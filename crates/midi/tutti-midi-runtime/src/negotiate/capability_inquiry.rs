@@ -518,7 +518,7 @@ impl CiInitiator {
         }
     }
 
-    /// Feed one inbound message. Records a Discovery Reply / Profile list, and
+    /// Feeds one inbound message. Records a Discovery Reply / Profile list, and
     /// returns any message that must be emitted in response — an Invalidate MUID
     /// on a MUID collision, otherwise nothing.
     pub fn ingest(&mut self, inbound: &CiMessage) -> Vec<CiMessage> {

@@ -156,9 +156,8 @@ fn a_queued_placement_moves_a_live_voice() {
 /// Mutation (run): `VoiceNode::process` not draining its commands → the voice
 /// never moves → fails. Mutation (run): `into_parts` making the queue after
 /// the node is boxed (the handle's sender paired with a receiver the node
-/// never holds) → fails. (The `AudioUnit` era's `Legacy` mutation — the
-/// adapter rendering a clone taken at insert — has no counterpart: nothing
-/// clones a graph node.)
+/// never holds) → fails. (Rendering a clone taken at insert is not a
+/// possible mutation: nothing clones a graph node.)
 #[test]
 fn a_command_reaches_a_node_across_a_commit() {
     let (mut ed, mut exec, handle) = graph_with(node_at(0.0));

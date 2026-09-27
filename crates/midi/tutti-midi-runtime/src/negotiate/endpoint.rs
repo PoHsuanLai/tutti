@@ -110,7 +110,7 @@ impl EndpointNegotiator {
         self
     }
 
-    /// Set the human-readable endpoint name and product-instance id reported in
+    /// Sets the human-readable endpoint name and product-instance id reported in
     /// their respective notifications. Empty strings omit those replies.
     pub fn with_names(
         mut self,
@@ -228,7 +228,7 @@ impl EndpointNegotiator {
         out
     }
 
-    /// Build an outbound Function Block Discovery asking `block_number` (or
+    /// Builds an outbound Function Block Discovery asking `block_number` (or
     /// [`ALL_FUNCTION_BLOCKS`]) for the notifications in `request`. Use when
     /// tutti is the *discoverer* re-querying a peer whose blocks may have
     /// changed.
@@ -239,7 +239,7 @@ impl EndpointNegotiator {
         MidiEvent::function_block_discovery(block_number, request)
     }
 
-    /// Build the outbound Endpoint Discovery request this endpoint would send to
+    /// Builds the outbound Endpoint Discovery request this endpoint would send to
     /// probe a peer, asking for every reply. Use when tutti is the *discoverer*.
     pub fn discovery_request() -> MidiEvent {
         MidiEvent::endpoint_discovery(
@@ -321,7 +321,7 @@ impl EndpointInquiry {
         EndpointNegotiator::discovery_request()
     }
 
-    /// Feed one reply event from the peer. Non-UMP-Stream events are ignored.
+    /// Feeds one reply event from the peer. Non-UMP-Stream events are ignored.
     /// Returns `true` if the event advanced the discovered state.
     pub fn ingest(&mut self, event: &MidiEvent) -> bool {
         let Ok(UmpMessage::UmpStream(stream)) = UmpMessage::try_from(event.data_words()) else {

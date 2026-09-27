@@ -1,9 +1,9 @@
 //! Timestamped transport commands: play, stop, seek, tempo and loop, each
 //! at an [`At`].
 //!
-//! Doc 013 §6, item 3: a command meant to happen during playback says when.
+//! A command meant to happen during playback says when:
 //! [`MotionFsm::schedule`](super::MotionFsm::schedule) takes an `At` and
-//! there is no untimed overload in it. The older untimed calls
+//! there is no untimed overload of it. The untimed calls
 //! ([`MotionFsm::try_send`](super::MotionFsm::try_send), the
 //! [`TransportSettings`](super::TransportSettings) stores) still work, and
 //! mean what `At::NextBlock` means.
@@ -216,7 +216,7 @@ impl Schedule {
 
     /// Control thread: the device rate is changing, and every command sent
     /// from here on is written in the new rate's frames. The boundary
-    /// [`rescale`](Self::rescale) keeps to — doc 013's rule for the
+    /// [`rescale`](Self::rescale) keeps to — the same rule as the
     /// executor's own schedule (`Editor::reprepare`), where a commit's
     /// sequence number is the boundary; here it is the send order.
     pub(crate) fn mark_rate_change(&self) {

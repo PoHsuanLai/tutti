@@ -10,15 +10,15 @@
 //!
 //! A looped voice plays file frames `0, 1, …, end - 1`, then `start, …, end -
 //! 1` again, forever (`resume` rather than `start` when the fade has to go into
-//! the loop's head, below). Two things follow, and both used to be wrong:
+//! the loop's head, below). Two things follow:
 //!
 //! - **The crossfade leads into `start`, it does not replay it.** Frame `end -
 //!   fade + k` (for `k` in `0..fade`) is blended toward frame `start - fade +
 //!   k`: the material that leads into `start`. The last blended frame is almost
 //!   all `start - 1`, and the next frame played is `start`, so the join is the
-//!   file's own step from `start - 1` to `start`. The first cut blended toward
-//!   `start + k` and then played `start` again: the loop's head was heard twice,
-//!   a jump of `fade` frames at every wrap.
+//!   file's own step from `start - 1` to `start`. Blending toward `start + k`
+//!   and then playing `start` again would play the loop's head twice, a jump
+//!   of `fade` frames at every wrap.
 //! - **Taps near the end read through the wrap.** The cubic kernel reads two
 //!   frames ahead of a position; a position within two frames of `end` reads
 //!   `start`, `start + 1` there, which are the frames the loop plays next, not
@@ -251,7 +251,7 @@ mod tests {
     /// frames 16..20 toward 6..10, weighted 1/5 … 4/5, and nothing else; the
     /// wrap lands on 10.
     ///
-    /// Mutation (run): the lead-in `resume + k` (the old head replay) → frame
+    /// Mutation (run): the lead-in `resume + k` (the head replayed) → frame
     /// 16 blends toward 10 → fails. Mutation (run): the weight `k / fade` →
     /// frame 16 weighs 0 → fails.
     #[test]
@@ -271,8 +271,8 @@ mod tests {
     /// wraps to 6, so the last blended frame (almost all 5) is followed by 6.
     /// A loop from frame 0 fades too; the fade is at most half the loop there.
     ///
-    /// Mutation (run): the head mode removed (the fade clamped to `start`,
-    /// the first cut) → a 2-frame fade → fails. Mutation (run): `resume` left
+    /// Mutation (run): the head mode removed (the fade clamped to `start`) →
+    /// a 2-frame fade → fails. Mutation (run): `resume` left
     /// at `start` in head mode → the wrap lands on 2, replaying the head →
     /// fails.
     #[test]
@@ -316,7 +316,7 @@ mod tests {
     /// 1 499..1 502 on a loop `[2000, 4000)`, looped or not.
     ///
     /// Mutation (run): the back wrap for every tap behind `resume` whenever
-    /// `looped` (the review's B1) → 3 499.. → fails.
+    /// `looped` → 3 499.. → fails.
     #[test]
     fn a_position_before_the_loop_reads_the_file_behind_it() {
         let span = LoopSpan::new(2_000, 4_000, 0, ANY).expect("a loop");

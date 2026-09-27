@@ -100,12 +100,14 @@ mod sync {
 /// Bits of the packed window word that hold its length; the rest its end.
 const LEN_BITS: u32 = 24;
 
-/// The most frames a ring holds: its window's length is packed in 24 bits.
-/// (The window's end takes the other 40: a position must stay below `2^40`,
-/// 290 days of frames at 44.1 kHz.)
+/// The most frames a [`PosRing`] holds.
+///
+/// The window's length is packed in 24 bits. Its end takes the other 40, so a
+/// position must stay below `2^40` (about 290 days of frames at 44.1 kHz).
 pub const MAX_POS_RING_FRAMES: usize = (1 << LEN_BITS) - 1;
 
-/// A window of positions `[from, to)`.
+/// A window of ring positions `[from, to)`: the positions a [`PosRing`]'s
+/// slots hold.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RingWindow {
     /// The first position held.
@@ -129,18 +131,57 @@ impl RingWindow {
         }
     }
 
-    /// Whether position `s` is held.
+    /// Returns whether position `s` is in the window.
     #[inline]
     pub fn holds(&self, s: u64) -> bool {
         s >= self.from && s < self.to
     }
 }
 
-/// The state a [`PosWriter`] and a [`PosReader`] share (see the module docs).
+/// A ring of frames a writer thread places ahead of the audio thread, indexed
+/// by position rather than consumed in order.
 ///
-/// Only its glances are public — the slots are read through a [`PosClaim`]
-/// and written through the [`PosWriter`]. A writer hands one out with
-/// [`PosWriter::watch`], for status and tests.
+/// One writer (a streaming thread, [`PosWriter`]) and one reader (the audio
+/// thread, [`PosReader`]) share `frames` slots of `stride` samples each. Slot
+/// `s mod frames` holds position `s`, a position on whatever line the two
+/// agree on (a disk stream uses the file's frame index). The writer publishes
+/// the [`RingWindow`] of positions the slots hold, appends at its end with
+/// [`PosWriter::push`], and may shrink it ([`retract_to`](PosWriter::retract_to),
+/// [`raise_from`](PosWriter::raise_from), [`reset`](PosWriter::reset)). Once
+/// per block the reader [`claim`](PosReader::claim)s the ranges it may read,
+/// takes the window, and reads any position inside both, in any order, as
+/// often as it likes. Nothing is consumed, and nothing on the reading side
+/// locks, allocates or waits.
+///
+/// **The guarantee.** A position the reader's block may read keeps the frame
+/// it had when the block took its window, for as long as the block runs: the
+/// writer never overwrites a slot the block in flight may read, even after a
+/// shrink, until the reader's next claim (or [`idle`](PosReader::idle)) shows
+/// it has moved on. A write that would break this is cut short instead, and
+/// `push` reports how many frames landed.
+///
+/// **One of each, by type.** [`PosRing::new`] returns the one writer and the
+/// one reader. Neither is `Clone`; the writer's methods take `&mut self`; a
+/// read goes through a [`PosClaim`], which borrows the reader, so a claim
+/// cannot outlive the next one. The ring itself is only reachable read-only,
+/// through [`PosWriter::watch`], for status displays and tests.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::PosRing;
+///
+/// // 8 stereo frames, nothing kept behind the play position.
+/// let (mut writer, mut reader) = PosRing::new(8, 2, 0);
+///
+/// // Streaming thread: frames for positions 0..3.
+/// assert_eq!(writer.push(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]), 3);
+///
+/// // Audio thread, once per block: play from 0, may read [0, 3).
+/// let claim = reader.claim(0, [(0, 3), (0, 0)]);
+/// assert!(claim.holds(2));
+/// assert_eq!(claim.sample(1, 1), 0.4);
+/// ```
 pub struct PosRing {
     stride: usize,
     frames: usize,
@@ -171,11 +212,13 @@ impl std::fmt::Debug for PosRing {
 }
 
 impl PosRing {
-    /// A ring of `frames` slots (at least one, at most
-    /// [`MAX_POS_RING_FRAMES`]) of `stride` samples (at least one), holding
-    /// nothing, that keeps `keep_behind` positions behind where the reader
-    /// plays (the taps a position reads behind itself): its one writer and
-    /// its one reader.
+    /// Creates an empty ring and returns its one writer and its one reader.
+    ///
+    /// `frames` is the slot count, clamped to `1..=`[`MAX_POS_RING_FRAMES`];
+    /// `stride` the samples per frame, at least one. The writer never reuses
+    /// the slot of a position less than `keep_behind` behind where the reader
+    /// plays (for a reader that taps positions behind the one it plays).
+    /// Allocates the slots, so call it off the audio thread.
     #[allow(clippy::new_ret_no_self)] // the ring is its two ends
     pub fn new(frames: usize, stride: usize, keep_behind: u64) -> (PosWriter, PosReader) {
         let frames = frames.clamp(1, MAX_POS_RING_FRAMES);
@@ -198,29 +241,30 @@ impl PosRing {
         (writer, PosReader { ring })
     }
 
-    /// Slots, in frames.
+    /// Returns the slot count, in frames.
     pub fn frames(&self) -> usize {
         self.frames
     }
 
-    /// Samples per frame.
+    /// Returns the samples per frame.
     pub fn stride(&self) -> usize {
         self.stride
     }
 
-    /// The window now: a glance, not a claim (nothing may be read by it).
+    /// Returns the window now: a glance for status, not a claim (nothing may
+    /// be read by it).
     #[inline]
     pub fn window(&self) -> RingWindow {
         RingWindow::unpack(self.window.load(Ordering::Acquire))
     }
 
-    /// Where the reader plays (or the writer last said it would). Advisory:
-    /// what the writer fills ahead of.
+    /// Returns where the reader plays (or where the writer last said it
+    /// would): the position the writer fills ahead of.
     pub fn play(&self) -> u64 {
         self.play.load(Ordering::Relaxed)
     }
 
-    /// Shrinks so far: the generation.
+    /// Returns how many times the window has shrunk (the generation).
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
@@ -233,7 +277,10 @@ impl PosRing {
     }
 }
 
-/// The one writer of a [`PosRing`]: a streaming thread. Not `Clone`.
+/// The one writer of a [`PosRing`], owned by a streaming thread.
+///
+/// Not `Clone`. None of its methods is meant for the audio thread: `push`
+/// runs a `SeqCst` fence and a loop over the frames it writes.
 pub struct PosWriter {
     ring: Arc<PosRing>,
     /// The span of positions shrinks have removed since the reader last
@@ -252,48 +299,49 @@ impl std::fmt::Debug for PosWriter {
 }
 
 impl PosWriter {
-    /// A read-only handle on the shared state, for glances (the window, the
-    /// play position, the generation). It reads no sample.
+    /// Returns a read-only handle on the shared state, for glances (the window,
+    /// the play position, the generation). It reads no sample.
     pub fn watch(&self) -> Arc<PosRing> {
         Arc::clone(&self.ring)
     }
 
-    /// Slots, in frames.
+    /// Returns the slot count, in frames.
     pub fn frames(&self) -> usize {
         self.ring.frames
     }
 
-    /// Samples per frame.
+    /// Returns the samples per frame.
     pub fn stride(&self) -> usize {
         self.ring.stride
     }
 
-    /// The window now.
+    /// Returns the window now.
     #[inline]
     pub fn window(&self) -> RingWindow {
         self.ring.window()
     }
 
-    /// Where the reader plays (or this writer last said it would).
+    /// Returns where the reader plays (or where this writer last said it
+    /// would).
     pub fn play(&self) -> u64 {
         self.ring.play()
     }
 
-    /// Shrinks so far.
+    /// Returns how many times the window has shrunk.
     pub fn generation(&self) -> u64 {
         self.ring.generation()
     }
 
-    /// One past the last position the reader's block in flight may read, as
-    /// of a `SeqCst` fence now (0 for an idle reader).
+    /// Returns one past the last position the reader's block in flight may
+    /// read, as of a `SeqCst` fence now (0 for an idle reader).
     pub fn in_flight_end(&self) -> u64 {
         fence(Ordering::SeqCst);
         let [(_, e0), (_, e1)] = self.ring.in_flight();
         e0.max(e1)
     }
 
-    /// Say where the reader plays before it has (so the window is filled
-    /// there).
+    /// Sets where the reader will play before its first claim, so the writer
+    /// fills ahead of the right position.
     pub fn set_play(&mut self, play: u64) {
         self.ring.play.store(play, Ordering::Relaxed);
     }
@@ -303,7 +351,7 @@ impl PosWriter {
         self.ring.claimed.load(Ordering::Acquire) == self.ring.generation.load(Ordering::Relaxed)
     }
 
-    /// Shrink to `window`, removing `[removed.0, removed.1)`, then bump the
+    /// Shrinks to `window`, removing `[removed.0, removed.1)`, then bumps the
     /// generation (the order is the module docs' argument).
     fn shrink(&mut self, window: RingWindow, removed: (u64, u64)) {
         // What earlier shrinks removed stays stale only until the reader has
@@ -318,7 +366,7 @@ impl PosWriter {
         self.ring.generation.fetch_add(1, Ordering::Release);
     }
 
-    /// Drop every position at and past `x` (a rewrite from `x` follows).
+    /// Drops every position at and past `x`, for a rewrite from `x`.
     pub fn retract_to(&mut self, x: u64) {
         let w = self.window();
         if x < w.to {
@@ -332,7 +380,7 @@ impl PosWriter {
         }
     }
 
-    /// Drop every position below `y`.
+    /// Drops every position below `y`.
     pub fn raise_from(&mut self, y: u64) {
         let w = self.window();
         if y > w.from {
@@ -346,7 +394,8 @@ impl PosWriter {
         }
     }
 
-    /// An empty window at `start` (the reader moved outside the old one).
+    /// Empties the window and restarts it at `start`, for a reader that moved
+    /// outside the current one.
     pub fn reset(&mut self, start: u64) {
         let w = self.window();
         self.shrink(
@@ -358,10 +407,13 @@ impl PosWriter {
         );
     }
 
-    /// Append frames at the window's end, returning how many **frames**
-    /// landed — short where a slot the reader's block in flight may read
-    /// would be written (see the module docs), or where the ring is full
-    /// ahead of where the reader plays. A trailing partial frame is ignored.
+    /// Appends interleaved frames at the window's end and returns how many
+    /// **frames** landed.
+    ///
+    /// The count is short where the next write would reuse a slot the reader's
+    /// block in flight may read, or where the ring is full ahead of where the
+    /// reader plays; push the rest again later. A trailing partial frame is
+    /// ignored.
     pub fn push(&mut self, samples: &[f32]) -> usize {
         let ring = &*self.ring;
         let ch = ring.stride;
@@ -429,7 +481,9 @@ impl PosWriter {
     }
 }
 
-/// The one reader of a [`PosRing`]: the audio thread. Not `Clone`.
+/// The one reader of a [`PosRing`], owned by the audio thread.
+///
+/// Not `Clone`. Its methods are wait-free and allocation-free.
 pub struct PosReader {
     ring: Arc<PosRing>,
 }
@@ -443,15 +497,17 @@ impl std::fmt::Debug for PosReader {
 }
 
 impl PosReader {
-    /// Samples per frame.
+    /// Returns the samples per frame.
     pub fn stride(&self) -> usize {
         self.ring.stride
     }
 
-    /// Once per block before any read: where the reader plays, the ranges the
-    /// block may read, and the window it may read them in (see the module
-    /// docs for the order). The claim borrows the reader: it ends before the
-    /// next one starts.
+    /// Claims this block's reads; call it once per block, before any read.
+    ///
+    /// `play` is where the reader plays; `reads` the (up to two) ranges
+    /// `[a, e)` the block may read (pass `(0, 0)` for an unused one). The
+    /// returned [`PosClaim`] holds the window taken now. It borrows the
+    /// reader, so it ends before the next claim starts.
     #[inline]
     pub fn claim(&mut self, play: u64, reads: [(u64, u64); 2]) -> PosClaim<'_> {
         let ring = &*self.ring;
@@ -471,9 +527,11 @@ impl PosReader {
         }
     }
 
-    /// A block that reads nothing: no ranges, and the generation echoed, so a
-    /// paused reader holds no write back (the ranges of its last block would
-    /// otherwise stand, and a shrink would wait on an echo that never comes).
+    /// Marks a block that reads nothing.
+    ///
+    /// Clears the reader's ranges and acknowledges every shrink so far, so a
+    /// paused reader holds no write back. Without it the ranges of its last
+    /// claim would keep blocking the writer.
     #[inline]
     pub fn idle(&mut self) {
         let ring = &*self.ring;
@@ -486,7 +544,10 @@ impl PosReader {
     }
 }
 
-/// One block's claim: the window it took and the ranges it may read.
+/// One block's claim on a [`PosRing`]: the window it took and the ranges it
+/// may read.
+///
+/// Returned by [`PosReader::claim`].
 #[derive(Debug)]
 pub struct PosClaim<'a> {
     ring: &'a PosRing,
@@ -495,21 +556,25 @@ pub struct PosClaim<'a> {
 }
 
 impl<'a> PosClaim<'a> {
-    /// The window this block may read.
+    /// Returns the window this block may read.
     #[inline]
     pub fn window(&self) -> RingWindow {
         self.window
     }
 
-    /// Whether position `s` may be read this block: the window holds it (the
-    /// caller keeps to its ranges).
+    /// Returns whether position `s` may be read this block: the window holds
+    /// it. The caller keeps to the ranges it claimed.
     #[inline]
     pub fn holds(&self, s: u64) -> bool {
         self.window.holds(s)
     }
 
-    /// The frame at position `s`, which the window and the claimed ranges
-    /// hold: its slot, found once for all its channels.
+    /// Returns the frame at position `s`, found once for all its channels.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if `s` is outside the window or the claimed ranges.
+    /// A release build reads whatever the slot holds.
     #[inline]
     pub fn frame(&self, s: u64) -> PosFrame<'a> {
         debug_assert!(self.window.holds(s), "position {s} outside the window");
@@ -522,19 +587,29 @@ impl<'a> PosClaim<'a> {
         PosFrame(&self.ring.slots[slot * ch..(slot + 1) * ch])
     }
 
-    /// Channel `c` of position `s` (see [`frame`](Self::frame)).
+    /// Returns channel `c` of position `s`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, as [`frame`](Self::frame) does, and if `c` is not
+    /// below the stride.
     #[inline]
     pub fn sample(&self, s: u64, c: usize) -> f32 {
         self.frame(s).get(c)
     }
 }
 
-/// One claimed frame's samples.
+/// One claimed frame's samples, from [`PosClaim::frame`].
 #[derive(Clone, Copy, Debug)]
 pub struct PosFrame<'a>(&'a [AtomicU32]);
 
 impl PosFrame<'_> {
-    /// Channel `c` (below the ring's stride; 0 past it in a release build).
+    /// Returns channel `c`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if `c` is not below the ring's stride. A release build
+    /// returns 0 there.
     #[inline]
     pub fn get(&self, c: usize) -> f32 {
         debug_assert!(c < self.0.len(), "channel {c} past the stride");

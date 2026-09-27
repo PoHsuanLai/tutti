@@ -20,7 +20,6 @@ mod common;
 /// `AudioGraphRes::output_source` rather than trusting the component, because the diff
 /// this layer performs is only meaningful if the engine is the thing being
 /// compared against.
-/// (Was `tests/graph_wire.rs`.)
 mod graph_wire {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
@@ -180,8 +179,7 @@ mod graph_wire {
     /// A node naming itself is skipped with a warning, not a panic.
     ///
     /// A self-connection is a cycle, which the graph refuses at commit — the
-    /// whole commit, not the one edge (fundsp's `Net::set_source` asserted on
-    /// one, which took the app down) — so the rebuild drops the edge rather
+    /// whole commit, not the one edge — so the rebuild drops the edge rather
     /// than lose every edit over a caller's typo.
     #[test]
     fn a_self_connection_is_skipped_not_panicked_on() {
@@ -318,15 +316,14 @@ mod graph_wire {
     /// **A host that wires the master itself, through a latent node, is left
     /// alone — and the rebuild's debug check does not panic over it.** An
     /// empty `MasterSources` declares no output channel, so the value carries
-    /// none; the host wires output 0 from a limiter by hand. The rebuild's
-    /// consistency check used to compare the latency plan of the *whole*
-    /// graph against the value's, and the value — which has no outputs —
-    /// folds to no latency where the graph has the limiter's: a debug build
-    /// panicked over a graph that was right. The check covers only what the
-    /// value declares now.
+    /// none; the host wires output 0 from a limiter by hand. Comparing the
+    /// latency plan of the *whole* graph against the value's would disagree
+    /// here — the value, which has no outputs, folds to no latency where the
+    /// graph has the limiter's — so the check covers only what the value
+    /// declares.
     ///
     /// Mutation (run): `topology::disagreements` comparing
-    /// `latency::plan(want)` against `graph.latency_plan()` again → this
+    /// `latency::plan(want)` against `graph.latency_plan()` → this
     /// panics in the rebuild ("the engine does not match the value").
     #[test]
     fn a_hand_wired_master_behind_a_latent_node_is_not_a_disagreement() {
@@ -414,9 +411,8 @@ mod graph_wire {
     /// A mono node reaches both master channels — via the constructor that says so.
     ///
     /// `MasterSources::from` names ports 0 and 1, which is correct for a stereo
-    /// source and unresolvable for a mono one. Its doc used to promise `pipe_output`'s
-    /// modulo wrapping, which it never did: channel 1 was skipped, leaving whatever
-    /// the channel previously held still audible.
+    /// source and unresolvable for a mono one: it does not wrap, so channel 1
+    /// would be skipped, leaving whatever the channel previously held audible.
     #[test]
     fn a_mono_source_can_claim_both_master_channels() {
         let mut app = app();
@@ -474,9 +470,8 @@ mod graph_wire {
     /// A rebuild that finds the engine already agreeing writes nothing — it does not
     /// re-set ports that already hold the declared source.
     ///
-    /// This is what the diff buys. Re-writing an unchanged port is not free (on
-    /// `Net`, before doc 013, it threw away the cached topological sort), and
-    /// marking `GraphDirty` forces a commit the frame did not need.
+    /// This is what the diff buys: marking `GraphDirty` for an unchanged port
+    /// would force a commit the frame did not need.
     ///
     /// Driven by adding a *second, unrelated* node, which dirties the rebuild via
     /// `Added<AudioNode>` without changing any existing declaration. Without the
@@ -562,9 +557,8 @@ mod graph_wire {
         }
     }
 
-    /// Widening must survive the real commit path. A plain `Net::commit` panicked
-    /// on an arity change (the graph before doc 013), so this is what proves the arity-permitting commit is
-    /// genuinely the one reached.
+    /// Widening must survive the real commit path: this proves the commit
+    /// reached permits an arity change.
     #[test]
     fn a_widened_root_survives_a_real_commit() {
         let mut app = app();
@@ -622,17 +616,14 @@ mod graph_wire {
     /// plan is the one over the graph that now exists.
     ///
     /// Channel 1 is fed through a limiter, so it is the channel that defines
-    /// the graph's latency. Before the fix the dropped channel kept its
-    /// source — nothing declared it any more, so nothing wrote it — and the
-    /// value, one channel short of the root, folded to a different latency
-    /// plan from the engine's (channel 1 still behind the limiter), which
-    /// tripped `rebuild`'s "the engine does not match the value" check. (That
-    /// check no longer compares whole-graph plans — see
-    /// `a_hand_wired_master_behind_a_latent_node_is_not_a_disagreement` — so
-    /// what catches a regression now is this test's own reading of channel 1.)
+    /// the graph's latency. A dropped channel that kept its source — nothing
+    /// declares it, so nothing would write it — would leave channel 1 behind
+    /// the limiter; this test's own reading of channel 1 catches that (the
+    /// rebuild's consistency check does not compare whole-graph plans; see
+    /// `a_hand_wired_master_behind_a_latent_node_is_not_a_disagreement`).
     ///
     /// Mutation (run): building the value's outputs to the declaration's
-    /// length, as before (`0..graph.outputs().min(master.0.len())`) → channel
+    /// length (`0..graph.outputs().min(master.0.len())`) → channel
     /// 1 keeps the limiter → "the dropped channel's source is disconnected"
     /// fails.
     #[test]
@@ -778,13 +769,9 @@ mod graph_wire {
 /// A param modulation and a node's audio ports are two spaces: declaring one
 /// cannot clobber the other.
 ///
-/// This module used to ask whether routing an audio-rate *param port* — an
-/// extra input channel after a node's audio inputs, fed by a base/sum chain —
-/// through `PortSources` made the clobber an imperative `pipe_input` suffered
-/// unrepresentable. The graph now modulates params through its own param
-/// edges (design doc 013 item 6), not input channels, so the clobber has no
-/// representation at all; these pin that the two spaces stay apart through
-/// the declarative layer. (Was `tests/param_port_wire.rs`.)
+/// The graph modulates params through its own param edges, not input
+/// channels, so a port declaration cannot clobber a modulation; these pin that
+/// the two spaces stay apart through the declarative layer.
 mod param_mod_wire {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;

@@ -25,8 +25,16 @@ use tutti_plugin_types::BusChannels;
 use tutti_plugin_types::ChannelLayout;
 
 impl ClapLoaded {
-    /// Lightweight probe: read the CLAP descriptor without creating or
-    /// initializing the plugin instance.
+    /// Reads the descriptor of the bundle's first plugin without creating an
+    /// instance.
+    ///
+    /// `library_path` is the binary to open when it differs from
+    /// `bundle_path`; `None` opens `bundle_path` itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened or has
+    /// no compatible `clap_entry` or plugin factory.
     pub fn probe(bundle_path: &Path, library_path: Option<&Path>) -> Result<PluginInfo> {
         let load_path = library_path.unwrap_or(bundle_path);
 
@@ -45,13 +53,18 @@ impl ClapLoaded {
         Ok(info)
     }
 
-    /// Every plugin a `.clap` bundle advertises, not just the first.
+    /// Returns the descriptor of every plugin a `.clap` bundle advertises.
     ///
     /// A bundle is a factory: `get_plugin_count` exists because one file may
     /// ship a synth plus companion effects. [`probe`](Self::probe) answers for
     /// the default (first) plugin, which is the whole answer for most bundles;
     /// this is how a caller finds the rest, and the ids it returns are what
     /// [`load_plugin`](Self::load_plugin) accepts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened or has
+    /// no compatible `clap_entry` or plugin factory.
     pub fn probe_all(bundle_path: &Path, library_path: Option<&Path>) -> Result<Vec<PluginInfo>> {
         let load_path = library_path.unwrap_or(bundle_path);
 
@@ -70,16 +83,42 @@ impl ClapLoaded {
         Ok(siblings)
     }
 
-    /// Load a CLAP plugin from a path that is either a file or a bundle directory.
+    /// Loads and initializes the first plugin in a `.clap` bundle.
+    ///
+    /// `sample_rate` (Hz) and `max_frames` (the largest block
+    /// [`process`](crate::ClapActive::process) will be asked for) are fixed
+    /// here and used by [`activate`](Self::activate).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use tutti_clap_host::ClapLoaded;
+    ///
+    /// let plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", 48_000.0, 512)?;
+    /// println!("{} {}", plugin.info().name, plugin.info().version);
+    /// # Ok::<(), tutti_clap_host::ClapError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
+    /// compatible `clap_entry` or plugin factory, or the plugin cannot be
+    /// created or initialized; `stage` says which step failed.
     pub fn load(path: impl AsRef<Path>, sample_rate: f64, max_frames: u32) -> Result<Self> {
         Self::load_with_library(path.as_ref(), None, sample_rate, max_frames)
     }
 
-    /// Load a named plugin from a bundle that ships more than one.
+    /// Loads a named plugin from a bundle that ships more than one.
     ///
     /// `plugin_id` is an id from [`probe_all`](Self::probe_all). A bundle with
     /// a single plugin needs [`load`](Self::load), which takes the only one
     /// there is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
+    /// compatible `clap_entry` or plugin factory, or the plugin cannot be
+    /// created or initialized; `stage` says which step failed.
     pub fn load_plugin(
         path: impl AsRef<Path>,
         plugin_id: &str,
@@ -95,11 +134,17 @@ impl ClapLoaded {
         )
     }
 
-    /// Load a CLAP plugin with a pre-resolved library path.
+    /// Loads a CLAP plugin with a pre-resolved library path.
     ///
     /// `bundle_path` is the original `.clap` bundle directory (passed to `init()`).
     /// `library_path` is the resolved binary for dlopen. If `None`, `bundle_path`
     /// is used for both.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
+    /// compatible `clap_entry` or plugin factory, or the plugin cannot be
+    /// created or initialized; `stage` says which step failed.
     pub fn load_with_library(
         bundle_path: &Path,
         library_path: Option<&Path>,
@@ -109,8 +154,17 @@ impl ClapLoaded {
         Self::load_selected(bundle_path, library_path, None, sample_rate, max_frames)
     }
 
-    /// The one load path. `plugin_id` `None` means "the bundle's first
-    /// plugin", which is what every single-plugin bundle wants.
+    /// Loads a plugin with every option explicit: a pre-resolved library path
+    /// and an optional plugin id.
+    ///
+    /// `plugin_id` `None` means the bundle's first plugin, which is what every
+    /// single-plugin bundle wants. The other `load*` constructors call this.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
+    /// compatible `clap_entry` or plugin factory, or the plugin cannot be
+    /// created or initialized; `stage` says which step failed.
     pub fn load_selected(
         bundle_path: &Path,
         library_path: Option<&Path>,
@@ -170,7 +224,7 @@ impl ClapLoaded {
             });
         }
 
-        // H5: bind the raw pointer into its owning handle BEFORE the init
+        // Bind the raw pointer into its owning handle BEFORE the init
         // checks. `create_plugin` has already handed us ownership, so every
         // exit from here on must `destroy()` it — CLAP's spec is explicit: "If
         // init returns false, the host must destroy the plugin instance."
@@ -231,7 +285,7 @@ impl ClapLoaded {
         })
     }
 
-    /// Load a CLAP plugin for editor/parameter/state work only — never for
+    /// Loads a CLAP plugin for editor/parameter/state work only — never for
     /// audio. The returned instance must NOT be `activate()`d, `process()`d, or
     /// `start_processing()`d; doing so is a misuse of an editor-only load.
     ///
@@ -240,6 +294,12 @@ impl ClapLoaded {
     /// sample rate / max-frames passed to the plugin are placeholders that are
     /// never used (no `activate()` call consumes them). Use this in the
     /// in-process GUI host, where audio runs in a separate instance/process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
+    /// compatible `clap_entry` or plugin factory, or the plugin cannot be
+    /// created or initialized; `stage` says which step failed.
     pub fn load_editor_only(bundle_path: &Path, library_path: Option<&Path>) -> Result<Self> {
         // Placeholder audio config: never used because the caller must not
         // activate this instance. A processing load uses `load_with_library`
@@ -260,9 +320,9 @@ impl ClapLoaded {
 /// A `get(i)` failure at `i < count` is malformed — CLAP has no sparse index
 /// space — and **truncates** rather than skipping. The returned list is
 /// positional: [`refill_port_buffers`](super::audio) walks it in order,
-/// advancing its offset by each entry's channel count. A `filter_map` (what
-/// this used to be) closes the gap, so every later port silently moves down one
-/// index and gets handed its neighbour's channels. Truncating keeps the list a
+/// advancing its offset by each entry's channel count. A `filter_map` would
+/// close the gap, so every later port would silently move down one index and
+/// get handed its neighbour's channels. Truncating keeps the list a
 /// true prefix, which CLAP tolerates — `process` carries explicit
 /// `audio_inputs_count` / `audio_outputs_count`.
 fn port_channels(
@@ -377,7 +437,7 @@ mod enumeration_hole_tests {
         }
     }
 
-    /// Configure the stub and run `f` under [`LAYOUT_LOCK`], so the store and
+    /// Configures the stub and runs `f` under [`LAYOUT_LOCK`], so the store and
     /// the read that follows it cannot interleave with another test's.
     ///
     /// The lock is taken poison-tolerant: a failing assertion inside `f` panics
@@ -411,7 +471,7 @@ mod enumeration_hole_tests {
         );
     }
 
-    /// A hole must truncate, never renumber. The pre-fix `filter_map` returned
+    /// A hole must truncate, never renumber. A `filter_map` would return
     /// `[1, 2, 4]` — port 3's width at index 2.
     #[test]
     fn hole_truncates_the_port_list() {

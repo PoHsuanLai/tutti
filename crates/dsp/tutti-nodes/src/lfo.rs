@@ -126,7 +126,7 @@ pub struct ModulatorNode<M: Modulator> {
 }
 
 /// The concrete LFO node the graph builds — a [`ModulatorNode`] driving a pure
-/// [`Lfo`]. Monomorphized, so `value()` inlines to the old codegen.
+/// [`Lfo`]. Monomorphized, so `value()` inlines.
 ///
 /// **The per-sample tier.** This is not a different LFO from the one the
 /// modulation matrix drives — it is the same [`Lfo`] under a different adapter.
@@ -140,7 +140,7 @@ pub struct ModulatorNode<M: Modulator> {
 pub type LfoNode = ModulatorNode<Lfo>;
 
 impl ModulatorNode<Lfo> {
-    /// Create a free-running LFO with default frequency 1.0 Hz.
+    /// Creates a free-running LFO with default frequency 1.0 Hz.
     ///
     /// Chain `.with_frequency(hz)` or `.with_beat_sync(beats)` to configure
     /// further. Its phase increment takes the rate [`Node::prepare`] hands
@@ -151,7 +151,7 @@ impl ModulatorNode<Lfo> {
 }
 
 impl<M: Modulator> ModulatorNode<M> {
-    /// Build a modulation node over an arbitrary pure modulator, free-running
+    /// Builds a modulation node over an arbitrary pure modulator, free-running
     /// at 1 Hz. The generic entry point behind [`LfoNode::new`]; also the seam
     /// any future modulator (envelope, sample & hold, …) wires through.
     ///
@@ -216,7 +216,7 @@ impl<M: Modulator> ModulatorNode<M> {
         BeatDuration(f64::from(self.frequency.load().get()))
     }
 
-    /// Set the modulation [`Depth`], clamped to `-1.0..=1.0`.
+    /// Sets the modulation [`Depth`], clamped to `-1.0..=1.0`.
     ///
     /// Bipolar: a negative depth inverts the modulator, so `-1.0` is the same
     /// shape phase-flipped and `0.0` is flat. Values past full scale saturate
@@ -226,7 +226,7 @@ impl<M: Modulator> ModulatorNode<M> {
         self
     }
 
-    /// Set the [`PhaseIncrement`] offset, conventionally `0.0` to `1.0` for one
+    /// Sets the [`PhaseIncrement`] offset, conventionally `0.0` to `1.0` for one
     /// full cycle.
     ///
     /// Stored as given; the wrap happens where the offset is *applied*, via
@@ -278,7 +278,7 @@ impl<M: Modulator> ModulatorNode<M> {
         self.phase_offset.as_atomic()
     }
 
-    /// Set the free-running rate. **Ignored in [`LfoMode::BeatSynced`]**, where
+    /// Sets the free-running rate. **Ignored in [`LfoMode::BeatSynced`]**, where
     /// the cell holds a span in beats and an `Hz` would be a silent reciprocal
     /// — use [`set_beats_per_cycle`](Self::set_beats_per_cycle).
     ///
@@ -291,7 +291,7 @@ impl<M: Modulator> ModulatorNode<M> {
         }
     }
 
-    /// Set the beat-synced span. **Ignored in [`LfoMode::FreeRunning`]** — the
+    /// Sets the beat-synced span. **Ignored in [`LfoMode::FreeRunning`]** — the
     /// mirror of [`set_frequency`](Self::set_frequency).
     pub fn set_beats_per_cycle(&self, beats_per_cycle: impl Into<BeatDuration>) {
         if self.mode == LfoMode::BeatSynced {

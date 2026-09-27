@@ -15,10 +15,9 @@
 //! ## The `audio-probe` bundle
 //!
 //! `audio-probe` is *ours*, not Steinberg's — ~1400 lines under
-//! `tests/support/audio-probe/`. It used to live inside a VST3 SDK checkout at
-//! a machine-specific path and be built by CMake, which made every test that
-//! loads it unrunnable anywhere but one developer's box. It is built here
-//! instead, so `cargo test` is the whole story.
+//! `tests/support/audio-probe/`. It is built here rather than by CMake from an
+//! external SDK checkout, so every test that loads it runs on any machine and
+//! `cargo test` is the whole story.
 //!
 //! No CMake: the plugin plus the ~43 SDK translation units it needs are
 //! compiled straight through `cc` and linked into a `.so` by hand. `cc` only
@@ -171,14 +170,12 @@ fn main() {
 /// The VST3 SDK to build against: the in-repo submodules by default,
 /// `VST3_SDK_DIR` when someone wants a different SDK version.
 ///
-/// ## Why this no longer degrades into a skip
+/// ## Why a missing SDK is a hard error, not a skip
 ///
-/// It used to. `VST3_SDK_DIR` unset meant an empty `VST3_PROBE_DIR`, and the
-/// suites that read it via `env!` then *panicked* — so `--features conformance`
-/// on a machine without an SDK checkout was a hard failure dressed up as a
-/// skip, and the tests that did skip cleanly were skipping for a reason nobody
-/// could act on. The SDK is a submodule now, so it is present in any correctly
-/// cloned tree and its absence has exactly one cause and one fix.
+/// The SDK is a submodule, so it is present in any correctly cloned tree and
+/// its absence has exactly one cause and one fix. Degrading to an empty
+/// `VST3_PROBE_DIR` would only make the suites that read it via `env!` panic
+/// later, a hard failure dressed up as a skip.
 fn resolve_sdk() -> PathBuf {
     if let Some(dir) = std::env::var_os("VST3_SDK_DIR") {
         let dir = PathBuf::from(dir);

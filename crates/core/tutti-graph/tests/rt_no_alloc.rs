@@ -1,11 +1,11 @@
 //! Regression gate: `Executor::process` never allocates once a plan is
 //! applied — through PDC rings, event delays, event fan-in merges, feedback of
-//! both kinds, in-place aliasing, the silence skip, scheduled commands landing (on time, late, and still waiting), writers
-//! refusing past a declared event capacity, and block lengths that change
+//! both kinds, in-place aliasing, the silence skip, scheduled commands
+//! landing (on time, late, and still waiting), writers refusing past a declared event capacity, and block lengths that change
 //! every call.
 //!
-//! What this cannot cover, stated rather than implied: `apply` allocates by
-//! design in phase 1 (see `exec.rs`), so it runs outside the gate; and a node
+//! What this cannot cover, stated rather than implied: applying a commit
+//! allocates (see `exec.rs`), so it runs outside the gate; and a node
 //! that allocates is the node's bug, which this test catches only for the
 //! nodes it runs.
 

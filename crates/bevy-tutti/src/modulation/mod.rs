@@ -1,9 +1,9 @@
-//! Control-rate modulation as an ECS surface.
+//! Control-rate modulation as an ECS surface (feature `modulation`).
 //!
 //! An LFO is a [`ModSource`] entity; an edge from one to a parameter is a
 //! [`ModRoute`] entity. Two systems keep the engine in step: one recompiles the
 //! matrix when that declaration changes, the other advances every source once a
-//! frame.
+//! frame. Add [`TuttiModulationPlugin`] yourself: `TuttiPlugin` does not.
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
@@ -217,14 +217,21 @@ use bevy_ecs::prelude::*;
 
 use crate::graph::{engine_ready, GraphReconcileSystems};
 
-/// Control-rate modulation: the matrix, the target registry, and the two
-/// systems that drive them.
+/// Adds control-rate modulation: the [`ModulationMatrix`], the
+/// [`ModTargetRegistry`], the built-in [`ModSource`] kind, and the systems that
+/// drive them, plus the audio-rate route reconciler.
 ///
-/// Ordering matches what the two systems mean. [`rebuild`] runs before
-/// `Params`, so the frame's routing is current before anything reads it.
-/// [`drive`] runs *inside* `Params` and last, because it flushes
-/// `base + Σ offsets` into the node atomics — a param reconciler that ran after
-/// it would overwrite a modulated value with a static one.
+/// Not added by [`TuttiPlugin`](crate::TuttiPlugin); add it after it. Its
+/// systems are gated on [`engine_ready`] and need
+/// [`TransportRes`](crate::graph::TransportRes) and
+/// [`AudioGraphRes`](crate::graph::AudioGraphRes).
+///
+/// [`rebuild`] runs before [`GraphReconcileSystems::Params`], so the frame's
+/// routing is current before anything reads it. [`drive`] runs in `Params`,
+/// flushing `base + Σ layers` into the node atomics; a param reconciler in the
+/// same set writes an authored value to the accumulator's base instead of the
+/// atomic (see [`write_param`](crate::graph::write_param)), so the two never
+/// contend.
 pub struct TuttiModulationPlugin;
 
 impl Plugin for TuttiModulationPlugin {

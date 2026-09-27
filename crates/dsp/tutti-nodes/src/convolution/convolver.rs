@@ -3,17 +3,16 @@
 //! behind an `Arc`, and shared by every convolver built from it.
 //!
 //! The partitioned convolution is the one `fft-convolver` 0.3 runs (its
-//! `FFTConvolver`, which this crate used until the `tutti_graph::Node` port), written here
-//! over the same `realfft` transforms with the same arithmetic in the same
-//! order: an output is bit-identical to it (checked bit for bit against
-//! `fft-convolver` 0.3 when this landed, IRs of 0 to 5000 samples at
-//! partitions of 2 to 512; the node's pinned goldens hold it since). It is owned here because
+//! `FFTConvolver`), written over the same `realfft` transforms with the same
+//! arithmetic in the same order, so an output is bit-identical to it (checked
+//! for IRs of 0 to 5000 samples at partitions of 2 to 512; the node's goldens
+//! pin it). It is written here rather than depended on because
 //! `fft-convolver` keeps the IR's spectra inside each convolver with no way to
 //! share them, so every channel of a shared-IR node and every fork of a node
-//! held its own copy — megabytes for a long reverb (design doc 013, Phase 4).
-//! Now a channel, a clone and a fork hold one `Arc` to the spectra, which
-//! nothing writes after they are built; each keeps only its own running state
-//! (the input spectra history, the overlap, the FFT scratch).
+//! would hold its own copy — megabytes for a long reverb. Here a channel, a
+//! clone and a fork hold one `Arc` to the spectra, which nothing writes after
+//! they are built; each keeps only its own running state (the input spectra
+//! history, the overlap, the FFT scratch).
 
 use std::sync::Arc;
 
@@ -318,7 +317,7 @@ pub struct Convolver {
 }
 
 impl Convolver {
-    /// Create a new convolver from an impulse response.
+    /// Creates a new convolver from an impulse response.
     ///
     /// `block_size` is rounded up to the next power of two.
     pub fn new(ir: &[f32], block_size: usize) -> Self {
@@ -347,7 +346,7 @@ impl Convolver {
         &self.fft.spectra
     }
 
-    /// Create with the default block size (`512`).
+    /// Creates a convolver with the default block size (`512`).
     pub fn with_ir(ir: &[f32]) -> Self {
         Self::new(ir, DEFAULT_BLOCK_SIZE)
     }
@@ -362,7 +361,7 @@ impl Convolver {
         self.partition.block_size
     }
 
-    /// Produce one convolved sample. Returns `0.0` for the first
+    /// Produces one convolved sample. Returns `0.0` for the first
     /// `block_size` samples (fill-up latency).
     #[inline]
     pub fn process_sample(&mut self, input: f32) -> f32 {
@@ -412,7 +411,7 @@ impl Convolver {
         }
     }
 
-    /// Zero the working buffers without discarding the IR. Safe to
+    /// Zeros the working buffers without discarding the IR. Safe to
     /// call on a stream discontinuity.
     ///
     /// **Both** halves of the state have to be cleared. Clearing only
@@ -421,7 +420,7 @@ impl Convolver {
     /// into whatever plays next: with an 8-tap IR the first sample after a
     /// reset comes back at 3.5 instead of silence. `reset` is called precisely
     /// at stream discontinuities (a seek, a region change), so that leak lands
-    /// exactly where a ghost of the old audio is most audible.
+    /// exactly where a ghost of the previous audio is most audible.
     pub fn reset(&mut self) {
         self.partition.clear();
         self.fft.reset();

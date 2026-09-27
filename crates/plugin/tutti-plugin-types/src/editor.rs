@@ -13,10 +13,10 @@ pub struct EditorSize {
     pub height: u32,
 }
 
-/// Static capabilities of a plugin editor view. Superset of the fields
-/// expressed by VST3 (`canResize`), CLAP (`gui_resize_hints`), and VST2
-/// (which leans on AppKit auto-resize semantics on macOS).
+/// The static resize capabilities of a plugin editor view.
 ///
+/// Covers what VST3 (`canResize`), CLAP (`gui_resize_hints`) and VST2 (which
+/// leans on AppKit auto-resize on macOS) can express.
 /// Grouped into [`ResizeHints`] (which axes the view supports) and
 /// [`AspectRatio`] (whether the view wants its aspect ratio preserved),
 /// plus the macOS-specific autoresize flag.
@@ -27,10 +27,11 @@ pub struct EditorCapabilities {
     pub resize: ResizeHints,
     /// Whether the view wants its aspect ratio preserved, and at what.
     pub aspect: AspectRatio,
-    /// `true` if the plugin's NSView resizes correctly when AppKit
-    /// auto-sizes it (e.g. VST3 / JUCE). `false` for formats like
-    /// CLAP that pin their NSView and require explicit `set_size`
-    /// calls to reflow internal layout. VST2-specific surface.
+    /// Whether the plugin's `NSView` reflows correctly when AppKit auto-sizes
+    /// it (typical of VST3 and JUCE plugins).
+    ///
+    /// `false` for views that must be resized through an explicit `set_size`
+    /// call, as CLAP views are. Only the VST2 editor path reads it.
     pub appkit_autoresize_friendly: bool,
 }
 
@@ -38,13 +39,13 @@ pub struct EditorCapabilities {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ResizeHints {
-    /// `true` if the view can be resized at all (VST3 `canResize`, CLAP
+    /// Whether the view can be resized at all (VST3 `canResize`, CLAP
     /// `gui_can_resize`).
     pub resizable: bool,
-    /// `true` if width may change. Meaningful only when
+    /// Whether the width may change. Meaningful only when
     /// [`resizable`](Self::resizable) is set.
     pub can_resize_horizontally: bool,
-    /// `true` if height may change. Meaningful only when
+    /// Whether the height may change. Meaningful only when
     /// [`resizable`](Self::resizable) is set.
     pub can_resize_vertically: bool,
 }
@@ -53,14 +54,14 @@ pub struct ResizeHints {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AspectRatio {
-    /// `true` if the host should keep `aspect_ratio` constant on resize.
+    /// Whether the host should keep [`ratio`](Self::ratio) constant on resize.
     pub preserve: bool,
-    /// `(width, height)` ratio the plugin would like maintained. `None`
-    /// means "no preference".
+    /// The `(width, height)` ratio the plugin would like maintained, or `None`
+    /// for no preference.
     pub ratio: Option<(u32, u32)>,
 }
 
-/// Native platform window handle used to embed plugin editors.
+/// A native platform window handle that a plugin editor embeds into.
 ///
 /// Platform mapping:
 /// - macOS: `NSView*`
@@ -76,7 +77,10 @@ pub struct WindowHandle(*mut c_void);
 unsafe impl Send for WindowHandle {}
 
 impl WindowHandle {
+    /// Wraps a raw platform window handle.
+    ///
     /// # Safety
+    ///
     /// `ptr` must be a valid platform window handle for the current OS
     /// (`NSView*` on macOS, `HWND` on Windows, X11 window ID on Linux) and
     /// must outlive any editor opened against it.
@@ -88,15 +92,17 @@ impl WindowHandle {
     /// this way.
     ///
     /// # Safety
+    ///
     /// Same requirements as [`from_raw`](Self::from_raw).
     pub unsafe fn from_ptr(ptr: *mut c_void) -> Self {
         Self(ptr)
     }
 
-    /// Construct from a numeric pointer value. Used by the plugin-server
-    /// IPC path, which transports `WindowHandle` as a `u64`.
+    /// Wraps a handle given as its numeric pointer value, as it travels over
+    /// IPC.
     ///
     /// # Safety
+    ///
     /// `ptr` must be a valid platform window handle for the current OS
     /// when interpreted as a pointer, and must outlive any editor opened
     /// against it.
@@ -104,7 +110,7 @@ impl WindowHandle {
         Self(ptr as *mut c_void)
     }
 
-    /// The raw platform handle, for passing to a native embedding call.
+    /// Returns the raw platform handle, for passing to a native embedding call.
     ///
     /// Safe to obtain — the pointer is opaque here. Dereferencing it requires
     /// the invariants [`from_raw`](Self::from_raw) documents, which this type
@@ -113,7 +119,7 @@ impl WindowHandle {
         self.0
     }
 
-    /// The pointer's numeric value, used by the IPC serializer.
+    /// Returns the pointer's numeric value, the form it takes over IPC.
     pub fn as_u64(&self) -> u64 {
         self.0 as u64
     }
@@ -138,9 +144,10 @@ impl<'de> serde::Deserialize<'de> for WindowHandle {
     }
 }
 
-/// Structured failures from opening an editor. Each variant tells the
-/// caller exactly what went wrong so UI can surface a meaningful message
-/// instead of falling back to "failed to open" for every case.
+/// Why opening a plugin editor failed.
+///
+/// Each variant names a distinct cause, so a UI can say what went wrong and
+/// whether retrying makes sense.
 #[derive(thiserror::Error, Debug)]
 pub enum EditorError {
     /// The plugin-server subprocess died, so there is nothing left to embed.

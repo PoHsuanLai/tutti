@@ -8,7 +8,7 @@
 //! work together without any DAW/ECS layer.
 //!
 //! The graphs are `tutti_graph`'s (`GraphBuilder`, rendered as a
-//! `RenderGraph`; doc 013 Phase 3 PR 8), and the mix is
+//! `RenderGraph`), and the mix is
 //! `tutti_spatial::build_vbap_mix` on the builder (`tutti-spatial`'s
 //! `tests/vbap_mix_parts.rs` pins it against the parts wired by hand).
 
@@ -123,12 +123,12 @@ fn quad_surround_graph_exports_a_four_channel_wav_with_rear_energy() {
     );
 }
 
-/// The Stage-4 export path: a graph that starts at the **device (stereo)
+/// The widened export path: a graph that starts at the **device (stereo)
 /// output** width — exactly what the live engine produces — is widened offline
 /// and re-piped to a surround master before export. This mirrors what a host
 /// does to the graph it exports (on `tutti_graph`, the topology's global
-/// outputs grown; a `Net`'s `set_output_arity` until doc 013 Phase 5), and proves widening a stereo
-/// graph does NOT lose the surround channels.
+/// outputs grown), and proves widening a stereo graph does NOT lose the
+/// surround channels.
 ///
 /// Mutation (run): widen *after* `pipe_output` → only the first two global
 /// outputs are wired, the file is 4-wide with silent rears, and the rear-left
@@ -313,10 +313,10 @@ fn surround_5_1_downmixes_center_to_both_stereo_channels() {
     );
     // The dominant C channel (not just the front L/R spill) must be folded in.
     // With the fold `Lo = FL + 0.707·C` peaks at ≈1.71 (front spill ≈1.0 plus
-    // 0.707·C, C≈1.0). If C were dropped — the old truncating channel-pick — `Lo`
+    // 0.707·C, C≈1.0). If C were dropped — a truncating channel-pick — `Lo`
     // would peak at only the front spill (≈0.71). The `> 1.2` threshold sits
-    // firmly between the two, so this fails the instant C stops being folded.
-    // This is the assertion the old test lacked: it passed on the spill alone.
+    // firmly between the two, so this fails the instant C stops being folded;
+    // a test on the spill alone would pass either way.
     assert!(
         peak_l > 1.2,
         "C channel was dropped, not folded — |Lo| peaked at {peak_l} (expect ≈1.71 with the C fold)"
@@ -324,9 +324,9 @@ fn surround_5_1_downmixes_center_to_both_stereo_channels() {
 }
 
 /// A STEREO graph exported to a MONO file must AVERAGE L+R, not keep only the
-/// left channel. Regression guard: the render→frame fold previously picked a
-/// single source channel per destination, so `n_out=2 → CH=1` silently dropped
-/// the right channel. Distinct constant L/R make the drop visible.
+/// left channel. A fold that picked a single source channel per destination
+/// would silently drop the right channel at `n_out=2 → CH=1`. Distinct
+/// constant L/R make the drop visible.
 #[test]
 fn stereo_graph_exports_folded_mono_not_left_only() {
     // Const::frame(&[0.8, 0.2]): left=0.8, right=0.2 → mono average = 0.5, NOT 0.8.
@@ -378,7 +378,7 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
         .iter()
         .fold(0.0f32, |m, s| m.max(s.abs()));
     // The C channel folds into mono at (Lo+Ro)·0.707, with Lo,Ro ≈ FL + 0.707·C,
-    // so a dead-center unit source peaks at ≈2.41. A channel-0-only pick (the old
+    // so a dead-center unit source peaks at ≈2.41. A channel-0-only pick (a
     // truncating driver) would peak at only the front spill (≈0.71). The `> 1.5`
     // threshold sits between the two, failing the instant C stops being folded.
     assert!(

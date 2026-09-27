@@ -386,7 +386,7 @@ impl Vst3Event {
         }
     }
 
-    /// Encode a Tutti UMP [`MidiEvent`] as a [`Vst3Event`]. Notes and
+    /// Encodes a Tutti UMP [`MidiEvent`] as a [`Vst3Event`]. Notes and
     /// poly-pressure keep MIDI-2 full-width resolution; per-note messages become
     /// note-expression events; everything else becomes a MIDI-1 [`Vst3Event::Data`]
     /// frame. `None` only for messages with no MIDI-1 form and no per-note mapping.
@@ -395,7 +395,7 @@ impl Vst3Event {
         vst3_event_from_midi(event)
     }
 
-    /// Decode this [`Vst3Event`] into a Tutti UMP [`MidiEvent`], promoting any
+    /// Decodes this [`Vst3Event`] into a Tutti UMP [`MidiEvent`], promoting any
     /// MIDI-1 payload to Channel Voice 2. `None` for non-MIDI events. The inverse
     /// of [`Vst3Event::from_midi`].
     #[inline]
@@ -404,7 +404,7 @@ impl Vst3Event {
     }
 }
 
-/// Convert the flat `Vst3Event` into the C `Event` struct the vst3 crate expects.
+/// Converts the flat `Vst3Event` into the C `Event` struct the vst3 crate expects.
 ///
 /// # Pointer lifetimes (the whole reason for the `'a` binding)
 ///
@@ -561,7 +561,7 @@ pub(crate) fn to_c_event<'a>(
 /// Plugin display names are short; this caps a malicious/garbage `textLen`.
 const MAX_EVENT_TEXT_LEN: usize = 256;
 
-/// Convert from the vst3 crate's tagged-union `Event` to the safe enum.
+/// Converts from the vst3 crate's tagged-union `Event` to the safe enum.
 ///
 /// `text_arena` owns the UTF-16 for any chord / scale / note-expression-text
 /// event decoded here (these arrive on a plugin's *output* event list); the
@@ -720,7 +720,7 @@ pub(crate) unsafe fn from_c_event(
     }
 }
 
-/// Encode a Tutti UMP [`MidiEvent`] as a [`Vst3Event`].
+/// Encodes a Tutti UMP [`MidiEvent`] as a [`Vst3Event`].
 ///
 /// Notes and poly-pressure are matched on `midi2`'s Channel Voice 2 vocabulary
 /// via [`tutti_midi_types::normalize`], so velocity / pressure arrive at the
@@ -735,11 +735,10 @@ pub(crate) unsafe fn from_c_event(
 /// per-note mapping.
 /// Text sizes are bounded as in `to_c_event`.
 ///
-/// **`cast_possible_wrap` is deliberately NOT allowed here.** An earlier version
-/// of this attribute listed it, to cover the `i64` note-expression slot — and
-/// that blanket allow silently re-permitted the `frame_offset as i32` wrap this
-/// module exists to prevent, verified by reintroducing the bug and watching it
-/// compile. The sign-changing casts now go through named helpers
+/// **`cast_possible_wrap` is deliberately NOT allowed here.** Listing it to
+/// cover the `i64` note-expression slot would silently re-permit the
+/// `frame_offset as i32` wrap this module exists to prevent. The sign-changing
+/// casts go through named helpers
 /// (`reinterpret_expression_value`) that carry their own narrow allow, so the
 /// deny still bites in the function body.
 #[allow(
@@ -947,7 +946,7 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
     }))
 }
 
-/// Map a MIDI-2 per-note controller index to the VST3 note-expression dimension
+/// Maps a MIDI-2 per-note controller index to the VST3 note-expression dimension
 /// it corresponds to, or `None` when there's no standard counterpart.
 ///
 /// Only the indices that align with a VST3 standard expression are forwarded;
@@ -963,7 +962,7 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
     }
 }
 
-/// Map a MIDI-2 *registered* per-note controller (a spec-named
+/// Maps a MIDI-2 *registered* per-note controller (a spec-named
 /// [`Controller`](tutti_midi_types::midi2::channel_voice2::Controller)) to the
 /// VST3 note-expression dimension it corresponds to, with its raw 32-bit data.
 ///
@@ -985,7 +984,7 @@ fn registered_controller_expression(
     }
 }
 
-/// Decode a [`Vst3Event`] into a Tutti UMP [`MidiEvent`].
+/// Decodes a [`Vst3Event`] into a Tutti UMP [`MidiEvent`].
 ///
 /// Notes and poly-pressure go through [`tutti_midi_types::encode`], so the
 /// plugin's `f32` velocity / pressure is preserved at MIDI-2's full bit width
@@ -1097,7 +1096,7 @@ pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
     Some(built.with_frame_offset(frame))
 }
 
-/// Rebuild the UMP MIDI message a plugin-emitted [`LegacyMidiCcOutEvent`] stands
+/// Rebuilds the UMP MIDI message a plugin-emitted [`LegacyMidiCcOutEvent`] stands
 /// for. `control_number` is a VST3 `ControllerNumbers` index: 0-127 are real
 /// CCs; the synthetic slots map to their channel-voice messages, with `value2`
 /// supplying the second data byte for pitch bend and poly-pressure.
@@ -1155,7 +1154,7 @@ fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> 
     Some(ev.with_frame_offset(frame))
 }
 
-/// Encode a [`NoteExpressionType`] as the integer `typeId` VST3 uses on the
+/// Encodes a [`NoteExpressionType`] as the integer `typeId` VST3 uses on the
 /// wire.
 ///
 /// The ids are the `NoteExpressionTypeIDs` enumerators from
@@ -1210,7 +1209,7 @@ fn is_text_type_id(id: u32) -> bool {
     }
 }
 
-/// Decode a VST3 `typeId` into a [`NoteExpressionType`].
+/// Decodes a VST3 `typeId` into a [`NoteExpressionType`].
 ///
 /// The six standard value dimensions map to their named variants; anything else
 /// becomes [`Custom`](NoteExpressionType::Custom) carrying the id, because VST3
@@ -1289,7 +1288,7 @@ pub fn note_expression_to_vst3(value: &NoteExpressionValue) -> Option<Vst3Event>
     }))
 }
 
-/// Extract a [`NoteExpressionValue`] from a [`Vst3Event`], or `None` for any
+/// Extracts a [`NoteExpressionValue`] from a [`Vst3Event`], or `None` for any
 /// non-expression variant or unrecognised `type_id`.
 pub fn vst3_to_note_expression(event: &Vst3Event) -> Option<NoteExpressionValue> {
     match event {
@@ -1450,7 +1449,7 @@ impl NoteExpressionIntValue {
     }
 }
 
-/// Read a chord/scale/text/int event off an output list, resolving its
+/// Reads a chord/scale/text/int event off an output list, resolving its
 /// [`TextRef`] against `arena` into an owned UTF-16 `Vec`. Returns `None` for
 /// any other variant.
 pub fn vst3_to_chord(event: &Vst3Event, arena: &[u16]) -> Option<ChordValue> {
@@ -1495,7 +1494,7 @@ pub fn vst3_to_note_expression_text(
     }
 }
 
-/// Read the integer per-note expression off an event, or `None` otherwise.
+/// Reads the integer per-note expression off an event, or `None` otherwise.
 pub fn vst3_to_note_expression_int(event: &Vst3Event) -> Option<NoteExpressionIntValue> {
     match event {
         Vst3Event::NoteExpressionInt(e) => Some(NoteExpressionIntValue {

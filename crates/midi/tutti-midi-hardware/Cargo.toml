@@ -9,9 +9,6 @@ readme = "README.md"
 
 # One feature, and it adds no capability. This crate IS the OS MIDI edge — with
 # the file codecs in `tutti-midi-file`, there is nothing here that is not a port.
-# The old `midi-hardware` flag left the whole session/port/capability surface
-# compiled with no backend to drive it, which is not a configuration anyone
-# wants.
 #
 # The per-platform deps below are gated by `cfg(target_os)` alone, which is what
 # actually decides whether CoreMIDI exists.
@@ -37,9 +34,7 @@ tracing = "0.1"
 # Core types
 tutti-midi-types = { path = "../tutti-midi-types" }
 # NOTE: no `tutti-midi-file` dep. A file is not hardware — this crate is the OS
-# port edge, and re-exporting an SMF codec through it was a category error left
-# over from the old `tutti-midi-io` name. Consumers depend on `tutti-midi-file`
-# directly; `bevy-tutti` and the known hosts already did.
+# port edge. Consumers depend on `tutti-midi-file` directly.
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 # The MIDI runtime: the graph's MIDI nodes and the ring they cross threads on.
 # Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-hardware.

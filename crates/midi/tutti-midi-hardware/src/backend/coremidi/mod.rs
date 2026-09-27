@@ -100,7 +100,7 @@ impl Default for CoreMidiEndpoints {
 }
 
 impl CoreMidiEndpoints {
-    /// Create the backend, opening its CoreMIDI client.
+    /// Creates the backend, opening its CoreMIDI client.
     ///
     /// A failed client is kept as `None` rather than panicking: enumeration then
     /// reports nothing and opening reports an error, which is what a headless

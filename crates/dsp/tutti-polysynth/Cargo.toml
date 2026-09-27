@@ -2,23 +2,13 @@
 name = "tutti-polysynth"
 version = "0.0.1"
 edition = "2021"
-description = "Polyphonic subtractive synth for Tutti (voice allocation, unison, portamento, tuning)"
+description = "Polyphonic subtractive synthesizer as a Tutti graph node: voice allocation, unison, portamento, tuning, MPE"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
-# No features. Two used to be here and both were removed:
-#
-# `midi` — never compiled with it off. `voice.rs` imports `NoteId`/`PerNoteMap`
-# unconditionally, and it must: a voice is *addressed* by per-note identity, so
-# the allocator, MPE state and `PolySynth` itself are all built on it. The flag
-# named no axis — turning it off left a config vocabulary with nothing to
-# configure, since `PolySynth` was itself `#[cfg(feature = "midi")]`. A synth
-# you cannot send a note to is not a smaller synth. Same reasoning as
-# `tutti-soundfont`, which ships featureless for the same reason.
-#
-# `soundfont` — SoundFont synthesis moved to `tutti-soundfont`. It shared none
-# of this crate's voice engine, so the flag was a dependency edge wearing a
-# feature's clothes. Depend on that crate directly.
+# `std` gates nothing yet. There is no `midi` feature: a voice is addressed by
+# per-note identity, so MIDI is not optional. SoundFont playback is the
+# separate `tutti-soundfont` crate.
 [lints]
 workspace = true
 
@@ -42,8 +32,7 @@ tutti-graph = { path = "../../core/tutti-graph" }
 # same functions `SvfFilterNode`/`LadderFilterNode` use, rather than a copy.
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 
-# `f32x8` lanes for the voice bank. Its own: the tree's other user of `wide`,
-# `tutti-node`'s numeric tower, went with fundsp in design doc 013 Phase 5.
+# `f32x8` lanes for the voice bank.
 wide = { version = "1.6", default-features = false }
 
 # Error handling

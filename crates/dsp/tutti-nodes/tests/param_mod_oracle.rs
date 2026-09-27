@@ -1,23 +1,18 @@
-//! The graph's compiler-owned param modulation (design doc 013 item 6)
-//! against the sub-graph it replaced: `AtomicSourceNode → ParamSumNode ←
-//! ParamShaperNode × N`.
+//! The graph's compiler-owned param modulation against a reference chain:
+//! a source per modulator, one shaper per edge, summed onto the base.
 //!
-//! The replacement is exact by construction — `ParamModShaping::shaping`
-//! bakes `tutti_mod::shape` into a table with `ParamShaperNode`'s own bake
-//! and lookup, and the fused step sums in source order from `-0.0` (as
-//! `f32`'s `Sum`) and clamps once, as `ParamSumNode` folded — and these
-//! tests hold it to that, bit for bit, for every curve `tutti_mod` shapes,
-//! both polarities and several depths, and through a rendered graph.
+//! The fused step is exact by construction — `ParamModShaping::shaping`
+//! bakes `tutti_mod::shape` into a table with the reference shaper's bake and
+//! lookup, and the fused step sums in source order from `-0.0` (as `f32`'s
+//! `Sum`) and clamps once, as the reference sum did — and these tests hold it
+//! to that, bit for bit, for every curve `tutti_mod` shapes, both polarities
+//! and several depths, and through a rendered graph.
 //!
-//! **The oracle.** The old nodes were built in these tests and compared
-//! against sample by sample, bit for bit, while they still existed (the
-//! commit that added this file, "test(tutti-nodes): pin the graph's param
-//! step against the chain it replaces"); they were then deleted, and what
-//! each test produced — the old nodes' output, since the two agreed on every
-//! bit — is pinned as a digest. Everything here is `+`, `*`, `sqrt` and a
-//! table read: correctly rounded IEEE operations, no libm, so the digests
-//! are portable across targets. The shaping is also held to
-//! `tutti_mod::shape` itself, within the table's interpolation error.
+//! **The oracle.** The reference chain's output is pinned as a digest.
+//! Everything here is `+`, `*`, `sqrt` and a table read: correctly rounded
+//! IEEE operations, no libm, so the digests are portable across targets. The
+//! shaping is also held to `tutti_mod::shape` itself, within the table's
+//! interpolation error.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -64,7 +59,7 @@ const CURVES: [CurveType; 6] = [
 ];
 const DEPTHS: [f32; 4] = [0.0, 0.3, 1.0, -0.7];
 
-/// The shaping the graph applies per source equals `ParamShaperNode`'s
+/// The shaping the graph applies per source equals the reference shaper's
 /// output, bit for bit (the digest), for each curve, polarity and depth; and
 /// it agrees with `tutti_mod::shape` — the function the control-rate path
 /// applies to the same route — within the table's interpolation error.
@@ -156,8 +151,8 @@ impl Node for Wave {
 const SEEDS: [u64; 3] = [7_919, 104_729, 1_299_709];
 
 /// Through a rendered graph, three modulators on one param sum on the base
-/// and clamp once exactly as `base → ParamSumNode ← ParamShaperNode × 3`
-/// did, frame for frame (the digest), once the connection's declick is over.
+/// and clamp once exactly as the reference chain (base plus three shapers)
+/// does, frame for frame (the digest), once the connection's declick is over.
 ///
 /// Mutation (run, against the oracle and after): sum the offsets in reverse
 /// source order in `ParamState::port` → fails (float addition is not

@@ -17,8 +17,10 @@ use tutti_nodes::automation::Curve;
 use crate::protocol::ParamAddress;
 
 /// One plugin parameter's automation curve, keyed by the parameter's address.
-/// The [`Curve`] is evaluated against the transport beat — any beat-keyed curve
-/// (breakpoint envelope, constant, LFO), not just an envelope.
+///
+/// The [`Curve`] is evaluated against the transport beat, so any beat-keyed
+/// curve works (breakpoint envelope, constant, LFO). Pass these to
+/// [`PluginControls::automation`](super::PluginControls::automation).
 #[derive(Clone)]
 pub struct TimedParam {
     /// Which parameter this curve drives.
@@ -164,10 +166,13 @@ impl Curve for LfoOffset {
     }
 }
 
-/// Turns an **absolute**-valued [`Curve`] (an automation envelope) into an
-/// **offset** layer by subtracting a fixed reference — the target's base — so it
-/// sums correctly in a [`LayeredCurve`](tutti_nodes::LayeredCurve) (`final = base + Σ offset`). Mirrors the
-/// native path's `accumulate(AUTOMATION, value − base())`.
+/// Turns an absolute-valued [`Curve`] (an automation envelope) into an offset
+/// layer.
+///
+/// Subtracts a fixed reference (the target's base) so the curve sums correctly
+/// in a [`LayeredCurve`](tutti_nodes::LayeredCurve), where
+/// `final = base + Σ offset`. Mirrors the native path's
+/// `accumulate(AUTOMATION, value − base())`.
 #[derive(Clone)]
 pub struct OffsetCurve {
     inner: std::sync::Arc<dyn Curve>,
@@ -335,8 +340,8 @@ impl Curve for PluginParamTarget {
     /// This target is live state: the mod router writes its layers every frame
     /// and a UI moves its base. A fork that shared it would have a live LFO
     /// writing into an export. Modulation for an export has to come from the
-    /// export's own offline driver (not built yet), so until then a forked
-    /// plugin renders its base plus authored automation — doc 013 gap 7.
+    /// export's own offline driver, which does not exist, so a forked plugin
+    /// renders its base plus authored automation.
     fn frozen(&self) -> Option<std::sync::Arc<dyn Curve>> {
         let mut authored = (*self.layered.read()).clone();
         authored.clear_mod_layers();
@@ -362,8 +367,8 @@ pub(super) const MAX_POINTS: usize = 10;
 /// The spacing of automation points in a `block_size`-frame block: every
 /// [`SAMPLE_STRIDE`] samples, widened for a long block so the points (the
 /// strides, plus the final sample) never exceed [`MAX_POINTS`]. A plugin's
-/// block is its host's device callback (doc 013, decision 8 reversed: up to
-/// thousands of frames), where a fixed stride of 8 would put 64 points in a
+/// block is its host's device callback (up to thousands of frames), where a
+/// fixed stride of 8 would put 64 points in a
 /// 512-frame block and allocate. The plugin interpolates between points, so a
 /// wider spacing over a longer block is a coarser ramp, not a lost value: the
 /// block's end is still exact.
@@ -454,7 +459,7 @@ mod tests {
     #[test]
     fn constant_and_temporal_layers_compose_on_plugin_target() {
         // Automation (a Const layer) + an LFO (a temporal layer) SUM in the one
-        // accumulator — the composition the old override-based path lacked.
+        // accumulator rather than one overriding the other.
         use tutti_core::Beat;
         use tutti_nodes::{LayerKey, ModTarget};
 
@@ -616,8 +621,8 @@ mod tests {
 
     #[test]
     fn lfo_offset_matches_the_native_span_scaling_no_double() {
-        // Regression: LfoCurve with min=-1,max=1 multiplied the offset by
-        // (max-min)=2, so a full-depth LFO was 2× too hot. LfoOffset scales by the
+        // Scaling by the LFO's own span (min=-1,max=1 → 2) would make a
+        // full-depth LFO 2× too hot. LfoOffset scales by the
         // *target's* span, matching the native contract `raw · depth · (max-min)`
         // (tutti-mod driver: "no 0.5"). For a [0,1] param (span 1), full depth →
         // ±1.0 offset (clips against the param range, like native); HALF depth →
@@ -666,8 +671,8 @@ mod tests {
 
     #[test]
     fn offset_curve_makes_automation_land_at_its_absolute_value() {
-        // Regression: an automation envelope (ABSOLUTE authored value) was summed
-        // straight onto base 0.5, so authored 0.7 gave clamp(0.5+0.7)=1.0.
+        // An automation envelope is an ABSOLUTE authored value; summed straight
+        // onto base 0.5, authored 0.7 would give clamp(0.5+0.7)=1.0.
         // OffsetCurve subtracts the base, so base + (value - base) = value exactly.
         use tutti_core::Beat;
         use tutti_nodes::LayerKey;

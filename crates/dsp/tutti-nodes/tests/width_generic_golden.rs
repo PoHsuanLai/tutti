@@ -1,15 +1,11 @@
 //! The width-generic SVF, ladder, delay, modulated delay and phaser: pinned
 //! renders.
 //!
-//! These values were captured from the merged nodes at the commit (`ee9e4d10`)
-//! where `src/legacy/equivalence.rs` rendered them side by side with the mono/stereo
-//! twins they replaced (design doc 013, rewrite-order item 3) and found them
-//! bit-identical on every held configuration the twins supported — so for the
-//! held cases here the pins are the old nodes' output. The `*_swept`,
-//! `*_automated`, ring-routed and phaser cases pin the new behaviour where it
-//! deliberately differs or is new (coefficient interpolation every 16 samples;
-//! control changes ramped across a block; the cross-feedback matrix). That
-//! commit's tests documented the old-vs-new tolerance for those.
+//! The held cases pin renders checked bit-identical against separate
+//! mono and stereo reference implementations. The `*_swept`, `*_automated`,
+//! ring-routed and phaser cases pin behaviour those references did not have
+//! (coefficient interpolation every 16 samples; control changes ramped across
+//! a block; the cross-feedback matrix).
 //!
 //! Captured with `cargo nextest run -p tutti-nodes -E 'test(print_goldens)'
 //! --run-ignored only --no-capture`.

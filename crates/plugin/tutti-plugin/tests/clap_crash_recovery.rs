@@ -127,13 +127,11 @@ fn drive_block(unit: &mut Rig) -> Vec<f32> {
 /// Drive blocks until the host reports the plugin dead, and say how many it took.
 ///
 /// The three tests here all need a plugin that has *actually* died before they
-/// can assert anything, and all three used to spend a fixed twelve blocks and
-/// then assert on the outcome. That is the same shape as the pre-crash budget
-/// below, and it fails the same way: a host call whose input the server has not
-/// consumed yet spends no plugin block, so on a cold or starved pipeline twelve
-/// host calls need not deliver the one block that aborts — and the failure then
-/// reads "the plugin should have crashed", blaming the crash path for a block
-/// that was never submitted.
+/// can assert anything. A fixed number of blocks is not enough: a host call
+/// whose input the server has not consumed yet spends no plugin block, so on a
+/// cold or starved pipeline twelve host calls need not deliver the one block
+/// that aborts — and the failure would read "the plugin should have crashed",
+/// blaming the crash path for a block that was never submitted.
 ///
 /// Driving until the observed status flips is the handshake. The bound is
 /// [`DRIVE_TO_DEATH_MAX`] blocks, so a plugin that genuinely never dies still

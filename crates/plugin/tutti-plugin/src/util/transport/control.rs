@@ -33,32 +33,25 @@ use std::time::{Duration, Instant};
 /// Duplex byte stream to the plugin-server.
 pub type ControlStream = Stream;
 
-/// Turn a host-chosen socket path into the local-socket name for this platform.
+/// Converts a host-chosen socket path into the local-socket name for this
+/// platform.
 ///
-/// **The two platforms disagree about what a local socket *is*, and the host
-/// config speaks only one of the two dialects.** `BridgeConfig::socket_path` is
-/// a filesystem path — a file under the temp dir, unlinked on bind and deleted
-/// by `ProcessGuard::drop`. On Unix that is literally the object. On Windows
-/// there is no such object: a named pipe lives in the `\\.\pipe\` namespace,
-/// which is not the filesystem, and handing a temp-file path to
-/// `GenericFilePath` fails with `Unsupported, "not a named pipe path"` before a
-/// stream ever exists. That is why every IPC test on Windows failed the first
-/// time this workspace was built there.
+/// The host dials and the server binds with this one function, so both ends
+/// name the endpoint the same way.
 ///
-/// So Windows takes the path's **final component** — `tutti-bridge-<pid>-<n>`,
-/// already unique for exactly the reason a pipe name must be, since
-/// `unique_socket_path` builds it from the pid and a counter — and names a pipe
-/// with it. Unix keeps the whole path, unchanged.
+/// `BridgeConfig::socket_path` is a filesystem path. On Unix that path is the
+/// socket. On Windows a named pipe lives in the `\\.\pipe\` namespace, which
+/// is not the filesystem, so the pipe is named after the path's **final
+/// component** (`tutti-bridge-<pid>-<n>`, already unique per bridge).
 ///
-/// # Why not `GenericNamespaced` on both
+/// # Errors
 ///
-/// It looks like the portable answer and it is a trap. On Linux it maps to the
-/// abstract namespace, but on every other Unix it maps to `SpecialDirUdSocket`,
-/// which interprocess itself **deprecates** — "inconsistent and suboptimal
-/// selection of temporary directory" — and which would move macOS off the path
-/// it is green on today. Fixing a broken platform is not worth risking a working
-/// one, and the asymmetry here is real rather than incidental: a Unix socket is
-/// a file and a named pipe is not.
+/// Returns an I/O error when the path (or, on Windows, its final component)
+/// is not a valid local-socket name.
+// Why not `GenericNamespaced` on both: on Linux it maps to the abstract
+// namespace, but on every other Unix it maps to `SpecialDirUdSocket`, which
+// interprocess itself deprecates, and it would move macOS off the filesystem
+// path that works there.
 pub fn socket_name(socket: &Path) -> std::io::Result<Name<'static>> {
     #[cfg(not(windows))]
     {

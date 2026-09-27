@@ -193,7 +193,7 @@ struct Rig {
 
 /// Build the two-path graph: one input fanned to a plugin path and a dry path,
 /// summed into output channel 0. The compiler's PDC pass aligns the two, as it
-/// does for every graph (doc 013 §3, "Latency solve").
+/// does for every graph.
 ///
 /// **`set_source` per edge, never `connect`/`pipe`.** The latter walk *every*
 /// port of a node, so a later wiring call silently clobbers an earlier one.
@@ -316,9 +316,8 @@ fn the_probe_declares_the_latency_this_suite_expects() {
 /// in its own right: it pins the *actual* delay the audio suffers, which is the
 /// third of the three numbers that must agree. The two tests together say the
 /// declared figure and the suffered delay are the same; either alone says only
-/// that one of them has some value. (Under `Net` this ran the two-path graph
-/// uncompensated; the graph always compensates, so the plugin path is
-/// measured on its own, where there is nothing to compensate.)
+/// that one of them has some value. (The graph always compensates, so the
+/// plugin path is measured on its own, where there is nothing to compensate.)
 #[test]
 fn the_plugin_path_alone_arrives_a_full_latency_late() {
     let _lock = exclusive();

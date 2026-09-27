@@ -62,12 +62,12 @@ pub struct CapturedControls {
 }
 
 impl CapturedControls {
-    /// The controls of a loaded out-of-process plugin, captured from the
-    /// unbound client before it is bound and inserted
-    /// ([`AudioGraphRes::insert_plugin`](crate::graph::AudioGraphRes::insert_plugin)):
-    /// its [`PluginControls`](tutti_plugin::handles::PluginControls) as the
-    /// entity's `PluginShadow`.
+    /// Captures the controls of a loaded out-of-process plugin.
     ///
+    /// Call it on the unbound client before it is bound and inserted
+    /// ([`AudioGraphRes::insert_plugin`](crate::graph::AudioGraphRes::insert_plugin)):
+    /// its [`PluginControls`](tutti_plugin::handles::PluginControls) become the
+    /// entity's `PluginShadow` once [bound](Self::bind).
     #[cfg(feature = "plugin")]
     pub fn for_plugin(client: &tutti_plugin::handles::PluginClient) -> Self {
         Self {
@@ -77,12 +77,14 @@ impl CapturedControls {
         }
     }
 
-    /// The controls of a node whose params are a
-    /// [`ParamSet`](tutti_graph::ParamSet): with `modulation`, a
-    /// `ModParamsHandle` over its cells, so a route resolves on any of its
-    /// params — the set already addresses them.
-    /// What a [`GraphNode`](crate::graph::GraphNode) with params returns
-    /// from `captured`.
+    /// Captures the controls of a node whose params are a
+    /// [`ParamSet`](tutti_graph::ParamSet).
+    ///
+    /// With the `modulation` feature this is a `ModParamsHandle` over the
+    /// set's cells, so a modulation route resolves on any of its params;
+    /// without it, it captures nothing. What a
+    /// [`GraphNode`](crate::graph::GraphNode) with params returns from
+    /// [`captured`](crate::graph::GraphNode::captured).
     pub fn for_params(params: &tutti_graph::ParamSet) -> Self {
         let _ = params;
         Self {
@@ -95,7 +97,7 @@ impl CapturedControls {
         }
     }
 
-    /// Bind `entity` to `node`: insert [`AudioNode`] and every captured control.
+    /// Binds `entity` to `node`: inserts [`AudioNode`] and every captured control.
     ///
     /// The whole binding in one step, which is how every insertion path in this
     /// crate forms it.
@@ -104,7 +106,7 @@ impl CapturedControls {
         self.replace(entity, node);
     }
 
-    /// Replace the entity's captured controls with these, keeping its
+    /// Replaces the entity's captured controls with these, keeping its
     /// [`AudioNode`] — the crossfade case, where the node changes under a
     /// surviving handle.
     ///

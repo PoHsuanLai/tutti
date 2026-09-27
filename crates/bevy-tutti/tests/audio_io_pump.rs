@@ -27,7 +27,6 @@ mod common;
 /// Every test writes a real `WavOut` into a `tempfile` and reads it back with
 /// `hound`, so "was it finalized" is answered by the file rather than by a flag
 /// this crate set. No audio device is involved.
-/// (Was `tests/audio_pump.rs`.)
 mod audio_pump {
     use std::path::PathBuf;
 
@@ -375,7 +374,6 @@ mod audio_pump {
 /// `TapIn` is the join. These pin that it holds, and that audio survives the
 /// trip — a type that satisfied the bound but dropped every frame would compile
 /// just as well.
-/// (Was `tests/master_record.rs`.)
 mod master_record {
     use std::path::PathBuf;
 
@@ -530,7 +528,6 @@ mod master_record {
 /// These read the engine back rather than trusting the component, for the same
 /// reason `graph_wire.rs` does: the diff this layer performs is only meaningful
 /// if the engine is what gets compared against.
-/// (Was `tests/io_graph_composition.rs`.)
 mod io_graph_composition {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;

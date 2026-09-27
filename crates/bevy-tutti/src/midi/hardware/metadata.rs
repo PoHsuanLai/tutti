@@ -91,7 +91,7 @@ pub enum BroadcastFlexMetadata {
     },
 }
 
-/// Send each requested Flex metadata value to external MIDI out as one or more
+/// Sends each requested Flex metadata value to external MIDI out as one or more
 /// UMP packets (text may span several 128-bit packets).
 ///
 /// Destination is the hardware-out mailbox, not the synth fan-out bus: Flex

@@ -452,8 +452,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         /// The reference CLAP plugin, built as a dev-dependency by this same
         /// `cargo test` run. Resolved rather than hard-coded so these tests run on
-        /// any machine — this used to name an absolute macOS path to a third-party
-        /// plugin, which failed everywhere else.
+        /// any machine.
         fn clap_plugin() -> &'static str {
             crate::test_utils::clap_probe_path()
         }

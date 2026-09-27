@@ -39,7 +39,6 @@ thiserror.workspace = true
 tutti-core = { path = "../tutti-core", default-features = false }
 
 # The live I/O edge: the capture ring and the monitor node `MicIn` hands back.
-# `core/`, so the device layer no longer reaches up into `dsp/` for them.
 tutti-io = { path = "../tutti-io", optional = true }
 
 # The mic ring's producer half, moved to the CPAL input callback thread.
@@ -53,8 +52,7 @@ criterion.workspace = true
 # graphs. No cycle: `tutti-nodes` names nothing above `tutti-core`.
 tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["testing"] }
 # The fixture graphs are `tutti_graph`'s (`Engine::new` takes an editor and its
-# executor, doc 013 Phase 3 PR 15). No cycle: tutti-graph names only
-# tutti-types.
+# executor). No cycle: tutti-graph names only tutti-types.
 tutti-graph = { path = "../tutti-graph" }
 
 [[bench]]

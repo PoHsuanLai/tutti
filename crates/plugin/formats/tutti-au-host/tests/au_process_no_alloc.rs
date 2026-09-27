@@ -188,25 +188,16 @@ fn effect_render_does_not_allocate() {
     });
 }
 
-/// Steady-state **f64** effect render must not allocate — the regression #266
-/// reported.
+/// Steady-state **f64** effect render must not allocate.
 ///
 /// AUv2 renders only in f32, so an f64 host pays a narrowing round trip on every
-/// block. The conversion is unavoidable; the *allocation* was not. Until this
-/// was fixed, the server loader built that conversion scratch inline — two
-/// `Vec<Vec<f32>>` buffer sets plus two `Vec` pointer tables, four heap
-/// allocations per block on the audio thread.
+/// block. The conversion is unavoidable; an allocation is not. The conversion
+/// reuses the render scratch, so no per-block buffers or pointer tables are
+/// built on the audio thread.
 ///
-/// This test is the reason the bug survived: every other case in this file
-/// drives `process`, and none of them touch f64. The sibling fixes in #262 were
-/// gated behind a plugin feature bit, but nothing gates this one — sample width
-/// is the host pipeline's choice, so an AU on a `Float64` pipeline paid it on
-/// every block unconditionally.
-///
-/// Guards the host-side conversion specifically. The four `Vec`s that motivated
-/// the issue lived one layer up, in `tutti-plugin-server`'s AU loader; moving
-/// the conversion here is what let it reuse the render scratch that already
-/// existed, so this is where the property is now enforceable.
+/// Every other case in this file drives `process`, and none of them touch f64.
+/// Nothing gates this path — sample width is the host pipeline's choice, so an
+/// AU on a `Float64` pipeline takes it on every block unconditionally.
 #[test]
 #[ignore]
 fn f64_effect_render_does_not_allocate() {

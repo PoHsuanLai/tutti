@@ -1,11 +1,8 @@
 //! The block read is the same **whatever the block length, and wherever a
 //! transport change falls**, bit for bit.
 //!
-//! Doc 013 item 7 made the voice read block-at-a-time (`PlaybackSlot::render_into`)
-//! and pinned it against the per-frame read it replaced; items 8 and 9 took
-//! the per-frame read away with `AudioUnit` (a graph node has one entry
-//! point) and moved the transport into each block's `Env`. What a block read
-//! must now hold to is the host's side of that: a host hands the graph
+//! A voice reads block-at-a-time (`PlaybackSlot::render_into`), and the
+//! transport reaches it through each block's `Env`. A host hands the graph
 //! blocks of any length, and a start, a stop or a seek lands inside a block
 //! as a change in its `Env`, not at its edge. So two pools are given the same
 //! voices; one renders in 256-frame blocks with every transport event inside

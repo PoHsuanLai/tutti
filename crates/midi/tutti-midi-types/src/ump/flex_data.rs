@@ -301,7 +301,7 @@ pub enum FlexTextKind {
     RubyLanguage,
 }
 
-/// Emit a Flex Data text/metadata message of `kind` carrying `text`, appending
+/// Emits a Flex Data text/metadata message of `kind` carrying `text`, appending
 /// one or more [`MidiEvent`]s (one per 128-bit packet) to `out`. UTF-8 text
 /// longer than one packet is fragmented by midi2's Format field, mirroring
 /// [`super::endpoint_name`]. Inverse: [`flex_text`] on each reassembled message.
@@ -382,7 +382,7 @@ impl FlexTextReassembler {
         Self::default()
     }
 
-    /// Feed one inbound event, returning the completed `(kind, text)` if this
+    /// Feeds one inbound event, returning the completed `(kind, text)` if this
     /// event finishes a run.
     pub fn push(&mut self, event: &MidiEvent) -> Option<(FlexTextKind, String)> {
         if event.message_type() != super::UmpMessageType::FlexData {
@@ -400,7 +400,7 @@ impl FlexTextReassembler {
         }
     }
 
-    /// Drop any partial run — e.g. after a stream reset.
+    /// Drops any partial run — e.g. after a stream reset.
     pub fn reset(&mut self) {
         self.words.clear();
     }

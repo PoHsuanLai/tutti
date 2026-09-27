@@ -11,13 +11,9 @@
 //! differently from the value path is as much a bug as one that is not made
 //! at all, and neither half catches the other's.
 //!
-//! The per-sample tier used to build a sub-graph per param (an
-//! `AtomicSourceNode` base, a `ParamSumNode`, a `ParamShaperNode` per route,
-//! into ports the node had to be born with); the graph now owns that
-//! arithmetic (design doc 013 item 6), so each test here asserts on the graph
-//! value (`AudioGraphRes::param_mod`) and on what renders, where it used to
-//! assert on chain entities. Every property the chain tests pinned is still
-//! pinned; each test says which one it carries.
+//! The graph owns the per-sample arithmetic, so each test here asserts on the
+//! graph value (`AudioGraphRes::param_mod`) and on what renders; each test
+//! says which property it carries.
 //!
 //! Every import below is behind `modulation`, so without the feature this file
 //! does not compile rather than silently finding no tests.
@@ -29,7 +25,7 @@ mod common;
 
 /// The audio-rate reconciler: a `ModRoute` marked `per_sample` becomes a
 /// param modulation in the graph, and stops being one when the route goes
-/// away. (Was `tests/mod_audio_rate_reconcile.rs`.)
+/// away.
 mod mod_audio_rate_reconcile {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
@@ -140,11 +136,9 @@ mod mod_audio_rate_reconcile {
 
     /// **A bus strip's Volume and Pan reach audio rate.**
     ///
-    /// The third victim of the old port lookup (the strip was missing from a
-    /// hand-kept downcast list, as both filters were, and the route fell back
-    /// to per-frame with nothing logged). The strip now declares its params
-    /// itself (`STRIP_PARAMS`), and the graph is asked, so there is no list
-    /// to leave a type out of.
+    /// The strip declares its params itself (`STRIP_PARAMS`), and the graph is
+    /// asked, so there is no hand-kept list to leave a type out of — a type
+    /// missing from one would fall back to per-frame with nothing logged.
     ///
     /// Asserts the whole declaration rather than a lookup, because "fell back
     /// to per-frame" is precisely what a lookup-only assertion cannot see:
@@ -423,8 +417,7 @@ mod mod_audio_rate_reconcile {
 
     /// **A route declared before its sink's node still reaches audio rate.**
     ///
-    /// The ordering a real host produces, and the one the reconciler used to fail
-    /// on. The declaration needs the sink's `AudioNode`, so a route whose sink
+    /// The ordering a real host produces. The declaration needs the sink's `AudioNode`, so a route whose sink
     /// has no node yet correctly declares nothing — but if the gate watched only
     /// `Changed<ModRoute>`/`Changed<ModParamRange>`, nothing would ask again when
     /// the node arrived and the route would stay on the per-frame fallback
@@ -538,14 +531,13 @@ mod mod_audio_rate_reconcile {
     /// The branch-level guard. The write is made directly, against a range the
     /// "document" never moved, so only `write_param` can deliver it.
     ///
-    /// The base is the node's own control now — the graph's modulation rides
-    /// on it — so the assertion reads that control (through the node's
-    /// shadow, which every `set_param` reaches, and which is what a fork is
-    /// taken from). It used to be a base chain's cell no `Setting` reached,
-    /// which a fork could not see.
+    /// The base is the node's own control — the graph's modulation rides on
+    /// it — so the assertion reads that control (through the node's shadow,
+    /// which every `set_param` reaches, and which is what a fork is taken
+    /// from).
     ///
     /// Mutation (run): make `write_param` return early for an audio-rate param
-    /// (the old branch, with no cell to write) → the base stays at 5 → fails.
+    /// → the base stays at 5 → fails.
     #[test]
     fn write_param_reaches_an_audio_rate_params_base() {
         let (mut app, target) = app_with_target();
@@ -803,7 +795,6 @@ mod mod_audio_rate_reconcile {
 /// against the `tutti_mod` function the frame-rate accumulator uses, with no
 /// `App` and no reconciler. What the *reconciler* declares is the module
 /// above's subject; this one is only about the arithmetic at each end.
-/// (Was `tests/mod_tier_parity.rs`.)
 mod mod_tier_parity {
     use bevy_ecs::prelude::*;
 

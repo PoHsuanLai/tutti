@@ -8,28 +8,22 @@
 //! cell, also addressable as `UnitParam::Volume`; placement over the node's
 //! command queue), kept on the entity as [`VoiceCommands`].
 //!
-//! # Why not `VoicePool`
+//! # One node per voice, or a pool
 //!
-//! The sampler ships a [`VoicePool`] that mixes many
-//! voices behind one node, and its markers (`VoicePoolRef` / `VoicePoolNode`) say
-//! "live on the track entity". That is the right shape for a host whose model is
-//! *track owns clips*. It is the wrong shape for a host whose model is a graph of
-//! nodes with edges: there, a source **is** a node, with its own placement, its
-//! own gain, and its own outgoing connection.
+//! The sampler also ships a [`VoicePool`] that mixes many voices behind one
+//! node, for a host whose model is *a track owns its clips*. A host whose model
+//! is a graph of nodes with edges spawns one voice per entity instead: a source
+//! **is** a node, with its own placement, its own gain, and its own outgoing
+//! connection. Both are [`GraphNode`]s.
 //!
-//! The pool's *retirement channel* looks like a hazard being ignored here. It
-//! is not: that channel exists because `VoiceCommand::Remove` is handled inside
-//! `drain_commands`, which runs from the audio callback, and dropping a slot
-//! frees its vocoder bank. **That cannot happen here.** A node removed from
-//! the graph ([`reconcile_node_despawn`](crate::graph::reconcile_node_despawn))
-//! is retired by the executor *back* to the editor rather than dropped, and
-//! freed in [`commit_graph`](crate::graph::commit_graph)'s collect — main
-//! thread. No channel needed.
+//! A voice node removed from the graph
+//! ([`reconcile_node_despawn`](crate::graph::reconcile_node_despawn)) is
+//! handed back by the audio thread and freed on the main thread, in
+//! [`commit_graph`](crate::graph::commit_graph), never on the audio thread.
 //!
-//! A voice reads the transport from its block's `Env`, frame by frame (doc
-//! 013 items 8 and 9): no voice holds a clock, so N voices cost N placements,
-//! not N cursors on one timeline. Merging adjacent voices into a shared node
-//! is an optimization available later, not a correctness debt.
+//! A voice reads the transport from its block's `Env`, frame by frame: no
+//! voice holds a clock, so N voices cost N placements, not N cursors on one
+//! timeline.
 //!
 //! # The two tiers arrive differently and converge here
 //!
@@ -59,24 +53,12 @@ use crate::graph::{CapturedControls, GraphNode, NodeControls};
 pub struct SamplerVoice;
 
 /// The control-thread handle to this entity's voice node: the
-/// [`NodeControls`] a voice's insert keeps, by the name this crate has always
-/// given it.
+/// [`NodeControls`] a voice's insert keeps.
 ///
-/// # Why a component rather than a resource map
-///
-/// It shares the voice's lifetime **exactly**. A `Resource` holding
-/// `HashMap<Entity, VoiceNodeHandle>` would be a second owner of that lifetime,
-/// and keeping it honest needs an invalidation path that always has a case it
-/// cannot see — a despawned source, a voice rebuilt on a path change. A
-/// component is removed when the entity is, for free, which is the whole
-/// argument this codebase makes for components over caches.
-///
-/// # Why the handle is not simply rebuilt on demand
-///
-/// It cannot be. The handle is minted by the node's `IntoNode` beside the
-/// receiver the node keeps, and once the node is in the graph there is no way
-/// back to it. The insert is the only moment both ends exist, so the handle
-/// has to be kept from there.
+/// A component, so it shares the voice's lifetime exactly and goes when the
+/// entity does. The handle is minted when the node goes into the graph and
+/// cannot be rebuilt afterwards, so keep this component to control the voice
+/// (gain, placement).
 ///
 /// Present **iff** the voice was built through [`InsertVoice`]/[`SpawnVoice`]
 /// (or `spawn_audio_node`), which is every voice this crate builds.
@@ -114,14 +96,15 @@ impl GraphNode for MemorySource {
 /// [`DiskVoiceControls`](tutti_sampler::DiskVoiceControls).
 impl GraphNode for DiskVoice {}
 
-/// Spawn a [`VoiceNode`] on an entity.
+/// `Commands` extension that spawns a [`VoiceNode`] on a new entity.
 ///
 /// An extension trait on `Commands` for the same reason
 /// [`SpawnAudioNode`](crate::graph::SpawnAudioNode) is one: the insert returns
-/// its id inside a deferred command, so nothing outside the command queue can
-/// observe the binding.
+/// its id inside a deferred command. The entity gets [`SamplerVoice`],
+/// [`AudioNode`](tutti_core::AudioNode) and [`VoiceCommands`]; it arrives
+/// unwired, like every node.
 pub trait SpawnVoice {
-    /// Add `voice` to the graph as a `width`-wide node on a **new** entity.
+    /// Adds `voice` to the graph as a `width`-wide node on a **new** entity.
     ///
     /// No transport is bound: a placed voice reads the playhead from its
     /// block's `Env`, per frame, and a system pushing per-frame positions
@@ -129,13 +112,12 @@ pub trait SpawnVoice {
     fn spawn_voice(&mut self, voice: Voice, width: ChannelLayout) -> EntityCommands<'_>;
 }
 
-/// Add a voice node to an entity that already exists.
+/// `EntityCommands` extension that makes an existing entity a voice node.
 ///
-/// The common case for a host whose entities come from somewhere else — a
-/// projection compiles the source entity first, and the voice arrives frames
-/// later once its audio is ready. [`SpawnVoice`] is for the standalone case.
+/// For an entity spawned before its audio is ready: the voice arrives frames
+/// later, once the clip is loaded. [`SpawnVoice`] is for the standalone case.
 pub trait InsertVoice {
-    /// Make this entity a `width`-wide voice node. See
+    /// Makes this entity a `width`-wide voice node. See
     /// [`SpawnVoice::spawn_voice`].
     fn insert_voice(&mut self, voice: Voice, width: ChannelLayout);
 }
@@ -160,7 +142,7 @@ impl InsertVoice for EntityCommands<'_> {
     }
 }
 
-/// Build an in-memory voice from a decoded wave.
+/// Builds an in-memory voice from a decoded wave.
 ///
 /// The `Residency::Whole` half of the tier decision, expressed as a function so
 /// a host writes one line rather than assembling a `Voice` by hand. The disk
@@ -169,16 +151,9 @@ impl InsertVoice for EntityCommands<'_> {
 ///
 /// # `window` is required, not defaulted
 ///
-/// It is the clip's authored placement on the timeline.
-/// `MemorySource::with_channels` builds at `VoiceWindow::default()`, so a
-/// caller allowed to omit this gets a resident clip playing at the default
-/// position regardless of what the document authored — silently, from the first
-/// frame, and only for short files, since the streaming tier takes the
-/// placement in `take_disk_voice`.
-///
-/// Taking it as a parameter rather than letting a host patch it afterwards is
-/// what makes that omission impossible: `apply_placement` is `pub(crate)` in
-/// the sampler, so there is no after-the-fact fix available outside that crate.
+/// It is the clip's placement on the timeline. A voice built without one
+/// would play at the default position regardless of where the clip is placed,
+/// so it is taken here rather than defaulted.
 pub fn memory_voice(
     wave: Arc<tutti_io::Wave>,
     width: ChannelLayout,

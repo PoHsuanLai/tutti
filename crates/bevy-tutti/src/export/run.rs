@@ -25,7 +25,7 @@ use crate::export::request::{
 use crate::graph::resources::ExportRefused;
 use crate::graph::{AudioConfig, AudioGraphRes};
 
-/// Start the oldest pending [`ExportRequest`], if nothing is already running.
+/// Starts the oldest pending [`ExportRequest`], if nothing is already running.
 ///
 /// The expensive part — copying the graph (a fork) —
 /// happens here, on the main thread, because the copy reads the graph
@@ -292,7 +292,7 @@ impl NodeNames {
     }
 }
 
-/// Drive in-flight renders; trigger [`ExportDone`] on the ones that finished.
+/// Drives in-flight renders; triggers [`ExportDone`] on the ones that finished.
 pub fn poll_exports(mut commands: Commands, mut in_flight: Query<(Entity, &mut ExportInFlight)>) {
     for (entity, mut export) in in_flight.iter_mut() {
         let Some(result) = export.poll() else {
@@ -435,23 +435,18 @@ mod tests {
     /// clamps the right channel onto its last port, the fraction) reads 0
     /// until frame 18 000, 1 until 42 000, then 2 — to a frame: the walk
     /// accumulates `beats_per_sample` (1/24 000 of a beat, which binary does
-    /// not hold) frame by frame, and lands on beat 2 one frame late (the
-    /// offline-timeline rounding doc 013 records as a follow-up). The live
+    /// not hold) frame by frame, and lands on beat 2 one frame late (a
+    /// known offline-timeline rounding). The live
     /// transport, rolling since the build, is at another beat: a forked
     /// node that read it would not step there: the fork reads the render's
-    /// `Env`. (The walker was the engine's beat clock, `EnvClock`, until it
-    /// was deleted with `Legacy`; until PR 13 this ran on `Net` too, where
-    /// only the lengths were asserted: a `Net` node export of the
-    /// `TransportClock` started from beat 0, not from the timeline's 0.25,
-    /// and a master export was a plain clone clicking on the live
-    /// transport's beats.)
+    /// `Env`.
     ///
     /// What the click itself renders is not asserted. The fork is cloned from
     /// the click's shadow, taken at insert, whose metronome mode is the one it
     /// had then (`Off` here):
     /// `MetronomeRes` writes the live node's settings cell, which the shadow
-    /// detached from (doc 013, "Metronome volume and mode ... live-only; a
-    /// click is not part of an export"). Its session flags are frozen at the
+    /// detached from: metronome volume and mode are live-only, and a click is
+    /// not part of an export. Its session flags are frozen at the
     /// fork from the live transport, and tutti-core's
     /// `isolate_snapshots_settings_and_session_flags` row pins that.
     ///

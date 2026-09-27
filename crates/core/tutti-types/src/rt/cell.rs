@@ -14,9 +14,12 @@ use core::ops::{Deref, DerefMut};
 #[cfg(debug_assertions)]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// Interior-mutability cell whose contract is "at most one borrow active at
-/// any moment". The caller is responsible for upholding that invariant —
-/// typically by reaching the cell only from the audio callback.
+/// An interior-mutability cell for the audio callback, with the contract "at
+/// most one borrow active at any moment".
+///
+/// The caller is responsible for upholding that invariant, typically by
+/// reaching the cell only from the audio callback. Borrowing takes no lock and
+/// never allocates.
 ///
 /// In debug builds the cell uses an atomic "in-use" flag to *catch concurrent
 /// borrows*: if a second thread enters `borrow`/`borrow_mut` while a first
@@ -30,7 +33,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// In release builds the cell compiles down to a bare `UnsafeCell` with zero
 /// overhead; the caller's invariant is what keeps it sound.
 ///
-/// # Why this exists (and replaces `Mutex<T>`)
+/// # Why not a `Mutex<T>`
 ///
 /// VST3's COM-object contract guarantees that the host and plugin only touch a
 /// given parameter / event object during `IAudioProcessor::process`, which
@@ -56,16 +59,19 @@ impl<T> AudioThreadCell<T> {
         }
     }
 
-    /// No-op, kept for source compatibility. Safe to delete at the call site.
+    /// Does nothing.
     ///
-    /// The cell pins no owner thread, so a device switch needs no reset.
+    /// The cell pins no owner thread, so a device switch needs no reset; a call
+    /// to this can be removed.
     #[inline]
     pub fn reset_owner(&self) {}
 
-    /// Borrow the cell mutably for the lifetime of the returned guard.
+    /// Borrows the cell mutably for the lifetime of the returned guard.
     ///
-    /// # Panics (debug only)
-    /// Panics if another borrow is already live on a different thread.
+    /// # Panics
+    ///
+    /// In debug builds, if another borrow is already live. Release builds do
+    /// not check.
     #[inline]
     #[track_caller]
     pub fn borrow_mut(&self) -> BorrowGuard<'_, T> {
@@ -74,14 +80,15 @@ impl<T> AudioThreadCell<T> {
         BorrowGuard { cell: self }
     }
 
-    /// Borrow the cell shared for the lifetime of the returned guard.
+    /// Borrows the cell shared for the lifetime of the returned guard.
     ///
-    /// Note: the contract still allows only one borrow at a time, so this is
-    /// just a convenience for `&T` access — it does not enable multiple
-    /// concurrent readers.
+    /// The contract still allows only one borrow at a time, so this is a
+    /// convenience for `&T` access; it does not allow concurrent readers.
     ///
-    /// # Panics (debug only)
-    /// Panics if another borrow is already live on a different thread.
+    /// # Panics
+    ///
+    /// In debug builds, if another borrow is already live. Release builds do
+    /// not check.
     #[inline]
     #[track_caller]
     pub fn borrow(&self) -> BorrowRef<'_, T> {
@@ -91,7 +98,8 @@ impl<T> AudioThreadCell<T> {
     }
 
     /// Returns a mutable reference when the caller already has `&mut self`.
-    /// No borrow check needed — `&mut self` guarantees exclusivity.
+    ///
+    /// No borrow check is needed: `&mut self` guarantees exclusivity.
     #[inline]
     pub fn get_mut(&mut self) -> &mut T {
         self.inner.get_mut()
@@ -241,11 +249,10 @@ mod tests {
     /// # Two barriers, and why neither is a sleep
     ///
     /// The property needs the main thread's borrow attempt to fall strictly
-    /// *inside* the other thread's live guard. That is a window, and the earlier
-    /// version of this test opened it with `sleep(50ms)` — which makes the test
-    /// a bet: if the main thread is descheduled past the sleep the guard is
-    /// already gone, `borrow_mut` succeeds, and the test fails having proven
-    /// nothing about the check it names.
+    /// *inside* the other thread's live guard. A sleep would make the test a
+    /// bet: if the main thread is descheduled past it the guard is already
+    /// gone, `borrow_mut` succeeds, and the test proves nothing about the check
+    /// it names.
     ///
     /// Two barriers close the window without any duration at all. `taken` is
     /// released after the guard exists, so the main thread cannot attempt its

@@ -31,7 +31,7 @@ pub(crate) struct MidiIo {
 }
 
 impl MidiIo {
-    /// Construct with the inbox queue; pre-sizes both reusable buffers so
+    /// Constructs with the inbox queue; pre-sizes both reusable buffers so
     /// the audio thread never allocates after warm-up.
     pub(crate) fn new(out_rx: Arc<ArrayQueue<MidiEvent>>) -> Self {
         let mut out = MidiEventVec::new();
@@ -48,7 +48,7 @@ impl MidiIo {
     }
 }
 
-/// Parse a VST2 `vst::api::MidiEvent` (MIDI 1.0 wire bytes) into a Tutti
+/// Parses a VST2 `vst::api::MidiEvent` (MIDI 1.0 wire bytes) into a Tutti
 /// UMP [`MidiEvent`]. Tags the event with the original `delta_frames`.
 pub(crate) fn to_midi(event: &vst::api::MidiEvent) -> Option<MidiEvent> {
     let bytes = event.midi_data;
@@ -59,7 +59,7 @@ pub(crate) fn to_midi(event: &vst::api::MidiEvent) -> Option<MidiEvent> {
     MidiEvent::from_midi1_bytes(frame, &bytes).map(|e| tutti_midi_types::normalize(&e))
 }
 
-/// Serialize a Tutti UMP [`MidiEvent`] to a VST2 `vst::api::MidiEvent`.
+/// Serializes a Tutti UMP [`MidiEvent`] to a VST2 `vst::api::MidiEvent`.
 ///
 /// MIDI 1.0 boundary. VST2 is a MIDI-1-only host: `to_midi1_bytes` performs the
 /// spec Min-Center-Max downscale (16-bit velocity / 32-bit CC / bend → 7/14-bit;
@@ -308,9 +308,9 @@ mod tests {
             "an unrepresentable offset must saturate"
         );
 
-        // The wrap used to be laundered by the inbound clamp: `to_midi` maps a
-        // negative `delta_frames` to 0, so a round trip reported frame 0 for an
-        // event scheduled at the end of time. Saturating keeps it at the end.
+        // A wrap would be laundered by the inbound clamp: `to_midi` maps a
+        // negative `delta_frames` to 0, so a round trip would report frame 0
+        // for an event scheduled at the end of time. Saturating keeps it there.
         let back = to_midi(&api).expect("the saturated event must parse back");
         assert_eq!(back.frame_offset, i32::MAX as u32);
     }
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(api.midi_data[2], 80);
     }
 
-    /// Build a raw VST2 `api::MidiEvent` from 3 MIDI-1 status/data bytes.
+    /// Builds a raw VST2 `api::MidiEvent` from 3 MIDI-1 status/data bytes.
     fn api_from_bytes(data: [u8; 3]) -> vst::api::MidiEvent {
         use std::mem;
         use vst::api;

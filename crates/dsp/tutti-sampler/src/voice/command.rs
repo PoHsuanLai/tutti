@@ -419,19 +419,19 @@ pub struct VoiceNodeHandle {
 pub(crate) type PlacementRecord = Arc<std::sync::Mutex<Option<(Beat, Option<BeatDuration>)>>>;
 
 impl VoiceNodeHandle {
-    /// Move the voice's timeline window.
+    /// Moves the voice's timeline window.
     ///
     /// A placement is a [`Beat`] (`f64`) plus an optional [`BeatDuration`] —
     /// two values, and a precision the transport cannot afford to lose, so it
-    /// is no scalar param. Truncating a beat position to `f32` re-introduces
-    /// the ~2²⁴ cliff that `Sample.loop_start` was moved to `SamplePosition`
-    /// (f64) to escape. It rides the node's command queue, and lands on the
-    /// node's next block.
+    /// is no scalar param (an `f32` beat position loses whole frames past
+    /// ~2²⁴). It rides the node's command queue, and lands on the node's next
+    /// block. Lock-free and allocation-free; the placement is also recorded for
+    /// a fork of the node (see [`send`](Self::send)).
     ///
-    /// The `SlotId` is `SlotId(0)`: a node's single voice is built with that id
-    /// (`VoiceNode::with_channels`), and the drain ignores it. It is in the wire
-    /// format because the format is shared with the pool, not because a node has
-    /// slots.
+    /// # Errors
+    ///
+    /// As for [`send`](Self::send): [`SendError::Full`] when the queue is full,
+    /// [`SendError::Disconnected`] once the node has been dropped.
     pub fn set_placement(
         &self,
         start_beat: Beat,
@@ -444,7 +444,7 @@ impl VoiceNodeHandle {
         })
     }
 
-    /// Set the voice's gain, from the node's next block on. A write to a
+    /// Sets the voice's gain, from the node's next block on. A write to a
     /// shared cell: never lost, never queued.
     pub fn set_gain(&self, gain: Amplitude) {
         self.params.set(tutti_core::UnitParam::Volume, gain.get());
@@ -461,7 +461,7 @@ impl VoiceNodeHandle {
         &self.params
     }
 
-    /// Queue a command for the node's next block.
+    /// Queues a command for the node's next block.
     ///
     /// Public so a host can send anything the node's drain understands, and
     /// fallible for the reason [`VoicePoolHandle::send`] gives: a full queue is
@@ -481,9 +481,16 @@ impl VoiceNodeHandle {
     /// construction, so a host changing either respawns the voice. Only
     /// [`VoicePool`](crate::VoicePool) has the live-update path.
     ///
-    /// A placement that is queued is also recorded for a fork of the node
-    /// (`PlacementRecord`); one that is refused is not, so a fork never
-    /// plays a move the live voice did not get.
+    /// A placement that is queued is also recorded for a fork of the node;
+    /// one that is refused is not, so a fork never plays a move the live
+    /// voice did not get.
+    ///
+    /// # Errors
+    ///
+    /// [`SendError::Full`] when the node's 64-command queue is full (transient:
+    /// the node drains it every block); [`SendError::Disconnected`] once the
+    /// node has been dropped (permanent). Either way the command is handed
+    /// back inside the error.
     pub fn send(&self, command: VoiceCommand) -> Result<(), SendError> {
         let placed = match command {
             VoiceCommand::UpdatePlacement {
@@ -539,7 +546,7 @@ pub struct VoicePoolHandle {
 }
 
 impl VoicePoolHandle {
-    /// Free everything the audio thread has retired since the last call — removed
+    /// Frees everything the audio thread has retired since the last call — removed
     /// slots and surplus stretch filters alike.
     ///
     /// Call this periodically from the control thread — once a frame is ample.
@@ -555,7 +562,7 @@ impl VoicePoolHandle {
         n
     }
 
-    /// Queue a command, doing any allocation it implies **here**, on the calling
+    /// Queues a command, doing any allocation it implies **here**, on the calling
     /// (control) thread.
     ///
     /// This is the one chokepoint every command passes through, which makes it the

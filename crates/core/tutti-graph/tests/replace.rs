@@ -1,5 +1,5 @@
-//! `Editor::replace`: swapping a running node's unit with a crossfade (doc 013
-//! Phase 3, gap 3). The rules are in `src/fade.rs`; each test here pins one,
+//! `Editor::replace`: swapping a running node's unit with a crossfade. The
+//! rules are in `src/fade.rs`; each test here pins one,
 //! and names the mutation it was seen to fail under.
 
 mod common;
@@ -232,8 +232,7 @@ fn the_outgoing_unit_retires_on_the_control_thread() {
 /// re-prepare — `Backpressure` is about commits in the queue, not fades in
 /// flight.
 ///
-/// Mutation: hold a fade's commit until the fade ends (the design this
-/// replaced) → the fifth commit is `Backpressure` → fails. Mutation: set
+/// Mutation: hold a fade's commit until the fade ends → the fifth commit is `Backpressure` → fails. Mutation: set
 /// `FADE_CAPACITY` to 4 → the fifth is refused → fails.
 #[test]
 fn long_fades_do_not_block_commits() {
@@ -282,8 +281,9 @@ fn a_remove_beside_a_fade_retires_at_once() {
 
 /// A replace whose unit differs in shape is refused, naming the key, and
 /// changes nothing: other ports, another latency, another in-place
-/// acceptance, or another declared event capacity. A node with nothing running is refused too. And the verifier
-/// refuses the same fade handed over in a delta built by hand.
+/// acceptance, or another declared event capacity. A node with nothing
+/// running is refused too. And the verifier refuses the same fade handed
+/// over in a delta built by hand.
 ///
 /// Mutation: drop the latency comparison from `Editor::replace` → the
 /// latency case is accepted → fails. Mutation: drop it from `verify_fades`

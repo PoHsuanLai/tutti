@@ -180,9 +180,9 @@ fn plugin_factory<'lib>(
 /// Every descriptor the factory advertises, in factory order.
 ///
 /// A `.clap` bundle is a factory, not a plugin: `get_plugin_count` exists
-/// precisely because one file may ship a synth plus companion effects. This
-/// used to take index 0 and discard the count, so every plugin after the first
-/// in a bundle was unreachable — with no error, because index 0 loads fine.
+/// precisely because one file may ship a synth plus companion effects. Taking
+/// index 0 and discarding the count would make every plugin after the first
+/// unreachable — with no error, because index 0 loads fine.
 ///
 /// A descriptor that comes back null is skipped rather than failing the whole
 /// bundle: one broken entry should not make its siblings unloadable. An empty
@@ -237,7 +237,7 @@ fn all_descriptors<'lib>(
     Ok(descriptors)
 }
 
-/// Pick the descriptor to load: the one whose id matches `wanted`, or the first
+/// Picks the descriptor to load: the one whose id matches `wanted`, or the first
 /// if no id was named.
 ///
 /// Defaulting to the first keeps every single-plugin bundle — which is most of

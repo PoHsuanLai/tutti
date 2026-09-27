@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn nak_carries_its_version_2_details_and_text() {
         // Table 15's Version-2 trailer: 5 detail bytes, a 2-byte LSB-first
-        // length, then that many text bytes. All of it was previously dropped.
+        // length, then that many text bytes. All of it must survive.
         let nak = Nak::new(SUB_ID2_DISCOVERY, Nak::STATUS_MALFORMED)
             .with_details([1, 2, 3, 4, 5])
             .with_message("body one byte short");

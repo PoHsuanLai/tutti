@@ -1,4 +1,4 @@
-//! Passes 1 and 2 of doc 013 §3: reject unbroken cycles (Tarjan SCC), then
+//! Compiler passes 2 and 3: reject unbroken cycles (Tarjan SCC), then
 //! produce the one deterministic topological order.
 //!
 //! Both run over the **direct** dependencies only — audio `Edge::Direct(Node)`
@@ -72,10 +72,10 @@ pub(super) fn scc(succ: &[Vec<usize>]) -> Vec<usize> {
 /// ready dependents are pushed so the smallest pops next.
 ///
 /// Reproducing it rather than calling it is deliberate: that sort sees audio
-/// edges only, and this one must also order event edges (doc 013 §1, "one
-/// topological sort"). On a graph with no event edges the two agree exactly —
+/// edges only, and this one must also order event edges (one topological
+/// sort for both). On a graph with no event edges the two agree exactly —
 /// `compile`'s tests assert it — so a caller reading `Topology::topo_order`
-/// today reads the compiler's order.
+/// reads the compiler's order.
 ///
 /// `preds[i]` lists `i`'s direct predecessors **with multiplicity** (one entry
 /// per edge), as `Topology::direct_preds` does. `keys` orders vertices; ties

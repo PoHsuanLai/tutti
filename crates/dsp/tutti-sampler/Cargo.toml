@@ -2,7 +2,7 @@
 name = "tutti-sampler"
 version = "0.0.1"
 edition = "2021"
-description = "Sampler, Butler disk-streaming thread, time stretch"
+description = "Sample playback for Tutti: in-memory and disk-streamed voices, a voice pool, and a phase-vocoder time stretch"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
@@ -13,9 +13,8 @@ workspace = true
 default = ["wav"]
 
 # Bevy ECS integration: the entity-as-node marker derives on the voice-pool
-# handles, and nothing else. The Plugins and asset loaders moved to bevy-tutti
-# (house rule R1), so this feature adds only `derive(Component)` — the DSP
-# leaves (MemorySource, DiskVoice, VoicePool, the butler streaming engine, the
+# handles, and nothing else. Plugins and asset loaders are bevy-tutti's, so
+# this feature adds only `derive(Component)` — the DSP leaves (MemorySource, DiskVoice, VoicePool, the butler streaming engine, the
 # stretch::Unit) compile Bevy-free for direct `tutti_graph` use either way.
 bevy = ["dep:bevy_ecs"]
 
@@ -54,7 +53,7 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 # `tutti-core`.
 tutti-io = { path = "../../core/tutti-io" }
 
-# The graph (doc 013): every node here is a `tutti_graph::Node`, reads
+# The graph: every node here is a `tutti_graph::Node`, reads
 # the transport from its block's `Env`, and hands its controls and its fork
 # source over through `IntoNode`. No cycle: `tutti-graph` names only
 # `tutti-types`.
@@ -69,9 +68,7 @@ tutti-analysis = { path = "../tutti-analysis", default-features = false }
 # gated by the `bevy` feature.
 bevy_ecs = { version = "0.19", default-features = false, optional = true }
 
-# The vocoder's fixed-size, allocation-free FFT (`stretch::fft`). The versions
-# and features the fundsp fork carried (deleted in doc 013 Phase 5), so the
-# transform is the one it always was.
+# The vocoder's fixed-size, allocation-free FFT (`stretch::fft`).
 microfft = { version = "0.6.0", features = ["size-32768"] }
 num-complex = { version = "0.4.6", default-features = false, features = ["libm"] }
 
@@ -124,10 +121,9 @@ serde_json = "1"
 assert_no_alloc = { version = "1", default-features = false }
 
 # Tests only: several fixtures write a real WAV to disk and stream it back, so
-# they need a writer. The library itself no longer touches `hound` — the live
-# WAV sink moved to `tutti-io` — which is why this is a dev-dependency and not
-# a dependency. Moving it back up would re-add a codec to a DSP crate that
-# decodes through `symphonia`.
+# they need a writer. The library itself does not touch `hound` (the live WAV
+# sink is `tutti-io`'s), so this is a dev-dependency only: a DSP crate that
+# decodes through `symphonia` has no business carrying a second codec.
 hound = "3.5"
 
 [[bench]]

@@ -1,5 +1,5 @@
 //! `vbap_mix_parts` builds the same mix as `build_vbap_mix` when a graph
-//! wires the parts its own way (doc 013 Phase 3 PR 8).
+//! wires the parts its own way.
 //!
 //! `build_vbap_mix` is `vbap_mix_parts(..).insert_into(g, ..)`, so its graph
 //! is one description of the mix by construction. What that cannot show is
@@ -8,9 +8,7 @@
 //! edge resolved, no port left to read silence that the builder wires. So
 //! each case builds the mix twice from the same sources, once with
 //! `build_vbap_mix` and once from the parts through this file's own
-//! [`insert`], and asserts the renders are **bit-identical**. (The first side
-//! was a `Net` until the LFE low-pass became a `tutti_graph::Node`, which a `Net`
-//! could not hold; `Net` itself went in doc 013 Phase 5.)
+//! [`insert`], and asserts the renders are **bit-identical**.
 //!
 //! Exact equality is portable: both sides run the same unit code on the same
 //! machine, in the same blocks.

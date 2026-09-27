@@ -6,13 +6,14 @@ use thiserror::Error;
 /// Convenience alias for results returned by this crate.
 pub type Result<T> = std::result::Result<T, ClapError>;
 
-/// Plugin-load phase label. The shared superset lives in `tutti-plugin-types`;
-/// CLAP uses the Opening/Factory/Instantiation/Initialization/Activation
-/// subset (no distinct Scanning or Setup phase). Re-exported so `ClapError`
-/// and callers keep referring to `crate::error::LoadStage`.
+/// The phase a plugin load or activation reached before failing, carried by
+/// [`ClapError::LoadFailed`].
+///
+/// Shared by all format hosts; CLAP reports the Opening, Factory,
+/// Instantiation, Initialization and Activation phases.
 pub use tutti_plugin_types::LoadStage;
 
-/// All error conditions reported by the CLAP host.
+/// An error reported by the CLAP host.
 #[derive(Debug, Error)]
 pub enum ClapError {
     /// The plugin could not be loaded. `stage` pinpoints which step failed.
@@ -38,9 +39,8 @@ pub enum ClapError {
 
     /// The plugin returned `CLAP_PROCESS_ERROR` from `process`.
     ///
-    /// Fieldless so it can be raised on the audio thread: a plugin in an error
-    /// state usually returns ERROR every block, so a `String` here allocated
-    /// per block inside the callback.
+    /// Fieldless so it can be raised on the audio thread without allocating: a
+    /// plugin in an error state usually returns ERROR every block.
     #[error("Processing error: plugin returned CLAP_PROCESS_ERROR")]
     PluginReturnedError,
 

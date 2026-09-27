@@ -46,11 +46,8 @@ cargo test -p tutti-vst3-host
 
 The SDK is in-tree at `crates/plugin/vendor/vst3-sdk/` (three git
 submodules), and this crate dev-depends on itself with `conformance` on, so its
-own tests always have a probe. Both used to be the caller's problem —
-`VST3_SDK_DIR` had to name an external checkout and `--features conformance` had
-to be passed, so on a machine without an SDK this suite did not skip, it
-*panicked*. `VST3_SDK_DIR` still overrides, for testing against another SDK
-revision.
+own tests always have a probe. `VST3_SDK_DIR` overrides the SDK location, for
+testing against another SDK revision.
 
 If the submodules are empty (a `git clone` without `--recursive`), the build
 script says so and names `git submodule update --init --recursive`.
@@ -67,15 +64,10 @@ writes a minimal one into `OUT_DIR`.
 
 The tests **panic** rather than skip when the probe cannot be found. The probe is
 built from this tree, so its absence is a build failure, not a property of the
-machine. That is now true of the suites in `tutti-plugin-server` too: they
-briefly carried skip macros, because the probe needed an SDK checkout that most
-machines lacked, and those are gone.
+machine. The suites in `tutti-plugin-server` follow the same rule.
 
-This is not hypothetical. The bundle previously lived at a machine-specific path
-outside the repo, and the test resolved it by a hardcoded filename. Building it
-under a different name made all nine tests skip *while printing
-`test result: ok. 9 passed`* — the suite reported success having executed
-nothing. Any change here must keep a missing probe loud.
+A skip that prints `test result: ok` reports success having executed nothing,
+so any change here must keep a missing probe loud.
 
 ## Misbehaviour
 

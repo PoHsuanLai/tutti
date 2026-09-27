@@ -61,7 +61,7 @@ pub struct PluginRenderMode(
     pub RenderMode,
 );
 
-/// Announce [`RenderMode::Offline`] while an export is in flight, and
+/// Announces [`RenderMode::Offline`] while an export is in flight, and
 /// [`RenderMode::Realtime`] whenever none is.
 ///
 /// Edge-triggered: the announcement happens on the frames the answer *changes*,

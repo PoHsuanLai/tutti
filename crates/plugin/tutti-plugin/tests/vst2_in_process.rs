@@ -388,11 +388,10 @@ fn the_node_carries_midi_on_its_event_ports() {
 /// The in-process node reports the tail the host decoded, not a blanket
 /// `Unknown`.
 ///
-/// The `AudioUnit` impls this type had (f32 and f64) used to hard-code
-/// `Unknown` with a comment claiming VST2 has no tail query. It has one —
-/// `effGetTailSize` — and `tutti-vst2-host` now asks it at load. This is the
-/// graph-side consumer of that answer (the node's declared tail), so it gets its own coverage: the
-/// out-of-process loader's tests cannot see this code path at all.
+/// VST2 has a tail query — `effGetTailSize` — and `tutti-vst2-host` asks it at
+/// load. This is the graph-side consumer of that answer (the node's declared
+/// tail), so it gets its own coverage: the out-of-process loader's tests cannot
+/// see this code path at all.
 ///
 /// The raw `1` case is the one worth pinning. VST2 inverts the convention every
 /// other format uses, so a plugin declaring "no tail at all" sends `1`, and a

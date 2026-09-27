@@ -28,9 +28,10 @@
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 // `transparent` for the same reason the float units have it: a `Samples` is
-// `512` on the wire, not `[512]`. Load-bearing for the latency path — the
-// plugin-metadata `latency_samples` field migrates from a bare `usize` to this
-// type without moving a byte, so host and subprocess upgrade independently.
+// `512` on the wire, not `[512]`. Load-bearing for the latency path: the
+// plugin-metadata `latency_samples` field has the same wire form as a bare
+// `usize`, so a host and a plugin subprocess built at different versions still
+// agree.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Samples(pub usize);
@@ -73,8 +74,8 @@ impl Samples {
         self.0
     }
 
-    /// The delay needed so a signal arriving at `self` lines up with one
-    /// arriving at `target`.
+    /// Returns the delay needed so a signal arriving at `self` lines up with
+    /// one arriving at `target`.
     ///
     /// Saturates: a signal already later than `target` needs no delay, and
     /// never a negative one.
@@ -83,7 +84,7 @@ impl Samples {
         Samples(target.0.saturating_sub(self.0))
     }
 
-    /// Frames left after consuming `taken`.
+    /// Returns the frames left after consuming `taken`.
     ///
     /// The mirror of [`align_to`](Self::align_to) — same subtraction, opposite
     /// argument order and opposite intent, which is why both are named rather
@@ -95,8 +96,7 @@ impl Samples {
         Samples(self.0.saturating_sub(taken.0))
     }
 
-    /// `self - rhs` when the result is representable, `None` when `rhs` is
-    /// larger.
+    /// Returns `self - rhs`, or `None` when `rhs` is larger.
     ///
     /// For callers that must *branch* on underflow rather than absorb it — the
     /// difference between "clamp to zero and carry on" and "this ordering was
@@ -109,15 +109,16 @@ impl Samples {
         }
     }
 
-    /// Whether this is an empty span — no frames at all.
+    /// Returns whether this is an empty span (no frames at all).
     #[inline]
     pub const fn is_zero(self) -> bool {
         self.0 == 0
     }
 
-    /// How many **samples** these frames occupy in a flat interleaved buffer
-    /// `layout` wide — `frames × channels`. The one sanctioned way from a frame
-    /// count to a slice length.
+    /// Returns how many **samples** these frames occupy in a flat interleaved
+    /// buffer `layout` wide: `frames × channels`.
+    ///
+    /// The one sanctioned way from a frame count to a slice length.
     ///
     /// Returns a bare `usize` on purpose: the result indexes a `&[S]`, and a
     /// slice has no other unit. It is the *only* place on the
@@ -133,8 +134,8 @@ impl Samples {
         self.0.saturating_mul(layout.count() as usize)
     }
 
-    /// How many **whole frames** a flat interleaved buffer of `len` samples
-    /// holds at `layout`'s width — `len / channels`, the inverse of
+    /// Returns how many **whole frames** a flat interleaved buffer of `len`
+    /// samples holds at `layout`'s width: `len / channels`, the inverse of
     /// [`interleaved_len`](Self::interleaved_len).
     ///
     /// A trailing partial frame is **not** counted, matching
@@ -154,7 +155,7 @@ impl Samples {
         }
     }
 
-    /// The span these frames occupy at `rate`. Inverse of
+    /// Returns the span these frames occupy at `rate`; the inverse of
     /// [`Seconds::to_samples`](super::units::Seconds::to_samples).
     ///
     /// No rounding variants, unlike the forward direction: that one lands on a
@@ -224,7 +225,8 @@ impl core::ops::Mul<usize> for Samples {
     }
 }
 
-/// Splitting a span into `k` equal chunks. Truncates, like integer division.
+/// Splitting a span into `k` equal chunks. Truncates, like integer division,
+/// and panics when `k` is zero.
 impl core::ops::Div<usize> for Samples {
     type Output = Self;
     #[inline]
@@ -235,6 +237,7 @@ impl core::ops::Div<usize> for Samples {
 
 /// How many of `rhs` fit in `self` — a bare number, not a count. This is the
 /// STFT overlap factor (`window / hop`), which is dimensionless by construction.
+/// Panics when `rhs` is zero.
 impl core::ops::Div for Samples {
     type Output = usize;
     #[inline]
@@ -243,7 +246,8 @@ impl core::ops::Div for Samples {
     }
 }
 
-/// Position within a repeating span — ring-buffer wraparound.
+/// Position within a repeating span — ring-buffer wraparound. Panics when
+/// `rhs` is zero.
 ///
 /// Safe here in a way `unit_modular!` is not for the float units: unsigned
 /// integer `%` has no sign to preserve, so there is no negative-input trap.

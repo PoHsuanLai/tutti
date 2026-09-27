@@ -1,4 +1,4 @@
-//! The synth as a graph node (doc 013, rewrite item 5): MIDI arrives
+//! The synth as a graph node: MIDI arrives
 //! on an event input port, on its frame, from whatever feeds it — a
 //! [`MidiClipNode`](tutti_midi_runtime::MidiClipNode), an arpeggiator, a
 //! hardware source — in the same block it was written.

@@ -1,10 +1,9 @@
 //! Binding the DSP graph to an ECS world.
 //!
-//! The engine itself needs none of this: the graph is the
-//! `tutti-graph` runtime (design doc 013), and transport, metering and PDC are
-//! plain value types a host can drive directly. This module is the adapter
-//! that lets
-//! a Bevy `App` reconcile ECS state into that graph:
+//! The engine itself needs none of this: the graph is the `tutti-graph`
+//! runtime, and transport, metering and PDC are plain value types a host can
+//! drive directly. This module is the adapter that lets a Bevy `App`
+//! reconcile ECS state into that graph:
 //!
 //! - the graph resources ([`AudioGraphRes`], [`AudioConfig`]) in [`resources`],
 //! - the pipeline, one file per duty: [`schedule`] (the set order, the

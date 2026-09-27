@@ -228,7 +228,7 @@ pub(crate) unsafe fn render_quality(unit: AudioUnit) -> Result<u32> {
     )
 }
 
-/// Set the AU's render quality, `0` (cheapest) to [`RENDER_QUALITY_MAX`] (best).
+/// Sets the AU's render quality, `0` (cheapest) to [`RENDER_QUALITY_MAX`] (best).
 ///
 /// Not a substitute for [`set_offline_render`]: the offline flag says *why* the
 /// host is rendering and leaves the AU to choose; this says what the host wants
@@ -330,7 +330,7 @@ pub struct PushScratch {
 }
 
 impl PushScratch {
-    /// Allocate for the given per-bus input and output widths.
+    /// Allocates for the given per-bus input and output widths.
     ///
     /// `inputs` and `outputs` are one entry per bus, in bus order — so a
     /// hypothetical sidechain compressor is `&[Stereo, Stereo]` in, `&[Stereo]`
@@ -406,7 +406,7 @@ impl PushScratch {
         self.output_audio.len()
     }
 
-    /// Send this scratch's render cursor back to zero.
+    /// Sends this scratch's render cursor back to zero.
     ///
     /// The push twin of the pull path's cursor restart, and it has to be a
     /// separate call because the two cursors are separate objects with separate
@@ -426,7 +426,7 @@ impl PushScratch {
         self.sample_position = 0.0;
     }
 
-    /// Copy `src` (planar, one slice per channel) into input bus `bus`.
+    /// Copies `src` (planar, one slice per channel) into input bus `bus`.
     ///
     /// Extra channels in `src` beyond the bus width are dropped and extra frames
     /// beyond `frames` ignored, matching the pull path's `stage_input`. Channels
@@ -458,7 +458,7 @@ impl PushScratch {
         true
     }
 
-    /// Copy output bus `bus` out into `dst`.
+    /// Copies output bus `bus` out into `dst`.
     ///
     /// Returns `false` for an out-of-range `bus`.
     pub fn emit_output(&self, bus: usize, dst: &mut [&mut [f32]], frames: u32) -> bool {
@@ -502,7 +502,7 @@ impl PushScratch {
         }
     }
 
-    /// Return the pre-advance sample position and move the cursor on, exactly as
+    /// Returns the pre-advance sample position and move the cursor on, exactly as
     /// the pull path's `RenderScratch::advance` does — AudioToolbox wants the
     /// block's *start* time, not its end.
     fn advance(&mut self, frames: u32) -> f64 {
@@ -512,7 +512,7 @@ impl PushScratch {
     }
 }
 
-/// Fill one `AudioBufferList` in place from planar channel storage.
+/// Fills one `AudioBufferList` in place from planar channel storage.
 ///
 /// Written here rather than reusing `RenderBufferList::bind` because that type
 /// owns its slab and its single width, whereas the push path has one slab per
@@ -546,7 +546,7 @@ unsafe fn bind_list(
     }
 }
 
-/// Push `frames` of audio through the AU with `AudioUnitProcess`.
+/// Pushes `frames` of audio through the AU with `AudioUnitProcess`.
 ///
 /// The single-buffer-list form: input bus 0 is handed in, and the AU writes its
 /// output back over the *same* list — that in-place contract is
@@ -628,7 +628,7 @@ pub unsafe fn process_push(
     Ok(flags)
 }
 
-/// Copy input bus 0 into output bus 0 (or zero it), without allocating.
+/// Copies input bus 0 into output bus 0 (or zero it), without allocating.
 ///
 /// Split out of [`process_push`] only so the two borrows do not overlap: source
 /// and destination live in different fields of the same struct, which index
@@ -654,7 +654,7 @@ fn copy_in_bus0_to_out_bus0(scratch: &mut PushScratch, silent: bool, frames: u32
     }
 }
 
-/// Push `frames` through the AU with `AudioUnitProcessMultiple` — the sidechain
+/// Pushes `frames` through the AU with `AudioUnitProcessMultiple` — the sidechain
 /// call.
 ///
 /// Every input bus staged into `scratch` is handed to the AU at once and every

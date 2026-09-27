@@ -33,17 +33,17 @@
 //! Treating `None` as absence would be wrong, and the AU loader is why: a host
 //! that does not probe a capability reports the same clear bit as a plugin that
 //! refused it. Withholding on `None` would refuse installs for whole formats
-//! purely because their loader has not been taught to ask yet, turning a
-//! reporting gap into a functional regression. `None` therefore permits the
-//! install — the block-level gate remains the backstop, exactly as before.
+//! purely because their loader does not ask, turning a reporting gap into a
+//! functional failure. `None` therefore permits the install — the block-level
+//! gate remains the backstop.
 //!
 //! What this does **not** do is catch a plugin that misreports: one declaring
 //! `MIDI_OUT` and never emitting is indistinguishable from a working one. The
 //! views close the "I wired it and nothing happened" gap, not the "the plugin
 //! lied" gap.
 //!
-//! MIDI needs no installer: it travels on the node's event ports (doc 013,
-//! rewrite item 5). [`PluginClient::takes_midi`] and
+//! MIDI needs no installer: it travels on the node's event ports.
+//! [`PluginClient::takes_midi`] and
 //! [`PluginClient::sends_midi`] answer whether wiring them means anything.
 
 use std::sync::Arc;
@@ -157,8 +157,8 @@ mod tests {
     ///
     /// An unprobed bit reads as clear, exactly like a declined one, so gating
     /// on the bare bit would refuse installs for a whole format purely because
-    /// its loader has not been taught to ask — turning a reporting gap into a
-    /// functional regression. The block-level gate remains the backstop.
+    /// its loader does not ask — turning a reporting gap into a functional
+    /// failure. The block-level gate remains the backstop.
     #[test]
     fn an_unprobed_capability_is_not_treated_as_declined() {
         let never_asked = LoadedPlugin::default();

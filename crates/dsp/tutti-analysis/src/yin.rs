@@ -33,10 +33,9 @@ impl YinConfig {
     /// Rejects an inverted or empty range, non-positive bounds, and a maximum
     /// above Nyquist.
     ///
-    /// The old constructor accepted `(sample_rate, 2000.0, 50.0)` happily and
-    /// then reported "unvoiced" forever, because the period bounds inverted and
-    /// every call bailed. Two adjacent `f32` parameters made the transposition
-    /// easy and the failure silent.
+    /// Refusing here matters: accepting `(sample_rate, 2000.0, 50.0)` would
+    /// invert the period bounds and report "unvoiced" forever. Two adjacent
+    /// frequency parameters make the transposition easy to write.
     pub fn new(
         sample_rate: impl Into<SampleRate>,
         min_freq: impl Into<Hz>,
@@ -221,7 +220,7 @@ impl Pitch {
     }
 }
 
-/// Estimate the pitch of one buffer.
+/// Estimates the pitch of one buffer.
 ///
 /// Stateless: the same input always yields the same estimate.
 ///
@@ -240,7 +239,7 @@ pub fn yin(cfg: &YinConfig, samples: &[f32]) -> Result<PitchEstimate> {
     Ok(estimate(&mut cfg.detector(), samples))
 }
 
-/// Estimate the pitch at `hop` intervals across a buffer.
+/// Estimates the pitch at `hop` intervals across a buffer.
 pub fn yin_track(
     cfg: &YinConfig,
     samples: &[f32],
@@ -291,11 +290,11 @@ fn estimate(detector: &mut PitchDetector, samples: &[f32]) -> PitchEstimate {
     })
 }
 
-/// Median-filter a pitch track over `window` **frames**.
+/// Median-filters a pitch track over `window` **frames**.
 ///
-/// The count is frames, not samples — a distinction the old signature left to
-/// a shared parameter name, so copying an FFT window size into it compiled and
-/// smoothed over three orders of magnitude too much.
+/// The count is frames, not samples: an FFT window size passed here would
+/// smooth over three orders of magnitude too much, which is why the parameter
+/// is a [`FrameCount`].
 pub fn median_filter(pitches: &[PitchEstimate], window: FrameCount) -> Vec<PitchEstimate> {
     let w = window.get();
     if w <= 1 || pitches.len() < w {
@@ -324,7 +323,7 @@ pub fn median_filter(pitches: &[PitchEstimate], window: FrameCount) -> Vec<Pitch
         .collect()
 }
 
-/// Penalize implausible pitch jumps between adjacent frames.
+/// Penalizes implausible pitch jumps between adjacent frames.
 ///
 /// A melodic line rarely leaps more than a major third between consecutive
 /// analysis frames, so a larger jump is usually an octave error rather than a

@@ -1,13 +1,12 @@
-//! Every forkable node in this crate forks to a **snapshot** of its
-//! controls: no live control move reaches the fork (doc 013, gap 6's
-//! audit). One row per node, one control per cell the node reads;
-//! `tutti_graph::contract::IsolateRow` runs each control through
-//! fork → render → move live → render again (must be unchanged) → fork
+//! Every forkable node in this crate forks to a **snapshot** of its controls:
+//! no live control move reaches the fork. One row per node, one control per
+//! cell the node reads; `tutti_graph::contract::IsolateRow` runs each control
+//! through fork → render → move live → render again (must be unchanged) → fork
 //! again → render (must differ, so the control is audible and the row can
-//! fail). A node's fork is `fork_fresh` (`tutti_graph::param_parts`), so
-//! every cell a control writes is checked — addressed by its `ParamSet` or
-//! not (a compressor's knee, a gate's hold) — with the fork taken as the
-//! graph takes it.
+//! fail). A node's fork is `fork_fresh` (`tutti_graph::param_parts`), so every
+//! cell a control writes is checked — addressed by its `ParamSet` or not (a
+//! compressor's knee, a gate's hold) — with the fork taken as the graph takes
+//! it.
 //!
 //! Units with no live cell are not rows — there is nothing to move:
 //! `ChannelSumNode`, `DownmixNode`, `AutomationLaneNode` (its `Arc<dyn Curve>`

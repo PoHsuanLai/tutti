@@ -2,9 +2,7 @@
 //! `tutti-graph` [`Editor`], and — until the engine or a test takes it — the
 //! [`Executor`] it sends to.
 //!
-//! Design doc 013, Phase 3: added beside fundsp's `Net` in PR 11, the only
-//! runtime since PR 13. Every method here answers one of `AudioGraphRes`'s,
-//! and the mapping is:
+//! Every method here answers one of `AudioGraphRes`'s, and the mapping is:
 //!
 //! | `AudioGraphRes` | here |
 //! |---|---|
@@ -13,7 +11,7 @@
 //! | `set_param` | the node's [`ParamSet`], when it has one |
 //! | `replace` | `Editor::replace_or_swap` with a [`Fade`]: a plain swap when there is nothing to fade from |
 //! | `node_latency`, `node_tail`, `node_inputs`, `node_outputs` | the editor's [`Shapes`](tutti_graph::Shapes) |
-//! | `latency_plan` | `tutti_types::latency::plan` over the spec's topology |
+//! | `latency_plan` | `tutti_types::latency::plan` over the whole spec: audio edges plus event and param-modulation sources |
 //! | `compensate` | compiles the spec, reads `Plan::compensation` / `total_latency`; inserts nothing |
 //! | `commit` | `Editor::commit`, which collects first |
 //! | `set_node_latency` | `Editor::set_latency` |
@@ -31,10 +29,8 @@
 //!
 //! # `set_param` lands on the next block, never at once
 //!
-//! There is no control-side copy of a node for a setting to land on at once
-//! (a `Net` with no audio side, before PR 13, applied one straight to its only
-//! copy, so a test could read an atomic back the moment it wrote it). A
-//! write goes into the node's own `Param` cell through its [`ParamSet`], and
+//! There is no control-side copy of a node for a setting to land on at once.
+//! A write goes into the node's own `Param` cell through its [`ParamSet`], and
 //! the node reads it at the start of the executor's next block: one block
 //! later, on every graph. A test that reads what a write did renders a frame
 //! first ([`render_frame`](super::AudioGraphRes::render_frame)).
@@ -137,8 +133,8 @@ pub(crate) fn key(node: AudioNode) -> NodeKey {
 
 /// The graph's `Prepare`: `rate`, `max_block`, and the device's callback
 /// `quantum` when the host knows it (`tutti_cpal::OutputSpec::quantum`). A
-/// hosted out-of-process plugin ships one quantum per callback to its server
-/// (doc 013, decision 8 reversed), so the quantum is what keeps its pipeline
+/// hosted out-of-process plugin ships one quantum per callback to its server,
+/// so the quantum is what keeps its pipeline
 /// in step with the device.
 pub(crate) fn prepare_for(
     rate: SampleRate,
@@ -320,8 +316,8 @@ impl GraphRuntime {
         (id, controls)
     }
 
-    /// Insert a hosted plugin: bound (`PluginClient::bind`, the typestate
-    /// transition doc 013 §2 describes) and inserted as the `Node` it
+    /// Insert a hosted plugin: bound (`PluginClient::bind`, its typestate
+    /// transition to a graph node) and inserted as the `Node` it
     /// then is, which hands the editor its own
     /// [`ForkSource`](tutti_graph::ForkSource) (a fork by state transfer) and
     /// declares its latency in its `Shape`.
@@ -620,7 +616,7 @@ impl GraphRuntime {
         self.edited = true;
     }
 
-    // --- Param modulation (design doc 013 item 6) ---
+    // --- Param modulation ---
 
     /// Whether `node` declares `param` modulatable (its shape's params).
     pub(crate) fn declares_param(&self, node: AudioNode, param: UnitParam) -> bool {
@@ -815,7 +811,7 @@ impl GraphRuntime {
     /// plugin is `PluginControls::declared_latency` (its own figure **plus**
     /// the chunk its pipeline holds) — to the editor (`Editor::set_latency`),
     /// so the next commit moves PDC to it without touching the running node.
-    /// Doc 013: a latency change is a `Shape` change in the next commit.
+    /// A latency change is a `Shape` change in the next commit.
     ///
     /// Returns whether the editor's figure moved. `tests/plugin_capture.rs`
     /// pins the path.
@@ -952,7 +948,7 @@ impl AudioSide {
         }
     }
 
-    /// Render one frame: `input` one sample per global input, `output` one
+    /// Renders one frame: `input` one sample per global input, `output` one
     /// per global output. Commits sent since the last call land first.
     pub fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         render(
@@ -972,7 +968,7 @@ impl AudioSide {
         self.transport = transport;
     }
 
-    /// Render `frames` frames with no global input into `output`, planar,
+    /// Renders `frames` frames with no global input into `output`, planar,
     /// one slice per global output, in the blocks a device would hand over:
     /// executor blocks of up to `block` frames, each under the transport
     /// last [set](Self::set_transport) (stopped at beat zero until one is).
@@ -1096,7 +1092,7 @@ mod tests {
     }
 
     /// **Every param write path reaches a fork of a node** — the constraint
-    /// export by `Editor::fork` (doc 013, PR 12) rests on — through the
+    /// export by `Editor::fork` rests on — through the
     /// node's `ParamSet`: `AudioParam` and `set_param` write the live cell and the authored
     /// value, a param the control-rate driver owns gets its base as the
     /// authored value only (the live cell is the driver's), and a fork
@@ -1112,8 +1108,6 @@ mod tests {
     /// `ModParamRange`). The driver's live offset is the exception — a fork
     /// (an export) runs its own modulation — and the live render shows it is
     /// there, so the fork's plain base is not the driver doing nothing.
-    /// (This was the twin of a test of the same paths through the `Legacy`
-    /// adapter's settings ring and shadow, deleted with it.)
     ///
     /// Mutations (run; each fails its channel):
     /// - `GraphRuntime::set_param` skipping a node's `ParamSet` → channels 0

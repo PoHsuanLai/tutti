@@ -31,7 +31,7 @@
 //! previously served snapshot exactly as JUCE and Ardour do.
 
 use crate::types::TransportInfo;
-// Shared with the VST3 path so the two cannot drift again.
+// Shared with the VST3 path so the two cannot drift apart.
 use tutti_plugin_types::is_usable;
 
 /// The transport bits whose transition defines `TRANSPORT_CHANGED`.
@@ -45,7 +45,7 @@ fn transport_bits(flags: vst::api::TimeInfoFlags) -> i32 {
     (flags & (F::TRANSPORT_PLAYING | F::TRANSPORT_RECORDING | F::TRANSPORT_CYCLE_ACTIVE)).bits()
 }
 
-/// Build the snapshot the plugin will read via `audioMasterGetTime`.
+/// Builds the snapshot the plugin will read via `audioMasterGetTime`.
 ///
 /// `previous` is the snapshot last served to this plugin (`None` before the
 /// first block). It is used only to compute the `TRANSPORT_CHANGED` edge; every
@@ -161,11 +161,11 @@ mod tests {
 
         assert_eq!(info.flags, expected);
 
-        // Spot-check the historically-mistranscribed bits are actually set.
+        // Spot-check the easily-mistranscribed bits are actually set.
         assert_ne!(info.flags & F::TRANSPORT_RECORDING.bits(), 0);
         assert_ne!(info.flags & F::CYCLE_POS_VALID.bits(), 0);
-        // AUTOMATION_WRITING (bit 6) must NOT be set — the old hand-rolled
-        // table put TRANSPORT_RECORDING there by mistake.
+        // AUTOMATION_WRITING (bit 6) must NOT be set — a hand-rolled flag
+        // table can put TRANSPORT_RECORDING there by mistake.
         assert_eq!(info.flags & F::AUTOMATION_WRITING.bits(), 0);
     }
 
@@ -203,8 +203,8 @@ mod tests {
         let start = build_vst2_time_info(&playing, 48_000.0, Some(&first));
         assert_ne!(start.flags & F::TRANSPORT_CHANGED.bits(), 0);
 
-        // Playing → still playing, over and over: no edge. This is the block
-        // that used to (wrongly) keep asserting the bit.
+        // Playing → still playing, over and over: no edge. A level-triggered
+        // implementation would keep asserting the bit here.
         let mut prev = start;
         for _ in 0..8 {
             let next = build_vst2_time_info(&playing, 48_000.0, Some(&prev));

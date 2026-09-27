@@ -2,18 +2,21 @@
 //!
 //! [`SvfFilterNode`](super::SvfFilterNode), [`EqBandNode`](super::EqBandNode)
 //! and [`LadderFilterNode`](super::LadderFilterNode) are generic over it, so a
-//! host picks `f64` state for low cutoffs at high rates (doc 013, decision 2)
-//! and `f32` elsewhere. It is exactly the arithmetic those filters use and
-//! nothing more. Until design doc 013 Phase 5 it was `tutti-node`'s `Real`, the
-//! top of fundsp's `Num`/`Float`/`Real` tower (SIMD lanes included); the tower
-//! went with the fork, and this is the part of it a node here named. The
-//! transcendental calls go through `libm`, as the tower's did, so a filter
-//! renders the same bits it did before.
+//! host picks `f64` state for low cutoffs at high rates, where an `f32`
+//! integrator loses resolution, and `f32` elsewhere. It is exactly the
+//! arithmetic those filters use and nothing more. The transcendental calls go
+//! through `libm`, so results do not depend on the platform's C math
+//! library.
 
 use core::fmt::Debug;
 use core::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
 
-/// A scalar float for filter state and coefficients: `f32` or `f64`.
+/// A scalar float for filter state and coefficients, implemented for `f32`
+/// and `f64`.
+///
+/// The filter nodes are generic over it: `SvfFilterNode::<f64>` keeps its
+/// state in double precision, which matters for low cutoffs at high sample
+/// rates. You do not need to implement it yourself.
 pub trait Real:
     Copy
     + Default

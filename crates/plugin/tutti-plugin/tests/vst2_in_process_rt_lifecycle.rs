@@ -7,8 +7,7 @@
 //! `effMainsChanged`(12) — the opcode plugins allocate and free their
 //! rate-dependent buffers in. Routing there dispatches two main-thread-only
 //! opcodes, plus `effStopProcess`(71) / `effStartProcess`(72), racing the
-//! render. (Under `AudioUnit` these were `reset` and `set_sample_rate`,
-//! called on the audio thread itself.)
+//! render.
 //!
 //! Asserting a *negative* — that no opcode was dispatched — needs the plugin's
 //! own view, not the host's. The reference probe counts `effMainsChanged`
@@ -193,12 +192,8 @@ fn reset_dispatches_no_opcode_to_the_plugin() {
 /// Blocks of any length up to the prepared maximum reach the plugin, and a
 /// re-prepare for a longer maximum dispatches nothing to it.
 ///
-/// The `AudioUnit` path this node had beside the graph's sized its scratch
-/// to 64 frames (`BLOCK_SIZE`, the D4 shape of doc 013) and grew it on the
-/// audio thread past that; the node now sizes it in `prepare`, to the
-/// graph's `MaxBlock`. (This test replaced one for the `AudioUnit<F64>`
-/// body's `reset`, a second audio-thread entry that went with it: the graph
-/// is `f32` only.)
+/// The node sizes its scratch in `prepare`, to the graph's `MaxBlock`, and
+/// never grows it on the audio thread.
 ///
 /// Mutation (run): `ensure_scratch_size` not resizing the render scratch
 /// (`RenderScratch` left at its load-time size) → the 1 000-frame block
@@ -228,8 +223,7 @@ fn blocks_past_64_frames_reach_the_plugin_after_a_prepare() {
 }
 
 /// `Node::prepare` at a new rate (a device change re-prepares a running
-/// graph) must park the rate rather than dispatch it. It was
-/// `AudioUnit::set_sample_rate`, and carried the same bracket.
+/// graph) must park the rate rather than dispatch it.
 ///
 /// The rate is *also* asserted not to have reached the plugin, not only the
 /// mains counters: a host that skipped the bracket but still dispatched

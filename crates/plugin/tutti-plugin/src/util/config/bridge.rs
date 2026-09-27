@@ -16,8 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// unloaded — far from the cause.
 ///
 /// The pid keeps it unique across concurrent hosts; the counter keeps it unique
-/// within one. Public because this is the only correct way to name a bridge
-/// socket — hand-rolling one is how the collision above arises.
+/// within one.
 pub fn unique_socket_path() -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     std::env::temp_dir().join(format!(
@@ -27,11 +26,23 @@ pub fn unique_socket_path() -> PathBuf {
     ))
 }
 
-/// How this process connects to and manages one plugin-server subprocess.
+/// Low-level settings for one plugin-server connection.
+///
+/// Most hosts never build one: [`AudioConfig`](crate::catalog::AudioConfig)
+/// covers the settings an application tunes, and each load derives a
+/// `BridgeConfig` from it. `tutti-plugin-server` takes one to know where to
+/// listen.
+///
+/// The default uses a fresh, unique socket path, the `tutti_audio_` slab
+/// prefix, 8192-frame blocks, a 5000 ms timeout and 32-bit float samples.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeConfig {
-    /// Unix socket this bridge's host/server pair rendezvous on. Must be unique
-    /// per bridge — see `unique_socket_path`.
+    /// Local-socket path this bridge's host/server pair meet on (on Windows,
+    /// its final component names a named pipe).
+    ///
+    /// Must be unique per bridge: binding unlinks whatever is already there,
+    /// so two bridges sharing a path break each other. [`Default`] generates a
+    /// unique one per call.
     pub socket_path: PathBuf,
     /// Prefix for the shared-memory audio slab's OS name.
     pub shm_prefix: String,

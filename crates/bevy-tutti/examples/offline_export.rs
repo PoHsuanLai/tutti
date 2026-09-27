@@ -37,7 +37,7 @@ fn main() {
     let mut app = App::new();
 
     // Same headless engine as `graph_wiring`, plus the export plugin. Each
-    // export renders a fork of the live graph (design doc 013, PR 12).
+    // export renders a fork of the live graph.
     let mut graph = AudioGraphRes::headless(0, 2);
     graph.set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
     app.insert_resource(graph);

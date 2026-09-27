@@ -161,7 +161,7 @@ impl IAttributeListTrait for AttributeList {
         kResultOk
     }
 
-    /// Return a borrowed pointer to the stored binary value.
+    /// Returns a borrowed pointer to the stored binary value.
     ///
     /// # Caveat
     ///

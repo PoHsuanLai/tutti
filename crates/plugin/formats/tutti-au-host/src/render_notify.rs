@@ -336,7 +336,7 @@ impl ParamEvent {
     }
 }
 
-/// Schedule parameter events into the render call currently in flight.
+/// Schedules parameter events into the render call currently in flight.
 ///
 /// **Call this from a pre-render notify and nowhere else.** The events apply to
 /// the current `AudioUnitRender` and only to it, so scheduling from a control
@@ -433,7 +433,7 @@ unsafe impl Send for RenderUnit {}
 unsafe impl Sync for RenderUnit {}
 
 impl RenderUnit {
-    /// Wrap a raw unit for use inside a render notify callback.
+    /// Wraps a raw unit for use inside a render notify callback.
     ///
     /// # Safety
     /// `unit` must be a live `AudioUnit` that outlives every callback invocation
@@ -542,7 +542,7 @@ unsafe impl Send for RenderNotify {}
 unsafe impl Sync for RenderNotify {}
 
 impl RenderNotify {
-    /// Install a render notification on `unit`.
+    /// Installs a render notification on `unit`.
     ///
     /// `callback` is invoked **twice per render on the AU's render thread** —
     /// once with [`RenderPhase::Pre`] and once with [`RenderPhase::Post`].

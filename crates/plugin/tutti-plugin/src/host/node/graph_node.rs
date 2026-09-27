@@ -1,10 +1,8 @@
 //! A bound [`PluginClient`] as a [`Node`]: the shape it declares, and
 //! the chunk walk that feeds the IPC pipeline.
 //!
-//! Replaces the `AudioUnit<F32>` and `AudioUnit<F64>` impls (doc 013,
-//! Verdicts: `PluginClient`). The graph is `f32`, so there is one impl; a
-//! plugin that processes in double is converted inside the batcher's wire
-//! scratch.
+//! The graph is `f32`, so there is one impl; a plugin that processes in
+//! double is converted inside the batcher's wire scratch.
 //!
 //! The bound client is both the [`Node`] the executor owns and the
 //! [`IntoNode`](tutti_graph::IntoNode) a host inserts (in `fork.rs`), which
@@ -24,7 +22,8 @@ use super::{automation_node, BlockPayload, Bound, PluginClient};
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::protocol::{ChordValue, Features, MidiEvent, MidiEventVec, ScaleValue, TransportInfo};
 
-/// A bound plugin, owned by a graph's executor. See the module docs.
+/// A bound plugin, processed through the pipelined IPC path. See
+/// [`PluginClient`].
 impl Node for PluginClient<Bound> {
     /// The plugin's buses as audio ports, and its latency: the plugin's own
     /// figure **plus** the chunk the pipeline holds
@@ -62,9 +61,7 @@ impl Node for PluginClient<Bound> {
     /// `RenderClock::render_graph`) keeps, in whole blocks as in shorter
     /// passes. The transport itself is read from `Env`.
     /// The cost: a transport command scheduled inside a block reaches those
-    /// polled inputs from the block's first frame (up to a block early, where
-    /// passes bounded it to 64 frames); doc 013, "The plugin is no longer
-    /// `legacy`".
+    /// polled inputs from the block's first frame, up to a block early.
     fn shape(&self) -> Shape {
         let c = self;
         let midi_out = u16::from(c.loaded.features.contains(Features::MIDI_OUT));

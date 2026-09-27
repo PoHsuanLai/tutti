@@ -23,9 +23,12 @@ use crate::host::{AudioHost, DeviceHost, DeviceSelector, Direction};
 /// clamped and its tail silenced rather than reallocating on the audio thread.
 pub const MAX_FRAMES: usize = 8192;
 
-/// State shared between the engine and the RT audio callback.
+/// Everything the output callback reads: the [`Engine`], the master meter and
+/// the audio tap.
 ///
-/// Holds the [`Engine`], the meter and the tap. RT-safe.
+/// Built once on the control thread and shared as an `Arc` between the
+/// [`TuttiDriver`](crate::TuttiDriver) (or [`AudioEngine`]) that owns the stream
+/// and the stream's callback, which passes it to [`process_audio`].
 pub struct AudioCallbackState {
     pub(crate) engine: Engine,
     pub(crate) meter: MasterMeter,
@@ -33,27 +36,18 @@ pub struct AudioCallbackState {
 }
 
 impl AudioCallbackState {
-    /// Assemble the state a stream's callback reads. Called once at engine
-    /// build, on the control thread.
+    /// Creates the state a stream's callback reads, on the control thread.
     pub fn new(engine: Engine, meter: MasterMeter, tap: AudioTap) -> Self {
         Self { engine, meter, tap }
     }
 
-    /// Clear the RT processors' owner assertions, ahead of a device switch.
+    /// Clears the audio-thread owner checks, ahead of moving the callback to a
+    /// new thread.
     ///
-    /// **Currently a no-op all the way down**, and the docs here used to claim
-    /// otherwise. Every call in this chain bottoms out in
-    /// `AudioThreadCell::reset_owner`, whose own doc reads "No-op, kept for
-    /// source compatibility. The cell pins no owner thread, so a device switch
-    /// needs no reset." The cell's debug check is a *concurrent-borrow*
-    /// detector (`in_use.swap`), not an owner-thread one, so moving the
-    /// callback to a new CPAL thread has needed no reset since that change;
-    /// `tutti_types::RtEventBuf::reset_owner` already said so and this did not.
-    ///
-    /// Kept rather than deleted because it is public API and because the
-    /// property it guards is one a future cell might reinstate. Called from
-    /// `TuttiDriver::restart` for the same reason. Do not write new code that
-    /// depends on it doing something.
+    /// Currently a no-op: the engine's audio-thread cells check for concurrent
+    /// borrows, not for a fixed owner thread, so a device switch needs no
+    /// reset. [`TuttiDriver`](crate::TuttiDriver) still calls it on every
+    /// restart; do not write code that depends on it doing something.
     ///
     /// Control-thread only, and only while no stream is running.
     pub fn reset_owners(&self) {
@@ -61,9 +55,14 @@ impl AudioCallbackState {
     }
 }
 
-/// Render one block into `output`, an interleaved device buffer that carries
-/// its own width. The graph root is folded to that width (see
-/// [`Engine::process`]).
+/// Renders one block of the graph into `output`, an interleaved device buffer
+/// that carries its own width.
+///
+/// The graph's root outputs are folded to that width (see [`Engine::process`]),
+/// and denormals are flushed for the duration of the call. This is the render
+/// the output stream runs each callback; call it directly only on a state no
+/// running stream is also rendering (see
+/// [`TuttiDriver::from_parts`](crate::TuttiDriver::from_parts)).
 ///
 /// # Real-time
 ///
@@ -77,17 +76,18 @@ pub fn process_audio(state: &AudioCallbackState, output: &mut InterleavedMut<'_>
     state.engine.process(output);
 }
 
-/// Owns the running stream and the device configuration it was built from.
+/// An output device, its stream configuration, and the stream while it runs.
 ///
-/// The lifecycle half of the device layer: [`TuttiDriver`](crate::TuttiDriver)
-/// wraps one and is what a host normally holds. Every method here runs on the
-/// control thread — none is callable from the RT callback.
+/// [`TuttiDriver`](crate::TuttiDriver) wraps one and is what a host normally
+/// holds; use `AudioEngine` directly to open the device before the graph
+/// exists (its [`sample_rate`](Self::sample_rate) is the rate to build the
+/// graph at). Every method runs on the control thread.
 ///
-/// The running stream is a `Box<dyn RunningStream>` rather than a type
-/// parameter, for the reason `tutti_io::Recorder`'s field doc gives about its
-/// own driver: this is a type a caller stores in a field, and making it
-/// `AudioEngine<D>` would push the choice of driver into `TuttiDriver`, into
-/// `bevy-tutti`'s `NonSend`, and into every host signature that holds one.
+/// The stream runs until [`stop`](Self::stop) or until the engine is dropped.
+/// Backend errors go to [`faults`](Self::faults).
+// The running stream is a `Box<dyn RunningStream>` rather than a type
+// parameter so the driver choice does not leak into every type that stores an
+// `AudioEngine`.
 pub struct AudioEngine {
     spec: OutputSpec,
     /// `None` for an engine built from a bare spec — no host, no device, so
@@ -111,8 +111,8 @@ impl std::fmt::Debug for AudioEngine {
 }
 
 impl AudioEngine {
-    /// Open a device on the default host and read its config, without starting
-    /// a stream. `None` selects the host's default device.
+    /// Opens a device on the default host and reads its default output config,
+    /// without starting a stream. `None` selects the host's default device.
     ///
     /// # Errors
     /// [`Error::InvalidDevice`] if `device_index` is out of range, or
@@ -121,7 +121,8 @@ impl AudioEngine {
         Self::open(DeviceHost::open(AudioHost::Default)?, device_index.into())
     }
 
-    /// Open a device on a named host.
+    /// Opens a device on the given host and reads its default output config,
+    /// without starting a stream.
     ///
     /// # Errors
     /// As [`new`](Self::new), plus whatever resolving `sel` on `host` reports.
@@ -136,13 +137,13 @@ impl AudioEngine {
         })
     }
 
-    /// An engine with no host and no device: the spec is the caller's.
+    /// Creates an engine with no host and no device, at the caller's spec.
     ///
-    /// Pairs with [`ManualStreamDriver`](crate::ManualStreamDriver) to give a
-    /// complete engine lifecycle — start, render, fault, stop, restart — with
-    /// no sound card anywhere. That combination is what makes the device layer
-    /// testable at all; before it, every method here was unreachable from a
-    /// test.
+    /// Pairs with [`ManualStreamDriver`](crate::ManualStreamDriver) to run the
+    /// whole lifecycle — start, render, fault, stop, restart — with no sound
+    /// card. Such an engine can only be started with
+    /// [`start_with`](Self::start_with); [`start`](Self::start) and
+    /// [`device_name`](Self::device_name) return [`Error::InvalidDevice`].
     pub fn from_spec(spec: OutputSpec) -> Self {
         Self {
             spec,
@@ -152,30 +153,30 @@ impl AudioEngine {
         }
     }
 
-    /// The configuration of the stream that is playing, or that would be.
+    /// Returns the configuration of the stream that is playing, or that the
+    /// next start would use.
     pub fn spec(&self) -> &OutputSpec {
         &self.spec
     }
 
-    /// The fault sink, which survives stop and restart.
+    /// Returns the backend fault record, which survives stop and restart.
     ///
-    /// Take this once at startup and read it whenever; a fault has nowhere
-    /// else to go, because CPAL's error callback returns nothing.
+    /// Take it once at startup and poll it; CPAL's error callback returns
+    /// nothing, so a fault such as an unplugged device is reported only here.
     pub fn faults(&self) -> Arc<StreamFaults> {
         Arc::clone(&self.faults)
     }
 
-    /// Build a stream on the selected device and start it. A no-op if one is
-    /// already running.
+    /// Builds a stream on the selected device and starts it. Does nothing if a
+    /// stream is already running.
     ///
-    /// Re-reads the device's config, so [`spec`](Self::spec) describes the
-    /// stream that is actually playing rather than whatever
-    /// [`new`](Self::new) saw. `set_device` + `start` (what
-    /// [`TuttiDriver::restart`](crate::TuttiDriver::restart) does) reaches
-    /// here with a different device than `new` read, and leaving the spec at
-    /// its construction values would make `channels()` describe a device that
-    /// is no longer playing while the audio itself is correct — so a reader
-    /// sizing a buffer from it gets the old width with nothing to warn it.
+    /// Re-reads the device's default config first, so after a
+    /// [`set_device`](Self::set_device) the [`spec`](Self::spec),
+    /// [`sample_rate`](Self::sample_rate) and [`channels`](Self::channels)
+    /// describe the device that is actually playing. The stream is opened with
+    /// a fixed buffer of [`PREFERRED_QUANTUM`](crate::PREFERRED_QUANTUM) frames
+    /// clamped to the device's range, when the device reports one. Clears
+    /// [`faults`](Self::faults).
     ///
     /// # Errors
     /// [`Error::InvalidDevice`] for an unresolvable selector,
@@ -215,13 +216,19 @@ impl AudioEngine {
         self.spec = spec;
     }
 
-    /// [`start`](Self::start), with the caller choosing how the callback runs.
+    /// Starts a stream at the current [`spec`](Self::spec) through `driver`.
+    /// Does nothing if a stream is already running.
     ///
-    /// The spec, the fault sink and the stop are identical; a driver decides
-    /// only *where* the callback runs. So an engine over a
-    /// [`ManualStreamDriver`](crate::ManualStreamDriver) is the same engine,
-    /// and a test over one exercises the shipped lifecycle rather than a
-    /// stand-in for it.
+    /// Unlike [`start`](Self::start) it resolves no device: the driver decides
+    /// where the callback runs. With a
+    /// [`ManualStreamDriver`](crate::ManualStreamDriver) the caller runs each
+    /// callback by hand. Clears [`faults`](Self::faults).
+    ///
+    /// # Errors
+    /// Whatever the driver's [`open`](StreamDriver::open) reports; for
+    /// [`CpalDriver`](crate::CpalDriver), [`Error::InvalidConfig`] for an
+    /// unsupported sample format or [`Error::BuildStream`] /
+    /// [`Error::PlayStream`] from CPAL.
     pub fn start_with<D: StreamDriver>(
         &mut self,
         state: Arc<AudioCallbackState>,
@@ -241,57 +248,58 @@ impl AudioEngine {
         Ok(())
     }
 
-    /// Drop the stream, which stops the callback. Idempotent.
+    /// Stops and drops the running stream, if any. Idempotent.
     ///
-    /// Dropping is the stop: a stream runs for exactly as long as its handle
-    /// lives.
+    /// When this returns, the callback no longer runs.
     pub fn stop(&mut self) {
         if let Some(running) = self.running.take() {
             running.stop();
         }
     }
 
-    /// Rate of the running stream, or of the config read at construction if
-    /// none has started.
+    /// Returns the sample rate of the running stream, or of the config the
+    /// next start would use.
     pub fn sample_rate(&self) -> SampleRate {
         self.spec.sample_rate
     }
 
-    /// Channel layout of the running stream, or of the config read at
-    /// construction if none has started. This is the width [`process_audio`]
-    /// is handed.
+    /// Returns the channel layout of the running stream, or of the config the
+    /// next start would use. This is the width [`process_audio`] is handed.
     pub fn channels(&self) -> ChannelLayout {
         self.spec.channels
     }
 
-    /// Whether a stream is open **and** the backend has not reported the
-    /// device gone.
+    /// Returns whether a stream is open **and** the backend has not reported
+    /// the device gone.
     ///
-    /// The disconnect half is new, and is a behaviour change rather than a
-    /// signature one: this used to return `true` for a stream whose device had
-    /// been unplugged, because nothing read the error callback. That was the
-    /// defect, not the contract.
+    /// A stream whose device was unplugged reads `false` here even though it
+    /// has not been stopped; see [`StreamFaults::is_disconnected`].
     pub fn is_running(&self) -> bool {
         self.running.is_some() && !self.faults.is_disconnected()
     }
 
-    /// Select the device the next [`start`](Self::start) opens. `None` means
-    /// the host default. Does not disturb a running stream.
+    /// Selects the device the next [`start`](Self::start) opens, by position
+    /// in the enumeration; `None` means the host default. Does not disturb a
+    /// running stream, and does nothing on an engine built with
+    /// [`from_spec`](Self::from_spec).
     pub fn set_device(&mut self, index: Option<usize>) {
         self.select_device(index.into());
     }
 
-    /// Select the device by name or index. Does not disturb a running stream.
+    /// Selects the device the next [`start`](Self::start) opens, by name or
+    /// index. Does not disturb a running stream, and does nothing on an engine
+    /// built with [`from_spec`](Self::from_spec).
     pub fn select_device(&mut self, sel: DeviceSelector) {
         if let Some((_, current)) = &mut self.target {
             *current = sel;
         }
     }
 
-    /// The selected device's name, queried fresh from the host.
+    /// Returns the selected device's name, queried fresh from the host.
     ///
     /// # Errors
-    /// [`Error::InvalidDevice`] if the selector no longer resolves, or
+    /// [`Error::InvalidDevice`] if the selector no longer resolves or the
+    /// engine was built with [`from_spec`](Self::from_spec), or
     /// [`Error::DeviceNameError`] if the host cannot name it.
     pub fn device_name(&self) -> Result<String> {
         let Some((host, sel)) = &self.target else {
@@ -302,7 +310,7 @@ impl AudioEngine {
         Ok(host.device(Direction::Output, sel)?.name()?)
     }
 
-    /// Enumerate the default host's output devices as `(index, name)` pairs.
+    /// Lists the default host's output devices as `(index, name)` pairs.
     /// The index is positional — see [`DeviceSelector::Index`].
     ///
     /// # Errors
@@ -332,8 +340,8 @@ mod tests {
     /// leave the transport assertions below reading a playhead nothing
     /// exercised. A sine through a filter into the output gives the render
     /// path real nodes to run, buffers to hand between them, and a fold to
-    /// the device width. The playhead is the engine's own clock (doc 013
-    /// Phase 3 PR 15: no clock node in the graph).
+    /// the device width. The playhead is the engine's own clock; there is no
+    /// clock node in the graph.
     ///
     /// `tests/rt_no_alloc.rs` mirrors this fixture, because the allocation
     /// gates need a `#[global_allocator]` that only a test binary root can

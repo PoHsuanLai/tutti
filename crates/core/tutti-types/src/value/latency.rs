@@ -2,11 +2,10 @@
 //!
 //! # Why a newtype over `Samples`
 //!
-//! Doc 013's defect class D1–D3 is one mistake made three times: a node's
-//! *musical* delay (an echo's delay time, a chorus's modulation delay) was
-//! reported as its *processing* latency, because both were a `Samples` — or,
-//! worse, one `Signal::delay` — and nothing told them apart. A 500 ms echo
-//! insert then made PDC drag every parallel path 500 ms late.
+//! A node's *musical* delay (an echo's delay time, a chorus's modulation delay)
+//! and its *processing* latency are both a number of frames, and mixing them up
+//! is costly: report a 500 ms echo's delay time as its latency and delay
+//! compensation drags every parallel path 500 ms late.
 //!
 //! With `Latency` the two are different types. A delay time stays `Seconds` or
 //! `Samples`; a node's declared latency is a `Latency`, built only by
@@ -20,15 +19,10 @@
 //! declare(echo_time); // a delay time is not a latency
 //! ```
 //!
-//! # Why it lives here and not in the graph crate
-//!
-//! It is vocabulary, and the value layer is where the confusion starts:
-//! `graph::NodeSpec::latency` and `LatencyGraph::latency` both mean exactly
-//! this and are both in this crate. They are still `Samples`: every
-//! `LatencyGraph` implementor has to move in the same change, and while
-//! fundsp's `Net` was one of them (until doc 013 Phase 5) that change spanned
-//! a crate being deleted, so the fold signatures were left to flip on their
-//! own. New code (`tutti-graph`'s `Shape`) takes `Latency` from the start.
+//! `tutti-graph`'s node `Shape` declares its latency as a `Latency`. The
+//! graph-value folds in this crate ([`NodeSpec::latency`](crate::graph::NodeSpec::latency)
+//! and [`LatencyGraph::latency`](crate::LatencyGraph::latency)) carry the same
+//! quantity as a plain [`Samples`].
 //!
 //! # Algebra
 //!
@@ -40,9 +34,22 @@
 
 use super::samples::Samples;
 
-/// Frames a node buffers as a side effect of processing — lookahead, an FFT
-/// block, a plugin's pipeline. Never a musical delay. See the
-/// [module docs](self).
+/// The frames a node buffers as a side effect of processing: lookahead, an FFT
+/// block, a plugin's pipeline. Never a musical delay.
+///
+/// See the [module docs](self) for why this is not a bare
+/// [`Samples`].
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::{Latency, Samples};
+///
+/// let lookahead = Latency::new(Samples(128));
+/// let fft = Latency::new(Samples(64));
+/// assert_eq!(lookahead + fft, Latency::new(Samples(192))); // cascade
+/// assert_eq!(fft.gap_to(lookahead), Samples(64)); // compensation delay
+/// ```
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -53,7 +60,7 @@ impl Latency {
     /// No latency.
     pub const ZERO: Latency = Latency(Samples::ZERO);
 
-    /// Declare `frames` of processing latency.
+    /// Declares `frames` of processing latency.
     ///
     /// Deliberately the only constructor, and deliberately not a `From`: the
     /// point of the type is that becoming a latency is a visible decision.
@@ -62,20 +69,22 @@ impl Latency {
         Self(frames)
     }
 
-    /// The latency as a frame count.
+    /// Returns the latency as a frame count.
     #[inline]
     pub const fn samples(self) -> Samples {
         self.0
     }
 
-    /// Whether there is no latency.
+    /// Returns whether there is no latency.
     #[inline]
     pub const fn is_zero(self) -> bool {
         self.0.is_zero()
     }
 
-    /// The compensation delay a path arriving `self` late needs to line up
-    /// with one arriving `later` late. Zero when `self` is already the later.
+    /// Returns the compensation delay a path arriving `self` late needs to
+    /// line up with one arriving `later` late.
+    ///
+    /// Zero when `self` is already the later.
     #[inline]
     pub const fn gap_to(self, later: Latency) -> Samples {
         self.0.align_to(later.0)

@@ -151,7 +151,7 @@ pub fn start_scan(world: &mut World) {
     info!("plugin rescan started");
 }
 
-/// Forward scan progress, and re-install the catalog once the scan finishes.
+/// Forwards scan progress, and re-installs the catalog once the scan finishes.
 ///
 /// Exclusive for the same reason as [`start_scan`] — the catalog comes back by
 /// value and must be re-inserted as a resource.

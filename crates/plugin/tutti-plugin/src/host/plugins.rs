@@ -1,4 +1,4 @@
-//! [`Plugins`] — the primary user-facing catalog for discovered plugins.
+//! The [`Plugins`] catalog: scans plugin directories and opens what it found.
 //!
 //! The caller supplies where the DB lives and which directories to scan —
 //! this crate has no opinion on OS conventions or app names.
@@ -24,8 +24,8 @@
 //! use std::path::{Path, PathBuf};
 //! use tutti_plugin::catalog::{CatalogConfig, PluginCatalog, PluginRecord, Plugins};
 //!
-//! // Four methods is the whole contract; `flush` defaults to a no-op, which is
-//! // right for a store that is not durable.
+//! // Four methods are required; `flush` defaults to a no-op, which suits a
+//! // store that is not durable.
 //! #[derive(Default)]
 //! struct InMemory(HashMap<PathBuf, PluginRecord>);
 //!
@@ -59,19 +59,20 @@ use crate::util::config::{AudioConfig, CatalogConfig};
 use std::path::{Path, PathBuf};
 use tutti_core::SampleRate;
 
-/// Opaque identifier for a plugin in a [`Plugins`] catalog.
+/// Identifies a plugin in a [`Plugins`] catalog by its file path.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct PluginId(PathBuf);
 
 impl PluginId {
-    /// Construct from a plugin file path. The path must match a record
-    /// in the catalog at load time; otherwise `Plugins::open` returns
-    /// `BridgeError::PluginNotFound`.
+    /// Creates an id from a plugin file path.
+    ///
+    /// The id only resolves through [`Plugins::info`] when a record with this
+    /// exact path is in the catalog.
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
         Self(path.into())
     }
 
-    /// Underlying path (for save/round-trip).
+    /// Returns the plugin file path this id wraps.
     pub fn path(&self) -> &Path {
         &self.0
     }
@@ -83,9 +84,12 @@ impl From<PathBuf> for PluginId {
     }
 }
 
-/// Catalog of discoverable + loadable plugins. Backed by any
-/// [`PluginCatalog`] impl; `Plugins::with_json_catalog` supplies a
-/// file-backed one when the opt-in `json` feature is enabled.
+/// A catalog of scanned plugins that can list, blacklist and open them.
+///
+/// Backed by any [`PluginCatalog`] implementation; [`Plugins::with_catalog`]
+/// takes your own, and `Plugins::with_json_catalog` supplies a file-backed one
+/// when the `json` feature is enabled. Every mutation is in-memory until
+/// [`save`](Self::save) is called.
 pub struct Plugins {
     catalog: Box<dyn PluginCatalog>,
     config: CatalogConfig,
@@ -93,8 +97,9 @@ pub struct Plugins {
 }
 
 impl Plugins {
-    /// Catalog backed by an arbitrary [`PluginCatalog`] impl. Use this
-    /// to plug in SQLite, in-memory, or any other persistence.
+    /// Creates a catalog backed by any [`PluginCatalog`] implementation.
+    ///
+    /// Use this to plug in SQLite, an in-memory store or any other persistence.
     ///
     /// Audio settings default ([`AudioConfig::default`]); override with
     /// [`Plugins::with_audio_config`].
@@ -106,68 +111,68 @@ impl Plugins {
         }
     }
 
-    /// JSON-backed catalog, loaded from `config.db_path`. Requires the
-    /// `json` feature.
+    /// Creates a JSON-backed catalog loaded from `config.db_path`.
     ///
-    /// This is the "just give me a working catalog" path. Construction lives
-    /// here rather than on the config struct: config describes, the host layer
-    /// builds — the reverse made `util::config` depend on `host::plugins`.
+    /// See [`JsonCatalog::load`](crate::catalog::JsonCatalog::load) for how a
+    /// missing or corrupt file is handled. Requires the `json` feature.
     #[cfg(feature = "json")]
     pub fn with_json_catalog(config: CatalogConfig) -> Self {
         let catalog = JsonCatalog::load(config.db_path.clone());
         Self::with_catalog(Box::new(catalog), config)
     }
 
-    /// Empty JSON-backed catalog (no DB load). For tests or manual management.
+    /// Creates an empty JSON-backed catalog without reading `config.db_path`.
+    ///
+    /// [`save`](Self::save) still writes to `config.db_path`. Requires the
+    /// `json` feature.
     #[cfg(feature = "json")]
     pub fn empty(config: CatalogConfig) -> Self {
         let catalog = JsonCatalog::empty(config.db_path.clone());
         Self::with_catalog(Box::new(catalog), config)
     }
 
-    /// Override the audio settings applied to every plugin this catalog
-    /// loads. Chainable.
+    /// Sets the audio settings applied to every plugin this catalog opens.
     pub fn with_audio_config(mut self, audio: AudioConfig) -> Self {
         self.audio = audio;
         self
     }
 
-    /// The audio settings this catalog hands to a load.
+    /// Returns the audio settings this catalog applies when opening a plugin.
     ///
-    /// The counterpart to [`with_audio_config`](Self::with_audio_config).
-    /// Opening does not go through the catalog — [`Plugin::open_with`] takes
-    /// these settings and a path — so this is how a host that configured them
-    /// here passes them along rather than falling back to
-    /// [`AudioConfig::default`].
-    ///
-    /// Being a plain value read off `&self` is also what makes an **off-thread**
-    /// load work: clone it, hand it to a worker with the path, and no borrow of
-    /// the catalog has to outlive the frame while a subprocess takes half a
-    /// second to fifteen to launch.
+    /// Pass them to [`Plugin::open_with`] to open a plugin off-thread with the
+    /// same settings: clone the value, hand it to a worker with the path, and
+    /// no borrow of the catalog has to outlive the launch, which can take from
+    /// half a second to several seconds.
     ///
     /// [`Plugin::open_with`]: crate::catalog::Plugin::open_with
     pub fn audio_config(&self) -> &AudioConfig {
         &self.audio
     }
 
-    /// Run a blocking rescan and return `self`. Discards the
-    /// [`ScanResult`]; use [`Plugins::rescan`] if you need the tally.
+    /// Runs a blocking scan and returns `self`, for use in a builder chain.
+    ///
+    /// Discards the [`ScanResult`]; use [`Plugins::rescan`] if you need it.
     pub fn with_fresh_scan(mut self) -> Self {
         let _ = self.rescan();
         self
     }
 
-    /// Scan plugin directories on a background thread, consuming `self`.
-    /// Returns the scan handle (progress + result channels) alongside a
-    /// [`ScanTicket`] that yields the catalog back once the scan completes.
+    /// Scans the plugin directories on a background thread, consuming `self`.
     ///
-    /// Named for [`std::process::Command::spawn`]: a thread is created and
-    /// something must be joined. This is not an `async fn` and returns no
-    /// future — see [`rescan`](Self::rescan) for the blocking form.
+    /// Returns the [`ScanHandle`] (progress and result channels) and a
+    /// [`ScanTicket`] that gives the catalog back once the scan completes. See
+    /// [`rescan`](Self::rescan) for the blocking form.
     ///
-    /// Works with any [`PluginCatalog`] impl: the live catalog is *moved* onto
-    /// the scanner thread rather than reloaded from disk, so this assumes no
-    /// JSON and discards no in-memory record that was never flushed.
+    /// Works with any [`PluginCatalog`] implementation: the live catalog is
+    /// moved onto the scanner thread rather than reloaded from disk, so
+    /// unsaved in-memory records are kept.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system cannot spawn the scanner thread.
+    ///
+    /// # Examples
+    ///
     ///
     /// ```no_run
     /// # use tutti_plugin::catalog::Plugins;
@@ -192,8 +197,11 @@ impl Plugins {
         (handle, ticket)
     }
 
-    /// Scan on the calling thread (blocking). Returns the scan summary; the
-    /// in-memory catalog is refreshed before returning.
+    /// Scans the plugin directories on the calling thread and returns the
+    /// summary.
+    ///
+    /// Blocks while each new or changed plugin is probed in a subprocess. The
+    /// in-memory catalog is updated before this returns.
     pub fn rescan(&mut self) -> ScanResult {
         // Move the current catalog into the scanner; leave a throwaway
         // placeholder while scanning. Works for any catalog impl because
@@ -206,31 +214,35 @@ impl Plugins {
         result
     }
 
-    /// Rebuild the in-memory catalog by re-reading the JSON database file.
+    /// Replaces the in-memory catalog with the contents of the JSON database
+    /// file.
     ///
-    /// Only meaningful for a JSON-backed catalog whose file another process
-    /// may have rewritten — after [`Plugins::spawn_rescan`] the catalog comes back
-    /// through [`ScanTicket::join`] instead, with no reload needed.
+    /// Useful when another process may have rewritten the file. Unsaved
+    /// in-memory changes are lost. After [`Plugins::spawn_rescan`] no reload is
+    /// needed: the catalog comes back through [`ScanTicket::join`]. Requires
+    /// the `json` feature.
     #[cfg(feature = "json")]
     pub fn reload(&mut self) {
         self.catalog = Box::new(JsonCatalog::load(self.config.db_path.clone()));
     }
 
-    /// Iterate all non-blacklisted plugins.
+    /// Iterates the ids and descriptors of all non-blacklisted plugins.
     pub fn iter(&self) -> impl Iterator<Item = (PluginId, &PluginDescriptor)> {
         self.catalog
             .plugins()
             .map(|r| (PluginId(r.path.clone()), &r.descriptor))
     }
 
-    /// Iterate full non-blacklisted [`PluginRecord`]s. Use this when the
-    /// caller needs `format` or `extension_id` (e.g. a UI grouping
-    /// records by format or by owning extension).
+    /// Iterates the full [`PluginRecord`]s of all non-blacklisted plugins.
+    ///
+    /// Use this when you need `format` or `extension_id`, for example to group
+    /// plugins by format in a browser.
     pub fn records(&self) -> impl Iterator<Item = &PluginRecord> {
         self.catalog.plugins()
     }
 
-    /// Find a plugin by display name.
+    /// Returns the id of the first non-blacklisted plugin with this display
+    /// name.
     pub fn find(&self, name: &str) -> Option<PluginId> {
         self.catalog
             .plugins()
@@ -238,7 +250,7 @@ impl Plugins {
             .map(|r| PluginId(r.path.clone()))
     }
 
-    /// Look up a plugin's catalog descriptor by id.
+    /// Returns the descriptor of a non-blacklisted plugin by id.
     pub fn info(&self, id: &PluginId) -> Option<&PluginDescriptor> {
         self.catalog
             .plugins()
@@ -246,28 +258,24 @@ impl Plugins {
             .map(|r| &r.descriptor)
     }
 
-    /// Iterate the blacklisted records — the plugins that were hidden and
-    /// why. `iter`/`records` deliberately exclude them, so without this a
-    /// blacklisted plugin is simply absent with no way for a UI to say so.
+    /// Iterates the blacklisted records, including the recorded reason.
+    ///
+    /// [`iter`](Self::iter) and [`records`](Self::records) exclude these; use
+    /// this to show hidden plugins and offer to [`unblacklist`](Self::unblacklist)
+    /// them.
     pub fn blacklisted(&self) -> impl Iterator<Item = &PluginRecord> {
         self.catalog.blacklisted()
     }
 
-    /// `true` if [`open`](Self::open) would refuse the plugin at `path`.
+    /// Returns `true` if [`open`](Self::open) would refuse the plugin at
+    /// `path`.
     ///
-    /// **Answers the same question `open` asks, and must keep doing so.** Both
-    /// go through the mtime-aware [`CatalogExt::is_blacklisted_and_unchanged`];
-    /// reading the raw [`CatalogExt::is_blacklisted`] here would report `true`
-    /// for a plugin whose file had changed since it was blacklisted, while
-    /// `open` admitted it. A host greying out a browser entry on this answer
-    /// then hides a plugin it could have loaded — and hides it *permanently*,
-    /// because the reinstall that was supposed to lift the blacklist is exactly
-    /// what makes the two disagree.
-    ///
-    /// A raw flag check is still available as
-    /// [`CatalogExt::is_blacklisted`] for a host that genuinely wants "was this
-    /// ever blacklisted" — but that is a different question, and it is not the
-    /// one a UI asking "can I load this" wants.
+    /// A blacklisted plugin whose file has changed since it was blacklisted
+    /// (a reinstall or update) is not refused, so this returns `false` for it.
+    /// [`CatalogExt::is_blacklisted`] answers the different question "was this
+    /// ever blacklisted".
+    //
+    // Must stay in step with `open`: both use the mtime-aware check.
     ///
     /// [`CatalogExt::is_blacklisted`]: crate::catalog::CatalogExt::is_blacklisted
     /// [`CatalogExt::is_blacklisted_and_unchanged`]: crate::catalog::CatalogExt::is_blacklisted_and_unchanged
@@ -275,24 +283,21 @@ impl Plugins {
         self.catalog.is_blacklisted_and_unchanged(path)
     }
 
-    /// Open a plugin, refusing one this catalog recorded as having brought a
-    /// scan down.
+    /// Opens a plugin with this catalog's audio settings, refusing one that is
+    /// blacklisted.
     ///
-    /// The guarded door. [`Plugin::open`] is the plain one — it takes a path
-    /// and nothing else, so it has no crash history to consult. Which of the
-    /// two a host wants is a decision, so both exist and the difference is the
-    /// catalog.
+    /// [`Plugin::open`] opens any path without consulting a catalog; this adds
+    /// the blacklist check. The path need not have been scanned. The check is
+    /// mtime-aware ([`CatalogExt::is_blacklisted_and_unchanged`]), so a
+    /// reinstall or update re-admits the plugin without clearing anything.
+    /// Blocks while the plugin-server subprocess launches.
     ///
-    /// Takes a `&Path`, not a [`PluginId`]: requiring an id would mean "scan
-    /// before you can open", which is exactly the coupling
-    /// [`Plugin::open`] exists to remove. Both doors take the same argument and
-    /// differ only in the guard.
+    /// # Errors
     ///
-    /// The check is mtime-aware ([`CatalogExt::is_blacklisted_and_unchanged`]),
-    /// so a reinstall or vendor update re-admits the plugin without the host
-    /// clearing anything. On refusal the error carries the recorded reason, so
-    /// a host can name the plugin and offer to load it anyway — that offer
-    /// routes to [`Plugin::open`].
+    /// Returns [`BridgeError::Blacklisted`] with the recorded reason if the
+    /// plugin is blacklisted and unchanged; a host can offer to load it anyway
+    /// through [`Plugin::open`]. Otherwise returns any error of
+    /// [`Plugin::open_with`].
     ///
     /// [`Plugin::open`]: crate::catalog::Plugin::open
     pub fn open(&self, path: &Path, sample_rate: impl Into<SampleRate>) -> Result<Plugin> {
@@ -311,61 +316,59 @@ impl Plugins {
         Plugin::open_with(&self.audio, path, sample_rate)
     }
 
-    /// Blacklist a plugin by path, hiding it from `iter`/`records`/`find`.
+    /// Blacklists a plugin by path, hiding it from `iter`, `records` and `find`
+    /// and making [`open`](Self::open) refuse it.
     pub fn blacklist(&mut self, path: &Path, reason: impl Into<String>) {
         self.catalog.blacklist(path, reason.into());
     }
 
-    /// Clear one blacklist entry so the plugin is re-probed on the next scan.
-    /// Returns `true` if a blacklisted record was found and cleared.
+    /// Clears one blacklist entry so the plugin is re-probed on the next scan.
     ///
-    /// The inverse of [`Self::blacklist`]. False positives are expected — the
-    /// dead-man's pedal fires on force-quit, power loss, and OOM-kill just as
-    /// readily as on a real plugin crash — so a blacklist with no inverse
-    /// hides a working plugin forever.
+    /// Returns `true` if a blacklisted record was found and cleared. Offer this
+    /// to users: crash recovery also blacklists after a force-quit, power loss
+    /// or out-of-memory kill, so false positives are expected.
     pub fn unblacklist(&mut self, path: &Path) -> bool {
         self.catalog.unblacklist(path)
     }
 
-    /// Clear every blacklist entry. Returns the paths cleared. The bulk
-    /// escape hatch for "all my plugins vanished after a crash".
+    /// Clears every blacklist entry and returns the paths cleared.
     pub fn clear_blacklist(&mut self) -> Vec<PathBuf> {
         self.catalog.clear_blacklist()
     }
 
-    /// Drop one record entirely (blacklisted or not). Unlike
-    /// [`Self::unblacklist`] this forgets the plugin was ever seen, so the
-    /// next scan treats it as brand new.
+    /// Removes one record, blacklisted or not.
+    ///
+    /// Unlike [`Self::unblacklist`] this forgets the plugin entirely, so the
+    /// next scan treats it as new.
     pub fn remove(&mut self, path: &Path) {
         self.catalog.remove(path);
     }
 
-    /// Probe one plugin file and add it to the catalog, without scanning a
-    /// directory. Returns its [`PluginId`].
+    /// Probes one plugin file and adds it to the catalog, returning its
+    /// [`PluginId`].
     ///
-    /// For plugins the host knows about by path rather than by scan — one
-    /// shipped inside an application bundle, say, or a file the user pointed
-    /// at directly. The scan directories in [`CatalogConfig`] are for the
-    /// standard install locations; this is the escape hatch for everything
-    /// else. Errors if the extension is unrecognized or the probe fails.
-    /// **Blocking** — the probe spawns a subprocess and waits on a handshake,
+    /// For plugins known by path rather than found by a scan, such as one
+    /// shipped inside an application bundle or a file the user picked.
+    /// **Blocking**: the probe spawns a subprocess and waits on a handshake,
     /// up to about seven seconds if the plugin hangs. A frame-driven host should
-    /// run [`PluginRecord::probe`] on a worker and hand the result to
+    /// run [`PluginRecord::probe`] on a worker and pass the result to
     /// [`register_record`](Self::register_record) instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error of [`PluginRecord::probe`], for example when the file
+    /// extension is not a plugin format or the probe fails.
     pub fn register_path(&mut self, plugin_path: &Path) -> Result<PluginId> {
         let record = PluginRecord::probe(plugin_path)?;
         Ok(self.register_record(record))
     }
 
-    /// Add an already-probed record to the catalog, returning its [`PluginId`].
+    /// Adds an already-probed record to the catalog, returning its
+    /// [`PluginId`].
     ///
-    /// The non-blocking half of [`register_path`](Self::register_path): a caller
-    /// that cannot afford the probe on its own thread runs
-    /// [`PluginRecord::probe`] wherever it likes — the probe needs no catalog —
-    /// and calls this with the result. `register_path` is exactly these two
-    /// steps, so the two paths cannot disagree about what registering means.
-    ///
-    /// In-memory only, like every other catalog mutation; call
+    /// The non-blocking half of [`register_path`](Self::register_path): run
+    /// [`PluginRecord::probe`] on any thread (it needs no catalog) and pass the
+    /// result here. A record with the same path is replaced. Call
     /// [`save`](Self::save) to persist.
     pub fn register_record(&mut self, record: PluginRecord) -> PluginId {
         let id = PluginId(record.path.clone());
@@ -373,28 +376,29 @@ impl Plugins {
         id
     }
 
-    /// Persist the in-memory catalog to its backing store.
+    /// Writes the in-memory catalog to its backing store.
     ///
-    /// Named `save` rather than `flush`: the other three `flush`es in this
-    /// workspace drain a buffer onward (a sampler ring, a CLAP parameter
-    /// queue, a writer), and this one writes a file that outlives the process.
+    /// Calls [`PluginCatalog::flush`], which is a no-op for a store that does
+    /// not persist.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error of the backing store's `flush`, for example when
+    /// the JSON file cannot be written.
     pub fn save(&mut self) -> std::io::Result<()> {
         self.catalog.flush()
     }
 
-    /// If a previous scan died mid-probe, blacklist whatever it was probing.
+    /// Blacklists the plugin a previous scan was probing when it died.
     ///
-    /// The scan arms a sentinel file before each probe and clears it after, so a
-    /// sentinel surviving into the next run means the scanner *host* went down —
-    /// a plugin crash, but equally a force-quit, a power loss, or an OOM kill.
-    /// False positives are therefore expected, and
-    /// [`unblacklist`](Self::unblacklist) is the counterpart a host must offer.
+    /// A scan writes a sentinel file before each probe and removes it after, so
+    /// a sentinel left over means the scanning process went down: a plugin
+    /// crash, but equally a force-quit, power loss or out-of-memory kill. False
+    /// positives are therefore expected; offer
+    /// [`unblacklist`](Self::unblacklist) to the user.
     ///
-    /// Both scan paths already call this. It is public here so a host can
-    /// surface "a plugin brought your last session down" at startup **without**
-    /// paying for a full rescan: the recovery reads one sentinel and one record,
-    /// where a scan probes every plugin on disk in its own subprocess.
-    ///
+    /// Every scan already calls this. Call it directly to report "a plugin
+    /// brought your last session down" at startup without a full rescan.
     /// Idempotent, and a no-op when no sentinel is present.
     pub fn recover_crash(&mut self) {
         // The scanner owns the recovery, and it takes the catalog by value, so
@@ -408,21 +412,13 @@ impl Plugins {
         self.catalog = scanner.into_catalog();
     }
 
-    /// Drop records whose plugin file no longer exists.
+    /// Removes records whose plugin file does not exist and returns their
+    /// paths.
     ///
-    /// Uninstalling a plugin leaves its record behind — a scan only ever *adds*
-    /// what it finds, so nothing else removes one, and the entry stays visible
-    /// in a browser indefinitely. Returns the paths that were forgotten.
-    ///
-    /// Not part of a scan: a directory that is temporarily unavailable (an
-    /// unmounted volume, a network share) would otherwise have its whole
-    /// contents forgotten on the next rescan, and re-probing all of it is far
-    /// more expensive than leaving a stale row. Pruning is a decision a host
-    /// makes deliberately.
-    ///
-    /// Returns the paths rather than a count, because "three plugins vanished"
-    /// is not something a host can act on and "these three vanished" is —
-    /// `CatalogExt::prune_missing` computes the list and drops it.
+    /// A scan only adds what it finds, so an uninstalled plugin keeps its
+    /// record until this is called. Scans do not prune on their own because a
+    /// temporarily unavailable directory (an unmounted volume, a network share)
+    /// would lose all its records and need a full re-probe.
     pub fn prune_missing(&mut self) -> Vec<PathBuf> {
         let missing: Vec<PathBuf> = self
             .catalog
@@ -437,11 +433,11 @@ impl Plugins {
     }
 }
 
-/// Claim on the catalog a spawned [`Plugins::spawn_rescan`] took ownership of.
+/// Gives back the [`Plugins`] catalog that [`Plugins::spawn_rescan`] moved onto
+/// its scan thread.
 ///
-/// `rescan` consumes the [`Plugins`] because the catalog moves onto the scan
-/// thread; this is how you get one back. Holding a ticket does not block —
-/// [`join`](Self::join) is where you wait.
+/// Holding a ticket does not block; [`join`](Self::join) waits for the scan and
+/// [`try_join`](Self::try_join) polls.
 pub struct ScanTicket {
     catalog_rx: crossbeam_channel::Receiver<Box<dyn PluginCatalog>>,
     config: CatalogConfig,
@@ -452,12 +448,16 @@ pub struct ScanTicket {
 }
 
 impl ScanTicket {
-    /// Block until the scan finishes, then rebuild [`Plugins`] around the
-    /// returned catalog.
+    /// Blocks until the scan finishes and returns the catalog.
     ///
-    /// Errors only if the scan thread died without handing the catalog back
-    /// (a panic inside the scanner); the config is returned so the caller can
-    /// rebuild a fresh catalog rather than losing its scan directories.
+    /// The returned [`Plugins`] keeps the catalog config and audio settings it
+    /// had before the scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`CatalogConfig`] if the scan thread died without handing
+    /// the catalog back (a panic inside the scanner), so the caller can build
+    /// a fresh catalog without losing its scan directories.
     pub fn join(self) -> std::result::Result<Plugins, CatalogConfig> {
         match self.catalog_rx.recv() {
             Ok(catalog) => Ok(Plugins {
@@ -469,10 +469,14 @@ impl ScanTicket {
         }
     }
 
-    /// Take the catalog back if the scan has already finished, without
-    /// blocking. `Err(self)` means the scan is still running — poll again.
+    /// Returns the catalog if the scan has finished, without blocking.
     ///
     /// For frame-driven hosts (a Bevy system, a UI tick) that must not stall.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(self)` while the scan is still running (poll again), and
+    /// also if the scan thread died without handing the catalog back.
     pub fn try_join(self) -> std::result::Result<Plugins, Self> {
         match self.catalog_rx.try_recv() {
             Ok(catalog) => Ok(Plugins {

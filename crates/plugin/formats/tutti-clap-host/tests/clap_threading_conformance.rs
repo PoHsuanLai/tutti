@@ -193,7 +193,7 @@ fn assert_roles(cap: &ThreadCapture, site: Site, want_main: bool, want_audio: bo
 // ---------------------------------------------------------------------------
 
 /// The host must answer `clap.thread-check` correctly at every plugin entry
-/// point, and the two roles must stay mutually exclusive (C1) *on the real
+/// point, and the two roles must stay mutually exclusive *on the real
 /// paths* — not just when a test calls `claim_audio_thread()` by hand.
 ///
 /// The interesting sites are `start_processing` and `process`, driven here from
@@ -471,8 +471,8 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
 /// it genuinely running at the new rate.
 ///
 /// This is the *routine* path through the same activate → deactivate →
-/// re-activate cycle the restart test above drives, and until now nothing
-/// covered it. The difference matters: `restart_cycle_...` has the embedder do
+/// re-activate cycle the restart test above drives. The difference matters:
+/// `restart_cycle_...` has the embedder do
 /// the cycle by hand (`inst.deactivate()`, then `loaded.activate()`), whereas
 /// here the host does it internally inside
 /// [`set_sample_rate`](tutti_clap_host::ClapActive::set_sample_rate) and the
@@ -691,9 +691,9 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
 /// Every CLAP severity a plugin logs at must reach the host, keep its severity,
 /// keep its message, and keep its order.
 ///
-/// The host's `host_log` used to be seven `eprintln!` arms and nothing else, so
-/// a swap between two — routing `ERROR` as `DEBUG` — was invisible to anything
-/// but a human reading stderr. The messages are distinct per severity, so a
+/// If `host_log` only printed, a swap between two severities — routing `ERROR`
+/// as `DEBUG` — would be invisible to anything but a human reading stderr. The
+/// messages are distinct per severity, so a
 /// host collapsing them onto one arm cannot pass on count alone.
 #[test]
 fn host_routes_plugin_log_lines_at_every_severity() {
@@ -762,12 +762,11 @@ fn host_routes_plugin_log_lines_at_every_severity() {
 // 5. The host's own main-thread guard
 // ---------------------------------------------------------------------------
 
-/// **C-11.** `poll_timers` and `on_main_thread` are the two `[main-thread]`
-/// methods an embedder is most likely to reach from a UI framework's tick,
-/// which is not obliged to run on the thread `HostState::new()` did. Ten
-/// sibling methods already assert; these two did not, so a host calling them
-/// from a timer thread drove the plugin's `on_timer` / `on_main_thread` off the
-/// main thread with nothing to say so.
+/// `poll_timers` and `on_main_thread` are the two `[main-thread]` methods an
+/// embedder is most likely to reach from a UI framework's tick, which is not
+/// obliged to run on the thread `HostState::new()` did. Without the guard, a
+/// host calling them from a timer thread would drive the plugin's `on_timer` /
+/// `on_main_thread` off the main thread with nothing to say so.
 ///
 /// The guard is a `debug_assert`, so this has teeth only in a debug build —
 /// which is where `cargo test` runs. In release the call proceeds, and the

@@ -1,10 +1,8 @@
 //! The compiler's passes, one claim at a time: order, cycles, the latency
 //! solve against `tutti_types::latency`, colouring, coarsening, placement.
 //!
-//! The 13 shapes were `tutti-core/tests/topology_compile.rs`'s (deleted with
-//! `topology::compile` in doc 013 Phase 5), ported: the same graphs, compiled
-//! to a `Plan` instead of a `Net`. `tutti_types::latency` is the pure pass the
-//! plan's delays must equal.
+//! Thirteen fixed shapes (`shapes()`) cover the latency cases.
+//! `tutti_types::latency` is the pure pass the plan's delays must equal.
 
 mod common;
 
@@ -293,9 +291,6 @@ fn ties_break_by_key_across_edge_kinds() {
 
 /// Every per-port delay, every output alignment, the per-channel pre-roll and
 /// the total agree with `tutti_types::latency::delays` on all thirteen shapes.
-/// (Until doc 013 Phase 5 the reference was `latency::compensate` over a
-/// recording `DelayInsertion`; the pass now returns the same lists as a
-/// value.)
 ///
 /// Mutation: in `compile`, use `arrival[n]` (not `arrival + latency`) as a
 /// source's departure → `pdc_diamond` loses its 512-frame delay → fails.
@@ -804,14 +799,11 @@ fn the_delta_moves_only_what_changed() {
     assert_eq!(delta.store_len, 3);
 }
 
-/// Decision (review): a `Source::Global` input that merges with a latent
-/// path **is** delayed to align, like any other merge-point source. Until
-/// doc 013 Phase 5 this was where the compiler differed from
-/// `latency::plan`, which (for fundsp's `Net`) left a global input
-/// undelayed; the two solves are one now, and agree here.
+/// A `Source::Global` input that merges with a latent path **is** delayed
+/// to align, like any other merge-point source, and the compiler and
+/// `latency::delays` agree on it.
 ///
-/// Mutation: in `compile`, give `Source::Global` ports no delay (the old
-/// rule) → the plan has no `DelayKey::Audio { from: Global(0) }` → fails.
+/// Mutation: in `compile`, give `Source::Global` ports no delay → the plan has no `DelayKey::Audio { from: Global(0) }` → fails.
 /// Mutation (run): in `latency::delays`, `Feed::Outside => continue` → the
 /// pass lists no delay → fails. The reference interpreter computes the same
 /// delay independently.
@@ -836,7 +828,7 @@ fn a_global_input_merging_with_a_latent_path_is_delayed() {
         from: Source::Global(0),
     };
     assert_eq!(plan.delay(key), Samples(48));
-    // The pure pass agrees (unified in doc 013 Phase 5).
+    // The pure pass agrees.
     assert_eq!(
         latency::delays(&t).inputs(),
         &[(C, 1, Samples(48))],
@@ -862,8 +854,7 @@ fn a_global_input_merging_with_a_latent_path_is_delayed() {
 /// that node's departure: the compiler delays the audio port to it, and
 /// `latency::plan` over the whole spec (`GraphSpec`'s `LatencyGraph`, which
 /// lists event and param sources) reports the same compensation, where over
-/// the topology alone it would miss the event path. Unified in doc 013
-/// Phase 5; `Net` had no event ports, so this module walked audio only.
+/// the topology alone it would miss the event path.
 ///
 /// Mutation (run): drop the events from `GraphSpec::other_sources` → the
 /// spec's plan totals 0 against the compiler's 64 → fails.
@@ -963,7 +954,7 @@ fn a_shape_disagreeing_on_latency_or_tail_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
-// Event resolution (doc 013 §6 item 5).
+// Event resolution.
 // ---------------------------------------------------------------------------
 
 /// An automation source `A` feeding sink `B`'s event input, with `B`

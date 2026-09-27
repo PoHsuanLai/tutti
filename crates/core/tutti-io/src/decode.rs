@@ -1,13 +1,8 @@
 //! Decoding a file into a [`Wave`], and reading its header without decoding.
 //!
-//! Moved from the fundsp fork's `read.rs` by design doc 013, Phase 0, and
-//! trimmed to what the engine calls: [`Wave::load`], [`Wave::probe_metadata`]
-//! and, for Bevy, [`WaveAsset::from_bytes`]. The fork's progress-reporting,
-//! streaming-peaks and explicit-track loaders had no caller outside it.
-//!
-//! The decode loop is the fork's, statement for statement, so decoded samples
-//! are bit-identical; `tests/decode_golden.rs` pins that against committed
-//! fixtures. Codec-gated: with no `wav`/`flac`/`mp3`/`ogg` feature there is no
+//! The entry points are [`Wave::load`], [`Wave::probe_metadata`] and, for
+//! Bevy, [`WaveAsset::from_bytes`]. Decoded samples are pinned bit-for-bit by
+//! `tests/decode_golden.rs` against committed fixtures. Codec-gated: with no `wav`/`flac`/`mp3`/`ogg` feature there is no
 //! symphonia and this module does not exist.
 
 use std::fs::File;
@@ -23,27 +18,24 @@ use symphonia::core::probe::Hint;
 
 use crate::Wave;
 
-/// Why a file could not be probed or decoded.
+/// Why a file could not be probed or decoded: symphonia's own error type.
 ///
-/// symphonia's own error, named rather than wrapped: every variant is already
-/// the distinction a caller wants (I/O, unsupported format, malformed data),
-/// and the Bevy loader forwards it as its `#[source]`.
+/// Its variants already make the distinctions a caller wants — I/O,
+/// unsupported format, malformed data. Available with any codec feature.
 pub type WaveError = Error;
 
-/// Container/codec metadata read from an audio file without decoding any
-/// audio. Cheap, format-agnostic (anything symphonia can probe in this build),
-/// and the single source of truth for "how long is this file" decisions.
+/// Container metadata read from an audio file without decoding any audio.
 ///
-/// The fields are the container's raw answers — `u32` rate, `usize` width —
-/// and the sampler types them at its boundary (`tutti_sampler::probe`).
+/// Returned by [`Wave::probe_metadata`]. The fields are the container's raw
+/// answers (`u32` rate, `usize` width). Available with any codec feature.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WaveMetadata {
     /// Total sample frames, if the container reports it (`None` for some
     /// streamed/VBR formats that don't store a frame count).
     pub total_frames: Option<u64>,
-    /// The file's own rate.
+    /// The file's sample rate in Hz; 44 100 if the container does not say.
     pub sample_rate: u32,
-    /// The file's channel count.
+    /// The file's channel count; 2 if the container does not say.
     pub channels: usize,
 }
 
@@ -109,20 +101,44 @@ pub(crate) fn first_audio_track(
 }
 
 impl Wave {
-    /// Decode the first audio track of the file at `path`.
+    /// Decodes the first audio track of the file at `path` into memory.
     ///
-    /// Supported formats are whatever this build's codec features enable; see
-    /// [`decodable_extensions`](crate::decodable_extensions).
+    /// Requires a codec feature (`wav`, `flac`, `mp3` or `ogg`). Supported
+    /// formats are whatever those enable; see
+    /// [`decodable_extensions`](crate::decodable_extensions). The wave keeps
+    /// the file's own sample rate and channel count (44.1 kHz and 2 channels
+    /// when the container states neither); nothing is resampled. Reads and
+    /// decodes the whole file on the calling thread, so do not call it on the
+    /// audio thread.
+    ///
+    /// # Errors
+    ///
+    /// A [`WaveError`] if the file cannot be opened, its container is not one
+    /// this build reads, it has no audio track, or a packet fails to decode.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use tutti_io::Wave;
+    ///
+    /// let wave = Wave::load("kick.wav")?;
+    /// println!("{} channels, {} s", wave.channels(), wave.duration());
+    /// # Ok::<(), tutti_io::WaveError>(())
+    /// ```
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Wave, WaveError> {
         decode(probe_path(path.as_ref())?)
     }
 
-    /// Probe an audio file's metadata (frame count, sample rate, channels)
-    /// without decoding any audio packets.
+    /// Reads an audio file's frame count, sample rate and channel count
+    /// without decoding any audio.
     ///
-    /// The same probe head as [`Wave::load`], minus the decode loop — so it is
-    /// fast and works for every format this build can decode. Use this for
-    /// duration/size decisions instead of a format-specific header reader.
+    /// Works for every format [`Wave::load`] can read, and is fast enough for
+    /// duration and size decisions before a full load.
+    ///
+    /// # Errors
+    ///
+    /// A [`WaveError`] if the file cannot be opened, its container is not one
+    /// this build reads, or it has no audio track.
     pub fn probe_metadata<P: AsRef<Path>>(path: P) -> Result<WaveMetadata, WaveError> {
         let reader = probe_path(path.as_ref())?;
         let track = first_audio_track(&*reader)?;
@@ -175,7 +191,7 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, WaveError> {
         let packet = match reader.next_packet() {
             Ok(packet) => packet,
             // Any read error ends the stream — symphonia reports a clean end
-            // of file as an `IoError`, and this is the fork's rule unchanged.
+            // of file as an `IoError`.
             Err(err) => return wave.ok_or(err),
         };
 
@@ -209,8 +225,10 @@ mod asset {
     use super::WaveError;
     use crate::Wave;
 
-    /// Bevy asset wrapper around `Arc<Wave>`. Cheap to clone for use sites
-    /// that share the decoded samples (a sampler voice takes `Arc<Wave>`).
+    /// A decoded [`Wave`] as a Bevy asset (feature `bevy` plus a codec).
+    ///
+    /// Wraps an `Arc<Wave>`, so cloning shares the samples; derefs to
+    /// [`Wave`]. The asset loader itself lives in `bevy-tutti`.
     #[derive(Clone, bevy_asset::Asset, bevy_reflect::TypePath)]
     pub struct WaveAsset(pub Arc<Wave>);
 
@@ -225,7 +243,12 @@ mod asset {
         /// File extensions the Bevy asset loader recognises.
         pub const EXTENSIONS: &'static [&'static str] = &["wav", "flac", "mp3", "ogg"];
 
-        /// Decode a complete wave from an in-memory byte slice.
+        /// Decodes a complete file held in memory. The container is
+        /// identified from the bytes alone.
+        ///
+        /// # Errors
+        ///
+        /// As [`Wave::load`].
         pub fn from_bytes(bytes: &[u8]) -> Result<Self, WaveError> {
             Wave::load_slice(bytes.to_vec()).map(|w| Self(Arc::new(w)))
         }

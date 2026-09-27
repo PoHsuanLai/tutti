@@ -4,8 +4,8 @@
 //!
 //! This is where the two source tiers and the two stretch states meet: four
 //! combinations, each of which has to agree with the others about how much
-//! source one output sample costs. Three separate pitch/stretch bugs have lived
-//! in these branches, so the reasoning is kept inline at each fork.
+//! source one output sample costs. They are easy to get subtly wrong, so the
+//! reasoning is kept inline at each fork.
 
 use std::ops::Range;
 

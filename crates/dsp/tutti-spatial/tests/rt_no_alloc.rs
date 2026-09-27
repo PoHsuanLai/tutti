@@ -18,8 +18,7 @@ static A: AllocDisabler = AllocDisabler;
 /// `node` alone in a graph (`BlockRig`) at 48 kHz in 64-frame blocks, fed a
 /// DC pair: `warm` blocks, then 1 000 under `assert_no_alloc`.
 ///
-/// The inputs used to be silent. They carry signal now, and the gate checks
-/// it came out, so a gate over a node that renders nothing cannot pass
+/// The inputs carry signal, and the gate checks it came out, so a gate over a node that renders nothing cannot pass
 /// having walked no DSP. Mutation (run): `fill(0.0)` → "rendered silence".
 fn gate<N: IntoNode>(node: N, warm: usize) {
     let (mut rig, _controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
@@ -56,13 +55,11 @@ fn vbap_panner_stereo_process_is_allocation_free() {
 /// `vbap_panner_stereo_process_is_allocation_free` above pans to 30 degrees,
 /// which is inside the speaker pair and takes neither branch `solve_gains`
 /// added. A bearing past the lateral axis on a front-only layout takes the
-/// fold: the azimuth is mirrored before the solve. This is the case that used
-/// to be silent, so it is also the one most likely to be reached in anger.
+/// fold: the azimuth is mirrored before the solve.
 ///
 /// The fold itself is scalar arithmetic on an `Azimuth` and cannot allocate;
 /// what this pins is that it does not push the solve onto a different path
-/// inside `vbap` that does. Proved during review with a temporary probe — this
-/// makes it a standing gate instead.
+/// inside `vbap` that does.
 ///
 /// Mutation: have `solve_gains` build its own `Vec` for the gains instead of
 /// writing into the caller's scratch -> fails here and in both siblings.
@@ -70,7 +67,7 @@ fn vbap_panner_stereo_process_is_allocation_free() {
 fn vbap_folded_rear_arc_is_allocation_free() {
     let mut node = VbapPannerNode::stereo().expect("stereo preset");
     // 200 degrees wraps to -160, well past the lateral axis: the fold fires and
-    // mirrors it to -20. Before this crate's fix, this bearing was silent.
+    // mirrors it to -20. Plain VBAP would leave this bearing silent.
     node.set_position(200.0, 0.0);
     // `reset` seats the de-zipper on the folded bearing, so the assertion
     // window measures the steady state rather than the ramp into it.

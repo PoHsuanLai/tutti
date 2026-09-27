@@ -86,7 +86,7 @@ pub struct MidiRouteRule {
 }
 
 impl MidiRouteRule {
-    /// A rule matching every channel. Add targets with [`to`](Self::to).
+    /// Creates a rule matching every channel. Add targets with [`to`](Self::to).
     pub fn any_channel() -> Self {
         Self {
             channel: None,
@@ -95,7 +95,7 @@ impl MidiRouteRule {
         }
     }
 
-    /// A rule matching one channel.
+    /// Creates a rule matching one channel.
     pub fn for_channel(channel: MidiChannel) -> Self {
         Self {
             channel: Some(channel),
@@ -104,13 +104,13 @@ impl MidiRouteRule {
         }
     }
 
-    /// Add a destination.
+    /// Adds a destination.
     pub fn to(mut self, target: Entity) -> Self {
         self.targets.push(target);
         self
     }
 
-    /// Declare the rule without arming it.
+    /// Declares the rule without arming it.
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
         self
@@ -133,8 +133,8 @@ const ROUTES: &str = "midi routes";
 #[derive(Resource, Default)]
 pub struct RoutedTargets(HashSet<Entity>);
 
-/// Compile every declared rule into which of the hardware input's ports each
-/// target takes, and write it into [`EventFeeds`] (see the module docs).
+/// Compiles every declared rule into which of the hardware input's ports each
+/// target takes, and writes it into [`EventFeeds`] (see the module docs).
 ///
 /// Runs when a rule changes, is added, or is removed, and when the fallback
 /// changes: a whole recompile, since a target's ports are the union of every

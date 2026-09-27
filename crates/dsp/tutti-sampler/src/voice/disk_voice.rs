@@ -147,12 +147,12 @@ impl DiskSource {
         }
     }
 
-    /// Start reading. One relaxed atomic store, safe from the audio thread.
+    /// Starts reading. One relaxed atomic store, safe from the audio thread.
     pub fn play(&self) {
         self.playing.store(true, Ordering::Relaxed);
     }
 
-    /// Emit silence and stop reading. The butler keeps its window where the
+    /// Emits silence and stops reading. The butler keeps its window where the
     /// reader last played.
     pub fn stop(&self) {
         self.playing.store(false, Ordering::Relaxed);
@@ -164,7 +164,7 @@ impl DiskSource {
         self.playing.load(Ordering::Relaxed)
     }
 
-    /// Publish a new output gain, to the shared `RtState` (see `tutti_nodes`'
+    /// Publishes a new output gain, to the shared `RtState` (see `tutti_nodes`'
     /// crate docs for why a control is never a field).
     pub fn set_gain(&self, gain: Amplitude) {
         if let Some(ref state) = self.shared_state {
@@ -184,7 +184,7 @@ impl DiskSource {
         self.channels
     }
 
-    /// Forget the position and any fade: the next block starts afresh.
+    /// Forgets the position and any fade: the next block starts afresh.
     pub fn reset_interpolation(&mut self) {
         self.read.reset();
     }
@@ -484,7 +484,7 @@ impl Clone for DiskVoice {
 }
 
 impl DiskVoice {
-    /// Place a `DiskSource`'s stream on the timeline.
+    /// Places a `DiskSource`'s stream on the timeline.
     ///
     /// Construction (butler stream registration, ring allocation) happens on
     /// the ECS/butler side; this only binds the already-built unit to a
@@ -557,7 +557,7 @@ impl DiskVoice {
         self.offline.as_ref().map(|o| Arc::clone(&o.fault))
     }
 
-    /// Tell the stream how fast a wrapping time-stretcher wants its source.
+    /// Tells the stream how fast a wrapping time-stretcher wants its source.
     ///
     /// `1 / stretch`, or [`ReadRate::UNITY`] when nothing wraps this voice. See
     /// `RtState::read_rate` for why the factor lands there rather than at the
@@ -572,7 +572,7 @@ impl DiskVoice {
         self.shared_state.set_stretch_rate(rate);
     }
 
-    /// Move the voice's window to `[start_beat, start_beat + duration)`, or to
+    /// Moves the voice's window to `[start_beat, start_beat + duration)`, or to
     /// the whole source when `duration` is `None`. The next frame reads at the
     /// new window.
     pub fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
@@ -582,7 +582,7 @@ impl DiskVoice {
         };
     }
 
-    /// Publish a new output gain. `&self`: the write lands in the shared
+    /// Publishes a new output gain. `&self`: the write lands in the shared
     /// `RtState`, so no exclusivity is needed.
     pub fn set_gain(&self, gain: Amplitude) {
         self.shared_state.set_gain(gain);
@@ -600,14 +600,14 @@ impl DiskVoice {
         self.file_sample_rate
     }
 
-    /// Set the playback speed magnitude, in the shared `RtState` (what the
+    /// Sets the playback speed magnitude, in the shared `RtState` (what the
     /// butler's `SetVarispeed` also sets). The next block reads at the
     /// position the new speed gives, crossfaded.
     pub fn set_speed(&mut self, speed: PlaybackRate) {
         self.shared_state.set_speed(speed);
     }
 
-    /// Set the playback direction, in the shared `RtState`. The butler turns
+    /// Sets the playback direction, in the shared `RtState`. The butler turns
     /// the ring's mapping on its next cycle (reverse ignores the loop and
     /// mirrors the file, as the memory tier's reverse does).
     pub fn set_direction(&mut self, direction: Direction) {
@@ -855,7 +855,7 @@ impl std::fmt::Debug for DiskVoiceControls {
 }
 
 impl DiskVoiceControls {
-    /// Publish a new output gain.
+    /// Publishes a new output gain.
     pub fn set_gain(&self, gain: Amplitude) {
         self.state.set_gain(gain);
     }
@@ -865,12 +865,12 @@ impl DiskVoiceControls {
         self.state.gain()
     }
 
-    /// Set the playback speed (varispeed).
+    /// Sets the playback speed (varispeed).
     pub fn set_speed(&self, speed: PlaybackRate) {
         self.state.set_speed(speed);
     }
 
-    /// Set the playback direction.
+    /// Sets the playback direction.
     pub fn set_direction(&self, direction: Direction) {
         self.state.set_direction(direction);
     }
@@ -972,11 +972,11 @@ mod tests {
     /// frame**, exactly: output frame `i` is the ring's frame `i`, and after 8
     /// blocks of 64 it stands on frame 511.
     ///
-    /// The FIFO reader this replaced popped four frames of interpolation
-    /// head-room per block and dropped them, so it ran 68/64 fast — every
-    /// streamed file a quarter-tone sharp with its level and waveform intact.
-    /// Reading by position has no fetch step to get wrong, but the step is
-    /// still the one quantity that decides pitch, so it stays pinned.
+    /// A reader that popped four frames of interpolation head-room per block
+    /// and dropped them would run 68/64 fast: every streamed file a
+    /// quarter-tone sharp with its level and waveform intact. Reading by
+    /// position has no fetch step to get wrong, but the step is still the one
+    /// quantity that decides pitch, so it stays pinned.
     ///
     /// Mutation (run): the position stepped by `n + 4` frames a block → frame
     /// 64 reads 68 → fails.
@@ -1248,7 +1248,7 @@ mod tests {
     }
 
     /// **A severed source lets go of the live reader.** A clone never holds
-    /// it (the reader is the live source's alone, doc 013 item 7), so the one
+    /// it (the reader is the live source's alone), so the one
     /// way a severed copy could still speak for the live ring is a source
     /// severed in place (what a disk voice's fork does to its copy's source).
     /// Here the live source claims a block, is severed, and, stopped, renders
@@ -1782,14 +1782,9 @@ mod tests {
     /// cell (`RtState`), which every clone shares (a fork detaches it,
     /// `fork_copy`).
     ///
-    /// Re-pinned with doc 013 item 7 (the follow-up #48 left). This used to
-    /// render *from* the clone and write through the original, because
-    /// `Net::commit` handed its backend a clone of every node; the clone then
-    /// shared the ring's one reader through a `try_lock`. No engine renders a
-    /// `Net` since #49: the graph renders the node it was given, and
-    /// the only copy it takes (a fork, `fork_copy`) never renders the live
-    /// stream. So the reader is the original's
-    /// alone. What the graph does, and this pins: the original renders at the
+    /// The graph renders the node it was given, and the only copy it takes
+    /// (a fork, `fork_copy`) never renders the live stream, so the reader is
+    /// the original's alone. What the graph does, and this pins: the original renders at the
     /// gain a copy wrote (a copy holding the cell is how a host's handle,
     /// `DiskVoiceControls`, reaches it), and a clone, holding no reader,
     /// renders silence — it cannot claim the live ring.

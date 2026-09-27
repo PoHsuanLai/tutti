@@ -9,8 +9,34 @@ use crate::fork::{fresh_fork_parts, FreshFork};
 use crate::layout::speaker_channel_map;
 use crate::SpatialTarget;
 
-/// VBAP multichannel panner over a fixed speaker layout, with position driven
-/// by lock-free atomics so automation is RT-safe.
+/// A VBAP loudspeaker panner: stereo in, one output per speaker of a fixed
+/// layout.
+///
+/// Build it from a preset ([`stereo`](Self::stereo), [`quad`](Self::quad),
+/// [`surround_5_1`](Self::surround_5_1), [`surround_7_1`](Self::surround_7_1),
+/// [`atmos_7_1_4`](Self::atmos_7_1_4)) or from a channel count with
+/// [`for_layout`](Self::for_layout). It is a graph node
+/// (`tutti_graph::Node`); inserting it hands back its
+/// [`VbapPannerControls`], which move the source lock-free while it renders.
+/// Position changes are de-zippered over 50 ms. A mono source presents the
+/// same sample on both inputs. Rendering allocates nothing and reports no
+/// latency.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_core::{Azimuth, Elevation, SampleRate, Samples};
+/// use tutti_graph::{Prepare, Solo};
+/// use tutti_spatial::VbapPannerNode;
+///
+/// let panner = VbapPannerNode::quad()?;
+/// panner.set_position(Azimuth(45.0), Elevation(0.0)); // front-left
+///
+/// let mut solo = Solo::new(panner, Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let out = solo.render_input(&[&[1.0; 64], &[1.0; 64]]);
+/// assert_eq!(out.len(), 4); // one channel per speaker
+/// # Ok::<(), tutti_spatial::VbapError>(())
+/// ```
 ///
 /// # The layouts are a closed set
 ///
@@ -23,8 +49,7 @@ use crate::SpatialTarget;
 /// [`for_layout`](Self::for_layout) therefore refuses an unrecognized width with
 /// [`VbapError::UnsupportedSpeakerLayout`] rather than substituting a nearby
 /// layout, so a caller picks a real arrangement instead of silently rendering
-/// for a different one. That refusal is also what keeps this type's `Clone`
-/// correct — see the note on the impl.
+/// for a different one.
 ///
 /// # The energy law
 ///
@@ -33,7 +58,7 @@ use crate::SpatialTarget;
 /// source panned in a full circle holds a constant perceived level; it never
 /// fades out and never has a hole in it.
 ///
-/// That is stronger than textbook VBAP, deliberately. VBAP places a source
+/// That is stronger than textbook VBAP. VBAP places a source
 /// inside the two or three speakers surrounding it, and a direction that no
 /// speaker tuple surrounds has no solution: an array with a gap fades a source
 /// out as it crosses the gap. Two such gaps exist here — the rear arc of a
@@ -48,13 +73,9 @@ use crate::SpatialTarget;
 /// - Any layout, at a **height it has no speakers for**, renders at the nearest
 ///   height it does: a source under an Atmos bed comes from the bed.
 ///
-/// The alternative was measured and rejected. Left to the upstream `vbap`
-/// crate, which normalizes the tuple solution before clamping negative gains
-/// away, a stereo pair lost energy from 45° outward and was *completely silent*
-/// from 150° through 210° — a caller automating a pan through 180° heard the
-/// source disappear. Details and the full before/after table:
-/// `VbapPanner::solve_gains` and
-/// `tests/vbap_energy_sweep.rs`.
+/// Plain VBAP (as the `vbap` crate computes it) would instead lose energy on
+/// a stereo pair from 45° outward and fall silent from 150° through 210°, so
+/// a pan automated through 180° would make the source disappear.
 ///
 /// **The law holds at block edges, not strictly inside a moving block.** The
 /// gains are solved once per block, at its last frame, and ramped *linearly*
@@ -63,11 +84,9 @@ use crate::SpatialTarget;
 /// block sit slightly below unit energy (by `1 - cos(Δ/2)` for a gain vector
 /// turning through `Δ` in one block; a 64-frame block at the 50 ms de-zipper
 /// keeps `Δ` to a few degrees, a dip of well under 0.1 dB). A held source is
-/// exact everywhere. Blocks are no longer held to 64 frames: the graph
-/// hands a node up to `Prepare::max_block` (an export renders 1024), which
-/// widens `Δ` and so deepens the dip for a source moving inside one block.
-/// Not yet revisited: ramping in sub-blocks, or renormalising the ramped
-/// vector, would restore the law inside the block.
+/// exact everywhere. Longer blocks (up to the graph's `Prepare::max_block`;
+/// an export renders 1024) widen `Δ` and so deepen the dip for a source
+/// moving inside one block.
 ///
 /// Note that LFE is not one of the gains: the panner never feeds it
 /// ([`build_vbap_mix`](super::build_vbap_mix) sends it a separate low-passed
@@ -99,11 +118,12 @@ pub struct VbapPannerNode {
 }
 
 /// The live controls of a [`VbapPannerNode`]: its position, [`Spread`] and
-/// [`StereoWidth`], shared with the node (and every clone of these controls).
+/// [`StereoWidth`], shared with the node and every clone of these controls.
 ///
-/// What inserting the node hands back ([`IntoNode::Controls`]), and what the
-/// node's own setters write before it is inserted. A write lands on the
-/// node's next block, lock-free; the node reads every cell once per block.
+/// Inserting the node hands these back ([`IntoNode::Controls`]);
+/// [`VbapPannerNode::controls`] returns them too. Every method is lock-free
+/// and may be called from any thread while the node renders; a write lands
+/// on the node's next block, which reads every cell once.
 ///
 /// Its own type rather than a [`tutti_graph::ParamSet`]: `UnitParam` has no
 /// bearing, height, spread or width to address these by, and a position is
@@ -130,38 +150,40 @@ impl VbapPannerControls {
         }
     }
 
-    /// Set position (thread-safe, lock-free).
+    /// Sets the source's position, in degrees. Lock-free.
     ///
     /// - `azimuth`: bearing, wraps onto the circle (0 = front, 90 = left, -90 = right)
-    /// - `elevation`: height, saturates at the poles (0 = ear level, positive = up)
+    /// - `elevation`: height, clamped to -90..90 (0 = ear level, positive = up)
+    ///
+    /// The panner glides to the new position over 50 ms.
     pub fn set_position(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
         self.target.store(azimuth, elevation);
     }
 
-    /// The commanded bearing in [`Azimuth`] degrees — the target, not the
-    /// smoothed position the panner is currently at.
+    /// Returns the commanded bearing in [`Azimuth`] degrees: the target, not
+    /// the smoothed position the panner is currently at.
     pub fn azimuth(&self) -> Azimuth {
         self.target.azimuth.load()
     }
 
-    /// The commanded height in [`Elevation`] degrees — the target, not the
-    /// smoothed position the panner is currently at.
+    /// Returns the commanded height in [`Elevation`] degrees: the target, not
+    /// the smoothed position the panner is currently at.
     pub fn elevation(&self) -> Elevation {
         self.target.elevation.load()
     }
 
-    /// Set the VBAP diffusion, clamped to [`Spread`]'s `0..1`: 0 is a point
+    /// Sets the VBAP diffusion, clamped to [`Spread`]'s `0..1`: 0 is a point
     /// source, 1 smears it across the whole speaker field. Lock-free.
     pub fn set_spread(&self, spread: impl Into<Spread>) {
         self.spread.store(Spread::new_clamped(spread.into().get()));
     }
 
-    /// The current [`Spread`], `0..1`.
+    /// Returns the current [`Spread`], `0..1`.
     pub fn spread(&self) -> Spread {
         self.spread.load()
     }
 
-    /// Set the mid/side width applied to a stereo input, clamped to
+    /// Sets the mid/side width applied to a stereo input, clamped to
     /// [`StereoWidth`]: 0 is mono, 1 unchanged, above 1 wider than the source.
     /// Lock-free.
     pub fn set_width(&self, width: impl Into<StereoWidth>) {
@@ -169,7 +191,7 @@ impl VbapPannerControls {
             .store(StereoWidth::new_clamped(width.into().get()));
     }
 
-    /// The current [`StereoWidth`].
+    /// Returns the current [`StereoWidth`].
     pub fn width(&self) -> StereoWidth {
         self.width.load()
     }
@@ -215,8 +237,8 @@ impl Clone for VbapPannerNode {
         new_panner.set_position(azimuth, elevation);
         new_panner.set_spread(spread);
         // The fresh panner's smoother is built at 48 kHz; without this a clone
-        // of a 96 kHz node ran its 50 ms de-zipper in 25 ms until someone
-        // prepared it again.
+        // of a 96 kHz node would run its 50 ms de-zipper in 25 ms until it was
+        // prepared again.
         new_panner.set_sample_rate(self.sample_rate);
 
         Self {
@@ -236,7 +258,7 @@ impl Clone for VbapPannerNode {
 }
 
 impl VbapPannerNode {
-    /// A 2-out panner over the stereo speaker pair.
+    /// Creates a 2-out panner over the stereo speaker pair (±30°).
     ///
     /// # Errors
     /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
@@ -246,7 +268,7 @@ impl VbapPannerNode {
         Ok(Self::from_panner(panner, ChannelLayout::STEREO))
     }
 
-    /// A 4-out panner over the quad field (FL/FR/RL/RR, no LFE).
+    /// Creates a 4-out panner over the quad field (FL/FR/RL/RR, no LFE).
     ///
     /// # Errors
     /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
@@ -256,8 +278,8 @@ impl VbapPannerNode {
         Ok(Self::from_panner(panner, ChannelLayout::from(4u16)))
     }
 
-    /// A 6-out panner over the 5.1 field. The preset is literally 5.0 — LFE is
-    /// left silent here and fed separately by
+    /// Creates a 6-out panner over the 5.1 field. The preset is 5.0: the LFE
+    /// channel is left silent here and fed separately by
     /// [`build_vbap_mix`](super::build_vbap_mix).
     ///
     /// # Errors
@@ -268,8 +290,8 @@ impl VbapPannerNode {
         Ok(Self::from_panner(panner, ChannelLayout::from(6u16)))
     }
 
-    /// An 8-out panner over the 7.1 field. Like 5.1, the preset is 7.0 and LFE
-    /// is fed separately.
+    /// Creates an 8-out panner over the 7.1 field. Like 5.1, the preset is 7.0
+    /// and the LFE channel is fed separately.
     ///
     /// # Errors
     /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
@@ -279,7 +301,8 @@ impl VbapPannerNode {
         Ok(Self::from_panner(panner, ChannelLayout::from(8u16)))
     }
 
-    /// A 12-out panner over the 7.1.4 Atmos bed — 7.1 plus four height speakers.
+    /// Creates a 12-out panner over the 7.1.4 Atmos bed: 7.1 plus four height
+    /// speakers.
     ///
     /// # Errors
     /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
@@ -289,17 +312,14 @@ impl VbapPannerNode {
         Ok(Self::from_panner(panner, ChannelLayout::from(12u16)))
     }
 
-    /// Build a panner sized to a [`tutti_types::ChannelLayout`] — the count-based
-    /// width vocabulary the export / master side speaks — by dispatching to the
-    /// matching VBAP preset. This is the single place the count→preset mapping
-    /// lives, so reconcilers and graph builders call it instead of re-matching.
-    ///
-    /// The node keeps the count enum and resolves it to a VBAP speaker preset
-    /// internally.
+    /// Creates a panner for a [`tutti_types::ChannelLayout`] by its channel
+    /// count: 2 (stereo), 4 (quad), 6 (5.1), 8 (7.1) or 12 (7.1.4).
     ///
     /// # Errors
     /// Returns [`VbapError::UnsupportedSpeakerLayout`](crate::vbap::VbapError::UnsupportedSpeakerLayout)
-    /// for a width that has no preset — only 2/4/6/8/12 are defined.
+    /// for a width that has no preset, and
+    /// [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// geometry is rejected.
     pub fn for_layout(layout: tutti_types::ChannelLayout) -> Result<Self> {
         match layout.count() {
             2 => Self::stereo(),
@@ -323,54 +343,53 @@ impl VbapPannerNode {
         }
     }
 
-    /// The node's controls: a handle sharing its cells, the same the insert
-    /// hands back. Control thread.
+    /// Returns the node's controls: a handle sharing its cells, the same one
+    /// inserting the node hands back.
     pub fn controls(&self) -> VbapPannerControls {
         self.controls.clone()
     }
 
-    /// Set position (thread-safe, lock-free). See
+    /// Sets the source's position in degrees, lock-free. See
     /// [`VbapPannerControls::set_position`].
     pub fn set_position(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
         self.controls.set_position(azimuth, elevation);
     }
 
-    /// The commanded bearing in [`Azimuth`] degrees — the target, not the
-    /// smoothed position the panner is currently at.
+    /// Returns the commanded bearing in [`Azimuth`] degrees: the target, not
+    /// the smoothed position the panner is currently at.
     pub fn azimuth(&self) -> Azimuth {
         self.controls.azimuth()
     }
 
-    /// The commanded height in [`Elevation`] degrees — the target, not the
-    /// smoothed position the panner is currently at.
+    /// Returns the commanded height in [`Elevation`] degrees: the target, not
+    /// the smoothed position the panner is currently at.
     pub fn elevation(&self) -> Elevation {
         self.controls.elevation()
     }
 
-    /// Set the VBAP diffusion, clamped to [`Spread`]'s `0..1`. See
+    /// Sets the VBAP diffusion, clamped to [`Spread`]'s `0..1`. See
     /// [`VbapPannerControls::set_spread`].
     pub fn set_spread(&self, spread: impl Into<Spread>) {
         self.controls.set_spread(spread);
     }
 
-    /// The current [`Spread`], `0..1`.
+    /// Returns the current [`Spread`], `0..1`.
     pub fn spread(&self) -> Spread {
         self.controls.spread()
     }
 
-    /// Set the mid/side width applied to a stereo input, clamped to
+    /// Sets the mid/side width applied to a stereo input, clamped to
     /// [`StereoWidth`]. See [`VbapPannerControls::set_width`].
     pub fn set_width(&self, width: impl Into<StereoWidth>) {
         self.controls.set_width(width);
     }
 
-    /// The current [`StereoWidth`].
+    /// Returns the current [`StereoWidth`].
     pub fn width(&self) -> StereoWidth {
         self.controls.width()
     }
 
-    /// Output channel count — the speaker layout's width, and what
-    /// [`Node::shape`] reports.
+    /// Returns the output channel count: the speaker layout's width.
     pub fn num_channels(&self) -> usize {
         self.layout.count() as usize
     }
@@ -413,8 +432,8 @@ impl VbapPannerNode {
 
 /// Invert the layout's speaker → file-channel map into channel → speaker.
 ///
-/// A later speaker mapped to the same channel wins, matching the scatter this
-/// replaced (which wrote speakers in order). Allocates — construction only.
+/// A later speaker mapped to the same channel wins. Allocates, so it runs at
+/// construction only.
 fn speaker_of_channel(layout: ChannelLayout) -> Vec<Option<usize>> {
     let channels = layout.count() as usize;
     let mut inverse = vec![None; channels];
@@ -434,11 +453,11 @@ fn speaker_of_channel(layout: ChannelLayout) -> Vec<Option<usize>> {
 /// and its **last frame is exactly `to`** — written as a subtraction of a
 /// zero term, which is exact for any `from`, rather than
 /// `from + (to - from) * 1.0`, which is exact only when the two are within a
-/// factor of two. That is what makes a one-frame block the old
-/// per-frame solver bit for bit, and a block edge the exact solve.
+/// factor of two. That is what makes a one-frame block the per-frame solve
+/// bit for bit, and a block edge the exact solve.
 ///
-/// When both ends came from the mono-fold branch the pair is folded exactly
-/// as before (`fold(l, r) * g`); otherwise each end is expressed as a (left,
+/// When both ends came from the mono-fold branch the pair is folded
+/// (`fold(l, r) * g`); otherwise each end is expressed as a (left,
 /// right) gain pair — [`BlockGains::pair`] — so a width crossing the
 /// mono-fold threshold between blocks crossfades instead of stepping.
 #[inline]
@@ -485,23 +504,12 @@ fn render_channel(
 /// spatialised source to front-centre — and, since clones share these cells,
 /// the *live* node's source too.
 ///
-/// The `sync_position` first is load-bearing. The commanded position lives in
-/// **two** places: this node's [`SpatialTarget`], which
-/// [`set_position`](VbapPannerNode::set_position) writes, and the inner
-/// panner's own atomics, which the smoother is seeded from. The two are joined
-/// only by `sync_position`, which used to run exclusively inside the render.
-/// So `set_position` → `reset` seeded the ramp at the panner's *stale*
-/// bearing: on a fresh node, front-centre. The first block after the reset
-/// then rendered `[0.707, 0.707]` at every azimuth and glided to the commanded
-/// bearing over the following 50 ms — a plausible-looking unity that pans
-/// nowhere, with no error raised. Dropping `ramp_from` is the other half of
-/// the same seating: the previous block's gains belong to the ramp being
-/// discarded.
+/// The ramp is seated on the commanded position, so the first block after a
+/// reset already renders there rather than gliding in from front-centre.
 ///
 /// # Tail
 ///
-/// [`Tail::Unknown`], which is what the `AudioUnit` reported (it had no
-/// `tail`), and deliberately not [`Tail::None`]: the executor skips a
+/// [`Tail::Unknown`], deliberately not [`Tail::None`]: the executor skips a
 /// `Tail::None` node on a silent block, and a skipped block would not step the
 /// position de-zipper, so a source moved during silence would resume from a
 /// stalled ramp instead of the settled bearing.
@@ -544,6 +552,12 @@ impl Node for VbapPannerNode {
     }
 
     fn reset(&mut self) {
+        // `sync_position` first: the commanded position lives both in
+        // `controls.target` (what `set_position` writes) and in the inner
+        // panner's own cells (what the smoother is seeded from). Without the
+        // join, `set_position` → `reset` would seed the ramp at the panner's
+        // stale bearing and glide from there. Dropping `ramp_from` discards
+        // the previous block's gains along with the ramp.
         self.sync_position();
         self.panner.reset_state();
         self.ramp_from = None;
@@ -586,7 +600,7 @@ mod tests {
         prepared(node, RATE, 64)
     }
 
-    /// One block of one frame (what `AudioUnit::tick` was), written to `out`.
+    /// One block of one frame, written to `out`.
     fn tick(node: &mut VbapPannerNode, input: &[f32; 2], out: &mut [f32]) {
         tick_at(node, RATE, input, out);
     }
@@ -665,14 +679,13 @@ mod tests {
     ///
     /// The commanded position lives in the node's [`SpatialTarget`], which
     /// `set_position` writes, and in the inner panner's own atomics, which the
-    /// smoother is seeded from. `sync_position` is the only join, and it used to
-    /// run exclusively inside the render. So a `set_position` → `tick` → `reset`
-    /// sequence passed even with the bug present: the leading `tick` had already
-    /// pushed the bearing into the panner, so the reset seeded at the right
-    /// place by accident.
+    /// smoother is seeded from. `sync_position` is the only join. A
+    /// `set_position` → `tick` → `reset` sequence would pass even if `reset`
+    /// skipped the join, because the leading `tick` already pushed the bearing
+    /// into the panner.
     ///
     /// This test therefore resets with **no intervening tick**, which is the
-    /// sequence a caller writes and the one that was broken. The `-90°` half is
+    /// sequence a caller writes. The `-90°` half is
     /// the mutation guard: at `+90°` a bug that seeds front-centre still leaves
     /// the left channel leading, so a one-sided assertion could pass for the
     /// wrong reason.
@@ -819,8 +832,7 @@ mod tests {
             panner.elevation().get()
         );
 
-        // -- spread: its own cell, and the one the deleted `vbap_panner_clone`
-        //    used to be the only cover for.
+        // -- spread: its own cell.
         panner.set_spread(Spread(0.3));
         assert!(
             (cloned.spread().get() - 0.3).abs() < 0.001,

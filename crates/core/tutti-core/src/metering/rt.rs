@@ -18,7 +18,7 @@ pub struct MeteringContext {
 }
 
 impl MeteringContext {
-    /// Allocate both scratch planes at the 8192-frame ceiling.
+    /// Allocates both scratch planes at the 8192-frame ceiling.
     ///
     /// Call from the control thread before handing this to the callback — this
     /// is the only allocation on the metering path.
@@ -65,7 +65,7 @@ impl Default for MeteringContext {
     }
 }
 
-/// Measure `meter` and feed `tap` from one interleaved stereo output buffer.
+/// Measures `meter` and feeds `tap` from one interleaved stereo output buffer.
 ///
 /// `frames` is a **frame** count, so `output` must hold at least `frames * 2`
 /// samples. Stereo only — this is the master-bus tap, not a general meter.
@@ -75,8 +75,7 @@ impl Default for MeteringContext {
 /// deinterleave only runs when the meter is on — the tap takes the interleaved
 /// buffer directly.
 ///
-/// RT-safe: no allocation, no locks (the tap `try_lock`s and skips). Backstop:
-/// `tutti-core/tests/rt_no_alloc.rs`.
+/// RT-safe: no allocation, no locks (the tap `try_lock`s and skips).
 ///
 /// # Panics
 ///

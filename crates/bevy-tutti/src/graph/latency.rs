@@ -17,12 +17,11 @@
 //! out of the figures.
 //!
 //! [`LatencyCompensationPlugin`] is optional and adds only a check: in debug
-//! builds, on every frame that edits the graph, that the fold over the
-//! authored topology ([`AudioGraphRes::latency_plan`], what a latency readout
-//! reads) agrees with what the compiled plan compensates by. Before design doc
-//! 013's PR 13 it was what *applied* compensation (on `Net`, splicing delay
-//! nodes into the graph) and published the figures; the compiler and the
-//! commit do both now.
+//! builds, on every frame that edits the graph, that the latency fold over the
+//! whole graph spec ([`AudioGraphRes::latency_plan`], what a latency readout
+//! reads: audio edges plus each node's event and param-modulation sources)
+//! agrees with what the compiled plan compensates by. It applies nothing and
+//! publishes nothing; the graph compiler and the commit do both.
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
@@ -104,9 +103,9 @@ use tutti_core::Samples;
 /// sends. The sampler holds one of these; a host wanting to display or apply
 /// the figures elsewhere can clone it from the resource.
 ///
-/// Read a channel with `compensation.0.read().get(channel)`. A `for_channel`
-/// convenience lived here and was deleted: one line over an expression
-/// [`RtPublish::read`] already spells is surface without capability.
+/// Read a channel with `compensation.0.read().get(channel)` (see
+/// [`RtPublish::read`]), which is `None` for a channel past the end of the
+/// table. The table is empty until the first plan is sent.
 #[derive(Resource, Clone, Default)]
 pub struct ChannelCompensation(pub Arc<RtPublish<Vec<Samples>>>);
 
@@ -162,8 +161,12 @@ pub(crate) fn publish_sent(world: &mut World) {
     });
 }
 
-/// An optional debug check on the graph's compensation. See the
-/// [module docs](self): the figures are published without it.
+/// Adds [`compensate_graph`], a debug-build check of the graph's latency
+/// compensation, in [`GraphReconcileSystems::Compensate`].
+///
+/// Optional: [`TuttiPlugin`](crate::TuttiPlugin) does not add it, and the
+/// compensation figures are published without it. See the
+/// [module docs](self).
 pub struct LatencyCompensationPlugin;
 
 impl Plugin for LatencyCompensationPlugin {
@@ -179,16 +182,20 @@ impl Plugin for LatencyCompensationPlugin {
     }
 }
 
-/// In debug builds, on a frame that edits the graph: the fold over the
-/// authored topology ([`AudioGraphRes::latency_plan`]) is what the plan the
-/// frame's commit compiles compensates by. Both are read on the control side
-/// from the one spec, so a disagreement is a bug in one of the two, not a
-/// race. Publishes nothing ([`commit_graph`](crate::graph::commit_graph)
-/// does), and in release builds does nothing.
+/// Checks, in debug builds, that the graph's latency fold matches the plan the
+/// frame's commit will compile.
 ///
-/// Both `graph` and `dirty` are optional: `GraphDirty` is
-/// `GraphReconcilePlugin`'s and `AudioGraphRes` is `engine::build_into`'s, and
-/// the `engine_ready` gate covers neither.
+/// Runs only on a frame that edits the graph ([`GraphDirty`] set). The fold
+/// over the whole spec ([`AudioGraphRes::latency_plan`]: audio edges plus
+/// event and param-modulation sources) must equal what the compiled plan
+/// compensates by. Both are read on the control side from the one spec, so a
+/// disagreement is a bug, not a race.
+///
+/// # Panics
+///
+/// In debug builds, when the two disagree. Publishes nothing
+/// ([`commit_graph`](crate::graph::commit_graph) does), and in release builds
+/// does nothing. Returns quietly while either resource is missing.
 pub fn compensate_graph(graph: Option<Res<AudioGraphRes>>, dirty: Option<Res<GraphDirty>>) {
     let (Some(graph), Some(dirty)) = (graph, dirty) else {
         return;
@@ -296,8 +303,7 @@ mod tests {
     ///
     /// In this graph the limiter defines the worst-case path, and the channel it
     /// feeds pre-rolls by zero: the figure a DAW displays is exactly the one the
-    /// table does not contain. It was computed and discarded for as long as
-    /// `GraphLatency` did not exist.
+    /// table does not contain.
     #[test]
     fn publishes_the_graphs_total_latency_not_just_the_per_channel_table() {
         let (graph, eff_lat) = skewed_graph();
@@ -361,7 +367,7 @@ mod tests {
     }
 
     /// **The check agrees on a latent graph, and on one with no latency**:
-    /// the topology's fold (`latency_plan`, what a readout reads) is what the
+    /// the spec's fold (`latency_plan`, what a readout reads) is what the
     /// compiled plan compensates by, zeros and all (the fold reports no
     /// channels when nothing is latent; the plan a zero per output).
     ///
@@ -387,9 +393,8 @@ mod tests {
     /// `LatencyCompensationPlugin`: what `commit_graph` publishes is exactly
     /// the `Plan::compensation` / `total_latency` the commit sent the
     /// executor, so a pre-roll the sampler reads cannot drift off the delay
-    /// the graph applies. (Until PR 13's review these were a preview compile
-    /// published by the plugin, and a graph without it published nothing
-    /// while compensating anyway.)
+    /// the graph applies, and a graph without `LatencyCompensationPlugin`
+    /// still publishes.
     ///
     /// Mutation (run): `latency::publish` publishing the channels reversed →
     /// the table and the sent plan disagree on both channels (and the two
@@ -418,9 +423,7 @@ mod tests {
         );
         assert_eq!(sent.total, eff_lat, "and it is the limiter's lookahead");
         // Nothing was spliced in to get there: the compiler compensates, and
-        // both channels still read the nodes they were wired to. (Before PR
-        // 13 this asked `has_compensation`, which looked for `Net`'s spliced
-        // delay nodes; a spliced delay re-points the channel it aligns.)
+        // both channels still read the nodes they were wired to.
         let graph = app.world().resource::<AudioGraphRes>();
         assert_eq!(
             [graph.output_source(0), graph.output_source(1)],
@@ -479,8 +482,4 @@ mod tests {
             "the dry channel pre-rolls by the new figure"
         );
     }
-
-    // `for_channel_is_zero_outside_the_table` was deleted with the `for_channel`
-    // method it covered. Out-of-range now reads as `Vec::get -> None` at the call
-    // site, which is std's guarantee rather than this crate's to test.
 }

@@ -3,16 +3,14 @@
 //!
 //! One `Vec` of 64-byte [`Line`]s holds every slot; a slot is `stride` lines,
 //! so every channel a node sees starts on a cache line and its length is
-//! padded to a SIMD multiple (doc 013 §3 step 5, "one aligned `Vec<f32>` arena
-//! per port kind").
+//! padded to a SIMD multiple (one aligned arena per port kind).
 //!
 //! # Why no `unsafe`
 //!
 //! A node needs `&[f32]` inputs and `&mut [f32]` outputs **from the same
 //! arena at once**. The obvious spelling is raw pointers plus a proof that the
-//! colouring kept them disjoint — new non-FFI `unsafe`, which
-//! `docs/design/012-unsafe-policy.md` asks to be avoided when a safe construct
-//! will do. One will: [`borrow_sorted`] walks the requested slots in order
+//! colouring kept them disjoint — new non-FFI `unsafe`, which the crate
+//! avoids whenever a safe construct will do. One will: [`borrow_sorted`] walks the requested slots in order
 //! and peels them off with `split_at_mut`, so the borrow checker, not a
 //! comment, proves disjointness. If the colouring were ever wrong and asked
 //! for a written slot twice, the result is a panic naming the slot — never

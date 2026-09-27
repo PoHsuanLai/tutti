@@ -88,9 +88,8 @@ pub(super) const K_OUTPUT: i32 = sdk_enum_i32(kOutput);
 ///
 /// This is a preference, not conformance. Activating everything was legal —
 /// the SDK's own validator *requires* an unflagged bus to be activatable
-/// (`busactivation.cpp:66-71` fails a plugin that refuses), so nothing here
-/// fixes a defect. What it does is stop overriding a signal the plugin took
-/// the trouble to send.
+/// (`busactivation.cpp:66-71` fails a plugin that refuses). What this policy
+/// does is stop overriding a signal the plugin took the trouble to send.
 ///
 /// # Why not the strict reading
 ///

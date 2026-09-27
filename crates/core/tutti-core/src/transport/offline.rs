@@ -61,7 +61,7 @@ impl Default for OfflineTimelineConfig {
 ///
 /// # The frame is the source of truth
 ///
-/// The playhead is a frame count on a segment (doc 013 §6), and the beat is
+/// The playhead is a frame count on a segment, and the beat is
 /// derived from it in closed form, never accumulated: at 90 BPM and 48 kHz,
 /// 1 500 blocks of 64 frames is beat 3 to the bit, where adding
 /// `beats_per_sample × 64` per block reads `2.999999999999891` and a clip
@@ -109,7 +109,7 @@ pub struct OfflineTimeline {
 }
 
 impl OfflineTimeline {
-    /// Build a timeline seated at `config.start_beat`, precomputing the
+    /// Creates a timeline seated at `config.start_beat`, precomputing the
     /// per-sample beat increment from its tempo and sample rate.
     pub fn new(config: &OfflineTimelineConfig) -> Self {
         Self {
@@ -127,7 +127,7 @@ impl OfflineTimeline {
         }
     }
 
-    /// Advance the playhead by `samples` **frames** of render.
+    /// Advances the playhead by `samples` **frames** of render.
     ///
     /// If a loop region is set and the timeline crosses its end, the position
     /// wraps back into the region, on the frame that reaches the end.
@@ -181,7 +181,7 @@ impl OfflineTimeline {
         self.sample_rate
     }
 
-    /// Move the playhead to `beat`, for reusing one timeline across several
+    /// Moves the playhead to `beat`, for reusing one timeline across several
     /// renders.
     ///
     /// Named for the seek, not for a reset: it clears nothing, and `beat` is a
@@ -242,7 +242,7 @@ impl OfflineTimeline {
         (transport, tutti_graph::TransportChanges::NONE)
     }
 
-    /// Render one block of `frames` through `exec` under this timeline, then
+    /// Renders one block of `frames` through `exec` under this timeline, then
     /// advance the timeline by it: [`graph_block`](Self::graph_block),
     /// [`Executor::process_with_changes`](tutti_graph::Executor::process_with_changes),
     /// then [`advance`](Self::advance), in the one order that keeps every
@@ -374,15 +374,11 @@ mod tests {
     /// loop, exactly on the start when the crossings are on frames, and bit
     /// for bit where the same frames one at a time land when they are not.
     ///
-    /// Renamed from `advance_wraps_once_per_block_not_once_per_sample`, whose
-    /// premise was the accumulating clock's: a per-sample walk wrapped
-    /// repeatedly and drifted, so `advance` added a block in bulk and wrapped
-    /// once. `advance` now counts frames and starts a new segment on every
-    /// crossing's frame (`FrameClock::advance`), as the live clock does frame
-    /// by frame, so the two agree to the bit.
+    /// `advance` counts frames and starts a new segment on every crossing's
+    /// frame (`FrameClock::advance`), as the live clock does frame by frame,
+    /// so the two agree to the bit.
     ///
-    /// Mutation (run): wrap once per call, at the call's end (the old bulk
-    /// rule) → the block of 50 000 frames (five crossings of a 0.33-beat loop)
+    /// Mutation (run): wrap once per call, at the call's end → the block of 50 000 frames (five crossings of a 0.33-beat loop)
     /// lands off the frame-by-frame position → fails.
     #[test]
     fn a_block_longer_than_the_loop_lands_where_its_frames_do() {
@@ -486,9 +482,9 @@ mod tests {
         );
     }
 
-    /// The reviewer's case: at 90 BPM / 48 kHz, 1 500 blocks of 64 frames
+    /// At 90 BPM / 48 kHz, 1 500 blocks of 64 frames
     /// is beat 3 and 500 is beat 1, to the bit. An accumulated playhead
-    /// (`beat += beats_per_sample × 64` per block) read `2.999999999999891`
+    /// (`beat += beats_per_sample × 64` per block) would read `2.999999999999891`
     /// and `1.0000000000000007`.
     ///
     /// Mutation (run): accumulate in `FrameClock::advance` → 1.0000000000000007

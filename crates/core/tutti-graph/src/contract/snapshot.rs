@@ -101,7 +101,7 @@ impl<N: ParamNode + Clone> IsolateRow<N> {
         }
     }
 
-    /// Render `frames` frames per comparison instead of [`SNAPSHOT_FRAMES`].
+    /// Renders `frames` frames per comparison instead of [`SNAPSHOT_FRAMES`].
     #[must_use]
     pub fn frames(mut self, frames: usize) -> Self {
         self.frames = frames;
@@ -116,7 +116,7 @@ impl<N: ParamNode + Clone> IsolateRow<N> {
         self
     }
 
-    /// Run every control through the four steps in the module docs.
+    /// Runs every control through the four steps in the module docs.
     ///
     /// # Panics
     ///

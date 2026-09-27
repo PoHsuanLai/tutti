@@ -26,7 +26,7 @@ use crate::error::{AuError, Result};
 pub(crate) struct CfString(CfCFString);
 
 impl CfString {
-    /// Take ownership of a +1 reference (Create rule). Returns `None` if `raw`
+    /// Takes ownership of a +1 reference (Create rule). Returns `None` if `raw`
     /// is null.
     ///
     /// # Safety
@@ -41,7 +41,7 @@ impl CfString {
         }
     }
 
-    /// Build an owned CFString from a Rust `&str`.
+    /// Builds an owned CFString from a Rust `&str`.
     ///
     /// Needed for the properties that pass a string *into* the AU —
     /// `kAudioUnitProperty_ParameterValueFromString`, where the host supplies the
@@ -54,7 +54,7 @@ impl CfString {
         Some(Self(CfCFString::new(text)))
     }
 
-    /// Borrow the underlying `CFStringRef` (coreaudio-sys flavor) without
+    /// Borrows the underlying `CFStringRef` (coreaudio-sys flavor) without
     /// transferring ownership.
     ///
     /// Get rule: the returned pointer is valid only while `self` lives, and the
@@ -81,7 +81,7 @@ impl CfUrl {
         self.0.as_concrete_TypeRef() as coreaudio_sys::CFURLRef
     }
 
-    /// Take ownership of a +1 reference (Create rule). Returns `None` if `raw`
+    /// Takes ownership of a +1 reference (Create rule). Returns `None` if `raw`
     /// is null.
     ///
     /// # Safety
@@ -119,7 +119,7 @@ impl CfUrl {
 pub(crate) struct CfArray(CFArray<*const std::os::raw::c_void>);
 
 impl CfArray {
-    /// Take ownership of a +1 reference (Create rule). Returns `None` if `raw`
+    /// Takes ownership of a +1 reference (Create rule). Returns `None` if `raw`
     /// is null.
     ///
     /// # Safety
@@ -174,7 +174,7 @@ impl CfPlist {
         self.0.as_concrete_TypeRef()
     }
 
-    /// Take ownership of a +1 `CFPropertyListRef` (Create rule). Returns `None`
+    /// Takes ownership of a +1 `CFPropertyListRef` (Create rule). Returns `None`
     /// if `raw` is null.
     ///
     /// # Safety
@@ -190,14 +190,14 @@ impl CfPlist {
         }
     }
 
-    /// Serialize the property list to binary plist form.
+    /// Serializes the property list to binary plist form.
     pub fn to_binary(&self) -> Result<Vec<u8>> {
         let data = propertylist::create_data(self.as_raw(), kCFPropertyListBinaryFormat_v1_0)
             .map_err(|_| AuError::InvalidBuffer("CFPropertyListCreateData failed".into()))?;
         Ok(data.bytes().to_vec())
     }
 
-    /// Parse a binary plist blob back into a property list.
+    /// Parses a binary plist blob back into a property list.
     pub fn from_binary(bytes: &[u8]) -> Result<Self> {
         let data = core_foundation::data::CFData::from_buffer(bytes);
         let (plist_ref, _format) =

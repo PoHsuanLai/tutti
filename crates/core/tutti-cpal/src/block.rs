@@ -1,12 +1,11 @@
 //! One callback's worth of output work, with no device and no thread.
 //!
 //! [`process_audio`] is the *inner* seam — the engine render, callable without
-//! a device — and it was never the whole callback. Everything around it lived
-//! inside the closure handed to `device.build_output_stream`: the
+//! a device. Everything around it in the output callback lives here: the
 //! [`MAX_FRAMES`] clamp, the zero-fill, the stereo metering fold, the
-//! [`meter_output`] call, and the sample-format conversion. The only thing
-//! that could run any of it was CPAL with a real sound card open, which is why
-//! none of it has a test.
+//! [`meter_output`] call, and the sample-format conversion. Keeping it outside
+//! the closure handed to `device.build_output_stream` is what lets a test run
+//! it without a sound card.
 //!
 //! [`OutputBlock`] is the *outer* seam, and it maps onto `tutti_io`'s pump
 //! split exactly:

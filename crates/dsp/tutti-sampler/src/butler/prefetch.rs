@@ -26,10 +26,10 @@
 //! reader reads the slots by, the preroll, and a free-running reader's origin
 //! and seek.
 //!
-//! This replaced an SPSC FIFO the reader popped: the butler had to flush it to
-//! move it, which dropped what it had refilled since, left the reader's head
-//! unknowable while the flush was pending, and cost the reader its history —
-//! doc 013, "The live disk loop and its repositions (#48)".
+//! A position-indexed ring rather than an SPSC FIFO the reader pops: a FIFO
+//! has to be flushed to move, which drops what was refilled since, leaves the
+//! reader's head unknowable while the flush is pending, and costs the reader
+//! its history.
 //!
 //! # Where a ring is dropped
 //!
@@ -540,7 +540,7 @@ mod tests {
         assert_eq!(ring(usize::MAX >> 8, 1).1.frames(), MAX_POS_RING_FRAMES);
     }
 
-    /// **A ring serves one live reader** (the second review of #48, S2): it
+    /// **A ring serves one live reader**: it
     /// has one `PosReader` (not `Clone`), and taking a second is refused,
     /// naming why.
     ///

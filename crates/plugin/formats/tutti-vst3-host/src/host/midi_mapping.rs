@@ -69,7 +69,7 @@ impl MidiCcMapping {
         }
     }
 
-    /// Query the controller's `IMidiMapping` (if it exposes one) for every
+    /// Queries the controller's `IMidiMapping` (if it exposes one) for every
     /// channel × controller slot and build the table.
     ///
     /// Returns an [`empty`](Self::empty) table when the controller is absent
@@ -116,7 +116,7 @@ impl MidiCcMapping {
         !self.any_mapped
     }
 
-    /// Look up the `ParamID` a given channel/controller drives, or `None` if
+    /// Looks up the `ParamID` a given channel/controller drives, or `None` if
     /// the slot is unmapped or out of range.
     ///
     /// `controller` is a VST3 `ControllerNumbers` index: 0-127 for standard
@@ -175,7 +175,7 @@ pub(crate) fn midi_to_mapped_controller(event: &MidiEvent) -> Option<(u8, usize,
     }
 }
 
-/// Split `midi_events` against `mapping`: mapped CC/aftertouch/pitch-bend
+/// Splits `midi_events` against `mapping`: mapped CC/aftertouch/pitch-bend
 /// messages become normalized parameter points appended to `out_params`
 /// (already seeded with the host's automation); everything else is pushed to
 /// `out_filtered` to remain a MIDI event.
@@ -224,7 +224,7 @@ pub(crate) fn route_cc_events(
     }
 }
 
-/// Sort every queue's points into ascending `sample_offset` order, as VST3's
+/// Sorts every queue's points into ascending `sample_offset` order, as VST3's
 /// `IParamValueQueue` requires. Host automation is seeded before CC-derived
 /// points are appended (in MIDI-arrival order), so a queue carrying both can be
 /// unsorted even when each source was individually ordered. In place — the
@@ -260,7 +260,7 @@ pub(crate) struct CcRoute {
 }
 
 impl CcRoute {
-    /// Build with an empty mapping queried from `controller`, plus empty
+    /// Builds with an empty mapping queried from `controller`, plus empty
     /// scratch. The MIDI scratch is capped and never grows; `param_changes`
     /// grows once on first use and is reused thereafter.
     pub(crate) fn new(mapping: MidiCcMapping) -> Self {
@@ -429,7 +429,7 @@ mod tests {
         );
     }
 
-    /// Build a table with a single channel-0 mod-wheel (CC 1) → param mapping.
+    /// Builds a table with a single channel-0 mod-wheel (CC 1) → param mapping.
     fn mod_wheel_mapping(param_id: ParamID) -> MidiCcMapping {
         let mut table = vec![NO_PARAM_ID; NUM_CHANNELS * NUM_CONTROLLERS];
         table[1] = param_id; // channel 0, CC 1

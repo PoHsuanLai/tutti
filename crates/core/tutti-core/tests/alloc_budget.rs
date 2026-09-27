@@ -2,18 +2,16 @@
 //!
 //! # Why this is a test and not a benchmark
 //!
-//! Timing on a shared GitHub runner swings 30–50% run to run, and this
-//! engine's own `profile_stretch_clone` harness (deleted with `Net` in doc 013
-//! Phase 5; its figures are in doc 013) measured an **81× wall-clock
-//! spread** on identical work on a *quiet* machine. A threshold on a timing number would flap, and a flapping gate gets
-//! `continue-on-error: true` within a month and then tests nothing — exactly
-//! how the pre-extraction workflow died (see the header of `ci.yml`).
+//! Timing on a shared GitHub runner swings 30–50% run to run, and a profiling
+//! harness on this engine measured an **81× wall-clock spread** on identical
+//! work on a *quiet* machine. A threshold on a timing number would flap, and a
+//! flapping gate gets `continue-on-error: true` within a month and then tests
+//! nothing.
 //!
 //! Allocation **counts and bytes are machine-independent**. The same code
 //! allocates the same amount on a laptop and on a runner, so a budget on them
-//! is a real regression gate that survives a noisy vCPU. That is the insight
-//! `profile_stretch_clone`'s counting allocator carried; this
-//! generalises it into something that runs in the normal test job.
+//! is a real regression gate that survives a noisy vCPU, and it runs in the
+//! normal test job.
 //!
 //! # What this is *not*
 //!
@@ -21,7 +19,7 @@
 //! **nothing**, which is a stronger and different claim, and it uses
 //! `assert_no_alloc::AllocDisabler`. This file is about the *control* thread:
 //! building and committing a graph is allowed to allocate, and the question is
-//! whether it has quietly started allocating far more than it used to.
+//! whether it has quietly started allocating far more than its budget.
 //!
 //! **One `#[global_allocator]` per binary**, so this cannot share a file with
 //! `AllocDisabler` — that is why it is its own integration test.
@@ -112,8 +110,8 @@ fn measure<T>(f: impl FnOnce() -> T) -> (usize, usize, T) {
 }
 
 /// A sine into a chain of `nodes` gains, committed: the editor and the
-/// executor its commit is queued for. (A `Net` until doc 013 Phase 5; the
-/// budgets are on the graph `Engine` renders.)
+/// executor its commit is queued for. The budgets are on the graph `Engine`
+/// renders.
 fn graph(nodes: usize) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
     ed.insert(NodeKey(0), "sine", ForkByClone(Sine::new(Hz(440.0))));
@@ -180,9 +178,7 @@ fn building_a_graph_allocates_in_proportion_to_its_size() {
 ///
 /// A commit with no pending edits is the common case in a running app — the
 /// reconcile runs every frame and usually has nothing to do. If that path
-/// allocates, it allocates sixty times a second forever. (Measured on
-/// `Net::commit` until doc 013 Phase 5; the editor is the graph `Engine`
-/// renders.) The executor takes each commit between measurements, as the
+/// allocates, it allocates sixty times a second forever. The executor takes each commit between measurements, as the
 /// audio thread would, so the editor's queue never backs up.
 ///
 /// A no-op commit sends nothing and compiles nothing, so the tenth allocates

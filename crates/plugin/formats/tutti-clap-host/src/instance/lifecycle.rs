@@ -70,7 +70,7 @@ impl ClapLoaded {
         );
     }
 
-    /// Activate the plugin, transitioning to a [`ClapActive<T>`] that can
+    /// Activates the plugin, transitioning to a [`ClapActive<T>`] that can
     /// [`process`](ClapActive::process). Consumes `self`; on failure the
     /// `ClapLoaded` is handed back alongside the error so the caller can retry
     /// or fall back.
@@ -87,6 +87,15 @@ impl ClapLoaded {
     /// with no reload. Both failure paths preserve it — the `f64` check returns
     /// before any FFI runs, and a plugin-side refusal leaves the instance
     /// untouched and not active.
+    ///
+    /// The error is [`ClapError::NotSupported`] for an `f64` activation of a
+    /// plugin without 64-bit support, or [`ClapError::LoadFailed`] with
+    /// [`LoadStage::Activation`] when the plugin refuses to activate.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     // The `Err` variant deliberately hands `self` (a large `ClapLoaded`) back so
     // the caller can retry or fall back; boxing it would defeat that ownership
     // return and add a heap alloc on the (rare) failure path. That is the whole
@@ -171,7 +180,7 @@ impl ClapLoaded {
         })
     }
 
-    /// Call the plugin's `activate` FFI. Shared by `activate<T>` and the
+    /// Calls the plugin's `activate` FFI. Shared by `activate<T>` and the
     /// in-place re-activation path after `set_sample_rate`.
     pub(crate) fn activate_plugin(&mut self) -> Result<()> {
         let plugin_ref = unsafe { self.plugin.as_ref() };
@@ -197,7 +206,7 @@ impl ClapLoaded {
         Ok(())
     }
 
-    /// Call the plugin's `deactivate` FFI. Shared by `ClapActive::deactivate`
+    /// Calls the plugin's `deactivate` FFI. Shared by `ClapActive::deactivate`
     /// and the in-place re-activation path.
     pub(crate) fn deactivate_plugin(&mut self) {
         let plugin_ref = unsafe { self.plugin.as_ref() };
@@ -216,8 +225,8 @@ impl<T: super::ClapSample> ClapActive<T> {
         self.loaded.flags.processing
     }
 
-    /// Clear the plugin's processing state — buffers, filters, oscillators,
-    /// envelopes, LFOs — and kill its voices. Parameter values are unchanged.
+    /// Clears the plugin's processing state — buffers, filters, oscillators,
+    /// envelopes, LFOs — and kills its voices. Parameter values are unchanged.
     ///
     /// Call this on any playback discontinuity the host creates: a locate, a
     /// loop wrap, a punch. Without it a reverb tail, a ringing filter or a hung
@@ -253,7 +262,7 @@ impl<T: super::ClapSample> ClapActive<T> {
         self.scratch.steady_time = 0;
     }
 
-    /// Stop processing (if started) and deactivate, transitioning back to a
+    /// Stops processing (if started) and deactivates, transitioning back to a
     /// non-processing [`ClapLoaded`]. Consumes `self`.
     pub fn deactivate(mut self) -> ClapLoaded {
         self.stop_processing();
@@ -267,11 +276,11 @@ impl<T: super::ClapSample> ClapActive<T> {
         loaded
     }
 
-    /// Ensure the plugin's `start_processing` has run. Called at the top of
+    /// Ensures the plugin's `start_processing` has run. Called at the top of
     /// `process` (and is a no-op once started), so an instance returned by
     /// `activate` or rebuilt after `set_sample_rate` self-starts on first use.
     ///
-    /// # Threading (C1)
+    /// # Threading
     /// CLAP marks `start_processing` `[audio-thread & active & !processing]`.
     /// The audio-thread is symbolic: any OS thread may take the role provided
     /// only one holds it at a time, so this takes an [`AudioThreadClaim`] for
@@ -300,7 +309,7 @@ impl<T: super::ClapSample> ClapActive<T> {
         Ok(())
     }
 
-    /// Stop processing under a fresh [`AudioThreadClaim`] (C1).
+    /// Stops processing under a fresh [`AudioThreadClaim`].
     ///
     /// Every caller here is a setup-time / teardown path on the main thread
     /// (`deactivate`, `set_sample_rate`, `set_max_block_size`, `Drop`). Taking
@@ -327,13 +336,13 @@ impl<T: super::ClapSample> ClapActive<T> {
             unsafe { stop_fn(self.loaded.plugin.as_ptr()) };
         }
         self.loaded.flags.processing = false;
-        // H2: the CLAP steady_time counter is per start/stop cycle — reset it so
+        // The CLAP steady_time counter is per start/stop cycle — reset it so
         // the next start_processing begins the monotonic sequence at 0.
         self.scratch.steady_time = 0;
     }
 
-    /// Grow the activated maximum block size to `max_frames`, resizing the RT
-    /// scratch to match (C1). Only GROWS: a request no larger than the current
+    /// Grows the activated maximum block size to `max_frames`, resizing the RT
+    /// scratch to match. Only GROWS: a request no larger than the current
     /// ceiling is a no-op, so shrinking never strands allocated capacity.
     ///
     /// CLAP fixes `max_frames` at `activate()`, so a genuine grow must
@@ -353,7 +362,7 @@ impl<T: super::ClapSample> ClapActive<T> {
         self.reconfigure(self.loaded.audio.sample_rate, max_frames)
     }
 
-    /// Change the sample rate in place. CLAP requires deactivation around a
+    /// Changes the sample rate in place. CLAP requires deactivation around a
     /// sample-rate change, so this stops processing and re-activates the plugin
     /// at the new rate; the next `process` call self-starts processing again.
     /// Setup-time only — never call on the audio thread.
@@ -367,7 +376,7 @@ impl<T: super::ClapSample> ClapActive<T> {
         self.reconfigure(sample_rate, self.loaded.audio.max_frames)
     }
 
-    /// Deactivate → re-activate at `(sample_rate, max_frames)`, restoring the
+    /// Deactivates → re-activates at `(sample_rate, max_frames)`, restoring the
     /// previous configuration if the plugin refuses the new one.
     ///
     /// A failed `activate` must not be discarded — no `let _ =` here:

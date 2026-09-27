@@ -1,5 +1,5 @@
 //! Forking a hosted plugin **by state transfer**, against the reference CLAP
-//! plugin in a real `plugin-server` (doc 013 Phase 3 PR 16, gap 7).
+//! plugin in a real `plugin-server`.
 //!
 //! What a fork promises (`host::node::fork`'s module docs): a fresh instance of
 //! the same plugin, carrying the live instance's saved state, in a process of
@@ -127,8 +127,8 @@ fn env() -> ProbeEnv {
 ///
 /// Mutation: drop the `load_state` call in `PluginFork::instance` → the fork
 /// renders at 0 dB → fails. Mutation: drop `set_offline_wait` → unpaced blocks
-/// read silence → fails. (A client is not `Clone` any more, so "return the
-/// live client as the fork" is no longer a mutation the code can express;
+/// read silence → fails. (A client is not `Clone`, so "return the live client
+/// as the fork" is not a mutation the code can express;
 /// `a_fork_and_the_live_instance_do_not_reach_each_other` runs the two
 /// overlapped.)
 #[test]
@@ -328,7 +328,7 @@ fn a_plugin_that_cannot_save_its_state_is_a_named_fork_error() {
 
 /// **Through the graph**: a bound `PluginClient` inserted into an editor is
 /// forkable, and the forked graph renders the plugin at the live instance's
-/// gain on the offline timeline — the path an export takes (doc 013 PR 12).
+/// gain on the offline timeline — the path an export takes.
 /// With its inputs unwired the probe renders its tag, scaled.
 ///
 /// Mutation: hand no fork source from `IntoNode for PluginClient<Bound>`

@@ -44,9 +44,9 @@ use super::units::{Beat, BeatDuration, Bpm, SampleRate};
 /// How far past a frame a beat may fall, in frames, and still land on it.
 ///
 /// A millionth of a frame is far below anything musical (20 ns at 48 kHz).
-/// The graph's beat-timed commands (`tutti_graph::Env::due`) have used
-/// this tolerance since they landed; it moved here so every reader uses the
-/// same one.
+/// Every reader that places a beat on a frame (the transport, the graph's
+/// beat-timed commands) uses this one value, through
+/// [`first_frame_at_or_after`].
 ///
 /// # The bound
 ///
@@ -62,9 +62,12 @@ use super::units::{Beat, BeatDuration, Bpm, SampleRate};
 /// would have to pass them; not worth it for sessions past these lengths.
 pub const FRAME_TOLERANCE: f64 = 1e-6;
 
-/// The frame on which playback reaches a point `frames_ahead` frames after
-/// some origin frame: the first frame at or after it, within
-/// [`FRAME_TOLERANCE`]. Negative when that frame is before the origin.
+/// Returns the frame on which playback reaches a point `frames_ahead` frames
+/// after some origin frame: the first frame at or after it, within
+/// [`FRAME_TOLERANCE`].
+///
+/// The result is relative to the origin, and negative when that frame is
+/// before it.
 ///
 /// **The** beat→frame rule: every "is this beat in this block, and where"
 /// decision goes through it, so two readers cannot disagree about which
@@ -77,13 +80,21 @@ pub const FRAME_TOLERANCE: f64 = 1e-6;
 /// [`TimelineSegment`] does that ([`TimelineSegment::frame_of`]); a reader
 /// holding only a beat span and a per-frame beat span divides them. A NaN
 /// distance is frame 0 (Rust's saturating cast), so guard the tempo first.
+///
+/// ```
+/// use tutti_types::first_frame_at_or_after;
+///
+/// assert_eq!(first_frame_at_or_after(3.0), 3);
+/// assert_eq!(first_frame_at_or_after(3.000_000_000_1), 3); // an ulp late
+/// assert_eq!(first_frame_at_or_after(3.25), 4);
+/// ```
 #[inline]
 pub fn first_frame_at_or_after(frames_ahead: f64) -> i64 {
     (frames_ahead - FRAME_TOLERANCE).ceil() as i64
 }
 
-/// A fractional frame position, landed on the whole frame it is within
-/// [`FRAME_TOLERANCE`] of, if any; otherwise unchanged.
+/// Returns a fractional frame position landed on the whole frame it is within
+/// [`FRAME_TOLERANCE`] of, if any; otherwise returns it unchanged.
 ///
 /// The same rule as [`first_frame_at_or_after`], for a reader that keeps the
 /// fraction (a sampler's read position) rather than rounding to a frame. A
@@ -103,9 +114,11 @@ pub fn snap_to_whole_frame(position: f64) -> f64 {
 }
 
 /// A stretch of the timeline at one tempo: the beat at its first frame, and
-/// the tempo and rate it rolls at. The frame→beat conversion
-/// ([`beat_at`](Self::beat_at)) and its inverse ([`frame_of`](Self::frame_of)),
-/// in one place. See the [module docs](self).
+/// the tempo and rate it rolls at.
+///
+/// Holds the frame→beat conversion ([`beat_at`](Self::beat_at)) and its
+/// inverse ([`frame_of`](Self::frame_of)), in one place. See the
+/// [module docs](self).
 ///
 /// Frames are counted on whatever clock the owner keeps (an engine's clock
 /// counts frames rolled since it started); `origin_frame` is where this
@@ -132,7 +145,7 @@ pub struct TimelineSegment {
 }
 
 impl TimelineSegment {
-    /// A segment at `origin_beat` from `origin_frame`, at `tempo` and
+    /// Creates a segment at `origin_beat` from `origin_frame`, at `tempo` and
     /// `sample_rate`.
     #[inline]
     pub const fn new(
@@ -149,11 +162,11 @@ impl TimelineSegment {
         }
     }
 
-    /// Frames per beat, when the tempo and rate are both finite and positive
-    /// (`None` otherwise: the segment does not move).
+    /// Returns the frames per beat, when the tempo and rate are both finite
+    /// and positive (`None` otherwise: the segment does not move).
     ///
-    /// Raw `f64`, on purpose: frames an hour into a session do not fit
-    /// `Seconds` (`f32`), CLAUDE.md's "where the types stop".
+    /// Raw `f64` on purpose: the frame counts it scales run past what an `f32`
+    /// unit type holds exactly.
     #[inline]
     pub fn frames_per_beat(&self) -> Option<f64> {
         let (tempo, rate) = (self.tempo.get(), self.sample_rate.get());
@@ -162,7 +175,7 @@ impl TimelineSegment {
         usable.then(|| rate * 60.0 / tempo)
     }
 
-    /// The beat at `frame`, in closed form: `origin_beat + n × tempo /
+    /// Returns the beat at `frame`, in closed form: `origin_beat + n × tempo /
     /// (60 × rate)` for the `n` frames from the origin (negative before it).
     ///
     /// Never accumulated, so exact whenever the true beat is representable,
@@ -179,8 +192,8 @@ impl TimelineSegment {
         self.origin_beat + BeatDuration((n * self.tempo.get()) / (60.0 * self.sample_rate.get()))
     }
 
-    /// The frame on which playback along this segment reaches `beat`: the
-    /// first frame at or after it ([`first_frame_at_or_after`]).
+    /// Returns the frame on which playback along this segment reaches `beat`:
+    /// the first frame at or after it ([`first_frame_at_or_after`]).
     ///
     /// `None` when the segment does not move ([`frames_per_beat`] is `None`),
     /// or when that frame would be before [`Frame::ZERO`] on the owner's
@@ -196,8 +209,10 @@ impl TimelineSegment {
         u64::try_from(at).ok().map(Frame)
     }
 
-    /// Whether playback along this segment has reached `beat` by `frame`:
-    /// the beat's frame ([`frame_of`](Self::frame_of)) is at or before it.
+    /// Returns whether playback along this segment has reached `beat` by
+    /// `frame`: the beat's frame ([`frame_of`](Self::frame_of)) is at or
+    /// before it.
+    ///
     /// `false` when the segment does not move.
     #[inline]
     pub fn reached_by(&self, frame: Frame, beat: Beat) -> bool {
@@ -237,7 +252,7 @@ mod tests {
         assert_eq!(snap_to_whole_frame(128.001), 128.001);
     }
 
-    /// The reviewer's case: at 90 BPM / 48 kHz, frame 96 000 is beat 3 and
+    /// At 90 BPM / 48 kHz, frame 96 000 is beat 3 and
     /// frame 32 000 is beat 1, to the bit, and they convert back.
     ///
     /// Mutation (run): `beat_at` as `origin + n * (tempo / 60 / rate)` (a

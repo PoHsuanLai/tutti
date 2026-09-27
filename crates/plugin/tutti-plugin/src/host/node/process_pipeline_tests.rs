@@ -1,15 +1,10 @@
 //! Pins the out-of-process audio pipeline: output lags input by EXACTLY one
 //! block, and anything else is silence rather than wrong audio.
 //!
-//! These began as tests against the shipped bypass. `AudioBridge::process`
-//! pushed `Command::Process` and then did ONE non-blocking `ArrayQueue::pop()`
-//! for the reply, so nothing waited for the bridge thread. Two failure modes:
-//!
-//! - block 0: the response queue was empty, so the batcher emitted silence.
-//! - steady state: the pop returned the PREVIOUS block's response, and because a
-//!   single-bus plugin collapsed to `output_base == 0`, this block's input write
-//!   had already overwritten the region the output read draws from — so the host
-//!   read its own input back at unity gain. A silent bypass.
+//! The failure these guard against: if a single-bus plugin's input and output
+//! regions alias (`output_base == 0`), a block's input write overwrites the
+//! region the output read draws from, so the host reads its own input back at
+//! unity gain — a silent bypass.
 //!
 //! **One block of lag is the correct answer here.** The audio thread never
 //! waits for a reply: it submits block N and collects block N-1, because
@@ -285,9 +280,6 @@ fn bridge_with_server(
 /// here outputs the sidechain (input 2) on output 0 and the main left
 /// (input 0) on output 1, one chunk late.
 ///
-/// Replaces the tick-mode `write_accepts_sidechain_port`, which pinned the
-/// same property on the per-sample storage that no longer exists.
-///
 /// Mutation: stage `input.iter().take(2)` (the main bus only) in
 /// `Batcher::process` → output 0 reads silence → fails.
 #[test]
@@ -348,10 +340,8 @@ fn ramp_sample(block: usize, ch: usize, i: usize) -> f32 {
 fn drive_blocks_with_gap(blocks: usize, gap: std::time::Duration) -> Vec<Vec<Vec<f32>>> {
     let (bridge, _bridge_thread, _server) = bridge_with_doubling_server();
 
-    // The two directions are separately sized and separately addressed. The old
-    // version of this asserted `output_base() == 0` — it pinned the *cause of
-    // the bug* as a precondition, so the tests could only ever confirm the
-    // aliasing was still there.
+    // The two directions are separately sized and separately addressed; the
+    // output region must not alias the input region.
     let layout = stereo_layout();
     assert!(
         layout.input_ring_bytes() > 0 && layout.output_ring_bytes() > 0,
@@ -465,15 +455,13 @@ const WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 /// spawns a socket listener, a bridge thread and a server thread. Running
 /// several at once is not *incorrect* — the socket paths and shm names are
 /// per-process unique — but it multiplies the scheduling pressure each one's
-/// reply has to get through, which is what turned a fixed inter-block sleep
-/// into an intermittent "block N was silent".
+/// reply has to get through.
 ///
-/// The sleep is gone and [`WAIT_BUDGET`] is now a deadlock guard rather than a
-/// deadline anything races, so this lock is no longer what keeps the tests
-/// honest — [`wait_for_reply`] is. It stays because there is no reason to pay
-/// the contention: these tests are milliseconds each, and running them in
-/// series costs nothing while keeping any future timing assertion from
-/// inheriting a problem this file has already had twice.
+/// [`WAIT_BUDGET`] is a deadlock guard rather than a deadline anything races,
+/// so this lock is not what keeps the tests honest — [`wait_for_reply`] is. It
+/// stays because there is no reason to pay the contention: these tests are
+/// milliseconds each, and running them in series costs nothing while keeping
+/// any future timing assertion safe from scheduling pressure.
 ///
 /// A lock rather than a `--test-threads=1` note: a note is something a future
 /// runner has to know, and its absence shows up as a mystifying failure.
@@ -719,13 +707,12 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
 /// **The test that justifies the whole change.** Several stalled plugins driven
 /// in series must cost the audio thread no waiting, however many there are.
 ///
-/// # What this replaces
+/// # Why waiting fails
 ///
-/// The synchronous design was individually defensible — each plugin waited at
-/// most half its own block period before giving up and emitting silence. But
-/// fundsp ran nodes *serially* within one callback (`for &node_index in
-/// self.order`), as the graph's serial executor does now, so the budgets
-/// summed:
+/// A synchronous design is individually defensible — each plugin waits at most
+/// half its own block period before giving up and emitting silence. But the
+/// graph's serial executor runs nodes one after another within one callback,
+/// so the budgets sum:
 ///
 /// | Stalled plugins | Spent waiting | vs the 1333 us period @ 64/48k |
 /// |---|---|---|
@@ -734,10 +721,10 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
 /// | **3** | **2000 us** | **1.50x — overrun** |
 /// | 8 | 5333 us | 4.00x — overrun |
 ///
-/// Three concurrently-stalled plugins blew the callback; measured under 24x CPU
-/// load, 4 of 12 blocks made their deadline. Parallelising fundsp would not have
-/// helped — plugins in series on one track are a dependency chain, and that is
-/// the common arrangement. The defect was the waiting, not the serialism.
+/// Three concurrently-stalled plugins blow the callback; measured under 24x CPU
+/// load, 4 of 12 blocks made their deadline. Parallelising the executor would
+/// not help — plugins in series on one track are a dependency chain, and that
+/// is the common arrangement. The problem is the waiting, not the serialism.
 ///
 /// The loop below drives the plugins one after another within each block, which
 /// is exactly the arrangement whose budgets would sum if the thread waited.
@@ -806,7 +793,7 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
 
     let steps = (BLOCKS * PLUGINS) as u32;
     let per_step = elapsed / steps;
-    // What the old design would have spent: every plugin, every block, waiting
+    // What a synchronous design would spend: every plugin, every block, waiting
     // out its budget before giving up.
     let synchronous_floor = SYNC_WAIT_BUDGET * steps;
     assert!(

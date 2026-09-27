@@ -48,8 +48,10 @@ pub struct PluginServer {
 }
 
 impl PluginServer {
-    /// Bind nothing yet — record the spawning host's PID and prepare an empty
-    /// session. The socket is not created until [`PluginServer::run`].
+    /// Creates a server for `config`, recording the spawning host's PID.
+    ///
+    /// The socket is not created until [`PluginServer::run`]. Call this early:
+    /// the recorded PID is what orphan detection compares against.
     ///
     /// # Errors
     ///
@@ -66,7 +68,7 @@ impl PluginServer {
         })
     }
 
-    /// Serve one host, then return. Blocks for the lifetime of the session.
+    /// Serves one host, then returns. Blocks for the lifetime of the session.
     ///
     /// # The two-phase connection dance
     ///
@@ -91,7 +93,7 @@ impl PluginServer {
     pub fn run(mut self) -> Result<()> {
         let listener = TransportListener::bind(&self.config.socket_path)?;
 
-        // Phase 1: handshake.
+        // First connection: handshake.
         let mut handshake = listener.accept()?;
         handshake.send(&BridgeMessage::Ready {
             protocol_version: PROTOCOL_VERSION,
@@ -101,7 +103,7 @@ impl PluginServer {
         }
         drop(handshake);
 
-        // Phase 2: audio.
+        // Second connection: audio.
         let mut audio = listener.accept()?;
         audio.send(&BridgeMessage::Ready {
             protocol_version: PROTOCOL_VERSION,

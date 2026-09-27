@@ -1,4 +1,4 @@
-//! The unit as a graph node (doc 013, rewrite item 5): a clip node's note
+//! The unit as a graph node: a clip node's note
 //! sounds on its frame (to rustysynth's 8-frame chunk), the node follows its
 //! graph's rate, and a forked graph plays the clip.
 //!

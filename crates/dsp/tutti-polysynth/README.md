@@ -1,47 +1,25 @@
 # tutti-polysynth
 
-Polyphonic subtractive and wavetable synthesis for the Tutti audio engine.
+Polyphonic subtractive synthesis for the Tutti audio engine.
 
-## What this is
+Use it when you want a playable synthesizer voice in a Tutti graph: saw,
+square, triangle, sine or noise oscillators through a Moog-style ladder or a
+state-variable filter, with an ADSR envelope, unison, portamento, alternative
+tunings and MPE / MIDI 2.0 per-note expression.
 
-One type does the work: `PolySynth`, built from a `SynthConfig` and driven by
-MIDI. It takes no audio input and renders stereo. Around it sit the voice engine's
-parts: voice allocation (`AllocationStrategy`, `VoiceMode`), unison, portamento
-and tuning, all configured through `SynthConfig`.
+`PolySynth` is the synth: a graph node (`tutti_graph::Node`) built from a
+`SynthConfig`, with no audio input, stereo output and one MIDI event input.
+Wire a clip node, a keyboard's `MidiQueueNode` or the hardware input node (all
+`tutti-midi-runtime`) to the event input; each event is applied on its own
+frame. The rest of the crate is configuration: `SynthConfig` with its
+`OscillatorType`, `FilterType`, `EnvelopeConfig` and `FilterModConfig`; voice
+allocation (`VoiceMode`, `AllocationStrategy`); `UnisonConfig`;
+`PortamentoConfig`; and `Tuning`.
 
-**Notes arrive on its MIDI event input.** It is a `tutti_graph::Node` with one
-MIDI event input: a clip node, a keyboard's `MidiQueueNode` or the hardware
-input node (all `tutti-midi-runtime`) wires to it, each event played on its
-frame. There is no `note_on` scalar entry point on this type, and no queue to
-drive it by hand: a test or bench hands it events the way a graph does
-(`tutti_graph::contract::{drive_in, Direct}`).
-
-**Its controls are its params.** Inserted into a graph, it hands back a
-`tutti_graph::ParamSet` over its live cells — the master volume and, with a
-unison engine, the unison detune and stereo spread, by `UnitParam` — and a
-fork of the graph (an export) starts from the values last set through it.
-
-## What it does not own
-
-- **Not a SoundFont player.** `.sf2` playback is
-  [`tutti-soundfont`](../tutti-soundfont)'s, a **peer** crate rather than a
-  feature of this one. A sample player shares no voice engine, envelope model or
-  filter with a subtractive synth, so the two have nothing in common beyond the
-  node contract and a MIDI event input — and those come from `tutti-graph`, not
-  from each other. The old `soundfont` feature flag was
-  a dependency edge wearing a feature's clothes; depend on that crate directly.
-- **Not a clip player.** Playing a recorded `Wave` on a timeline is
-  [`tutti-sampler`](../tutti-sampler)'s, which correspondingly has no `note_on`.
-- **No effects.** Filters live per-voice inside the synth; a send, a delay or a
-  reverb is a `tutti-nodes` node after it.
-- **No MIDI I/O and no file parsing.** The wire vocabulary is
-  `tutti-midi-types`', the MIDI nodes are `tutti-midi-runtime`'s, ports are
-  `tutti-midi-hardware`'s.
-
-The other removed feature flag is worth knowing about for the same reason. `midi`
-never compiled with it off — a voice is *addressed* by per-note identity, so the
-allocator, MPE state and `PolySynth` itself are all built on it. A synth you
-cannot send a note to is not a smaller synth.
+Inserted into a graph, the synth hands back a `tutti_graph::ParamSet` over its
+live params by `UnitParam`: the master `Volume` and, with a unison engine,
+`Detune` and `StereoSpread`. A fork of the graph (an offline export) starts
+from the values last set through it.
 
 ## Quick start
 
@@ -53,8 +31,7 @@ use tutti_core::graph::{OutPort, Source};
 use tutti_core::{Amplitude, Hz, NodeKey, Resonance, SampleRate, Samples, Seconds, UnitParam};
 use tutti_graph::{Editor, Prepare};
 
-// `Moog` takes `Resonance`; the `Svf` variant takes `Q` instead. The two
-// filter families are deliberately not interchangeable.
+// `Moog` takes `Resonance`; the `Svf` variant takes `Q` instead.
 let synth = PolySynth::new(SynthConfig {
     oscillator: OscillatorType::Saw,
     max_voices: 8,
@@ -86,38 +63,50 @@ assert!(params.set(UnitParam::Volume, 0.8));
 # Ok::<(), tutti_polysynth::Error>(())
 ```
 
-## Constraint: what is fixed at construction, and what is not
+## What is fixed at construction
 
 The voice bank every voice renders in is built once for the oscillator, filter
-and envelope, so **those three need a new synth to change** — there is no setter for
-them, and swapping one means building a `PolySynth` and replacing the node.
+type and envelope, so those need a new synth to change: build a new
+`PolySynth` and replace the node. The filter's cutoff (and a ladder's
+resonance) are modulated live by `FilterModConfig`, CC74, CC71 and MPE slide.
 
-What does have a live setter: unison detune, stereo spread and sub-voice count,
-master volume and MPE enablement.
+Live setters exist for the master volume, unison detune, stereo spread and
+sub-voice count, and MPE enablement.
 
-`max_voices` must be at least 1 and has no upper bound. It was capped at 16
-until the per-block finished-voice list stopped being a `SmallVec<[usize; 16]>`
-— that type's inline capacity had to bound it, because a spill would have
-allocated in the audio callback. The list is now a `Vec` sized once at
-construction and only `clear()`ed, which keeps the callback allocation-free
-without a ceiling.
+`max_voices` must be at least 1 and has no upper bound. Every voice is built
+up front, so it is a memory and CPU budget.
+
+## Real-time behaviour
+
+Rendering allocates nothing and takes no lock, at any block length. Up to 512
+MIDI events per block are applied; any beyond that are dropped. Building a
+synth, forking it and changing the unison voice count allocate, and belong on
+the control thread.
+
+## Scope
+
+- **Not a SoundFont player.** `.sf2` playback is `tutti-soundfont`, a separate
+  crate that shares only the graph-node shape with this one.
+- **Not a clip player.** Playing recorded audio on a timeline is
+  `tutti-sampler`.
+- **No effects.** Filters live per voice inside the synth; a send, a delay or
+  a reverb is a `tutti-nodes` node after it.
+- **No MIDI I/O and no file parsing.** The message types are
+  `tutti-midi-types`, the MIDI nodes are `tutti-midi-runtime`, device ports
+  are `tutti-midi-hardware`.
+
+The `tutti` crate re-exports this one as `tutti::polysynth` behind its
+`synth` feature, and `bevy-tutti` uses it behind the same feature.
 
 ## Examples
 
 `examples/render_synth_cases.rs` renders a set of configurations to disk;
-`examples/verify_synth.py` checks the output. See `examples/README.md`.
-
-## Where it sits
-
-Depends on `tutti-core` (with `midi`), `tutti-mod` (for `ModParams`, so it
-carries the same control-rate modulation trait every other node does),
-`tutti-midi-types` and `tutti-midi-runtime`. Only `bevy-tutti` depends on it.
+`examples/verify_synth.py` checks the output against synthesis theory. See
+`examples/README.md`.
 
 ## Features
 
-`default = []`. There is also a `std` flag, which nothing in the crate currently
-reads — it gates no code today. See above for the two flags that were removed and
-why.
+`default = []`. The `std` feature is accepted but currently gates nothing.
 
 ## License
 

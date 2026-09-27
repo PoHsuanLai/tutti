@@ -617,15 +617,15 @@ fn a_null_factory_presets_array_is_treated_as_empty() {
 
 /// A garbage `FactoryPresets` array must not crash the preset walk.
 ///
-/// **This test found a real host bug.** `factory_presets` walks the array and
-/// reads each element as an `AUPreset`, pulling a `CFStringRef` out of its second
-/// field. The probe's elements are `CFData` blocks, so that read recovers CF
-/// header internals as `presetName` — non-null, so the old `is_null()`-only guard
-/// passed it straight to CoreFoundation, which aborted the process with SIGBUS
-/// (`EXC_BAD_ACCESS` inside `CFRetain`, confirmed under lldb). A real AU with a
-/// corrupted or stale preset table would take the whole DAW down the same way.
-/// The fix is `cfstring_to_string_checked`; see its docs for why a plain
-/// alignment test is the wrong guard on arm64.
+/// `factory_presets` walks the array and reads each element as an `AUPreset`,
+/// pulling a `CFStringRef` out of its second field. The probe's elements are
+/// `CFData` blocks, so that read recovers CF header internals as `presetName` —
+/// non-null, so an `is_null()`-only guard would pass it straight to
+/// CoreFoundation, which aborts the process with SIGBUS (`EXC_BAD_ACCESS`
+/// inside `CFRetain`). A real AU with a corrupted or stale preset table would
+/// take the whole DAW down the same way. The guard is
+/// `cfstring_to_string_checked`; see its docs for why a plain alignment test is
+/// the wrong guard on arm64.
 ///
 /// Repeated so a CoreFoundation ownership error has room to become a crash: an
 /// over-release corrupts the array and typically dies on a *later* pass, not the

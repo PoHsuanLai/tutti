@@ -7,7 +7,7 @@
 //! ([`spawn_audio_node`](crate::graph::SpawnAudioNode), a plugin load). The
 //! clip reads the block's `Env`, so its notes land on their frames through
 //! seeks and loop wraps, in the same block, and an export forks it with the
-//! target (doc 013 item 5). An edit replaces its events in place, ending the
+//! target. An edit replaces its events in place, ending the
 //! notes the old events left sounding; so does removing the last install
 //! naming the target. A target with no event input (an effect) takes no
 //! MIDI, and is skipped.
@@ -34,15 +34,12 @@
 //!
 //! [`MidiSourceInstall`] holds `TimedMidiEvent`s, not notes, because a note model
 //! cannot express most of what MIDI 2.0 carries — CC, pitch bend, per-note
-//! controllers, program change. A notes-only component would have re-imposed a
-//! MIDI-1.0 ceiling on a MIDI-2 engine.
+//! controllers, program change.
 //!
-//! A note-with-duration record is *authoring* vocabulary, and this adapter is
-//! not where it belongs. MIDI 2.0 defines no such record — the wire carries a
-//! note-on and a note-off, and duration is only the gap between them — so a host
-//! wanting one is inventing engine vocabulary, and a `from_notes` constructor
-//! here would make bevy-tutti the accidental owner of a type every host needs.
-//! Callers build `TimedMidiEvent`s, the vocabulary the engine already has.
+//! There is no note-with-duration constructor: MIDI 2.0 defines no such record
+//! (the wire carries a note-on and a note-off, and duration is only the gap
+//! between them). Callers build `TimedMidiEvent`s, the vocabulary the engine
+//! already has.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
@@ -55,7 +52,7 @@ use crate::graph::{
 };
 use tutti_core::AudioNode;
 
-/// "Play these events at that entity's synth."
+/// Declares events for the synth (or plugin) on `target` to play.
 ///
 /// The events are absolute-beat positioned; the engine decides where in a block
 /// each lands. Add or edit this component and [`rebuild`] replaces the clip's
@@ -72,7 +69,7 @@ pub struct MidiSourceInstall {
 }
 
 impl MidiSourceInstall {
-    /// Play `events` at `target`.
+    /// Creates an install that plays `events` at `target`.
     pub fn new(target: Entity, events: Vec<TimedMidiEvent>) -> Self {
         Self { target, events }
     }
@@ -89,13 +86,13 @@ const SEQUENCER: &str = "sequencer";
 pub struct SequencedClips(HashMap<Entity, (AudioNode, MidiClipControls)>);
 
 impl SequencedClips {
-    /// The clip node playing `target`, if it has one.
+    /// Returns the clip node playing `target`, if it has one.
     pub fn node(&self, target: Entity) -> Option<AudioNode> {
         self.0.get(&target).map(|(n, _)| *n)
     }
 }
 
-/// Recompile every changed install into its target's clip node.
+/// Recompiles every changed install into its target's clip node.
 ///
 /// Runs only when an install changed or went away, or a node was rebound. **Not**
 /// when the device's rate moves (a restart, `restart_device`): a clip node

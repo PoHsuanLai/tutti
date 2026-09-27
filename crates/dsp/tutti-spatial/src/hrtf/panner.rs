@@ -8,8 +8,8 @@
 //!
 //! `hrtf::HrtfProcessor` is *block-based* — it consumes exactly
 //! `interpolation_steps * block_len` mono samples per call and accumulates a
-//! stereo result. tutti drives nodes at arbitrary `process` sizes (and a
-//! 1-sample `tick`), so [`FrameBridge`] owns a pre-allocated input accumulator
+//! stereo result. tutti drives nodes at arbitrary `process` sizes (down to
+//! one frame), so [`FrameBridge`] owns a pre-allocated input accumulator
 //! and a stereo output queue. Input samples fill the accumulator; once a full
 //! HRTF frame is buffered it is processed in one shot and the stereo result is
 //! drained sample-by-sample. All buffers are allocated up front and only
@@ -56,7 +56,8 @@ pub(crate) const FRAME_LEN: usize = INTERPOLATION_STEPS * BLOCK_LEN;
 /// and is not latency.
 pub(crate) const LATENCY: usize = FRAME_LEN - 1;
 
-/// Errors constructing an HRTF renderer (bad or wrong-rate HRIR data).
+/// The error returned when an [`HrtfBinauralNode`](crate::HrtfBinauralNode)
+/// cannot be built from its HRIR data.
 #[derive(Debug, thiserror::Error)]
 pub enum HrtfBinauralError {
     /// The HRIR bytes could not be parsed as a sphere, or the dataset could not
@@ -158,8 +159,8 @@ impl FrameBridge {
     }
 
     /// Reset the fill/drain cursors after a frame has been rendered, and make
-    /// the frame just rendered the dry frame. A swap, not a copy: the old dry
-    /// frame is fully drained by now and the input side is about to be
+    /// the frame just rendered the dry frame. A swap, not a copy: the previous
+    /// dry frame is fully drained by now and the input side is about to be
     /// overwritten from index 0 anyway.
     #[inline]
     fn rewind(&mut self) {
@@ -332,12 +333,8 @@ impl HrtfBinaural {
     /// The node calls this from `Node::prepare`, which a graph calls again
     /// whenever the rate *or the maximum block* changes: the unchanged-rate
     /// early return is what keeps a block-size change from dropping the tail.
-    /// Rate changes may reset or keep state (the fundsp contract this was
-    /// written against allowed either), and tutti's two implementors sit at
-    /// opposite ends of that latitude. The other is
-    /// `tutti_sampler`'s stretch unit, which retunes its grid geometry and keeps
-    /// its phase history, allocation-free. A caller that treats the two as
-    /// interchangeable is the thing that breaks.
+    /// A real rate change rebuilds the processor and resets the streaming
+    /// state; it does not keep the tail.
     pub(crate) fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
         // Resolve to the sphere's own integral vocabulary and compare *before*
         // building a candidate: `HrirSource::new` copies the HRIR bytes, so
@@ -346,8 +343,7 @@ impl HrtfBinaural {
         if sample_rate == self.source.sample_rate {
             return;
         }
-        // Rebuilding is a non-RT reconfigure (mirrors the old node rebuilding
-        // its whole panner in `set_sample_rate`); resampling the sphere here
+        // Rebuilding is a non-RT reconfigure; resampling the sphere here
         // rather than on the audio path keeps the callback clean.
         let candidate = HrirSource::new(&self.source.bytes, SampleRate::from(sample_rate));
         if let Ok(processor) = candidate.build() {

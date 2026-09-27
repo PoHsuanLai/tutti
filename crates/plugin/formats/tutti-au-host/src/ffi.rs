@@ -21,7 +21,7 @@ pub(crate) fn check(function: &'static str, status: OSStatus) -> Result<()> {
     }
 }
 
-/// Fetch a `T`-valued AudioUnit property.
+/// Fetches a `T`-valued AudioUnit property.
 ///
 /// # Safety
 /// The caller must know that the property at `(id, scope, element)` is exactly
@@ -49,7 +49,7 @@ pub(crate) unsafe fn get_property<T>(
     Ok(out.assume_init())
 }
 
-/// Write a `T`-valued AudioUnit property.
+/// Writes a `T`-valued AudioUnit property.
 ///
 /// # Safety
 /// The caller must ensure the property at `(id, scope, element)` accepts a
@@ -74,7 +74,7 @@ pub(crate) unsafe fn set_property<T>(
     )
 }
 
-/// Query the byte size of an AudioUnit property without reading its value.
+/// Queries the byte size of an AudioUnit property without reading its value.
 ///
 /// # Safety
 /// `unit` must reference a live, valid AudioUnit.
@@ -94,7 +94,7 @@ pub(crate) unsafe fn property_size(
     Ok(size)
 }
 
-/// Read a variable-size property into an owned byte buffer.
+/// Reads a variable-size property into an owned byte buffer.
 ///
 /// # Safety
 /// `unit` must reference a live, valid AudioUnit.

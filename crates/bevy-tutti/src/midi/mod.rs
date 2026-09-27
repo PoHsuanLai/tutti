@@ -1,18 +1,15 @@
-//! ECS integration for the MIDI subsystem.
+//! ECS integration for the MIDI subsystem (feature `midi`; OS ports with
+//! `midi-hardware`).
 //!
 //! One duty per module, each owning its components, systems and resources, with
-//! [`TuttiMidiPlugin`] (in [`plugin`]) as the composition root. The MIDI engine
-//! these systems drive is framework-free; this layer only wraps it.
+//! [`TuttiMidiPlugin`] (in [`plugin`]) as the composition root, added by
+//! [`TuttiPlugin`](crate::TuttiPlugin). The MIDI engine these systems drive is
+//! framework-free; this layer only wraps it. [`file`](mod@self::file) adapts
+//! `tutti-midi-file` (codecs, no OS port); [`hardware::device`] adapts
+//! `tutti-midi-hardware` and is gated with it behind `midi-hardware`; the rest
+//! adapts `tutti-midi-runtime`.
 //!
-//! This module mirrors the engine's `midi/` *tier*, not a single crate — the
-//! exception to the one-module-per-engine-crate shape, because the four crates
-//! underneath don't each earn an adapter. `tutti-midi-types` is vocabulary and
-//! needs none; [`file`](mod@self::file) adapts `tutti-midi-file` (codecs, no OS port);
-//! [`hardware::device`] adapts `tutti-midi-hardware` and is gated with it
-//! behind `midi-hardware`; everything else adapts `tutti-midi-runtime`.
-//!
-//! Within the tier, the modules group by duty, and each one's rule is one
-//! sentence:
+//! The modules:
 //!
 //! - [`nodes`] — the engine's MIDI graph nodes (hardware input, clock,
 //!   hardware out) and a keyboard's way in ([`LiveMidiInput`]).
@@ -26,8 +23,7 @@
 //! # MIDI is wiring
 //!
 //! A MIDI-receiving node (a synth, a SoundFont player, a hosted plugin) takes
-//! MIDI on its event input, and nothing else reaches it (doc 013, rewrite
-//! item 5). What feeds that input is declared: `EventSources` on the entity,
+//! MIDI on its event input, and nothing else reaches it. What feeds that input is declared: `EventSources` on the entity,
 //! a [`MidiRouteRule`] for the hardware input, a [`MidiSourceInstall`] for a
 //! clip, a [`LiveMidiInput`] for a keyboard. The graph merges them by frame.
 //!
@@ -53,11 +49,12 @@ pub mod file;
 
 pub mod plugin;
 
-/// Constructors an integration test needs and production code must not have.
+/// Test-only helpers for this crate's integration tests; not for production use.
 ///
 /// A `#[cfg(test)]` gate would not reach an integration test, which is a
 /// separate crate — hence an ordinary public module, documented as test-only
 /// and named to make a production call site look wrong in review.
+#[doc(hidden)]
 pub mod test_support {
     /// Everything sitting in the outbound MIDI-out mailbox, drained.
     ///

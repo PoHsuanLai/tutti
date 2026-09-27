@@ -1,89 +1,3 @@
-//! The OS edge for MIDI: native UMP through CoreMIDI (macOS) and the ALSA
-//! seq-UMP sequencer (Linux).
-//!
-//! Enumerate endpoints, open them, send MIDI 2.0 out and receive it back. There
-//! are **no cargo features** — the crate *is* the OS edge, so there is nothing
-//! here to switch off. `backend::active()` is the only `cfg(target_os)` in the
-//! crate that decides anything, and it decides once at construction.
-//!
-//! # What this crate does not do
-//!
-//! - **No file codecs.** Reading a `.mid` and talking to a MIDI port are
-//!   different jobs; `smf` and `clip` live in `tutti-midi-file`, which this
-//!   crate does not re-export. Pairing them once made a consumer that wanted
-//!   only the former link CoreMIDI.
-//! - **No MIDI value types or state machines.** The wire vocabulary is
-//!   `tutti-midi-types`' and the routing / allocation / expression machinery is
-//!   `tutti-midi-runtime`'s. Both are re-exported below for convenience; neither
-//!   is defined here.
-//! - **No audio.** Nothing here touches a sample buffer.
-//! - **No ECS.** The Bevy systems that drive this — routing, scheduled dispatch,
-//!   clock-out, device management, MPE — are `bevy_tutti::midi`'s.
-//! - **No MIDI 1.0 transport.** Events reach the wire as UMP words, so
-//!   MIDI-2-only messages (per-note controllers, per-note pitch bend, JR
-//!   Timestamps) survive rather than vanishing into a `to_midi1_bytes` `None`.
-//!
-//! # Example: enumerate, connect, send
-//!
-//! [`MidiSession`] is the whole OS edge. Inbound events never pass *through* it
-//! — each opened input gets its own lock-free ring in
-//! [`HardwareMidiInputs`], which the audio thread drains; the session only owns
-//! the connection, and dropping it closes the port.
-//!
-//! `no_run`: every path here opens a real device. It is still type-checked, so
-//! a wrong method name fails the build.
-//!
-//! ```no_run
-//! use std::sync::Arc;
-//! use tutti_midi_hardware::prelude::*;
-//! use tutti_midi_hardware::HardwareMidiInputs;
-//!
-//! // The rings inbound events land in, then a session over this platform's backend.
-//! let ports = Arc::new(HardwareMidiInputs::new(1024));
-//! let session = MidiSession::new(Arc::clone(&ports));
-//!
-//! // A fresh snapshot per call — device lists go stale on hot-plug, so nothing
-//! // here is cached.
-//! for endpoint in session.inputs() {
-//!     println!("{}: {:?}", endpoint.name, endpoint.capability);
-//! }
-//!
-//! // Connect by id when it matters; see the matching note below for by-name.
-//! if let Some(first) = session.inputs().first() {
-//!     session.connect_input(first.id)?;
-//! }
-//!
-//! // Outbound: UMP words on the wire, so a MIDI-2-only message survives.
-//! session.connect_output_by_name("iac")?;
-//! let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-//! assert_eq!(session.send(&[note]), 1);
-//! # Ok::<(), tutti_midi_hardware::Error>(())
-//! ```
-//!
-//! ## Matching by name picks a device you did not choose
-//!
-//! Every `*_by_name` method matches **case-insensitive substring, first hit
-//! wins**, in the backend's enumeration order — which is not sorted and not
-//! stable across a hot-plug. So `"iac"` matches `"IAC Driver Bus 1"`, and a
-//! name matching two devices silently takes whichever the OS listed first.
-//! Connect by [`EndpointId`] when the choice matters.
-//!
-//! [`disconnect_input_by_name`](MidiSession::disconnect_input_by_name) is
-//! weaker still: it searches a `HashMap` of open connections, so there is no
-//! "first" at all and a name matching two open inputs closes an **arbitrary**
-//! one. Use [`disconnect_input`](MidiSession::disconnect_input) with an id, or
-//! [`disconnect_all_inputs`](MidiSession::disconnect_all_inputs).
-//!
-//! ## A build may have no backend, and it is not an error
-//!
-//! ALSA's UMP sequencer API landed in alsa-lib 1.2.10. An older (or absent)
-//! alsa-lib compiles the same empty stub Windows gets — zero endpoints, and
-//! [`Error::Unsupported`] naming the reason — after a `cargo:warning` from the
-//! build script. It degrades rather than failing the build, so the code above
-//! compiles everywhere and simply enumerates nothing where there is no backend.
-//!
-//! The full picture — backend table, quick start, and the two Linux loopback
-//! traps — is in the crate README, included below.
 #![doc = include_str!("../README.md")]
 
 // --- Framework-free hardware I/O core ---
@@ -170,12 +84,12 @@ pub use crossbeam_channel;
 // --- Standard MIDI File codec: NOT here ---
 //
 // The file codecs live in `tutti-midi-file` and are deliberately *not*
-// re-exported. Reading a `.mid` and talking to a MIDI port are different jobs;
-// pairing them once made a consumer that wanted only the former link CoreMIDI.
-// A file is not a device. Depend on `tutti-midi-file` directly for `smf`/`clip`.
+// re-exported. Reading a `.mid` and talking to a MIDI port are different jobs,
+// and a consumer that wants only the former should not link CoreMIDI. Depend
+// on `tutti-midi-file` directly for `smf`/`clip`.
 
-/// The hardware MIDI prelude, for `use tutti_midi_hardware::prelude::*;` —
-/// everything a typical app touches, from one import.
+/// The common types for a hardware MIDI app, for
+/// `use tutti_midi_hardware::prelude::*;`.
 ///
 /// It re-exports [`tutti_midi_types::prelude`] (the wire event + decoded view +
 /// clip-file codec + per-note identity) and adds this crate's I/O and delivery:
@@ -185,10 +99,9 @@ pub use crossbeam_channel;
 ///   nodes), [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`] (the lock-free
 ///   ring), and [`TimedMidiEvent`] (a clip's events).
 ///
-/// Deliberately excludes the rarer surfaces — UMP-Stream endpoint negotiation,
-/// the Bevy ECS layer, sync decoders, MPE zone config — which stay explicit
-/// imports (`::MidiClockDecoder`, `::ecs::*`, …). Glob this for the 90% path;
-/// import the rest by name. The SMF / Clip File codecs are not here at all:
+/// The rarer surfaces (sync decoders such as [`MidiClockDecoder`], MPE zone
+/// config, the MIDI-CI codec) are not in the prelude; import them from the
+/// crate root by name. The SMF / Clip File codecs are not here at all:
 /// they are `tutti-midi-file`'s, and this crate does not re-export them.
 ///
 /// ```

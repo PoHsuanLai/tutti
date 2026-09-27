@@ -548,7 +548,7 @@ fn test_output_list_filters_midi_from_mixed_events() {
     assert_eq!(list.to_param_changes().queues.len(), 1);
 }
 
-// ── Phase 1: New event types through output list FFI ──
+// ── Event types through the output list FFI ──
 
 #[test]
 fn test_output_list_push_note_choke() {
@@ -713,7 +713,7 @@ fn test_transport_flags_are_distinct_bits() {
     }
 }
 
-// ── Phase 5: Host state + extensions ──
+// ── Host state + extensions ──
 
 #[test]
 fn test_host_state_poll_clears_flag() {
@@ -991,10 +991,10 @@ fn test_host_thread_check_audio_thread() {
 ///
 /// The spec lets a host mark any OS thread — including the main thread — as the
 /// audio thread, but they are alternative *roles*, not simultaneous identities.
-/// The host used to answer `true` to both at once while `start_processing` ran
-/// on the main thread, which made every plugin-side thread assertion
-/// unfalsifiable: a plugin asserting `!is_main_thread()` inside an
-/// `[audio-thread]` call could never detect that it was on the wrong thread.
+/// Answering `true` to both at once while `start_processing` runs on the main
+/// thread would make every plugin-side thread assertion unfalsifiable: a plugin
+/// asserting `!is_main_thread()` inside an `[audio-thread]` call could never
+/// detect that it was on the wrong thread.
 #[test]
 fn thread_check_roles_are_mutually_exclusive_c1() {
     use clap_sys::ext::thread_check::clap_host_thread_check;
@@ -1040,8 +1040,7 @@ fn thread_check_roles_are_mutually_exclusive_c1() {
 /// an assertion. A second thread trying to enter an `[audio-thread]` region
 /// must block until the first has left — this is the serialization CLAP's
 /// "`params.flush` must not be called concurrently to `process()`" requires,
-/// and which the old `debug_assert!` (compiled out in release, and made
-/// tautologically true in debug by C1) did not provide.
+/// and which a `debug_assert!` (compiled out in release) could not provide.
 #[test]
 fn audio_thread_claim_serializes_across_threads_c2() {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -1084,7 +1083,7 @@ fn audio_thread_claim_serializes_across_threads_c2() {
     );
 }
 
-// ── Phase 8: Final tests ──
+// ── Miscellaneous ──
 
 #[test]
 fn test_param_value_event_construction() {
@@ -1184,7 +1183,7 @@ fn test_note_port_dialect_to_send() {
     );
 
     // No preference stated: fall back to a supported dialect rather than
-    // inventing one. This is the case that used to report Midi2.
+    // inventing one (for example, reporting Midi2).
     assert_eq!(
         port(NoteDialects::CLAP | NoteDialects::MIDI, None).dialect_to_send(),
         Some(NoteDialect::Clap),
@@ -1272,14 +1271,14 @@ fn test_needs_restart_non_clearing() {
     assert!(!state.lifecycle.restart_requested.load(Ordering::Acquire));
 }
 
-// ── New extension type tests ──
+// ── Extension types ──
 
 /// A track's advertised channel count is the layout's, so the count and the port
 /// tag cannot disagree.
 ///
-/// The pair used to be `Option<i32>` + `Option<String>`, which made
-/// `Some(6)` alongside `Some("stereo")` representable with nothing to catch it.
-/// Reading the count *through* the layout is what makes that unconstructable.
+/// A pair of `Option<i32>` + `Option<String>` would make `Some(6)` alongside
+/// `Some("stereo")` representable with nothing to catch it. Reading the count
+/// *through* the layout is what makes that unconstructable.
 #[test]
 #[cfg(feature = "clap-extras")]
 fn track_audio_count_comes_from_the_layout() {
@@ -1430,7 +1429,7 @@ fn test_host_remote_controls_changed_and_suggest() {
     // suggest_page stores internally — verified by the fact the callback didn't crash
 }
 
-// ── Phase 1: thread_pool, audio_ports_activation, extensible_audio_ports ──
+// ── thread_pool, audio_ports_activation, extensible_audio_ports ──
 
 /// `ext/thread-pool.h:57`: `true` means the host *did execute* all the tasks.
 /// This host runs no pool, so every request must be rejected — a `true` here
@@ -1455,15 +1454,13 @@ fn test_host_thread_pool_request_exec_rejects() {
     }
 }
 
-// ── Phase 2: ambisonic, surround ──
+// ── ambisonic, surround ──
 
 /// Every id CLAP defines maps to a named position, and anything else is
 /// carried rather than discarded.
 ///
-/// This previously asserted `from_position(18) == None`. 18 is
-/// `CLAP_SURROUND_TSL` (`surround.h:55`) — a position CLAP does define — so the
-/// test was pinning the bug: the enum stopped at 17, and the decoder's
-/// `filter_map` then dropped the channel entirely.
+/// 18 is `CLAP_SURROUND_TSL` (`surround.h:55`) — a position CLAP does define —
+/// so it must decode to a named position, not `None`.
 #[test]
 fn test_surround_channel_from_position() {
     use tutti_clap_host::SurroundChannel;

@@ -66,7 +66,7 @@ pub struct ProcessOutputRef<'a> {
 }
 
 impl<'a> ProcessOutputRef<'a> {
-    /// Snapshot into an owned [`ProcessOutput`]. Allocates; off-RT only.
+    /// Snapshots into an owned [`ProcessOutput`]. Allocates; off-RT only.
     pub fn to_owned(self) -> ProcessOutput {
         ProcessOutput {
             midi_events: self.midi_events.iter().copied().collect(),
@@ -154,7 +154,7 @@ impl PluginInfo {
         self
     }
 
-    /// Set the `|`-delimited subcategories. Takes an `Option` rather than a
+    /// Sets the `|`-delimited subcategories. Takes an `Option` rather than a
     /// string so a v1-only factory's "cannot report" survives the builder — see
     /// [`sub_categories`](Self::sub_categories).
     pub fn sub_categories(mut self, sub_categories: Option<String>) -> Self {
@@ -171,7 +171,7 @@ impl PluginInfo {
         self
     }
 
-    /// Record the full per-bus channel layout (one entry per audio bus, in
+    /// Records the full per-bus channel layout (one entry per audio bus, in
     /// bus-index order). The main bus (`[0]`) is expected to match
     /// [`num_inputs`](Self::num_inputs) / [`num_outputs`](Self::num_outputs).
     pub fn bus_channels(

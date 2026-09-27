@@ -1,17 +1,16 @@
 //! Every insertion path captures a node's controls before the node enters the
 //! graph, and the readers ignore a capture that belongs to another node.
 //!
-//! `bevy_tutti::graph::capture` replaced the graph downcasts that used to answer
-//! "what are this entity's modulatable params".
-//! These pin the replacement at the insertion paths themselves —
+//! `bevy_tutti::graph::capture` answers "what are this entity's modulatable
+//! params" without a graph downcast. These pin it at the insertion paths
+//! themselves —
 //! `spawn_audio_node`, `insert_audio_node`, `crossfade_audio_node` — rather
 //! than at a fixture that captures by hand, because a path that forgot to
 //! capture would leave every hand-captured suite green.
 //!
 //! The fixture is the suites' own [`DriveUnit`](common::drive_unit::DriveUnit),
-//! a host's `ParamNode` registered with `param_graph_node!` (it was an
-//! `AudioUnit` captured through the `ModTargetRegistry`'s type registration,
-//! which went with `Legacy`), beside an engine node, `DistortionNode`.
+//! a host's `ParamNode` registered with `param_graph_node!`, beside an engine
+//! node, `DistortionNode`.
 
 #![cfg(feature = "modulation")]
 

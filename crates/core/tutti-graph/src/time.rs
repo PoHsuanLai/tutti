@@ -1,7 +1,7 @@
 //! Time inside a block: [`Offset`], and [`Due`], what a scheduled time means
 //! for the block being rendered.
 //!
-//! Doc 013 §6, "In the type system", item 1. There are two kinds of time in a
+//! There are two kinds of time in a
 //! graph and they must not mix:
 //!
 //! - a **[`Frame`]** (`tutti-types`) is an absolute position on the
@@ -128,7 +128,7 @@ pub enum Due {
 /// Which beats the transport has **crossed by continuous playback** — the
 /// history a beat-timed command needs to tell "late" from "jumped over".
 ///
-/// The rule it implements (doc 013 §6): an `At::Beat(b)` fires when the
+/// The rule it implements: an `At::Beat(b)` fires when the
 /// playhead reaches or crosses `b` through continuous playback, and a loop
 /// wrap that lands at or after `b` counts as reaching it. A seek, or a loop
 /// that jumps *over* `b`, does not fire it: it stays pending until the
@@ -171,7 +171,7 @@ impl Playhead {
         Self::default()
     }
 
-    /// Record the block about to be rendered.
+    /// Records the block about to be rendered.
     ///
     /// A block with [transport changes](Env::changes) is recorded segment by
     /// segment, as if each were a block of its own: a start or a tempo change
@@ -247,7 +247,7 @@ impl Env {
         self.frame + Samples(offset.index())
     }
 
-    /// Resolve a scheduled time against this block.
+    /// Resolves a scheduled time against this block.
     ///
     /// - [`At::NextBlock`] is this block's first frame.
     /// - [`At::Frame`] is exact: [`Due::In`] its offset when it is inside

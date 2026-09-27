@@ -1,4 +1,4 @@
-//! `Engine` over the graph (doc 013 Phase 2), and timestamped
+//! `Engine` over the graph, and timestamped
 //! transport commands through it.
 //!
 //! What is pinned here:
@@ -10,15 +10,14 @@
 //! - a transport command at `At::Frame` / `At::Beat` lands on its frame in a
 //!   graph node's `Env`;
 //! - a graph `At::Beat` command scheduled against a timestamped start lands
-//!   on its frame — the first engine-level case of the doc 013 §6 contract;
+//!   on its frame — the first engine-level case of the sample-accuracy
+//!   contract;
 //! - the beat a graph node reads from `Env`, and the playhead the engine
 //!   publishes, are the closed-form beat of each segment the commands cut.
 //!
-//! Until doc 013 Phase 3 PR 15 several of these compared the graph against
-//! a `Net` rendered by the same engine. With the `Net` backend gone, each
-//! comparison is pinned to what the `Net` was checked against: an analytic
-//! figure (the fold matrix, the fade, the segment's closed form), computed
-//! here without the engine's code.
+//! Each comparison is pinned to an analytic figure (the fold matrix, the
+//! fade, the segment's closed form), computed here without the engine's
+//! code.
 //!
 //! The allocation gate is in `rt_no_alloc_engine.rs`.
 
@@ -240,9 +239,7 @@ fn graph_engine_render_is_bit_identical_to_the_executor() {
 /// 5.1, to stereo and 5.1 devices, rolling and then stopped with a declick
 /// mid-run.
 ///
-/// Until doc 013 PR 15 this compared the graph bit for bit against a `Net`
-/// rendered by the same engine. The oracle is now what that comparison
-/// stood for, computed here: each frame of the source (deterministic and
+/// The oracle is computed here: each frame of the source (deterministic and
 /// libm-free), folded by `fold_frame` (the ITU/Dolby matrices, plain
 /// arithmetic), times the declick gain — 1 before the stop, zero on the
 /// stop's frame (an untimed stop has no lead) and `k / 480` for `k` frames
@@ -335,17 +332,16 @@ fn a_timed_start_sounds_from_its_exact_frame() {
 /// beat 10.5 (half a beat after the seek to 10) is frame 36 000.
 ///
 /// The seek's beat falls on a block's first frame, where the engine's
-/// playhead is exactly beat 1 (it counts frames and derives the beat, doc
-/// 013 §6): it must land there, on that frame, without counting as late.
+/// playhead is exactly beat 1 (it counts frames and derives the beat): it
+/// must land there, on that frame, without counting as late.
 ///
 /// Mutation (run): land every due command at its piece's first frame
 /// (`at = cursor` in the walk) → the stop lands at its block's start →
 /// fails. Hand the executor `TransportChanges::NONE` → fails. Drop
-/// `schedule.release` → `scheduled_outstanding` stays 2 → fails. (Dropping
-/// the behind-side rounding tolerance in `Env::beat_due` failed this test
-/// while the playhead accumulated and sat ~1e-12 beat past beat 1; with the
-/// playhead exact it no longer does, and tutti-graph's
-/// `a_beat_a_rounding_error_behind_is_the_first_frame` pins the tolerance.)
+/// `schedule.release` → `scheduled_outstanding` stays 2 → fails. (With the
+/// playhead exact, the behind-side rounding tolerance in `Env::beat_due` is
+/// not exercised here; tutti-graph's
+/// `a_beat_a_rounding_error_behind_is_the_first_frame` pins it.)
 #[test]
 fn beat_timed_seek_and_stop_land_on_their_frames() {
     let transport = Transport::new(SR);
@@ -481,9 +477,6 @@ const FADE_STEP: f32 = 1.0 / 480.0 + 1e-5;
 /// blocks for `blocks` blocks; `script(motion, i)` is called before block
 /// `i`. Returns the output — the declick gain, read straight off it — and
 /// the transport per frame as `(beat, playing)`, from the graph's `Env`.
-///
-/// (Until doc 013 PR 15 it also ran a `Net` engine, and every assertion
-/// held for both; the assertions were analytic, so they stand alone.)
 #[allow(clippy::type_complexity)]
 fn dc_run(
     blocks: usize,
@@ -598,7 +591,7 @@ fn a_timed_declicked_stop_fades_out_before_its_frame() {
 
 /// An untimed declicked seek (`At::NextBlock`) has no lead time: it lands on
 /// the next block's first frame with the gain at zero there (the old audio
-/// ends on that frame, the one step, which the design accepts), and the new
+/// ends on that frame, the one accepted step), and the new
 /// audio fades in continuously from it.
 ///
 /// Mutation (run): skip the fade-in after a no-lead jump (gain straight back
@@ -681,7 +674,7 @@ fn tempo_and_loop_change_on_their_frames() {
     assert!(transport.settings.loop_span.range().is_some());
 }
 
-/// The first engine-level case of the doc 013 §6 contract: the transport
+/// The first engine-level case of the sample-accuracy contract: the transport
 /// starts at a frame inside a block (`At::Frame`), and graph notes scheduled
 /// at beats land on the frames playback reaches them — beat 0 on the start
 /// frame itself, beat 0.5 half a beat later.
@@ -720,10 +713,7 @@ fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
 /// playhead the engine publishes after each block is the model's beat at
 /// the block's end, and the next block starts on it, to the bit.
 ///
-/// Until doc 013 PR 15 the oracle was a `Net`'s `TransportClock` rendered by
-/// the same engine (bit-equal at block starts and cuts, within 1e-7
-/// between, through its `f32` ports). The model below is what that clock
-/// was pinned to in `clock.rs`; it is exact up to the rebasing at each
+/// The model below is what the clock is pinned to in `clock.rs`; it is exact up to the rebasing at each
 /// segment's origin, so the tolerance is 1e-9 beat.
 ///
 /// Mutation (run): skip the loop wrap in `FrameClock::advance` → fails after
@@ -826,18 +816,14 @@ fn env_beats_are_the_closed_form_of_each_segment() {
 /// A loop armed while the playhead is past its end does not jump: playback
 /// runs on, in the graph's `Env` and in the playhead the engine publishes,
 /// until a seek puts the playhead inside the loop, and from then it wraps
-/// (doc 013's decision, the common DAW behaviour).
-///
-/// Until doc 013 PR 15 a `Net`'s clock ran beside the graph and the two
-/// published playheads were compared to the bit; both were already pinned
-/// to the linear beat here, which now also bounds the published playhead
-/// after every block.
+/// (the common DAW behaviour). The linear beat also bounds the published
+/// playhead after every block.
 ///
 /// Mutation (run): drop the armed-behind guard in `FrameClock::advance`
 /// (wrap whether or not the playhead was before the end) → the clock jumps
 /// into the loop on the frame after it is armed, the published playhead is
-/// inside [1, 2) → fails. (`LoopRange::advance`, which this note used to
-/// name, is the offline timeline's rule; the live clock's is that guard.)
+/// inside [1, 2) → fails. (`LoopRange::advance` is the offline timeline's
+/// rule; the live clock's is that guard.)
 #[test]
 fn a_loop_armed_behind_the_playhead_does_not_jump() {
     let transport = Transport::new(SR);
@@ -895,13 +881,10 @@ fn a_loop_armed_behind_the_playhead_does_not_jump() {
 /// A declick stop at `At::Frame` inside a block stops the **transport** on
 /// that frame; only the audio fades. The graph's `Env` reads the transport
 /// stopped from the frame, its beat holds, and a graph `At::Beat` command
-/// due after it in the same block does not fire. (Until doc 013 PR 15 a
-/// `Net`'s clock was also seen to hold on the same frame; the held `Env`
-/// beat is the same assertion on the one clock left.)
+/// due after it in the same block does not fire.
 ///
 /// Mutation (run): leave `apply_outcome` out of `publish`'s
-/// `DeclickStarted` arm (the old rule: the transport rolls until the fade
-/// completes) → `Env` reads rolling after frame 600, the beat-0.03 note
+/// `DeclickStarted` arm (so the transport rolls until the fade completes) → `Env` reads rolling after frame 600, the beat-0.03 note
 /// fires → fails.
 #[test]
 fn a_declick_stop_stops_the_transport_on_its_frame() {
@@ -1025,7 +1008,7 @@ fn a_graph_engine_refuses_more_outputs_than_it_folds() {
 /// capacity is refused on the control thread.
 ///
 /// Mutation (run): read the block bound before `apply_pending` in `settle`
-/// (the reviewed order) → the shrink hands the executor a 512-frame block
+/// → the shrink hands the executor a 512-frame block
 /// against a 256 maximum → panics → fails.
 #[test]
 fn re_preparing_under_the_engine_adopts_the_new_block_at_once() {
@@ -1082,9 +1065,7 @@ fn re_preparing_under_the_engine_adopts_the_new_block_at_once() {
 /// Beats resolve with the tempo the engine's clock runs at: a tempo wiggle
 /// under the clock's hysteresis does not move it, so a beat-timed stop at
 /// beat 10 lands on beat 10's frame at the tempo in force (120 BPM), not
-/// at the 120.0005 BPM asked. (Until doc 013 PR 15 the same stop was also
-/// pinned through a `Net`, whose side resolved beats separately; the graph
-/// side's analytic frame is what is left.)
+/// at the 120.0005 BPM asked.
 ///
 /// Mutation (run): take the raw asked tempo in `TransportClock::take_tempo`
 /// (no hysteresis) → the clock runs at 120.0005 BPM and the stop's frame
@@ -1136,9 +1117,8 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
 /// last one published. Drift would grow with the run, so a long one is
 /// where it shows.
 ///
-/// Until doc 013 PR 15 the oracle was a `Net`'s clock rendered beside the
-/// graph by the same engine, compared to the bit; that clock is `FrameClock`
-/// in closed form, which the model here writes out (`Segment::at` is
+/// The engine's clock is `FrameClock` in closed form, which the model here
+/// writes out (`Segment::at` is
 /// `TimelineSegment::beat_at`'s arithmetic, IEEE-exact on every target: no
 /// libm).
 ///
@@ -1243,11 +1223,10 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
 /// an untimed seek (no lead, the accepted step on its frame) then a timed
 /// one 100 frames on, inside its fade window.
 ///
-/// Mutation (run): clear the aim after the inner loop on a jump (the
-/// reviewed order: `if jump { self.aim = None }`) → the aim pushed after the
-/// jump at the same offset is lost, the gain rises and is forced back to 0
-/// at the second command → a step (0.04 and 0.2 in the review's probes) →
-/// fails.
+/// Mutation (run): clear the aim after the inner loop on a jump
+/// (`if jump { self.aim = None }`) → the aim pushed after the jump at the
+/// same offset is lost, the gain rises and is forced back to 0 at the second
+/// command → a step (about 0.04 and 0.2) → fails.
 #[test]
 fn two_declicked_commands_close_together_stay_continuous() {
     let seek = |beat: f64| MotionEvent::Locate {

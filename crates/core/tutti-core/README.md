@@ -1,18 +1,21 @@
 # tutti-core
 
-Real-time audio engine core — DSP graph, transport, metering, latency.
+Real-time audio engine core — DSP graph render, transport, metering, latency.
 
 ## What this is
 
-The engine's runtime kernel and its vocabulary: the DSP graph, playback
-transport, level metering, and delay compensation. Sibling crates
-(`tutti-plugin`, `tutti-sampler`, `tutti-nodes`, …) build on these types and
-re-export them, so a consumer usually meets them through whichever subsystem it
-already depends on.
+The engine's runtime kernel and its vocabulary: the per-block graph render,
+playback transport, level metering, and delay compensation. Use it directly
+when you drive the audio callback yourself (a custom device layer, an offline
+renderer, a test harness); otherwise take the `tutti` facade, which re-exports
+this crate as `tutti::core`, or `bevy-tutti` for a Bevy app. Sibling crates
+(`tutti-plugin`, `tutti-sampler`, `tutti-nodes`, …) build on these types, so a
+consumer often meets them through whichever subsystem it already depends on.
 
-- `Engine` — the graph render the RT callback runs. It renders the
-  graph (`tutti-graph`'s `Executor`, whose `Editor` the control thread keeps),
-  and only that since design doc 013's Phase 3 PR 15.
+- `Engine` — the graph render the RT callback runs: each block it renders
+  `tutti-graph`'s `Executor` (whose `Editor` the control thread keeps), folds
+  the output to the device width, and applies transport commands on their
+  frame.
 - `Transport` — playback control, split into `settings` (anyone may store into)
   and `motion` (a state machine that may defer or reject), with commands
   timed to a frame or a beat (`MotionFsm::schedule`). The engine drives the
@@ -24,11 +27,11 @@ already depends on.
   output needs, and (`latency::delays`) which ports to delay by how much. The
   graph compiler applies it; this crate inserts nothing.
 
-A consumer that wants the whole engine behind one dependency takes `bevy-tutti`,
-the umbrella. A consumer that wants audio without Bevy takes the `tutti` facade crate,
-which re-exports all of them behind one dependency; it can also depend on
-these crates
-directly.
+- `prelude` — what a host driving the engine names, in one import.
+
+A consumer that wants the whole engine behind one dependency takes `tutti`
+(no Bevy) or `bevy-tutti` (a Bevy plugin); either can be mixed with direct
+dependencies on these crates.
 
 ## What this crate does not own
 
@@ -135,9 +138,8 @@ All are off by default (`default = []`), which is what keeps this crate
 Bevy-free unless a consumer asks:
 
 - `bevy` — the `Component` derive on `AudioNode` described above.
-- `bevy_ecs` — a back-compat alias for `bevy`, kept because sibling crates still
-  spell it that way.
-- `midi` — reserved; the MIDI subsystems are separate crates.
+- `bevy_ecs` — an alias for `bevy`.
+- `midi` — gates nothing here; the MIDI subsystems are separate crates.
 - `serde` — `Serialize`/`Deserialize` on the shared value vocabulary (forwards
   to `tutti-types/serde`). Off by default, since the engine itself never
   serializes.

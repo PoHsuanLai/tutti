@@ -83,7 +83,7 @@ impl InFlightProbes {
     }
 }
 
-/// Spawn a probe per requested path.
+/// Spawns a probe per requested path.
 ///
 /// The probe itself needs no catalog — it reads the file and asks a throwaway
 /// subprocess what it is — so nothing is borrowed across the await. Only the
@@ -103,7 +103,7 @@ pub fn start_probe(
     }
 }
 
-/// Install finished probes into the catalog.
+/// Installs finished probes into the catalog.
 ///
 /// Ungated on the engine, like the scan: probing touches the filesystem and a
 /// throwaway subprocess, never the graph.

@@ -1,14 +1,12 @@
 //! Binding a loaded plugin to the rest of the engine: the meter, and
 //! parameter automation / modulation.
 //!
-//! # What binding no longer has to do
+//! # What binding does not have to do
 //!
 //! **The transport.** The plugin node reads it from each block's `Env` — the
 //! engine's own playhead, with every start, seek, tempo and loop edit on its
 //! frame — so a freshly promoted plugin has the right transport from its
-//! first block, and there is nothing to install (doc 013, Verdicts:
-//! `TransportSource`). It used to receive a stopped default until a system
-//! here installed a transport reader.
+//! first block, and there is nothing to install.
 //!
 //! **Reaching the node.** Binding into the graph is a typestate transition at
 //! insert (`PluginClient::bind`, in `AudioGraphRes::insert_plugin`); the host
@@ -26,8 +24,7 @@
 //! metronome exists — on project load, plugins instantiate while the engine is
 //! still coming up — and `Added` fires exactly once. A pass over the not-yet-
 //! bound converges whenever the missing half turns up; a one-shot leaves that
-//! plugin at 4/4 forever. This is the rule `midi/registration.rs` states at
-//! length.
+//! plugin at 4/4 forever.
 //!
 //! Binding is idempotent anyway (installing a meter replaces the previous
 //! one), so the marker is an optimisation, not a correctness device.
@@ -97,7 +94,7 @@ pub struct PluginMeterBound;
 /// not been bound yet.
 type MeterUnbound = (With<PluginEmitter>, Without<PluginMeterBound>);
 
-/// Give every plugin that lacks it the project meter.
+/// Gives every plugin that lacks it the project meter.
 ///
 /// The plugin's per-block transport — tempo, playhead, loop, recording — comes
 /// from the graph's `Env` and needs nothing installed; the time signature and
@@ -167,7 +164,7 @@ pub struct PluginAutomationNode {
 #[cfg(feature = "modulation")]
 const AUTOMATION: &str = "plugin automation";
 
-/// Take a plugin entity's automation node out of the graph when its
+/// Takes a plugin entity's automation node out of the graph when its
 /// [`PluginAutomationNode`] goes (the entity despawned, or the component
 /// removed), and stop feeding it.
 #[cfg(feature = "modulation")]
@@ -217,8 +214,8 @@ type ParamsNeedRebind = (
     )>,
 );
 
-/// Give every param a plugin declares modulatable a per-block accumulator, and
-/// feed those accumulators to the plugin as its automation source.
+/// Gives every param a plugin declares modulatable a per-block accumulator, and
+/// feeds those accumulators to the plugin as its automation source.
 ///
 /// A host declares which params are modulatable with [`ModParamRange`](crate::modulation::ModParamRange), the same
 /// component a native node uses — the difference is only that a plugin's entries
@@ -231,8 +228,7 @@ type ParamsNeedRebind = (
 ///
 /// Capturing the client as the entity's `ModParamsHandle` looks like it would
 /// work — `PluginClient` implements `ModParams`, answering on `ParamAddr::Id`.
-/// (A registry of node types did that capture for an `AudioUnit`; it went
-/// with the `Legacy` adapter.) It would be wrong anyway.
+/// It would be wrong.
 ///
 /// A captured handle is asked again on **every** modulation rebuild, and
 /// `PluginControls::param_target` is a *constructor*: it returns a fresh

@@ -1,4 +1,4 @@
-//! `PluginClient` — the graph node for an out-of-process plugin.
+//! The graph node for an out-of-process plugin ([`PluginClient`]).
 //!
 //! # Loaded, then bound
 //!
@@ -43,11 +43,9 @@
 //! (Mutation-tested: an `IntoNode` impl for `PluginClient<Unbound>` makes the
 //! first compile and fail as a doctest; a `Node` impl makes both.)
 //!
-//! Binding is the typestate transition doc 013 §2 describes; it replaces the
-//! downcasts a host once made to reach a plugin node inside a graph. Inserting
-//! a bound client hands back its [`PluginControls`] (its
-//! `IntoNode::Controls`) and a fork source, so the host never needs the node
-//! again.
+//! Inserting a bound client hands back its [`PluginControls`] (its
+//! `IntoNode::Controls`) and a fork source, so the host never needs to reach
+//! into the graph for the node again.
 //!
 //! # What the node reads
 //!
@@ -57,10 +55,9 @@
 //!   is its own plus one callback. The `f64` wire conversion stays inside it.
 //! - **The transport**, from each chunk's frame of the block's `Env`
 //!   (`transport_source`), plus the meter installed on its controls.
-//! - **MIDI, parameter automation, harmony and note expression** through
-//!   their `InputSlot`s and the MIDI port — out-of-band inputs that poll
-//!   their own timelines until they become event ports (doc 013). They are
-//!   why the node declares [`Shape::legacy`](tutti_graph::Shape::legacy).
+//! - **MIDI, parameter ramps, chords and scales** on its event input, sent
+//!   with the chunk their frames fall in. A clip installed on the MIDI port is
+//!   still polled out of band (see the `shape` docs in `graph_node`).
 //!
 //! Subprocess lifetime is [`ProcessGuard`], held behind `Arc` here and in
 //! [`crate::host::handles::PluginHandle`], so the subprocess dies when the
@@ -100,8 +97,7 @@ mod real_stall_tests;
 mod tests;
 
 // The shared node primitives (change sinks) live in `crate::util::node`;
-// re-exported here so the existing `crate::host::node::...` paths keep
-// resolving.
+// re-exported here so `crate::host::node::...` paths resolve.
 pub use crate::util::node::ParameterChangeSink;
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
 pub use automation_node::{AutomationControls, PluginAutomation, AUTOMATION_EVENT_CAPACITY};
@@ -135,15 +131,18 @@ use tutti_core::meter::MeterMap;
 use tutti_core::{SampleRate, Samples};
 use tutti_plugin_types::PluginTail;
 
-/// A loaded plugin not yet bound into a graph: the state
-/// [`PluginClient::new`] returns. See the module docs.
+/// The typestate of a [`PluginClient`] that is loaded but not yet a graph node.
+///
+/// [`PluginClient::new`] returns this state; [`PluginClient::bind`] leaves it.
 #[derive(Debug)]
 pub struct Unbound {
     _private: (),
 }
 
-/// A plugin bound to be a graph node: the audio path it owns once
-/// [`bind`](PluginClient::bind) has run. Only `PluginClient<Bound>` is a
+/// The typestate of a [`PluginClient`] that owns its audio path and can go into
+/// a graph.
+///
+/// Reached through [`PluginClient::bind`]. Only `PluginClient<Bound>` is a
 /// [`Node`](tutti_graph::Node).
 pub struct Bound {
     /// The pipelined IPC path, sized for the chunk ceiling at bind and
@@ -175,12 +174,38 @@ impl std::fmt::Debug for Bound {
     }
 }
 
-/// An out-of-process plugin: [`Unbound`] as loaded, [`Bound`] as a graph
-/// node. See the module docs.
+/// An out-of-process plugin as a graph node: [`Unbound`] when loaded,
+/// [`Bound`] once it can go into a graph.
 ///
-/// Not `Clone`: a node exists once, in the graph that owns it. Everything a
-/// host keeps is on [`PluginControls`] and
-/// [`PluginHandle`](crate::host::handles::PluginHandle), both shared handles.
+/// [`PluginClient::new`] launches the plugin-server subprocess and loads the
+/// plugin. [`bind`](PluginClient::bind) allocates the audio path and returns a
+/// `PluginClient<Bound>`, the only state that implements
+/// [`IntoNode`](tutti_graph::IntoNode). Inserting it into a graph hands back
+/// its [`PluginControls`], so the host never needs to reach into the graph for
+/// the node again. Most hosts get a client through
+/// [`Plugin::open`](crate::catalog::Plugin::open) instead of calling `new`.
+///
+/// The node processes planar `f32` audio in chunks of one device callback
+/// through a pipelined IPC path, so its latency is the plugin's own plus one
+/// callback ([`PluginControls::declared_latency`] reports both). MIDI,
+/// parameter automation, harmony and note expression come in through the
+/// node's inputs and [`PluginControls`]; the transport is read from each
+/// block. Editor, state and main-thread parameter access are on
+/// [`PluginHandle`](crate::host::handles::PluginHandle). The subprocess
+/// exits when the node and every handle built from it have been dropped.
+///
+/// Not `Clone`: a node exists once, in the graph that owns it.
+///
+/// # Examples
+///
+/// ```no_run
+/// use tutti_graph::Editor;
+/// use tutti_plugin::handles::{PluginClient, PluginControls};
+/// use tutti_types::NodeKey;
+/// fn insert(client: PluginClient, editor: &mut Editor) -> PluginControls {
+///     editor.insert(NodeKey(1), "plugin", client.bind())
+/// }
+/// ```
 pub struct PluginClient<S = Unbound> {
     bridge: Arc<PluginBridge>,
     descriptor: PluginDescriptor,
@@ -237,11 +262,19 @@ pub(super) struct BlockPayload {
 }
 
 impl PluginClient<Unbound> {
-    /// Spawns the plugin-server, loads `plugin_path`, and returns the
-    /// loaded plugin, [`Unbound`]. The subprocess lifetime is held
-    /// internally by an `Arc<ProcessGuard>` shared with any `PluginHandle`
-    /// built from this client; the subprocess dies when both the graph has
-    /// dropped the node and all handles have dropped.
+    /// Spawns the plugin-server, loads `plugin_path` and returns the loaded
+    /// plugin, [`Unbound`].
+    ///
+    /// Blocks while the subprocess launches and completes its handshake. The
+    /// subprocess exits when the graph has dropped the node and every
+    /// [`PluginHandle`](crate::host::handles::PluginHandle) built from this
+    /// client has been dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BridgeError`](crate::BridgeError) if the plugin-server
+    /// cannot be found or spawned, the handshake fails or times out, the
+    /// plugin fails to load, or the IPC bridge cannot be set up.
     pub fn new(
         config: BridgeConfig,
         plugin_path: PathBuf,
@@ -285,9 +318,9 @@ impl PluginClient<Unbound> {
             indexed,
         );
         // The chunk ceiling, matching the slab — `slab_layout_for` clamps to
-        // `MAX_CHUNK` for the same reason. Passing the raw `max_buffer_size`
-        // here meant staging 8192 samples per channel to ship 64, and left the
-        // two sizes free to disagree.
+        // `MAX_CHUNK` for the same reason. The raw `max_buffer_size` would
+        // stage 8192 samples per channel to ship 64 and leave the two sizes
+        // free to disagree.
         let ceiling = config.max_buffer_size.min(MAX_CHUNK);
         process_guard.attach(bridge_thread);
         let process_guard = Arc::new(process_guard);
@@ -356,11 +389,12 @@ impl PluginClient<Unbound> {
         })
     }
 
-    /// Bind this plugin to be a graph node: allocate its audio path (the IPC
-    /// batcher and its scratch) and become a [`PluginClient<Bound>`], the one
-    /// state that is a [`Node`](tutti_graph::Node). Control thread;
-    /// allocates. Insert the result with `Editor::insert`, which prepares it
-    /// and hands back its [`PluginControls`].
+    /// Allocates the audio path and returns the [`PluginClient<Bound>`] that
+    /// can go into a graph.
+    ///
+    /// Call on the control thread; allocates. Insert the result with
+    /// `Editor::insert`, which prepares it and hands back its
+    /// [`PluginControls`].
     ///
     /// Install per-block sources before or after — they live on shared cells
     /// ([`controls`](Self::controls)), so an install through a handle reaches
@@ -428,7 +462,7 @@ impl<S> PluginClient<S> {
         &self.process_guard
     }
 
-    /// The plugin's reported latency, in **frames** — its own figure, without
+    /// Returns the plugin's reported latency in **frames**: its own figure, without
     /// the chunk the IPC pipeline adds
     /// ([`PluginControls::declared_latency`] has both).
     ///
@@ -437,7 +471,7 @@ impl<S> PluginClient<S> {
         self.controls.latency()
     }
 
-    /// Runtime latency update. RT-safe.
+    /// Overrides the plugin's reported latency. RT-safe.
     ///
     /// Normally driven by the bridge thread when the plugin-server emits
     /// `BridgeMessage::LatencyChanged` (installed by `PluginClient::new`);
@@ -451,7 +485,7 @@ impl<S> PluginClient<S> {
         self.controls.set_latency(samples);
     }
 
-    /// What the plugin currently reports for its tail.
+    /// Returns what the plugin currently reports for its tail.
     ///
     /// Starts as the value read at load and tracks runtime changes for formats
     /// that signal them (CLAP).
@@ -459,7 +493,7 @@ impl<S> PluginClient<S> {
         self.controls.tail()
     }
 
-    /// Runtime tail update. RT-safe.
+    /// Overrides the plugin's reported tail. RT-safe.
     ///
     /// Normally driven by the bridge thread when the plugin-server emits
     /// `BridgeMessage::TailChanged`; exposed publicly so callers can also force
@@ -470,9 +504,11 @@ impl<S> PluginClient<S> {
         self.controls.set_tail(tail);
     }
 
-    /// A handle on this node's host-side controls — its input slots, meter,
-    /// latency, tail and sample rate — that stays valid after the node moves
-    /// into a graph. Inserting a bound client hands the same handle back.
+    /// Returns a handle on this node's host-side controls that stays valid
+    /// after the node moves into a graph.
+    ///
+    /// The controls cover the input slots, meter, latency, tail and sample
+    /// rate. Inserting a bound client hands the same handle back.
     ///
     /// Every cell in it is shared with this node, so a host takes this and
     /// drives the running plugin through it from then on, instead of reaching
@@ -481,53 +517,58 @@ impl<S> PluginClient<S> {
         self.controls.clone()
     }
 
-    /// Catalog identity (id, name, vendor, version, native class, editor).
+    /// Returns the plugin's catalog identity (id, name, vendor, version, class,
+    /// editor).
     pub fn descriptor(&self) -> &PluginDescriptor {
         &self.descriptor
     }
 
-    /// Engine-wiring data from load (per-bus channel widths, latency, f64).
+    /// Returns what the plugin reported at load: per-bus channel widths,
+    /// latency and `f64` support.
     pub fn loaded(&self) -> &LoadedPlugin {
         &self.loaded
     }
 
-    /// The sample format negotiated with the plugin at load.
+    /// Returns the sample format negotiated with the plugin at load.
     pub fn format(&self) -> SampleFormat {
         self.format
     }
 
-    /// Audio input ports: main plus sidechain/aux buses.
+    /// Returns the number of audio input ports: main plus sidechain/aux buses.
     pub fn inputs(&self) -> usize {
         self.inputs
     }
 
-    /// Audio output ports.
+    /// Returns the number of audio output ports.
     pub fn outputs(&self) -> usize {
         self.outputs
     }
 
-    /// When true, all audio processing produces silence.
+    /// Returns `true` once the connection to the plugin-server has failed (for
+    /// example, the subprocess crashed); the node then outputs silence.
     pub fn is_crashed(&self) -> bool {
         self.bridge.is_crashed()
     }
 
-    /// RT-safe, fire-and-forget. Main-thread parameter reads/writes live
-    /// on [`crate::host::handles::PluginHandle`]; this method exists because registry
-    /// builders push initial parameter values through the `PluginClient`
-    /// before any `PluginHandle` has been constructed.
+    /// Queues a parameter change for the plugin. RT-safe, fire-and-forget.
+    ///
+    /// Main-thread parameter reads and writes are on
+    /// [`PluginHandle`](crate::host::handles::PluginHandle); this lets a
+    /// builder set initial values before any handle exists.
     pub fn set_parameter(&self, param_id: ParamAddress, value: Normalized) {
         let _ = self.bridge.set_parameter_rt(param_id, value);
     }
 
-    /// Push the host [`AutomationMode`](crate::protocol::AutomationMode) to the
-    /// plugin. RT-safe, fire-and-forget; a no-op for plugins / formats without an
-    /// automation-state concept. The format-neutral mode is encoded onto the
-    /// format's own ABI at its FFI edge (server-side / GUI-side), not here.
+    /// Sends the host [`AutomationMode`](crate::protocol::AutomationMode) to the
+    /// plugin.
+    ///
+    /// RT-safe, fire-and-forget; a no-op for plugins and formats without an
+    /// automation-state concept.
     pub fn set_automation_state(&self, mode: crate::protocol::AutomationMode) {
         let _ = self.bridge.set_automation_state_rt(mode);
     }
 
-    /// Push the [`RenderMode`](crate::protocol::RenderMode) to the plugin.
+    /// Sends the [`RenderMode`](crate::protocol::RenderMode) to the plugin.
     ///
     /// Queued on the same command bus as the blocks around it, so the change
     /// lands between two blocks rather than overtaking one in flight.
@@ -542,25 +583,28 @@ impl<S> PluginClient<S> {
         self.bridge.set_render_mode_rt(mode)
     }
 
-    /// Give the plugin the project meter, for the time signature and bar in
-    /// the transport it is sent each block. The transport itself needs no
-    /// install: the node reads it from each block's `Env`. See
-    /// [`PluginControls::set_meter`].
+    /// Installs the project meter, from which the plugin's transport gets its
+    /// time signature and bar.
+    ///
+    /// The transport itself needs no install: the node reads it from each
+    /// block. See [`PluginControls::set_meter`].
     pub fn set_meter(&self, meter: Arc<tutti_core::RtPublish<MeterMap>>) {
         self.controls.set_meter(meter);
     }
 
-    /// Parameter automation for this plugin: an event source node sampling
-    /// one curve per parameter, to wire to this plugin node's event input.
+    /// Creates an automation node that samples one curve per parameter, to
+    /// wire to this plugin node's event input.
+    ///
     /// See [`PluginControls::automation`].
     pub fn automation(&self, params: impl IntoIterator<Item = TimedParam>) -> PluginAutomation {
         self.controls.automation(params)
     }
 
-    /// Build a [`PluginParamTarget`] for one of this plugin's params — a
-    /// [`ModTarget`](tutti_nodes::ModTarget) a modulation router accumulates
-    /// into, whose value the plugin receives over the per-block
-    /// [`ParameterChanges`] path.
+    /// Creates a [`PluginParamTarget`] for one of this plugin's parameters.
+    ///
+    /// The target is a [`ModTarget`](tutti_nodes::ModTarget) a modulation
+    /// router accumulates into; the plugin receives its value as a per-block
+    /// parameter change.
     ///
     /// The returned `Arc` is usable as BOTH a `ModTarget` (route to it) and a
     /// [`Curve`](tutti_nodes::automation::Curve) (a `TimedParam`'s, for
@@ -588,8 +632,8 @@ impl<S> PluginClient<S> {
     }
 }
 
-/// A hosted plugin implements the **same** `ModParams` trait as a native node —
-/// the whole point of `ParamAddr`. A plugin speaks the opaque-id vocabulary, so
+/// A hosted plugin implements the same `ModParams` trait as a native node.
+/// A plugin speaks the opaque-id vocabulary, so
 /// it answers on [`ParamAddr::Id`](tutti_core::ParamAddr::Id) (its numeric param
 /// id) and returns `None` for a native [`Unit`](tutti_core::ParamAddr::Unit)
 /// param it does not have.

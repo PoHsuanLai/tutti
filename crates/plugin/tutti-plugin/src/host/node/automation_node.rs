@@ -1,5 +1,5 @@
 //! [`PluginAutomation`]: a hosted plugin's parameter automation as an event
-//! source node (doc 013, rewrite item 5).
+//! source node.
 //!
 //! One [`Curve`] per plugin parameter ([`TimedParam`]), sampled each block at
 //! the beat `Env` puts each frame at (`Env::transport_at`: the host's own
@@ -7,7 +7,7 @@
 //! node's event input as [`ParamRamp::foreign`] events, one per point. The
 //! plugin node turns them into its chunk's `ParameterChanges`; the edge
 //! between the two is a graph edge, so the compiler's delay compensation
-//! covers it like any other (defect D9).
+//! covers it like any other.
 //!
 //! **Points.** At frame 0, every `stride` frames and the block's last frame,
 //! the stride widening with the block so a parameter gets at most
@@ -473,7 +473,7 @@ mod tests {
     /// **Live modulation does not reach a fork.** A `PluginParamTarget` is
     /// live state the mod router writes every frame; a fork samples a frozen
     /// copy of its authored part (base and `AUTOMATION` layer as they stood,
-    /// modulation layers dropped, doc 013 gap 7), and nothing written to the
+    /// modulation layers dropped), and nothing written to the
     /// live target afterwards reaches it. The fork (the sink and what feeds
     /// it) sends 0.6 before and after the live target moves.
     ///

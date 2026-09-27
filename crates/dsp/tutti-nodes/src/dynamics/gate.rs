@@ -35,8 +35,8 @@ pub(super) struct GateCore {
 /// The controls one block runs on, read from their atomics **once** at the
 /// top of `process`.
 ///
-/// Two atomic loads per sample used to sit inside the gain computation. The
-/// threshold only decides open/closed, and the attack/hold/release follower
+/// Reading per block keeps two atomic loads per sample out of the gain
+/// computation. The threshold only decides open/closed, and the attack/hold/release follower
 /// already turns a changed decision into a ramp, so it is held for the block.
 /// The range multiplies the output directly — the closed floor — so a step
 /// would click; it ramps linearly from the previous block's value instead.
@@ -125,7 +125,7 @@ impl GateCore {
         )
     }
 
-    /// Read every block-rate control once, and move the range ramp's start to
+    /// Reads every block-rate control once, and moves the range ramp's start to
     /// this block's end.
     #[inline]
     pub fn begin_block(&mut self) -> GateBlock {
@@ -175,8 +175,8 @@ impl GateCore {
 /// # Modulated threshold
 ///
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
-/// (`ch..2*ch`). The threshold is modulatable by the graph (design doc 013
-/// item 6; [`GATE_PARAMS`]): a per-frame threshold in [`Db`] on the param
+/// (`ch..2*ch`). The threshold is modulatable by the graph
+/// ([`GATE_PARAMS`]): a per-frame threshold in [`Db`] on the param
 /// port ([`Io::param`](tutti_graph::Io::param)) overrides the threshold cell
 /// per sample. Unmodulated, the node reads its cell once per block, which is
 /// the common case; the arity never changes.
@@ -479,7 +479,7 @@ mod tests {
         assert_param_fork(GateNode::stereo(-30.0, 0.001, 0.01, 0.1));
     }
 
-    /// A block longer than the old 64-frame stack lane renders whole: the
+    /// A block longer than 64 frames renders whole: the
     /// gain lane is sized from the prepared `MaxBlock`.
     ///
     /// Mutation (run): size the lane `vec![0.0; 64]` in `prepare` → the

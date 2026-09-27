@@ -18,8 +18,8 @@ use crate::window::{CosineWindow, Window};
 
 /// Window, hop, window shape, and sample rate — validated once, on construction.
 ///
-/// Fields are private and there is no literal constructor, so the invalid
-/// instances the old `pub`-field structs admitted cannot exist: a zero hop, a
+/// Fields are private and there is no literal constructor, so invalid
+/// instances cannot exist: a zero hop, a
 /// hop wider than its window, a non-positive sample rate, or a stored bin
 /// count contradicting the window it came from.
 ///
@@ -190,8 +190,8 @@ impl StftGeometry {
     ///
     /// Two conditions belonging to two different types: the hop must divide the
     /// window (a fact about the *grid*) and the overlap must reach the window's
-    /// own COLA factor (a fact about the *window*, which is why the `4` that
-    /// used to sit here now lives on [`CosineWindow::cola_overlap`]).
+    /// own COLA factor (a fact about the *window*, given by
+    /// [`CosineWindow::cola_overlap`]).
     #[inline]
     pub fn is_cola(self) -> bool {
         self.window.get().is_multiple_of(self.hop.get())

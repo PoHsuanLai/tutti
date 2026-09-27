@@ -19,9 +19,9 @@
 //! `encode` minus `render` at matching settings says which half to look at.
 //!
 //! Durations are kept short on purpose. Once the rendered planes get large
-//! the working set leaves criterion's domain — the same boundary
-//! `tutti-sampler`'s `profile_stretch_clone` harness measured at 81×
-//! wall-clock spread (doc 013 records it; the harness went with `Net`) — and the honest instrument becomes `--profile-time` plus samply.
+//! the working set leaves criterion's domain (wall-clock spread of 81× has
+//! been measured at that boundary), and the honest instrument becomes
+//! `--profile-time` plus samply.
 
 use std::hint::black_box;
 
@@ -39,8 +39,7 @@ const SR: f64 = 48_000.0;
 /// `g`, built for an export at `rate` — the config's render rate, which the
 /// graph must be prepared at.
 ///
-/// Built per iteration, like the `Net` it replaced was: an export consumes its
-/// graph, so the build (preparing every unit, compiling the plan) is part of
+/// Built per iteration: an export consumes its graph, so the build (preparing every unit, compiling the plan) is part of
 /// what a bounce costs.
 fn built(g: GraphBuilder, rate: f64) -> RenderGraph {
     let (editor, executor) = g

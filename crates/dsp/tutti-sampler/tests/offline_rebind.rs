@@ -1,13 +1,10 @@
 //! An offline render must not hear the live playhead — nor steal from it.
 //!
-//! Under `Net` this was a per-node duty (`AudioUnit::rebind_offline`: each
-//! transport-aware unit re-pointed its clock at the render's timeline), and
-//! these guards pinned that every such node — `VoicePool`, `VoiceNode`, a bare
-//! `MemorySource`, one nested in a sub-net — was reached. The sampler's nodes
-//! are graph nodes now (doc 013 items 8 and 9): each reads the transport from its
-//! block's `Env`, so a fork (`Editor::fork`, the export's) has nothing to
-//! rebind — it plays on whatever transport its own renderer hands it. What is
-//! left to pin is the outcome, for every node shape: a fork rendered on a
+//! Each of the sampler's nodes reads the transport from its block's `Env`, so
+//! a fork (`Editor::fork`, the export's) has nothing to rebind: it plays on
+//! whatever transport its own renderer hands it. What these tests pin is the
+//! outcome, for every node shape (`VoicePool`, `VoiceNode`, a bare
+//! `MemorySource`, one behind another node): a fork rendered on a
 //! **stopped** render transport is silent while the live graph, on a rolling
 //! one, sounds; a fork holds nothing the live graph's handles reach; and a
 //! node that reads no transport is unaffected.
@@ -245,15 +242,13 @@ impl Node for Pass {
     fn reset(&mut self) {}
 }
 
-/// **The fork reaches a voice behind another node.** Under `Net`, a voice
-/// nested in a sub-net used as a node inherited `rebind_offline`'s
-/// do-nothing default until `Net` forwarded it; the graph's fork walks every
-/// node an output reaches, and each reads its own `Env`. A voice feeding a
+/// **The fork reaches a voice behind another node.** The graph's fork walks
+/// every node an output reaches, and each reads its own `Env`. A voice feeding a
 /// pass-through, forked, renders silence on a stopped render transport.
 ///
 /// Mutation (run): `place` ignoring `run.rolling()` → the fork sounds on the
-/// stopped transport → fails. (The `Net`-era mutation — the fork keeping the
-/// live clock — has no counterpart: a graph node holds no clock to keep.)
+/// stopped transport → fails. (A fork keeping the live clock is not a
+/// possible mutation: a graph node holds no clock to keep.)
 #[test]
 fn a_voice_behind_another_node_is_forked_too() {
     let (mut ed, mut exec) = Editor::new(prepare());

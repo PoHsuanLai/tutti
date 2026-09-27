@@ -1,14 +1,13 @@
 # tutti-nodes
 
-The engine's built-in DSP nodes: filters, delays, dynamics, modulation effects,
-mixing and automation.
+The Tutti audio engine's built-in DSP nodes: filters, delays, dynamics,
+modulation effects, mixing and automation.
 
-## What this is
-
-Graph nodes (`tutti_graph::Node`), each inserted with the `ParamSet` a host
-drives it through by `UnitParam`. Every node here goes into a graph
-(`tutti_graph::{GraphBuilder, Editor}`), gets wired, is prepared at the device
-rate, and renders.
+Every node here is a graph node (`tutti_graph::Node`). Build one, insert it
+into a graph (`tutti_graph::{GraphBuilder, Editor}`), wire it, and the graph
+prepares it at the device rate and renders it. Inserting a node hands back its
+controls, usually a `tutti_graph::ParamSet` addressed by `UnitParam`, which
+change the running node without a lock.
 
 - **Filters** — `SvfFilterNode`, `LadderFilterNode` (both any width, one
   coefficient solve shared across the channels) and `EqBandNode`.
@@ -32,23 +31,19 @@ rate, and renders.
   and recording units, and `ConvolverNode` with its IR generators (behind a
   feature).
 
-Note the suffix convention: a `*Node` is the graph-facing `Node`, while the
-inner DSP objects it is built from — `DelayLine`, `Lfo`, `Modulator`, `BandState`
-— deliberately carry no suffix, because they are not nodes.
+A `*Node` is the graph-facing node; the inner DSP objects some are built
+from — `DelayLine`, `Lfo`, `Modulator`, `BandState` — carry no suffix, because
+they are not nodes and can be used on their own.
 
-## What it does not own
+Nothing in this crate can fail: there is no `Error` type, and a node is ready
+to insert the moment it is built.
 
-It is the **infallible** DSP tier: no fallible operation anywhere, and therefore
-no `Error` type at all. Speaker-layout construction was the last thing that could
-fail here, and it left with the panners.
+## Scope
 
-- **No geometry.** The VBAP and binaural panners are
-  [`tutti-spatial`](../tutti-spatial)'s, which depends on *this* crate — its mix
-  builder is assembled from `ChannelSumNode` + `SvfFilterNode`. The arrow runs
-  geometry → DSP and never back.
-- **No Bevy, and no feature to add it.** The entire ECS binding layer — param and
-  marker components, reconcile/spawn systems, deferred convolver load — is
-  app-side. The engine's Bevy side (`bevy-tutti`) only drives the graph.
+- **No spatial panning.** The VBAP and binaural panners are `tutti-spatial`,
+  which builds its mixes from this crate's `ChannelSumNode` and
+  `SvfFilterNode`.
+- **No Bevy.** ECS bindings are the host's; `bevy-tutti` drives the graph.
 - **No sample playback and no synthesis.** Those are `tutti-sampler`,
   `tutti-polysynth` and `tutti-soundfont`.
 
@@ -73,78 +68,65 @@ assert!(solo.controls().set(UnitParam::Cutoff, 2_000.0));
 let out = solo.render_input(&[&[1.0; 64]]);
 ```
 
-## Live control values must live in shared storage (MANDATORY)
+## Changing a running node
 
-> A value a user can change **while the node is rendering** lives behind an `Arc`
-> — a `Param<U>`, an `Arc<AtomicBool>`, an `Arc<AtomicU8>` — and its setter takes
-> **`&self`**. A `&mut self` setter means exactly one thing: *restructure me,
-> and expect a respawn.*
+Once a node is in a graph it belongs to the executor, so the control thread
+reaches it only through what it shares: its `Param<U>` cells and atomics,
+reached through the controls it was inserted with. A setter that takes
+`&self` writes such a cell; it is lock-free and lands on the node's next
+block. A setter that takes `&mut self` restructures the node and is meant for
+before insertion (or for a replacement node). Clones of a node share its
+cells, so a control handle stays valid for the node it came from.
 
-This is not style. A node in the graph belongs to the executor: nothing on the
-control side can reach it but what it shares — its cells, through the controls
-it was inserted with. A control stored **by value** cannot be changed on a live
-node at all; the change is a replacement (a crossfade to a new node).
-`tests/live_controls_reach_the_node.rs` is that rule as assertions. (Under
-`Net` it was worse: its frontend held **clones** of its vertices, so a by-value
-write compiled, landed on a clone, and the next commit discarded it, with no
-error and no diagnostic.)
+`ParamSet::set` returns `false` for a param the node was not inserted with,
+so a write to the wrong address is visible at the call site. A host pushing
+one value to many nodes can ignore the `false` from the ones that do not own
+it.
 
-**`&self` is necessary, not sufficient.** A plain `AtomicBool` field also permits
-`&self` and is *still* lost, because `Clone` copies the atomic rather than
-sharing it (`tutti_sampler`'s `MemorySource` is the cautionary example:
-`trigger` / `play` / `stop` all take `&self` and all evaporate). The property
-that matters is **shared across clones**; `&self` is how you get there, not proof
-that you did.
+### Writing your own node's controls
 
-### Which mechanism, by what the value is
+The same rule applies to a node you write: a value that changes while the
+node renders lives behind an `Arc`, shared across clones.
 
 | the value | mechanism |
 |---|---|
 | one `f32` with a unit newtype | `Param<U>` + `&self` setter + its `UnitParam` address in the node's `ParamNode::param_set` |
-| one `bool`, or a small `Copy` enum | `Arc<AtomicBool>` / `Arc<AtomicU8>` + `&self` setter. A bool rides `UnitParam`'s documented `>= 0.5` encoding — `ParamSet::set` carries an `f32`, so it has to. |
+| one `bool`, or a small `Copy` enum | `Arc<AtomicBool>` / `Arc<AtomicU8>` + `&self` setter. A bool rides `UnitParam`'s `>= 0.5` encoding, since `ParamSet::set` carries an `f32`. |
 | a multi-field struct, or anything heap-backed | a command queue: flatten the struct into scalar fields, allocate sender-side, drain in the callback |
 
-`Param<U>` stops where `ParamSet::set` stops: its payload is one `f32`, so anything
-wider leaves the `set()` path entirely. That is a property of the transport, not
-a limitation of `Param`.
+A plain `AtomicBool` field is not enough: `Clone` copies the atomic rather
+than sharing it, so writes to one clone never reach another. `RtPublish` is
+for moving a *deallocation* off the audio thread (routing tables, delay
+vectors), not for sharing a small `Copy` value.
 
-`RtPublish` is **not** on this ladder. It exists to move a *deallocation* off the
-audio thread — routing tables, PDC vectors, meter maps. Reaching for it to share
-a 16-byte `Copy` struct pays a slot CAS, a `SeqCst` fence and one of the cell's
-reader slots for none of its benefit.
+## Real-time behaviour
 
-### A wrong address is visible; past it, nothing is
-
-Worth knowing before assuming a value arrived. `ParamSet::set` returns `false`
-for a param the node was not inserted with, so a write to an address the node
-does not own shows at the call site (a host pushing one value to many nodes can
-ignore the `false` from the ones that do not own it; that is deliberate).
-
-Past the address nothing can tell: a node that registers a cell and never reads
-it is indistinguishable, from the control side, from one that reads it and does
-nothing. That is what a host's audible end-to-end tests are for, and they
-necessarily live wherever the DAW param vocabulary does. (Under fundsp's `Net`,
-deleted in design doc 013 Phase 5, it was worse: `AudioUnit::set` had an empty
-default body that swallowed every setting, with no `false` to see.)
+The nodes' `process` paths allocate nothing and take no lock, at any block
+length up to the graph's prepared maximum; buffers are sized at construction
+and in `prepare`, on the control thread. The recursive nodes (filters, delays,
+modulation effects, dynamics) read a non-finite control value (NaN, ±∞) as
+unchanged, so it never reaches their state.
 
 ## Where it sits
 
-Depends on `tutti-core`, `tutti-types`, `tutti-mod` (with `routing`) and
-`audio-automation`. `tutti-spatial`, `tutti-export`, `tutti-plugin` and
-`bevy-tutti` depend on it. It re-exports `ModParams`, `ModTarget`,
-`AtomicTarget`, `LayeredCurve` and friends from `tutti-mod`, so a downstream
-crate implementing `ModParams` needs no separate `tutti-mod` dependency.
+The `tutti` crate re-exports this one as `tutti::nodes`; `bevy-tutti`,
+`tutti-spatial`, `tutti-polysynth`, `tutti-export` and `tutti-plugin` build on
+it. It re-exports `ModParams`, `ModTarget`, `AtomicTarget`, `LayeredCurve` and
+related items from `tutti-mod`, so a crate implementing `ModParams` needs no
+separate `tutti-mod` dependency, and the unit types (`Hz`, `Db`, `Seconds`, …)
+and `Param` from `tutti-core`.
 
 ## Features
 
 `default = []`.
 
 - `convolution` — FFT convolution reverb over a partitioned IR (`Convolver`,
-  `ConvolverNode` at any width, with `IrChannelConfig`). Pulls `realfft`; the
-  partitioned convolution is this crate's, so an IR's spectra are stored once
-  (`IrSpectra`, behind an `Arc`) and shared by every channel and every fork.
-
-There is no `bevy` feature, and no `spatial` / `hrtf` — see above.
+  `ConvolverNode` at any width, with `IrChannelConfig`). Pulls `realfft`. An
+  IR's spectra are stored once (`IrSpectra`, behind an `Arc`) and shared by
+  every channel and every fork of the graph.
+- `testing` — stimulus and plumbing nodes for tests, examples and benches
+  (`Const`, `Osc`, `Through`, `Split`, `Sink`). Enable it from
+  `[dev-dependencies]` only.
 
 ## License
 

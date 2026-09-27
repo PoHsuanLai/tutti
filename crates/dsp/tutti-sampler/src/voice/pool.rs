@@ -331,7 +331,7 @@ impl VoicePool {
             .map(|s| &s.voice.play)
     }
 
-    /// Drop every voice slot. Control thread (it frees them).
+    /// Drops every voice slot. Control thread (it frees them).
     pub fn clear_voices(&mut self) {
         self.voices.clear();
     }
@@ -414,7 +414,7 @@ impl VoicePool {
         self.insert_voice_inner(id, Box::new(voice), stretch);
     }
 
-    /// Insert a fully-built [`Voice`] as a new slot and REALISE its full
+    /// Inserts a fully-built [`Voice`] as a new slot and realises its full
     /// `Playback` intent per-tier, building the stretch filter here if the voice
     /// needs one.
     ///

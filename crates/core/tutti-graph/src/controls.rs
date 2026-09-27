@@ -7,11 +7,9 @@
 //! and a caller that knows the node's type uses those. A host that does not
 //! — bevy-tutti's `AudioParam<U, P>`, which names a param by `UnitParam` and
 //! reaches the node through its graph key — needs the same cells by address.
-//! Under `Net` that was `AudioUnit::set(Setting)`, a settings ring per node
-//! and a shadow copy of the unit to fork from. A graph node has neither: its
-//! controls **are** its cells, shared with the running unit, so a write lands
+//! A graph node's controls **are** its cells, shared with the running unit, so a write lands
 //! on the next block without a ring and a fork reads the values it needs from
-//! the controls rather than from a shadow.
+//! the controls rather than from a shadow copy of the unit.
 //!
 //! # Live and authored
 //!
@@ -26,9 +24,8 @@
 //! A fork of the node starts from the **authored** values ([`ParamFork`]), so
 //! an export renders the knob the user set, not whatever a modulation source
 //! had added to it at the instant of the fork (the export runs its own
-//! modulation). That is what the old adapter's shadow copy gave, for the
-//! same reason; here it is a second number per param instead of a second
-//! copy of the unit.
+//! modulation). It costs a second number per param, not a second copy of the
+//! unit.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -67,7 +64,7 @@ impl ParamSet {
         }
     }
 
-    /// Start a set; add each param with [`ParamSetBuilder::param`].
+    /// Starts a set; add each param with [`ParamSetBuilder::param`].
     pub fn builder() -> ParamSetBuilder {
         ParamSetBuilder { slots: Vec::new() }
     }
@@ -76,7 +73,7 @@ impl ParamSet {
         self.slots.iter().find(|s| s.param == param)
     }
 
-    /// Set `param` to `value`: the live cell (the node reads it on its next
+    /// Sets `param` to `value`: the live cell (the node reads it on its next
     /// block) and the authored value (what a fork starts from). `false` if
     /// the node has no such param; nothing is written then.
     pub fn set(&self, param: UnitParam, value: f32) -> bool {
@@ -88,7 +85,7 @@ impl ParamSet {
         true
     }
 
-    /// Set only `param`'s authored value, leaving the live cell to whoever
+    /// Sets only `param`'s authored value, leaving the live cell to whoever
     /// drives it (a modulation driver writing `base + Σ layers` there every
     /// frame: a write of the bare base would fight it for a block). `false`
     /// if the node has no such param.
@@ -182,10 +179,9 @@ impl ParamSetBuilder {
 /// [`ParamSet`]: what [`param_parts`] inserts, with a fork that shares
 /// nothing and starts from the authored values.
 ///
-/// It took the place of `AudioUnit::isolate` + `rebind_offline` (deleted
-/// with fundsp in doc 013 Phase 5) for such a node: a graph node reads time
-/// from its block's `Env`, so there is nothing to rebind, and
-/// [`fork_fresh`](Self::fork_fresh) is the isolate.
+/// A graph node reads time from its block's [`Env`](crate::Env), so a fork
+/// has nothing to rebind: [`fork_fresh`](Self::fork_fresh) is the whole
+/// copy.
 pub trait ParamNode: Node + Sized {
     /// A [`ParamSet`] over this node's cells (every param a host may set by
     /// address). Control thread; may allocate.

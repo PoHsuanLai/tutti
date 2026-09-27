@@ -3,12 +3,13 @@
 //!
 //! # Why a separate type
 //!
-//! A plugin node is owned by the graph once inserted (doc 013: units exist
-//! exactly once, and nothing downcasts to find one). Everything a host does to
-//! it afterwards — give it the project meter, read the latency it reports —
-//! goes through state shared with the node: the meter, latency and tail are
-//! shared cells. (What it plays — MIDI, parameter automation, chords and
-//! scales — reaches it on its event input, from nodes of their own.) This type is those shared cells and nothing else, and it is what
+//! A plugin node is owned by the graph once inserted: it exists exactly once,
+//! and nothing downcasts to find it. Everything a host does to it afterwards —
+//! give it the project meter, read the latency it reports — goes through state
+//! shared with the node: the meter, latency and tail are shared cells. (What
+//! it plays — MIDI, parameter automation, chords and scales — reaches it on
+//! its event input, from nodes of their own.) This type is those shared cells
+//! and nothing else, and it is what
 //! inserting a bound plugin hands back
 //! ([`IntoNode::Controls`](tutti_graph::IntoNode::Controls)), so the type
 //! system gives the host its control surface at insert.
@@ -204,9 +205,11 @@ impl PluginControls {
         self.indexed
     }
 
-    /// Parameter automation for this plugin: an event source node sampling
-    /// one curve per parameter at each block's beats, to insert in the graph
-    /// and wire to the plugin node's event input (doc 013 item 5). The
+    /// Creates this plugin's parameter automation node.
+    ///
+    /// The node is an event source sampling one curve per parameter at each
+    /// block's beats; insert it in the graph and wire it to the plugin node's
+    /// event input. The
     /// automation reaches the plugin through the graph, so its delay
     /// compensation covers it. An address of the other model than this
     /// plugin's (a VST2 index on a CLAP plugin) is refused, logged. Replace

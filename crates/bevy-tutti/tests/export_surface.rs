@@ -5,9 +5,8 @@
 //! spawn site, that a batch spawned in one frame starts one at a time, and that
 //! a request's `prepare` hook reaches the graph that is actually rendered.
 //!
-//! An export forks the graph (`Editor::fork`, design doc 013 PR 12). These
-//! ran on both graph runtimes until PR 13 removed the `Net` one; the surface
-//! did not change. What the fork renders is `export_fork.rs`'s.
+//! An export forks the graph (`Editor::fork`). What the fork renders is
+//! `export_fork.rs`'s.
 
 #![cfg(all(feature = "export", feature = "wav"))]
 
@@ -203,7 +202,7 @@ fn export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it() {
 /// failure, not a silent drop or a panic on the pool.
 ///
 /// "No outputs" means the *unit* produces none (`Editor::fork` asks the
-/// node's own arity, as `Net::clone_isolated` did — not whether it happens to be
+/// node's own arity — not whether it happens to be
 /// wired), so this needs a genuine sink. A `dc` pushed but left unwired still
 /// has one output and renders fine.
 #[test]
@@ -363,12 +362,12 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
 /// **The caller's timeline is what the nodes get rebound onto.**
 ///
 /// `RenderClock` is advance-only, so this crate cannot read a timeline back out
-/// of the `clock` a caller supplies. It used to manufacture its own — hardcoded
-/// to 120 BPM at beat 0 — and rebind every transport-aware node in the clone
-/// onto *that*, while the renderer advanced the caller's. The two ends
-/// disagreed: a tap on a 90 BPM project bound its voices to a 120 BPM playhead
-/// that nothing then advanced, which is the silent-playhead failure the
-/// per-node rebind exists to prevent.
+/// of the `clock` a caller supplies. Manufacturing its own timeline (say 120 BPM
+/// at beat 0) and rebinding the clone's transport-aware nodes onto *that*,
+/// while the renderer advanced the caller's, would make the two ends disagree:
+/// a tap on a 90 BPM project would bind its voices to a 120 BPM playhead that
+/// nothing advances, which is the silent-playhead failure the per-node rebind
+/// exists to prevent.
 #[test]
 fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
@@ -426,10 +425,8 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
     );
 }
 
-/// **A master export is rebound onto the caller's timeline too.** The
-/// behaviour change of doc 013's PR 12, pinned where a host sees it: what
-/// the `prepare` hook is told. (Until PR 13 a `Net` master export kept its
-/// live bindings and said so with `ctx: None`; `ctx` is no longer optional.)
+/// **A master export is rebound onto the caller's timeline too**, pinned
+/// where a host sees it: what the `prepare` hook is told.
 ///
 /// Mutation (run): `prepare_graph` handing the hook a context of its own
 /// (`ExportClock::frozen().offline()`) instead of the one the fork was

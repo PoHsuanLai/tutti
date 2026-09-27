@@ -1,6 +1,5 @@
 //! [`MidiQueueNode`]: MIDI a control thread sends (a keyboard, a preview,
-//! an all-notes-off) into the graph, out of one event port (doc 013, rewrite
-//! item 5).
+//! an all-notes-off) into the graph, out of one event port.
 //!
 //! The control thread pushes into a [`MidiSender`] (the node's controls);
 //! each block the node drains what arrived and sends it out, every event on

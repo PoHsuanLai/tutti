@@ -61,7 +61,7 @@ pub struct MidiSender {
 }
 
 impl MidiSender {
-    /// Push `events`; return how many were accepted. `< events.len()` means
+    /// Pushes `events` and returns how many were accepted. `< events.len()` means
     /// the ring was full and the rest were dropped (a prefix is accepted, so
     /// the stream stays in order). Dropping a note-off whose note-on landed is
     /// what leaves a note stuck, so a caller with anywhere to report it must.
@@ -77,8 +77,8 @@ impl MidiSender {
         accepted
     }
 
-    /// Push a MIDI 1.0 note-on (7-bit velocity); `false` if the ring was
-    /// full.
+    /// Pushes a MIDI 1.0 note-on (7-bit velocity) on group 1. Returns `false`
+    /// if the ring was full.
     pub fn note_on(&self, channel: MidiChannel, note: u8, velocity: u8) -> bool {
         self.slot
             .events
@@ -91,8 +91,8 @@ impl MidiSender {
             .is_ok()
     }
 
-    /// Push a MIDI 1.0 note-off; `false` if the ring was full (which would
-    /// leave the note stuck).
+    /// Pushes a MIDI 1.0 note-off on group 1. Returns `false` if the ring was
+    /// full (which would leave the note stuck).
     pub fn note_off(&self, channel: MidiChannel, note: u8) -> bool {
         self.slot
             .events
@@ -135,7 +135,7 @@ impl MidiReceiver {
         !self.slot.events.is_empty()
     }
 
-    /// Drop everything waiting.
+    /// Drops everything waiting in the ring.
     pub fn clear(&self) {
         while self.slot.events.pop().is_some() {}
     }

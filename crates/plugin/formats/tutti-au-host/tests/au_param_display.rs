@@ -393,8 +393,8 @@ fn meter_parameters_are_flagged_as_read_only_readings() {
 /// controls and must NOT be flagged, or the filter that hides meters would hide
 /// the whole automation menu.
 ///
-/// Not a blanket "no effect has a meter" assertion — that was the first version of
-/// this test and it was **wrong**. AUDynamicsProcessor genuinely publishes three
+/// Not a blanket "no effect has a meter" assertion — that would be **wrong**.
+/// AUDynamicsProcessor genuinely publishes three
 /// meters ("Comp Amount" 1000, "Input Amplitude" 2000, "Output Amplitude" 3000,
 /// all flags `0x48108010`), which the host reads correctly. The real invariant is
 /// that the flag separates the two populations rather than being stuck on or off,

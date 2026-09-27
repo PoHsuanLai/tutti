@@ -29,25 +29,25 @@ impl LfoDrive {
         }
     }
 
-    /// Write the phase at each sample of the block into `out` — the phase
+    /// Writes the phase at each sample of the block into `out` — the phase
     /// *before* that sample's step — reading the rate once, and leave the drive
     /// stepped past the block.
     ///
     /// The increment is hoisted out of the loop: the rate cannot change inside
     /// a block, so the phases are bit-identical to stepping sample by sample.
     ///
-    /// `per_sample` computes in f64 and narrows once; the old form divided by
-    /// the sample rate already narrowed to f32, which is the drift
-    /// `PhaseIncrement` exists to prevent.
+    /// `per_sample` computes in f64 and narrows once; dividing by a sample
+    /// rate already narrowed to f32 would drift.
     ///
-    /// `Phase::advance` wraps with `rem_euclid`. What it replaced —
-    /// `if phase >= 1.0 { phase -= 1.0 }` — is only a wrap when the increment
-    /// is in `[0, 1)`, and nothing on this path guaranteed that. `set_rate`
+    /// `Phase::advance` wraps with `rem_euclid`. A conditional subtract
+    /// (`if phase >= 1.0 { phase -= 1.0 }`) is only a wrap when the increment
+    /// is in `[0, 1)`, and nothing on this path guarantees that. `set_rate`
     /// floors the rate at 0.01 Hz but never caps it, so a rate above the
-    /// sample rate walked the phase out of `[0, 1)` permanently and froze the
-    /// LFO to DC; the control-rate modulation path skips `set_rate` entirely
-    /// (it writes the atomic through a caller-supplied min/max), so a negative
-    /// rate ran the phase down without ever meeting the `>= 1.0` test.
+    /// sample rate would walk the phase out of `[0, 1)` permanently and freeze
+    /// the LFO to DC; the control-rate modulation path skips `set_rate`
+    /// entirely (it writes the atomic through a caller-supplied min/max), so a
+    /// negative rate would run the phase down without ever meeting the
+    /// `>= 1.0` test.
     #[inline]
     pub fn fill_block(&mut self, sample_rate: impl Into<SampleRate>, out: &mut [Phase]) {
         let rate = Hz(self.good_rate.read(self.rate.load().get()));
@@ -71,7 +71,7 @@ impl LfoDrive {
         self.phase = Phase::START;
     }
 
-    /// Detach every cell (see [`Param::detach`]): the `fork_fresh` half of this
+    /// Detaches every cell (see [`Param::detach`]): the `fork_fresh` half of this
     /// group, keeping the current values.
     pub fn detach(&mut self) {
         self.rate.detach();
@@ -129,7 +129,7 @@ impl LinearModMix {
         )
     }
 
-    /// Detach every cell (see [`Param::detach`]): the `fork_fresh` half of this
+    /// Detaches every cell (see [`Param::detach`]): the `fork_fresh` half of this
     /// group, keeping the current values.
     pub fn detach(&mut self) {
         self.depth.detach();
@@ -189,7 +189,7 @@ impl TimeModMix {
         )
     }
 
-    /// Detach every cell (see [`Param::detach`]): the `fork_fresh` half of this
+    /// Detaches every cell (see [`Param::detach`]): the `fork_fresh` half of this
     /// group, keeping the current values.
     pub fn detach(&mut self) {
         self.depth.detach();
@@ -225,12 +225,12 @@ mod tests {
         }
     }
 
-    /// The two failure modes the old `if phase >= 1.0 { phase -= 1.0 }` had.
+    /// The two failure modes a conditional `if phase >= 1.0 { phase -= 1.0 }` has.
     #[test]
     fn a_conditional_subtract_would_not_have_wrapped_these() {
         let sr = SampleRate::SR_48K;
 
-        // Increment > 1.0: the old form subtracted once and then climbed away
+        // Increment > 1.0: a conditional subtract fires once and then climbed away
         // for good, freezing the LFO to DC.
         let mut fast = LfoDrive::new(Hz(60_000.0));
         for _ in 0..8 {
@@ -238,8 +238,8 @@ mod tests {
         }
         assert!((0.0..1.0).contains(&fast.phase.get()));
 
-        // Negative rate: the old form's `>= 1.0` test never fired, so the
-        // phase ran down without bound.
+        // Negative rate: a `>= 1.0` test never fires, so the phase would run
+        // down without bound.
         let mut backward = LfoDrive::new(Hz(-2.0));
         for _ in 0..4096 {
             backward.advance(sr);

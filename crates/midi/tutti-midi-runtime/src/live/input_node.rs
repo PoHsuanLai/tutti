@@ -1,6 +1,5 @@
 //! [`MidiInputNode`]: a MIDI input edge (the hardware ports, typically) as a
-//! graph node, its events out of one event port per channel (doc 013,
-//! rewrite item 5).
+//! graph node, its events out of one event port per channel.
 //!
 //! Each block it polls its [`MidiIn`], assembles (N)RPN runs
 //! ([`Midi1ToMidi2Translator`]) and rewrites classic MPE into native per-note

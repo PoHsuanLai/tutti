@@ -27,8 +27,8 @@ pub const SYSEX7_STATUS_CONTINUE: u8 = 0x2;
 pub const SYSEX7_STATUS_END: u8 = 0x3;
 
 impl MidiEvent {
-    /// Build SysEx 7-bit packets (UMP type 0x3, 64-bit each) for `data` and
-    /// push them onto `out`. `data` is the payload *between* 0xF0 and 0xF7
+    /// Builds SysEx 7-bit packets (UMP type 0x3, 64-bit each) for `data` and
+    /// pushes them onto `out`. `data` is the payload *between* 0xF0 and 0xF7
     /// (no delimiters). Payloads ≤ 6 bytes produce a single packet; longer
     /// payloads produce `Start` + `Continue*` + `End` — midi2 owns the split.
     pub fn sysex7_fragments(group: MidiGroup, data: &[u8], out: &mut Vec<MidiEvent>) {
@@ -41,7 +41,7 @@ impl MidiEvent {
         }
     }
 
-    /// Build a single self-contained SysEx 7-bit packet (UMP type 0x3) from a
+    /// Builds a single self-contained SysEx 7-bit packet (UMP type 0x3) from a
     /// payload of up to 6 bytes (the data *between* 0xF0 and 0xF7, no
     /// delimiters). Returns `None` if the payload exceeds one packet — use
     /// [`Self::sysex7_fragments`] for longer messages.
@@ -56,7 +56,7 @@ impl MidiEvent {
         Some(MidiEvent::from_ump(0, &m.data()[..2]))
     }
 
-    /// Decode a single SysEx 7-bit packet (UMP type 0x3) into its
+    /// Decodes a single SysEx 7-bit packet (UMP type 0x3) into its
     /// `(status, payload)` — the inverse of [`Self::sysex7_fragments`]. Returns the
     /// status nibble ([`SYSEX7_STATUS_SINGLE`]/`START`/`CONTINUE`/`END`) and the
     /// up-to-6 payload bytes (no 0xF0/0xF7 delimiters). `None` for any event

@@ -3,17 +3,9 @@
 //! for the param and mirrors it through an [`AtomicTarget`] (bevy-tutti's
 //! `ParamSetTargets`), so a route writes exactly the cell the node reads.
 //!
-//! These pinned each node's `ModParams` impl (`src/mod_params.rs`) while a
-//! route resolved through a registry of node types; the registry and the
-//! impls went with `Legacy` (doc 013, "Legacy deleted"), and the `ParamSet`
-//! is each node's one address. Each assertion is the old one, asked of the
-//! set. Two changed with it, both deliberate:
-//!
-//! - a foreign `ParamAddr::Id` is no longer expressible: a set is addressed
-//!   by `UnitParam` alone (the old `native_node_ignores_a_foreign_id`);
-//! - the compressor's makeup is `GainDb`, its one address, where the
-//!   `ModParams` impl answered `Makeup` for the same cell (one cell, one
-//!   address; see the CHANGELOG).
+//! The `ParamSet` is each node's one address: a set is addressed by
+//! `UnitParam` alone, and each cell has one address (the compressor's makeup
+//! is `GainDb`).
 //!
 //! Mutation (run): `ParamSet::cell` answering every param with the set's
 //! first cell → every test asking for a param the set lacks, or one that is

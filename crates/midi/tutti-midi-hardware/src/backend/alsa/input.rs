@@ -45,7 +45,7 @@ impl Drop for AlsaInput {
     }
 }
 
-/// Open `id` for input and start pumping its events into `producer`.
+/// Opens `id` for input and starts pumping its events into `producer`.
 ///
 /// The pump runs on its own thread and stops when the returned connection is
 /// dropped, which is also when the port unsubscribes.

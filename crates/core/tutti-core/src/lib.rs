@@ -19,14 +19,11 @@ pub use tutti_types::value::{
 mod engine;
 
 // The shape of a node swap: the graph's (`Editor::replace` follows
-// it), at the engine root. (`net_fade`, its conversion to fundsp's
-// `sequencer::Fade` for `Net::crossfade`, went with the last `Net` fixture
-// that crossfaded, doc 013 Phase 3 PR 15; the law is pinned in tutti-graph's
-// `fade.rs`.)
+// it), at the engine root. The law is pinned in tutti-graph's `fade.rs`.
 pub use tutti_graph::CrossfadeCurve;
 // `MAX_ROOT_CHANNELS` comes to the root with `Engine`: it is the ceiling on the
 // root's own output width, so a host sizing a scratch buffer for `process` has
-// to name it — seven callsites did, all through the module path.
+// to name it, and names it from the root.
 pub use engine::{Engine, GraphEngineError, DEFAULT_BLOCK_CAPACITY, MAX_ROOT_CHANNELS};
 
 pub mod transport;
@@ -115,11 +112,8 @@ pub use tutti_types::{fold_frame, fold_frame_to_mono, fold_frame_to_stereo};
 // engine — the CPAL callback above all — names this type at its own boundary.
 pub use tutti_types::{Interleaved, InterleavedMut};
 
-// `Wave`, `FileIn`, `WaveMetadata`, `WaveError`, `WaveAsset` and the
-// `can_decode`/`decodable_extensions` pair used to be re-exported here from the
-// fork's `wave`/`read`/`stream` modules, with this crate's codec features
-// forwarding to `fundsp/…`. They are file I/O, so they moved to `tutti-io`
-// with the codec features (design doc 013, Phase 0). This crate decodes nothing.
+// Audio file decoding (`Wave`, `can_decode`, the codec features) is file I/O
+// and lives in `tutti-io`. This crate decodes nothing.
 
 // MIDI vocabulary types (MidiEvent, MidiIn, MidiOut, …) live in the
 // `tutti-midi-types` crate; consumers import them from there directly rather

@@ -1,87 +1,93 @@
-//! [`Retire`] — an owning box for anything that crosses to the audio thread
+//! [`Retire`], an owning box for anything that crosses to the audio thread
 //! and must come back to be freed.
-//!
-//! Doc 013 §4: a graph edit ships to the audio thread as a box; the audio
-//! thread swaps pointers at a block boundary and sends the *old* contents
-//! (retired units, the previous plan, the previous arena) back in the same box,
-//! so every free happens on the control thread. The rule that makes that true
-//! is "nothing in the box is dropped on the audio thread", and this type
-//! checks it: in debug builds, dropping a non-empty `Retire` while the current
-//! thread is marked with [`AudioThread::enter`] panics.
-//!
-//! # How the contents come back
-//!
-//! There is no `Retire::into_inner` on the audio side. The contents leave a
-//! `Retire` only through [`reclaim`](Retire::reclaim), which is itself checked
-//! to run off the audio thread. The return *path* is the caller's: in
-//! `tutti-graph`'s phase 1 it is the value `Executor::apply` returns, and the
-//! control side's credit count (at most N edits in flight, one box each) is
-//! what guarantees the phase-2 return ring always has room — back-pressure
-//! lands on the control side, never as a failed push on the audio side.
-//!
-//! # No mutable access at all
-//!
-//! A `DerefMut` would reopen the hole this type closes: `*r = other` or
-//! `mem::take(&mut *r)` frees the old contents in place, on whatever thread
-//! runs it, and `Retire`'s own drop check never sees it. So a `Retire` is
-//! read-only and move-only.
-//!
-//! A crate whose audio side must *mutate* what it was handed (the graph
-//! executor installs units and edits its commit box) keeps its own
-//! crate-private box instead, whose fields no other crate can reach and whose
-//! `Drop` calls [`AudioThread::check_not_current`]. That is sealed by crate
-//! privacy. A public "may hand out `&mut`" marker trait was tried and removed:
-//! left open, any crate could implement it for a `Vec` and free through it;
-//! sealed, the crate that owns the type could not implement it either.
-//!
-//! ```compile_fail
-//! use tutti_types::Retire;
-//! let mut r = Retire::new(vec![1.0f32; 64]);
-//! *r = Vec::new(); // would free the old buffer wherever this runs
-//! ```
-//!
-//! # Interior mutability is outside the guarantee
-//!
-//! `Retire` refuses `&mut`, but a `&T` can still free through interior
-//! mutability: a `Retire<RefCell<Vec<f32>>>` lets
-//! `r.borrow_mut().clear(); r.borrow_mut().shrink_to_fit()` free the buffer
-//! on whatever thread runs it, and a `Mutex` or `Cell<Option<Box<_>>>` does the
-//! same. Don't put interior-mutable owners in a `Retire`. No in-tree type
-//! does, and nothing here can check it.
-//!
-//! # What it does not do in release builds
-//!
-//! The check is a `debug_assertions` check. A release build that breaks the
-//! rule frees on the audio thread rather than aborting a live performance;
-//! the debug check plus the tests that run under it are the gate.
 
 use core::ops::Deref;
 
 use super::audio_thread::AudioThread;
 
-/// An owning box that must not be dropped on the audio thread. See the
-/// `rt::retire` module docs (`src/rt/retire.rs`).
+/// An owning box that must not be dropped on the audio thread.
+///
+/// A graph edit ships to the audio thread as a box; the audio thread swaps
+/// pointers at a block boundary and sends the *old* contents (retired nodes,
+/// the previous plan, the previous arena) back in the same box, so every free
+/// happens on the control thread. The rule that makes that true is "nothing in
+/// the box is dropped on the audio thread", and this type checks it: in debug
+/// builds, dropping a non-empty `Retire` while the current thread is marked
+/// with [`AudioThread::enter`] panics.
+///
+/// # How the contents come back
+///
+/// There is no way to take the contents out on the audio side. They leave a
+/// `Retire` only through [`reclaim`](Retire::reclaim), which is itself checked
+/// to run off the audio thread. The return *path* is the caller's: in
+/// `tutti-graph` it is the value `Executor::apply` returns, and the control
+/// side bounds the number of edits in flight so the return path always has
+/// room. Back-pressure lands on the control side, never as a failed push on
+/// the audio side.
+///
+/// # No mutable access at all
+///
+/// A `DerefMut` would reopen the hole this type closes: `*r = other` or
+/// `mem::take(&mut *r)` frees the old contents in place, on whatever thread
+/// runs it, and `Retire`'s own drop check never sees it. So a `Retire` is
+/// read-only and move-only.
+///
+/// A crate whose audio side must *mutate* what it was handed keeps its own
+/// crate-private box instead, whose `Drop` calls
+/// [`AudioThread::check_not_current`].
+///
+/// ```compile_fail
+/// use tutti_types::Retire;
+/// let mut r = Retire::new(vec![1.0f32; 64]);
+/// *r = Vec::new(); // would free the old buffer wherever this runs
+/// ```
+///
+/// # Interior mutability is outside the guarantee
+///
+/// `Retire` refuses `&mut`, but a `&T` can still free through interior
+/// mutability: a `Retire<RefCell<Vec<f32>>>` lets
+/// `r.borrow_mut().clear(); r.borrow_mut().shrink_to_fit()` free the buffer
+/// on whatever thread runs it, and a `Mutex` or `Cell<Option<Box<_>>>` does the
+/// same. Do not put interior-mutable owners in a `Retire`; nothing here can
+/// check it.
+///
+/// # Release builds
+///
+/// The check is a `debug_assertions` check. A release build that breaks the
+/// rule frees on the audio thread rather than aborting a live performance.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::Retire;
+///
+/// let boxed = Retire::new(vec![0.0f32; 64]); // control thread: allocates
+/// assert_eq!(boxed.len(), 64); // read-only access anywhere
+/// let back: Box<Vec<f32>> = boxed.reclaim(); // control thread again
+/// drop(back);
+/// ```
 #[must_use = "a Retire must travel back to the control thread to be reclaimed"]
 pub struct Retire<T: ?Sized> {
     inner: Option<Box<T>>,
 }
 
 impl<T> Retire<T> {
-    /// Box `value` for a trip to the audio thread and back. Control thread:
-    /// allocates.
+    /// Boxes `value` for a trip to the audio thread and back.
+    ///
+    /// Allocates, so call it on the control thread.
     pub fn new(value: T) -> Self {
         Self::from_box(Box::new(value))
     }
 }
 
 impl<T: ?Sized> Retire<T> {
-    /// Take ownership of an existing box — for unsized contents
-    /// (`Box<dyn Node>`).
+    /// Takes ownership of an existing box, for unsized contents such as a
+    /// `Box<dyn Trait>`.
     pub fn from_box(value: Box<T>) -> Self {
         Self { inner: Some(value) }
     }
 
-    /// Give up the contents, on the control thread.
+    /// Gives up the contents, on the control thread.
     ///
     /// # Panics
     ///

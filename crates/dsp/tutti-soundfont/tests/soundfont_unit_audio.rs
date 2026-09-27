@@ -1,13 +1,8 @@
 //! Audio behaviour of [`SoundFontUnit`] against the committed `TimGM6mb.sf2`.
 //!
-//! These moved here from `bevy-tutti`'s `src/soundfont.rs`, where they had been
-//! testing the engine unit from inside the Bevy adapter — none of them names a
-//! `World`, an `App` or an asset handle. The adapter's own tests are about
-//! asset loading and promotion; this file is about whether the unit sounds.
-//!
-//! The fixture is committed at `assets/soundfonts/TimGM6mb.sf2`, so
-//! a missing one is a broken checkout and fails loudly. The bevy-tutti copies
-//! `return`ed silently instead, which meant a green run proved nothing.
+//! The fixture is committed at `assets/soundfonts/TimGM6mb.sf2`, so a missing
+//! one is a broken checkout and fails loudly rather than skipping, which would
+//! let a green run prove nothing.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -99,27 +94,18 @@ fn render_process_blocks(
 /// `block_size` chunk it fills whole, and 8 is the smallest `block_size` it
 /// accepts. Offsets 16 and 20 would still collide; 16 and 24 do not.
 ///
-/// # What this used to assert
-///
-/// The previous version of this test pinned the **defect**: it asserted that
-/// offsets 16, 32 and 48 were byte-identical to each other and each equal to
-/// the offset-0 render delayed by exactly one 64-frame chunk, because
-/// `refill_buffers` rendered rustysynth's whole chunk in one call before any
-/// mid-block event could reach it. Measured on this fixture, the offset-0 note
-/// first sounded at frame 0 and every non-zero offset first sounded at frame
-/// 64 regardless of its value. After the fix the same four renders first sound
-/// at frames 41, 57, 73 and 89 — each exactly `offset + 41`, the 41 being the
-/// fixture's own attack ramp.
+/// On this fixture the four renders first sound at frames 41, 57, 73 and 89:
+/// each exactly `offset + 41`, the 41 being the fixture's own attack ramp.
 ///
 /// # Mutation
 ///
-/// Both halves of the fix were reverted independently and this test caught each:
+/// Each of these fails the test:
 ///
 /// - Render the whole block ignoring offsets (apply every event, then one
-///   `render_range(0..size)`) → fails.
-/// - Keep the split but restore rustysynth's default `block_size` of 64 → also
-///   fails, which is the half that is easy to miss: the split alone does not
-///   fix the defect, because the internal chunk is still filled whole.
+///   `render_range(0..size)`).
+/// - Keep the split but build at rustysynth's default `block_size` of 64. The
+///   split alone is not enough, because the internal chunk is still filled
+///   whole.
 #[test]
 fn process_honors_frame_offset_within_block() {
     let sf = load_test_soundfont();
@@ -165,8 +151,8 @@ fn process_honors_frame_offset_within_block() {
         );
     }
 
-    // The offsets must differ from one another. This is what the old
-    // chunk-resolution behaviour failed: 16, 32 and 48 were byte-identical.
+    // The offsets must differ from one another: at a 64-frame chunk, 16, 32
+    // and 48 would be byte-identical.
     for i in 1..OFFSETS.len() {
         assert_ne!(
             shifted[i],
@@ -295,11 +281,11 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
 /// Mutation: render the whole block ignoring offsets → fails (the note lands at
 /// frame 0, so the "silent before frame 63" assertion trips).
 ///
-/// Note what this one does **not** catch: restoring rustysynth's default
+/// Note what this one does **not** catch: building at rustysynth's default
 /// `block_size` of 64 while keeping the split leaves it green, because at that
 /// resolution offset 63 and offset 0 both round into the same chunk and the
-/// remaining assertions are inequalities rather than equalities. That half of
-/// the fix is pinned by `process_honors_frame_offset_within_block`; this test
+/// remaining assertions are inequalities rather than equalities. The
+/// resolution is pinned by `process_honors_frame_offset_within_block`; this test
 /// is about the split loop's boundary arithmetic, not the resolution.
 #[test]
 fn event_at_last_frame_of_block_still_applies() {
@@ -359,9 +345,7 @@ fn event_at_last_frame_of_block_still_applies() {
 /// The node re-rates only when the prepared rate differs (rebuilding the
 /// synthesizer, see `the_node_follows_its_graphs_rate`), so the property at
 /// the same rate is *continuity*: rendering, re-preparing, then rendering on
-/// must equal rendering straight through. This pins that no stale-cursor bug
-/// took the place of the unit's old buffer-position state. (Until the port to
-/// `tutti_graph::Node` it pinned `AudioUnit::set_sample_rate`, a no-op.)
+/// must equal rendering straight through, with no stale chunk cursor.
 ///
 /// Mutation (run): `prepare` rebuilding the synthesizer whatever the rate
 /// (drop the rate comparison) → the second half starts from fresh channel

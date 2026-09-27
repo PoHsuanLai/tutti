@@ -1,4 +1,4 @@
-//! The sample-accuracy contract (doc 013 §6, "Proof") for this crate's
+//! The sample-accuracy contract for this crate's
 //! latency-bearing nodes, as a graph runs them, on the audio-impulse path.
 //! An impulse at frame `F` must leave at exactly
 //! `F + arrival + latency`, where `latency` is what the node *declares* — on
@@ -6,26 +6,26 @@
 //! across ragged blocks). See `tutti_graph::contract` for the paths and the
 //! mutation each was seen to fail under.
 //!
-//! Each row is a defect class from doc 013:
+//! Each row is a class of latency defect:
 //!
 //! - **LimiterNode** — a lookahead: its latency is real, and the
 //!   ring must delay by exactly the figure its shape declares.
-//! - **ConvolverNode** — one FFT block of latency for the *whole* output
-//!   (D3): at mix 0 the output is all dry, so a dry half that is not delayed
-//!   leaves `latency` frames early.
-//! - **DelayLineNode** — a musical delay is not latency (D1): it declares
+//! - **ConvolverNode** — one FFT block of latency for the *whole* output: at
+//!   mix 0 the output is all dry, so a dry half that is not delayed leaves
+//!   `latency` frames early.
+//! - **DelayLineNode** — a musical delay is not latency: it declares
 //!   none, and the dry half of its blend leaves on the excitation's frame.
 //!
-//! A failing row here is a real D1–D3-class regression: fix the node, never
+//! A failing row here is a real latency regression: fix the node, never
 //! the row.
 //!
 //! Mutations (run):
 //!
 //! - In `LimiterNode::shape`, declare one frame more than the ring's
 //!   `lookahead_samples` → both limiter rows fail every path.
-//! - In `ConvolverNode::blend_channel`, blend the undelayed input again (D3)
+//! - In `ConvolverNode::blend_channel`, blend the undelayed input
 //!   → `convolver_dry` and `convolver_half` fail every path.
-//! - Declare the echo time as latency in `DelayLineNode::shape` (D1) →
+//! - Declare the echo time as latency in `DelayLineNode::shape` →
 //!   `delay_line` fails every path.
 //!
 //! Every row is a graph node (`Row::new`).
@@ -115,7 +115,7 @@ mod convolution {
         .expect_latency(Samples(256))
     }
 
-    // Mix 0: all dry — D3's case, where the undelayed dry half left first.
+    // Mix 0: all dry — the case where an undelayed dry half would leave first.
     contract_tests!(audio convolver_dry => convolver_row(0.0));
     contract_tests!(audio convolver_half => convolver_row(0.5));
     contract_tests!(audio convolver_wet => convolver_row(1.0));

@@ -5,7 +5,7 @@
 //! - [`disk_voice`] — disk-streaming playback, fed by the butler thread.
 //! - `offline_read` — a forked disk voice's file, read on demand offline.
 //! - [`types`] — the voice vocabulary: `Voice`, `VoiceSource`, `Playback`.
-//! - [`slot`] — a voice plus its stretch filter, and the per-sample read.
+//! - [`slot`] — a voice plus its stretch filter, and the per-voice block read.
 //! - [`command`] — the ECS → audio-thread protocol and its handle.
 //! - [`pool`] — per-track multi-voice mixer over both tiers.
 //! - [`node`] — one voice as a standalone graph node.
@@ -38,7 +38,7 @@ pub mod types;
 // Tests only — they exercise the five modules above in combination and reach
 // private state a sibling module could not see.
 mod voice_pool;
-// Tests only: the block read against the frame read it replaced.
+// Tests only: the block read is the same whatever the block length.
 #[cfg(test)]
 mod block_render;
 
@@ -65,7 +65,7 @@ pub use pool::{VoicePoolNode, VoicePoolRef};
 /// control intent recorded for it. Documented on [`types`].
 pub use types::{Direction, Playback, SlotId, Voice, VoiceSource};
 
-// `wave_loader` and `TuttiPlaybackPlugin` live in bevy-tutti (house rule R1: an
-// engine crate may derive Component/Resource on its own value types, but may not
-// define a Plugin). `VoicePoolNode` / `VoicePoolRef` above stay here — plain
-// derives on this crate's own types.
+// The asset loader and `TuttiPlaybackPlugin` live in bevy-tutti: an engine
+// crate may derive Component/Resource on its own value types, but does not
+// define a Plugin. `VoicePoolNode` / `VoicePoolRef` above are plain derives on
+// this crate's own types.

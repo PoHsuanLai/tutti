@@ -1,7 +1,5 @@
 //! The differential suite: the serial plan executor against the reference
-//! interpreter, bit for bit, on random graphs (doc 013 §3, "a naive reference
-//! interpreter … and the optimized executor must be bit-identical on
-//! proptest-generated topologies").
+//! interpreter, bit for bit, on random graphs.
 //!
 //! The graphs mix every test node in `common`: generators (`Const` returning
 //! `Status::Constant`, `EnvProbe` reading `Env` and `Cx::arrival`), in-place
@@ -509,7 +507,7 @@ proptest! {
     /// `Env::due_at_arrival`, so a time-logic bug in either diverges here.
     ///
     /// Mutation: after a wrap, call the whole loop crossed (`beat < loop end`
-    /// in `Playhead::crossed`, the reviewed bug) → a beat ahead of the
+    /// in `Playhead::crossed`) → a beat ahead of the
     /// playhead fires late in the executor only → diverges. Mutation: in
     /// `CommandRx::overlay`, merge the scheduled events *before* the port's
     /// own → ties flip → diverges. Mutation: never feed the executor's
@@ -588,7 +586,7 @@ proptest! {
     }
 
     /// Scheduled commands and `Env`, with the transport changing **inside**
-    /// blocks (doc 013 §6, the engine's timestamped transport commands):
+    /// blocks (the engine's timestamped transport commands):
     /// both interpreters see the same changes, resolve a beat against the
     /// transport in force where playback reaches it (a beat just after a
     /// mid-block start or seek lands in that block), and agree on late.
@@ -800,7 +798,7 @@ fn the_generator_covers_what_the_suite_claims() {
     for (what, n) in all {
         eprintln!("{what}: {n}");
     }
-    // The four added with the review are rarer by construction (each needs
+    // The last four are rarer by construction (each needs
     // two features to meet); ten over 512 graphs still exercises each.
     for (i, (what, n)) in all.iter().enumerate() {
         let min = if i < 6 { 25 } else { 10 };

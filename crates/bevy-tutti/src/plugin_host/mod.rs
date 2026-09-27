@@ -1,17 +1,14 @@
-//! Plugin (VST2/VST3/CLAP/AU) hosting for Bevy.
+//! Plugin (VST2/VST3/CLAP/AU) hosting for Bevy (feature `plugin`; formats
+//! with `vst2`, `vst3`, `clap`, `au`).
 //!
 //! Turns `tutti-plugin`'s catalog and handles into an ECS surface: a
 //! [`PluginRequest`] becomes a loaded plugin bound to the transport, the MIDI
 //! bus and the modulation matrix, with a native GUI window and a liveness state.
 //!
-//! **Bevy-only by design.** Every module here is ECS / window glue; there is no
-//! Bevy-free core to gate. A non-Bevy host uses the (Bevy-free) `tutti-plugin`
-//! crate directly and wires the equivalent itself.
-//!
-//! This module mirrors the engine's `plugin/` *tier* (`tutti-plugin` plus the
-//! `tutti-plugin-server` subprocess it launches) rather than a single crate. It
-//! is `plugin_host`, not `plugin`, because that name belongs to the crate's
-//! composition root, [`TuttiPlugin`](crate::TuttiPlugin).
+//! Every module here is ECS and window glue over `tutti-plugin` and the
+//! `tutti-plugin-server` subprocess it launches; a non-Bevy host uses
+//! `tutti-plugin` directly. [`TuttiHostingPlugin`] adds it all, and
+//! [`TuttiPlugin`](crate::TuttiPlugin) adds that with the `plugin` feature.
 //!
 //! # Life of a plugin
 //!
@@ -143,7 +140,7 @@ impl PluginsRes {
 // cannot express. Automation reaches them sample-accurately through an
 // automation node on the plugin's event input instead — see the `bind` module.
 
-/// Bevy plugin: plugin load, engine binding, health, editor lifecycle, and
+/// Adds plugin hosting: load, engine binding, health, editor lifecycle, and
 /// catalog scanning.
 ///
 /// Inserts:

@@ -108,8 +108,8 @@ impl LookaheadRing {
 /// # Modulated params
 ///
 /// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling
-/// and the threshold (both dB) are modulatable by the graph (design doc 013
-/// item 6), in that port order ([`LIMITER_PARAMS`]): a per-frame value on
+/// and the threshold (both dB) are modulatable by the graph,
+/// in that port order ([`LIMITER_PARAMS`]): a per-frame value on
 /// the param port ([`Io::param`](tutti_graph::Io::param)) overrides its cell
 /// per sample. Unmodulated, the node reads its cells once per block, which
 /// is the common case; the arity never changes.
@@ -207,8 +207,7 @@ impl LimiterNode {
     ) -> Self {
         let layout = channels.into();
         // An empty layout would leave every scratch `Vec` zero-length and make
-        // the shape report no channels, so clamp to at least mono — the same
-        // floor the raw `channels.max(1)` used to provide.
+        // the shape report no channels, so clamp to at least mono.
         let n = (layout.count() as usize).max(1);
         let layout = ChannelLayout::from(n);
         let lookahead_secs = Seconds(0.005);
@@ -379,12 +378,8 @@ impl LimiterNode {
         // convention `CompressorNode::gain_reduction_db` also follows.
         //
         // `from_amplitude` owns the `log10(0)` guard, so silence pins at
-        // `Db::FLOOR` rather than `-inf`. This site used to hand-roll the
-        // conversion with a `96.0` floor of its own, which was the divergence
-        // `amplitude_to_db`'s doc records as already removed — it had been
-        // removed from the detector path just above and missed here. The old
-        // floor was never a ceiling either: a merely tiny gain fell through to
-        // the `log10` branch and reported far past 96 dB.
+        // `Db::FLOOR` rather than `-inf`, the same floor the detector path
+        // above uses.
         self.gain_reduction_db = -amplitude_to_db(min_gain);
     }
 }
@@ -528,10 +523,10 @@ impl Clone for LimiterNode {
 ///
 /// # Modulated ceiling
 ///
-/// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling
-/// (dB) is modulatable by the graph (design doc 013 item 6;
-/// [`BRICKWALL_PARAMS`]): modulated → the param port overrides the ceiling
-/// cell per sample, unmodulated → bit-identical to a node nothing modulates.
+/// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling (dB)
+/// is modulatable by the graph ([`BRICKWALL_PARAMS`]): modulated → the param
+/// port overrides the ceiling cell per sample, unmodulated → bit-identical to a
+/// node nothing modulates.
 ///
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over the ceiling.
@@ -1047,9 +1042,8 @@ mod tests {
 
     /// A stereo limiter fed on one channel only limits that channel and
     /// leaves the other silent: the graph hands an unconnected input
-    /// silence, which the linked detector reads as such. (What replaced the
-    /// `tick` short-frame fallback, which duplicated the last channel: a
-    /// graph node is always handed every input it declares.)
+    /// silence, which the linked detector reads as such (a graph node is
+    /// always handed every input it declares).
     ///
     /// Mutation (run): read `inputs.get(0)` for every channel in `process`
     /// → ch1 carries ch0's signal → fails.

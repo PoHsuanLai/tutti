@@ -12,8 +12,9 @@ use tutti_core::{Amplitude, Depth, Hz, Resonance, Seconds, Semitones, Q};
 /// One oscillator per synth, chosen at construction: the voice bank is built
 /// for it, so changing it needs a new [`PolySynth`](crate::PolySynth). The
 /// pitched waveforms are band-limited (PolyBLEP / PolyBLAMP), so a high note
-/// does not fold its harmonics back below Nyquist as inharmonic partials. All variants except [`Noise`](Self::Noise)
-/// track the voice's pitch; `Noise` ignores it entirely.
+/// does not fold its harmonics back below Nyquist as inharmonic partials. All
+/// variants except [`Noise`](Self::Noise) track the voice's pitch; `Noise`
+/// ignores it entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum OscillatorType {
     /// A pure sine — no harmonics for the filter to work on.

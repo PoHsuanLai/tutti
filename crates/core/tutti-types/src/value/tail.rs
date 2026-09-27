@@ -56,10 +56,23 @@ use serde::{Deserialize, Serialize};
 ///
 /// [`Unknown`](Self::Unknown) is not [`None`](Self::None). A node that was never
 /// asked, or whose format has no tail query, has said nothing about its tail —
-/// reporting that as "no tail" is the same class of invention the `probed` mask
-/// exists to prevent for plugin capabilities. It is also the default for every
+/// reporting that as "no tail" would invent an answer it never gave. It is
+/// also the default for every
 /// graph node that has not been taught to answer, which is why a graph's figure
 /// carries an unknown *count* rather than collapsing to one word.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::{Samples, Tail};
+///
+/// let delay = Tail::Finite(Samples(24_000));
+/// let reverb = Tail::Finite(Samples(96_000));
+/// assert_eq!(delay.then(reverb), Tail::Finite(Samples(120_000))); // cascade
+/// assert_eq!(delay.beside(reverb), reverb); // parallel
+/// assert_eq!(Tail::from_samples(u32::MAX), Tail::Unbounded);
+/// assert_eq!(Tail::Unknown.samples(), None);
+/// ```
 // `Hash` and not `Ord`: hashing needs only that equal values hash equally, which
 // the derive gives, whereas an ordering would have to rank `Unknown` against
 // `Unbounded` — two answers that are not points on a line. `graph::NodeSpec`
@@ -81,8 +94,8 @@ pub enum Tail {
 }
 
 impl Tail {
-    /// The tail as a sample count a render can add, or `None` when there is no
-    /// finite answer.
+    /// Returns the tail as a sample count a render can add, or `None` when
+    /// there is no finite answer.
     ///
     /// [`Unknown`](Self::Unknown) and [`Unbounded`](Self::Unbounded) both yield
     /// `None`, for opposite reasons — one has no information, the other has
@@ -96,8 +109,9 @@ impl Tail {
         }
     }
 
-    /// Build from a format's raw sample count, mapping the `u32::MAX` sentinel
-    /// CLAP and VST3 both use for "unbounded".
+    /// Converts a plugin format's raw sample count, mapping `0` to
+    /// [`None`](Self::None) and the `u32::MAX` sentinel CLAP and VST3 both use
+    /// for "unbounded" to [`Unbounded`](Self::Unbounded).
     ///
     /// The sentinel is the formats' own, so decoding it belongs here rather
     /// than being repeated at each loader.
@@ -109,7 +123,8 @@ impl Tail {
         }
     }
 
-    /// The tail of `self` feeding into `next`: a cascade, so the two add.
+    /// Returns the tail of `self` feeding into `next`: a cascade, so the two
+    /// add.
     ///
     /// Cascading convolves the two responses, and ring-out is defined so that
     /// supports add with no correction term. `Unbounded` wins over everything —
@@ -133,12 +148,12 @@ impl Tail {
         }
     }
 
-    /// The tail of two nodes running side by side: the longer of the two.
+    /// Returns the tail of two nodes running side by side: the longer of the
+    /// two.
     ///
     /// Summing two paths leaves the longer one's support untouched, so a merge
-    /// takes the max rather than the sum. This is where tail and latency
-    /// genuinely differ — latency takes the *minimum* across a merge, because it
-    /// asks when a signal first arrives where this asks when it last leaves.
+    /// takes the max rather than the sum: the question is when the signal last
+    /// leaves.
     pub fn beside(self, other: Self) -> Self {
         match (self, other) {
             (Self::Unbounded, _) | (_, Self::Unbounded) => Self::Unbounded,
@@ -209,12 +224,8 @@ mod tests {
         assert_eq!(a.beside(b), Tail::Finite(Samples(3000)));
     }
 
-    /// The merge rule is where tail and latency part company.
-    ///
-    /// fundsp's latency took the *minimum* across a merge, because it asked
-    /// when a signal first arrives. Tail asks when it last leaves, so it must
-    /// take the maximum — which is why tail could not ride the `Signal` carrier
-    /// fundsp's latency used.
+    /// A merge keeps the longer leg, not the shorter: tail asks when a signal
+    /// last leaves, not when it first arrives.
     #[test]
     fn a_merge_is_not_the_shorter_leg() {
         let slow = Tail::Finite(Samples(3000));

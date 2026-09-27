@@ -13,13 +13,13 @@ use crate::{
 };
 use smallvec::SmallVec;
 
-/// Sequencer-context inputs (chord / scale / per-note text / int expression).
-/// These live in one optional bundle rather than as loose fields on the
-/// universal [`ProcessContext`]. The host sends this bundle only when the
-/// plugin advertised [`Features::SEQUENCER_CONTEXT`](crate::Features); a plugin
-/// that didn't leaves this `None`. (Today only the VST3 loader reads it — that
-/// is a fact about the format landscape, not a gate: the gate is the feature
-/// flag.)
+/// Sequencer-context inputs for one block: chords, scales, per-note text and
+/// integer per-note expression.
+///
+/// The host sends this bundle as [`ProcessContext::expressive`] only when the
+/// plugin advertised
+/// [`Features::SEQUENCER_CONTEXT`](crate::Features::SEQUENCER_CONTEXT). Only the
+/// VST3 loader reads it.
 #[derive(Default)]
 pub struct ExpressiveContext<'a> {
     /// Chord events in effect this block. `None` when the host sends no chord
@@ -121,37 +121,23 @@ pub struct ProcessOutput {
     pub param_changes: ParameterChanges,
     /// Note expression the plugin emitted this block.
     pub note_expression: NoteExpressionChanges,
-    /// Retired [`ParameterQueue`]s, kept only for the `points` buffers inside
-    /// them.
-    ///
-    /// [`clear`](Self::clear) moves the block's queues here instead of dropping
-    /// them, and [`emit_param_point`](Self::emit_param_point) takes one back
-    /// when it needs a new queue. Without this the two-tier reset is
-    /// unachievable: a `ParameterQueue` owns its `points`, so dropping the
-    /// queue frees that buffer no matter how carefully it was cleared first.
-    ///
-    /// Not `pub`, because it is storage rather than data — a reader of
-    /// `param_changes` must not see last block's queues.
+    // Retired `ParameterQueue`s, kept only for the `points` buffers inside
+    // them: `clear` moves the block's queues here and `emit_param_point` takes
+    // one back when it needs a new queue. Private because it is storage rather
+    // than data.
     retired: SmallVec<[ParameterQueue; 16]>,
 }
 
 impl ProcessOutput {
-    /// Empty every list, keeping the storage behind it.
+    /// Empties every list, keeping the storage behind it.
     ///
-    /// Called at the top of each block, and the reason this type is reused at
-    /// all. The parameter half is the part that is easy to get wrong twice:
-    ///
-    /// - Clearing only `queues` drops each [`ParameterQueue`] **and the
-    ///   `points` buffer it owns**, so a plugin automating the same parameter
-    ///   every block reallocates that buffer every block.
-    /// - Clearing each `points` first and *then* the queue list looks like it
-    ///   fixes that, and does not: the drop still happens, one line later.
-    ///
-    /// So the queues are **moved aside** into `retired` rather than dropped,
-    /// and [`emit_param_point`](Self::emit_param_point) draws from that pool.
-    /// The queues cannot simply be left in place: one is addressed by
-    /// `param_id`, and the next block may automate an entirely different set,
-    /// so a reader must not find last block's.
+    /// Call at the top of each block. The block's [`ParameterQueue`]s are
+    /// moved into an internal pool rather than dropped, so their `points`
+    /// buffers survive for [`emit_param_point`](Self::emit_param_point) to
+    /// reuse; a reader of `param_changes` never sees last block's queues.
+    // Clearing `queues` directly would drop each queue and the `points` buffer
+    // it owns, so a plugin automating the same parameter every block would
+    // reallocate that buffer every block.
     pub fn clear(&mut self) {
         self.midi_events.clear();
         // `drain` empties `queues` while leaving its own capacity intact, and
@@ -163,7 +149,7 @@ impl ProcessOutput {
         self.note_expression.changes.clear();
     }
 
-    /// Append one automation point, reusing a pooled queue when a new one is
+    /// Appends one automation point, reusing a pooled queue when a new one is
     /// needed.
     ///
     /// Behaves like [`ParameterChanges::add_change`] — same matching on the

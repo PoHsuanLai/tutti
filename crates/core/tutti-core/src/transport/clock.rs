@@ -83,7 +83,7 @@ impl Control {
 /// `OfflineTimeline`) matches that order, or sits permanently one frame out
 /// of step.
 ///
-/// **The frame is the source of truth** (doc 013 §6). The playhead is a
+/// **The frame is the source of truth.** The playhead is a
 /// frame count on a segment (`FrameClock`), and the beat is derived from it
 /// in closed form, never accumulated: at 90 BPM and 48 kHz, frame 96 000 is
 /// beat 3 to the bit, where adding `beats_per_sample` 96 000 times drifts off
@@ -678,7 +678,7 @@ mod tests {
     /// `Env` reports and `Env::for_each_beat` steps by.
     ///
     /// Mutation (run): derive it from the asked tempo in `set_sample_rate`
-    /// (the old code) → the first step is 120.0005 BPM's → fails.
+    /// → the first step is 120.0005 BPM's → fails.
     #[test]
     fn a_rate_change_keeps_the_tempo_in_force() {
         let (tempo, paused) = create_test_atomics();

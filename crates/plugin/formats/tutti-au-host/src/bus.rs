@@ -109,7 +109,7 @@ pub enum AuChannelCount {
 }
 
 impl AuChannelCount {
-    /// Decode one raw `SInt16` field of an `AUChannelInfo`.
+    /// Decodes one raw `SInt16` field of an `AUChannelInfo`.
     ///
     /// Every branch here is a distinct documented meaning, so there is no
     /// fallthrough that turns an unrecognized value into a count.
@@ -178,7 +178,7 @@ pub struct AuChannelConfig {
 }
 
 impl AuChannelConfig {
-    /// Decode one raw `AUChannelInfo`.
+    /// Decodes one raw `AUChannelInfo`.
     fn from_raw(raw: AuChannelInfo) -> Self {
         Self {
             inputs: AuChannelCount::from_raw(raw.in_channels),

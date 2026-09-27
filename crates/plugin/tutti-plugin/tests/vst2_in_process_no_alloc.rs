@@ -5,14 +5,12 @@
 //! reference probe (`tutti-vst2-test-plugin`) built from this tree in the same
 //! `cargo test` invocation — the same plugin every other VST2 test here uses.
 //!
-//! It used to name `/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst` and carry
-//! an `#[ignore]`, on the reasoning that some plugins allocate inside their own
-//! `process` callback and would trip the harness for a reason that is not our
-//! bug. That reasoning does not apply to the in-repo probe, whose `process` we
-//! control — which is the same argument `vst2-host`'s own
-//! `vst2_host_process_no_alloc.rs` already makes. So it runs by default now:
-//! a failure means the in-process backend (or the `vst2-host` codec) introduced
-//! a per-block alloc.
+//! Third-party plugins may allocate inside their own `process` callback and
+//! trip the harness for a reason that is not our bug; the in-repo probe's
+//! `process` we control (the same argument `vst2-host`'s own
+//! `vst2_host_process_no_alloc.rs` makes). So it runs by default: a failure
+//! means the in-process backend (or the `vst2-host` codec) introduced a
+//! per-block alloc.
 
 #![cfg(feature = "vst2")]
 

@@ -1,4 +1,4 @@
-//! Buffer colouring over the **partial** order (doc 013 §3 step 5).
+//! Buffer colouring over the **partial** order (compiler step 6).
 //!
 //! Serial liveness colouring — "a slot is free once its last reader in the
 //! serial order has run" (JUCE) — is wrong the moment two ops can run at once:

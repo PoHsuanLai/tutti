@@ -2,7 +2,7 @@
 name = "tutti-plugin"
 version = "0.0.1"
 edition = "2021"
-description = "Multi-process plugin hosting client for Tutti - loads VST2, VST3, CLAP plugins in isolated processes"
+description = "Plugin hosting for Tutti: loads VST3, CLAP and AU plugins in isolated subprocesses (VST2 in-process) as audio-graph nodes"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
@@ -40,8 +40,7 @@ tutti-core = { path = "../../core/tutti-core", default-features = false, feature
 tutti-types = { path = "../../core/tutti-types" }
 
 # The graph, for a plugin node's own `ForkSource` (fork by state
-# transfer, doc 013 Phase 3 PR 16). No cycle: `tutti-graph` names only
-# `tutti-types`.
+# transfer). No cycle: `tutti-graph` names only `tutti-types`.
 tutti-graph = { path = "../../core/tutti-graph" }
 
 # Parameter range/scaling
@@ -166,14 +165,12 @@ libc = "0.2"
 
 # NOTE: the `loom` model of this crate's shared-memory header protocol lives in
 # the sibling `tutti-shm-model` crate, not here. `--cfg loom` is a global
-# RUSTFLAG, and the model's target must not depend on what the rest of this
-# crate's tree does under it (`lfqueue`, via the fundsp fork, failed to compile
-# under it until doc 013 Phase 5 deleted the fork). See that crate's
-# Cargo.toml for the full reasoning.
+# RUSTFLAG, and the model's target must not depend on whether every crate in
+# this crate's dependency tree compiles under it. See that crate's Cargo.toml
+# for the full reasoning.
 
-# docs.rs renders with every feature on. `default = []` keeps the engine
-# Bevy-free for consumers, but it would otherwise publish a page with the
-# feature-gated half of the public API missing.
+# docs.rs renders with every feature on; otherwise it would publish a page with
+# the feature-gated half of the public API missing.
 [package.metadata.docs.rs]
 all-features = true
 

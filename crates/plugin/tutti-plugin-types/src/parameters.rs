@@ -58,11 +58,8 @@ use serde::{Deserialize, Serialize};
 /// [`ParamAddress`] — the models do not silently interconvert.
 ///
 /// There is no matching `Plain` newtype. A plain value's legal range is
-/// per-parameter, so the type could promise only "finite" — and after the
-/// conversion was unified onto [`ParamRange`], every plain value lives inside
-/// a single format crate and never crosses a boundary where it could be
-/// confused. One newtype where the invariant is real beats two where one is
-/// decoration.
+/// per-parameter, so the type could promise only "finite"; conversions go
+/// through [`ParamRange`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Normalized(f64);
@@ -74,7 +71,7 @@ impl Normalized {
     /// with nothing returned to say so — an encoding mistake at the call site
     /// survives as a plausible value rather than surfacing as an error.
     ///
-    /// Total rather than fallible: every caller of a `Result` here would
+    /// Infallible by design: every caller of a `Result` here would
     /// `unwrap_or(0.0)` or clamp anyway, and the values arriving are automation
     /// output and IPC payloads rather than user input — a rejected write would
     /// be a dropped automation point, which is worse than a clamped one.
@@ -86,7 +83,7 @@ impl Normalized {
         Self(clamp_unit(v))
     }
 
-    /// The underlying `0..=1` value.
+    /// Returns the underlying `0..=1` value.
     pub const fn get(self) -> f64 {
         self.0
     }
@@ -129,7 +126,7 @@ impl Default for ParamRange {
 }
 
 impl ParamRange {
-    /// The plugin's declared bounds, or [`None`] if it declared none.
+    /// Returns the plugin's declared bounds, or [`None`] if it declared none.
     pub fn bounds(&self) -> Option<(f64, f64)> {
         match *self {
             Self::Normalized { .. } => None,
@@ -137,14 +134,14 @@ impl ParamRange {
         }
     }
 
-    /// The default value, in whichever domain this range speaks.
+    /// Returns the default value, in whichever domain this range speaks.
     pub fn default_value(&self) -> f64 {
         match *self {
             Self::Normalized { default } | Self::Plain { default, .. } => default,
         }
     }
 
-    /// Map a normalized `0..=1` value onto this parameter's domain.
+    /// Maps a normalized `0..=1` value onto this parameter's domain.
     ///
     /// For [`Normalized`](Self::Normalized) this is the identity, clamped —
     /// there is nothing to map onto. For [`Plain`](Self::Plain) it maps the
@@ -186,8 +183,9 @@ impl ParamRange {
         }
     }
 
-    /// Inverse of [`to_plain`](Self::to_plain): map a value in this parameter's
-    /// domain onto normalized `0..=1`.
+    /// Maps a value in this parameter's domain onto normalized `0..=1`.
+    ///
+    /// The inverse of [`to_plain`](Self::to_plain).
     ///
     /// A degenerate or non-finite range yields `0.0`, as does a NaN input — see
     /// [`to_plain`](Self::to_plain) for why NaN is checked rather than clamped.
@@ -248,7 +246,8 @@ pub enum ParamSteps {
 }
 
 impl ParamSteps {
-    /// Build from a span, collapsing the degenerate cases.
+    /// Builds from a span (`max - min` of an integer range), collapsing the
+    /// degenerate cases.
     ///
     /// A span below 1 has no positions to step between, so it is
     /// [`Continuous`](Self::Continuous) rather than an invented count; a span of
@@ -265,7 +264,8 @@ impl ParamSteps {
         }
     }
 
-    /// Number of positions, or [`None`] if unreported or freely variable.
+    /// Returns the number of positions, or [`None`] if unreported or freely
+    /// variable.
     pub fn count(&self) -> Option<u32> {
         match *self {
             Self::Unknown | Self::Continuous => None,
@@ -318,8 +318,8 @@ bitflags! {
     }
 }
 
-/// A plugin's own name for one of its parameters: VST3 `ParamID`, CLAP
-/// `clap_id`, AU `AudioUnitParameterID`.
+/// A plugin-chosen parameter id: VST3 `ParamID`, CLAP `clap_id`, AU
+/// `AudioUnitParameterID`.
 ///
 /// **Opaque.** The number is chosen by the plugin and is meaningful only
 /// against the instance that reported it — plenty of plugins derive it from a
@@ -346,7 +346,7 @@ bitflags! {
 pub struct ParamId(u32);
 
 impl ParamId {
-    /// Wrap a format-native parameter id.
+    /// Wraps a format-native parameter id.
     ///
     /// The absent algebra is the point, so it is pinned here rather than only
     /// asserted in the type's docs — each of these is a way a `u32` field
@@ -383,7 +383,8 @@ impl ParamId {
         Self(id)
     }
 
-    /// The underlying number, for handing back to the format that issued it.
+    /// Returns the underlying number, for handing back to the format that
+    /// issued it.
     pub const fn get(self) -> u32 {
         self.0
     }
@@ -452,9 +453,7 @@ pub enum ParamAddress {
 }
 
 impl Default for ParamAddress {
-    /// Opaque zero. Chosen because three of the four formats are opaque, and
-    /// because a defaulted address is a placeholder either way — `ParameterInfo`
-    /// derives `Default` for test construction, not for a value any plugin
+    /// Returns opaque id zero, a placeholder rather than an address any plugin
     /// reported.
     fn default() -> Self {
         Self::Opaque(ParamId::new(0))
@@ -462,7 +461,7 @@ impl Default for ParamAddress {
 }
 
 impl ParamAddress {
-    /// The opaque handle, or `None` if this is a VST2 index.
+    /// Returns the opaque handle, or `None` if this is a VST2 index.
     ///
     /// The refusals below are the enum's reason for existing, so they are
     /// pinned rather than only described. A bare number cannot become an
@@ -505,7 +504,7 @@ impl ParamAddress {
         }
     }
 
-    /// The dense index, or `None` if this is an opaque handle.
+    /// Returns the dense index, or `None` if this is an opaque handle.
     pub const fn index(self) -> Option<i32> {
         match self {
             Self::Index(i) => Some(i),
@@ -531,7 +530,30 @@ impl std::fmt::Display for ParamAddress {
     }
 }
 
-/// One plugin parameter, as the boundary vocabulary every host crate speaks.
+/// The description of one plugin parameter, shared by every format host.
+///
+/// Read it through the accessors — [`bounds`](Self::bounds),
+/// [`default_value`](Self::default_value), [`step_count`](Self::step_count),
+/// [`flag`](Self::flag), [`to_plain`](Self::to_plain) — rather than matching
+/// on [`range`](Self::range) and [`steps`](Self::steps): they answer the
+/// question a caller has without it learning which format declined what.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_plugin_types::{ParamAddress, ParamFlags, ParamId, ParameterInfo};
+///
+/// let cutoff = ParameterInfo::new(ParamId::new(7), "Cutoff")
+///     .with_plain_range(20.0, 20_000.0, 1_000.0)
+///     .with_flags(ParamFlags::AUTOMATABLE, ParamFlags::AUTOMATABLE);
+/// assert_eq!(cutoff.bounds(), Some((20.0, 20_000.0)));
+/// assert_eq!(cutoff.flag(ParamFlags::AUTOMATABLE), Some(true));
+/// assert_eq!(cutoff.flag(ParamFlags::BYPASS), None); // never reported
+///
+/// // VST2 without `effGetParameterProperties`: no declared range at all.
+/// let mix = ParameterInfo::new(ParamAddress::Index(0), "Mix");
+/// assert_eq!(mix.bounds(), None);
+/// ```
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParameterInfo {
@@ -565,7 +587,7 @@ pub struct ParameterInfo {
     /// VST2 a numbered category, AU an optional integer clump. What they share
     /// is that each resolves to a *name*, so that is what crosses this
     /// boundary. A caller wanting VST3's tree reaches into `tutti-vst3-host`,
-    /// which still has it.
+    /// which keeps it.
     ///
     /// Deliberately a `String` rather than an `Option<String>`, unlike the
     /// [`known`](Self::known) mask beside it: "the format never said" and "the
@@ -574,8 +596,6 @@ pub struct ParameterInfo {
     /// clump 3, VST2 category 3 and VST3 unit 3 are unrelated numbers, and a
     /// bare number that does not say which model it belongs to is the mistake
     /// [`ParamAddress`] exists to prevent.
-    ///
-    /// See `docs/design/010-parameter-grouping.md`.
     pub group: String,
 }
 
@@ -597,31 +617,32 @@ impl ParameterInfo {
         }
     }
 
-    /// Declare the group this parameter belongs to (builder).
+    /// Sets the group this parameter belongs to.
     pub fn with_group(mut self, group: impl Into<String>) -> Self {
         self.group = group.into();
         self
     }
 
-    /// Declare the plugin's own range (builder).
+    /// Sets a declared plain range, in the unit [`unit`](Self::unit) names.
     pub fn with_plain_range(mut self, min: f64, max: f64, default: f64) -> Self {
         self.range = ParamRange::Plain { min, max, default };
         self
     }
 
-    /// Declare a normalized range with the given default (builder).
+    /// Sets a normalized `0..=1` range with the given default, for a parameter
+    /// that declared no plain range.
     pub fn with_normalized_default(mut self, default: f64) -> Self {
         self.range = ParamRange::Normalized { default };
         self
     }
 
-    /// Declare step information (builder).
+    /// Sets the step information.
     pub fn with_steps(mut self, steps: ParamSteps) -> Self {
         self.steps = steps;
         self
     }
 
-    /// Report `reported` as the values of the `known` capabilities (builder).
+    /// Records `reported` as the values of the `known` capabilities.
     ///
     /// Takes both together so a format cannot set a bit it never reported, nor
     /// report a bit it left unset.
@@ -631,8 +652,8 @@ impl ParameterInfo {
         self
     }
 
-    /// `Some(true)`/`Some(false)` if the format reported this capability,
-    /// [`None`] if it did not.
+    /// Returns `Some(value)` if the format reported this capability, [`None`] if
+    /// it did not.
     ///
     /// Pass exactly one bit; a multi-bit query answers whether *all* of them are
     /// known and set.
@@ -640,18 +661,19 @@ impl ParameterInfo {
         self.known.contains(f).then(|| self.flags.contains(f))
     }
 
-    /// Map a normalized `0..=1` value onto this parameter's domain.
+    /// Maps a normalized `0..=1` value onto this parameter's domain.
     /// See [`ParamRange::to_plain`].
     pub fn to_plain(&self, normalized: f64) -> f64 {
         self.range.to_plain(normalized)
     }
 
-    /// Inverse of [`to_plain`](Self::to_plain). See [`ParamRange::to_normalized`].
+    /// Maps a value in this parameter's domain onto normalized `0..=1`.
+    /// See [`ParamRange::to_normalized`].
     pub fn to_normalized(&self, plain: f64) -> f64 {
         self.range.to_normalized(plain)
     }
 
-    /// The plugin's declared bounds, or [`None`] when it declared none.
+    /// Returns the plugin's declared bounds, or [`None`] when it declared none.
     ///
     /// The normalized read: a caller asking what this parameter's range *is*
     /// should not have to know that VST2 sometimes declines
@@ -663,14 +685,15 @@ impl ParameterInfo {
         self.range.bounds()
     }
 
-    /// The default value, in whichever domain [`bounds`](Self::bounds) speaks —
-    /// plain units when it returns `Some`, normalized `0..=1` when `None`.
+    /// Returns the default value, in whichever domain [`bounds`](Self::bounds)
+    /// speaks: plain units when it returns `Some`, normalized `0..=1` when
+    /// `None`.
     pub fn default_value(&self) -> f64 {
         self.range.default_value()
     }
 
-    /// Number of discrete positions, or [`None`] when the parameter is
-    /// continuous *or* the format never said.
+    /// Returns the number of discrete positions, or [`None`] when the parameter
+    /// is continuous *or* the format never said.
     ///
     /// Those two collapse deliberately: both mean "do not draw this as a
     /// stepped control", which is the only decision a consumer makes from it.
@@ -680,12 +703,10 @@ impl ParameterInfo {
         self.steps.count()
     }
 
-    /// The parameter's name qualified by its group — `"Delay / Mix"` — or the
-    /// bare name when it has no group.
+    /// Returns the parameter's name qualified by its group (`"Delay / Mix"`), or
+    /// the bare name when it has no group.
     ///
-    /// This is the operation every consumer of [`group`](Self::group) performs,
-    /// and it is why the field lands with its own reader rather than after one.
-    /// It also states the limit of what grouping fixes: two parameters that a
+    /// Grouping does not make names unique: two parameters that a
     /// plugin genuinely distinguishes but names identically *within one group*
     /// still qualify to the same string. Addressing is unaffected — that always
     /// goes through [`id`](Self::id).
@@ -724,9 +745,8 @@ mod tests {
     /// Bounds of `0.0..1.0` that the plugin *declared* stay distinguishable
     /// from a parameter that declared none.
     ///
-    /// This is what the old `min_value`/`max_value` pair could not express: the
-    /// numbers were identical and only a sibling discriminant told them apart.
-    /// Now the `Normalized` arm has no bounds at all.
+    /// A bounds pair alone could not express this: the numbers are identical.
+    /// The `Normalized` arm has no bounds at all.
     #[test]
     fn a_declared_unit_range_is_not_the_same_as_no_range() {
         let declared = ParameterInfo::new(ParamId::new(1), "Blend").with_plain_range(0.0, 1.0, 0.0);
@@ -903,8 +923,8 @@ mod tests {
     }
 
     /// Apple's AUDelay Lowpass Cutoff: `[10, 22050]` Hz, native units. Writing
-    /// a normalized `1.0` straight through set 1 Hz; `to_plain` is the call that
-    /// makes it 22050.
+    /// a normalized `1.0` straight through would set 1 Hz; `to_plain` is the
+    /// call that makes it 22050.
     #[test]
     fn to_plain_maps_normalized_onto_the_declared_range() {
         let info = ParameterInfo::new(ParamId::new(1), "Lowpass Cutoff")

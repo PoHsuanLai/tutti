@@ -96,16 +96,13 @@ impl PluginStatus {
 
 /// Main-thread control handle for a loaded plugin.
 ///
-/// Backend-agnostic: it holds each control capability as a separate `Arc<dyn …>`
-/// slot ([`HostParams`], [`HostState`], and an *optional* [`HostEditor`]), so
-/// out-of-process VST3/CLAP/AU and in-process VST2 hosting share this surface
-/// while advertising only the capabilities they honor. One backend object
-/// implements several capability traits; construction clones the *same* backend
-/// `Arc` into each always-present slot (cheap — Arc-based — and shared state stays
-/// intact), and passes the optional editor slot explicitly. There is no stored
-/// bundle/union trait object.
+/// Backend-agnostic: it holds each control capability as a separate trait
+/// object ([`HostParams`] and [`HostState`] always; [`HostEditor`],
+/// [`HostAutomationState`], `HostRenderMode` and [`HostPresets`] when the
+/// backend honors them), so out-of-process VST3/CLAP/AU and in-process VST2
+/// hosting share this surface while advertising only what they support.
 ///
-/// Clone is cheap (Arc-based). Action methods return `&Self` for chaining.
+/// Clone is cheap (`Arc`-based). Action methods return `&Self` for chaining.
 ///
 /// # What each call costs
 ///
@@ -165,9 +162,12 @@ pub struct PluginHandle {
 }
 
 impl PluginHandle {
-    /// Construct from a `PluginClient` (out-of-process backend). Call
-    /// this before moving the client into a graph. The subprocess
-    /// backend honors every capability, including the editor.
+    /// Creates a handle for an out-of-process plugin from its [`PluginClient`].
+    ///
+    /// Call this before moving the client into a graph. The subprocess backend
+    /// honors every capability, including the editor.
+    ///
+    /// [`PluginClient`]: crate::handles::PluginClient
     pub fn from_client<S>(client: &crate::host::node::PluginClient<S>) -> Self {
         let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(
             client.bridge(),
@@ -195,19 +195,12 @@ impl PluginHandle {
         }
     }
 
-    /// Construct from an in-process backend that implements the always-present
-    /// capabilities, plus optional editor and render-mode routes. Used by every
-    /// in-process loader — the in-crate VST2 path passes `Some(backend)` for
-    /// both; a headless out-of-crate loader passes `None`.
+    /// Creates a handle for an in-process backend.
     ///
-    /// `backend: Arc<B>` is coerced into the `params`/`state` slots at the call
-    /// site (both are clones of the same object), so shared state stays intact.
-    ///
-    /// The optional capabilities are a struct rather than positional parameters
-    /// because they are independent — a backend may carry the render mode
-    /// without hosting an editor, or the reverse — and a call site passing
-    /// `None, None, None` says nothing about which slot is which. Build it with
-    /// `..Default::default()` and name only what the backend honours.
+    /// `backend` provides the always-present [`HostParams`] and [`HostState`]
+    /// (one shared object serves both). The optional capabilities go in
+    /// `optional`; build it with `..Default::default()` and name only what the
+    /// backend honors. See [`OptionalCapabilities`] for an example.
     pub fn from_backend<B: HostParams + HostState + 'static>(
         backend: Arc<B>,
         optional: OptionalCapabilities,
@@ -273,45 +266,43 @@ impl PluginHandle {
 
     // ---- Capability accessors ---------------------------------------------
 
-    /// The always-present parameter capability (catalog / read / write / health).
+    /// Returns the parameter capability (catalog, reads, writes, liveness).
     pub fn params(&self) -> &dyn HostParams {
         self.params.as_ref()
     }
 
-    /// The always-present state (preset save/load) capability.
+    /// Returns the state save/load capability.
     pub fn state(&self) -> &dyn HostState {
         self.state.as_ref()
     }
 
-    /// The editor capability, or `None` when the backend cannot host an
-    /// embeddable editor. The "why" is queryable separately via
-    /// [`has_editor`](Self::has_editor) / the [`descriptor`](Self::descriptor).
+    /// Returns the editor capability, or `None` when the backend cannot host
+    /// the plugin's editor.
     pub fn editor(&self) -> Option<&dyn HostEditor> {
         self.editor.as_deref()
     }
 
-    /// The automation-state advisory capability (Direction C-in), or `None` when
-    /// the backend doesn't support it (in-process VST2). Announce the
-    /// host's automation mode via [`HostAutomationState::set_automation_mode`],
-    /// or use the [`set_automation_mode`](Self::set_automation_mode) convenience.
+    /// Returns the automation-state capability, or `None` when the backend
+    /// does not support it (in-process VST2).
+    ///
+    /// [`set_automation_mode`](Self::set_automation_mode) is the convenience
+    /// form.
     pub fn automation_state(&self) -> Option<&dyn HostAutomationState> {
         self.automation_state.as_deref()
     }
 
-    /// The render-mode capability (Direction C-in), or `None` when the backend
-    /// carries no route to it.
+    /// Returns the render-mode capability, or `None` when the backend carries
+    /// no route to it.
     ///
-    /// Every backend this crate builds fills the slot: the subprocess one for
-    /// all three out-of-process formats, and `InProcessVst2Backend` for the
-    /// in-crate VST2 path. `None` is reserved for an out-of-crate headless
-    /// loader that passes it explicitly to
-    /// [`from_backend`](Self::from_backend).
+    /// Every backend this crate builds provides it (the subprocess backend and
+    /// the in-process VST2 backend); `None` comes only from a handle built with
+    /// [`from_backend`](Self::from_backend) without one.
     pub fn render_mode(&self) -> Option<&dyn HostRenderMode> {
         self.render_mode.as_deref()
     }
 
-    /// The preset capability, or `None` when this handle carries no route to
-    /// presets at all.
+    /// Returns the preset capability, or `None` when this handle carries no
+    /// route to presets at all.
     ///
     /// Distinct from "the plugin has no presets", which is an *empty list* from
     /// a present capability, and from "this format cannot enumerate", which is
@@ -324,8 +315,8 @@ impl PluginHandle {
         self.presets.as_deref()
     }
 
-    /// What this plugin's preset surface can do — one call instead of two
-    /// capability bits and two method returns.
+    /// Returns what this plugin's preset surface can do, combining the preset
+    /// route and the two preset capability bits.
     ///
     /// Match on it to decide what to render:
     ///
@@ -349,11 +340,6 @@ impl PluginHandle {
     /// because an empty list is ambiguous on its own: a plugin that declined
     /// and one this host never asked both list nothing, and only the first
     /// should hide the browser.
-    ///
-    /// Stays on the handle rather than moving to [`HostPresets`] because it
-    /// reads [`loaded`](Self::loaded) — the capability object cannot see the
-    /// feature bits, and "no route at all" is a fact about the handle rather
-    /// than an answer any capability could give.
     pub fn preset_support(&self) -> PresetSupport {
         if self.presets.is_none() {
             // No route at all: the plugin was never asked anything, whatever
@@ -364,7 +350,7 @@ impl PluginHandle {
         PresetSupport::from_report(&report)
     }
 
-    /// Tell the plugin whether it is rendering under realtime pressure.
+    /// Tells the plugin whether it is rendering under realtime pressure.
     ///
     /// Set this **before** a bounce pulls blocks: a plugin may spend more per
     /// block once it knows there is no deadline, and three of the four formats
@@ -374,9 +360,7 @@ impl PluginHandle {
     /// declined. Those collapse deliberately — both mean the render is
     /// unchanged — and a caller that needs to tell them apart reads
     /// [`Features::RENDER_MODE`](crate::protocol::Features) on
-    /// [`loaded`](Self::loaded). Kept rather than left to
-    /// [`render_mode`](Self::render_mode) precisely because that collapse is
-    /// the useful answer: every caller so far wants the one bool.
+    /// [`loaded`](Self::loaded).
     #[must_use = "a false return means the render mode was not applied"]
     pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
         self.render_mode
@@ -386,15 +370,13 @@ impl PluginHandle {
 
     // ---- Meta -------------------------------------------------------------
 
-    /// Whether the plugin is still answering, and why not if it is not.
+    /// Returns whether the plugin is still answering, and why not if it is not.
     ///
-    /// The honest form of [`is_crashed`](Self::is_crashed), which is a `bool`
-    /// that cannot carry a reason: the `BridgeError` behind a death is dropped
-    /// as soon as the failing call returns, so a host that polled the flag
-    /// could only ever report a placeholder. The cause is latched where the
-    /// crash is noticed, so this answers even for a plugin that died before the
-    /// host installed a listener — the connect- and handshake-failure cases,
-    /// which are the common ones for a bad install.
+    /// Unlike [`is_crashed`](Self::is_crashed), this carries the reason. The
+    /// cause is latched where the crash is noticed, so this answers even for a
+    /// plugin that died before the host installed a listener — the connect-
+    /// and handshake-failure cases, which are the common ones for a bad
+    /// install.
     ///
     /// **Two variants, not three.** There is deliberately no `Failing` here.
     /// A peer that answers a control call with a well-formed reply of the wrong
@@ -421,30 +403,31 @@ impl PluginHandle {
         }
     }
 
-    /// `true` if this plugin exposes an embeddable editor (post-load truth).
+    /// Returns `true` if this plugin has an editor this handle can open.
     ///
-    /// A bool rather than `editor().is_some()` at the call site because the
-    /// question is asked while deciding whether to *offer* a window — often per
-    /// frame — and it answers without materialising the trait object.
+    /// Cheap enough to call per frame when deciding whether to offer a
+    /// window.
     pub fn has_editor(&self) -> bool {
         self.editor.is_some()
     }
 
-    /// Catalog identity (id, name, vendor, version, native class, editor).
+    /// Returns the plugin's catalog identity (id, name, vendor, version, class,
+    /// editor).
     pub fn descriptor(&self) -> &PluginDescriptor {
         &self.descriptor
     }
 
-    /// Engine-wiring data from load (per-bus channel widths, latency, f64).
+    /// Returns what the plugin reported at load: per-bus channel widths,
+    /// latency, `f64` support and capability bits.
     pub fn loaded(&self) -> &LoadedPlugin {
         &self.loaded
     }
 
-    /// The OS process id of the `plugin-server` hosting this plugin, or `None`
-    /// for an in-process plugin, which has no subprocess.
+    /// Returns the OS process id of the `plugin-server` hosting this plugin, or
+    /// `None` for an in-process plugin.
     ///
     /// Fixed at load, so free to call. The subprocess lives until the last
-    /// handle *and* the graph's audio unit have both dropped, and it is then
+    /// handle *and* the graph's node have both dropped, and it is then
     /// killed and reaped synchronously. So once they have all dropped, this id
     /// names no child of this process. A caller that probes it after that
     /// point is asking whether the subprocess was reaped, not what it is doing.
@@ -452,7 +435,7 @@ impl PluginHandle {
         self.server_pid
     }
 
-    /// What is known about this plugin's channel placement.
+    /// Returns what is known about this plugin's channel placement.
     ///
     /// The one call a caller makes before deciding whether to speak in speaker
     /// names or channel numbers:
@@ -473,15 +456,13 @@ impl PluginHandle {
     /// # }
     /// ```
     ///
-    /// **Reporting only.** No variant means a layout can be *changed*: nothing
-    /// above the format hosts proposes one today, and naming a capability that
-    /// cannot be reached is the write-only shape this work exists to remove.
-    /// See [`LayoutSupport`].
+    /// **Reporting only.** No variant means a layout can be *changed*: the host
+    /// has no call that proposes a layout to a plugin. See [`LayoutSupport`].
     pub fn layout_support(&self) -> LayoutSupport {
         LayoutSupport::of(&self.loaded)
     }
 
-    /// Which speaker each channel of one input bus feeds.
+    /// Returns which speaker each channel of one input bus feeds.
     ///
     /// `None` when that bus reported no placement — the plugin declined, the
     /// format cannot say, or it names a speaker this vocabulary lacks. Never
@@ -494,31 +475,37 @@ impl PluginHandle {
         self.loaded.input_bus_topology(bus)
     }
 
-    /// Which speaker each channel of one output bus feeds. See
+    /// Returns which speaker each channel of one output bus feeds. See
     /// [`input_bus_topology`](Self::input_bus_topology).
     pub fn output_bus_topology(&self, bus: usize) -> Option<&ChannelTopology> {
         self.loaded.output_bus_topology(bus)
     }
 
-    /// The plugin's display name, as its descriptor reports it.
+    /// Returns the plugin's display name, as its descriptor reports it.
     pub fn name(&self) -> &str {
         &self.descriptor.name
     }
 
-    /// Whether the plugin has died. See [`PluginStatus::Dead`] for what is
-    /// recoverable.
+    /// Returns `true` if the plugin has died. See [`status`](Self::status) for
+    /// the reason and [`PluginStatus::Dead`] for what is recoverable.
     pub fn is_crashed(&self) -> bool {
         self.params.is_crashed()
     }
 
     // ---- Editor convenience (ergonomic wrappers over the editor slot) ------
 
-    /// Embed the plugin's editor into `parent`. Pass anything that impls
-    /// [`HasWindowHandle`] — Bevy windows, winit windows, wgpu surfaces.
+    /// Embeds the plugin's editor into `parent` and returns the size the editor
+    /// asked for.
     ///
-    /// Returns the editor's requested size on success; otherwise a structured
-    /// [`EditorError`] — including [`EditorError::GuiNotSupported`] when this
-    /// plugin has no editor (`editor()` is `None`).
+    /// Pass anything that implements [`HasWindowHandle`]: Bevy windows, winit
+    /// windows, wgpu surfaces. Call on the main thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EditorError::GuiNotSupported`] when this handle has no editor
+    /// route (`editor()` is `None`), an [`EditorError`] if `parent`'s window
+    /// handle is unavailable or of an unsupported platform, and otherwise any
+    /// error of [`HostEditor::open_editor`].
     pub fn open_editor(&self, parent: impl HasWindowHandle) -> Result<EditorSize, EditorError> {
         let Some(editor) = self.editor.as_deref() else {
             return Err(EditorError::GuiNotSupported {
@@ -533,13 +520,19 @@ impl PluginHandle {
         editor.open_editor(ptr)
     }
 
-    /// Open the editor as a floating window the plugin owns.
+    /// Opens the editor as a floating window the plugin owns.
     ///
     /// For a plugin whose [`Features::EDITOR_FLOATING`](crate::protocol::Features)
     /// bit is set — CLAP plugins that cannot embed. Takes no parent and returns
     /// no size: the window is the plugin's, so the host neither supplies nor
     /// lays it out. Close it with the same
     /// [`close_editor`](Self::close_editor) an embedded editor uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EditorError::GuiNotSupported`] when this handle has no editor
+    /// route, and otherwise any error of [`HostEditor::open_floating_editor`],
+    /// such as a format without floating editors.
     pub fn open_floating_editor(&self) -> Result<(), EditorError> {
         let Some(editor) = self.editor.as_deref() else {
             return Err(EditorError::GuiNotSupported {
@@ -549,7 +542,7 @@ impl PluginHandle {
         editor.open_floating_editor()
     }
 
-    /// Close the editor, if one is open.
+    /// Closes the editor, if one is open.
     ///
     /// A no-op without an editor route, so a caller tearing a window down need
     /// not first ask whether there was one. Returns `&Self` for chaining with
@@ -561,7 +554,7 @@ impl PluginHandle {
         self
     }
 
-    /// Call periodically (~30Hz) while editor is open.
+    /// Services the editor; call periodically (about 30 Hz) while it is open.
     ///
     /// Like [`close_editor`](Self::close_editor), a no-op without an editor:
     /// this is driven from a per-frame system that should not branch on a
@@ -573,11 +566,14 @@ impl PluginHandle {
         self
     }
 
-    /// Returns the snapped/clamped size the plugin applied.
+    /// Asks the plugin to resize its editor and returns the size it applied,
+    /// which may be snapped or clamped.
     ///
-    /// Converts "no editor" into [`EditorError::GuiNotSupported`] rather than
-    /// making the caller unwrap an `Option` first, matching
-    /// [`open_editor`](Self::open_editor).
+    /// # Errors
+    ///
+    /// Returns [`EditorError::GuiNotSupported`] when this handle has no editor
+    /// route, and otherwise any error of [`HostEditor::set_editor_size`], such
+    /// as an editor that cannot be resized.
     pub fn set_editor_size(&self, requested: EditorSize) -> Result<EditorSize, EditorError> {
         match self.editor.as_deref() {
             Some(editor) => editor.set_editor_size(requested),
@@ -587,9 +583,11 @@ impl PluginHandle {
         }
     }
 
-    /// A size the *plugin* has asked to become, if it asked since the last
-    /// poll. Call it beside [`editor_idle`](Self::editor_idle) on the host's
-    /// frame loop.
+    /// Returns the size the *plugin* has asked its window to become, if it
+    /// asked since the last poll.
+    ///
+    /// Call it beside [`editor_idle`](Self::editor_idle) on the host's frame
+    /// loop.
     ///
     /// The other half of the conversation [`set_editor_size`](Self::set_editor_size)
     /// starts: that one is the host resizing the plugin, this one is the plugin
@@ -602,23 +600,21 @@ impl PluginHandle {
     /// plugin has not asked" are the same answer to a poll — nothing to do —
     /// whereas `set_editor_size` is a request that deserves to be told it went
     /// nowhere.
-    ///
-    /// Exists for symmetry rather than to remove duplication — there is one
-    /// caller today — because [`set_editor_size`](Self::set_editor_size) carries
-    /// the same convenience, and the asymmetry reads as "one of these is not
-    /// part of the
-    /// handle API".
     pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
         self.editor.as_deref()?.poll_editor_resize_request()
     }
 
     // ---- Automation-state convenience --------------------------------------
 
-    /// Announce the host's automation [`AutomationMode`] to the plugin so its
-    /// editor can update UI feedback. Returns `Ok(())` if delivered, or an
-    /// [`EditorError`] — including [`EditorError::GuiNotSupported`] when this
-    /// backend has no automation-state capability (`automation_state()` is
-    /// `None`).
+    /// Announces the host's [`AutomationMode`] to the plugin so its editor can
+    /// update UI feedback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EditorError::GuiNotSupported`] when this backend has no
+    /// automation-state capability (`automation_state()` is `None`), and
+    /// otherwise any error of
+    /// [`HostAutomationState::set_automation_mode`].
     pub fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError> {
         match self.automation_state.as_deref() {
             Some(a) => a.set_automation_mode(mode),
@@ -630,7 +626,7 @@ impl PluginHandle {
 
     // ---- Notify sinks (plugin → host reactions) ----------------------------
 
-    /// Register a callback invoked when the plugin writes back a
+    /// Registers a callback invoked when the plugin writes back a
     /// parameter value internally (preset load, automation, host
     /// write-back). Fires on the bridge thread for the out-of-process
     /// backend; on the GUI thread (during `editor_idle`) for the in-process
@@ -641,7 +637,7 @@ impl PluginHandle {
         self
     }
 
-    /// Register a callback for **cosmetic** refresh signals: the host's cached
+    /// Registers a callback for **cosmetic** refresh signals: the host's cached
     /// *view* of some plugin state is stale ([`PluginRefresh::ParamValues`] /
     /// [`PluginRefresh::ParamTitles`]) and should be re-read, but the audio graph
     /// is unaffected. See [`Self::on_parameter_changed`] for thread caveats. Only
@@ -651,7 +647,7 @@ impl PluginHandle {
         self
     }
 
-    /// Register a callback for **structural** invalidation signals: the plugin
+    /// Registers a callback for **structural** invalidation signals: the plugin
     /// changed its latency ([`PluginInvalidation::Latency`]) or bus layout
     /// ([`PluginInvalidation::Io`]), or reloaded in place
     /// ([`PluginInvalidation::Reloaded`]) — the host must rewire and re-run
@@ -664,19 +660,19 @@ impl PluginHandle {
         self
     }
 
-    /// Clear the parameter-changed callback (if any).
+    /// Removes the parameter-changed callback, if any.
     pub fn clear_parameter_callback(&self) -> &Self {
         self.param_sink.clear();
         self
     }
 
-    /// Clear the refresh callback (if any).
+    /// Removes the refresh callback, if any.
     pub fn clear_refresh_callback(&self) -> &Self {
         self.refresh_sink.clear();
         self
     }
 
-    /// Clear the invalidate callback (if any).
+    /// Removes the invalidate callback, if any.
     pub fn clear_invalidate_callback(&self) -> &Self {
         self.invalidate_sink.clear();
         self
@@ -688,9 +684,8 @@ mod tests {
     use super::*;
     use crate::protocol::{Normalized, ParamAddress, ParameterInfo, Preset, PresetId};
 
-    /// A backend that reaches presets, standing in for a format layer that is
-    /// not wired yet. Doubles as proof the capability is implementable from
-    /// outside this crate's own backends.
+    /// A test backend that reaches presets. Doubles as proof the capability is
+    /// implementable from outside this crate's own backends.
     struct FakePresets {
         listed: Vec<Preset>,
         accepts: bool,

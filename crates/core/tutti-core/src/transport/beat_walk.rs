@@ -1,10 +1,7 @@
 //! The beat walk the metronome shares with the graph: every frame's beat,
 //! read from its block's [`Env`](tutti_graph::Env).
 //!
-//! It was also `EnvClock`'s, a node that emitted the walk on two beat ports
-//! for nodes that took the beat as a signal. Every such node now reads its
-//! block's `Env` (doc 013, "Legacy deleted"), so the node is gone and the
-//! walk is `Env::for_each_beat`.
+//! Nodes that follow the beat read it with `Env::for_each_beat`.
 
 use tutti_types::Beat;
 

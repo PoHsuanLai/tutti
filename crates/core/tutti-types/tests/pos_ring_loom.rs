@@ -31,7 +31,7 @@
 //! - `a_second_range_is_kept` — appends round the ring onto the slot of a
 //!   position only the reader's *second* range holds;
 //! - `retract_then_push` — retracts under a claim, then rewrites past the
-//!   retraction (the second review of #48, B3);
+//!   retraction;
 //! - `reset_then_push` — resets below the old end, then rewrites there;
 //! - `retract_twice_then_push` — two shrinks before the rewrite (the stale
 //!   span kept, or cleared, across them);
@@ -39,15 +39,14 @@
 //! - `reset_then_wrap` — a reset, then appends that go round the ring from
 //!   the new place;
 //! - `a_capped_push_then_reset_keeps_the_claim` — a push cut to nothing by
-//!   the second range's alias, then a reset and a rewrite there (the review
-//!   of `PosRing`, B1);
+//!   the second range's alias, then a reset and a rewrite there;
 //! - `a_partly_capped_push_then_reset_keeps_the_claim` — the same with a push
 //!   that lands one frame of three.
 //!
 //! # Mutations (run)
 //!
 //! - The generation check removed from `push` → `retract_then_push`,
-//!   `reset_then_push` fail (B3, found before its fix, shown in PR #48).
+//!   `reset_then_push` fail.
 //! - The start raise before the range load removed →
 //!   `a_write_round_the_ring_never_lands_under_a_claim` fails.
 //! - The reader loading the window before storing its ranges → the same
@@ -56,9 +55,8 @@
 //!   `retract_then_push`, `reset_then_push` fail.
 //! - Every fence removed → `a_write_round_the_ring_never_lands_under_a_claim`
 //!   and `retract_then_push` fail.
-//! - The shipped `push` (no first cap from the ranges, the raise kept when
-//!   the write is cut short) → `a_capped_push_then_reset_keeps_the_claim`
-//!   fails (B1, found before its fix, shown in PR #48).
+//! - A `push` with no first cap from the ranges, keeping the raise when the
+//!   write is cut short → `a_capped_push_then_reset_keeps_the_claim` fails.
 //! - Only the restore of a write cut to nothing removed → the same fails.
 //! - Only the final window's start the raise's (the first cap kept) →
 //!   `a_partly_capped_push_then_reset_keeps_the_claim` fails: the ranges

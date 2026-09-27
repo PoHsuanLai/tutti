@@ -1,4 +1,4 @@
-//! The sample-accuracy contract (doc 013 §6) for the synth as a graph
+//! The graph's sample-accuracy contract for the synth as a graph
 //! node: a note-on at offset `k` of the event input sounds from frame `k`
 //! (plus the compiled arrival), exactly, on every path the harness runs —
 //! direct, behind PDC, through an event fan-in, across recompiles, in ragged

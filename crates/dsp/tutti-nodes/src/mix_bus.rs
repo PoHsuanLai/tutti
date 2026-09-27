@@ -2,19 +2,15 @@
 //! into one N-channel mix.
 //!
 //! A graph's audio input port holds exactly one source: it is a total function
-//! from port to source, with no fan-in (design doc 013: audio fan-in is a node,
-//! because a mix is a choice of gains). So summing several signals into one is a *node's*
-//! job, and every consumer that mixes needs one — a surround master folding its
-//! panners, a DAW bus folding its tracks.
+//! from port to source, with no fan-in, because a mix is a choice of gains. So
+//! summing several signals into one is a *node's* job, and every consumer that
+//! mixes needs one — a surround master folding its panners, a DAW bus folding
+//! its tracks.
 //!
-//! fundsp's stock combinators (the engine's until design doc 013 Phase 5) did
-//! not cover it, for two independent reasons. `join`/`multijoin` **average**
-//! (they divide by the source count), so adding a source would quieten the
-//! others; `sumi` sums correctly but takes its arity as a `typenum` and builds
-//! its children from a generator, so it can neither read a count at runtime nor
-//! accept wires arriving from elsewhere in the graph. A
-//! mixer folds a *runtime* number of sources at a *runtime* channel count, which
-//! is why this is a small hand-written graph node.
+//! The bus **sums**; it does not average (dividing by the source count would
+//! make adding a source quieten the others). It folds a *runtime* number of
+//! sources at a *runtime* channel count, fed by wires from anywhere in the
+//! graph.
 //!
 //! `K` sources × `channels` each, interleaved per source, summed channel-wise
 //! into `channels` outputs. Input port `s * channels + c` is source `s`'s channel
@@ -203,10 +199,9 @@ mod tests {
     /// A latency-bearing node upstream of a bus is not hidden by it: the
     /// graph aligns every input of the bus to its latest one, so an impulse
     /// on both sources at frame 0 sums **once**, at the late side's latency.
-    /// (Under `Net` this was the bus's `route` reporting the largest input
-    /// latency; in the graph it is the compiler's PDC, and this pins that the bus
+    /// The alignment is the graph compiler's PDC; this pins that the bus
     /// declares nothing that defeats it — no latency of its own, and every
-    /// input a real port.)
+    /// input a real port.
     ///
     /// Mutation (run): sum only source 0 in `process` → the output is 1.0,
     /// not 2.0 → fails. (A latency the bus declares but does not add is not
@@ -237,8 +232,7 @@ mod tests {
         }
     }
 
-    /// Summing, not averaging — the property that ruled out fundsp's
-    /// `join`/`multijoin` for a mixer bus.
+    /// Summing, not averaging.
     ///
     /// Worth pinning because the failure is quiet and musical rather than a
     /// crash: were this to average, adding a track to a bus would duck every

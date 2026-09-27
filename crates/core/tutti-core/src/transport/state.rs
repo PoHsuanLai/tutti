@@ -29,8 +29,7 @@ use crate::{Beat, BeatDuration};
 /// **No clock steps by it.** A playhead that adds this per frame or per block
 /// drifts off the frames (at 90 BPM / 48 kHz it reads `2.999999999999891` on
 /// frame 96 000, which is beat 3): the clocks count frames and derive the
-/// beat in closed form ([`TimelineSegment`](tutti_types::TimelineSegment),
-/// doc 013 §6).
+/// beat in closed form ([`TimelineSegment`](tutti_types::TimelineSegment)).
 ///
 /// One spelling, `(tempo / 60) / sample_rate`, so every reader that divides
 /// by it divides by the same `f64`.
@@ -70,7 +69,7 @@ impl SeekSlot {
         self.pending.store(true, Ordering::Release);
     }
 
-    /// Take a pending target, clearing the flag. `None` if no seek is due.
+    /// Takes a pending target, clearing the flag. `None` if no seek is due.
     pub fn take(&self) -> Option<Beat> {
         self.pending
             .swap(false, Ordering::AcqRel)
@@ -126,7 +125,7 @@ impl LoopSpan {
         self.enabled.load(Ordering::Acquire)
     }
 
-    /// Arm or disarm looping, leaving the bounds intact.
+    /// Arms or disarm looping, leaving the bounds intact.
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
     }
@@ -156,7 +155,7 @@ impl LoopSpan {
         )
     }
 
-    /// Store new bounds. Not validated and not ordered — an inverted pair is
+    /// Stores new bounds. Not validated and not ordered — an inverted pair is
     /// accepted, and simply yields no [`range`](Self::range).
     pub fn set_range(&self, start: impl Into<Beat>, end: impl Into<Beat>) {
         self.start.store(start.into().get(), Ordering::Release);
@@ -200,7 +199,7 @@ impl Declick {
         }
     }
 
-    /// Arm a fade of `frames`, resetting the ramp to full gain.
+    /// Arms a fade of `frames`, resetting the ramp to full gain.
     ///
     /// Takes [`Samples`] because that is what callers hold and what the
     /// processor compares against — `Seconds::to_samples_*` returns one, and

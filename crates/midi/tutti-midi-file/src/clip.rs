@@ -31,7 +31,7 @@ pub enum MidiFileKind {
 }
 
 impl MidiFileKind {
-    /// Identify a byte stream by its magic. `None` if it is neither format
+    /// Identifies a byte stream by its magic. `None` if it is neither format
     /// (including a stream too short to tell).
     ///
     /// Cheap enough to call on the first bytes of a file: it inspects at most
@@ -46,9 +46,13 @@ impl MidiFileKind {
         }
     }
 
-    /// Identify the file at `path` by reading only its header, not the whole
-    /// file. `Ok(None)` means "readable, but neither format" — distinct from
-    /// `Err`, which means the file could not be read at all.
+    /// Identifies the file at `path` by reading only its header, not the whole
+    /// file. `Ok(None)` means "readable, but neither format".
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] if the file cannot be opened or read. A
+    /// file shorter than a header is not an error; it returns `Ok(None)`.
     pub fn sniff_path(path: impl AsRef<Path>) -> Result<Option<Self>> {
         use std::io::Read;
 
@@ -64,25 +68,35 @@ impl MidiFileKind {
     }
 }
 
-/// Read and parse a MIDI 2.0 Clip File from `path`.
+/// Reads and parses a MIDI 2.0 Clip File from `path`.
 ///
 /// The clip-file counterpart of [`crate::smf::tracks_from_path`]. Parse errors
 /// keep their [`ClipFileError`](tutti_midi_types::ClipFileError) wording, so
 /// "not a clip file" stays distinguishable from "malformed clip file" in the
 /// message — check [`MidiFileKind::sniff_path`] first if you need to branch on
 /// that programmatically.
+///
+/// # Errors
+///
+/// [`Error::Io`] if the file cannot be read, or
+/// [`Error::MidiFileParse`] (prefixed with the
+/// path) if the bytes are not a valid Clip File.
 pub fn read_clip_file_from_path(path: impl AsRef<Path>) -> Result<ParsedClipFile> {
     let path = path.as_ref();
     let bytes = std::fs::read(path)?;
     read_clip_file(&bytes).map_err(|e| Error::MidiFileParse(format!("{}: {e}", path.display())))
 }
 
-/// Write events to a MIDI 2.0 Clip File at `path`.
+/// Writes events to a MIDI 2.0 Clip File at `path`.
 ///
 /// `header` is optional only in the type system — M2-116 §7.1.1/§7.1.2 recommend
 /// every clip declare its tempo and time signature, and an importer that reads a
 /// clip without them has to guess. Pass `Some` unless the musical context is
 /// genuinely unknown.
+///
+/// # Errors
+///
+/// [`Error::Io`] if the file cannot be written.
 pub fn write_clip_file_to_path(
     path: impl AsRef<Path>,
     ticks_per_quarter: u16,

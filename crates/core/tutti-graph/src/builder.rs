@@ -1,4 +1,4 @@
-//! [`GraphBuilder`]: a `Net`-shaped way to write a [`GraphSpec`] and its
+//! [`GraphBuilder`]: a call-per-edge way to write a [`GraphSpec`] and its
 //! units, and [`Renderer`], which drives the result block by block.
 //!
 //! # Not a second graph model
@@ -15,13 +15,10 @@
 //!
 //! # Why it exists
 //!
-//! The engine's tests, examples and simple hosts were written against
-//! fundsp's `Net` (`push`, `connect`, `pipe_output`, …). Doc 013's Phase 3
-//! moved them to this graph (PR 8 for `tutti-export`), and the port was
-//! mechanical: same call, same meaning, including `Net`'s fan-out rules,
-//! which are quoted on each method below. (`Net` itself went in Phase 5;
-//! the `Net::…` names below say which call each one spells.) Writing a
-//! [`GraphSpec`] by hand instead is several `BTreeMap` inserts per edge.
+//! Tests, examples and simple hosts want to wire a fixed graph in a few
+//! lines: `add`, `connect`, `pipe_output`, `chain`, with fan-out rules stated
+//! on each method. Writing a [`GraphSpec`] by hand instead is several
+//! `BTreeMap` inserts per edge.
 //!
 //! # Keys
 //!
@@ -41,7 +38,7 @@
 //!
 //! # Panics, not errors
 //!
-//! As `Net`'s did, the wiring calls assert their port indices: a builder is for
+//! The wiring calls assert their port indices: a builder is for
 //! code whose graph is fixed in its source, where an out-of-range port is a
 //! typo to fix, not a condition to handle. Anything that needs the shapes
 //! *and* the edges together (a cycle, a feedback delay shorter than the
@@ -64,14 +61,35 @@ struct Pending {
     unit: NodeParts<()>,
 }
 
-/// Builds a [`GraphSpec`] and its units with `Net`'s calls, then hands both
-/// to an [`Editor`]. See the `builder` module docs (`src/builder.rs`): it is a
-/// spelling of the spec, not a second graph model.
+/// Builds a [`GraphSpec`] and its units one call per node or edge, then hands
+/// both to an [`Editor`] — the quickest way to wire a fixed graph in a test,
+/// an example or a simple host.
 ///
-/// # Example
+/// It is a spelling of the spec, not a second graph model: every wiring call
+/// writes one entry of a [`GraphSpec`], and [`build`](Self::build) inserts
+/// the units into an [`Editor`] through [`Editor::insert`], copies the wiring
+/// across and commits — the public path any host takes, so what it builds is
+/// exactly what a host writing that spec by hand would get.
+/// [`renderer`](Self::renderer) wraps the result in a [`Renderer`] that
+/// drives the executor block by block.
 ///
-/// The port of a typical `Net` test fixture — `Net::new(0, 2)`, `push`, and
-/// `pipe_output`:
+/// Nodes get [`NodeKey`]s in the order they are added, from 0. The fan-out
+/// calls (`pipe`, `pipe_input`, `pipe_output`, `chain`) read a node's widths
+/// from [`Node::shape`](crate::Node::shape) when it is added, before it is
+/// prepared; latency and tail are rewritten from the prepared shape when the
+/// editor is built.
+///
+/// # Panics, not errors
+///
+/// The wiring calls assert their port indices: a builder is for code whose
+/// graph is fixed in its source, where an out-of-range port is a typo to fix.
+/// Anything that needs the shapes and the edges together (a cycle, a feedback
+/// delay shorter than the block) is found by [`build`](Self::build) and
+/// returned as a [`CommitError`].
+///
+/// # Examples
+///
+/// A source feeding both channels of a stereo output:
 ///
 /// ```
 /// use tutti_graph::{ForkByClone, GraphBuilder, Prepare};
@@ -92,7 +110,7 @@ struct Pending {
 ///
 /// let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
 /// let src = g.add(ForkByClone(Dc(0.25)));
-/// g.pipe_output(src); // mono → both channels, as `Net::pipe_output` does
+/// g.pipe_output(src); // mono → both channels
 ///
 /// let mut r = g
 ///     .renderer(Prepare::new(SampleRate(48_000.0), Samples(64)))
@@ -143,7 +161,7 @@ pub struct GraphBuilder {
 
 impl GraphBuilder {
     /// An empty graph with `inputs` global input channels and `outputs`
-    /// global output channels, every output silent until wired — `Net::new`.
+    /// global output channels, every output silent until wired.
     pub fn new(inputs: ChannelLayout, outputs: ChannelLayout) -> Self {
         let mut spec = GraphSpec::default();
         spec.topology.inputs = inputs;
@@ -155,7 +173,7 @@ impl GraphBuilder {
         }
     }
 
-    /// Add a node, unwired. Its kind (the [`NodeSpec::kind`] diagnostics
+    /// Adds a node, unwired. Its kind (the [`NodeSpec::kind`] diagnostics
     /// print) is its type name ([`IntoNode::kind`]: the wrapped node's, for
     /// a fork wrapper).
     ///
@@ -166,7 +184,7 @@ impl GraphBuilder {
         self.add_with_controls(node).0
     }
 
-    /// Add a node, unwired, and return its controls with its key.
+    /// Adds a node, unwired, and returns its controls with its key.
     pub fn add_with_controls<N: IntoNode>(&mut self, node: N) -> (NodeKey, N::Controls) {
         let NodeParts {
             node,
@@ -211,12 +229,12 @@ impl GraphBuilder {
             .unwrap_or_else(|| panic!("{node:?} was not added by this builder"))
     }
 
-    /// Audio inputs of `node` — `Net::inputs_in`.
+    /// Audio inputs of `node`.
     pub fn inputs_in(&self, node: NodeKey) -> usize {
         self.shape(node).audio_in.count() as usize
     }
 
-    /// Audio outputs of `node` — `Net::outputs_in`.
+    /// Audio outputs of `node`.
     pub fn outputs_in(&self, node: NodeKey) -> usize {
         self.shape(node).audio_out.count() as usize
     }
@@ -231,13 +249,14 @@ impl GraphBuilder {
         self.spec.topology.outputs.len()
     }
 
-    /// How many nodes were added — `Net::size`.
+    /// How many nodes were added.
     pub fn size(&self) -> usize {
         self.units.len()
     }
 
     /// The graph value so far. Latency and tail are as each node declared
-    /// them *before* it was prepared (see the module docs).
+    /// them *before* it was prepared; the built editor's spec holds the
+    /// prepared figures.
     pub fn spec(&self) -> &GraphSpec {
         &self.spec
     }
@@ -289,7 +308,7 @@ impl GraphBuilder {
         }
     }
 
-    /// Feed `node`'s input `port` from `source` — `Net::set_source`.
+    /// Feeds `node`'s input `port` from `source`.
     ///
     /// # Panics
     ///
@@ -307,9 +326,8 @@ impl GraphBuilder {
         self
     }
 
-    /// Feed `to`'s input `to_port` from `from`'s output `from_port` —
-    /// `Net::connect`. Replaces whatever fed that input: one source per
-    /// input port, as in `Net`.
+    /// Feeds `to`'s input `to_port` from `from`'s output `from_port`.
+    /// Replaces whatever fed that input: one source per input port.
     pub fn connect(
         &mut self,
         from: NodeKey,
@@ -321,10 +339,9 @@ impl GraphBuilder {
         self.set_source(to, to_port, source)
     }
 
-    /// Feed `to`'s input `to_port` from `from`'s output `from_port` as it
+    /// Feeds `to`'s input `to_port` from `from`'s output `from_port` as it
     /// was `delay` frames ago — a declared cycle
-    /// ([`FeedbackFrom`](tutti_types::graph::FeedbackFrom)). `Net` had no
-    /// counterpart. `delay` must be at least the maximum block the graph is
+    /// ([`FeedbackFrom`](tutti_types::graph::FeedbackFrom)). `delay` must be at least the maximum block the graph is
     /// built for; [`build`](Self::build) refuses a shorter one.
     pub fn feedback(
         &mut self,
@@ -343,28 +360,25 @@ impl GraphBuilder {
         self
     }
 
-    /// Feed `node`'s input `port` from silence — `Net::disconnect`. An
+    /// Feeds `node`'s input `port` from silence. An
     /// explicit [`Source::Zero`], which reads the same as an unconnected
     /// port but says it was meant.
     pub fn disconnect(&mut self, node: NodeKey, port: usize) -> &mut Self {
         self.set_source(node, port, Source::Zero)
     }
 
-    /// Feed `to`'s input `to_port` from global input `global` —
-    /// `Net::connect_input`.
+    /// Feeds `to`'s input `to_port` from global input `global`.
     pub fn connect_input(&mut self, global: usize, to: NodeKey, to_port: usize) -> &mut Self {
         self.set_source(to, to_port, Source::Global(global as u16))
     }
 
-    /// Feed global output `global` from `from`'s output `from_port` —
-    /// `Net::connect_output`.
+    /// Feeds global output `global` from `from`'s output `from_port`.
     pub fn connect_output(&mut self, from: NodeKey, from_port: usize, global: usize) -> &mut Self {
         let source = Source::Node(self.check_out(from, from_port));
         self.set_output(global, source)
     }
 
-    /// Feed global output `channel` from `source` —
-    /// `Net::set_output_source`.
+    /// Feeds global output `channel` from `source`.
     ///
     /// # Panics
     ///
@@ -379,14 +393,13 @@ impl GraphBuilder {
         self
     }
 
-    /// Feed global output `output` straight from global input `input` —
-    /// `Net::pass_through`.
+    /// Feeds global output `output` straight from global input `input`.
     pub fn pass_through(&mut self, input: usize, output: usize) -> &mut Self {
         self.set_output(output, Source::Global(input as u16))
     }
 
-    /// Feed every input of `to` from the outputs of `from`, in order —
-    /// `Net::pipe_all`, with its fan-out rule: input `c` reads output
+    /// Feeds every input of `to` from the outputs of `from`, in order. The
+    /// fan-out rule: input `c` reads output
     /// `c % outputs`, so a mono source feeds every channel of a wider sink
     /// and a wider source's extra channels go unused. A source with no
     /// outputs feeds silence.
@@ -406,8 +419,8 @@ impl GraphBuilder {
         self
     }
 
-    /// Feed every input of `node` from the global inputs, in order —
-    /// `Net::pipe_input`, with its rule: input `c` reads global input
+    /// Feeds every input of `node` from the global inputs, in order. The
+    /// rule: input `c` reads global input
     /// `c % inputs`, and with no global inputs at all every input reads
     /// silence.
     pub fn pipe_input(&mut self, node: NodeKey) -> &mut Self {
@@ -423,8 +436,8 @@ impl GraphBuilder {
         self
     }
 
-    /// Feed every global output from the outputs of `node`, in order —
-    /// `Net::pipe_output`, with its rule: global output `c` reads output
+    /// Feeds every global output from the outputs of `node`, in order. The
+    /// rule: global output `c` reads output
     /// `c % outputs`. So a mono node feeds every channel, a stereo node
     /// feeding six channels repeats L R L R L R (it wraps, it does not
     /// clamp to the last channel), a node wider than the graph has its
@@ -445,8 +458,8 @@ impl GraphBuilder {
         self
     }
 
-    /// Add `node` at the end of the chain the global outputs describe —
-    /// `Net::chain`. The first node added to an empty builder reads the
+    /// Adds `node` at the end of the chain the global outputs describe. The
+    /// first node added to an empty builder reads the
     /// global inputs ([`pipe_input`](Self::pipe_input), when there are
     /// any); a later one reads whatever fed the global outputs, input `c`
     /// taking output source `c % outputs`. Either way the node then feeds
@@ -476,7 +489,7 @@ impl GraphBuilder {
         self.pipe_output(key);
     }
 
-    /// Add `from`'s event output `from_port` to the sources of `to`'s event
+    /// Adds `from`'s event output `from_port` to the sources of `to`'s event
     /// input `to_port` ([`GraphSpec::connect_events`]). Event ports take
     /// fan-in: events at equal offsets arrive in source order, the source
     /// port's `(NodeKey, port)` — for nodes this builder added, the order
@@ -514,7 +527,7 @@ impl GraphBuilder {
         self
     }
 
-    /// Prepare every unit for `prepare`, commit the graph, and install it:
+    /// Prepares every unit for `prepare`, commits the graph, and installs it:
     /// the returned executor is already running the plan, and the editor
     /// has nothing in flight.
     ///
@@ -522,6 +535,12 @@ impl GraphBuilder {
     /// per node in the order they were added, the wiring copied into
     /// [`Editor::spec_mut`], [`Editor::commit`] — so an error is the
     /// editor's own.
+    ///
+    /// # Errors
+    ///
+    /// The [`CommitError`] [`Editor::commit`] returns: a cycle, a feedback
+    /// delay shorter than `prepare`'s maximum block, a width mismatch, and
+    /// so on.
     pub fn build(self, prepare: Prepare) -> Result<(Editor, Executor), CommitError> {
         let (mut editor, mut executor) = Editor::new(prepare);
         for Pending { key, kind, unit } in self.units {
@@ -559,6 +578,10 @@ impl GraphBuilder {
     }
 
     /// [`build`](Self::build), wrapped in a [`Renderer`].
+    ///
+    /// # Errors
+    ///
+    /// As [`build`](Self::build).
     pub fn renderer(self, prepare: Prepare) -> Result<Renderer, CommitError> {
         let (editor, executor) = self.build(prepare)?;
         Ok(Renderer::new(editor, executor))
@@ -627,7 +650,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    /// Drive `executor`, draining back into `editor`. Transport stopped at
+    /// Drives `executor`, draining back into `editor`. Transport stopped at
     /// beat zero ([`Transport::default`]); blocks at the prepared maximum.
     ///
     /// # Panics
@@ -647,7 +670,7 @@ impl Renderer {
         }
     }
 
-    /// Render in blocks of `frames` (the last of a render may be shorter).
+    /// Renders in blocks of `frames` (the last of a render may be shorter).
     ///
     /// # Panics
     ///
@@ -663,7 +686,7 @@ impl Renderer {
         self
     }
 
-    /// Hand every block `transport`, unchanged. It does not advance: a
+    /// Hands every block `transport`, unchanged. It does not advance: a
     /// playing transport whose beat should move is a
     /// [`set_transport_fn`](Self::set_transport_fn).
     pub fn set_transport(&mut self, transport: Transport) -> &mut Self {
@@ -671,7 +694,7 @@ impl Renderer {
         self
     }
 
-    /// Ask `f` for each block's transport, given the block's first frame
+    /// Asks `f` for each block's transport, given the block's first frame
     /// ([`Executor::frame`]).
     pub fn set_transport_fn(
         &mut self,
@@ -681,7 +704,7 @@ impl Renderer {
         self
     }
 
-    /// Render `frames` with silent global inputs; one `Vec` per global
+    /// Renders `frames` with silent global inputs; one `Vec` per global
     /// output channel.
     pub fn render(&mut self, frames: usize) -> Vec<Vec<f32>> {
         let mut out = vec![vec![0.0f32; frames]; self.global_outputs()];
@@ -690,7 +713,7 @@ impl Renderer {
         out
     }
 
-    /// Render one frame per input sample, reading `input` (one slice per
+    /// Renders one frame per input sample, reading `input` (one slice per
     /// global input channel, all the same length); one `Vec` per global
     /// output channel.
     ///
@@ -721,7 +744,7 @@ impl Renderer {
         out
     }
 
-    /// Render into `output` (one slice per global output channel, all the
+    /// Renders into `output` (one slice per global output channel, all the
     /// same length, which is the frame count) with silent global inputs.
     ///
     /// # Panics
@@ -736,7 +759,7 @@ impl Renderer {
         self.run(frames, None, output);
     }
 
-    /// Render `input` into `output`, planar. The frame count is the
+    /// Renders `input` into `output`, planar. The frame count is the
     /// channels' length.
     ///
     /// # Panics
@@ -893,12 +916,12 @@ impl<C> Solo<C> {
         self.key
     }
 
-    /// Render one frame per input sample (see [`Renderer::render_input`]).
+    /// Renders one frame per input sample (see [`Renderer::render_input`]).
     pub fn render_input(&mut self, input: &[&[f32]]) -> Vec<Vec<f32>> {
         self.renderer.render_input(input)
     }
 
-    /// Render `frames` with silent inputs (see [`Renderer::render`]).
+    /// Renders `frames` with silent inputs (see [`Renderer::render`]).
     pub fn render(&mut self, frames: usize) -> Vec<Vec<f32>> {
         self.renderer.render(frames)
     }

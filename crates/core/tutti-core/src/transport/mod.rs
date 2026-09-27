@@ -69,7 +69,7 @@ pub use tutti_types::{OfflineClock, OfflineTransport, Timeline};
 /// entire render — a desync that reads as "the samplers are
 /// slightly late" and nothing else.
 pub trait RenderClock: Send + Sync {
-    /// Advance the playhead by `frames` — a **frame** count, not a sample
+    /// Advances the playhead by `frames` — a **frame** count, not a sample
     /// count, so it is independent of the render's channel width.
     ///
     /// Call after the block has been processed, never before.
@@ -88,7 +88,7 @@ pub trait RenderClock: Send + Sync {
     /// it is.
     fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges);
 
-    /// Render `frames` through `exec` under this clock, then advance the
+    /// Renders `frames` through `exec` under this clock, then advance the
     /// clock by it: [`graph_block`](Self::graph_block),
     /// `Executor::process_with_changes`, then [`advance`](Self::advance) —
     /// the one order that keeps every reader of this clock on the frame the

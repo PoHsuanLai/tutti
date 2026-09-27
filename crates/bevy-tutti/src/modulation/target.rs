@@ -11,10 +11,6 @@
 //! - a sink no node owns — a hosted plugin's per-block param target, or any
 //!   accumulator a host evaluates at its own rate — is supplied by the host
 //!   through [`ModTargetRegistry::insert_target`].
-//!
-//! (A registry of `AudioUnit` types, each asked for a `ModParams` clone of
-//! the unit at insert, answered the first case until every node was a
-//! graph node with a `ParamSet`; it went with the `Legacy` adapter.)
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
@@ -41,7 +37,7 @@ pub struct ModTargetRegistry {
 }
 
 impl ModTargetRegistry {
-    /// Supply an already-built sink for `(entity, param)`, replacing any
+    /// Supplies an already-built sink for `(entity, param)`, replacing any
     /// previous one.
     ///
     /// A node's params resolve through its `ParamSet`, each with an
@@ -69,7 +65,7 @@ impl ModTargetRegistry {
         self
     }
 
-    /// Drop a supplied sink. No-op if none was registered.
+    /// Drops a supplied sink. No-op if none was registered.
     ///
     /// Resolution falls back to the node path afterwards, so removing a
     /// supplied sink for a param a node also exposes silently reverts to the
@@ -105,7 +101,8 @@ pub struct ModParamsHandle {
 }
 
 impl ModParamsHandle {
-    /// Captured params for the node that became `node`.
+    /// Creates a handle over the params captured from the node that became
+    /// `node`.
     ///
     /// `node` is what makes a leftover handle inert: resolution skips one whose
     /// node is not the entity's current [`AudioNode`].
@@ -113,7 +110,7 @@ impl ModParamsHandle {
         Self { node, params }
     }
 
-    /// Capture a typed `unit` directly, for a caller that has the concrete type
+    /// Captures a typed `unit` directly, for a caller that has the concrete type
     /// in hand (a host's own `ModParams` type).
     pub fn of<T: ModParams + Clone + Send + Sync + 'static>(
         node: tutti_core::NodeKey,
@@ -122,12 +119,12 @@ impl ModParamsHandle {
         Self::new(node, Arc::new(unit.clone()))
     }
 
-    /// The graph node these params were captured from.
+    /// Returns the graph node these params were captured from.
     pub fn node(&self) -> tutti_core::NodeKey {
         self.node
     }
 
-    /// The captured params.
+    /// Returns the captured params.
     pub fn params(&self) -> &(dyn ModParams + Send + Sync) {
         &*self.params
     }
@@ -191,8 +188,8 @@ pub struct ModTargetResolver<'w, 's> {
 }
 
 impl ModTargetResolver<'_, '_> {
-    /// The accumulator for `param` on `entity`, or `None` if nothing on this
-    /// entity exposes it.
+    /// Returns the accumulator for `param` on `entity`, or `None` if nothing
+    /// on this entity exposes it.
     ///
     /// Three kinds of target, tried in order:
     ///
@@ -261,7 +258,7 @@ impl ModTargetResolver<'_, '_> {
         )))
     }
 
-    /// The shared [`ModBus`] a resolved target is registered on.
+    /// Returns the shared [`ModBus`] a resolved target is registered on.
     ///
     /// The one bus [`ModBusRes`] holds — see it for why a second would leave the
     /// driver dispatching into accumulators nothing reads.

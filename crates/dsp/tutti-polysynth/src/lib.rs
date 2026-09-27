@@ -1,25 +1,15 @@
-//! Polyphonic subtractive and wavetable synthesis for the Tutti audio engine.
-//!
-//! One type does the work: [`PolySynth`], a graph node
-//! (`tutti_graph::Node`) built from a [`SynthConfig`] and driven by MIDI. It
-//! takes no audio input — notes arrive on its event input, on their frames —
-//! and renders stereo. Its live params (master volume, unison detune and
-//! spread) are a `tutti_graph::ParamSet`, its controls.
-//!
-//! Around it sit the voice engine's parts, all configured through
-//! [`SynthConfig`]: allocation ([`AllocationStrategy`], [`VoiceMode`]), unison
-//! ([`UnisonConfig`]), portamento ([`PortamentoConfig`]) and [`Tuning`].
-//!
-//! `.sf2` playback is [`tutti-soundfont`]'s, a peer crate rather than a feature
-//! of this one: a sample player shares no voice engine, envelope model or filter
-//! with a subtractive synth, so the two have nothing to hold in common beyond
-//! the node contract.
-//!
-//! The quick start, what is fixed at construction, the `max_voices` ceiling and
-//! the features are in the crate README, included below.
-//!
-//! [`tutti-soundfont`]: https://docs.rs/tutti-soundfont
 #![doc = include_str!("../README.md")]
+//!
+//! ## Items
+//!
+//! - [`PolySynth`]: the synth, a graph node with one MIDI event input.
+//! - [`SynthConfig`]: everything a synth is built from, with
+//!   [`OscillatorType`], [`FilterType`] and [`SvfMode`], [`EnvelopeConfig`]
+//!   and [`FilterModConfig`].
+//! - Voice allocation: [`VoiceMode`] and [`AllocationStrategy`].
+//! - [`UnisonConfig`], [`PortamentoConfig`] (with [`PortamentoMode`] and
+//!   [`PortamentoCurve`]) and [`Tuning`].
+//! - [`enum@Error`] and [`Result`]: what construction can fail with.
 
 mod error;
 pub use error::{Error, Result};

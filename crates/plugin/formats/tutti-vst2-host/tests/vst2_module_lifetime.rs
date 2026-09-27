@@ -1,5 +1,5 @@
-//! Pins the two events `handle.rs`'s module docs insist are different, and the
-//! bug that came of conflating them.
+//! Pins the two events `handle.rs`'s module docs insist are different, and
+//! what goes wrong when they are conflated.
 //!
 //! * **`effClose`** releases *this instance*: the plugin frees its `AEffect`,
 //!   drops its DSP state, and hands back any licence seat. Mandatory — skip it
@@ -8,28 +8,25 @@
 //!   That is the step that crashes with JUCE-based plugins, so hosts (JUCE and
 //!   Ardour both) never take it.
 //!
-//! `Vst2Handle` once had these exactly backwards: it was `ManuallyDrop` and
-//! skipped the instance destructor entirely, so `effClose` never ran while the
-//! `Arc<Library>` inside still dropped. The fix (`src/handle.rs`, the ordering
-//! its `Drop` spells out) has survived only as prose in that file and as a
-//! `std::mem::forget(lib)` plus an explanatory comment in seven test files.
-//! Nothing executed it.
+//! Getting these backwards (skipping the instance destructor while letting the
+//! `Arc<Library>` drop) means `effClose` never runs while the module can still
+//! unload. `src/handle.rs` spells out the correct ordering in its `Drop`; this
+//! file executes it.
 //!
-//! # Why this was mistaken for flakiness
+//! # Why a lost switch looks like flakiness
 //!
-//! The seven copies of that comment record the symptom: the probe's switches
-//! are `static`s inside its image, and they survive only while the image stays
-//! mapped. A test helper that opened the library, wrote a switch, and let the
-//! handle drop decremented the refcount that kept it mapped — and with no
-//! `Vst2Instance` holding it open at that moment, the write went with the
-//! unload and the next load mapped a fresh image reading the default.
+//! The probe's switches are `static`s inside its image, and they survive only
+//! while the image stays mapped. A test helper that opens the library, writes a
+//! switch, and lets the handle drop decrements the refcount that keeps it
+//! mapped — and with no `Vst2Instance` holding it open at that moment, the
+//! write goes with the unload and the next load maps a fresh image reading the
+//! default. That is why the helpers `std::mem::forget` their handle.
 //!
-//! It presented as load-sensitivity because it passed whenever *another* test's
-//! instance happened to keep the image resident, which is a matter of
-//! scheduling. The diagnosis "these tests are load-sensitive" was wrong: the
-//! defect was a dropped `Library` handle, and it was deterministic once the
-//! refcount was accounted for. This file asserts on the refcount directly, so
-//! there is nothing left to schedule.
+//! Such a failure looks like load-sensitivity, because it passes whenever
+//! *another* test's instance happens to keep the image resident, which is a
+//! matter of scheduling. It is deterministic once the refcount is accounted
+//! for, so this file asserts on the refcount directly and leaves nothing to
+//! scheduling.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -94,7 +91,7 @@ fn reset_close_count(path: &PathBuf) {
     });
 }
 
-/// **The regression test for `handle.rs:82`.** Dropping a `Vst2Instance` must
+/// Pins the ordering in `Vst2Handle`'s `Drop`. Dropping a `Vst2Instance` must
 /// dispatch `effClose`, and must do so while the module is still mapped.
 ///
 /// The two halves are one assertion, because the count is *read out of the
@@ -105,8 +102,8 @@ fn reset_close_count(path: &PathBuf) {
 /// same answer a skipped `effClose` gives, and the distinguishing test below
 /// separates them.
 ///
-/// Under the pre-fix `ManuallyDrop` handle this reads 0: the instance
-/// destructor never ran, so `effClose` was never dispatched.
+/// A handle that skipped the instance destructor (for example by holding it in
+/// `ManuallyDrop`) reads 0 here: `effClose` is never dispatched.
 #[test]
 fn dropping_an_instance_dispatches_eff_close_while_the_module_stays_mapped() {
     let _guard = lock_probe();
@@ -188,12 +185,12 @@ fn the_module_survives_an_instance_lifetime_and_a_reload() {
 /// *host* loads the plugin — the property the seven `std::mem::forget(lib)`
 /// calls exist to guarantee.
 ///
-/// This is the bug from the other side. The probe's switches are `static`s
-/// inside its image and survive only while that image stays mapped, so a helper
-/// that opened the library, wrote a switch and dropped the handle could lose
-/// the write to the unload — leaving the next load to map a fresh image reading
-/// the default. It presented as flakiness because it passed whenever another
-/// test's instance happened to keep the image resident.
+/// This is the same hazard from the other side. The probe's switches are
+/// `static`s inside its image and survive only while that image stays mapped,
+/// so a helper that opens the library, writes a switch and drops the handle
+/// can lose the write to the unload — leaving the next load to map a fresh
+/// image reading the default. It looks like flakiness because it passes
+/// whenever another test's instance happens to keep the image resident.
 ///
 /// # What this can and cannot assert
 ///
@@ -207,9 +204,9 @@ fn the_module_survives_an_instance_lifetime_and_a_reload() {
 /// What *is* invariant, and is what the `forget` buys, is the direction: a
 /// leaked handle can never lose the write. So that is what is asserted, over a
 /// full write → host-load → read cycle — the exact sequence the seven helpers
-/// perform. Under the pre-fix helper this failed on any run where no other
-/// instance held the image; here it cannot fail for that reason at all, which
-/// is the point.
+/// perform. A helper that dropped its handle would fail on any run where no
+/// other instance held the image; this one cannot fail for that reason at all,
+/// which is the point.
 #[test]
 fn a_switch_written_through_a_leaked_handle_survives_the_hosts_load() {
     let _guard = lock_probe();

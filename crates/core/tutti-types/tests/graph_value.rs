@@ -256,9 +256,8 @@ fn unconnected_is_reported_but_not_fatal() {
 
 /// Two topologies built in **different insertion orders** are equal and hash
 /// equal. This is what makes the value usable as a cache key and as the whole of
-/// a change check — `Net::revision` (until doc 013 Phase 5) was monotone but
-/// not a function of the graph, so it could order two states and not
-/// identify one.
+/// a change check: a revision counter could order two states but not identify
+/// one.
 ///
 /// Mutation: swap `Topology::nodes` to a `HashMap` → the derived `Hash` stops
 /// being order-independent and the hash assertion fails (intermittently, which
@@ -337,12 +336,10 @@ fn param_equality_is_structural() {
 
 /// The default topology has **no** global inputs.
 ///
-/// Not a formality: when `ChannelLayout::default()` was `STEREO`, a *derived*
-/// `Default` on `Topology` silently gave every master graph two input channels
-/// nobody declared — and a `Source::Global(1)` typo then resolved against them
-/// instead of being rejected as out of range. `ChannelLayout` has no `Default`
-/// any more, so that derive no longer compiles; this pins the hand-written
-/// impl's *choice* of width, which the compiler cannot.
+/// Not a formality: with any global inputs, a `Source::Global(1)` typo would
+/// resolve against them instead of being rejected as out of range.
+/// `ChannelLayout` has no `Default`, so the impl is hand-written; this pins its
+/// *choice* of width, which the compiler cannot.
 ///
 /// Mutation: `inputs: ChannelLayout::STEREO` in the hand-written impl → the
 /// out-of-range edge validates → both assertions fail.

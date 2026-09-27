@@ -32,25 +32,22 @@ pub use tutti_core::transport::{FrozenClock, RenderClock};
 use std::path::{Path, PathBuf};
 use tutti_types::Samples;
 
-/// A file that was written.
+/// A file an export wrote, returned by [`render_to_file`], [`write_buffers`]
+/// and [`render_normalized_to_file`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Written {
     /// Where it landed — the `path` the entry point was given.
     pub path: PathBuf,
-    /// Size on disk after finalization. `0` if the file could not be stat'd.
-    ///
-    /// This is the only thing an export reports back, which is why a
-    /// normalization that silently failed to apply would leave no trace: no
-    /// field here records the gain.
+    /// Size on disk after finalization, in bytes. `0` if the file could not
+    /// be stat'd.
     pub bytes: u64,
 }
 
-/// Rendered audio, one `Vec` per channel.
+/// Rendered audio held in memory, one `Vec` per channel.
 ///
-/// Planes rather than a `(left, right)` pair: a pair cannot express a surround
-/// render, so it forces the in-memory path to fold anything wider than stereo
-/// and leaves callers hardcoding "2 channels" downstream because the type gives
-/// them no other answer.
+/// Returned by [`render_to_buffers`]; written with [`write_buffers`]. Planes
+/// rather than a `(left, right)` pair, so a surround render keeps every
+/// channel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rendered {
     /// One `Vec` per channel, all the same length. Planar, not interleaved —
@@ -64,29 +61,27 @@ pub struct Rendered {
 }
 
 impl Rendered {
-    /// FRAMES per plane — the length of one channel, not the total sample
-    /// count.
+    /// Returns the frames per plane — the length of one channel, not the total
+    /// sample count.
     pub fn frames(&self) -> Samples {
         Samples(self.planes.first().map_or(0, |p| p.len()))
     }
 
-    /// Channel count — the interleave stride, and the number of planes.
+    /// Returns the channel count — the interleave stride, and the number of
+    /// planes.
     pub fn channels(&self) -> usize {
         self.planes.len()
     }
 
-    /// The width these planes carry, as the engine's channel vocabulary.
+    /// Returns the width these planes carry as a [`ChannelLayout`].
     ///
-    /// [`channels`](Self::channels) is the same number as a raw stride, for the
-    /// indexing arithmetic that wants one. This is the *declaration* — what
-    /// callers reaching for a layout (the loudness meter, a resample, an encode
-    /// config) actually want, so they stop re-wrapping the count themselves.
+    /// [`channels`](Self::channels) is the same number as a raw stride.
     pub fn layout(&self) -> ChannelLayout {
         ChannelLayout::from(self.planes.len() as u16)
     }
 
-    /// Multiply every sample by `gain` — the apply half of a measure-then-apply
-    /// normalization.
+    /// Multiplies every sample by `gain` — the apply half of a
+    /// measure-then-apply normalization.
     pub fn apply_gain(&mut self, gain: tutti_types::Db) {
         let scale = gain.to_amplitude().get();
         for plane in self.planes.iter_mut() {
@@ -96,7 +91,7 @@ impl Rendered {
         }
     }
 
-    /// The planes interleaved — the shape a meter or an encoder takes.
+    /// Returns the planes interleaved — the shape a meter or an encoder takes.
     ///
     /// **Allocates the whole render.** A `Rendered` holds an entire offline
     /// pass in memory, so this doubles that for the duration of the call; on a
@@ -109,15 +104,11 @@ impl Rendered {
         out
     }
 
-    /// Interleave into a caller-owned buffer, reusing its allocation.
+    /// Interleaves into a caller-owned buffer, reusing its allocation.
     ///
     /// `out` is cleared first, so it is a destination and not an accumulator.
-    /// This exists for the same reason
-    /// [`Interleaved::fold_to_mono_into`](tutti_types::Interleaved::fold_to_mono_into)
-    /// does — [`interleaved`](Self::interleaved) allocates once per call, and
-    /// its callers measure the result and drop it. A two-pass normalize that
-    /// interleaves twice in one scope pays that twice over a buffer it could
-    /// have reused.
+    /// Prefer it over [`interleaved`](Self::interleaved) when interleaving more
+    /// than once.
     pub fn interleaved_into(&self, out: &mut Vec<f32>) {
         out.clear();
         let frames = self.frames().get();
@@ -143,31 +134,48 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
     }
 }
 
-/// Write already-rendered audio to `path`.
+/// Writes already-rendered audio to `path`.
 ///
-/// The third of the API, and what makes measure-then-apply usable: render to
-/// buffers, measure, apply a gain, write. Without it a caller who normalized has
-/// nowhere to put the result.
+/// With [`render_to_buffers`] and [`Rendered::apply_gain`] this makes
+/// measure-then-apply possible: render to buffers, measure, apply a gain,
+/// write.
 ///
 /// `config.encode` is honoured as-is. `config.render` is not consulted — the
 /// frames already exist and carry their own rate in [`Rendered::sample_rate`] —
 /// but `config.resample` still applies, so a caller can convert on the way out.
 /// Dither is applied here, at the real depth and after any resample, which is
 /// the only point where one LSB is known.
+///
+/// # Errors
+///
+/// [`Error::UnsupportedChannels`] for a zero-channel `config.encode.channels`;
+/// [`Error::UnsupportedFormat`] if the format's feature is off or it cannot
+/// write the bit depth; [`Error::InvalidConfig`], [`Error::Resample`],
+/// [`Error::Encoding`] or [`Error::Io`] from the resample and encode stages.
 pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) -> Result<Written> {
     frame_width(config.encode.channels)?;
     encode::encode_planes(rendered, config, path)
 }
 
-/// Render `graph` and write it to `path`.
+/// Renders `graph` and writes it to `path`.
 ///
 /// Streams: the encoder pulls the graph one block at a time and no PCM is held
-/// whole. `clock` is advanced once per block, after the graph processes
-/// ([`RenderClock::render_graph`]) — pass
-/// [`FrozenClock`] for a graph with no time-dependent nodes.
+/// whole. The frame count comes from `config.render` (duration, latency trim,
+/// tail); the output is resampled, dithered and encoded as `config` says.
+/// `clock` is advanced once per block, after the graph processes
+/// ([`RenderClock::render_graph`]) — pass [`FrozenClock`] for a graph with no
+/// time-dependent nodes.
 ///
-/// `graph` is a graph, built for the render or forked from a live one
-/// ([`RenderGraph`]).
+/// `graph` is built for the render or forked from a live one
+/// ([`RenderGraph`]), and must be prepared at `config.render.sample_rate`.
+/// Blocks until the file is finalized.
+///
+/// # Errors
+///
+/// As [`write_buffers`], plus [`Error::InvalidConfig`] if the graph was
+/// prepared at another rate or its editor does not feed its executor, and
+/// [`Error::ForkFailed`] if a forked node (a hosted plugin) failed during the
+/// render — the file may exist but is not a valid render.
 pub fn render_to_file(
     mut graph: RenderGraph,
     config: &ExportConfig,
@@ -181,10 +189,11 @@ pub fn render_to_file(
     })
 }
 
-/// Render `graph` ([`RenderGraph`]) into memory.
+/// Renders `graph` ([`RenderGraph`]) into memory.
 ///
-/// Applies the same gate as [`render_to_file`], and reports the rate it actually
-/// rendered at.
+/// Renders the same frames as [`render_to_file`] and reports the rate it
+/// actually rendered at. Only `config.render` and `config.encode.channels` are
+/// read.
 ///
 /// **Neither resampled nor dithered**, for the same reason in both cases: they
 /// are *output* steps, and these planes are not an output. `config.resample`
@@ -201,6 +210,13 @@ pub fn render_to_file(
 ///
 /// [`write_buffers`] dithers on the way out, at the real depth and after any
 /// resample — the only point where the LSB is known.
+///
+/// # Errors
+///
+/// [`Error::UnsupportedChannels`] for a zero-channel `config.encode.channels`;
+/// [`Error::InvalidConfig`] if the graph was prepared at another rate or its
+/// editor does not feed its executor; [`Error::ForkFailed`] if a forked node
+/// failed during the render.
 pub fn render_to_buffers(
     mut graph: RenderGraph,
     config: &ExportConfig,

@@ -13,10 +13,6 @@ use std::sync::{Arc, OnceLock};
 /// Latching takes no lock and, after the first, allocates nothing (a later
 /// error is dropped unboxed), but the first boxes its error: latch from a
 /// thread that may allocate, which an offline render's is.
-///
-/// Until design doc 013 Phase 5 this was `tutti-node`'s, beside a
-/// `RenderFault` trait it was the only implementor of; the trait went with
-/// that crate, and the latch moved to its one user.
 #[derive(Default)]
 pub(crate) struct FaultLatch(OnceLock<Arc<dyn Error + Send + Sync>>);
 

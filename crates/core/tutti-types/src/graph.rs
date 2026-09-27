@@ -1,37 +1,41 @@
 //! The audio graph as a **value**: build it, fold over it, compare it, hash it.
 //!
-//! # Ownership rule
+//! [`Topology`] **is** the graph: nodes by stable [`NodeKey`], edges keyed by
+//! the sink port they feed, and the global outputs. `tutti-graph`'s compiler
+//! interprets it (a `Topology` in, an immutable plan out), and nothing reads a
+//! topology back out of a plan. Because it is a plain value, `Eq` compares two
+//! graphs, `Hash` keys a cache on one, and every static property is a pure
+//! fold over it: evaluation order ([`Topology::topo_order`]), width agreement
+//! ([`Topology::validate`]), latency ([`latency::plan`](crate::latency::plan))
+//! and tail ([`graph_tail`](crate::graph_tail)).
 //!
-//! [`Topology`] **is** the graph. `tutti_graph`'s compiler is its interpreter —
-//! a `Topology` in, an immutable plan out — and nothing reads a topology back
-//! out of a plan. That direction is the point. Under fundsp's `Net` (deleted in
-//! doc 013 Phase 5) the only way to answer "what is wired to what" was to read
-//! `Net::source` port by port, so every question about the graph needed a live
-//! runtime, and every layer that wanted to remember what it built kept shadow
-//! state that went stale. A value fixes that by *being* the answer: `Eq`
-//! compares two graphs, `Hash` keys a cache on one, and every static property —
-//! latency, tail, evaluation order, width agreement — is a pure fold over it.
+//! # Validation instead of a type index
 //!
-//! # What replaces the type index
+//! Channel widths are runtime data (a file's channel count, a plugin's bus
+//! arity, a device's layout), so a stereo-into-mono edge cannot be a compile
+//! error. [`Topology::validate`] is the replacement: one total function that
+//! returns every disagreement at once, run on the control thread, whose
+//! *result* is carried in the type as [`Valid`].
 //!
-//! Haskell would index a node type by its channel widths, making a
-//! stereo-into-mono edge a compile error. Rust cannot here, because the widths
-//! are genuinely runtime data: a file's channel count, a plugin's bus arity, a
-//! device's layout. The replacement is [`Topology::validate`] — one total
-//! function returning every disagreement at once, run once on the control
-//! thread, whose *result* is carried in the type as [`Valid`]. That is the same
-//! trade the engine made when it deleted `AudioIn<S, const CH: usize>`: strictly
-//! weaker than a type index, and mitigated the same way — the check ships with
-//! the thing it replaces, so no call site escapes to the unchecked form.
+//! # Examples
 //!
-//! # The folds cost two impls
+//! ```
+//! use tutti_types::graph::{Edge, InPort, NodeSpec, OutPort, Source};
+//! use tutti_types::{ChannelLayout, NodeKey, Topology};
 //!
-//! [`latency::plan`](crate::latency::plan) and
-//! [`tail::graph_tail`](crate::tail::graph_tail) were already generic over
-//! [`LatencyGraph`] / [`TailGraph`]; neither needed a line changed. The two
-//! impls at the bottom of this module are the whole adaptation, and they are
-//! what let the engine's best-tested graph math answer questions about a value a
-//! unit test can write down, instead of only about a runtime behind a device.
+//! let (osc, gain) = (NodeKey(1), NodeKey(2));
+//! let mut g = Topology::default();
+//! g.nodes.insert(osc, NodeSpec::new("osc", ChannelLayout::EMPTY, ChannelLayout::MONO));
+//! g.nodes.insert(gain, NodeSpec::new("gain", ChannelLayout::MONO, ChannelLayout::MONO));
+//! g.edges.insert(
+//!     InPort { node: gain, port: 0 },
+//!     Edge::Direct(Source::Node(OutPort { node: osc, port: 0 })),
+//! );
+//! g.outputs = vec![Source::Node(OutPort { node: gain, port: 0 })];
+//!
+//! let valid = g.validate().expect("well formed");
+//! assert_eq!(valid.get().topo_order(), Ok(vec![osc, gain]));
+//! ```
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -40,30 +44,26 @@ use crate::tail::TailGraph;
 use crate::value::{Samples, Tail};
 use crate::ChannelLayout;
 
-/// Stable identity for a node, chosen by the **author** of the topology.
+/// A stable identity for a node, chosen by the **author** of the topology.
 ///
-/// This is the fix for stale ids. fundsp's `NodeId` (the key before doc 013
-/// Phase 5) was minted by a global counter inside `Net::push`, so a crossfade
-/// — which pushed a replacement — changed it, and any handle a caller stored
-/// went stale silently. A `NodeKey`
-/// is supplied from outside (a Bevy `Entity`'s bits, a document node id, a
-/// test's literal) and is therefore stable across any number of recompiles. The
-/// runtime's own id is derived from it while compiling and never escapes.
+/// A `NodeKey` is supplied from outside (a Bevy `Entity`'s bits, a document
+/// node id, a test's literal), so it stays the same across any number of
+/// recompiles and across a crossfade that replaces the node: a handle a caller
+/// stored never goes stale. The runtime's own id is derived from it while
+/// compiling and never escapes.
 ///
 /// A host with no id of its own to supply takes one from
-/// [`NodeKey::fresh`], a process-wide counter (what fundsp's `NodeId::new`
-/// was, before doc 013 Phase 5 deleted it).
+/// [`NodeKey::fresh`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeKey(pub u64);
 
 impl NodeKey {
-    /// A key no earlier call in this process returned: a process-wide
-    /// counter from 0, one step per call, from any thread.
+    /// Returns a key no earlier call in this process returned: a
+    /// process-wide counter from 0, one step per call, from any thread.
     ///
     /// Unique among its own calls only. A key a host writes itself (an
     /// `Entity`'s bits, a literal) is not reserved against it, so a host
-    /// mixing the two keeps them in ranges that cannot meet, as fundsp's
-    /// `NodeId::new` required before it.
+    /// mixing the two keeps them in ranges that cannot meet.
     pub fn fresh() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
@@ -93,9 +93,7 @@ pub struct InPort {
 /// What feeds one sink port.
 ///
 /// Fan-in is unrepresentable: an [`InPort`] is a map *key*, so it has at most
-/// one source — exactly what `bevy_tutti::graph::PortSources` declares and what
-/// `Net` structurally required (one port per input edge). Summing is a node,
-/// never a property of an edge.
+/// one source. Summing is a node, never a property of an edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Source {
     /// An output port of another node in this topology.
@@ -145,12 +143,12 @@ pub struct FeedbackFrom {
 }
 
 impl FeedbackFrom {
-    /// A feedback edge from `from`, delayed by `delay` frames.
+    /// Creates a feedback edge from `from`, delayed by `delay` frames.
     pub const fn new(from: OutPort, delay: Samples) -> Self {
         Self { from, delay }
     }
 
-    /// A feedback edge from `from`, delayed by one block of `block` frames —
+    /// Creates a feedback edge from `from`, delayed by one block of `block` frames —
     /// the block size the author designed the loop for, fixed here so every
     /// interpreter (live or offline) renders the same loop.
     pub const fn one_block(from: OutPort, block: Samples) -> Self {
@@ -253,7 +251,8 @@ pub struct NodeSpec {
 }
 
 impl NodeSpec {
-    /// A spec of `kind` at the given widths: no latency, no tail, no params.
+    /// Creates a spec of `kind` at the given widths: no latency, no tail, no
+    /// params.
     ///
     /// The common shape; amend with the builder that names the field you mean.
     /// A constructor rather than a struct literal so adding a field later does
@@ -269,28 +268,28 @@ impl NodeSpec {
         }
     }
 
-    /// This spec with `latency` frames of involuntary latency.
+    /// Returns this spec with `latency` frames of involuntary latency.
     #[must_use]
     pub fn with_latency(mut self, latency: Samples) -> Self {
         self.latency = latency;
         self
     }
 
-    /// This spec with the given ring-out.
+    /// Returns this spec with the given ring-out.
     #[must_use]
     pub fn with_tail(mut self, tail: Tail) -> Self {
         self.tail = tail;
         self
     }
 
-    /// This spec with one more initial parameter value.
+    /// Returns this spec with one more initial parameter value.
     #[must_use]
     pub fn with_param(mut self, name: impl Into<String>, value: ParamValue) -> Self {
         self.params.insert(name.into(), value);
         self
     }
 
-    /// The scalar value of `name`, if it has one.
+    /// Returns the scalar value of `name`, if it has one.
     ///
     /// The lookup a catalog performs to build a node, written once here rather
     /// than open-coded per kind.
@@ -304,7 +303,8 @@ impl NodeSpec {
 
 /// The audio graph, as a value.
 ///
-/// See the [module docs](self) for the ownership rule this type states.
+/// See the [module docs](self) for what it is for and an example. `Default`
+/// is the empty graph with no global inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Topology {
     /// Nodes by stable key. `BTreeMap` so iteration order — and therefore the
@@ -322,14 +322,10 @@ pub struct Topology {
 /// An empty graph with **no global inputs** — a master graph before anything is
 /// added to it.
 ///
-/// Hand-written, and the reason is a real trap. `ChannelLayout` used to
-/// implement `Default` as `STEREO`, so a derived `Default` here gave every
-/// `Topology::default()` two global input channels nobody asked for. That was
-/// silent — the value validated, and the compiled graph merely had two unused
-/// inputs — right up until a `Source::Global` typo resolved against them
-/// instead of being rejected as out of range. `ChannelLayout` no longer has a
-/// `Default` at all, so a derive here would not compile: every width is now
-/// written where it is chosen.
+/// Hand-written: `ChannelLayout` has no `Default`, so the width is chosen here.
+/// With no global inputs, a stray `Source::Global` edge is rejected by
+/// [`Topology::validate`] rather than resolving against inputs nobody asked
+/// for.
 impl Default for Topology {
     fn default() -> Self {
         Self {
@@ -404,7 +400,7 @@ pub enum Invalid {
 }
 
 impl Invalid {
-    /// Whether this fault blocks validity.
+    /// Returns whether this fault blocks validity.
     ///
     /// Only [`Unconnected`](Self::Unconnected) does not.
     pub fn is_fatal(&self) -> bool {
@@ -422,12 +418,12 @@ impl Invalid {
 pub struct Valid(Topology);
 
 impl Valid {
-    /// The checked topology.
+    /// Returns the checked topology.
     pub fn get(&self) -> &Topology {
         &self.0
     }
 
-    /// Take the checked topology back out.
+    /// Takes the checked topology back out.
     ///
     /// Consuming rather than clone-and-get, so a caller that means to *edit* the
     /// graph gives up the proof it was checked — which is the wrapper's point.
@@ -437,9 +433,16 @@ impl Valid {
 }
 
 impl Topology {
-    /// Check every structural property a type index would have checked.
+    /// Checks every structural property: that every edge names existing nodes
+    /// and in-range ports, that global inputs and outputs resolve, and that
+    /// every cycle is broken by a feedback edge.
     ///
-    /// Returns **all** problems, not the first.
+    /// Clones the topology into the returned [`Valid`]; runs on the control
+    /// thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns **all** problems, not the first, when any is fatal.
     /// [`Unconnected`](Invalid::Unconnected) is reported but does not block
     /// validity: a partially built graph is renderable and reads silence there.
     /// A caller that wants to warn about half-wired ports asks
@@ -523,7 +526,7 @@ impl Topology {
         }
     }
 
-    /// Every declared input port nothing feeds, in key order.
+    /// Returns every declared input port nothing feeds, in key order.
     ///
     /// Not a fault (see [`validate`](Self::validate)) — exposed so a caller that
     /// wants to warn about a half-wired graph has an answer that does not depend
@@ -601,12 +604,14 @@ impl Topology {
         }
     }
 
-    /// Evaluation order: deterministic, and a pure function of the value.
+    /// Returns the evaluation order: deterministic, and a pure function of the
+    /// value.
     ///
-    /// `Net` computed this too (until doc 013 Phase 5) — inside itself,
-    /// lazily, invalidated by every mutation, and observable only by
-    /// rendering. Here it is a return value.
-    /// `Err` carries the nodes a cycle left unplaceable.
+    /// Feedback edges are cut before the walk, so they never order two nodes.
+    ///
+    /// # Errors
+    ///
+    /// The nodes a cycle of direct edges left unplaceable.
     pub fn topo_order(&self) -> Result<Vec<NodeKey>, Vec<NodeKey>> {
         self.acyclic_order()
     }

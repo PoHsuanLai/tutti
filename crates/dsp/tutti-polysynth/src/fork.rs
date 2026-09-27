@@ -1,7 +1,7 @@
-//! Forking a [`PolySynth`] for the graph's export (`Editor::fork`, design
-//! doc 013): a fresh synth that shares nothing with the live one. Its MIDI
-//! comes from its event input, as the live synth's does: the fork of the
-//! graph forks the clip node feeding it too (doc 013, rewrite item 5).
+//! Forking a [`PolySynth`] for the graph's export (`Editor::fork`): a fresh
+//! synth that shares nothing with the live one. Its MIDI comes from its event
+//! input, as the live synth's does: the fork of the graph forks the clip node
+//! feeding it too.
 //!
 //! # A `ParamNode` fork
 //!
@@ -25,10 +25,18 @@
 use crate::PolySynth;
 
 impl PolySynth {
-    /// A fresh synth for a fork of the graph this one plays in: the same
-    /// config and voices, control cells of its own (at the values this
-    /// synth's hold now), and no sounding voice. See the `fork` module docs
-    /// (`src/fork.rs`). What `ParamNode::fork_fresh` returns.
+    /// Returns a fresh synth for a fork of the graph this one plays in (an
+    /// offline export, for example).
+    ///
+    /// The copy has the same config and unison settings, control cells of its
+    /// own (at the values this synth's hold now, so later moves on either side
+    /// do not reach the other), and no sounding voice. State the live synth
+    /// reached through MIDI (a pitch bend, a CC-driven cutoff) is carried as
+    /// it is now. Allocates a copy of every voice, so call it off the audio
+    /// thread.
+    ///
+    /// A synth inserted into a graph registers this as its fork, so a graph
+    /// fork needs no call to it; it is for hosts building a copy by hand.
     pub fn fork_instance(&self) -> PolySynth {
         let mut fork = self.clone();
         // Control cells: detached at their current values, so the fork

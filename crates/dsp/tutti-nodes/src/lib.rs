@@ -1,50 +1,38 @@
-//! DSP nodes for the Tutti audio engine.
+#![doc = include_str!("../README.md")]
 //!
-//! Every node here is a graph node (`tutti_graph::Node`): it is inserted into
-//! a graph (`tutti_graph::{GraphBuilder, Editor}`), wired, prepared and
-//! rendered. Nothing in this crate is fallible — there is no `Error` type — so
-//! a node is ready to insert the moment it is built.
+//! ## Sample rate
 //!
-//! # Live control values live in shared storage
+//! Every time constant here is derived from a sample rate: delay taps and ring
+//! lengths from [`Seconds`], filter coefficients from a cutoff in [`Hz`]
+//! against Nyquist, envelope attack and release coefficients, LFO phase
+//! increments. A constructor that needs a rate seeds [`SampleRate::DEFAULT`],
+//! and the graph calls the node's `prepare` with the device rate before its
+//! first block, so a node in a graph never renders at the placeholder. To
+//! drive a node outside a graph, prepare it first (`tutti_graph::Solo`, or
+//! `tutti_graph::contract::prepared` in tests).
 //!
-//! A value a user can change **while the node is rendering** is a [`Param<U>`]
-//! cell (or an `Arc`'d atomic), reached through the controls or the
-//! `ParamSet` the node was inserted with, and its setter takes `&self`. The
-//! graph never clones a node to commit it, so a node's own fields are the
-//! running node's; the shared cell is how the control thread reaches them
-//! without a lock. (Under fundsp's `Net`, deleted in design doc 013 Phase 5,
-//! the frontend held clones of every vertex, so a control stored by value was
-//! silently lost on a live node; the rule predates the graph and still holds.)
+//! ## Items
 //!
-//! A [`Param<U>`] carries one `f32` with its unit; anything wider (a layout, a
-//! table) is a typed control of its own, not a param.
-//!
-//! # The graph supplies the rate
-//!
-//! Every time constant in this crate is derived from a sample rate: delay taps
-//! and ring lengths from [`Seconds`], filter coefficients from a cutoff in
-//! [`Hz`] against Nyquist, envelope attack/release coefficients, LFO phase
-//! increments. A constructor that needs one seeds [`SampleRate::DEFAULT`], and
-//! the graph calls the node's `prepare` with the device rate before its first
-//! block, so there is no path on which a node in a graph runs at the
-//! placeholder. A test drives one prepared (`tutti_graph::contract::prepared`,
-//! or a `tutti_graph::Solo`).
-//!
-//! Nodes carrying no rate-dependent quantity — [`BusStripNode`],
-//! [`ChannelSumNode`], [`DownmixNode`], [`DistortionNode`] — have nothing for a
-//! wrong rate to skew. The placeholder is also what makes a rate-free
-//! constructor representable at all: [`ModDelayNode::chorus`] takes only a
-//! width, yet builds delay lines.
-//!
-//! The quick start, the mechanism table and the features are in the crate
-//! README, included below.
+//! - Filters: [`SvfFilterNode`] ([`SvfType`]), [`LadderFilterNode`]
+//!   ([`LadderType`]), [`EqBandNode`]; the coefficient solvers
+//!   [`compute_svf_coeffs`] and [`compute_ladder_coeffs`]; [`Real`], the
+//!   `f32`/`f64` state type.
+//! - Delay: [`DelayLineNode`] over [`DelayLine`], with [`InterpolationMode`].
+//! - Dynamics: [`CompressorNode`], [`GateNode`], [`LimiterNode`],
+//!   [`BrickwallLimiterNode`].
+//! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
+//!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
+//! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over [`Lfo`] and
+//!   [`Modulator`].
+//! - Mixing: [`ChannelSumNode`], [`DownmixNode`], [`BusStripNode`].
+//! - Param modulation: each node's `*_PARAMS` port list (for example
+//!   [`SVF_PARAMS`]) and [`ParamModShaping`].
+//! - Modules: [`automation`] (lanes and recording), [`buffer`] (ring buffers),
+//!   [`param_mod`].
 //!
 //! [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-#![doc = include_str!("../README.md")]
 
-// NOTE: this crate has no fallible operation and therefore no `Error` type.
-// Speaker-layout construction was the only fallible thing here, and it lives in
-// `tutti-spatial` with the panners.
+// This crate has no fallible operation and therefore no `Error` type.
 
 // Per-block control reads and the ramps that keep them from stepping.
 mod ramp;
@@ -69,8 +57,7 @@ pub mod buffer;
 mod lfo;
 // `LfoNode` is `ModulatorNode<Lfo>` — the graph node over a pure
 // `tutti_mod::Modulator`. `LfoShape`/`Lfo`/`Modulator` are re-exported from
-// `tutti-mod` through `lfo` so existing `use tutti_nodes::LfoShape` sites are
-// untouched.
+// `tutti-mod` through `lfo`, so `use tutti_nodes::LfoShape` works.
 pub use lfo::{Lfo, LfoMode, LfoNode, LfoShape, Modulator, ModulatorNode};
 
 mod delay;
@@ -93,7 +80,7 @@ pub use dynamics::{
 };
 
 // The shaping an audio-rate modulation edge authors; the edge itself is the
-// graph's (design doc 013 item 6).
+// graph's.
 pub mod param_mod;
 pub use param_mod::ParamModShaping;
 
@@ -108,10 +95,8 @@ pub use tutti_mod::{
 };
 
 // The fan-in every mixer needs: `K` sources × `N` channels summed into one
-// `N`-wide output. Ungated on purpose — it is arity arithmetic, not geometry, so
-// gating it under `spatial` made a VBAP dependency the price of summing two
-// stereo signals. `spatial`'s `build_vbap_mix` is one consumer, not the only
-// one.
+// `N`-wide output. Ungated on purpose — it is arity arithmetic, not geometry.
+// `tutti-spatial`'s `build_vbap_mix` is one consumer, not the only one.
 mod mix_bus;
 pub use mix_bus::ChannelSumNode;
 
@@ -123,12 +108,8 @@ pub use downmix_unit::DownmixNode;
 mod strip;
 pub use strip::{BusStripNode, STRIP_PARAMS};
 
-// NOTE: the spatial panners (`VbapPannerNode`, the HRTF binaural pair) and
-// `build_vbap_mix` moved to the `tutti-spatial` crate. They were the crate's
-// only *geometry* — azimuth, elevation, speaker layouts — where everything left
-// here is per-channel signal processing. `tutti-spatial` depends on this crate
-// (its mix builder is assembled from `ChannelSumNode` + `SvfFilterNode`), so the
-// arrow points geometry → DSP and nothing here names it.
+// Spatial panners (VBAP, binaural) are `tutti-spatial`'s, which depends on
+// this crate; nothing here names it.
 
 mod modulation;
 pub use modulation::{ModDelayConfig, ModDelayNode, PhaserNode};
@@ -142,9 +123,7 @@ pub use convolution::{
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a
-// test, example or bench wires a graph out of. They replace the fundsp
-// one-liners (`dc`, `sine_hz`, `pass`, `split`, `sink`, …) that
-// `tutti_core::dsp` used to forward for the same job.
+// test, example or bench wires a graph out of.
 //
 // Behind the `testing` feature, not `cfg(test)`: the consumers are *other*
 // crates' tests, which a `cfg(test)` module is invisible to. The feature keeps
@@ -159,9 +138,6 @@ pub mod testing;
 // breaks every link the module makes to its own items. See `automation/mod.rs`.
 pub mod automation;
 
-// NOTE: the spatial-panner graph binding (`spatial_graph`) and the automation
-// graph binding (`automation::graph`) moved host-side — they bound DAW
+// ECS bindings for automation and panning are host-side: they bind DAW
 // `Volume`/`Pan`/`PluginParam` components, which are not this engine's
-// vocabulary. This crate keeps only the pure DSP: the automation lane node
-// (`automation::{lane, recording}`); the spatial panner nodes are
-// `tutti-spatial`'s.
+// vocabulary.

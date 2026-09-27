@@ -37,7 +37,7 @@ static A: AllocDisabler = AllocDisabler;
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Block size every test drives. Well under the 512 the instance is activated
-/// for, so the C1 block-size guard is not in play except where a test aims at
+/// for, so the block-size guard is not in play except where a test aims at
 /// it deliberately.
 const FRAMES: usize = 64;
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -329,7 +329,7 @@ fn alternating_continue_tail_does_not_allocate() {
     });
 
     // Not just "did not allocate" — the host must still have *observed* the
-    // status, or a fix that deleted the tracking would pass. 128 blocks from an
+    // status, or a host that dropped the tracking would pass. 128 blocks from an
     // even index leaves the last odd, so the final status is TAIL.
     assert!(
         inst.is_tailing(),
@@ -510,9 +510,9 @@ fn plugin_error_status_does_not_allocate() {
 
 /// Rejecting an oversized block must not allocate.
 ///
-/// The C1 guard formatted the requested and activated frame counts into a
-/// `String` before returning, and a host driving a too-large block drives it
-/// again next block. The rejection itself is the point of the guard (an
+/// A guard that formatted the requested and activated frame counts into a
+/// `String` would allocate on every such block, and a host driving a too-large
+/// block drives it again next block. The rejection itself is the point of the guard (an
 /// oversized block would make the plugin write past the scratch), so this
 /// asserts the error is still raised and still carries both numbers.
 #[test]
@@ -645,14 +645,14 @@ fn start_processing_failure_is_allocation_free() {
 /// A plugin logging through `clap.log` from inside `process` must not make the
 /// host allocate, lock stderr, or take the log mutex.
 ///
-/// CLAP marks `clap.log` `[thread-safe]`, which includes the audio thread. The
-/// host used to treat such a line like a main-thread one: `into_owned()`,
+/// CLAP marks `clap.log` `[thread-safe]`, which includes the audio thread.
+/// Treating such a line like a main-thread one would mean `into_owned()`,
 /// `eprintln!`, and `LogState::push` taking a `Mutex` that `drain_log` holds
 /// across a `.collect()`. The first two are allocations; the third is a
 /// priority inversion this gate cannot see, caught instead by the host refusing
 /// to reach the lock from this thread.
 ///
-/// `log_lines_dropped` is asserted to move, so a "fix" that silently discarded
+/// `log_lines_dropped` is asserted to move, so a host that silently discarded
 /// audio-thread logs would fail here rather than pass.
 #[test]
 fn audio_thread_logging_does_not_allocate() {

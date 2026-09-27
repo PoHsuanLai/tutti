@@ -33,7 +33,7 @@ pub struct ModDelayConfig {
     pub max_delay: Seconds,
     /// How far each channel's sweep is staggered from the previous channel's,
     /// in LFO cycles: channel `c` runs `c × channel_phase_offset` ahead of
-    /// channel 0, wrapped. At width 2 this is the old L/R offset exactly.
+    /// channel 0, wrapped. At width 2 this is the L/R offset.
     /// Replace the whole set with [`ModDelayNode::with_phase_offsets`].
     pub channel_phase_offset: PhaseIncrement,
     /// The range [`ModDelayNode::set_depth`] clamps the sweep depth into.
@@ -101,8 +101,7 @@ struct ModDelayControls {
 /// channel by a phase offset (see [`ModDelayConfig::channel_phase_offset`] and
 /// [`with_phase_offsets`](Self::with_phase_offsets)). At width 2 with the
 /// [`CHORUS`](ModDelayConfig::CHORUS) or [`FLANGER`](ModDelayConfig::FLANGER)
-/// preset it renders exactly what the old stereo `ChorusNode` / `FlangerNode`
-/// did.
+/// preset it is a stereo chorus or flanger.
 ///
 /// Rate ([`Hz`]), depth ([`Seconds`] of delay sweep), [`Feedback`] and [`Mix`]
 /// are live [`Param`](tutti_core::Param)s shared across clones, all read **once
@@ -117,14 +116,14 @@ struct ModDelayControls {
 /// # In a graph
 ///
 /// A graph node ([`IntoNode`]), `N` in and `N` out, with zero latency: the
-/// modulated delay is the effect's sound, not processing latency, and PDC
-/// would otherwise delay every other path by the base delay (design doc 013,
-/// D1). Inserted, its controls are a [`ParamSet`] over rate
-/// ([`UnitParam::Rate`]), depth ([`UnitParam::Depth`]), feedback
-/// ([`UnitParam::Feedback`]) and mix ([`UnitParam::Wet`]); a fork starts from
-/// the values last set through it. The graph prepares it at the device rate,
-/// which sizes the lines, before its first block. Its tail is
-/// [`Tail::Unknown`] (a recirculating line), so it is never skipped.
+/// modulated delay is the effect's sound, not processing latency, and PDC would
+/// otherwise delay every other path by the base delay. Inserted, its controls
+/// are a [`ParamSet`] over rate ([`UnitParam::Rate`]), depth
+/// ([`UnitParam::Depth`]), feedback ([`UnitParam::Feedback`]) and mix
+/// ([`UnitParam::Wet`]); a fork starts from the values last set through it. The
+/// graph prepares it at the device rate, which sizes the lines, before its
+/// first block. Its tail is [`Tail::Unknown`] (a recirculating line), so it is
+/// never skipped.
 pub struct ModDelayNode {
     config: ModDelayConfig,
     /// One line per channel; `len()` is the audio width. Built at construction
@@ -340,8 +339,8 @@ impl SweptLines<'_> {
         let base_delay = self.base_delay * sr;
         for (c, (line, &offset)) in self.delays.iter_mut().zip(self.offsets).enumerate() {
             for (i, &phase) in self.phases.iter().enumerate() {
-                // Channel 0's offset is zero, and the old left channel read the
-                // phase directly; `offset_by(0)` is the same value.
+                // Channel 0's offset is zero; `offset_by(0)` returns the phase
+                // unchanged.
                 let lfo = phase.offset_by(offset).to_radians().get().sin();
                 let delay = (base_delay + lfo * depth_at(i) * sr).max(1.0);
                 let input = x(c, i);

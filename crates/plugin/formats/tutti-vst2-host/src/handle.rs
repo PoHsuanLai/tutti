@@ -17,12 +17,10 @@
 //!   That is the step that crashes with JUCE-based plugins, so hosts (JUCE and
 //!   Ardour both) never do it.
 //!
-//! This handle used to be `ManuallyDrop` and skipped the instance destructor
-//! entirely, which had it exactly backwards: `effClose` never ran, while the
-//! `Arc<Library>` inside still dropped. The module leak now lives where it
-//! belongs — `vst::host::PluginInstance` holds its `Library` in a
-//! `ManuallyDrop` — so dropping the instance here closes the plugin without
-//! ever unloading the module.
+//! So the instance is dropped normally and the module is leaked: the leak
+//! lives in `vst::host::PluginInstance`, which holds its `Library` in a
+//! `ManuallyDrop`. Dropping the instance here closes the plugin without ever
+//! unloading the module.
 
 use vst::host::PluginInstance;
 use vst::plugin::Plugin as _;

@@ -3,11 +3,11 @@
 //! as a device drives it — one call per callback, the callbacks paced to real
 //! time — at 480-, 1024- and 441-frame device quanta.
 //!
-//! Doc 013 reversed its decision 8: a live plugin's pipeline chunk is the
-//! device's callback (`Prepare::quantum`), not a fixed 64 frames. With 64, a
-//! chunk completed mid-callback was collected microseconds after it was
-//! submitted, and read as silence; with the callback as the chunk, the server
-//! has a whole device period to answer. Asserted here: at least 99% of the
+//! A live plugin's pipeline chunk is the device's callback
+//! (`Prepare::quantum`), not a fixed 64 frames. With 64, a chunk completed
+//! mid-callback would be collected microseconds after it was submitted, and
+//! read as silence; with the callback as the chunk, the server has a whole
+//! device period to answer. Asserted here: at least 99% of the
 //! blocks after warm-up carry audio, every block is either the input delayed
 //! by exactly the declared latency (137 + quantum) or silence, and the graph
 //! declares that latency.
@@ -153,11 +153,11 @@ fn assert_live(rate: f64, quantum: usize) {
     );
 }
 
-/// 480-frame callbacks at 48 kHz: not a multiple of 64, so the reversed
-/// 64-frame pipeline collected most chunks mid-callback.
+/// 480-frame callbacks at 48 kHz: not a multiple of 64, so a 64-frame
+/// pipeline would collect most chunks mid-callback.
 ///
-/// Mutation: cap the chunk at 64 in `Batcher::prepare` (the reversed
-/// decision) → most blocks are silent → fails (measured: see doc 013).
+/// Mutation: cap the chunk at 64 in `Batcher::prepare` → most blocks are
+/// silent → fails.
 /// Ignoring `Prepare::quantum` is invisible here (the graph's `MaxBlock` is
 /// the same 480); the batcher's unit test pins it.
 #[test]

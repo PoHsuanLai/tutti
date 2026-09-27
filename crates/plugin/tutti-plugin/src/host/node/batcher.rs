@@ -10,12 +10,12 @@
 //! # Pipelined, never waiting
 //!
 //! The batcher **submits chunk N and plays chunk N−1's output**, never waiting
-//! for a reply. This replaced a synchronous version that spun on the audio
-//! thread, where each node's wait was individually reasonable — half its own
-//! block period — but the budgets *summed*: the graph runs nodes serially in
-//! one callback, so three stalled plugins spent 3 × 667 µs against a 1333 µs
-//! deadline. Parallelising the graph would not have helped; plugins in series
-//! are a dependency chain. The defect was the waiting.
+//! for a reply. A synchronous wait on the audio thread fails even when each
+//! node's wait is individually reasonable — half its own block period —
+//! because the budgets *sum*: the graph runs nodes serially in one callback,
+//! so three stalled plugins spend 3 × 667 µs against a 1333 µs deadline.
+//! Parallelising the graph would not help; plugins in series are a dependency
+//! chain.
 //!
 //! Not waiting makes a stalled plugin cost zero, however many there are and
 //! whatever the graph's shape. The price is one chunk of latency per
@@ -27,11 +27,11 @@
 //! # A FIFO, so every chunk is whole
 //!
 //! The calls the node is handed need not line up with chunks: the engine
-//! rendered a device callback in 64-frame passes while a `Legacy` node was
-//! in the graph, a host may call in any lengths, and an export may render
-//! 100-frame blocks. Shipping each
-//! call as it came (a 36-frame submission, then a 64-frame one collecting it)
-//! dropped or zero-padded frames wherever consecutive lengths differed. So a
+//! renders a device callback in 64-frame passes while a `Legacy` node is in
+//! the graph, a host may call in any lengths, and an export may render
+//! 100-frame blocks. Shipping each call as it came (a 36-frame submission,
+//! then a 64-frame one collecting it) would drop or zero-pad frames wherever
+//! consecutive lengths differ. So a
 //! call's input only ever fills the FIFO, a submission is always one whole
 //! chunk, and the output is read from the ring at the same position the input
 //! is written: output frame `t` is the plugin's output for input frame
@@ -47,12 +47,11 @@
 //! and the plugin's latency is one device block, as a DAW hosting plugins out
 //! of process has it.
 //!
-//! Doc 013 had decided the opposite first (decision 8: a fixed 64-frame
-//! pipeline, for the lower latency), and reversed it on measurement: with a
-//! 64-frame chunk inside a 480-frame callback, every chunk but the first is
-//! collected microseconds after it was submitted, and 186 of 200 blocks
-//! rendered silent (441: 198; 1024: 187); with the callback as the chunk, 0
-//! of 200 (`tests/clap_live.rs`). A chunk that is not the callback — a host
+//! A fixed 64-frame chunk would give lower latency but does not work: inside
+//! a 480-frame callback every chunk but the first is collected microseconds
+//! after it was submitted, and 186 of 200 blocks rendered silent (441: 198;
+//! 1024: 187); with the callback as the chunk, 0 of 200
+//! (`tests/clap_live.rs`). A chunk that is not the callback — a host
 //! that does not know its quantum, a device calling back with more than
 //! `MAX_CHUNK` frames, or one whose callbacks vary — still delays exactly
 //! `chunk` frames, but may collect chunks the server had no time to answer.
@@ -64,7 +63,7 @@
 //!
 //! # `f32` in the graph, the plugin's format on the wire
 //!
-//! The graph hands every node planar `f32` (doc 013, owner decision 2). The
+//! The graph hands every node planar `f32`. The
 //! wire carries whatever the plugin negotiated at load, so a plugin that
 //! processes in double is converted here, in the wire scratch, and nowhere
 //! else: the `f64` stays inside the node.
@@ -642,8 +641,8 @@ mod tests {
 
     /// The pipeline's chunk — and so the latency it declares — comes from
     /// `prepare`: the host's device quantum when it has one (one chunk per
-    /// callback: doc 013 reversed decision 8, a live plugin now keeps in step
-    /// with the device rather than a 64-frame grid), else the graph's
+    /// callback, so a live plugin keeps in step with the device rather than a
+    /// 64-frame grid), else the graph's
     /// `MaxBlock`, capped by the slab's ceiling either way.
     ///
     /// Mutation: `self.chunk = self.ceiling.min(64)` in `prepare` (the

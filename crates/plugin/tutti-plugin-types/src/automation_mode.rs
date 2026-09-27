@@ -13,7 +13,7 @@
 //! vocabulary and must not depend on or bake in any one format's encoding.
 //!
 //! It is a single global mode (applies to the whole plugin), matching the only
-//! host→plugin automation-state channel wired today (VST3's global
+//! host→plugin automation-state channel that exists (VST3's global
 //! `IAutomationState`). A finer per-parameter model (CLAP indication) would be a
 //! separate capability if/when it is wired.
 

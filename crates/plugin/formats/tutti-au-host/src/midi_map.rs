@@ -211,7 +211,7 @@ impl MidiTrigger {
         }
     }
 
-    /// Decode a raw `(mStatus, mData1)` pair.
+    /// Decodes a raw `(mStatus, mData1)` pair.
     fn from_raw(status: u8, data1: u8) -> Self {
         match status & 0xF0 {
             0x80 => Self::NoteOff { note: data1 },
@@ -350,7 +350,7 @@ impl AuMidiMapping {
         }
     }
 
-    /// Decode a mapping the AU handed back.
+    /// Decodes a mapping the AU handed back.
     ///
     /// Total — every bit pattern decodes. An unrecognised status byte becomes
     /// [`MidiTrigger::Other`] rather than a panic or a false `ControlChange`,
@@ -374,7 +374,7 @@ impl AuMidiMapping {
         }
     }
 
-    /// Encode for the AU. The `reserved*` fields are zeroed, as the header
+    /// Encodes for the AU. The `reserved*` fields are zeroed, as the header
     /// demands; the sub-range values are written only when
     /// [`sub_range`](Self::sub_range) is `Some`, so a `None` mapping cannot
     /// leave stale bounds behind.
@@ -431,7 +431,7 @@ impl AuMidiMapping {
     }
 }
 
-/// Read the AU's whole mapping table.
+/// Reads the AU's whole mapping table.
 ///
 /// Returns an empty `Vec` when the AU has no mappings installed, which is what a
 /// fresh AUSampler reports (`noErr`, size 0) — distinct from *not implementing
@@ -455,7 +455,7 @@ pub unsafe fn all(unit: AudioUnit) -> Result<Vec<AuMidiMapping>> {
     Ok(decode_table(&bytes))
 }
 
-/// Decode a byte buffer of `AUParameterMIDIMapping` structs.
+/// Decodes a byte buffer of `AUParameterMIDIMapping` structs.
 ///
 /// Split out from [`all`] so the decode is unit-testable without an AU, and so
 /// the truncation rule lives in one place: a buffer whose length is not a
@@ -482,7 +482,7 @@ fn decode_table(bytes: &[u8]) -> Vec<AuMidiMapping> {
         .collect()
 }
 
-/// Encode mappings into the flat buffer the property expects.
+/// Encodes mappings into the flat buffer the property expects.
 ///
 /// Separate from the write calls so the encode is testable without an AU, and so
 /// both [`add`] and [`set_all`] share one layout.
@@ -494,7 +494,7 @@ fn encode_table(mappings: &[AuMidiMapping]) -> Vec<AuParameterMidiMappingRaw> {
         .collect()
 }
 
-/// Write `mappings` to a property that takes an array of them.
+/// Writes `mappings` to a property that takes an array of them.
 ///
 /// # Safety
 /// `unit` must reference a live, valid AudioUnit, and `property` must be one
@@ -514,7 +514,7 @@ unsafe fn write_table(unit: AudioUnit, property: u32, mappings: &[AuMidiMapping]
     )
 }
 
-/// Add `mappings` to whatever the AU already has, replacing any mapping that
+/// Adds `mappings` to whatever the AU already has, replacing any mapping that
 /// already targets the same parameter.
 ///
 /// A no-op for an empty slice: a zero-length write is `paramErr` (-50) on both
@@ -540,7 +540,7 @@ pub unsafe fn add(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> {
     )
 }
 
-/// Remove the mappings targeting each of `mappings`'
+/// Removes the mappings targeting each of `mappings`'
 /// `(scope, element, parameter_id)`.
 ///
 /// Only that triple is matched — the trigger and flags of the argument are
@@ -563,7 +563,7 @@ pub unsafe fn remove(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> 
     )
 }
 
-/// Replace the AU's entire mapping table with `mappings`.
+/// Replaces the AU's entire mapping table with `mappings`.
 ///
 /// # Why an empty slice takes a different path
 ///
@@ -597,7 +597,7 @@ pub unsafe fn set_all(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()>
     )
 }
 
-/// Arm "learn" mode: the AU maps the **next MIDI message it sees** to the
+/// Arms "learn" mode: the AU maps the **next MIDI message it sees** to the
 /// parameter `mapping` names.
 ///
 /// The trigger and channel of `mapping` are ignored by the AU — it fills those
@@ -623,7 +623,7 @@ pub unsafe fn arm_hot_map(unit: AudioUnit, mapping: &AuMidiMapping) -> Result<()
     )
 }
 
-/// Read the pending or just-completed hot map.
+/// Reads the pending or just-completed hot map.
 ///
 /// # Why this returns `Option`, and why the status is not the signal
 ///

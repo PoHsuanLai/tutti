@@ -1,4 +1,4 @@
-//! The unit as a graph node (doc 013, rewrite item 5): MIDI arrives on an
+//! The unit as a graph node: MIDI arrives on an
 //! event input, on its frame (to rustysynth's 8-frame chunk, see
 //! [`SoundFontUnit`]'s "How an event's offset is honoured").
 //!
@@ -65,7 +65,7 @@ impl Node for SoundFontUnit {
     /// never be parked.
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         // No clamp: `prepare` sized the scratch to the prepared `MaxBlock`,
-        // and a block is never longer (doc 013 defect D4).
+        // and the graph never hands a node a longer block.
         let size = io.frames();
         let events = if io.event_input_count() > 0 {
             io.events(0)

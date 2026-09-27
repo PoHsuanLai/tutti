@@ -12,7 +12,7 @@
 //! A placed voice derives its read position from the playhead. Live, that
 //! playhead is the audio callback; here it is `render_to_file` advancing an
 //! [`OfflineTimeline`] once per block. The voice reads that clock from its
-//! block's `Env` (the sampler's nodes are graph nodes, doc 013 items 8 and 9), so
+//! block's `Env` (the sampler's nodes are graph nodes), so
 //! this test also pins that what the export's `RenderClock` hands the graph
 //! is what the voice plays — a render whose clock advanced at a different rate
 //! from the voice's would produce a file that is silent, truncated, or
@@ -33,27 +33,17 @@
 //! The graph is prepared at `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK`
 //! (1024), and the voice reads the transport per frame from each block's
 //! `Env`: it seats its read at the playhead on the first frame of each
-//! 64-frame piece it renders and steps from there. Until the sampler's nodes
-//! ported, the voice ran as a `tutti_graph::Legacy` polling the timeline out
-//! of band, and `render_graph` had to render a graph holding one chunk-major,
-//! 64 frames across every node, or every chunk of a 1024-frame block read the
-//! block's first beat (measured, the dry voice exported at ~768 Hz, not
-//! 440). The graph renders whole blocks.
+//! 64-frame piece it renders and steps from there. A voice that read only the
+//! block's first beat would replay it for every piece of a 1024-frame block
+//! (the dry voice would export at ~768 Hz, not 440).
 //!
 //! Mutation (run): `interp::place` seating each piece at the block's first
-//! beat (`run.beat_at(e)` → `run.beat_at(0)`, the `Legacy` failure moved
-//! into the node) → the voice replays each block's first piece → every case
-//! fails.
+//! beat (`run.beat_at(e)` → `run.beat_at(0)`) → the voice replays each
+//! block's first piece → every case fails.
 //!
 //! Gated on `wav`, because the assertions decode the exported file through
 //! `hound` — which this crate only links when that feature is on. `wav` is in
 //! `default`, so these run by default.
-//!
-//! This file previously read `#![cfg(feature = "sampler")]`, a feature that has
-//! never existed in this crate's manifest. The gate was therefore always false
-//! and all five tests below were silently compiled out from the day they
-//! landed; the `start_beat` type error they had accumulated in the meantime is
-//! what a never-compiled file collects.
 
 #![cfg(feature = "wav")]
 

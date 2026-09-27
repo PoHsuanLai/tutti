@@ -24,7 +24,7 @@ default = []
 # shape at rest as on the wire. `MpeMode` passes all three. `MidiEvent` fails the
 # last two (its `frame_offset` is stamped by the audio thread against a block
 # size the document never sees, and MIDI has no durational note record), so it
-# must never get this treatment even now that the feature exists.
+# must never get this treatment.
 #
 # Forwards to `tutti-types`: `MpeZoneConfig` is built from that crate's
 # newtypes, so without the forward the derives here would fail to resolve.

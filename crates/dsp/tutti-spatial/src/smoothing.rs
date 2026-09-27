@@ -1,5 +1,5 @@
-//! One-pole exponential smoother used to de-zipper the panners' atomic
-//! position changes. Private to `spatial` — the only consumer.
+//! One-pole exponential smoother that de-zippers the panners' position
+//! changes.
 
 use tutti_core::{Azimuth, Elevation, SampleRate, Seconds};
 
@@ -29,7 +29,7 @@ impl ExponentialSmoother {
         coeff.clamp(0.0, 1.0)
     }
 
-    /// Recompute the smoothing coefficient for a new sample rate, holding the
+    /// Recomputes the smoothing coefficient for a new sample rate, holding the
     /// original smoothing time constant. Without this the de-zipper ramp runs
     /// at whatever rate the smoother was built with.
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
@@ -75,7 +75,7 @@ impl ExponentialSmoother {
         self.value
     }
 
-    /// Seed the running value directly, discarding whatever ramp was in
+    /// Seeds the running value directly, discarding whatever ramp was in
     /// flight.
     ///
     /// This is the whole of a smoother's runtime state, so seeding it at the

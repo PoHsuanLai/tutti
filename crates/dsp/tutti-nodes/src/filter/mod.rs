@@ -23,8 +23,8 @@ pub(super) mod test_utils {
         buf
     }
 
-    /// A mono node over `input`, one frame per call (a block of one,
-    /// what `tick` was). The node must be prepared.
+    /// A mono node over `input`, one frame per call (a block of one). The
+    /// node must be prepared.
     pub fn process_mono(node: &mut dyn Node, input: &[f32]) -> Vec<f32> {
         let mut output = vec![0.0f32; input.len()];
         for (i, &sample) in input.iter().enumerate() {

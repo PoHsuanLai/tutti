@@ -1,5 +1,5 @@
 //! MIDI crossing the graph's edge: in from a wire or a control thread, out to
-//! one (doc 013, rewrite item 5). Inside the graph MIDI travels on event
+//! one. Inside the graph MIDI travels on event
 //! ports; these are the nodes at its border.
 //!
 //! - [`MidiInputNode`] polls a [`MidiIn`](tutti_midi_types::MidiIn) (the

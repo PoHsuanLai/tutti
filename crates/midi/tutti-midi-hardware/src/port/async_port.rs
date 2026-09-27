@@ -35,7 +35,7 @@ impl core::fmt::Debug for InputProducerHandle {
 }
 
 impl InputProducerHandle {
-    /// Push one event with its arrival `timestamp`, which the drain converts
+    /// Pushes one event with its arrival `timestamp`, which the drain converts
     /// into a `frame_offset` within the block that reads it.
     ///
     /// Returns `false` when the ring is full; the event is then dropped, not
@@ -91,8 +91,8 @@ impl HardwareMidiInput {
         }
     }
 
-    /// Drain at most `limit` events from this port's input ring into `sink`,
-    /// tagging each with `port_index`, and return how many were taken.
+    /// Drains at most `limit` events from this port's input ring into `sink`,
+    /// tagging each with `port_index`, and returns how many were taken.
     ///
     /// Generic over the sink (`Vec`, `SmallVec`, …) so callers can use whatever
     /// RT buffer they hold. `limit` is what keeps a fixed-capacity sink from

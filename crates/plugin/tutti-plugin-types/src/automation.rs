@@ -33,14 +33,14 @@ pub struct ParameterPoint {
     pub value: Normalized,
 }
 
-/// Ordered list of [`ParameterPoint`]s for a single parameter id within
-/// one block. Inline storage keeps a full block's automation run
-/// allocation-free on the RT path.
+/// The automation points for one parameter within one process block.
 ///
-/// Sized for the densest producer: the host's automation node sends at most
-/// 10 points a parameter a block (one per 8 samples, the stride widening with
-/// the block, plus the final sample), and the plugin node keeps a chunk's
-/// queue at 10 by replacing its last point, so the queue never spills.
+/// Inline storage keeps a full block's automation run allocation-free on the
+/// audio thread. It is sized for the densest producer: the host's automation
+/// node sends at most 10 points a parameter a block (one per 8 samples, the
+/// stride widening with the block, plus the final sample), and the plugin node
+/// keeps a chunk's queue at 10 by replacing its last point, so the queue never
+/// spills.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ParameterQueue {
@@ -168,8 +168,8 @@ impl<'de> serde::Deserialize<'de> for ParameterQueue {
     }
 }
 
-/// Collection of [`ParameterQueue`]s, one per parameter id, passed into
-/// or returned from a plugin's process call.
+/// The per-block parameter automation passed into or returned from a plugin's
+/// process call, as one [`ParameterQueue`] per parameter.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParameterChanges {

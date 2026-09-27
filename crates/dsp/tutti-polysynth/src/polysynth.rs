@@ -1,4 +1,4 @@
-//! The synth itself: a graph node (`polysynth/node.rs`) that owns an
+//! The synth itself: a graph node that owns an
 //! allocator and a fixed set of voices, and renders their sum.
 //!
 //! This is where MIDI becomes sound. Everything else in the crate is a piece
@@ -42,13 +42,47 @@ fn q7_9_to_fractional_note(bits: u16) -> f32 {
     bits as f32 / (1u16 << 9) as f32
 }
 
-/// Polyphonic subtractive synthesizer: a MIDI-driven voice allocator over a
+/// A polyphonic subtractive synthesizer: a MIDI-driven voice allocator over a
 /// SIMD voice bank.
 ///
-/// Construct one from a [`SynthConfig`] via [`PolySynth::new`]. It is a
-/// `tutti_graph::Node`: MIDI arrives on its event input, on its frame, and
-/// its live params (master volume, and the unison detune and spread when it
-/// has a unison engine) are a `tutti_graph::ParamSet`, its controls.
+/// Construct one from a [`SynthConfig`] with [`PolySynth::new`]. It is a
+/// graph node (`tutti_graph::Node`) with no audio input, stereo output and
+/// one MIDI event input; each event is applied on its own frame. Inserting it
+/// hands back a `tutti_graph::ParamSet` over its live params, by
+/// `UnitParam`: `Volume` (master gain, linear), and with a unison engine
+/// `Detune` (cents) and `StereoSpread` (0..1).
+///
+/// The event input accepts MIDI 1.0 and MIDI 2.0 (UMP) channel-voice
+/// messages, including MPE and MIDI 2.0 per-note controllers when
+/// [`SynthConfig::mpe_enabled`] is set. Up to 512 events per block are
+/// applied; any beyond that are dropped.
+///
+/// Rendering allocates nothing and takes no lock. Construction, forking and
+/// changing the unison voice count allocate and belong on the control thread.
+/// The oscillator, filter and envelope are fixed at construction: to change
+/// them, build a new synth and replace the node.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_core::{Hz, Resonance, SampleRate, Samples};
+/// use tutti_graph::{Prepare, Solo};
+/// use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
+///
+/// let synth = PolySynth::new(SynthConfig {
+///     oscillator: OscillatorType::Saw,
+///     max_voices: 8,
+///     filter: FilterType::Moog { cutoff: Hz(2_000.0), resonance: Resonance(0.5) },
+///     ..Default::default()
+/// })?;
+/// assert_eq!(synth.active_voice_count(), 0);
+///
+/// // Alone in a graph; a host wires a clip or keyboard to its event input.
+/// let mut solo = Solo::new(synth, Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let out = solo.render(64);
+/// assert_eq!(out.len(), 2); // stereo
+/// # Ok::<(), tutti_polysynth::Error>(())
+/// ```
 pub struct PolySynth {
     config: SynthConfig,
     allocator: VoiceAllocator,
@@ -78,9 +112,9 @@ pub struct PolySynth {
 }
 
 impl PolySynth {
-    /// Build a synth from a [`SynthConfig`]. Configure the config the idiomatic
-    /// Bevy way — `Default` plus struct-update — e.g.
-    /// `SynthConfig { oscillator: OscillatorType::Saw, max_voices: 8, ..default() }`.
+    /// Creates a synth from a [`SynthConfig`], usually written as `Default`
+    /// plus struct update:
+    /// `SynthConfig { oscillator: OscillatorType::Saw, max_voices: 8, ..Default::default() }`.
     ///
     /// Every voice — and every unison sub-voice within it — is built here, so
     /// this allocates in proportion to `max_voices * unison.voice_count` and
@@ -89,15 +123,9 @@ impl PolySynth {
     /// # Errors
     ///
     /// Returns [`Error::InvalidConfig`](crate::Error::InvalidConfig) if
-    /// `max_voices` is 0. There is **no upper bound**: the per-block
-    /// finished-voice list is sized to `max_voices` here and only ever
-    /// `clear()`ed, so it never reallocates however large that is.
-    ///
-    /// It used to reject anything above 16, which was the inline capacity of
-    /// a `SmallVec` — a real constraint, since a spill would have put a
-    /// `malloc` in the audio callback, but one the `Vec` removes rather than
-    /// enforces. Every voice is fully constructed up front, so `max_voices`
-    /// is a memory and CPU budget.
+    /// `max_voices` is 0. There is no upper bound: every voice is built up
+    /// front, so `max_voices` is a memory and CPU budget, not a real-time
+    /// risk.
     pub fn new(config: SynthConfig) -> crate::Result<Self> {
         if config.max_voices == 0 {
             return Err(crate::Error::InvalidConfig(
@@ -159,12 +187,17 @@ impl PolySynth {
         )
     }
 
-    /// Apply one MIDI event now, as if it arrived on the current frame.
+    /// Applies one MIDI event now, as if it arrived at the start of the next
+    /// rendered block.
+    ///
+    /// Takes `&mut self`, so it cannot reach a synth that is already in a
+    /// graph; there, send MIDI on the event input instead. Useful for setting
+    /// a synth up before insertion or driving it by hand.
     pub fn apply_midi(&mut self, event: &MidiEvent) {
         self.process_midi_event(event);
     }
 
-    /// Whether per-note (MPE) expression is applied at render time.
+    /// Returns whether per-note (MPE) expression is applied at render time.
     ///
     /// Ask before concluding MPE is active: the per-note setters accept
     /// unconditionally, and the per-note pitch-bend *sensitivity* RPN applies
@@ -176,7 +209,7 @@ impl PolySynth {
         self.config.mpe_enabled
     }
 
-    /// Turn per-note (MPE) expression on or off, affecting sounding notes as
+    /// Turns per-note (MPE) expression on or off, affecting sounding notes as
     /// well as future ones.
     ///
     /// Disabling **resets** each voice's per-note state rather than merely
@@ -191,73 +224,69 @@ impl PolySynth {
         }
     }
 
-    /// Set the master output gain as a linear [`Amplitude`]: `1.0` is unity,
-    /// `0.0` silence, and values above unity boost.
+    /// Sets the master output gain as a linear [`Amplitude`]: `1.0` (the
+    /// default) is unity, `0.0` silence, and values above unity boost.
+    /// Negative values clamp to 0.
     ///
-    /// Only the lower bound is enforced. A ceiling here would constrain nothing
-    /// — `volume_atomic()` writes the same cell on the modulation path with no
-    /// cap — and a boost above unity is legal for an `Amplitude`.
-    ///
-    /// Applied once per block to the summed mix, not per voice.
-    ///
-    /// `&self`, matching every other atomic-backed volume setter in the engine
-    /// (`BusStripNode`, `ClickSettings`): the write lands in a shared cell, and
-    /// [`volume_atomic`](Self::volume_atomic) hands that same cell to the
-    /// modulation path — so `&mut` would advertise an exclusivity this type
-    /// does not have.
+    /// Applied once per block to the summed mix, not per voice. The write is
+    /// a lock-free store into the cell the node reads, the same one the
+    /// synth's `ParamSet` addresses as `Volume` and
+    /// [`volume_atomic`](Self::volume_atomic) returns, so it reaches a synth
+    /// that is already rendering.
     pub fn set_volume(&self, volume: f32) {
         self.master_volume.store(Amplitude(volume.max(0.0)));
     }
 
-    /// The current master gain as a linear amplitude. Reflects modulation
+    /// Returns the current master gain as a linear amplitude. Reflects modulation
     /// written through [`volume_atomic`](Self::volume_atomic) as well as
     /// [`set_volume`](Self::set_volume) — they share one cell.
     pub fn volume(&self) -> f32 {
         self.master_volume.load().get()
     }
 
-    /// The shared master-volume atomic, for control-rate modulation (the
-    /// cell the synth's `ParamSet` addresses as `Volume`). Clones the `Arc`; call it during setup, not
-    /// from the audio path.
+    /// Returns the shared master-volume cell, for control-rate modulation (the
+    /// cell the synth's `ParamSet` addresses as `Volume`). Clones the `Arc`;
+    /// call it during setup, not from the audio path.
     pub fn volume_atomic(&self) -> Arc<tutti_core::AtomicF32> {
         self.master_volume.as_atomic()
     }
 
-    /// The shared unison-detune atomic (cents), for control-rate modulation.
+    /// Returns the shared unison-detune cell (cents), for control-rate
+    /// modulation.
     /// `None` when this synth has no unison engine.
     pub fn detune_atomic(&self) -> Option<Arc<tutti_core::AtomicF32>> {
         self.unison.as_ref().map(|u| u.detune_atomic())
     }
 
-    /// The shared unison-stereo-spread atomic (0..1), for control-rate modulation.
+    /// Returns the shared unison stereo-spread cell (0..1), for control-rate
+    /// modulation.
     /// `None` when this synth has no unison engine.
     pub fn spread_atomic(&self) -> Option<Arc<tutti_core::AtomicF32>> {
         self.unison.as_ref().map(|u| u.spread_atomic())
     }
 
-    /// How many voices are currently sounding, counting those in their release
+    /// Returns how many voices are currently sounding, counting those in their release
     /// stage. A voice stays counted until its envelope reaches silence, which is
     /// why this can exceed the number of keys held.
     pub fn active_voice_count(&self) -> usize {
         self.voices.iter().filter(|v| v.is_active()).count()
     }
 
-    /// This synth's unison settings, or `None` when it was built without a
-    /// [`UnisonConfig`](crate::UnisonConfig). A synth built without one cannot
-    /// gain unison later —
-    /// every unison setter below is a no-op on it.
+    /// Returns this synth's unison settings, or `None` when it was built
+    /// without a [`UnisonConfig`](crate::UnisonConfig). A synth built without
+    /// one cannot gain unison later: every unison setter is a no-op on it.
     pub fn unison_config(&self) -> Option<&crate::UnisonConfig> {
         self.unison.as_ref().map(|u| u.config())
     }
 
-    /// Sub-voices stacked per note, clamped to 1..=16. Returns `1` when this
+    /// Returns the number of sub-voices stacked per note (1..=16), or `1` when this
     /// synth has no unison engine, so the total oscillator count is always
     /// `max_voices * this`.
     pub fn unison_voice_count(&self) -> usize {
         self.unison.as_ref().map_or(1, |u| u.voice_count())
     }
 
-    /// Set the unison detune in [`Cents`](tutti_core::Cents), applied
+    /// Sets the unison detune in [`Cents`](tutti_core::Cents), applied
     /// symmetrically either side of the written pitch. Negative values clamp to
     /// zero. Recomputes the per-sub-voice pitch ratios immediately, so it
     /// affects sounding notes as well as future ones. No-op without unison.
@@ -267,7 +296,7 @@ impl PolySynth {
         }
     }
 
-    /// Set how wide the sub-voices are panned, 0.0 (all centre) to 1.0
+    /// Sets how wide the sub-voices are panned, 0.0 (all centre) to 1.0
     /// (outermost pair hard left and right); out-of-range values are clamped.
     /// Takes effect on sounding notes. No-op without unison.
     pub fn set_unison_stereo_spread(&mut self, spread: f32) {
@@ -276,7 +305,7 @@ impl PolySynth {
         }
     }
 
-    /// Set the number of stacked sub-voices per note, clamped to 1..=16.
+    /// Sets the number of stacked sub-voices per note, clamped to 1..=16.
     ///
     /// **Allocates**: the voice bank is rebuilt at the new width (sounding
     /// sub-voices keep their state). Call it from the control thread, never the
@@ -291,7 +320,7 @@ impl PolySynth {
         }
     }
 
-    /// Replace all unison settings at once. Carries the same allocation warning
+    /// Replaces all unison settings at once. Carries the same allocation warning
     /// as [`set_unison_voice_count`](Self::set_unison_voice_count) when the
     /// count grows. No-op without unison.
     pub fn set_unison_config(&mut self, config: crate::UnisonConfig) {
@@ -309,7 +338,7 @@ impl PolySynth {
         }
     }
 
-    /// Seed the phase-randomisation generator, making a render with
+    /// Seeds the phase-randomisation generator, making a render with
     /// `phase_randomize` reproducible. A seed of `0` is remapped to `1`, since
     /// the xorshift generator cannot leave that state. No-op without unison.
     pub fn seed_unison_rng(&mut self, seed: u32) {
@@ -318,7 +347,7 @@ impl PolySynth {
         }
     }
 
-    /// The computed per-sub-voice pitch ratio, pan, phase offset and amplitude
+    /// Returns the computed per-sub-voice pitch ratio, pan, phase offset and amplitude
     /// — one entry per active sub-voice. Derived state, recomputed on every
     /// unison setter; for inspection, not for driving the audio path.
     /// `None` without unison.
@@ -717,10 +746,9 @@ impl PolySynth {
     ///
     /// The glide is ticked per frame and the voices are aimed at where it will
     /// be at the *end* of the step; the bank ramps each lane there sample by
-    /// sample. So a glide moves the pitch every frame in `process` as it does
-    /// in `tick`. The block path used to tick the glide `block_len` times and
-    /// then render the whole sub-block at the final pitch: a staircase, one
-    /// step per MIDI sub-block, that `tick` never produced.
+    /// sample. So a glide moves the pitch every frame at any block length.
+    /// Rendering a whole sub-block at the glide's final pitch would instead
+    /// produce a staircase, one step per MIDI sub-block.
     fn control_step(&mut self, frames: usize) {
         if let Some(ref mut porta) = self.portamento {
             if porta.is_gliding() {
@@ -812,9 +840,7 @@ impl PolySynth {
     ///
     /// The block is split at each event so the event lands on its frame, and
     /// the pieces go to [`render_span`](Self::render_span). Nothing here is
-    /// bounded by a block size: this used to mix into `[f32; MAX_BUFFER_SIZE]`
-    /// stack arrays and clamp `size` to them, which in a release build silently
-    /// rendered only the first 64 frames of a longer block.
+    /// bounded by a block size, so any block length renders every frame.
     fn render_events(
         &mut self,
         size: usize,
@@ -928,8 +954,7 @@ mod tests {
     /// [`queue_midi`] is the next block's event input.
     ///
     /// - [`tick`](Hand::tick) is a one-frame block: every queued event lands
-    ///   on its frame (as the `AudioUnit`-era `tick` applied them all before
-    ///   its frame).
+    ///   on its frame.
     /// - [`render_planar`](Hand::render_planar) is one block of `left.len()`
     ///   frames: each queued event on its `frame_offset`, and one past the
     ///   block applied after it (as the renderer applies an event at or past
@@ -998,9 +1023,8 @@ mod tests {
 
     /// A long block renders every frame it was asked for.
     ///
-    /// The `AudioUnit` era's ceiling (`BufferMut`'s 64-frame channel stride)
-    /// is gone with it; a graph block is as long as the graph was prepared
-    /// for, so this renders four 512-frame blocks, each read in full.
+    /// A graph block is as long as the graph was prepared for, so this renders
+    /// four 512-frame blocks, each read in full.
     /// `a_long_block_renders_every_frame_like_short_blocks` covers longer.
     #[test]
     fn a_full_block_renders_every_frame() {
@@ -1089,10 +1113,7 @@ mod tests {
     }
 
     /// **A fork carries no sounding note**: a note playing on the live synth
-    /// is not in its fork, which plays only what its own event input brings
-    /// (the `AudioUnit` era's version of this pinned that MIDI queued by hand
-    /// stayed with the original; the queue is gone, and the voices are what
-    /// a copy could still carry).
+    /// is not in its fork, which plays only what its own event input brings.
     ///
     /// Mutation (run): `fork_instance` not resetting the voices → the fork
     /// sounds the live note → fails.
@@ -1117,14 +1138,10 @@ mod tests {
         assert!(l.iter().all(|&s| s == 0.0), "and sounds nothing");
     }
 
-    /// Regression: the deeper half of the same bug. `SynthVoice` used to hold
-    /// its `gate`/`pitch`/`filter_*` as `Shared` (`Arc<AtomicU32>`), which
-    /// `clone()` aliases — and the voice *wrote* them every tick. So a worker
-    /// ticking the render clone would stomp the atomics the live voice reads
-    /// into its output, even with the MIDI inbox already severed. The voice
-    /// bank made those plain fields, so the property is now structural; this
-    /// keeps it pinned. Driving the clone's voice must leave the live voice's
-    /// gate untouched.
+    /// A clone's voice state is its own. If a voice held its gate, pitch or
+    /// filter state in shared cells, `clone()` would alias them, and a worker
+    /// rendering the clone would overwrite what the live voice reads. Driving
+    /// the clone's voice must leave the live voice's gate untouched.
     #[test]
     fn a_clone_unaliases_voice_state() {
         let mut live = synth(SynthConfig {
@@ -1368,10 +1385,6 @@ mod tests {
 
     /// One sub-voice's chain — oscillator, envelope, gains — is silent while
     /// its gate is closed and sounds once it opens.
-    ///
-    /// This drove fundsp's `var(&pitch) >> (saw() * (var(&gate) >>
-    /// adsr_live(..)))` until that chain was replaced by the voice bank; the
-    /// claim is the same, made of the chain the synth now runs.
     ///
     /// *Mutation:* dropping `gate_on`'s `enter(Attack)` (so the gate never
     /// opens the envelope) fails the second half.
@@ -2983,14 +2996,12 @@ mod tests {
     /// MIDI landing inside it past frame 64 — and is sample-identical to the
     /// same audio rendered as eight 64-frame blocks.
     ///
-    /// This is design doc 013's D4: the block path mixed into
-    /// `[f32; MAX_BUFFER_SIZE]` (64-frame) stack arrays and clamped `size` to
-    /// them, so in release a 512-frame block rendered 64 frames and silence.
-    /// The renderer now has no block-sized scratch at all; the identity with
-    /// short blocks is what shows the long block is not merely non-silent but *right* —
-    /// control steps, glides and event offsets all land where they would have.
+    /// The renderer has no block-sized scratch; the identity with short
+    /// blocks is what shows the long block is not merely non-silent but
+    /// *right* — control steps, glides and event offsets all land where they
+    /// would have.
     ///
-    /// *Mutation:* clamping `size` to 64 (the old `MAX_BUFFER_SIZE`) at the top
+    /// *Mutation:* clamping `size` to 64 at the top
     /// of `render_events` fails this (frame 64 onward goes silent and the event
     /// at 200 is never reached in the long block).
     #[test]
@@ -3108,13 +3119,12 @@ mod tests {
 
     /// A portamento glide sounds the same through `process` as through `tick`.
     ///
-    /// This is design doc 013's D5. `tick` has always glided per sample, but
-    /// `process` ticked the glide `block_len` times and then rendered the whole
-    /// MIDI sub-block at the final pitch: a staircase, one step per block,
-    /// always ahead of the true glide. The phase error that leaves accumulates
-    /// over the glide, so the two paths' *waveforms* drift apart even though
-    /// their pitch at any block boundary agrees. Now both run the same
-    /// renderer, and inside a control step the pitch ramps per sample.
+    /// Rendering a whole MIDI sub-block at the glide's final pitch would make
+    /// a staircase, one step per block, always ahead of the true glide; the
+    /// phase error that leaves accumulates, so the waveforms would drift apart
+    /// even though their pitch at any block boundary agrees. Both paths run
+    /// the same renderer, and inside a control step the pitch ramps per
+    /// sample.
     ///
     /// Not asserted bit-identical: `tick` takes a control step every sample and
     /// `process` every 16, and between them the pitch ramps linearly rather
@@ -3187,10 +3197,10 @@ mod tests {
     /// Each note of a chord struck together gets its own stack of random
     /// start phases, and the lanes really start on them.
     ///
-    /// The phases used to live in the shared unison table, drawn once per
-    /// note-on and read when each voice started — so every note of a chord
-    /// read the last draw and all stacks started identically, the transient
-    /// spike `phase_randomize` exists to avoid, summed across the chord.
+    /// Phases drawn once per note-on into a shared table would make every
+    /// note of a chord read the last draw, so all stacks would start
+    /// identically: the transient spike `phase_randomize` exists to avoid,
+    /// summed across the chord.
     ///
     /// Both notes are the same pitch (on two channels) with no detune, so all
     /// six lanes run at one increment and their phases after the first block
@@ -3306,8 +3316,8 @@ mod tests {
     /// Reset All Controllers returns CC74 to its centre, leaving the cutoff
     /// where the patch put it.
     ///
-    /// It used to set the CC74 position to 0.0, which the `4^(v - 0.5)` map
-    /// reads as half the cutoff.
+    /// Setting the CC74 position to 0.0 instead would read, through the
+    /// `4^(v - 0.5)` map, as half the cutoff.
     ///
     /// *Mutation:* `set_cc_cutoff(0.0)` in the `RESET_ALL` arm fails this.
     #[test]
@@ -3374,8 +3384,7 @@ mod tests {
     /// A fork of the synth renders the master volume and unison it was taken
     /// with, audibly: for each param, a move set through the synth's
     /// `ParamSet` after a fork is not in that fork's render, and one before a
-    /// fork is (the `ParamNode` fork `param_parts` inserts; it replaced the
-    /// `AudioUnit` era's isolate row). Each rendered fork is handed its own
+    /// fork is (the `ParamNode` fork `param_parts` inserts). Each rendered fork is handed its own
     /// chord, as its clip would.
     ///
     /// Mutations (run): `fork_instance` not detaching `master_volume` →

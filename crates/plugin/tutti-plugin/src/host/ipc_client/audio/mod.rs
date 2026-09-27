@@ -264,7 +264,7 @@ impl AudioBridge {
     /// Hand block `seq` to the bridge thread and return **immediately**.
     ///
     /// Lock-free, allocation-free, and it never waits — see the module doc on
-    /// `Batcher` for why waiting here was the defect rather than a tuning problem.
+    /// `Batcher` for why waiting here would overrun the audio callback.
     ///
     /// The caller collects block `seq`'s *output* on a later call, gated on the
     /// slab's sequence number rather than on a reply (see `Batcher::collectable`).
@@ -360,8 +360,7 @@ impl AudioBridge {
             // bridge thread is gone — the plugin is unreachable either way.
             return Err(StateError::PluginCrashed);
         }
-        // A refusal to answer is not an acceptance. Before this the fallback was
-        // `false`, which a `()`-returning caller could not see.
+        // A refusal to answer is not an acceptance.
         //
         // Same progress deadline as `save_state`, for the same reason: the write
         // direction is chunked too, so a total budget capped how large a state

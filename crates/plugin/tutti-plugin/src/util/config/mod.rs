@@ -11,9 +11,7 @@
 //!   `AudioConfig::to_bridge_config` derives it.
 //!
 //! Nothing here constructs a [`Plugins`](crate::catalog::Plugins). Config is a
-//! leaf: it describes, the host layer builds. The previous
-//! `PluginsConfig::build()` inverted that, so `util::config` reached back into
-//! `host::plugins` for a type it otherwise knew nothing about.
+//! leaf: it describes, the host layer builds.
 
 pub mod bridge;
 pub mod catalog;

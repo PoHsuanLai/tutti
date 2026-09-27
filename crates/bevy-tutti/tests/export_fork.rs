@@ -1,16 +1,10 @@
 //! What an export renders, through the whole adapter: a request spawned in the
 //! ECS, rendered on the task pool, reported on its entity.
 //!
-//! An export forks the live graph (`Editor::fork`, design doc 013 PR 12).
-//! Until PR 13 the adapter could also run on fundsp's `Net`, whose export
-//! cloned the net; from PR 13 to PR 15 the tests that held the two to the
-//! same answer held the fork to the `Net`-era render, built by hand as a
-//! test oracle (`chain_net_era`, `synths::poly_node_export_net_era`,
-//! rendered by `render_net_era`). PR 15 retired those oracles with the rest
-//! of the `Net` fixtures: the exports are now held to the same units wired
-//! fresh with `GraphBuilder` (a fork starts reset, which a fresh graph is),
-//! to a synth's own reference note, and, for the samples the `Net` rendered,
-//! to golden digests on Linux/glibc (see [`GOLDEN_HERE`]). The rest pin
+//! An export forks the live graph (`Editor::fork`). The exports are held to
+//! the same units wired fresh with `GraphBuilder` (a fork starts reset, which
+//! a fresh graph is), to a synth's own reference note, and to golden digests
+//! on Linux/glibc (see [`GOLDEN_HERE`]). The rest pin
 //! what only a fork has: it shares nothing with the live graph, it names a
 //! node it cannot copy, it forks a hosted plugin by state transfer.
 //! `export_surface.rs` pins the request/response shape; this file pins the
@@ -144,7 +138,7 @@ fn buffers(source: ExportSource, seconds: f64) -> ExportRequest {
 }
 
 // ---------------------------------------------------------------------------
-// What a `Net` export also rendered
+// What any export renders
 // ---------------------------------------------------------------------------
 
 /// A saw through a low-pass on channel 0, the raw saw on channel 1: a master
@@ -166,9 +160,9 @@ fn chain(app: &mut App) -> Entity {
 }
 
 /// Whether this target is the one the golden digests were recorded on:
-/// Linux with glibc's libm. The digests are of the fork's render on the
-/// commit that retired the `Net`-era oracles (doc 013, PR 15), which
-/// rendered the `Net` era's samples bit for bit (asserted there); the units
+/// Linux with glibc's libm. The digests are of the fork's render, recorded
+/// when it was checked against an independent reference implementation; the
+/// units
 /// call `tan` (the filter's coefficients) and `sin` (the synth), libm
 /// quality-of-implementation that differs in the last ulp between C
 /// runtimes, so they are asserted only where they were recorded.
@@ -226,13 +220,11 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
 /// **An export renders its graph as wired fresh**, for the master and for
 /// one node, on a graph whose live side has not run: bit for bit the same
 /// units in a `GraphBuilder` graph ([`chain_fresh`]), and (Linux/glibc)
-/// the `Net`-era export's samples.
+/// the golden digest.
 ///
-/// "Where the rules allow" (doc 013, PR 12): a `Net` master export was a
-/// plain clone that copied the running state (an oscillator's phase, a
-/// filter's memory), and a fork starts reset. With the live side never
-/// rendered the two coincided, so this was the like-for-like pair with the
-/// `Net`-era export (`chain_net_era`) until doc 013 PR 15 retired it.
+/// A fork starts reset rather than copying the running state (an
+/// oscillator's phase, a filter's memory); with the live side never rendered
+/// that makes no difference, so the comparison is like for like.
 ///
 /// Mutation (run): `AudioGraphRes::export` forking `ForkTarget::Master` for a
 /// node export → the node's render is the master's, and the node comparison
@@ -313,8 +305,8 @@ impl Node for Late {
 /// past its duration. Asked of the forked plan.
 ///
 /// The tail is resolved by `GraphTail::resolve`: a finite tail under the cap
-/// is rendered whole, and a graph whose only node never said (`Tail::Unknown`,
-/// what an `AudioUnit` said by default) renders none — not the cap, which would
+/// is rendered whole, and a graph whose only node never said (`Tail::Unknown`)
+/// renders none — not the cap, which would
 /// append silence.
 ///
 /// Mutation (run): `start_exports` ignoring `latency_from_graph` → frame 0
@@ -493,9 +485,8 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     // From there the clip's frame `k` is the render's frame `AT + k`, from
     // the first: the voice reads the render's transport from its blocks'
     // `Env`, per frame, and frame 96 000 reads exactly beat 3, since the
-    // timeline counts frames and derives the beat (doc 013 §6). (It
-    // accumulated once, read a hair under 3 there, and the voice, then
-    // polling the clock per 64-frame chunk, entered a chunk late, at 96 064.)
+    // timeline counts frames and derives the beat. (An accumulating timeline
+    // would read a hair under 3 there.)
     for k in 0..4_000 {
         let got = planes[0][AT + k];
         assert!(
@@ -526,7 +517,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
 }
 
 // ---------------------------------------------------------------------------
-// What a fork has and a `Net` clone did not
+// What a fork has and a plain clone would not
 // ---------------------------------------------------------------------------
 
 /// A source that counts frames in a cell its clones **share**, and whose
@@ -583,15 +574,12 @@ impl Node for Counter {
 /// on without a jump, and the export counts from 0 (a fork is reset) — the
 /// two never shared the counter.
 ///
-/// A `Net` master export (before PR 13) was a plain clone that shared the
-/// counter with the live net (doc 013, PR 12's behaviour change), and this
-/// test failed there by design.
+/// A plain clone would share the counter with the live graph, and fail this
+/// test by design.
 ///
-/// Mutation (run while nodes were `AudioUnit`s): `Boxed::isolate` not
-/// forwarding to the unit (so the shadow a fork was cloned from shared the
-/// live cell) → the fork's reset and render moved the live count, which
-/// jumped. The fork is now [`CounterFork`]'s: handing the fork a `Counter`
-/// over the live cell there is the same mutation.
+/// Mutation: handing the fork a `Counter` over the live cell in
+/// [`CounterFork`] → the fork's reset and render move the live count, which
+/// jumps.
 #[test]
 fn live_playback_continues_unaffected_while_an_export_renders() {
     let mut graph = graph_on();
@@ -719,9 +707,8 @@ fn an_unforkable_node_refuses_the_export_by_name() {
 
 /// The reference CLAP plugin through a real `plugin-server`, exported through
 /// a fork: a fresh instance in a server of its own, loaded with the live
-/// one's state (tutti-plugin's `PluginClient::fork_instance`). (A `Net`
-/// master export, before PR 13, drove the **live** plugin from the render
-/// thread.)
+/// one's state (tutti-plugin's `PluginClient::fork_instance`), so the render
+/// thread never drives the **live** plugin.
 ///
 /// Build the server first: `cargo build -p tutti-plugin-server`.
 #[cfg(feature = "plugin")]
@@ -868,8 +855,7 @@ mod plugin {
     /// tell a trim of 64 from one of 201.)
     ///
     /// Mutation: hand the editor no fork source from `IntoNode for
-    /// PluginClient<Bound>` (`fork: None`; before PR 12 the same came of
-    /// inserting the plugin boxed) → the export is refused as not forkable,
+    /// PluginClient<Bound>` (`fork: None`) → the export is refused as not forkable,
     /// naming "Probe". Mutation (run):
     /// trimming one frame less than the plan's latency
     /// (`reported_latency() - 1` in `start_exports`) → every frame reads its
@@ -940,7 +926,7 @@ mod plugin {
 
     /// **An exported plugin instrument plays its notes.** The plugin has a
     /// MIDI event input, so its `MidiSourceInstall` plays through a clip node
-    /// wired to it (doc 013 item 5), which the export forks with it and which
+    /// wired to it, which the export forks with it and which
     /// reads the render's `Env`. A note from beat 1 to beat 2 holds the probe's gate open
     /// from beat 1 to beat 2 of the render's timeline, heard one pipeline
     /// chunk (the export's 1024-frame block) later, and nowhere else.
@@ -948,10 +934,9 @@ mod plugin {
     /// At 90 BPM and 48 kHz a beat is 32 000 frames, a per-frame step binary
     /// cannot hold, and the edges are asserted to the frame: 32 000 and
     /// 64 000 (at the default 120 BPM, 24 000 and 48 000). The timeline
-    /// counts frames and derives the beat, and the clip places by frame
-    /// (doc 013 §6); when the timeline accumulated, the note landed a frame
-    /// early (measured: 32 063 for 32 064), and this test ran at 87.890625
-    /// BPM, where a beat is exactly 2^15 frames, to dodge it.
+    /// counts frames and derives the beat, and the clip places by frame, so
+    /// the edges land exactly; an accumulating timeline would land the note a
+    /// frame early.
     ///
     /// Not trimmed: the probe reports 137 frames of latency in every mode
     /// but delays only in its latency mode, so the graph's figure is not
@@ -1070,14 +1055,10 @@ mod plugin {
 /// Built-in synths — `PolySynth` and `SoundFontUnit` — inserted as graph
 /// nodes and exported through a fork, playing the clip a `MidiSourceInstall`
 /// wires to them: a clip node, which the export forks with the synth and
-/// which reads the render's `Env` (doc 013, rewrite item 5).
+/// which reads the render's `Env`.
 ///
 /// Every tempo here is 90 BPM: a beat is 32 000 frames at 48 kHz (64 000 at
-/// 96 kHz), placed to the frame since clips place on integer frames (#40).
-///
-/// A `Net` export had no fork, and its synth played no clip unless the host
-/// refilled one (the `Net`-era oracle that did, to compare, went with doc
-/// 013 PR 15).
+/// 96 kHz), placed to the frame since clips place on integer frames.
 #[cfg(all(feature = "midi", feature = "synth", feature = "soundfont"))]
 mod synths {
     use super::*;
@@ -1368,13 +1349,7 @@ mod synths {
 
     /// **A node export of a synth plays its clip**: silent until beat 1,
     /// then the synth's own note ([`reference`]) sample for sample, and
-    /// (Linux/glibc) the `Net`-era export's samples. The fork carries the
-    /// clip itself.
-    ///
-    /// Until doc 013 PR 15 the oracle was `poly_node_export_net_era`: the
-    /// synth `clone_isolated` out of a `Net`, the clip reinstalled by hand
-    /// (a `Net`-era host's `prepare` hook), rendered as tutti-export's `Net`
-    /// arm rendered it, bit for bit.
+    /// (Linux/glibc) the golden digest. The fork carries the clip itself.
     ///
     /// Mutation (run): the synth's fork not reset (`PolySynth::fork_instance`
     /// skipping `reset_voices`) → no change: a fork from the template never
@@ -1399,8 +1374,7 @@ mod synths {
 /// streams into its ring; the fork cannot (the ring's one consumer is the live
 /// audio thread, and a seek moves the live stream), so it reads the file the
 /// butler's record names itself, on the render's thread (tutti-sampler's
-/// `offline_read`). (A `Net` master export, before PR 13, was a plain clone
-/// that read the live ring.)
+/// `offline_read`), never from the live ring.
 ///
 /// The butler is hand-stepped (`DiskStreamer::manual`), so a refill is a
 /// step, not a race with a render that runs faster than real time.
@@ -1587,9 +1561,7 @@ mod disk {
         }
     }
 
-    /// **A node export of a disk voice plays its file.** (Until PR 13 this
-    /// also ran on `Net`, whose node export isolated and rebound a clone of
-    /// the node, the same calls a fork made then.)
+    /// **A node export of a disk voice plays its file.**
     ///
     /// Mutation (run): `DiskVoice::fork_copy` not handing the copy its file
     /// → silent → fails.
@@ -1680,10 +1652,9 @@ mod disk {
     /// here: a fork sharing the live control cell (`fork_copy` without
     /// `detached`) — the offline read never asks that cell's butler to seek,
     /// so the live side plays on untouched with or without it (run: every
-    /// disk test passes). Under `Net` the fork took the live path, and that
-    /// sharing made the live frames jump; a fork now has no live path to
-    /// take, so the live-side assertion pins an outcome the structure
-    /// guarantees rather than one a one-line mutation can break.
+    /// disk test passes). A fork has no live path to take, so the live-side
+    /// assertion pins an outcome the structure guarantees rather than one a
+    /// one-line mutation can break.
     #[test]
     fn live_disk_playback_is_untouched_while_its_voice_exports() {
         const BLOCK: usize = 256;

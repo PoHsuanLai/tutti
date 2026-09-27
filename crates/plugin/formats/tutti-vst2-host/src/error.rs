@@ -6,13 +6,14 @@ use thiserror::Error;
 /// Convenience alias for results returned by this crate.
 pub type Result<T> = std::result::Result<T, Vst2Error>;
 
-/// Plugin-load phase label. The shared superset lives in `tutti-plugin-types`;
-/// VST2 uses the Opening/Factory/Instantiation/Initialization subset (no
-/// distinct Scanning, Setup, or Activation phase). Re-exported so `Vst2Error`
-/// and callers keep referring to `crate::error::LoadStage`.
+/// The phase a plugin load reached before failing, carried by
+/// [`Vst2Error::LoadFailed`].
+///
+/// Shared by all format hosts; VST2 reports only the Opening, Factory,
+/// Instantiation and Initialization phases.
 pub use tutti_plugin_types::LoadStage;
 
-/// All error conditions reported by the VST2 host.
+/// An error reported by the VST2 host.
 #[derive(Debug, Error)]
 pub enum Vst2Error {
     /// The plugin could not be loaded. `stage` says how far the load got, which

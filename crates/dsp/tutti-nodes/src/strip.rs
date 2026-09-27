@@ -6,32 +6,16 @@
 //! it with the same generic machinery it uses for a filter cutoff and needs no
 //! downcast.
 //!
-//! # Why this is a unit rather than a fundsp graph
+//! Every scalar lives in a cell the node's [`ParamSet`] addresses by
+//! [`UnitParam`] — the same shape every other node in this crate uses — so a
+//! host has one param path to the strip, not a second set of handles beside
+//! it.
 //!
-//! (fundsp was the engine's DSP library until design doc 013 Phase 5; this
-//! records why the strip was never built from it.) The DSP is a handful of
-//! multiplies, and fundsp could express it: `shared`/`var` give a lock-free
-//! scalar, `pan`/`panner` an equal-power law, `mul` a gain. What that
-//! composition does *not* give is **addressing**, and addressing is the whole
-//! point.
+//! # Balance, not panning
 //!
-//! Every scalar here lives in a cell the node's [`ParamSet`] addresses by
-//! [`UnitParam`] — the same shape every other node in this crate uses. A
-//! `Shared`-based strip would instead need its host to hold the handles and
-//! write them directly, which is a second param path running alongside the
-//! declared one, invisible to the reconcilers that own the first. Two writers,
-//! one port, no way to see the conflict.
-//!
-//! fundsp's `Panner` was unreachable from the declared path for a second
-//! reason: `Panner<U2>` takes its pan as an *audio input port*, which would sit
-//! in the same index space `PortSources` declares into.
-//!
-//! # The balance law is this crate's own
-//!
-//! fundsp's `Panner` is **mono**-to-stereo: one signal placed between two
-//! speakers. A mixer strip is stereo-to-stereo — it *rebalances* a signal that is
-//! already stereo, and must leave it untouched at centre. Those are different
-//! functions, and nothing in tutti or fundsp implemented the second one. See
+//! A panner is **mono**-to-stereo: one signal placed between two speakers. A
+//! mixer strip is stereo-to-stereo — it *rebalances* a signal that is already
+//! stereo, and must leave it untouched at centre. See
 //! [`BusStripNode::balance_gains`].
 //!
 //! # Every control change is a ramp, never a step
@@ -56,7 +40,7 @@ pub const STRIP_PARAMS: [UnitParam; 2] = [UnitParam::Volume, UnitParam::Pan];
 /// A mixer strip: volume, stereo balance and mute over `channels` audio ports.
 ///
 /// Ports are `channels` audio inputs → `channels` outputs. Volume and pan
-/// are modulatable by the graph (design doc 013 item 6), in that port order
+/// are modulatable by the graph, in that port order
 /// ([`STRIP_PARAMS`]): a per-frame value on the param port
 /// ([`Io::param`](tutti_graph::Io::param)) overrides its cell per sample.
 /// There is deliberately no modulatable mute: a per-sample boolean is a
@@ -227,7 +211,7 @@ impl BusStripNode {
         self.pan.load()
     }
 
-    /// Set the fader position as a linear [`Amplitude`], unclamped.
+    /// Sets the fader position as a linear [`Amplitude`], unclamped.
     ///
     /// Linear, not [`Db`](tutti_core::Db): `1.0` is unity, `0.0` silent, and
     /// values above 1.0 amplify. Read once per block and ramped to across it.
@@ -235,13 +219,13 @@ impl BusStripNode {
         self.volume.store(volume.into());
     }
 
-    /// Set the balance, clamped to `-1..1` — an out-of-range value would
+    /// Sets the balance, clamped to `-1..1` — an out-of-range value would
     /// otherwise amplify one channel past unity rather than saturating.
     pub fn set_pan(&self, pan: impl Into<Pan>) {
         self.pan.store(Pan(pan.into().get().clamp(-1.0, 1.0)));
     }
 
-    /// Mute or unmute the strip.
+    /// Mutes or unmutes the strip.
     ///
     /// A gate on the output, applied after volume and pan — muting does not
     /// disturb the fader position, so unmuting restores the previous level.
@@ -276,8 +260,7 @@ impl BusStripNode {
     /// somebody moves it, and this is what
     /// [`unity_at_defaults`](self::tests::unity_at_defaults) pins.
     ///
-    /// This is **balance, not panning**, and the distinction is why fundsp's
-    /// `Panner` could not be reused. A panner *places* a mono signal, so it spreads
+    /// This is **balance, not panning**. A panner *places* a mono signal, so it spreads
     /// one input across two outputs with an equal-power (`cos`/`sin`) law that
     /// reads `-3 dB` on each side at centre. Applying that here would attenuate
     /// an already-stereo signal by 3 dB just for existing. A balance instead
@@ -544,9 +527,8 @@ mod tests {
         assert_eq!(tick2(&mut s, 1.0, 1.0), (0.0, 0.0));
     }
 
-    /// A strip must be transparent until somebody moves it. This is the property
-    /// that ruled out reusing fundsp's equal-power `Panner`, which would
-    /// attenuate a centred signal by 3 dB.
+    /// A strip must be transparent until somebody moves it. An equal-power
+    /// pan law would attenuate a centred signal by 3 dB.
     #[test]
     fn unity_at_defaults() {
         let mut s = BusStripNode::new();
@@ -659,7 +641,7 @@ mod tests {
     /// is never applied twice across the block: the fed value takes over
     /// from its first frame, where the graph's declick puts it at the base.
     ///
-    /// Mutation (run): drop the `last_fed` guard (ramp from the old control
+    /// Mutation (run): drop the `last_fed` guard (ramp from the previous control
     /// share) → the first fed block starts at volume² (0.25) → fails.
     #[test]
     fn starting_a_feed_does_not_apply_the_gain_twice() {
@@ -786,8 +768,8 @@ mod tests {
     /// is silent from the end of that block on; unmuting ramps back the same
     /// way.
     ///
-    /// D7 in design doc 013: the mute was a hard gate, so toggling it on a
-    /// full-scale signal was a full-scale step — a click.
+    /// A mute that was a hard gate would make toggling it on a full-scale
+    /// signal a full-scale step — a click.
     ///
     /// Mutation: rendering `target` unconditionally in `render` (no ramp) makes
     /// the toggle a step of 1.0 and fails the step bound on both edges; ramping

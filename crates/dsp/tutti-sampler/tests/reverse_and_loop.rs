@@ -256,8 +256,8 @@ fn reverse_does_not_read_outside_the_source() {
     }
 }
 
-/// **Reverse falls silent past the source's first frame** (doc 013 follow-up
-/// S1, the memory tier), as forward falls silent past its last: the mirror of
+/// **Reverse falls silent past the source's first frame** (the memory tier),
+/// as forward falls silent past its last: the mirror of
 /// a read past the end is a read before the start. Holding frame 0 there
 /// played the source's first sample as DC for as long as the voice's window
 /// stayed open.
@@ -266,7 +266,7 @@ fn reverse_does_not_read_outside_the_source() {
 /// silence by accident.
 ///
 /// Mutation (run): the silence removed from `MemorySource::read_placed_into`'s
-/// reverse arm (the old `(len - 1 - pos).max(0.0)` alone) → frame 0 held from
+/// reverse arm (`(len - 1 - pos).max(0.0)` alone) → frame 0 held from
 /// output `LEN` on → fails.
 #[test]
 fn reverse_past_the_first_frame_is_silent() {
@@ -337,8 +337,7 @@ fn largest_step(x: &[f32]) -> (f32, usize) {
         .fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a })
 }
 
-/// **A crossfaded loop is continuous at its wrap** (doc 013 follow-up S3, the
-/// memory tier): on a sine whose loop points would click cut hard, no step in
+/// **A crossfaded loop is continuous at its wrap** (the memory tier): on a sine whose loop points would click cut hard, no step in
 /// the output is larger than the sine's own, round the loop three times. The
 /// fade leads into the loop's start — the last blended frame is almost all
 /// the frame before `start`, and the wrap plays `start` next — so the seam is
@@ -348,15 +347,15 @@ fn largest_step(x: &[f32]) -> (f32, usize) {
 /// does): the two read the loop through the same `LoopSpan`.
 ///
 /// And from frame 0 ([`HEAD_SEAM`]), where there is no lead-in: the fade goes
-/// into the loop's head and the wrap resumes after it, still continuous. The
-/// first cut clamped that fade to nothing — a loop from 0 always cut hard.
+/// into the loop's head and the wrap resumes after it, still continuous,
+/// rather than the fade clamping to nothing and a loop from 0 cutting hard.
 ///
 /// The hard loop is asserted to click first, so the loop points have teeth.
 ///
 /// Mutation (run): the head mode removed (the fade clamped to `start`) → the
 /// loop from 0 cuts hard → fails.
 ///
-/// Mutation (run): `LoopSpan::fade_at`'s lead-in `start + k` (the old head
+/// Mutation (run): `LoopSpan::fade_at`'s lead-in `start + k` (the head
 /// replay: the fade blends toward the loop's first frames, then the wrap plays
 /// them again) → a step far above the sine's own at the wrap → fails.
 /// Mutation (run): the fade dropped (`LoopTap::fade` always `None`) → the hard

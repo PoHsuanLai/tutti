@@ -2,9 +2,9 @@
 //!
 //! `Engine::process` is `tutti-core`'s, but the graph it renders here is built
 //! from this crate's nodes (`Osc`, `EqBandNode`, `BusStripNode`,
-//! `SvfFilterNode`), so the numbers are for the filters the engine ships rather
-//! than fundsp's. That is why the bench lives here: `tutti-core` cannot depend
-//! on this crate without a cycle.
+//! `SvfFilterNode`), so the numbers are for the filters the engine ships. That
+//! is why the bench lives here: `tutti-core` cannot depend on this crate
+//! without a cycle.
 //!
 //! # Reading these numbers
 //!
@@ -26,14 +26,12 @@
 //!
 //! Criterion suits steady-state, allocation-free, fixed-working-set code, and
 //! this path is exactly that — `tests/rt_no_alloc_engine.rs` (beside this
-//! bench, in `tutti-nodes`) *proves* the
-//! precondition. It is the wrong tool where cost is dominated by allocation
-//! churn or by the scheduler: `tutti-sampler`'s `profile_stretch_clone`
-//! harness (deleted with `Net` in doc 013 Phase 5; its figures are in doc
-//! 013) measured an **81× wall-clock spread** on identical work and
-//! deliberately reported a median with a sampling profiler instead, because criterion's outlier *rejection* would discard
-//! precisely the samples that decide whether audio drops out. Anything with
-//! that shape belongs in a harness of that kind, not here.
+//! bench, in `tutti-nodes`) *proves* the precondition. It is the wrong tool
+//! where cost is dominated by allocation churn or by the scheduler: such work
+//! can show a wall-clock spread of tens of times on identical input, and
+//! criterion's outlier *rejection* would discard precisely the samples that
+//! decide whether audio drops out. Anything with that shape belongs in a
+//! harness that reports a median under a sampling profiler, not here.
 //!
 //! # Running
 //!
@@ -195,23 +193,17 @@ fn bench_transport_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-// ---- this crate's nodes against a reference pair (doc 013) -------------------
+// ---- this crate's nodes against a reference pair ------------------------------
 //
 // `backend/<runtime>/<depth>/<frames>`: the `nodes` shape — a source into
 // `depth` filters in series, stereo device — through the whole `Engine`
 // (motion drain, transport walk, render, fold, declick) on each node kind.
-// (A `net` row ran fundsp's `Net` through the engine until doc 013 Phase 3
-// PR 15 removed that backend.)
 //
-// - `graph-crate`: this crate's own nodes, `Osc` and `SvfFilterNode`. (The
-//   row was `graph-legacy` while `Osc` ran through `tutti_graph::Legacy`,
-//   which copied in and out of fundsp buffers, and before `SvfFilterNode`
-//   was ported, through `Legacy` too: figures from then price the adapter.)
+// - `graph-crate`: this crate's own nodes, `Osc` and `SvfFilterNode`.
 // - `graph-reference`: nodes written for this bench against `Io` (a
-//   phase-accumulator sine and an SVF lowpass with fundsp's `FixedSvf`
-//   arithmetic, the `graph_render` bench's pair): a reference filter of the
-//   same order of work as `SvfFilterNode`, for the runtime's cost. (It was
-//   `graph-native`.)
+//   phase-accumulator sine and a fixed-coefficient trapezoidal SVF lowpass,
+//   the `tutti-graph` `graph_render` bench's pair): a reference filter of the
+//   same order of work as `SvfFilterNode`, for the runtime's cost.
 //
 // The graph engines are prepared for 512-frame blocks, so every row here is
 // one executor block per device block.
@@ -250,8 +242,8 @@ impl tutti_graph::Node for Sine {
     }
 }
 
-/// An SVF lowpass with fundsp's `FixedSvf<f32, LowpassMode>` arithmetic,
-/// against `Io`, in place.
+/// A fixed-coefficient trapezoidal SVF lowpass (Simper's form), against `Io`,
+/// in place.
 struct Lowpass {
     cutoff: f32,
     q: f32,

@@ -1,6 +1,5 @@
 //! Timestamped control commands: an event, or a parameter ramp, delivered into
-//! a node's event input **on an exact frame** (doc 013 §6, "Commands must say
-//! when").
+//! a node's event input **on an exact frame**.
 //!
 //! # The path
 //!

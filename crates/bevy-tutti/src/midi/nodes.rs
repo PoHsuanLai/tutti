@@ -1,7 +1,6 @@
-//! The engine's MIDI as graph nodes (doc 013, rewrite item 5): the hardware
-//! input, the clock and the hardware out the engine build inserts
-//! ([`MidiEngineNodes`]), the MPE mode the input ingests in, and a
-//! keyboard's way in ([`LiveMidiInput`]).
+//! The engine's MIDI as graph nodes: the hardware input, the clock and the
+//! hardware out the engine build inserts ([`MidiEngineNodes`]), the MPE mode
+//! the input ingests in, and a keyboard's way in ([`LiveMidiInput`]).
 //!
 //! MIDI reaches a node over event edges and nothing else. Which node hears
 //! the hardware is declared with `MidiRouteRule`s (wired to the input
@@ -62,7 +61,7 @@ impl Default for MpeModeConfig {
 /// the MIDI input node's controls.
 ///
 /// [`MpeModeConfig`] is the build-time seed; this is how the mode changes
-/// afterwards, which is what lets zone configuration live in a document.
+/// afterwards.
 /// Inserted by [`build_into`](crate::engine::build_into), so it is absent
 /// when the engine failed or is disabled — hold it as `Option<Res<_>>`.
 ///
@@ -79,8 +78,8 @@ impl std::ops::Deref for MpeModeRes {
     }
 }
 
-/// Put on an entity (a synth, a hosted plugin) to send it MIDI from the
-/// control thread: a keyboard, a preview, an all-notes-off. A
+/// Marks an entity (a synth, a hosted plugin) that the host sends MIDI to
+/// from the control thread: a keyboard, a preview, an all-notes-off. A
 /// `MidiQueueNode` is inserted for it and wired to its event input, and the
 /// entity gets [`LiveMidi`], the sender. Removing this (or despawning the
 /// entity) removes the node.
@@ -97,7 +96,7 @@ pub struct LiveMidi {
 }
 
 impl LiveMidi {
-    /// The queue node feeding the entity.
+    /// Returns the queue node feeding the entity.
     pub fn node(&self) -> AudioNode {
         self.node
     }
@@ -113,7 +112,7 @@ impl std::ops::Deref for LiveMidi {
 /// Who feeds an entity through its [`LiveMidiInput`], in `EventFeeds`.
 const LIVE: &str = "live midi";
 
-/// Insert a queue node for every [`LiveMidiInput`] without one.
+/// Inserts a queue node for every [`LiveMidiInput`] without one.
 pub fn attach_live_midi(
     mut commands: Commands,
     wanted: Query<Entity, (With<LiveMidiInput>, Without<LiveMidi>)>,
@@ -132,7 +131,7 @@ pub fn attach_live_midi(
     }
 }
 
-/// Remove the queue node of an entity whose [`LiveMidiInput`] went (or
+/// Removes the queue node of an entity whose [`LiveMidiInput`] went (or
 /// that was despawned).
 pub fn detach_live_midi(
     removed: On<Remove, LiveMidiInput>,
@@ -153,8 +152,10 @@ pub fn detach_live_midi(
     }
 }
 
-/// [`LiveMidiInput`]'s systems: attach before the event wiring, so a new
-/// queue is wired on the frame it is made.
+/// Adds [`LiveMidiInput`]'s systems: [`attach_live_midi`] before the event
+/// wiring, so a new queue is wired on the frame it is made, and the
+/// [`detach_live_midi`] observer. Part of
+/// [`TuttiMidiPlugin`](super::TuttiMidiPlugin).
 pub struct LiveMidiPlugin;
 
 impl Plugin for LiveMidiPlugin {

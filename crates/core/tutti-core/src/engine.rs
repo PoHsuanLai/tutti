@@ -2,8 +2,7 @@
 //!
 //! [`Engine`] ticks the graph's
 //! [`Executor`](tutti_graph::Executor) and the transport, and renders one
-//! output buffer per block (doc 013; fundsp's `Net` rendered here too until
-//! Phase 3 PR 15). It folds the graph's outputs to the device width, keeps
+//! output buffer per block. It folds the graph's outputs to the device width, keeps
 //! the declick, and applies timestamped transport commands on their frame.
 //!
 //! # Timestamped transport commands
@@ -12,7 +11,7 @@
 //! an [`At`]. Each block, the engine walks the commands due in it in time
 //! order and **cuts the block's transport** at each one's frame: the pieces
 //! before and after run under different transports. The executor never
-//! splits a block (doc 013 §6): the engine advances its own clock piece by
+//! splits a block: the engine advances its own clock piece by
 //! piece, records each cut as a
 //! [`TransportChange`](tutti_graph::TransportChange) in the block's `Env`,
 //! and renders the whole block once. A node reads the transport at a frame
@@ -148,8 +147,8 @@ type GraphTransport = tutti_graph::Transport;
 /// That split is the reason this is a distinct type rather than a method on the
 /// transport or the graph. Both of those are edited from the control thread;
 /// this is touched only from the callback. Fusing it into either would put a
-/// control-thread API and an RT-only API on one object, where the compiler can
-/// no longer say which methods are safe to call from where — and the failure is
+/// control-thread API and an RT-only API on one object, where the compiler could
+/// not say which methods are safe to call from where — and the failure is
 /// silent, because a lock or an allocation on the audio thread produces a
 /// dropout rather than an error.
 ///
@@ -184,12 +183,18 @@ struct GraphRender {
 }
 
 impl Engine {
-    /// Build an engine that renders a graph: `executor`, the audio
-    /// half of `editor`'s pair, whose `Prepare` comes from the device
-    /// configuration (its rate, and the largest block the device hands
-    /// over). The block capacity is the larger of that maximum and
-    /// [`DEFAULT_BLOCK_CAPACITY`]; see
-    /// [`with_capacity`](Self::with_capacity).
+    /// Creates an engine that renders the graph run by `executor`.
+    ///
+    /// `executor` is the audio half of `editor`'s pair, whose `Prepare` comes
+    /// from the device configuration (its rate, and the largest block the
+    /// device hands over). The block capacity is the larger of that maximum
+    /// and [`DEFAULT_BLOCK_CAPACITY`]; see
+    /// [`with_capacity`](Self::with_capacity) for what building an engine
+    /// does to the editor and the transport.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`with_capacity`](Self::with_capacity).
     pub fn new(
         transport: &crate::Transport,
         editor: &mut Editor,
@@ -232,6 +237,17 @@ impl Engine {
     ///
     /// Control thread. Allocates the fold scratch
     /// (`MAX_ROOT_CHANNELS × capacity` samples).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, leaving `editor` unchanged, when:
+    ///
+    /// - [`GraphEngineError::NotAPair`]: `executor` is not `editor`'s.
+    /// - [`GraphEngineError::PlayheadClaimed`]: another engine over
+    ///   `transport` (or a clone of it) is alive.
+    /// - [`GraphEngineError::Limits`]: what the editor already sent has more
+    ///   than [`MAX_ROOT_CHANNELS`] global outputs or a `MaxBlock` above the
+    ///   capacity.
     pub fn with_capacity(
         transport: &crate::Transport,
         editor: &mut Editor,
@@ -280,9 +296,10 @@ impl Engine {
         self.capacity
     }
 
-    /// Render the whole of `output` — an interleaved device buffer that carries
-    /// its own width — with no transport motion and no declick: the pure
-    /// render.
+    /// Renders the whole of `output` with no transport motion and no declick.
+    ///
+    /// `output` is an interleaved device buffer that carries its own width.
+    /// This is the pure render.
     ///
     /// One executor block per device block (up to its prepared maximum),
     /// under the
@@ -331,7 +348,7 @@ impl Engine {
         }
     }
 
-    /// Render one block into `output`, an interleaved device buffer.
+    /// Renders one block into `output`, an interleaved device buffer.
     ///
     /// How many frames is `output`'s own business — it is `output.len()`,
     /// which cannot disagree with the slice the way a separate `frames`
@@ -371,7 +388,7 @@ impl Engine {
         }
     }
 
-    /// Walk one block's scheduled transport commands in time order, running
+    /// Walks one block's scheduled transport commands in time order, running
     /// each piece between them through `pieces` and planning the declick
     /// gain over the block. See the module docs for the rules.
     ///
@@ -494,16 +511,18 @@ impl Engine {
         false
     }
 
-    /// Install every commit the engine's editor has sent, and follow a
-    /// re-prepare's rate change with the engine's clock and the transport's
-    /// frame-timed commands — what the first block after it would do, done
-    /// now. Returns whether the graph is running a plan with no re-prepare
-    /// between its halves.
+    /// Installs every commit the engine's editor has sent, outside the audio
+    /// callback.
+    ///
+    /// It also follows a re-prepare's rate change with the engine's clock and
+    /// the transport's frame-timed commands — what the first block after it
+    /// would do, done now. Returns whether the graph is running a plan with no
+    /// re-prepare between its halves.
     ///
     /// A device restart calls it between the two halves of
     /// `Editor::reprepare` so the re-prepare finishes before the first block
     /// at the new rate, which then renders the re-prepared graph rather than
-    /// the executor's silent checked-out block (doc 013, Phase 3 PR 13).
+    /// the executor's silent checked-out block.
     /// Hosts reach it through `tutti_cpal::Stopped::settle_graph`, which only
     /// a restart hook is handed.
     ///
@@ -528,12 +547,11 @@ impl Engine {
         graph.exec.pending_prepare().is_none() && graph.exec.plan().is_some()
     }
 
-    /// Reset the audio-thread ownership assertions on both cells.
+    /// Does nothing.
     ///
-    /// Call when the device switches and a different thread takes over the
-    /// callback: `AudioThreadCell` pins the first thread that borrows it and
-    /// panics in debug builds on any other, so a new callback thread must be
-    /// announced rather than discovered.
+    /// The engine's [`AudioThreadCell`](tutti_types::AudioThreadCell)s pin no
+    /// owner thread, so a device switch that moves the callback to another
+    /// thread needs no reset. A call to this can be removed.
     pub fn reset_owners(&self) {
         self.graph.reset_owner();
         self.motion.reset_owner();
@@ -905,7 +923,7 @@ mod tests {
     /// at the next block.
     ///
     /// Mutation (run): re-read `Control::read` after a command in
-    /// `GraphPieces::begin` (the reviewed behaviour) → the change carries
+    /// `GraphPieces::begin` → the change carries
     /// 200 BPM → fails.
     #[test]
     fn an_untimed_store_during_the_walk_waits_for_the_next_block() {
@@ -959,7 +977,7 @@ mod tests {
     /// A command in sight plans its aim once, not at every walk step.
     ///
     /// Mutation (run): push an aim at every walk step regardless of change
-    /// (the reviewed behaviour) → the quiet block's plan is not empty →
+    /// → the quiet block's plan is not empty →
     /// fails.
     #[test]
     fn a_quiet_block_plans_no_gain_event() {

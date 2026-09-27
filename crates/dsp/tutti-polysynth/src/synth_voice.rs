@@ -8,12 +8,8 @@
 //! [`SynthVoice`] reaches them only through [`SynthVoice::drive`], once per
 //! control step.
 //!
-//! That split is what the fundsp operator-DSL chain this replaced could not
-//! make. Each sub-voice used to be an opaque `Box<dyn AudioUnit>` reading its
-//! pitch, gate, cutoff and resonance out of four `Shared` atomics every sample
-//! — atomics shared between clones, which is why `isolate` had to rebuild every
-//! voice. Here those are plain fields, derived at the point of use each control
-//! step; nothing a clone could alias.
+//! Pitch, gate, cutoff and resonance are plain fields, derived at the point of
+//! use each control step, so there is nothing a clone could alias.
 //!
 //! Nothing here allocates. The gate edges `note_on`/`note_off` record are
 //! applied to the lanes by the next `drive`, which the render calls before the
@@ -262,8 +258,7 @@ impl SynthVoice {
     /// Write this voice's targets into its lanes for the next `frames` frames,
     /// applying any pending gate edge first. `index` is the voice's slot.
     ///
-    /// The per-control-step replacement for the per-sample `tick_stereo` the
-    /// fundsp chain had: modulation is evaluated here, once, and the bank ramps
+    /// Modulation is evaluated here, once per control step, and the bank ramps
     /// the lanes to it.
     pub(crate) fn drive(
         &mut self,
@@ -340,10 +335,10 @@ impl SynthVoice {
     /// `frames`.
     ///
     /// All sources multiply the base and compound, as [`FilterModConfig`]
-    /// documents. MPE slide compounds with them too: it used to *overwrite*
-    /// the cutoff the others had computed, and — because nothing recomputed the
-    /// cutoff once every source was idle — a slide that returned to center left
-    /// the filter wherever the slide last put it.
+    /// documents. MPE slide compounds with them too rather than overwriting
+    /// the cutoff the others computed, and the cutoff is recomputed even when
+    /// every source is idle, so a slide that returns to center returns the
+    /// filter too.
     fn modulated_cutoff(&mut self, frames: usize, sample_rate: tutti_core::SampleRate) -> Hz {
         let fm = &self.filter_mod;
         let mut cutoff = self.base_filter_cutoff.get();

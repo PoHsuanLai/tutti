@@ -14,9 +14,8 @@
 //! *voice*, and per-note expression lands on a note nobody is holding.
 //!
 //! A `pub type MidiChannel = u8` alias prevents none of that — an alias is the
-//! same type. This is the real newtype, and `tutti-midi-types` re-exports it.
-//! It lives here rather than there because a document has to persist a channel
-//! and that crate carries no serde.
+//! same type. This is a real newtype, re-exported by `tutti-midi-types`, and
+//! serializable (feature `serde`) so a document can persist a channel.
 //!
 //! See [`MidiGroup`](super::MidiGroup) for the other half: typing a channel
 //! alone still leaves `(group, channel)` transposable, since both are 4-bit and
@@ -50,24 +49,33 @@ impl MidiChannel {
     /// How many channels a MIDI group carries.
     pub const COUNT: u8 = 16;
 
-    /// Wrap a raw channel number, masking into `0..=15`.
+    /// Wraps a raw channel number, masking it into `0..=15`.
     ///
     /// Masks rather than returning an error because that is what the wire does:
-    /// the UMP field is 4 bits, so a larger value cannot be represented and
-    /// `channel_voice.rs` already `debug_assert`s then masks. Rejecting here
-    /// would make this type stricter than the format it addresses.
+    /// the UMP field is 4 bits, so a larger value cannot be represented.
+    /// Rejecting here would make this type stricter than the format it
+    /// addresses.
+    ///
+    /// ```
+    /// use tutti_types::MidiChannel;
+    ///
+    /// assert_eq!(MidiChannel::new(9).get(), 9);
+    /// assert_eq!(MidiChannel::new(16).get(), 0); // masked, like the wire
+    /// assert_eq!(MidiChannel::new(9).as_display_number(), 10);
+    /// ```
     #[inline]
     pub const fn new(raw: u8) -> MidiChannel {
         MidiChannel(raw & 0x0F)
     }
 
-    /// The raw 0-based channel number, for a UMP constructor.
+    /// Returns the raw 0-based channel number, for a UMP constructor.
     #[inline]
     pub const fn get(self) -> u8 {
         self.0
     }
 
-    /// The 1-based number hardware and DAW UIs display (channel 0 shows as 1).
+    /// Returns the 1-based number hardware and DAW UIs display (channel 0
+    /// shows as 1).
     ///
     /// Named because the off-by-one is a display convention, and a bare `+ 1`
     /// at a call site hides that it is one.

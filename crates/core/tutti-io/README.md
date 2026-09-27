@@ -1,9 +1,10 @@
 # tutti-io
 
 Tutti's audio I/O edge: what comes in from a device or a file, and what goes
-out to a file.
+out to a file. Device-free: the sound-card side lives in `tutti-cpal`, and the
+`tutti` facade re-exports this crate as `tutti::io` (feature `io`).
 
-## What this is
+## What is here
 
 Four live pieces, and recording is just a pump between two of them:
 
@@ -28,9 +29,6 @@ And the file side, which needs no device either:
   width, with sample-accurate `seek`. The read-side twin of `WavOut`.
 - `WaveAsset` — the Bevy asset wrapper (feature `bevy`).
 - `can_decode` / `decodable_extensions` — which formats *this build* reads.
-
-These came from the fundsp fork (design doc 013, Phase 0); decode output is
-pinned bit-for-bit by `tests/decode_golden.rs`.
 
 The traits this crate implements are re-exported from its root (`pump`,
 `AudioIn`, `AudioOut`, `OnEmpty`, `BitDepth`), so a consumer reaches the
@@ -94,10 +92,8 @@ let mut wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32)
 assert_eq!(src.layout(), AudioOut::layout(&wav), "pump requires equal widths");
 
 // The scratch is sized in SAMPLES because a flat interleaved slice has no other
-// unit — but `pump` returns FRAMES, as a `Samples`. Conflating the two is this
-// boundary's most repeated defect: a stereo take compared against a sample
-// count runs half as long as it should. So the one crossing is named, and a
-// bare `usize` is not accepted where a frame count is meant.
+// unit, but `pump` returns FRAMES, as a `Samples`. `interleaved_len` is the one
+// named crossing between the two.
 let mut scratch = vec![0.0f32; Samples(1024).interleaved_len(src.layout())];
 assert_eq!(pump(&mut src, &mut wav, &mut scratch), Samples(3));
 

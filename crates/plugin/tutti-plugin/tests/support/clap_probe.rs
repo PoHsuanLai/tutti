@@ -38,8 +38,7 @@ use tutti_plugin::BridgeConfig;
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
 
 /// A bound plugin as the only node of a graph: the global inputs feed
-/// its inputs in order, its outputs feed the global outputs. What a test
-/// drives where it once drove the client as an `AudioUnit` — the executor
+/// its inputs in order, its outputs feed the global outputs. The executor
 /// hands the node its `Env` and its whole block, as the engine does.
 pub struct Rig {
     renderer: Renderer,
@@ -249,8 +248,8 @@ pub mod cross_process_lock {
                 }
                 // An unusable lock path (a read-only temp dir, say) must not
                 // silently disable the serialization the suites depend on, but
-                // it must not fail them either — running unserialized is what
-                // they did before this existed.
+                // it must not fail them either — fall back to running
+                // unserialized.
                 Err(_) => return Guard,
             }
         }

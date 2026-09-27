@@ -1,12 +1,11 @@
-//! The sample-accuracy contract suite's harness (doc 013 §6, "Proof"): for
+//! The sample-accuracy contract suite's harness: for
 //! a node and a way to excite it, run it through every path the graph can
 //! put it on and assert that an excitation at frame `F` produces its
 //! response at exactly frame `F + arrival + latency`.
 //!
 //! Behind the `contract` feature (off by default): it is test support, for
-//! this crate's suite and for node crates adding rows (Phase 4 ports each
-//! node to [`Node`] and adds its row here). Enable it from a
-//! dev-dependency.
+//! this crate's suite and for node crates that add rows for their own nodes.
+//! Enable it from a dev-dependency.
 //!
 //! # A row
 //!
@@ -39,9 +38,8 @@
 //! arrival latency (asserted against what the path built, so a harness bug
 //! cannot quietly turn a PDC path into a direct one), and `latency` is the
 //! node's **declared** [`Shape::latency`]. A node whose DSP delays by more or
-//! less than it declares fails every path — which is the D1–D3 class in doc
-//! 013. An event excitation is held to the node's declared
-//! [`Shape::event_resolution`] (doc 013 §6): `Sample` is the exact frame,
+//! less than it declares fails every path. An event excitation is held to
+//! the node's declared [`Shape::event_resolution`]: `Sample` is the exact frame,
 //! `Frames(n)` any frame within `n - 1` of it **in either direction** (no
 //! grid origin is assumed, so a node chunking on its own cursor honours it),
 //! `Block` any frame within the block the event arrives in. A node finer
@@ -157,7 +155,7 @@ pub enum Excite {
     },
     /// Put one sample of `amplitude` on the audio source of the node's
     /// modulated param `param` (unshaped, unclamped): the compiler-owned
-    /// modulation's sample-accuracy case (design doc 013 item 6). A
+    /// modulation's sample-accuracy case. A
     /// modulation step at frame `F` must reach the node's param at `F +
     /// arrival`, exactly. The source is connected from the start, so its
     /// declick is over long before the excitation. Behind PDC the latent
@@ -361,7 +359,7 @@ enum Edit {
 }
 
 /// A node, how to excite it, and how to find its response — one row of the
-/// contract suite. See the module docs (`src/contract.rs`).
+/// contract suite. See the [module docs](self).
 pub struct Row {
     name: String,
     make: Box<dyn Fn() -> Box<dyn Node>>,
@@ -374,6 +372,11 @@ pub struct Row {
 
 impl Row {
     /// A row for the node `make` builds (a fresh one per run).
+    ///
+    /// # Panics
+    ///
+    /// If `detect` is [`Detect::Exact`] with a response that does not start
+    /// with a non-zero sample (the response is found by its first sample).
     pub fn new(
         name: &str,
         make: impl Fn() -> Box<dyn Node> + 'static,
@@ -429,7 +432,7 @@ impl Row {
         self
     }
 
-    /// Run `path` over every offset in [`OFFSETS`], and panic, naming the
+    /// Runs `path` over every offset in [`OFFSETS`], and panics, naming the
     /// row, the path, the excitation frame and both frames, at the first
     /// response that is not exactly where the contract puts it.
     ///
@@ -594,7 +597,7 @@ impl Row {
         let blocks = schedule.blocks(total);
 
         // Where each response may start: `delivered + latency`, within what
-        // the node's resolution promises (doc 013 §6: `Frames(n)` within
+        // the node's resolution promises (`Frames(n)` within
         // `n - 1` frames either way, `Block` within the block it lands in).
         let expect: Vec<(u64, u64)> = delivered
             .iter()
@@ -1565,7 +1568,7 @@ pub fn prepared<N: Node>(mut node: N, rate: SampleRate, max_block: usize) -> N {
     node
 }
 
-/// Check a [`ParamNode`]'s fork, the promise [`param_parts`](crate::param_parts)
+/// Checks a [`ParamNode`]'s fork, the promise [`param_parts`](crate::param_parts)
 /// relies on: a fork of `node` starts from the values last **set** through
 /// its [`ParamSet`](crate::ParamSet) (the authored values, not a live
 /// composite a modulation driver left in the cells), and shares no cell with
@@ -1799,7 +1802,7 @@ impl<N: Node> Direct<N> {
         &mut self.inputs
     }
 
-    /// Feed declared param `k` with `values` (one per frame) from the next
+    /// Feeds declared param `k` with `values` (one per frame) from the next
     /// block on, or `None` to read its base again.
     ///
     /// # Panics
@@ -1834,7 +1837,7 @@ impl<N: Node> Direct<N> {
         self.transport = transport;
     }
 
-    /// Run the blocks from the next one on `len` frames long, at most the
+    /// Runs the blocks from the next one on `len` frames long, at most the
     /// prepared frames (default: all of them). Inputs, param feeds and
     /// outputs are read and written in their first `len` frames.
     ///

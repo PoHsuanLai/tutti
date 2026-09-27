@@ -71,29 +71,51 @@ pub enum GraphSource {
     Silence,
 }
 
-/// The editable DSP graph. Its methods are the only way to touch it.
+/// The editable DSP graph, as a Bevy resource.
 ///
-/// Edit through them, then set [`GraphDirty`](crate::graph::GraphDirty): the
-/// per-frame [`commit_graph`](crate::graph::commit_graph) publishes every edit
-/// of the frame to the audio thread at once. Nothing here commits inline.
+/// Edit through its methods, then set [`GraphDirty`](crate::graph::GraphDirty):
+/// the per-frame [`commit_graph`](crate::graph::commit_graph) publishes every
+/// edit of the frame to the audio thread at once. Nothing here commits inline.
 ///
-/// The graph is the `tutti-graph` runtime (design doc 013): an
-/// `Editor` on this side, its `Executor` on the audio thread. Every node goes
-/// in through its own `IntoNode`, and PDC is the compiler's — nothing is
-/// spliced into the graph to align it. fundsp's `Net` ran behind this type
-/// until Phase 3 PR 13, which deleted it.
+/// Behind it is a `tutti-graph` [`Editor`](tutti_graph::Editor) on this side
+/// and its executor on the audio thread. Every node goes in through its own
+/// [`IntoNode`](tutti_graph::IntoNode), and latency compensation (PDC) is the
+/// graph compiler's: nothing is spliced into the graph to align it.
+///
+/// Inserted by [`build_into`](crate::engine::build_into) once the device is
+/// open; [`headless`](Self::headless) builds one with no device, for tests and
+/// offline tools. Every method runs on the control side (the main thread or a
+/// system), never on the audio thread; they may allocate.
+///
+/// Most apps do not call these methods directly: spawn nodes with
+/// [`SpawnAudioNode`](crate::graph::SpawnAudioNode) and declare wiring with
+/// [`PortSources`](crate::graph::PortSources) and
+/// [`MasterSources`](crate::graph::MasterSources), and the reconcile systems
+/// make the calls.
 ///
 /// # Why opaque
 ///
-/// Every method is named in graph terms — insert a node, set a port's source,
-/// replace a node under a fade — and takes an [`AudioNode`] and a
-/// [`GraphSource`], never a runtime type, so what is behind it can change
-/// without the signatures moving (it did: `Net`, then both, then the graph
-/// alone).
+/// Every method is named in graph terms (insert a node, set a port's source,
+/// replace a node under a fade) and takes an [`AudioNode`] and a
+/// [`GraphSource`], never a runtime type. There is no `Deref`: graph mutation
+/// is paired with the per-frame commit, and keeping it behind named methods
+/// keeps the dirty/commit boundary visible at the call site.
 ///
-/// No `Deref`, for the same reason there never was one: graph mutation is paired
-/// with the per-frame commit, and keeping it behind named methods keeps the
-/// dirty/commit boundary visible at the call site.
+/// # Examples
+///
+/// ```
+/// use bevy_tutti::prelude::*;
+/// use tutti_nodes::testing::Const;
+///
+/// let mut graph = AudioGraphRes::headless(0, 1);
+/// let (node, _controls) = graph.insert(Const::mono(0.5));
+/// graph.set_output_source(0, GraphSource::Node(node, 0));
+///
+/// // A headless graph renders on the calling thread.
+/// let mut out = [0.0f32];
+/// graph.render_frame(&mut out);
+/// assert_eq!(out[0], 0.5);
+/// ```
 ///
 /// The raw graph is not reachable from outside this crate:
 ///
@@ -187,7 +209,7 @@ impl AudioGraphRes {
         AudioSide::live(self.write().take_executor())
     }
 
-    /// Re-prepare every node in the graph, and every node inserted after,
+    /// Re-prepares every node in the graph, and every node inserted after,
     /// for `rate`.
     ///
     /// For a [`headless`](Self::headless) graph, which has no device to take a
@@ -249,7 +271,7 @@ impl AudioGraphRes {
 
     // --- Nodes ---
 
-    /// Add `node` to the graph, unwired, through its own
+    /// Adds `node` to the graph, unwired, through its own
     /// [`IntoNode`](tutti_graph::IntoNode), and return its handle and its
     /// controls. Its fork source goes to the editor, so an export forks it as
     /// its type says; it is prepared at the graph's rate.
@@ -263,7 +285,7 @@ impl AudioGraphRes {
         self.write().insert(node)
     }
 
-    /// Address `node`'s params by `params`, its controls: what
+    /// Addresses `node`'s params by `params`, its controls: what
     /// [`set_param`](Self::set_param) writes through for it, and what a fork
     /// of it starts from. `None` takes the address away.
     /// [`spawn_audio_node`](crate::graph::SpawnAudioNode::spawn_audio_node)
@@ -277,7 +299,7 @@ impl AudioGraphRes {
         self.read().node_event_inputs(node)
     }
 
-    /// Feed `sink`'s event input `port` from exactly `sources` (each an
+    /// Feeds `sink`'s event input `port` from exactly `sources` (each an
     /// event output: from an `AudioNode` alone, its output 0). Event inputs
     /// merge their sources by offset, so any number may feed one port. Takes
     /// effect with the frame's commit.
@@ -297,7 +319,7 @@ impl AudioGraphRes {
         self.read().event_sources(sink, port)
     }
 
-    /// Insert a hosted plugin: bound (`PluginClient::bind`) and inserted as
+    /// Inserts a hosted plugin: bound (`PluginClient::bind`) and inserted as
     /// the node it then is, handing the editor its fork source (a fork
     /// by state transfer) and its latency (its `Shape`). Capture its controls
     /// first ([`CapturedControls::for_plugin`](crate::graph::CapturedControls::for_plugin)):
@@ -323,7 +345,7 @@ impl AudioGraphRes {
         self.write().replace_plugin(node, client, fade, curve)
     }
 
-    /// Take `node` out of the graph. Every edge to and from it reads silence
+    /// Takes `node` out of the graph. Every edge to and from it reads silence
     /// afterwards, so a sink still naming it is left silent rather than
     /// dangling.
     ///
@@ -337,7 +359,7 @@ impl AudioGraphRes {
         self.read().contains(node)
     }
 
-    /// Swap the node behind `node` for `incoming`, fading from one to the
+    /// Swaps the node behind `node` for `incoming`, fading from one to the
     /// other over `fade` along `curve`. `node` keeps its handle and every edge
     /// to and from it. Hands back `incoming`'s controls; address its params
     /// with [`set_node_params`](Self::set_node_params).
@@ -361,7 +383,7 @@ impl AudioGraphRes {
         self.write().replace(node, incoming, fade, curve)
     }
 
-    /// Write `value` to `node`'s scalar param `param`, through the node's
+    /// Writes `value` to `node`'s scalar param `param`, through the node's
     /// [`ParamSet`](tutti_graph::ParamSet) (its controls, addressed with
     /// [`set_node_params`](Self::set_node_params)): the cell it reads at the
     /// start of its next block — on every graph, including a
@@ -378,7 +400,7 @@ impl AudioGraphRes {
         self.read().source(node, port)
     }
 
-    /// Feed `node`'s input `port` from `source`. A port holds one source; this
+    /// Feeds `node`'s input `port` from `source`. A port holds one source; this
     /// replaces whatever it held.
     ///
     /// # Panics
@@ -390,19 +412,20 @@ impl AudioGraphRes {
 
     // --- Param modulation ---
 
-    /// Whether `node` declares `param` modulatable by the graph (design doc
-    /// 013 item 6): its shape lists it among its params. False for a node
-    /// not in the graph.
+    /// Returns whether `node` declares `param` modulatable by the graph: its
+    /// shape lists it among its params. False for a node not in the graph.
     pub fn declares_param(&self, node: AudioNode, param: UnitParam) -> bool {
         self.read().declares_param(node, param)
     }
 
-    /// Drive `node`'s declared `param` from exactly `sources` — each a node's
+    /// Drives `node`'s declared `param` from exactly `sources` — each a node's
     /// output 0, through its shaping — summed onto the param's own control
     /// (its base) and clamped to `range`, per frame, by the graph's fused
     /// param step. Replaces whatever modulated it; the change crossfades
     /// (`PARAM_DECLICK`) rather than stepping. Takes effect with the frame's
     /// commit, like any edge.
+    ///
+    /// # Errors
     ///
     /// Refused, changing nothing, with the error the commit would otherwise
     /// fail on (every commit after it, too): a NaN bound
@@ -420,7 +443,7 @@ impl AudioGraphRes {
         self.write().set_param_mod(node, param, sources, range)
     }
 
-    /// Stop modulating `node`'s `param`: it reads its own control again,
+    /// Stops modulating `node`'s `param`: it reads its own control again,
     /// declicked.
     pub fn clear_param_mod(&mut self, node: AudioNode, param: UnitParam) {
         self.write().clear_param_mod(node, param);
@@ -437,7 +460,7 @@ impl AudioGraphRes {
         self.read().output_source(channel)
     }
 
-    /// Feed global output `channel` from `source`.
+    /// Feeds global output `channel` from `source`.
     ///
     /// # Panics
     ///
@@ -446,7 +469,7 @@ impl AudioGraphRes {
         self.write().set_output_source(channel, source);
     }
 
-    /// Feed **every** global output from `node`: channel `c` from its port
+    /// Feeds **every** global output from `node`: channel `c` from its port
     /// `c % node_outputs(node)`, or silence if it has no outputs.
     ///
     /// For a headless graph a test or tool wires by hand. It overwrites every
@@ -501,8 +524,9 @@ impl AudioGraphRes {
     // --- Latency ---
 
     /// What compensation this graph needs: the per-output-channel pre-roll
-    /// and the total, folded over the authored graph. Mutates nothing, so a
-    /// latency readout can call it freely.
+    /// and the total, folded over the graph as edited (committed or not):
+    /// audio edges plus each node's event and param-modulation sources.
+    /// Mutates nothing, so a latency readout can call it freely.
     ///
     /// Nothing is ever spliced into the graph to apply it — the compiler
     /// compensates every commit — so this is always the figure the plans
@@ -585,7 +609,7 @@ impl AudioGraphRes {
         self.write().collect();
     }
 
-    /// Render one frame on the calling thread: no inputs, `output` sized to
+    /// Renders one frame on the calling thread: no inputs, `output` sized to
     /// [`outputs`](Self::outputs).
     ///
     /// For a [`headless`](Self::headless) graph, which has no audio thread to
@@ -619,8 +643,7 @@ impl AudioGraphRes {
     /// `ForkMode::Offline(ctx)`, prepared at `rate`. Every node is forked from
     /// its shadow — isolated, rebound onto `ctx`, reset — **the master
     /// included**: a master export renders what the graph is driven to play
-    /// from `ctx`, starting silent, not a copy of what is sounding now (doc
-    /// 013, PR 12).
+    /// from `ctx`, starting silent, not a copy of what is sounding now.
     ///
     /// `Err(ExportRefused::GraphHasNoOutputs)` when the graph has no global
     /// outputs, and `Err(ExportRefused::NoOutputs)` when `node` has no audio

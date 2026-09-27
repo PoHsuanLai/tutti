@@ -4,10 +4,10 @@ use thiserror::Error;
 
 /// A failure opening, configuring, or running an audio device.
 ///
-/// Every variant is a device concern. Subsystem failures (synth, plugin,
-/// export) are the host's to aggregate — this crate only knows about sound
-/// cards, so wrapping those here would make the type a catch-all that every
-/// consumer must match exhaustively.
+/// Every variant is a device concern; failures from other subsystems (synth,
+/// plugin, export) are the host's to aggregate. Errors reported by a stream
+/// that is already running do not come back as an `Error`: CPAL delivers them
+/// to [`StreamFaults`](crate::StreamFaults).
 #[derive(Error, Debug)]
 pub enum Error {
     /// No default output stream config was available from the host.
@@ -42,25 +42,28 @@ pub enum Error {
     /// machine — the feature is off, the platform has no such host, or the
     /// server is not running.
     ///
-    /// A runtime error rather than a compile error on purpose: `AudioHost`
-    /// carries every variant on every platform so a host's configuration
-    /// struct does not change shape per OS. See [`AudioHost`](crate::AudioHost).
+    /// A runtime error rather than a compile error: [`AudioHost`](crate::AudioHost)
+    /// has every variant on every platform, and
+    /// [`available_hosts`](crate::available_hosts) lists the reachable ones.
     #[error("audio host {host} unavailable: {reason}")]
     HostUnavailable {
+        /// The host that was asked for.
         host: crate::host::AudioHost,
+        /// Why it cannot be opened, as the backend or this crate put it.
         reason: String,
     },
 
     /// A capture device cannot run at the graph's sample rate.
     ///
-    /// `MicMonitorNode` renders the mic into the graph with no resampling —
-    /// its `prepare` reconfigures nothing, and assumes the device layer
-    /// opened the mic at the graph's rate. This is the error that makes
-    /// that an enforced guarantee rather than an assumption.
+    /// Returned by `MicIn::open` (feature `capture`): the mic is rendered into
+    /// the graph with no resampling, so it must run at the graph's rate.
     #[error("input device {device_name:?} runs at {device} Hz; the graph runs at {graph} Hz")]
     SampleRateMismatch {
+        /// The input device's name, as the OS reports it.
         device_name: String,
+        /// The rate of the device's default input config.
         device: tutti_core::SampleRate,
+        /// The rate that was asked for.
         graph: tutti_core::SampleRate,
     },
 
@@ -68,17 +71,19 @@ pub enum Error {
     /// the output device at a different rate than the graph was built at.
     ///
     /// Everything time-denominated in the graph — every oscillator, every
-    /// delay in samples, the beat clock — would run at the old rate on the
-    /// new device, off pitch and off tempo with no error anywhere, so the
+    /// delay in samples, the beat clock — would run at the graph's rate on
+    /// the new device, off pitch and off tempo with no error anywhere, so the
     /// stream is left stopped instead. Restart with
     /// [`TuttiDriver::restart_with`](crate::TuttiDriver::restart_with) and
-    /// re-rate the graph in its hook (`bevy_tutti`'s device restart does).
+    /// re-rate the graph in its hook.
     #[error(
         "the output device now runs at {device} Hz, the graph at {graph} Hz; \
          restart with `restart_with` and re-rate the graph"
     )]
     RateChanged {
+        /// The rate the output device now reports.
         device: tutti_core::SampleRate,
+        /// The rate the graph runs at ([`TuttiDriver::graph_rate`](crate::TuttiDriver::graph_rate)).
         graph: tutti_core::SampleRate,
     },
 

@@ -1,6 +1,5 @@
 //! `Editor::fork`: a copy of the graph (or of what feeds one node) that
-//! shares no state with the live one — the replacement for fundsp's
-//! `clone_isolated` → `isolate_for_offline` → `reset` (doc 013 Phase 3 PR 2).
+//! shares no state with the live one.
 
 mod common;
 
@@ -634,15 +633,12 @@ fn a_failing_fork_source_is_a_named_error_with_its_cause() {
         .is_ok());
 }
 
-/// **A node fork's outputs follow fundsp's `Net::clone_isolated`**, the
-/// rule it replaced: channel `c` reads the node's port `min(c, outs - 1)` —
+/// **A node fork's outputs clamp**: channel `c` reads the node's port `min(c, outs - 1)` —
 /// a mono node on every channel, and a wider graph *clamped* to the node's
 /// last port (stereo into six is L R R R R R), not wrapped as `pipe_output`
 /// wraps. Walked over a grid of node and graph widths; since port `p` of
 /// [`Consts`] carries `base + p`, channel `c` must carry
-/// `base + min(c, outs - 1)` on every frame. (Until doc 013 Phase 5 this was
-/// checked against a `Net`'s render; `Net` is gone, so the rule is the
-/// figure.)
+/// `base + min(c, outs - 1)` on every frame.
 ///
 /// Mutation: `c % outs` instead of the clamp → 2-into-3 reads port 0 on
 /// channel 2 → fails.

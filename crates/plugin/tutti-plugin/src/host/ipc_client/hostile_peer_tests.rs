@@ -639,13 +639,12 @@ fn a_crash_during_save_state_does_not_block_the_caller_forever() {
 /// sends 4 bytes is exactly the corrupt-framing case. The host must fail the
 /// read rather than sit on the allocation.
 ///
-/// **This test used to pass for a weak reason.** Before the bound, the 4 GiB
-/// `vec![0u8; len]` lowered to `calloc`, which `mmap`s lazily — measured at
-/// 60 ns on Linux with `overcommit_memory=0`, so the allocation the test names
-/// as the hazard was in practice free, and what the test actually observed was
-/// the socket read timing out 5 s later. The assertion below is now about the
-/// *bound*: with `MAX_FRAME_BYTES` the rejection happens in the four bytes it
-/// takes to read the prefix, which is why the elapsed check is here.
+/// **The elapsed check is what makes this test meaningful.** An unbounded 4 GiB
+/// `vec![0u8; len]` lowers to `calloc`, which `mmap`s lazily — measured at
+/// 60 ns on Linux with `overcommit_memory=0` — so without the bound the test
+/// would still pass, observing only the socket read timing out 5 s later. With
+/// `MAX_FRAME_BYTES` the rejection happens in the four bytes it takes to read
+/// the prefix.
 #[test]
 fn an_absurd_length_prefix_does_not_hang_or_exhaust_memory() {
     let mock = MockServer::start("huge-len", |msg| match msg {
@@ -949,17 +948,16 @@ fn an_under_cap_dribble_is_stopped_by_the_total_deadline() {
 
 /// A large state survives the round trip, in both directions.
 ///
-/// The regression this guards is the one the frame cap introduced: a state over
-/// `MAX_FRAME_BYTES` used to fail as a *crash* — `save_state` answering with a
-/// cause reading "Bridge process crashed" — which is indistinguishable from a
-/// segfault and loses the user's preset under a wrong explanation. It must now
-/// simply work, by travelling as chunks.
+/// A state over `MAX_FRAME_BYTES` must travel as chunks, not fail as a *crash*
+/// (`save_state` answering "Bridge process crashed"), which would be
+/// indistinguishable from a segfault and lose the user's preset under a wrong
+/// explanation.
 ///
 /// **Sized by `STATE_CHUNK_BYTES`, not by `MAX_FRAME_BYTES`.** What this test
 /// has to prove is that a state spanning *several* chunks reassembles in order
 /// and intact, and the chunk size is what decides that — a 68 MiB fixture
-/// proved the same property while moving 68 MiB through a socket, which under
-/// parallel load overran the harness's 10 s deadline and failed as a timeout
+/// would prove the same property while moving 68 MiB through a socket, which
+/// under parallel load overruns the harness's 10 s deadline and fails as a timeout
 /// rather than a defect. Three chunks and a remainder exercises every boundary
 /// the reassembler has: first, middle, last, and a partial final chunk.
 #[test]
@@ -1019,19 +1017,19 @@ fn a_state_larger_than_one_frame_round_trips() {
 
 /// An over-limit `load_state` is a typed refusal, not a crash, and is instant.
 ///
-/// Three separate regressions, which is why the assertions are three:
+/// Three separate properties, which is why the assertions are three:
 ///
-/// - **Typed.** It used to surface as
-///   `Rejected("the plugin did not answer within the state timeout")`, which
-///   says the plugin refused or hung. It did neither — the host declined to
-///   send. `TooLarge` names the real reason and carries both numbers.
-/// - **Instant.** The refusal is a length comparison, but the error propagated
-///   out of `handle` *before* `reply.send`, dropping the `Reply` and leaving
-///   the caller to wait out `STATE_TIMEOUT` for an answer the host already had.
+/// - **Typed.** Not `Rejected("the plugin did not answer within the state
+///   timeout")`, which says the plugin refused or hung. It did neither — the
+///   host declined to send. `TooLarge` names the real reason and carries both
+///   numbers.
+/// - **Instant.** The refusal is a length comparison; an error propagated out
+///   of `handle` *before* `reply.send` would drop the `Reply` and leave the
+///   caller to wait out `STATE_TIMEOUT` for an answer the host already had.
 /// - **Non-fatal.** `pump` treats any `handle` error as connection-level, so
-///   one oversized preset called `crash()` on a healthy session. Nothing was
-///   written, so the socket is still synchronised and there is nothing to crash
-///   about — which is what separates this from an over-cap *receive*.
+///   one oversized preset must not call `crash()` on a healthy session. Nothing
+///   was written, so the socket is still synchronised and there is nothing to
+///   crash about — which is what separates this from an over-cap *receive*.
 #[test]
 fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
     use crate::protocol::MAX_STATE_BYTES;
@@ -1078,19 +1076,17 @@ fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
 /// A slow but *steadily progressing* transfer must complete, however long it
 /// takes in total.
 ///
-/// The regression: the state wait was a fixed 10 s budget for the whole
-/// transfer, which made [`MAX_STATE_BYTES`](crate::protocol::MAX_STATE_BYTES)
-/// unreachable — a gigabyte cannot cross the control socket inside 10 s, so a
-/// large-but-legal state failed on the clock and surfaced as
-/// `Rejected("the plugin did not answer within the state timeout")`. That reads
-/// as a hung plugin. The plugin was fine; the host gave up on it.
+/// A fixed budget for the whole transfer would make
+/// [`MAX_STATE_BYTES`](crate::protocol::MAX_STATE_BYTES) unreachable — a
+/// gigabyte cannot cross the control socket inside 10 s, so a large-but-legal
+/// state would fail on the clock and read as a hung plugin.
 ///
 /// **Scaled, not literal.** Proving this with real sizes would mean moving a
 /// gigabyte through a socket. Instead the *ratio* is reproduced: 30 chunks at a
 /// gap that sums to comfortably more than the deadline any single-budget
 /// implementation would impose. With `STATE_PROGRESS_TIMEOUT` at 400 ms and a
 /// 40 ms gap the transfer takes ~1.2 s — 3x a total budget, while no single gap
-/// comes close to it. Under the old code this is a timeout; under a progress
+/// comes close to it. Under a total budget this is a timeout; under a progress
 /// deadline it simply works.
 ///
 /// **Mutation note**, and the first attempt at it was wrong in a way worth
@@ -1172,9 +1168,9 @@ fn a_slow_but_progressing_state_transfer_completes() {
 /// if a stalled one is still caught. Four properties:
 ///
 /// - **Typed.** [`StateError::Stalled`] and not `Rejected`. The plugin refused
-///   nothing — it went quiet mid-stream — and the old string
-///   `"the plugin did not answer within the state timeout"` blamed it for a
-///   judgement the host made. Also distinct from `TooLarge`: nothing here is
+///   nothing — it went quiet mid-stream — and a string like
+///   `"the plugin did not answer within the state timeout"` would blame it for
+///   a judgement the host made. Also distinct from `TooLarge`: nothing here is
 ///   over any limit, and a caller that cannot tell the two apart cannot decide
 ///   whether retrying is worth anything.
 /// - **Prompt.** One deadline after progress stops, not one after the call

@@ -12,26 +12,21 @@ use crate::ump::MidiEvent;
 // Delivery: write side (out) and read side (in)
 // -----------------------------------------------------------------------------
 
-/// Push MIDI events at a single **terminal sink** — the write-side complement to
-/// [`MidiIn`]. A sink is already addressed: it *is* the destination (a
+/// A single **terminal sink** that MIDI events are pushed to.
+///
+/// The write-side complement to [`MidiIn`]. A sink is already addressed: it *is* the destination (a
 /// mailbox, a hardware wire), so `queue` carries no id. What was delivered
 /// is drained with [`MidiIn::poll_block`] or the sink's own reader.
 ///
 /// Implementations must be **lock-free** and **alloc-free** — `queue` runs on
 /// the audio thread, once per event.
 pub trait MidiOut: Send + Sync {
-    /// Deliver `events`; return how many the sink **accepted**.
+    /// Delivers `events` and returns how many the sink **accepted**.
     ///
     /// `< events.len()` means the rest were dropped — a full ring, a device that
     /// refused the write. Dropping a note-off whose note-on landed is what
     /// produces a stuck note, so a caller with anywhere to report it must.
     /// A sink that cannot fail returns `events.len()`.
-    ///
-    /// The count belongs on the trait, not on individual implementations: leave
-    /// it off and a capable sink computes a real figure while a trivial one
-    /// discards it, so the two paths disagree with nothing to signal which is
-    /// which — and a session layer ends up reporting `events.len()` for a device
-    /// that refused every event.
     ///
     /// A partial accept is a **prefix**, not a subset: an implementation that
     /// hits a failure stops there rather than skipping and continuing, so the
@@ -39,8 +34,7 @@ pub trait MidiOut: Send + Sync {
     fn queue(&self, events: &[MidiEvent]) -> usize;
 }
 
-/// Drain everything that has arrived at one input edge for this
-/// block.
+/// One input edge that the audio thread drains once per block.
 ///
 /// The events are not yet addressed: nothing here knows
 /// which unit any of them belongs to — deciding that is what the consumer does
@@ -57,7 +51,7 @@ pub trait MidiOut: Send + Sync {
 /// Implementations must be **lock-free** and **alloc-free** — this runs on the
 /// audio thread, once per block.
 pub trait MidiIn: Send + Sync {
-    /// Write this block's pending events into `buffer`; return how many.
+    /// Writes this block's pending events into `buffer` and returns how many.
     ///
     /// **A full `buffer` drops the overflow.** An implementation draining a
     /// hardware ring has already consumed those events by the time it finds

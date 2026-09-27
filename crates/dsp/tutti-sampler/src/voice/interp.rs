@@ -77,7 +77,7 @@ use crate::MAX_SAMPLER_CHANNELS;
 /// # Reached by frame, not by comparing beats
 ///
 /// "Has the playhead reached `start_beat`?" is the engine's one beat→frame
-/// rule ([`TimelineSegment::reached_by`], doc 013 §6): the voice enters on
+/// rule ([`TimelineSegment::reached_by`]): the voice enters on
 /// the first frame at or after its start, within a millionth of a frame. A
 /// bare `beat < start` puts a clip whose start is exactly on the playhead's
 /// frame, but whose `f64` came out an ulp later than the clock's, a frame
@@ -286,7 +286,7 @@ pub(crate) fn hermite_lanes(out: &mut [f32], y: [&[f32]; 4], t: &[f32]) {
     }
 }
 
-/// Read one `out.len()`-wide frame from `wave` at fractional position
+/// Reads one `out.len()`-wide frame from `wave` at fractional position
 /// `position` using 4-tap cubic Hermite interpolation per channel.
 ///
 /// The four taps are `idx-1, idx, idx+1, idx+2` (where `idx = floor(position)`),
@@ -883,10 +883,10 @@ mod tests {
     }
 
     /// **A window that opens and closes inside a block does so on its
-    /// frames** (doc 013 §6): a clip placed 10 frames into a 64-frame block
-    /// reads its frame 0 there, and one lasting 30 frames is silent from
-    /// frame 40 on. Under the 64-frame chunked read the gate was asked once
-    /// per chunk, and this clip entered at the next chunk.
+    /// frames**: a clip placed 10 frames into a 64-frame block reads its
+    /// frame 0 there, and one lasting 30 frames is silent from frame 40 on. A
+    /// gate asked once per 64-frame chunk would let it enter at the next
+    /// chunk instead.
     ///
     /// Mutation (run): `place` seating only if the range's first frame is
     /// inside the window (the chunked gate) → frames 10..40 are `None` →

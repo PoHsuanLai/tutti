@@ -10,15 +10,20 @@
 //! conversions, with no audio-engine dependency. A node maps each
 //! `UnitParam` it exposes to one of its `f32` cells in a
 //! `tutti_graph::ParamSet`, which is how a host sets a param by address.
-//! (Until doc 013 Phase 5 the other half carried a `UnitParam` through
-//! fundsp's `Setting` channel, in `fundsp-tutti`.)
 
 /// The full set of scalar parameters any built-in tutti unit may expose.
 ///
-/// Discriminants are **stable** — they are the address a `ParamSet` and a
-/// host's `AudioParam<U, P>` name a param by, and (potentially) persist in
-/// tooling, so existing values must
-/// never be renumbered. Append new params at the end.
+/// Discriminants are **stable**: they are the address a `ParamSet` and a
+/// host's `AudioParam<U, P>` name a param by, and may be persisted, so an
+/// existing value is never renumbered. New params are appended at the end.
+///
+/// ```
+/// use tutti_types::UnitParam;
+///
+/// let id = u16::from(UnitParam::Cutoff);
+/// assert_eq!(UnitParam::try_from(id), Ok(UnitParam::Cutoff));
+/// assert!(UnitParam::try_from(9_999).is_err());
+/// ```
 #[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
@@ -72,10 +77,8 @@ pub enum UnitParam {
     ///
     /// Distinct from [`StereoSpread`](Self::StereoSpread), which widens a source
     /// about its centre; this moves the centre. It is addressed through a
-    /// node's `ParamSet` like every other `UnitParam` (unlike fundsp's
-    /// `Parameter::Pan`, which reached its `Panner` through a different
-    /// channel until doc 013 Phase 5), which is what makes it reachable from a
-    /// generic param reconciler.
+    /// node's `ParamSet` like every other `UnitParam`, so a generic param
+    /// reconciler reaches it too.
     Pan = 20,
     /// Mute toggle: **`>= 0.5` is muted**, below is unmuted.
     ///
@@ -86,9 +89,11 @@ pub enum UnitParam {
     Mute = 21,
 }
 
-/// The `u16` id was not a known [`UnitParam`] discriminant. The scheme is
-/// forward-compatible: an unknown id simply doesn't map to a param, so callers
-/// treat this as "ignore" rather than a hard error.
+/// The error converting a `u16` that is not a known [`UnitParam`]
+/// discriminant.
+///
+/// The scheme is forward-compatible: an unknown id simply does not map to a
+/// param, so callers treat this as "ignore" rather than a hard error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnitParamOutOfRange(pub u16);
 
@@ -103,7 +108,8 @@ impl std::error::Error for UnitParamOutOfRange {}
 impl TryFrom<u16> for UnitParam {
     type Error = UnitParamOutOfRange;
 
-    /// Reconstruct from the stable `u16` discriminant. `Err` for unknown ids.
+    /// Converts the stable `u16` discriminant back to a param; `Err` for an
+    /// unknown id.
     fn try_from(id: u16) -> Result<Self, Self::Error> {
         use UnitParam::*;
         Ok(match id {
@@ -204,7 +210,7 @@ impl<U> ParamKey<U> {
         }
     }
 
-    /// The untyped id, for a channel that carries it type-erased.
+    /// Returns the untyped id, for a channel that carries it type-erased.
     #[inline]
     pub const fn id(self) -> UnitParam {
         self.id
@@ -326,7 +332,7 @@ param_keys! {
 }
 
 impl ParamKey<()> {
-    /// Every param that has a typed key, with the name of its unit.
+    /// Returns every param that has a typed key, with the name of its unit.
     pub fn registry() -> &'static [(UnitParam, &'static str)] {
         KEYED
     }

@@ -10,9 +10,8 @@
 //! state between "ready to load editor / params" and "ready to process audio",
 //! and the type carries no lifecycle stage. Suspend and resume are a
 //! reconfiguration bracket around a rate or block-size change, not a stage a
-//! host parks in; the reasoning for both, and how it differs from the other
-//! three formats, is in the crate docs under *The lifecycle, and why one type
-//! carries all of it*.
+//! host parks in; the reasoning for both is in the crate docs under *Why one
+//! type carries the whole lifecycle*.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,7 +27,7 @@ use crate::parameters::SendParams;
 use crate::transport_cell::TransportCell;
 use crate::types::{ChannelLayout, PluginInfo, PluginTail, Samples, Vst2Category};
 
-/// Map the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
+/// Maps the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
 /// A free fn rather than a `From` impl: both `Category` (from `vst`) and
 /// `Vst2Category` (from `tutti-plugin-types`) are foreign here, so the orphan
 /// rule forbids the impl.
@@ -86,12 +85,37 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
     }
 }
 
-/// Loaded, initialized, processing-ready VST2 plugin.
+/// A loaded, initialized VST2 plugin, ready to process audio.
 ///
-/// The instance owns the `vst::PluginInstance` (via `Vst2Handle`) plus
-/// the channel ends fed by the host-callback `HostState`. `Send` but not
-/// `Sync` — callers serialize access (subprocess server is single-threaded;
-/// in-process backend uses a `parking_lot::Mutex`).
+/// Created by [`load`](Self::load), which runs the whole VST2 start-up
+/// sequence, so there is no separate "loaded but not active" type. One value
+/// carries audio and MIDI processing ([`process_f32`](Self::process_f32),
+/// [`process_f64`](Self::process_f64)), parameters, programs, state
+/// ([`get_state`](Self::get_state) / [`set_state`](Self::set_state)) and the
+/// native editor ([`open_editor`](Self::open_editor)).
+///
+/// # Threading
+///
+/// The type is `Send` and `Sync`, but the plugin behind it is not thread-safe:
+/// callers must serialize access themselves (for example behind a mutex, or by
+/// owning the instance on a single thread). Methods documented as main-thread
+/// only must be called from the thread registered with
+/// [`tutti_plugin_types::mark_main_thread`]; debug builds assert it.
+///
+/// Dropping the instance closes the editor, suspends the plugin and dispatches
+/// `effClose`. The plugin's shared library is never unloaded, because
+/// unloading runs static destructors that crash many JUCE-based plugins.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::path::Path;
+/// use tutti_vst2_host::Vst2Instance;
+///
+/// let plugin = Vst2Instance::load(Path::new("/usr/lib/vst/MyPlugin.so"), 48_000.0, 512)?;
+/// println!("{} by {}", plugin.metadata().name, plugin.metadata().vendor);
+/// # Ok::<(), tutti_vst2_host::Vst2Error>(())
+/// ```
 pub struct Vst2Instance {
     /// The loaded `vst::PluginInstance` (owns the editor handle + teardown).
     pub(crate) handle: Vst2Handle,
@@ -130,22 +154,35 @@ pub struct Vst2Instance {
 // addressed via a wrapper (`SendEditor`, `SendParams`). The raw pointers
 // inside `vst::host::PluginInstance` point at heap memory this crate owns;
 // callers serialize access externally (subprocess server is single-
-// threaded; in-process backend uses `parking_lot::Mutex`). `Sync` was
-// needed by the in-process callers when fundsp's `dyn AudioUnit` required
-// `Send + Sync` of a node holding `Arc<Mutex<Vst2Instance>>` (a graph node
-// needs only `Send`).
+// threaded; in-process backend uses `parking_lot::Mutex`). `Sync` rests on
+// the same external serialization; a graph node itself needs only `Send`.
 unsafe impl Send for Vst2Instance {}
 unsafe impl Sync for Vst2Instance {}
 
 impl Vst2Instance {
-    /// Load a VST2 bundle and run the full init/resume sequence.
+    /// Loads a VST2 plugin and runs its full start-up sequence.
     ///
-    /// On macOS `.vst` is a bundle directory; this constructor probes
-    /// `Contents/MacOS/` for the actual binary. Plain shared-library
-    /// paths (Linux `.so`, Windows `.dll`) are used as-is.
+    /// `path` may be a `.vst` bundle directory (the native binary inside it is
+    /// found automatically) or a plain shared library (`.so`, `.dll`, or a
+    /// Mach-O file). `sample_rate` is in Hz. `block_size` is the maximum number
+    /// of samples per process call; callers may render fewer per call, but
+    /// never more.
     ///
-    /// `block_size` is the maximum number of samples per process call;
-    /// callers may render fewer per call, but never more.
+    /// The plugin is opened, configured with the rate and block size, told the
+    /// processing precision, and resumed, so the returned instance can process
+    /// immediately. Parameter defaults are captured here, before anything can
+    /// write to the plugin (see [`ParameterInfo`](crate::ParameterInfo)).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Vst2Error::LoadFailed`] if the file cannot be opened as a VST2
+    /// module ([`LoadStage::Factory`]) or the plugin's entry point fails to
+    /// produce an instance ([`LoadStage::Instantiation`]).
+    ///
+    /// # Panics
+    ///
+    /// Main thread only. In debug builds, panics if called off the thread
+    /// registered with [`tutti_plugin_types::mark_main_thread`].
     pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
         // Loading runs the plugin's init/resume sequence and probes its
         // editor — VST2 requires this happen on the host main thread. A
@@ -238,11 +275,10 @@ impl Vst2Instance {
 
         // Pin counts come from the live opcodes, not from `info`: `get_info()`
         // hardcodes both to 0 (its snapshot predates `effOpen`, and the fork
-        // never filled them), so reading them there made every pin term a dead
-        // `false`. That was not merely a missing signal for `emits_midi` — it
-        // was its *only* inferred term, so a plugin answering `Maybe` to
-        // `sendVstMidiEvent` resolved to `false` and had its MIDI output
-        // dropped.
+        // does not fill them), so reading them there would make every pin term
+        // a dead `false`. For `emits_midi` that would be its *only* inferred
+        // term, so a plugin answering `Maybe` to `sendVstMidiEvent` would
+        // resolve to `false` and have its MIDI output dropped.
         //
         // A declined opcode is `None`, which is distinct from `Some(0)` and
         // from a declared pin. Absence must not read as a denial: it leaves the
@@ -318,18 +354,18 @@ impl Vst2Instance {
         })
     }
 
-    /// Plugin metadata snapshot captured at load time.
+    /// Returns the plugin metadata captured at load time.
     pub fn metadata(&self) -> &PluginInfo {
         &self.metadata
     }
 
-    /// Whether the plugin is currently resumed (processing enabled).
+    /// Returns `true` while the plugin is resumed (processing enabled).
     pub fn is_resumed(&self) -> bool {
         self.resumed
     }
 
-    /// Take the plugin out of the processing state, returning whether a suspend
-    /// was actually dispatched.
+    /// Takes the plugin out of the processing state, returning whether a
+    /// suspend was actually dispatched.
     ///
     /// Idempotent: a no-op when already suspended. VST 2.4 does not document
     /// `effMainsChanged` as idempotent and real plugins free or reallocate
@@ -338,9 +374,10 @@ impl Vst2Instance {
         self.suspend_for_reconfigure()
     }
 
-    /// Put the plugin back into the processing state. Idempotent for the same
-    /// reason as [`suspend`](Self::suspend); returns whether a resume was
-    /// actually dispatched.
+    /// Puts the plugin back into the processing state, returning whether a
+    /// resume was actually dispatched.
+    ///
+    /// Idempotent for the same reason as [`suspend`](Self::suspend).
     pub fn resume(&mut self) -> bool {
         if self.resumed {
             return false;
@@ -349,7 +386,10 @@ impl Vst2Instance {
         true
     }
 
-    /// Cycle the plugin through suspend and resume — `effStopProcess` →
+    /// Cycles the plugin through suspend and resume to clear its processing
+    /// state, as far as VST2 allows.
+    ///
+    /// The sequence is `effStopProcess` →
     /// `effMainsChanged(0)` → `effMainsChanged(1)` → `effStartProcess` — to
     /// clear whatever processing state it chooses to clear on those edges.
     ///
@@ -366,10 +406,12 @@ impl Vst2Instance {
     /// `effMainsChanged` is not documented as idempotent, so a redundant
     /// suspend would be a second buffer teardown rather than a no-op.
     ///
-    /// # Threading
-    /// Main thread only, asserted. `effMainsChanged` allocates, so no
-    /// audio-thread caller may reach this — a host handling a locate or a loop
-    /// wrap calls it from the thread that owns the editor, between blocks.
+    /// # Panics
+    ///
+    /// Main thread only: `effMainsChanged` allocates, so a host handling a
+    /// locate or a loop wrap calls this between blocks, never from the audio
+    /// thread. In debug builds, panics if called off the thread registered
+    /// with [`tutti_plugin_types::mark_main_thread`].
     pub fn reset_processing_state(&mut self) -> bool {
         tutti_plugin_types::assert_main_thread();
         let was_resumed = self.suspend_for_reconfigure();
@@ -377,7 +419,7 @@ impl Vst2Instance {
         was_resumed
     }
 
-    /// Take the plugin out of the processing state, if it is in it, in the
+    /// Takes the plugin out of the processing state, if it is in it, in the
     /// SDK's teardown order: `effStopProcess` → `effMainsChanged(0)`.
     ///
     /// Returns whether a suspend was actually issued, so the caller can restore
@@ -408,7 +450,7 @@ impl Vst2Instance {
         self.handle.instance.start_process();
     }
 
-    /// Notify the plugin of a sample-rate change.
+    /// Changes the plugin's sample rate, in Hz.
     ///
     /// The VST2 SDK requires the plugin be suspended around a rate change — many
     /// plugins reallocate rate-dependent buffers in `effSetSampleRate` and assume
@@ -416,17 +458,15 @@ impl Vst2Instance {
     /// need not. The bracket is edge-triggered, so a plugin suspended on entry
     /// stays suspended on exit.
     ///
-    /// `sample_rate` is in Hz. The narrowing `as f32` inside is not a unit-type
-    /// regression: `effSetSampleRate` passes the rate in the dispatcher's `opt`
-    /// field, a C `float` — an FFI boundary, which is where the unit types stop.
+    /// The rate reaches the plugin as a C `float`, so it is narrowed to `f32`.
+    /// The plugin may change its latency in response; re-read
+    /// [`latency`](Self::latency) afterwards.
     ///
-    /// # Threading
-    /// Main thread only, asserted. The bracket's `effMainsChanged` is where
-    /// plugins allocate and free, so this is not reachable from an audio-thread
-    /// caller — one wanting to change rate parks it for a main-thread drain.
-    /// The guard is here rather than only at the call sites because this is the
-    /// function that dispatches: a future caller inherits it without knowing to
-    /// ask.
+    /// # Panics
+    ///
+    /// Main thread only: the bracket's `effMainsChanged` is where plugins
+    /// allocate and free. In debug builds, panics if called off the thread
+    /// registered with [`tutti_plugin_types::mark_main_thread`].
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         tutti_plugin_types::assert_main_thread();
         let was_resumed = self.suspend_for_reconfigure();
@@ -434,7 +474,7 @@ impl Vst2Instance {
         self.restore_after_reconfigure(was_resumed);
     }
 
-    /// Set whether the host reports itself as rendering offline.
+    /// Sets whether the host reports itself as rendering offline.
     ///
     /// Unlike the other three formats there is nothing to push: VST2 carries
     /// this through `audioMasterGetCurrentProcessLevel`, a callback the plugin
@@ -447,26 +487,26 @@ impl Vst2Instance {
         self.host_link.state.set_offline(offline);
     }
 
-    /// Whether the host is currently reporting offline.
+    /// Returns `true` while the host reports itself as rendering offline.
     pub fn is_offline_render(&self) -> bool {
         self.host_link.state.is_offline()
     }
 
-    /// Notify the plugin of a maximum-block-size change. Bracketed for the same
-    /// reason as [`set_sample_rate`](Self::set_sample_rate) (block size drives
-    /// per-block buffer sizing), with the same edge-triggered semantics.
+    /// Changes the maximum number of samples per process call.
     ///
-    /// No in-tree caller today — block size is fixed at [`load`](Self::load) and
-    /// the engine re-loads rather than re-sizing — but it stays public as part
-    /// of the VST2 host contract.
+    /// Bracketed by suspend/resume for the same reason as
+    /// [`set_sample_rate`](Self::set_sample_rate) (block size drives per-block
+    /// buffer sizing), with the same edge-triggered semantics. A
+    /// [`RenderScratch`](crate::RenderScratch) sized for the old block size
+    /// must be rebuilt if the new one is larger.
     pub fn set_block_size(&mut self, block_size: usize) {
         let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_block_size(block_size as i64);
         self.restore_after_reconfigure(was_resumed);
     }
 
-    /// Whether the plugin has asked the host to refresh what it displays,
-    /// consuming the request.
+    /// Returns whether the plugin has asked the host to refresh what it
+    /// displays, and clears the request.
     ///
     /// Raised by `audioMasterUpdateDisplay`, which a plugin fires after
     /// changing preset or program from its own editor. VST 2.4 carries no
@@ -481,7 +521,7 @@ impl Vst2Instance {
         self.host_link.state.take_display_stale()
     }
 
-    /// The plugin's latency **as it currently stands**.
+    /// Returns the plugin's current latency, in samples.
     ///
     /// Re-read from the live `AEffect` rather than returned from the load-time
     /// metadata, because VST2 gives a plugin no way to announce a change: there
@@ -497,7 +537,7 @@ impl Vst2Instance {
         Samples(self.handle.instance.read_initial_delay().max(0) as usize)
     }
 
-    /// The plugin's programs, as `(index, name)` pairs.
+    /// Returns the plugin's programs as `(index, name)` pairs.
     ///
     /// VST2 programs are genuinely positional — `effProgramChange` takes an
     /// index in `[0, numPrograms)` — so unlike AU's sparse selectors the index
@@ -516,12 +556,13 @@ impl Vst2Instance {
             .collect()
     }
 
-    /// Which program the plugin currently reports as active.
+    /// Returns the index of the program the plugin reports as active.
     pub fn current_program(&self) -> i32 {
         self.params.get_preset_num()
     }
 
-    /// Switch program, bracketed by `effBeginSetProgram` / `effEndSetProgram`.
+    /// Switches to program `index`, bracketed by `effBeginSetProgram` /
+    /// `effEndSetProgram`.
     ///
     /// The bracket is why this is on the instance rather than a bare
     /// `params.change_preset`: a switch moves many parameters at once, and
@@ -543,7 +584,7 @@ impl Vst2Instance {
         true
     }
 
-    /// What the plugin answers for its MIDI channel counts, right now.
+    /// Returns the plugin's current answer for its MIDI channel counts.
     ///
     /// `None` on a field means the plugin declined the opcode, which is
     /// **not** the same as answering zero — see
@@ -555,7 +596,7 @@ impl Vst2Instance {
         self.handle.instance.read_midi_channels()
     }
 
-    /// Whether the plugin advertises its own soft bypass, via
+    /// Returns `true` if the plugin advertises its own soft bypass via
     /// `effCanDo("bypass")`.
     ///
     /// Ask before [`set_bypass`](Self::set_bypass): `Maybe` is the common
@@ -567,7 +608,7 @@ impl Vst2Instance {
         matches!(self.handle.instance.can_do(CanDo::Bypass), Supported::Yes)
     }
 
-    /// Ask the plugin to enter or leave its own soft bypass.
+    /// Asks the plugin to enter or leave its own soft bypass.
     ///
     /// Returns whether the plugin accepted. `false` means it refused or does
     /// not implement `effSetBypass` — indistinguishable, since an unimplemented
@@ -584,7 +625,7 @@ impl Vst2Instance {
     }
 }
 
-/// Resolve a `.vst` bundle directory to its inner Mach-O / ELF binary.
+/// Resolves a `.vst` bundle directory to its inner Mach-O / ELF binary.
 ///
 /// Plain files and nonexistent paths pass through unchanged — the caller
 /// surfaces the load failure with its own diagnostic. Bundle layouts:

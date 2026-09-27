@@ -44,7 +44,7 @@ pub mod process_context_flags {
     pub const NEED_TRANSPORT_STATE: u32 = Flags_::kNeedTransportState as u32;
 }
 
-/// Build a VST3 [`ProcessContext`](vst3::Steinberg::Vst::ProcessContext)
+/// Builds a VST3 [`ProcessContext`](vst3::Steinberg::Vst::ProcessContext)
 /// from the shared [`TransportInfo`], encoding the validity flags the
 /// VST3 spec requires.
 ///
@@ -125,9 +125,8 @@ pub fn to_process_context(
         // *asked for*, not what the host *has*. Setting a validity bit over a
         // NaN or an infinity is worse than leaving it clear, because a plugin
         // that trusts the bit propagates the NaN through its timing math into
-        // the audio buffer. The VST2 path has always gated on the value this
-        // way; this one did not, so the two drifted (`is_usable` now lives in
-        // `tutti-plugin-types` so they cannot drift again).
+        // the audio buffer. The VST2 path gates on the value the same way, via
+        // the shared `is_usable` in `tutti-plugin-types`.
         if wants(need::NEED_PROJECT_TIME_MUSIC) && is_usable(t.position.quarters) {
             state |= StatesAndFlags_::kProjectTimeMusicValid as u32;
         }
@@ -453,9 +452,9 @@ mod tests {
     /// contain valid information" — a claim about fields, not about whether a
     /// cycle is running.
     ///
-    /// Setting `kCycleValid` from `cycle_active` broke both directions at
+    /// Setting `kCycleValid` from `cycle_active` breaks both directions at
     /// once, and each half needs its own assertion because either alone still
-    /// passes with the bug half-fixed.
+    /// passes when only one direction is right.
     #[test]
     fn cycle_active_and_cycle_valid_are_gated_separately() {
         let t = populated_transport();

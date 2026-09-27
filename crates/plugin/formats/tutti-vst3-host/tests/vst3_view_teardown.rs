@@ -22,7 +22,7 @@
 //! A view that records its own calls sees it directly and needs no display.
 //! The test drives the host's **real** `detach_view` — the same function
 //! `close_editor_unchecked` calls — rather than a copy of the sequence, so
-//! reverting the fix fails the test. Only the `EditorState` around it is
+//! a wrong order in the host fails the test. Only the `EditorState` around it is
 //! stubbed, because that can only be built by `open_editor`.
 
 #![cfg(feature = "conformance")]

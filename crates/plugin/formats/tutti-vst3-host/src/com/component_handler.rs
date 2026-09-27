@@ -123,7 +123,7 @@ pub struct RestartFlags {
 }
 
 impl RestartFlags {
-    /// Decode the raw `i32` bitmask passed to `restartComponent`.
+    /// Decodes the raw `i32` bitmask passed to `restartComponent`.
     pub fn from_bits(flags: i32) -> Self {
         let has = |bit: i32| (flags & bit) != 0;
         Self {
@@ -282,7 +282,7 @@ impl IComponentHandler2Trait for ComponentHandler {
 }
 
 impl IComponentHandler3Trait for ComponentHandler {
-    /// Return `null` to decline building a host context menu.
+    /// Returns `null` to decline building a host context menu.
     ///
     /// This is intentional and spec-legal: `IComponentHandler3` lets a plugin
     /// ask the host for a menu it can populate with host-contributed items (and

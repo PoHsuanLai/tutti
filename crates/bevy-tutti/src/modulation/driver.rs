@@ -42,7 +42,7 @@ pub struct ModulationMatrix {
 }
 
 impl ModulationMatrix {
-    /// Whether the modulation driver owns this param.
+    /// Returns whether the modulation driver owns this param.
     ///
     /// A param reconciler must consult this before writing: if it returns true,
     /// the authored value belongs on the accumulator's *base*
@@ -52,12 +52,12 @@ impl ModulationMatrix {
         self.targets.contains_key(&(entity, param))
     }
 
-    /// The accumulator behind a modulated param, if the driver owns it.
+    /// Returns the accumulator behind a modulated param, if the driver owns it.
     pub fn target(&self, entity: Entity, param: ParamAddr) -> Option<&Arc<dyn ModTarget>> {
         self.targets.get(&(entity, param))
     }
 
-    /// Update a modulated param's authored base.
+    /// Updates a modulated param's authored base.
     ///
     /// The write a param reconciler makes *instead* of touching the node
     /// directly. Modulation is `base + Σ offsets`, so an authored change lands
@@ -80,7 +80,7 @@ impl ModulationMatrix {
         }
     }
 
-    /// How many params the driver currently owns.
+    /// Returns how many params the driver currently owns.
     pub fn len(&self) -> usize {
         self.targets.len()
     }
@@ -92,7 +92,7 @@ impl ModulationMatrix {
     }
 }
 
-/// Recompile the routing table from the ECS declaration.
+/// Recompiles the routing table from the ECS declaration.
 ///
 /// Runs only when the modulation *shape* changed — a source, a rate, a route,
 /// or a route despawning. Deliberately **not** on an authored base change:
@@ -110,28 +110,22 @@ impl ModulationMatrix {
 /// [`write_param`](crate::graph::write_param) is discarded and reset to
 /// whatever `ModParamRange` last declared.
 ///
-/// Measured, not inferred: with a document base of 5.0, a `write_param` write
-/// of 8.0, and a `+1.0` modulator, the param reads 9.0 — then 6.0 after a
-/// rebuild triggered by a *route* change that never touched the base.
+/// For example, with a declared base of 5.0, a `write_param` write of 8.0,
+/// and a `+1.0` modulator, the param reads 9.0 — then 6.0 after a rebuild
+/// triggered by a *route* change that never touched the base.
 ///
 /// **For a control-rate param, `ModParamRange` is therefore the authority on
-/// the base, and `write_param` is only authoritative between rebuilds.** In
-/// a typical host that is invisible, because its one producer of `ModParamRange`
-/// reads the same authored document the `write_param` call sites do, so the two
-/// always agree.
-/// It stops being invisible the moment a base can move without the document
-/// moving — a MIDI-learn ride, a plugin writing its own param back, an
-/// automation lane evaluated outside the document. Any such writer must reach
-/// `ModParamRange`, not just the accumulator.
+/// the base, and `write_param` is only authoritative between rebuilds.** A
+/// host whose `ModParamRange` and `write_param` calls read the same authored
+/// value never notices. A writer that moves a base on its own (a MIDI-learn
+/// ride, a plugin writing its own param back) must update `ModParamRange`
+/// too, not just the accumulator.
 ///
-/// **This does not hold for an audio-rate (`PerSample`) param**, and the
-/// difference is worth knowing before generalising the rule. Such a param is
-/// not in `matrix.targets` at all (see the skip below), so nothing here
-/// reconstructs it: its base lives in the chain's own `Arc<AtomicF32>`, which
-/// survives every rebuild because `reconcile_audio_rate` preserves a chain of
-/// the right shape. There the ownership is the other way round — the cell is
-/// authoritative, and `ModParamRange` edits are folded *into* it by
-/// `ParamChain::refresh_base`.
+/// **This does not hold for an audio-rate (`PerSample`) param.** Such a param
+/// is not in the matrix at all, so nothing here reconstructs it: its base is
+/// the node's own control, which `write_param` writes directly, and
+/// `reconcile_audio_rate` writes a `ModParamRange` base into that control only
+/// when the declared base (or the node) changes.
 #[allow(clippy::type_complexity)]
 pub fn rebuild(
     mut matrix: ResMut<ModulationMatrix>,
@@ -297,7 +291,7 @@ pub fn rebuild(
     matrix.ids = ids;
 }
 
-/// Advance every modulation source one frame and flush into the target atomics.
+/// Advances every modulation source one frame and flushes into the target atomics.
 ///
 /// `dt` comes from the transport's steady sample count rather than frame time:
 /// it is written by the audio clock, so a free-running LFO advances with the

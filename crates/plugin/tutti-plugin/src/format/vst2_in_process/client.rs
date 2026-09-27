@@ -1,5 +1,5 @@
-//! `InProcessVst2Client` — the graph node (`node.rs`) that drives a
-//! VST2 plugin from the host audio thread.
+//! `InProcessVst2Client`: the graph node (`node.rs`) that drives a VST2 plugin
+//! from the host audio thread.
 //!
 //! The instance lives behind `Arc<Mutex<tutti_vst2_host::Vst2Instance>>` shared
 //! with the matching control backend. Audio thread acquires with
@@ -9,7 +9,7 @@
 //! All per-block scratch — channel buffers, ref-vector storage, MIDI
 //! drain — is sized in the node's `prepare`, to the graph's largest block.
 //! A block is allocation-free in steady state (verified by the
-//! `assert_no_alloc` regression test in `tests/`).
+//! `assert_no_alloc` test in `tests/`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -43,8 +43,19 @@ impl ProcessScratch {
     }
 }
 
-/// An in-process VST2 plugin, as a graph node: MIDI in and out on event
-/// ports, see `node.rs`.
+/// A VST2 plugin running inside the host process, as a graph node.
+///
+/// Created by [`in_process_vst2_client`](crate::in_process_vst2_client), or by
+/// [`Plugin::open`](crate::catalog::Plugin::open) for a `.vst`/`.dll`/`.so`
+/// file when the `vst2` feature is enabled. MIDI arrives on the node's event
+/// input and the plugin's MIDI-out leaves on an event output (for a plugin that
+/// declares [`Features::MIDI_OUT`]).
+///
+/// There is no process isolation: a plugin crash takes the host down. The
+/// audio thread takes the instance lock with `try_lock` and outputs silence on
+/// contention (counted by [`contention_count`](Self::contention_count)). Steady
+/// state processing does not allocate. A graph holding this node cannot be
+/// forked for offline rendering.
 pub struct InProcessVst2Client {
     pub(super) inner: Arc<Mutex<Vst2Instance>>,
     pub(super) metadata: PluginInfo,
@@ -164,7 +175,7 @@ impl InProcessVst2Client {
         }
     }
 
-    /// Install a transport reader so the plugin receives a live per-block
+    /// Installs a transport reader so the plugin receives a live per-block
     /// [`TransportInfo`] (tempo, playhead, meter, bar, loop), which the VST2
     /// host turns into the `audioMasterGetTime` snapshot the plugin polls.
     ///
@@ -188,8 +199,8 @@ impl InProcessVst2Client {
         )));
     }
 
-    /// Drop a previously-installed transport reader; subsequent blocks feed the
-    /// plugin a default (stopped) snapshot.
+    /// Removes the installed transport reader; later blocks feed the plugin a
+    /// default (stopped) snapshot.
     pub fn clear_transport_source(&mut self) {
         self.transport.clear();
     }
@@ -206,20 +217,25 @@ impl InProcessVst2Client {
         }
     }
 
-    /// Set the level reported through `audioMasterGetCurrentProcessLevel`.
+    /// Sets the render mode the plugin reads through
+    /// `audioMasterGetCurrentProcessLevel`.
     ///
-    /// Always `true`: VST2 carries this on a host callback the plugin polls, so
-    /// there is no query for a plugin to decline. Takes the lock rather than
-    /// caching the flag locally — the answer lives on the `HostState` the
-    /// plugin already holds, and a second copy here could disagree with it.
+    /// Always returns `true`: VST2 carries this on a host callback the plugin
+    /// polls, so there is nothing for a plugin to decline. Takes the instance
+    /// lock, so call it from a control thread, not the audio thread.
+    //
+    // Takes the lock rather than caching the flag locally: the answer lives on
+    // the `HostState` the plugin already holds, and a second copy could
+    // disagree with it.
     pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
         self.inner.lock().set_offline_render(mode.is_offline());
         true
     }
 
-    /// Cumulative audio-thread `try_lock` failures since construction.
-    /// Shared across clones; intended for diagnostic introspection by
-    /// embedders (no current internal caller).
+    /// Returns how many times the audio thread found the instance locked and
+    /// output silence instead, since construction.
+    ///
+    /// Shared across clones; intended for diagnostics.
     pub fn contention_count(&self) -> u64 {
         self.contention_count.load(Ordering::Relaxed)
     }
@@ -601,10 +617,9 @@ mod transport_tests {
     /// Installing on one clone reaches the clone the audio thread runs.
     ///
     /// A host installs the transport through whichever clone it holds, which
-    /// need not be the one in the graph (fundsp cloned the unit on every graph
-    /// commit; the graph no longer does, but the type is still `Clone`). Sharing the producer cell
-    /// rather than the `Option` is what makes the install visible; the opposite
-    /// is the shared-cell bug this rail already carries a regression guard for.
+    /// need not be the one in the graph (the type is `Clone`). Sharing the
+    /// producer cell rather than the `Option` is what makes the install
+    /// visible.
     #[test]
     fn a_transport_installed_on_one_clone_reaches_another() {
         let original = slot();

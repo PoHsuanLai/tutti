@@ -30,9 +30,8 @@
 //! Every UMP channel-voice constructor takes `(group, channel, note, …)` —
 //! adjacent `u8`s with no positional guard. Transposing the first two compiles,
 //! does not crash, and produces a well-formed packet on the wrong cable
-//! addressing the wrong voice. `channel_voice.rs` `debug_assert`s the widths,
-//! but both fields are 4 bits, so a transposition of two in-range values passes
-//! every assertion and is invisible in release. Two distinct types make it a
+//! addressing the wrong voice. Both fields are 4 bits, so a transposition of
+//! two in-range values passes every width check. Two distinct types make it a
 //! compile error:
 //!
 //! ```compile_fail
@@ -42,9 +41,8 @@
 //! takes(MidiChannel::new(3), MidiGroup::new(1));
 //! ```
 //!
-//! It lives here rather than in `tutti-midi-types` beside the constructors for
-//! the same reason [`MidiChannel`](super::MidiChannel) does: a document has to
-//! persist it, and `tutti-midi-types` carries no serde.
+//! Like [`MidiChannel`](super::MidiChannel), it is re-exported by
+//! `tutti-midi-types` and serializable (feature `serde`).
 
 /// One of the 16 groups (virtual cables) in a UMP Endpoint.
 ///
@@ -70,18 +68,18 @@ impl MidiGroup {
     /// How many groups a UMP Endpoint carries.
     pub const COUNT: u8 = 16;
 
-    /// Wrap a raw group number, masking into `0..=15`.
+    /// Wraps a raw group number, masking it into `0..=15`.
     ///
     /// Masks rather than returning an error because that is what the wire does:
-    /// the UMP field is 4 bits, so a larger value cannot be represented and
-    /// `channel_voice.rs` already `debug_assert`s then masks. Rejecting here
-    /// would make this type stricter than the format it addresses.
+    /// the UMP field is 4 bits, so a larger value cannot be represented.
+    /// Rejecting here would make this type stricter than the format it
+    /// addresses.
     #[inline]
     pub const fn new(raw: u8) -> MidiGroup {
         MidiGroup(raw & 0x0F)
     }
 
-    /// The raw 0-based group number, for a UMP constructor.
+    /// Returns the raw 0-based group number, for a UMP constructor.
     #[inline]
     pub const fn get(self) -> u8 {
         self.0

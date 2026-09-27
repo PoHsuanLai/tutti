@@ -1,6 +1,6 @@
 //! The compiler: `compile(&ValidGraph, &Shapes, &Prepare, prev) -> (Plan, Delta)`.
 //!
-//! Doc 013 §3. Pure: no I/O, no audio, no units — only the value, the shapes
+//! Pure: no I/O, no audio, no units — only the value, the shapes
 //! the units declared, and the previous plan (for placements and nothing
 //! else). The passes, in order:
 //!
@@ -23,8 +23,6 @@
 //!    `LatencyGraph` impl lists event and param sources). **Event and param
 //!    edges count toward arrival**, and **a `Source::Global` input is a
 //!    merge-point source**, delayed to the node's arrival like any other.
-//!    (Until doc 013 Phase 5 `latency::plan` served fundsp's `Net` too, and
-//!    did neither; the two solves are one now.)
 //!
 //!    Emits a `Delay` op per mismatched audio port and per mismatched event
 //!    *source*, plus per-output alignment rings, with state keyed by
@@ -38,14 +36,14 @@
 //! 6. **Colour** ([`colour`]) — slot sharing that is correct under any
 //!    parallel schedule, with in-place aliasing where legal.
 //! 7. **Coarsen** — fuse single-successor/single-predecessor chains into
-//!    tasks. The serial executor ignores tasks; the plan carries them so the
-//!    phase-2 parallel executor needs no format change.
+//!    tasks. The serial executor ignores tasks; the plan carries them so a
+//!    parallel executor needs no format change.
 //! 8. **Verify** ([`verify`]) in debug builds.
 //! 9. **Place** units: `NodeKey` → dense [`UnitIdx`], diffed against `prev`
 //!    into a [`Delta`].
 //!
-//! Doc 013's step 6 (a serial-vs-parallel cost model) is phase 6 work; there
-//! is only a serial executor to pick.
+//! There is no serial-vs-parallel cost model yet: there is only a serial
+//! executor to pick.
 
 mod colour;
 mod order;
@@ -137,8 +135,8 @@ pub enum CompileError {
         /// The offending count.
         count: usize,
     },
-    /// The shape's latency disagrees with the spec's (see the module docs,
-    /// step 1).
+    /// The shape's latency disagrees with the spec's: one of the two is
+    /// stale.
     LatencyMismatch {
         /// The node.
         node: NodeKey,
@@ -415,12 +413,35 @@ impl Emitted {
     }
 }
 
-/// Compile `graph` against the units' `shapes`.
+/// Compiles `graph` against the units' `shapes` into an immutable [`Plan`]
+/// and the [`Delta`] from `prev`.
+///
+/// Pure: no I/O and no units, only the value, the shapes the units declared
+/// and the `Prepare` they were prepared for. It checks each shape against
+/// its node's spec, rejects cycles not broken by a feedback edge, orders the
+/// nodes, solves latency compensation (inserting delays on the shorter
+/// paths, for audio, events and params alike), assigns buffer slots, and
+/// places units in the executor's store. Runs on the control thread and
+/// allocates. [`Editor::commit`](crate::Editor::commit) calls it for you; call
+/// it directly to inspect a plan or to drive [`Editor::package`](crate::Editor::package).
 ///
 /// `prev` is the plan currently running, if any. It is read for exactly one
 /// thing — which store index each surviving key already occupies — so that the
 /// [`Delta`] moves only what changed. Delay-ring and feedback state carry over
 /// by *key* at the runtime and need nothing from `prev`.
+///
+/// # Errors
+///
+/// Returns a [`CompileError`] when a node has no shape, a shape disagrees
+/// with its spec, a port is out of range, a cycle has no feedback edge, a
+/// feedback delay is shorter than the maximum block, a marked event edge
+/// needs a finer resolution than its sink declares, or a limit is exceeded;
+/// the variants name each case.
+///
+/// # Panics
+///
+/// In debug builds, if the plan it produced fails [`verify`](crate::verify)
+/// — a compiler bug, never a property of the input.
 pub fn compile(
     graph: &ValidGraph,
     shapes: &Shapes,
@@ -750,7 +771,7 @@ pub fn compile(
 
         // Event inputs: delay each source that needs it, then merge fan-in
         // in **source order**, `(source NodeKey, source port)` — not the
-        // order the edges were listed in (owner decision 6, doc 013). The
+        // order the edges were listed in. The
         // tie-break at equal offsets is then a property of the wiring alone:
         // two specs that list the same sources differently merge alike, so
         // a host that rebuilds its spec from an unordered store (the ECS)

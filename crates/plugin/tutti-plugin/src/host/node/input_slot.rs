@@ -4,19 +4,17 @@
 //! plugin consumes this block, reading the live transport as needed.*
 //! [`BlockInput`] names that shape; [`InputSlot`] holds one installed producer
 //! and drains it per block. Only the in-process VST2 node's polled transport
-//! still uses it: the out-of-process plugin node takes its per-block inputs
+//! uses it: the out-of-process plugin node takes its per-block inputs
 //! (parameter automation, chords and scales) on its event input, from nodes of
-//! their own (doc 013 item 5).
+//! their own.
 //!
 //! **Why the slot is a shared cell.** The box the audio thread runs can be a
 //! *different clone* than the one a host-side `set_*_source` call mutates (the
-//! rule came from fundsp's frontend/backend split, which ran a clone and
-//! discarded edits to it on commit; the node is still `Clone`). So the *slot
-//! itself* is an `Arc<ArcSwapOption<…>>` shared across clones: an install on any clone is seen live by whichever clone the
+//! node is `Clone`). So the *slot itself* is an `Arc<ArcSwapOption<…>>` shared
+//! across clones: an install on any clone is seen live by whichever clone the
 //! audio thread runs, lock-free, no commit needed. The contract lives here
 //! once rather than copy-pasted into each producer slot, because a slot that
-//! forgets to share silently never fires. See
-//! [[plugin-source-install-shared-cell]].
+//! forgets to share silently never fires.
 //!
 //! **Feature gating is data, not logic.** An input is only sent to plugins
 //! that advertised wanting it (`Features::TRANSPORT` for transport); an empty
@@ -151,8 +149,7 @@ mod tests {
         }
     }
 
-    /// Regression guard for [[plugin-source-install-shared-cell]], generalized:
-    /// installing on ONE clone is visible to ANOTHER clone (shared slot).
+    /// Installing on ONE clone is visible to ANOTHER clone (shared slot).
     #[test]
     fn install_propagates_across_clones() {
         let mut original: InputSlot<Dummy> = InputSlot::new(Features::empty());

@@ -24,11 +24,6 @@ routing = ["std", "dep:dashmap", "dep:arc-swap", "dep:atomic_float"]
 # `Reflect` on the `LfoShape`/`Polarity` vocabulary a Bevy component carries.
 # Implies `routing` (the ids/targets are only useful with it) and std.
 #
-# Enables `tutti-types/bevy` because the reflected types here are built from
-# reflected units — an unreflectable `Depth` inside a reflected `ModEdge` does
-# not compile. This is the one place a tutti crate's `bevy` feature reaches into
-# another's, and it is a reflection-completeness edge rather than the transitive
-# Bevy leak the feature-hygiene rule guards against.
 # Enables the reflection features of the crates whose types ride inside the
 # reflected ones: an unreflectable `Depth` inside a reflected `ModEdge`, or a
 # `CurveType` inside a `ModRoute`, does not compile. These are
@@ -54,10 +49,8 @@ audio-automation = { workspace = true }
 # `ModParams` trait addresses — comes from here too.
 #
 # Unconditional despite the floor's no-dependencies instinct, because `Phase`
-# exists *because of this crate*: three hand-rolled wraps lived here, two of them
-# sign-wrong for a reverse-rate modulator, and the type is what makes that class
-# unrepresentable. Spelling the invariant out in a comment was the alternative,
-# and it is how the third wrap survived. tutti-types is a leaf crate — Bevy-free,
+# is what makes a sign-wrong hand-rolled wrap (a reverse-rate modulator walking
+# off a shape table) unrepresentable. tutti-types is a leaf crate — Bevy-free,
 # pulling only smallvec / atomic_float / arc-swap.
 tutti-types = { path = "../tutti-types", default-features = false }
 

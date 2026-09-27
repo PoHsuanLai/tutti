@@ -179,7 +179,7 @@ impl MpeZoneConfig {
         }
     }
 
-    /// Encode this zone as an **MPE Configuration Message** (MCM): a MIDI 2.0
+    /// Encodes this zone as an **MPE Configuration Message** (MCM): a MIDI 2.0
     /// Registered Controller (RPN) on the zone's *master* channel, bank
     /// [`RPN_BANK_MPE`](crate::ump::RPN_BANK_MPE), index
     /// [`RPN_INDEX_MCM`](crate::ump::RPN_INDEX_MCM), data = member count. Per
@@ -199,7 +199,7 @@ impl MpeZoneConfig {
         )
     }
 
-    /// Decode an MCM back into `(master_channel, member_count)`, if `event` is an
+    /// Decodes an MCM back into `(master_channel, member_count)`, if `event` is an
     /// MPE Configuration Message (RPN bank `0x00`, index `0x06`). Returns `None`
     /// for any other message. The zone side (lower vs upper) is inferred from the
     /// master channel by the caller (Ch0 → lower, Ch15 → upper).

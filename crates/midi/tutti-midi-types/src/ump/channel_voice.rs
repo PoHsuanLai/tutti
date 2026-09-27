@@ -330,11 +330,10 @@ mod tests {
         assert_eq!(m.control_change_data(), 0xDEAD_BEEF);
     }
 
-    /// Every CC number survives the trip out to the wire and back. This is what
-    /// the type buys over the old `debug_assert!(cc < 128)` + `& 0x7F`: the
-    /// assert only fired in debug, so a release build silently emitted a
-    /// *different* controller. Now the mask happens once, at `CCNumber::new`,
-    /// and nothing downstream can change the number.
+    /// Every CC number survives the trip out to the wire and back. The mask
+    /// happens once, at `CCNumber::new`, and nothing downstream can change the
+    /// number (a debug-only assert plus a mask at the wire would let a release
+    /// build silently emit a *different* controller).
     #[test]
     fn every_cc_number_round_trips_through_the_wire() {
         for raw in 0u8..128 {

@@ -46,7 +46,9 @@ use crate::modulation::components::{ModClock, ModRoute, ModSourceRate};
 ///
 /// Implement it on the component carrying that modulator's parameters; the
 /// component *is* the authored declaration, and [`build`](Self::build) turns it
-/// into the engine object.
+/// into the engine object. Register a kind with
+/// [`add_mod_source`](ModSourceAppExt::add_mod_source).
+///
 /// `Clone + Send + Sync + 'static` so a kind's authored parameters can be moved
 /// into the curve builder the collector hands to `rebuild` — the builder
 /// outlives the query borrow it was read through, and only the collector can
@@ -55,14 +57,14 @@ pub trait ModSourceKind: Component + Clone + Send + Sync + Sized + 'static {
     /// The modulator this component builds.
     type Source: Modulator + Send + Sync + 'static;
 
-    /// Construct the modulator from the authored parameters.
+    /// Constructs the modulator from the authored parameters.
     ///
     /// Rate is deliberately absent: it arrives from the entity's [`ModSourceRate`]
     /// and is applied by the caller, so a kind cannot accidentally own two
     /// notions of frequency.
     fn build(&self) -> Self::Source;
 
-    /// This kind as a beat-evaluated [`Curve`], if it has such a form.
+    /// Returns this kind as a beat-evaluated [`Curve`], if it has such a form.
     ///
     /// A curve is installed once and sampled by the *sink* at whatever rate it
     /// reads — a plugin's per-block producer traces a smooth ramp where a
@@ -91,13 +93,6 @@ pub trait ModSourceKind: Component + Clone + Send + Sync + Sized + 'static {
     }
 }
 
-/// Every source declared this frame, and whether any of them changed.
-///
-/// Filled by one `collect::<K>` system per registered kind, then read by
-/// `rebuild`. The indirection is what keeps `rebuild` a normal system: a kind's
-/// component type cannot appear in `rebuild`'s signature — that is the whole
-/// point of the registry — but it can appear in a system of the kind's own,
-/// scheduled by `add_mod_source`.
 /// Builds this source's curve form for one edge's shaping, or `None` if the
 /// kind has no such form.
 ///
@@ -126,7 +121,7 @@ pub struct CollectedModSources {
 }
 
 impl CollectedModSources {
-    /// How many sources the registered kinds built this frame.
+    /// Returns how many sources the registered kinds built this frame.
     ///
     /// One per source entity. A count higher than the number of source
     /// entities means a kind was registered twice, or an entity carries two
@@ -136,7 +131,7 @@ impl CollectedModSources {
         self.sources.len()
     }
 
-    /// Whether no kind built a source this frame.
+    /// Returns whether no kind built a source this frame.
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
     }
@@ -264,7 +259,7 @@ fn collect<K: ModSourceKind>(
 
 /// Registers a modulator kind.
 pub trait ModSourceAppExt {
-    /// Let source entities carrying `K` be built into modulators.
+    /// Lets source entities carrying `K` be built into modulators.
     ///
     /// Idempotent: registering a kind twice schedules one collector. Two would
     /// each push a source for the same entity, and the routing table would bind
@@ -297,13 +292,12 @@ impl ModSourceAppExt for App {
 /// `rebuild` runs on `Or<(Changed<ModRoute>, Changed<ModParamRange>)>` *or* a
 /// dirty source, and it builds its source registry by **draining**
 /// `CollectedModSources::sources`. But `collect` refills that list only when
-/// `dirty` is set, and `dirty` tracked source changes alone.
+/// `dirty` is set, which source changes alone would not do.
 ///
-/// So a rebuild triggered by a route or range change found an empty registry,
-/// failed to resolve `source_index` for every route, and **dropped every
-/// accumulator**. The user-visible effect was that editing a modulated
-/// parameter's authored value silently deleted its modulation — nothing errored,
-/// the matrix just emptied.
+/// Without this, a rebuild triggered by a route or range change would find an
+/// empty registry, fail to resolve `source_index` for every route, and **drop
+/// every accumulator**: editing a modulated parameter's authored value would
+/// silently delete its modulation.
 ///
 /// Non-generic and registered once, unlike [`mark_dirty`]: a route is not
 /// per-kind, and duplicating this into every kind's registration would raise the
@@ -375,7 +369,7 @@ impl ModRateCell {
         Self(Param::new(frequency))
     }
 
-    /// The shared atomic, for the accumulator that drives this rate.
+    /// Returns the shared atomic, for the accumulator that drives this rate.
     ///
     /// This must be the cell the [`Sourced`](tutti_mod::Sourced) reads — handing
     /// an accumulator any other atomic type-checks, runs, and modulates nothing.
@@ -387,7 +381,7 @@ impl ModRateCell {
         self.0.as_atomic()
     }
 
-    /// The frequency the source is running at *now* — the authored rate until
+    /// Returns the frequency the source is running at *now* — the authored rate until
     /// modulation moves it, and the modulated value thereafter.
     ///
     /// This is the live read a UI wants: `ModSourceRate::frequency` is what the user

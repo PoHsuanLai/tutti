@@ -24,14 +24,12 @@
 //!
 //! **Inbound arrives from the app layer, not from here.**
 //! [`InboundCiMessage`] / [`InboundEndpointReply`] have no producer *in this
-//! crate*; the live one is a host's hardware drain, which classifies by UMP
-//! message type and feeds these. The chain behind it is real: `core/hardware/input.rs`
-//! reassembles MIDI-1.0 SysEx across driver callbacks and promotes it to UMP
-//! SysEx7, which a `Sysex7PacketReassembler` + `ci::sysex7_to_ci` turn back into a
+//! crate*: a host's hardware drain classifies inbound UMP by message type and
+//! writes these. The hardware input promotes MIDI-1.0 SysEx to UMP SysEx7,
+//! which a `Sysex7PacketReassembler` + `ci::sysex7_to_ci` turn back into a
 //! typed [`CiMessage`]. That works because MIDI-CI is Universal SysEx by design
 //! (M2-101) — it has to survive a MIDI-1.0 transport, since it's how two devices
 //! discover each other *before* either knows the other speaks MIDI 2.0.
-//! `midi1_wire_sysex_promotes_to_a_typed_ci_message` covers that seam.
 //!
 //! **UMP-Stream needs a native-UMP transport.** That family has no MIDI-1.0
 //! encoding, so it cannot arrive over midir (a MIDI-1.0 API) at all. On macOS
@@ -61,8 +59,8 @@ const CI_GROUP: MidiGroup = MidiGroup::FIRST;
 
 /// The MIDI-CI negotiation state — this device's responder identity plus the
 /// initiator that probes peers. Built from a [`DiscoveryData`] identity and a
-/// seed MUID (the engine forbids `rand`/`Date::now`, so the seed is supplied by
-/// the caller — e.g. a hash of the device name).
+/// seed MUID, supplied by the caller (e.g. a hash of the device name) rather
+/// than drawn from a random source.
 #[derive(Resource)]
 pub struct CiRes {
     /// The answering side: replies to inbound Discovery / Profile / Property.
@@ -72,7 +70,7 @@ pub struct CiRes {
 }
 
 impl CiRes {
-    /// Build the CI state from this device's identity, seeding both MUIDs from
+    /// Builds the CI state from this device's identity, seeding both MUIDs from
     /// `muid_seed` (initiator and responder get distinct MUIDs so a self-probe on
     /// a shared bus doesn't read as a collision).
     pub fn new(identity: DiscoveryData, muid_seed: u32) -> Self {
@@ -89,8 +87,8 @@ pub struct StartCiDiscovery;
 
 /// A decoded inbound MIDI-CI message to feed into the negotiators.
 ///
-/// No producer in this crate yet — the inbound-decode seam. A future pass that
-/// reassembles SysEx7 off the hardware input (or a loopback test) writes this;
+/// This crate writes none: the host's hardware drain, which reassembles
+/// SysEx7 off the hardware input (or a loopback test), writes it, and
 /// [`ci_ingest_system`] then drives both negotiator halves with it.
 #[derive(Message, Debug, Clone)]
 pub struct InboundCiMessage(
@@ -105,7 +103,7 @@ pub struct CiDeviceDiscovered(
     pub DiscoveredCiDevice,
 );
 
-/// Send a Discovery probe to external MIDI out when [`StartCiDiscovery`] fires.
+/// Sends a Discovery probe to external MIDI out when [`StartCiDiscovery`] fires.
 ///
 /// MIDI-CI negotiates with *peer devices*, so the destination is the hardware-out
 /// mailbox rather than the synth fan-out bus.
@@ -124,7 +122,7 @@ pub fn ci_discovery_system(
     }
 }
 
-/// Fragment a CI message into SysEx7 UMP packets and push them at the
+/// Fragments a CI message into SysEx7 UMP packets and pushes them at the
 /// hardware-out mailbox.
 fn send_ci(sender: &tutti_midi_runtime::MidiSender, message: &CiMessage) {
     let mut packets = Vec::new();
@@ -132,7 +130,7 @@ fn send_ci(sender: &tutti_midi_runtime::MidiSender, message: &CiMessage) {
     sender.queue(&packets);
 }
 
-/// Feed decoded inbound CI messages into both negotiator halves: the responder
+/// Feeds decoded inbound CI messages into both negotiator halves: the responder
 /// emits replies (queued back onto the bus), and the initiator records
 /// discovered peers (raising [`CiDeviceDiscovered`]) and any collision
 /// Invalidate it must send.
@@ -186,8 +184,8 @@ pub struct StartEndpointDiscovery;
 
 /// A decoded inbound UMP-Stream reply event to feed into the discoverer.
 ///
-/// Like [`InboundCiMessage`], the inbound-decode seam — no producer in this crate
-/// yet (the hardware path doesn't surface Stream messages).
+/// Like [`InboundCiMessage`], written by the host, not by this crate: the
+/// hardware input does not surface UMP-Stream messages.
 #[derive(Message, Debug, Clone)]
 pub struct InboundEndpointReply(
     /// One UMP-Stream reply packet; an endpoint takes several to assemble.
@@ -201,7 +199,7 @@ pub struct EndpointDiscovered(
     pub DiscoveredEndpoint,
 );
 
-/// Send an Endpoint Discovery probe to external MIDI out when
+/// Sends an Endpoint Discovery probe to external MIDI out when
 /// [`StartEndpointDiscovery`] fires. Like MIDI-CI, this asks a *peer endpoint*
 /// about itself, so it goes to the hardware-out mailbox.
 pub fn endpoint_discovery_system(
@@ -222,7 +220,7 @@ pub fn endpoint_discovery_system(
     }
 }
 
-/// Feed inbound reply events into the discoverer; raise [`EndpointDiscovered`]
+/// Feeds inbound reply events into the discoverer; raises [`EndpointDiscovered`]
 /// the first frame a complete endpoint assembles.
 pub fn endpoint_ingest_system(
     mut endpoint: ResMut<EndpointDiscoveryRes>,
@@ -340,11 +338,9 @@ mod tests {
 
     /// A Discovery probe must land in the mailbox the hardware pump drains.
     ///
-    /// Regression: sending these to a synth's per-unit *system* ring (the
-    /// fan-out this replaced) dropped every CI probe, endpoint-discovery
-    /// request and Flex-metadata message silently, because nothing polled
-    /// that ring. Loopback tests of the
-    /// negotiators cannot catch it; only checking the destination can.
+    /// A probe sent anywhere else (a synth's event ring, say) would be dropped
+    /// silently, since nothing drains it to the wire. Loopback tests of the
+    /// negotiators cannot catch that; only checking the destination can.
     #[test]
     fn discovery_probe_reaches_the_hardware_out_mailbox() {
         let mut world = World::new();

@@ -87,7 +87,7 @@ fn render_process(node: &mut dyn Node, case: &Case) -> Vec<Vec<f32>> {
     render_blocks(node, case, BLOCK)
 }
 
-/// Render one frame at a time — a block of one, what `tick` was.
+/// Render one frame at a time — a block of one.
 fn render_tick(node: &mut dyn Node, case: &Case) -> Vec<Vec<f32>> {
     render_blocks(node, case, 1)
 }
@@ -114,8 +114,7 @@ fn assert_pinned(name: &str, got: &[f32], want: &[f32]) {
 }
 
 // `_port`: whether the case feeds the threshold — a node's feed is always
-// there, so building it no longer depends on it (it was `with_param_inputs`'
-// port flag when the pins were captured; the fed values are unchanged).
+// there, so building it does not depend on it.
 fn compressor(ch: usize, _port: bool) -> CompressorNode {
     let n = CompressorNode::with_channels(-24.0, 4.0, 0.002, 0.05, ch as u8)
         .with_soft_knee(6.0)
@@ -160,10 +159,8 @@ fn print_goldens() {
 ///
 /// A frame at a time is held to the same table: a block of one is where the
 /// per-block read and the per-sample read coincide, and the table was
-/// captured from 64-frame blocks — agreement is also the old
-/// `process_matches_tick` property. The table was captured through
-/// `AudioUnit::process` before the port; the graph node renders it
-/// unchanged.
+/// captured from 64-frame blocks, so agreement also shows block rendering
+/// and frame-at-a-time rendering match.
 ///
 /// Mutation (each tried): dropping the `* gain` for every channel but 0 in the
 /// planar apply loop fails `comp_stereo`; ignoring the threshold port in favour

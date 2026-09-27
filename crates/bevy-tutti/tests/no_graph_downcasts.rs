@@ -1,19 +1,17 @@
 //! No code in this crate reaches into the graph for a node by type.
 //!
-//! `Net`'s typed node accessors (the `node` + `_as` / `_as_mut` pair, until
-//! doc 013 Phase 5 deleted `Net`) handed back the graph's own copy of a node,
-//! downcast to a concrete type. This crate used to lean on them for three
-//! things — a synth's MIDI port, a node's modulatable params, and a hosted
-//! plugin's input slots and latency. MIDI is event edges now; the other two
-//! come from components captured off the unit as it is inserted
+//! A typed node accessor hands back the graph's own copy of a node, downcast
+//! to a concrete type. This crate needs none: a synth's MIDI arrives over event
+//! edges, and a node's modulatable params and a hosted plugin's input slots
+//! and latency come from components captured off the unit as it is inserted
 //! (`bevy_tutti::graph::capture`).
 //!
-//! The downcast has to stay gone, because it is what ties a call site to one
+//! The downcast has to stay out, because it is what ties a call site to one
 //! graph implementation: a graph that owns its nodes outright, rather than
 //! keeping a frontend clone of each, has nothing to downcast to. Neither rustc
 //! nor clippy can say "not this method, in this crate only" — clippy's
 //! `disallowed_methods` lives in the workspace-wide `clippy.toml`, and other
-//! crates' node-level tests once used these methods legitimately — so this
+//! crates' node-level tests may use such methods legitimately — so this
 //! text scan is the enforcement.
 //!
 //! Three spellings are watched, because the typed accessor is not the only way
@@ -50,8 +48,7 @@ const PATTERNS: &[Pattern] = &[
     },
     Pattern {
         // `.0.node(` is the spelling through the resource's field; `net.node(`
-        // the one on a `Net` bound as `net` (the adapter's own arm, until PR
-        // 13; a test's `Net`-era oracle since).
+        // the one on a graph bound as `net`.
         name: "raw graph node access (.0.node( / net.node()",
         matches: |l| {
             l.contains(".0.node(")

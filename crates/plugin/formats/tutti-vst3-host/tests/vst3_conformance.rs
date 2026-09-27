@@ -30,18 +30,16 @@
 //!
 //! **Nothing here skips silently.** Every test either asserts or carries an
 //! explicit `#[ignore = "..."]`; there is no `eprintln!("skipping"); return;`
-//! left in the file. That shape used to report `ok` while executing nothing,
-//! and on a correct checkout it was the outcome for most of the suite — which
-//! is worse than having no suite, because it claimed coverage of the
-//! `ProcessData` this host builds.
+//! in the file. That shape reports `ok` while executing nothing, which is worse
+//! than having no suite, because it claims coverage of the `ProcessData` this
+//! host builds.
 //!
-//! There were two layers of it, and they had to be removed together. The outer
-//! `harness_ready()` gate now asserts (its two requirements are met by any
-//! recursive checkout, so absence has one cause and one fix). The inner
-//! per-plugin gates — `let Some(p) = sample(..) else { skip }` — are gone too:
-//! `sample`/`sample_plugins` now search the in-repo bundle directory as well as
-//! the external one, and the lookups that must succeed go through
-//! `require_sample` / `require_host_checker`, which panic by name.
+//! The `harness_ready()` gate asserts (its two requirements are met by any
+//! recursive checkout, so absence has one cause and one fix). There are no
+//! per-plugin skip gates either: `sample`/`sample_plugins` search the in-repo
+//! bundle directory as well as the external one, and the lookups that must
+//! succeed go through `require_sample` / `require_host_checker`, which panic
+//! by name.
 //!
 //! # What is `#[ignore]`d, and why
 //!
@@ -128,15 +126,13 @@ const SAMPLE_PLUGIN_DIR: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
 /// `multiple-program-changes`. Present on any recursive checkout, because they
 /// are compiled by this very `cargo test` invocation.
 ///
-/// Without this, [`sample_plugins`] saw only `VST3_SAMPLE_PLUGIN_DIR`, which
+/// [`sample_plugins`] searches this as well as `VST3_SAMPLE_PLUGIN_DIR`, which
 /// names a hand-built external SDK tree and is unset on essentially every
-/// machine — so every test in this file took the skip and still printed `ok`.
-/// The sibling suites (`vst3_audio_correctness.rs`, `support/gui_lifecycle.rs`)
-/// already fall back here for exactly that reason; this file was simply never
-/// updated when the probe stopped being external.
+/// machine. The sibling suites (`vst3_audio_correctness.rs`,
+/// `support/gui_lifecycle.rs`) fall back here for the same reason.
 const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");
 
-/// `ProcessModes_::kOffline`. Used to assert the plugin observed the mode we
+/// `ProcessModes_::kOffline`. Lets tests assert the plugin observed the mode we
 /// asked for, independent of the enum's Rust-side representation.
 const K_OFFLINE: c_int = 2;
 
@@ -271,17 +267,12 @@ fn first_parameter_id(path: &Path) -> Option<u32> {
 
 /// Assert the harness is usable, **panicking with the reason when it is not**.
 ///
-/// # Why this is not a skip any more
+/// # Why this is not a skip
 ///
-/// It used to return `false` and print "skipping", and its call sites turned
-/// that into an early `return` — a passing test that executed nothing. It was
-/// the *outer* of two such gates; the per-plugin ones inside the test bodies
-/// are gone too, and the module docs describe both. On this repo's own CI and on any correct checkout that was
-/// *always* the outcome, because [`sample_plugins`] only looked at
-/// `VST3_SAMPLE_PLUGIN_DIR`. So the suite reported roughly two dozen green
-/// tests while running zero assertions, which is worse than having no suite:
-/// it claimed coverage of the `ProcessData` this host builds, and a regression
-/// in that would have shipped silently.
+/// A gate that returns `false` and lets its call sites `return` early turns
+/// every test into a pass that executed nothing. That claims coverage of the
+/// `ProcessData` this host builds while running zero assertions, and a
+/// regression in it would ship silently.
 ///
 /// Both requirements are satisfied by a recursive checkout and nothing else:
 /// the hostchecker sources live in the `public.sdk` submodule, and `build.rs`
@@ -343,11 +334,8 @@ const NEEDS_VSTGUI: &str = "needs a VST3 SDK sample whose controller inherits \
 
 /// Resolve a sample plugin that **must** be present, panicking by name if not.
 ///
-/// Replaces the `let Some(x) = sample(..) else { eprintln!("skipping"); return; }`
-/// that stood at every one of these call sites. That shape is why 19 of this
-/// file's tests reported `ok` while executing nothing: the outer `harness_ready`
-/// gate was fixed first, and these inner per-plugin gates were left behind, so
-/// the tests got past the front door and then quietly turned around.
+/// Used instead of `let Some(x) = sample(..) else { eprintln!("skipping");
+/// return; }`, a shape that makes a test report `ok` while executing nothing.
 ///
 /// A test whose plugin genuinely cannot be built carries `#[ignore]` instead —
 /// see [`NEEDS_VSTGUI`]. So reaching this panic means a plugin `build.rs` *does*
@@ -601,8 +589,7 @@ fn hostcheck_is_linked() {
 /// It also pins the real limitation behind that: there is no public API to
 /// instantiate a *chosen* class. A DAW needs one — a user picking "mda Delay"
 /// from a bundle that also holds "mda Bandisto" cannot be served by
-/// first-audio-class-wins. Issue #54 item 7 is about real-plugin coverage; this
-/// is the concrete, in-repo half of it.
+/// first-audio-class-wins.
 #[test]
 fn report_multi_class_bundle_coverage() {
     if !harness_ready() {
@@ -662,8 +649,7 @@ fn report_multi_class_bundle_coverage() {
 /// This is the coverage [`report_multi_class_bundle_coverage`] measures: 55
 /// classes behind 19 bundles, of which the path-loading sweeps reach 19. The 36
 /// others include 33 of `mda-vst3`'s — the closest thing in this corpus to real
-/// shipped plugins rather than teaching examples, which is what issue #54 item
-/// 7 is about.
+/// shipped plugins rather than teaching examples.
 ///
 /// Each is loaded, activated, and driven for a block. Failures are collected
 /// rather than panicking on the first, because one broken class should not hide
@@ -952,12 +938,12 @@ fn partial_block_is_spec_clean() {
 ///
 /// From the anonymous enum in `hostcheckercontroller.h`, which starts at
 /// `kProcessingLoadTag = 1000` and runs unbroken to `kProcessWarnTag`. Counted
-/// from the header rather than guessed: an earlier off-by-five here decoded the
-/// neighbouring `kProcessContext*` readouts as warning bitfields and invented
-/// four "spec errors" that did not exist. [`warn_tag_block_is_isolated`] pins
-/// the value against that class of mistake.
+/// from the header rather than guessed: an off-by-five here decodes the
+/// neighbouring `kProcessContext*` readouts as warning bitfields and invents
+/// "spec errors" that do not exist. [`warn_tag_block_is_isolated`] pins the
+/// value against that class of mistake.
 const K_PROCESS_WARN_TAG: u32 = 1027;
-/// `kParamProcessModeTag`, immediately below the warning block — used to check
+/// `kParamProcessModeTag`, immediately below the warning block; it checks
 /// the block's lower bound.
 const K_PARAM_PROCESS_MODE_TAG: u32 = 1026;
 /// Parameters in the warning block.
@@ -1080,7 +1066,7 @@ const K_TRIGGER_PROGRESS_TAG: u32 = 1008;
 ///
 /// ## Why the number does not move much
 ///
-/// Issue #54 item 10 assumed the figure was low mainly because this test drove
+/// It is tempting to assume the figure is low mainly because this test drives
 /// so little, and that feeding it everything the suite covers elsewhere would
 /// raise it. Measured, that is not what happens: populating every transport
 /// field (14 of the 75 are per-`ProcessContext`-flag), processing more blocks,
@@ -1095,7 +1081,7 @@ const K_TRIGGER_PROGRESS_TAG: u32 = 1008;
 /// editor, units, `IComponentHandler2`/`3`, keyswitches — not more audio.
 ///
 /// So the figure is a **floor on controller-side coverage**, which is a
-/// narrower claim than item 10 implied. Treat a change in it as signal; treat
+/// narrower claim than it looks. Treat a change in it as signal; treat
 /// its absolute value as close to meaningless.
 #[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
 #[test]
@@ -1453,7 +1439,7 @@ fn host_checker_reports_no_errors_through_output_params() {
 
 /// Plugin state must survive a `getState` → `setState` → `getState` round trip.
 ///
-/// Untested until now, and it is the persistence path: a project save/reload
+/// This is the persistence path: a project save/reload
 /// runs exactly this. `host-checker` implements state on both the processor and
 /// the controller (`HostCheckerProcessor::setState` /
 /// `HostCheckerController::setState`), each with a thread-affinity assertion,
@@ -2362,11 +2348,9 @@ fn sample(name: &str) -> Option<Vst3Loaded> {
 
 /// Locate a sample bundle by file name, **searching both plugin directories**.
 ///
-/// It used to join `SAMPLE_PLUGIN_DIR` only — the external, almost-always-unset
-/// tree — so every lookup missed and every caller took its skip branch. That is
-/// the same defect `sample_plugins` had, in the one place fixing
-/// `sample_plugins` did not reach: these tests name a specific bundle rather
-/// than sweeping the corpus.
+/// Searching `SAMPLE_PLUGIN_DIR` alone (the external, almost-always-unset tree)
+/// would make every lookup miss. These tests name a specific bundle rather than
+/// sweeping the corpus, so they need the in-repo directory too.
 fn sample_path(name: &str) -> Option<PathBuf> {
     [SAMPLE_PLUGIN_DIR, PROBE_DIR_BUILT]
         .into_iter()

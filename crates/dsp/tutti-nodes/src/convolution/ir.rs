@@ -6,7 +6,7 @@
 
 use tutti_core::{SampleRate, Seconds};
 
-/// Fill `out` with a simple exponential-decay test IR.
+/// Fills `out` with a simple exponential-decay test IR.
 ///
 /// The decay envelope is `exp(-t / decay_time)` sampled at `sample_rate`.
 pub fn generate_test_ir_into(
@@ -33,7 +33,7 @@ pub fn generate_test_ir(
     out
 }
 
-/// Fill `out` with a synthetic room IR: an initial impulse, a handful
+/// Fills `out` with a synthetic room IR: an initial impulse, a handful
 /// of early reflections scaled by `room_size`, and a noisy
 /// exponential tail.
 ///

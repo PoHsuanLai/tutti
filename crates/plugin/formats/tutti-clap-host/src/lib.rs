@@ -7,7 +7,7 @@ pub mod instance;
 pub mod topology;
 pub mod types;
 
-/// Copy a nul-terminated C string into an owned `String`, substituting lossy
+/// Copies a nul-terminated C string into an owned `String`, substituting lossy
 /// replacement for invalid UTF-8. Returns an empty string if `ptr` is null.
 ///
 /// # Safety

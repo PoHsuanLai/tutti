@@ -62,8 +62,8 @@ impl Sample for f64 {}
 ///
 /// Allocated once per plugin instance and reused, so the realtime `process`
 /// path only *refills* the pointer slots (never grows the `Vec`s) and stays
-/// allocation-free. An instance holds one of these per sample width — see
-/// [`Sample`] for why both widths are kept rather than a single `BufferPtrs<T>`.
+/// allocation-free. An instance that can process at both widths holds one of
+/// these per width.
 pub struct BufferPtrs<T> {
     /// One slot per input channel, refilled each block by
     /// [`prepare`](Self::prepare). Null between calls — the pointers are only
@@ -141,7 +141,7 @@ impl<T> BufferPtrs<T> {
     }
 }
 
-/// Block of deinterleaved audio passed to a plugin's process call.
+/// A block of deinterleaved audio passed to a plugin's process call.
 ///
 /// `inputs` and `outputs` borrow channel slices owned by the host. `T`
 /// picks 32-bit or 64-bit processing.
@@ -171,8 +171,10 @@ pub struct AudioBuffer<'t, 'd: 't, T: Sample = f32> {
 }
 
 impl<'t, 'd: 't, T: Sample> AudioBuffer<'t, 'd, T> {
-    /// `num_samples` is derived from the first output channel's length, or
-    /// the first input channel's length if there are no outputs.
+    /// Creates a block over the given channel tables.
+    ///
+    /// `num_samples` is taken from the first output channel's length, or the
+    /// first input channel's length if there are no outputs.
     ///
     /// # Panics
     /// Panics if both `inputs` and `outputs` are empty.
@@ -220,7 +222,7 @@ pub type AudioBuffer32<'t, 'd> = AudioBuffer<'t, 'd, f32>;
 /// bus.
 pub type AudioBuffer64<'t, 'd> = AudioBuffer<'t, 'd, f64>;
 
-/// Sample-format-tagged buffer handed to
+/// An [`AudioBuffer`] tagged with its sample width, as handed to
 /// [`PluginAudio::process`](crate::PluginAudio::process).
 ///
 /// The enum keeps the trait dyn-compatible while letting each format's

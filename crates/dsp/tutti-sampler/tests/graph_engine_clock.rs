@@ -3,15 +3,10 @@
 //! A placed voice (a `MemorySource` in a `VoicePool`) derives its read
 //! position from the playhead, which it reads from each block's `Env` — per
 //! frame, through the transport's own frame clock, with every transport
-//! change inside the block (a locate, a loop wrap) on its frame (doc 013
-//! items 8 and 9). So the engine (`Engine::new`) renders whole device blocks,
-//! and a voice neither replays a stretch of a block nor waits for a chunk boundary.
-//!
-//! Until the sampler's nodes ported, a voice polled an `Arc<dyn Timeline>`
-//! on every `AudioUnit::process` call, one per 64-frame `Legacy` chunk, and
-//! the engine rendered chunk-major to keep that poll right; a loop wrap and
-//! a locate landed on their chunk, not their frame. This file pinned that;
-//! it now pins the frame.
+//! change inside the block (a locate, a loop wrap) on its frame. So the
+//! engine (`Engine::new`) renders whole device blocks, and a voice neither
+//! replays a stretch of a block nor waits for a chunk boundary: a loop wrap
+//! and a locate land on their frame.
 //!
 //! The oracle is the tone the voice plays: a dry voice must be the tone,
 //! frame for frame, at the source frame the playhead puts it on. The pitched
@@ -233,10 +228,7 @@ fn a_voice_plays_in_time_at_2048_frame_blocks() {
 /// **Two nodes over one transport** (two clones of one pool) both render the
 /// tone. Each reads the transport from its own block's `Env` and keeps its
 /// own record of where the playhead was (its `Clock`), so neither sees the
-/// other's render as a jump. Under the `AudioUnit` era two such clones
-/// shared one `BeatCursor` on a shared timeline, and only a chunk-major
-/// render kept them from seeing a rewind every block; this pins that the
-/// graph nodes share nothing to get wrong.
+/// other's render as a jump: the nodes share no cursor to get wrong.
 ///
 /// Dry, not pitched: a stretch filter's fill-up would only delay the tone.
 #[test]
@@ -333,10 +325,8 @@ fn a_loop_wrap_plays_the_tone_a_loop_back_from_its_frame() {
 /// **A locate scheduled inside a block** (`At::Frame(10 037)`, to beat ¼,
 /// immediate) lands **on its frame**: the tone up to it, and the target at
 /// its frame from it. The engine cuts the transport on the locate's frame
-/// (a change in the block's `Env`), and the voice reads it there. (Until the
-/// voice read its `Env`, a `Legacy` clip reader read the playhead once per
-/// 64-frame call and played the target from the chunk's first frame, 53
-/// frames early.)
+/// (a change in the block's `Env`), and the voice reads it there, not at the
+/// first frame of its 64-frame piece (53 frames early).
 ///
 /// Mutation (run): `Runs` ignoring `Env::changes` → the voice plays the tone
 /// on past the locate → fails.

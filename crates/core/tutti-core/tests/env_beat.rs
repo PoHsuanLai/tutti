@@ -1,4 +1,4 @@
-//! The beat signal on the graph (doc 013 Phase 3, PR 6).
+//! The beat signal on the graph.
 //!
 //! What is pinned here:
 //!
@@ -13,17 +13,12 @@
 //!   graph the transport a live graph engine hands it for the same timeline:
 //!   the `Env` per block.
 //!
-//! Until doc 013 PR 15 the first two compared the graph against a `Net`
-//! engine with a `TransportClock`, bit for bit. With the engine's `Net`
-//! backend gone, the oracles are the graph's own `Env` (a second code path:
+//! The oracles are the graph's own `Env` (a second code path:
 //! `Env::transport_at`'s closed form, against `Env::for_each_beat`'s walk of
 //! the clock's `FrameClock`) and the closed-form beat model in `support`.
 //!
-//! The walk used to reach the graph as a node, `EnvClock`, emitting it on
-//! two beat ports for nodes that took the beat as a signal. Every such node
-//! now reads its block's `Env`, so `EnvClock` is gone; [`BeatPorts`] below is
-//! its body, kept as this file's probe so every assertion still reads the
-//! walk through the same `f32` split.
+//! [`BeatPorts`] below emits the walk on two beat ports, so every assertion
+//! reads it through the same `f32` split.
 
 use std::sync::{Arc, Mutex};
 
@@ -167,14 +162,11 @@ fn beat(p: (f32, f32)) -> f64 {
 /// were meant to. Commands land inside blocks (the graph block is not
 /// split), so this is the segment walk, not only the block start.
 ///
-/// Until doc 013 PR 15 the oracle was a `TransportClock` in a `Net` engine,
-/// bit for bit per frame. The walk runs that clock's own code
-/// (`FrameClock`) from each piece's origin, so it equals it by
-/// construction; `transport_at` agrees with it to rounding (it folds a loop
+/// The walk runs the clock's own code (`FrameClock`) from each piece's
+/// origin, so it equals the clock by construction; `transport_at` agrees with it to rounding (it folds a loop
 /// by the unwrapped position), and the frame checks below pin each event.
 ///
-/// Mutations (run while this walk was `EnvClock`'s, each failed; the walk is
-/// now `Env::for_each_beat` in tutti-graph, the same code):
+/// Mutations (each failed; the walk is `Env::for_each_beat` in tutti-graph):
 /// - use the block's `env.transport` for every piece (ignore the cuts) →
 ///   wrong from the first mid-block command (frame 700);
 /// - hand the walk no loop region → it never wraps → wrong from the first
@@ -305,12 +297,9 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
 /// needs no clock wired to it.
 ///
 /// The transport rolls throughout. (A start or a stop inside a block gates
-/// the click on its frame, since its port to `tutti_graph::Node`; `ClickNode`'s
-/// own tests pin that.)
+/// the click on its frame; `ClickNode`'s own tests pin that.)
 ///
-/// Until doc 013 PR 15 the oracle was the same click behind a `TransportClock`
-/// in a `Net` engine: the same onset frames and the same samples. The onsets
-/// are now the model's (`support::model_beats`): a click starts on the first
+/// The onsets are the model's (`support::model_beats`): a click starts on the first
 /// frame of each beat (frame 0, then each frame whose beat's whole part
 /// changes, a seek and a wrap included). `onsets` counts a silent frame
 /// followed by a sounding one, and a click's first sample is `sin(0)`, an

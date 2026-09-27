@@ -1,4 +1,5 @@
-//! Re-plan latency compensation when a hosted plugin changes its own latency.
+//! Re-planning latency compensation when a hosted plugin changes its own
+//! latency.
 //!
 //! # The gap this closes
 //!
@@ -11,8 +12,8 @@
 //! The graph does not read that cell. A node declares its latency in its
 //! `Shape`, which the editor reads at insert; after that the editor's figure
 //! is the one PDC compiles against until something hands it another
-//! (`Editor::set_latency`). Doc 013: a latency change is a `Shape` change in
-//! the next commit. Without this system every compensation delay keeps the
+//! (`Editor::set_latency`): a latency change is a `Shape` change in the next
+//! commit. Without this system every compensation delay keeps the
 //! figure it was planned against — a plugin whose own latency is right and
 //! whose *alignment against every other path* is wrong, audible as a track
 //! drifting out of time with the rest of the mix.

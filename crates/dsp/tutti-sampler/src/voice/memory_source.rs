@@ -85,7 +85,7 @@ pub enum LoopSetting {
     /// Play through once, then stop.
     #[default]
     Off,
-    /// Loop over `[start, end)` in samples, with `crossfade_frames` of loop
+    /// Loop over `[start, end)` in file frames, with `crossfade_frames` of loop
     /// crossfade (0 = hard loop, no crossfade).
     ///
     /// **The fade actually used.** The points are whole frames (truncated),
@@ -112,11 +112,13 @@ pub enum LoopSetting {
     /// crossfade (`BufferConfig::seek_crossfade_frames`) from what the old
     /// loop would have played. From there on the live voice plays the new
     /// loop exactly as the memory tier does. An export fork taken after the
-    /// change reads the new loop from the start of its render (doc 013, "The
-    /// live disk loop and its repositions (#48)").
+    /// change reads the new loop from the start of its render.
     On {
+        /// First frame of the loop, in file frames.
         start: SamplePosition,
+        /// End of the loop (exclusive), in file frames; clamped to the file.
         end: SamplePosition,
+        /// Length of the loop crossfade in frames; 0 is a hard loop.
         crossfade_frames: usize,
     },
 }
@@ -384,7 +386,7 @@ impl MemorySource {
         self.channels
     }
 
-    /// Build from an explicit [`MemorySourceConfig`] — the canonical
+    /// Creates a source from an explicit [`MemorySourceConfig`] — the canonical
     /// configurable constructor, matching tutti's `X::new(XConfig)` convention.
     ///
     /// A `LoopSetting::On { crossfade_frames, .. }` loops with that crossfade
@@ -433,14 +435,14 @@ impl MemorySource {
         )
     }
 
-    /// Move the window. Independent of whether the source is placed — a
+    /// Moves the window. Independent of whether the source is placed — a
     /// window is just geometry, so there is no "only if placed" branch to get
     /// wrong. The next frame reads at the new window.
     pub fn set_window(&mut self, window: VoiceWindow) {
         self.window = window;
     }
 
-    /// Place this source on the transport at `window` (see
+    /// Places this source on the transport at `window` (see
     /// [`is_placed`](Self::is_placed)).
     #[must_use]
     pub fn placed_at(mut self, window: VoiceWindow) -> Self {
@@ -449,7 +451,7 @@ impl MemorySource {
         self
     }
 
-    /// Rewind to sample 0 and start playing. Two relaxed atomic stores, so this
+    /// Rewinds to sample 0 and starts playing. Two relaxed atomic stores, so this
     /// is safe from the audio thread.
     ///
     /// Only affects the **free-running** path: a placed voice derives its
@@ -466,13 +468,13 @@ impl MemorySource {
         self.playing.store(true, Ordering::Relaxed);
     }
 
-    /// Resume from wherever the cursor sits, without rewinding. Free-running
+    /// Resumes from wherever the cursor sits, without rewinding. Free-running
     /// path only, as with [`trigger`](Self::trigger).
     pub fn play(&self) {
         self.playing.store(true, Ordering::Relaxed);
     }
 
-    /// Stop and hold the cursor where it is. Subsequent frames are silence until
+    /// Stops and holds the cursor where it is. Subsequent frames are silence until
     /// [`play`](Self::play) or [`trigger`](Self::trigger).
     pub fn stop(&self) {
         self.playing.store(false, Ordering::Relaxed);
@@ -484,7 +486,7 @@ impl MemorySource {
         self.playing.load(Ordering::Relaxed)
     }
 
-    /// Toggle looping. Enabling loops over the whole sample (unless a range was
+    /// Toggles looping. Enabling loops over the whole sample (unless a range was
     /// already set); disabling drops any range and crossfade.
     pub fn set_looping(&mut self, looping: bool) {
         match (looping, &self.loop_mode) {
@@ -557,7 +559,7 @@ impl MemorySource {
         self.wave.duration()
     }
 
-    /// Publish a new output gain.
+    /// Publishes a new output gain.
     ///
     /// `&self` and stored in a shared cell: a value stored by value here is
     /// written on a frontend clone and rendered from a different one. See the
@@ -585,7 +587,7 @@ impl MemorySource {
         self.gain.detach();
     }
 
-    /// Set varispeed. Out-of-range and non-finite values are handled by
+    /// Sets varispeed. Out-of-range and non-finite values are handled by
     /// [`PlaybackRate`]'s bounded constructor, not here — that is the point of
     /// the type: both playback tiers get the same range without either having
     /// to remember to clamp.
@@ -635,7 +637,7 @@ impl MemorySource {
         self.speed.read_rate(SrcRatio::UNITY)
     }
 
-    /// Replace the wave data. Resets playback position to the start.
+    /// Replaces the wave data. Resets playback position to the start.
     ///
     /// Call from `graph_mut` — not safe to call from the audio thread directly.
     pub fn set_wave(&mut self, wave: Arc<Wave>) {
@@ -646,7 +648,7 @@ impl MemorySource {
         self.looped.store(false, Ordering::Relaxed);
     }
 
-    /// Re-derive the sample-rate conversion ratio for a new session rate.
+    /// Re-derives the sample-rate conversion ratio for a new session rate.
     ///
     /// The derivation itself lives in [`SrcRatio::for_rates`] — the butler's
     /// streaming path calls the same function, so the two tiers cannot drift
@@ -655,7 +657,7 @@ impl MemorySource {
         self.src_ratio = SrcRatio::for_rates(self.wave.sample_rate(), session_rate);
     }
 
-    /// Apply a [`LoopSetting`]: `On` primes the range + crossfade, `Off`
+    /// Applies a [`LoopSetting`]: `On` primes the range + crossfade, `Off`
     /// clears the range and disables looping.
     ///
     /// In-memory only. The streaming tier's loop is butler-owned (a
@@ -676,7 +678,7 @@ impl MemorySource {
         }
     }
 
-    /// Loop over `[loop_start, loop_end)` in source samples, with
+    /// Loops over `[loop_start, loop_end)` in source samples, with
     /// `crossfade_frames` **frames** of loop crossfade (0 = a hard loop).
     ///
     /// The loop plays whole frames (its points are truncated, as the butler
@@ -707,7 +709,7 @@ impl MemorySource {
         self.looped.store(false, Ordering::Relaxed);
     }
 
-    /// Drop the loop range and revert to one-shot playback. Allocation-free, so
+    /// Drops the loop range and reverts to one-shot playback. Allocation-free, so
     /// it is safe on the same audio-thread command drain
     /// [`set_loop_range`](Self::set_loop_range) runs on.
     pub fn clear_loop_range(&mut self) {
@@ -745,7 +747,7 @@ impl MemorySource {
         }
     }
 
-    /// Read one un-gained frame into `out` (width = `out.len()`).
+    /// Reads one un-gained frame into `out` (width = `out.len()`).
     ///
     /// Writes every element, so the caller never pre-zeros. The wave's own
     /// channel count need not match `out.len()` —
@@ -1238,8 +1240,7 @@ impl Node for MemorySource {
         Status::Modified
     }
 
-    /// The free-running cursor rewound and stopped, the transport forgotten
-    /// (as the `AudioUnit` era's `reset` had it).
+    /// The free-running cursor rewound and stopped, the transport forgotten.
     fn reset(&mut self) {
         self.rewind();
     }
@@ -1327,9 +1328,7 @@ mod tests {
     //
     // A node is handed blocks of any length, so N one-frame blocks — the
     // transport moved a frame between each, as a host moves it — must equal
-    // one N-frame block sample for sample. (The `AudioUnit` era asked this of
-    // `tick` against `process`; the graph node has one entry point, and
-    // the question is now its block length.)
+    // one N-frame block sample for sample.
     //
     // KNOWN LIMIT: these are CONSISTENCY checks, not correctness ones. Both
     // run the same read, so a change moves them together. What catches a
@@ -1627,8 +1626,8 @@ mod tests {
         }
     }
 
-    /// **The interpolator's taps wrap through the loop** (doc 013 follow-up
-    /// N2, the memory tier): at half speed over a hard loop `[10, 20)`, a
+    /// **The interpolator's taps wrap through the loop** (the memory tier): at
+    /// half speed over a hard loop `[10, 20)`, a
     /// position half a frame before the end interpolates frames 18, 19, then
     /// 10, 11 — what the loop plays next — not 20, 21 from past it; and after
     /// the wrap, half a frame into the loop, the frame behind is 19, the one
@@ -1666,11 +1665,8 @@ mod tests {
     /// speed gives**: 16 frames at 1×, then 2× on the next block, and the
     /// read is seated where the gate puts the playhead at 2× (elapsed time at
     /// the new speed — what a varispeed change on a placed voice means) and
-    /// steps 2 from there.
-    ///
-    /// (The `AudioUnit` era also pinned a rate change *between two frames of
-    /// one clock reading*, reachable only by `tick`; a block reads its rates
-    /// once, so there is no such moment.)
+    /// steps 2 from there. A block reads its rates once, so there is no moment between two frames
+    /// of one block at which a rate can change.
     ///
     /// Mutation (run): `placed_positions` stepping by `read_rate` without
     /// the speed (`SrcRatio` alone) → the second block steps 1 → fails.
@@ -1775,8 +1771,7 @@ mod tests {
         }
     }
 
-    /// **A stop inside a block silences the read on its frame** (doc 013
-    /// §6): the block's `Env` carries the stop as a change at frame 40, and
+    /// **A stop inside a block silences the read on its frame**: the block's `Env` carries the stop as a change at frame 40, and
     /// the clip plays frames 0..40 and not one more.
     ///
     /// Mutation (run): `place` reading the block's first transport for every
@@ -1809,7 +1804,7 @@ mod tests {
     }
 
     /// **A loop moved under a cursor that has been round the old one reads
-    /// the file where the cursor is** (the review's B1): wrapped once on
+    /// the file where the cursor is**: wrapped once on
     /// `[1000, 3000)` to frame 1500, then the loop moved to `[2000, 4000)` —
     /// what `VoiceCommand::UpdateLoop` does while a loop point is dragged — the
     /// next frames are the file's 1500, 1501, …, not 3500, …. The same after
@@ -2558,8 +2553,8 @@ mod tests {
     }
 
     /// **A fork of the node shares nothing with it, and starts from the gain
-    /// last set** — the graph's fork check (`assert_param_fork`,
-    /// which replaced the `IsolateRow` row): gain is this node's one cell.
+    /// last set** — the graph's fork check (`assert_param_fork`): gain is
+    /// this node's one cell.
     ///
     /// Mutation (run): `fork_fresh` without `detach_gain` → "a live write
     /// reached the fork" → fails.

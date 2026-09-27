@@ -89,7 +89,7 @@ impl Vst3Library {
         self.run_loop.clone()
     }
 
-    /// Load a VST3 library from a pre-resolved path to the actual binary (the
+    /// Loads a VST3 library from a pre-resolved path to the actual binary (the
     /// inner Mach-O / ELF / PE, not the bundle directory).
     ///
     /// # Errors
@@ -194,7 +194,7 @@ impl Vst3Library {
         unsafe { self.factory.countClasses() }
     }
 
-    /// Read the `index`-th class descriptor from the factory.
+    /// Reads the `index`-th class descriptor from the factory.
     ///
     /// Prefers `IPluginFactory3::getClassInfoUnicode`, whose `name` is UTF-16,
     /// falling back to the ASCII `IPluginFactory::getClassInfo`. The ASCII
@@ -275,7 +275,7 @@ impl Vst3Library {
         })
     }
 
-    /// Instantiate a class by CID and query for an interface. Returns a
+    /// Instantiates a class by CID and query for an interface. Returns a
     /// `+1` refcounted raw pointer to the requested interface.
     pub(crate) fn create_instance<I: Interface>(&self, cid: &TUID) -> Result<ComPtr<I>> {
         let iid_tuid = guid_as_tuid(&I::IID);

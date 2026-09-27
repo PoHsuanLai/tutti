@@ -1,10 +1,8 @@
 //! Regression gate: the unit's `Node::process` must not allocate, at any
 //! block length.
 //!
-//! This crate had no such gate before the frame-offset fix, which is what made
-//! the fix worth gating: a block now walks a variable number of render
-//! segments per block rather than one fixed refill, so the obvious regressions
-//! are shaped like allocation — collecting the segment boundaries into a `Vec`,
+//! A block walks a variable number of render segments (one per distinct
+//! event offset), so the likely regressions are shaped like allocation — collecting the segment boundaries into a `Vec`,
 //! growing the scratch buffers to `size` on the audio thread, or re-sizing
 //! `midi_buffer` when a block carries more events than usual.
 //!
@@ -101,10 +99,10 @@ fn soundfont_process_with_active_voices_is_allocation_free() {
     });
 }
 
-/// The path the frame-offset fix added: several events at distinct offsets in
-/// one block, so `process` splits the render into multiple segments.
+/// Several events at distinct offsets in one block, so `process` splits the
+/// render into multiple segments.
 ///
-/// This is the test the fix is gated on. A regression that collected segment
+/// A regression that collected segment
 /// boundaries into a `Vec`, or that allocated a scratch slice per segment,
 /// lands here and nowhere else — the two tests above drive one segment per
 /// block and would stay green.
@@ -179,7 +177,7 @@ fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
     });
 }
 
-/// One-frame blocks (the old per-sample `tick` path's shape): a graph may
+/// One-frame blocks: a graph may
 /// hand the node a block of one frame.
 #[test]
 fn soundfont_one_frame_blocks_are_allocation_free() {

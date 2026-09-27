@@ -23,13 +23,21 @@ use smallvec::SmallVec;
 /// smaller.
 const MAX_BLOCK_SIZE: usize = 4096;
 
-/// Load a VST2 plugin in-process. Returns the graph node (insert it with
-/// `Editor::insert`: it is a `tutti_graph::Node`) and a control handle.
+/// Loads a VST2 plugin in the host process, returning its graph node and
+/// control handle.
 ///
-/// The returned node and handle share the underlying
-/// `tutti_vst2_host::Vst2Instance` via an `Arc<Mutex<…>>`. Drop both to drop
-/// the plugin. Editors are opened through the handle; audio happens on
-/// whatever thread the graph's executor runs on.
+/// [`Plugin::open`](crate::catalog::Plugin::open) calls this for `.vst` files
+/// when the `vst2` feature is on; call it directly only to get the concrete
+/// [`InProcessVst2Client`] type. Insert the node with `Editor::insert` (it is a
+/// `tutti_graph::Node`). The node and handle share the plugin instance; drop
+/// both to drop the plugin. Editors are opened through the handle, and audio
+/// runs on whatever thread the graph's executor runs on. Blocks while the
+/// plugin loads, so call it off the audio thread.
+///
+/// # Errors
+///
+/// Returns [`BridgeError::LoadFailed`] when the library cannot be opened or
+/// the plugin fails to initialize.
 pub fn load_client(
     path: &Path,
     sample_rate: impl Into<tutti_core::SampleRate>,

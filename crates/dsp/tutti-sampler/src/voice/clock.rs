@@ -1,5 +1,5 @@
 //! The transport over one block, as a placed voice reads it: from the block's
-//! [`Env`], never from a shared timeline (doc 013, items 8 and 9).
+//! [`Env`], never from a shared timeline.
 //!
 //! A placed voice's position is a function of the playhead, so what it needs
 //! from a block is the playhead's beat at every frame. The block's `Env`

@@ -1,7 +1,7 @@
 //! [`MidiClipNode`]: a clip plays its notes out of an event port, on the
 //! frames playback reaches their beats in the block's `Env` — through a seek,
 //! a loop wrap, a stop and a replaced clip — and ends the notes it leaves
-//! sounding when playback jumps (doc 013, rewrite item 5).
+//! sounding when playback jumps.
 //!
 //! Every test renders a clip node into a sink that logs each event it
 //! receives with its absolute frame. 120 BPM at 48 kHz: a beat is 24 000
@@ -341,8 +341,8 @@ fn setting_the_same_events_cuts_nothing() {
 }
 
 /// **A note lands on its frame where the beat is not a whole number of
-/// frames' worth of float** (doc 013 §6, "the frame is the source of
-/// truth"). At 90 BPM and 48 kHz a beat is 32 000 frames: notes at beats 1
+/// frames' worth of float** (the frame, not the beat, is the source of
+/// truth). At 90 BPM and 48 kHz a beat is 32 000 frames: notes at beats 1
 /// and 3 land on frames 32 000 and 96 000 exactly, in 64-frame blocks whose
 /// transport beat is `frame / 32 000` (not exact in binary).
 ///

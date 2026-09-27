@@ -5,14 +5,9 @@
 //! neither says without the whole value in hand: which sources, with which
 //! shapings, the graph's spec holds for a modulated param.
 //!
-//! It used to assert the same things about a sub-graph — which shaper fed
-//! which port of a `ParamSumNode`, and a shaper's shaping lifted into its
-//! node's `NodeSpec` — because the chain was nodes in the `Topology`. The
-//! graph owns the arithmetic now (design doc 013 item 6), and its value holds
-//! the modulation directly (`GraphSpec::params`, read here through
-//! `AudioGraphRes::param_mod`): one entry per modulated param, each source
-//! with its shaping. Every property below is the old one, asked of that
-//! value.
+//! The graph owns the arithmetic, and its value holds the modulation directly
+//! (`GraphSpec::params`, read here through `AudioGraphRes::param_mod`): one
+//! entry per modulated param, each source with its shaping.
 
 #![cfg(feature = "modulation")]
 
@@ -192,8 +187,7 @@ fn despawning_a_mod_source_leaves_no_stale_source_in_the_value() {
 
 /// **The value carries the shaping each source is rendered with** — the
 /// table the graph's fused step reads, built from the route's depth,
-/// polarity and curve. What used to be lifted from a shaper entity's
-/// `ShaperShaping` into its `NodeSpec` by hand is now simply the value.
+/// polarity and curve.
 ///
 /// Mutation (run): declare every source with depth 1 (ignore `r.depth`) →
 /// fails.

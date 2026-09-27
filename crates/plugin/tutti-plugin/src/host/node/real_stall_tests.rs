@@ -283,11 +283,10 @@ fn a_real_plugin_that_stops_answering_is_abandoned_and_later_drained() {
 
     // --- The session survived. A missed budget is not a death.
     //
-    // This is the regression the `Owed` work fixed: before it, a `Timeout`
-    // propagated out of `handle` into `pump`, which treats every error as
-    // connection-level — so one late block crashed the bridge permanently and
-    // the plugin was silent for the rest of the session while the server was
-    // still running and still correct.
+    // A `Timeout` must not propagate out of `handle` into `pump`, which treats
+    // every error as connection-level — one late block would crash the bridge
+    // permanently and silence the plugin for the rest of the session while the
+    // server was still running and still correct.
     assert!(
         !handle.status().is_dead(),
         "a plugin that missed its block budget must not be marked dead: {:?}",

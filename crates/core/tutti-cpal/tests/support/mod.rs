@@ -1,19 +1,11 @@
 //! Shared fixtures for this crate's integration tests.
 //!
-//! The rolling-graph fixture now exists in three places — `output.rs`'s
-//! `build_callback_state`, `tests/rt_no_alloc.rs`'s `rolling_state`, and
-//! whatever the next test binary needs. Each is a graph (doc 013
-//! Phase 3 PR 15: `Engine` renders nothing else); the nodes are graph
-//! nodes, rendered whole blocks at a time. Two copies were already acknowledged
-//! in `rt_no_alloc.rs`'s header ("duplicated rather than shared because that
-//! one is `#[cfg(test)]`-private"); three is the point at which the repo's own
-//! escalation applies.
+//! The rolling-graph fixture: a sine through a filter, rendered by an
+//! `Engine` whole blocks at a time. `output.rs`'s unit tests carry their own
+//! copy (`build_callback_state`) because a `#[cfg(test)]` module cannot see
+//! `tests/`.
 //!
-//! A support module, not a dev-dependency crate: `tutti-fixture-resolve`
-//! exists because *three separate crates* each carried a copy of the same
-//! probe-path logic. Three copies inside one crate is a `tests/support/`.
-//!
-//! `rt_no_alloc.rs` still keeps its own copy, deliberately — it declares a
+//! `rt_no_alloc.rs` keeps its own copy too, deliberately — it declares a
 //! `#[global_allocator]`, and every line it runs before the gate has to be
 //! auditable in one file.
 

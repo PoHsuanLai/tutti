@@ -1,8 +1,4 @@
 //! JSON-backed [`PluginCatalog`] implementation.
-//!
-//! Stores [`PluginRecord`] entries in memory keyed by filesystem path and
-//! persists them as a JSON list on [`PluginCatalog::flush`]. This is the
-//! default catalog used by [`crate::catalog::Plugins`].
 
 use super::catalog::PluginCatalog;
 use super::record::PluginRecord;
@@ -15,15 +11,24 @@ use tracing::{debug, warn};
 /// Disambiguates concurrent temp files within one process.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Catalog backed by a JSON file on disk.
+/// A [`PluginCatalog`] that keeps records in memory and persists them as a JSON
+/// file.
+///
+/// Records are keyed by plugin path. [`PluginCatalog::flush`] writes the whole
+/// list atomically (a sibling temp file, fsynced, then renamed over the real
+/// path), so a crash mid-write leaves the previous file intact. This is the
+/// store behind [`Plugins::with_json_catalog`](crate::catalog::Plugins::with_json_catalog).
 pub struct JsonCatalog {
     records: HashMap<PathBuf, PluginRecord>,
     db_path: PathBuf,
 }
 
 impl JsonCatalog {
-    /// Load from `db_path`, or start empty if the file is missing or
-    /// corrupt.
+    /// Loads the catalog from `db_path`, or starts empty if the file is missing
+    /// or corrupt.
+    ///
+    /// A corrupt file is not overwritten: it is renamed to the same path with
+    /// a `.corrupt` extension so its records can be recovered by hand.
     pub fn load(db_path: impl Into<PathBuf>) -> Self {
         let db_path = db_path.into();
         let records = match std::fs::read_to_string(&db_path) {
@@ -58,7 +63,8 @@ impl JsonCatalog {
         Self { records, db_path }
     }
 
-    /// Empty catalog that writes to `db_path` on `flush`.
+    /// Creates an empty catalog that writes to `db_path` on `flush`, without
+    /// reading it.
     pub fn empty(db_path: impl Into<PathBuf>) -> Self {
         Self {
             records: HashMap::new(),
@@ -66,7 +72,7 @@ impl JsonCatalog {
         }
     }
 
-    /// Path where JSON is persisted.
+    /// Returns the path the JSON file is written to.
     pub fn db_path(&self) -> &Path {
         &self.db_path
     }
@@ -89,15 +95,15 @@ impl PluginCatalog for JsonCatalog {
         Box::new(self.records.values())
     }
 
-    /// Persist atomically: serialise to a sibling temp file, fsync it, then
-    /// `rename` over the real path.
+    /// Writes the catalog atomically: serialises to a sibling temp file, fsyncs
+    /// it, then renames it over the real path.
     ///
-    /// The previous `fs::write` truncated in place, so a crash or power loss
-    /// mid-write left a half-written file. `load` then logged "corrupt,
-    /// starting fresh" and returned an empty map — silently destroying the
-    /// entire catalog, blacklist included. `rename` is atomic on POSIX and on
-    /// Windows (`MoveFileEx` semantics via `std::fs::rename` replacing an
-    /// existing file), so a reader sees either the old file or the new one.
+    /// A reader sees either the old file or the new one, never a partial write.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error if the parent directory, the temp file or the
+    /// rename fails.
     fn flush(&mut self) -> std::io::Result<()> {
         let records: Vec<&PluginRecord> = self.records.values().collect();
         let json = serde_json::to_string_pretty(&records).map_err(std::io::Error::other)?;
@@ -288,8 +294,8 @@ mod tests {
         assert!(db.is_empty());
     }
 
-    /// Regression for a corrupt DB must be preserved, not silently
-    /// destroyed by the next flush. Losing it loses every blacklist entry.
+    /// A corrupt DB must be preserved, not destroyed by the next flush.
+    /// Losing it loses every blacklist entry.
     #[test]
     fn load_corrupt_json_quarantines_the_file() {
         let dir = TempDir::new().unwrap();
@@ -307,7 +313,7 @@ mod tests {
         assert!(!db_path.exists(), "corrupt DB should not be left in place");
     }
 
-    /// Regression for `flush` must never truncate the live file.
+    /// `flush` must never truncate the live file.
     /// It writes a sibling temp then renames, so any failure leaves the
     /// previous catalog intact rather than half-written.
     #[test]

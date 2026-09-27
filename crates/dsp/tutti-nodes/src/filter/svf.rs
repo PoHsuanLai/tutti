@@ -86,7 +86,7 @@ pub struct SvfCoeffs {
     pub m2: f64,
 }
 
-/// Compute SVF filter coefficients from parameters (pure function, no state).
+/// Computes SVF filter coefficients from parameters (pure function, no state).
 ///
 /// The three tuning parameters are three different units, and taking them as
 /// [`Hz`] / [`Q`] / [`Db`] is what keeps them apart. As bare `f32`s they are
@@ -211,9 +211,9 @@ impl<F: Real> SvfCoefficients<F> {
 ///
 /// The pair is kept together per channel (array-of-structures), not split into
 /// one array per word: the two updates are symmetric and their loads and
-/// stores stay adjacent. Measured, splitting them cost 26% at width 6 — the
-/// across-channel layout design doc 013 sketched only pays once a
-/// channel-inner loop is explicitly vectorised, which this one is not.
+/// stores stay adjacent. Measured, splitting them cost 26% at width 6 — an
+/// across-channel layout only pays once a channel-inner loop is explicitly
+/// vectorised, which this one is not.
 #[inline(always)]
 fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
     let two = F::from_f64(2.0);
@@ -225,15 +225,30 @@ fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
     c.m0 * v0 + c.m1 * v1 + c.m2 * v2
 }
 
-/// State-variable filter of any width: `N` audio inputs, `N` outputs, one
+/// A state-variable filter of any width: `N` audio inputs, `N` outputs, one
 /// coefficient set shared across the channels and one integrator pair per
 /// channel.
 ///
-/// This used to be two types — a mono `SvfFilterNode` and a
-/// `StereoSvfFilterNode` that was already `N`-wide despite its name (a leftover
-/// of the extraction). They ran the same integrator; the merge keeps the mono
-/// arithmetic bit-for-bit at width 1 and the old wide arithmetic at every other
-/// width.
+/// Eight responses ([`SvfType`]) share one coefficient solve (Cytomic /
+/// Zavalishin TPT form), so switching type is as cheap as any parameter
+/// change.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_core::{Hz, Q, UnitParam};
+/// use tutti_graph::{Prepare, Solo};
+/// use tutti_nodes::{SvfFilterNode, SvfType};
+/// use tutti_types::{SampleRate, Samples};
+///
+/// let filter = SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(800.0), Q(0.707));
+/// let mut solo = Solo::new(filter, Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let out = solo.render_input(&[&[1.0; 64]]);
+/// assert_eq!(out.len(), 1);
+///
+/// // Move the cutoff on the running node; it glides over the next block.
+/// assert!(solo.controls().set(UnitParam::Cutoff, 2_000.0));
+/// ```
 ///
 /// Cutoff ([`Hz`]), [`Q`] and gain ([`Db`]) are live [`Param`]s shared across
 /// clones, read **once per block**. A held value costs nothing — the
@@ -253,7 +268,7 @@ fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
 /// # Modulated params
 ///
 /// `N` audio inputs, `N` outputs. Cutoff (in [`Hz`]) and [`Q`] are
-/// modulatable by the graph (design doc 013 item 6), in that port order
+/// modulatable by the graph, in that port order
 /// ([`SVF_PARAMS`]): a per-frame value on the param port
 /// ([`Io::param`](tutti_graph::Io::param)) **overrides** the corresponding
 /// cell. It is sampled at the solve points — every 16 samples and at the
@@ -267,7 +282,7 @@ fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
 /// over cutoff, Q and gain by [`UnitParam`], and a fork of it starts from
 /// the values last set through that set. The graph prepares it at the
 /// device rate before its first block, so it is never run at the placeholder
-/// rate it is built at (an `AudioUnit` could be, until doc 013 Phase 5).
+/// rate it is built at. Rendering allocates nothing.
 pub struct SvfFilterNode<F: Real = f64> {
     filter_type: SvfType,
     frequency: Param<Hz>,
@@ -552,10 +567,9 @@ impl<F: Real> SvfFilterNode<F> {
 }
 
 impl<F: Real + 'static> Node for SvfFilterNode<F> {
-    /// Its tail is [`Tail::Unknown`], as it reported under `Legacy`: a
-    /// resonant filter rings on after its input stops, for as long as its Q
-    /// says, so the graph's tail fold (what an export renders past the end)
-    /// must not read it as `None`.
+    /// Its tail is [`Tail::Unknown`]: a resonant filter rings on after its
+    /// input stops, for as long as its Q says, so the graph's tail fold (what
+    /// an export renders past the end) must not read it as `None`.
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.width() as u16);
         Shape::audio(width, width)
@@ -1006,8 +1020,8 @@ mod tests {
     }
 
     /// The shape is as wide as the filter was built, in and out, declares
-    /// cutoff then Q as its modulatable params, and keeps the
-    /// `Tail::Unknown` the filter reported under `Legacy`.
+    /// cutoff then Q as its modulatable params, and reports
+    /// `Tail::Unknown`.
     ///
     /// Mutation (run): swap `SVF_PARAMS`' order → the params assertion fails.
     /// Mutation (run): drop `.with_tail(Tail::Unknown)` → the shape's default

@@ -1,12 +1,11 @@
 //! Events: what flows on an event port.
 //!
-//! Doc 013 §1 ("Port kinds") and owner decision 4: events are **graph ports**,
-//! not a side channel, so the one compiler pass that aligns audio (PDC) aligns
-//! notes and automation too. Decision 6: an event input port may have several
-//! sources, merged deterministically by `(offset, source order)`, where source
-//! order is the source port's `(NodeKey, port)` — layering a keyboard and a
-//! clip is the normal case, not an edge case. Decision 7:
-//! automation is carried as **linear ramp** events first.
+//! Events are **graph ports**, not a side channel, so the one compiler pass
+//! that aligns audio (PDC) aligns notes and automation too. An event input
+//! port may have several sources, merged deterministically by `(offset,
+//! source order)`, where source order is the source port's `(NodeKey, port)`
+//! — layering a keyboard and a clip is the normal case, not an edge case.
+//! Automation is carried as **linear ramp** events.
 //!
 //! # Why a raw UMP payload and not `tutti-midi-types`
 //!
@@ -198,8 +197,8 @@ impl Harmony {
 /// happens there.
 ///
 /// `offset` is an [`Offset`] — a position inside the block the event is
-/// delivered in, never an absolute [`Frame`](tutti_types::Frame) (see the
-/// `time` module docs, `src/time.rs`). Slices of events handed to a node are
+/// delivered in, never an absolute [`Frame`](tutti_types::Frame) (see
+/// [`Offset`]). Slices of events handed to a node are
 /// sorted by it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Event {
@@ -298,6 +297,11 @@ impl<'a> SortedEvents<'a> {
 
     /// `events`, if they are sorted by offset and every offset is below
     /// `frames`.
+    ///
+    /// # Errors
+    ///
+    /// [`EventOrderError::OutOfBlock`] or [`EventOrderError::Unsorted`],
+    /// naming the first offending index.
     pub fn new(events: &'a [Event], frames: usize) -> Result<Self, EventOrderError> {
         for (i, e) in events.iter().enumerate() {
             if e.offset.index() >= frames {
@@ -310,8 +314,13 @@ impl<'a> SortedEvents<'a> {
         Ok(Self { events })
     }
 
-    /// Sort `events` in place by offset (stably), then view them. Fails only
+    /// Sorts `events` in place by offset (stably), then views them. Fails only
     /// when an offset is outside the block. Control side: may allocate.
+    ///
+    /// # Errors
+    ///
+    /// [`EventOrderError::OutOfBlock`], naming the first event at or past
+    /// `frames`; `events` is left unsorted.
     pub fn sort(events: &'a mut [Event], frames: usize) -> Result<Self, EventOrderError> {
         if let Some(at) = events.iter().position(|e| e.offset.index() >= frames) {
             return Err(EventOrderError::OutOfBlock { at });
@@ -426,7 +435,8 @@ impl std::ops::Deref for SortedEvents<'_> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventRejected {
     /// The port's preallocated buffer is full. The event is dropped; the
-    /// executor counts it (see `Executor::dropped_events`).
+    /// executor counts it (see
+    /// [`Executor::dropped_events`](crate::Executor::dropped_events)).
     Full,
     /// `offset` is at or past the end of the block.
     OutOfBlock,
@@ -488,7 +498,16 @@ impl<'a> EventWriter<'a> {
         Err(why)
     }
 
-    /// Append `event`. Offsets must be non-decreasing and inside the block.
+    /// Appends `event`. Offsets must be non-decreasing and inside the block.
+    /// Audio thread: never allocates.
+    ///
+    /// # Errors
+    ///
+    /// [`EventRejected::OutOfBlock`], [`EventRejected::OutOfOrder`], or
+    /// [`EventRejected::Full`] when the port's declared capacity is reached.
+    /// A refused event is dropped and counted in
+    /// [`Executor::dropped_events`](crate::Executor::dropped_events); the
+    /// events already written stand.
     pub fn push(&mut self, event: Event) -> Result<(), EventRejected> {
         if event.offset.get() >= self.frames {
             return self.reject(EventRejected::OutOfBlock);

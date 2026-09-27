@@ -20,8 +20,8 @@ pub(crate) fn noise(seed: u32, len: usize) -> Vec<f32> {
 /// Three nodes from `make` render `block1` identically. Then `change` is
 /// applied to two of them: `ramped` renders `block2` through `process` (the
 /// per-block read, which ramps), `jumped` through `tick` (a block of one per
-/// sample, so the change lands whole on the first sample — the old per-sample
-/// behaviour). `held` never sees the change.
+/// sample, so the change lands whole on the first sample, as a per-sample read
+/// would). `held` never sees the change.
 pub(crate) struct ChangeRun<N> {
     pub ramped: N,
     pub jumped: N,
@@ -45,7 +45,7 @@ pub(crate) fn drive_block(node: &mut dyn Node, inputs: &[&[f32]]) -> Vec<Vec<f32
 }
 
 /// A node over `inputs`, one frame per call: a change lands whole on
-/// the first frame, as `tick` landed it.
+/// the first frame.
 pub(crate) fn drive_frames(node: &mut dyn Node, inputs: &[&[f32]]) -> Vec<Vec<f32>> {
     let n = inputs[0].len();
     let mut out: Vec<Vec<f32>> = Vec::new();
@@ -110,17 +110,16 @@ impl<N> ChangeRun<N> {
     }
 }
 
-/// The rate the per-frame unit tests ran their nodes at before the port.
+/// The rate the per-frame unit tests run their nodes at.
 pub(crate) const RATE_44K: SampleRate = SampleRate(44_100.0);
 
-/// A node prepared at `rate` for blocks of up to 1024 frames: what
-/// `set_sample_rate(rate)` did for an `AudioUnit`.
+/// A node prepared at `rate` for blocks of up to 1024 frames.
 pub(crate) fn prepared_at<N: Node>(node: N, rate: SampleRate) -> N {
     tutti_graph::contract::prepared(node, rate, 1024)
 }
 
-/// One frame of a node — a block of one, what `tick` was: `input`
-/// holds one sample per audio input, and `out` receives one per output.
+/// One frame of a node — a block of one: `input` holds one sample per audio
+/// input, and `out` receives one per output.
 pub(crate) fn tick(node: &mut dyn Node, input: &[f32], out: &mut [f32]) {
     tick_fed(node, input, &[], out);
 }

@@ -3,9 +3,10 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
-/// Plugin-load phase label. The shared superset lives in `tutti-plugin-types`;
-/// VST3 uses every phase. Re-exported so `Vst3Error` and downstream callers
-/// keep referring to `crate::error::LoadStage`.
+/// The loading step a [`Vst3Error`] belongs to.
+///
+/// Re-exported from `tutti-plugin-types`, which shares it across all plugin
+/// formats; VST3 uses every phase.
 pub use tutti_plugin_types::LoadStage;
 
 /// Convenience alias for `Result<T, Vst3Error>`.
@@ -46,9 +47,7 @@ pub enum Vst3Error {
     ///
     /// Editor failures are [`Vst3Error::EditorError`], not this: "the plugin
     /// publishes no view" and "the view refused this platform's window type"
-    /// are both editor outcomes a caller handles at the editor call site, and
-    /// folding them in here made a missing GUI indistinguishable from a
-    /// refused sample format.
+    /// are both editor outcomes a caller handles at the editor call site.
     #[error("Feature not supported: {0}")]
     NotSupported(String),
 

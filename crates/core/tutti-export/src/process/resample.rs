@@ -135,10 +135,9 @@ mod streaming {
     }
 
     impl Resampler {
-        /// Both rates are [`SampleRate`], which every caller already holds —
-        /// they used to narrow to `u32` at the call and this widened straight
-        /// back to divide. The narrowing now happens once, here, at rubato's
-        /// boundary, which is the only place it is owed.
+        /// Both rates are [`SampleRate`], which every caller already holds;
+        /// the narrowing to rubato's integer rates happens once, here, at its
+        /// boundary.
         ///
         /// This does **not** make a transposition a compile error: the two
         /// arguments are the same type, so swapping them still builds
@@ -267,9 +266,9 @@ mod streaming {
 /// conversion moves the true peak, so a gain measured at the render rate would
 /// miss its target once the file is written at another.
 // Not codec-gated: this converts buffers through `rubato`, an unconditional
-// dependency, and its caller `render_normalized_to_file` is ungated too. The
-// gate that used to be here made a no-codec build fail to compile rather than
-// merely fail to encode.
+// dependency, and its caller `render_normalized_to_file` is ungated too. Gating
+// it would make a no-codec build fail to compile rather than merely fail to
+// encode.
 pub(crate) fn resample_rendered(
     rendered: &crate::Rendered,
     opts: crate::config::Resample,
@@ -334,9 +333,9 @@ mod tests {
         }
     }
 
-    /// The regression: an impulse must come out where the rate change puts it,
-    /// not `output_delay()` frames later. The old code never called
-    /// `output_delay`, so this landed 320 frames late at 44.1→48 k.
+    /// An impulse must come out where the rate change puts it, not
+    /// `output_delay()` frames later (320 frames late at 44.1→48 k if the
+    /// delay is not compensated).
     #[test]
     fn an_impulse_keeps_its_position() {
         let n = 8192;
@@ -366,9 +365,8 @@ mod tests {
         }
     }
 
-    /// …and the tail must survive. A marker on the final input frame used to
-    /// vanish entirely, because the blind truncate cut where the delayed tail
-    /// would have been.
+    /// …and the tail must survive. A marker on the final input frame vanishes
+    /// entirely if the output is truncated where the delayed tail would be.
     #[test]
     fn the_tail_is_flushed_not_truncated() {
         let n = 4096;

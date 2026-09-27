@@ -64,7 +64,7 @@ pub struct LadderCoeffs {
     pub k: f64,
 }
 
-/// Compute ladder coefficients (pure function, no state).
+/// Computes ladder coefficients (pure function, no state).
 ///
 /// The cutoff is clamped to `1.0..=0.998 * Nyquist`, since `tan` diverges at
 /// Nyquist itself, and the resonance to `0.0..=1.0`.
@@ -84,9 +84,8 @@ pub fn compute_ladder_coeffs(
 /// The ladder's two coefficients plus the parameter values they were solved
 /// at, shared by every channel.
 ///
-/// `g1` is the one-pole stage gain `g / (1 + g)` with `g = tan(π·fc/sr)`; the
-/// old per-channel node recomputed that division every sample from a cached
-/// `g`. It is the same value, so it is solved once with the `tan`.
+/// `g1` is the one-pole stage gain `g / (1 + g)` with `g = tan(π·fc/sr)`,
+/// solved once with the `tan` rather than divided out every sample.
 #[derive(Clone, Copy, PartialEq)]
 struct LadderCoefficients<F: Real> {
     g1: F,
@@ -169,14 +168,11 @@ fn ladder_step<F: Real>(
     }
 }
 
-/// Moog-style four-stage ladder filter with resonance and drive, of any width:
-/// `N` audio inputs, `N` outputs.
+/// A Moog-style four-stage ladder filter with resonance and drive, of any
+/// width: `N` audio inputs, `N` outputs.
 ///
-/// This used to be a mono `LadderFilterNode` plus a `StereoLadderFilterNode`
-/// that held one whole mono node per channel — each with its own coefficient
-/// cache and its own three atomic loads per sample. Now the coefficients are
-/// solved once for every channel and the channels' four-stage chains run side
-/// by side.
+/// The coefficients are solved once for every channel, and the channels'
+/// four-stage chains run side by side.
 ///
 /// Cutoff ([`Hz`]), [`Resonance`] and [`Drive`] are live [`Param`]s shared
 /// across clones, all read **once per block**. A held cutoff/resonance costs
@@ -199,7 +195,7 @@ fn ladder_step<F: Real>(
 /// # Modulated params
 ///
 /// `N` audio inputs, `N` outputs. Cutoff, Q and drive are modulatable by the
-/// graph (design doc 013 item 6), in that port order ([`LADDER_PARAMS`]). A
+/// graph, in that port order ([`LADDER_PARAMS`]). A
 /// modulated cutoff or Q is sampled at the solve points (every 16 samples
 /// and the block's last sample) with the coefficients interpolated between
 /// them; a modulated drive is read every sample, since drive needs no solve.
@@ -214,7 +210,7 @@ fn ladder_step<F: Real>(
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over cutoff, resonance (as `UnitParam::Q`) and drive, and a fork of it
 /// starts from the values last set through that set. The graph prepares it
-/// at the device rate before its first block.
+/// at the device rate before its first block. Rendering allocates nothing.
 pub struct LadderFilterNode<F: Real = f64> {
     ladder_type: LadderType,
     frequency: Param<Hz>,
@@ -387,7 +383,7 @@ impl<F: Real> LadderFilterNode<F> {
     /// slice. One channel alone is latency-bound — every sample's `tanh` waits
     /// on the previous sample's fourth stage — and running the independent
     /// chains of a group side by side is what fills that latency (measured:
-    /// one channel at a time was 2× slower than the old per-sample loop).
+    /// one channel at a time is 2× slower).
     fn run_held(
         &mut self,
         size: usize,
@@ -540,10 +536,9 @@ impl<F: Real> LadderFilterNode<F> {
 impl<F: Real + 'static> Node for LadderFilterNode<F> {
     /// `N` in and out, cutoff, Q and drive modulatable ([`LADDER_PARAMS`]).
     ///
-    /// Its tail is [`Tail::Unknown`], as it reported under `Legacy`: a
-    /// resonant ladder rings on after its input stops, for as long as its
-    /// resonance and cutoff say, so it is never skipped on a silent block
-    /// (a `Tail::None` would cut the ring-out).
+    /// Its tail is [`Tail::Unknown`]: a resonant ladder rings on after its
+    /// input stops, for as long as its resonance and cutoff say, so it is never
+    /// skipped on a silent block (a `Tail::None` would cut the ring-out).
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.width() as u16);
         Shape::audio(width, width)
@@ -908,7 +903,7 @@ mod tests {
     }
 
     /// The shape declares cutoff, Q then drive, never changes the arity, and
-    /// keeps the `Tail::Unknown` the ladder reported under `Legacy`.
+    /// reports `Tail::Unknown`.
     ///
     /// Mutation (run): swap `LADDER_PARAMS`' Q and drive → the first
     /// assertion fails. Mutation (run): drop `.with_tail(Tail::Unknown)` →

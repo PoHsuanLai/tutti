@@ -12,12 +12,6 @@
 //!
 //! [`UmpOutRes`] holds an erased `Box<dyn MidiOut>`, so there is one path and no
 //! `#[cfg]`: a Linux ALSA seq-UMP output stamps exactly as a CoreMIDI one does.
-//!
-//! # Why these live here rather than beside the Flex Data metadata
-//!
-//! [`UmpOutRes`] is a *transport* and [`JrStamperRes`] is its stamping config;
-//! neither is Flex Data, and nothing in `metadata.rs` reads either. They belong
-//! beside the router that does.
 
 use bevy_ecs::prelude::*;
 
@@ -44,12 +38,12 @@ pub struct JrStamperRes {
 }
 
 impl JrStamperRes {
-    /// Stamping off until an app turns it on.
+    /// Creates the switch with stamping off, the default.
     pub fn disabled() -> Self {
         Self { enabled: false }
     }
 
-    /// Stamping on.
+    /// Creates the switch with stamping on.
     pub fn enabled() -> Self {
         Self { enabled: true }
     }
@@ -105,7 +99,7 @@ impl core::fmt::Debug for UmpOutRes {
 }
 
 impl UmpOutRes {
-    /// Wrap a UMP output sink, stamping *and clocking* at `sample_rate`.
+    /// Wraps a UMP output sink, stamping *and clocking* at `sample_rate`.
     ///
     /// No group: JR Timestamps are groupless utility messages (M2-104-UM
     /// §2.1.2), so a stamp applies to the whole stream.
@@ -247,7 +241,7 @@ pub struct MidiOutRouter<'a> {
 }
 
 impl MidiOutRouter<'_> {
-    /// Route a batch of drained events to the open output.
+    /// Routes a batch of drained events to the open output.
     ///
     /// An event with no live transport is dropped — the ring must not back up —
     /// but it is counted first, so "nothing is coming out" has an answer.
@@ -263,7 +257,7 @@ impl MidiOutRouter<'_> {
     }
 }
 
-/// Drain a [`MidiReceiver`] mailbox fully and route every event.
+/// Drains a [`MidiReceiver`] mailbox fully and routes every event.
 ///
 /// The single output-drain primitive: the graph's hardware out (the clock and
 /// whatever else is wired to it) and track MIDI-out push into a mailbox, and
@@ -343,10 +337,8 @@ mod tests {
     /// Both pumps stamp through one stream, so the origin keeps climbing across
     /// them.
     ///
-    /// This is the invariant the wrap-only move bought. When bevy-tutti carried
-    /// the origin itself, "the clock master and the track path share it" was a
-    /// convention held by a field one of them happened to own; now the engine's
-    /// `JrStream` owns it and the two cannot disagree.
+    /// The engine's `JrStream` owns the origin, so the clock master and the
+    /// track path cannot disagree about it.
     #[test]
     fn both_producers_advance_one_origin() {
         let (mut out, _) = out_with_counter(true);

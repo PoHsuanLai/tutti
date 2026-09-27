@@ -62,11 +62,9 @@ fn set_late_latency(samples: i32) {
     // value is written and then discarded with the unload, and the next load
     // starts a fresh image reading zero.
     //
-    // That is what made this file look flaky: `a_sample_rate_change_can_be_
-    // followed_by_a_fresh_read` failed with `Samples(0)` vs `Samples(1537)` in
-    // roughly a third of runs, passed single-threaded, and passed whenever
-    // another test's instance kept the image resident. Measured on this bug:
-    // 2 of 6 runs failed without the leak, 0 of 6 with it.
+    // Without the leak this file looks flaky: a read can come back as
+    // `Samples(0)` instead of the value just set, pass single-threaded, and
+    // pass whenever another test's instance keeps the image resident.
     //
     // `PROBE_LOCK` cannot help — it serializes callers, but the hazard is the
     // *refcount*, not concurrent access.

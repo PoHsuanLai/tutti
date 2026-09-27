@@ -2,17 +2,14 @@
 //! implements, and the [`PluginInstance`] bundle that composes them.
 //!
 //! A loaded plugin (VST2 / VST3 / CLAP / AU) is a *subprocess-local* object:
-//! it lives entirely inside `tutti-plugin-server`, reached through
-//! `Plugin::instance_mut()`, and never crosses the IPC wire. The surface is
-//! split along the real capability axis, one trait per concern, so a loader
-//! implements only the capabilities it has and a consumer depends only on the
-//! capability it uses.
+//! it lives entirely inside `tutti-plugin-server` and never crosses the IPC
+//! wire. The surface is split along the real capability axis, one trait per
+//! concern, so a loader implements only the capabilities it has and a consumer
+//! depends only on the capability it uses.
 //!
-//! Note the audio methods here ([`PluginAudio`]) are the *subprocess* render
-//! path — distinct from the host-side graph node (`PluginClient`) on the
-//! other end of the wire. Both are "process a block", but they are different
-//! objects in different processes, so this is not a duplicate of the graph's
-//! `Node`.
+//! The audio methods here ([`PluginAudio`]) are the *subprocess* render path,
+//! distinct from the host-side graph node (`PluginClient`) on the other end of
+//! the wire.
 //!
 //! # A plugin is a set of capabilities, not a state machine
 //!
@@ -80,32 +77,34 @@ use crate::{
     RenderMode, WindowHandle,
 };
 
-/// Catalog identity + load-time engine-wiring snapshot.
+/// A plugin's catalog identity and load-time wiring snapshot.
 ///
-/// Static identity (name, vendor, native class, has-editor) is on
-/// [`descriptor`](Self::descriptor); per-bus widths / latency / f64 support on
-/// [`loaded`](Self::loaded). Both are snapshots of what the plugin reported at
-/// load time — pure `&self` queries with no live-plugin analogue on a graph
-/// node (a graph node carries no identity of its own; the graph keys it).
+/// Static identity (name, vendor, native class, editor presence) is on
+/// [`descriptor`](Self::descriptor); per-bus widths, latency and capability
+/// flags are on [`loaded`](Self::loaded). Both are snapshots of what the plugin
+/// reported at load time.
 pub trait PluginMeta {
-    /// Static catalog identity as reported at load: name, vendor, native class,
-    /// whether an editor exists.
+    /// Returns the static catalog identity reported at load: name, vendor,
+    /// native class and whether an editor exists.
     fn descriptor(&self) -> &PluginDescriptor;
 
-    /// The load-time engine-wiring snapshot: per-bus channel widths, reported
-    /// latency, f64 support.
+    /// Returns the load-time wiring snapshot: per-bus channel widths, reported
+    /// latency and capability flags.
     fn loaded(&self) -> &LoadedPlugin;
 }
 
-/// The subprocess audio render path.
+/// Renders audio blocks through a loaded plugin.
 ///
-/// The loader-side counterpart of the host-side graph node: same "render
-/// one block" job, different object across the IPC boundary.
+/// This is the loader-side render path inside the plugin process; the host
+/// side reaches it through `tutti-plugin`'s graph node across the IPC
+/// boundary.
 pub trait PluginAudio: Send {
-    /// Process one audio block. The buffer carries the negotiated sample
-    /// format (f32 or f64) as a tagged enum, so the trait stays
-    /// dyn-compatible while implementations branch once and delegate into a
-    /// single generic inner body.
+    /// Processes one audio block.
+    ///
+    /// The buffer carries the negotiated sample format (f32 or f64) as a
+    /// tagged enum, so the trait stays dyn-compatible while implementations
+    /// branch once and delegate into a single generic inner body. Called on
+    /// the audio thread; implementations must not allocate or block.
     ///
     /// # `out` is the caller's, and is reused
     ///
@@ -117,17 +116,15 @@ pub trait PluginAudio: Send {
     /// Returning `ProcessOutput` by value looks equivalent and is not: this
     /// runs on the realtime audio thread, and a fresh return value has no
     /// capacity to reuse, so every block that emits more than the inline
-    /// `SmallVec` capacity allocates inside the audio callback. Worse, the two
-    /// hosts that already avoid this — `tutti-vst3-host` and `tutti-clap-host`
-    /// both return a borrowing `ProcessOutputRef` into their own pooled
-    /// buffers — had that borrow discarded by an owning conversion at exactly
-    /// this boundary. The out-parameter is what lets a loader copy into
-    /// storage that persists instead.
-    ///
-    /// A borrowed return would express the same thing, but not through a
-    /// `dyn`-safe trait: the returned lifetime would come from `&mut self` and
-    /// so hold the plugin borrowed across everything the caller does with the
+    /// `SmallVec` capacity allocates inside the audio callback. A borrowed
+    /// return would avoid that, but its lifetime would come from `&mut self`
+    /// and hold the plugin borrowed across everything the caller does with the
     /// block.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::Process`](crate::PluginError::Process) (or
+    /// another variant) when the plugin fails to render the block.
     fn process(
         &mut self,
         buffer: AudioBufferMut<'_, '_>,
@@ -143,7 +140,7 @@ pub trait PluginAudio: Send {
     /// the plugin is deactivated.
     fn set_sample_rate(&mut self, rate: f64);
 
-    /// Tell the plugin whether it is rendering under realtime pressure.
+    /// Tells the plugin whether it is rendering under realtime pressure.
     ///
     /// Configure-time, beside [`set_sample_rate`](Self::set_sample_rate), and
     /// for the same reason: three of the four formats can only accept it while
@@ -168,12 +165,8 @@ pub trait PluginAudio: Send {
 }
 
 /// Parameter enumeration, read, and write.
-///
-/// A graph node has no parameter *catalog* ([`get_parameter_list`](Self::get_parameter_list)
-/// returns id/name/range/default/unit/flags with no node analogue), so this
-/// stays plugin-specific.
 pub trait PluginParams {
-    /// Parameter value, **normalized `0..=1`**, for every format.
+    /// Returns a parameter's value, **normalized `0..=1`**, for every format.
     ///
     /// This is the host's authoring convention, and the same one
     /// [`ParameterPoint::value`](crate::ParameterPoint) carries: the direct path
@@ -213,7 +206,9 @@ pub trait PluginParams {
     /// write in [`set_parameter`](Self::set_parameter). Neither invents a cast.
     fn get_parameter(&self, id: ParamAddress) -> f64;
 
-    /// Write a parameter — see [`get_parameter`](Self::get_parameter) for why
+    /// Writes a parameter value.
+    ///
+    /// See [`get_parameter`](Self::get_parameter) for why
     /// every format speaks the normalized convention here, and for how an
     /// address of the wrong model is treated.
     ///
@@ -224,8 +219,8 @@ pub trait PluginParams {
     /// anyway arrives saturated rather than rejected.
     fn set_parameter(&mut self, id: ParamAddress, value: Normalized);
 
-    /// The plugin's own display string for `value` — `"800 Hz"`, `"Bandpass"`,
-    /// `"-inf dB"` — or `None` if it will not say.
+    /// Returns the plugin's own display string for `value` (`"800 Hz"`,
+    /// `"Bandpass"`, `"-inf dB"`), or `None` if it will not say.
     ///
     /// Asking the plugin is the only way to get this: formatting the number
     /// host-side cannot recover it, because only the plugin knows its own taper,
@@ -252,8 +247,9 @@ pub trait PluginParams {
         None
     }
 
-    /// Parse `text` back to a value using the plugin's own interpretation — the
-    /// inverse of [`parameter_text`](Self::parameter_text), and what lets a user
+    /// Parses `text` into a value using the plugin's own interpretation.
+    ///
+    /// The inverse of [`parameter_text`](Self::parameter_text): it lets a user
     /// type `"800 Hz"` or `"Bandpass"` into a field rather than hunting for the
     /// raw float.
     ///
@@ -280,13 +276,14 @@ pub trait PluginParams {
         None
     }
 
-    /// Push the host [`AutomationMode`](crate::AutomationMode) to the plugin.
+    /// Tells the plugin the host's current [`AutomationMode`](crate::AutomationMode).
+    ///
     /// Fire-and-forget; the default no-op covers formats without an
     /// automation-state concept. A format that supports it (VST3's
-    /// `IAutomationState`) encodes the mode onto its own ABI at the FFI edge.
+    /// `IAutomationState`) encodes the mode onto its own ABI.
     fn set_automation_state(&mut self, _mode: crate::AutomationMode) {}
 
-    /// Every parameter the plugin advertises, in the plugin's own order.
+    /// Returns every parameter the plugin advertises, in the plugin's own order.
     ///
     /// The order is presentation, not addressing: index `n` in this vector is
     /// not parameter id `n` for VST3, CLAP or AU. Address through each entry's
@@ -294,13 +291,18 @@ pub trait PluginParams {
     fn get_parameter_list(&self) -> Vec<ParameterInfo>;
 }
 
-/// Opaque preset-chunk save/load. A graph node has no serializable opaque state,
-/// so this is genuinely irreducible.
+/// Saves and restores a plugin's full state as an opaque chunk.
 pub trait PluginState: Send {
-    /// The plugin's full state as an opaque chunk, for the host to persist.
+    /// Returns the plugin's full state as an opaque chunk, for the host to
+    /// persist.
     ///
     /// The bytes are the plugin's own format and carry no host-readable
     /// structure; only the same plugin can interpret them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::State`](crate::PluginError::State) when the
+    /// plugin cannot produce its state.
     fn get_state(&mut self) -> Result<Vec<u8>>;
 
     /// Restores state from a chunk [`get_state`](Self::get_state) produced.
@@ -308,27 +310,32 @@ pub trait PluginState: Send {
     /// `&mut self` because every format applies this to the live instance.
     /// Handing a chunk from a different plugin is the caller's error to avoid —
     /// nothing here can validate the opaque bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::State`](crate::PluginError::State) when the
+    /// plugin rejects the chunk.
     fn set_state(&mut self, data: &[u8]) -> Result<()>;
 }
 
-/// Preset enumeration and loading, subprocess side.
+/// Enumerates and loads a plugin's own presets.
 ///
-/// The mirror of the host-side `HostPresets`, on the far end of the IPC. Every
+/// Every
 /// method is defaulted to "this format cannot", so a loader implements only
 /// what its format actually offers — which matters more here than for the other
 /// capabilities, because **no format offers both halves unconditionally**:
 ///
 /// - **CLAP** loads by path but cannot enumerate: discovery is a factory-level
 ///   extension this host does not bind.
-/// - **VST3** enumerates but has no load call — a program is selected by writing
-///   the parameter flagged `kIsProgramChange`, through the parameter path.
+/// - **VST3** has no load call; a loader implements the load by writing the
+///   parameter flagged `kIsProgramChange` that owns the program's list.
 /// - **AU** and **VST2** offer both.
 ///
 /// That split is what [`Features::PRESET_LIST`](crate::Features::PRESET_LIST)
 /// and [`Features::PRESET_LOAD`](crate::Features::PRESET_LOAD) report, and why
 /// they are two bits rather than one.
 pub trait PluginPresets: Send {
-    /// Every preset the plugin advertises, in the plugin's own order.
+    /// Returns every preset the plugin advertises, in the plugin's own order.
     ///
     /// Empty is the default and is the honest answer for a format that cannot
     /// enumerate. It is **not** the same as "this plugin has no presets" — a
@@ -337,11 +344,10 @@ pub trait PluginPresets: Send {
         Vec::new()
     }
 
-    /// Load one, by an id [`get_presets`](Self::get_presets) produced.
+    /// Loads a preset by an id [`get_presets`](Self::get_presets) produced.
     ///
-    /// Returns whether the plugin accepted. `false` is the default, and is the
-    /// honest answer for VST3: its programs go through the parameter path, and
-    /// routing them here as well would give one operation two write paths.
+    /// Returns whether the plugin accepted. `false` is the default, for a
+    /// format that cannot load presets.
     ///
     /// An id whose shape this format does not use addresses nothing — a CLAP
     /// path names no AU preset — and must be refused rather than coerced into
@@ -350,32 +356,30 @@ pub trait PluginPresets: Send {
         false
     }
 
-    /// Which preset the plugin considers current, when it will say. `None`
-    /// means the format has no query or the plugin declined — never "the first
-    /// one".
+    /// Returns the preset the plugin considers current, when it will say.
+    ///
+    /// `None` means the format has no query or the plugin declined — never
+    /// "the first one".
     fn get_current_preset(&mut self) -> Option<PresetId> {
         None
     }
 }
 
-/// The subprocess-side editor hooks.
+/// Opens and closes a loaded plugin's editor inside the plugin process.
 ///
-/// Distinct from the host-side `PluginEditor` (the second, editor-only dlopen
-/// in the main process): this is the editor surface a loader exposes *from
-/// inside* the plugin-server subprocess, where the editor runs on the platform
-/// GUI toolkit's own run loop.
-///
-/// **Idle ticking is not here.** Every editor this codebase pumps — including
-/// the in-process VST2 one — is pumped through the host-side surface
-/// (`HostEditor::editor_idle`, driven per frame by
-/// `bevy_tutti::plugin_host::editor`). This trait deliberately has no
-/// `editor_idle`: a second pump path beside the working one would give one thing
-/// two writers.
+/// The editor runs on the platform GUI toolkit's own run loop. Idle ticking is
+/// not part of this trait: editors are pumped through `tutti-plugin`'s
+/// host-side editor surface.
 pub trait PluginEditorHost {
     /// Embeds the plugin's editor into `parent`, returning the size it asks for.
     ///
     /// Runs on the platform GUI toolkit's run loop inside the plugin-server
     /// subprocess, never on the audio thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::Editor`](crate::PluginError::Editor) when the
+    /// plugin has no editor or fails to open it.
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize>;
 
     /// Tears the editor down.
@@ -386,13 +390,12 @@ pub trait PluginEditorHost {
     fn close_editor(&mut self);
 }
 
-/// A loaded plugin instance: the full capability bundle a format loader
-/// implements.
+/// The full capability bundle a loaded plugin instance implements.
 ///
 /// This is a marker supertrait over the fine-grained capabilities, with a
 /// blanket impl — a loader implements the small traits and gets
 /// `PluginInstance` for free, and a consumer that needs "the whole plugin"
-/// (the session dispatch) depends on this one bound. Consumers that need only
+/// depends on this one bound. Consumers that need only
 /// one capability should depend on that trait alone.
 ///
 /// [`PluginPresets`] is in the bundle even though every one of its methods is

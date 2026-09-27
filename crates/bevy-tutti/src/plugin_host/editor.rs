@@ -161,7 +161,7 @@ pub enum Visibility {
 }
 
 impl SetEditorVisible {
-    /// Ask for `entity`'s editor to be shown.
+    /// Asks for `entity`'s editor to be shown.
     pub fn show(entity: Entity) -> Self {
         Self {
             entity,
@@ -169,7 +169,7 @@ impl SetEditorVisible {
         }
     }
 
-    /// Ask for `entity`'s editor to be closed.
+    /// Asks for `entity`'s editor to be closed.
     pub fn hide(entity: Entity) -> Self {
         Self {
             entity,
@@ -177,7 +177,7 @@ impl SetEditorVisible {
         }
     }
 
-    /// Flip `entity`'s editor between open and closed.
+    /// Flips `entity`'s editor between open and closed.
     pub fn toggle(entity: Entity) -> Self {
         Self {
             entity,

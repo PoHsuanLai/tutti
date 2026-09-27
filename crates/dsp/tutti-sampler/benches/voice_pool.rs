@@ -8,8 +8,7 @@
 //! from disk is dominated by the filesystem and by prefetch state, which is
 //! not something criterion can summarise honestly; a counting-allocator and
 //! sampling-profiler harness is the instrument for anything shaped like that
-//! (the `profile_stretch_clone` example was one until doc 013 Phase 5
-//! deleted it with `Net`: an 81× wall-clock spread on identical work, where
+//! (spreads of 81× in wall clock on identical work are possible there, and
 //! criterion's outlier *rejection* would discard exactly the samples that
 //! matter).
 //!
@@ -107,17 +106,12 @@ fn pool_with(n: usize, stretch: f32, cents: f32) -> Rig {
                     play: Playback {
                         stretch: StretchFactor::new(stretch),
                         // Every voice gets the SAME pitch, deliberately.
-                        //
-                        // An earlier draft detuned each one by `i` cents "so
-                        // nothing can be shared between them". Voices are
-                        // already independent `MemorySource`s, so it shared
-                        // nothing — but `Cents(0)` is a resampler *bypass*,
-                        // so it put voice 0 on the fast path and voices 1..n
-                        // on the pitch-shifting one. `voices/plain` then
-                        // measured 1.37 µs for one voice and 144 µs for eight
-                        // — 105x for 8x the work — and the jump was the
-                        // benchmark's doing, not the engine's. `voices/pitch`
-                        // is where the shifter is priced.
+                        // `Cents(0)` is a resampler *bypass*: detuning each
+                        // voice by `i` cents would put voice 0 on the fast
+                        // path and voices 1..n on the pitch-shifting one, and
+                        // `voices/plain` would price the shifter (1.37 µs for
+                        // one voice, 144 µs for eight). `voices/pitch` is
+                        // where the shifter is priced.
                         pitch: Cents::new(cents),
                         ..Default::default()
                     },

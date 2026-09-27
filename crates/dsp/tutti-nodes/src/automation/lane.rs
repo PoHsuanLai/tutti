@@ -113,7 +113,7 @@ impl AutomationLaneNode {
         self.curve.value_at(beat).unwrap_or(0.0)
     }
 
-    /// Evaluate at `beat` and record it as the last value.
+    /// Evaluates at `beat` and records it as the last value.
     pub fn update_to(&mut self, beat: Beat) -> f32 {
         self.last_value = self.get_value_at(beat);
         self.last_value

@@ -1,4 +1,4 @@
-//! The sample-accuracy contract (doc 013 §6) for the SoundFont player as a
+//! The graph's sample-accuracy contract for the SoundFont player as a
 //! graph node: a note-on at offset `k` of the event input sounds where the
 //! contract puts it, to the 8-frame resolution the node declares
 //! (`Resolution::Frames(8)`, rustysynth's chunk), on every path the harness

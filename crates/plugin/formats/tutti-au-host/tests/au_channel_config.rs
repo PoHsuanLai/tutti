@@ -186,7 +186,7 @@ fn a_refused_layout_reports_the_width_the_au_kept() {
 }
 
 /// A wider-than-stereo request must also be honoured, so the layout is genuinely
-/// caller-driven rather than "mono or the old default".
+/// caller-driven rather than "mono or a fixed default".
 ///
 /// Measured on macOS 15.6: every unit in `ACCEPTS_MONO` also accepts a 4-channel
 /// format. AUMatrixReverb takes 4 on output but keeps 2 on input, which is why
@@ -263,8 +263,8 @@ fn the_layout_less_constructor_still_defaults_to_stereo() {
 /// `probe()` derives `has_input` from `bus_count(Input) > 0` rather than from
 /// whether the input stream-format read succeeded. Those two differ only for an
 /// AU that *has* an input element but declines to report its format — for which
-/// the old inference skipped installing the render callback on a unit that needs
-/// one (the bug that made every instrument fail `initialize` with `-10877`).
+/// the format-read inference would skip installing the render callback on a
+/// unit that needs one (and the unit then fails `initialize` with `-10877`).
 ///
 /// **Measured: no unit installed on this machine distinguishes the two.** Swapping
 /// `probe()` back to the format-read-derived semantics leaves this test green,
@@ -379,7 +379,7 @@ fn set_block_size_changes_the_size_and_the_au_still_renders() {
         "set_block_size must restore the Ready state it found"
     );
 
-    // A frame count the OLD size would have refused must now be admitted, and
+    // A frame count the previous size would have refused must now be admitted, and
     // the scratch must be big enough for it — that is the resize actually
     // happening rather than the config merely recording a bigger number.
     let input = silence(2, 2048);

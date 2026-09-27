@@ -24,12 +24,18 @@ pub(crate) fn arch_subdirs() -> &'static [&'static str] {
     tutti_plugin_types::bundle::native_arch_subdirs()
 }
 
-/// Resolve a plugin bundle directory to its inner library binary.
+/// Resolves a plugin bundle directory to its inner library binary.
 ///
 /// If `path` is already a file (VST2) or doesn't exist as a directory, it is
 /// returned unchanged — the caller will surface any load failure with its own
-/// richer context. For bundle directories, probes platform-specific
-/// subdirectories under `Contents/`.
+/// richer context. For bundle directories, probes the `Contents/<arch>`
+/// subdirectories this target can load from.
+///
+/// # Errors
+///
+/// Returns [`BridgeError::BundleResolutionFailed`] when `path` is a directory
+/// holding no module this target can load; the error lists the directories
+/// probed.
 pub fn resolve_bundle(path: &Path) -> Result<PathBuf> {
     if path.is_file() || !path.is_dir() {
         return Ok(path.to_path_buf());
@@ -59,9 +65,8 @@ mod tests {
     /// The subdirectory `resolve_bundle` looks in *first* on this target.
     ///
     /// This deliberately reads from production's `arch_subdirs()` rather than
-    /// hardcoding a copy: the previous helper hardcoded `"x86_64-linux"` /
-    /// `"x86_64-win"`, the exact strings production got wrong, so the tests
-    /// passed on ARM while every real bundle failed to resolve.
+    /// hardcoding a copy: a hardcoded `"x86_64-linux"` would pass on ARM while
+    /// every real bundle failed to resolve there.
     fn arch_subdir() -> &'static str {
         arch_subdirs()[0]
     }
@@ -113,8 +118,8 @@ mod tests {
     fn errors_when_no_binary_matches() {
         let tmp = TempDir::new().unwrap();
         let bundle = make_bundle(&tmp, "Empty.vst3");
-        // Drop an unrelated file so the directory is non-empty — the removed
-        // fallback would have picked this up; we no longer want that.
+        // Drop an unrelated file so the directory is non-empty: a stray file
+        // must not be taken for the module.
         let stray = bundle
             .join("Contents")
             .join(arch_subdir())

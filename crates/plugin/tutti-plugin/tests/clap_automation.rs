@@ -1,5 +1,5 @@
 //! Parameter automation reaches a hosted plugin through the graph: a
-//! `PluginAutomation` node (doc 013 item 5) on the plugin node's event input,
+//! `PluginAutomation` node on the plugin node's event input,
 //! against the reference CLAP plugin's gain parameter.
 //!
 //! Needs `cargo build -p tutti-plugin-server` first (see `CLAUDE.md`).

@@ -3,10 +3,8 @@
 //!
 //! These are inputs the host *sequencer* supplies (a chord track, a key/scale
 //! lane, per-note annotations), not derived from MIDI. Only the VST3 host
-//! consumes them today (other formats ignore them), but they're cross-format
-//! vocabulary so the protocol and any future consumer speak one definition.
-//! Text is an owned UTF-8 `String` here; the VST3 boundary converts it to
-//! UTF-16.
+//! consumes them; other formats ignore them. Text is an owned UTF-8 `String`
+//! here; the VST3 boundary converts it to UTF-16.
 //!
 //! The `Serialize`/`Deserialize` derives are gated behind the `serde`
 //! feature.
@@ -17,7 +15,7 @@ use smallvec::SmallVec;
 
 const STACK_CAPACITY: usize = 4;
 
-/// Per-note text annotation (lyric, ornament, …) bound to a `note_id`.
+/// A per-note text annotation (lyric, ornament, …) bound to a `note_id`.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct NoteExpressionTextValue {
@@ -33,7 +31,8 @@ pub struct NoteExpressionTextValue {
     pub text: String,
 }
 
-/// Integer-valued per-note expression (stepped / enumerated dimensions).
+/// An integer-valued per-note expression event, for stepped or enumerated
+/// dimensions.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct NoteExpressionIntValue {
@@ -50,8 +49,8 @@ pub struct NoteExpressionIntValue {
     pub value: i64,
 }
 
-/// Current chord context: root + bass note (0..127), a degree `mask`, and a
-/// display name.
+/// A chord-context event: root and bass note, a degree `mask`, and a display
+/// name.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ChordValue {
@@ -71,8 +70,8 @@ pub struct ChordValue {
     pub text: String,
 }
 
-/// Current scale/key context: root (0..127) + a 12-bit degree `mask`, and a
-/// display name.
+/// A scale/key-context event: root, a 12-bit degree `mask`, and a display
+/// name.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ScaleValue {
@@ -107,8 +106,10 @@ macro_rules! changes_container {
                 Self::default()
             }
 
-            /// Appends one event. Order is the caller's to maintain; nothing
-            /// here sorts by `sample_offset`.
+            /// Appends one event.
+            ///
+            /// Order is the caller's to maintain; nothing here sorts by
+            /// `sample_offset`.
             pub fn add_change(&mut self, change: $item) {
                 self.$field.push(change);
             }

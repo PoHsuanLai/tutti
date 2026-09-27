@@ -10,14 +10,11 @@
 //! > *restructure me*: it can only reach a node that is not running, and a
 //! > running one is changed by replacing it.
 //!
-//! Under `Net` the second half was a trap: its frontend held a clone of every
-//! unit, a by-value write landed on the clone, and the next commit discarded
-//! it — no error, the fader moved on screen and not in the sound. This file
-//! pinned that as `live_value_survives_commit.rs`. A graph node leaves no
-//! clone to write: once inserted it belongs to the executor, so a `&mut self`
-//! setter on it does not compile. What is left to pin is the other half —
-//! that the shared path reaches the node that renders, across a commit — and
-//! the way a by-value change is made instead (a replace).
+//! A graph node leaves no clone to write: once inserted it belongs to the
+//! executor, so a `&mut self` setter on it does not compile. What is pinned
+//! here is the other half — that the shared path reaches the node that
+//! renders, across a commit — and the way a by-value change is made instead
+//! (a replace).
 //!
 //! `EqBandNode` is the fixture because it has both conventions: its
 //! frequency/Q/gain are the inner SVF's shared `Param`s, and its enable flag

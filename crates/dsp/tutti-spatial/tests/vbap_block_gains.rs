@@ -1,41 +1,40 @@
-//! Golden renders of `VbapPannerNode`'s block render, pinned from the per-frame
-//! implementation that solved the gains twice per frame.
+//! Golden renders of `VbapPannerNode`'s block render, pinned against a
+//! reference that solves the gains per frame.
 //!
-//! The panner now solves once per block and linearly ramps the gain vector
-//! from the previous block's end to this block's end (design doc 013,
-//! "`VbapPannerNode` `process`"). `GOLDENS` and `TICK_GOLDEN` were rendered by
-//! the **old** per-frame solver (at `9f3acfad`, before the rewrite), so this
-//! file is the equivalence proof and then stays as the regression pin. The
-//! `print_*` generators render whatever is current: rerunning them now would
-//! pin the new code against itself, so only do that for a deliberate change.
+//! The panner solves once per block and linearly ramps the gain vector from
+//! the previous block's end to this block's end. `GOLDENS` and `TICK_GOLDEN`
+//! were rendered by a per-frame reference solver, so this file checks the
+//! block render against it. The `print_*` generators render whatever is
+//! current: rerunning them would pin the code against itself, so only do that
+//! for a deliberate change.
 //!
 //! Two tolerances, and why they differ:
 //!
 //! - **The last frame of every block is exact** (`EDGE_TOL`, 1e-6 — f32
 //!   rounding only; measured ≤ 5e-9). The smoother is still stepped once per
-//!   frame, so at the block's last frame the new code solves at the very
-//!   position the old code solved at, and the ramp is written so its last
+//!   frame, so at the block's last frame the block render solves at the very
+//!   position the reference solved at, and the ramp is written so its last
 //!   sample *is* that solve.
 //! - **Frames inside a block are within `RAMP_TOL`**. They lie on a chord of
-//!   the gain curve where the old code sat on the curve itself, so the error is
-//!   bounded by how far the source travels in one block. The 50 ms de-zipper
-//!   moves at most `1 - exp(-64 / 2400)` ≈ 2.6% of the remaining arc per
-//!   64-frame block: ≈ 3.2° on the 120° jump below, and up to ≈ 3.5° in the
+//!   the gain curve where the reference sat on the curve itself, so the error
+//!   is bounded by how far the source travels in one block. The 50 ms
+//!   de-zipper moves at most `1 - exp(-64 / 2400)` ≈ 2.6% of the remaining arc
+//!   per 64-frame block: ≈ 3.2° on the 120° jump below, and up to ≈ 3.5° in the
 //!   sweep, whose target runs away 25° a block. VBAP gains are piecewise smooth
 //!   in the bearing with slope at most ≈ 2 per radian on these layouts (the
 //!   30° C–L pair is the steepest), and a chord across a span Δθ of a function
 //!   with slope ≤ L deviates by at most L·Δθ/2 ≈ 0.06 on a ±1 input. Measured
-//!   against the full old render (every frame, not just the pinned ones): 0.0
-//!   on both static cases, 1.3e-3 on the stereo jump, 5.5e-3 on the 5.1 jump,
-//!   1.0e-3 on the mono fold and 0.021 on the sweep. `RAMP_TOL` is the 0.06
-//!   bound, not the measurement, so it cannot be tuned to pass.
+//!   against the full reference render (every frame, not just the pinned
+//!   ones): 0.0 on both static cases, 1.3e-3 on the stereo jump, 5.5e-3 on the
+//!   5.1 jump, 1.0e-3 on the mono fold and 0.021 on the sweep. `RAMP_TOL` is
+//!   the 0.06 bound, not the measurement, so it cannot be tuned to pass.
 //!
 //! One case differs **on purpose** inside its blocks: `stereo_width_switch`.
-//! The old code switched between the mono-fold and two-source branches at the
-//! block boundary with a hard step (0.64 of full scale, measured); the new
-//! code crossfades the two across the next block. Only its block edges are
-//! compared, and `a_width_crossing_the_fold_threshold_crossfades` pins the
-//! crossfade itself.
+//! The per-frame reference switches between the mono-fold and two-source
+//! branches at the block boundary with a hard step (0.64 of full scale,
+//! measured); the block render crossfades the two across the next block. Only
+//! its block edges are compared, and
+//! `a_width_crossing_the_fold_threshold_crossfades` pins the crossfade itself.
 
 use tutti_core::{Azimuth, ChannelLayout, Elevation, SampleRate, Spread, StereoWidth};
 use tutti_graph::contract::{drive, prepared};
@@ -65,7 +64,7 @@ fn process(node: &mut VbapPannerNode, input: &Block) -> Vec<Vec<f32>> {
     drive(node, RATE, &[&input[0], &input[1]], &[])
 }
 
-/// A block of one frame (what `AudioUnit::tick` was), written to `out`.
+/// A block of one frame, written to `out`.
 fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
     let rendered = drive(node, RATE, &[&input[..1], &input[1..]], &[]);
     for (o, c) in out.iter_mut().zip(rendered) {
@@ -93,8 +92,8 @@ struct Case {
     speakers: u16,
     setup: fn(&mut VbapPannerNode),
     per_block: fn(&mut VbapPannerNode, usize),
-    /// Whether frames inside a block are expected to follow the old render.
-    /// False only where the old render stepped and the new one ramps.
+    /// Whether frames inside a block are expected to follow the reference.
+    /// False only where the reference steps and the block render ramps.
     in_block: bool,
 }
 
@@ -983,8 +982,8 @@ fn the_gain_ramp_is_continuous_across_block_boundaries() {
 /// A width crossing the mono-fold threshold between blocks crossfades the two
 /// branches across the next block instead of stepping at the boundary.
 ///
-/// Measured before the rewrite: the old per-frame solver stepped by 0.64 of
-/// full scale at every crossing of `stereo_width_switch`.
+/// A per-frame solve steps by 0.64 of full scale at every crossing of
+/// `stereo_width_switch`.
 ///
 /// Mutation: rendering a mixed mono/stereo ramp at its end point only (no
 /// crossfade when the branches differ) fails at the first crossing.

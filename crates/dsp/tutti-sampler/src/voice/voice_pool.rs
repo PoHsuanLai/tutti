@@ -185,10 +185,9 @@ mod tests {
     /// and rendered for 4096 frames plays, sample for sample, what an
     /// identical voice that was never forked plays.
     ///
-    /// Mutation: none expressible as a one-line edit any more. The sharing
-    /// this guards against needs a shared bank type, which the ownership
-    /// change deleted (the filter owns its vocoders by value, so the types
-    /// rule it out); the unit-level twin,
+    /// Mutation: none expressible as a one-line edit. The sharing this guards
+    /// against needs a shared bank type, and the filter owns its vocoders by
+    /// value, so the types rule it out; the unit-level twin,
     /// `stretch::tests::a_clone_and_its_original_tick_independently`, runs
     /// its mutation. This pins, at the voice, what a reintroduced shared bank
     /// would break.
@@ -252,9 +251,7 @@ mod tests {
     /// **A pool's fork shares nothing with the live pool.** It is an empty
     /// pool at the live one's width: it holds none of the live voices, drains
     /// none of the live handle's commands, and preparing it at another rate
-    /// does not move the rate the live handle builds its stretch filters at
-    /// (the `AudioUnit` era's hazard here was a shared beat cursor whose rate
-    /// a fork's `set_sample_rate` rewrote).
+    /// does not move the rate the live handle builds its stretch filters at.
     ///
     /// Mutation (run): `PoolFork` sharing the live pool's `SharedRate` (a
     /// `rate` field cloned into it and the fork built with it) → the live
@@ -557,21 +554,20 @@ mod tests {
 
     /// **A stretched placed voice must not transpose**, across block boundaries.
     ///
-    /// The bug this pins was in the *assembly*, not the DSP.
-    /// [`stretch::Unit`] was correct and unit-tested, but `VoicePool` never
-    /// applied [`stretch::Unit::input_rate`] — the method had zero call sites in
-    /// the whole crate — so the vocoder was fed one source sample per output
-    /// sample and the factor acted as plain varispeed: 2.0x turned 440 Hz into
-    /// 880 Hz with the duration unchanged.
+    /// What this pins is the *assembly*, not the DSP: if `VoicePool` did not
+    /// apply [`stretch::Unit::input_rate`], the vocoder would be fed one source
+    /// sample per output sample and the factor would act as plain varispeed
+    /// (2.0x turning 440 Hz into 880 Hz with the duration unchanged), while
+    /// every unit test of [`stretch::Unit`] still passed.
     ///
     /// **Why this renders many blocks.** The failure lives at block boundaries.
     /// A placed voice re-derives its origin from the playhead each block, and the
     /// playhead runs at wall clock, so a stretched read that covers
     /// `block / stretch` source samples gets re-seated a full `block` further on
     /// at the next boundary — discarding the stretch, forever. A single-block
-    /// test cannot see it, and a fix applied to the within-block step alone made
-    /// it *worse* (pitch +35% off, spectral purity 0.95 -> 0.54) rather than
-    /// failing outright.
+    /// test cannot see it, and applying the stretch to the within-block step
+    /// alone makes it *worse* (pitch +35% off, spectral purity 0.95 -> 0.54)
+    /// rather than failing outright.
     ///
     /// Asserted by measuring the dominant frequency, because every other stretch
     /// assertion on this path is `!= 0.0` — and an octave-transposed voice is
@@ -1306,8 +1302,7 @@ mod tests {
     }
 
     /// **A voice's fork keeps its window and reads its render's transport**
-    /// — the offline render's path, which replaced `replace_transport`: the
-    /// fork is `Voice::fork_copy`, and there is no clock to swap, because a
+    /// — the offline render's path: the fork is `Voice::fork_copy`, and there is no clock to swap, because a
     /// voice reads the transport from each block's `Env`.
     ///
     /// Asserted **behaviourally**, on what the fork plays under the render's

@@ -106,7 +106,7 @@ fn polysynth_process_with_active_voices_is_allocation_free() {
     });
 }
 
-/// One-frame blocks (the old per-sample `tick` path's shape): each is a
+/// One-frame blocks: each is a
 /// whole block, cut from the control grid at its edge.
 #[test]
 fn polysynth_one_frame_blocks_with_active_voices_are_allocation_free() {
@@ -182,32 +182,20 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
 /// same block, at the maximum `max_voices` the constructor accepts.
 ///
 /// `finished_indices` collects one entry per voice that finished, so this
-/// fills it exactly to its inline capacity. The other tests in this file all
-/// run at `max_voices: 8`, half of it.
+/// fills it exactly to its capacity: every voice releasing in the same block,
+/// on a heap buffer, inside the no-alloc gate. That pins the "sized once,
+/// `clear()`ed thereafter" property at a voice count well past any small
+/// inline buffer.
 ///
-/// **Run at 64 voices, which is the point.** This test used to run at 16,
-/// because 16 was the ceiling `PolySynth::new` enforced: `finished_indices`
-/// was a `SmallVec<[usize; 16]>` and a larger `max_voices` could have spilled
-/// it onto the heap inside the callback. At 16-of-16 the collection was
-/// always inline, so the test passed whether the drain indexed or used
-/// `mem::take`, and it proved nothing about the heap.
-///
-/// `finished_indices` is now a `Vec` sized to `max_voices` at construction,
-/// so there is no ceiling and this runs well past the old one — every voice
-/// releasing in the same block, on a heap buffer, inside the no-alloc gate.
-/// That is a strictly stronger statement than the version with the cap: it
-/// pins the "sized once, `clear()`ed thereafter" property that replaced the
-/// ceiling, rather than a bound that made the property untestable.
-///
-/// Constructing at all is half the assertion — the `.unwrap()` below is what
-/// used to be `polysynth_rejects_max_voices_past_inline_capacity`.
+/// Constructing at all is half the assertion: the `.unwrap()` below shows
+/// `max_voices` has no upper bound.
 ///
 /// *Mutation:* `Vec::with_capacity(config.max_voices)` -> `Vec::new()` in
 /// `PolySynth::new` aborts inside the gate on the first block that finishes
 /// a voice.
 #[test]
 fn polysynth_all_voices_finishing_together_is_allocation_free() {
-    // Four times the old inline ceiling, so the buffer under test is on the heap.
+    // Large enough that the buffer under test is certainly on the heap.
     const MAX_VOICES: usize = 64;
 
     let mut synth = Hand::new(

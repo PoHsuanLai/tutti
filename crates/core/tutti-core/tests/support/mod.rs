@@ -100,16 +100,14 @@ impl Node for Gain {
 
 // ---- the beat, in closed form ---------------------------------------------
 
-/// The beat, segment by segment, as the engine is specified to count it
-/// (doc 013 §6), written here without its code: each segment is an origin
+/// The beat, segment by segment, as the engine is specified to count it,
+/// written here without its code: each segment is an origin
 /// frame and beat and a tempo, and the beat at a frame is the origin beat
 /// plus `frames × tempo / (60 × rate)` in closed form. A loop wraps on the
 /// first frame whose beat reaches its end, onto
 /// `start + (beat − start) mod len`, when the playhead was inside it.
 ///
-/// Until doc 013 PR 15 the engine tests compared the graph's beats against
-/// a `Net`'s `TransportClock` rendered by the same engine; this is what that
-/// clock was pinned to, and the oracle now.
+/// The engine tests use it as the oracle for the graph's beats.
 #[derive(Clone, Copy, Debug)]
 pub struct Segment {
     pub frame: u64,

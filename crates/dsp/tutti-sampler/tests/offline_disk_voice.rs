@@ -297,14 +297,14 @@ fn a_fork_at_another_rate_resamples() {
 /// Crossfaded, the last 100 frames before the end blend toward the 100 that
 /// lead into the loop's start (`[900, 1000)`), frame `k` of the fade weighing
 /// the lead-in `(k + 1) / 101`, and the wrap then plays 1000: the join is the
-/// file's own step (doc 013's S3; `LoopSpan`). At unit speed on whole frames
+/// file's own step (`LoopSpan`). At unit speed on whole frames
 /// every read is a frame of that sequence exactly.
 ///
 /// Mutation (run): the fork reading its loop when the voice was built rather
 /// than when it is forked (`StreamFile::loop_` forced `Off`) → plays
 /// straight on past 3000 → fails. Mutation (run): the crossfade blend dropped
 /// → the hard-loop values in the fade → fails. Mutation (run): the lead-in
-/// `start + k` (the old head replay) → fails.
+/// `start + k` (the head replayed) → fails.
 #[test]
 fn a_fork_loops_as_the_stream_is_looped_when_it_is_taken() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -373,7 +373,7 @@ fn write_sine(path: &Path, frames: usize) {
 /// The period of [`write_sine`]'s sine, in frames.
 const PERIOD: usize = 100;
 
-/// **A fork's crossfaded loop is continuous at its wrap** (doc 013's S3):
+/// **A fork's crossfaded loop is continuous at its wrap**:
 /// on a sine whose loop points click when cut hard — the loop starts on a
 /// rising zero crossing and ends a quarter period later in the cycle, so the
 /// frame before the wrap is the crest and the one after it zero — no step in
@@ -445,13 +445,13 @@ fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
     }
 }
 
-/// **A reversed fork falls silent past the file's first frame** (doc 013's
-/// S1), as a forward one does past its last: the file backwards, then
+/// **A reversed fork falls silent past the file's first frame**, as a
+/// forward one does past its last: the file backwards, then
 /// silence — not frame 0 held as DC.
 ///
 /// Mutation (run): `OfflineRead::read_into` without either silence — the
 /// early close of a reversed read at or past `len`, and the reverse arm's own
-/// check (the old `(len - 1 - pos).max(0.0)` alone) → `value(0)` from render
+/// check (`(len - 1 - pos).max(0.0)` alone) → `value(0)` from render
 /// frame `LEN` on → fails. (The early close alone keeps it silent once the
 /// file's length is known; the arm's check covers a first read already past
 /// it.)
@@ -479,8 +479,8 @@ fn a_reversed_fork_is_silent_past_the_first_frame() {
 /// new speed gives: 32 frames at 1×, then — the live voice set to 2× and
 /// forked again — 32 more, seated where the gate puts the playhead at 2× (32
 /// frames in at 2× is file frame 64) and stepping two file frames a frame.
-/// (The `AudioUnit` era pinned a change *between two frames of one clock
-/// reading*, reachable only frame by frame; a block reads its rates once.)
+/// A block reads its rates once, so no change lands between two of its
+/// frames.
 ///
 /// Mutation (run): the fork's gate ignoring varispeed (`DiskVoice::window_rate`
 /// without `effective_speed`) → the second render starts at file frame 32 →
@@ -596,8 +596,8 @@ fn a_fork_told_no_rate_fails_rather_than_guess() {
 
 /// **A reversed fork plays the file backwards**, across its pages: frame `k`
 /// of the clip is the file's frame `len - 1 - k`, exactly, over a file three
-/// pages long. (Past the file's first frame is doc 013's follow-up S1, not
-/// asserted.)
+/// pages long. (Past the file's first frame is
+/// `a_reversed_fork_is_silent_past_the_first_frame`'s.)
 ///
 /// Mutation (run): the reverse mirror removed from `OfflineRead::read_into`
 /// → plays forwards → fails.
@@ -711,12 +711,10 @@ fn a_fork_follows_a_looping_render_timeline() {
 ///
 /// - **At 1.5× varispeed**, on fractional positions.
 /// - **A 24 kHz file at 48 kHz** (a non-unity conversion): the memory tier
-///   used to step by varispeed alone within a chunk (doc 013's placed
-///   `MemorySource` rate follow-up).
+///   must step by the conversion as well as the varispeed.
 /// - **A crossfaded loop at 1.5×**, through the fade, the seam and many
-///   wraps, on fractional positions: the fade toward the lead-in (S3) and the
-///   taps through the seam (N2). A placed memory voice used to ignore its
-///   loop.
+///   wraps, on fractional positions: the fade toward the lead-in and the
+///   taps through the seam, which a placed memory voice honours too.
 /// - **The same loop, paged**: the rows above fork onto the butler's cached
 ///   wave (`Open::Resident`, the butler decodes the file whole to capture a
 ///   loop's fade), which reads through the very `read_looped_frame` the
@@ -726,7 +724,7 @@ fn a_fork_follows_a_looping_render_timeline() {
 ///   so the fork decodes pages (`Pages::read_looped_into`), an independent
 ///   fetch-and-blend. A hard loop at 1.5× runs the paged seam taps too.
 /// - **Reversed** (the memory voice in a `VoiceNode`, where direction lives),
-///   past the file's first frame into silence (S1).
+///   past the file's first frame into silence.
 ///
 /// **What this does not pin**: anything the two tiers share — `LoopSpan`'s
 /// fade weight, lead-in and tap layout, the seat, the kernel. Agreement

@@ -22,7 +22,6 @@ mod common;
 /// These moved out of `graph/reconcile.rs` when that file was split by duty.
 /// They exercise only public API, so an integration test is their natural home —
 /// and it proves the split kept the surface a host actually reaches intact.
-/// (Was `tests/graph_reconcile.rs`.)
 mod graph_reconcile {
     use bevy_app::App;
     use bevy_ecs::prelude::*;
@@ -287,7 +286,6 @@ mod graph_reconcile {
 /// steady frame doing nothing, and — the reason the claim set exists — an
 /// authored write on a *modulated* param going to the accumulator base instead
 /// of the atomic.
-/// (Was `tests/audio_param.rs`.)
 mod audio_param {
     // The plain-reconcile tests below run in every configuration; the ones that
     // need a modulation driver are gated individually. Gating the whole file would
@@ -528,7 +526,6 @@ mod audio_param {
 /// These drive the wrapper directly. The build-time publish itself needs a real
 /// audio device (`TuttiPlugin { disabled: true }` skips `build_into` entirely),
 /// so it is covered by the ignored test at the bottom rather than claimed here.
-/// (Was `tests/audio_tap.rs`.)
 mod audio_tap {
     use bevy_app::App;
     use bevy_tutti::graph::AudioTapRes;
@@ -609,15 +606,7 @@ mod engine_nodes {
     use tutti_core::AudioNode;
 
     /// The metronome reads the beat of every frame from its block's `Env`,
-    /// so it has no inputs to wire. (The beat clock that sat beside it, and
-    /// this test's assertion on its two ports, went with `Legacy`: no node
-    /// reads the beat as a signal any more.)
-    ///
-    /// Until the click's `Node` port it took the beat from the clock's two
-    /// ports (the edge `build_into` declared, `PortSources::stereo_from`), and
-    /// this pinned that edge: without it the click read beat 0 forever. The
-    /// click now reads its block's transport (D8, design doc 013) and
-    /// cannot miss a wire.
+    /// so it has no inputs to wire and cannot miss a wire.
     ///
     /// Ignored: `build_into`
     /// opens a real CPAL device. It passes on a machine with ALSA's default

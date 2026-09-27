@@ -1,7 +1,12 @@
-//! Loading `.sf2` files as Bevy assets and promoting them into playing voices.
+//! Loading `.sf2` files as Bevy assets and promoting them into playing
+//! instruments (feature `soundfont`).
 //!
-//! Named for `tutti-soundfont`, the engine crate it adapts — one adapter module
-//! per engine crate is this crate's shape.
+//! The adapter for `tutti-soundfont`. [`TuttiSoundFontPlugin`] registers the
+//! [`SoundFontAsset`] loader; spawning a [`PlaySoundFont`] builds a
+//! `SoundFontUnit` off the main thread and inserts it as a graph node with a
+//! MIDI event input. The node arrives unwired: declare what plays it (MIDI) and
+//! where it sounds ([`MasterSources`](crate::graph::MasterSources)) as for any
+//! node.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_asset::{io::Reader, AssetApp, AssetLoader, Assets, Handle, LoadContext};
@@ -33,7 +38,12 @@ impl SoundFontAsset {
     /// File extensions the asset loader recognises.
     pub const EXTENSIONS: &'static [&'static str] = &["sf2"];
 
-    /// Parse a complete SoundFont from an in-memory byte slice.
+    /// Parses a complete SoundFont from an in-memory byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns the parser's error when the bytes are not a well-formed
+    /// SoundFont.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SoundFontError> {
         SoundFont::new(&mut std::io::Cursor::new(bytes)).map(|sf| Self(Arc::new(sf)))
     }
@@ -219,16 +229,13 @@ pub fn soundfont_playback_system(
 ///
 /// Entities whose build is still running are left alone for the next frame.
 ///
-/// Two things this deliberately does *not* do, for the same reason — neither is
-/// a decision a loader gets to make on the host's behalf:
+/// Two things this does *not* do, since neither is a loader's decision to
+/// make on the host's behalf:
 ///
 /// - **MIDI wiring.** What plays the player is declared on its entity (a
 ///   `MidiSourceInstall`, a route rule, a `LiveMidiInput`), and wired to its
 ///   event input once it has a node.
-/// - **Output wiring.** A `pipe_output` here would make every soundfont that
-///   finished loading claim the entire master bus — overwriting the metronome,
-///   then the previous soundfont, silently, in query order. Whether a soundfont
-///   is audible is declared with
+/// - **Output wiring.** Whether a soundfont is audible is declared with
 ///   [`MasterSources`](crate::graph::MasterSources) or an
 ///   [`PortSources`](crate::graph::PortSources) on a mixer.
 pub fn promote_pending_soundfonts(
@@ -283,7 +290,11 @@ pub fn promote_pending_soundfonts(
     }
 }
 
-/// Bevy plugin: SoundFont asset loader + deferred playback trigger systems.
+/// Registers the [`SoundFontAsset`] loader and the [`PlaySoundFont`] systems.
+///
+/// Added by [`TuttiPlugin`](crate::TuttiPlugin) with the `soundfont` feature.
+/// Needs an `AssetServer` (`bevy_asset::AssetPlugin`) already in the app; the
+/// systems run in [`GraphReconcileSystems::Spawn`], gated on [`engine_ready`].
 pub struct TuttiSoundFontPlugin;
 
 impl Plugin for TuttiSoundFontPlugin {

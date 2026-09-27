@@ -43,7 +43,7 @@ pub struct PluginInfo {
 }
 
 impl PluginInfo {
-    /// Create a new [`PluginInfo`] with the given plugin ID and display name.
+    /// Creates a new [`PluginInfo`] with the given plugin ID and display name.
     /// Defaults to stereo in/out and empty metadata fields.
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
@@ -59,37 +59,37 @@ impl PluginInfo {
         }
     }
 
-    /// Set the plugin vendor (builder style).
+    /// Sets the plugin vendor (builder style).
     pub fn vendor(mut self, vendor: impl Into<String>) -> Self {
         self.vendor = vendor.into();
         self
     }
 
-    /// Set the plugin version string (builder style).
+    /// Sets the plugin version string (builder style).
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
         self
     }
 
-    /// Set the plugin homepage URL (builder style).
+    /// Sets the plugin homepage URL (builder style).
     pub fn url(mut self, url: impl Into<String>) -> Self {
         self.url = url.into();
         self
     }
 
-    /// Set the plugin description (builder style).
+    /// Sets the plugin description (builder style).
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = desc.into();
         self
     }
 
-    /// Set the CLAP feature/category tags (builder style).
+    /// Sets the CLAP feature/category tags (builder style).
     pub fn features(mut self, features: Vec<String>) -> Self {
         self.features = features;
         self
     }
 
-    /// Set the audio input/output channel counts (builder style).
+    /// Sets the audio input/output channel counts (builder style).
     pub fn audio_io(mut self, inputs: usize, outputs: usize) -> Self {
         self.audio_inputs = inputs;
         self.audio_outputs = outputs;
@@ -146,7 +146,7 @@ pub const RT_NOTE_EXPR_CAPACITY: usize = 16;
 pub type RtNoteExpressions = tutti_types::RtVec<ClapNoteExpression, RT_NOTE_EXPR_CAPACITY>;
 
 impl ClapNoteExpression {
-    /// Create a new note expression. Defaults to port 0, any channel, any key;
+    /// Creates a new note expression. Defaults to port 0, any channel, any key;
     /// refine with the `port`/`on_channel`/`on_key`/`at` builders.
     pub fn new(expression_type: NoteExpressionType, note_id: i32, value: f64) -> Self {
         Self {
@@ -166,7 +166,7 @@ impl ClapNoteExpression {
         self
     }
 
-    /// Set the note port index.
+    /// Sets the note port index.
     pub fn port(mut self, port_index: i16) -> Self {
         self.port_index = port_index;
         self
@@ -184,7 +184,7 @@ impl ClapNoteExpression {
         self
     }
 
-    /// Build a CLAP-native expression from the shared, format-agnostic
+    /// Builds a CLAP-native expression from the shared, format-agnostic
     /// [`NoteExpressionValue`](tutti_plugin_types::NoteExpressionValue). The
     /// shared form carries no voice addressing, so `port`/`channel`/`key`
     /// default to port 0 / any-channel / any-key.
@@ -262,7 +262,7 @@ pub struct ClapParamInfo {
 }
 
 impl ClapParamInfo {
-    /// Create a new parameter with the given ID and display name. Defaults
+    /// Creates a new parameter with the given ID and display name. Defaults
     /// to range `[0.0, 1.0]` with default `0.0` and no flags — use the
     /// builder methods to refine.
     pub fn new(id: u32, name: impl Into<String>) -> Self {
@@ -277,13 +277,13 @@ impl ClapParamInfo {
         }
     }
 
-    /// Set the grouping path (slash-separated, e.g. `"Filter/Cutoff"`).
+    /// Sets the grouping path (slash-separated, e.g. `"Filter/Cutoff"`).
     pub fn module(mut self, module: impl Into<String>) -> Self {
         self.module = module.into();
         self
     }
 
-    /// Set the value range and default all at once.
+    /// Sets the value range and default all at once.
     pub fn range(mut self, min: f64, max: f64, default: f64) -> Self {
         self.min_value = min;
         self.max_value = max;
@@ -291,7 +291,7 @@ impl ClapParamInfo {
         self
     }
 
-    /// Set the parameter flags.
+    /// Sets the parameter flags.
     pub fn flags(mut self, flags: ClapParamFlags) -> Self {
         self.flags = flags;
         self
@@ -321,7 +321,7 @@ pub struct ParamRescan {
 }
 
 impl ParamRescan {
-    /// Decode the accumulated `clap_param_rescan_flags` bitset. `requested`
+    /// Decodes the accumulated `clap_param_rescan_flags` bitset. `requested`
     /// reflects whether any rescan happened (the caller passes that separately
     /// since the flags alone can legally be 0).
     pub(crate) fn from_flags(requested: bool, flags: u32) -> Self {
@@ -377,7 +377,7 @@ pub struct AudioPortsRescan {
 }
 
 impl AudioPortsRescan {
-    /// Decode the accumulated `clap_audio_ports_rescan_flags` bitset.
+    /// Decodes the accumulated `clap_audio_ports_rescan_flags` bitset.
     ///
     /// `requested` is passed separately for the same reason as on
     /// [`ParamRescan::from_flags`]: a plugin may legally call `rescan` with no
@@ -749,13 +749,13 @@ pub struct RemoteControlsPage {
 pub enum TransportRequest {
     /// Begin playback from the current position.
     Start,
-    /// Stop playback and return to the start position.
+    /// Stops playback and return to the start position.
     Stop,
     /// Resume playback from where it was paused.
     Continue,
     /// Halt playback, keeping the current position.
     Pause,
-    /// Start if stopped, stop if playing.
+    /// Starts if stopped, stop if playing.
     TogglePlay,
     /// Relocate the playhead.
     Jump {
@@ -771,9 +771,9 @@ pub enum TransportRequest {
     },
     /// Invert whether looping is enabled.
     ToggleLoop,
-    /// Set looping on or off explicitly.
+    /// Sets looping on or off explicitly.
     EnableLoop(bool),
-    /// Set recording on or off explicitly.
+    /// Sets recording on or off explicitly.
     Record(bool),
     /// Invert whether recording is armed.
     ToggleRecord,
@@ -902,8 +902,8 @@ pub struct AmbisonicConfig {
 /// `Unknown` arm. A closed enum would turn that release into either a decode
 /// failure or a shifted map.
 ///
-/// The `#[repr(u8)]` went with it: a payload variant cannot carry explicit
-/// discriminants. The wire values live in [`from_position`](Self::from_position)
+/// A payload variant rules out `#[repr(u8)]` with explicit discriminants, so
+/// the wire values live in [`from_position`](Self::from_position)
 /// and [`position`](Self::position), which is where a reader checks them
 /// against the header anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -956,7 +956,7 @@ pub enum SurroundChannel {
 }
 
 impl SurroundChannel {
-    /// Map a raw CLAP surround channel ID to a [`SurroundChannel`].
+    /// Maps a raw CLAP surround channel ID to a [`SurroundChannel`].
     ///
     /// Total: an unrecognised id becomes [`Unknown`](Self::Unknown) rather than
     /// `None`, because the caller decodes a *positional* map and has no way to
@@ -988,12 +988,11 @@ impl SurroundChannel {
         }
     }
 
-    /// The raw CLAP position id, the inverse of
+    /// Returns the raw CLAP position id, the inverse of
     /// [`from_position`](Self::from_position).
     ///
-    /// Exists because the enum no longer carries `#[repr(u8)]` (see the type
-    /// docs), so `as u8` is not available — and because a round trip is what
-    /// pins the two tables against each other.
+    /// Use this instead of `as u8`, which the enum does not support (see the
+    /// type docs).
     pub fn position(self) -> u8 {
         match self {
             Self::FrontLeft => 0,
@@ -1139,7 +1138,7 @@ mod tests {
 
     /// A name change is the one rescan applicable while the plugin is active.
     ///
-    /// This is the distinction the old `changed: bool` could not carry. A host
+    /// A plain `changed: bool` could not carry this distinction. A host
     /// that deactivates on every port rename stalls audio for a cosmetic
     /// update; one that treats every rescan as cosmetic re-reads a channel
     /// count while active, which the spec forbids.

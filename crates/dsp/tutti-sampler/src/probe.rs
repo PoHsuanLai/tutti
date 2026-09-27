@@ -86,13 +86,26 @@ pub enum ProbeError {
     /// symphonia's `Error` is neither `Clone` nor `PartialEq`, and a probe result
     /// is something a host caches and compares. Nothing branches on the text.
     #[error("could not read {path}: {message}")]
-    Unreadable { path: String, message: String },
+    Unreadable {
+        /// The path that was probed, as displayed.
+        path: String,
+        /// The decoder's error message.
+        message: String,
+    },
 }
 
-/// Read `path`'s header and report what this sampler can do with it.
+/// Reads `path`'s header and reports what this sampler can do with it.
 ///
 /// **Blocking file I/O.** A host on a frame budget runs this off the main thread;
 /// this crate deliberately does not choose a task system for it.
+///
+/// # Errors
+///
+/// [`ProbeError::Unreadable`] when the file cannot be opened or holds no track
+/// this build can decode. A file that decodes but cannot be streamed is not an
+/// error: it reports `streamable: false`.
+///
+/// # Examples
 ///
 /// ```no_run
 /// # use tutti_sampler::probe;
@@ -147,16 +160,11 @@ mod tests {
     /// A minimal real PCM wav, `frames` frames of stereo silence, written
     /// inside a caller-owned [`TempDir`](tempfile::TempDir).
     ///
-    /// The directory is the caller's, not this helper's, for a reason that cost
-    /// a flake: this used to write into a *fixed* shared path
-    /// (`temp_dir()/tutti_sampler_probe_tests`) with a fixed file name per
-    /// test. nextest runs each test in its own process, so two runs of the
-    /// suite — or one run alongside anything else using that path — had two
-    /// processes creating, reading and `remove_file`-ing the same bytes, and a
-    /// probe could see a half-written or already-deleted file. Handing each
-    /// test its own `TempDir` removes the sharing rather than trying to
-    /// sequence it, and the directory is cleaned up on drop, so no test needs
-    /// to remove its own file.
+    /// The directory is the caller's, not this helper's: a fixed shared path
+    /// would let two test processes (nextest runs each test in its own)
+    /// create, read and remove the same bytes, and a probe could see a
+    /// half-written or already-deleted file. Each test owning its `TempDir`
+    /// removes the sharing, and the directory is cleaned up on drop.
     ///
     /// Gated to match its two callers, which are both `#[cfg(feature = "wav")]`
     /// — a build with a different codec on has no use for a hand-rolled WAV.

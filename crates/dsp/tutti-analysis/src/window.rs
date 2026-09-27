@@ -176,9 +176,8 @@ impl CosineWindow {
 
     /// Periodic Blackman-Harris — four terms, deeper still.
     ///
-    /// Costs one line, where under the old per-variant shape it would have cost
-    /// an enum variant plus two table entries. That is the whole argument for
-    /// the coefficient vector.
+    /// Its [`cola_overlap`](Window::cola_overlap) follows from its four
+    /// terms.
     pub const BLACKMAN_HARRIS: Self = Self::new(&[0.35875, 0.48829, 0.14128, 0.01168]);
 
     /// No window at all — the identity, for callers holding samples that are
@@ -252,9 +251,8 @@ impl Window for CosineWindow {
     /// (2.1% for Blackman, 42% for Hamming). `the_cola_rule_is_tight` pins both
     /// halves.
     ///
-    /// **This replaced a hand-written table**, which had Blackman at 4 on the
-    /// reasoning that its raised-cosine neighbours use 4. That was wrong by
-    /// 2.1% ripple, and a derivation cannot make that mistake.
+    /// Derived rather than tabulated: Blackman at 4, by analogy with its
+    /// raised-cosine neighbours, would ripple by 2.1%.
     #[inline]
     fn cola_overlap(&self) -> usize {
         let needed = 2 * self.terms.len() - 1;

@@ -4,16 +4,17 @@
 //! A 64-frame block at 48 kHz has **1.333 ms**; divide a case's time by that
 //! for the fraction of the budget one instance consumes.
 //!
-//! Every case is driven through `process`, never `tick`: the per-block param
-//! read and the channel-outer planar loop are exactly what `tick` cannot show.
+//! Every case is driven through `process` with whole blocks, never one frame
+//! at a time: the per-block param read and the channel-outer planar loop are
+//! exactly what a block of one cannot show.
 //! Each node is primed with a few blocks first so the coefficient cache and any
 //! delay line are warm, and the input is broadband noise rather than silence —
 //! a filter fed zeros can take denormal-free shortcuts a real signal never does.
 //!
 //! The `*_mod` cases feed the cutoff per frame, as the graph's param
 //! modulation does, with a sweep that moves every sample: the path where a
-//! per-sample coefficient solve (a `tan` per sample for the SVF) used to be
-//! the dominant cost.
+//! per-sample coefficient solve (a `tan` per sample for the SVF) would be the
+//! dominant cost.
 
 use std::hint::black_box;
 

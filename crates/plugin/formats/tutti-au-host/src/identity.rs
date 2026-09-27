@@ -98,7 +98,7 @@ pub struct OverviewParameter {
     pub element: u32,
 }
 
-/// Tell the AU where it sits in the host's project — "track 3", "Drum Bus".
+/// Tells the AU where it sits in the host's project — "track 3", "Drum Bus".
 ///
 /// This is *context*, not identity: it describes the slot, so moving the plugin
 /// to another track should rewrite it. For the instance's own name, which is
@@ -129,7 +129,7 @@ pub unsafe fn set_context_name(unit: AudioUnit, name: &str) -> Result<()> {
     }
 }
 
-/// Read back the context name set by [`set_context_name`].
+/// Reads back the context name set by [`set_context_name`].
 ///
 /// Apple's header marks this property `Read / Write`, and all 57 instantiable
 /// units measured on macOS 15.6 return the exact string written. It exists
@@ -181,7 +181,7 @@ pub unsafe fn set_nick_name(unit: AudioUnit, name: &str) -> Result<()> {
     }
 }
 
-/// Read back the instance name set by [`set_nick_name`].
+/// Reads back the instance name set by [`set_nick_name`].
 ///
 /// `Ok(None)` means the AU answered with a null string — it implements the
 /// property but has no name set — which is distinct from the `Err` an AU that

@@ -1,9 +1,10 @@
-//! The generic graph-reconcile Bevy plugin and core type registration.
+//! The graph-reconcile Bevy plugin.
 //!
 //! [`GraphReconcilePlugin`] wires the five-phase reconcile cycle (`Spawn` →
 //! `Params` → `Despawn` → `Compensate` → `Commit`), the despawn observer, and
-//! the leaf-agnostic reconcile systems. Leaf crates layer their own
-//! feature-gated systems on top (sampler/plugin/convolution/midi).
+//! the reconcile systems every host needs. The feature-gated subsystem plugins
+//! (sampler, MIDI, plugin hosting, modulation) schedule their own systems into
+//! the same sets.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
@@ -12,15 +13,21 @@ use crate::graph::{
     commit_graph, engine_ready, reconcile_node_despawn, GraphDirty, GraphReconcileSystems,
 };
 
-/// Bevy plugin: the generic graph reconciliation pipeline.
+/// Reconciles declared ECS state into the audio graph every frame.
 ///
-/// Runs the five-phase reconcile cycle every `Update`: `Spawn` → `Params` →
-/// `Despawn` → `Compensate` → `Commit`. Other plugins hook into these sets to
-/// interleave their work; `Compensate` holds only
-/// [`LatencyCompensationPlugin`](crate::LatencyCompensationPlugin)'s debug check,
-/// if a host adds it (the figures are published in `Commit`). This is the
-/// leaf-agnostic core; bevy-tutti adds the sampler/plugin/convolution/midi
-/// systems on top.
+/// Runs the five-phase reconcile cycle in `Update`: `Spawn` → `Params` →
+/// `Despawn` → `Compensate` → `Commit` ([`GraphReconcileSystems`]), gated on
+/// [`engine_ready`]. It adds the declared-wiring plugins
+/// ([`GraphWirePlugin`](crate::graph::GraphWirePlugin),
+/// [`GraphEventsPlugin`](crate::graph::GraphEventsPlugin)), the
+/// [`reconcile_node_despawn`] observer, [`commit_graph`], and initializes
+/// [`GraphDirty`], [`ChannelCompensation`](crate::ChannelCompensation) and
+/// [`GraphLatency`](crate::GraphLatency).
+///
+/// [`TuttiPlugin`](crate::TuttiPlugin) always adds it. Other plugins hook into
+/// the sets to interleave their work; `Compensate` holds only
+/// [`LatencyCompensationPlugin`](crate::LatencyCompensationPlugin)'s debug
+/// check, if a host adds it (the figures are published in `Commit`).
 pub struct GraphReconcilePlugin;
 
 impl Plugin for GraphReconcilePlugin {

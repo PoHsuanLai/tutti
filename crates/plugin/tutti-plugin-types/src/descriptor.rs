@@ -1,22 +1,19 @@
-//! Catalog identity for a discovered plugin — the static, scan-time data the
-//! plugin database persists and the DAW app reads (browser listing, dedup).
+//! Catalog identity for a discovered plugin: the static, scan-time data a
+//! plugin catalog persists and a host reads for browsing and deduplication.
 //!
 //! Distinct from [`LoadedPlugin`](crate::LoadedPlugin), which carries the
-//! runtime engine-wiring data (bus widths, latency) produced at *load* time and
-//! never persisted. These live in the format-agnostic vocab crate so the four
-//! format host crates can name them without depending on `tutti-plugin`; the
-//! per-format [`PluginClass`] inner types are self-contained mirrors (not the
-//! host crates' own enums), so the wire vocab never depends on the optional,
-//! feature-gated FFI host crates.
+//! runtime wiring data (bus widths, latency) produced at *load* time and never
+//! persisted.
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use crate::{ClapFeature, PluginRole, Vst3SubCategories};
 
-/// Catalog identity for a discovered plugin — the static, scan-time data that
-/// the plugin database persists and the DAW app reads (browser listing, dedup).
+/// The catalog identity of a discovered plugin.
 ///
+/// This is the static, scan-time data a plugin catalog persists and a host
+/// reads for its browser listing and deduplication.
 /// Distinct from [`LoadedPlugin`](crate::LoadedPlugin), which carries the
 /// runtime engine-wiring data (bus widths, latency) produced at *load* time and
 /// never persisted.
@@ -32,8 +29,8 @@ pub struct PluginDescriptor {
     /// Version string (may be empty).
     pub version: String,
     /// The plugin's native classification, carried verbatim from its format.
-    /// The DAW app interprets this (synth vs effect, browser category, MIDI
-    /// routing) — tutti does not flatten it into a common "kind".
+    ///
+    /// [`PluginClass::role`] derives a cross-format [`PluginRole`] from it.
     pub class: PluginClass,
     /// Whether the plugin reports an editor / GUI.
     ///
@@ -47,14 +44,11 @@ pub struct PluginDescriptor {
     /// Persisting `false` from such a path is what a badge reads as "no GUI" —
     /// for a plugin that may well have one. See [`EditorPresence`].
     ///
-    /// `serde(default)` is load-bearing here, unlike on the bincode-only wire
-    /// types: this record is persisted as **JSON**, and an existing catalog was
-    /// written before the field existed. Without the attribute that is a parse
-    /// error, and `PluginDatabase::load` quarantines the entire file — every
-    /// scan result and blacklist entry discarded because one field was added.
-    /// `Unknown` is the right value to default to: a record written without
-    /// this field never examined the plugin, so any concrete answer would be a
-    /// guess.
+    /// A persisted record without this field deserializes as
+    /// [`EditorPresence::Unknown`].
+    // `serde(default)` keeps catalogs written before this field existed
+    // loadable; without it the whole JSON file fails to parse and is
+    // quarantined. `Unknown` because such a record never examined the plugin.
     #[cfg_attr(feature = "serde", serde(default))]
     pub editor: EditorPresence,
 }
@@ -81,8 +75,10 @@ pub enum EditorPresence {
 }
 
 impl EditorPresence {
-    /// Build from a live plugin's answer. Never yields
-    /// [`Unknown`](Self::Unknown) — that variant is for paths that did not ask.
+    /// Builds from a live plugin's answer.
+    ///
+    /// Never yields [`Unknown`](Self::Unknown); that variant is for paths that
+    /// did not ask.
     pub fn measured(has_editor: bool) -> Self {
         if has_editor {
             Self::Present
@@ -91,7 +87,7 @@ impl EditorPresence {
         }
     }
 
-    /// `true` only when the plugin was asked and said yes.
+    /// Returns `true` only when the plugin was asked and said yes.
     ///
     /// The conservative read, for a caller that must produce a bool: an
     /// unexamined plugin is not claimed to have an editor. A UI that wants to
@@ -103,7 +99,7 @@ impl EditorPresence {
 }
 
 impl PluginDescriptor {
-    /// Whether this plugin was asked and reported an editor.
+    /// Returns whether this plugin was asked and reported an editor.
     ///
     /// The normalized read, so a caller deciding whether to draw an "open
     /// editor" button does not have to know that a filename-fallback probe
@@ -114,8 +110,9 @@ impl PluginDescriptor {
         self.editor.is_present()
     }
 
-    /// A minimal descriptor with just id + name; everything else defaulted.
-    /// Used by tests and filename-fallback probing.
+    /// Creates a descriptor with an id, name and class; the vendor and version
+    /// are empty and [`editor`](Self::editor) is
+    /// [`EditorPresence::Unknown`].
     pub fn new(id: impl Into<String>, name: impl Into<String>, class: PluginClass) -> Self {
         Self {
             id: id.into(),
@@ -128,16 +125,15 @@ impl PluginDescriptor {
     }
 }
 
-/// Each plugin format's native classification, carried verbatim across the IPC
-/// wire and into the persisted catalog. Defined here because `tutti-plugin`
-/// already enumerates every format; the DAW app matches on the variant once
-/// (browser bucketing, MIDI-routing decisions) instead of consuming a lossy
-/// shared "kind".
+/// A plugin's native classification in its own format's taxonomy.
 ///
-/// The inner types are self-contained mirrors (not the host crates' own enums)
-/// so this wire vocab never depends on the optional, feature-gated FFI host
-/// crates — the deserializing client may have different format features enabled
-/// than the server that produced the value.
+/// Carried verbatim across the IPC wire and into the persisted catalog, so a
+/// host can match on the variant for format-specific decisions. For a
+/// cross-format answer use [`role`](Self::role).
+///
+/// The inner types are self-contained mirrors rather than the format host
+/// crates' own enums, so a value deserializes regardless of which format
+/// features the reading side enabled.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum PluginClass {
@@ -171,10 +167,8 @@ pub enum PluginClass {
 }
 
 impl PluginClass {
-    /// The plugin format's short name (`"vst2"`, `"vst3"`, `"clap"`, `"au"`,
-    /// or `"unknown"`). Fills
-    /// [`EditorError::GuiNotSupported`](crate::editor::EditorError::GuiNotSupported)
-    /// with which format has no hostable editor.
+    /// Returns the plugin format's short name: `"vst2"`, `"vst3"`, `"clap"`,
+    /// `"au"`, or `"unknown"`.
     pub fn format_name(&self) -> &'static str {
         match self {
             PluginClass::Unknown => "unknown",
@@ -185,7 +179,7 @@ impl PluginClass {
         }
     }
 
-    /// What this plugin *is*, normalized across the formats.
+    /// Returns what this plugin *is*, normalized across the formats.
     ///
     /// The one place the four native taxonomies are collapsed into a shared
     /// vocabulary, so a host bucketing a browser matches once here instead of
@@ -207,7 +201,7 @@ impl PluginClass {
 }
 
 impl AuComponentType {
-    /// The role this component type describes.
+    /// Returns the role this component type describes.
     ///
     /// `MusicEffect` (`aumf`) is an **effect**: it takes MIDI *and* audio, so
     /// it is an insert that happens to want notes. The MIDI half is reported
@@ -230,9 +224,11 @@ impl AuComponentType {
     }
 }
 
-/// Mirror of the AudioUnit component type. Self-contained so the wire vocab
-/// doesn't depend on `tutti-au-host`; the AU loader maps its native `AuType`
-/// here. `Unknown` carries the raw four-char code for forward-compat.
+/// An Audio Unit component type (`aufx`, `aumu`, …).
+///
+/// A mirror of `tutti-au-host`'s native type, so this crate needs no AU
+/// dependency. [`Unknown`](Self::Unknown) carries the raw four-char code of a
+/// type this enum does not name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum AuComponentType {
@@ -266,8 +262,8 @@ mod tests {
     /// "Not asked" and "asked, no editor" are different answers.
     ///
     /// The whole reason the type is three-valued: the AU and VST3 probe paths
-    /// cannot instantiate, so a bool forced them to persist `false` — which a
-    /// browse-time GUI badge reads as "no GUI".
+    /// cannot instantiate, so a bool would force them to persist `false` — which
+    /// a browse-time GUI badge reads as "no GUI".
     #[test]
     fn an_unexamined_plugin_is_not_a_plugin_without_an_editor() {
         assert_ne!(EditorPresence::Unknown, EditorPresence::Absent);

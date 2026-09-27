@@ -1,27 +1,3 @@
-//! MIDI runtime state machines for the Tutti audio engine.
-//!
-//! Pure MIDI types live in [`tutti_midi_types`]; hardware I/O lives in
-//! `tutti-midi-hardware`. This crate owns the *runtime state* that connects
-//! them:
-//!
-//! - MIDI as graph nodes (doc 013, rewrite item 5), sending on event ports:
-//!   [`MidiInputNode`] (a wire, one port per channel: routing is wiring),
-//!   [`MidiQueueNode`] (what a control thread sends), [`MidiClipNode`] and
-//!   [`HarmonyNode`] (a timeline), [`ClockNode`] (Beat Clock and MTC), and
-//!   [`MidiOutNode`], the sink handing MIDI back to a control thread
-//! - [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`] — the lock-free ring
-//!   MIDI crosses a thread boundary on
-//! - [`ClockMaster`] and the rest of engine-produced MIDI *out* (Beat Clock,
-//!   MTC, JR timestamps)
-//! - [`MpeIngest`] — the input-edge transform rewriting classic-MPE
-//!   channel-spread into native MIDI-2 per-note messages (per M2-104, MPE is an
-//!   ingestion concern; synth voices track per-note expression themselves)
-//!
-//! Refusal is shaped as a *value* throughout, which is why there is no `Error`
-//! type: a full mailbox drops and reports a count, and [`MpeIngest::translate`]
-//! returns `Option`.
-//!
-//! Worked examples are in the crate README, included below.
 #![doc = include_str!("../README.md")]
 
 // NOTE: this crate has no fallible operation and therefore no `Error` type.

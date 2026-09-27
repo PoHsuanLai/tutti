@@ -41,7 +41,7 @@ pub(super) unsafe fn create_view(unit: AudioUnit, preferred: EditorSize) -> Resu
     make_view(factory, unit, preferred)
 }
 
-/// Read `kAudioUnitProperty_CocoaUI` and decode the bundle URL plus the view
+/// Reads `kAudioUnitProperty_CocoaUI` and decode the bundle URL plus the view
 /// factory's ObjC class name.
 ///
 /// Both come back **owned** (`from_copied` takes the +1), so the caller drops
@@ -84,7 +84,7 @@ unsafe fn load_cocoa_view_info(unit: AudioUnit) -> Result<(CfUrl, CfString)> {
     Ok((bundle_url, class_name))
 }
 
-/// Load and link the `NSBundle` at `url`, the AU's advertised view-factory
+/// Loads and links the `NSBundle` at `url`, the AU's advertised view-factory
 /// bundle.
 ///
 /// # Safety
@@ -141,7 +141,7 @@ unsafe fn instantiate_factory(_bundle: &NSBundle, class_name: &CfString) -> Resu
     Ok(factory)
 }
 
-/// Send `uiViewForAudioUnit:withSize:` to the factory and take ownership of the
+/// Sends `uiViewForAudioUnit:withSize:` to the factory and take ownership of the
 /// resulting `NSView`.
 ///
 /// Consumes `factory`: it is `release`d before this returns, whether or not a

@@ -1,10 +1,8 @@
-//! Gaps a mutation audit of this crate's suites found, and the assertions that
-//! close them.
+//! Assertions that catch plausible mutations of `src/` no other suite catches.
 //!
-//! Every test here was produced the same way: a plausible bug was introduced
-//! into `src/`, the whole suite was run, and **nothing failed**. The tests below
-//! are the ones that now do. Each doc comment names the mutation it kills, so a
-//! future refactor that reintroduces it fails here rather than shipping.
+//! Each test targets a bug that, introduced into `src/`, leaves the rest of the
+//! suite passing. Each doc comment names the mutation it kills, so a refactor
+//! that reintroduces it fails here rather than shipping.
 //!
 //! ## What is deliberately *not* here
 //!

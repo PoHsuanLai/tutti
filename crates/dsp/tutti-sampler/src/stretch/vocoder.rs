@@ -23,14 +23,13 @@ pub(super) struct Vocoder {
     pub(super) geometry: StftGeometry,
     /// The analysis/synthesis window, taken from the grid.
     ///
-    /// Whatever shape `geometry.window_fn()` names — it is no longer assumed to
-    /// be Hann, because the overlap-add normalization no longer assumes it
-    /// either (see [`OverlapAdd`]).
+    /// Whatever shape `geometry.window_fn()` names: nothing assumes Hann,
+    /// because the overlap-add normalization divides out the window's actual
+    /// sum (see [`OverlapAdd`]).
     ///
     /// `Arc` because it is immutable for the vocoder's lifetime and identical for
-    /// every channel and every clone — and because building it costs `size`
-    /// `cos()` calls, which `Net::commit`'s deep clone was paying per channel per
-    /// node. Sharing turns that into a refcount bump.
+    /// every channel and every clone, and building it costs `size` `cos()`
+    /// calls. Sharing turns that into a refcount bump.
     pub(super) window: Arc<Vec<f32>>,
 
     /// Real scratch handed to [`real_fft`], which transforms it in place.
@@ -117,18 +116,10 @@ impl Vocoder {
     ///
     /// This is what `Unit::clone` runs, per channel: about 100 KB per vocoder
     /// (64% of it the two `size * 4` rings), on the control thread. The graph
-    /// clones a unit only for a fork, never to commit.
-    ///
-    /// Under `Net`, which cloned every node on every commit, this was the cost
-    /// that had to go. Profiled under `samply`
-    /// (`examples/profile_stretch_clone.rs`), it split **~42% allocator, ~37%
-    /// `memset`**; a buffer pool could only address the allocator's share (a
-    /// recycled buffer is cleared by the same `memset`), and measured no
-    /// faster. A deep-cloning commit moved 201.8 MB at stereo and 604.6 MB at
-    /// six channels against a 2 ms budget, so the bank was shared by `Arc`
-    /// across clones (1.3 / 3.3 MB) at the price of a claim token proving one
-    /// handle ticked it. With no clone per commit, the sharing went (doc 013
-    /// item 7) and this is a plain constructor again.
+    /// clones a unit only for a fork, never to commit, so the cost (about 42%
+    /// allocator and 37% `memset` when profiled) is paid off the audio path. A
+    /// buffer pool would not help: a recycled buffer is cleared by the same
+    /// `memset`.
     pub(super) fn clone_fresh(&self) -> Self {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();
@@ -260,9 +251,9 @@ impl Vocoder {
         for i in 0..size {
             let w = self.window[i];
             // The windowed sample and the window energy that carried it, summed
-            // into the same slot. `drain` divides one by the other — which is
-            // what `tutti_analysis::istft` has always done, and what the old
-            // `COLA_GAIN` scalar only approximated for one window at one hop.
+            // into the same slot. `drain` divides one by the other, as
+            // `tutti_analysis::istft` does; a constant COLA gain would be right
+            // for one window at one hop only.
             self.output.add_at(i, self.spectrum[i].re * w, w * w);
         }
 
@@ -291,13 +282,9 @@ pub(super) fn wrap_phase(phase: Radians) -> Radians {
     phase.wrapped_signed()
 }
 
-// `COLA_GAIN` used to live here: `1.0 / 1.5`, where `1.5 = 4 × mean(hann²)`.
-//
-// It was a precomputed scalar, and its own doc said what was wrong with it —
-// "only correct at 75% overlap". It was also only correct for Hann, silently:
-// point a Hamming window at it and every sample is 0.8 dB hot, a Blackman one
-// and it is 0.9 dB shy, with nothing erroring anywhere.
-//
-// The sum is now accumulated per sample in `OverlapAdd` and divided out at the
-// read, which is what `tutti_analysis::istft` has always done. See that type's
-// doc for why the two rings are one struct.
+// No precomputed COLA gain: a scalar such as `1.0 / 1.5` (`4 × mean(hann²)`)
+// is right only for Hann at 75% overlap, and silently wrong otherwise (a
+// Hamming window comes out 0.8 dB hot, a Blackman one 0.9 dB shy). The window
+// sum is accumulated per sample in `OverlapAdd` and divided out at the read,
+// as `tutti_analysis::istft` does. See that type's doc for why the two rings
+// are one struct.

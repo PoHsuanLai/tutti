@@ -254,9 +254,8 @@ fn narrate_editor(
                 "  editor: open at {}x{} (resizable={})",
                 editor.width, editor.height, editor.capabilities.resize.resizable
             );
-            // Closing and reopening is the case the old open-component could not
-            // express: it was consumed a frame after insertion, so nothing could
-            // ask whether an editor was showing.
+            // Close it again: the `PluginEditorOpen` component says whether an
+            // editor is showing, so closing is observable too.
             commands.trigger(SetEditorVisible::toggle(entity));
         }
         Err(_) if narrated.editor_opened && !narrated.editor_closed => {

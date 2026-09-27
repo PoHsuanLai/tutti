@@ -5,7 +5,7 @@
 //! at another rate would play a graph built for the old one, every oscillator
 //! off pitch, the beat clock off tempo, every figure in samples (PDC, a
 //! lookahead) wrong — with no error anywhere. That is why a plain
-//! `TuttiDriver::restart` now refuses a rate change, and why this module
+//! `TuttiDriver::restart` refuses a rate change, and why this module
 //! exists: [`restart_device`] runs the driver's restart with a hook that, while
 //! no callback runs, moves everything the adapter owns to the new
 //! configuration:
@@ -32,19 +32,18 @@
 //!   seeking in it pre-rolls by the new rate's.
 //!
 //! Every unit instance is kept across the re-prepare, and only time-based
-//! state resets (`Editor::reprepare`'s rule). (On `Net`, before design doc
-//! 013's PR 13, a re-rate swapped in never-run control-side copies of every
-//! unit, losing voices mid-note, tails, filter memory and LFO phase.)
+//! state resets (`Editor::reprepare`'s rule): voices keep sounding, and
+//! filter memory and LFO phase carry over.
 //!
 //! **Recovery after a failed hook:** the stream is left stopped, and the
 //! driver keeps the old spec and graph rate (`TuttiDriver::graph_rate`). A
 //! restart onto the old device at the old rate — `restart_device` with it,
 //! or a plain `TuttiDriver::restart` — moves nothing and plays again.
 //!
-//! Not re-rated here, and recorded in design doc 013 (Phase 3 follow-ups):
-//! a `SoundFontUnit` (rustysynth fixes its rate at construction) and a
-//! host-built `UmpOutRes` (its JR clock). A MIDI clip node needs nothing: it
-//! places its events by its block's `Env`, rate included.
+//! Not re-rated here: a `SoundFontUnit` (rustysynth fixes its rate at
+//! construction) and a host-built `UmpOutRes` (its JR clock). A MIDI clip
+//! node needs nothing: it places its events by its block's `Env`, rate
+//! included.
 
 use bevy_ecs::prelude::*;
 
@@ -71,7 +70,7 @@ pub struct DeviceRestart {
     pub max_block: Option<Samples>,
 }
 
-/// Restart the output device and move the graph, the transport and every
+/// Restarts the output device and moves the graph, the transport and every
 /// rate-derived resource to the configuration it comes back with.
 ///
 /// Call from an exclusive system or a queued command
@@ -373,7 +372,7 @@ mod tests {
     /// - `rerate` not calling `latency::publish_sent` → the 44.1 kHz figure
     ///   is still published before the first block → fails;
     /// - `rerate` not settling the engine and collecting (leaving the second
-    ///   half to `commit_graph`, as before PR 13's review) → the first block
+    ///   half to `commit_graph`) → the first block
     ///   is silent, and the figures are old before it → fails.
     #[test]
     fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
@@ -544,7 +543,7 @@ mod tests {
     ///
     /// Mutations (run):
     /// - `rerate` not widening → the root stays two → fails;
-    /// - `rerate` publishing the old `AudioConfig::channels` (as it did) →
+    /// - `rerate` publishing the old `AudioConfig::channels` →
     ///   two after the 5.1 restart → fails.
     #[test]
     fn a_restart_onto_a_wider_device_widens_the_root() {
@@ -728,7 +727,8 @@ mod tests {
     /// the engine's own clock node, the ticks are 918.75 frames apart before
     /// the restart and 1 000 after it, and the restart sends no Song
     /// Position (it is not a locate: 512-frame blocks move the beat further
-    /// at 44.1 kHz than at 48, past the seek epsilon of the old check).
+    /// at 44.1 kHz than at 48, which a seek check with a fixed epsilon would
+    /// take for a locate).
     ///
     /// Mutations (run):
     /// - `ClockNode::prepare` not calling `ClockMaster::set_sample_rate` →
@@ -832,10 +832,8 @@ mod tests {
     /// graph is not between its halves and nothing waits. The incoming 2 kHz
     /// sine plays at the new rate: 24 frames a cycle.
     ///
-    /// Until PR 13's review this crossfade waited in `PendingCrossfades`
-    /// (#32), because the re-prepare's second half only landed on a later
-    /// frame; the waiting itself is still pinned, on a graph re-prepared
-    /// while it runs, by `graph::runtime`'s
+    /// The waiting case (a crossfade in `PendingCrossfades` while a graph
+    /// re-prepares) is pinned by `graph::runtime`'s
     /// `a_crossfade_during_a_re_prepare_lands_after_it`.
     ///
     /// Mutation (run): `rerate` not settling the engine and collecting
@@ -870,8 +868,7 @@ mod tests {
 
     /// **A restart onto a device with another callback size re-declares a
     /// hosted plugin's latency, and PDC follows.** A live plugin ships one
-    /// device callback per chunk to its server (doc 013, decision 8
-    /// reversed), so its declared latency is its own 137 frames plus the
+    /// device callback per chunk to its server, so its declared latency is its own 137 frames plus the
     /// callback: 137 + 512 on the first device, 137 + 256 once the restart
     /// re-prepares the graph for the second (`OutputSpec::quantum` →
     /// `Prepare::quantum`). The graph's latency (`GraphLatency`, the plugin

@@ -16,8 +16,7 @@ use tutti_types::graph::NodeKey;
 
 /// Component identity for a graph node.
 ///
-/// Wraps the [`NodeKey`] the node was inserted at (fundsp's `NodeId` until
-/// doc 013 Phase 5). Inserted by host helpers (e.g.
+/// Wraps the [`NodeKey`] the node was inserted at. Inserted by host helpers (e.g.
 /// `Commands::spawn_audio_node`) immediately after the underlying node is
 /// added to the graph; removing this component (or despawning the entity)
 /// is the signal for the host to remove the node and `commit()`.
@@ -33,13 +32,13 @@ use tutti_types::graph::NodeKey;
 pub struct AudioNode(pub NodeKey);
 
 impl AudioNode {
-    /// A handle at a key no earlier [`NodeKey::fresh`] returned.
+    /// Returns a handle at a key no earlier [`NodeKey::fresh`] returned.
     #[inline]
     pub fn fresh() -> Self {
         Self(NodeKey::fresh())
     }
 
-    /// The graph key this handle names.
+    /// Returns the graph key this handle names.
     #[inline]
     pub fn key(self) -> NodeKey {
         self.0

@@ -1,15 +1,15 @@
 //! Event delivery properties the differential suite cannot see: rules where
 //! the reference and the executor could share one wrong decision.
 //!
-//! - **Conservation** (review S1): every event emitted while an edge exists
+//! - **Conservation**: every event emitted while an edge exists
 //!   is delivered exactly once to that edge's sink, across recompiles that
 //!   retune, remove, rewire and re-add delays and feedback edges, regenerate
 //!   units, and change the block size — checked on *both* interpreters
 //!   against a ledger kept by the emitters themselves.
-//! - **Wide fan-in** (B1): 65 and 200 sources into one event port compile to
+//! - **Wide fan-in**: 65 and 200 sources into one event port compile to
 //!   a merge tree and deliver in `(offset, source order)`.
-//! - **Feedback delays by its declared delay** at any `MaxBlock`, audio and events, under
-//!   block sizes that change and are ragged.
+//! - **Feedback delays by its declared delay** at any `MaxBlock`, audio and
+//!   events, under block sizes that change and are ragged.
 //! - **Scheduled commands are conserved too**: each lands exactly once, on
 //!   its frame (or, when already past, at the start of the next block),
 //!   through the same recompiles.
@@ -403,7 +403,7 @@ fn arb_phase(emitters: usize) -> impl Strategy<Value = Phase> {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
 
-    /// S1: every event emitted while an edge exists is delivered exactly
+    /// Conservation: every event emitted while an edge exists is delivered exactly
     /// once to that edge's sink — no loss, no duplicate — through PDC delays
     /// that retune or vanish (lag at 0), rewiring, direct↔feedback switches,
     /// regenerated emitters and ragged block sizes. Checked on both
@@ -468,7 +468,7 @@ proptest! {
 }
 
 /// A delay whose key vanishes flushes its pending events rather than losing
-/// them — the reviewers' counterexample: an emitter behind a 20-frame event
+/// them: an emitter behind a 20-frame event
 /// delay; regenerate the lag at latency 0, and nothing is lost.
 ///
 /// Mutation: skip the `gone` flush loop in `Executor::rebuild` → 5 of the
@@ -499,13 +499,12 @@ fn a_vanishing_event_delay_flushes_instead_of_dropping() {
     assert!(got.iter().any(|&(_, _, f, at)| f < switch && at >= switch));
 }
 
-/// B1: 65 and 200 sources into one event port compile (to a tree of merges
-/// of at most `MAX_PORTS`), and deliver in `(offset, source order)` — here
+/// 65 and 200 sources into one event port compile (to a tree of merges of
+/// at most `MAX_PORTS`), and deliver in `(offset, source order)` — here
 /// every source fires on the same frame, so the order is the source order,
-/// the source's `NodeKey` (owner decision 6 as refined for events as
-/// ports: the order the spec lists its edges in no longer counts — this
-/// test pinned list order before, and lists the sources in reverse so that
-/// a merge falling back to it is caught).
+/// the source's `NodeKey`, not the order the spec lists its edges in. The
+/// sources are listed in reverse so that a merge falling back to list order
+/// is caught.
 ///
 /// Mutation: in `merge_tree`, merge the runs in reverse order → the first
 /// tie goes to source 64 → fails. Mutation: remove the `n <= MAX_PORTS` arm
@@ -800,7 +799,7 @@ fn a_feedback_delay_shorter_than_max_block_is_refused() {
     );
 }
 
-/// B1 against the reference: a 150-wide fan-in, sources firing on shared and
+/// Wide fan-in against the reference: a 150-wide fan-in, sources firing on shared and
 /// distinct frames, delivers exactly what the reference's
 /// concatenate-and-stable-sort delivers.
 ///

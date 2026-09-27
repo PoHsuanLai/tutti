@@ -7,12 +7,11 @@
 //!
 //! The hazard it removes is an *owning* read on the audio thread: hold the last
 //! reference to a retired value and the callback runs `free` on its `Vec`s
-//! inside the block. `ClickSettings::meter` did exactly that through
-//! `ArcSwap::load_full`.
+//! inside the block.
 //!
-//! **A no-alloc test cannot pin this property**, and one that claimed to did
-//! not: the hazard is a race between a reader and a publisher, and a
-//! single-threaded sampling test has no schedule that exhausts it. The guarantee
+//! **A no-alloc test cannot pin this property**: the hazard is a race between
+//! a reader and a publisher, and a single-threaded sampling test has no
+//! schedule that exhausts it. The guarantee
 //! therefore lives in two places that *can* be checked: [`RtRef`]'s type (no
 //! owning handle, checked at compile time), and the reclamation protocol below
 //! (no code path on the reader side that frees, checked by the `loom` model in
@@ -307,17 +306,18 @@ struct Control<T> {
 /// Retired values are freed by [`publish`](Self::publish), on the publishing
 /// thread — or, when a reader still holds one at that moment, by a later
 /// publish or by the cell's own drop. The cost is real, but it always lands
-/// where blocking is allowed. (The one exception is dropping the cell itself:
-/// see the module docs on who should own the last handle.)
+/// where blocking is allowed.
 ///
-/// This is structural, not probabilistic. The previous implementation wrapped
-/// `arc_swap::ArcSwap`, whose guard could degrade into an owning reference when
-/// a writer settled its debt concurrently, making an audio-thread free "very
-/// unlikely" rather than impossible. The protocol that replaced it (spelled
-/// out at the top of `rt/publish.rs`) has no such path, and the `loom` model
-/// in `tests/rt_publish_loom.rs` asserts it.
+/// This is structural, not probabilistic: no code path on the reader side can
+/// free, whatever the interleaving with a publisher.
 ///
 /// There is deliberately no owning read, and no way to get an `Arc` back out.
+///
+/// # Who drops the cell
+///
+/// The cell itself owns the current value and the retired list, so dropping
+/// the last `Arc<RtPublish<_>>` frees them on whichever thread drops it. Keep a
+/// control-side handle alive for as long as an audio node might hold one.
 ///
 /// # Cost
 ///
@@ -335,6 +335,37 @@ struct Control<T> {
 /// is precision in reclamation: an overflow reader pins every value that was
 /// current during its epoch (usually one or two), not just the one it holds.
 /// Prefer one read per block, passed down.
+///
+/// # Parked readers
+///
+/// Reclamation assumes each [`RtRef`] is dropped within the block that took
+/// it. If several overflow readers are parked across publishes (held for many
+/// blocks, or passed to `mem::forget`), a publish can find no free epoch to
+/// advance into, and every value retired from then on stays pinned until one
+/// of them drops: memory grows by one value per publish. Nothing is unsound in
+/// that state. Debug builds assert once 1024 values are waiting; release
+/// builds report it through [`retired_len`](Self::retired_len) and
+/// [`epoch_stalls`](Self::epoch_stalls), for a host to poll.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use tutti_types::RtPublish;
+///
+/// // Control thread: build and share the cell.
+/// let routing = Arc::new(RtPublish::new(vec![0usize, 1]));
+///
+/// // Audio thread, once per block: a borrow that cannot free.
+/// {
+///     let table = routing.read();
+///     assert_eq!(table[1], 1);
+/// }
+///
+/// // Control thread: swap in a new table; the old one is freed here.
+/// routing.publish(Arc::new(vec![1, 0]));
+/// assert_eq!(routing.read()[0], 1);
+/// ```
 pub struct RtPublish<T> {
     /// The current value, from [`Arc::into_raw`]. The cell owns that one strong
     /// count; [`Drop`] gives it back.
@@ -363,7 +394,8 @@ impl<T> RtPublish<T> {
         Self::from_arc(Arc::new(value))
     }
 
-    /// Build from an existing `Arc`, when the publisher already has one.
+    /// Builds the cell from an existing `Arc`, when the publisher already has
+    /// one.
     ///
     /// The cell takes over that strong count; other clones the caller keeps are
     /// unaffected, and the value is freed wherever its *last* `Arc` drops —
@@ -392,8 +424,10 @@ impl<T> RtPublish<T> {
         }
     }
 
-    /// Read the current value. **Audio-thread safe**: wait-free, and it
-    /// neither allocates nor frees, whatever the publisher is doing.
+    /// Returns a borrow of the current value.
+    ///
+    /// **Audio-thread safe**: wait-free, and it neither allocates nor frees,
+    /// whatever the publisher is doing.
     ///
     /// Hold the returned [`RtRef`] for the block you are rendering and no
     /// longer: it is a read lease, and a parked one keeps a retired value alive
@@ -468,7 +502,7 @@ impl<T> RtPublish<T> {
         NonNull::new(ptr).expect("RtPublish::current is never null")
     }
 
-    /// Publish a new value. **Control-thread only.**
+    /// Publishes a new value. **Control-thread only.**
     ///
     /// Swaps the value in, then frees every retired value no reader can still
     /// hold — including the outgoing one, if nobody is reading it. It may spin
@@ -659,12 +693,13 @@ impl<T> RtPublish<T> {
             .sum()
     }
 
-    /// How many swapped-out values are still waiting to be freed.
+    /// Returns how many swapped-out values are still waiting to be freed.
+    ///
     /// **Control-thread only**: it takes the publisher's lock.
     ///
     /// For a host to poll. It should stay small: a few values plus one per
     /// slot reader parked across publishes. If it keeps growing, reclamation
-    /// has stalled — see "The limit" in the module docs.
+    /// has stalled (see "Parked readers" above).
     pub fn retired_len(&self) -> usize {
         self.control
             .lock()
@@ -673,14 +708,15 @@ impl<T> RtPublish<T> {
             .len()
     }
 
-    /// How many publishes found every overflow epoch still occupied, and so
-    /// could not start a new one. **Control-thread only**: it takes the
-    /// publisher's lock.
+    /// Returns how many publishes found every overflow epoch still occupied,
+    /// and so could not start a new one.
+    ///
+    /// **Control-thread only**: it takes the publisher's lock.
     ///
     /// A counter rather than a log line, for a host to poll. It stays at zero
     /// while `RtRef`s are held only within a block. It rises when several
     /// long-lived overflow `RtRef`s occupy every epoch, and while that lasts,
-    /// every retired value stays pinned (module docs, "The limit").
+    /// every retired value stays pinned (see "Parked readers" above).
     pub fn epoch_stalls(&self) -> u64 {
         self.control
             .lock()
@@ -728,10 +764,9 @@ enum Held {
 /// A borrow of the value inside an [`RtPublish`], valid for as long as it is
 /// held.
 ///
-/// Deliberately not `Send`, and tied to the cell's lifetime. Between them, a
-/// guard cannot be stashed in a struct field, moved to another thread, or
-/// outlive the cell — so "held across blocks", the failure mode a review rule
-/// would otherwise have to catch, is a compile error instead.
+/// Returned by [`RtPublish::read`]. Deliberately not `Send`, and tied to the
+/// cell's lifetime: a guard cannot be moved to another thread or outlive the
+/// cell. Hold it for the block being rendered and drop it.
 ///
 /// There is no way to get an owning `Arc` back out. That is not an oversight.
 /// Dropping one clears a slot or bumps a counter and does nothing else: it
@@ -847,7 +882,7 @@ mod tests {
     }
 
     /// A guard must not be able to escape the thread that took it — that is what
-    /// makes "held across blocks" a compile error rather than a review rule.
+    /// makes "moved to another thread" a compile error rather than a convention.
     ///
     /// Asserted via autoref specialization: the inherent const on `Wrap<T>` wins
     /// over the trait's default only when `T: Send`, so `IS_SEND` resolves to

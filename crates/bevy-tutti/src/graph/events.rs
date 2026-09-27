@@ -1,5 +1,5 @@
-//! Declaring what feeds a node's event input (doc 013, rewrite item 5), and
-//! [`GraphNode`], what every spawn path takes.
+//! Declaring what feeds a node's event input, and [`GraphNode`], the trait
+//! every spawn path takes.
 //!
 //! A node inserted with [`spawn_audio_node`](crate::graph::SpawnAudioNode)
 //! may declare MIDI event inputs and outputs: a clip node writes its notes to
@@ -36,7 +36,7 @@ use crate::graph::{
 pub struct EventSources(pub Vec<Entity>);
 
 impl EventSources {
-    /// Fed by `entity` alone.
+    /// Creates a declaration fed by `entity` alone.
     pub fn from(entity: Entity) -> Self {
         Self(vec![entity])
     }
@@ -53,7 +53,7 @@ pub struct EventSource {
 }
 
 impl EventSource {
-    /// `node`'s event output `port`.
+    /// Names `node`'s event output `port`.
     pub const fn new(node: AudioNode, port: u16) -> Self {
         Self { node, port }
     }
@@ -80,12 +80,12 @@ impl From<AudioNode> for EventSource {
 pub struct EventFeeds(HashMap<Entity, std::collections::BTreeMap<&'static str, Vec<EventSource>>>);
 
 impl EventFeeds {
-    /// `feeder`'s sources feeding `sink`, replacing what it fed before.
+    /// Sets the sources `feeder` feeds `sink`, replacing what it fed before.
     pub fn set(&mut self, sink: Entity, feeder: &'static str, sources: Vec<EventSource>) {
         self.0.entry(sink).or_default().insert(feeder, sources);
     }
 
-    /// `feeder` feeds `sink` nothing any more.
+    /// Removes everything `feeder` feeds `sink`.
     pub fn remove(&mut self, sink: Entity, feeder: &'static str) {
         if let Some(feeds) = self.0.get_mut(&sink) {
             feeds.remove(feeder);
@@ -95,7 +95,7 @@ impl EventFeeds {
         }
     }
 
-    /// Every source any feeder feeds `sink`.
+    /// Returns every source any feeder feeds `sink`.
     pub fn sources(&self, sink: Entity) -> impl Iterator<Item = EventSource> + '_ {
         self.0
             .get(&sink)
@@ -253,7 +253,7 @@ param_graph_node!(
 impl GraphNode for tutti_nodes::DownmixNode {}
 impl GraphNode for tutti_nodes::ChannelSumNode {}
 
-// The delay, modulation and LFO nodes (doc 013 Phase 4, tutti-nodes group B).
+// The delay, modulation and LFO nodes.
 param_graph_node!(
     tutti_nodes::DelayLineNode,
     tutti_nodes::ModDelayNode,
@@ -261,7 +261,7 @@ param_graph_node!(
     tutti_nodes::LfoNode,
 );
 
-/// The convolution reverb: its mix by address.
+// The convolution reverb: its mix by address.
 #[cfg(feature = "convolution")]
 param_graph_node!(tutti_nodes::ConvolverNode);
 
@@ -293,11 +293,11 @@ impl GraphNode for tutti_spatial::HrtfBinauralNode {}
 param_graph_node!(tutti_polysynth::PolySynth);
 
 /// What each sink entity's event input 0 was last set to, so a frame with
-/// no change writes nothing.
+/// no change writes nothing: the [`reconcile`] system's `Local` state.
 #[derive(Default)]
 pub struct Reconciled(HashMap<Entity, (AudioNode, Vec<EventSource>)>);
 
-/// Write every sink's declared event sources ([`EventSources`] plus the
+/// Writes every sink's declared event sources ([`EventSources`] plus the
 /// [`EventFeeds`] for it) into the graph, where they differ from what was
 /// last written. A sink that declared sources last frame and none now is
 /// emptied; one bound to a new node since is written afresh (the old node's

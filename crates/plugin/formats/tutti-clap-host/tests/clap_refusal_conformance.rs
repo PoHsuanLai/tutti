@@ -3,8 +3,8 @@
 //! *"not applicable"*.
 //!
 //! Companion to the other conformance suites here, which all drive a plugin
-//! that says **yes** to everything — which is why none of them could see these
-//! bugs. Every assertion below is about what the host does *after* hearing
+//! that says **yes** to everything, so none of them can see these paths.
+//! Every assertion below is about what the host does *after* hearing
 //! "no", so the paths under test are unreachable without the reference
 //! plugin's `refusal` switches; see that module for what each one models.
 //!
@@ -192,14 +192,14 @@ fn read_param_capture() -> ParamStateCapture {
 }
 
 // ---------------------------------------------------------------------------
-// Bug 1 — `activate` refusal
+// `activate` refusal
 // ---------------------------------------------------------------------------
 
 /// A refused `set_sample_rate` must be *reported*, not swallowed.
 ///
-/// The pre-fix host returned `&mut Self` unconditionally, so this call was
-/// indistinguishable from a successful one at every call site. There was no
-/// value a caller could inspect to learn the request had been denied.
+/// A setter returning `&mut Self` unconditionally would make this call
+/// indistinguishable from a successful one at every call site, with no value
+/// a caller could inspect to learn the request had been denied.
 #[test]
 fn refused_sample_rate_change_is_reported() {
     let probe = Probe::acquire();
@@ -271,9 +271,9 @@ fn refused_sample_rate_change_rolls_back_and_stays_active() {
 /// leave the RT scratch sized for a ceiling the plugin never agreed to.
 ///
 /// The scratch size is what `process` bounds-checks incoming blocks against
-/// (`process_impl` rejects `num_samples > max_frames`). Had the host kept
-/// `max_frames` at the refused value while the plugin was activated at the old
-/// one, `process` would have accepted a block larger than the plugin's declared
+/// (`process_impl` rejects `num_samples > max_frames`). If the host kept
+/// `max_frames` at the refused value while the plugin was activated at the
+/// previous one, `process` would accept a block larger than the plugin's declared
 /// ceiling — the plugin reads `frames_count` samples out of buffers it sized
 /// for less.
 #[test]
@@ -305,11 +305,11 @@ fn refused_block_size_growth_rolls_back() {
 
 /// The instance must still process audio after a refused reconfiguration.
 ///
-/// This is the end-to-end consequence the other two tests pin structurally. The
-/// pre-fix host left the plugin deactivated, so this `process` drove
-/// `ensure_processing` → `start_processing` against a plugin that had been
-/// deactivated and never re-activated — CLAP's `start_processing` is
-/// `[audio-thread & active & !processing]`, and `active` was false.
+/// This is the end-to-end consequence the other two tests pin structurally. A
+/// host that left the plugin deactivated would drive `ensure_processing` →
+/// `start_processing` here against a plugin that had been deactivated and never
+/// re-activated — CLAP's `start_processing` is
+/// `[audio-thread & active & !processing]`, and `active` would be false.
 #[test]
 fn instance_still_processes_after_a_refused_reconfiguration() {
     let probe = Probe::acquire();
@@ -341,7 +341,7 @@ fn instance_still_processes_after_a_refused_reconfiguration() {
 
 /// A no-op reconfiguration must not touch the plugin at all.
 ///
-/// Guards the fix against over-reach: `reconfigure` deactivates before it
+/// Guards against over-reach: `reconfigure` deactivates before it
 /// re-activates, so routing the early-return cases through it would make
 /// setting the rate to its current value a real deactivate/activate cycle — a
 /// gratuitous state reset (and, for a plugin with a tail, an audible one).
@@ -374,7 +374,7 @@ fn unchanged_configuration_does_not_re_activate() {
 
 /// An *accepted* reconfiguration still works, and reaches the plugin.
 ///
-/// The counterpart to the refusal tests: a fix that reported an error on every
+/// The counterpart to the refusal tests: a host that reported an error on every
 /// reconfiguration would satisfy them and break the feature.
 #[test]
 fn accepted_sample_rate_change_reaches_the_plugin() {
@@ -469,7 +469,7 @@ fn refused_context_load_is_not_retried_context_free() {
     );
 }
 
-/// Guards the other direction: a fix that turned "extension absent" into an
+/// Guards the other direction: a host that turned "extension absent" into an
 /// error alongside "present and refused" would break every plugin without
 /// `clap.state-context/2`.
 ///

@@ -17,10 +17,37 @@ thread_local! {
     static DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-/// The audio-thread marker. See the `rt::audio_thread` module docs (`src/rt/audio_thread.rs`).
+/// A per-thread marker that says "this code is inside an audio callback".
+///
+/// A *marker*, not an owner: it records that the current thread is running a
+/// block, for as long as the [`AudioThreadGuard`] from [`enter`](Self::enter)
+/// lives. It does not pin one thread as "the" audio thread, because some hosts
+/// (CoreAudio) move their callback between threads. What it answers is the
+/// question a destructor needs: "am I about to free memory inside a block?"
+/// [`Retire`](crate::Retire) uses it for exactly that.
+///
+/// Cheap enough to set every block: entering is a `const`-initialised
+/// thread-local counter, so it neither allocates nor registers a destructor.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::AudioThread;
+///
+/// assert!(!AudioThread::is_current());
+/// {
+///     let _block = AudioThread::enter();
+///     assert!(AudioThread::is_current());
+/// }
+/// assert!(!AudioThread::is_current());
+/// ```
 pub struct AudioThread;
 
-/// Marks the current thread as running audio until dropped. Nestable.
+/// Marks the current thread as running audio until dropped.
+///
+/// Returned by [`AudioThread::enter`]. Guards nest: the thread stays marked
+/// until the last one drops. `!Send`, so it is dropped on the thread that
+/// made it.
 #[must_use = "the thread is marked only while the guard lives"]
 pub struct AudioThreadGuard {
     // `!Send`: the mark is per thread, so the guard must be dropped on the
@@ -29,9 +56,9 @@ pub struct AudioThreadGuard {
 }
 
 impl AudioThread {
-    /// Mark the current thread as the audio thread until the guard drops.
+    /// Marks the current thread as the audio thread until the guard drops.
     ///
-    /// An executor calls this at the top of every block.
+    /// An executor calls this at the top of every block. Allocation-free.
     pub fn enter() -> AudioThreadGuard {
         DEPTH.with(|d| d.set(d.get() + 1));
         AudioThreadGuard {
@@ -39,15 +66,22 @@ impl AudioThread {
         }
     }
 
-    /// Whether the current thread is inside an [`enter`](Self::enter) scope.
+    /// Returns whether the current thread is inside an [`enter`](Self::enter)
+    /// scope.
     pub fn is_current() -> bool {
         DEPTH.with(|d| d.get() > 0)
     }
 
-    /// In debug builds, panic if the current thread is marked — for a `Drop`
-    /// impl whose value must be freed on the control thread. `what` names it
-    /// in the message. Silent while already unwinding, so a first panic is
-    /// not turned into an abort.
+    /// Panics, in debug builds, if the current thread is marked.
+    ///
+    /// For a `Drop` impl whose value must be freed on the control thread.
+    /// `what` names the value in the message. Does nothing in release builds.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, when called inside an [`enter`](Self::enter) scope,
+    /// unless the thread is already unwinding (so a first panic is not turned
+    /// into an abort).
     pub fn check_not_current(what: &str) {
         if cfg!(debug_assertions) && Self::is_current() && !std::thread::panicking() {
             panic!("{what} dropped on the audio thread: it must be freed on the control thread");

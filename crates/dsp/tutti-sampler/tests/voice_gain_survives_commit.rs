@@ -7,18 +7,13 @@
 //! is not running. This pins the sampler's compliance with it, through the
 //! door a host actually uses.
 //!
-//! # What replaced what
+//! # The door
 //!
-//! Under `Net` the door was `Net::set(Setting)` → `VoiceNode::set`, which
-//! wrote `slot.voice.play.gain` (a plain `Copy` field) on the copy the backend
-//! rendered; under the graph's first cut it was `Legacy::controlled`'s
-//! settings ring into the same `set`, with a shadow copy for forks
-//! (`voice_gain_through_legacy_settings.rs`). Both went with `AudioUnit` (doc
-//! 013 items 8 and 9): a `VoiceNode` is a graph node whose `IntoNode` hands
-//! back a `VoiceNodeHandle` — its gain a `Param<Amplitude>` cell, addressable
-//! as `UnitParam::Volume` through the handle's `ParamSet` — and the node reads
+//! A `VoiceNode` is a graph node whose `IntoNode` hands back a
+//! `VoiceNodeHandle` — its gain a `Param<Amplitude>` cell, addressable as
+//! `UnitParam::Volume` through the handle's `ParamSet` — and the node reads
 //! the cell once per block into its `Playback` record and its source. A fork
-//! starts from the value last **set** (the authored value), with no shadow.
+//! starts from the value last **set** (the authored value).
 //!
 //! # Why the assertion is on rendered audio
 //!
@@ -59,8 +54,8 @@ fn rolling(frame: Frame) -> Transport {
 ///
 /// The transport is mandatory, not decoration: a placed voice on a stopped
 /// transport renders **silence**, and every gain comparison in this file would
-/// compare 0.0 against 0.0. The first version of the `Net` file had no clock
-/// and all its tests failed on the guard below, which is what it is for.
+/// compare 0.0 against 0.0. A setup without a rolling clock fails on the
+/// guard below, which is what it is for.
 fn solo_voice() -> Solo<VoiceNodeHandle> {
     let voice = Voice {
         source: VoiceSource::Memory(MemorySource::placed(flat_wave(48_000), Beat(0.0), None)),
@@ -136,8 +131,7 @@ fn a_gain_set_through_the_controls_reaches_the_running_voice() {
     assert_eq!(s.controls().gain(), Amplitude::new(0.5));
 }
 
-/// **A fork of the node starts from the gain last set** — what `Playback`'s
-/// gain record and `Legacy::controlled`'s shadow were for: an export renders
+/// **A fork of the node starts from the gain last set**: an export renders
 /// the fader the user set. And the fork shares nothing: a live move after the
 /// fork does not reach it.
 ///

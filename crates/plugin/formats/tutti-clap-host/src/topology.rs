@@ -19,8 +19,7 @@
 //! and [`Speaker`] an `Unknown(u16)`, so a position either vocabulary cannot
 //! name still occupies its channel's slot. That matters more here than
 //! anywhere: the map is positional, so a dropped element renumbers every
-//! channel after it — the bug this crate shipped when `decode_surround_channel_map`
-//! used `filter_map`.
+//! channel after it, which is why `decode_surround_channel_map` never filters.
 //!
 //! The two `Unknown` payloads are **not interchangeable**. A
 //! `SurroundChannel::Unknown(n)` holds a raw CLAP position, and a
@@ -103,7 +102,7 @@ fn channel_of(speaker: Speaker) -> Option<SurroundChannel> {
     })
 }
 
-/// Convert a CLAP channel map into a [`ChannelTopology`].
+/// Converts a CLAP channel map into a [`ChannelTopology`].
 ///
 /// Total, and length-preserving: the topology has exactly one position per
 /// channel the plugin reported.
@@ -111,7 +110,7 @@ pub fn topology_of(map: &[SurroundChannel]) -> ChannelTopology {
     ChannelTopology::new(map.iter().copied().map(speaker_of))
 }
 
-/// Convert a [`ChannelTopology`] into a CLAP channel map, or `None` if any
+/// Converts a [`ChannelTopology`] into a CLAP channel map, or `None` if any
 /// position has no CLAP spelling.
 ///
 /// All-or-nothing rather than per-channel: a map with one element silently

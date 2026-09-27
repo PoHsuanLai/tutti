@@ -1,49 +1,12 @@
 #![doc = include_str!("../README.md")]
-//!
-//! # This crate contains no code, and that is the rule
-//!
-//! Every item here is a `pub use`. There is no `TuttiEngine`, no builder, no
-//! driver wrapper, no error aggregation, and there must never be.
-//!
-//! It was tried the other way once. The package of this name at `9c75ec54`
-//! was the **workspace root package** — the root `Cargo.toml` carried both
-//! `[workspace]` and `[package] name = "tutti"` — and it held real logic:
-//! `TuttiEngine` ("a flat bundle of owned subsystems returned from the
-//! builder"), `TuttiGraph`, `TuttiEngineBuilder`, `TuttiDriver`, `audio_io`,
-//! `midi_export`, an error type and a `no_std` lattice. It was dissolved in
-//! `0a4adf68` ("bevy-tutti … become the umbrella crate") and `4b5bd2fd`
-//! ("delete the dissolved tutti umbrella package"), because `bevy-tutti`
-//! needed that logic and **two stacked umbrellas, where the lower one owns
-//! what the upper one needs, is one umbrella too many.**
-//!
-//! Re-exporting other crates was never the problem. Owning logic was. So:
-//!
-//! > If something wants to live here, it belongs in the crate that owns the
-//! > thing it wires — device bootstrap in `tutti-cpal`, graph logic in
-//! > `tutti-core`.
-//!
-//! `tests/no_logic.rs` enforces this by reading this file. It is a cheap
-//! test for a failure that is one `fn build()` away.
-//!
-//! # What one dependency does and does not buy
-//!
-//! One dependency and one `use` line get you the whole vocabulary. They do
-//! **not** get you a running audio device in one call, because no such call
-//! exists anywhere in the engine: the only bootstrap in the tree is
-//! `bevy_tutti::engine::build`, and it inserts Bevy resources. Every *part*
-//! is public and Bevy-free already — `AudioEngine::new`,
-//! `AudioCallbackState::new`, `TuttiDriver::from_parts` — and assembling
-//! them is about thirty lines you can read. `examples/headless_engine.rs` is
-//! those thirty lines.
-//!
-//! That is deliberate rather than unfinished. A `TuttiEngine::builder()` here
-//! would be precisely the artifact `4b5bd2fd` deleted.
-
-// Every item here is a re-export, so this costs nothing to satisfy and is the
-// cheapest place in the workspace to start enforcing it: a `pub use` inherits
-// the source item's docs, so the only way to trip this is to add something
-// that is not a re-export — which `tests/no_logic.rs` forbids anyway. Two
-// gates on the same rule, from different directions.
+// Every item here is a re-export, which inherits the source item's docs, so
+// the only way to trip this is to add something that is not a re-export —
+// which `tests/no_logic.rs` forbids anyway. Two gates on the same rule.
+//
+// This file holds only `pub use`, `pub mod` and docs: a convenience
+// constructor belongs in the crate that owns what it wires (device bootstrap
+// in `tutti-cpal`, graph logic in `tutti-graph`/`tutti-core`), where
+// `bevy-tutti` gets it too. `tests/no_logic.rs` enforces this.
 #![deny(missing_docs)]
 
 // --- runtime and vocabulary -------------------------------------------------
@@ -53,108 +16,115 @@
 // `Source` in two — and aliasing away the `tutti_` prefix is also what keeps
 // `scripts/check-canonical-paths.sh` honest: with no `tutti_x::` spelling
 // reachable through this crate, the redundant path it exists to catch cannot
-// be written in the first place. Same trick `bevy-tutti` uses for
-// `tutti_polysynth as polysynth`.
+// be written in the first place. `bevy-tutti` aliases the same way.
 
-/// The engine: `Engine`, `Transport`, metering, latency.
-///
-/// Shadows the `core` extern-prelude crate *inside this crate only*, which is
-/// harmless here because this crate has no code. Write `::core::` in the
-/// unlikely event anything needs the real one.
+/// The engine (`tutti-core`): `Engine`, `Transport`, metering, delay
+/// compensation.
+// Shadows the `core` extern-prelude crate inside this crate only, which is
+// harmless because this crate has no code; `::core::` names the real one.
 pub use tutti_core as core;
 
-/// The measurement vocabulary: the unit newtypes, channel layouts, the I/O
-/// edge traits, `RtPublish`.
+/// The shared vocabulary (`tutti-types`): unit newtypes, channel layouts,
+/// buffer views, the I/O edge traits, real-time primitives.
 pub use tutti_types as types;
 
-/// The audio graph (design doc 013): `GraphBuilder`, `Editor`, `Executor`,
-/// `Fork`. What `export` renders and what `Engine::new` runs; the
-/// successor to fundsp's `Net` (deleted in doc 013 Phase 5).
+/// The audio graph (`tutti-graph`): `GraphBuilder`, `Editor`, `Executor`,
+/// and the `Node` trait. What `Engine` runs and what `export` renders.
 pub use tutti_graph as graph;
 
-/// The DSP node library: LFOs, dynamics, convolution, automation.
+/// Built-in graph nodes (`tutti-nodes`): filters, delays, dynamics, LFOs,
+/// mixing, automation, convolution.
 pub use tutti_nodes as nodes;
 
 // --- edges ------------------------------------------------------------------
 
-/// The sound card: CPAL streams, the RT callback, driver lifecycle.
+/// The sound card (`tutti-cpal`): CPAL output stream, the audio callback,
+/// mic capture and the driver lifecycle. Feature `device`.
 #[cfg(feature = "device")]
 pub use tutti_cpal as device;
 
-/// The I/O edge: mic monitor, WAV sink, `Recorder`, and the file side —
-/// `Wave`, `Wave::load`, `FileIn`. Feature `io`, which `audio-io` and every
-/// codec imply (and `sampler` implies `wav`), since the decoder lives there.
+/// The I/O edge (`tutti-io`): file decode (`Wave`, `FileIn`), WAV out, mic
+/// monitoring and recording. Feature `io`, which `audio-io` and every codec
+/// imply.
 #[cfg(feature = "io")]
 pub use tutti_io as io;
 
-/// Offline rendering and export — the live edge's opposite number.
+/// Offline rendering and export (`tutti-export`). Feature `export`.
 #[cfg(feature = "export")]
 pub use tutti_export as export;
 
 // --- dsp --------------------------------------------------------------------
 
-/// Sample playback: streaming, audition, the butler.
+/// Sample playback (`tutti-sampler`): in-memory and disk-streamed voices,
+/// time stretch. Feature `sampler`.
 #[cfg(feature = "sampler")]
 pub use tutti_sampler as sampler;
 
-/// The polyphonic subtractive / wavetable synth.
+/// The polyphonic subtractive synth node (`tutti-polysynth`). Feature
+/// `synth`.
 #[cfg(feature = "synth")]
 pub use tutti_polysynth as polysynth;
 
-/// SoundFont (.sf2) playback.
+/// SoundFont (.sf2) playback (`tutti-soundfont`). Feature `soundfont`.
 #[cfg(feature = "soundfont")]
 pub use tutti_soundfont as soundfont;
 
-/// The engine's geometry: the `vbap` and `hrtf` renderers.
+/// Spatial audio (`tutti-spatial`): VBAP speaker panning and binaural HRTF.
+/// Feature `spatial`.
 #[cfg(feature = "spatial")]
 pub use tutti_spatial as spatial;
 
-/// Audio analysis: waveform, transient, pitch, loudness.
+/// Audio analysis (`tutti-analysis`): waveform, onsets, pitch, loudness.
+/// Feature `analysis`.
 #[cfg(feature = "analysis")]
 pub use tutti_analysis as analysis;
 
-/// Pure modulation: the audio-free mod matrix and curves.
+/// Modulation (`tutti-mod`): sources, targets and the mod matrix. Feature
+/// `modulation`.
 #[cfg(feature = "modulation")]
 pub use tutti_mod as modulation;
 
 // --- midi -------------------------------------------------------------------
 
-/// MIDI value types, MIDI 2.0 / UMP native.
+/// MIDI value types (`tutti-midi-types`), MIDI 2.0 / UMP native. Feature
+/// `midi`.
 #[cfg(feature = "midi")]
 pub use tutti_midi_types as midi;
 
-/// The MIDI engine: routing, allocation, expression.
+/// The MIDI runtime (`tutti-midi-runtime`): MIDI graph nodes, MPE, MIDI-CI.
+/// Feature `midi`.
 #[cfg(feature = "midi")]
 pub use tutti_midi_runtime as midi_runtime;
 
-/// SMF and MIDI 2.0 Clip File codecs. OS-free.
+/// Standard MIDI File and MIDI 2.0 Clip File codecs (`tutti-midi-file`).
+/// Feature `midi`.
 #[cfg(feature = "midi")]
 pub use tutti_midi_file as midi_file;
 
-/// OS MIDI I/O — CoreMIDI, ALSA seq-UMP.
+/// OS MIDI I/O (`tutti-midi-hardware`): CoreMIDI, ALSA seq-UMP. Feature
+/// `midi-hardware`.
 #[cfg(feature = "midi-hardware")]
 pub use tutti_midi_hardware as midi_hardware;
 
 // --- plugin hosting ---------------------------------------------------------
 
-/// Plugin hosting: VST2, VST3, CLAP and AU, in-process or sandboxed.
+/// Plugin hosting (`tutti-plugin`): VST2, VST3, CLAP and AU plugins as graph
+/// nodes, in-process or sandboxed. Feature `plugin` plus a format feature.
 ///
-/// `tutti-plugin-server` is deliberately absent: it is a **binary** the host
-/// spawns, and depending on it here would put a
-/// `tutti-plugin → tutti-plugin-server → tutti-plugin` cycle one edit away.
-/// Build it with `cargo build -p tutti-plugin-server`.
+/// The sandbox's server, `tutti-plugin-server`, is a separate binary the host
+/// spawns; build it with `cargo build -p tutti-plugin-server`.
+// Not a dependency: that would put a
+// `tutti-plugin → tutti-plugin-server → tutti-plugin` cycle one edit away.
 #[cfg(feature = "plugin")]
 pub use tutti_plugin as plugin;
 
 /// Everything a headless host names, in one import.
 ///
-/// The exclusions are not oversights — they are `tutti_core`'s and
-/// `tutti_types`' own, forwarded unchanged. `Result`, `Sample` and `Unit`
-/// each shadow a name a consumer already has.
-///
-/// This is exactly `bevy_tutti`'s prelude with the ECS group removed, which
-/// is the point: it is not a new design, it is the Bevy-free half of a
-/// prelude already in production use.
+/// The engine's prelude (units, `ChannelLayout`, buffer views, `Engine`,
+/// `Transport`, metering) plus the transport's motion vocabulary, and the
+/// device and sampler handles when those features are on. `Result`, `Sample`
+/// and `Unit` are left out because each would shadow a name a consumer
+/// already has. It matches `bevy-tutti`'s prelude without the ECS types.
 pub mod prelude {
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::{
@@ -162,8 +132,7 @@ pub mod prelude {
     };
     pub use tutti_core::CrossfadeCurve;
 
-    /// The device handle and its enumeration record. `bevy-tutti` surfaces
-    /// both at *its* root; a headless host needs them at least as much.
+    // The device handle and its enumeration record.
     #[cfg(feature = "device")]
     pub use tutti_cpal::{DeviceInfo, TuttiDriver};
 

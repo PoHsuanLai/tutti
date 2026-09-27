@@ -39,8 +39,8 @@ pub(super) struct CompressorCore {
 /// The controls one block runs on, read from their atomics **once** at the
 /// top of `process`.
 ///
-/// Four atomic loads per sample used to sit inside the gain computation. The
-/// detector-side three (threshold, knee, ratio) are held for the block: they
+/// Reading per block keeps four atomic loads per sample out of the gain
+/// computation. The detector-side three (threshold, knee, ratio) are held for the block: they
 /// decide a *target* reduction that the attack/release follower then smooths,
 /// so a step between blocks reaches the output already ramped by the envelope.
 /// Makeup is not smoothed by anything — it multiplies the output directly — so
@@ -142,7 +142,7 @@ impl CompressorCore {
         )
     }
 
-    /// Read every block-rate control once, and move the makeup ramp's start
+    /// Reads every block-rate control once, and moves the makeup ramp's start
     /// to this block's end.
     #[inline]
     pub fn begin_block(&mut self) -> CompressorBlock {
@@ -202,8 +202,8 @@ impl CompressorCore {
 /// # Modulated threshold
 ///
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
-/// (`ch..2*ch`). The threshold is modulatable by the graph (design doc 013
-/// item 6; [`COMPRESSOR_PARAMS`]): a per-frame threshold in [`Db`] on the
+/// (`ch..2*ch`). The threshold is modulatable by the graph
+/// ([`COMPRESSOR_PARAMS`]): a per-frame threshold in [`Db`] on the
 /// param port ([`Io::param`](tutti_graph::Io::param)) overrides the threshold
 /// cell per sample. Unmodulated, the node reads its cell once per block,
 /// which is the common case; the arity never changes.
@@ -542,7 +542,7 @@ mod tests {
         assert_param_fork(CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1).with_makeup(3.0));
     }
 
-    /// A block longer than the old 64-frame stack lane renders whole: the
+    /// A block longer than 64 frames renders whole: the
     /// gain lane is sized from the prepared `MaxBlock`, not a constant.
     ///
     /// Mutation (run): size the lane `vec![0.0; 64]` in `prepare` → the

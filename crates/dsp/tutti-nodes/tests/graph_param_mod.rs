@@ -1,32 +1,22 @@
 //! This crate's modulatable nodes under the graph's compiler-owned param
-//! modulation (design doc 013 item 6), run as they run in an engine: a
-//! node reading its param ports through `Io::param`.
+//! modulation, run as they run in an engine: a node reading its param ports
+//! through `Io::param`.
 //!
-//! These replace the tests of the per-param sub-graph the graph made
-//! obsolete (`AtomicSourceNode → ParamSumNode ← ParamShaperNode`, wired into
-//! extra input channels a node had to be born with): `born_with_ports.rs`,
-//! `param_writer_ownership.rs`, `audio_rate_param_mod.rs` and
-//! `idle_chain_cost.rs`. What each pinned, and where it went:
+//! What is pinned:
 //!
-//! - "an unfed port reads the param as 0", "the base chain is mandatory",
-//!   "the idle chain costs two nodes per param": gone by construction — an
-//!   unconnected param reads its base (`tutti-graph`'s
+//! - an unconnected param reads its base (`tutti-graph`'s
 //!   `an_unconnected_param_reads_its_base_never_zero`), and an unmodulated
 //!   param adds nothing to the plan
 //!   (`an_unmodulated_param_adds_nothing_to_the_plan`, below);
-//! - "the port a node advertises is the one its DSP reads, at every width"
-//!   (`param_ports.rs`): `each_fed_param_is_the_one_the_dsp_reads`, below;
-//! - "the edge changes what the node produces", "the sum folds base + N
-//!   offsets and clamps", "a crossed range is survivable", "the shaper
-//!   agrees with the control-rate shaping": below, and
-//!   `param_mod_oracle.rs` (bit for bit against the old nodes);
-//! - "the authored value must land on the sum's base cell", "control rate
-//!   and audio rate share one base cell": the base is now the node's own
-//!   control, so an authored write — or a control-rate target mirroring
-//!   into that cell — moves the modulated param
-//!   (`an_authored_write_moves_the_base_under_modulation`);
-//! - "a param port is clobbered by `pipe_input`", "N edges land on ports
-//!   1..N": no ports, so nothing to clobber or number.
+//! - the port a node advertises is the one its DSP reads, at every width:
+//!   `each_fed_param_is_the_one_the_dsp_reads`, below;
+//! - the edge changes what the node produces, the sum folds base + N offsets
+//!   and clamps, a crossed range is survivable, and the shaper agrees with
+//!   the control-rate shaping: below, and `param_mod_oracle.rs` (bit for bit
+//!   against a reference chain);
+//! - the base is the node's own control, so an authored write — or a
+//!   control-rate target mirroring into that cell — moves the modulated
+//!   param (`an_authored_write_moves_the_base_under_modulation`).
 
 use std::sync::atomic::Ordering;
 

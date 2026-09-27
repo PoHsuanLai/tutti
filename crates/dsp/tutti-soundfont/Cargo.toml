@@ -2,16 +2,15 @@
 name = "tutti-soundfont"
 version = "0.0.1"
 edition = "2021"
-description = "SoundFont (.sf2) synthesis for Tutti, via RustySynth"
+description = "SoundFont (.sf2) playback as a Tutti graph node, via RustySynth"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
-# No features. The crate IS the SoundFont unit — rustysynth and the MIDI inbox
-# are both load-bearing, and gating either leaves a `SoundFontUnit` that cannot
-# be built or cannot receive notes. It was split out of the old `tutti-synth`
-# (renamed `tutti-polysynth`) because a `.sf2` player shares no code with a
-# subtractive voice engine: the old `soundfont` feature reached for none of that
-# crate's voice allocation, tuning, portamento or unison.
+# No features. RustySynth and the MIDI event input are both essential: gating
+# either would leave a `SoundFontUnit` that cannot be built or cannot receive
+# notes. This is a separate crate from `tutti-polysynth` because a `.sf2`
+# player shares none of that crate's voice allocation, tuning, portamento or
+# unison.
 
 [lints]
 workspace = true

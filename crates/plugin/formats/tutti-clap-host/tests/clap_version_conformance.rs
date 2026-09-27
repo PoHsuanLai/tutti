@@ -1,4 +1,4 @@
-//! Host-conformance harness for **`clap_version` compatibility** (C-10) — the
+//! Host-conformance harness for **`clap_version` compatibility** — the
 //! two version claims a CLAP binary makes, and the host's obligation to read
 //! them before it reads anything else.
 //!
@@ -155,7 +155,7 @@ fn a_current_version_plugin_still_loads() {
 // clap_plugin_entry.clap_version
 // ---------------------------------------------------------------------------
 
-/// **C-10, entry.** A `0.x` entry is the case `clap_version_is_compatible`
+/// **Entry.** A `0.x` entry is the case `clap_version_is_compatible`
 /// exists for: `version.h`'s own comment says the development-stage versions
 /// "aren't compatible", because API *and ABI* were unstable there.
 ///
@@ -171,7 +171,7 @@ fn a_development_stage_entry_is_refused() {
     assert_rejected(probe.probe_info(), "0.9.3", "clap_entry");
 }
 
-/// **C-10, entry, future major.** `clap_version_is_compatible` is written from
+/// **Entry, future major.** `clap_version_is_compatible` is written from
 /// the plugin's side — it answers "is this host new enough?", so it has only a
 /// floor. A host asks the mirror question and needs a ceiling too: a major bump
 /// is the announcement that the layout changed, so a 2.0 binary is exactly as
@@ -188,7 +188,7 @@ fn a_future_major_entry_is_refused() {
 // clap_plugin_descriptor.clap_version
 // ---------------------------------------------------------------------------
 
-/// **C-10, descriptor.** A separate claim from the entry's, and separately
+/// **Descriptor.** A separate claim from the entry's, and separately
 /// checked: `plugin.h:13` gives each descriptor its own `clap_version`, and a
 /// factory may hand out several. A host that checks only the entry accepts a
 /// descriptor it cannot read — which is the struct `descriptor_to_info`

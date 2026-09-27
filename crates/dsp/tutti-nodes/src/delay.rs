@@ -185,18 +185,16 @@ struct DelayControls {
     mix: f32,
 }
 
-/// Delay with feedback, of any width: `N` audio inputs, `N` outputs, one
-/// delay line and one delay time per channel.
+/// A feedback delay of any width: `N` audio inputs, `N` outputs, one delay
+/// line and one delay time per channel.
 ///
-/// This used to be a mono `DelayLineNode` and a `StereoDelayLineNode` whose
-/// L↔R cross-feedback existed only at exactly width 2 — a special case in the
-/// sample loop. The cross-feed is now an explicit **routing matrix**: entry
-/// `(c, j)` is how much of channel `j`'s delayed tap recirculates into channel
-/// `c`'s line, scaled by the [`cross_feedback`](Self::cross_feedback) amount.
-/// Width 2 defaults to the swap matrix `[[0, 1], [1, 0]]` — exactly the old
-/// stereo cross-feed, bit for bit — and every other width to no routing, as
-/// before; [`with_cross_feedback_matrix`](Self::with_cross_feedback_matrix)
-/// routes any width.
+/// Cross-feedback is an explicit **routing matrix**: entry `(c, j)` is how
+/// much of channel `j`'s delayed tap recirculates into channel `c`'s line,
+/// scaled by the [`cross_feedback`](Self::cross_feedback) amount. Width 2
+/// defaults to the swap matrix `[[0, 1], [1, 0]]` (a stereo ping-pong cross
+/// feed) and every other width to no routing;
+/// [`with_cross_feedback_matrix`](Self::with_cross_feedback_matrix) routes any
+/// width.
 ///
 /// [`Seconds`] delay times, [`Feedback`] recirculation, cross-feedback and
 /// wet/dry [`Mix`] are live [`Param`]s shared across clones, all read **once
@@ -212,7 +210,7 @@ struct DelayControls {
 /// # Modulated params
 ///
 /// `N` audio inputs, `N` outputs. **Feedback** and **delay time** are
-/// modulatable by the graph (design doc 013 item 6), in that port order
+/// modulatable by the graph, in that port order
 /// ([`DELAY_PARAMS`]): a per-frame value on the param port
 /// ([`Io::param`](tutti_graph::Io::param)) overrides the control, and a
 /// modulated delay time drives *every* channel through one shared value (the
@@ -538,8 +536,9 @@ impl DelayLineNode {
     ///
     /// Every control atomic is read once, here. `fb_port` / `dt_port` are the
     /// graph's per-frame feedback and delay time for the block when it
-    /// modulates them (the node's param ports); they are read per sample. Everything else ramps from where the previous block
-    /// ended (see [`ramp`](crate::ramp)).
+    /// modulates them (the node's param ports); they are read per sample.
+    /// Everything else ramps from where the previous block ended (see
+    /// [`ramp`](crate::ramp)).
     fn render(
         &mut self,
         size: usize,
@@ -723,10 +722,9 @@ impl Node for DelayLineNode {
     ///
     /// Zero latency, whatever the delay time: the echo is the *effect*, not
     /// processing latency. PDC compensates whatever a node declares by
-    /// delaying every other path; this used to report the delay time, so a
-    /// 500 ms echo insert pushed the whole rest of the mix 500 ms late to
-    /// "line up" with an echo that is supposed to be late (design doc 013,
-    /// D1). The dry half of the blend is undelayed, so the output's earliest
+    /// delaying every other path, so reporting the delay time would push the
+    /// whole rest of the mix late to "line up" with an echo that is supposed
+    /// to be late. The dry half of the blend is undelayed, so the output's earliest
     /// energy leaves with the input.
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.width() as u16);
@@ -740,7 +738,7 @@ impl Node for DelayLineNode {
         for d in &mut self.delays {
             *d = DelayLine::from_seconds(self.max_delay, self.sample_rate);
         }
-        // Delay positions are in samples of the old rate: start the next block
+        // Delay positions are in samples of the previous rate: start the next block
         // on its targets rather than gliding across a rate change.
         self.last = None;
     }
@@ -895,7 +893,7 @@ mod tests {
     }
 
     /// `node` over `inputs` one frame per `process` call (a change lands
-    /// whole on its frame, as the old `tick` landed it), `params[k][i]` on
+    /// whole on its frame), `params[k][i]` on
     /// param port `k` at frame `i` when `Some`.
     fn frames(
         node: &mut DelayLineNode,

@@ -139,7 +139,7 @@ struct AuListenerBase {
 type AUEventListenerRef = *mut AuListenerBase;
 
 unsafe extern "C" {
-    /// Create a listener that delivers on `queue`. See the module docs for why
+    /// Creates a listener that delivers on `queue`. See the module docs for why
     /// this and not the `CFRunLoopRef` variant.
     fn AUEventListenerCreateWithDispatchQueue(
         out_listener: *mut AUEventListenerRef,
@@ -162,7 +162,7 @@ unsafe extern "C" {
     /// `AUEventListenerRef`.
     fn AUListenerDispose(listener: AUEventListenerRef) -> OSStatus;
 
-    /// Deliver an arbitrary `AudioUnitEvent` to every registered listener.
+    /// Delivers an arbitrary `AudioUnitEvent` to every registered listener.
     ///
     /// A host never needs this for parameter values — that is what
     /// [`AUParameterSet`] is for. It exists here solely to *emit gestures*,
@@ -174,7 +174,7 @@ unsafe extern "C" {
         event: *const AudioUnitEvent,
     ) -> OSStatus;
 
-    /// Set a parameter **and** notify every listener registered for it.
+    /// Sets a parameter **and** notify every listener registered for it.
     fn AUParameterSet(
         sending_listener: AUEventListenerRef,
         sending_object: *mut c_void,
@@ -183,7 +183,7 @@ unsafe extern "C" {
         buffer_offset_in_frames: u32,
     ) -> OSStatus;
 
-    /// Notify listeners of a change that already happened, without writing a
+    /// Notifies listeners of a change that already happened, without writing a
     /// value. This is the "the AU's state moved underneath you" signal.
     fn AUParameterListenerNotify(
         sending_listener: AUEventListenerRef,
@@ -272,7 +272,7 @@ pub enum AuEvent {
 }
 
 impl AuEvent {
-    /// Decode a C `AudioUnitEvent` + value into the typed form.
+    /// Decodes a C `AudioUnitEvent` + value into the typed form.
     ///
     /// Returns `None` for an event type this crate does not model, which is how
     /// a future AudioToolbox event kind degrades: the host misses it, rather
@@ -416,7 +416,7 @@ impl AuParameterListener {
     const NOTIFICATION_INTERVAL: f32 = 0.200;
     const VALUE_CHANGE_GRANULARITY: f32 = 0.010;
 
-    /// Register a listener on `unit`, delivering events to `callback`.
+    /// Registers a listener on `unit`, delivering events to `callback`.
     ///
     /// The listener starts out watching **nothing**. AudioToolbox requires each
     /// parameter and each event type to be subscribed explicitly, so call
@@ -506,7 +506,7 @@ impl AuParameterListener {
         })
     }
 
-    /// Build the C address struct for `(id, address)` on this listener's unit.
+    /// Builds the C address struct for `(id, address)` on this listener's unit.
     fn parameter(&self, id: AudioUnitParameterID, address: EventAddress) -> AudioUnitParameter {
         AudioUnitParameter {
             mAudioUnit: self.unit,
@@ -516,7 +516,7 @@ impl AuParameterListener {
         }
     }
 
-    /// Subscribe to one event type at one address.
+    /// Subscribes to one event type at one address.
     fn add_event_type(
         &self,
         event_type: u32,
@@ -534,7 +534,7 @@ impl AuParameterListener {
         })
     }
 
-    /// Deliver [`AuEvent::ParameterChanged`] for parameter `id`.
+    /// Delivers [`AuEvent::ParameterChanged`] for parameter `id`.
     ///
     /// # Errors
     /// Returns the AU's own status — typically `kAudioUnitErr_InvalidParameter`
@@ -545,7 +545,7 @@ impl AuParameterListener {
         self.add_event_type(K_AUDIO_UNIT_EVENT_PARAMETER_VALUE_CHANGE, id, address)
     }
 
-    /// Deliver [`AuEvent::BeginGesture`] and [`AuEvent::EndGesture`] for
+    /// Delivers [`AuEvent::BeginGesture`] and [`AuEvent::EndGesture`] for
     /// parameter `id`.
     ///
     /// Both are registered together because a host has no use for one without
@@ -568,7 +568,7 @@ impl AuParameterListener {
         self.add_event_type(K_AUDIO_UNIT_EVENT_END_PARAMETER_CHANGE_GESTURE, id, address)
     }
 
-    /// Deliver [`AuEvent::PropertyChanged`] for property `id`.
+    /// Delivers [`AuEvent::PropertyChanged`] for property `id`.
     ///
     /// The property id goes in the same slot the parameter id does — the C
     /// struct is a union and the event tag is what distinguishes them.
@@ -601,7 +601,7 @@ impl Drop for AuParameterListener {
     }
 }
 
-/// Write a parameter **and** notify every registered listener — including the
+/// Writes a parameter **and** notify every registered listener — including the
 /// AU's own open editor.
 ///
 /// This is `AUParameterSet`, the write a host should use everywhere. The bare
@@ -647,7 +647,7 @@ pub unsafe fn set_parameter_notifying(
     })
 }
 
-/// Emit a gesture boundary to every listener registered on `unit`.
+/// Emits a gesture boundary to every listener registered on `unit`.
 ///
 /// Gestures normally originate in the *plugin's own editor* — the AU emits them
 /// when the user grabs and releases a control, and receiving them is this
@@ -697,7 +697,7 @@ pub unsafe fn emit_gesture(
     })
 }
 
-/// Tell every listener on `unit` to re-read **every** parameter.
+/// Tells every listener on `unit` to re-read **every** parameter.
 ///
 /// This is the wildcard form of `AUParameterListenerNotify`, and it exists for
 /// exactly one situation: the AU's parameters were changed *behind* the

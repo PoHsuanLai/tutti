@@ -30,10 +30,7 @@ pub enum ExportSource {
     /// node no output reaches is not copied, and need not be forkable): every
     /// node isolated, rebound onto the request's [`ExportClock`] and reset, so
     /// it renders what the graph is *driven* to play from that timeline,
-    /// starting silent — not a copy of what is sounding now. (Until design
-    /// doc 013's PR 13, the `Net` runtime rendered one plain clone of the
-    /// net: no isolation, the live transport bindings and running state
-    /// kept.)
+    /// starting silent — not a copy of what is sounding now.
     Master,
     /// One node's output, isolated from everything downstream of it — "what
     /// does this point in the graph actually sound like".
@@ -121,7 +118,7 @@ pub struct ExportRequest {
 }
 
 impl ExportRequest {
-    /// A request with no [`prepare`](ExportRequest::prepare) hook.
+    /// Creates a request with no [`prepare`](ExportRequest::prepare) hook.
     pub fn new(
         source: ExportSource,
         target: ExportTarget,
@@ -139,7 +136,7 @@ impl ExportRequest {
         }
     }
 
-    /// Render against `timeline`: [`ExportClock::timeline`], set on a
+    /// Renders against `timeline`: [`ExportClock::timeline`], set on a
     /// request already built.
     pub fn on_timeline<T>(mut self, timeline: Arc<T>) -> Self
     where
@@ -149,7 +146,7 @@ impl ExportRequest {
         self
     }
 
-    /// Attach a hook that runs on the graph before the render starts.
+    /// Attaches a hook that runs on the graph before the render starts.
     pub fn with_prepare(
         mut self,
         prepare: impl Fn(PreparedGraph, &World) + Send + Sync + 'static,
@@ -158,7 +155,7 @@ impl ExportRequest {
         self
     }
 
-    /// Trim the graph's reported latency from the start of the render — the
+    /// Trims the graph's reported latency from the start of the render — the
     /// figure its PDC aligned every output to (a look-ahead limiter's, a
     /// hosted plugin's) — in place of `config.render.latency`.
     ///
@@ -174,7 +171,7 @@ impl ExportRequest {
         self
     }
 
-    /// Render the graph's reported tail past `duration_seconds` — a reverb's
+    /// Renders the graph's reported tail past `duration_seconds` — a reverb's
     /// decay, a plugin's declared tail — in place of `config.render.tail`,
     /// resolved against `cap` by `GraphTail::resolve`'s rule: a graph that
     /// never decays renders `cap`; otherwise the tail its nodes reported,
@@ -214,12 +211,12 @@ enum Clock {
 }
 
 impl ExportClock {
-    /// No musical time; see the type docs.
+    /// Creates a clock with no musical time; see the type docs.
     pub fn frozen() -> Self {
         Self(Clock::Frozen)
     }
 
-    /// Render against `timeline`: the renderer advances it, and every
+    /// Creates a clock that renders against `timeline`: the renderer advances it, and every
     /// transport-aware node is rebound onto it. One argument, because they
     /// are the same object — the only configuration that is ever correct.
     pub fn timeline<T>(timeline: Arc<T>) -> Self
@@ -306,14 +303,12 @@ impl std::fmt::Debug for ExportRequest {
 /// **At most one of these exists at a time.** The per-request graph fork is
 /// main-thread work (see [`ExportSource::Node`]), so starting a batch of them in
 /// one frame is what stalls the audio callback. The limit is enforced where the
-/// renders start, not advertised as a run condition for callers to apply: a
-/// `run_if` gate can only see the *previous* frame's state, so several requests
-/// spawned in one frame would all pass it and all start together — precisely the
-/// burst it was supposed to prevent.
+/// renders start ([`start_exports`](super::start_exports)), so a burst of
+/// requests spawned in one frame still starts one at a time.
 ///
 /// Observe it to know whether an export is running. Gating a spawn system on
-/// `not(any_with_component::<ExportInFlight>)` still works and avoids piling up
-/// entities, but it is an optimization now, not the safety mechanism.
+/// `not(any_with_component::<ExportInFlight>)` avoids piling up request
+/// entities, but is not needed for safety.
 #[derive(Component)]
 pub struct ExportInFlight {
     task: Task<Result<ExportOutput, ExportError>>,
@@ -328,7 +323,7 @@ impl ExportInFlight {
         bevy_tasks::block_on(bevy_tasks::futures_lite::future::poll_once(&mut self.task))
     }
 
-    /// Abort the render, discarding whatever it has done so far.
+    /// Aborts the render, discarding whatever it has done so far.
     ///
     /// No [`ExportDone`] fires for a cancelled export. A cancelled
     /// [`ExportTarget::File`] may leave a partial file at its path — the encoder
@@ -499,9 +494,7 @@ impl std::fmt::Display for ExportNode {
 ///   means, which differs per host.
 ///
 /// `graph` is the engine's own [`RenderGraph`]: the fork's own editor and
-/// executor, already installed. It is a `tutti-graph` graph and nothing else (since
-/// design doc 013 PR 14 tutti-export renders no `Net`, so a hook cannot swap
-/// one in). Edit a fork through `graph.editor_mut()`
+/// executor, already installed. Edit a fork through `graph.editor_mut()`
 /// (insert nodes, `spec_mut`); the adapter commits whatever the hook leaves,
 /// and a commit the fork refuses fails the export with the reason. A fork's
 /// units are on its executor by the time the hook runs, so a unit already in
@@ -520,7 +513,7 @@ pub struct PreparedGraph<'a> {
 }
 
 impl PreparedGraph<'_> {
-    /// A key no node in any graph this adapter builds holds, for a node the
+    /// Returns a key no node in any graph this adapter builds holds, for a node the
     /// hook inserts into a fork (`editor.insert(prepared.fresh_key(), ..)`).
     ///
     /// Minted as the live graph mints its own (from [`NodeKey::fresh`]'s

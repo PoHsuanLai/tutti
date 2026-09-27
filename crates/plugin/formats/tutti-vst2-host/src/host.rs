@@ -35,8 +35,8 @@
 //! - `size_window`, `io_changed`, `get_input_latency`,
 //!   `get_output_latency`, `get_automation_state` return honest neutral
 //!   defaults — the wiring exists, but `HostState` has no reference to
-//!   the value each would need (see each method's note). They no longer
-//!   fall through to vst-rs's swallowed 0; the fork owns the answer.
+//!   the value each would need (see each method's note). The fork owns the
+//!   answer rather than falling through to vst-rs's swallowed 0.
 
 use crate::midi::to_midi;
 use crate::transport_cell::TransportCell;
@@ -92,8 +92,8 @@ pub(crate) struct HostLink {
     pub(crate) state: Arc<HostState>,
     /// Transport snapshot the host pushes and the plugin reads via
     /// `get_time_info`. A seqlock, not an `ArcSwap`: the push happens on the
-    /// audio thread every block, and `ArcSwap::store` allocated the new value
-    /// and freed the old one there. See [`TransportCell`].
+    /// audio thread every block, and `ArcSwap::store` would allocate the new
+    /// value and free the retired one there. See [`TransportCell`].
     pub(crate) time_info: Arc<TransportCell>,
     /// Inbox for `audioMasterAutomate` parameter changes (editor knob moves).
     ///
@@ -170,7 +170,7 @@ impl HostState {
         }
     }
 
-    /// Set the render mode reported through
+    /// Sets the render mode reported through
     /// `audioMasterGetCurrentProcessLevel`.
     ///
     /// `&self` because the plugin holds this behind an `Arc` — the mode moves
@@ -184,7 +184,7 @@ impl HostState {
         self.offline.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Consume the `audioMasterUpdateDisplay` latch.
+    /// Consumes the `audioMasterUpdateDisplay` latch.
     ///
     /// `swap` rather than a load: the caller is acting on the signal, so
     /// leaving it set would make every later poll re-read for a change already
@@ -283,12 +283,12 @@ impl Host for HostState {
         self.block_size
     }
 
-    // ── audioMaster query callbacks, now answerable via the vst-tutti fork ──
+    // ── audioMaster query callbacks, answerable via the vst-tutti fork ──
     //
-    // Upstream vst-rs 0.3.0 swallowed these in `host_dispatch`'s `_ =>` arm;
+    // Upstream vst-rs 0.3.0 swallows these in `host_dispatch`'s `_ =>` arm;
     // the vendored `vst-tutti` fork adds the trait methods + dispatch arms, so
     // each callback returns a real answer instead of 0. Two carry live data
-    // today (sample rate, process level); the rest are honest neutral defaults
+    // (sample rate, process level); the rest are honest neutral defaults
     // pending engine plumbing (documented per method below).
 
     /// Real data: the live transport sample rate from the `TimeInfo`
@@ -307,9 +307,8 @@ impl Host for HostState {
     /// The two the host can honestly answer. `User` (1) and `Prefetch` (3)
     /// describe *which thread is asking* — this callback is re-entrant from
     /// wherever the plugin chooses to call it, and the host cannot tell — so
-    /// answering either would be a guess. `Unknown` (0) is what the host
-    /// returned before the offline half existed, and it means "host does not
-    /// support the query", which is now false.
+    /// answering either would be a guess. `Unknown` (0) would mean "host does
+    /// not support the query", which is false.
     fn get_process_level(&self) -> isize {
         if self.is_offline() {
             4 // kVstProcessLevelOffline

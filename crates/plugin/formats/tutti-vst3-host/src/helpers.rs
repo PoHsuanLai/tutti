@@ -25,7 +25,7 @@ pub(crate) fn cid_to_string(cid: &[u8; 16]) -> String {
     )
 }
 
-/// Convert a 16-byte `Guid` (`[u8; 16]`) to a `TUID` (`[i8; 16]`).
+/// Converts a 16-byte `Guid` (`[u8; 16]`) to a `TUID` (`[i8; 16]`).
 pub(crate) fn guid_as_tuid(guid: &vst3::com_scrape_types::Guid) -> TUID {
     std::array::from_fn(|i| guid[i] as i8)
 }
@@ -40,7 +40,7 @@ pub(crate) fn guid_as_tuid(guid: &vst3::com_scrape_types::Guid) -> TUID {
 /// error at [`sdk_enum_i32`]'s call sites, not as a silently stale copy.
 pub(crate) type SdkEnum = vst3::Steinberg::Vst::MediaTypes;
 
-/// Widen an SDK enum constant to the `int32` the ABI fields carrying it use
+/// Widens an SDK enum constant to the `int32` the ABI fields carrying it use
 /// (`BusInfo::mediaType`, `ProcessSetup::processMode`, `IBStream::seek`'s
 /// `mode`, …).
 ///

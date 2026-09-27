@@ -13,7 +13,7 @@
 //!
 //! That is the whole answer to "does VST2 support CC→parameter mapping". What
 //! VST2 *does* have — and what this module implements — is the adjacent
-//! metadata surface the host was ignoring entirely:
+//! metadata surface:
 //!
 //! * `effGetParameterProperties` (opcode 56, `GetParamInfo` in the bindings)
 //!   describes a parameter's integer range, step granularity and grouping.
@@ -29,7 +29,7 @@
 //! # All of it is optional, and real plugins decline
 //!
 //! Measured (see `tests/vst2_param_properties.rs` for the recorded numbers)
-//! against every VST2 plugin installed on the development machine —
+//! against three widely used VST2 plugins —
 //! TAL-NoiseMaker (88 params, synth), TAL-Reverb-4 (20 params), TDR Nova (75
 //! params, 73 programs): **all three answer `0` to `effGetParameterProperties`
 //! for every parameter, and decline the entire MIDI-metadata family.** So these
@@ -83,7 +83,7 @@ pub struct ParameterPropertyFlags {
 }
 
 impl ParameterPropertyFlags {
-    /// Decode the raw flags word.
+    /// Decodes the raw flags word.
     ///
     /// Undefined bits are ignored rather than rejected: the flags word is
     /// plugin-authored and VST2 reserves the high bits, so a plugin setting one
@@ -234,7 +234,7 @@ pub struct MidiKeyName {
     pub name: String,
 }
 
-/// Decode a fixed-size, NUL-padded C string field the plugin wrote.
+/// Decodes a fixed-size, NUL-padded C string field the plugin wrote.
 ///
 /// Stops at the first NUL and lossily decodes the rest. Both halves matter:
 /// VST2 pads with NULs and plugins are not required to terminate a field that
@@ -246,7 +246,7 @@ fn decode_label(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-/// Decode a bank-select byte pair, mapping VST2's `255` sentinel to absence.
+/// Decodes a bank-select byte pair, mapping VST2's `255` sentinel to absence.
 ///
 /// Either byte reading 255 discards the pair: a half-specified bank select is
 /// not a bank select, and emitting only the MSB would leave the LSB at whatever
@@ -262,7 +262,7 @@ fn decode_bank(msb: u8, lsb: u8) -> Option<(u8, u8)> {
 /// VST2's "no parent" sentinel for the category index fields.
 const NO_PARENT_CATEGORY: i32 = -1;
 
-/// Map a parent-category field onto `Option`, treating any negative value as
+/// Maps a parent-category field onto `Option`, treating any negative value as
 /// absent.
 ///
 /// The spec names `-1`, but a plugin returning another negative number means
@@ -275,7 +275,7 @@ fn decode_parent_category(raw: i32) -> Option<i32> {
 }
 
 impl ParameterProperties {
-    /// Decode the raw `#[repr(C)]` struct the plugin filled in.
+    /// Decodes the raw `#[repr(C)]` struct the plugin filled in.
     ///
     /// Kept separate from the query so the decode is testable against
     /// hand-built structs. That is not a convenience: no plugin available here
@@ -315,7 +315,7 @@ impl ParameterProperties {
         }
     }
 
-    /// Decode the category triple, or `None` when the plugin set the flag but
+    /// Decodes the category triple, or `None` when the plugin set the flag but
     /// left the index at VST2's `0` = uncategorised.
     fn decode_category(raw: &api::ParameterProperties) -> Option<ParameterCategory> {
         // Categories are 1-based. A zero index with the flag set means
@@ -336,7 +336,7 @@ impl ParameterProperties {
 }
 
 impl MidiProgram {
-    /// Decode the raw struct. Separate from the query for the same reason as
+    /// Decodes the raw struct. Separate from the query for the same reason as
     /// [`ParameterProperties::decode`].
     fn decode(index: i32, raw: &api::MidiProgramName) -> Self {
         Self {
@@ -372,11 +372,11 @@ impl MidiKeyName {
 }
 
 impl Vst2Instance {
-    /// Query `effGetParameterProperties` for one parameter.
+    /// Returns what `effGetParameterProperties` reports for one parameter.
     ///
     /// `None` when the index is out of range, or when the plugin does not
-    /// implement the opcode — the common case, measured on every plugin
-    /// available here. Callers must keep their name/label fallback.
+    /// implement the opcode, which is the common case. Callers must keep their
+    /// name/label fallback.
     pub fn parameter_properties(&self, id: i32) -> Option<ParameterProperties> {
         // Range-check before dispatch. Plugins are not required to bounds-check
         // the index, and the probe's own out-of-range answers show why: an
@@ -390,7 +390,8 @@ impl Vst2Instance {
         Some(ParameterProperties::decode(id, &raw))
     }
 
-    /// Query `effGetParameterProperties` for every declared parameter.
+    /// Returns what `effGetParameterProperties` reports for every declared
+    /// parameter.
     ///
     /// Entries are `None` where the plugin declined, so the result stays index-
     /// aligned with [`Vst2Instance::get_parameter_list`]. Compacting to only the
@@ -401,19 +402,17 @@ impl Vst2Instance {
             .collect()
     }
 
-    /// Number of parameters the plugin advertises, never negative.
+    /// Returns the number of parameters the plugin advertises, never negative.
     ///
-    /// `AEffect::numParams` is a signed `i32` and a malformed plugin can report
-    /// a negative one; that must become "no parameters", not an empty range that
-    /// happens to iterate zero times by accident. Clamping states it.
-    ///
-    /// The count is the addressing bound too: VST2 addresses by position, so
-    /// every valid id is in `[0, count)`.
+    /// A negative `numParams` from a malformed plugin is reported as zero. The
+    /// count is the addressing bound too: VST2 addresses by position, so every
+    /// valid id is in `[0, count)`.
     pub fn parameter_count(&self) -> i32 {
         self.handle.instance.get_info().parameters.max(0)
     }
 
-    /// Query `effGetMidiProgramName` for one program on one MIDI channel.
+    /// Returns what `effGetMidiProgramName` reports for one program on one MIDI
+    /// channel.
     ///
     /// Returns the program plus the number of programs the plugin says it
     /// services on that channel. `None` when the channel is out of range or the
@@ -429,7 +428,7 @@ impl Vst2Instance {
         Some((MidiProgram::decode(program_index, &raw), serviced))
     }
 
-    /// Enumerate every MIDI program the plugin services on `channel`.
+    /// Returns every MIDI program the plugin services on `channel`.
     ///
     /// The plugin's own serviced count bounds the walk, and each entry is
     /// re-queried — the count from the first call is not assumed to hold, and a
@@ -457,14 +456,15 @@ impl Vst2Instance {
         programs
     }
 
-    /// Query `effGetCurrentMidiProgram` — which program `channel` is on.
+    /// Returns the MIDI program `channel` is currently on, via
+    /// `effGetCurrentMidiProgram`.
     ///
     /// `None` when unsupported.
     ///
     /// # Why this needs a second query
     ///
     /// This opcode's return value alone cannot distinguish success from refusal,
-    /// and it is the only one in the family with that defect. It returns the
+    /// and it is the only one in the family with that problem. It returns the
     /// current program *index*, so `0` is a perfectly valid answer — and `0` is
     /// also what an unimplemented opcode returns after falling through the
     /// plugin's dispatcher. The two are byte-identical: same return value, and a
@@ -473,8 +473,7 @@ impl Vst2Instance {
     /// Both readings are wrong on real plugins. Treating `0` as unsupported
     /// discards a genuine "program 0", which is where most instruments sit at
     /// load. Treating it as supported invents a nameless program 0 for every
-    /// plugin that ignores the opcode — the majority, and the bug this guard was
-    /// added to fix after the reference probe reproduced it.
+    /// plugin that ignores the opcode, which is the majority.
     ///
     /// So the question is answered by an opcode that *can* say no:
     /// `effGetMidiProgramName` reports a serviced count, where `0` is
@@ -496,7 +495,8 @@ impl Vst2Instance {
         Some(MidiProgram::decode(current, &raw))
     }
 
-    /// Query `effGetMidiProgramCategory` for one category on `channel`.
+    /// Returns what `effGetMidiProgramCategory` reports for one category on
+    /// `channel`.
     ///
     /// Returns the category plus the plugin's count of used categories.
     pub fn midi_program_category(
@@ -514,8 +514,8 @@ impl Vst2Instance {
         Some((MidiProgramCategory::decode(category_index, &raw), serviced))
     }
 
-    /// Query `effHasMidiProgramsChanged` — whether `channel`'s program or key
-    /// names changed since the host last read them.
+    /// Returns whether `channel`'s program or key names changed since the host
+    /// last read them, via `effHasMidiProgramsChanged`.
     ///
     /// A cache-invalidation signal, so it is `true` only on the spec'd `1`.
     pub fn midi_programs_changed(&self, channel: i32) -> bool {
@@ -525,7 +525,7 @@ impl Vst2Instance {
         self.handle.instance.midi_programs_changed(channel)
     }
 
-    /// Query `effGetMidiKeyName` for one key.
+    /// Returns the plugin's name for one MIDI key, via `effGetMidiKeyName`.
     ///
     /// `None` when the arguments are out of range or the plugin declines. Drum
     /// plugins use this so a host can label a pad instead of showing a note
@@ -549,7 +549,7 @@ impl Vst2Instance {
         Some(MidiKeyName::decode(program_index, key_number, &raw))
     }
 
-    /// Every key the plugin names for `program_index` on `channel`.
+    /// Returns every key the plugin names for `program_index` on `channel`.
     ///
     /// Keys the plugin declines are omitted: an unnamed key is not an
     /// empty-named key, and a drum editor should fall back to the note number
@@ -565,7 +565,7 @@ impl Vst2Instance {
 mod tests {
     use super::*;
 
-    /// Build a raw properties struct with the flags word and nothing else set,
+    /// Builds a raw properties struct with the flags word and nothing else set,
     /// so a test can prove the gated fields are not read.
     fn raw_properties(flags: i32) -> api::ParameterProperties {
         api::ParameterProperties {
@@ -588,7 +588,7 @@ mod tests {
         }
     }
 
-    /// Write a `&str` into a fixed NUL-padded field.
+    /// Writes a `&str` into a fixed NUL-padded field.
     fn label<const N: usize>(text: &str) -> [u8; N] {
         let mut out = [0u8; N];
         let bytes = text.as_bytes();

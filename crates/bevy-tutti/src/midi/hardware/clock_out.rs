@@ -43,14 +43,14 @@ pub struct ClockMasterRes {
 }
 
 impl ClockMasterRes {
-    /// Pair a clock master with the hardware-out node it is wired to.
+    /// Pairs a clock master with the hardware-out node it is wired to.
     pub fn new(master: Arc<ClockMaster>, out: MidiOutControls) -> Self {
         Self { master, out }
     }
 }
 
-/// Per-frame: drain the clock-master ring and send each event to hardware MIDI
-/// out, via the shared [`MidiOutRouter`]. Under `midi-hardware` this reaches the
+/// Drains the clock-master ring each frame and sends each event to hardware
+/// MIDI out, via the shared [`MidiOutRouter`]. Under `midi-hardware` this reaches the
 /// OS; otherwise it drains and drops (keeping the ring from backing up).
 pub fn pump_clock_out_system(
     // `Option`, despite the `engine_ready` gate: that condition reads
@@ -76,8 +76,9 @@ pub fn pump_clock_out_system(
 }
 
 /// Registers the clock-master output pump. The [`ClockMasterRes`] itself is
-/// claimed by [`TuttiMidiPlugin`](crate::midi::plugin::TuttiMidiPlugin) from the engine
-/// handoff; this plugin only schedules the drain.
+/// inserted by [`build_into`](crate::engine::build_into); this plugin only
+/// schedules the drain. Part of
+/// [`TuttiMidiPlugin`](crate::midi::plugin::TuttiMidiPlugin).
 pub struct ClockOutPlugin;
 
 impl Plugin for ClockOutPlugin {

@@ -2,10 +2,13 @@
 
 use bevy_app::{App, Plugin};
 
-/// MIDI wiring (routes, clips, keyboards), outbound clock and track MIDI-out,
-/// plus hardware device management (`midi-hardware`).
+/// Adds the MIDI subsystem: wiring (routes, clips, keyboards), outbound clock
+/// and track MIDI-out, MIDI files, plus hardware device management
+/// (`midi-hardware`).
 ///
-/// Composes the per-duty sub-plugins:
+/// Added by [`TuttiPlugin`](crate::TuttiPlugin) with the `midi` feature. Needs
+/// an `AssetServer` (`bevy_asset::AssetPlugin`) already in the app, for the
+/// MIDI file loader. Composes the per-duty sub-plugins:
 ///
 /// - [`LiveMidiPlugin`](super::nodes::LiveMidiPlugin) — a keyboard's queue
 ///   node per `LiveMidiInput`
@@ -15,6 +18,7 @@ use bevy_app::{App, Plugin};
 /// - [`MidiOutPlugin`](super::hardware::track_out::MidiOutPlugin) — MIDI-out to external hardware
 /// - [`MidiNegotiationPlugin`](super::hardware::negotiation::MidiNegotiationPlugin) — MIDI-CI + UMP-Stream
 /// - [`MidiMetadataPlugin`](super::hardware::metadata::MidiMetadataPlugin) — Flex Data metadata
+/// - [`MidiFilePlugin`](super::file::MidiFilePlugin) — `.mid` assets and file writes
 /// - `MidiDevicePlugin` — hardware connect/poll (`midi-hardware`)
 ///
 /// The handles these read — [`MidiEngineNodes`](super::MidiEngineNodes),

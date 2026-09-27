@@ -1,5 +1,5 @@
 //! [`MidiOutNode`]: MIDI leaving the graph for a control thread (a hardware
-//! MIDI-out pump), in at one event port (doc 013, rewrite item 5).
+//! MIDI-out pump), in at one event port.
 //!
 //! Each block it pushes the MIDI arriving at its event input into a ring
 //! whose [`MidiReceiver`] its controls hold, every event's `frame_offset`

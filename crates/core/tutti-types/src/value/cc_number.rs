@@ -10,19 +10,18 @@
 //! # Why a newtype and not `u8`
 //!
 //! A CC number and a MIDI channel are both small integers that arrive together
-//! and mask silently — `handle_cc(cc_num: u8, value: f32, channel: u8)` is a
-//! real signature in `tutti-polysynth`, with two interchangeable `u8`s. Swapping
-//! them does not crash: CC 1 on channel 3 becomes CC 3 on channel 1, so the mod
+//! and mask silently, so a signature like
+//! `handle_cc(cc_num: u8, value: f32, channel: u8)` has two interchangeable
+//! `u8`s. Swapping them does not crash: CC 1 on channel 3 becomes CC 3 on channel 1, so the mod
 //! wheel silently drives brightness, or a sustain pedal lands on a channel
 //! nobody is playing. Both failures are audible-but-plausible, which is the
 //! worst kind.
 //!
 //! A `pub type CCNumber = u8` alias prevents none of that — an alias is the
-//! same type as what it aliases. This is the real newtype, and
-//! `tutti-midi-types` re-exports it, exactly as it does
-//! [`MidiChannel`](super::MidiChannel). It lives here rather than there because
-//! a document has to persist a CC number (a CC automation lane is keyed by
-//! one), and that crate carries no serde.
+//! same type as what it aliases. This is a real newtype, re-exported by
+//! `tutti-midi-types` like [`MidiChannel`](super::MidiChannel), and
+//! serializable (feature `serde`) so a document can persist one (a CC
+//! automation lane is keyed by one).
 //!
 //! # Why 7-bit, in a MIDI 2.0 engine
 //!
@@ -131,19 +130,26 @@ impl CCNumber {
     /// CC 101.
     pub const RPN_MSB: CCNumber = CCNumber(101);
 
-    /// Wrap a raw controller number, masking into `0..=127`.
+    /// Wraps a raw controller number, masking it into `0..=127`.
     ///
     /// Masks rather than returning an error because that is what the wire does:
     /// the UMP control field is 7 bits, so a larger value cannot be
-    /// represented, and `channel_voice.rs` already `debug_assert`s then masks.
-    /// Rejecting here would make this type stricter than the format it
-    /// addresses.
+    /// represented. Rejecting here would make this type stricter than the
+    /// format it addresses.
+    ///
+    /// ```
+    /// use tutti_types::CCNumber;
+    ///
+    /// assert_eq!(CCNumber::new(74), CCNumber::BRIGHTNESS);
+    /// assert_eq!(CCNumber::new(128).get(), 0); // masked, like the wire
+    /// ```
     #[inline]
     pub const fn new(raw: u8) -> CCNumber {
         CCNumber(raw & 0x7F)
     }
 
-    /// The raw 0-based controller number, for a UMP constructor or a wire byte.
+    /// Returns the raw 0-based controller number, for a UMP constructor or a
+    /// wire byte.
     #[inline]
     pub const fn get(self) -> u8 {
         self.0

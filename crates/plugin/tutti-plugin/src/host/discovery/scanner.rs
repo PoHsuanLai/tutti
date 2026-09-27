@@ -1,4 +1,4 @@
-//! Crash-recovery plugin scanner.
+//! The plugin scanner, with crash recovery.
 //!
 //! Discovers plugin files in directories, validates them against a
 //! [`PluginCatalog`], and reports progress via a channel. An internal
@@ -37,7 +37,7 @@ pub enum ScanPhase {
     Complete,
 }
 
-/// Handle returned by [`PluginScanner::spawn_scan`] for monitoring progress.
+/// Channels for monitoring a scan started by [`PluginScanner::spawn_scan`].
 pub struct ScanHandle {
     /// Per-plugin progress, emitted as the scan advances.
     pub progress_rx: Receiver<ScanProgress>,
@@ -68,34 +68,44 @@ pub struct ScanResult {
     pub newly_blacklisted: usize,
 }
 
-/// Plugin scanner with crash recovery. Operates on any [`PluginCatalog`].
+/// Scans plugin directories into a [`PluginCatalog`], with crash recovery.
+///
+/// Each new or changed plugin is probed in a `plugin-server` subprocess;
+/// unchanged ones (same modification time) are skipped. A plugin that fails to
+/// load, hangs or crashes its probe is blacklisted with the reason, and a
+/// sentinel file (the "dead-man's pedal") blacklists the plugin a crashed scan
+/// was probing on the next run. Most hosts use
+/// [`Plugins`](crate::catalog::Plugins), which drives a scanner for them.
 pub struct PluginScanner {
     catalog: Box<dyn PluginCatalog>,
     pedal: Pedal,
 }
 
 impl PluginScanner {
-    /// Construct a scanner around `catalog`. `pedal_path` is where the
-    /// dead-man's pedal sentinel file lives (crashes leave it behind,
-    /// next run blacklists whatever it points at).
+    /// Creates a scanner around `catalog`.
+    ///
+    /// `pedal_path` is where the crash sentinel file lives: a crashed scan
+    /// leaves it behind, and the next run blacklists the plugin it names.
     pub fn new(catalog: Box<dyn PluginCatalog>, pedal_path: impl Into<PathBuf>) -> Self {
         let pedal = Pedal::new(pedal_path.into());
         Self { catalog, pedal }
     }
 
-    /// If a previous scan crashed, blacklist the offending plugin.
-    /// Safe to call multiple times; a no-op when no pedal is present.
+    /// Blacklists the plugin a previous, crashed scan was probing.
+    ///
+    /// Safe to call multiple times; a no-op when no sentinel is present.
     pub fn recover_crash(&mut self) {
         self.pedal.recover(self.catalog.as_mut());
     }
 
-    /// Consume the scanner and return the inner catalog.
+    /// Consumes the scanner and returns the inner catalog.
     pub fn into_catalog(self) -> Box<dyn PluginCatalog> {
         self.catalog
     }
 
-    /// Scan directories on a background thread, returning immediately.
-    /// Runs crash recovery before scanning.
+    /// Scans directories on a background thread, returning immediately.
+    ///
+    /// Runs crash recovery before scanning, and flushes the catalog after.
     ///
     /// Spawns a thread and hands back channels, in the shape of
     /// [`std::process::Command::spawn`] — this is *not* an `async fn` and
@@ -106,10 +116,9 @@ impl PluginScanner {
     /// handle and the catalog is dropped with the thread; keep it to recover
     /// ownership.
     ///
-    /// The paths are collected into owned `PathBuf`s here, because they cross
-    /// the thread boundary with the scanner and cannot borrow from the caller's
-    /// frame. That collect is the difference from [`scan`](Self::scan), which
-    /// borrows for the duration of the call and keeps nothing.
+    /// # Panics
+    ///
+    /// Panics if the OS refuses to spawn the scanner thread.
     pub fn spawn_scan(
         mut self,
         directories: impl IntoIterator<Item = impl AsRef<Path>>,
@@ -144,18 +153,15 @@ impl PluginScanner {
         }
     }
 
-    /// Scan directories on the calling thread (blocking). Runs crash recovery,
-    /// scans, then flushes the catalog.
+    /// Scans directories on the calling thread, blocking until done.
     ///
-    /// The plain-verb form, per [`std::process::Command::status`] vs
-    /// [`spawn`](Self::spawn_scan): this one blocks and returns the tally.
+    /// Runs crash recovery, scans, then flushes the catalog (a flush failure is
+    /// logged, not returned). Each probe spawns a subprocess, so a large
+    /// plugin folder can take minutes the first time; see
+    /// [`spawn_scan`](Self::spawn_scan) for the background form.
     ///
-    /// Takes anything iterable rather than `Vec<PathBuf>`: nothing here
-    /// outlives the call, so a caller scanning a directory list it already
-    /// owns — a config field, most often — should not have to clone it to be
-    /// read from. `&Vec<PathBuf>`, `&[PathBuf]`, an array of `&str` and a lazy
-    /// iterator all work. [`spawn_scan`](Self::spawn_scan) is the one that
-    /// genuinely needs owned paths, because they travel to another thread.
+    /// `directories` can be `&[PathBuf]`, an array of `&str`, or any iterator
+    /// of paths.
     pub fn scan(&mut self, directories: impl IntoIterator<Item = impl AsRef<Path>>) -> ScanResult {
         self.recover_crash();
         let result = self.scan_inner(directories, None);
@@ -177,7 +183,7 @@ impl PluginScanner {
             }
         };
 
-        // Phase 1: Discovery. `dir_count` is tallied as we go rather than read
+        // Step 1: discovery. `dir_count` is tallied as we go rather than read
         // from a `len()`: the input is an iterator, so it has no length to ask
         // for and is consumed by this pass.
         let mut dir_count = 0usize;
@@ -199,7 +205,7 @@ impl PluginScanner {
         let total = plugin_paths.len();
         info!("discovered {total} plugin files across {dir_count} directories");
 
-        // Phase 2: Scanning — classify (pure) then execute (effectful).
+        // Step 2: scanning — classify (pure) then execute (effectful).
         let result = plugin_paths
             .iter()
             .enumerate()
@@ -245,8 +251,8 @@ impl PluginScanner {
     /// `failedFiles` and then `addToBlacklist` — failure, not just a hard
     /// crash, earns the blacklist.
     ///
-    /// That reasoning applies to a *load* failure too, which was the one path
-    /// that still wrote nothing. A plugin whose library will not open
+    /// That reasoning applies to a *load* failure too. A plugin whose library
+    /// will not open
     /// — a stub file, a wrong-arch binary, a broken install — fails identically on
     /// every future scan, and each attempt costs a full subprocess spawn. It is
     /// recorded for the same reason a crash is. What it is *not* is silently
@@ -827,7 +833,7 @@ mod tests {
         );
     }
 
-    /// Regression for blacklisting must have an inverse.
+    /// Blacklisting must have an inverse.
     #[test]
     fn unblacklist_and_clear_blacklist_are_the_inverse() {
         let dir = TempDir::new().unwrap();

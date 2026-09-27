@@ -1,19 +1,12 @@
 //! Waveshaping distortion node over six memoryless curves ([`ShapeKind`]).
 //!
-//! The curves are this crate's own ([`ShapeKind::apply`]). They were fundsp's
-//! `Shape` impls (`Tanh`, `Atan`, `Softsign`, `Clip`, `Crush`, `SoftCrush`),
-//! reached through `tutti_core::dsp`; each is one line of arithmetic, so owning
-//! them cost less than the re-export surface did. The formulas are fundsp's,
-//! in the same operation order, and matched fundsp's output bit for bit when
-//! they were moved (design doc 013, Phase 0b).
+//! Each curve ([`ShapeKind::apply`]) is one line of arithmetic: `Tanh`,
+//! `Atan`, `Softsign`, `Clip`, `Crush` and `SoftCrush`.
 //!
-//! fundsp's `shape(..)` opcode baked its drive (the shaper's hardness field) in
-//! at construction and exposed no `set()`, so driving it live would have forced
-//! a crossfade node-rebuild every parameter change. Instead this node owns an
-//! atomic `drive` (the standard [`Param`] UI-handle pattern) and reconstructs
-//! the cheap, stateless shaper struct only when drive actually moves — so
-//! `UnitParam::Drive` is written through the node's [`ParamSet`] with no
-//! rebuild and no zipper noise.
+//! The node owns an atomic `drive` (a [`Param`]) and rebuilds the cheap,
+//! stateless shaper only when drive actually moves, so `UnitParam::Drive` is
+//! written through the node's [`ParamSet`] live, with no node rebuild and no
+//! zipper noise.
 //!
 //! The waveshape *kind* (Tanh / Atan / … ) is fixed at construction: switching
 //! kind is a different effect kind, which a host handles as remove + add (a
@@ -25,7 +18,7 @@
 //!
 //! # Modulated drive
 //!
-//! Drive is modulatable by the graph (design doc 013 item 6): when the graph
+//! Drive is modulatable by the graph: when the graph
 //! feeds the node's param port ([`Io::param`](tutti_graph::Io::param)) a
 //! per-frame drive, it **overrides** the `drive` atomic per sample (rebuilding the stateless
 //! shaper when it moves). Unfed, the node reads its atomic once per block —
@@ -60,7 +53,7 @@ pub enum ShapeKind {
 }
 
 impl ShapeKind {
-    /// Shape one sample: `x` through this curve at `drive`.
+    /// Shapes one sample: `x` through this curve at `drive`.
     ///
     /// `drive` is input gain into the curve, floored at 0 — the same
     /// normalization [`DistortionNode`] applies to its param. For the two
@@ -76,8 +69,8 @@ impl ShapeKind {
 
     /// The curve at a hardness already normalized by [`Shaper::build`].
     ///
-    /// Each arm is the formula fundsp's corresponding `Shape` impl used, in the
-    /// same operation order — which is what kept the move bit-identical.
+    /// The operation order within each arm is fixed: the pinned values in the
+    /// tests depend on it bit for bit.
     #[inline]
     fn curve(self, hardness: f32, x: f32) -> f32 {
         use core::f32::consts::PI;
@@ -524,11 +517,8 @@ mod tests {
 
     /// The curves, pinned.
     ///
-    /// These used to be fundsp's `Shape` impls. When they moved here they were
-    /// compared bit for bit against fundsp over 2.16 M (x, drive) points — six
-    /// curves, nine drives from 0 to 100, x in [-2, 2] — and matched exactly.
-    /// That comparison cannot outlive the move (it needs the fundsp types
-    /// `tutti_core::dsp` stopped re-exporting), so what stays is these values.
+    /// The formulas follow the common waveshaper definitions; these values
+    /// pin them.
     ///
     /// The four curves built from `+ * / round floor clamp abs` are pinned
     /// **exactly**: IEEE-754 rounds each of those correctly, so the result is

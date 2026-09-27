@@ -6,8 +6,10 @@
 
 use thiserror::Error;
 
-/// What VBAP panning can fail at. Module-scoped because both variants are
-/// speaker geometry; HRTF has its own error type.
+/// The error returned when a VBAP panner or mix cannot be built.
+///
+/// Both variants are about speaker geometry; the binaural renderer has its own
+/// error type.
 #[derive(Debug, Clone, Error)]
 pub enum VbapError {
     /// The `vbap` crate rejected the speaker geometry — a degenerate preset
@@ -26,5 +28,5 @@ impl From<vbap::VBAPError> for VbapError {
     }
 }
 
-/// Result of a VBAP operation, defaulting the error to [`VbapError`].
+/// `Result` with [`VbapError`] as the failure type.
 pub type Result<T> = core::result::Result<T, VbapError>;

@@ -82,7 +82,7 @@ use crate::graph::{
 /// distinguish node types (for a type-specific reconciler) attaches its own
 /// marker component alongside.
 pub trait SpawnAudioNode {
-    /// Add `node` to the graph and spawn an entity bound to it via
+    /// Adds `node` to the graph and spawns an entity bound to it via
     /// [`AudioNode`], its controls as [`NodeControls`].
     fn spawn_audio_node<N>(&mut self, node: N) -> EntityCommands<'_>
     where
@@ -90,19 +90,20 @@ pub trait SpawnAudioNode {
         N::Controls: Send + Sync + 'static;
 }
 
-/// The same binding, onto an entity that already exists.
+/// `EntityCommands` extension that adds a node to the graph and binds an
+/// existing entity to it.
 ///
-/// Separate from [`SpawnAudioNode`] because the lifecycle differs: that one owns
-/// the entity it creates, this one adopts one somebody else made. A host whose
-/// entities come from a projection needs this — the entity is compiled from the
-/// document first, and its DSP node may only be constructible frames later (an
-/// audio file has to be read before there is a node to add).
+/// The same binding as [`SpawnAudioNode`], for an entity that already exists:
+/// one spawned earlier whose node can only be built frames later (an audio file
+/// has to be read before there is a node to add). The graph mutation is
+/// deferred to the next command flush, as with `spawn_audio_node`.
 ///
-/// Adding a second node to an entity that already carries [`AudioNode`] replaces
-/// the component, orphaning the first node in the graph. Callers that re-arity
-/// should despawn and respawn, which is what the bus reconciler does.
+/// Adding a second node to an entity that already carries [`AudioNode`]
+/// replaces the component, orphaning the first node in the graph. To change
+/// the node behind an entity, use [`crossfade_audio_node`], or despawn and
+/// respawn.
 pub trait InsertAudioNode {
-    /// Add `node` to the graph and bind **this** entity to it via
+    /// Adds `node` to the graph and binds **this** entity to it via
     /// [`AudioNode`], its controls as [`NodeControls`].
     fn insert_audio_node<N>(&mut self, node: N) -> &mut Self
     where
@@ -137,12 +138,14 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
     }
 }
 
-/// Insert `node` and bind `entity` to it: capture its controls
+/// Inserts `node` and binds `entity` to it: capture its controls
 /// ([`GraphNode::captured`]), add it, address its params
 /// ([`GraphNode::params`]), mark the graph dirty, and bind the entity — its
 /// [`AudioNode`], its captured controls, and its own controls as
-/// [`NodeControls`]. The body both insertion commands share, and of a plugin
-/// of this crate that spawns a node from a system with world access.
+/// [`NodeControls`]. The body both insertion commands run, for a caller with
+/// direct world access (an exclusive system or a custom command).
+///
+/// Logs a warning and does nothing when [`AudioGraphRes`] is missing.
 ///
 /// The capture comes first because it is the last moment the concrete node is
 /// in hand — see [`capture`](crate::graph::capture).
@@ -171,7 +174,7 @@ where
     }
 }
 
-/// Crossfade-replace an entity's underlying graph node with `node`.
+/// Replaces an entity's graph node with `node` under a short crossfade.
 ///
 /// Queues a deferred world command that:
 ///
@@ -230,12 +233,13 @@ where
     });
 }
 
-/// [`crossfade_audio_node`] for a hosted plugin: swap `entity`'s node for the
-/// loaded `client`, fading when the running node is a plugin of the same
-/// ports and latency (a plain swap otherwise), and replace the entity's
-/// captured controls with the incoming plugin's
-/// ([`CapturedControls::for_plugin`]). A plugin is loaded unbound and bound
-/// on the way in, so it has a path of its own.
+/// Replaces `entity`'s node with a loaded plugin: [`crossfade_audio_node`] for
+/// a hosted plugin.
+///
+/// Fades when the running node is a plugin of the same ports and latency, and
+/// is a plain swap otherwise. The entity's captured controls become the
+/// incoming plugin's ([`CapturedControls::for_plugin`]). Deferred to the next
+/// command flush; waits in [`PendingCrossfades`] while the graph re-prepares.
 #[cfg(feature = "plugin")]
 pub fn crossfade_plugin_node(
     commands: &mut Commands<'_, '_>,
@@ -310,7 +314,7 @@ where
     }
 }
 
-/// Crossfades [`crossfade_audio_node`] could not apply yet, because the graph
+/// Crossfades that [`crossfade_audio_node`] could not apply yet, because the graph
 /// was re-preparing (a sample-rate or block-size change between its two
 /// commits). Each keeps its node and the controls captured from it, and
 /// [`retry_pending_crossfades`] applies it on the first frame the graph takes
@@ -323,12 +327,12 @@ where
 pub struct PendingCrossfades(Vec<(Entity, Incoming, CapturedControls)>);
 
 impl PendingCrossfades {
-    /// How many crossfades are waiting.
+    /// Returns how many crossfades are waiting.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    /// Whether none are.
+    /// Returns whether no crossfade is waiting.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -410,7 +414,7 @@ fn apply_crossfade(
     }
 }
 
-/// Apply every crossfade that was waiting for a re-prepare, now that the graph
+/// Applies every crossfade that was waiting for a re-prepare, now that the graph
 /// may take it. One still refused as busy goes back on the queue, in order.
 pub fn retry_pending_crossfades(world: &mut World) {
     let Some(mut pending) = world.get_resource_mut::<PendingCrossfades>() else {

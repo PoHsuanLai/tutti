@@ -1,14 +1,8 @@
-//! The graph's exports, pinned to what fundsp's `Net` rendered for
-//! the same units.
+//! The graph's exports, pinned by analytic figures and golden digests.
 //!
 //! # The oracles
 //!
-//! Until doc 013 Phase 3 PR 14 this file compared tutti-export's two backends,
-//! `RenderGraph::Net` and the `tutti_graph` one, bit for bit; PR 14 kept the
-//! comparisons against `net_render`, a test-only `Net` renderer here. PR 15
-//! retired that last `Net` oracle with the engine's `Net` backend: each
-//! comparison is now pinned to what it stood for, case by case, and two
-//! kinds of check sit side by side.
+//! Two kinds of check sit side by side.
 //!
 //! - **Portable, on every target:** an analytic figure where the signal has
 //!   one (a sine's samples, a DC level, a lookahead's frames, a direct
@@ -18,9 +12,8 @@
 //!   trimmed render is the untrimmed one shifted by the trim; a fork of a
 //!   graph renders the fresh graph).
 //! - **Golden digests, Linux/glibc only:** FNV-1a over the planes' (or the
-//!   file's) bits, recorded from the graph's render on the commit that
-//!   retired the `Net` oracle, which rendered exactly what the `Net` did
-//!   (that was asserted there, bit for bit). They catch the drift an analytic
+//!   file's) bits, recorded from the graph's render against an independent
+//!   reference renderer it matched bit for bit. They catch the drift an analytic
 //!   tolerance lets through (an output scaled by `1 + f32::EPSILON`), but
 //!   they pin `sin`/`cos`/`exp`, which are libm quality-of-implementation and
 //!   differ in the last ulp between C runtimes (the reason
@@ -34,20 +27,16 @@
 //!
 //! # Blocks
 //!
-//! The graph renders `GRAPH_MAX_BLOCK` (1024) frames a block, a multiple of
-//! 64: while nodes ran through the `Legacy` adapter, in 64-frame chunks from
-//! each block's start, that put every chunk on the frames a `Net`'s 64-frame
-//! block did, so a node whose output depends on the call partition (the VBAP
-//! panner, which ramps its gains across each call) rendered the same, and
-//! the digests below were recorded so. Since `Legacy` went every node renders
-//! whole blocks; of the digests, only the gliding panners' moved (see
-//! `a_surround_mix_folds_to_every_width`). The durations below are
-//! deliberately *not* multiples, so the last block is short.
+//! The graph renders `GRAPH_MAX_BLOCK` (1024) frames a block and every node
+//! renders whole blocks. A node whose output depends on the call partition
+//! (the VBAP panner, which ramps its gains across each call) is pinned at that
+//! partition (see `a_surround_mix_folds_to_every_width`). The durations below
+//! are deliberately *not* multiples, so the last block is short.
 //!
 //! # What these do not cover
 //!
-//! `Net`'s `ping` seeding of noise generators has no graph counterpart (doc
-//! 013), so no case here uses a seeded generator.
+//! The graph has no seeding of noise generators, so no case here uses a
+//! seeded generator.
 
 #![cfg(feature = "wav")]
 
@@ -130,8 +119,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// device's block, then forked offline at the render's.
 ///
 /// A fork **resets** every unit it makes (each node's fork source hands a
-/// reset copy), which is what the `Net` export did to the `Net` it cloned. For most
-/// units a reset one renders what a fresh one does; not for all: a reset
+/// reset copy). For most units a reset one renders what a fresh one does; not for all: a reset
 /// `VbapPannerNode` starts on its commanded bearing where a fresh one glides
 /// there from front-centre.
 fn forked(g: GraphBuilder) -> RenderGraph {
@@ -316,10 +304,7 @@ fn float_samples(bytes: &[u8]) -> Vec<f32> {
 
 /// The sine, built for the export and forked from a live graph: the closed
 /// form on every frame of both channels, the fork the fresh graph to the
-/// bit, and (Linux/glibc) the digest the `Net` rendered.
-///
-/// Until doc 013 PR 15 both were compared bit for bit with a `Net`
-/// rendering the same unit (`net_render`).
+/// bit, and (Linux/glibc) its golden digest.
 ///
 /// Mutations (run): `block_size` rounded down to a multiple of 64 in
 /// `GraphSource::fill` (the last, short block is never rendered) → the
@@ -347,14 +332,9 @@ fn a_sine_renders_its_closed_form() {
 
 /// The resample case (48 k → 44.1 k), to a file: the file is the render's
 /// planes through the same conversion and encoder (`write_buffers`), byte
-/// for byte, at 44.1 kHz, and (Linux/glibc) the bytes the `Net` export
-/// wrote.
-///
-/// Until doc 013 PR 15 the planes written through `write_buffers` were a
-/// `Net`'s, rendered in 64-frame blocks against the graph's 1024 (the
-/// resampler's carry makes its output independent of the partition, which
-/// that pinned too; `oracle_resample.rs` holds the conversion to first
-/// principles).
+/// for byte, at 44.1 kHz, and (Linux/glibc) its golden digest. The
+/// resampler's carry makes its output independent of the block partition;
+/// `oracle_resample.rs` holds the conversion to first principles.
 ///
 /// Mutation (run): scale the graph path's output by `1.0 + f32::EPSILON` in
 /// `GraphSource::fill` → the digest moves.
@@ -386,7 +366,8 @@ fn a_resampled_export_writes_its_render() {
 /// is its render normalized and written (`Normalize::gain_for_rendered`,
 /// then `write_buffers`), byte for byte; its sample peak sits at the
 /// -1 dBTP target or just under it (the true peak, between samples, is
-/// what reaches -1 dB); and (Linux/glibc) the bytes are the `Net` export's.
+/// what reaches -1 dB); and (Linux/glibc) the bytes match their golden
+/// digest.
 ///
 /// Mutation (run): as above → the digest moves.
 #[test]
@@ -424,8 +405,8 @@ fn a_peak_normalized_export_writes_its_normalized_render() {
 /// codes, so every sample is perturbed. The file is its planes dithered and
 /// written (`write_buffers`), byte for byte; its samples scatter around the
 /// level's code (8 192.05) within the dither's two codes and average onto it;
-/// and it is the `Net` export's file to the byte, on **every** target: a DC
-/// level and a seeded integer dither use no libm.
+/// and its golden digest holds on **every** target: a DC level and a seeded
+/// integer dither use no libm.
 ///
 /// Mutation (run): as above → the digest moves.
 #[test]
@@ -465,21 +446,16 @@ fn a_dithered_export_writes_its_dithered_render() {
 /// down to stereo and to mono. The narrower files are the quad render folded
 /// frame by frame with `fold_frame` (the ITU matrix), to the bit; the quad
 /// render puts the front-left source in channel 0 and the rear-left one in
-/// channel 2; and (Linux/glibc) the forked quad render is the `Net`'s (the
-/// built one was, until its panners ramped across whole blocks: below).
+/// channel 2; and (Linux/glibc) the built and forked quad renders match their
+/// golden digests.
 ///
 /// This is also the case that pins the block rule in the module docs: the
 /// VBAP panner ramps its gains across each call, so it is the unit here whose
 /// output depends on where the blocks fall.
 ///
-/// The quad digest was re-recorded when `Legacy` went (doc 013, "Legacy
-/// deleted"): the sine sources were `Legacy` units, so the graph rendered
-/// chunk-major and the panners ramped across 64-frame calls, as `Net`'s
-/// did; now they ramp across the render's 1024-frame blocks. Only the fresh
-/// panners' glide in from front-centre moved (the difference decays from
-/// ~1.1 in the first block to ~0.04 past frame 8192, the smoother settling):
-/// the forked render, whose panners start on their bearing, kept its digest
-/// bit for bit, as did the fold-downs' identity with the quad render.
+/// The panners ramp across the render's 1024-frame blocks. A fresh panner
+/// glides in from front-centre, so the built render's digest depends on the
+/// block partition; the forked render's panners start on their bearing.
 ///
 /// Mutations (run): `fold_graph_frame` reading `planes[0]` for every source
 /// channel → the stereo file is not the quad render folded; `GRAPH_MAX_BLOCK
@@ -525,7 +501,7 @@ fn a_surround_mix_folds_to_every_width() {
 
 /// A convolver — FFT-partitioned, latency- and tail-bearing — renders the
 /// direct time-domain convolution of its input, delayed by the latency it
-/// reports, at the graph's block; and (Linux/glibc) the `Net`'s render.
+/// reports, at the graph's block; and (Linux/glibc) its golden digest.
 ///
 /// It turns out not to be the block-sensitive unit: it buffers its
 /// partitions internally, so `GRAPH_MAX_BLOCK = 1000` still passes here
@@ -566,10 +542,6 @@ fn a_convolver_renders_the_direct_convolution_at_the_graph_block() {
 /// 48 kHz, 240 frames), and a render trimmed by it is the untrimmed render
 /// from frame 240 on, sample for sample.
 ///
-/// Until doc 013 PR 15 the figure was also compared with a `Net`'s
-/// (`net_latency`, re-rated to the render's rate) and the trimmed render
-/// with the `Net`'s trimmed render (`net_render`).
-///
 /// Mutations (run): `RenderGraph::reported_latency` returning
 /// `Samples::ZERO` → the figure is 0; `drive` trimming one frame more than
 /// the latency → the trimmed render is a frame short.
@@ -596,9 +568,6 @@ fn the_latency_trim_drops_the_lookahead() {
 /// The graph reports a convolver's tail analytically (a 3 000-tap IR rings
 /// 2 999 frames), and a render trimmed by its latency and extended by its
 /// tail is the direct convolution, frame for frame, through the tail.
-///
-/// Until doc 013 PR 15 the figure was also compared with the tail fold over
-/// a `Net` (`graph_tail`), and the render with the `Net`'s (`net_render`).
 ///
 /// Mutation (run): `RenderGraph::reported_tail` folding an empty topology
 /// → `Some(0)` against the convolver's 2999.
@@ -881,25 +850,17 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 /// **A sampler voice renders in time at `GRAPH_MAX_BLOCK`**, dry and a fifth
 /// up: the dry one is the tone it plays, to the bit, on both channels; the
 /// render clock ends the render's frames on; and (Linux/glibc) the pitched
-/// one is the `Net`'s render.
+/// one matches its golden digest.
 ///
 /// The voice reads the render clock's transport from each block's `Env`,
 /// per frame: it seats its read at the playhead on the first frame of each
-/// 64-frame piece it renders. The export asks for 1024-frame blocks. Under
-/// `Net`, and then through the `Legacy` adapter, the voice polled the clock
-/// out of band once per 64-frame call, and a render that did not move the
-/// clock between chunks had every chunk of a block read the block's first
-/// beat, replaying the first 64 frames sixteen times (a dry 440 Hz voice
-/// measured 768 Hz); `render_graph` rendered such a graph chunk-major. The
-/// graph renders whole blocks, and the voice finds each piece's beat in its
-/// `Env`.
+/// 64-frame piece it renders, and the export asks for 1024-frame blocks. A
+/// voice that read only the block's first beat would replay the first 64
+/// frames sixteen times (a dry 440 Hz voice would measure 768 Hz).
 ///
 /// Why a digest and not a tolerance for the pitched voice: the vocoder turns
-/// an ulp of beat into far more. Measured with the clock advanced a block at
-/// a time and the chunk positions computed in one multiply each, the
-/// fifth-up voice left the `Net`'s render by 1e-3 at frame 3076. Until doc
-/// 013 PR 15 both voices were compared with a `Net` rendering them
-/// (`net_render`), bit for bit.
+/// an ulp of beat into far more — computing the chunk positions a different
+/// way moves the fifth-up voice by 1e-3 at frame 3076.
 ///
 /// Mutations (run): the graph path's output scaled by `1.0 + f32::EPSILON`
 /// → the dry render is not the tone, and the pitched digest moves;
@@ -953,9 +914,6 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
 /// tone from the render's start, to the bit, as a voice on the render's
 /// transport from the start does. The fork shares nothing with the live node
 /// and holds no clock: it reads the render's transport from its `Env`.
-/// (Under `Net` its `rebind_offline` re-pointed it at the render's timeline;
-/// until doc 013 PR 15 it was compared with a `Net` rendering the source on
-/// that timeline.)
 ///
 /// Mutation (run): the graph path's output scaled by `1.0 + f32::EPSILON`
 /// → the render is not the tone. Mutation (run): the `MemorySource`'s

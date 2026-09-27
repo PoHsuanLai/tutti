@@ -220,7 +220,7 @@ impl TransportState {
         Self::default()
     }
 
-    /// Publish a new transport snapshot. **Control thread only.**
+    /// Publishes a new transport snapshot. **Control thread only.**
     ///
     /// Ordering is deliberate: every value field is stored *before*
     /// `state_changed`, so an AU that observes the changed flag is guaranteed to
@@ -252,7 +252,7 @@ impl TransportState {
         // `TransportPosition::samples` is an `Option` because no producer in
         // this engine fills it, and the AU callback has no validity bit — same
         // wall VST2's `samplePos` and VST3's `projectTimeSamples` hit. So it
-        // degrades to 0, matching them, and the fix is the shared one: give the
+        // degrades to 0, matching them, and the remedy is shared: give the
         // transport a real project-time sample clock (see the field doc on
         // `TransportPosition::samples`).
         let sample_time = info.position.samples.unwrap_or(0) as f64;
@@ -285,7 +285,7 @@ impl TransportState {
         }
     }
 
-    /// Set how many samples remain from the start of the next render buffer to
+    /// Sets how many samples remain from the start of the next render buffer to
     /// the next whole beat.
     ///
     /// Separate from [`set_transport`](Self::set_transport) because it is the
@@ -322,7 +322,7 @@ impl TransportState {
         self.cycling.load(Ordering::Relaxed)
     }
 
-    /// Read **and clear** the transport-state-changed flag.
+    /// Reads **and clear** the transport-state-changed flag.
     ///
     /// A `swap`, not a load-then-store: both transport procs can be called
     /// within one render block, and a non-atomic read/clear would let both
@@ -376,7 +376,7 @@ impl TransportState {
         )
     }
 
-    /// Build the `HostCallbackInfo` that points AudioToolbox at this state.
+    /// Builds the `HostCallbackInfo` that points AudioToolbox at this state.
     ///
     /// Both transport procs are filled. See the module docs for the measurement
     /// that makes filling both mandatory rather than belt-and-braces.
@@ -405,7 +405,7 @@ unsafe fn state_from<'a>(user_data: *mut c_void) -> Option<&'a TransportState> {
     }
 }
 
-/// Store `value` through `ptr` when the AU asked for that field.
+/// Stores `value` through `ptr` when the AU asked for that field.
 ///
 /// Every out-param in `HostCallbackInfo`'s procs is documented nullable — the
 /// AU passes null for anything it does not want — so each write must be guarded.
@@ -653,7 +653,7 @@ pub(crate) unsafe fn tail_time(unit: AudioUnit) -> crate::error::Result<Seconds>
     Ok(Seconds(seconds as f32))
 }
 
-/// Tell the AU how far *downstream* of it the listener is, on one bus.
+/// Tells the AU how far *downstream* of it the listener is, on one bus.
 ///
 /// The direction is the opposite of every other latency call in this crate.
 /// [`tail_time`] and [`get_latency`](crate::instance::AuInstance::get_latency)

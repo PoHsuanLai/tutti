@@ -9,14 +9,11 @@
 //! - `mod_curve_delivery` — a route delivered as a beat-evaluated curve.
 //! - `mod_source` — a modulator kind the adapter has never heard of.
 //!
-//! Each was its own file; they share the value path as their subject and are
-//! grouped by it. Their node is the suites' own
-//! [`DriveUnit`](common::drive_unit::DriveUnit), a host's `ParamNode`
-//! registered with `param_graph_node!` and captured by its `ParamSet` (it
-//! was a test-local `AudioUnit` captured through the `ModTargetRegistry`'s
-//! type registration, which went with `Legacy`). Bodies and test names are
-//! unchanged from those files (one renamed, noted on it), and each
-//! module keeps its own helpers so nothing is coupled across the seam.
+//! They share the value path as their subject and are grouped by it. Their
+//! node is the suites' own [`DriveUnit`](common::drive_unit::DriveUnit), a
+//! host's `ParamNode` registered with `param_graph_node!` and captured by its
+//! `ParamSet`. Each module keeps its own helpers so nothing is coupled across
+//! the seam.
 
 #![cfg(feature = "modulation")]
 
@@ -29,7 +26,6 @@ mod common;
 /// The declaration → matrix → node-atomic path is the whole point of the layer,
 /// and it is the part a unit test of any single piece would miss. Every test
 /// here asserts on the value the DSP actually reads.
-/// (Was `tests/modulation.rs`.)
 mod modulation {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
@@ -174,9 +170,7 @@ mod modulation {
 
     /// A node bound with nothing captured (a host that bound `AudioNode` by
     /// hand and skipped the capture) has nothing to resolve on: a route onto
-    /// it is inert rather than panicking. (It was "an unregistered node type
-    /// resolves to nothing", while the capture went through a registry of
-    /// `AudioUnit` types.)
+    /// it is inert rather than panicking.
     #[test]
     fn an_uncaptured_node_resolves_to_nothing() {
         let mut app = App::new();
@@ -258,10 +252,9 @@ mod modulation {
         assert!(!matrix.is_modulated(target, ParamAddr::Unit(UnitParam::Cutoff)));
     }
 
-    // The two `set_base` tests moved into `modulation/driver.rs` when the method
-    // became `pub(crate)` — an integration test cannot reach it. They still build a
-    // real `App` and assert on the node's atomic; only their address changed. The
-    // public path they used to stand in for is covered by
+    // The `set_base` tests live in `modulation/driver.rs`: the method is
+    // `pub(crate)`, so an integration test cannot reach it. The public path is
+    // covered by
     // `an_authored_write_to_a_modulated_param_moves_the_base` in `audio_param.rs`.
 
     #[test]
@@ -497,7 +490,6 @@ mod modulation {
 /// fails *silently* — a second cell type-checks, runs, and modulates nothing —
 /// so the assertions below read the value the downstream source actually runs
 /// at rather than any bookkeeping about it.
-/// (Was `tests/mod_cascade.rs`.)
 mod mod_cascade {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
@@ -859,7 +851,6 @@ mod mod_cascade {
 /// What the delivery mode buys is *when* the value is decided, not what it is:
 /// a scalar is computed once per frame and stored, a curve is stored as a
 /// function and sampled by the sink at whatever rate it reads.
-/// (Was `tests/mod_curve_delivery.rs`.)
 mod mod_curve_delivery {
     use std::sync::{Arc, Mutex};
 
@@ -1100,7 +1091,6 @@ mod mod_curve_delivery {
 /// `M`, so an app should be able to add a kind without bevy-tutti knowing it.
 /// Registering only types the adapter already ships would not test that — this
 /// defines a modulator here, in the test, and drives a node with it.
-/// (Was `tests/mod_source.rs`.)
 mod mod_source {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;

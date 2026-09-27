@@ -68,13 +68,12 @@
 //! [`rebuild`] derives a [`Topology`](tutti_types::graph::Topology) from the
 //! declarations, compares it against [`LiveGraph`] — one comparison, the whole
 //! change detection — and, when it differs, writes the ports that differ through
-//! `AudioGraphRes::set_source` / `set_output_source`. Those are the same calls this
-//! module always made; what changed is that a *value* decides them rather than a
-//! port-by-port re-read of the runtime.
+//! `AudioGraphRes::set_source` / `set_output_source`. A *value* decides those
+//! writes, not a port-by-port re-read of the runtime.
 //!
 //! **Units are not the value's.** A node is added by
 //! [`spawn_audio_node`](super::SpawnAudioNode) and removed by the
-//! `On<Remove, AudioNode>` observer, exactly as before; the value names nodes by
+//! `On<Remove, AudioNode>` observer; the value names nodes by
 //! [`NodeKey`](tutti_types::graph::NodeKey) and never builds one. That split is
 //! deliberate and is what keeps a hosted plugin's C-pointer state, the sampler's
 //! butler-shared buffers and a queued crossfade alive across a rebuild — see the
@@ -84,17 +83,14 @@
 //! # One writer per declared port
 //!
 //! A port named by a [`PortSources`] belongs to that declaration. Writing it
-//! imperatively through [`AudioGraphRes::set_source`] as well is a bug in the host — and one
-//! this layer now **detects and repairs**. An engine-side write leaves the
-//! declaration untouched, so the value is unchanged and `want != live` is *not*
-//! what catches it; what catches it is that the write lands on a port the value
-//! names, and every such port is compared against the engine before being
-//! written. The declaration is reasserted on the next rebuild.
+//! imperatively through [`AudioGraphRes::set_source`] as well is a bug in the
+//! host, which this layer **repairs**: every port the value names is compared
+//! against the engine before being written, so the declaration is reasserted
+//! on the next rebuild.
 //!
-//! That is a real narrowing of the old hazard, not its removal. The repair still
-//! waits for a rebuild, so an imperative value survives until one happens — it is
-//! no longer "silently, and at an unpredictable moment", but it is not
-//! instantaneous either. Declare the port, or own it — not both.
+//! The repair waits for a rebuild (a frame in which a declaration or a node
+//! binding changes), so an imperative write survives until one happens.
+//! Declare the port, or own it — not both.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
@@ -192,7 +188,7 @@ impl PortSources {
         )
     }
 
-    /// Set one port, growing with [`PortSource::Silence`] to reach it.
+    /// Sets one port, growing with [`PortSource::Silence`] to reach it.
     ///
     /// Audio ports only. A node's modulatable params (a filter's cutoff, a
     /// distortion's drive) are not input ports: the graph modulates them
@@ -293,7 +289,12 @@ impl MasterSources {
     }
 }
 
-/// Compile every declaration into the graph, writing only what differs.
+/// Compiles every wiring declaration into the graph, writing only what differs.
+///
+/// The system [`GraphWirePlugin`] schedules between
+/// [`GraphReconcileSystems::Spawn`] and [`GraphReconcileSystems::Compensate`];
+/// it records what it applied in [`LiveGraph`] and sets [`GraphDirty`] when it
+/// wrote anything.
 ///
 /// # What counts as a change
 ///
@@ -315,12 +316,8 @@ impl MasterSources {
 /// node out of the engine (the `On<Remove, AudioNode>` observer calls
 /// `AudioGraphRes::remove`, which zeroes every edge to and from it) while leaving the
 /// entity, its `PortSources` and every declaration naming it untouched. None of
-/// the other four arms fires, so before this arm existed the pass simply did not
-/// run: the engine was repaired and the declaration side was never re-derived.
-///
-/// That was invisible while the only record of the graph was the engine itself —
-/// there was nothing to be stale. It is visible the moment a value records what
-/// the declarations mean, which is how it was found.
+/// the other four arms fires, so without this one the declaration side would
+/// never be re-derived.
 ///
 /// The gate is still a gate, not the change detection. It answers "is it worth
 /// deriving the value at all", cheaply, from change ticks; the value comparison
@@ -392,10 +389,9 @@ pub fn rebuild(
     // A value's [`NodeKey`] is an `Entity`, deliberately: that is what lets a
     // crossfade replace the unit behind a node without moving a wire. The
     // graph keys the same node by its `AudioNode`, which an entity binds, and
-    // that binding is not the value's. (It survived the move off `Net`, doc
-    // 013 PR 13: a node goes into the graph before any entity is bound to it,
-    // and nodes with no entity at all are allowed, so the graph cannot key by
-    // entity.) The consequence is
+    // that binding is not the value's. (A node goes into the graph before any
+    // entity is bound to it, and nodes with no entity at all are allowed, so
+    // the graph cannot key by entity.) The consequence is
     // that the value **cannot see a re-bind** — `insert`ing a different
     // `AudioNode` on the same entity changes which node (which `AudioNode`
     // key) the declaration resolves to while leaving the entity, and therefore
@@ -486,14 +482,13 @@ pub fn rebuild(
     }
 }
 
-/// Silence the ports a removed declaration was claiming.
+/// Silences the ports a removed [`PortSources`] declaration was claiming.
 ///
 /// `On<Remove, PortSources>` fires at command-flush with the component value
 /// still readable, mirroring
 /// [`reconcile_node_despawn`](super::reconcile_node_despawn). Without this the
 /// ports would keep their last-written sources forever: the entity leaves
 /// [`rebuild`]'s query, so the diff never visits it again. This is the case that
-/// is unsolvable imperatively without every call site remembering what it wired.
 ///
 /// **Only the declared ports.** It reads the outgoing `PortSources` and clamps
 /// to its length, exactly as [`rebuild`] does when writing. Zeroing every input
@@ -530,13 +525,14 @@ pub fn unwire_removed_sources(
     }
 }
 
-/// Declared graph wiring: the sink declarations, the master bus, and the
-/// rebuild that compiles them.
+/// Adds declared audio wiring: [`MasterSources`], [`LiveGraph`], the
+/// [`rebuild`] system and the [`unwire_removed_sources`] observer.
 ///
 /// [`rebuild`] runs after `Spawn` (a node must be in the graph before it can be
-/// wired) and before `Compensate` (PDC is computed from topology, so wiring
-/// after it would compensate last frame's graph). It sets [`GraphDirty`] and
-/// never commits — `commit_graph` coalesces.
+/// wired) and before `Compensate` and `Commit`, so the frame's commit carries
+/// the frame's wiring. It sets [`GraphDirty`] and never commits —
+/// [`commit_graph`](crate::graph::commit_graph) coalesces.
+/// [`GraphReconcilePlugin`](crate::graph::GraphReconcilePlugin) adds it.
 pub struct GraphWirePlugin;
 
 impl Plugin for GraphWirePlugin {

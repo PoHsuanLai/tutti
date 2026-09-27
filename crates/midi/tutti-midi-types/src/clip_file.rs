@@ -87,7 +87,7 @@ impl Default for ClipHeader {
     }
 }
 
-/// Serialize a MIDI Clip File (M2-116) from a tick-per-quarter unit and a flat
+/// Serializes a MIDI Clip File (M2-116) from a tick-per-quarter unit and a flat
 /// list of timed events. Emits header + DCTPQ + Start-of-Clip + (DCS·UMP)* +
 /// End-of-Clip, big-endian.
 ///
@@ -98,7 +98,7 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
     write_clip(ticks_per_quarter, None, events)
 }
 
-/// Serialize a MIDI Clip File that opens with its tempo and time signature, per
+/// Serializes a MIDI Clip File that opens with its tempo and time signature, per
 /// M2-116 §7.1.1 / §7.1.2 — the shape an importer needs to place the clip in
 /// real time.
 ///
@@ -154,7 +154,7 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
     // A supplied header REPLACES one the events already carry rather than being
     // prepended to it. Tempo and time signature are ordinary events in this
     // format, so `read_clip_file` hands them back inside `events` — and writing
-    // the header on top of them is how a parse -> write -> parse cycle used to
+    // the header on top of them would make a parse -> write -> parse cycle
     // grow a duplicate pair every time round. Stripping is confined to the
     // leading zero-delta run, so a mid-clip tempo change is not touched.
     let events = if header.is_some() {
@@ -208,7 +208,7 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
     out
 }
 
-/// Serialize a MIDI Clip File from **beat-positioned** events — the ergonomic
+/// Serializes a MIDI Clip File from **beat-positioned** events — the ergonomic
 /// entry point when you think in beats rather than delta ticks.
 ///
 /// Each `(beat, event)` carries an *absolute* beat position (quarter notes from
@@ -397,7 +397,7 @@ pub struct ClipNote {
     /// Length (Note Off beat − Note On beat, clamped to ≥ 0).
     ///
     /// A [`BeatDuration`] beside a [`Beat`] — a span and a position, so the
-    /// pair can no longer be transposed. The MIDI-wire fields above stay
+    /// pair cannot be transposed. The MIDI-wire fields above stay
     /// integers: a channel nibble and a 16-bit velocity are protocol values,
     /// not measurements.
     pub duration_beats: BeatDuration,
@@ -444,10 +444,17 @@ pub enum ClipFileError {
     TrailingData,
 }
 
-/// Parse a MIDI Clip File (M2-116). Delta Clockstamps set the delta of the
-/// following UMP; Start/End-of-Clip and the DCTPQ are structural and not
-/// returned as events. Unknown/utility messages between a DCS and a real event
-/// are tolerated. See [`ClipFileError`] for the failure cases.
+/// Parses a MIDI Clip File (M2-116) from its bytes.
+///
+/// Delta Clockstamps set the delta of the following UMP; Start/End-of-Clip and
+/// the DCTPQ are structural and not returned as events. Unknown/utility
+/// messages between a DCS and a real event are tolerated.
+///
+/// # Errors
+///
+/// Returns a [`ClipFileError`] naming the first structural problem: a bad
+/// magic, a body that is not whole UMP words, a truncated UMP, a missing or
+/// zero DCTPQ, a missing Start or End of Clip, or data after the End of Clip.
 pub fn read_clip_file(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
     if bytes.len() < 8 || bytes[..8] != CLIP_FILE_MAGIC {
         return Err(ClipFileError::BadMagic);

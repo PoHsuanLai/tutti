@@ -29,7 +29,8 @@ pub(crate) fn sidechain_level(input: &Inputs<'_>, ch: usize, i: usize) -> f32 {
 /// `from + (to - from) * 1.0` can round past `to`, and the next block starts
 /// from `to`. A held value (`from == to`) returns `to` bit for bit at every
 /// frame, which is what keeps a node whose controls never move identical to
-/// one that read them per sample. A tick is `n == 1`: the new value, at once.
+/// one that read them per sample. A block of one (`n == 1`) takes the new
+/// value at once.
 #[inline]
 pub(crate) fn ramp_db(from: Db, to: Db, i: usize, n: usize) -> Db {
     if from == to || i + 1 >= n {

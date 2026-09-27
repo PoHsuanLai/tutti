@@ -19,9 +19,9 @@ use super::Samples;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
-/// when an older/partial message arrives without the field. The operative
-/// value at runtime comes from `config.max_buffer_size` (see
-/// `host::subprocess::launch`); this is only a safety net for legacy messages.
+/// when a message arrives without the field. The operative value at runtime
+/// comes from `config.max_buffer_size` (see `host::subprocess::launch`); this is
+/// only a safety net.
 pub(crate) const DEFAULT_BLOCK_SIZE: usize = 512;
 
 fn default_block_size() -> usize {

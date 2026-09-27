@@ -1,12 +1,12 @@
-//! **A placed clip enters on its frame** (doc 013 §6, "the frame is the
-//! source of truth") — not a chunk late, and not a block late.
+//! **A placed clip enters on its frame** (the frame is the source of truth)
+//! — not a chunk late, and not a block late.
 //!
 //! At 90 BPM and 48 kHz a frame is 1/32 000 of a beat, which binary cannot
-//! represent. A clock that accumulated its beat (`beat += beats_per_sample`,
-//! per frame live, per 64-frame chunk offline) drifted off frame 96 000's
-//! beat, which is exactly 3: offline it read `2.999999999999891` there, and
-//! the placement gate (`beat < start` → silent) held a clip placed at beat 3
-//! silent for a whole 64-frame call. Three properties, each pinned here:
+//! represent. A clock that accumulated its beat (`beat += beats_per_sample`)
+//! would drift off frame 96 000's beat, which is exactly 3 (to
+//! `2.999999999999891`), and a placement gate comparing beats
+//! (`beat < start` → silent) would hold a clip placed at beat 3 silent past
+//! its frame. Three properties, each pinned here:
 //!
 //! - the clocks count frames and derive the beat in closed form, so a node's
 //!   `Env` reads beat 3 **to the bit** on frame 96 000, on every path;
@@ -14,13 +14,9 @@
 //!   (`TimelineSegment::reached_by`), so a start an ulp after the playhead's
 //!   beat on its frame (two roundings of one musical position) still enters
 //!   there;
-//! - the voice reads the transport from its block's `Env`, **per frame**
-//!   (doc 013 items 8 and 9), so it enters on its frame wherever that falls in
-//!   the block. Until the sampler's nodes ported, a voice polled a shared
-//!   timeline once per call and the engine rendered chunk-major (64-frame
-//!   graph blocks, `Legacy`), so a clip entered on a 64-frame boundary at
-//!   best; this file pinned that resolution (a start a frame after 96 000
-//!   entered at 96 064). It now pins the frame.
+//! - the voice reads the transport from its block's `Env`, **per frame**, so
+//!   it enters on its frame wherever that falls in the block, not at the next
+//!   64-frame boundary.
 //!
 //! A clip at beat 3, a constant wave: its first non-zero frame is exactly
 //! 96 000 on every path a voice is driven by — live, the engine
@@ -40,10 +36,10 @@
 //! - compare beats in the gate (`Gate::reached` as `now >= target`) → the
 //!   start an ulp late enters a frame late → `a_start_an_ulp_after_the_frame_
 //!   enters_on_it` fails.
-//! - `place` gating only a range's first frame (the old per-call gate) →
-//!   every path enters at the next 64-frame piece → all fail. (With the
-//!   512-, 1024- and 100-frame blocks this file once used, 96 000 was a
-//!   piece's first frame on every path, and this mutation passed them.)
+//! - `place` gating only a range's first frame (a per-call gate) → every
+//!   path enters at the next 64-frame piece → all fail. (The block lengths
+//!   are chosen so 96 000 is never a piece's first frame; where it is, this
+//!   mutation passes.)
 
 use std::sync::{Arc, Mutex};
 

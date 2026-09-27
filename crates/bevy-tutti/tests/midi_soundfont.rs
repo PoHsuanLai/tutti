@@ -18,18 +18,14 @@ mod common;
 
 /// The SoundFont spawner binds its entity to the graph with one handle.
 ///
-/// `promote_pending_soundfonts` used to insert `AudioNode` *and* an
-/// `AudioEmitter` carrying the same `NodeId`, with a comment conceding that
-/// teardown keys on the former. `AudioEmitter` is gone; this pins what replaced
-/// it, and covers a spawner that had no test at all — the soundfont audio tests
-/// next door build their node by hand and never reach this path.
+/// `promote_pending_soundfonts` inserts `AudioNode` and nothing else that names
+/// the node, so teardown has one key. The soundfont audio tests next door
+/// build their node by hand and never reach this path.
 ///
 /// The `.sf2` these need is **committed** at
 /// `assets/soundfonts/TimGM6mb.sf2`, so a missing one is a broken
-/// checkout and fails loudly with the resolved path. These used to skip on the
-/// `None` arm instead — the pattern the copies in `src/soundfont.rs` followed,
-/// where a wrong path meant every one of them silently passed without running.
-/// (Was `tests/soundfont_spawn.rs`.)
+/// checkout and fails loudly with the resolved path, rather than skipping and
+/// passing without running.
 mod soundfont_spawn {
     use std::path::PathBuf;
 
@@ -143,7 +139,7 @@ mod soundfont_spawn {
     /// The trigger does not fire twice: a promoted entity keeps its original node.
     ///
     /// Honest about what this covers. `PlaySoundFontPending`'s `Without<AudioNode>`
-    /// clause (which used to name `AudioEmitter`) is *not* what stops a re-trigger —
+    /// clause is *not* what stops a re-trigger —
     /// `soundfont_playback_system` removes `PlaySoundFont` when it fires, so the
     /// entity leaves the trigger set either way, and breaking the filter alone does
     /// not fail this test. The clause is a second line of defence for an entity
@@ -183,10 +179,8 @@ mod soundfont_spawn {
     /// node, whose event input a `MidiSourceInstall`, a route or a keyboard
     /// is wired to.
     ///
-    /// Mutation (run while `Legacy` existed): promoting it through `Legacy`
-    /// (`graph.insert(unit)`) → a node with no event input → fails. Now:
-    /// the soundfont's shape declaring no event input (`with_events(0, 0)`)
-    /// is the same mutation.
+    /// Mutation: the soundfont's shape declaring no event input
+    /// (`with_events(0, 0)`) → a node with no event input → fails.
     #[test]
     fn a_promoted_soundfont_has_a_midi_event_input() {
         let asset = soundfont_asset();
@@ -223,10 +217,8 @@ mod soundfont_spawn {
 ///
 /// The `.sf2` these need is **committed** at
 /// `assets/soundfonts/TimGM6mb.sf2`, so a missing one is a broken
-/// checkout and fails loudly with the resolved path. These used to skip on the
-/// `None` arm instead — the pattern the copies in `src/soundfont.rs` followed,
-/// where a wrong path meant every one of them silently passed without running.
-/// (Was `tests/midi_soundfont_audio.rs`.)
+/// checkout and fails loudly with the resolved path, rather than skipping and
+/// passing without running.
 mod midi_soundfont_audio {
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -270,9 +262,8 @@ mod midi_soundfont_audio {
     ///
     /// Panics with the resolved path rather than returning `None`: `TimGM6mb.sf2` is
     /// **committed**, so a checkout without it is broken, not a configuration this
-    /// suite should quietly pass on. The tests here used to `return` on the `None`
-    /// arm, which meant a wrong path — the exact bug the copies of this helper in
-    /// `src/soundfont.rs` carried — reported success while asserting nothing.
+    /// suite should quietly pass on. Returning on `None` would let a wrong path
+    /// report success while asserting nothing.
     fn soundfont() -> Arc<SoundFont> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent() // crates/
@@ -404,7 +395,7 @@ mod midi_soundfont_audio {
     /// that fires the instant the clip is installed.
     ///
     /// Without this, "it made noise" would pass equally for a source that ignored
-    /// the beat entirely, which is what the old path effectively did.
+    /// the beat entirely.
     ///
     /// The beat is set by hand: the engine's transport drives it, and this test
     /// builds a minimal graph holding only the synth.

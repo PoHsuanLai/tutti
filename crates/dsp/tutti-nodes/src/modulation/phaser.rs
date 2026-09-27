@@ -52,10 +52,9 @@ struct PhaserControls {
 
 /// One first-order all-pass coefficient for a sweep position.
 ///
-/// `tan` of the normalised centre, folded into the all-pass form. This is the
-/// per-sample `tan` the old node paid (twice, per channel); it is now solved
+/// `tan` of the normalised centre, folded into the all-pass form. It is solved
 /// only at the control points — every 16 samples and a block's last sample —
-/// and interpolated between.
+/// and interpolated between, rather than per sample and channel.
 #[inline]
 fn allpass_coeff(sweep_hz: f32, sr: f32) -> f32 {
     let w = core::f32::consts::PI * sweep_hz / sr;
@@ -74,15 +73,10 @@ fn allpass_coeff(sweep_hz: f32, sr: f32) -> f32 {
 /// sounds hollower and less metallic than a flanger. Stage count sets how many
 /// notches there are; feedback deepens them.
 ///
-/// This used to be a mono `PhaserNode` and a `StereoPhaserNode` built from two
-/// of them, each running its own LFO and solving its own coefficient (with two
-/// `tan`s) every sample. Now one LFO serves every channel, the coefficient is
-/// solved at control points and interpolated, and the all-pass state is
-/// stored stage-major across channels, so a stage runs over every channel in
-/// one inner loop.
+/// One LFO serves every channel, and the all-pass coefficient is solved at
+/// control points (every 16 samples) and interpolated between.
 ///
-/// Every channel sweeps in step by default — the old stereo phaser's
-/// behaviour, which widens nothing by itself.
+/// Every channel sweeps in step by default, which widens nothing by itself.
 /// [`with_phase_offsets`](Self::with_phase_offsets) staggers them.
 ///
 /// Rate, [`Depth`], [`Feedback`] and [`Mix`] are live params read **once per
@@ -376,7 +370,7 @@ impl Node for PhaserNode {
         // Re-clamped from what was asked for, not from the last clamp, so a
         // rate that rises again restores the authored top.
         self.range.max_hz = self.authored_max_hz.min(self.range_ceiling());
-        // The interpolation start was solved at the old rate.
+        // The interpolation start was solved at the previous rate.
         self.last = None;
         let max = p.max_block().get();
         self.coeffs = vec![0.0; max * self.width];
@@ -641,7 +635,7 @@ mod tests {
     /// A low rate clamps the sweep top to its ceiling; a higher rate after it
     /// restores what was asked for.
     ///
-    /// Mutation: re-clamping from `self.range.max_hz` (the old in-place clamp)
+    /// Mutation: re-clamping from `self.range.max_hz` (an in-place clamp)
     /// leaves the top at 3600 Hz after the rate rises and fails.
     #[test]
     fn a_rising_rate_restores_the_authored_sweep_top() {

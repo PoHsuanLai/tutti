@@ -121,13 +121,11 @@ fn the_master_declaration_becomes_the_values_outputs() {
     );
 }
 
-/// **The hazard `wire.rs`'s module docs used to call undetectable — now
-/// repaired.**
+/// **An imperative write to a declared port is detected and reverted.**
 ///
-/// A host writing a declared port imperatively through `AudioGraphRes::set_source` was
-/// invisible to the old per-port loop: the dirty gate watches ECS change ticks,
-/// so a write nothing in the ECS touched never re-entered the loop, and the
-/// engine kept the imperative value "silently, and at an unpredictable moment".
+/// A host can write a declared port imperatively through
+/// `AudioGraphRes::set_source`. The dirty gate watches ECS change ticks, so a
+/// write nothing in the ECS touched does not by itself trigger a rebuild.
 ///
 /// With the value owning edges, the repair falls out of [`apply`]: it compares
 /// every port the value names against the engine before writing, so a tampered
@@ -141,11 +139,8 @@ fn the_master_declaration_becomes_the_values_outputs() {
 /// The repair needs a rebuild that gets past `rebuild`'s early return, and that
 /// return fires when the derived value equals the stored one. The declaration
 /// did not change, so **an imperative write alone will not provoke its own
-/// repair** — something else must move the graph first. That is a real narrowing
-/// of the old hazard rather than its removal: the old loop could not repair the
-/// port at all without an unrelated edit *and* would then only revisit the ports
-/// of declarations it happened to walk, whereas now the first rebuild of any
-/// kind sweeps every declared port. Closing the gap completely would mean
+/// repair** — something else must move the graph first. The first rebuild of
+/// any kind then sweeps every declared port. Closing the gap completely would mean
 /// deriving and comparing the value against the runtime every frame, which is
 /// the per-frame cost the dirty gate exists to avoid.
 ///
@@ -296,8 +291,7 @@ fn removing_the_component_without_despawning_takes_the_node_out_of_the_value() {
 /// The declaration names an entity, so a replacement it does not observe cannot
 /// strand it. In the value this is visible as an edge whose `NodeKey` is
 /// **unchanged** — a crossfade is a node replacement at the same key, which is
-/// exactly the identity `NodeKey` exists to provide and fundsp's `NodeId` (the
-/// key before doc 013 Phase 5) did not.
+/// exactly the identity `NodeKey` exists to provide.
 ///
 /// **Mutation note.** Keying the value on `AudioNode.0` (the engine's own key)
 /// instead of the entity's bits fails this: a crossfade keeps that key, but

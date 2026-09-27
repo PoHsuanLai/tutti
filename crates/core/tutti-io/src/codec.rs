@@ -27,7 +27,8 @@
 //! fails, and a mislabelled file fails whatever this returns. This answers
 //! "is it worth offering?", which is the question a file browser has.
 
-/// Every file extension this build can decode, lowercase and without a dot.
+/// Returns every file extension this build can decode, lowercase and without
+/// a dot.
 ///
 /// Empty when no codec feature is enabled, which is the default for this crate
 /// and is a legitimate configuration — a host doing pure synthesis needs no
@@ -55,12 +56,9 @@ pub fn decodable_extensions() -> &'static [&'static str] {
 /// # Derived, not written down
 ///
 /// Every reader already declares its own extensions in a `Descriptor` — the
-/// same data the probe registers itself from — so a hand-written list here is a
-/// second copy of something upstream owns, and it drifts. It had: the list this
-/// replaced named `ogg` alone, where `OggReader` declares seven (`oga`, `opus`,
-/// `spx`, … all decode today), and named `mp3` alone where `MpaReader` declares
-/// three. Both errors *hid working files from the browser* — the same lie this
-/// module exists to prevent, pointed the other way.
+/// same data the probe registers itself from — so a hand-written list here
+/// would be a second copy of something upstream owns, and would drift
+/// (`OggReader` declares seven extensions, `MpaReader` three).
 ///
 /// What stays hand-written is the **feature → reader** mapping below, because
 /// that is tutti's own knowledge and not symphonia's: nothing upstream can know
@@ -125,14 +123,11 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
     exts
 });
 
-/// Whether this build can decode a file with this extension.
+/// Returns whether this build can decode a file with this extension.
 ///
 /// Case-insensitive, and tolerant of a leading dot, because both spellings turn
 /// up: `Path::extension` yields `wav`, while a filter string a user typed or a
-/// config file holds is as likely to say `.wav`. Normalising here rather than at
-/// each call site is what stops one caller lowercasing and another forgetting —
-/// the exact shape that let `.RS` slip past one of three predicates in a host's
-/// file browser.
+/// config file holds is as likely to say `.wav`.
 ///
 /// ```
 /// # use tutti_io::can_decode;
@@ -205,13 +200,9 @@ mod tests {
         }
     }
 
-    /// The list is *derived*, and this is the case that proves it.
-    ///
-    /// The hand-written table this replaced listed `ogg` alone. `OggReader`
-    /// actually declares seven extensions, so `.opus` and `.oga` files were
-    /// decodable by the build and hidden by the browser — a filter that lied in
-    /// the one direction this module exists to prevent. Nobody would have
-    /// written these seven out by hand; that is the argument for deriving them.
+    /// The list is *derived*, and this is the case that proves it: `OggReader`
+    /// declares seven extensions, and a hand-written list naming `ogg` alone
+    /// would hide decodable `.opus` and `.oga` files.
     #[cfg(feature = "ogg")]
     #[test]
     fn the_ogg_feature_covers_every_extension_its_reader_declares() {
@@ -251,10 +242,8 @@ mod tests {
         assert!(!can_decode("aif"));
     }
 
-    // No test for the codec-free build. In `tutti-core` one asserted that
-    // `decodable_extensions()` is empty there, but this crate's test targets
-    // always have every codec on (its dev-dependency on itself), so that test
-    // could never compile here and would claim coverage it does not have. The
-    // property holds by construction instead: every `add!` above is gated on
+    // No test for the codec-free build: this crate's test targets always have
+    // every codec on (its dev-dependency on itself), so such a test could never
+    // run here. The property holds by construction instead: every `add!` above is gated on
     // its feature, and `cargo check -p tutti-io` builds that configuration.
 }

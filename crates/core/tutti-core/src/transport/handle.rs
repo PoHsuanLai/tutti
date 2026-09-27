@@ -49,7 +49,7 @@ pub struct Transport {
 }
 
 impl Transport {
-    /// Build a stopped transport at 120 BPM, running at `sample_rate`.
+    /// Creates a stopped transport at 120 BPM, running at `sample_rate`.
     pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
         let settings = TransportSettings::new();
         Self {
@@ -69,9 +69,9 @@ impl Transport {
     /// that supplies the inputs without the writeback yields a transport whose
     /// playhead never moves.
     ///
-    /// # One writer
+    /// # Errors
     ///
-    /// Refused with [`PlayheadClaimed`] while links from an earlier call are
+    /// Returns [`PlayheadClaimed`] while links from an earlier call are
     /// alive (in a clock, or a clone of one), on this handle or any clone of
     /// it: two clocks would both consume every seek and both write the
     /// playhead. The claim is given back when the last holder of those links

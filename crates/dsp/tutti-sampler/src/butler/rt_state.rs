@@ -41,10 +41,7 @@ pub struct PlaybackParams {
     ///
     /// Here rather than on `DiskSource` for the reason `tutti_nodes`' crate docs
     /// give: a live control is a shared cell the control thread writes through
-    /// `&self`, never a field of the node. (Under fundsp's `Net`, deleted in doc
-    /// 013 Phase 5, the frontend held clones and `Net::migrate` discarded edits
-    /// to them, so a plain `Amplitude` field made a clip's fader do nothing once
-    /// its voice existed — silently, with the knob still moving.)
+    /// `&self`, never a field of the node.
     gain: AtomicF32,
     /// Source samples consumed per output sample by a wrapping time-stretcher:
     /// `1 / stretch`. 1.0 when the voice does not stretch.
@@ -112,8 +109,7 @@ pub struct RtState {
     /// Ring occupancy and underruns.
     pub health: BufferHealth,
     // No crossfaders: a loop's fade is written into the ring, and a jump's
-    // fade is the reader's own, from the ring (doc 013, "The live disk
-    // reposition (after #48)").
+    // fade is the reader's own, from the ring.
 }
 
 impl Default for RtState {

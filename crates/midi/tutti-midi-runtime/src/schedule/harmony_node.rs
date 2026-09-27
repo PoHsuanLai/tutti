@@ -1,5 +1,5 @@
 //! [`HarmonyNode`]: a sequencer's chord and scale lanes as a graph node,
-//! sending [`Harmony`] events out of an event port (doc 013, rewrite item 5),
+//! sending [`Harmony`] events out of an event port,
 //! for a node that follows them (a hosted VST3 plugin's chord and scale
 //! events).
 //!
@@ -127,7 +127,7 @@ pub struct HarmonyControls {
 }
 
 impl HarmonyControls {
-    /// Send `changes` from the next block on, the node re-stating the context
+    /// Sends `changes` from the next block on, the node re-stating the context
     /// in force on that block's first frame. Changes equal to the lanes' (in
     /// beat order) change nothing. Control thread.
     pub fn set(&self, changes: impl IntoIterator<Item = TimedHarmony>) {
@@ -142,7 +142,7 @@ impl HarmonyControls {
         }));
     }
 
-    /// Send nothing from the next block on.
+    /// Sends nothing from the next block on. Control thread.
     pub fn clear(&self) {
         self.set([]);
     }

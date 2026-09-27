@@ -19,14 +19,13 @@ workspace = true
 default = []
 bevy = ["dep:bevy_ecs", "dep:bevy_reflect"]
 
-# Back-compat alias: sibling crates still pass `features = ["bevy_ecs"]`, which
-# maps onto the `bevy` feature.
+# Alias for `bevy`: some sibling crates enable it as `features = ["bevy_ecs"]`.
 bevy_ecs = ["bevy"]
 
-# No codec features: decoding (and `WaveAsset`, the Bevy asset it produces)
-# moved to `tutti-io` with `Wave`/`FileIn`. Name `tutti-io/wav` etc. instead.
+# No codec features: decoding (`Wave`, `FileIn`, and the Bevy `WaveAsset`) is
+# `tutti-io`'s. Name `tutti-io/wav` etc. instead.
 
-# Optional subsystems
+# Gates nothing in this crate; the MIDI subsystems are separate crates.
 midi = []
 
 # `Serialize`/`Deserialize` on the shared value vocabulary — the meter types and
@@ -39,9 +38,8 @@ serde = ["tutti-types/serde"]
 thiserror.workspace = true
 serde = { version = "1", default-features = false, features = ["derive"] }
 
-# The graph runtime (doc 013): the `tutti_graph::Executor` `Engine`
-# renders, its only runtime since Phase 3 PR 15. No cycle: tutti-graph depends
-# on no tutti crate but tutti-types.
+# The graph runtime: `Engine` renders a `tutti_graph::Executor`. No cycle:
+# tutti-graph depends on no tutti crate but tutti-types.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
 # MIDI types (pure types from tutti-midi-types) — always included for SmpteFrameRate etc.
@@ -58,17 +56,15 @@ arc-swap = "1.7"
 hashbrown = { version = "0.16", default-features = false }
 parking_lot = { version = "0.12", default-features = false }
 
-# Bevy — optional, gated by the `bevy` feature. tutti-core hosts the ECS
-# graph-reconcile hub (GraphReconcileSystems, AudioGraphRes,
-# GraphReconcilePlugin, the param components) that every leaf audio crate
-# schedules against. Pinned to the same Bevy minor as the rest of the
-# workspace. `--no-default-features` drops all of these.
+# Bevy — optional, gated by the `bevy` feature, which adds only the `Component`
+# derive on `AudioNode`; the reconcile systems live in `bevy-tutti`. Pinned to
+# the same Bevy minor as the rest of the workspace.
 bevy_ecs = { version = "0.19", default-features = false, features = ["bevy_reflect"], optional = true }
 bevy_reflect = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 # The same crate as the dependency above, with the sample-accuracy contract
-# harness on (`tests/graph_contract.rs`, doc 013 §6): its `Pulse` and
+# harness on (`tests/graph_contract.rs`): its `Pulse` and
 # `Latent` nodes are the engine-level rows' sources.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph", features = ["contract"] }
 assert_no_alloc = { version = "1", default-features = false }

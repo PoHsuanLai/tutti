@@ -38,11 +38,25 @@ use crate::sampler::DiskStreamerRes;
 #[cfg(feature = "sampler")]
 use tutti_sampler::DiskStreamer;
 
-/// Build the engine from a [`TuttiPlugin`](crate::TuttiPlugin) config and insert
+/// Builds the engine from a [`TuttiPlugin`](crate::TuttiPlugin) config and inserts
 /// every subsystem resource into `app`. The audio callback is live on return.
 ///
-/// On `Err`, nothing is inserted — the `engine_ready` run-condition gates all
-/// engine-dependent systems, so the app proceeds without audio.
+/// [`TuttiPlugin`](crate::TuttiPlugin) calls this during plugin build (unless
+/// `disabled`) and records the outcome in
+/// [`AudioEngineState`](crate::AudioEngineState). It opens the output device
+/// (`plugin.output_device`, or the system default), builds the graph at the
+/// device's rate, and inserts [`AudioGraphRes`], [`AudioConfig`],
+/// [`TransportRes`], [`MetronomeRes`], [`MeteringRes`] (enabled),
+/// [`AudioTapRes`] (closed), [`EngineNodes`] and the [`TuttiDriver`] (as a
+/// non-send resource), plus the MIDI and sampler resources when those features
+/// are on.
+///
+/// # Errors
+///
+/// Returns an error when the device cannot be opened or started, or the graph
+/// cannot be built over it. On `Err`, nothing is inserted; the
+/// [`engine_ready`](crate::graph::engine_ready) run condition gates every
+/// engine-dependent system, so the app proceeds without audio.
 pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     build_on(
         plugin,
@@ -112,7 +126,7 @@ pub(crate) fn build_on(
         &click_settings,
     )?;
 
-    // The engine's MIDI, as graph nodes (doc 013, rewrite item 5): the
+    // The engine's MIDI, as graph nodes: the
     // hardware input (translating, and ingesting MPE in the app's
     // `MpeModeConfig`, inserted before the engine builds; default `Disabled`),
     // the clock (Beat Clock / MTC, disabled until a host enables it) and the
@@ -246,8 +260,7 @@ struct Assembled {
 /// **The graph runs at the device's `rate`.** Every node inserted is prepared
 /// at the graph's rate, so a graph left at its default 44.1 kHz would run
 /// every node at 44.1 kHz on a 48 kHz device: every oscillator about 8.8%
-/// slow. (That is what this builder did on `Net` before the rate was passed
-/// here.)
+/// slow.
 ///
 /// The graph holds no beat clock: a graph engine drives its own
 /// `TransportClock`, and every node that follows the beat reads it from its
@@ -425,16 +438,11 @@ mod tests {
 /// The engine [`assemble`] builds, rendered from the builder's own wiring (the
 /// click it builds).
 ///
-/// From design doc 013's PR 13 to PR 15 these compared the engine with the
-/// one this builder made before PR 13 (fundsp's `Net` with a
-/// `TransportClock` in it, over the engine's `Net` backend, rebuilt by hand
-/// as `net_era`), bit for bit. PR 15 removed that backend. Each test now
-/// stands on the analytic figures it also asserted (onset frames, the tone a
-/// dry voice reads), on what does not depend on the oracle (a voice's
-/// render at two block sizes whose 64-frame chunks coincide), and, for the
-/// samples themselves, on a golden digest recorded from this engine on the
-/// commit that retired the oracle, which rendered the `Net` era's samples
-/// bit for bit (asserted there). The click and the pitched voice call `sin`
+/// Each test stands on analytic figures (onset frames, the tone a dry voice
+/// reads), on what needs no oracle (a voice's render at two block sizes whose
+/// 64-frame chunks coincide), and, for the samples themselves, on a golden
+/// digest of a render checked against an independent reference implementation
+/// when it was recorded. The click and the pitched voice call `sin`
 /// (and the vocoder's FFT), libm quality-of-implementation that differs in
 /// the last ulp between C runtimes, so the digests are asserted on
 /// Linux/glibc only, where they were recorded ([`GOLDEN_HERE`]).
@@ -544,12 +552,10 @@ mod engine_tests {
     }
 
     /// **The builder's engine clicks on every beat, across a seek**, and
-    /// (Linux/glibc) clicks the samples the `Net`-era engine clicked. The
-    /// click reads the beat of every frame from its block's `Env` (the
-    /// transport the engine's own `TransportClock` reports; the graph holds
-    /// no second one); on `Net` it read a `TransportClock` in the graph,
-    /// wired to its inputs, and until its `Node` port an `EnvClock` wired the
-    /// same way. The transport starts before the first block, so the play
+    /// (Linux/glibc) clicks the golden digest's samples. The click reads the
+    /// beat of every frame from its block's `Env` (the transport the engine's
+    /// own `TransportClock` reports; the graph holds no second one). The
+    /// transport starts before the first block, so the play
     /// gate opens on the first frame (a start inside a block opens it on its
     /// frame: `ClickNode`'s own tests pin that).
     ///
@@ -560,10 +566,7 @@ mod engine_tests {
     /// the next beat is a quarter beat (6 000 frames) later; a click is heard
     /// from the frame after its beat (its first sample is `sin(0)`). The
     /// locate itself clicks too (60 417): it moves the whole beat from 2 to
-    /// 0, which the click takes for a new beat — as it did on `Net`.
-    ///
-    /// Until doc 013 PR 15 the samples were compared, bit for bit, with the
-    /// `Net`-era engine (`net_era`); the digest is what that render was.
+    /// 0, which the click takes for a new beat.
     ///
     /// Mutations (run):
     /// - the click reading the block's first beat for the whole block
@@ -584,10 +587,9 @@ mod engine_tests {
 
     /// **The graph runs at the device's rate.** At 120 BPM and 48 kHz the
     /// click lands every 24 000 frames. Every unit inserted is prepared at
-    /// the graph's rate, so a graph left at its 44.1 kHz default — which is
-    /// what `build_into` built on `Net` before the rate was passed — renders
-    /// the click's waveform at 44.1 kHz (the click's own `prepare`) and
-    /// clicked every 22 050 frames on `Net`.
+    /// the graph's rate, so a graph left at its 44.1 kHz default would render
+    /// the click's waveform at 44.1 kHz (the click's own `prepare`) and click
+    /// every 22 050 frames.
     ///
     /// Mutation (run): `assemble` building the graph with
     /// `AudioGraphRes::headless` (the 44.1 kHz default) instead of at `rate`
@@ -639,10 +641,7 @@ mod engine_tests {
     ///
     /// The voice is a clip reader, a graph node: it reads the playhead from
     /// each block's `Env`, per frame, seating its read on the first frame of
-    /// each 64-frame piece it renders. (Until the sampler's nodes ported it
-    /// polled the transport out of band from a `Legacy` call, and read the
-    /// right beat only because the engine rendered a plan holding one
-    /// chunk-major.)
+    /// each 64-frame piece it renders.
     #[cfg(feature = "sampler")]
     fn render_voice(cents: f32, frames: usize, block: usize) -> Vec<f32> {
         let transport = Transport::new(SampleRate(RATE));
@@ -693,25 +692,18 @@ mod engine_tests {
     /// `block`-frame device blocks with a rolling transport: the dry voice is
     /// the tone it plays, to the bit, on both channels; the voice a fifth up
     /// renders the same bits as at 64-frame blocks, and (Linux/glibc) the
-    /// `Net`-era engine's.
+    /// golden digest's.
     ///
     /// `scene_render.rs` renders under a stopped transport, where a clip
     /// reader sounds nothing; this is the adapter's path with the clock
-    /// moving (doc 013, the #32 follow-up). Until doc 013 PR 15 both voices
-    /// were compared, bit for bit, with the `Net`-era engine (`net_era`).
+    /// moving.
     ///
     /// Mutation (run): `Cents::to_pitch_ratio` dividing by 1 100 cents to
     /// the octave → the pitched voice is not a fifth up, on every target.
     /// Mutation (run): the voice seating each 64-frame piece at its block's
     /// first beat (`interp::place` reading `run.beat_at(0)`) → both block
-    /// sizes fail. (It passed here while the assembled graph held a `Legacy`
-    /// unit and the engine rendered it chunk-major, 64 frames a block, so
-    /// every piece was a block's first; it is also pinned by tutti-sampler's
-    /// `block_render.rs` and tutti-export's `graph_source.rs` and
-    /// `sampler_to_export.rs`.) (The `Net`-era
-    /// mutation here, the engine publishing its playhead before the render,
-    /// has no counterpart: the voice reads the playhead from its `Env`, not
-    /// the published position.)
+    /// sizes fail. (Also pinned by tutti-sampler's `block_render.rs` and
+    /// tutti-export's `graph_source.rs` and `sampler_to_export.rs`.)
     #[cfg(feature = "sampler")]
     fn a_voice_plays_in_time(block: usize) {
         let frames = 24_000;

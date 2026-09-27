@@ -6,9 +6,7 @@
 //!
 //! `cargo:rustc-env` applies only to the crate whose build script emitted it —
 //! it does not propagate to dependents — and this crate compiles its own tests.
-//! The rules used to be copy-pasted between the two with a "keep them in sync"
-//! note; they are `tutti-fixture-resolve`'s now, so there is nothing left to
-//! keep in sync.
+//! Both call `tutti-fixture-resolve`, so the rules live in one place.
 //!
 //! ## Why we don't *build* the plugin here
 //!

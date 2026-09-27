@@ -1,12 +1,9 @@
 //! Which platform host, and which device on it.
 //!
-//! Before this module there were four `cpal::default_host()` calls and no way
-//! to reach anything else. That mattered twice over: JACK was unreachable even
-//! with cpal's `jack` dependency compiled in (because `default_host()` returns
-//! ALSA regardless — the host has to be named), and a device was addressed
-//! only by its position in one enumeration, which any hot-plug invalidates.
-//!
-//! All four call sites collapse into [`DeviceHost::open`].
+//! The host has to be named: `cpal::default_host()` returns ALSA even when
+//! cpal's `jack` dependency is compiled in. Every host is opened through
+//! [`DeviceHost::open`], and every device is resolved by
+//! [`DeviceHost::device`].
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
@@ -15,12 +12,11 @@ use crate::error::{Error, Result};
 
 /// Which platform audio host to open devices through.
 ///
-/// **Every variant exists on every platform, deliberately.** cpal's own
-/// `HostId` is cfg-generated per target, so mirroring it would make a host's
-/// configuration struct — and `bevy_tutti::TuttiPlugin`'s field — a different
-/// type on Linux than on macOS. This enum is compile-time stable and resolves
-/// at runtime: asking for a host this build cannot reach is
-/// [`Error::HostUnavailable`], not a compile error.
+/// Every variant exists on every platform, so a configuration struct holding
+/// an `AudioHost` has the same shape on Linux, macOS and Windows (cpal's own
+/// `HostId` is generated per target). Asking for a host this build cannot
+/// reach fails at runtime with [`Error::HostUnavailable`]; use
+/// [`available_hosts`] to list the ones that work.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum AudioHost {
@@ -29,12 +25,8 @@ pub enum AudioHost {
     Default,
     /// JACK, on Linux and the BSDs.
     ///
-    /// Needs this crate's `jack` feature, which enables cpal's. Note that
-    /// cpal declares no `jack` feature of its own — it is the *implicit*
-    /// feature of an optional dependency that appears only in cpal's
-    /// Linux/BSD target table, so enabling it on macOS or Windows compiles
-    /// cleanly and reaches nothing. That is why this variant answers
-    /// [`Error::HostUnavailable`] rather than failing to exist.
+    /// Needs this crate's `jack` feature. Elsewhere, or without the feature,
+    /// opening it returns [`Error::HostUnavailable`].
     Jack,
 }
 
@@ -47,14 +39,16 @@ impl std::fmt::Display for AudioHost {
     }
 }
 
-/// How a device is addressed.
+/// Which device on a host to open.
 ///
-/// [`Index`](Self::Index) is what the old `Option<usize>` meant and carries
-/// the same defect: it is positional within one enumeration, so a device
+/// [`Index`](Self::Index) is positional within one enumeration, so a device
 /// appearing or disappearing renumbers everything after it.
-/// [`Name`](Self::Name) survives re-enumeration, which is the cheapest
-/// available mitigation — cpal 0.15 exposes no hot-plug notification on any
-/// backend, so there is nothing better short of per-platform code.
+/// [`Name`](Self::Name) survives re-enumeration and is the better choice for a
+/// saved setting; cpal exposes no hot-plug notification, so neither form
+/// follows a device that is unplugged and replugged under a new name.
+///
+/// An index or name that matches nothing is an error
+/// ([`Error::InvalidDevice`]), never a fallback to the default device.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum DeviceSelector {
     /// The host's default device.
@@ -67,7 +61,8 @@ pub enum DeviceSelector {
 }
 
 impl From<Option<usize>> for DeviceSelector {
-    /// Keeps every call site that predates this type working unchanged.
+    /// Maps `None` to [`Default`](DeviceSelector::Default) and `Some(i)` to
+    /// [`Index(i)`](DeviceSelector::Index).
     fn from(index: Option<usize>) -> Self {
         match index {
             Some(i) => DeviceSelector::Index(i),
@@ -88,7 +83,7 @@ pub(crate) enum Direction {
     Input,
 }
 
-/// An opened platform host, and the device enumeration that goes with it.
+/// An opened platform audio host, used to enumerate its devices.
 pub struct DeviceHost {
     inner: cpal::Host,
     id: AudioHost,
@@ -102,7 +97,7 @@ impl std::fmt::Debug for DeviceHost {
 }
 
 impl DeviceHost {
-    /// Open a platform host.
+    /// Opens a platform host.
     ///
     /// # Errors
     /// [`Error::HostUnavailable`] when this build cannot reach `which` — the
@@ -155,13 +150,16 @@ impl DeviceHost {
         })
     }
 
-    /// Which host this is.
+    /// Returns which host this is.
     pub fn id(&self) -> AudioHost {
         self.id
     }
 
-    /// Output devices, as `(index, name)` pairs. The index is positional —
-    /// see [`DeviceSelector::Index`].
+    /// Lists this host's output devices.
+    ///
+    /// Each [`DeviceInfo::index`] is positional (see
+    /// [`DeviceSelector::Index`]); a device whose name cannot be read is listed
+    /// with an empty name.
     ///
     /// # Errors
     /// [`Error::DevicesError`] if the host cannot enumerate.
@@ -177,7 +175,8 @@ impl DeviceHost {
             .collect())
     }
 
-    /// Input devices. Same indexing caveat as [`output_devices`](Self::output_devices).
+    /// Lists this host's input devices, with the same indexing caveat as
+    /// [`output_devices`](Self::output_devices).
     ///
     /// # Errors
     /// [`Error::DevicesError`] if the host cannot enumerate.
@@ -242,11 +241,11 @@ impl DeviceHost {
     }
 }
 
-/// The hosts this build can actually reach, in preference order.
+/// Returns the hosts this build can reach right now, default first.
 ///
-/// A host UI should offer these rather than every [`AudioHost`] variant, since
-/// the enum is deliberately platform-independent and lists hosts this binary
-/// may not have been built with.
+/// A settings UI should offer these rather than every [`AudioHost`] variant:
+/// the enum is platform-independent and names hosts this binary may not have
+/// been built with.
 pub fn available_hosts() -> Vec<AudioHost> {
     let mut out = vec![AudioHost::Default];
     if DeviceHost::open(AudioHost::Jack).is_ok() {
@@ -298,7 +297,7 @@ mod tests {
         );
     }
 
-    /// The compatibility shim that keeps `Option<usize>` call sites working.
+    /// `Option<usize>` converts to the matching selector.
     #[test]
     fn an_optional_index_maps_to_the_selector_it_used_to_mean() {
         assert_eq!(DeviceSelector::from(None), DeviceSelector::Default);

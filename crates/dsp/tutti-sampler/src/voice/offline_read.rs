@@ -545,7 +545,7 @@ mod tests {
         }
     }
 
-    /// **The taps wrap through the loop** (doc 013's N2, the disk fork): on a
+    /// **The taps wrap through the loop** (the disk fork): on a
     /// hard loop `[10, 20)`, half a frame before the end interpolates frames
     /// 18, 19, then 10, 11 — what the loop plays next, and what the butler's
     /// ring holds there — not 20, 21 from past it; half a frame into a later

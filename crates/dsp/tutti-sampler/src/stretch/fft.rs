@@ -5,13 +5,6 @@
 //! `ifft_1024`, …). These two functions are the dispatch from a runtime
 //! [`FftSize`](super::FftSize) to that family.
 //!
-//! They used to be `fundsp-tutti`'s `fft` module, reached through
-//! `tutti_core::{real_fft, inverse_fft, Complex32}`. The vocoder was the only
-//! caller anywhere in the engine, so the wrapper moved to its one user and the
-//! sampler names `microfft` and `num-complex` directly (design doc 013, Phase
-//! 0b). Same crates, same versions, same functions — so the transform is bit
-//! for bit what it was, which the stretch suite's round-trip test pins.
-//!
 //! The dispatch covers [`FftSize::MIN`](super::FftSize::MIN) to
 //! [`FftSize::MAX`](super::FftSize::MAX) — every length an `FftSize` can hold,
 //! and no other. `microfft`'s own floor is 2, but a 2-point window has no `/4`

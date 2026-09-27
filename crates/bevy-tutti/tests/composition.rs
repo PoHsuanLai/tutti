@@ -18,7 +18,6 @@
 /// adding the plugin meant opening a device, so a CI runner or a headless test
 /// could not add it at all — and therefore could not add any host plugin that
 /// schedules against its system sets.
-/// (Was `tests/headless.rs`.)
 mod headless {
     use bevy_app::App;
     use bevy_tutti::{AudioEngineState, TuttiPlugin};
@@ -107,12 +106,11 @@ mod headless {
 /// Revert any `Option<Res<_>>` in a system these plugins schedule back to a hard
 /// `Res<_>` and this must fail. If it still passes, the plugin whose system you
 /// broke is not being added here — add it.
-/// (Was `tests/plugins_without_engine.rs`.)
 mod plugins_without_engine {
     use bevy_app::prelude::*;
 
     /// Every plugin this build has, with **no** `engine::build_into` — but with the
-    /// claim that the engine is up, which is the lie that used to be load-bearing.
+    /// claim that the engine is up, so every `engine_ready`-gated system runs.
     fn all_plugins_no_engine() -> App {
         let mut app = App::new();
         // `AssetPlugin` because any subsystem registering an asset loader — the
@@ -172,32 +170,21 @@ mod plugins_without_engine {
 /// What reaches the speakers, and who decides.
 ///
 /// "This node is the master" is not a mix. `AudioGraphRes::set_outputs_from`
-/// (the graph's form of `Net::pipe_output`, which these tests drove
-/// until design doc 013's PR 15 retired the last `Net` fixtures) walks
-/// *every* global output channel and overwrites that channel's source, so
-/// two callers do not layer — the second silently disconnects the first.
-/// Two places in this crate once called `pipe_output` as though it layered:
-/// `engine::build` for the metronome (its comment said "mixed into master
-/// output") and `synth::soundfont` for every soundfont that finished
-/// loading.
+/// walks *every* global output channel and overwrites that channel's source,
+/// so two callers do not layer — the second silently disconnects the first.
 ///
-/// These pinned that behaviour before the fix. The primitive still behaves
-/// this way — clobbering is a correct thing for a "this node IS the master"
-/// primitive to do, and a headless tool wiring by hand wants it. What
-/// changed is that **this crate's systems no longer call it**: what reaches
-/// the bus is declared once, in `MasterSources`, where two claims cannot
-/// coexist.
+/// Clobbering is correct for a "this node IS the master" primitive, and a
+/// headless tool wiring by hand wants it. It is also why **this crate's
+/// systems never call it**: what reaches the bus is declared once, in
+/// `MasterSources`, where two claims cannot coexist.
 ///
-/// They stay as the record of why that shape was chosen, and as a guard: if
-/// anything here starts calling `set_outputs_from` from a system again, the
-/// mechanism these tests describe is what it will silently reintroduce. The
-/// declarative side is covered in `graph_wire.rs`.
-/// (Was `tests/master_bus.rs`.)
+/// These tests record why that shape was chosen, and guard it: if anything
+/// here starts calling `set_outputs_from` from a system, the mechanism these
+/// tests describe is what it will silently introduce. The declarative side is
+/// covered in `graph_wire.rs`.
 mod master_bus {
     // No feature gate: this drives the graph resource directly and names no
-    // synth type. It carried `#![cfg(feature = "synth")]` for one commit,
-    // which meant the file documenting a silent bug was itself silently
-    // running zero tests in the default configuration.
+    // synth type, so it runs in the default configuration too.
 
     use bevy_tutti::graph::{AudioGraphRes, GraphSource};
     use tutti_core::{ChannelLayout, Hz};
@@ -258,14 +245,14 @@ mod master_bus {
         assert_eq!(graph.output_source(1), GraphSource::Node(mono, 0));
     }
 
-    /// The sequence this crate used to produce: the build piped the metronome to
-    /// output, then every soundfont that finished loading piped itself, taking the
-    /// whole bus. Neither call site knew about the other.
+    /// The sequence a system calling `set_outputs_from` produces: the build
+    /// pipes the metronome to output, then every soundfont that finishes
+    /// loading pipes itself, taking the whole bus. Neither call site knows about
+    /// the other.
     ///
-    /// Both are gone — `engine/build.rs` no longer wires the click, and
-    /// `synth/soundfont.rs` no longer wires the unit it promotes. This reproduces
-    /// what they did, so the failure mode stays legible to whoever reads
-    /// `MasterSources` and wonders why a resource rather than a helper.
+    /// Neither `engine/build.rs` nor the soundfont promotion wires anything this
+    /// way. This reproduces the failure mode so it stays legible to whoever
+    /// reads `MasterSources` and wonders why a resource rather than a helper.
     #[test]
     fn the_sequence_this_crate_used_to_produce_lost_the_metronome() {
         let mut graph = AudioGraphRes::headless(0, 2);

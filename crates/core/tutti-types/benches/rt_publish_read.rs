@@ -1,5 +1,4 @@
-//! **What does one `RtPublish::read` cost, against the `ArcSwap::load` it
-//! replaced?**
+//! **What does one `RtPublish::read` cost, against an `ArcSwap::load`?**
 //!
 //! The engine's rule is one read per block, so this is a per-block cost, not a
 //! per-sample one: at 64 frames and 48 kHz a block has 1.333 ms, and either

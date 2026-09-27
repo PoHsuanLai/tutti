@@ -45,7 +45,7 @@ use crate::value::{Samples, Tail};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-/// Upper bound on any single node's reported tail, 60 s at 48 kHz.
+/// The upper bound on any single node's reported tail: 60 s at 48 kHz.
 ///
 /// Reported tails are clamped to this rather than trusted, for the reason
 /// [`MAX_NODE_LATENCY`](crate::latency::MAX_NODE_LATENCY) is: a plugin that
@@ -74,7 +74,7 @@ pub const MAX_NODE_TAIL: Samples = Samples(48_000 * 60);
 /// `inputs` and `outputs` for latency answers them identically for tail, so
 /// declaring them again would be two views of one graph free to drift.
 pub trait TailGraph: LatencyGraph {
-    /// The tail `node` reports.
+    /// Returns the tail `node` reports.
     ///
     /// [`Tail::Unknown`] is the honest answer for a node that has not been
     /// taught to report one; it is not [`Tail::None`], and [`graph_tail`] keeps
@@ -99,7 +99,8 @@ pub struct GraphTail {
 }
 
 impl GraphTail {
-    /// The tail as a frame count, or `None` when there is no finite answer.
+    /// Returns the tail as a frame count, or `None` when there is no finite
+    /// answer.
     ///
     /// `None` covers two cases that want opposite handling. A graph that never
     /// decays — a reverb reporting unbounded, a delay at full feedback — needs a
@@ -114,7 +115,8 @@ impl GraphTail {
         Some(self.known)
     }
 
-    /// The longest path over the nodes that answered, whatever the caveats.
+    /// Returns the longest path over the nodes that answered, whatever the
+    /// caveats.
     ///
     /// Always a number, and therefore only correct for a caller that has read
     /// [`is_unbounded`](Self::is_unbounded) and
@@ -125,13 +127,13 @@ impl GraphTail {
         self.known
     }
 
-    /// Whether any node reaching an output never decays, or a feedback cycle
-    /// rings.
+    /// Returns whether any node reaching an output never decays, or a feedback
+    /// cycle rings.
     pub const fn is_unbounded(self) -> bool {
         self.unbounded
     }
 
-    /// How many nodes reaching an output reported [`Tail::Unknown`].
+    /// Returns how many nodes reaching an output reported [`Tail::Unknown`].
     ///
     /// Zero means every node that can affect the output answered, so
     /// [`samples`](Self::samples) is `Some` unless the graph is unbounded.
@@ -139,7 +141,8 @@ impl GraphTail {
         self.unknown_nodes
     }
 
-    /// A frame count to render, given where the caller has chosen to stop.
+    /// Returns a frame count to render, given where the caller has chosen to
+    /// stop.
     ///
     /// [`samples`](Self::samples) refuses to answer for a graph that never
     /// decays or one that did not fully report, because neither has a frame
@@ -161,8 +164,23 @@ impl GraphTail {
     /// reporting 4 095 frames beside one node that stayed quiet is a 0.09-second
     /// tail, not an eight-second one.
     ///
-    /// ```ignore
-    /// let tail = graph.reported_tail().resolve(Seconds(8.0).to_samples(rate));
+    /// ```
+    /// use tutti_types::graph::{NodeSpec, OutPort, Source};
+    /// use tutti_types::{graph_tail, ChannelLayout, NodeKey, Samples, Tail, Topology};
+    ///
+    /// let verb = NodeKey(1);
+    /// let mut g = Topology::default();
+    /// g.nodes.insert(
+    ///     verb,
+    ///     NodeSpec::new("reverb", ChannelLayout::EMPTY, ChannelLayout::MONO)
+    ///         .with_tail(Tail::Unbounded),
+    /// );
+    /// g.outputs = vec![Source::Node(OutPort { node: verb, port: 0 })];
+    ///
+    /// let tail = graph_tail(&g);
+    /// assert_eq!(tail.samples(), None); // never decays
+    /// let eight_seconds = Samples(8 * 48_000);
+    /// assert_eq!(tail.resolve(eight_seconds), eight_seconds);
     /// ```
     pub fn resolve(self, cap: Samples) -> Samples {
         if self.unbounded {
@@ -172,14 +190,16 @@ impl GraphTail {
     }
 }
 
-/// The tail `g` reports: the longest additive path from any node to an output.
+/// Returns the tail `g` reports: the longest additive path from any node to an
+/// output.
 ///
 /// Only nodes that can reach an output count. A node wired to nothing cannot
 /// affect the render however long it rings, so neither its tail nor its silence
 /// changes the answer.
 ///
 /// Returns [`GraphTail::default`] — no tail, nothing unknown — for a graph whose
-/// nodes all report [`Tail::None`], which is the common case.
+/// nodes all report [`Tail::None`], which is the common case. Allocates; run it
+/// on the control thread.
 pub fn graph_tail<G: TailGraph>(g: &G) -> GraphTail {
     let tails: HashMap<G::Node, Tail> = g.nodes().map(|node| (node, g.tail(node))).collect();
 

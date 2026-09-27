@@ -23,11 +23,9 @@
 //! What keeps that true: **the ring is popped only from
 //! [`Node::process`](tutti_graph::Node::process), and there is one node.**
 //!
-//! - The node is **not `Clone`**: under `Net`, every commit cloned every unit
-//!   and kept a clone on the main thread over the same consumer, which is why
-//!   `reset` had to be a no-op. The graph owns its unit and never
-//!   clones it, and without `Clone` no second consumer can be made from the
-//!   node at all:
+//! - The node is **not `Clone`**: the graph owns its node and never clones
+//!   it, and without `Clone` no second consumer can be made from the node at
+//!   all:
 //!
 //!   ```compile_fail
 //!   fn second_consumer(node: &tutti_io::MicMonitorNode) -> tutti_io::MicMonitorNode {
@@ -52,16 +50,15 @@ use ringbuf::{traits::Consumer, HeapCons};
 use tutti_core::{Amplitude, AudioThreadCell, ChannelLayout, SampleRate, Tail};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 
-/// A stereo capture-ring consumer.
+/// The consumer end of a stereo capture ring, as an opaque handle for
+/// [`MicMonitorNode`].
 ///
-/// Built by the device layer via [`share_mic_ring`]: it splits a
-/// [`HeapRb`](ringbuf::HeapRb), keeps the producer to push captured frames, and
-/// hands the consumer here for [`MicMonitorNode::new`]. This is an **opaque
-/// handle** — the inner `Arc<AudioThreadCell<HeapCons<_>>>` is deliberately
-/// private so the ring's single-consumer invariant (see the module docs) can't
-/// be broken by a consumer popping the raw ring off the audio thread. `Clone`
-/// shares the one underlying consumer: a device layer may hold it until it
-/// builds the node.
+/// Built with [`share_mic_ring`]: the device layer splits a
+/// [`HeapRb<[f32; 2]>`](ringbuf::HeapRb), keeps the producer to push captured
+/// frames from its input callback, and wraps the consumer here. Only the
+/// monitor node, on the audio thread, can pop from it, so the ring keeps
+/// exactly one consumer. `Clone` shares that one consumer; a device layer may
+/// hold a clone until it builds the node.
 #[derive(Clone)]
 pub struct MicRing(Arc<AudioThreadCell<HeapCons<[f32; 2]>>>);
 
@@ -84,24 +81,32 @@ impl std::fmt::Debug for MicRing {
     }
 }
 
-/// Wrap a freshly-split ring consumer into a [`MicRing`] for handoff to the
-/// audio thread.
+/// Wraps a freshly split ring consumer into a [`MicRing`], ready to hand to
+/// [`MicMonitorNode::new`].
+///
+/// Allocates once; call it on the control thread.
 #[must_use = "the returned MicRing is the only handle to the capture ring; drop it and the monitor node has nothing to drain"]
 pub fn share_mic_ring(consumer: HeapCons<[f32; 2]>) -> MicRing {
     MicRing(Arc::new(AudioThreadCell::new(consumer)))
 }
 
-/// Live microphone monitoring as a graph node (0 in → 2 out),
-/// inserted unforkable (see the module docs).
+/// Live microphone monitoring as a graph node: no inputs, two outputs.
 ///
-/// Drains the capture ring one frame per output sample; an empty ring (the
-/// device hasn't pushed yet, or the audio thread outran it) emits silence rather
-/// than stalling — the live-source analogue of the streaming unit's underrun
-/// hold. No pitch/speed/interpolation: the mic is already at the graph rate
-/// (the device layer opens it so), so this is a straight per-frame passthrough.
+/// Each block it pops one captured stereo frame per output frame from its
+/// [`MicRing`], scaled by its gain; an empty ring (the device has not pushed
+/// yet, or the audio thread outran it) yields silence rather than stalling.
+/// It does not resample: the device must run at the graph's rate, which
+/// `tutti_cpal::MicIn` ensures. Wire it through effects to hear the mic live
+/// while the same capture callback records to a [`WavOut`](crate::WavOut).
 ///
-/// Not `Clone`: a clone would be a second consumer of the one ring (see the
-/// module's single-consumer note).
+/// Real-time safe: `process` does not allocate or lock. It reports an
+/// unbounded tail, so the executor never skips it as silent.
+///
+/// Not `Clone`, and inserted **unforkable**: a clone or fork would be a second
+/// consumer of the one ring. Forking a graph that holds it (an offline export
+/// of the live mic, for instance) fails with
+/// [`ForkError::NotForkable`](tutti_graph::ForkError::NotForkable) naming its
+/// key.
 #[derive(Debug)]
 pub struct MicMonitorNode {
     ring: MicRing,
@@ -119,7 +124,7 @@ pub struct MicMonitorNode {
 }
 
 impl MicMonitorNode {
-    /// Build a monitor node over a shared capture ring at unity gain.
+    /// Creates a monitor node over a capture ring, at unity gain.
     pub fn new(ring: MicRing) -> Self {
         Self {
             ring,
@@ -128,11 +133,13 @@ impl MicMonitorNode {
         }
     }
 
-    /// Build a monitor node over a ring the device layer opened at
-    /// `device_rate`, which the graph is then held to.
+    /// Creates a monitor node over a ring the device layer opened at
+    /// `device_rate`, at unity gain.
     ///
-    /// This is what `tutti_cpal::MicIn::open_with_monitor` uses; a caller
-    /// wiring a ring by hand wants [`new`](Self::new).
+    /// In debug builds, preparing the node for a graph at any other rate
+    /// panics, since the node does not resample. This is what
+    /// `tutti_cpal::MicIn::open_with_monitor` uses; a caller wiring a ring by
+    /// hand can use [`new`](Self::new).
     pub fn new_at(ring: MicRing, device_rate: SampleRate) -> Self {
         Self {
             ring,
@@ -141,7 +148,7 @@ impl MicMonitorNode {
         }
     }
 
-    /// Build a monitor node over a shared capture ring at `gain`.
+    /// Creates a monitor node over a capture ring, at `gain`.
     pub fn with_gain(ring: MicRing, gain: Amplitude) -> Self {
         Self {
             ring,
@@ -170,8 +177,7 @@ impl Node for MicMonitorNode {
     /// each interleaved device frame to a stereo pair before it ever reaches
     /// [`MicRing`] (a `HeapCons<[f32; 2]>`). Widening this node without widening
     /// that callback and the ring would declare an arity its own source can
-    /// never fill, so live capture stays stereo until the device edge is
-    /// widened with it. That edge is app-side, not engine-side.
+    /// never fill.
     ///
     /// A live source: [`Tail::Unbounded`], so the executor never skips it as
     /// silent (a skipped block would leave its frames to pile up in the ring).

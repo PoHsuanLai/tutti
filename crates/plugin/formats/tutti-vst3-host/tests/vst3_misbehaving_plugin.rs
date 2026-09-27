@@ -151,8 +151,8 @@ const BLOCK: usize = 128;
 /// emitted silence" apart from "the host forwarded something".
 ///
 /// Non-zero on purpose: driving silence makes a plugin that renders nothing and
-/// a plugin that renders correctly produce identical output, which is how four
-/// of the tests in this file were vacuous in their first version.
+/// a plugin that renders correctly produce identical output, which would make
+/// the tests in this file vacuous.
 const INPUT_LEVEL: f32 = 0.25;
 
 /// Drive one block through an activated instance, with `input` in every input
@@ -369,9 +369,9 @@ fn an_overreported_bus_count_does_not_run_the_host_off_the_end() {
 /// plugin a channel it is not running.
 ///
 /// The assertion is on the **reported** counts rather than on rendering, and
-/// that is the point. The internal scratch was always re-resolved from the
-/// read-back; what was missing is the write-back into `PluginInfo`, so a test
-/// that only drove audio passed against the bug.
+/// that is the point. The internal scratch is re-resolved from the read-back
+/// either way, so a test that only drove audio would pass even if the
+/// write-back into `PluginInfo` were missing.
 #[test]
 fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
     let path = probe_path();
@@ -415,7 +415,7 @@ fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
 
     // And the reported total agrees, since that is what sizes a caller's
     // buffers. Asserted separately: `total_input_channels` sums the bus list,
-    // so a fix that updated only the main entry would leave the two disagreeing.
+    // so updating only the main entry would leave the two disagreeing.
     let expected_total: usize = inst.info().input_bus_channels.iter().sum();
     assert_eq!(
         inst.info().total_input_channels(),

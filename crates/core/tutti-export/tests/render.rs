@@ -11,8 +11,7 @@
 //! results back — is likewise only linked under `wav`.
 //!
 //! Every graph here is built with `tutti_graph::GraphBuilder` and rendered
-//! as a `RenderGraph` (doc 013 Phase 3 PR 8); how the graph's renders
-//! compare with what fundsp's `Net` rendered is `graph_source.rs`'s.
+//! as a `RenderGraph`; the golden-digest pins live in `graph_source.rs`.
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
@@ -126,10 +125,8 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
 
 /// The clock is advanced once per block, by exactly the frames produced.
 ///
-/// This is the test the old `transport()` setter never had: sabotaging that
-/// setter to discard its argument passed all 45 tests, even though its own doc
-/// warned the failure mode was total silence. A clock that is never advanced
-/// leaves every placed voice at beat 0.
+/// A clock that is never advanced leaves every placed voice at beat 0, and
+/// the failure mode is total silence.
 #[test]
 fn the_clock_advances_by_exactly_the_frames_rendered() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -263,9 +260,8 @@ fn cascaded_convolvers_sum_their_tails() {
 /// constructed deliberately now that the engine's stock nodes all answer.
 #[test]
 fn one_silent_node_makes_the_figure_partial_without_losing_it() {
-    /// A node that does not know its tail (`Tail::Unknown`): what an
-    /// `AudioUnit` said by default, and what a node that has not measured
-    /// its own ring-out declares.
+    /// A node that does not know its tail (`Tail::Unknown`): what a node that
+    /// has not measured its own ring-out declares.
     #[derive(Clone, Default)]
     struct Unreporting;
 
@@ -323,8 +319,8 @@ fn a_graph_of_stock_nodes_reports_a_spendable_tail() {
 /// A stereo integrator: `y[n] = y[n-1] + x[n]`, per channel.
 ///
 /// The smallest node that genuinely never decays — a feedback loop with a gain
-/// of exactly one, the limit of the FDN reverb (fundsp's `reverb_stereo`) this
-/// test used to reach for. The engine ships no node that reports
+/// of exactly one, the limit of an FDN reverb. The engine ships no node that
+/// reports
 /// [`Tail::Unbounded`]: `ConvolverNode`, its reverb, is an FIR and reports a
 /// finite ring-out (the cases above). So the property under test — that
 /// `resolve` spends exactly the caller's cap on a graph that never decays —
@@ -489,9 +485,7 @@ fn a_caller_can_compose_normalization() {
 /// A requested resample reaches the file: the header carries the target rate,
 /// and the frame count matches the converted duration.
 ///
-/// `render_to_file` used to accept `sample_rate` and silently ignore it on the
-/// in-memory path while honouring it on the file path — two terminals with the
-/// same settings and different behaviour.
+/// The file path must honour the resample the config asks for.
 #[test]
 fn a_resample_request_reaches_the_file() {
     let d = tempfile::tempdir().unwrap();
@@ -558,10 +552,10 @@ fn normalized_audio_can_be_written_to_every_format() {
 /// A resample must reach **every** format, not just the ones that happened to
 /// route through the shared pump.
 ///
-/// FLAC and Ogg used to pull from `drive` directly while still taking their
-/// header rate from `encoder_rate`, so each wrote un-resampled audio under a
-/// header claiming the target: a 1 s render played back 8.8% fast. WAV and AIFF
-/// were correct, which is exactly why a WAV-only test could not see it.
+/// An encoder that pulled from `drive` directly while taking its header rate
+/// from `encoder_rate` would write un-resampled audio under a header claiming
+/// the target (a 1 s render playing back 8.8% fast), which a WAV-only test
+/// cannot see.
 #[test]
 fn a_resample_reaches_every_format_not_just_wav() {
     let d = tempfile::tempdir().unwrap();
@@ -783,8 +777,8 @@ fn a_sub_gating_block_render_normalizes_without_poisoning_the_signal() {
 }
 
 /// R128 meters any channel count, so a surround export normalizes against its
-/// own loudness. Pins the removal of the old stereo-only restriction: it must
-/// not error, and must not silently switch to a different metric.
+/// own loudness: it must not error, and must not silently switch to a
+/// different metric.
 #[test]
 fn surround_normalizes_rather_than_falling_back_to_peak() {
     use tutti_export::{render_normalized_to_file, Normalize};
@@ -885,11 +879,11 @@ fn int_file_peak(path: &std::path::Path) -> f32 {
 
 /// **Normalizing silence must write silence.**
 ///
-/// `render_to_buffers` used to dither, so at an integer depth the planes handed
-/// to the meter were not silent — they carried ±1 LSB of noise. The meter read
-/// that as the signal (~-86 dBTP), the gain came back at ~+86 dB, and
-/// `apply_gain` amplified the noise: a "normalized" export of silence landed
-/// near full scale.
+/// If `render_to_buffers` dithered, at an integer depth the planes handed to
+/// the meter would not be silent — they would carry ±1 LSB of noise. The meter
+/// would read that as the signal (~-86 dBTP), the gain would come back at
+/// ~+86 dB, and `apply_gain` would amplify the noise: a "normalized" export of
+/// silence would land near full scale.
 ///
 /// Dither belongs at the encode boundary, where the LSB is known; buffers are
 /// `f32` and quantize to nothing.
@@ -948,11 +942,9 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     // Energy near Nyquist, with its true peak *between* samples, is what SRC
     // overshoots on; a DC constant barely moves and would hide the bug entirely.
     //
-    // A sine at a quarter of the 44.1 kHz render rate, started at 0.546 turns.
-    // That is what the fundsp `square_hz(11025.0)` this test used to build
-    // rendered: a band-limited square at fs/4 keeps no harmonic below Nyquist
-    // but its fundamental, and its phase came from the graph's hash — measured,
-    // not assumed. At that phase the samples are ±0.285 and ±0.958 of the peak
+    // A sine at a quarter of the 44.1 kHz render rate, started at 0.546 turns
+    // (a band-limited square at fs/4 keeps no harmonic below Nyquist but its
+    // fundamental, so it renders the same). At that phase the samples are ±0.285 and ±0.958 of the peak
     // (±0.279 / ±0.939 at this amplitude of 0.98).
     //
     // The property that matters is where the meter looks. It estimates true
@@ -1143,7 +1135,7 @@ fn an_odd_width_round_trips_through_buffers() {
 
 /// An odd width must survive a resample too — that path deinterleaves into
 /// planes and re-interleaves them, so it is where a stride mistake at a width
-/// the old code never saw would surface.
+/// that is rarely exercised would surface.
 #[test]
 fn an_odd_width_survives_a_resample() {
     let d = tempfile::tempdir().unwrap();

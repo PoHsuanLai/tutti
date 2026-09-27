@@ -3,10 +3,7 @@
 //! Both the out-of-process node ([`crate::host::node::PluginClient`]) and the
 //! in-process paths (the in-crate VST2 node, and any out-of-crate loader)
 //! build on these. They carry no IPC or format knowledge — just the
-//! parameter-change sinks a plugin node reports through. (The fundsp pieces
-//! that lived here, `PLUGIN_CLIENT_ID` and `route_with_latency`, went with
-//! `AudioUnit` in design doc 013 Phase 5: a graph node declares its latency in
-//! its `Shape`.)
+//! parameter-change sinks a plugin node reports through.
 
 pub(crate) mod listeners;
 

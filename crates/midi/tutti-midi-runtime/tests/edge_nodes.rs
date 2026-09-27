@@ -1,4 +1,4 @@
-//! The nodes at the graph's MIDI border (doc 013, rewrite item 5):
+//! The nodes at the graph's MIDI border:
 //! [`MidiInputNode`] sends a wire's events out of their channels' ports,
 //! translated; [`MidiQueueNode`] sends what a control thread pushed;
 //! [`MidiOutNode`] hands what reaches it back to one; [`ClockNode`] ticks

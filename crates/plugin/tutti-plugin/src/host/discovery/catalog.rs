@@ -9,40 +9,50 @@ use super::fs::{file_modification_time, format_from_path};
 use super::record::{Blacklist, PluginFormat, PluginRecord};
 use std::path::{Path, PathBuf};
 
-/// Minimal primitives a catalog must provide. Derived operations
-/// (`is_blacklisted`, `needs_rescan`, `plugins`, `blacklist`,
-/// `prune_missing`) live on the [`CatalogExt`] blanket extension.
+/// A pluggable store for discovered plugin records.
+///
+/// Implement these primitives over any store (a JSON file, SQLite, an
+/// in-memory map) and pass it to `Plugins::with_catalog`. The derived
+/// operations (`is_blacklisted`, `needs_rescan`, `plugins`, `blacklist`,
+/// `prune_missing`, …) come from the [`CatalogExt`] blanket extension.
 pub trait PluginCatalog: Send + Sync {
-    /// Look up a record by filesystem path.
+    /// Returns the record for a filesystem path, if any.
     fn get(&self, path: &Path) -> Option<&PluginRecord>;
 
-    /// Insert or replace a record.
+    /// Inserts or replaces a record, keyed by its path.
     fn upsert(&mut self, record: PluginRecord);
 
-    /// Remove a record by path (no-op if absent).
+    /// Removes a record by path (no-op if absent).
     fn remove(&mut self, path: &Path);
 
-    /// Iterate every record, including blacklisted ones.
+    /// Iterates every record, including blacklisted ones.
     fn iter(&self) -> Box<dyn Iterator<Item = &PluginRecord> + '_>;
 
-    /// Commit pending changes to durable storage. Default: no-op — right
-    /// for in-memory impls. File-backed impls override to persist.
+    /// Commits pending changes to durable storage.
+    ///
+    /// The default is a no-op, right for in-memory stores; file-backed stores
+    /// override it to persist.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying I/O error when the store cannot be written.
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-/// Derived helpers built on top of [`PluginCatalog`]. Automatically
-/// implemented for every `T: PluginCatalog + ?Sized`, so `Box<dyn
-/// PluginCatalog>` and any concrete impl both get them free.
+/// Derived helpers built on top of [`PluginCatalog`].
+///
+/// Implemented for every `T: PluginCatalog + ?Sized`, so `Box<dyn
+/// PluginCatalog>` and any concrete store both get them.
 pub trait CatalogExt: PluginCatalog {
-    /// `true` if the plugin at `path` is recorded and blacklisted.
+    /// Returns `true` if the plugin at `path` is recorded and blacklisted.
     fn is_blacklisted(&self, path: &Path) -> bool {
         self.get(path).is_some_and(|r| r.blacklist.is_blacklisted())
     }
 
-    /// `true` if `path` is blacklisted **and** its on-disk bytes have not
-    /// changed since the blacklist was recorded.
+    /// Returns `true` if `path` is blacklisted **and** its file has not changed
+    /// since the blacklist was recorded.
     ///
     /// This is the check the scanner must use, not the raw
     /// [`Self::is_blacklisted`]: blacklisting records the file's mtime, so a
@@ -57,8 +67,11 @@ pub trait CatalogExt: PluginCatalog {
         })
     }
 
-    /// Clear the blacklist flag on one record, keeping its other fields.
-    /// Returns `true` if a blacklisted record was found and cleared.
+    /// Clears the blacklist flag on one record, keeping its other fields.
+    ///
+    /// Returns `true` if a blacklisted record was found and cleared. The
+    /// record is marked for rescan, since a blacklisted record carries only a
+    /// placeholder descriptor.
     ///
     /// The inverse of [`Self::blacklist`]. Without it a single pedal misfire
     /// hides a plugin forever, remediable only by hand-editing the DB.
@@ -80,8 +93,7 @@ pub trait CatalogExt: PluginCatalog {
         true
     }
 
-    /// Clear every blacklist entry. Returns the paths that were cleared.
-    /// The bulk escape hatch for "my plugins vanished after a crash".
+    /// Clears every blacklist entry, returning the paths that were cleared.
     fn clear_blacklist(&mut self) -> Vec<PathBuf> {
         let blacklisted: Vec<PathBuf> = self
             .iter()
@@ -94,14 +106,14 @@ pub trait CatalogExt: PluginCatalog {
         blacklisted
     }
 
-    /// Iterate the blacklisted records, so a UI can show what was hidden and
+    /// Iterates the blacklisted records, so a UI can show what was hidden and
     /// why instead of the plugin just being absent.
     fn blacklisted(&self) -> Box<dyn Iterator<Item = &PluginRecord> + '_> {
         Box::new(self.iter().filter(|r| r.blacklist.is_blacklisted()))
     }
 
-    /// `true` if `path` is absent or its on-disk mtime has changed since
-    /// the last scan.
+    /// Returns `true` if `path` has no record or its file's modification time
+    /// has changed since the last scan.
     fn needs_rescan(&self, path: &Path) -> bool {
         self.get(path).is_none_or(|record| {
             let current_mtime = file_modification_time(path).unwrap_or(0);
@@ -109,13 +121,13 @@ pub trait CatalogExt: PluginCatalog {
         })
     }
 
-    /// Iterate non-blacklisted records.
+    /// Iterates the records that are not blacklisted.
     fn plugins(&self) -> Box<dyn Iterator<Item = &PluginRecord> + '_> {
         Box::new(self.iter().filter(|r| !r.blacklist.is_blacklisted()))
     }
 
-    /// Mark a path as blacklisted with a reason. Inserts a stub record if
-    /// the path isn't present yet.
+    /// Marks a path as blacklisted with a reason, inserting a stub record if
+    /// the path has none yet.
     fn blacklist(&mut self, path: &Path, reason: String) {
         let record = match self.get(path) {
             Some(existing) => PluginRecord {
@@ -133,7 +145,7 @@ pub trait CatalogExt: PluginCatalog {
         self.upsert(record);
     }
 
-    /// Drop every record whose path no longer exists on disk.
+    /// Removes every record whose path does not exist on disk.
     fn prune_missing(&mut self) {
         let missing: Vec<PathBuf> = self
             .iter()

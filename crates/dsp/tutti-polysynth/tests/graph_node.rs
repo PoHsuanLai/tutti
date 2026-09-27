@@ -1,5 +1,4 @@
-//! The synth as a graph node, fed by a clip node's event port (doc 013,
-//! rewrite item 5): a clip's note sounds on its frame, in the block it is
+//! The synth as a graph node, fed by a clip node's event port: a clip's note sounds on its frame, in the block it is
 //! written, and a forked graph plays it offline with nothing rebound.
 //!
 //! 120 BPM at 48 kHz: a beat is 24 000 frames.

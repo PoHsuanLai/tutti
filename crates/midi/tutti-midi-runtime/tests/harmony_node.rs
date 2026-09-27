@@ -1,7 +1,7 @@
 //! [`HarmonyNode`]: chord and scale changes go out of an event port on the
 //! frames playback reaches their beats, and the context in force is
 //! re-stated wherever playback jumps (a start, a seek, a loop wrap) or the
-//! lanes are replaced (doc 013, rewrite item 5).
+//! lanes are replaced.
 //!
 //! Every test renders a harmony node into a sink that logs each harmony
 //! event with its absolute frame. 120 BPM at 48 kHz: a beat is 24 000 frames.

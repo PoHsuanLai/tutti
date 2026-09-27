@@ -1,24 +1,15 @@
-//! [`ThreadDriver`] — the production driver — under test for the first time.
+//! [`ThreadDriver`] — the default driver — under test.
 //!
-//! Every existing `Recorder` test drives a [`ManualDriver`], deliberately:
-//! `recorder.rs`'s header records that the old versions slept 20–50 ms and one
-//! asserted `frames >= 3` against a floor "tuned on a loaded machine", which is
-//! an assertion about the test host rather than the engine. Counting passes
-//! replaced that, and it was the right trade.
-//!
-//! But it left the driver a host actually gets with **no coverage at all**.
-//! Nothing ran `std::thread::spawn`, the `Acquire`/`Release` stop handshake,
-//! the [`PumpPass::Ended`] break, the [`IDLE_PARK`] on a starving source, or
+//! The unit tests in `recorder.rs` drive a [`ManualDriver`] so they can count
+//! passes instead of sleeping. These cover what only the thread driver runs:
+//! `std::thread::spawn`, the `Acquire`/`Release` stop handshake, the
+//! [`PumpPass::Ended`] break, the [`IDLE_PARK`] on a starving source, and
 //! `impl RunningPump for JoinHandle` — including its "recording thread
-//! panicked" arm. `Recorder::start`, the entry point every consumer calls, was
-//! reached by exactly one test, and only to check a width mismatch it rejects
-//! before spawning anything.
+//! panicked" arm.
 //!
-//! These four cover that surface without reintroducing the tuned sleep. The
-//! first three sequence on a fact the pump thread *publishes about itself* —
-//! drained, polled N times — via [`wait_until`], so no assertion depends on a
-//! duration. The fourth needs none of that, and that is its point:
-//! [`Recorder::wait`] was added because of what the first one had to do.
+//! The first three sequence on a fact the pump thread *publishes about
+//! itself* — drained, polled N times — via [`wait_until`], so no assertion
+//! depends on a duration. The fourth exercises [`Recorder::wait`].
 //! The one property that genuinely cannot be asserted is "a live take never
 //! ends on its own": its counter-example is a hang, and its only bound is
 //! nextest's per-test timeout. That is said plainly at the test rather than
@@ -35,13 +26,11 @@
 //! | `.unwrap_or_else(…)` → `.unwrap()` | `a_panicking_source_…` |
 //! | `Recorder::wait` calls `shutdown()` rather than `join_pump()` | `wait_returns_a_complete_finite_take_…` (short file) |
 //!
-//! The first row is worth keeping: an earlier draft of `a_finite_source_…`
-//! **passed** under `PumpPass::Ended => {}`. Waiting for the source to run dry
-//! and then checking the file proves nothing about the break, because a driver
-//! that spins on a dry source still finalizes correctly once `stop()` clears
-//! the flag. The only externally visible consequence of the break is that the
-//! source stops being polled, so that is what the test now asserts. A test
-//! that cannot fail is worse than no test; this one could not, until it could.
+//! On the first row: waiting for the source to run dry and then checking the
+//! file proves nothing about the break, because a driver that spins on a dry
+//! source still finalizes correctly once `stop()` clears the flag. The only
+//! externally visible consequence of the break is that the source stops being
+//! polled, so that is what the test asserts.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;

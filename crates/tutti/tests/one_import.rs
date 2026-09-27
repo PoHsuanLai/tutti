@@ -14,10 +14,6 @@ use tutti::prelude::*;
 
 /// Everything below is reached through `tutti::` and nothing else. If the
 /// façade stopped re-exporting something, this stops compiling.
-///
-/// (Until doc 013 Phase 3 PR 15 this built a `tutti::dsp::Net` and handed
-/// its backend to `Engine::new`; the engine renders only `tutti_graph`
-/// now, built here with `tutti::graph::GraphBuilder`.)
 #[test]
 fn one_import_renders_a_block() {
     let mut g = tutti::graph::GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -63,9 +59,8 @@ fn the_measurement_vocabulary_arrives_and_converts() {
 fn the_dsp_library_and_the_node_contract_are_reachable() {
     // A `tutti-nodes` unit, built and driven through `tutti::` alone.
     let _lfo = tutti::nodes::Lfo::default();
-    // The node contract, `tutti_graph::Node` (it was `tutti-node`'s
-    // `AudioUnit` and planar buffers until doc 013 Phase 5), on a node
-    // reached through `tutti::` too.
+    // The node contract, `tutti_graph::Node`, on a node reached through
+    // `tutti::` too.
     let node = tutti::nodes::testing::Const::frame(&[0.5, 0.5]);
     let shape = tutti::graph::Node::shape(&node);
     assert_eq!(shape.audio_out, ChannelLayout::STEREO);

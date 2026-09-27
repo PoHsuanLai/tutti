@@ -5,26 +5,20 @@
 //! whole budget — for one instrument, before any other track, effect or
 //! plugin. Divide criterion's elem/s by 48 000 for the realtime multiple.
 //!
-//! # Two traps the first draft of this file fell into
+//! # Two traps
 //!
-//! **`max_voices` must be raised with the note count, and it caps at 16.** It
-//! defaults to 8, so holding 16, 32 or 64 notes against the default steals
-//! back down to 8 and every case above 8 measured *identically* — the axis
-//! looked flat and the flatness was the benchmark's fault, not the synth's.
-//! Each case here sets `max_voices` to its own note count.
-//!
-//! The 16-voice ceiling these axes were originally written against is gone:
-//! `finished_indices` became a `Vec` sized at construction, so `max_voices`
-//! has no upper bound. The axis still stops at 16 because that is where the
-//! numbers in `docs/benchmarks.md` were taken and the scaling is linear —
-//! extend it if you need a figure past there, rather than extrapolating.
+//! **`max_voices` must be raised with the note count.** It defaults to 8, so
+//! holding 16, 32 or 64 notes against the default steals back down to 8 and
+//! every case above 8 would measure *identically*. Each case here sets
+//! `max_voices` to its own note count. `max_voices` has no upper bound; the
+//! axis stops at 16 because that is where the numbers in `docs/benchmarks.md`
+//! were taken and the scaling is linear — extend it if you need a figure past
+//! there, rather than extrapolating.
 //!
 //! **The block size is fixed at 64 frames**, the figures in
-//! `docs/benchmarks.md`. (Under the `AudioUnit` path it could be nothing
-//! else: `BufferVec` was 64 frames wide, and an earlier draft reported the
-//! 64-frame cost under a 512-frame label.) The synth is driven as a graph
-//! drives it, `Node::process` through `tutti_graph::contract::Direct`, so a
-//! longer block is now measurable; block size stays `engine_render`'s axis.
+//! `docs/benchmarks.md`. The synth is driven as a graph drives it,
+//! `Node::process` through `tutti_graph::contract::Direct`, so a longer block
+//! is measurable; block size is `engine_render`'s axis.
 //!
 //! `voices/unison` matters more than it looks: unison *multiplies* the voice
 //! count, so 8 notes at 7-way unison is 56 voices of work. A synth that

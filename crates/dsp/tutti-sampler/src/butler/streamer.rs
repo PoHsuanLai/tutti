@@ -9,26 +9,49 @@ use tutti_core::RtPublish;
 use tutti_core::SampleRate;
 use tutti_core::Samples;
 
-/// The sampler subsystem handle.
+/// The disk-streaming engine: owns the butler thread that reads files into
+/// per-stream rings for [`DiskVoice`](crate::DiskVoice)s to play.
 ///
-/// Owns the butler thread, which drives all disk I/O. The engine builds one at
-/// startup with [`new`](Self::new); a host holds it for the lifetime of the
-/// session.
+/// A host builds one at startup with [`new`](Self::new) and holds it for the
+/// lifetime of the audio engine; dropping it stops the butler thread. Stream
+/// control is split into two cloneable ports: the WRITE port
+/// [`commands`](Self::commands) (a [`Commands`] over the butler's command
+/// channel) and the READ port [`status`](Self::status) (a [`Status`] carrying
+/// the sample rate and building the [`DiskVoice`](crate::DiskVoice) for a
+/// stream).
 ///
-/// Stream control is split MIDI-device-style into two cloneable ports: the
-/// WRITE port [`commands`](Self::commands) (a [`Commands`] over the butler
-/// command channel) and the READ port [`status`](Self::status) (a [`Status`]
-/// carrying the sample rate + the reader-factory).
+/// All of this is control-thread API. The audio thread only ever touches the
+/// `DiskVoice` a `Status` built, which reads its ring without locking or
+/// allocating.
 ///
+/// # Examples
 ///
-/// # Example
+/// Stream a file on channel 0 and build the voice that plays it:
 ///
 /// ```no_run
-/// use tutti_sampler::DiskStreamer;
+/// use tutti_core::{Beat, SamplePosition};
+/// use tutti_sampler::{Command, DiskStreamer, TakeVoiceError};
 ///
-/// # fn main() -> tutti_sampler::Result<()> {
-/// let sampler = DiskStreamer::new(48_000.0, Default::default())?;
-/// let _ = sampler.status().sample_rate();
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let streamer = DiskStreamer::new(48_000.0, Default::default())?;
+///
+/// streamer.commands().send(Command::Stream {
+///     channel_index: 0,
+///     file_path: "take_1.wav".into(),
+///     offset: SamplePosition(0.0),
+/// })?;
+///
+/// // The butler opens the file on its own thread; poll until the stream is
+/// // ready, then place the voice at beat 0 for the file's full length.
+/// let voice = loop {
+///     match streamer.status().take_disk_voice(0, Beat(0.0), None) {
+///         Ok(voice) => break voice,
+///         Err(TakeVoiceError::NotStreaming) => std::thread::yield_now(),
+///         Err(e) => return Err(e.into()),
+///     }
+/// };
+/// // `voice` is a graph node: insert it into the graph that renders the track.
+/// # drop(voice);
 /// # Ok(())
 /// # }
 /// ```
@@ -48,11 +71,22 @@ impl std::fmt::Debug for DiskStreamer {
 }
 
 impl DiskStreamer {
-    /// Build the system and spawn the butler thread.
+    /// Creates the streaming engine at `sample_rate` (the engine's rate) and
+    /// spawns the butler thread.
     ///
     /// Configure with [`DiskStreamerConfig`] (`Default` + struct-update); pass
-    /// `Default::default()` for the tuned defaults. Returns [`Err`] if any
-    /// subsystem fails to initialize.
+    /// `Default::default()` for the tuned defaults. Allocates and spawns a
+    /// thread: control thread only.
+    ///
+    /// # Errors
+    ///
+    /// None at present: every path returns `Ok`. The `Result` is the crate's
+    /// [`Error`](crate::Error) type, for initialization that touches the
+    /// filesystem.
+    ///
+    /// # Panics
+    ///
+    /// If the OS refuses to spawn the butler thread.
     pub fn new(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
         let mut butler = ButlerThread::with_config(256, sample_rate.into(), config.buffer_config);
 
@@ -66,14 +100,21 @@ impl DiskStreamer {
         Ok(DiskStreamer { butler_tx, butler })
     }
 
-    /// Build the system **without** spawning the butler thread; cycles are then
-    /// run by hand with [`step_once`](Self::step_once).
+    /// Creates the streaming engine **without** spawning the butler thread;
+    /// cycles are then run by hand with [`step_once`](Self::step_once).
+    /// Requires the `test-support` feature.
     ///
     /// The step is the same one the thread runs, so this is the shipped path
     /// with its pacing removed rather than a parallel implementation. What it
     /// buys is a butler whose progress is *counted* instead of waited for: a
     /// test can say "after this many cycles the ring holds audio", where the
     /// threaded streamer only lets it say "after this long it probably does".
+    ///
+    /// # Errors
+    ///
+    /// None at present, as for [`new`](Self::new).
+    ///
+    /// # Examples
     ///
     /// ```
     /// use tutti_sampler::{DiskStreamer, DiskStreamerConfig};
@@ -97,9 +138,10 @@ impl DiskStreamer {
         Ok(DiskStreamer { butler_tx, butler })
     }
 
-    /// Run one butler cycle on the calling thread, reporting whether the
-    /// butler still has urgent work ([`StepOutcome::Busy`]) or has caught up
-    /// ([`StepOutcome::Healthy`] / [`StepOutcome::Idle`]).
+    /// Runs one butler cycle on the calling thread, reporting whether the
+    /// butler still has urgent work ([`Busy`](crate::StepOutcome::Busy)) or has
+    /// caught up ([`Healthy`](crate::StepOutcome::Healthy) /
+    /// [`Idle`](crate::StepOutcome::Idle)).
     ///
     /// That verdict is what makes a step-driven test terminate on a *condition*
     /// rather than on a step budget: stepping until `Healthy` primes every ring
@@ -115,7 +157,7 @@ impl DiskStreamer {
         self.butler.step_once()
     }
 
-    /// Step until the butler stops making progress, or `budget` cycles have run
+    /// Steps until the butler stops making progress, or `budget` cycles have run
     /// — whichever comes first. Returns the number of cycles taken.
     ///
     /// "Stops making progress" is any outcome other than
@@ -154,7 +196,7 @@ impl DiskStreamer {
         Status::new(self.butler.session_rate(), self.butler.plans())
     }
 
-    /// Move the session rate to `sample_rate`: what a device restart at a new
+    /// Moves the session rate to `sample_rate`: what a device restart at a new
     /// rate does, between the stream's stop and its start.
     ///
     /// Every open stream keeps its file and its position (in file frames, which
@@ -208,24 +250,12 @@ mod tests {
 
     /// A backward `Command::Seek` must actually reposition the live stream.
     ///
-    /// This settles a question the end-to-end test could not, back when that
-    /// test was driven by wall clock. In `tests/tier_parity.rs`, seeking a live
-    /// stream appeared to leave the audio coming from the old position — which
-    /// is consistent with two very different causes: the butler ignoring the
-    /// seek, or the butler repositioning correctly while the reader drains a
-    /// ring already primed with pre-seek material. From outside the crate those
-    /// were indistinguishable, because the only observable was the audio and the
-    /// audio was the thing in dispute.
-    ///
-    /// In-crate the butler's own state is visible, so the question is
-    /// answerable directly. **It passes: the butler does reposition.**
-    ///
-    /// The end-to-end test now passes too — driving the butler by hand lets it
-    /// apply the seek and refill before the next render, so it no longer chases
-    /// a ring it cannot drain. This test stays because it asks a *different*
-    /// question: it observes the butler's own reposition signal rather than the
-    /// audio downstream of it, so a regression that repositioned late (rather
-    /// than not at all) fails here first and unambiguously.
+    /// The end-to-end test (`tests/tier_parity.rs`) observes only the audio,
+    /// where a butler that ignored the seek and one that repositioned while
+    /// the reader drained pre-seek material can look alike. In-crate the
+    /// butler's own state is visible, so this observes its reposition signal
+    /// directly: a regression that repositioned late (rather than not at all)
+    /// fails here first and unambiguously.
     ///
     /// # Why the ring's window
     ///
@@ -326,13 +356,13 @@ mod tests {
     /// **A loop change on a streamed file reads only the frames it needs**:
     /// its fade's lead-in and a short loop's body, through the stream's own
     /// decoder — never the whole file, which blocked every other stream while
-    /// it decoded and held the plan map (the review of #48). Observed through
+    /// it decoded and held the plan map. Observed through
     /// the cache the whole-file read filled: a hard loop, a crossfaded one and
     /// a cleared one leave it empty, and the loop still plays (the ring holds
     /// the loop's frames past its end).
     ///
     /// Mutation (run): the handler reading the file whole for the lead-in
-    /// (`load_wave`, the old path) → the cache holds the file → fails.
+    /// (`load_wave`) → the cache holds the file → fails.
     #[test]
     fn a_loop_change_reads_only_the_frames_it_needs() {
         use crate::ports::Command;

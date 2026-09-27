@@ -1,15 +1,10 @@
 //! The one rule this crate has, enforced.
 //!
-//! `src/lib.rs` must contain nothing but `pub use` and documentation. That is
-//! not a style preference — it is the difference between this crate and the
-//! one that was deleted in `4b5bd2fd`.
-//!
-//! The package of this name at `9c75ec54` was the workspace **root** package
-//! and held `TuttiEngine`, `TuttiGraph`, `TuttiEngineBuilder`, `TuttiDriver`,
-//! `audio_io`, `midi_export` and an error type. `0a4adf68` moved that logic
-//! into `bevy-tutti` and `4b5bd2fd` deleted the package, because two stacked
-//! umbrellas where the lower one owns what the upper one needs is one too
-//! many. Re-exporting other crates was never the problem.
+//! `src/lib.rs` must contain nothing but `pub use` and documentation. Logic
+//! that wires subsystems belongs in the crate that owns them, where
+//! `bevy-tutti` gets it too: two stacked umbrellas where the lower one owns
+//! what the upper one needs is one too many. Re-exporting other crates is
+//! fine.
 //!
 //! So the failure mode is specific and it is one `fn build()` away: someone
 //! adds a small convenience constructor here because it is the crate that can
@@ -35,8 +30,7 @@ fn code_lines() -> Vec<(usize, &'static str)> {
 /// The code lines, joined into whole statements.
 ///
 /// Line-based checking is not enough: a `pub use a::{ .. }` spanning three
-/// lines makes its continuations look like bare expressions, and an earlier
-/// version of this test failed on exactly that. Statements are accumulated
+/// lines makes its continuations look like bare expressions. Statements are accumulated
 /// until braces balance and the text ends in `;`, `{` or `}`.
 fn statements() -> Vec<(usize, String)> {
     let mut out = Vec::new();

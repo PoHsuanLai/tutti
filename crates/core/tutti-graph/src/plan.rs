@@ -1,9 +1,9 @@
 //! The compiled form: [`Plan`] (immutable, structure-of-arrays) and [`Delta`]
 //! (which units a runtime must insert, retire or replace to run it).
 //!
-//! Doc 013 §3 step 8. Everything here is plain data — `Vec`s of `u32` indices
-//! and a closed [`Op`] enum, never `Box<dyn Fn>` — so a `Plan` is `Send + Sync`
-//! and can be published to the audio thread as one value (phase 2), and a
+//! Everything here is plain data — `Vec`s of `u32` indices and a closed
+//! [`Op`] enum, never `Box<dyn Fn>` — so a `Plan` is `Send + Sync` and can be
+//! published to the audio thread as one value, and a
 //! verifier or a test can read every decision the compiler made.
 //!
 //! # Slots
@@ -21,8 +21,8 @@
 //! written by an op. Event slots hold [`Plan::event_slot_capacity`] events:
 //! a node's output port what its shape declares
 //! ([`Shape::event_capacity`]), a delay's output (and a feedback slot) all
-//! its FIFO can hold at its source's declared rate, and a merge's output as many as all its inputs together, so a merge can
-//! never drop one. Coloured slots are shared between values whose lifetimes
+//! its FIFO can hold at its source's declared rate, and a merge's output as
+//! many as all its inputs together, so a merge can never drop one. Coloured slots are shared between values whose lifetimes
 //! cannot overlap under *any* schedule that respects the op DAG — see
 //! `compile`'s colouring pass.
 //!
@@ -32,8 +32,8 @@
 //! carries it exactly when it is still the same wire:
 //!
 //! - **A PDC delay** is keyed by **(sink port, source port)** — [`DelayKey`].
-//!   Rewiring a sink to another source starts a fresh (silent) ring: the old
-//!   source's past audio is never played out of the new wire. Pending events
+//!   Rewiring a sink to another source starts a fresh (silent) ring: the
+//!   previous source's past audio is never played out of the new wire. Pending events
 //!   of an event delay whose key disappears are flushed to the sink at offset
 //!   0 of the next block if the sink survives (a dropped note-off is a stuck
 //!   note), and dropped with it otherwise.
@@ -64,8 +64,7 @@ pub const EMPTY_SLOT: u32 = 0;
 /// A dense index into the runtime's unit store.
 ///
 /// Resolved from a [`NodeKey`] on the **control** side by `compile`, so the
-/// audio thread never hashes a key (FunDSP's `migrate` did a HashMap lookup on
-/// the RT side; doc 013 §2).
+/// audio thread never hashes a key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitIdx(pub u32);
 
@@ -84,11 +83,15 @@ impl Span {
     }
 }
 
-/// Which PDC delay a ring belongs to. The ring's **state is keyed by this**,
-/// so it survives any recompile that keeps the key (doc 013 §3 step 3: "an
-/// unrelated edit does not click"), where fundsp re-minted — and zeroed —
-/// every `PdcDelay` vertex on every compensation run. The key names both ends
-/// of the wire; see the `plan` module's docs (`src/plan.rs`) for why.
+/// Which PDC delay a ring belongs to.
+///
+/// The ring's **state is keyed by this**, so it survives any recompile that
+/// keeps the key: an unrelated edit does not click. The key names both ends
+/// of the wire, so rewiring a sink to another source starts a fresh (silent)
+/// ring and the previous source's past audio is never played out of the new
+/// wire. Pending events of an event delay whose key disappears are flushed
+/// to the sink at the start of its next block if the sink survives (a
+/// dropped note-off would be a stuck note), and dropped with it otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DelayKey {
     /// An audio input port, delayed to align with the node's latest input.
@@ -107,7 +110,7 @@ pub enum DelayKey {
         from: EventOut,
     },
     /// An audio source of a modulated param, delayed to the param's node's
-    /// arrival (see the `param` module docs, `src/param.rs`).
+    /// arrival (see [`GraphSpec::connect_param`](crate::GraphSpec::connect_param)).
     ParamAudio {
         /// The param port.
         at: ParamIn,
@@ -235,7 +238,7 @@ impl EventSlotCapacity {
 
     /// What the output of an event delay (a PDC delay, or a feedback edge)
     /// of `len` frames fed by a port declaring `cap` can hold: everything its
-    /// FIFO can (`EventFifo::bound`, `src/kernels.rs`), since that is what
+    /// FIFO can (`EventFifo::bound`), since that is what
     /// can fall due in one block — events the source wrote across several
     /// of its blocks, or a backlog a retune made overdue. Pricing it at the
     /// source's one block would deliver the rest a block late.
@@ -335,8 +338,8 @@ pub enum Op {
         /// Event slot written.
         dst: u32,
     },
-    /// Merge several event streams by `(offset, source order)` — the event
-    /// fan-in of owner decision 6. Source order is the source port's
+    /// Merge several event streams by `(offset, source order)` — event
+    /// fan-in. Source order is the source port's
     /// `(NodeKey, port)`.
     EventMerge {
         /// Event slots read, in source order (into [`Plan::event_list`]).
@@ -389,7 +392,8 @@ pub enum Op {
 }
 
 /// One modulated param port of a node op: the fused `ParamMod` step the op
-/// runs before its node (see the `param` module docs, `src/param.rs`).
+/// runs before its node (see
+/// [`GraphSpec::connect_param`](crate::GraphSpec::connect_param)).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamPortOp {
     /// Its index in the node's declared params
@@ -666,8 +670,8 @@ impl NodeTables {
             slots.extend_from_slice(ein);
             slots.extend_from_slice(eout);
 
-            // The same requests, in the same order, that the executor used to
-            // build and `sort_unstable` on every call.
+            // Built and sorted once here, so the executor never sorts per
+            // call.
             let start = borrows.len() as u32;
             for (c, &s) in ain.iter().enumerate() {
                 if !in_place.get(c) {
@@ -803,7 +807,21 @@ pub struct Value {
     pub readers: Span,
 }
 
-/// The compiled, immutable form of a graph.
+/// The compiled, immutable form of a graph, produced by
+/// [`compile`](crate::compile) and run by the [`Executor`](crate::Executor).
+///
+/// Plain data (`Send + Sync`, `Vec`s of indices and a closed [`Op`] enum),
+/// so it is shared with the audio thread as one `Arc` and a test or the
+/// [`verify`](crate::verify) pass can read every decision the compiler made.
+/// Most hosts never look inside one: [`Editor::commit`](crate::Editor::commit)
+/// compiles and ships it.
+///
+/// Every buffer it names is a **slot**, an index into one of two arenas
+/// (audio and event). Slot 0 of each ([`ZERO_SLOT`], [`EMPTY_SLOT`]) is
+/// never written and is what an unconnected input reads; feedback slots
+/// come next, filled from the feedback state before the first op of each
+/// block; the rest are shared between values whose lifetimes cannot
+/// overlap.
 ///
 /// `ops` is one **serial schedule** (a topological order of the op DAG); the
 /// DAG itself is kept as CSR successor lists so a parallel executor can run
@@ -842,8 +860,8 @@ pub struct Plan {
     pub(crate) nodes: NodeTables,
 }
 
-// Phase 2 publishes a `Plan` to the audio thread. Asserted here rather than
-// discovered there.
+// The editor publishes a `Plan` to the audio thread. Asserted here rather
+// than discovered there.
 const _: fn() = || {
     fn send_sync<T: Send + Sync>() {}
     send_sync::<Plan>();
@@ -1043,7 +1061,7 @@ pub struct Placement {
 
 /// What a runtime must change to go from the previous plan to this one.
 ///
-/// Doc 013 §4: edits ship as deltas, O(changed) — never a copy of every unit.
+/// Edits ship as deltas, O(changed) — never a copy of every unit.
 /// `compile` is pure, so this lists *placements*; the boxes themselves are
 /// attached on the control side (see `Editor::commit`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

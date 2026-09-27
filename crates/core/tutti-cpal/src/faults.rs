@@ -1,9 +1,8 @@
 //! Where a stream error goes when there is no call to return it from.
 //!
-//! CPAL's error callback has no return value, and both of this crate's were
-//! literally `|_err| {}`. A device unplugged mid-session surfaced *nowhere*:
-//! `is_running()` stayed true, no event fired, no flag moved. The host went on
-//! reporting a healthy stream to a user hearing silence.
+//! CPAL's error callback has no return value, so without a place to put its
+//! error a device unplugged mid-session would surface nowhere: the host would
+//! go on reporting a healthy stream to a user hearing silence.
 //!
 //! The outcome is therefore *stored* rather than returned or logged — the same
 //! reasoning `tutti_io::FinalizeStatus` records for a Drop-path finalize. A
@@ -35,22 +34,26 @@ pub enum StreamFaultKind {
     Backend,
 }
 
-/// One fault, with the backend's own words.
+/// One fault reported by the backend, with the backend's own message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamFault {
+    /// Whether the device went away or the backend reported something else.
     pub kind: StreamFaultKind,
-    /// The backend's message. Carried rather than flattened to a sentinel,
-    /// for the reason `Error::DeviceNotAvailable` carries its cpal error: the
-    /// cases want different responses and only the text distinguishes them.
+    /// The backend's message, as its `Display` rendered it.
     pub message: String,
 }
 
-/// The accumulated faults of one stream, shared between the error callback
-/// and whoever asked for the handle.
+/// The accumulated faults of one output stream, shared between CPAL's error
+/// callback and the host.
 ///
 /// Created by [`AudioEngine`](crate::AudioEngine) and handed out by
-/// `AudioEngine::faults()`; it survives stop and restart, so a host can take
-/// it once at startup.
+/// [`AudioEngine::faults`](crate::AudioEngine::faults). The same handle
+/// survives stop and restart, so a host can take it once at startup. Starting
+/// a stream clears it, so a restart after a disconnect reads healthy again.
+///
+/// Every getter is lock-free except [`last`](Self::last) and
+/// [`take_last`](Self::take_last), which take a short mutex. None of it is
+/// touched by the audio callback.
 #[derive(Debug, Default)]
 pub struct StreamFaults {
     count: AtomicU64,
@@ -59,37 +62,43 @@ pub struct StreamFaults {
 }
 
 impl StreamFaults {
+    /// Creates an empty fault record.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// How many faults this stream has reported since the last start.
+    /// Returns how many faults this stream has reported since the last start.
     ///
-    /// A cheap poll: one relaxed-ish load, no lock. A per-frame consumer
+    /// A cheap poll: one atomic load, no lock. A per-frame consumer
     /// should compare this against what it saw last and only call
     /// [`last`](Self::last) when it moved.
     pub fn count(&self) -> u64 {
         self.count.load(Ordering::Acquire)
     }
 
-    /// Whether anything at all has gone wrong.
+    /// Returns whether any fault has been reported since the last start.
     pub fn is_faulted(&self) -> bool {
         self.count() > 0
     }
 
-    /// Whether the device is gone. This is the one that should stop a host
-    /// claiming the stream is healthy.
+    /// Returns whether the backend reported the device gone.
+    ///
+    /// This is the fault that should stop a host claiming the stream is
+    /// healthy; it stays set until the stream is started again.
     pub fn is_disconnected(&self) -> bool {
         self.disconnected.load(Ordering::Acquire)
     }
 
-    /// The most recent fault, if any.
+    /// Returns a copy of the most recent fault, if any.
     pub fn last(&self) -> Option<StreamFault> {
         self.last.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
-    /// The most recent fault, clearing it. For a host that wants to show each
-    /// fault once.
+    /// Takes the most recent fault, leaving `None`, for a host that wants to
+    /// show each fault once.
+    ///
+    /// [`count`](Self::count) and [`is_disconnected`](Self::is_disconnected)
+    /// are unaffected.
     pub fn take_last(&self) -> Option<StreamFault> {
         self.last.lock().unwrap_or_else(|p| p.into_inner()).take()
     }

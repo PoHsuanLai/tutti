@@ -42,16 +42,15 @@ use tutti_midi_types::{MidiChannel, MidiGroup};
 /// A parameter id the reference plugin actually declares (`params_state.rs`).
 ///
 /// The tests below are about event *offsets*, not parameter identity, so the id
-/// is only a carrier — but it has to be a real one. The host now drops
-/// automation addressed to an id that a params-reporting plugin never
-/// described, because such an id has no known range and would otherwise reach
-/// the plugin un-denormalized (see `add_param_changes` in `events.rs`). These
-/// tests previously used an invented id `7`, which made them fail for a reason
-/// unrelated to what they assert.
+/// is only a carrier — but it has to be a real one. The host drops automation
+/// addressed to an id that a params-reporting plugin never described, because
+/// such an id has no known range and would otherwise reach the plugin
+/// un-denormalized (see `add_param_changes` in `events.rs`). An invented id
+/// would make these tests fail for a reason unrelated to what they assert.
 use tutti_plugin_types::{ParamAddress, ParamId};
 
 /// The probe's real `clap_id`. A `ParamAddress` because that is what a queue
-/// is keyed by now — CLAP ids are opaque handles, never positional indices.
+/// is keyed by — CLAP ids are opaque handles, never positional indices.
 const REAL_PARAM_ID: ParamAddress = ParamAddress::Opaque(ParamId::new(101));
 
 /// The same id as the bare `clap_id` the FFI carries, for assertions against
@@ -226,7 +225,7 @@ fn host_delivers_param_points_with_offsets() {
 ///
 /// `header.time` is a sample index the plugin uses to split the block, so an
 /// out-of-range value is an out-of-bounds access *inside the plugin*. Two ways
-/// the host used to produce one:
+/// a host can produce one:
 /// - a NEGATIVE automation `sample_offset` (`i32`) cast bare to `u32`, which
 ///   turned -1 into 4_294_967_295;
 /// - an offset simply past the end of the block, forwarded verbatim.

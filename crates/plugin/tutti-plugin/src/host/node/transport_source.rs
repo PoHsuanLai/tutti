@@ -1,8 +1,8 @@
 //! The transport a hosted plugin is handed each block: a pure function of the
 //! block's [`Env`] and the project meter.
 //!
-//! Doc 013 (Verdicts, `TransportSource`): the plugin node no longer polls a
-//! shared timeline. The executor hands it the block's [`Env`], whose
+//! The plugin node does not poll a shared timeline. The executor hands it the
+//! block's [`Env`], whose
 //! transport is the engine's own playhead at the block's first frame, with
 //! every start, stop, seek, tempo or loop edit inside the block in
 //! [`Env::changes`]. [`from_env`] reads it at a frame with
@@ -11,9 +11,9 @@
 //! offline, where the forked node's `Env` is the render's.
 //!
 //! The mapping onto the plugin ABIs' snapshot is [`transport_info`], shared
-//! with the one node that still polls a timeline: the in-process VST2 client
-//! (a graph node since doc 013's per-node port) still reads its transport
-//! from an installed reader rather than its `Env`, and builds the same
+//! with the one node that polls a timeline: the in-process VST2 client reads
+//! its transport from an installed reader rather than its `Env`, and builds
+//! the same
 //! [`Snapshot`] from it (`PolledTransport`, behind the `vst2` feature).
 
 use tutti_core::meter::{Meter, MeterMap};

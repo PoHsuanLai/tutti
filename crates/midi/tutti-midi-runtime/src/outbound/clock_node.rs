@@ -1,5 +1,5 @@
 //! [`ClockNode`]: outbound MIDI Beat Clock and MTC as a graph node, out of
-//! one event port (doc 013, rewrite item 5).
+//! one event port.
 //!
 //! It ticks its [`ClockMaster`] once per transport segment of each block
 //! (`Env::segments`), so a start, a stop or a locate inside a block sends its

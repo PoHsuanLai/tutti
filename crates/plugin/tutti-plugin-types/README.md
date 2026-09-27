@@ -13,22 +13,26 @@ harmony changes, [`AudioBuffer`] in its f32/f64 forms, editor vocabulary
 ([`WindowHandle`], [`EditorSize`], [`EditorCapabilities`]), presets, and the
 [`Features`] capability bitset.
 
-It also carries `format_host`: the fine-grained capability traits
-([`PluginMeta`], [`PluginAudio`], [`PluginParams`], [`PluginState`],
-[`PluginPresets`], [`PluginEditorHost`]) that each format loader implements,
-reassembled by the blanket-impl [`PluginInstance`].
+It also carries the fine-grained capability traits ([`PluginMeta`],
+[`PluginAudio`], [`PluginParams`], [`PluginState`], [`PluginPresets`],
+[`PluginEditorHost`]) that each format loader implements, reassembled by the
+blanket-impl [`PluginInstance`], and the [`bundle`] helpers that find the
+loadable module inside a `.vst3` / `.vst` bundle.
 
 ## What it does not own
 
 **Any lifecycle.** These traits describe a plugin as a set of *capabilities* and
-deliberately say nothing about what state it is in. That is what lets each format
-crate model its own lifecycle as tightly as its own contract allows; the
-comparative account is in `tutti-plugin`'s crate docs under *The plugin state
-machine*.
+deliberately say nothing about what state it is in: by the time a plugin is
+reachable through them it is loaded and activated, and configure-time calls such
+as [`set_sample_rate`] handle whatever deactivate/reactivate bracket their format
+needs. That is what lets each format crate model its own lifecycle as tightly as
+its own contract allows; the comparative account is in `tutti-plugin`'s crate
+docs under *The plugin state machine*.
 
-**Any FFI.** Nothing here links a plugin SDK. The format crates under
-`../formats/` do that, and each re-exports these types from its own public API so
-a caller can stay format-agnostic whenever only the shared surface is in play.
+**Any FFI.** Nothing here links a plugin SDK. The format host crates
+(`tutti-vst2-host`, `tutti-vst3-host`, `tutti-clap-host`, `tutti-au-host`) do
+that, and each re-exports these types from its own public API so a caller can
+stay format-agnostic whenever only the shared surface is in play.
 
 ## Why it is its own crate
 
@@ -159,6 +163,8 @@ MIT OR Apache-2.0
 [`PluginPresets`]: crate::PluginPresets
 [`PluginEditorHost`]: crate::PluginEditorHost
 [`PluginInstance`]: crate::PluginInstance
+[`bundle`]: crate::bundle
+[`set_sample_rate`]: crate::PluginAudio::set_sample_rate
 [`Samples`]: crate::Samples
 [`ChannelLayout`]: crate::ChannelLayout
 [`ChannelTopology`]: crate::ChannelTopology

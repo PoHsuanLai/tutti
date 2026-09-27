@@ -14,12 +14,10 @@ render to −14 LUFS.
 
 ### Why this exists
 
-The crate had 45 passing tests while three of its four output formats were
-broken and an upmix export panicked. The tests all went through the same WAV
-stereo path; nothing rendered a FLAC, and nothing asked for a file wider than the
-graph. An example that actually calls the public API the way a caller would is
-the cheapest check that the API *works*, as opposed to type-checking — and it is
-the same reason `tutti-sampler/examples/` exists.
+An example that calls the public API the way a caller would — every format, a
+file wider than the graph — is the cheapest check that the API *works*, as
+opposed to type-checking, and it exercises paths a WAV-stereo test suite never
+reaches. `tutti-sampler/examples/` exists for the same reason.
 
 It doubles as the API's documentation. If a case here reads badly, the API is
 wrong, not the example.
@@ -66,10 +64,10 @@ and the channel fold/upmix paths.
 The Rust tests read files back with `hound`, which only speaks WAV. FLAC, AIFF
 and Ogg are checked there by frame count and header — never by content. So
 "does the FLAC hold the same samples as the WAV" is not a question the Rust suite
-can ask, and that is exactly the question that mattered: the FLAC encoder carried
-a private quantizer that **truncated** where `tutti_core::pcm` rounds, so 0.7
-encoded as 22936 in a FLAC and 22937 in a WAV from the same render. Its own unit
-tests covered only 0.0 and ±1.0, where truncation and rounding agree.
+can ask. A FLAC quantizer that **truncated** where `tutti_core::pcm` rounds
+would encode 0.7 as 22936 in a FLAC and 22937 in a WAV from the same render,
+and a unit test at 0.0 and ±1.0, where truncation and rounding agree, would not
+notice.
 
 `soundfile` decodes all four containers uniformly, which makes the comparison
 possible at all. And the resampler's actual quality — passband flatness, alias
@@ -81,7 +79,7 @@ The judge derives every expectation from the case **name** and first principles
 1/32767; an 18 kHz tone above the new Nyquist must be *gone*, not folded down to
 4050 Hz), never from the Rust. It is a second opinion, not a restatement.
 
-### Two traps, both paid for
+### Two traps
 
 **`soundfile` and tutti disagree about full scale.** tutti scales floats by
 `2^(n-1) − 1` (32767 at 16-bit); `soundfile` normalizes integers by `2^(n-1)`

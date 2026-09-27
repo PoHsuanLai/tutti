@@ -9,12 +9,11 @@
 //! `stretch::Unit`, whose fixed-capacity `RtScratch` buffers make `process`
 //! non-allocating for any block size up to the preallocated maximum.
 //!
-//! The sampler's nodes are graph nodes (doc 013 items 8 and 9): each is driven
-//! through `tutti_graph::contract::Direct`, whose buffers are built once, under
-//! a rolling transport moved after every block as a host moves it. The
-//! `AudioUnit` era's `tick` gates are one-frame blocks now — the node has no
-//! per-sample entry point, and a one-frame block is what a sample-accurate
-//! caller drives.
+//! The sampler's nodes are graph nodes: each is driven through
+//! `tutti_graph::contract::Direct`, whose buffers are built once, under a
+//! rolling transport moved after every block as a host moves it. A node has
+//! no per-sample entry point, so the sample-accurate gates drive one-frame
+//! blocks.
 //!
 //! `DiskSource` is **not** covered here: it needs a crate-private ring, so its
 //! non-allocation (steady state, a jump's scratch copy and fade) is guarded
@@ -102,8 +101,7 @@ fn memory_source_process_is_allocation_free() {
     });
 }
 
-/// One-frame blocks: the sample-accurate caller's path (the `AudioUnit`
-/// era's `tick`).
+/// One-frame blocks: the sample-accurate caller's path.
 #[test]
 fn memory_source_one_frame_blocks_are_allocation_free() {
     let mut rig = Rig::new(MemorySource::new(sine_wave(2.0, 48_000.0)), 1);
@@ -155,11 +153,8 @@ fn time_stretch_process_is_allocation_free() {
 
 /// The same guarantee for a **cloned** unit — the shape a fork produces.
 ///
-/// A clone builds its own vocoders and block scratch (doc 013 item 7), so
-/// there is no `allocate` hook between cloning and running any more: a clone
-/// is ready as built. Under `Net`, whose commit cloned every node, the clone
-/// shared the original's bank and left the scratch for `allocate` to size,
-/// which is why this test used to call it first.
+/// A clone builds its own vocoders and block scratch, so there is no step
+/// between cloning and running: a clone is ready as built.
 ///
 /// `time_stretch_process_is_allocation_free` above cannot catch a regression
 /// here: it drives a freshly constructed unit, not a clone.
@@ -249,8 +244,8 @@ fn voice_pool_process_steady_state_is_allocation_free() {
 ///
 /// Every other pool test drives a freshly constructed node, and the two
 /// stretch tests never clone a pool, so this is the pool's RT contract across
-/// a clone. Since doc 013 item 7 the clone needs no `allocate` first: its
-/// filters build their own scratch, and the pool builds its own block lanes
+/// a clone. The clone needs no preparation first: its filters build their
+/// own scratch, and the pool builds its own block lanes
 /// (the slot reads through `stretch::Unit::filter_lanes` into them). (The
 /// graph never clones a node — a pool's fork is a fresh, empty pool —
 /// so a clone is what a host holding a template makes.)
@@ -299,7 +294,7 @@ fn cloned_voice_pool_with_stretch_is_allocation_free() {
 }
 
 /// Same steady-state guard in one-frame blocks: the sample-accurate caller's
-/// path (the `AudioUnit` era's `tick`).
+/// path.
 #[test]
 fn voice_pool_one_frame_blocks_are_allocation_free() {
     let wave = sine_wave(2.0, 48_000.0);
@@ -483,7 +478,7 @@ fn memory_source_process_is_allocation_free_at_six_channels() {
     });
 }
 
-/// One-frame blocks at width 6 (the `AudioUnit` era's `tick`).
+/// One-frame blocks at width 6.
 #[test]
 fn memory_source_one_frame_blocks_are_allocation_free_at_six_channels() {
     let node = MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6usize);

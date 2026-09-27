@@ -1,10 +1,8 @@
 //! What an export renders: the graph.
 //!
-//! Doc 013 Phase 3. PR 7 put [`RenderGraph`] beside fundsp's `Net` as a second
-//! backend; PR 14 removed the `Net` one, so an export renders a `tutti_graph`
-//! editor/executor pair and nothing else. It becomes a frame source
-//! (`render::driver`), and the gate, resample, dither and encoders downstream
-//! see only frames.
+//! An export renders a `tutti_graph` editor/executor pair ([`RenderGraph`]) and
+//! nothing else. It becomes a frame source (`render::driver`), and the gate,
+//! resample, dither and encoders downstream see only frames.
 
 use tutti_core::SampleRate;
 use tutti_graph::{CommitError, Editor, Executor, ForkError, ForkMode, ForkTarget, Prepare};
@@ -12,16 +10,15 @@ use tutti_types::{GraphTail, Samples};
 
 use crate::{Error, Result};
 
-/// The `MaxBlock` a graph is prepared at for an export
+/// The largest block, in frames, a graph is prepared for in an export
 /// ([`RenderGraph::prepare`], [`RenderGraph::fork`]).
 ///
 /// 1024 frames: long enough that the executor's per-block walk is paid rarely
-/// on a long bounce, short enough that a block's planes stay in cache. A
-/// multiple of 64 on purpose: a node that renders in 64-frame pieces from
-/// each block's start (the sampler's clip readers) cuts them on the frames
-/// `Net`'s 64-frame blocks did, and the golden digests
-/// `tests/graph_source.rs` pins were recorded so (doc 013, "Two things carry
-/// over from `Legacy` chunking").
+/// on a long bounce, short enough that a block's planes stay in cache.
+// A multiple of 64 on purpose: a node that renders in 64-frame pieces from each
+// block's start (the sampler's clip readers) cuts them on the same frames at
+// any multiple of 64, and the golden digests `tests/graph_source.rs` pins were
+// recorded with 64-frame pieces.
 pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 
 /// The graph an export renders: a `tutti_graph` editor/executor pair.

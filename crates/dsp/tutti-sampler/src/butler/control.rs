@@ -1,10 +1,10 @@
 //! The single definition of the butler stream-control operations, expressed
 //! over the raw handles (command channel + channel-plan map).
 //!
-//! Both the timeline path ([`DiskStreamer`](crate::DiskStreamer)) and the browser-preview
-//! path ([`Auditioner`](crate::Auditioner)) drive butler streaming through these
-//! functions, so "start a stream on a channel", "stop", "set varispeed", and
-//! "take the streaming consumer" each have exactly one implementation.
+//! The public ports ([`Commands`](crate::Commands) and
+//! [`Status`](crate::Status)) drive butler streaming through these functions,
+//! so "start a stream on a channel", "stop", "set varispeed", and "take the
+//! streaming consumer" each have exactly one implementation.
 
 use std::path::PathBuf;
 use std::sync::Arc;

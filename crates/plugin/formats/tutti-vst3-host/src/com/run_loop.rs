@@ -81,7 +81,7 @@ impl RunLoop {
         Arc::new(Self::default())
     }
 
-    /// Fire any timers whose period has elapsed and dispatch any readable file
+    /// Fires any timers whose period has elapsed and dispatch any readable file
     /// descriptors.
     ///
     /// A Linux host must call this regularly from its UI thread while a plugin

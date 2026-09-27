@@ -1,6 +1,6 @@
 //! Both panners fork to a **snapshot** of their placement: once a fork is
 //! taken from the source their insert hands the editor, no live move of the
-//! position, spread, width or blend reaches it (doc 013, gap 6's audit).
+//! position, spread, width or blend reaches it.
 //!
 //! The panners are graph nodes whose controls are typed cells no
 //! `UnitParam` addresses, so their fork is not `tutti_graph::param_parts`'

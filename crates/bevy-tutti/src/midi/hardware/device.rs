@@ -21,8 +21,8 @@ use bevy_ecs::prelude::*;
 use bevy_log::warn;
 
 /// The open MIDI connections and the endpoints available to open. Only present
-/// when the `midi-hardware` feature is compiled; claimed into the world by
-/// [`TuttiMidiPlugin`](crate::midi::plugin::TuttiMidiPlugin) from the engine handoff.
+/// when the `midi-hardware` feature is compiled; inserted by
+/// [`build_into`](crate::engine::build_into).
 #[derive(Resource, Clone, Debug)]
 pub struct MidiIoRes(
     /// The OS session. Shares its state behind an `Arc`, so this clone and the
@@ -57,15 +57,9 @@ pub struct DisconnectMidiDevice {
 /// Fire-and-forget request: connect a MIDI **output** device by name (partial
 /// match). Replaces any currently connected output.
 ///
-/// # Why not a direction field on [`ConnectMidiDevice`]
-///
-/// The engine's two sides are not symmetric, and folding them together would
-/// have to hide that. Inputs are many-at-once and disconnect *by name*
-/// (`MidiIo::disconnect_input(&name)`); there is at most one output, and
-/// `MidiIo::disconnect_output()` takes no name at all. A shared
-/// `DisconnectMidiDevice { name, direction }` would therefore have to accept a
-/// name it silently ignores for one of the two — a new quiet failure in the
-/// subsystem this layer exists to make loud.
+/// A separate message from [`ConnectMidiDevice`] because the two sides are not
+/// symmetric: inputs are many-at-once and disconnect by name, while there is at
+/// most one output, disconnected with [`DisconnectMidiOutput`].
 #[derive(Message, Debug, Clone)]
 pub struct ConnectMidiOutput {
     /// Matched the same way [`ConnectMidiDevice::name`] is.
@@ -138,7 +132,7 @@ pub struct MidiDeviceState {
     pub(crate) last_check: Option<std::time::Instant>,
 }
 
-/// Service connect/disconnect requests against the OS port manager.
+/// Services connect/disconnect requests against the OS port manager.
 ///
 /// Emits no [`MidiDeviceEvent`] itself — [`midi_device_poll_system`] observes
 /// what actually changed and reports it. A request the driver silently declines
@@ -256,7 +250,9 @@ pub fn midi_device_poll_system(
     }
 }
 
-/// Hardware device connect/disconnect servicing + hot-plug polling.
+/// Adds hardware device connect/disconnect servicing and hot-plug polling
+/// (feature `midi-hardware`). Part of
+/// [`TuttiMidiPlugin`](crate::midi::plugin::TuttiMidiPlugin).
 pub struct MidiDevicePlugin;
 
 impl Plugin for MidiDevicePlugin {

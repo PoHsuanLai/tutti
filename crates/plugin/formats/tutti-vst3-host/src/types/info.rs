@@ -204,7 +204,7 @@ pub mod automation_state {
     /// Host is both reading and writing automation.
     pub const READ_WRITE: i32 = AutomationStates_::kReadWriteState;
 
-    /// Encode the format-neutral [`AutomationMode`] as the VST3 `IAutomationState`
+    /// Encodes the format-neutral [`AutomationMode`] as the VST3 `IAutomationState`
     /// bitmask. This mapping lives here — the VST3 crate is the one that knows
     /// both the mode vocabulary and its `IAutomationState` ABI — so
     /// `tutti-plugin-types` stays format-agnostic. Pass the result to
@@ -218,7 +218,7 @@ pub mod automation_state {
         }
     }
 
-    /// Decode a VST3 `IAutomationState` bitmask back into an [`AutomationMode`]
+    /// Decodes a VST3 `IAutomationState` bitmask back into an [`AutomationMode`]
     /// (inverse of [`from_mode`]). Unknown bits beyond read|write are ignored.
     pub fn to_mode(bits: i32) -> AutomationMode {
         match (bits & READ != 0, bits & WRITE != 0) {
@@ -494,7 +494,7 @@ impl Vst3UnitInfo {
         self.program_list.is_none() && self.program_list_id_raw != unit_ids::NO_PROGRAM_LIST
     }
 
-    /// Decode the C struct. `program_list` is left unresolved (`None` unless
+    /// Decodes the C struct. `program_list` is left unresolved (`None` unless
     /// the raw id is a real one); [`resolve_program_list`](Self::resolve_program_list)
     /// finishes the job once the list ids are known.
     pub(crate) fn from_c(c: &vst3::Steinberg::Vst::UnitInfo) -> Self {
@@ -617,7 +617,7 @@ pub mod prefetchable_support {
 mod note_expression_info_tests {
     use super::{note_expression_flags, Vst3NoteExpressionInfo};
 
-    /// Copy a Rust `&str` into a UTF-16, null-terminated `String128` buffer.
+    /// Copies a Rust `&str` into a UTF-16, null-terminated `String128` buffer.
     fn string128(s: &str) -> [u16; 128] {
         let mut buf = [0u16; 128];
         for (slot, ch) in buf.iter_mut().zip(s.encode_utf16()) {

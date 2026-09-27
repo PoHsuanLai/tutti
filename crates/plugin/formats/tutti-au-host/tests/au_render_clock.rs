@@ -101,10 +101,10 @@ fn the_render_clock_starts_at_zero_and_advances_by_one_block() {
 
 /// `reset()` must send the render clock back to zero.
 ///
-/// This is E-3. Before the fix `sample_position` was written in exactly one
-/// place — `RenderScratch::advance` — so `reset` flushed the AU's history and
-/// left the clock running, and the first block after a locate arrived stamped
-/// as the seamless continuation of the last block before it.
+/// If `sample_position` were written only by `RenderScratch::advance`, `reset`
+/// would flush the AU's history and leave the clock running, and the first
+/// block after a locate would arrive stamped as the seamless continuation of
+/// the last block before it.
 ///
 /// The pre-reset renders are not decoration: they move the cursor off zero, so
 /// the post-reset `0.0` is a value the reset produced rather than one the clock
@@ -188,7 +188,7 @@ fn repeated_resets_each_restart_the_clock() {
 /// once the AU becomes renderable.
 ///
 /// `reset` is documented as legal in the `Loaded` state, where there is no
-/// render scratch at all. The fix must therefore tolerate its absence rather
+/// render scratch at all. It must therefore tolerate its absence rather
 /// than reaching through the typestate — and the clock a later `initialize`
 /// creates starts at zero anyway, so the observable result is the same.
 #[test]
@@ -255,9 +255,9 @@ fn the_push_clock_starts_at_zero_and_advances_by_one_block() {
 
 /// `PushScratch::reset_position` restarts the push clock.
 ///
-/// The push half of E-3. The cursor lives on the scratch rather than on the
-/// instance, so it needs its own call — see the next test for why that is the
-/// correct division rather than a gap.
+/// The push-side counterpart of the `reset()` test. The cursor lives on the
+/// scratch rather than on the instance, so it needs its own call — see the
+/// next test for why that is the correct division rather than a gap.
 #[test]
 fn resetting_the_push_scratch_restarts_its_clock() {
     let mut au = Misbehaviour::None.open_initialized(RATE, BLOCK);

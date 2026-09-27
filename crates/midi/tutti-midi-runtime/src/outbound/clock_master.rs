@@ -75,7 +75,7 @@ pub struct ClockMaster {
     /// that a seek.
     prev_advance: AtomicF64,
     /// The MTC quarter-frame grid, in closed form rather than accumulated
-    /// (doc 013 §6, "the frame is the source of truth"): quarter-frame `k`
+    /// (the frame, not the beat, is the source of truth): quarter-frame `k`
     /// (counted from the last transport edge or locate, so `k & 7` is its
     /// nibble) is due `mtc_lead + (k - mtc_base) × rate / (4 × fps)` frames
     /// into the current grid segment, whose frames `mtc_frames` counts. A
@@ -200,7 +200,7 @@ impl ClockMaster {
         self.send_mtc.store(send, Ordering::Release);
     }
 
-    /// Set the SMPTE frame rate the MTC quarter-frames are denominated in.
+    /// Sets the SMPTE frame rate the MTC quarter-frames are denominated in.
     ///
     /// It appears twice in the stream: as the quarter-frame cadence
     /// (frame-rate × 4) and encoded into the hours nibble. Changing it does not
@@ -299,7 +299,7 @@ impl ClockMaster {
         // (1/24).
         //
         // Placed by the engine's one beat→frame rule
-        // (`first_frame_at_or_after`, doc 013 §6) and compared as integer
+        // (`first_frame_at_or_after`) and compared as integer
         // frames, not as beats against `beat + expected_advance`: a tick on
         // a block boundary is reached on the next block's first frame (offset
         // `block_size` here, 0 there), so it goes out once. Comparing beats,
@@ -538,8 +538,7 @@ mod tests {
         (rig, transport, receiver)
     }
 
-    /// Drain a receiver fully into a `Vec` — the test-side stand-in for the old
-    /// consumer's `drain_all`.
+    /// Drains a receiver fully into a `Vec`.
     fn drain_all(receiver: &crate::MidiReceiver) -> Vec<MidiEvent> {
         let mut out = Vec::new();
         let mut buf = [MidiEvent::noop(); 256];
@@ -885,7 +884,7 @@ mod tests {
     /// - `set_sample_rate` not rescaling the carried phase → the first one
     ///   lands 344 frames after the restart, ~30 early → fails;
     /// - the seek check comparing the beat's move with *this* block's
-    ///   advance (as it did) → the old-rate block's 0.0232 beats against the
+    ///   advance → the old-rate block's 0.0232 beats against the
     ///   new rate's 0.0213 is past the 0.001 epsilon → a Song Position, and
     ///   the phase reset to the restart's frame → fails.
     #[test]

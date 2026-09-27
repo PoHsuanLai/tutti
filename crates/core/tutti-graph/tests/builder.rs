@@ -1,9 +1,7 @@
 //! `GraphBuilder`: what it builds is what a host writing the `GraphSpec` by
-//! hand builds, and its fan-out calls mean exactly what fundsp's `Net` calls
-//! of the same name meant — which is what let doc 013's PR 8 port the `Net`
-//! fixtures call for call. `Net` itself is gone (doc 013 Phase 5), so the
-//! fan-out rules it followed are written out below ([`net_rule`]) and each
-//! render is pinned to the figure those rules give in closed form.
+//! hand builds, and its fan-out calls follow the rules its docs state. Those
+//! rules are written out independently below ([`net_rule`]) and each render
+//! is pinned to the figure they give in closed form.
 
 mod common;
 
@@ -66,7 +64,7 @@ fn ch(n: usize) -> ChannelLayout {
 }
 
 /// What the builder feeds `node`'s input `port`. An absent edge reads
-/// silence, as `Net`'s default `Zero` does.
+/// silence, as an explicit `Zero` does.
 fn source_of(g: &GraphBuilder, node: NodeKey, port: u16) -> Source {
     match g.spec().topology.edges.get(&InPort { node, port }) {
         Some(Edge::Direct(s)) => *s,
@@ -117,8 +115,8 @@ fn assert_renders(
     }
 }
 
-/// fundsp's `Net` fan-out rules, as `fundsp-tutti`'s `net.rs` wrote them
-/// before doc 013 Phase 5 deleted it, over [`Width`] nodes.
+/// The builder's fan-out rules, written out independently over [`Width`]
+/// nodes.
 mod net_rule {
     use super::*;
 
@@ -135,7 +133,7 @@ mod net_rule {
         })
     }
 
-    /// `Net::pipe_all(a, b)`: input `c` of `b` reads `a`'s port
+    /// `pipe(a, b)`: input `c` of `b` reads `a`'s port
     /// `c % a_outs`; silence when `a` has no outputs.
     pub fn pipe_all(a: NodeKey, a_outs: usize, b_ins: usize) -> Vec<Source> {
         (0..b_ins)
@@ -149,7 +147,7 @@ mod net_rule {
             .collect()
     }
 
-    /// `Net::pipe_output(n)`: global output `c` reads `n`'s port
+    /// `pipe_output(n)`: global output `c` reads `n`'s port
     /// `c % n_outs`; silence when `n` has no outputs.
     pub fn pipe_output(n: NodeKey, n_outs: usize, outputs: usize) -> Vec<Source> {
         (0..outputs)
@@ -163,7 +161,7 @@ mod net_rule {
             .collect()
     }
 
-    /// `Net::pipe_input(n)`: input `c` reads global input `c % globals`;
+    /// `pipe_input(n)`: input `c` reads global input `c % globals`;
     /// silence when there are none.
     pub fn pipe_input(globals: usize, ins: usize) -> Vec<Source> {
         (0..ins)
@@ -177,7 +175,7 @@ mod net_rule {
             .collect()
     }
 
-    /// `Net::chain` over `widths`: the first node takes `pipe_input` (when
+    /// `chain` over `widths`: the first node takes `pipe_input` (when
     /// there are global inputs; otherwise its inputs stay silent), each later
     /// one reads what fed global output `i % outputs` (silence with no
     /// outputs), and each takes over the outputs with `pipe_output`.
@@ -355,7 +353,7 @@ fn builder_builds_what_a_hand_written_spec_builds() {
     }
 }
 
-/// `pipe` connects ports in order, with `Net::pipe_all`'s fan-out — over a
+/// `pipe` connects ports in order, with its fan-out rule — over a
 /// grid of widths, including a source with no outputs, checked against the
 /// rule written out ([`net_rule::pipe_all`]) and by the figure it renders.
 ///
@@ -406,8 +404,7 @@ fn pipe_connects_ports_in_order_as_net_pipe_all() {
     }
 }
 
-/// `pipe_output` fans a node out over the global outputs exactly as
-/// `Net::pipe_output` does: output `c` reads port `c % width`. Mono feeds
+/// `pipe_output` fans a node out over the global outputs: output `c` reads port `c % width`. Mono feeds
 /// every channel; stereo into six **wraps** (L R L R L R), it does not clamp
 /// to the last channel; a wider node's extra ports go unused; a node with no
 /// outputs feeds silence. Checked structurally and by the figure it renders.
@@ -451,7 +448,7 @@ fn pipe_output_fans_out_as_net_does() {
 }
 
 /// `pipe_input` reads global input `c % inputs`, and silence with no global
-/// inputs — `Net::pipe_input`.
+/// inputs.
 ///
 /// Mutation: `Source::Global(c)` without the modulo → out of range → panics
 /// at 1 global input into 2 ports → fails. (Explicit `Zero` against an
@@ -477,7 +474,7 @@ fn pipe_input_wraps_as_net_does() {
     }
 }
 
-/// `chain` extends a series as `Net::chain` does: the first node reads the
+/// `chain` extends a series: the first node reads the
 /// global inputs, each later one reads what fed the global outputs
 /// (wrapping), and every one takes over the outputs. Across width changes,
 /// with and without global inputs, and to the bit in render.
@@ -539,7 +536,7 @@ fn chain_and_add_take_nodes() {
     assert_eq!(out, vec![vec![6.0; 10]]);
 }
 
-/// An out-of-range port is a panic at the call, as in `Net`, not a graph
+/// An out-of-range port is a panic at the call, not a graph
 /// that fails later.
 ///
 /// Mutation: drop the assert in `check_in` → the edge is written and

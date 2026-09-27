@@ -8,10 +8,12 @@ use super::{
     ParameterChanges, ScaleChanges, TransportInfo,
 };
 
-/// One process block's inputs: which block this is, the sample count, and all
-/// the per-block side-band (MIDI, automation, note-expression, VST3
-/// sequencer-context, transport). Audio itself travels in the shared
-/// `AudioSlab`; everything here rides the control socket alongside it.
+/// One process block's inputs, except the audio itself.
+///
+/// Carries which block this is, the sample count, and all the per-block
+/// side-band (MIDI, automation, note expression, VST3 sequencer context,
+/// transport). Audio travels in the shared `AudioSlab`; everything here rides
+/// the control socket alongside it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProcessAudioData {
     /// Which block this is. Monotonic per plugin instance from 1, and the index

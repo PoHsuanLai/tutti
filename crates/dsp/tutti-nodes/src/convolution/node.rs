@@ -1,13 +1,10 @@
 //! [`ConvolverNode`]: [`Convolver`] as a graph node, at any channel
 //! width.
 //!
-//! One node for every width. It used to be two — a 1-in/1-out `ConvolverNode`
-//! and a 2-in/2-out `StereoConvolverNode` — whose bodies were the same
-//! per-channel "convolve, gain, delay the dry, blend" step written once for
-//! one channel and once for a hardcoded stereo pair. The width is now a
-//! property of the value (how many convolvers it was built with), and the IR
-//! wiring that made the stereo type more than two mono ones survives as
-//! [`IrChannelConfig`], generalised to N channels.
+//! One node for every width: each channel runs the same "convolve, gain,
+//! delay the dry, blend" step. The width is a property of the value (how many
+//! convolvers it was built with), and which IR each channel hears is an
+//! [`IrChannelConfig`].
 //!
 //! The node composes a [`Convolver`] per channel (the DSP engine) with one
 //! [`WetDry`] parameter group (the user-facing knobs), shared across channels.
@@ -17,7 +14,7 @@
 //! [`IrChannelConfig::Mono`] every channel reads the one set, and a fork of
 //! the node ([`ParamNode::fork_fresh`]) reads the live node's, since nothing
 //! writes them after they are built. Each channel and each fork keeps only
-//! its own running state (design doc 013, Phase 4).
+//! its own running state.
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
@@ -118,7 +115,7 @@ pub enum IrChannelConfig {
 /// 1-channel node. Latency is one FFT block, the same on every channel,
 /// declared in its [`Shape`] for the **whole** output: each channel's dry
 /// half is delayed by the same block inside the node, so wet and dry leave
-/// aligned (design doc 013, D3). Its tail is the longest IR's ring-out.
+/// aligned. Its tail is the longest IR's ring-out.
 ///
 /// The wet/dry [`Mix`] and wet-path [`Amplitude`] are one [`WetDry`] block
 /// shared by every channel, read once per block.
@@ -134,10 +131,10 @@ pub enum IrChannelConfig {
 ///
 /// # The sample rate is not this node's to fix
 ///
-/// Unlike the other rate-dependent nodes in this crate, `prepare` fixes
-/// nothing here — it stores the rate and nothing else. The IRs are taken as bare `&[f32]` with no rate attached, so
-/// the node cannot tell what rate they were measured at and has nothing to
-/// resample from or to.
+/// Unlike the other rate-dependent nodes in this crate, `prepare` fixes nothing
+/// here — it stores the rate and nothing else. The IRs are taken as bare
+/// `&[f32]` with no rate attached, so the node cannot tell what rate they were
+/// measured at and has nothing to resample from or to.
 ///
 /// The consequence is the caller's to avoid: an IR captured at 44.1 kHz and
 /// convolved at 48 kHz plays back 8.8% short and correspondingly bright — a
@@ -622,11 +619,10 @@ mod tests {
         assert_eq!(node.mix().load(core::sync::atomic::Ordering::Acquire), 0.0);
     }
 
-    /// Fully dry is the input unchanged — but, since design doc 013's D3 fix,
-    /// unchanged *and* `latency_samples` late, because the node reports that
-    /// latency for its whole output and PDC compensates the whole output by it.
-    /// (This test used to assert the value on the very first tick, which pinned
-    /// the defect: a dry half that led the reported latency.)
+    /// Fully dry is the input unchanged *and* `latency_samples` late, because
+    /// the node reports that latency for its whole output and PDC compensates
+    /// the whole output by it. A dry half that led the reported latency would
+    /// arrive early.
     #[test]
     fn dry_mix_is_passthrough() {
         let ir = vec![1.0; 64];
@@ -733,10 +729,8 @@ mod golden {
         ]
     }
 
-    /// Every 131st output sample of each case, captured from this node after
-    /// the side-by-side suite proved it bit-identical to the `ConvolverNode` /
-    /// `StereoConvolverNode` pair it replaced (the commit before the pair was
-    /// deleted). They are the old pair's output, kept as numbers.
+    /// Every 131st output sample of each case, captured from a reference
+    /// render of the same mono and stereo convolutions and kept as numbers.
     const GOLDEN: [(&str, &[&[f32]]); 4] = [
         (
             "width1",
@@ -856,7 +850,7 @@ mod golden {
         ),
     ];
 
-    /// The merged node still renders what the pair it replaced rendered, at
+    /// The node renders the pinned reference output at
     /// width 1 and in all three stereo configurations, through `process`.
     ///
     /// The tolerance is relative (`1e-5` of the value, floored at `1e-5`) and

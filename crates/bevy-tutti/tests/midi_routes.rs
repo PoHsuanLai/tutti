@@ -1,7 +1,7 @@
-//! MIDI wiring declared in the ECS reaching the graph (doc 013, rewrite item
-//! 5): route rules wire the hardware input node's ports to their targets, a
-//! keyboard's `LiveMidiInput` inserts a queue node wired to its entity, and
-//! removing a node takes everything wired to it with it.
+//! MIDI wiring declared in the ECS reaching the graph: route rules wire the
+//! hardware input node's ports to their targets, a keyboard's `LiveMidiInput`
+//! inserts a queue node wired to its entity, and removing a node takes
+//! everything wired to it with it.
 //!
 //! - `routes` — a rule becomes event edges from the input node's ports.
 //! - `keyboard` — a `LiveMidiInput` reaches its entity, and goes with it.
@@ -258,7 +258,6 @@ mod keyboard {
 /// handle: the `On<Remove, AudioNode>` observer removes its node, on a
 /// removal or a despawn alike. (A crashed plugin's teardown takes this path;
 /// a synth stands in for it, since a crash is not producible on demand.)
-/// (Was `tests/plugin_crash_unwire.rs`.)
 mod unwire {
     use super::*;
 

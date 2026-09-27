@@ -14,7 +14,7 @@ pub struct OutputStream {
 }
 
 impl OutputStream {
-    /// Create an empty output stream.
+    /// Creates an empty output stream.
     pub fn new() -> Self {
         Self {
             buffer: Vec::new(),
@@ -32,12 +32,12 @@ impl OutputStream {
         &self.stream
     }
 
-    /// Borrow the bytes written so far.
+    /// Borrows the bytes written so far.
     pub fn data(&self) -> &[u8] {
         &self.buffer
     }
 
-    /// Consume the stream and return the accumulated bytes.
+    /// Consumes the stream and return the accumulated bytes.
     pub fn into_data(self) -> Vec<u8> {
         self.buffer
     }
@@ -69,7 +69,7 @@ pub struct InputStream<'a> {
 }
 
 impl<'a> InputStream<'a> {
-    /// Wrap an existing byte slice as a CLAP input stream.
+    /// Wraps an existing byte slice as a CLAP input stream.
     pub fn new(data: &'a [u8]) -> Self {
         Self {
             data,

@@ -70,14 +70,14 @@ impl NoteRotationAllocator {
         id
     }
 
-    /// Resolve the active id for `note` (for routing a per-note message that
+    /// Resolves the active id for `note` (for routing a per-note message that
     /// arrived by note number). `None` if no live note of that number.
     #[inline]
     pub fn resolve(&self, note: u8) -> Option<NoteId> {
         self.active.get(note as usize).copied().flatten()
     }
 
-    /// Clear the active id for `note` on note-off, returning the id that was
+    /// Clears the active id for `note` on note-off, returning the id that was
     /// freed (so the caller can release the matching voice/expression).
     #[inline]
     pub fn note_off(&mut self, note: u8) -> Option<NoteId> {
@@ -139,7 +139,7 @@ impl MpeChannelVoiceMap {
         }
     }
 
-    /// Allocate a member channel for `note`, stealing the oldest sounding
+    /// Allocates a member channel for `note`, stealing the oldest sounding
     /// voice when all member channels are occupied.
     pub fn assign_note(&mut self, note: u8) -> Option<u8> {
         if note >= 128 {
@@ -207,7 +207,7 @@ impl MpeChannelVoiceMap {
         }
     }
 
-    /// Clear the `channel`↔`note` binding made by [`bind_channel`](Self::bind_channel).
+    /// Clears the `channel`↔`note` binding made by [`bind_channel`](Self::bind_channel).
     pub fn unbind_channel(&mut self, channel: u8, note: u8) {
         if channel < 16 {
             self.channel_to_note[channel as usize] = None;

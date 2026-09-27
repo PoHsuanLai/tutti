@@ -126,7 +126,7 @@ impl<T: Copy + Default, const N: usize> PerNoteMap<T, N> {
         self.slot(id).map(|s| &self.vals[s])
     }
 
-    /// Insert or overwrite. Returns `false` if the map is full and `id` is new.
+    /// Inserts or overwrites. Returns `false` if the map is full and `id` is new.
     #[inline]
     pub fn insert(&mut self, id: NoteId, value: T) -> bool {
         match self.entry(id) {
@@ -138,7 +138,7 @@ impl<T: Copy + Default, const N: usize> PerNoteMap<T, N> {
         }
     }
 
-    /// Remove `id`, returning its value if present.
+    /// Removes `id`, returning its value if present.
     #[inline]
     pub fn remove(&mut self, id: NoteId) -> Option<T> {
         let slot = self.slot(id)?;

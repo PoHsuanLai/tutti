@@ -283,7 +283,7 @@ unsafe fn floating_editor_sequence(
     Ok(did_create)
 }
 
-/// Read `can_resize` + `get_resize_hints` off a created editor.
+/// Reads `can_resize` + `get_resize_hints` off a created editor.
 ///
 /// Split out of [`ClapActive::editor_capabilities`] for the same reason as
 /// `embed_editor_sequence`: the CLAP call order is the contract, and a free
@@ -374,7 +374,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Create the plugin editor and embed it into the given native `parent`
+    /// Creates the plugin editor and embed it into the given native `parent`
     /// window, returning the editor's initial size.
     ///
     /// Follows the CLAP embed sequence: `is_api_supported` → `create` →
@@ -385,6 +385,11 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::EditorError`] if the plugin does not expose a GUI, if the
     /// embedded window API is unsupported, or if `create`/`set_parent` fails.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         self.assert_main_thread();
         if self.extensions.gui.gui.is_null() {
@@ -419,7 +424,7 @@ impl ClapLoaded {
         Ok(outcome.size)
     }
 
-    /// Create the plugin's own top-level window, rather than embedding.
+    /// Creates the plugin's own top-level window, rather than embedding.
     ///
     /// The path for a plugin that answers `is_api_supported(api, true)` and not
     /// the embedded question — legal CLAP, and the only option on windowing
@@ -438,6 +443,11 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::EditorError`] if the plugin exposes no GUI, if it does not
     /// support a floating window, or if `create` fails.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn open_floating_editor(
         &mut self,
         transient: Option<WindowHandle>,
@@ -541,7 +551,7 @@ impl ClapLoaded {
         stated.then_some(is_floating)
     }
 
-    /// Query the plugin's resize/aspect capabilities.
+    /// Queries the plugin's resize/aspect capabilities.
     ///
     /// Requires a created editor, not merely a `gui` extension. The CLAP
     /// spec orders every other `clap_plugin_gui` call after `create()`, and plugins
@@ -552,9 +562,7 @@ impl ClapLoaded {
     /// without a prior call to clap_plugin_gui.create()
     /// ```
     ///
-    /// on every call. This guarded only on the extension pointer, so it violated
-    /// that on every pre-create query; the diagnostic went to a log nobody read.
-    /// `destroy_editor` already gates on `gui_created` — this was the outlier.
+    /// on every call made before `create()`.
     ///
     /// Defaults are the honest answer before create: nothing has been asked, so
     /// nothing is claimed. A caller wanting real hints must create the editor first,
@@ -569,12 +577,17 @@ impl ClapLoaded {
         unsafe { query_editor_capabilities(gui, self.plugin.as_ptr()) }
     }
 
-    /// Returns the snapped size the plugin applied.
+    /// Asks the plugin to resize its open editor to `requested`, returning the
+    /// size it applied after snapping.
     ///
-    /// `adjust_size` returning false means no usable size fits the request, and
-    /// leaves the out-params untouched — so it is fatal here, not "no snap to
-    /// apply". Reading it the other way forwarded the *unadjusted* size to
-    /// `set_size` in exactly the case the plugin had declined it.
+    /// When the plugin implements `adjust_size` the request is snapped first, so
+    /// the result may differ from `requested`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClapError::EditorError`] if the plugin has no GUI extension,
+    /// cannot adjust the request to a usable size, lacks `set_size`, or refuses
+    /// the adjusted size.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
         if self.extensions.gui.gui.is_null() {
             return Err(ClapError::EditorError("No GUI extension".to_string()));
@@ -601,7 +614,7 @@ impl ClapLoaded {
         })
     }
 
-    /// Consume the plugin's pending `gui.request_resize`, if any.
+    /// Consumes the plugin's pending `gui.request_resize`, if any.
     ///
     /// Draining: a second call with no new request answers `None`. The host
     /// is free to ignore or clamp the size — CLAP treats it as a request, not
@@ -629,7 +642,7 @@ impl ClapLoaded {
         })
     }
 
-    /// Hide and destroy the plugin editor, if one was opened. Idempotent.
+    /// Hides and destroys the plugin editor, if one was opened. Idempotent.
     ///
     /// `gui.hide` is skipped when the plugin reported
     /// `gui.closed(was_destroyed = true)`: that says its window is gone, and
@@ -639,6 +652,11 @@ impl ClapLoaded {
     /// `destroy` (step 14) with `create` (step 2), so it releases the gui
     /// resources `create` allocated rather than the window that just closed.
     /// Skipping it leaked those resources for the instance's lifetime.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn close_editor(&mut self) {
         self.assert_main_thread();
         if !self.flags.gui_created {
@@ -673,41 +691,41 @@ impl ClapLoaded {
         &self.host_state
     }
 
-    /// Consume and return the `restart_requested` flag.
+    /// Consumes and returns the `restart_requested` flag.
     pub fn poll_restart_requested(&self) -> bool {
         self.host_state
             .poll(&self.host_state.lifecycle.restart_requested)
     }
 
-    /// Consume and return the `process_requested` flag (the plugin wants
+    /// Consumes and returns the `process_requested` flag (the plugin wants
     /// `process()` to be called even if the host would otherwise skip it).
     pub fn poll_process_requested(&self) -> bool {
         self.host_state
             .poll(&self.host_state.lifecycle.process_requested)
     }
 
-    /// Consume and return the `callback_requested` flag — call
+    /// Consumes and returns the `callback_requested` flag — call
     /// [`Self::on_main_thread`] when this fires.
     pub fn poll_callback_requested(&self) -> bool {
         self.host_state
             .poll(&self.host_state.lifecycle.callback_requested)
     }
 
-    /// Consume and return the `latency_changed` flag; fetch the new value
+    /// Consumes and returns the `latency_changed` flag; fetch the new value
     /// with [`Self::get_latency`].
     pub fn poll_latency_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.processing.latency_changed)
     }
 
-    /// Consume and return the `tail_changed` flag; fetch the new value with
+    /// Consumes and returns the `tail_changed` flag; fetch the new value with
     /// [`Self::get_tail`].
     pub fn poll_tail_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.processing.tail_changed)
     }
 
-    /// Consume and return the pending parameter-rescan request as a decoded
+    /// Consumes and returns the pending parameter-rescan request as a decoded
     /// [`ParamRescan`], clearing both the request flag and the accumulated
     /// flags. `ParamRescan::requested` is `false` when nothing is pending.
     ///
@@ -726,21 +744,21 @@ impl ClapLoaded {
         ParamRescan::from_flags(requested, flags)
     }
 
-    /// Consume and return the `params_flush_requested` flag — call
+    /// Consumes and returns the `params_flush_requested` flag — call
     /// [`Self::flush_params`] or run a process block when this fires.
     pub fn poll_params_flush_requested(&self) -> bool {
         self.host_state
             .poll(&self.host_state.params.flush_requested)
     }
 
-    /// Consume and return the `state_dirty` flag — the plugin's state has
+    /// Consumes and returns the `state_dirty` flag — the plugin's state has
     /// diverged from the last save.
     pub fn poll_state_dirty(&self) -> bool {
         self.host_state
             .poll(&self.host_state.processing.state_dirty)
     }
 
-    /// Consume and return the scope of any pending `audio-ports.rescan`.
+    /// Consumes and returns the scope of any pending `audio-ports.rescan`.
     ///
     /// Replaces a bare `poll_audio_ports_changed() -> bool`. A bool cannot be
     /// acted on correctly: five of the six rescan flags require the plugin to
@@ -762,12 +780,12 @@ impl ClapLoaded {
         AudioPortsRescan::from_flags(requested, flags)
     }
 
-    /// Consume and return the `notes.ports_changed` flag.
+    /// Consumes and returns the `notes.ports_changed` flag.
     pub fn poll_note_ports_changed(&self) -> bool {
         self.host_state.poll(&self.host_state.notes.ports_changed)
     }
 
-    /// Consume and return the `gui.closed` flag.
+    /// Consumes and returns the `gui.closed` flag.
     pub fn poll_gui_closed(&self) -> bool {
         self.host_state.poll(&self.host_state.gui.closed)
     }
@@ -782,7 +800,7 @@ impl ClapLoaded {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Drain every `clap.log` line the plugin has emitted since the last drain,
+    /// Drains every `clap.log` line the plugin has emitted since the last drain,
     /// oldest first.
     ///
     /// Lines are also mirrored to stderr as they arrive; this is the
@@ -814,40 +832,33 @@ impl ClapLoaded {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Fire any expired timers the plugin registered via
+    /// Fires any expired timers the plugin registered via
     /// `CLAP_EXT_TIMER_SUPPORT`. Call periodically from the main thread.
     /// Returns the number of timer callbacks invoked.
     ///
-    /// `on_timer` is `[main-thread]` (`ext/timer-support.h`). This is one of
-    /// the two methods most likely to be reached from a UI framework's tick,
-    /// which need not run on the thread `HostState::new()` did — hence the
-    /// guard, which the ten sibling `[main-thread]` methods already carry.
+    /// `on_timer` is `[main-thread]` (`ext/timer-support.h`), and a UI
+    /// framework's tick need not run on the thread that loaded the plugin.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn poll_timers(&mut self) -> usize {
         self.poll_timers_at(std::time::Instant::now())
     }
 
-    /// [`poll_timers`](Self::poll_timers) with the clock supplied by the
-    /// caller, so a test can decide what time it is.
+    /// Like [`poll_timers`](Self::poll_timers), with the current time supplied
+    /// by the caller.
     ///
-    /// # Why the clock is a parameter
+    /// A timer is due once `period_ms` has elapsed since it last fired, and its
+    /// period restarts from the fire instant. An instant earlier than a timer's
+    /// last fire is treated as not due. Useful for driving timers
+    /// deterministically in tests; production code calls `poll_timers`.
     ///
-    /// Every timer test drove `period_ms = 0`, and
-    /// `take_due_timers` treats a zero period as always-due — so the
-    /// comparison that decides whether a timer has expired was never actually
-    /// evaluated against anything. Inverting it, or replacing it with `true`,
-    /// left the whole suite green: `0 >= 0` and `0 <= 0` are both true, and so
-    /// is "always fire". The tests pinned that the host *reaches* the plugin's
-    /// `on_timer` with the right id on the right thread, which is real, but
-    /// nothing pinned *when*.
+    /// # Panics
     ///
-    /// Reading `Instant::now()` inside the poll is what made a real period
-    /// untestable: covering a 10 ms timer honestly would mean sleeping, and a
-    /// sleeping test is a slow test that flakes under load — the harness defect
-    /// this batch exists to remove, reintroduced to fix a different one.
-    ///
-    /// So the clock is an argument. `poll_timers` supplies the real one and is
-    /// what production calls; a test hands in instants it chose and asserts on
-    /// exact fire counts with no wall clock involved at all.
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn poll_timers_at(&mut self, now: std::time::Instant) -> usize {
         self.assert_main_thread();
         if self.extensions.system.timer_support.is_null() {
@@ -873,23 +884,21 @@ impl ClapLoaded {
         fired
     }
 
-    /// Consume and return the `audio_ports.config_changed` flag.
+    /// Consumes and returns the `audio_ports.config_changed` flag.
     pub fn poll_audio_ports_config_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.audio_ports.config_changed)
     }
 
-    /// Consume and return the `remote_controls.changed` flag. Speculative —
-    /// gated behind `clap-extras`.
+    /// Consumes and returns the `remote_controls.changed` flag. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn poll_remote_controls_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.remote_controls.changed)
     }
 
-    /// Consume and return the page ID the plugin most recently suggested
-    /// the host switch to, or `None` if no suggestion is pending. Speculative —
-    /// gated behind `clap-extras`.
+    /// Consumes and returns the page ID the plugin most recently suggested
+    /// the host switch to, or `None` if no suggestion is pending. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn poll_suggested_remote_page(&self) -> Option<u32> {
         let val = self
@@ -904,8 +913,8 @@ impl ClapLoaded {
         }
     }
 
-    /// Drain all pending [`TransportRequest`]s the plugin has emitted, in
-    /// arrival order. Speculative — gated behind `clap-extras`.
+    /// Drains all pending [`TransportRequest`]s the plugin has emitted, in
+    /// arrival order. Requires the `clap-extras` feature.
     ///
     /// Main-thread only: this takes the lock that the plugin-side push
     /// deliberately only *tries*, so calling it from the audio thread
@@ -926,34 +935,38 @@ impl ClapLoaded {
         reqs.drain(..).collect()
     }
 
-    /// Consume and return the `notes.names_changed` flag.
+    /// Consumes and returns the `notes.names_changed` flag.
     pub fn poll_note_names_changed(&self) -> bool {
         self.host_state.poll(&self.host_state.notes.names_changed)
     }
 
-    /// Consume and return the `notes.voice_info_changed` flag.
+    /// Consumes and returns the `notes.voice_info_changed` flag.
     pub fn poll_voice_info_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.notes.voice_info_changed)
     }
 
-    /// Consume and return the `preset_loaded` flag. Speculative — gated behind
-    /// `clap-extras`.
+    /// Consumes and returns the `preset_loaded` flag. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn poll_preset_loaded(&self) -> bool {
         self.host_state
             .poll(&self.host_state.processing.preset_loaded)
     }
 
-    /// Invoke the plugin's `on_main_thread` callback — call when
+    /// Invokes the plugin's `on_main_thread` callback — call when
     /// [`Self::poll_callback_requested`] fires.
     ///
     /// The name states the contract (`plugin.h`'s `on_main_thread` is
     /// `[main-thread]`), and it is the other method an embedder is likely to
     /// drive from a UI tick, so it takes the same guard as
     /// [`Self::poll_timers`]. A plugin reached here off-thread runs whatever
-    /// deferred work it queued on the wrong thread, which is the class of bug
-    /// that shows up as a crash somewhere else entirely.
+    /// deferred work it queued on the wrong thread, which tends to show up as a
+    /// crash somewhere else entirely.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn on_main_thread(&mut self) -> &mut Self {
         self.assert_main_thread();
         let plugin_ref = unsafe { &*self.plugin.as_ptr() };
@@ -963,9 +976,9 @@ impl ClapLoaded {
         self
     }
 
-    /// Publish track metadata for the plugin to read via
+    /// Publishes track metadata for the plugin to read via
     /// `CLAP_EXT_TRACK_INFO`. Call [`Self::notify_track_info_changed`]
-    /// afterwards to ping the plugin. Speculative — gated behind `clap-extras`.
+    /// afterwards to ping the plugin. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn set_track_info(&self, info: TrackInfo) {
         if let Ok(mut guard) = self.host_state.resources.track_info.lock() {
@@ -973,8 +986,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Tell the plugin its track info has changed. Speculative — gated behind
-    /// `clap-extras`.
+    /// Tells the plugin its track info has changed. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn notify_track_info_changed(&self) {
         if self.extensions.system.track_info.is_null() {
@@ -986,8 +998,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Number of remote-control pages the plugin exposes. Speculative — gated
-    /// behind `clap-extras`.
+    /// Number of remote-control pages the plugin exposes. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn remote_controls_page_count(&self) -> usize {
         if self.extensions.params.remote_controls.is_null() {
@@ -1000,8 +1011,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Describe the remote-controls page at `index`. Speculative — gated behind
-    /// `clap-extras`.
+    /// Describes the remote-controls page at `index`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn get_remote_controls_page(&self, index: usize) -> Option<RemoteControlsPage> {
         if self.extensions.params.remote_controls.is_null() {
@@ -1022,9 +1032,9 @@ impl ClapLoaded {
         })
     }
 
-    /// Ask the plugin to supply the context-menu entries for `target`.
+    /// Asks the plugin to supply the context-menu entries for `target`.
     /// Returns `None` if the plugin does not implement context menus.
-    /// Speculative — gated behind `clap-extras`.
+    /// Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn context_menu_populate(&self, target: ContextMenuTarget) -> Option<Vec<ContextMenuItem>> {
         if self.extensions.gui.context_menu.is_null() {
@@ -1060,8 +1070,8 @@ impl ClapLoaded {
         }
     }
 
-    /// Invoke a context-menu action the plugin previously reported via
-    /// [`Self::context_menu_populate`]. Speculative — gated behind `clap-extras`.
+    /// Invokes a context-menu action the plugin previously reported via
+    /// [`Self::context_menu_populate`]. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn context_menu_perform(&self, target: ContextMenuTarget, action_id: u32) -> bool {
         if self.extensions.gui.context_menu.is_null() {
@@ -1086,8 +1096,7 @@ impl ClapLoaded {
     }
 
     /// Number of trigger "parameters" (stateless momentary actions) the
-    /// plugin exposes via the draft `CLAP_EXT_TRIGGERS`. Speculative — gated
-    /// behind `clap-extras`.
+    /// plugin exposes via the draft `CLAP_EXT_TRIGGERS`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn trigger_count(&self) -> usize {
         if self.extensions.system.triggers.is_null() {
@@ -1100,7 +1109,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Describe the trigger at `index`. Speculative — gated behind `clap-extras`.
+    /// Describes the trigger at `index`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn get_trigger_info(&self, index: usize) -> Option<TriggerInfo> {
         if self.extensions.system.triggers.is_null() {
@@ -1120,8 +1129,8 @@ impl ClapLoaded {
         })
     }
 
-    /// Run a task that the plugin enqueued via `CLAP_EXT_THREAD_POOL`.
-    /// Call from a worker thread. Speculative — gated behind `clap-extras`.
+    /// Runs a task that the plugin enqueued via `CLAP_EXT_THREAD_POOL`.
+    /// Call from a worker thread. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn thread_pool_exec(&self, task_index: u32) {
         if self.extensions.system.thread_pool.is_null() {
@@ -1133,8 +1142,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Tell the plugin its tuning table set has changed. Speculative — gated
-    /// behind `clap-extras`.
+    /// Tells the plugin its tuning table set has changed. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn notify_tuning_changed(&self) {
         if self.extensions.system.tuning.is_null() {
@@ -1146,9 +1154,8 @@ impl ClapLoaded {
         }
     }
 
-    /// Fire `on_fd` for every POSIX FD the plugin has registered.
-    /// Returns the number of callbacks invoked. Speculative — gated behind
-    /// `clap-extras`.
+    /// Fires `on_fd` for every POSIX FD the plugin has registered.
+    /// Returns the number of callbacks invoked. Requires the `clap-extras` feature.
     #[cfg(all(unix, feature = "clap-extras"))]
     pub fn poll_posix_fds(&mut self) -> usize {
         if self.extensions.system.posix_fd_support.is_null() {
@@ -1362,7 +1369,7 @@ mod embed_sequence_tests {
         plugin
     }
 
-    /// Drive the embed sequence against `api` and return the call log.
+    /// Drives the embed sequence against `api` and return the call log.
     fn run_embed(api: &std::ffi::CStr) -> Vec<&'static str> {
         let mut order: Vec<&'static str> = Vec::new();
         let plugin = stub_plugin(&mut order);
@@ -1435,8 +1442,8 @@ mod embed_sequence_tests {
 
     /// `uikit` carries the identical annotation (`ext/gui.h:59-60`) and has no
     /// clap-sys constant, so it is matched by literal. Asserted separately
-    /// because a fix written against the `CLAP_WINDOW_API_COCOA` constant alone
-    /// leaves it out.
+    /// because a check written against the `CLAP_WINDOW_API_COCOA` constant
+    /// alone leaves it out.
     #[test]
     fn embed_sequence_skips_set_scale_on_uikit() {
         let order = run_embed(c"uikit");
@@ -1490,12 +1497,12 @@ mod embed_sequence_tests {
     /// `gui_created` gate in `editor_capabilities` is what keeps it from happening
     /// before that.
     ///
-    /// The bug was a missing precondition, not a wrong call sequence: the vtable
-    /// calls below are correct *once `create()` has run*. CLAP orders every
-    /// `clap_plugin_gui` method after `create`, and plugins check — TAL-Reverb-4
-    /// printed `[clap-plugin HOST-MISBEHAVING] clap_plugin_gui.can_resize() was
-    /// called without a prior call to clap_plugin_gui.create()` on every query,
-    /// because the guard tested only the extension pointer.
+    /// The hazard is a missing precondition, not a wrong call sequence: the
+    /// vtable calls below are correct *once `create()` has run*. CLAP orders
+    /// every `clap_plugin_gui` method after `create`, and plugins check —
+    /// TAL-Reverb-4 prints `[clap-plugin HOST-MISBEHAVING]
+    /// clap_plugin_gui.can_resize() was called without a prior call to
+    /// clap_plugin_gui.create()` if the guard tests only the extension pointer.
     #[test]
     fn capability_query_reads_both_gui_fns() {
         let mut order: Vec<&'static str> = Vec::new();
@@ -1584,8 +1591,8 @@ mod timer_due_tests {
     /// The headline case, and the one no previous test could express: a 10 ms
     /// timer ticked at 5, 10, 15 and 20 ms fires at 10 and 20 only.
     ///
-    /// The old suite drove `period_ms = 0`, where "always due", `>=` and `<=`
-    /// are indistinguishable. Here they are not: an inverted comparison fires
+    /// With `period_ms = 0`, "always due", `>=` and `<=` are
+    /// indistinguishable. Here they are not: an inverted comparison fires
     /// at 5 and nowhere else, and an always-due implementation fires four
     /// times.
     ///
@@ -1710,8 +1717,8 @@ mod timer_due_tests {
     /// An instant before `last_fire` is not due, and must not panic.
     ///
     /// `Instant::duration_since` panics in debug builds when the argument is
-    /// later than the receiver. Now that the clock is a caller's value rather
-    /// than always `Instant::now()`, that is reachable.
+    /// later than the receiver. Since the clock is a caller's value rather than
+    /// always `Instant::now()`, that is reachable.
     #[test]
     fn a_clock_that_went_backwards_is_not_due_and_does_not_panic() {
         let start = Instant::now();

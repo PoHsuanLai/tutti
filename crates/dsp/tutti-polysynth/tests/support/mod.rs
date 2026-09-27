@@ -4,9 +4,7 @@
 //! `tutti_graph::contract::Direct` (buffers built once, so the allocation
 //! gates can run it).
 //!
-//! What replaced the synth's own `queue_midi` + `AudioUnit::process` when
-//! the synth became a graph node only: the node plays its event input and
-//! nothing else.
+//! The node plays only its event input, so this is how a test feeds it MIDI.
 
 #![allow(dead_code)] // each test binary uses its own subset
 
@@ -18,11 +16,11 @@ use tutti_graph::{Event, Offset};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_polysynth::PolySynth;
 
-/// The block length a [`Hand`] renders: 64 frames, the `AudioUnit` era's.
+/// The block length a [`Hand`] renders: 64 frames.
 pub const BLOCK: usize = 64;
 
 /// A [`PolySynth`] driven by hand. Derefs to the synth, so its own methods
-/// (`set_volume`, `active_voice_count`, …) read as before.
+/// (`set_volume`, `active_voice_count`, …) are reachable.
 pub struct Hand {
     direct: Direct<PolySynth>,
     queued: Vec<Event>,

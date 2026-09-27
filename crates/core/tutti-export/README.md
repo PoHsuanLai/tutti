@@ -1,9 +1,10 @@
 # tutti-export
 
 **The OFFLINE edge**: render a Tutti graph to a file, or to buffers, faster (or
-slower) than real time.
+slower) than real time. The `tutti` facade re-exports this crate as
+`tutti::export` (feature `export`).
 
-## What this is
+## What is here
 
 The graph is *pulled* to a known frame count that `RenderConfig` fixes up front,
 then resampled, dithered and encoded on the way out. Three entry points, and the
@@ -30,9 +31,9 @@ below. Encoding is WAV, FLAC, AIFF or OGG Vorbis, each behind its own feature.
   the engine's `Config`/`State`/step analysis vocabulary is;
   `render_normalized_to_file` measures with it. The edge is acyclic —
   `tutti-analysis` does not depend on this crate.
-- **Threads.** Both entry points are synchronous and `Send`. A host that wants a
-  render off the main thread already owns a task pool that is better at it than
-  a raw `std::thread` would be.
+- **Threads.** Every entry point is synchronous and runs on the calling
+  thread. A host that wants a render off the main thread runs it on its own
+  task pool.
 - **A buffering strategy.** Every format streams, because every codec library
   used here supports incremental encoding. There is no buffered-versus-streaming
   mode to pick.
@@ -48,9 +49,7 @@ render.
 The graph is `tutti_graph`'s, built with its `GraphBuilder` and
 prepared at the render's rate (`RenderGraph::prepare`): a graph prepared at
 another rate is refused rather than re-rated. A host exporting its live graph
-forks it instead, with `RenderGraph::fork`. That graph is the only one
-an export renders (fundsp's `Net` stopped being a source in doc 013 Phase 3
-PR 14, and was deleted in Phase 5).
+forks it instead, with `RenderGraph::fork`.
 
 ```rust
 use tutti_core::{FrozenClock, Hz, SampleRate};

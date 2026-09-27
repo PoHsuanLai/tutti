@@ -18,8 +18,7 @@ links = "tutti_vst3_probe"
 # `tests/support/gui_lifecycle.rs` is `include!`d by two targets, not a target
 # itself, but cargo's auto-discovery walks `tests/` and would compile it as one
 # — and it opens with `//!`, so that fails with E0753 before anything runs.
-# Latent until now: it only bit under `--features conformance`, which nothing in
-# a workspace test run used to enable. Every real target is declared below.
+# Every real target is therefore declared below.
 autotests = false
 
 [lints]

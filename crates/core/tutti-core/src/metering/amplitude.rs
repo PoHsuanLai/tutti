@@ -3,12 +3,10 @@
 use crate::{AtomicBool, AtomicF32, Ordering};
 use tutti_types::{Amplitude, StereoPlanes};
 
-/// One meter reading: peak and RMS for a stereo pair.
-///
-/// A struct rather than a `(f32, f32, f32, f32)` for the reason `measure`
-/// takes a [`StereoPlanes`] instead of two loose slices — four same-typed
-/// positional values are one careless edit away from swapping a peak with an
-/// RMS, and no compiler catches it. Naming them does.
+/// One meter reading: peak and RMS for a stereo pair, as linear
+/// [`Amplitude`]s.
+// A struct rather than a `(f32, f32, f32, f32)`: four same-typed positional
+// values are one careless edit away from swapping a peak with an RMS.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MeterReading {
     /// Largest absolute sample on the left channel over the measured block.
@@ -42,7 +40,7 @@ impl Default for AtomicAmplitude {
 }
 
 impl AtomicAmplitude {
-    /// A silent cell — all four levels at zero.
+    /// Creates a silent cell — all four levels at zero.
     pub fn new() -> Self {
         Self {
             peak_left: AtomicF32::new(0.0),
@@ -67,7 +65,7 @@ impl AtomicAmplitude {
         }
     }
 
-    /// Publish all four levels. RT-safe: four stores, no allocation.
+    /// Publishes all four levels. RT-safe: four stores, no allocation.
     #[inline]
     pub fn set(&self, reading: MeterReading) {
         self.peak_left
@@ -80,27 +78,21 @@ impl AtomicAmplitude {
             .store(reading.rms_right.get(), Ordering::Release);
     }
 
-    /// Measure peak + RMS over one deinterleaved stereo buffer and publish.
+    /// Measures peak and RMS over one deinterleaved stereo buffer and
+    /// publishes them.
     ///
-    /// RT-safe: reads two slices, does four folds, stores four atomics.
-    ///
-    /// Takes a [`StereoPlanes`] rather than two loose slices because the RMS
-    /// divisor is the pair's *shared* frame count. Two loose slices let a
-    /// caller derive `frames` from the left and never check the right, so a
-    /// short right channel divides its sum of squares by the wrong count and
-    /// publishes a quietly wrong level. The pairing cannot be formed unless the
-    /// two agree, which makes that unrepresentable rather than merely
-    /// unreached.
-    ///
-    /// The four folds below read the planes directly rather than through an
-    /// accessor per sample — they autovectorize, and the newtype's inner-loop
-    /// rule says destructure at the top and index raw below.
+    /// RT-safe: reads two slices, does four folds, stores four atomics. An
+    /// empty buffer publishes nothing. Takes a [`StereoPlanes`] rather than
+    /// two loose slices because the RMS divisor is the pair's *shared* frame
+    /// count, which the pairing guarantees.
     #[inline]
     pub fn measure(&self, planes: StereoPlanes<'_>) {
         let frames = planes.frames();
         if frames == 0 {
             return;
         }
+        // Read the planes directly rather than through a per-sample accessor,
+        // so the folds autovectorize.
         let (left, right) = (planes.left(), planes.right());
         let peak_l = left.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         let peak_r = right.iter().fold(0.0f32, |m, s| m.max(s.abs()));
@@ -130,19 +122,19 @@ pub struct MasterMeter {
 }
 
 impl MasterMeter {
-    /// A silent, **disabled** meter. Nothing is measured until
+    /// Creates a silent, **disabled** meter. Nothing is measured until
     /// [`enable`](Self::enable) is called.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Start measuring. The audio callback begins deinterleaving its buffer on
+    /// Starts measuring. The audio callback begins deinterleaving its buffer on
     /// the next block.
     pub fn enable(&self) {
         self.enabled.store(true, Ordering::Release);
     }
 
-    /// Stop measuring, skipping the deinterleave entirely. The last reading
+    /// Stops measuring, skipping the deinterleave entirely. The last reading
     /// stays readable and goes stale.
     pub fn disable(&self) {
         self.enabled.store(false, Ordering::Release);

@@ -1,20 +1,26 @@
 # bevy-tutti
 
-Bevy plugin for the [Tutti](https://github.com/PoHsuanLai/tutti) audio engine. Exposes Tutti's real-time audio graph, transport, MIDI, plugin hosting, and DSP as Bevy ECS components, resources, and systems.
+Bevy plugin for the [Tutti](https://github.com/PoHsuanLai/tutti) audio engine.
 
-## What is this?
+Tutti is a real-time, lock-free audio engine for DAWs and interactive audio: a
+DSP graph, a transport, MIDI 2.0, sample playback, plugin hosting
+(VST2/VST3/CLAP/AU), recording and offline export. `bevy-tutti` runs it inside a
+Bevy `App`: `TuttiPlugin` opens the output device and starts the audio callback,
+each engine subsystem becomes a Bevy resource, and graph nodes are entities.
+Wiring, parameters, MIDI routes and modulation are *declared* as components and
+resources; reconcile systems write what changed into the graph and publish it to
+the audio thread once per frame.
 
-[Tutti](https://github.com/PoHsuanLai/tutti) is a real-time, lock-free audio engine built in Rust for DAW and interactive audio applications. It handles synthesis, sample playback, MIDI, plugin hosting (VST3/VST2/CLAP), recording, automation, spatial audio, and offline export.
-
-**bevy-tutti** bridges Tutti into the Bevy ECS. Instead of managing audio lifetimes and callbacks manually, you spawn entities with trigger components and let systems handle the rest. The plugin also syncs engine state (transport, metering, device info) into Bevy resources every frame, so your UI and game logic can read audio state without touching the audio thread.
+Use this crate for a Bevy app. For a host without Bevy (a CLI, a server, an
+offline renderer), the `tutti` crate exposes the same engine with no ECS.
 
 ## Quick start
 
 ```rust
 use bevy::prelude::*;
-use bevy_tutti::*;
+use bevy_tutti::prelude::*;
 use tutti_core::Hz;
-use tutti_nodes::testing::Osc;
+use tutti_nodes::testing::Osc; // a test tone; needs tutti-nodes' `testing` feature
 
 fn main() {
     App::new()
@@ -25,377 +31,148 @@ fn main() {
 }
 
 fn setup(mut commands: Commands) {
-    // A node is spawned unwired; the resource declares what feeds the master.
-    let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
+    // A node arrives unwired; the resource declares what feeds the output.
+    let osc = commands.spawn_audio_node(ForkByClone(Osc::sine(Hz(440.0)))).id();
     commands.insert_resource(MasterSources::mono_from(osc));
 }
 ```
 
-## Plugin configuration
+`TuttiPlugin { disabled: true, ..Default::default() }` opens no device, for
+tests and headless tools; insert `AudioGraphRes::headless(inputs, outputs)`
+yourself in that case.
 
-```rust
-// Default: stereo output, system default device
-TuttiPlugin::default()
+## How it works
 
-// Custom I/O
-TuttiPlugin { inputs: 2, outputs: 2, ..Default::default() }
-
-// The graph is the tutti-graph runtime (design doc 013); there is no
-// runtime to choose. (`graph_backend: GraphBackend::Net | Native` was removed
-// with fundsp's `Net` arm.)
-               // select device by index
-                         // enable MIDI subsystem
-
-// MPE (requires `mpe` feature, automatically enables MIDI)
-TuttiPlugin::default()
-
-// Resource-only mode (no ECS systems, just TuttiEngineResource)
-TuttiPlugin::default()
-```
+- **Nodes are entities.** `Commands::spawn_audio_node(node)` adds a node to the
+  graph and spawns an entity carrying `AudioNode`. Despawning the entity removes
+  the node. `crossfade_audio_node` swaps the node behind an entity without
+  breaking its wiring.
+- **Wiring is declared.** `PortSources` on an entity names what feeds each of
+  its input ports; the `MasterSources` resource names what feeds each output
+  channel; `EventSources` names what feeds a node's event (MIDI) input. Nothing
+  calls `connect`.
+- **Parameters are components.** `AudioParam<U, P>` holds one parameter value
+  (unit `U`, parameter address `P`); register each type once with
+  `App::add_audio_param`.
+- **One commit per frame.** The reconcile systems run in `Update` in the
+  `GraphReconcileSystems` sets (`Spawn`, `Params`, `Despawn`, `Compensate`,
+  `Commit`). Direct edits through `AudioGraphRes` set `GraphDirty`, and
+  `commit_graph` publishes the frame's edits together.
+- **Latency is compensated by the graph.** `GraphLatency` and
+  `ChannelCompensation` report the plan the audio thread runs.
 
 ## Direct engine access
 
-Every ECS system is optional. Each subsystem of the engine is its own
-Bevy resource — take only what you need:
+Every subsystem is its own resource, so a system takes only what it needs:
 
 ```rust
 use bevy::prelude::*;
 use bevy_tutti::prelude::*;
-use tutti_core::Hz;
-use tutti_nodes::testing::Osc;
-use tutti_core::transport::MotionEvent;
 
-fn control(
-    transport: Res<TransportRes>,
-    mut graph: ResMut<AudioGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
-) {
+fn control(transport: Res<TransportRes>, meter: Res<MeteringRes>) {
     transport.settings.set_tempo(128.0);
     let _ = transport.motion.try_send(MotionEvent::Play);
-    let _node = graph.insert(Osc::sine(Hz(440.0)));
-    // Staged: `commit_graph` publishes the frame's edits once.
-    dirty.0 = true;
+    let _ = meter;
 }
 ```
 
-## Node entities
+| Resource | Feature | What it is |
+|----------|---------|------------|
+| `AudioGraphRes` | always | The editable DSP graph |
+| `AudioConfig` | always | Sample rate and channel layout |
+| `TransportRes` | always | Play, stop, seek, tempo and loop |
+| `MetronomeRes` | always | The metronome click state |
+| `MeteringRes` | always | Master peak and RMS meters |
+| `AudioTapRes` | always | A copy of the master output for analysis or recording |
+| `MasterSources` | always | What feeds each output channel |
+| `AudioDeviceState`, `AudioEngineState` | always | The output device and whether the engine is running |
+| `GraphLatency`, `ChannelCompensation` | always | Latency compensation figures |
+| `MidiEngineNodes`, `MpeModeRes` | `midi` | The engine's MIDI nodes and the input's MPE mode |
+| `DiskStreamerRes` | `sampler` | The disk-streaming engine |
+| `PluginsRes` | `plugin` | The scanned plugin catalog |
 
-An entity carrying `AudioNode` *is* a node in the graph. The reconcile
-pipeline (`GraphReconcileSystems::{Spawn, Params, Despawn, Compensate, Commit}`)
-translates component edits into graph operations and coalesces a single
-commit per frame.
+## Subsystems
 
-```rust
-use bevy::prelude::*;
-use bevy_tutti::prelude::*;
-use tutti_core::Hz;
-use tutti_nodes::testing::Osc;
-
-fn setup(mut commands: Commands) {
-    // `spawn_audio_node` adds an *unwired* node — it renders nothing until
-    // something declares it as a source.
-    let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
-    commands.insert_resource(MasterSources::from(osc));
-}
-```
-
-Despawn the entity to remove the underlying graph node.
-
-### Components
-
-Every component is a thin wrapper over a tutti capability that already exists.
-
-| Component | Feature | What it binds |
-|-----------|---------|---------------|
-| `AudioNode(NodeKey)` | always | Identity for "this entity owns a graph node." |
-| `AudioParam<U, P>` | always | One scalar param: unit `U`, address `P`. Registered with `App::add_audio_param`. |
-| `PortSources` | always | What feeds this entity's input ports. Index *i* is port *i*. |
-| `AudioPump<S>` | always | A running `AudioIn` → `AudioOut` transfer; `S` is the sample type, the width is runtime. Registered with `App::add_audio_pump`. |
-| `ModParamRange` | `modulation` | Depth/range for a modulated param. |
-| `PendingSoundFontUnit` | `synth` | "Build a SoundFont unit off-thread, then bind it." |
-| `MidiRouteRule` | `midi` | Which hardware-input MIDI channel reaches which entities (wired to the input node's per-channel ports). |
-| `MidiSourceInstall` | `midi` | A clip for an entity: played by a clip node wired to its event input. |
-| `LiveMidiInput` → `LiveMidi` | `midi` | A keyboard for an entity: a queue node wired to it, and its sender. |
-| `EventSources` | always | What feeds this entity's event input (a clip node, a plugin's MIDI out). |
-| `PluginEmitter`, `PluginEditorOpen` | `plugin` | A hosted plugin instance and its editor window. |
-| `ModParamsHandle`, `PluginShadow` | `modulation`, `plugin` | Controls captured from a unit as its node is inserted (`CapturedControls`): its modulatable params, a hosted plugin's meter and latency. Read instead of the graph. |
-
-The DAW parameter components (`Volume`, `Pan`, `Mute`, …) are **not** here: they
-are app vocabulary and live app-side. `AudioParam<U, P>` is the generic the
-engine adapter keeps.
-
-### Helpers
-
-| Helper | Where | What it does |
-|--------|-------|--------------|
-| `Commands::spawn_audio_node(unit)` | always | Add `unit` to the graph + spawn an entity with `AudioNode`. The node arrives unwired. |
-| `crossfade_audio_node(commands, entity, new_unit)` | always | `AudioGraphRes::replace` for entity-as-node; the same `AudioNode` survives, so declared wiring keeps resolving. |
-
-## ECS resources
-
-Inserted by `TuttiPlugin` once the engine builds. Each is a newtype over an
-engine value — the wrapper adds no behaviour, it just gives a Bevy system a way
-to reach it.
-
-| Resource | Feature | Description |
-|----------|---------|-------------|
-| `AudioGraphRes` | always | The editable DSP graph, behind methods (`insert`, `remove`, `set_source`, `set_output_source`, `replace`, `set_param`, …); `headless(inputs, outputs)` builds one with no device. No `Deref`, so the mutate/commit boundary stays visible at call sites. |
-| `AudioConfig` | always | Sample rate and channel layout, captured at build |
-| `TransportRes` | always | Lock-free transport handle (play/stop/seek/tempo/loop) |
-| `MetronomeRes` | always | Shared `ClickState` the click node reads |
-| `MeteringRes` | always | Lock-free master peak/RMS meter |
-| `AudioTapRes` | always | Post-master frame tap for analysis. Closed at build; `open()` hands back a consumer the caller owns |
-| `MasterSources` | always | What feeds each global output channel |
-| `AudioDeviceState` | always | Output devices, current device, running status |
-| `ChannelCompensation` | always | Per-channel PDC pre-roll for out-of-graph sources |
-| `MidiEngineNodes` | `midi` | The engine's MIDI nodes' entities: hardware input, clock, hardware out |
-| `MpeModeRes`, `ClockMasterRes` | `midi` | The input's MPE mode; the clock master and the hardware out it is drained from |
-| `DiskStreamerRes` | `sampler` | The disk-streaming engine; owns the butler thread |
-| `PluginsRes` | `plugin` | The scanned plugin catalog (inserted lazily) |
-
-## Trigger components
-
-Spawn an entity with a trigger component to perform an action. The corresponding system processes `Added<T>` queries, does the work, removes the trigger, and inserts a result component.
-
-### Audio playback
-
-Clip playback goes through `tutti-sampler`'s `VoicePool`: build a `Voice` (in-RAM
-`MemorySource` or disk-streaming `DiskVoice`) and send it with
-`VoiceCommand::Add`, then drive it with the other `VoiceCommand` variants. A
-voice bound to a transport derives its read position from the playhead, so it
-stays sample-aligned with the timeline.
-
-Disk streaming is driven through `DiskStreamerRes`: `commands()` issues
-stream/seek/loop operations and `status()` builds a `DiskVoice` to wire into the
-graph. Neither is wrapped in ECS vocabulary — both speak in channel indices and
-timeline placements, which is clip-scheduling policy a host owns.
-
-There is no spawn-a-trigger one-shot API — an earlier `PlayAudio` component
-existed but had no consumer and was removed.
-
-### SoundFont instruments
-
-Requires `soundfont` feature.
+### MIDI (`midi`)
 
 ```rust
-let sf2 = asset_server.load("sounds/GeneralMidi.sf2");
-commands.spawn(PlaySoundFont { source: sf2, preset: 0, channel: 0 });
-```
-
-### Audio plugins (VST3/VST2/CLAP)
-
-Requires `plugin` feature. Format is auto-detected from file extension.
-
-```rust
-commands.spawn(PluginRequest::new("path/to/Reverb.vst3"));
-```
-
-After processing: `PluginRequest` becomes a private `PendingPlugin`, and on completion `AudioNode` + `PluginEmitter` are inserted. Use the `PluginHandle` for parameter control, editor management, and state save/load.
-
-### MIDI
-
-Requires `midi` feature.
-
-MIDI reaches a node over event edges: insert synths with `spawn_audio_node`
-and declare what plays them.
-
-```rust
-// Hardware channel 1 plays the synth.
+// Hardware channel 1 plays the synth entity.
 commands.spawn(MidiRouteRule::for_channel(MidiChannel::FIRST).to(synth));
-
 // A clip plays it too.
 commands.spawn(MidiSourceInstall::new(synth, events));
-
-// And a keyboard: once wired, the entity's `LiveMidi` sends notes.
+// And a keyboard: once wired, the entity's `LiveMidi` component sends notes.
 commands.entity(synth).insert(LiveMidiInput);
-// ...later, in a system:
-live.note_on(MidiChannel::FIRST, 60, 100);
 ```
 
-`MidiInputEvent` is emitted as a Bevy message for incoming hardware MIDI (requires `midi-hardware`).
+`midi-hardware` adds OS MIDI ports and device hot-plug.
 
-### Recording, and audio I/O generally
+### Recording and audio I/O (`audio-io`)
 
-Recording is one case of moving frames from an `AudioIn` to an `AudioOut`, which
-is what `AudioPump` does. Register the sample type once, then spawn a pump. The
-channel count is not part of the registration — endpoints report it at runtime
-as a `ChannelLayout` — so one call covers stereo, 5.1, and whatever width a
-device turns out to have:
+`AudioPump` moves frames from any `AudioIn` to any `AudioOut` on its own thread,
+and finalizes the sink exactly once however the pump ends; `PumpFinished`
+reports the result.
 
 ```rust
-app.add_audio_pump::<f32>();   // idempotent: a host and a library may both call it
+app.add_audio_pump::<f32>();
 
-// Mic -> WAV. The mic is opened *at* the graph rate (a device that cannot run
-// there is an error, not a stream that drifts). `matching_sink` then builds the
-// sink from the mic's own rate and width, which is the one place both halves
-// are in scope — hand-rolling the `WavOut` is how you get a file that plays at
-// the wrong speed. `MicIn::open_with_monitor` also hands back a monitor node;
-// see below.
 let mic = MicIn::open(None, config.sample_rate)?;
 let wav = mic.matching_sink(&path, BitDepth::Float32)?;
-// `Samples(1024)` is the pump's scratch buffer in frames, allocated once up front.
 let pump = commands.spawn(AudioPump::start(mic, wav, Samples(1024))).id();
-
-// Later:
-audio_pumps.get(pump)?.stop();
 ```
 
-The master output records the same way — `AudioTapRes` is the engine's
-lock-free copy of it, and `TapIn` adapts the consumer end into an `AudioIn`:
+`TapIn::new(tap.open()?)` records the master output the same way.
+`MicIn::open_with_monitor` also returns a `MicMonitorNode` to hear the input
+through the graph. `Recorder` is the same loop without ECS.
 
-```rust
-// One consumer at a time: `open` returns `Err(TapBusy)` rather than displacing
-// an analysis reader that got there first.
-let src = TapIn::new(tap.open()?);
-let wav = WavOut::create(&path, config.sample_rate, ChannelLayout::STEREO, BitDepth::Float32)?;
-commands.spawn(AudioPump::start(src, wav, Samples(1024)));
-```
+### Sample playback (`sampler`), SoundFonts (`soundfont`), synths (`synth`)
 
-Nothing can check that a sink's rate matches its source — `AudioIn` carries no
-rate — so for a tap it comes from `AudioConfig`, not from the source.
+`sampler` registers a `.wav` asset loader and adds `DiskStreamerRes` for disk
+streaming; `memory_voice` and `InsertVoice` put a voice on an entity.
+`soundfont` loads `.sf2` assets and plays them with `PlaySoundFont`. `synth`
+re-exports the polyphonic synth.
 
-There is no policy argument for what an empty poll means: that is
-`AudioIn::ON_EMPTY`, a property of the source type. A `MicIn` is `Starved` (an
-empty ring means the callback has not pushed yet, so the pump parks and
-retries); a decoded file is `EndOfStream` (the pump finishes and finalizes).
-Passing it per call would let a caller state it wrong, and treating a mic as
-finite would end a recording milliseconds in with no error.
+### Plugin hosting (`plugin`)
 
-The sink is finalized **exactly once on every path out** — an explicit `stop()`,
-the source ending itself, or the entity being despawned mid-pump. That matters
-because `AudioOut::finalize` consumes `self` and can fail; for a WAV, missing it
-leaves the header unpatched and the file unreadable. `PumpFinished` carries the
-result, so a host can react to a sink that failed to close.
+Plugins run out of process. Spawn a `PluginRequest` with a plugin id and sample
+rate; when the plugin loads, the entity gets `AudioNode` and `PluginEmitter`.
+`PluginsRes` scans and lists installed plugins; `SetEditorVisible` opens and
+closes a plugin's editor window. Enable a format with `vst2`, `vst3`, `clap` or
+`au`.
 
-The pump runs on its own thread, not a Bevy task pool: it never completes, and
-`AsyncComputeTaskPool` caps at four threads, so live pumps would starve every
-other async job.
+### Export (`export`)
 
-`AudioPump` is the ECS-shaped surface. The same loop without an ECS is
-`tutti_io::Recorder`, which takes the same `(source, sink)` pair and hands back a
-handle you `stop()` — reach for it in a non-Bevy host, or in a Bevy one for work
-whose lifetime you want to own yourself.
+Spawn an `ExportRequest`; `ExportPlugin` renders a copy of the live graph off
+the main thread while the live graph keeps playing, and reports `ExportDone` or
+an `ExportError`.
 
-#### Monitoring while recording
+### Modulation (`modulation`) and spatial audio (`spatial`)
 
-`MicIn::open_with_monitor` returns a `MicMonitorNode` alongside the source. The
-two drain **independent rings** fed by the same callback — a deep one for
-recording, a shallow one for monitoring — so polling one never steals frames
-from the other.
+`modulation` adds LFO sources (`ModSource`) and modulation routes (`ModRoute`)
+as entities; add `TuttiModulationPlugin`. `spatial` re-exports `tutti-spatial`'s
+VBAP panner, and `hrtf` its binaural panner, spawned like any other node.
 
-The node is a plain `tutti_graph::Node`; add it and declare what it feeds, like any node:
+## Feature flags
 
-```rust
-// The graph's rate: the monitor node does not resample.
-let (mic, monitor) = MicIn::open_with_monitor(None, config.sample_rate)?;
-let (node, _) = graph.insert(monitor);
-commands.spawn(node);   // then name it in MasterSources or a PortSources
-```
-
-A monitor node that is never wired fills its ~10 ms ring and then silently drops
-every frame — there is no error and no counter, so an unwired monitor looks
-exactly like a working one.
-
-### Export
-
-Requires the `export` feature. An export is an **entity**: spawn an
-[`ExportRequest`] and `ExportPlugin` drives it to completion off the main
-thread.
-
-It renders a **fork** of the live graph: every node
-isolated, rebound onto the request's offline timeline and reset, a hosted
-plugin as a fresh instance loaded with the live one's state, a clip node
-playing its clip on the render's timeline, a disk-streamed voice reading its
-file itself. The live graph
-keeps playing untouched. A node that cannot be copied (a mic monitor)
-refuses the export by entity and `Name`, as does a plugin fork that crashes
-mid-render (`ExportError`).
-
-The underlying engine call is also available directly:
-
-```rust,ignore
-// A `RenderGraph` (a fork, or a graph built for the render), by value, and
-// the clock is mandatory — forgetting the transport is a compile error rather
-// than a silently silent render.
-let written = tutti_export::render_to_file(graph, &config, &clock, &path)?;
-```
-
-### DSP nodes
-
-Spawn the node itself; its params are `AudioParam` components on the entity,
-and you insert only the ones you drive.
-
-```rust
-// DSP nodes come from `tutti-nodes`, spawned like any other graph
-// node (the filters, the dynamics, the distortion, the strip, the delays,
-// the LFO, the convolver) through `spawn_audio_node`. There are no
-// marker components and no per-node ECS wrappers.
-use tutti_nodes::{CompressorNode, GateNode, LfoNode, LfoShape};
-
-commands.spawn_audio_node(LfoNode::new(LfoShape::Sine).with_frequency(Hz(2.0)));
-
-// A param is an `AudioParam` on the entity, addressed by `UnitParam`; it
-// writes through the node's `ParamSet`.
-commands
-    .spawn_audio_node(CompressorNode::stereo(-18.0, 3.0, 0.01, 0.15).with_makeup(3.0))
-    .insert(AudioParam::<Db, { UnitParam::Threshold as u16 }>::new(Db(-24.0)));
-
-commands.spawn_audio_node(GateNode::stereo(-25.0, 0.002, 0.01, 0.2));
-```
-
-### Spatial audio
-
-Requires `spatial` feature.
-
-```rust
-// `tutti-spatial` is re-exported whole. The VBAP and binaural panners are
-// graph nodes (the binaural one with the `hrtf` feature): spawned with
-// `spawn_audio_node`, their controls land on the entity as `NodeControls`.
-use bevy_tutti::spatial::{VbapPannerControls, VbapPannerNode};
-
-let panner = VbapPannerNode::for_layout(layout)?;
-panner.set_position(30.0, 0.0);
-commands.spawn_audio_node(panner);
-// Later, from a system:
-fn orbit(q: Query<&NodeControls<VbapPannerControls>>) {
-    for c in &q {
-        c.0.set_position(c.0.azimuth().get() + 1.0, 0.0);
-    }
-}
-```
-
-## Features
-
-All features are opt-in and aligned with Tutti's feature flags.
+No feature is on by default; the default build is the graph, transport,
+metering, device handling and `AudioPump`.
 
 | Feature | What it enables |
-|---------|----------------|
-| `sampler` | Clip playback: the `.wav` asset loader and `DiskStreamerRes` |
-| `audio-io` | The live I/O edge (`bevy_tutti::io`): mic capture, `WavOut`, `Recorder` |
-| `midi` | MIDI routing, sequencing, clock, MPE — no OS I/O |
-| `midi-hardware` | The OS layer on top of `midi`: device connect/poll, CoreMIDI virtual ports |
-| `synth` | The software synths |
-| `soundfont` | SoundFont (.sf2) asset loading and playback (implies `synth`, `midi`) |
-| `plugin` | VST3/VST2/CLAP/AU hosting: editor windows, catalog scan, crash detection |
-| `vst2` / `vst3` / `clap` / `au` | Individual plugin format support (each implies `plugin`) |
-| `modulation` | Control-rate modulation: LFO sources and mod-matrix edges as entities |
-| `spatial` | Spatial audio: VBAP speaker panning and surround mix assembly (`tutti-spatial`) |
-| `hrtf` | The binaural panner (`HrtfBinauralNode`), on top of `spatial` |
-| `dsp` | The VBAP/binaural panner. Dynamics are always compiled |
-| `convolution` | FFT convolution reverb (partitioned IR) |
-| `export` | The `tutti-export` dependency (no ECS surface — see above) |
-| `wav` / `flac` / `mp3` / `ogg` | Individual audio format decoders (`tutti-io`'s, reached through `sampler` or `audio-io`) |
-| `full` | Everything above except the opt-in plugin formats |
-
-`AudioPump`, the graph, transport, metering and PDC are always available — no
-feature gate. The pump in particular needs neither `sampler` nor `audio-io`: it
-speaks `AudioIn` / `AudioOut`, which live in `tutti-core`. `audio-io` is what
-gives you a `WavOut` to point it at.
-
-`sampler` and `audio-io` are independent in both directions — recording a take
-needs no clip playback, and playing a clip needs no microphone. They were one
-flag until the live I/O edge moved to its own crate; a host wanting only mic→WAV
-was compiling the butler streaming thread to get it.
+|---------|-----------------|
+| `full` | Everything below except the plugin formats and `convolution` |
+| `midi` | MIDI routing, clip sequencing, MIDI files, clock output and MPE, with no OS MIDI I/O |
+| `midi-hardware` | OS MIDI ports, device hot-plug and MIDI 2.0 endpoints (implies `midi`) |
+| `synth` | The polyphonic synth |
+| `soundfont` | SoundFont (`.sf2`) assets and playback (implies `midi`) |
+| `sampler` | Clip playback, disk streaming and the `.wav` asset loader (implies `wav`) |
+| `audio-io` | Microphone capture, WAV writing and recording |
+| `wav` / `flac` / `mp3` / `ogg` | Audio file decoders |
+| `modulation` | LFOs and a modulation matrix as ECS entities |
+| `spatial` | VBAP panning and surround mixing |
+| `hrtf` | The HRTF binaural panner (implies `spatial`) |
+| `convolution` | The FFT convolution reverb node |
+| `export` | Offline rendering to files or buffers |
+| `plugin` | Out-of-process plugin hosting, editor windows and catalog scans (implies `midi`) |
+| `vst2` / `vst3` / `clap` / `au` | Each plugin format (implies `plugin`) |
 
 ## Bevy compatibility
 

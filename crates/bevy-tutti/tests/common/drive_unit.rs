@@ -2,11 +2,8 @@
 //!
 //! The capture and value-path suites pin what happens to a node bound
 //! through `spawn_audio_node` / `AudioGraphRes::insert`: its controls are
-//! captured before it goes in, and a route reaches its own cell. Their
-//! fixture was `DistortionNode`, then a test-local `AudioUnit` resolved
-//! through the `ModTargetRegistry`'s type registration; both paths became
-//! one when `Legacy` went (doc 013, "Legacy deleted"). It is now what a host
-//! writes for a node of its own: a `ParamNode` registered with
+//! captured before it goes in, and a route reaches its own cell. The fixture
+//! is what a host writes for a node of its own: a `ParamNode` registered with
 //! [`param_graph_node!`](bevy_tutti::param_graph_node), which is the path
 //! these suites pin.
 

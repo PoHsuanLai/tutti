@@ -1,4 +1,4 @@
-//! The in-process VST2 plugin as a graph node (doc 013, rewrite item 5): MIDI
+//! The in-process VST2 plugin as a graph node: MIDI
 //! arrives on an event input, on its frame, and the plugin's MIDI-out leaves
 //! on an event output (a plugin that declared `Features::MIDI_OUT`), each
 //! event on the frame the plugin gave it.
@@ -47,8 +47,7 @@ impl Node for InProcessVst2Client {
         let n_in = (self.metadata.num_inputs.count() as usize).min(MAX_CHANNELS);
         let n_out = (self.metadata.num_outputs.count() as usize).min(MAX_CHANNELS);
         // No clamp and no size check: `prepare` sized the scratch to the
-        // prepared `MaxBlock`, and a block is never longer (doc 013 defect
-        // D4; the `AudioUnit` path it replaced was capped at 64 frames).
+        // prepared `MaxBlock`, and a block is never longer.
         // The event input's MIDI, in its (sorted) order; past the inline
         // capacity it is dropped rather than spill (allocate).
         self.midi.clear();
@@ -141,18 +140,16 @@ fn sort_by_offset(events: &mut crate::protocol::MidiEventVec) {
 
 /// The plugin, inserted as a graph node. No controls (its per-block inputs
 /// are installed through it before it goes in), and **no fork source**: a
-/// clone shares the one in-process plugin instance, so a fork would render
-/// through the live plugin's state beside the live graph. A fork needs a
-/// second instance loaded from this one's state.
-///
-/// The subprocess `PluginClient` has that (`host::node::fork`); this node
-/// does not yet. It would be a second `AEffect` from the same library *in
-/// this process* — one more image-global the two instances could share —
-/// and a plugin whose state is not a chunk (`programsAreChunks` clear)
-/// saves only its current program's parameters, so what "the state" is
-/// differs per plugin in a way the subprocess formats do not. Until that is
-/// built and tested against the VST2 probe, a graph holding an in-process
-/// VST2 plugin is refused a fork (`ForkError::NotForkable`).
+/// graph holding an in-process VST2 plugin is refused a fork
+/// (`ForkError::NotForkable`), so it cannot be rendered offline through
+/// `Editor::fork`. Use the out-of-process
+/// [`PluginClient`](crate::handles::PluginClient) when you need that.
+//
+// A clone shares the one in-process instance, so a fork would render through
+// the live plugin's state. Forking would need a second `AEffect` from the same
+// library in this process (one more image-global the two could share), and a
+// plugin whose state is not a chunk (`programsAreChunks` clear) saves only its
+// current program's parameters.
 impl IntoNode for InProcessVst2Client {
     type Controls = ();
 

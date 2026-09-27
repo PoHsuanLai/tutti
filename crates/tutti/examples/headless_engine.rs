@@ -1,12 +1,8 @@
 //! **Open a device and start the audio thread, with no ECS.**
 //!
-//! This bootstrap exists nowhere else in the repository. The only other one
-//! is `bevy_tutti::engine::build`, which is 388 lines of Bevy systems
-//! inserting resources into an `App`. Every *part* below is public and
-//! Bevy-free already; nothing assembled them, so a headless host had to read
-//! those 388 lines and subtract the ECS to learn the order.
-//!
-//! That order is the whole content of this file, and it is not arbitrary:
+//! Every part below is public and Bevy-free; `bevy-tutti` assembles the same
+//! parts inside Bevy systems. The order is the whole content of this file,
+//! and it is not arbitrary:
 //!
 //! 1. **Open the device first.** It reports the rate, and the graph must be
 //!    built at that rate — not the other way round. Building a 48 kHz graph
@@ -24,8 +20,7 @@
 //! **Keep the editor.** It is how the host edits the graph from then on;
 //! here it lives in `main`, and a real host stores it beside the driver.
 //!
-//! Deliberately not wrapped in a `TuttiEngine::builder()`. A builder here is
-//! precisely the artifact `4b5bd2fd` deleted — see `src/lib.rs`.
+//! Deliberately not wrapped in a builder: the `tutti` crate holds no code.
 //!
 //! Run: `cargo run -p tutti --features device --example headless_engine`
 //! (needs a real output device; it plays a 440 Hz tone for two seconds).
@@ -82,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_millis(100));
         // What a host's status line would poll. `is_running` goes false on a
-        // disconnect, which is the half that used to be silently true.
+        // disconnect.
         if !driver.is_running() {
             if let Some(fault) = faults.last() {
                 eprintln!("audio stopped: {} ({:?})", fault.message, fault.kind);

@@ -40,7 +40,8 @@ use tutti_core::transport::{ClickState, Timeline, Transport};
 pub struct TransportRes(pub Transport);
 
 impl TransportRes {
-    /// A [`Timeline`] handle for an audio-thread source to ask the beat with.
+    /// Returns a [`Timeline`] handle for an audio-thread source to ask the beat
+    /// with.
     ///
     /// **This is the seam between the two rates**, and getting it right is the
     /// difference between sample-accurate scheduling and framerate-quantised
@@ -55,11 +56,6 @@ impl TransportRes {
     /// [`Timeline`] reads — the beat, the tempo, the rolling flag — lives behind
     /// an `Arc` over an atomic, so what the source holds is another reference to
     /// the live transport, not a copy of this frame's values.
-    ///
-    /// (`Transport::sample_rate` is a plain `f64` and *does* copy. No `Timeline`
-    /// method reads it and nothing mutates it after construction, so it cannot
-    /// drift — but a future `set_sample_rate`, or a `Timeline` method that reads
-    /// it, would make that a live bug rather than a footnote.)
     ///
     /// ```rust
     /// use bevy_app::prelude::*;
@@ -92,8 +88,8 @@ impl TransportRes {
         Arc::new(self.0.clone())
     }
 
-    /// A [`TransportState`](tutti_core::transport::TransportState) handle —
-    /// [`timeline`](Self::timeline) plus the
+    /// Returns a [`TransportState`](tutti_core::transport::TransportState)
+    /// handle: [`timeline`](Self::timeline) plus the
     /// live-session facts a plain timeline has no vocabulary for: whether the
     /// transport is recording, its loop region, and free-running stream time.
     ///
@@ -137,9 +133,7 @@ impl std::ops::Deref for MetronomeRes {
 }
 
 /// The entity of the node [`build_into`](crate::engine::build_into) puts in
-/// the graph before any host system runs: the metronome. (It named the beat
-/// clock too, `clock`, until every beat reader read its block's `Env` and the
-/// clock was deleted with `Legacy`.)
+/// the graph before any host system runs: the metronome.
 ///
 /// Not a second way to name a node — the *only* way to name this one. Every
 /// other node is spawned by the host, which keeps the `Entity`
@@ -157,11 +151,8 @@ impl std::ops::Deref for MetronomeRes {
 pub struct EngineNodes {
     /// The [`ClickNode`](tutti_core::ClickNode) — the metronome.
     ///
-    /// Its **outputs are deliberately unwired**: where the click lands is the
-    /// host's declaration, like every other source. A `pipe_output` here would
-    /// read like "mix the click into master" but overwrite every global output
-    /// edge, so the first soundfont to load would silently disconnect the
-    /// metronome.
+    /// Its **outputs are unwired**: where the click lands is the host's
+    /// declaration, like every other source.
     ///
     /// Declare it with [`MasterSources`](crate::graph::MasterSources), or feed
     /// it into a mixer with [`PortSources`](crate::graph::PortSources).

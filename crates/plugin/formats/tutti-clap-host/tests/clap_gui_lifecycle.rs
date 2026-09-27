@@ -2,12 +2,12 @@
 //! `clap_plugin_gui` half of `src/instance/polling.rs`, driven by a real plugin
 //! across the real CLAP FFI.
 //!
-//! The bug this exists to prevent: `has_editor()` was `!gui.is_null()` — "is
-//! there a gui vtable?" rather than "can an editor actually be embedded?".
-//! Those differ for two legal plugin shapes, a floating-only plugin and one
-//! whose `create` is absent, both of which have a non-null pointer. The answer
-//! feeds `Features::EDITOR`, so the DAW rendered an "open editor" button that
-//! could not open one.
+//! The central property: `has_editor()` answers "can an editor actually be
+//! embedded?", not "is there a gui vtable?" (`!gui.is_null()`). Those differ
+//! for two legal plugin shapes, a floating-only plugin and one whose `create`
+//! is absent, both of which have a non-null pointer. The answer feeds
+//! `Features::EDITOR`, so getting it wrong renders an "open editor" button that
+//! cannot open one.
 //!
 //! Nothing here opens a window: the probe's `clap.gui` is pure bookkeeping and
 //! never dereferences the parent handle, so this suite runs headless on every
@@ -213,8 +213,8 @@ fn has_editor_true_for_embeddable_plugin() {
     );
 }
 
-/// A plugin with no `clap.gui` at all. The pointer check gets this right, so
-/// this is the case the fix must not regress.
+/// A plugin with no `clap.gui` at all. Even a bare pointer check gets this
+/// right, so it must keep holding.
 #[test]
 fn has_editor_false_when_extension_absent() {
     let probe = Probe::acquire(GuiMode::Absent);
@@ -228,7 +228,7 @@ fn has_editor_false_when_extension_absent() {
 
 /// **The floating-only case.** `is_api_supported(api, is_floating=false)` is
 /// false, so there is no embedded editor to open — but the vtable pointer is
-/// non-null, so the old implementation said `true`.
+/// non-null, so a pointer check would say `true`.
 ///
 /// The `open_editor` assertion is what makes the first one meaningful: the two
 /// must not disagree.
@@ -251,7 +251,7 @@ fn has_editor_false_for_floating_only_plugin() {
 
     // The other half of the distinction: "cannot embed" is not "has no editor".
     // Without this the test above is satisfied by a host that reports every
-    // floating-only plugin as having no UI at all, which is the bug C-12 names.
+    // floating-only plugin as having no UI at all.
     assert!(
         loaded.has_floating_editor(),
         "the same plugin *does* have a floating editor — a host that only ever \
@@ -401,7 +401,7 @@ fn open_editor_runs_the_spec_embed_sequence() {
     );
 }
 
-/// **C-4.** `ext/gui.h:56-57` on `cocoa`, and `:59-60` on `uikit`: "uses
+/// `ext/gui.h:56-57` on `cocoa`, and `:59-60` on `uikit`: "uses
 /// logical size, don't call clap_plugin_gui->set_scale()". `set_scale` itself
 /// repeats it at `:141`. A logical-pixel api has already folded the display's
 /// backing-scale factor into every coordinate, so a host that sets it too
@@ -533,12 +533,12 @@ fn close_editor_destroys_exactly_once() {
 /// clap_plugin_gui->destroy() to acknowledge the gui destruction."* The spec's
 /// own lifecycle (`gui.h:20-34`) pairs `destroy()` (step 14) with `create()`
 /// (step 2), so it releases the gui resources `create` allocated — not the
-/// window that just closed. The host read `was_destroyed` as "the plugin
-/// already ran destroy for you" and skipped it, leaking those resources for the
+/// window that just closed. Reading `was_destroyed` as "the plugin already ran
+/// destroy for you" and skipping it would leak those resources for the
 /// instance's lifetime.
 ///
-/// `hide` is the one call that *is* skipped: it acts on a window, and there is
-/// no longer one.
+/// `hide` is the one call that *is* skipped: it acts on a window, and the
+/// window is gone.
 #[test]
 fn close_editor_destroys_after_plugin_window_was_destroyed() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -588,8 +588,8 @@ fn close_editor_destroys_after_plugin_window_was_destroyed() {
 /// The same, but the plugin reports the destruction from **inside `show`** —
 /// while the host is still within `open_editor`.
 ///
-/// The host used to clear its window-destroyed latch *after*
-/// `embed_editor_sequence` returned, so this callback was wiped by the very
+/// A host that cleared its window-destroyed latch *after*
+/// `embed_editor_sequence` returned would wipe this callback with the very
 /// call that carried it. Only a callback raised inside the sequence
 /// distinguishes clearing before it from clearing after; the out-of-band test
 /// above lands after the clear either way.
@@ -639,7 +639,7 @@ fn close_editor_destroys_after_window_was_destroyed_during_show() {
 /// it the full `hide` **and** `destroy`.
 ///
 /// The `hide` assertion is what keeps the two halves apart: `destroy` alone is
-/// now common to both, so a host that skipped the `was_destroyed` branch
+/// common to both, so a host that skipped the `was_destroyed` branch
 /// entirely would satisfy every other assertion here.
 #[test]
 fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
@@ -783,15 +783,15 @@ fn resize_editor_forwards_the_adjusted_size() {
 }
 
 /// `adjust_size` returning false means the plugin could not compute a usable
-/// size ("Returns true if the plugin could adjust the given size"). The host
-/// read that as "no snap to apply" and forwarded the *unadjusted* request to
-/// `set_size` — pushing the raw size through in the one case where the plugin
+/// size ("Returns true if the plugin could adjust the given size"). Reading
+/// that as "no snap to apply" and forwarding the *unadjusted* request to
+/// `set_size` would push the raw size through in the one case where the plugin
 /// said it cannot give a working size, with out-params never promised to have
 /// been written.
 ///
-/// The probe's fixed-size mode accepts only its own dimensions, so the old
-/// behaviour is observable: it reached `set_size`, was refused there, and
-/// produced an error naming the wrong call.
+/// The probe's fixed-size mode accepts only its own dimensions, so that
+/// behaviour is observable: it would reach `set_size`, be refused there, and
+/// produce an error naming the wrong call.
 #[test]
 fn resize_editor_fails_when_plugin_cannot_adjust() {
     let probe = Probe::acquire(GuiMode::FixedSize);
@@ -936,9 +936,9 @@ fn suggested_title(cap: &GuiCapture) -> String {
 
 /// A floating-only plugin opens, in the order `ext/gui.h:20-27` gives.
 ///
-/// The whole point of C-12: before this, the only path into a CLAP editor was
-/// the embed sequence, which such a plugin refuses at its first gate. It could
-/// therefore never show a UI, and `Features::EDITOR` said it had none.
+/// Without this path the only way into a CLAP editor would be the embed
+/// sequence, which such a plugin refuses at its first gate, so it could never
+/// show a UI.
 #[test]
 fn open_floating_editor_runs_the_spec_sequence() {
     let probe = Probe::acquire(GuiMode::FloatingOnly);
@@ -1111,7 +1111,7 @@ fn close_editor_tears_down_a_floating_editor() {
 ///
 /// The negative that keeps [`has_floating_editor`] honest: it must consult the
 /// vtable rather than answer from the extension pointer, which is the same
-/// mistake `has_editor` used to make in the other direction.
+/// mistake a pointer-based `has_editor` would make in the other direction.
 #[test]
 fn a_plugin_without_create_has_no_floating_editor() {
     let probe = Probe::acquire(GuiMode::NoCreate);

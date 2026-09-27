@@ -1,7 +1,7 @@
 //! The one transport the crate's tests share, and the block driver they
 //! drive a node under it with.
 //!
-//! A node reads the transport from its block's `Env` (doc 013), so a test
+//! A node reads the transport from its block's `Env`, so a test
 //! holds a [`MockTransport`] — a playhead it moves between blocks, as a host
 //! moves one — and hands each block the `Env` it describes
 //! ([`MockTransport::env`], or [`block`] / [`play`], which drive a node
@@ -51,12 +51,12 @@ impl MockTransport {
         t
     }
 
-    /// Start or stop the transport where it stands — the beat does not move.
+    /// Starts or stops the transport where it stands — the beat does not move.
     pub fn set_rolling(&self, rolling: bool) {
         self.playing.store(rolling, Ordering::Relaxed);
     }
 
-    /// Jump the playhead — a seek or a scrub, seen by the next block.
+    /// Jumps the playhead — a seek or a scrub, seen by the next block.
     pub fn set_beat(&self, beat: Beat) {
         self.beat.store(beat.get().to_bits(), Ordering::Relaxed);
     }
@@ -81,7 +81,7 @@ impl MockTransport {
         Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
     }
 
-    /// Move by `samples` at `sample_rate`, the way a block-driven transport does
+    /// Moves by `samples` at `sample_rate`, the way a block-driven transport does
     /// after a block is rendered. Negative `samples` rewinds, so a test can
     /// replay a span twice — which is why it is a signed `i64` and not
     /// [`Samples`] (an unsigned count that cannot carry the rewind).

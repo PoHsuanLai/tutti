@@ -1,5 +1,5 @@
-//! One scene, rendered through the adapter and pinned to what fundsp's `Net`
-//! rendered for it (design doc 013, Phase 3).
+//! One scene, rendered through the adapter and pinned to independent
+//! reference renders.
 //!
 //! The scene is built through the ECS — `spawn_audio_node`, `PortSources`,
 //! `MasterSources`, `AudioParam`, `crossfade_audio_node`,
@@ -9,12 +9,7 @@
 //!
 //! # The oracles
 //!
-//! This file was `net_parity.rs`: from PR 11 to PR 13 an A/B between the
-//! adapter's two runtimes, then (PR 13 to PR 15) the adapter against
-//! `NetEra`, the same units in a fundsp `Net` wired, compensated and
-//! committed as the adapter's `Net` arm did, compared bit for bit. PR 15
-//! retired that last `Net` oracle; each comparison is pinned to what it
-//! stood for, with oracles that share no code with the adapter:
+//! Each comparison uses an oracle that shares no code with the adapter:
 //!
 //! - **PDC**: the compensated scene's dry left channel is the uncompensated
 //!   scene's, delayed by the limiter's lookahead to the frame; its latent
@@ -29,9 +24,8 @@
 //!   last, between the two throughout, the waveshaper being monotonic), and
 //!   ends on the new filter as if it had run from the fade's start: a
 //!   hand-wired graph whose filter hears silence until then.
-//! - **The `Net`'s samples**, as a golden digest of the scene, Linux/glibc
-//!   only: recorded from the adapter on the commit that retired `NetEra`,
-//!   which rendered the `Net`'s samples bit for bit (asserted there). The
+//! - **A golden digest** of the scene, Linux/glibc only: recorded when the
+//!   render was checked against an independent reference implementation. The
 //!   filter's coefficients, the waveshaper and the limiter call `tan`,
 //!   `tanh` and `exp`, libm quality-of-implementation that differs in the
 //!   last ulp between C runtimes, so it is asserted where it was recorded.
@@ -196,11 +190,8 @@ const GOLDEN_HERE: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
 /// **The compensated scene**: its dry left channel is the uncompensated
 /// scene's, delayed by the limiter's lookahead to the frame (silence
 /// first); its latent right channel is the saw through the limiter,
-/// hand-wired; and (Linux/glibc) the whole render is the `Net` era's,
+/// hand-wired; and (Linux/glibc) the whole render matches the golden digest,
 /// bit for bit.
-///
-/// Until doc 013 PR 15 the oracle was `NetEra`, the same units in a `Net`
-/// compensated by a spliced `PdcDelay`.
 ///
 /// Mutations (run; each fails this test):
 /// - the forwarding `Boxed::latency` returning `None` → the editor never
@@ -254,12 +245,7 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
 
 /// **A block length that is not a multiple of 64 changes nothing for
 /// per-sample nodes**: an oscillator, a filter and a waveshaper render the
-/// same samples in 100-frame blocks as in 64-frame blocks, to the bit. (It
-/// pinned the `Legacy` adapter's chunking of each 100-frame block from its
-/// own start, until the nodes were ported; the property is the nodes' now.)
-///
-/// Until doc 013 PR 15 the oracle was `NetEra` in 64-frame chunks of device
-/// time; the scene in 64-frame blocks is that grid.
+/// same samples in 100-frame blocks as in 64-frame blocks, to the bit.
 ///
 /// Mutation (run): `AudioSide::render` rendering whole blocks only (`while
 /// done + block <= frames`) leaves the last 50 frames at zero and fails.
@@ -282,12 +268,10 @@ fn unaligned_blocks_render_per_sample_units_identically() {
 /// **A param write lands on the first frame of the next block**: written
 /// between two 256-frame blocks, the render from there on is the scene built
 /// with the new drive (the waveshaper holds no state), and before it the
-/// scene with the old one. That is the frame `Net` landed it on (it drained
-/// its queue at the start of its next 64-frame `process` call), which
-/// `NetEra` pinned until doc 013 PR 15.
+/// scene with the old one.
 ///
-/// Mutation (run): `GraphRuntime::set_param` sending the setting with the node
-/// address `Net` needed (`unit_param::node_setting`) instead of the leaf's →
+/// Mutation (run): `GraphRuntime::set_param` sending the setting with the
+/// enclosing node's address instead of the leaf's →
 /// the waveshaper ignores it and the render after the write stays the old
 /// scene's.
 #[test]
@@ -364,9 +348,6 @@ impl Node for From {
 ///   the law written out here: `x = (k + 1) / 241`, `g_in = x³(6x² − 15x +
 ///   10)`, `g_out = 1 − g_in`. Within 1e-6: the blend and `tanh` are
 ///   computed in `f64` here, in `f32` by the graph.
-///
-/// Until doc 013 PR 15 the oracle was `NetEra`'s `Net::crossfade` on the same
-/// law, bit for bit before and after, within two fade steps inside.
 ///
 /// Mutations (run): `Editor::replace_or_swap` not setting the fade when the
 /// shape fits (a hard swap) → the fade's frames are the new filter's →
@@ -445,10 +426,7 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
 /// and the plan carries the delay (it renders the delayed dry channel:
 /// [`a_compensated_scene_delays_its_dry_channel_by_the_lookahead`]).
 ///
-/// Until PR 13 this also pinned the other half, on the adapter's `Net` arm:
-/// there the channel read a `PdcDelay` the adapter had spliced in. That arm
-/// is gone; the half that stays is what tells a compiled compensation from a
-/// spliced one.
+/// This is what tells a compiled compensation from a spliced one.
 ///
 /// Mutation (run): `GraphRuntime::lift` answering `Silence` for a node source
 /// → the channel no longer reads the waveshaper; the rebuild's own

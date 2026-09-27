@@ -1,7 +1,7 @@
 //! The runtime's audio side: [`Executor`], and the commit box that carries an
 //! edit to it over a queue and the retired state back.
 //!
-//! Doc 013 §4. Units exist exactly once, in the executor's store. An edit
+//! Units exist exactly once, in the executor's store. An edit
 //! travels as a **commit box** holding the new plan and only the units that
 //! change. [`Editor::new`](crate::Editor::new) builds the editor and the
 //! executor as a pair joined by two preallocated single-producer,
@@ -41,12 +41,12 @@
 //!
 //! Applying runs under the [`AudioThread::enter`] marker, so a unit or a
 //! commit dropped there panics in a debug build. The marker's coverage of
-//! applying is **partial** in this phase: applying *allocates* (it builds the
-//! new arena and delay state) and frees transient allocations of its own —
-//! the key maps it builds to carry state across, a ring's old buffer on a
-//! retune, the flush lists — which are plain `Vec`s and `BTreeMap`s the
-//! marker does not see. Moving that work to the control side, so applying
-//! only swaps pointers, is the remaining Phase 2 work. Every type crossing
+//! applying is **partial**: applying *allocates* (it builds the new arena and
+//! delay state) and frees transient allocations of its own — the key maps it
+//! builds to carry state across, a ring's previous buffer on a retune, the
+//! flush lists — which are plain `Vec`s and `BTreeMap`s the marker does not
+//! see. Moving that work to the control side, so applying only swaps
+//! pointers, is not done yet. Every type crossing
 //! the queue is already `Send` (units, commits) or `Send + Sync` (the plan).
 //!
 //! # The serial executor
@@ -60,8 +60,7 @@
 //! `NodeRec` (`plan.rs`): store index, generation, arrival, tail, the port
 //! slots, the buffer borrow requests **already sorted**, and a `Form` that
 //! picks the borrow. The verifier checks each record against its op, so a
-//! call does one indexed load where it used to do six, and
-//! never sorts. The commonest shapes — at most one audio input and one
+//! call does one indexed load and never sorts. The commonest shapes — at most one audio input and one
 //! audio output, or the stereo shapes 0→2, 1→2, 2→1 and 2→2, all with no
 //! event ports — borrow their slots directly, and their whole call path is
 //! specialised so the per-port loops fold away. An
@@ -587,10 +586,24 @@ impl State {
     }
 }
 
-/// The serial plan executor. Built with its [`Editor`](crate::Editor) by
+/// The audio-thread half of a graph: runs the current [`Plan`] one block at a
+/// time.
+///
+/// Built with its [`Editor`](crate::Editor) by
 /// [`Editor::new`](crate::Editor::new): the two share one [`Prepare`] and
 /// one queue pair, and the executor applies that editor's commits, in order,
-/// at the start of each block.
+/// at the start of each block. It owns every running unit; the editor never
+/// touches one.
+///
+/// Call [`process`](Self::process) from the audio callback. With no commit
+/// queued it does not allocate, lock or block; applying a commit does
+/// allocate (it builds the new arena and delay state), and everything a
+/// commit replaces is sent back to the editor to be freed on the control
+/// thread. The executor walks the plan's ops serially, hands every node the
+/// **whole block** and its sorted events — it never splits a block at an
+/// event, a loop wrap or a transport change — and skips a node whose inputs
+/// are silent when its last [`Status`] (and, for a node without event
+/// inputs, its declared tail) says it has nothing more to produce.
 pub struct Executor {
     prepare: Prepare,
     event_cap: usize,
@@ -716,14 +729,15 @@ impl Executor {
         self.commands.cancelled()
     }
 
-    /// Apply every queued commit, in the order the editor sent them, and send
-    /// each box back. [`process`](Self::process) calls this first; it is
+    /// Applies every queued commit, in the order the editor sent them, and
+    /// sends each box back. [`process`](Self::process) calls this first; it is
     /// public so a caller can install a commit without rendering.
     ///
     /// Delay rings, feedback state and units carry over by key (see
     /// [`DelayKey`] and [`FeedbackKey`]). An event delay or event feedback
     /// whose key disappears flushes its pending events to its sink when the
-    /// sink survives — see the module docs for where they land.
+    /// sink survives: they arrive on the sink's next call, keeping their
+    /// relative spacing, with the earliest at offset 0.
     ///
     /// # Panics
     ///
@@ -1091,7 +1105,7 @@ impl Executor {
         }
     }
 
-    /// Render one block of `frames` into `outputs`, reading `inputs`.
+    /// Renders one block of `frames` into `outputs`, reading `inputs`.
     ///
     /// `inputs` must have a slice per global input channel the plan reads, and
     /// `outputs` one per global output channel; every slice at least `frames`
@@ -1114,9 +1128,9 @@ impl Executor {
 
     /// As [`process`](Self::process), with the transport changing inside the
     /// block: `transport` holds at the first frame, and each of `changes`
-    /// from its offset on (doc 013 §6: a transport command lands on its
-    /// frame). The block is **not** split at them. Every node gets the whole
-    /// block and an [`Env`] carrying the changes, and scheduled `At::Beat`
+    /// from its offset on (a transport command lands on its frame). The block
+    /// is **not** split at them. Every node gets the whole block and an
+    /// [`Env`] carrying the changes, and scheduled `At::Beat`
     /// commands resolve against the transport in force where playback
     /// reaches their beat.
     ///

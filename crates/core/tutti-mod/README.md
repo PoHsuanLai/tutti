@@ -1,9 +1,10 @@
 # tutti-mod
 
 Modulation for the Tutti engine — pure `phase -> value` sources, a keyed
-accumulator target, and a mod-matrix router.
+accumulator target, and a mod-matrix router. The `tutti` facade re-exports it
+as `tutti::modulation` (feature `modulation`).
 
-## What this is
+## What is here
 
 Three roles, layered: **rules** (a routing table of `ModEdge`s), **dispatch** (an
 id→target router), and **receive** (a keyed accumulator that clamps
@@ -13,8 +14,7 @@ hold, and the shared `shape` / `fold` / `curve_apply` math.
 
 `ModMatrix` is the fluent front door; the primitives are rarely touched
 directly. (Most type names below sit behind the `routing` feature, which is off
-under `default = []`, so they are written as code spans rather than links;
-docs.rs renders with `all-features = true`.)
+by default, so they are written as code spans rather than links.)
 
 ## What this crate does not own
 
@@ -139,9 +139,10 @@ A `Modulator` is itself rate-agnostic — the *adapter* around it picks the tier
 `tutti_nodes::ModulatorNode` (aliased `LfoNode`) is per-sample. One modulator,
 two adapters — not two LFOs.
 
-One gap is known and deliberate: the routing subsystem cannot deliver a curve to
-a **per-sample** sink for a native param, because `AtomicTarget` is the only sink
-native nodes use. Its module doc tracks the audio-rate sink as later work.
+One limitation: the routing subsystem cannot deliver a curve to a
+**per-sample** sink for a native param, because `AtomicTarget` is the only sink
+native nodes use. For per-sample modulation of a native param, wire a
+`ModulatorNode` in the graph instead.
 
 ## The target + routing (the `routing`/`bevy` features)
 

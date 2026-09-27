@@ -1,10 +1,10 @@
 //! A node's declared latency (`Shape::latency`) must be the delay the output
-//! actually has — design doc 013, defects D1 and D3.
+//! actually has.
 //!
 //! PDC reads nothing but that figure: it delays every *other* path by it. So a
-//! figure that is too high (a musical delay reported as latency, D1) drags the
+//! figure that is too high (a musical delay reported as latency) drags the
 //! rest of the mix late, and a figure that is true of only part of the output
-//! (the convolver's wet half, D3) leaves the other part early after
+//! (the convolver's wet half) leaves the other part early after
 //! compensation. Each test therefore pins the reported number **and** measures
 //! the output with an impulse, because the number alone cannot fail on a node
 //! whose DSP drifted away from it.
@@ -45,9 +45,8 @@ fn impulse_response<N: Node>(node: N, frames: usize) -> Vec<Vec<f32>> {
     out
 }
 
-/// The latency a node declares: one figure for its whole output. (A graph
-/// node has no per-output latency to get half wrong, which is what the
-/// `AudioUnit` form of these tests had to check through `route` per port.)
+/// The latency a node declares: one figure for its whole output (a graph
+/// node has no per-output latency to get half wrong).
 fn declared(node: &dyn Node) -> Latency {
     node.shape().latency
 }
@@ -62,7 +61,7 @@ fn onsets(ch: &[f32]) -> Vec<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// D1: a musical delay reports zero latency.
+// A musical delay reports zero latency.
 // ---------------------------------------------------------------------------
 
 /// A 500 ms echo is the effect, not processing latency: it must declare 0,
@@ -152,15 +151,15 @@ fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
     }
 }
 
-/// The consequence D1 was about, measured where it lands: the graph's PDC.
+/// The consequence of a delay reporting latency, measured where it lands:
+/// the graph's PDC.
 ///
 /// Three paths from the graph input — one through a 500 ms echo, one through
 /// a chorus, one dry — must need no compensation at all: no output pre-rolls
-/// and the compiler inserts no delay. With the echo declaring its delay time,
-/// the compiler delayed the dry output by 24 000 samples and the chorus one
-/// by 24 000, i.e. PDC dragged the whole rest of the mix half a second late
-/// to line up with an echo. (This was `latency::plan` over a `Net`; the
-/// graph's compiler is the PDC now.)
+/// and the compiler inserts no delay. Were the echo to declare its delay
+/// time, the compiler would delay the dry output by 24 000 samples and the
+/// chorus one by 24 000, i.e. PDC would drag the whole rest of the mix half a
+/// second late to line up with an echo.
 ///
 /// Mutation (run): declaring `with_latency(Latency::new(Samples(24_000)))` in
 /// `DelayLineNode::shape` makes the compensation `[0, 24000, 24000]` and adds
@@ -190,10 +189,9 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
 
 /// A summing bus does not hide the latency of what feeds it.
 ///
-/// `ChannelSumNode` replaced fundsp's `sum` as the engine's fan-in, and under
-/// `Net` its `route` once answered `Latency(0)` whatever arrived: a lookahead
-/// limiter summed with a dry path then read as a zero-latency graph, and an
-/// export pre-rolled by nothing. Both are graph nodes now, and the
+/// `ChannelSumNode` is the engine's fan-in. Were it to hide its inputs'
+/// latency, a lookahead limiter summed with a dry path would read as a
+/// zero-latency graph, and an export would pre-roll by nothing. The
 /// compiler's PDC owns the fold: the graph reports the limiter's lookahead,
 /// and the dry path is delayed to meet it, so the impulse leaves **once**, at
 /// exactly that frame.
@@ -239,7 +237,7 @@ fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
 }
 
 // ---------------------------------------------------------------------------
-// D3: the convolver's reported latency is true of the whole output.
+// The convolver's reported latency is true of the whole output.
 // ---------------------------------------------------------------------------
 //
 // Behind the crate's `convolution` feature, as the convolver is. A workspace
@@ -282,9 +280,9 @@ mod convolver {
         }
     }
 
-    /// The wide node in all three channel configs, at width 2 (the old stereo
-    /// node's three constructors) and width 6: each channel's dry input is
-    /// delayed by the same latency as its wet path.
+    /// The wide node in all three channel configs, at width 2 and width 6:
+    /// each channel's dry input is delayed by the same latency as its wet
+    /// path.
     ///
     /// Mutation: blending the undelayed input instead of `dry.step(s)` in
     /// `ConvolverNode::blend_channel` fails every channel (two onsets at mix
@@ -348,7 +346,7 @@ mod convolver {
         let peak = out[0].iter().fold(0.0f32, |p, s| p.max(s.abs()));
         assert!(
             peak < 1e-6,
-            "reset left {peak} of the old dry take in the ring"
+            "reset left {peak} of the previous dry take in the ring"
         );
     }
 

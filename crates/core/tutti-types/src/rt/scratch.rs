@@ -7,22 +7,39 @@
 use core::fmt;
 use std::vec::Vec;
 
-/// Fixed-capacity, no-grow scratch buffer for the audio thread.
+/// A fixed-capacity scratch buffer for the audio thread that can never grow.
 ///
 /// The backing storage is allocated once in [`RtScratch::new`]; its length stays
-/// equal to `capacity` for the buffer's lifetime. No public method reallocates.
+/// equal to `capacity` for the buffer's lifetime. There is no grow, resize or
+/// push API, so RT code cannot reallocate through it: the active length per
+/// block is chosen by slicing a prefix, not by changing the backing length.
 ///
 /// Use [`try_active`](RtScratch::try_active) off the RT path (it reports an
 /// overflow the caller can handle) and [`active`](RtScratch::active) /
 /// [`active_ref`](RtScratch::active_ref) on the RT path (they `debug_assert` the
 /// budget and clamp in release).
+///
+/// `Clone` allocates a fresh default-filled buffer of the same capacity; it
+/// does not copy the contents.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::RtScratch;
+///
+/// let mut scratch = RtScratch::<f32>::new(512);
+/// let block = scratch.active(128);
+/// block.fill(0.25);
+/// assert_eq!(scratch.active_ref(128)[0], 0.25);
+/// assert!(scratch.try_active(1024).is_err());
+/// ```
 pub struct RtScratch<T> {
     buf: Vec<T>,
     capacity: usize,
 }
 
-/// Error from [`RtScratch::try_active`] / [`RtScratch::try_active_ref`] when the
-/// requested active length exceeds the fixed capacity.
+/// The error [`RtScratch::try_active`] and [`RtScratch::try_active_ref`] return
+/// when the requested active length exceeds the fixed capacity.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct RtScratchOverflow {
     /// Requested active length.
@@ -51,8 +68,10 @@ impl fmt::Display for RtScratchOverflow {
 }
 
 impl<T: Copy + Default> RtScratch<T> {
-    /// Allocate `capacity` default-filled elements — the only allocation the
-    /// type performs.
+    /// Allocates `capacity` default-filled elements.
+    ///
+    /// This is the only allocation the type performs, so call it off the audio
+    /// thread.
     pub fn new(capacity: usize) -> Self {
         Self {
             buf: vec![T::default(); capacity],
@@ -60,14 +79,19 @@ impl<T: Copy + Default> RtScratch<T> {
         }
     }
 
-    /// Fixed capacity (the maximum active length).
+    /// Returns the fixed capacity (the maximum active length).
     #[inline]
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
-    /// Mutable active prefix `[..len]`, or [`RtScratchOverflow`] if `len`
-    /// exceeds [`capacity`](Self::capacity). For non-RT callers.
+    /// Returns the mutable active prefix `[..len]`.
+    ///
+    /// For callers that can handle a sizing error.
+    ///
+    /// # Errors
+    ///
+    /// [`RtScratchOverflow`] if `len` exceeds [`capacity`](Self::capacity).
     #[inline]
     pub fn try_active(&mut self, len: usize) -> Result<&mut [T], RtScratchOverflow> {
         if len > self.capacity {
@@ -79,7 +103,12 @@ impl<T: Copy + Default> RtScratch<T> {
         Ok(&mut self.buf[..len])
     }
 
-    /// Read-only counterpart of [`try_active`](Self::try_active).
+    /// Returns the read-only active prefix `[..len]`; see
+    /// [`try_active`](Self::try_active).
+    ///
+    /// # Errors
+    ///
+    /// [`RtScratchOverflow`] if `len` exceeds [`capacity`](Self::capacity).
     #[inline]
     pub fn try_active_ref(&self, len: usize) -> Result<&[T], RtScratchOverflow> {
         if len > self.capacity {
@@ -91,8 +120,15 @@ impl<T: Copy + Default> RtScratch<T> {
         Ok(&self.buf[..len])
     }
 
-    /// Mutable active prefix `[..len]` for the RT hot path. `debug_assert`s
-    /// `len <= capacity`; clamps to `capacity` in release. Never reallocates.
+    /// Returns the mutable active prefix `[..len]`, for the RT hot path.
+    ///
+    /// Never reallocates. In release builds a `len` past the capacity is
+    /// clamped to it.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if `len` exceeds [`capacity`](Self::capacity): the
+    /// worst case must be budgeted at construction.
     #[inline]
     pub fn active(&mut self, len: usize) -> &mut [T] {
         debug_assert!(
@@ -105,7 +141,12 @@ impl<T: Copy + Default> RtScratch<T> {
         &mut self.buf[..len]
     }
 
-    /// Read-only counterpart of [`active`](Self::active).
+    /// Returns the read-only active prefix `[..len]`; see
+    /// [`active`](Self::active).
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if `len` exceeds [`capacity`](Self::capacity).
     #[inline]
     pub fn active_ref(&self, len: usize) -> &[T] {
         debug_assert!(

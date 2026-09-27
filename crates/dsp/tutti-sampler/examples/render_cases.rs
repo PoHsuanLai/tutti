@@ -1,11 +1,9 @@
 //! Render a matrix of sampler cases to WAV for independent analysis.
 //!
-//! This exists because four separate defects in this crate — a 60 dB gain error,
-//! a 17.5 dB phase-seeding error, an inert pitch shift, and a seek smear — were
-//! each invisible to every test in the suite. The tests that missed them were
-//! written against the same understanding of the DSP as the code, so they could
-//! not contradict it. An external tool re-deriving the expected answer from the
-//! signal alone has no such shared blind spot.
+//! Tests written against the same understanding of the DSP as the code cannot
+//! contradict it. An external tool re-deriving the expected answer from the
+//! signal alone (`verify_sampler.py`, beside this file) has no such shared
+//! blind spot.
 //!
 //! Drives the **real** `VoicePool`: placement gate, `MemorySource`, the resident
 //! stretch filter, and a block-advanced transport — not `stretch::Unit` in
@@ -72,12 +70,11 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     // Block-driven, as a host drives a node: each block's `Env` carries the
     // playhead where it stands, and it advances once per block.
     //
-    // A placed voice derives its read position from the playhead. When this
-    // harness was written, `tick` re-read the playhead per call, so calling it
-    // 64 times against one transport reading emitted the SAME sample 64 times
-    // — a staircase that resampled the source downward and failed every case,
-    // including an unprocessed one. A placed read now seats on the block's
-    // transport and steps through the block.
+    // A placed voice derives its read position from the playhead: a placed
+    // read seats on the block's transport and steps through the block. Driving
+    // it frame by frame against a transport that does not move would emit the
+    // SAME sample over and over — a staircase that resamples the source
+    // downward and fails every case, including an unprocessed one.
     //
     // The `dry` control is what distinguishes that from a real defect: driven
     // wrongly it renders 440 Hz as 308 Hz with no processing engaged. The
@@ -93,8 +90,7 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
             if rendered <= at && at < rendered + BLOCK {
                 // Beat 5 of an 8-beat wave (FRAMES*4 samples at 120 BPM). A
                 // seek past the material renders correct silence and proves
-                // nothing about flushing — the first draft jumped to beat 20 and
-                // measured an empty region.
+                // nothing about flushing.
                 transport.seek(Beat::new(5.0));
             }
         }

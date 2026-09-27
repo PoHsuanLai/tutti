@@ -137,7 +137,7 @@ impl TransportFsm {
         }
     }
 
-    /// Take the outcome of a completed fade. One-shot: a second call after the
+    /// Takes the outcome of a completed fade. One-shot: a second call after the
     /// same fade yields `None`.
     pub fn take_declick_outcome(&mut self) -> Option<DeclickOutcome> {
         self.pending.take()
@@ -230,7 +230,7 @@ impl TransportFsm {
         !matches!(self.motion, MotionState::Stopped)
     }
 
-    /// Apply `event`, returning what changed or `None` if the FSM refused it.
+    /// Applies `event`, returning what changed or `None` if the FSM refused it.
     ///
     /// Every path that returns `Some` assigns `self.motion` first — that is
     /// what keeps the published mirror and the machine from diverging, and it

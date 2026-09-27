@@ -1,17 +1,17 @@
-//! The sample-accuracy contract (doc 013 §6, "Proof") for the binaural
+//! The graph's sample-accuracy contract for the binaural
 //! renderer, a graph node, on the audio-impulse path: an impulse at
 //! frame `F` leaves at exactly `F + arrival + FRAME_LEN - 1` on every path
 //! (direct, behind PDC, across a recompile, across ragged blocks — see
 //! `tutti_graph::contract`).
 //!
-//! This is D2's row: the `AudioUnit`'s `route` used to pass the input
-//! straight through while every sample left a frame late, so PDC never saw
-//! the delay and binaural tracks arrived late against the mix. The row pins
+//! A node that declared no latency while every sample left a frame late would
+//! leave PDC blind to the delay, and binaural tracks would arrive late against
+//! the mix. The row pins
 //! the declared figure (511 at the panner's 4 × 128 frame) *and* that the
 //! output leaves on it, wherever in the HRTF frame and in the graph's block
 //! the impulse falls.
 //!
-//! Mutations (run): declare `Latency::ZERO` in `shape` (D2 again) → every
+//! Mutations (run): declare `Latency::ZERO` in `shape` → every
 //! path fails (declared 0, output 511 late). Set `LATENCY` to `FRAME_LEN` →
 //! every path fails (declared one frame late).
 

@@ -2,7 +2,7 @@
 name = "tutti-analysis"
 version = "0.0.1"
 edition = "2021"
-description = "Audio analysis tools: waveform thumbnails, transient detection, pitch detection, stereo correlation"
+description = "Audio analysis for Tutti over plain sample slices: waveform blocks, onsets, pitch, loudness, stereo correlation, STFT"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "analysis", "waveform", "pitch", "dsp"]
@@ -36,10 +36,8 @@ serde = { version = "1", features = ["derive"], optional = true }
 
 [features]
 # No `bevy` feature, and no default features. This crate is a library of
-# analysis algorithms over `&[f32]`; the ECS surface it used to carry belonged
-# to the live-analysis subsystem, which computed four analyses that nobody read
-# and has been removed. A host that wants these results in an ECS wires them up
-# on its own side.
+# analysis algorithms over `&[f32]`; a host that wants these results in an ECS
+# wires them up on its own side.
 default = []
 # `dep:serde` (not bare `serde`) so this feature replaces the implicit
 # optional-dep feature rather than colliding with it.
@@ -56,8 +54,7 @@ serde = ["dep:serde", "tutti-types/serde"]
 # generator. Seeded, so an uncorrelated-input assertion is not flaky.
 #
 # No `assert_no_alloc` here, unlike most sibling crates: everything this crate
-# does is cold-path batch analysis that legitimately allocates its output. The
-# one thread-adjacent path (`live.rs`) is being removed rather than gated.
+# does is cold-path batch analysis that legitimately allocates its output.
 rand = "0.8"
 # An independent YIN, as a second opinion on ours, for `tests/oracle_pitch.rs`.
 # Unmaintained (last release 2022) — see that file's header for why it is still

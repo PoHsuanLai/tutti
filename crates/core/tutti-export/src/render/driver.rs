@@ -1,8 +1,7 @@
 //! The render source: a graph presented as a block-at-a-time frame source.
 //!
 //! [`GraphSource`] block-renders a `tutti_graph` executor into
-//! interleaved frames and advances the caller's [`RenderClock`] in lockstep
-//! (doc 013 Phase 3 PR 7; the `Net` source beside it went in PR 14).
+//! interleaved frames and advances the caller's [`RenderClock`] in lockstep.
 //! Everything downstream — gating, dither, the encoder — pulls from it (or
 //! from [`PlaneSource`], replaying a render already held), so the graph is
 //! stepped exactly once per block no matter which encoder is driving.
@@ -343,8 +342,7 @@ impl FrameSource for PlaneSource<'_> {
     }
 
     /// The planes are already rendered, so the size only paces the encoder:
-    /// 64 frames, the block this source has always handed out (fundsp's
-    /// `MAX_BUFFER_SIZE`, until doc 013 Phase 5 deleted it).
+    /// 64 frames.
     fn max_block(&self) -> usize {
         64
     }
@@ -454,7 +452,6 @@ mod tests {
     /// channel. `fold_frame`'s rule beyond stereo is copy-and-zero-fill, and a
     /// full-level mono copy in the LFE and surrounds is the bug this pins.
     ///
-    /// Ported from the `Net` source in doc 013 PR 14, assertions unchanged.
     /// Mutation (run): `fold_graph_frame` writing `dst.fill(src[0])` for a
     /// one-channel source → channel 1 reads 0.5.
     #[test]
@@ -477,7 +474,6 @@ mod tests {
     /// Widths 3 and 5 are here on purpose: they are the ones a fixed enumeration
     /// of widths would refuse outright.
     ///
-    /// Ported from the `Net` source in doc 013 PR 14, assertions unchanged.
     /// Mutation (run): `fold_graph_frame` gathering `dst.len()` channels
     /// instead of `planes.len()` → it indexes a missing plane and panics.
     #[test]
@@ -494,11 +490,8 @@ mod tests {
     /// beat, and after N frames the clock stands exactly N frames on. A
     /// priming `advance` desyncs every clock reader from the render's start.
     ///
-    /// Ported from the `Net` source in doc 013 PR 14: the `Net` carried its
-    /// beat in a `TransportClock` node; the graph walked the same beat from
-    /// each block's transport, which this source hands it, first in
-    /// `EnvClock` and now in a test node calling `Env::for_each_beat` (what
-    /// `EnvClock` did). Assertions unchanged.
+    /// The graph reads the beat from each block's transport, which this
+    /// source hands it; here a test node calls `Env::for_each_beat`.
     ///
     /// Mutation (run): `self.clock.advance(Samples(1))` before `render_graph`
     /// in `GraphSource::fill` → the first frame reads a frame past the start

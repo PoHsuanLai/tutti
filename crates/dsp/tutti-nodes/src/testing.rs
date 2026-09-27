@@ -1,21 +1,35 @@
 //! Test and stimulus nodes: sources that feed a graph a known signal, and the
 //! plumbing (pass-through, fan-out, sink) a test graph is wired out of.
 //!
-//! These replace the fundsp one-liners — `dc`, `sine_hz`, `saw_hz`,
-//! `square_hz`, `triangle`, `pass`, `multipass`, `split`, `sink` — that tests,
-//! examples and benches used to build stimulus graphs with. Two things are
-//! different, and both are the point:
+//! Available with the `testing` feature; enable it from `[dev-dependencies]`.
 //!
-//! - **Widths are runtime.** Every node here takes a [`ChannelLayout`], where
-//!   fundsp spelled a width as a `typenum` (`split::<U2>()`) or as an operator
-//!   expression (`pass() | pass()`). A stereo tone is one node,
-//!   `Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO)`, not
-//!   `sine_hz(440.0) >> split::<U2>()`.
-//! - **They are plain graph [`Node`]s.** There is no operator DSL here and no
-//!   `An<X>` wrapper, so a test graph is built the same way a production one
-//!   is: add nodes to a graph and wire them. Each is its own
-//!   [`IntoNode`], forkable by clone (none shares state with its clones), so
-//!   `GraphBuilder::add(Osc::sine(..))` takes it as it is.
+//! - [`Const`] and [`Osc`] are sources: a constant, or a naive sine, saw,
+//!   square or triangle ([`Waveform`]).
+//! - [`Through`], [`Split`] and [`Sink`] are plumbing: pass-through, fan-out
+//!   from one input, and a sink with no outputs.
+//!
+//! Widths are runtime: every node takes a [`ChannelLayout`], so a stereo tone
+//! is one node, `Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO)`.
+//! Each is a plain graph [`Node`] and its own [`IntoNode`], forkable by clone
+//! (none shares state with its clones), so a test graph is built the same way
+//! a production one is: `GraphBuilder::add(Osc::sine(..))`.
+//!
+//! # Examples
+//!
+//! ```
+//! use tutti_core::{ChannelLayout, Hz, SampleRate, Samples};
+//! use tutti_graph::{GraphBuilder, Prepare};
+//! use tutti_nodes::testing::Osc;
+//!
+//! let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+//! let tone = g.add(Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO));
+//! g.pipe_output(tone);
+//! let mut r = g
+//!     .renderer(Prepare::new(SampleRate(48_000.0), Samples(64)))
+//!     .expect("builds");
+//! let out = r.render(64);
+//! assert_eq!(out.len(), 2);
+//! ```
 //!
 //! # Not for production audio
 //!
@@ -58,7 +72,7 @@ pub struct Const {
 }
 
 impl Const {
-    /// `value` on every channel of `layout`.
+    /// Creates a constant `value` on every channel of `layout`.
     pub fn new(value: f32, layout: impl Into<ChannelLayout>) -> Self {
         let channels = layout.into().count() as usize;
         Self {
@@ -66,13 +80,13 @@ impl Const {
         }
     }
 
-    /// A one-channel constant — fundsp's `dc(value)`.
+    /// Creates a one-channel constant.
     pub fn mono(value: f32) -> Self {
         Self::new(value, ChannelLayout::MONO)
     }
 
-    /// One value per channel, so channels can be told apart — fundsp's
-    /// `dc((a, b))`. The width is `values.len()`.
+    /// Creates a constant with one value per channel, so channels can be told
+    /// apart. The width is `values.len()`.
     pub fn frame(values: &[f32]) -> Self {
         Self {
             values: values.to_vec(),
@@ -83,9 +97,8 @@ impl Const {
 impl Node for Const {
     /// Nothing drives a source, so there is nothing to drain: what it emits
     /// *is* the signal, and it stops when the render does — `Tail::None`, the
-    /// convention fundsp's `dc` follows, and the one a graph's tail walk
-    /// relies on (`Unbounded` here would make every graph with a stimulus in
-    /// it unspendable).
+    /// convention a graph's tail walk relies on (`Unbounded` here would make
+    /// every graph with a stimulus in it unspendable).
     fn shape(&self) -> Shape {
         Shape::audio(
             ChannelLayout::EMPTY,
@@ -142,8 +155,8 @@ impl Waveform {
 ///
 /// The phase starts at [`Phase::START`] unless [`with_phase`](Self::with_phase)
 /// says otherwise, and is accumulated in `f64`, so a long render does not
-/// drift. Unlike fundsp's `sine_hz`, the start phase is **not** seeded from the
-/// graph's hash — a stimulus a test measures should start where the test says.
+/// drift. The start phase is deterministic: a stimulus a test measures should
+/// start where the test says.
 ///
 /// **Starts at the placeholder [`SampleRate::DEFAULT`]** until it is
 /// prepared ([`Node::prepare`], which a graph does at insert).
@@ -163,7 +176,7 @@ pub struct Osc {
 }
 
 impl Osc {
-    /// A mono, unity-amplitude oscillator of `waveform` at `frequency`.
+    /// Creates a mono, unity-amplitude oscillator of `waveform` at `frequency`.
     pub fn new(waveform: Waveform, frequency: Hz) -> Self {
         Self {
             waveform,
@@ -176,34 +189,33 @@ impl Osc {
         }
     }
 
-    /// A sine — fundsp's `sine_hz`.
+    /// Creates a sine oscillator.
     pub fn sine(frequency: Hz) -> Self {
         Self::new(Waveform::Sine, frequency)
     }
 
-    /// A naive saw — fundsp's `saw_hz`, without the band-limiting.
+    /// Creates a naive (not band-limited) saw oscillator.
     pub fn saw(frequency: Hz) -> Self {
         Self::new(Waveform::Saw, frequency)
     }
 
-    /// A naive square — fundsp's `square_hz`, without the band-limiting.
+    /// Creates a naive (not band-limited) square oscillator.
     pub fn square(frequency: Hz) -> Self {
         Self::new(Waveform::Square, frequency)
     }
 
-    /// A naive triangle — fundsp's `triangle_hz`, without the band-limiting.
+    /// Creates a naive (not band-limited) triangle oscillator.
     pub fn triangle(frequency: Hz) -> Self {
         Self::new(Waveform::Triangle, frequency)
     }
 
-    /// Scale the output by `amplitude` — fundsp's `sine_hz(f) * a`.
+    /// Scales the output by `amplitude`.
     pub fn with_amplitude(mut self, amplitude: Amplitude) -> Self {
         self.amplitude = amplitude;
         self
     }
 
-    /// Start the cycle at `phase` rather than 0 — fundsp's
-    /// `sine_hz(f)` with `Setting::phase`. A sine sampled off its peaks is how
+    /// Starts the cycle at `phase` rather than 0. A sine sampled off its peaks is how
     /// a test gets a true peak that falls *between* samples.
     ///
     /// `phase` is in turns and is wrapped into `[0, 1)` here, so `1.25` and
@@ -224,8 +236,7 @@ impl Osc {
         self
     }
 
-    /// Put the signal on every channel of `layout` — fundsp's
-    /// `sine_hz(f) >> split::<N>()`, or `sine_hz(f) | sine_hz(f)`.
+    /// Puts the signal on every channel of `layout`.
     pub fn with_layout(mut self, layout: impl Into<ChannelLayout>) -> Self {
         self.layout = layout.into();
         self
@@ -267,8 +278,7 @@ impl Node for Osc {
     }
 }
 
-/// `N` inputs copied unchanged to `N` outputs — fundsp's `pass()` (mono) and
-/// `multipass::<N>()` / `pass() | pass()` (wider).
+/// A pass-through node: `N` inputs copied unchanged to `N` outputs.
 ///
 /// The node a test uses where it needs *a* node of a given width and no
 /// processing: a sink port to declare wiring into, a stand-in for a track.
@@ -278,14 +288,14 @@ pub struct Through {
 }
 
 impl Through {
-    /// A pass-through `layout` wide.
+    /// Creates a pass-through `layout` wide.
     pub fn new(layout: impl Into<ChannelLayout>) -> Self {
         Self {
             layout: layout.into(),
         }
     }
 
-    /// A one-channel pass-through — fundsp's `pass()`.
+    /// Creates a one-channel pass-through.
     pub fn mono() -> Self {
         Self::new(ChannelLayout::MONO)
     }
@@ -310,14 +320,14 @@ impl Node for Through {
     fn reset(&mut self) {}
 }
 
-/// One input copied to every channel of `layout` — fundsp's `split::<N>()`.
+/// A fan-out node: one input copied to every channel of `layout`.
 #[derive(Clone, Debug)]
 pub struct Split {
     layout: ChannelLayout,
 }
 
 impl Split {
-    /// A fan-out from one input to `layout`'s channels.
+    /// Creates a fan-out from one input to `layout`'s channels.
     pub fn new(layout: impl Into<ChannelLayout>) -> Self {
         Self {
             layout: layout.into(),
@@ -344,22 +354,21 @@ impl Node for Split {
     fn reset(&mut self) {}
 }
 
-/// `N` inputs, no outputs: consumes whatever is wired into it — fundsp's
-/// `sink()`, at a runtime width.
+/// A sink node: `N` inputs, no outputs; consumes whatever is wired into it.
 #[derive(Clone, Debug)]
 pub struct Sink {
     layout: ChannelLayout,
 }
 
 impl Sink {
-    /// A sink `layout` wide.
+    /// Creates a sink `layout` wide.
     pub fn new(layout: impl Into<ChannelLayout>) -> Self {
         Self {
             layout: layout.into(),
         }
     }
 
-    /// A one-channel sink — fundsp's `sink()`.
+    /// Creates a one-channel sink.
     pub fn mono() -> Self {
         Self::new(ChannelLayout::MONO)
     }
@@ -394,7 +403,7 @@ mod tests {
 
     /// The oscillator's samples are the closed form of its phase, on every
     /// channel, and a render in blocks of one frame agrees with a render in
-    /// one block, sample for sample (what `tick` against `process` pinned).
+    /// one block, sample for sample.
     ///
     /// Mutation: dropping the `phase -= floor` wrap leaves the sine intact (it
     /// is periodic) but walks the saw off past +1 — the saw row fails. Filling

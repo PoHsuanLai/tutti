@@ -2,17 +2,14 @@
 //! graph: timed transport commands, and the metronome, whose meter read is
 //! the one non-scalar read on the audio thread.
 //!
-//! The metronome gate ran on a `Net` (a `TransportClock` feeding the click)
-//! until doc 013 Phase 3 PR 15 removed the engine's `Net` backend; its graph
-//! form, the click beside a node walking its `Env`'s beat, with timed seeks,
-//! tempo and loop changes on top, is
+//! The metronome gate — the click beside a node walking its `Env`'s beat,
+//! with timed seeks, tempo and loop changes on top — is
 //! `graph_engine_with_env_clock_and_metronome_is_allocation_free`.
 //!
 //! The gate over a chain of real DSP nodes (EQ, strip, limiter) is
-//! `tutti-nodes`' `tests/rt_no_alloc_engine.rs`. It used to live here, built
-//! from fundsp's filters; running it on the nodes the engine ships means
-//! depending on `tutti-nodes`, which depends on this crate, so it moved there
-//! rather than create a cycle.
+//! `tutti-nodes`' `tests/rt_no_alloc_engine.rs`: running it on the nodes the
+//! engine ships means depending on `tutti-nodes`, which depends on this crate,
+//! so it lives there rather than create a cycle.
 //!
 //! What this file deliberately does *not* test: that the audio thread never
 //! *frees* a retired non-scalar value (a `MeterMap`, a routing table). That
@@ -21,14 +18,11 @@
 //! the callback to be left holding — and by `RtPublish`'s reclamation protocol,
 //! whose reader side has no path to a destructor. It cannot be pinned by a
 //! no-alloc gate here: the hazard is a race, and a sampling schedule cannot
-//! exhaust one. A test that tried anyway lived here until it was removed — it
-//! passed while asserting a property it structurally could not observe, which
-//! reads as coverage and is worse than nothing. The race is covered where it
-//! can be: the loom model `tutti-types/tests/rt_publish_loom.rs` (against the
-//! shipped code; bounded in CI, exhaustive under `just loom-full`) and miri
-//! over `rt::publish`'s stress test. (#34's
-//! residual case — the old `ArcSwap` guard degrading into an owning reference —
-//! is gone with the `ArcSwap`.)
+//! exhaust one; a test that tried would pass while asserting a property it
+//! structurally could not observe. The race is covered where it can be: the
+//! loom model `tutti-types/tests/rt_publish_loom.rs` (against the shipped
+//! code; bounded in CI, exhaustive under `just loom-full`) and miri over
+//! `rt::publish`'s stress test.
 
 use assert_no_alloc::AllocDisabler;
 use std::sync::Arc;

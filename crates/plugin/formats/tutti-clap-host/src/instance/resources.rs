@@ -5,7 +5,7 @@ use super::ClapLoaded;
 use crate::cstr_to_string;
 
 impl ClapLoaded {
-    /// Tell the plugin where to read/write its resources. `is_shared`
+    /// Tells the plugin where to read/write its resources. `is_shared`
     /// selects between the shared (project-level) and private (preset-level)
     /// directory.
     pub fn resource_set_directory(&self, path: &str, is_shared: bool) {
@@ -19,7 +19,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Ask the plugin to enumerate the resource files it currently uses.
+    /// Asks the plugin to enumerate the resource files it currently uses.
     /// If `all` is true, include files under the shared directory as well.
     pub fn resource_collect(&self, all: bool) {
         let Some(ext) = (unsafe { ext::opt(self.extensions.system.resource_directory) }) else {

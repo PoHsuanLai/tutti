@@ -27,7 +27,7 @@ pub struct SeqClient {
 unsafe impl Send for SeqClient {}
 
 impl SeqClient {
-    /// Open a client in UMP MIDI-2.0 mode.
+    /// Opens a client in UMP MIDI-2.0 mode.
     ///
     /// Three steps, and all three matter:
     /// 1. `snd_seq_open` — an ordinary sequencer client.
@@ -95,7 +95,7 @@ impl SeqClient {
         )
     }
 
-    /// Create a port on this client.
+    /// Creates a port on this client.
     pub fn create_port(&self, name: &str, caps: u32, kind: u32) -> Result<c_int> {
         let cname = CString::new(name).unwrap_or_else(|_| CString::new("tutti").unwrap());
         // SAFETY: `self.seq` is open; `cname` outlives the call.

@@ -1,38 +1,3 @@
-//! Pure MIDI types for the Tutti audio engine.
-//!
-//! Canonical event type is [`MidiEvent`] — a packed 20-byte UMP event
-//! (sample-accurate frame offset + up to four UMP words) carrying any MIDI
-//! 1.0 / 2.0 / SysEx / utility message. Construction uses inherent constructors
-//! ([`MidiEvent::note_on`], [`MidiEvent::cc`], ...); decoding goes through
-//! [`MidiEvent::message`] or `midi2::UmpMessage::try_from(ev.data_words())`.
-//!
-//! Six public modules sit around it: [`ump`], [`mpe`] (MIDI Polyphonic
-//! Expression, RP-053), [`sync`] (clock and MTC decoders), [`cc`] (CC→DAW-target
-//! mapping), [`ci`] (Capability Inquiry) and [`translation`] (the MIDI 1↔2
-//! boundary, reachable at the root as [`convert`]).
-//!
-//! The MIDI 2.0 Clip File codec ([`read_clip_file`] / [`write_clip_file`]) is
-//! re-exported at the root from a private module, so it has exactly one path.
-//!
-//! SMF file parsing and the MIDI-1 wire codec come from the re-exported `midly`;
-//! typed UMP messages from the re-exported `midi2`.
-//!
-//! # The resolution boundary, and why the loss hides
-//!
-//! Widening is the spec's Min-Center-Max scaler
-//! ([`convert::midi1_velocity_to_midi2`]), not a shift: `127` must reach full
-//! scale, and `127 << 9` is `65024`, which is not. Every 7-bit value round-trips
-//! exactly — **and that exactness is the trap.** A path that narrows to 7 bits
-//! is *self-consistently* lossy: it round-trips every value it can emit, so a
-//! round-trip test passes and the loss never shows. It is only visible on a
-//! value that did not start at 7 bits, which the README demonstrates.
-//!
-//! So [`MidiEvent::velocity_u7`] is for a MIDI 1.0 *destination* only. Reading a
-//! velocity for any other purpose goes through [`MidiEvent::velocity_u16`],
-//! which is lossless from either protocol.
-//!
-//! The module map, the [`normalize`] example, the demonstration of that hidden
-//! loss and the serde criterion are in the crate README, included below.
 #![doc = include_str!("../README.md")]
 
 // Third-party, re-exported whole so a consumer matching our version needs no

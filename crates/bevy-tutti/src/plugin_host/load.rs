@@ -215,7 +215,7 @@ type LoadNotStarted = (
     Without<tutti_core::AudioNode>,
 );
 
-/// Start loads for requests that have not been attempted yet.
+/// Starts loads for requests that have not been attempted yet.
 ///
 /// Steady-state query rather than `Added<PluginRequest>`: an entity may carry a
 /// request before `PluginsRes` exists (it is inserted lazily) or before the
@@ -259,7 +259,7 @@ pub fn plugin_load_start(
     }
 }
 
-/// Drain finished loads: add the node, bind the handle, report the outcome.
+/// Drains finished loads: adds the node, binds the handle, reports the outcome.
 ///
 /// Deliberately **not** gated on `engine_ready`. A load already in flight when
 /// the engine tears down still has to be reported rather than left hanging —
@@ -307,8 +307,8 @@ pub fn plugin_load_promote(
                 //
                 // An out-of-process plugin is bound as it goes in
                 // (`PluginClient::bind`): a graph node, with its own fork
-                // source so an export can fork it (by state transfer; doc
-                // 013, PR 12). An in-process VST2 plugin is a graph node too,
+                // source so an export can fork it (by state transfer). An
+                // in-process VST2 plugin is a graph node too,
                 // with no fork source yet: it goes in `Unforkable`, and an export
                 // of a graph holding it is refused, naming it.
                 let (id, controls) = match plugin.into_client() {

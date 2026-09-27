@@ -13,11 +13,6 @@ use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, PhaseIncrement};
 
 /// A modulation source: one LFO shape, running at one [`ModSourceRate`].
 ///
-/// The shape is `tutti_mod`'s, so this component names the engine's waveform
-/// vocabulary directly rather than mirroring it — a `From`-bridged copy is what
-/// the app layer needs when it has its own authored enum, not what the adapter
-/// needs.
-///
 /// One of possibly several *kinds* of source (see
 /// [`ModSourceKind`](super::ModSourceKind)); it is the built-in one, and the
 /// only kind [`TuttiModulationPlugin`](super::TuttiModulationPlugin) registers
@@ -33,7 +28,8 @@ pub struct ModSource {
 }
 
 impl ModSource {
-    /// A source tracing `shape`, at [`ModSourceRate`]'s default rate.
+    /// Creates a source tracing `shape`. Its rate is the entity's
+    /// [`ModSourceRate`], which the entity must also carry.
     pub fn new(shape: LfoShape) -> Self {
         Self { shape }
     }
@@ -67,8 +63,8 @@ impl super::ModSourceKind for ModSource {
 /// Which clock a [`ModSource`] runs on, and its rate in that clock's own unit.
 ///
 /// Mirrors [`SourceClock`](tutti_mod::SourceClock). The two arms carry different
-/// units because the quantities are reciprocal — see that type for the two bugs
-/// the shared `Hz` produced.
+/// units because the quantities are reciprocal: a frequency, and a span in
+/// beats.
 ///
 /// Toggling a UI between the arms is a *mode change*, not a flag flip: there is
 /// no "the value" to carry across, because a rate in one arm is not a rate in
@@ -113,7 +109,7 @@ pub struct ModSourceRate {
 }
 
 impl ModSourceRate {
-    /// Locked to the transport, one cycle per `beats_per_cycle`.
+    /// Creates a rate locked to the transport, one cycle per `beats_per_cycle`.
     pub fn beat_synced(beats_per_cycle: impl Into<BeatDuration>) -> Self {
         Self {
             clock: ModClock::Synced {
@@ -123,7 +119,7 @@ impl ModSourceRate {
         }
     }
 
-    /// Free-running at `hz` cycles per second.
+    /// Creates a free-running rate of `hz` cycles per second.
     pub fn free_running(hz: impl Into<Hz>) -> Self {
         Self {
             clock: ModClock::Free { hz: hz.into() },
@@ -131,7 +127,7 @@ impl ModSourceRate {
         }
     }
 
-    /// Displace the generated phase by `offset`, leaving the clock untouched.
+    /// Displaces the generated phase by `offset`, leaving the clock untouched.
     ///
     /// Signed: this is what stereo-spreads two otherwise identical sources.
     pub fn with_phase_offset(mut self, offset: impl Into<PhaseIncrement>) -> Self {
@@ -177,18 +173,9 @@ pub struct ModRoute {
 
 /// How often a route's value reaches the param it drives.
 ///
-/// One axis, three points — **not** a set of flags. Delivery is a choice among
-/// alternatives, and the earlier pair of independent bools
-/// (`deliver_as_curve` + `at_audio_rate`) could express a fourth state that
-/// means nothing: both at once produced a graph chain *and* a per-frame driver
-/// edge, two writers racing over one param. That is the hazard
-/// [`ModulationMatrix`](super::ModulationMatrix)'s claim set exists to prevent,
-/// so it should not be representable one level out either.
-///
-/// The names say what actually differs — the **rate** — rather than naming an
-/// implementation ("curve") or a tier only an audio person parses ("audio
-/// rate"). They line up with the three sampling rates `tutti-mod` documents:
-/// one `Curve`, read at whatever rate the consumer needs.
+/// One axis, three points: a route is delivered exactly one way, so a param
+/// never has two modulation writers. The names say what differs, the
+/// **rate**; they line up with the three sampling rates `tutti-mod` documents.
 ///
 /// Every tier **falls back to [`PerFrame`](Self::PerFrame)** when its
 /// preconditions do not hold. Falling back is always correct — a coarser
@@ -219,8 +206,8 @@ pub enum ModDelivery {
     PerBlock,
     /// **Per sample.** Declares the route to the graph as a param modulation
     /// — the source's node, through the route's shaping, summed onto the
-    /// param's own control and clamped per frame by the graph (design doc 013
-    /// item 6); the driver never touches the param.
+    /// param's own control and clamped per frame by the graph; the driver
+    /// never touches the param.
     ///
     /// A different *mechanism* rather than a request, and its outcome is
     /// **observable**: the param either appears in
@@ -237,7 +224,8 @@ pub enum ModDelivery {
 }
 
 impl ModRoute {
-    /// A full-depth bipolar linear route — the common case.
+    /// Creates a full-depth, bipolar, linear, per-frame route — the common
+    /// case.
     pub fn new(source: Entity, target: Entity, param: ParamAddr) -> Self {
         Self {
             source,
@@ -251,7 +239,7 @@ impl ModRoute {
         }
     }
 
-    /// Choose how often this route's value reaches the param.
+    /// Chooses how often this route's value reaches the param.
     ///
     /// One setter for one axis, so picking a tier cannot leave a previous
     /// choice standing beside it.
@@ -260,29 +248,29 @@ impl ModRoute {
         self
     }
 
-    /// Sugar for [`ModDelivery::PerBlock`].
+    /// Delivers per block: shorthand for `deliver(ModDelivery::PerBlock)`.
     pub fn per_block(self) -> Self {
         self.deliver(ModDelivery::PerBlock)
     }
 
-    /// Sugar for [`ModDelivery::PerSample`].
+    /// Delivers per sample: shorthand for `deliver(ModDelivery::PerSample)`.
     pub fn per_sample(self) -> Self {
         self.deliver(ModDelivery::PerSample)
     }
 
-    /// Scale the source's contribution. Bipolar — negative inverts.
+    /// Scales the source's contribution. Bipolar — negative inverts.
     pub fn with_depth(mut self, depth: impl Into<Depth>) -> Self {
         self.depth = depth.into();
         self
     }
 
-    /// Map the source's swing bipolar or unipolar before `depth` scales it.
+    /// Maps the source's swing bipolar or unipolar before `depth` scales it.
     pub fn with_polarity(mut self, polarity: Polarity) -> Self {
         self.polarity = polarity;
         self
     }
 
-    /// Shape the response across the source's swing.
+    /// Shapes the response across the source's swing.
     pub fn with_curve(mut self, curve: CurveType) -> Self {
         self.curve = curve;
         self
@@ -322,7 +310,7 @@ pub struct ParamRange {
 }
 
 impl ModParamRange {
-    /// Declare `param` modulatable over `[min, max]`, sitting at `base`.
+    /// Declares `param` modulatable over `[min, max]`, sitting at `base`.
     pub fn with(mut self, param: ParamAddr, base: f32, min: f32, max: f32) -> Self {
         self.params.push(ParamRange {
             param,
@@ -333,7 +321,7 @@ impl ModParamRange {
         self
     }
 
-    /// The declared range for `param`, or `None` if it was never declared —
+    /// Returns the declared range for `param`, or `None` if it was never declared —
     /// which is what makes it unmodulatable.
     pub fn get(&self, param: ParamAddr) -> Option<&ParamRange> {
         self.params.iter().find(|p| p.param == param)

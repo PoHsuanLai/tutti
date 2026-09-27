@@ -1,15 +1,15 @@
 //! RT-safety and lifecycle conformance for the VST2 host.
 //!
-//! Two regressions:
+//! Two properties:
 //!
-//! 1. `update_transport` ran `time_info.store(Arc::new(Some(next)))` every
-//!    block — an allocation *and* a free inside the callback. Replaced by the
-//!    seqlock in `src/transport_cell.rs`.
-//! 2. `set_sample_rate` / `set_block_size` ran an unconditional
-//!    `suspend(); set(); resume()` with nothing tracking suspend state.
+//! 1. `update_transport` publishes the per-block transport snapshot without an
+//!    allocation *or* a free inside the callback (the seqlock in
+//!    `src/transport_cell.rs`).
+//! 2. `set_sample_rate` / `set_block_size` bracket the change with an
+//!    edge-triggered suspend/resume that tracks suspend state.
 //!
-//! The gate proves only that the *allocation* is gone. It does not prove the
-//! RT-publishing property CLAUDE.md describes, and cannot: that hazard is a
+//! The gate proves only that there is no *allocation*. It does not prove the
+//! full RT-publishing property (no reader ever frees), and cannot: that hazard is a
 //! race no sampling schedule exhausts. What stands in for it is structural —
 //! the value is overwritten in place, so nothing is retired for a reader to
 //! free. The concurrent-reader torture test lives in `transport_cell.rs`,
@@ -106,9 +106,8 @@ where
     // write is discarded with the unload and the next load maps a fresh image
     // reading the default.
     //
-    // Measured on this bug in `vst2_latency.rs`: 2 of 6 runs failed without
-    // this, 0 of 6 with it. It reads as flakiness because it passes whenever
-    // another test's instance happens to keep the image resident.
+    // Without the leak the lost write reads as flakiness, because it passes
+    // whenever another test's instance happens to keep the image resident.
     std::mem::forget(lib);
     r
 }
@@ -327,9 +326,9 @@ fn process_f32_with_midi_does_not_allocate() {
 /// and must leave it suspended.
 ///
 /// The plugin must be suspended on entry for this to bite: back-to-back
-/// reconfigures of a *resumed* plugin produced one balanced pair each even
-/// pre-fix and looked correct. Only from suspended did the old code dispatch a
-/// second `effMainsChanged(0)` and then silently resume on the way out.
+/// reconfigures of a *resumed* plugin produce one balanced pair each even with
+/// an unconditional bracket. Only from suspended would such a bracket dispatch
+/// a second `effMainsChanged(0)` and then silently resume on the way out.
 ///
 /// Counters come from the probe, so this asserts what crossed the FFI seam
 /// rather than trusting the host's own flag.
@@ -374,8 +373,7 @@ fn reconfigure_while_suspended_does_not_double_suspend_or_silently_resume() {
 }
 
 /// `suspend` / `resume` must be idempotent: a redundant call dispatches
-/// nothing across the FFI seam. Nothing tracked suspend state before the fix,
-/// so every call was dispatched unconditionally.
+/// nothing across the FFI seam.
 #[test]
 fn repeated_suspend_and_resume_are_idempotent() {
     let _guard = lock_probe();

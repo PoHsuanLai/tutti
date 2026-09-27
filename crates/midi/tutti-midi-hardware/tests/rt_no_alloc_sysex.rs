@@ -85,7 +85,7 @@ fn buffering_a_run_in_flight_is_allocation_free() {
 /// An overflowing run — the lost-`0xF7` fault path — allocates nothing either.
 ///
 /// Worth its own gate because it is the path a *misbehaving* device drives, and
-/// the one where an uncapped buffer used to grow without bound. Discarding must
+/// the one where an uncapped buffer would grow without bound. Discarding must
 /// not itself allocate, or a fault becomes a second fault.
 #[test]
 fn an_overflowing_run_is_allocation_free() {

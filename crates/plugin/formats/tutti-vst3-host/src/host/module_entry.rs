@@ -37,7 +37,7 @@ pub(crate) struct ModuleEntry {
     inner: platform::Entry,
 }
 
-/// Build the [`Vst3Error::LoadFailed`] every failure below reports: module
+/// Builds the [`Vst3Error::LoadFailed`] every failure below reports: module
 /// entry runs while the DSO is being opened, so the stage is always
 /// [`LoadStage::Opening`].
 fn load_failed(lib_path: &Path, reason: impl Into<String>) -> Vst3Error {
@@ -66,7 +66,7 @@ impl Drop for ModuleEntry {
     }
 }
 
-/// Resolve `name` as a function symbol in `library`, or `None` if the module
+/// Resolves `name` as a function symbol in `library`, or `None` if the module
 /// doesn't export it. A missing entry/exit point is a supported case.
 fn symbol<'a, T>(
     library: &'a libloading::Library,
@@ -97,7 +97,7 @@ mod platform {
         exit: Option<BundleExitFn>,
     }
 
-    /// Walk up from the inner Mach-O (`Foo.vst3/Contents/MacOS/Foo`) to the
+    /// Walks up from the inner Mach-O (`Foo.vst3/Contents/MacOS/Foo`) to the
     /// `.vst3` bundle directory it lives in. Returns `None` for a bare dylib
     /// with no surrounding bundle.
     pub(super) fn bundle_dir(lib_path: &Path) -> Option<&Path> {
@@ -106,7 +106,7 @@ mod platform {
             .find(|p| p.extension().is_some_and(|e| e == "vst3") && p.is_dir())
     }
 
-    /// Build a `CFBundleRef` for a `.vst3` bundle directory, or `None` if
+    /// Builds a `CFBundleRef` for a `.vst3` bundle directory, or `None` if
     /// CoreFoundation rejects the path or cannot open it as a bundle.
     ///
     /// Ownership follows the CoreFoundation Create Rule: the returned reference

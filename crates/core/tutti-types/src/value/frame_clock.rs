@@ -4,7 +4,7 @@
 //! the graph's `Env::for_each_beat` and `Env::transport_at`, all walk with
 //! it.
 //!
-//! Doc 013 §6, "the frame is the source of truth". A clock that adds
+//! The frame is the source of truth. A clock that adds
 //! `beats_per_sample` to its beat, per frame or per block, drifts: at 90 BPM
 //! and 48 kHz frame 96 000 is exactly beat 3, and the sum reads
 //! `2.999999999999891` after 1 500 chunks of 64 frames. A clip placed at
@@ -15,9 +15,20 @@
 //! integer frame, on a seek, a tempo or rate change and a loop wrap; a
 //! stopped transport simply does not count. So the beat at a frame is the
 //! same `f64` whether the clock got there one frame at a time (the graph's
-//! `Env::for_each_beat`, and a `Net`'s `TransportClock` before it) or a block at a time (the graph
-//! engine's walk, the offline timeline): they emit the same beats, bit for
-//! bit, by construction rather than by agreeing to rounding.
+//! `Env::for_each_beat`) or a block at a time (the engine's walk, the offline
+//! timeline): they emit the same beats, bit for bit, by construction rather
+//! than by agreeing to rounding.
+//!
+//! ```
+//! use tutti_types::{Beat, Bpm, FrameClock, SampleRate, Samples};
+//!
+//! let mut clock = FrameClock::new(Beat(0.0), Bpm(90.0), SampleRate(48_000.0));
+//! for _ in 0..1_500 {
+//!     clock.advance(Samples(64), None);
+//! }
+//! // 96 000 frames at 90 BPM is exactly beat 3, with no accumulated drift.
+//! assert_eq!(clock.beat(), Beat(3.0));
+//! ```
 
 use super::frame::Frame;
 use super::samples::Samples;
@@ -37,43 +48,44 @@ pub struct LoopRange {
 }
 
 impl LoopRange {
-    /// Build a region, or `None` if it is empty or inverted.
+    /// Creates a region, or returns `None` if it is empty or inverted.
     pub fn new(start: impl Into<Beat>, end: impl Into<Beat>) -> Option<Self> {
         let (start, end) = (start.into(), end.into());
         (end > start).then_some(Self { start, end })
     }
 
-    /// First beat of the region, inclusive.
+    /// Returns the first beat of the region, inclusive.
     #[inline]
     pub fn start(&self) -> Beat {
         self.start
     }
 
-    /// One past the last beat of the region, exclusive.
+    /// Returns the end of the region, exclusive.
     #[inline]
     pub fn end(&self) -> Beat {
         self.end
     }
 
-    /// Length in beats. Always positive, by construction.
+    /// Returns the length in beats; always positive, by construction.
     #[inline]
     pub fn len(&self) -> BeatDuration {
         self.end - self.start
     }
 
-    /// Whether `beat` falls in `[start, end)`. The end beat is *not* contained
-    /// — it is the first beat of the next pass.
+    /// Returns whether `beat` falls in `[start, end)`.
+    ///
+    /// The end beat is *not* contained: it is the first beat of the next pass.
     #[inline]
     pub fn contains(&self, beat: Beat) -> bool {
         beat >= self.start && beat < self.end
     }
 
-    /// Where a playhead that moved forward from `from` to `to` lands under
-    /// this loop: wrapped back into the region when the move crossed the end,
-    /// and **unchanged when `from` was already at or past the end**.
+    /// Returns where a playhead that moved forward from `from` to `to` lands
+    /// under this loop: wrapped back into the region when the move crossed the
+    /// end, and **unchanged when `from` was already at or past the end**.
     ///
     /// Arming a loop whose end is at or behind the playhead does not jump
-    /// (the common DAW behaviour, and doc 013's decision): the loop takes
+    /// (the common DAW behaviour): the loop takes
     /// effect once the playhead is inside it, by a seek or by playing into it
     /// from before `start`. The graph reads a transport the same way
     /// (`tutti_graph::Env::due` treats a playhead at or past the loop end as
@@ -87,7 +99,9 @@ impl LoopRange {
         }
     }
 
-    /// Wrap `beat` back into the region, preserving overshoot.
+    /// Wraps `beat` back into the region, preserving overshoot.
+    ///
+    /// A beat below the end is returned unchanged.
     ///
     /// The remainder needs no zero guard because `len()` is positive by
     /// construction. `rem_euclid` rather than `%` so a beat below `start` wraps
@@ -111,9 +125,10 @@ impl LoopRange {
 }
 
 /// Where a counted playhead is: the beat at its current segment's first
-/// frame, the frames rolled since, and the rate they are counted at. What a
-/// [`FrameClock`] reports ([`FrameClock::origin`]) and rebuilds from
-/// ([`FrameClock::from_origin`], with the tempo it moves at); what a
+/// frame, the frames rolled since, and the rate they are counted at.
+///
+/// What a [`FrameClock`] reports ([`FrameClock::origin`]) and rebuilds from
+/// ([`FrameClock::from_origin`], with the tempo it moves at), and what a
 /// graph block's transport carries, so a node continues the host's clock
 /// with the host's arithmetic.
 ///
@@ -131,8 +146,10 @@ pub struct SegmentOrigin {
     pub sample_rate: SampleRate,
 }
 
-/// A playhead as a frame count on a [`TimelineSegment`]. See the
-/// [module docs](self).
+/// A playhead kept as a frame count on a [`TimelineSegment`], with its beat
+/// derived in closed form.
+///
+/// See the [module docs](self) for why the frame, not the beat, is counted.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameClock {
     /// The segment the beat is derived from, on this clock's frame count.
@@ -147,7 +164,8 @@ pub struct FrameClock {
 }
 
 impl FrameClock {
-    /// A clock at `beat`, at `tempo` and `sample_rate`.
+    /// Creates a clock at `beat`, moving at `tempo`, counting frames at
+    /// `sample_rate`.
     pub fn new(beat: Beat, tempo: Bpm, sample_rate: SampleRate) -> Self {
         Self {
             segment: TimelineSegment::new(Frame::ZERO, beat, tempo, sample_rate),
@@ -156,10 +174,10 @@ impl FrameClock {
         }
     }
 
-    /// The clock `origin` describes, moving at `tempo`: its segment, at the
-    /// frame the origin was taken on. A host's clock rebuilt from its own
-    /// snapshot (`origin()`) continues with the same arithmetic, so it lands
-    /// on the same bits the host does.
+    /// Rebuilds the clock `origin` describes, moving at `tempo`.
+    ///
+    /// A host's clock rebuilt from its own snapshot (`origin()`) continues
+    /// with the same arithmetic, so it lands on the same bits the host does.
     pub fn from_origin(origin: SegmentOrigin, tempo: Bpm) -> Self {
         Self {
             segment: TimelineSegment::new(Frame::ZERO, origin.beat, tempo, origin.sample_rate),
@@ -168,25 +186,25 @@ impl FrameClock {
         }
     }
 
-    /// The beat, in closed form from the segment's origin.
+    /// Returns the beat, in closed form from the segment's origin.
     #[inline]
     pub fn beat(&self) -> Beat {
         self.segment.beat_at(self.at)
     }
 
-    /// The tempo the beat moves at.
+    /// Returns the tempo the beat moves at.
     #[inline]
     pub fn tempo(&self) -> Bpm {
         self.segment.tempo
     }
 
-    /// The rate frames are counted at.
+    /// Returns the rate frames are counted at.
     #[inline]
     pub fn sample_rate(&self) -> SampleRate {
         self.segment.sample_rate
     }
 
-    /// Where the beat is counted from, for a transport snapshot: the
+    /// Returns where the beat is counted from, for a transport snapshot: the
     /// segment's origin beat, the frames rolled since it, and the rate they
     /// are counted at.
     pub fn origin(&self) -> SegmentOrigin {
@@ -199,13 +217,15 @@ impl FrameClock {
         }
     }
 
-    /// Jump to `beat`: a new segment from this frame.
+    /// Jumps to `beat`, starting a new segment at this frame.
     pub fn seat(&mut self, beat: Beat) {
         self.restart(beat);
     }
 
-    /// Move at `tempo` from this frame on. A new segment only when it
-    /// differs, so an unchanged tempo leaves the arithmetic untouched.
+    /// Moves at `tempo` from this frame on.
+    ///
+    /// Starts a new segment only when the tempo differs, so an unchanged tempo
+    /// leaves the arithmetic untouched.
     pub fn set_tempo(&mut self, tempo: Bpm) {
         if tempo != self.segment.tempo {
             self.restart(self.beat());
@@ -213,7 +233,7 @@ impl FrameClock {
         }
     }
 
-    /// Count frames at `sample_rate` from this frame on, the beat held.
+    /// Counts frames at `sample_rate` from this frame on, holding the beat.
     pub fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         if sample_rate != self.segment.sample_rate {
             self.restart(self.beat());
@@ -221,7 +241,7 @@ impl FrameClock {
         }
     }
 
-    /// Which stretch of straight-line time the beat is on: a count that
+    /// Returns which stretch of straight-line time the beat is on: a count that
     /// moves on at every discontinuity — a [`seat`](Self::seat) (a seek,
     /// even to the beat already there), a tempo or rate change that starts
     /// a segment, a loop wrap inside [`advance`](Self::advance), and a
@@ -242,10 +262,12 @@ impl FrameClock {
         self.generation
     }
 
-    /// The transport started rolling from here: a discontinuity for a
-    /// reader (it was not reading a moving playhead a moment ago) though
-    /// not for the arithmetic, so the generation moves on and the segment
-    /// does not restart.
+    /// Records that the transport started rolling from here.
+    ///
+    /// A discontinuity for a reader (it was not reading a moving playhead a
+    /// moment ago) though not for the arithmetic, so the
+    /// [`generation`](Self::generation) moves on and the segment does not
+    /// restart.
     pub fn mark_play_start(&mut self) {
         self.generation = self.generation.wrapping_add(1);
     }
@@ -257,7 +279,7 @@ impl FrameClock {
         self.generation = self.generation.wrapping_add(1);
     }
 
-    /// Roll `frames` forward, wrapping at `looping`.
+    /// Rolls `frames` forward, wrapping at `looping`.
     ///
     /// A wrap happens on the first frame whose beat reaches the loop's end,
     /// and only for a playhead that was before it: a loop armed behind the
@@ -381,7 +403,7 @@ mod tests {
         }
     }
 
-    /// The reviewer's figures: at 90 BPM / 48 kHz, 1 500 chunks of 64 frames
+    /// At 90 BPM / 48 kHz, 1 500 chunks of 64 frames
     /// is beat 3 and 500 is beat 1, exactly, where an accumulated playhead
     /// reads 2.999999999999891 and 1.0000000000000007.
     ///

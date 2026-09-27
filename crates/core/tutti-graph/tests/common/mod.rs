@@ -96,7 +96,7 @@ pub enum Kind {
         events_in: u16,
         events_out: u16,
     },
-    /// A spec-driven node for the ported shapes: `dc`/`gain`/`sum`/`fan`
+    /// A spec-driven node for the fixed compile shapes: `dc`/`gain`/`sum`/`fan`
     /// behaviour with a *declared* latency and tail it does not realise.
     Spec {
         behaviour: SpecBehaviour,

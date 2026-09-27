@@ -3,21 +3,19 @@
 //!
 //! # What this exists to catch
 //!
-//! The bug this whole change addresses was that per-plugin waits *summed*.
-//! fundsp ran nodes serially in one callback (the graph's serial executor
-//! does too), so N stalled plugins cost N x
-//! budget, and 3 was enough to overrun 64 frames at 48 kHz. The synthetic
-//! `stalled_plugins_do_not_stall_the_audio_thread` test proves the waiting is
-//! gone using mock servers; this proves it with **real plugin subprocesses**,
+//! Per-plugin waits on the audio thread would *sum*: the graph's serial
+//! executor runs nodes one after another in one callback, so N stalled plugins
+//! would cost N x budget, and 3 is enough to overrun 64 frames at 48 kHz. The
+//! synthetic `stalled_plugins_do_not_stall_the_audio_thread` test proves
+//! nothing waits using mock servers; this proves it with **real plugin
+//! subprocesses**,
 //! which the mock cannot model: real scheduling, real dlopen'd DSP, real
 //! shared-memory traffic, real socket round-trips.
 //!
-//! **These used to be `#[ignore]`d for needing plugins installed, and were
-//! therefore run nowhere** — not locally on Linux, not in CI. `EFFECTS` names
-//! macOS system paths, so on a bare checkout the only harness measuring the
-//! out-of-process bridge executed zero assertions. `load_n` now falls back to
-//! the **reference CLAP probe**, which cargo builds as a dev-dependency, so
-//! they run anywhere the `clap` feature is on:
+//! `EFFECTS` names macOS system paths, so on a bare checkout no installed
+//! plugin is found. `load_n` then falls back to the **reference CLAP probe**,
+//! which cargo builds as a dev-dependency, so these run anywhere the `clap`
+//! feature is on:
 //!
 //! ```text
 //! cargo build -p tutti-plugin-server
@@ -74,8 +72,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// Planar scratch, `channels` × [`BLOCK`] frames: what this harness fills and
-/// measures. (fundsp's `BufferVec`, `BLOCK` = its 64 frames, until design doc
-/// 013 Phase 5 deleted it.)
+/// measures.
 struct Planes(Vec<Vec<f32>>);
 
 impl Planes {
@@ -97,8 +94,8 @@ impl Planes {
 /// A loaded plugin as the only node of a graph, driven with the
 /// buffer types this suite fills and measures (`fill_sine`, `peak`).
 ///
-/// The plugin node is a `tutti_graph` node now, not an `AudioUnit`: a block
-/// reaches it through the executor, with the `Env` the engine would give it.
+/// A block reaches the plugin node through the executor, with the `Env` the
+/// engine would give it.
 /// The global inputs feed its inputs, its outputs feed the global outputs.
 struct GraphUnit {
     renderer: tutti_graph::Renderer,
@@ -214,27 +211,15 @@ impl GraphUnit {
 
 /// Take the machine, **across processes**.
 ///
-/// This was a `static Mutex`, and under `cargo nextest` a `static Mutex`
-/// serializes nothing: nextest gives every test its own *process*, so a
-/// process-local lock is uncontended in each one and the tests run fully
-/// parallel anyway. `clap_probe.rs` had already learned this and answered it
-/// with a lock directory — `create_dir` is atomic and fails with
-/// `AlreadyExists` on every OS this builds for — while this file kept the
-/// `Mutex` and a doc describing `cargo test`'s threading model, which is not
-/// the model this repo runs under.
+/// Under `cargo nextest` a `static Mutex` serializes nothing: nextest gives
+/// every test its own *process*, so a process-local lock is uncontended in
+/// each one. This uses `clap_probe.rs`'s lock directory instead — `create_dir`
+/// is atomic and fails with `AlreadyExists` on every OS this builds for.
 ///
-/// It went unnoticed because every test here was `#[ignore]`d. The first CI
-/// run after they were enabled failed exactly there:
-/// `repeated_load_and_drop_leaves_no_subprocesses` counts `plugin-server`
-/// processes **system-wide**, and its "before" count came back 5 rather than
-/// 0 — the three neighbouring tests' subprocesses, live in their own
-/// processes. It reported a leak that was a race.
-///
-/// What still needs serializing is wall clock, which is process-global: each
-/// test paces itself to a real block period, so neighbours halve the time each
-/// subprocess gets. The process count no longer does. The leak test now
-/// probes only the pids it launched itself, so a neighbour's servers are
-/// invisible to it.
+/// What needs serializing is wall clock, which is process-global: each test
+/// paces itself to a real block period, so neighbours halve the time each
+/// subprocess gets. The process count does not: the leak test probes only the
+/// pids it launched itself, so a neighbour's servers are invisible to it.
 #[cfg(feature = "clap")]
 fn exclusive() -> clap_probe::cross_process_lock::Guard {
     clap_probe::exclusive()
@@ -367,8 +352,8 @@ fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::Pl
     let mut handles = Vec::with_capacity(count);
     for i in 0..count {
         let path = paths[i % paths.len()];
-        // `Plugin::open` infers the format from the path, so this no longer
-        // dispatches on the extension itself. `available_effects` has already
+        // `Plugin::open` infers the format from the path, so this does not
+        // dispatch on the extension itself. `available_effects` has already
         // filtered to what is installed, and the whole function is cfg'd on the
         // formats `EFFECTS` can name.
         let built = tutti_plugin::catalog::Plugin::open(path, SAMPLE_RATE).map(|plugin| {
@@ -381,11 +366,9 @@ fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::Pl
                 handles.push(handle);
             }
             // A plugin that is *installed* but will not load is a failure, not a
-            // reason to skip. Skipping here made every test in this file report
-            // `ok` while loading nothing and asserting nothing — which is how a
-            // server-side regression that broke plugin loading outright went
-            // unnoticed through a full run. "Absent" and "broken" are different
-            // answers and only the first is a skip.
+            // reason to skip. Skipping here would make every test in this file
+            // report `ok` while loading nothing and asserting nothing. "Absent"
+            // and "broken" are different answers and only the first is a skip.
             Err(e) => panic!(
                 "instance {i} ({path}) is installed but failed to load: {e}\n\
                  This is a real failure. If the plugin is genuinely unavailable, \
@@ -438,7 +421,7 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
 
         // Every unit gets the SAME input and is processed one after another —
         // the arrangement the serial executor produces for parallel plugins on
-        // separate tracks, and precisely the one whose per-node waits used to
+        // separate tracks, and precisely the one whose per-node waits would
         // sum inside a single callback.
         //
         // Deliberately not chained output-to-input. Chaining looks like the
@@ -592,7 +575,7 @@ fn eight_real_plugins_stay_under_the_callback_deadline() {
     // this a flake generator that tells us nothing about the design.
     //
     // The median is what distinguishes the two designs, and it does so by an
-    // order of magnitude. Eight plugins under the old summing budget could not
+    // order of magnitude. Eight plugins under a summing wait budget could not
     // come in under 8 x 667 us = 5333 us by construction; pipelined, the per-
     // block cost is memcpy plus a queue push. Measured across runs: 187-554 us
     // median for eight, i.e. ~23-70 us each.
@@ -784,7 +767,7 @@ fn repeated_load_and_drop_leaves_no_subprocesses() {
     // No `available_effects()` guard: subprocess teardown is the same code
     // whatever is loaded into it, so the reference probe exercises this
     // exactly as a third-party plugin does — and `load_n` falls back to it.
-    // The guard used to skip this test on every machine without plugins
+    // A guard would skip this test on every machine without plugins
     // installed, which is every bare checkout.
     let mut launched = Vec::new();
     for round in 0..8 {
@@ -845,8 +828,8 @@ const PASSTHROUGH_VST3: &str = "/Library/Audio/Plug-Ins/VST3/TDR Nova.vst3";
 ///
 /// Worth testing separately rather than trusting the VST3 result: it is a
 /// different format host, a different loader, and a different parameter/latency
-/// path in `tutti-plugin-server`. AU had no real-plugin coverage at all before
-/// this, despite an AU-specific NaN bug being one of the audit's findings.
+/// path in `tutti-plugin-server`, and AU has had format-specific bugs (NaN
+/// output) of its own.
 #[cfg(feature = "au")]
 const PASSTHROUGH_AU: &str = "/Library/Audio/Plug-Ins/Components/TDR Nova.component";
 

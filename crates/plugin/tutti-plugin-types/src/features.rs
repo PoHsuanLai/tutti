@@ -8,21 +8,17 @@
 //! this" and "so send it" — there is no plugin that can consume a thing yet
 //! should not be sent it, so capability and want collapse to one bit.
 //!
-//! Numeric wiring (bus widths, latency samples) is NOT here — that is the
-//! `Limits` half, and lives on [`crate::LoadedPlugin`] as plain fields. Only
-//! flags that are *not* recoverable from those numbers are stored here;
-//! `multi_bus` / `latency` stay derived methods on `LoadedPlugin`.
+//! Numeric wiring (bus widths, latency samples) is not here: it lives on
+//! [`LoadedPlugin`](crate::LoadedPlugin) as plain fields, with
+//! [`multi_bus`](crate::LoadedPlugin::multi_bus) and
+//! [`latency`](crate::LoadedPlugin::latency) derived from them.
 //!
-//! The `Serialize`/`Deserialize` derives are gated behind the `serde` feature
-//! (the IPC wire path enables it), and serialize as the underlying bits.
+//! With the `serde` feature, [`Features`] serializes as its underlying bits.
 //!
-//! This is a fixed list of the functionality the engine supports — not a
-//! superset of what the formats emit. The three kinds
-//! (Required / Negotiated / Best-effort)
-//! and the per-format capability table live in the `tutti-plugin` crate README
-//! (`## Capability model`). Keep that table in sync with the per-format loaders
-//! in `tutti-plugin-server/src/loaders/`, which are the source of truth for what
-//! each format actually reports.
+//! This is a fixed list of the functionality the engine supports, not a
+//! superset of what the formats emit. The capability kinds (required,
+//! negotiated, best-effort, reaction) and the per-format capability table are
+//! in the `tutti-plugin` crate documentation, under *Capability model*.
 
 use bitflags::bitflags;
 
@@ -30,14 +26,16 @@ use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 
 bitflags! {
-    /// The capabilities a loaded plugin reports. Filled at load time by the
-    /// per-format loader (live-probed where the format exposes a query).
+    /// The capabilities a loaded plugin reports.
+    ///
+    /// Filled at load time by the per-format loader, live-probed where the
+    /// format exposes a query. See [`FeatureReport`] for telling a declined
+    /// capability from one that was never asked.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
     #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
     pub struct Features: u16 {
         // --- Audio (negotiated) ---
         /// Plugin negotiated 64-bit sample processing at activation.
-        /// (Was `LoadedPlugin::supports_f64`.)
         const F64_AUDIO = 1 << 0;
 
         // --- MIDI (negotiated) ---
@@ -78,15 +76,13 @@ bitflags! {
         /// Plugin can enumerate its own presets by name.
         ///
         /// Two bits rather than one because the formats split exactly here:
-        /// AU answers both, CLAP answers only [`Features::PRESET_LOAD`] (its
-        /// preset *discovery* is a separate extension, unbound here), so one
-        /// combined bit could not describe CLAP without either over- or
-        /// under-claiming.
+        /// VST2, VST3 and AU answer both, CLAP answers only
+        /// [`Features::PRESET_LOAD`] (its preset *discovery* is a separate
+        /// extension, unbound here), so one combined bit could not describe
+        /// CLAP without either over- or under-claiming.
         ///
-        /// VST3 sets neither, and that absence is an answer rather than a gap:
-        /// a VST3 program is an ordinary parameter carrying
-        /// `kIsProgramChange`, selected through the parameter path like any
-        /// other value. There is no second mechanism for a bit to describe.
+        /// VST3 sets both when the plugin publishes program lists; loading
+        /// writes the parameter flagged `kIsProgramChange` that owns the list.
         const PRESET_LIST = 1 << 10;
         /// Host can ask the plugin to load one of its presets.
         ///
@@ -137,10 +133,10 @@ bitflags! {
 }
 
 impl Features {
-    /// The best-effort set the engine gates per-block sends on. Making the
-    /// bucket a named mask (rather than a doc comment on scattered fields) is
-    /// the anti-hybrid guarantee: the send path reads
-    /// `features.intersection(Features::CONSUMES)`, never a format name.
+    /// The best-effort set the engine gates per-block sends on.
+    ///
+    /// The send path reads `features.intersection(Features::CONSUMES)`, never a
+    /// format name.
     pub const CONSUMES: Features = Features::TRANSPORT
         .union(Features::PARAM_AUTOMATION)
         .union(Features::NOTE_EXPRESSION)
@@ -161,9 +157,8 @@ impl Features {
 /// single mask-and-compare.
 ///
 /// The distinction between "the host has not implemented it" and "the format
-/// cannot" is
-/// the `○` / `✕` split in the per-format capability table in the `tutti-plugin`
-/// README. Both are absent from `probed`, because both mean the same thing to a
+/// cannot" is the `○` / `✕` split in the per-format capability table in the
+/// `tutti-plugin` crate documentation. Both are absent from `probed`, because both mean the same thing to a
 /// consumer: no plugin answered. Which of the two it is belongs in that table,
 /// next to the reason — not duplicated in a runtime bit that would go stale the
 /// moment a loader grows the missing path.
@@ -178,7 +173,7 @@ pub struct FeatureReport {
 }
 
 impl FeatureReport {
-    /// Record `features` as the answers to the `probed` capabilities.
+    /// Records `features` as the answers to the `probed` capabilities.
     ///
     /// Takes both together so a loader cannot report a bit it never probed, nor
     /// probe a bit it left unset — the same constructor discipline as
@@ -190,14 +185,14 @@ impl FeatureReport {
         }
     }
 
-    /// Every capability probed, with the given answers. For a loader that asks
-    /// the whole set.
+    /// Creates a report in which every capability was probed, with the given
+    /// answers.
     pub fn all_probed(features: Features) -> Self {
         Self::new(Features::all(), features)
     }
 
-    /// `Some(true)`/`Some(false)` when the loader probed this capability,
-    /// [`None`] when it did not.
+    /// Returns `Some(answer)` when the loader probed this capability, [`None`]
+    /// when it did not.
     ///
     /// Pass exactly one bit; a multi-bit query answers whether *all* of them
     /// were probed and set.
@@ -205,8 +200,8 @@ impl FeatureReport {
         self.probed.contains(f).then(|| self.features.contains(f))
     }
 
-    /// The conservative read the per-block send-gate uses: an unprobed
-    /// capability is not sent.
+    /// Returns whether the capability is set, treating an unprobed capability as
+    /// absent.
     ///
     /// Distinct from [`get`](Self::get) by intent — this is for the hot path,
     /// which has no way to act on "unknown" and must pick a side. `features` is
@@ -229,25 +224,24 @@ pub mod probed {
     //! what a loader probes should be readable, diffable, and testable without
     //! one.
     //!
-    //! They live here, beside [`Features`], because two crates build the same
-    //! format's report: `tutti-plugin-server` loads VST2 out of process and
-    //! `tutti-plugin` loads it in process. Those answer the same five questions,
-    //! and a second copy of the list is the drift this module exists to prevent.
+    //! They live beside [`Features`] because two crates build the same format's
+    //! report: `tutti-plugin-server` loads VST2 out of process and
+    //! `tutti-plugin` loads it in process, and both must name the same list.
     //!
     //! A bit absent here means the loader did not ask. *Why* it did not — the
     //! format has no query, or this codebase has not implemented the path — is
-    //! the `✕` / `○` split in the `tutti-plugin` README capability table. That
+    //! the `✕` / `○` split in the `tutti-plugin` capability table. That
     //! distinction is documentation, not a runtime bit: it describes the host,
     //! not the plugin, and would go stale the moment a loader grows the missing
     //! path.
 
     use super::Features;
 
-    /// VST3 probes everything except `AUTOMATION_STATE`, which no loader sets.
+    /// VST3 probes everything except `AUTOMATION_STATE` and `EDITOR_FLOATING`.
     ///
-    /// The preset bits are *answered*, not skipped: VST3 routes program
-    /// selection through a parameter flagged `kIsProgramChange`, so there is no
-    /// separate preset mechanism to report. Both bits are probed and clear.
+    /// Both preset bits are answered from one question — does the plugin
+    /// publish program lists — because a VST3 program is loaded by writing the
+    /// `kIsProgramChange` parameter that owns its list.
     ///
     /// `RENDER_MODE` is answered unconditionally: `processMode` is a field on
     /// the `ProcessSetup` every VST3 plugin is configured with, so there is no
@@ -261,8 +255,11 @@ pub mod probed {
         .difference(Features::AUTOMATION_STATE)
         .difference(Features::EDITOR_FLOATING);
 
-    /// CLAP probes everything except sequencer context (no chord/scale events in
-    /// the spec), `AUTOMATION_STATE`, and `PRESET_LIST`.
+    /// CLAP probes everything except `SEQUENCER_CONTEXT`, `AUTOMATION_STATE`
+    /// and `PRESET_LIST`.
+    ///
+    /// The spec has no chord or scale events, so there is no sequencer context
+    /// to ask about.
     ///
     /// `PRESET_LIST` is unprobed rather than declined: CLAP enumerates presets
     /// through the preset-*discovery* extension, which is a factory-level query
@@ -281,7 +278,9 @@ pub mod probed {
         .difference(Features::AUTOMATION_STATE)
         .difference(Features::PRESET_LIST);
 
-    /// VST2 answers eight, in or out of process. It has no query for editor
+    /// VST2 answers eight, in or out of process.
+    ///
+    /// It has no query for editor
     /// resize, note expression, or sequencer context, and neither loader probes
     /// `effCanDo` for sample-accurate automation.
     ///
@@ -304,8 +303,9 @@ pub mod probed {
         .union(Features::PRESET_LOAD);
 
     /// AU answers five: MIDI input, the editor, both preset bits, and the render
-    /// mode. The rest
-    /// are unimplemented in this host, not declined by the units.
+    /// mode.
+    ///
+    /// The rest are unimplemented in this host, not declined by the units.
     ///
     /// `MIDI_IN` is answered from the component type — an AU is an instrument,
     /// music effect or MIDI processor, or it is not — which is the same
@@ -336,10 +336,9 @@ mod tests {
 
     /// "The plugin said no" and "nobody asked" are different answers.
     ///
-    /// The AU loader determines exactly one capability (`EDITOR`); the other
-    /// nine are unimplemented host-side. Without the `probed` mask its
-    /// `Features::empty()` is indistinguishable from a plugin that was asked
-    /// all ten and declined.
+    /// A loader that probes only `EDITOR` leaves every other capability
+    /// unanswered. Without the `probed` mask its clear bits are
+    /// indistinguishable from a plugin that was asked and declined.
     #[test]
     fn an_unprobed_capability_is_not_a_declined_one() {
         let au = FeatureReport::new(Features::EDITOR, Features::EDITOR);
@@ -417,9 +416,8 @@ mod tests {
     }
 
     /// Each loader's claim, pinned. These are assertions about this codebase's
-    /// own coverage,
-    /// so they change only when a loader grows or loses a probe — at which point
-    /// the README capability table needs the same edit.
+    /// own coverage, so they change only when a loader grows or loses a probe —
+    /// at which point the README capability table needs the same edit.
     #[test]
     fn each_loader_claims_only_what_it_probes() {
         assert_eq!(
@@ -523,10 +521,8 @@ mod tests {
         assert!(probed::AU.contains(Features::PRESET_LOAD));
     }
 
-    /// VST3's clear preset bits are an answer, not a gap. Its programs are
-    /// ordinary parameters carrying `kIsProgramChange`, reached through the
-    /// parameter path, so there is no second mechanism to report. If a bit ever
-    /// gets set here, something has invented a preset API VST3 does not have.
+    /// VST3 probes both preset bits, so a plugin without program lists reads as
+    /// a refusal rather than as an unasked question.
     #[test]
     fn vst3_answers_that_it_has_no_separate_preset_mechanism() {
         let probed_both = probed::VST3.contains(Features::PRESET_LIST | Features::PRESET_LOAD);

@@ -1,32 +1,23 @@
-//! Where a plugin bundle keeps its loadable module, and how to find it.
+//! Locating the loadable module inside a `.vst3` / `.vst` bundle directory.
 //!
-//! A `.vst3` / `.vst` bundle is a *directory*: the module sits at
-//! `Contents/<arch>/<name>`, where `<arch>` names the platform and CPU and the
-//! extension differs per platform and per format. Every host and every test
-//! that wants the module has to walk that layout.
+//! A bundle is a *directory*: the module sits at `Contents/<arch>/<name>`,
+//! where `<arch>` names the platform and CPU and the extension differs per
+//! platform and per format. Getting the walk wrong fails silently — `None` is
+//! indistinguishable from "this is not a bundle" — so every host and test that
+//! needs the module should use these functions rather than its own walk. They
+//! also skip the import libraries (`.lib`) a Windows linker drops beside the
+//! module.
 //!
-//! **This module exists because eight near-copies of that walk had drifted
-//! apart.** They disagreed about which arch directories to look in — four
-//! omitted `aarch64-linux`, all eight omitted the three `arm64*-win` spellings
-//! the production resolver handled — and the failure mode of getting it wrong
-//! is silence: the walk returns `None`, which is indistinguishable from "this
-//! is not a bundle". One of those copies also handed the loader a `.lib`,
-//! because on Windows the linker drops import libraries beside the module and
-//! `read_dir` order is arbitrary; that cost thirteen test failures whose
-//! message said the plugin was broken.
-//!
-//! # Two traversals, deliberately
+//! # Two traversals
 //!
 //! [`native_module_in_bundle`] probes only the directories *this* target can
 //! load from. That is what a host wants: loading a foreign-arch binary fails at
 //! `dlopen`/`LoadLibrary` anyway, and reporting "no module" is the honest answer.
 //!
 //! [`any_module_in_bundle`] probes every arch directory any platform uses. That
-//! is what a *corpus scan* wants — a test fixture built by a cross-build, or a
+//! is what a *corpus scan* wants: a test fixture built by a cross-build, or a
 //! bundle assembled for another host, should be found rather than silently
-//! skipped. The rationale is `tutti-plugin-server`'s, kept verbatim because it
-//! is the reason the two cannot be collapsed into one: probing all of them means
-//! "a cross-build lands in the slower branch instead of a wrong answer".
+//! skipped.
 
 use std::path::{Path, PathBuf};
 
@@ -65,8 +56,8 @@ pub const ALL_ARCH_SUBDIRS: &[&str] = &[
     "x86-win",
 ];
 
-/// The `Contents/<arch>` subdirectories *this* target can load from, most
-/// preferred first.
+/// Returns the `Contents/<arch>` subdirectories *this* target can load from,
+/// most preferred first.
 ///
 /// On ARM64 Windows an `arm64ec`/`arm64x` module is also loadable and x64 runs
 /// under emulation, so those follow as fallbacks in the SDK's order. Everywhere
@@ -168,8 +159,8 @@ fn exts_for(arch_dir: &str, kind: ModuleKind) -> &'static [&'static str] {
     }
 }
 
-/// Whether `path` is something the linker left beside a module rather than a
-/// module.
+/// Returns whether `path` is a linker by-product (`.lib`, `.exp`, `.pdb`,
+/// `.ilk`) rather than a module.
 ///
 /// On Windows an MSVC link drops `<stem>.lib`, `.exp`, `.pdb` and `.ilk` next to
 /// the DLL, all inside the bundle. A bundle is a directory a host scans, so
@@ -183,7 +174,7 @@ pub fn is_link_byproduct(path: &Path) -> bool {
     )
 }
 
-/// The module inside `bundle` for this target, or `None`.
+/// Returns the module inside `bundle` that this target can load, or `None`.
 ///
 /// A path that is already a file, or is not a directory, yields `None` — it is
 /// not a bundle, and the caller knows better than this function what to do
@@ -192,7 +183,7 @@ pub fn native_module_in_bundle(bundle: &Path, kind: ModuleKind) -> Option<PathBu
     probe_dirs(bundle, native_arch_subdirs(), kind, false)
 }
 
-/// The module inside `bundle` for *any* platform, or `None`.
+/// Returns the module inside `bundle` for *any* platform, or `None`.
 ///
 /// Probes every directory in [`ALL_ARCH_SUBDIRS`] by name, then falls back to
 /// enumerating each one and taking the first file that is not a
@@ -306,9 +297,8 @@ mod tests {
 
     #[test]
     fn aarch64_linux_and_the_arm64_windows_spellings_are_all_covered() {
-        // The exact omissions that made the eight copies disagree. Named one by
-        // one rather than by counting, so adding a directory does not silently
-        // satisfy this.
+        // Directories that are easy to miss. Named one by one rather than by
+        // counting, so adding a directory does not silently satisfy this.
         for required in [
             "aarch64-linux",
             "arm64-win",
@@ -320,7 +310,7 @@ mod tests {
         ] {
             assert!(
                 ALL_ARCH_SUBDIRS.contains(&required),
-                "{required} is missing, which is the divergence this module exists to end"
+                "{required} is missing from ALL_ARCH_SUBDIRS"
             );
         }
     }

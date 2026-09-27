@@ -35,10 +35,9 @@ pub struct AudioDeviceState {
     pub channels: ChannelLayout,
     /// Backend faults reported since the stream last started.
     ///
-    /// Non-zero means the audio backend reported an error. CPAL's error
-    /// callback returns nothing, so before this existed a fault surfaced
-    /// *nowhere*: the callback was `|_err| {}`, `is_running` stayed true, and
-    /// a host went on telling the user a disconnected device was healthy.
+    /// Non-zero means the audio backend reported an error. A fault does not
+    /// stop the stream by itself, so `is_running` can stay true on a device
+    /// that has been disconnected; a status display checks this too.
     pub stream_faults: u64,
     /// The most recent fault's message, for a status line. Empty if none.
     pub last_fault: String,
@@ -57,7 +56,7 @@ impl Default for AudioDeviceState {
     }
 }
 
-/// Refresh the per-frame half of [`AudioDeviceState`]: run state and channel
+/// Refreshes the per-frame half of [`AudioDeviceState`]: run state and channel
 /// layout.
 ///
 /// Device *names* are not refreshed here — enumeration is an OS call, and doing
@@ -88,7 +87,7 @@ pub fn device_state_sync_system(
     }
 }
 
-/// Enumerate output devices once, at startup, and record which one is open.
+/// Enumerates output devices once, at startup, and records which one is open.
 ///
 /// Both lookups are allowed to fail quietly: a driver that cannot name its
 /// device or list the others leaves those fields at their defaults rather than

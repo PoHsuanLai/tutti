@@ -15,12 +15,24 @@
 
 use tutti_plugin_types::ChannelLayout;
 
-/// Scratch buffers for VST2's audio pointer tables, at both sample widths.
+/// Pre-allocated audio buffers that [`Vst2Instance::process_f32`] and
+/// [`Vst2Instance::process_f64`] render through.
 ///
-/// Owns contiguous per-channel `Vec<f32>` / `Vec<f64>` plus the parallel
-/// pointer tables that the `vst` crate's `AudioBuffer<f32>` /
-/// `AudioBuffer<f64>` consume. Sized at construction to `num_inputs` /
-/// `num_outputs` channels × `block_size` samples.
+/// VST2 wants contiguous pointer tables, which a caller's `&[&[f32]]` cannot
+/// supply, so each block is copied into these buffers and back out. Create one
+/// per instance, sized from [`PluginInfo::num_inputs`] /
+/// [`PluginInfo::num_outputs`] and the block size passed to
+/// [`Vst2Instance::load`], and reuse it for every block: after construction
+/// nothing here allocates, so it is safe on the audio thread.
+///
+/// The `prepare_*` / `copy_out_*` methods are the halves the process calls use
+/// internally; most callers never need them directly.
+///
+/// [`Vst2Instance::process_f32`]: crate::Vst2Instance::process_f32
+/// [`Vst2Instance::process_f64`]: crate::Vst2Instance::process_f64
+/// [`Vst2Instance::load`]: crate::Vst2Instance::load
+/// [`PluginInfo::num_inputs`]: crate::PluginInfo::num_inputs
+/// [`PluginInfo::num_outputs`]: crate::PluginInfo::num_outputs
 ///
 /// Carrying both costs `block_size * (in + out) * 12` bytes over one width —
 /// at a 512-sample block and stereo I/O, 24 KiB.
@@ -38,20 +50,18 @@ pub struct RenderScratch {
 // SAFETY: the raw pointers point into the owned `Vec<Vec<_>>` fields
 // within the same struct. They are never read concurrently — callers
 // ensure exclusive access (subprocess server holds a single instance;
-// in-process backend serializes via Mutex). `Sync` is needed because
-// `tutti-plugin`'s in-process node once required `Send + Sync` (fundsp's
-// `dyn AudioUnit` bound; a graph node needs only `Send`), even though every
-// actual touch of the pointers is serialized.
+// in-process backend serializes via Mutex). `Sync` rests on the same
+// serialization: every actual touch of the pointers is exclusive.
 unsafe impl Send for RenderScratch {}
 unsafe impl Sync for RenderScratch {}
 
 impl RenderScratch {
-    /// Allocates both widths' buffers and pointer tables up front.
+    /// Creates scratch buffers for the given channel counts, allocating both
+    /// sample widths up front.
     ///
-    /// Call once at load time, never on the audio thread — this is the crate's
-    /// only render-path allocation, and hoisting it here is the point.
-    /// `block_size` is the maximum block in **frames**; a process call may render
-    /// fewer, never more.
+    /// Call once at load time, never on the audio thread: this is the only
+    /// allocation on the render path. `block_size` is the maximum block in
+    /// frames; a process call may render fewer, never more.
     pub fn new(num_inputs: ChannelLayout, num_outputs: ChannelLayout, block_size: usize) -> Self {
         let inputs: Vec<Vec<f32>> = (0..num_inputs.count())
             .map(|_| vec![0.0f32; block_size])
@@ -84,8 +94,13 @@ impl RenderScratch {
         }
     }
 
-    /// Copy caller's f32 inputs into the scratch Vecs, zero missing channels,
-    /// and refresh the pointer table.
+    /// Copies the caller's f32 inputs into the scratch buffers, zeroing missing
+    /// channels and the outputs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `num_samples` exceeds the block size given to
+    /// [`new`](Self::new), or if an input slice is shorter than `num_samples`.
     pub fn prepare_f32(&mut self, caller_inputs: &[&[f32]], num_samples: usize) {
         for (i, src) in caller_inputs.iter().enumerate() {
             if i < self.inputs.len() {
@@ -101,14 +116,16 @@ impl RenderScratch {
         self.refresh_ptrs();
     }
 
-    /// Copy caller's f64 inputs into the f64 scratch Vecs, zero missing
-    /// channels, and refresh the f64 pointer table.
+    /// Copies the caller's f64 inputs into the f64 scratch buffers, zeroing
+    /// missing channels and the outputs.
     ///
-    /// The `zip` stops at the shorter of scratch channel and caller slice, so
-    /// a caller slice shorter than `num_samples` leaves the tail at whatever
-    /// the previous block wrote. That tail is never read: `process_block_f64`
-    /// hands the plugin `num_samples`, and a caller that declared more samples
-    /// than it supplied has already mis-stated its own block.
+    /// An input slice shorter than `num_samples` leaves the rest of that
+    /// channel holding the previous block's samples.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `num_samples` exceeds the block size given to
+    /// [`new`](Self::new).
     pub fn prepare_f64(&mut self, caller_inputs: &[&[f64]], num_samples: usize) {
         for (i, src) in caller_inputs.iter().enumerate() {
             if i < self.inputs_f64.len() {
@@ -126,12 +143,17 @@ impl RenderScratch {
         self.refresh_ptrs_f64();
     }
 
-    /// Cast caller's f64 inputs down into the *f32* scratch — the fallback for
-    /// a plugin that never installed `processReplacingF64`.
+    /// Narrows the caller's f64 inputs into the *f32* scratch buffers, for a
+    /// plugin that has no `processReplacingF64`.
     ///
     /// Paired with [`copy_out_f64_from_f32`](Self::copy_out_f64_from_f32);
     /// [`Vst2Instance::process_f64`](crate::Vst2Instance::process_f64) picks
     /// this pair only when the plugin's `effFlagsCanDoubleReplacing` is clear.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `num_samples` exceeds the block size given to
+    /// [`new`](Self::new).
     pub fn prepare_f64_as_f32(&mut self, caller_inputs: &[&[f64]], num_samples: usize) {
         for (i, src) in caller_inputs.iter().enumerate() {
             if i < self.inputs.len() {
@@ -149,17 +171,14 @@ impl RenderScratch {
         self.refresh_ptrs();
     }
 
-    /// Copy scratch outputs back to the caller's f32 channels.
+    /// Copies the scratch outputs back to the caller's f32 channels.
     ///
-    /// Writes exactly `num_samples` per channel, which is the block length the
-    /// plugin was asked to render — a caller whose slices are *longer* than that
-    /// keeps whatever was past the block, same as the f64 path.
-    ///
-    /// Both sides are sliced deliberately, and the `min` is load-bearing: a bare
-    /// `copy_from_slice` requires equal lengths and panics on any caller slice
-    /// that is not exactly the block. That is reachable through the public
-    /// `process_f32`, which takes `num_samples` as a separate argument precisely
-    /// so the two need not match.
+    /// Writes at most `num_samples` per channel. A caller slice longer than
+    /// that keeps whatever was past the block; a shorter one is filled only up
+    /// to its length.
+    // Both sides are sliced and the `min` is load-bearing: a bare
+    // `copy_from_slice` requires equal lengths and would panic on any caller
+    // slice that is not exactly the block, which `process_f32` allows.
     pub fn copy_out_f32(&self, caller_outputs: &mut [&mut [f32]], num_samples: usize) {
         for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
             if i < self.outputs.len() {
@@ -171,12 +190,9 @@ impl RenderScratch {
         }
     }
 
-    /// Copy the f64 scratch outputs back to the caller's f64 channels.
+    /// Copies the f64 scratch outputs back to the caller's f64 channels.
     ///
-    /// Bounded on both sides for the same reason as
-    /// [`copy_out_f32`](Self::copy_out_f32): `out_channel[..num_samples]` alone
-    /// panics on a caller slice *shorter* than the block. The `zip` already stops
-    /// at the scratch's end; the `min` is what makes the destination safe too.
+    /// Bounded on both sides like [`copy_out_f32`](Self::copy_out_f32).
     pub fn copy_out_f64(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
         for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
             if i < self.outputs_f64.len() {
@@ -188,8 +204,9 @@ impl RenderScratch {
         }
     }
 
-    /// Widen the *f32* scratch outputs into the caller's f64 channels — the
-    /// read half of the fallback pair described on
+    /// Widens the *f32* scratch outputs into the caller's f64 channels.
+    ///
+    /// The read half of the fallback pair described on
     /// [`prepare_f64_as_f32`](Self::prepare_f64_as_f32). Bounded like
     /// [`copy_out_f64`](Self::copy_out_f64).
     pub fn copy_out_f64_from_f32(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
@@ -232,7 +249,7 @@ impl RenderScratch {
 mod tests {
     use super::*;
 
-    /// Fill the scratch outputs with a recognizable ramp so a copy-out can be
+    /// Fills the scratch outputs with a recognizable ramp so a copy-out can be
     /// checked sample by sample.
     fn scratch_with_ramp(channels: u16, block: usize) -> RenderScratch {
         let layout = ChannelLayout::from(channels);
@@ -345,7 +362,7 @@ mod tests {
     }
 
     /// `prepare_f64` must carry a value that has no f32 representation through
-    /// unchanged. The staging step is where the old path lost it, before the
+    /// unchanged. Staging through an f32 buffer would lose it before the
     /// plugin was ever entered.
     #[test]
     fn prepare_f64_stages_without_narrowing() {

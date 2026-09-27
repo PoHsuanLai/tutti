@@ -1,4 +1,4 @@
-//! The sample-accuracy contract suite (doc 013 §6, "Proof"), for the
+//! The sample-accuracy contract suite, for the
 //! graph's own nodes: an event at offset `k` produces output at frame
 //! `k + arrival + latency`, exactly, on every path — direct, behind PDC,
 //! through an event fan-in, across a recompile (an unrelated edit, and a
@@ -58,7 +58,7 @@ fn latent_pulse_row() -> Row {
 
 /// Declares `Frames(8)` (a SoundFont's resolution) and quantizes on its own
 /// 8-frame grid, offset from every block schedule: an event takes effect at
-/// the start of its next chunk, up to 7 frames late. Doc 013 §6: `Frames(n)`
+/// the start of its next chunk, up to 7 frames late. `Frames(n)`
 /// is honoured within `n - 1` frames either way, so it passes on every
 /// path, ragged schedules included.
 fn chunked_pulse_row() -> Row {
@@ -93,7 +93,7 @@ fn lookahead_row() -> Row {
     .expect_latency(Samples(45))
 }
 
-/// Compiler-owned param modulation (doc 013 item 6): a step in a modulator
+/// Compiler-owned param modulation: a step in a modulator
 /// at frame `F` reaches the node's param at `F + arrival`, exactly — on the
 /// PDC path through the compiler's delay of the early param source.
 ///
@@ -139,7 +139,7 @@ enum Timing {
 
 /// Declares `declared` frames of latency and `resolution`, and delivers
 /// one impulse `actual` frames after where `timing` puts each event: the
-/// D1–D3 shape when `actual` and `declared` differ, and a resolution lie
+/// latency-lie shape when `actual` and `declared` differ, and a resolution lie
 /// when `timing` is coarser than `resolution`.
 struct Liar {
     declared: usize,
@@ -290,7 +290,7 @@ fn a_node_ignoring_offsets_fails() {
     );
 }
 
-/// Resolution is held as declared (doc 013 §6): within `n - 1` frames of
+/// Resolution is held as declared: within `n - 1` frames of
 /// the exact frame for `Frames(n)`, either way.
 ///
 /// - Declaring `Sample` but quantizing to 8 frames fails.
@@ -369,7 +369,7 @@ impl Node for Tags {
 }
 
 /// Fan-in at **equal** offsets: source order decides, at every offset of a
-/// block (doc 013 decision 5), three sources deep.
+/// block, three sources deep.
 ///
 /// Mutation (run): in `merge_into`, break ties toward the later source
 /// (`<` → `<=`) → the order reverses → fails.

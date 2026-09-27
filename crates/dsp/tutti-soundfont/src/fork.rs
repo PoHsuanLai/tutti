@@ -1,8 +1,7 @@
-//! Forking a [`SoundFontUnit`] for the graph's export (`Editor::fork`,
-//! design doc 013): a fresh unit over the same decoded SoundFont, at the
-//! render's rate. Its MIDI comes from its event input, as the live unit's
-//! does: the fork of the graph forks the clip node feeding it too (doc 013,
-//! rewrite item 5).
+//! Forking a [`SoundFontUnit`] for the graph's export (`Editor::fork`): a
+//! fresh unit over the same decoded SoundFont, at the render's rate. Its MIDI
+//! comes from its event input, as the live unit's does: the fork of the graph
+//! forks the clip node feeding it too.
 //!
 //! # What this forks from
 //!
@@ -17,10 +16,8 @@
 //!
 //! **The fork follows its graph's rate**, as the live node does: the editor
 //! prepares it at the render's rate, and the node's `prepare` swaps in
-//! [`SoundFontUnit::with_sample_rate`], keeping the preset. (Under `Legacy`
-//! this took a `RateFollowing` wrapper whose `set_sample_rate` re-rated; a
-//! graph node's `prepare` runs on the control thread, where rebuilding is
-//! allowed, so the node does it itself.)
+//! [`SoundFontUnit::with_sample_rate`], keeping the preset. `prepare` runs on
+//! the control thread, where rebuilding is allowed.
 //!
 //! What the fork does **not** carry: sounding voices, and channel state the
 //! live unit reached through MIDI after the template was taken (a program
@@ -43,10 +40,18 @@ impl ForkSource for SoundFontFork {
 }
 
 impl SoundFontUnit {
-    /// A fresh unit for a fork of the graph this one plays in: the same
-    /// SoundFont (shared, not reloaded), settings, rate and preset, and no
-    /// sounding voice. See the `fork` module docs (`src/fork.rs`); its graph
-    /// re-rates it when it is prepared.
+    /// Returns a fresh unit for a fork of the graph this one plays in (an
+    /// offline export, for example).
+    ///
+    /// The copy has the same SoundFont (shared, not reloaded), settings, rate
+    /// and preset, with every key released. Voices already sounding are
+    /// released into their envelopes rather than cut. It allocates a copy of
+    /// the synthesizer's voice and effect state, so call it off the audio
+    /// thread. When the fork is prepared at another rate, its node re-rates
+    /// itself as a live unit does.
+    ///
+    /// A unit inserted into a graph registers its own fork source, so a graph
+    /// fork needs no call to this; it is for hosts building a copy by hand.
     pub fn fork_instance(&self) -> SoundFontUnit {
         let mut fork = self.clone();
         fork.release_all();

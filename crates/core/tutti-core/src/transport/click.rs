@@ -1,6 +1,6 @@
 //! Metronome click node — click sounds synced to the transport.
 //!
-//! The click node is a graph node (doc 013): it reads the playhead
+//! The click node is a graph node: it reads the playhead
 //! **per frame** from its block's [`Env`] — walked piece by piece across the
 //! block's transport changes, with the host's own clock
 //! ([`Env::for_each_beat`](tutti_graph::Env::for_each_beat)) — the play and record state from
@@ -12,7 +12,7 @@
 //! The transport's `beat` atomic is the clock's *writeback*: stored once per
 //! block, as the beat the **next** block starts on. A node reading it gets
 //! one value per block, so a click could only ever start on a block boundary
-//! — up to a whole block of jitter on every beat (doc 013 defect D8). The
+//! — up to a whole block of jitter on every beat. The
 //! block's `Env` carries the transport at its first frame and every change
 //! inside it (a start, a stop, a seek, a tempo or loop edit, each on its
 //! frame), so the node computes the beat of every frame — a loop wrap or a
@@ -134,7 +134,7 @@ impl ClickSettings {
         }
     }
 
-    /// Set the click level, clamped to `0.0..=1.0` in [`Amplitude`] (linear,
+    /// Sets the click level, clamped to `0.0..=1.0` in [`Amplitude`] (linear,
     /// not dB).
     pub fn set_volume(&self, volume: impl Into<Amplitude>) {
         self.volume
@@ -146,7 +146,7 @@ impl ClickSettings {
         Amplitude(self.volume.load(Ordering::Acquire))
     }
 
-    /// Publish a new meter. Lock-free; visible to the audio thread on its next
+    /// Publishes a new meter. Lock-free; visible to the audio thread on its next
     /// block.
     pub fn set_meter(&self, meter: Arc<MeterMap>) {
         self.meter.publish(meter);
@@ -601,8 +601,7 @@ mod tests {
 
     const SR: f64 = 44_100.0;
 
-    /// The session state a block is rendered under: what the tests used to
-    /// set on the live transport before a `tick`.
+    /// The session state a block is rendered under: playing and recording.
     #[derive(Clone, Copy)]
     struct Deck {
         playing: bool,
@@ -644,7 +643,7 @@ mod tests {
         [l, r]
     }
 
-    /// One frame at `beat`, as a `[left, right]` pair: the old `tick`.
+    /// One frame at `beat`, as a `[left, right]` pair.
     fn frame(node: &mut ClickNode, deck: Deck, beat: f64) -> [f32; 2] {
         let [l, r] = block(node, &env(SR, 1, held(deck, beat)));
         [l[0], r[0]]
@@ -979,8 +978,8 @@ mod tests {
     /// A click starts on the frame where the playhead reaches its onset — not
     /// on the next block boundary — at more than one block size.
     ///
-    /// D8 in design doc 013: the node read one beat per block from the clock's
-    /// writeback, so every click started on a block boundary, up to a block late.
+    /// A node that read one beat per block from the clock's writeback would
+    /// start every click on a block boundary, up to a block late.
     ///
     /// The expected frame is derived from tempo arithmetic alone, not from the
     /// node: the host's clock is at `start + i·bps` on frame `i` (emit, then
@@ -990,7 +989,7 @@ mod tests {
     /// engine hands it.
     ///
     /// Mutation: reading the beat of frame 0 of the block for the whole block
-    /// (the old once-per-block read) moves the onset to the next block
+    /// (a once-per-block read) moves the onset to the next block
     /// boundary and fails at both block sizes: frame 2112 at 64 and 2120 at
     /// 40, against 2103. (A second size that shared a boundary with the first
     /// would prove nothing more, so 40 is chosen to land elsewhere.)
@@ -1097,29 +1096,24 @@ mod tests {
         assert_ne!(left[11], 0.0, "beat 5's click from frame 10");
     }
 
-    /// Eight blocks of the metronome, hashed bit-for-bit against the render the
-    /// node produced while it was an `An<ClickNode>`.
+    /// Eight blocks of the metronome, hashed bit-for-bit against a reference
+    /// render.
     ///
     /// # What this pins, and why a hash
     ///
-    /// The `impl AudioNode` → `impl AudioUnit` rewrite (graph plan PR 4b), and
-    /// then the port to `tutti_graph::Node` (doc 013 item 8), each had to be an *identity*:
-    /// the same samples, not merely samples that still pass the behavioural
-    /// tests above. Those tests check onsets, accents and mode gating — every
-    /// one of them would pass a click whose envelope had drifted by an LSB,
-    /// and none of them would name it.
+    /// The render must stay an *identity*: the same samples, not merely
+    /// samples that still pass the behavioural tests above. Those tests check
+    /// onsets, accents and mode gating — every one of them would pass a click
+    /// whose envelope had drifted by an LSB, and none of them would name it.
     ///
-    /// The reference figure was captured by running this exact schedule
-    /// against `An(ClickNode)` on the commit before the first rewrite: FNV-1a
-    /// over the raw `f32` bits of all 1,024 samples, `0xE011_43CA_E6D4_ECD5`
-    /// before and after each. A hash rather than a 1,024-entry array because
-    /// the array would be unreadable and unmaintained, while any single-bit
-    /// difference moves it.
+    /// The reference figure is FNV-1a over the raw `f32` bits of all 1,024
+    /// samples of this exact schedule, `0xE011_43CA_E6D4_ECD5`. A hash rather
+    /// than a 1,024-entry array because the array would be unreadable and
+    /// unmaintained, while any single-bit difference moves it.
     ///
     /// The schedule holds the beat constant across each 64-frame block (a
     /// rolling transport at a tempo of zero, stepped an eighth note per
-    /// block): the node then read one beat per block, and the same samples
-    /// must come out now that it reads the beat per frame.
+    /// block), so a per-block and a per-frame beat read give the same samples.
     ///
     /// # Mutation-tested
     ///
@@ -1127,10 +1121,6 @@ mod tests {
     /// changes the digest. It also fails if `generate_click`'s envelope
     /// changes, or if the beat schedule below is edited — all of which is the
     /// point. Recompute the constant ONLY with a deliberate, argued DSP change.
-    ///
-    /// The `AudioUnit` era's `get_id` pin went with `get_id`: it mattered
-    /// because `Net`'s `ping` hashed it into the seed of every pseudorandom
-    /// phase in the net, and the graph has no such hash.
     #[test]
     fn render_is_bit_identical_to_the_audionode_era() {
         /// FNV-1a over the little-endian `f32` bits, in emission order.

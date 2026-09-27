@@ -4,9 +4,7 @@
 //! `tutti_graph::contract::Direct` (buffers built once, so the allocation
 //! gates can run it).
 //!
-//! What replaced the unit's own `queue_midi` + `AudioUnit::process` when
-//! it became a graph node only: the node plays its event input and nothing
-//! else.
+//! The node plays only its event input, so this is how a test feeds it MIDI.
 
 #![allow(dead_code)] // each test binary uses its own subset
 
@@ -18,11 +16,11 @@ use tutti_graph::{Event, Offset};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_soundfont::SoundFontUnit;
 
-/// The block length a [`Hand`] renders: 64 frames, the `AudioUnit` era's.
+/// The block length a [`Hand`] renders: 64 frames.
 pub const BLOCK: usize = 64;
 
 /// A [`SoundFontUnit`] driven by hand. Derefs to the unit, so its own
-/// methods (`note_on`, `program_change`, …) read as before.
+/// methods (`note_on`, `program_change`, …) are reachable.
 pub struct Hand {
     direct: Direct<SoundFontUnit>,
     queued: Vec<Event>,

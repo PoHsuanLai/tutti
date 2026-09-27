@@ -3,11 +3,9 @@
 //! matching-width device, or folded to a narrower one via the ITU/Dolby matrix.
 //!
 //! `TuttiPlugin.outputs` is a public field, so a host can build a mono or wider
-//! root. A root wider than the engine's fold scratch once indexed past its end
-//! and panicked *in release*, inside the CPAL callback (a `Net` iterated its
-//! own output table by the scratch's width). The engine now renders only
-//! `tutti_graph` (doc 013 Phase 3 PR 15) and refuses such a root on the control
-//! thread instead; these still run in both profiles on purpose.
+//! root. A root wider than the engine's fold scratch would index past its end
+//! inside the CPAL callback, so the engine refuses such a root on the control
+//! thread instead; these run in both profiles on purpose.
 
 mod support;
 
@@ -126,9 +124,8 @@ fn center_root_folds_symmetrically_to_stereo() {
 /// A root wider than `MAX_ROOT_CHANNELS` (8) never reaches the callback:
 /// the engine refuses it at construction, naming the widths.
 ///
-/// Until doc 013 PR 15 this rendered a 12-wide `Net` root and checked it
-/// clamped to 8 channels without panicking. A graph cannot be handed
-/// to the engine that wide, so the property is the refusal (the refusal of
+/// A graph cannot be handed to the engine that wide, so the property is the
+/// refusal (the refusal of
 /// a later widening commit is `engine_graph`'s
 /// `a_graph_engine_refuses_more_outputs_than_it_folds`).
 ///

@@ -429,12 +429,10 @@ fn queued_commits_apply_in_fifo_order() {
     assert_eq!(ed.collect(), vec![FX], "only the first gain was retired");
 }
 
-/// Review probe d, which the old API allowed: c1 applied; c2 (inserts node
-/// 2) in flight; c3 (inserts node 3) dropped unapplied; then every later
-/// commit failed with `MissingUnit { 2 }`. A commit can no longer be dropped
-/// — the caller never holds one — so the same interleaving, expressed in
-/// the API that remains, just works: c2 and c3 queue, run in order, and the
-/// next commit applies.
+/// Commits in flight run in order: c1 applied; c2 (inserts node 2) in
+/// flight; c3 (inserts node 3) sent behind it. The caller never holds a
+/// commit, so none can be dropped unapplied: c2 and c3 queue, run in order,
+/// and the next commit applies.
 ///
 /// Mutation: in `Editor::send`, set `self.plan` to the plan the executor
 /// last applied instead of the one just sent (a rebase) → the next commit's
@@ -680,7 +678,7 @@ fn a_held_note_keeps_sounding_and_a_released_one_is_skipped() {
     );
 }
 
-/// "An honest `Silent` means parked forever" (review): a synth whose attack
+/// An honest `Silent` does not mean parked forever: a synth whose attack
 /// starts 200 frames after its note-on is silent, with quiet inputs, well past
 /// its 40-frame tail — and must still be called, because it is not idle.
 ///
@@ -768,8 +766,7 @@ fn applying_refuses_a_plan_for_another_prepare() {
     exec.apply_pending();
 }
 
-/// Review: a merge used to drop past one slot's capacity with no note-off
-/// exception. The probe: capacity 32, two sources each sending 30 note-offs
+/// A merge never drops past one slot's capacity. The probe: capacity 32, two sources each sending 30 note-offs
 /// on one frame into one port — 60 must arrive, none dropped.
 ///
 /// Mutation: size merged slots at one capacity (all `event_slot_weight` 1)
@@ -928,9 +925,6 @@ fn out_of_band_graph(node: OutOfBand) -> Executor {
 /// written, and the next block carries the level. Run for a node with an
 /// audio input wired to silence (the live hazard: a plugin instrument with a
 /// sidechain) and for a 0-input source (a mic monitor).
-///
-/// Moved here from the adapter's suite, where it pinned that an `AudioUnit`
-/// made no claim by default; the rule it rests on is the executor's.
 ///
 /// Mutation (run): in `exec.rs`'s `node_op`, treat `Status::Modified` as a
 /// claim of silence on every output → the 1-input node is parked after its

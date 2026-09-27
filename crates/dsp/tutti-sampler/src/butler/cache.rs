@@ -35,13 +35,13 @@ pub struct LruCache {
     /// Monotonic access counter — the source of every `last_access` stamp.
     ///
     /// "Least recently used" is a statement about access *order*, so the stamp
-    /// is a sequence number rather than a reading of a clock. This replaced
-    /// `SystemTime::now()` in milliseconds, which got the order wrong two ways:
+    /// is a sequence number rather than a reading of a clock. A millisecond
+    /// `SystemTime::now()` would get the order wrong two ways:
     ///
     /// - **Resolution.** Cache accesses are memory-speed; several land in the
-    ///   same millisecond routinely, and every one of those was a *tie*.
+    ///   same millisecond routinely, and every one of those would be a *tie*.
     ///   `min_by_key` breaks a tie by iteration order, which for a `DashMap` is
-    ///   shard order — so the victim was effectively arbitrary, and it changed
+    ///   shard order — so the victim would be effectively arbitrary, and change
     ///   between runs. A tick increments per touch, so no two accesses can tie.
     /// - **Monotonicity.** `SystemTime` is a wall clock: NTP correction, a
     ///   manual set, or a DST-adjacent jump moves it *backwards*, which makes a
@@ -268,10 +268,10 @@ mod tests {
     /// wall clock could not give.
     ///
     /// Both inserts land in the same millisecond (they are memory writes), so
-    /// under `SystemTime::now().as_millis()` they carried the *identical*
-    /// stamp. `min_by_key` then broke the tie by `DashMap` iteration order,
-    /// i.e. shard order, so which entry got evicted was arbitrary and could
-    /// differ run to run. No sleep here on purpose: a sleep would paper over
+    /// under `SystemTime::now().as_millis()` they would carry the *identical*
+    /// stamp, and `min_by_key` would break the tie by `DashMap` iteration
+    /// order, i.e. shard order: an arbitrary eviction that could differ run to
+    /// run. No sleep here on purpose: a sleep would paper over
     /// exactly the defect being asserted.
     #[test]
     fn same_instant_accesses_still_order_deterministically() {

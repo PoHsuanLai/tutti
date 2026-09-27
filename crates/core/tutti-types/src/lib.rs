@@ -1,21 +1,17 @@
 #![doc = include_str!("../README.md")]
-// Turned on after it found a real one: `RtEventBuf`'s entire struct-level doc
-// comment was attached to the `Debug` impl below it, so the type itself was
-// undocumented in rustdoc while looking thoroughly documented in the source.
-// That is the failure mode this lint exists for, and nothing else catches it.
+// Catches a doc comment attached to the wrong item (say, an `impl Debug` right
+// below a struct), which leaves the type undocumented in rustdoc while it looks
+// documented in the source. Nothing else catches that.
 #![deny(missing_docs)]
 
 // `value` is declared first and `#[macro_use]`d so the `unit_*` operator macros
 // it defines are in scope for the modules below — `macro_rules!` are textually
 // scoped, so a module declared *before* the one defining them cannot see them.
-// `meter` hand-wrote ~90 lines of affine operators for exactly this reason.
 //
 // The macros stay crate-private rather than `#[macro_export]`ed: eight names as
 // generic as `unit_bounded!` would sit permanently at the root of a published
-// crate, un-renameable and un-feature-gateable. Every unit is now defined here,
-// so nothing pays for that privacy in hand-written operators — `SampleRate` was
-// the last holdout (it lived in `fundsp-tutti`, whose traits take it) until it
-// moved here and `fundsp-tutti` switched to re-exporting it.
+// crate, un-renameable and un-feature-gateable. Every unit is defined here, so
+// nothing pays for that privacy in hand-written operators.
 #[macro_use]
 pub mod value;
 

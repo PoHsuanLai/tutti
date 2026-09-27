@@ -15,7 +15,7 @@
 //! those through element 0 would collapse a whole mixer's per-channel strip
 //! onto a single control, which is why the `_at` functions take an element.
 //!
-//! LIMITATION (intentional): [`ParamView`] and [`crate::instance::AuInstance`]'s
+//! LIMITATION (intentional): [`ParamView`] and [`crate::AuInstance`]'s
 //! parameter methods stay global/element-0. They are the DAW-facing surface, and
 //! the DAW hosts effects and instruments, none of which put parameters anywhere
 //! else. A mixer-hosting caller reaches for the `_at` functions directly. That
@@ -127,7 +127,7 @@ impl ParamRange {
         (self.min + self.max) * 0.5
     }
 
-    /// Clamp `v` into `[min, max]`.
+    /// Clamps `v` into `[min, max]`.
     pub fn clamp(&self, v: f32) -> f32 {
         v.clamp(self.min, self.max)
     }
@@ -225,7 +225,7 @@ pub enum MetaScope {
 }
 
 impl MetaScope {
-    /// Classify the two meta bits of an `AudioUnitParameterInfo::flags` word.
+    /// Classifies the two meta bits of an `AudioUnitParameterInfo::flags` word.
     ///
     /// `None` when neither is set. When an AU sets **both** — which Apple's
     /// header neither blesses nor forbids, and no unit on this machine does —
@@ -292,7 +292,7 @@ pub enum DisplayCurve {
 }
 
 impl DisplayCurve {
-    /// Extract the curve from a raw `AudioUnitParameterInfo::flags` word.
+    /// Extracts the curve from a raw `AudioUnitParameterInfo::flags` word.
     ///
     /// Masks with Apple's own `kAudioUnitParameterFlag_DisplayMask`, which spans
     /// bits 16..=18 **and** bit 22 — the field is not contiguous. Masking with
@@ -357,7 +357,7 @@ pub enum ParameterUnit {
 }
 
 impl ParameterUnit {
-    /// Map a raw `kAudioUnitParameterUnit_*` code onto the typed variant.
+    /// Maps a raw `kAudioUnitParameterUnit_*` code onto the typed variant.
     pub fn from_raw(raw: u32) -> Self {
         match raw {
             K_AUDIO_UNIT_PARAMETER_UNIT_GENERIC => Self::Generic,
@@ -404,7 +404,7 @@ pub struct ParamView<'a> {
 }
 
 impl<'a> ParamView<'a> {
-    /// Build a view wrapping a raw `AudioUnit`.
+    /// Builds a view wrapping a raw `AudioUnit`.
     ///
     /// # Safety
     /// The caller must guarantee that `unit` remains valid for the lifetime
@@ -416,17 +416,25 @@ impl<'a> ParamView<'a> {
         }
     }
 
-    /// Enumerate all parameters exposed by this AU.
+    /// Enumerates all parameters exposed by this AU.
     pub fn list(&self) -> Vec<AuParameter> {
         list(self.unit)
     }
 
-    /// Read the current value of parameter `id`.
+    /// Reads the current value of parameter `id`.
+    ///
+    /// # Errors
+    ///
+    /// As [`get_at`].
     pub fn get(&self, id: u32) -> Result<f32> {
         get(self.unit, id)
     }
 
-    /// Write a new value to parameter `id`.
+    /// Writes a new value to parameter `id`.
+    ///
+    /// # Errors
+    ///
+    /// As [`set_at`].
     pub fn set(&self, id: u32, value: f32) -> Result<()> {
         set(self.unit, id, value)
     }
@@ -441,7 +449,7 @@ impl<'a> ParamView<'a> {
         string_from_value(self.unit, id, value)
     }
 
-    /// Parse `text` with the AU's own interpretation. See [`value_from_string`].
+    /// Parses `text` with the AU's own interpretation. See [`value_from_string`].
     pub fn value_from_string(&self, id: u32, text: &str) -> Option<f32> {
         value_from_string(self.unit, id, text)
     }
@@ -452,7 +460,7 @@ impl<'a> ParamView<'a> {
     }
 }
 
-/// Enumerate all parameters on the given raw `AudioUnit`, from the global
+/// Enumerates all parameters on the given raw `AudioUnit`, from the global
 /// scope / element 0.
 ///
 /// Returns an empty vec if the AU doesn't advertise a parameter list.
@@ -460,7 +468,7 @@ pub fn list(unit: AudioUnit) -> Vec<AuParameter> {
     list_at(unit, ParamAddress::GLOBAL)
 }
 
-/// Enumerate the parameters at `addr`.
+/// Enumerates the parameters at `addr`.
 ///
 /// Returns an empty vec if the AU advertises no parameter list there. That is
 /// the common answer for a scope/element an AU does not use, and it is not an
@@ -490,12 +498,16 @@ pub fn list_at(unit: AudioUnit, addr: ParamAddress) -> Vec<AuParameter> {
         .collect()
 }
 
-/// Read a parameter value from the global scope / element 0.
+/// Reads a parameter value from the global scope / element 0.
+///
+/// # Errors
+///
+/// As [`get_at`].
 pub fn get(unit: AudioUnit, id: u32) -> Result<f32> {
     get_at(unit, ParamAddress::GLOBAL, id)
 }
 
-/// Read the value of parameter `id` at `addr`.
+/// Reads the value of parameter `id` at `addr`.
 ///
 /// # Errors
 /// The AU's own status — `kAudioUnitErr_InvalidElement` (`-10877`) for an
@@ -510,12 +522,16 @@ pub fn get_at(unit: AudioUnit, addr: ParamAddress, id: u32) -> Result<f32> {
     Ok(value)
 }
 
-/// Write a parameter value to the global scope / element 0.
+/// Writes a parameter value to the global scope / element 0.
+///
+/// # Errors
+///
+/// As [`set_at`].
 pub fn set(unit: AudioUnit, id: u32, value: f32) -> Result<()> {
     set_at(unit, ParamAddress::GLOBAL, id, value)
 }
 
-/// Write `value` to parameter `id` at `addr`.
+/// Writes `value` to parameter `id` at `addr`.
 ///
 /// # Errors
 /// As [`get_at`]. A write to an element the AU does not have fails rather than
@@ -527,17 +543,19 @@ pub fn set_at(unit: AudioUnit, addr: ParamAddress, id: u32, value: f32) -> Resul
     })
 }
 
-/// Read one parameter's metadata, from the global scope / element 0.
+/// Reads one parameter's metadata, from the global scope / element 0.
 ///
-/// The single-parameter counterpart of [`list`]. Without it, a caller wanting
-/// one parameter's declared range had to `list()` the whole catalog and filter
-/// — an O(n) walk, each step a property fetch into the plugin, for an O(1)
-/// question.
+/// The single-parameter counterpart of [`list`]: one property fetch instead of
+/// a walk over the whole catalog.
+///
+/// # Errors
+///
+/// As [`info_at`].
 pub fn info(unit: AudioUnit, param_id: u32) -> Result<AuParameter> {
     info_at(unit, ParamAddress::GLOBAL, param_id)
 }
 
-/// Read one parameter's metadata at `addr`.
+/// Reads one parameter's metadata at `addr`.
 ///
 /// Note the AudioToolbox quirk this preserves: `kAudioUnitProperty_ParameterInfo`
 /// is fetched with the **parameter id in the element position**, not the element
@@ -546,6 +564,12 @@ pub fn info(unit: AudioUnit, param_id: u32) -> Result<AuParameter> {
 /// per-`(scope, element, id)`, and `addr.element` deliberately does not appear
 /// below. Passing it here instead would query metadata for whatever parameter
 /// happened to share that number.
+///
+/// # Errors
+///
+/// Returns [`AuError::OsStatus`](crate::AuError::OsStatus) if the AU refuses
+/// `kAudioUnitProperty_ParameterInfo` for `param_id`, typically because it
+/// never declared that id.
 pub fn info_at(unit: AudioUnit, addr: ParamAddress, param_id: u32) -> Result<AuParameter> {
     let raw: AudioUnitParameterInfo = unsafe {
         get_property(
@@ -710,7 +734,7 @@ pub fn string_from_value_at(
     unsafe { crate::cf::CfString::from_copied(request.outString) }.map(|s| s.to_string())
 }
 
-/// Parse `text` into a parameter value using the AU's own interpretation.
+/// Parses `text` into a parameter value using the AU's own interpretation.
 ///
 /// The inverse of [`string_from_value`], and what lets a user type "-6 dB" or
 /// "Band Pass" into a field instead of hunting for the raw float. Returning the

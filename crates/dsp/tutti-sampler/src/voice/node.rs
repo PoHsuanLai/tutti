@@ -82,13 +82,13 @@ pub struct VoiceNode {
 }
 
 impl VoiceNode {
-    /// Wrap a single [`Voice`] as a standalone **stereo** graph node. Builds the
+    /// Wraps a single [`Voice`] as a standalone **stereo** graph node. Builds the
     /// resident stretch processor once (like a mixer slot), off any hot path.
     pub fn new(voice: Voice) -> Self {
         Self::with_channels(voice, ChannelLayout::STEREO)
     }
 
-    /// Wrap a single [`Voice`] as a `channels`-wide graph node.
+    /// Wraps a single [`Voice`] as a `channels`-wide graph node.
     ///
     /// **Builds the stretch filter here** when `voice.play` asks for one. This
     /// is a control-thread constructor, so the allocation is free; the

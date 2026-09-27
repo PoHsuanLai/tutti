@@ -46,7 +46,8 @@ pub struct VbapSource<N = NodeKey> {
 }
 
 impl<N> VbapSource<N> {
-    /// A source at ear level ([`Elevation::LEVEL`]) at the given bearing.
+    /// Creates a source at ear level ([`Elevation::LEVEL`]) at the given
+    /// bearing in degrees.
     pub fn at(node: N, azimuth: impl Into<Azimuth>) -> Self {
         Self {
             node,
@@ -103,13 +104,11 @@ pub struct VbapLfeSend {
 /// and from the caller's sources, as data.
 ///
 /// The graph-agnostic half of [`build_vbap_mix`], for a caller that builds
-/// its graph its own way (bevy-tutti inserts through its `AudioGraphRes`): it
-/// inserts the units and wires [`edges`](Self::edges) there, resolving
-/// [`VbapMixNode::Source`]`(i)` to its `i`th source. The mix's output is the
-/// [`sum`](Self::sum), `layout`-wide. [`insert_into`](Self::insert_into) is
-/// that step for a [`GraphBuilder`], and `build_vbap_mix` is exactly
-/// `vbap_mix_parts(..)?.insert_into(..)`, so every graph is built from one
-/// description of the mix rather than from copies that must agree.
+/// its graph its own way: it inserts the units and wires
+/// [`edges`](Self::edges) there, resolving [`VbapMixNode::Source`]`(i)` to its
+/// `i`th source. The mix's output is the [`sum`](Self::sum), `layout`-wide.
+/// [`insert_into`](Self::insert_into) is that step for a [`GraphBuilder`], and
+/// `build_vbap_mix` is exactly `vbap_mix_parts(..)?.insert_into(..)`.
 pub struct VbapMixParts {
     /// One panner per source, placed at the source's position, in source
     /// order ([`VbapMixNode::Panner`]).
@@ -123,7 +122,7 @@ pub struct VbapMixParts {
 }
 
 impl VbapMixParts {
-    /// Every audio edge of the mix, including the ones from the caller's
+    /// Returns every audio edge of the mix, including the ones from the caller's
     /// sources ([`VbapMixNode::Source`]) into the panners and the LFE send.
     /// A port not named here reads silence: that is the rest of the LFE
     /// send's input group on the sum.
@@ -131,11 +130,11 @@ impl VbapMixParts {
         &self.edges
     }
 
-    /// Add every unit to `g` and wire [`edges`](Self::edges), resolving
+    /// Adds every unit to `g` and wires [`edges`](Self::edges), resolving
     /// [`VbapMixNode::Source`]`(i)` to `sources[i]`. Returns the sum's key.
     ///
-    /// The [`GraphBuilder`] adapter. It adds in `build_vbap_mix`'s historical
-    /// order (panners, the LFE send, the sum). The panners are graph nodes,
+    /// Nodes are added in order: panners, the LFE send, the sum. The panners
+    /// are graph nodes,
     /// added with their controls, which are dropped here with the low-pass's:
     /// the placement is the one [`vbap_mix_parts`] set, and the send's cutoff
     /// is fixed. A caller that moves sources later takes each panner's
@@ -144,7 +143,7 @@ impl VbapMixParts {
     ///
     /// # Panics
     ///
-    /// If `sources` is shorter than the list the parts were built from.
+    /// Panics if `sources` is shorter than the list the parts were built from.
     pub fn insert_into(self, g: &mut GraphBuilder, sources: &[NodeKey]) -> NodeKey {
         let panners: Vec<NodeKey> = self
             .panners
@@ -169,12 +168,20 @@ impl VbapMixParts {
     }
 }
 
-/// Build a VBAP surround mix's units and edges, in no graph.
+/// Builds a VBAP surround mix's nodes and edges without inserting them into
+/// any graph.
 ///
 /// The graph-agnostic form of [`build_vbap_mix`] (see [`VbapMixParts`]). The
 /// sources' `node` handles are not read — only their positions, and their
-/// order, which [`VbapMixNode::Source`] indexes. Errors as `build_vbap_mix`
-/// does, if `layout` has no VBAP preset.
+/// order, which [`VbapMixNode::Source`] indexes. Allocates; call it on the
+/// control thread.
+///
+/// # Errors
+///
+/// Returns [`VbapError::UnsupportedSpeakerLayout`](super::VbapError::UnsupportedSpeakerLayout)
+/// if `layout` has no VBAP preset (only 2, 4, 6, 8 and 12 channels do), and
+/// [`VbapError::Vbap`](super::VbapError::Vbap) if the preset geometry is
+/// rejected.
 pub fn vbap_mix_parts<N>(
     layout: tutti_types::ChannelLayout,
     sources: &[VbapSource<N>],
@@ -263,26 +270,31 @@ pub fn vbap_mix_parts<N>(
     })
 }
 
-/// Assemble a VBAP surround producer into `g` and return the summed mix node.
+/// Builds a VBAP surround mix into `g` and returns the summed mix node.
 ///
 /// Each source gets a [`VbapPannerNode::for_layout`] placed at its position;
-/// every panner's `CH` outputs are summed by a [`ChannelSumNode`] into one
+/// every panner's outputs are summed by a [`ChannelSumNode`] into one
 /// `layout`-wide node, whose key is returned. The caller decides what to do
-/// with it — `g.pipe_output(mix)` for a direct surround render, or feed it
-/// into a master strip. Pure graph surgery, no ECS.
+/// with it: `g.pipe_output(mix)` for a direct surround render, or feed it
+/// into a master strip. For a layout with an LFE channel (5.1, 7.1, 7.1.4),
+/// every source's channel 0 is also summed to mono, low-passed at 120 Hz and
+/// routed into the LFE channel.
 ///
-/// This is the one-call form of the `sources → panners → ChannelSumNode` graph
-/// (the shape proven by the surround tests). It builds the whole mix at once, so
-/// it suits offline assembly and tests; an incremental reconciler that adds and
-/// removes sources over time borrows the *structure* rather than calling this.
-/// It is [`vbap_mix_parts`] followed by [`VbapMixParts::insert_into`]; a graph
-/// built another way uses the first half alone.
+/// It builds the whole mix at once, so it suits offline assembly and tests. It
+/// is [`vbap_mix_parts`] followed by [`VbapMixParts::insert_into`]; a graph
+/// built another way uses the first half alone. The panners' controls are
+/// dropped, so positions are fixed at the ones given here.
 ///
 /// Each source node is wired stereo-in (its ports 0 and 1) to its panner. A
-/// mono source should present the same sample on both — the panner treats a
-/// single input channel as centered anyway. Errors if `layout` has no VBAP
-/// preset (see [`VbapPannerNode::for_layout`]). An empty `sources` yields a
-/// silent (but valid) `layout`-wide sum node.
+/// mono source should present the same sample on both. An empty `sources`
+/// yields a silent (but valid) `layout`-wide sum node.
+///
+/// # Errors
+///
+/// Returns [`VbapError::UnsupportedSpeakerLayout`](super::VbapError::UnsupportedSpeakerLayout)
+/// if `layout` has no VBAP preset (only 2, 4, 6, 8 and 12 channels do), and
+/// [`VbapError::Vbap`](super::VbapError::Vbap) if the preset geometry is
+/// rejected.
 pub fn build_vbap_mix(
     g: &mut GraphBuilder,
     layout: tutti_types::ChannelLayout,

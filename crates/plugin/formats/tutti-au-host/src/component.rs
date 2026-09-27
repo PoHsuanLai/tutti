@@ -35,7 +35,7 @@ pub enum AuType {
 }
 
 impl AuType {
-    /// Convert a raw AudioToolbox `componentType` code to its typed variant.
+    /// Converts a raw AudioToolbox `componentType` code to its typed variant.
     #[cfg(target_os = "macos")]
     pub fn from_raw(component_type: u32) -> Self {
         match component_type {
@@ -51,7 +51,7 @@ impl AuType {
         }
     }
 
-    /// Convert back to the raw AudioToolbox four-char code.
+    /// Converts back to the raw AudioToolbox four-char code.
     #[cfg(target_os = "macos")]
     pub fn to_raw(self) -> u32 {
         match self {
@@ -174,13 +174,13 @@ fn enumerate_with_desc(desc: AudioComponentDescription) -> Vec<AuComponentInfo> 
     results
 }
 
-/// Enumerate every Audio Unit registered with AudioToolbox.
+/// Enumerates every Audio Unit registered with AudioToolbox.
 #[cfg(target_os = "macos")]
 pub fn enumerate_components() -> Vec<AuComponentInfo> {
     enumerate_with_desc(AudioComponentDescription::default())
 }
 
-/// Enumerate only Audio Units of a given [`AuType`].
+/// Enumerates only Audio Units of a given [`AuType`].
 #[cfg(target_os = "macos")]
 pub fn enumerate_components_of_type(au_type: AuType) -> Vec<AuComponentInfo> {
     enumerate_with_desc(AudioComponentDescription {
@@ -189,7 +189,7 @@ pub fn enumerate_components_of_type(au_type: AuType) -> Vec<AuComponentInfo> {
     })
 }
 
-/// Look up the first component matching an exact [`AudioComponentDescription`].
+/// Looks up the first component matching an exact [`AudioComponentDescription`].
 ///
 /// Returns `None` if no matching AU is installed.
 #[cfg(target_os = "macos")]
@@ -230,7 +230,7 @@ fn component_info(component: AudioComponent) -> Option<AuComponentInfo> {
     })
 }
 
-/// Decode `AudioComponentGetVersion` into a `"major.minor.dot"` string.
+/// Decodes `AudioComponentGetVersion` into a `"major.minor.dot"` string.
 ///
 /// Empty when the component refuses the call. Every AU registered on macOS 15.6
 /// answers (measured: 0 of ~130 fail), so this is the unmeasured third-party

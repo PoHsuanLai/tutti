@@ -2,10 +2,7 @@
 //!
 //! The nodes are written directly against `Io`: a sine source, a chain or
 //! fan of two-pole lowpass filters (the SVF's `tick`), and (for the fan) one
-//! summing node. Until doc 013 Phase 5 each shape also had a `net` row,
-//! fundsp's `Net` running the same arithmetic as `AudioUnit`s; `Net` is
-//! deleted, so the `graph` row is what is left, and the history of the
-//! comparison (the figures it recorded) is in doc 013.
+//! summing node.
 //!
 //! `overhead/<n>` isolates the executor's **fixed per-node cost**: a chain of
 //! `n` nodes that do no work (a node that returns `Status::Modified` on its
@@ -45,8 +42,7 @@ fn cutoff(i: usize) -> f32 {
 
 // ---- graph nodes -------------------------------------------------------------
 
-/// A sine: phase accumulator, `sin(phase · τ)` (fundsp's `sine_hz`, which
-/// the `net` row ran).
+/// A sine: phase accumulator, `sin(phase · τ)`.
 struct Sine {
     hz: f32,
     phase: f32,
@@ -75,9 +71,8 @@ impl Node for Sine {
     }
 }
 
-/// A two-pole lowpass: the coefficients and `tick` of fundsp's
-/// `lowpass_hz(cutoff, q)` (`FixedSvf<f32, LowpassMode>`), one sample at a
-/// time.
+/// A two-pole lowpass: a state-variable filter in lowpass mode at
+/// `cutoff` and `q`, one sample at a time.
 struct Lowpass {
     cutoff: f32,
     q: f32,

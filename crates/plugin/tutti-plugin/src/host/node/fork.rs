@@ -1,7 +1,7 @@
 //! Forking a hosted plugin **by state transfer**: a fresh instance of the same
-//! plugin, handed the live instance's saved state. Doc 013 Phase 3 PR 16
-//! (gap 7), which the graph's export (`tutti_graph::Editor::fork`, PR 12)
-//! needs before a graph holding a plugin can be rendered offline.
+//! plugin, handed the live instance's saved state. The graph's export
+//! (`tutti_graph::Editor::fork`) needs this to render a graph holding a
+//! plugin offline.
 //!
 //! # Why not a copy of the node
 //!
@@ -9,8 +9,7 @@
 //! bridge: a copy of the node would drive the live plugin from the render
 //! thread — two callers interleaving blocks into one instance's state. So the
 //! node is not `Clone`, and a bound client hands the editor its **own**
-//! [`ForkSource`] through [`IntoNode`] instead: the fork source on the bound
-//! type (doc 013 §2's `Fork`).
+//! [`ForkSource`] through [`IntoNode`] instead.
 //!
 //! # What a fork is
 //!
@@ -94,8 +93,8 @@
 //! - **A fork of its own.** The node the fork source builds is inserted
 //!   without one, like every forked node.
 //!
-//! In-process VST2 (`InProcessVst2Client`) has no fork source yet and stays
-//! not forkable; see its `forkable`.
+//! In-process VST2 (`InProcessVst2Client`) has no fork source and is not
+//! forkable.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -336,8 +335,10 @@ impl ForkSource for PluginFork {
 }
 
 impl<S> PluginClient<S> {
-    /// A fresh instance of this plugin carrying this one's saved state, bound
-    /// and ready to insert: a fork by state transfer. Control thread; blocks
+    /// Creates a fresh instance of this plugin carrying this one's saved state,
+    /// bound and ready to insert.
+    ///
+    /// This is a fork by state transfer. Call on a control thread; it blocks
     /// on a subprocess launch and two state transfers (half a second or
     /// more).
     ///
@@ -346,8 +347,9 @@ impl<S> PluginClient<S> {
     /// timeline, tells the plugin it is rendering offline, and makes it wait
     /// for each chunk; [`ForkMode::Live`] keeps its sources on the live
     /// transport. Either way the fork reads the transport from the `Env` of
-    /// the graph it is rendered in. See the `fork` module docs (`src/host/node/fork.rs`) for
-    /// the steps and what a fork does not carry (MIDI, running DSP state).
+    /// the graph it is rendered in. A fork does not carry live MIDI or running
+    /// DSP state (voices, delay lines, a reverb's tail): the state is what the
+    /// plugin saves for a project, so a fork starts silent.
     ///
     /// This instance is only asked for its state. What the fork renders, and
     /// any parameter changed on either afterwards, does not reach the other.
@@ -355,6 +357,13 @@ impl<S> PluginClient<S> {
     /// Inserting a bound `PluginClient` into a graph ([`IntoNode`]) hands the
     /// editor a fork source that calls this, so `Editor::fork` forks a graph
     /// holding a plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PluginForkError`] naming the step that failed: the live
+    /// instance is gone or would not save its state, the new instance failed
+    /// to load, it turned out to be a different plugin, or it refused the
+    /// state. A partly started fork is shut down before this returns.
     pub fn fork_instance(
         &self,
         mode: ForkMode<'_>,
@@ -387,12 +396,11 @@ impl<S> PluginClient<S> {
 }
 
 /// A bound plugin as a graph node: the node itself, the [`PluginControls`] a
-/// host drives it through from then on (the typed control surface doc 013 §2
-/// hands back at insert), and a [`ForkSource`] that forks it by state
-/// transfer.
+/// host drives it through from then on, and a [`ForkSource`] that forks it by
+/// state transfer (a fresh instance in its own subprocess, loaded with the
+/// live instance's saved state).
 ///
-/// Only [`Bound`]: an unbound plugin is not a node (see the `host::node`
-/// module docs for the `compile_fail` pin).
+/// Only [`Bound`] implements this: an unbound plugin is not a node.
 impl IntoNode for PluginClient<Bound> {
     type Controls = PluginControls;
 

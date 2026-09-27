@@ -4,8 +4,8 @@
 //! so consumers need only one import path.
 //!
 //! Two pieces, one domain — the two directions of a [`Curve`]:
-//! - the playback-side [`AutomationLaneNode`] `AudioUnit`, reading a curve at the
-//!   transport's beat position (`beat -> value`);
+//! - the playback-side [`AutomationLaneNode`] graph node, reading a curve at
+//!   the transport's beat position (`beat -> value`);
 //! - the capture-side [`Recorder`], fed `(beat, value)` samples during a write /
 //!   touch / latch take and handing back an envelope.
 //!

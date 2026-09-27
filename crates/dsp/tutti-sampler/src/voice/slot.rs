@@ -79,7 +79,7 @@ pub(crate) struct PlaybackSlot {
     /// materialisation matches the reader rather than defaulting.
     pub(crate) channels: ChannelLayout,
     /// The engine rate the resident stretch unit is tuned to, kept in step by
-    /// the owner's `set_sample_rate`. A stale value here is a pitch error
+    /// the owner's `prepare`. A stale value here is a pitch error
     /// proportional to the device's real rate, reported nowhere.
     pub(crate) sample_rate: SampleRate,
 }

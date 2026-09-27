@@ -88,7 +88,7 @@ sudo dnf install -y alsa-lib-devel pkgconf-pkg-config  # Fedora
 
 ## Workspace Structure
 
-One workspace, rooted at the repo root. 33 members, grouped by subsystem.
+One workspace, rooted at the repo root. 32 members, grouped by subsystem.
 
 ```
 crates/
@@ -96,7 +96,7 @@ crates/
   bevy-tutti          # THE BEVY UMBRELLA. Adapter + engine re-exports; the only
                       #   Bevy-mandatory member.
   core/
-    tutti-core        # Audio graph runtime (Net, Transport, Metering, PDC)
+    tutti-core        # Engine runtime (Engine, Transport, Metering)
     tutti-types       # Engine value vocabulary + io::{AudioIn, AudioOut, pump}
     tutti-cpal        # Device layer: CPAL stream, RT callback, driver lifecycle
     tutti-io          # I/O edge: mic monitor node, WavOut, Recorder, and the
@@ -104,7 +104,8 @@ crates/
                       #   Device-free, so tutti-cpal depends on it, not vice
                       #   versa. Peer of tutti-export (the offline edge).
     tutti-mod         # Pure modulation (audio-free mod matrix, curves)
-    tutti-node        # Planar block buffers + the routing/contract arithmetic
+    tutti-graph       # The graph: `Node` contract, Topology→Plan compiler
+                      #   (PDC), executor. Design doc 013.
     tutti-export      # Offline rendering and export
   dsp/
     tutti-nodes       # DSP nodes (LFO, dynamics, convolution, automation).
@@ -270,8 +271,8 @@ the engine fixes a channel count in a type any more.
   compares a returned count against a loop range or a file position, both in
   frames, so leaking samples makes a 6-channel looped clip wrap at a sixth of its
   length and present as "the loop points are wrong".
-- **`AudioUnit::process(BufferRef, BufferMut)`** — anything that is a node in the
-  graph.
+- **`tutti_graph::Node::process`** — anything that is a node in the graph:
+  planar `f32` through `Io`, any block length up to `Prepare::max_block`.
 
 **The const-generic width was a mistake, and its removal is settled — do not
 reintroduce it.** `AudioIn<S, const CH: usize>` put the frame width in the type.
@@ -314,8 +315,8 @@ carry from how that landed:
   `butler/io/wave_io.rs`.
 
 **A sampler *voice* is a graph node and not an edge — the split above decides it,
-not the width.** `MemorySource` implements `AudioUnit` (`inputs() = 0`,
-`outputs() = channels.count()`) and will not grow an `AudioIn` impl. Three
+not the width.** `MemorySource` implements `tutti_graph::Node` (no
+inputs, `channels` outputs) and will not grow an `AudioIn` impl. Three
 reasons, none about channel count: `poll_into` has no clock to seat on, and
 the placed path needs one because a transport advances once per *block* — it
 seats where the playhead is and steps from there until the clock moves
@@ -325,7 +326,7 @@ no honest value, since a placed voice outside its window fills zeros and then
 sounds again when the playhead re-enters; and `AudioIn` deliberately carries no
 rate/length/seek vocabulary, so `window_position`, `read_rate` / `window_rate`,
 loop wrap and `rebind_offline` would all stay outside the trait anyway. It also
-renders into fundsp's **planar** `BufferMut`, so an interleaved impl would be
+renders into the graph's **planar** `Io`, so an interleaved impl would be
 de-interleaved right back. The sampler's genuine edge is the butler ring, and
 that is the thing wearing the trait.
 
@@ -350,37 +351,39 @@ a trait analogue worth applying: a trait earns its name if you can state its
 boundary in one sentence without "and". The plugin capability split (`PluginMeta`
 / `PluginAudio` / `PluginParams` / `PluginState` / `PluginEditorHost`, reassembled
 by the blanket-impl `PluginInstance`) passes — each answers a *different* "why is
-this not just a fundsp node?", which is why they are five doc comments and not
+this not just a graph node?", which is why they are five doc comments and not
 one. The failure mode to watch is reaching for a **compile-time** guarantee where
 the quantity is genuinely runtime, which is exactly how `AudioIn` ended up with a
 vocabulary it could not cover.
 
 ## Wiring is declared, not called
 
-`spawn_audio_node` adds an *unwired* node. `AudioSources` on a sink names what
+`spawn_audio_node` adds an *unwired* node. `PortSources` on a sink names what
 feeds each of its input ports; the `MasterSources` resource names what feeds each
 global output channel. The rebuild resolves entities → `AudioNode` each frame (a
-stored handle goes stale on a rebind) and diffs against `AudioGraphRes::source` /
-`output_source`, so the adapter keeps no shadow state.
+stored handle goes stale on a rebind), builds a `Topology` value from the
+declarations, and writes the declared ports that differ into the editor's spec;
+the frame's commit compiles it (doc 013).
 
-Keying on the *sink port* is what makes fan-in unrepresentable: `Net` holds one
-source per input port, and so does the declaration. Summing is a node's job —
-`Net` has no summing bus. The old `AudioFeedsTo` edge component is deleted; it
+Keying on the *sink port* is what makes fan-in unrepresentable: a `Topology`
+holds one source per input port, and so does the declaration. Summing is a
+node's job — the graph has no summing bus. The old `AudioFeedsTo` edge component is deleted; it
 kept a tracked map to know what to disconnect.
 
 `bevy_tutti::graph` owns the `GraphReconcileSystems` set hierarchy —
 `Spawn → Params → Despawn → Compensate → Commit` — one file per duty (`schedule`,
 `spawn`, `despawn`, `commit`, `wire`, `param`, plus `io`, `metering`, `tap`,
 `transport`, `plugin`, `resources`). `AudioGraphRes` is the graph handle
-(opaque: its methods are the only way to the `Net` inside, and there is no
+(opaque: its methods are the only way to the `Editor` inside, and there is no
 `Deref`, so the mutate/commit boundary stays visible),
 `AudioConfig` the sample-rate / channel config, `GraphDirty` the per-frame
 commit-coalescing flag. Node removal is an `On<Remove, AudioNode>` observer, not a
 despawn system.
 
 Params are `AudioParam<U, const P: u16>` — one generic component per scalar,
-registered with `App::add_audio_param::<U, P>()` and written through `Net::set` in
-the `Params` phase. `AudioNode` is the only thing `tutti-core` gates behind its
+registered with `App::add_audio_param::<U, P>()` and written in the `Params`
+phase through the node's `ParamSet` (`GraphNode::params`); a node without the
+param takes nothing. `AudioNode` is the only thing `tutti-core` gates behind its
 `bevy` feature: one `derive(Component)` on one struct.
 
 ## Testing Policy

@@ -10,10 +10,11 @@
 //! [`push`](AudioTap::push) is a single atomic load and a return.
 //!
 //! This is the only way to observe master output. The RT callback takes no
-//! host-supplied hook, so the alternative is an `AudioUnit` spliced into
-//! `MasterSources` — which must leave its ring untouched in `reset` (fundsp
-//! clones every vertex on `commit`, so a frontend clone shares the ring and
-//! popping there races the backend's `tick`) and mint a unique `get_id`.
+//! host-supplied hook, so the alternative is a graph node spliced into
+//! `MasterSources`. (Under fundsp's `Net`, until doc 013 Phase 5, that node
+//! also had to leave its ring untouched in `reset` — `Net` cloned every
+//! vertex on `commit`, so a frontend clone shared the ring and popping there
+//! raced the backend's `tick` — and mint a unique `get_id`.)
 
 use crate::{AtomicBool, Ordering};
 use parking_lot::Mutex;

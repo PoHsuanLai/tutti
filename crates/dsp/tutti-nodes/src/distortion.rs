@@ -7,9 +7,9 @@
 //! in the same operation order, and matched fundsp's output bit for bit when
 //! they were moved (design doc 013, Phase 0b).
 //!
-//! fundsp's `shape(..)` opcode bakes its drive (the shaper's hardness field) in
-//! at construction and exposes no `set()`, so driving it live would force a
-//! crossfade node-rebuild every parameter change. Instead this node owns an
+//! fundsp's `shape(..)` opcode baked its drive (the shaper's hardness field) in
+//! at construction and exposed no `set()`, so driving it live would have forced
+//! a crossfade node-rebuild every parameter change. Instead this node owns an
 //! atomic `drive` (the standard [`Param`] UI-handle pattern) and reconstructs
 //! the cheap, stateless shaper struct only when drive actually moves — so
 //! `UnitParam::Drive` is written through the node's [`ParamSet`] with no

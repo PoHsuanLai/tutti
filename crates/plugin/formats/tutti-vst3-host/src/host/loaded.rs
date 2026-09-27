@@ -1477,8 +1477,9 @@ impl Vst3Loaded {
         self.close_editor_unchecked();
     }
 
-    /// Assert-free editor teardown for [`Drop`], which can run on the audio
-    /// thread when the fundsp graph releases the instance. The public
+    /// Assert-free editor teardown for [`Drop`], which has no main-thread
+    /// guarantee (it once ran on the audio thread when fundsp's graph released
+    /// the instance). The public
     /// [`close_editor`](Self::close_editor) asserts the main thread before
     /// delegating here; `Drop` calls this directly to avoid panicking off it.
     fn close_editor_unchecked(&mut self) {
@@ -2001,8 +2002,8 @@ impl Vst3Loaded {
 
 impl Drop for Vst3Loaded {
     fn drop(&mut self) {
-        // No main-thread assert: Drop can run on the audio thread when the
-        // fundsp graph releases the instance. See `close_editor_unchecked`.
+        // No main-thread assert: Drop has no main-thread guarantee. See
+        // `close_editor_unchecked`.
         self.close_editor_unchecked();
         // Mirror the load-time connect in reverse: for a separate controller,
         // tear the component↔controller connection down before terminating

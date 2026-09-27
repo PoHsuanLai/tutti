@@ -1238,8 +1238,8 @@ impl Node for MemorySource {
         Status::Modified
     }
 
-    /// The free-running cursor rewound and stopped, the transport forgotten,
-    /// as `AudioUnit::reset` had it.
+    /// The free-running cursor rewound and stopped, the transport forgotten
+    /// (as the `AudioUnit` era's `reset` had it).
     fn reset(&mut self) {
         self.rewind();
     }

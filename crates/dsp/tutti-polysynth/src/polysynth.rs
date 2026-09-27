@@ -2984,15 +2984,15 @@ mod tests {
     /// same audio rendered as eight 64-frame blocks.
     ///
     /// This is design doc 013's D4: the block path mixed into
-    /// `[f32; MAX_BUFFER_SIZE]` (64-frame) stack arrays and clamped `size` to them, so in
-    /// release a 512-frame block rendered 64 frames and silence. The renderer
-    /// now has no block-sized scratch at all; the identity with short blocks is
-    /// what shows the long block is not merely non-silent but *right* —
+    /// `[f32; MAX_BUFFER_SIZE]` (64-frame) stack arrays and clamped `size` to
+    /// them, so in release a 512-frame block rendered 64 frames and silence.
+    /// The renderer now has no block-sized scratch at all; the identity with
+    /// short blocks is what shows the long block is not merely non-silent but *right* —
     /// control steps, glides and event offsets all land where they would have.
     ///
-    /// *Mutation:* clamping `size` to 64 (the old `MAX_BUFFER_SIZE`) at the top of
-    /// `render_events` fails this (frame 64 onward goes silent and the event at
-    /// 200 is never reached in the long block).
+    /// *Mutation:* clamping `size` to 64 (the old `MAX_BUFFER_SIZE`) at the top
+    /// of `render_events` fails this (frame 64 onward goes silent and the event
+    /// at 200 is never reached in the long block).
     #[test]
     fn a_long_block_renders_every_frame_like_short_blocks() {
         let config = || SynthConfig {

@@ -286,15 +286,16 @@ pub enum BridgeMessage {
         value: f32,
     },
     /// Plugin reported a latency change at runtime. Host updates the
-    /// corresponding `PluginClient::set_latency` so `AudioUnit::latency()`
-    /// reports the new value. Note: does NOT trigger PDC re-analysis;
-    /// the graph must be committed again for compensation to update.
+    /// corresponding `PluginClient::set_latency` so the latency the node
+    /// declares in its `Shape` is the new value. Note: does NOT trigger PDC
+    /// re-analysis; the graph must be committed again for compensation to
+    /// update.
     LatencyChanged {
         /// The plugin's new reported latency, in frames.
         samples: Samples,
     },
-    /// Plugin reported a new tail length at runtime. The host updates the value
-    /// `AudioUnit::tail()` reports, so a bounce started after the change sizes
+    /// Plugin reported a new tail length at runtime. The host updates the tail
+    /// the node declares in its `Shape`, so a bounce started after the change sizes
     /// its render from the current decay rather than the one loaded with.
     ///
     /// CLAP-only in practice: it is the one format that pairs its tail query

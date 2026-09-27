@@ -364,7 +364,7 @@ fn an_overreported_bus_count_does_not_run_the_host_off_the_end() {
 /// `kResultFalse` from `setBusArrangements` means "I did not accept yours, I
 /// kept my own" — legal, and what any fixed-I/O plugin returns. The host must
 /// then re-read the kept layout and report *that*, because everything above it
-/// sizes buffers from `info()`: `PluginClient::new` builds its fundsp node from
+/// sizes buffers from `info()`: `PluginClient::new` builds its graph node from
 /// these counts, so a host that keeps reporting what it proposed hands the
 /// plugin a channel it is not running.
 ///

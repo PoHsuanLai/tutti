@@ -4,7 +4,8 @@
 //! # What this exists to catch
 //!
 //! The bug this whole change addresses was that per-plugin waits *summed*.
-//! fundsp runs nodes serially in one callback, so N stalled plugins cost N x
+//! fundsp ran nodes serially in one callback (the graph's serial executor
+//! does too), so N stalled plugins cost N x
 //! budget, and 3 was enough to overrun 64 frames at 48 kHz. The synthetic
 //! `stalled_plugins_do_not_stall_the_audio_thread` test proves the waiting is
 //! gone using mock servers; this proves it with **real plugin subprocesses**,
@@ -436,9 +437,9 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
         fill_sine(&mut input, max_ch, block);
 
         // Every unit gets the SAME input and is processed one after another —
-        // the arrangement fundsp produces for parallel plugins on separate
-        // tracks, and precisely the one whose per-node waits used to sum inside
-        // a single callback.
+        // the arrangement the serial executor produces for parallel plugins on
+        // separate tracks, and precisely the one whose per-node waits used to
+        // sum inside a single callback.
         //
         // Deliberately not chained output-to-input. Chaining looks like the
         // harsher test but measures the wrong thing here: each pipelined stage
@@ -733,9 +734,8 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
         }
 
         // The bypass signature: output identical to the input we just fed in.
-        let matches_input = (0..max_ch).all(|ch| {
-            (0..BLOCK).all(|i| (output.at(ch, i) - input.at(ch, i)).abs() < 1e-6)
-        });
+        let matches_input = (0..max_ch)
+            .all(|ch| (0..BLOCK).all(|i| (output.at(ch, i) - input.at(ch, i)).abs() < 1e-6));
         if matches_input && in_peak > 0.0 {
             echoed += 1;
         }
@@ -922,8 +922,9 @@ fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin::handles::Plu
 #[cfg(any(feature = "vst3", feature = "au"))]
 fn assert_nulls_at_declared_latency(mut unit: GraphUnit, path: &str) {
     let unit = &mut unit;
-    // Wide enough for *both* directions: fundsp indexes one buffer by channel for
-    // whichever side is wider, so sizing to the narrower one panics.
+    // Wide enough for *both* directions: one width sizes both `Planes`, and
+    // `stage`/`read` index each by channel up to its own side, so sizing to the
+    // narrower one panics.
     let channels = unit.inputs().max(unit.outputs()).max(1);
 
     let declared = unit

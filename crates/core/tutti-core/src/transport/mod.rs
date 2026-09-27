@@ -61,11 +61,12 @@ pub use tutti_types::{OfflineClock, OfflineTransport, Timeline};
 /// `Timeline`: a clock that does not move (`FrozenClock`) has a transport to
 /// report — stopped, at beat zero — without being a timeline anything reads.
 ///
-/// **Advance AFTER processing, never before.** `TransportClock` (the in-net
-/// clock feeding beat-driven nodes) is emit-then-advance: sample 0 of a block
-/// carries the block's start beat, and only then does the beat increment. A
-/// clock advanced ahead of the net sits one `beats_per_sample` off the net's own
-/// clock for the entire render — a desync that reads as "the samplers are
+/// **Advance AFTER processing, never before.** `TransportClock` (the engine's
+/// clock, whose transport beat-driven nodes read from `Env`) is
+/// emit-then-advance: sample 0 of a block carries the block's start beat, and
+/// only then does the beat increment. A clock advanced ahead of the render
+/// sits one `beats_per_sample` off the transport its nodes read for the
+/// entire render — a desync that reads as "the samplers are
 /// slightly late" and nothing else.
 pub trait RenderClock: Send + Sync {
     /// Advance the playhead by `frames` — a **frame** count, not a sample
@@ -114,7 +115,7 @@ pub trait RenderClock: Send + Sync {
 
 /// A clock that does not move.
 ///
-/// For rendering a net with no time-dependent nodes — a synth patch, a test
+/// For rendering a graph with no time-dependent nodes — a synth patch, a test
 /// tone, an impulse response. It exists so that "this graph has no transport"
 /// is something a caller *states* rather than something they omit: a renderer
 /// takes a clock, so forgetting one is a compile error instead of a silently

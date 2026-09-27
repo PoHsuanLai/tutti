@@ -54,8 +54,8 @@ pub enum Error {
     /// A capture device cannot run at the graph's sample rate.
     ///
     /// `MicMonitorNode` renders the mic into the graph with no resampling —
-    /// its `set_sample_rate` is a documented no-op that assumes the device
-    /// layer opened the mic at the graph's rate. This is the error that makes
+    /// its `prepare` reconfigures nothing, and assumes the device layer
+    /// opened the mic at the graph's rate. This is the error that makes
     /// that an enforced guarantee rather than an assumption.
     #[error("input device {device_name:?} runs at {device} Hz; the graph runs at {graph} Hz")]
     SampleRateMismatch {

@@ -27,8 +27,8 @@ what the realtime graph needs and this crate does not. Both are
 
 ## What it does not own
 
-- **No graph, no framework, no ECS.** Nothing here knows about `Net`, and there
-  is no Bevy feature. The live-analysis ECS surface this crate once carried
+- **No graph, no framework, no ECS.** Nothing here is a graph node or knows
+  about one, and there is no Bevy feature. The live-analysis ECS surface this crate once carried
   computed four analyses nobody read, and was removed rather than gated.
 - **No threading and no scheduling.** "Live" is a property of a call site, never
   of an algorithm, so nothing here is named for it. A host that wants these

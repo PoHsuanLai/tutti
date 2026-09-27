@@ -260,7 +260,7 @@ fn cascaded_convolvers_sum_their_tails() {
 ///
 /// `known()` still gives the sum over what spoke, so the two accessors disagree
 /// — which is the whole reason there are two. The unreporting node has to be
-/// constructed deliberately now that the stock fundsp nodes all answer.
+/// constructed deliberately now that the engine's stock nodes all answer.
 #[test]
 fn one_silent_node_makes_the_figure_partial_without_losing_it() {
     /// A node that does not know its tail (`Tail::Unknown`): what an
@@ -1065,7 +1065,7 @@ fn a_width_the_old_dispatch_rejected_now_exports() {
             "width {width} should be an unnamed layout"
         );
 
-        // A net as wide as the file, carrying a distinct constant per channel so
+        // A graph as wide as the file, carrying a distinct constant per channel so
         // a dropped or duplicated channel is visible.
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
         for c in 0..width as usize {

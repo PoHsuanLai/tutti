@@ -1,6 +1,5 @@
-//! A node's declared latency (`Shape::latency` for a graph node,
-//! `AudioUnit::latency()` for a unit) must be the delay the output actually
-//! has — design doc 013, defects D1 and D3.
+//! A node's declared latency (`Shape::latency`) must be the delay the output
+//! actually has — design doc 013, defects D1 and D3.
 //!
 //! PDC reads nothing but that figure: it delays every *other* path by it. So a
 //! figure that is too high (a musical delay reported as latency, D1) drags the

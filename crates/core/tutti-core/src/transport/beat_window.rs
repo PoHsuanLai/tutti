@@ -244,16 +244,18 @@ fn forward_slack(beats_per_sample: BeatDuration, block_size: usize) -> BeatDurat
 /// no local to forget, and `?` cannot skip a write that happens inside
 /// [`advance`](Self::advance).
 ///
-/// Cheap to clone — shares the cursor, so fundsp's clone-on-commit of the
-/// parent node does not restart playback.
+/// Cheap to clone — shares the cursor. That sharing exists because fundsp's
+/// `Net` cloned the parent node on every commit (until doc 013 Phase 5), and
+/// the clone must not restart playback; the graph never clones a node to
+/// commit it, but a clone still shares the cursor.
 #[derive(Clone)]
 pub struct BeatCursor {
     transport: Arc<dyn Timeline>,
     /// Shared for the same reason `last_beat` is: a cursor is cloned along with
-    /// whatever owns it, and fundsp commits a *different clone* than a setter
-    /// would touch. A plain field is not merely stale after a device rate
-    /// change — it is unreachable, since the owner sits behind an `Arc` and
-    /// there is no `&mut` to the running copy.
+    /// whatever owns it, and under fundsp's `Net` the commit ran a *different
+    /// clone* than a setter would touch. A plain field would not merely be
+    /// stale after a device rate change — it would be unreachable, since the
+    /// owner sits behind an `Arc` and there is no `&mut` to the running copy.
     sample_rate: Arc<AtomicF64>,
     last_beat: Arc<AtomicF64>,
 }
@@ -322,7 +324,7 @@ impl BeatCursor {
         SampleRate::from(self.sample_rate.load(crate::Ordering::Acquire))
     }
 
-    /// Re-point at a new sample rate, as `AudioUnit::set_sample_rate` requires.
+    /// Re-point at a new sample rate (the owner's `prepare` hands it one).
     ///
     /// Affects `beats_per_sample`, hence `end_beat` — and hence the forward-jump
     /// threshold, which is derived from it. A cursor left at a stale rate would
@@ -330,7 +332,7 @@ impl BeatCursor {
     /// large and a real seek goes unnoticed.
     ///
     /// `&self`, not `&mut`: the rate is a shared atomic, so this reaches every
-    /// clone including the one fundsp is running.
+    /// clone, including one the audio thread is running.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
         self.sample_rate
             .store(sample_rate.into().get(), crate::Ordering::Release);

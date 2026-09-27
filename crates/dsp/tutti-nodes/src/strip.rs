@@ -8,10 +8,12 @@
 //!
 //! # Why this is a unit rather than a fundsp graph
 //!
-//! The DSP is a handful of multiplies, and fundsp can express it: `shared`/`var`
-//! give a lock-free scalar, `pan`/`panner` an equal-power law, `mul` a gain. What
-//! that composition does *not* give is **addressing**, and addressing is the
-//! whole point.
+//! (fundsp was the engine's DSP library until design doc 013 Phase 5; this
+//! records why the strip was never built from it.) The DSP is a handful of
+//! multiplies, and fundsp could express it: `shared`/`var` give a lock-free
+//! scalar, `pan`/`panner` an equal-power law, `mul` a gain. What that
+//! composition does *not* give is **addressing**, and addressing is the whole
+//! point.
 //!
 //! Every scalar here lives in a cell the node's [`ParamSet`] addresses by
 //! [`UnitParam`] — the same shape every other node in this crate uses. A
@@ -20,9 +22,9 @@
 //! declared one, invisible to the reconcilers that own the first. Two writers,
 //! one port, no way to see the conflict.
 //!
-//! fundsp's `Panner` is unreachable from the declared path for a second reason:
-//! `Panner<U2>` takes its pan as an *audio input port*, which would sit in the
-//! same index space `PortSources` declares into.
+//! fundsp's `Panner` was unreachable from the declared path for a second
+//! reason: `Panner<U2>` takes its pan as an *audio input port*, which would sit
+//! in the same index space `PortSources` declares into.
 //!
 //! # The balance law is this crate's own
 //!
@@ -275,7 +277,7 @@ impl BusStripNode {
     /// [`unity_at_defaults`](self::tests::unity_at_defaults) pins.
     ///
     /// This is **balance, not panning**, and the distinction is why fundsp's
-    /// `Panner` cannot be reused. A panner *places* a mono signal, so it spreads
+    /// `Panner` could not be reused. A panner *places* a mono signal, so it spreads
     /// one input across two outputs with an equal-power (`cos`/`sin`) law that
     /// reads `-3 dB` on each side at centre. Applying that here would attenuate
     /// an already-stereo signal by 3 dB just for existing. A balance instead
@@ -543,8 +545,8 @@ mod tests {
     }
 
     /// A strip must be transparent until somebody moves it. This is the property
-    /// that rules out reusing fundsp's equal-power `Panner`, which would attenuate
-    /// a centred signal by 3 dB.
+    /// that ruled out reusing fundsp's equal-power `Panner`, which would
+    /// attenuate a centred signal by 3 dB.
     #[test]
     fn unity_at_defaults() {
         let mut s = BusStripNode::new();

@@ -221,7 +221,7 @@ later."* That is this host — there is no public per-bus activation API, so a b
 at load is unreachable for the instance's lifetime rather than merely inactive.
 
 Two constraints worth keeping. Bus **geometry stays on declared buses**: `SlabLayout`, the
-batcher and fundsp port arity all index positionally off declared widths, so filtering the
+batcher and the graph node's port count all index positionally off declared widths, so filtering the
 scratch resolve as well would silently take a multi-out instrument from N stem ports to 2
 and shift every `connect()` in a user's graph. And a bus whose `getBusInfo` fails is
 activated anyway — that restores the old behaviour for exactly the plugins that cannot

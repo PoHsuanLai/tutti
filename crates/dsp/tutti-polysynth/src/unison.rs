@@ -98,8 +98,8 @@ impl UnisonEngine {
 
     /// Stop sharing the detune and spread cells with the live engine and its
     /// mod targets, keeping their current values (see `Param::detach`): the
-    /// half of `PolySynth::isolate` that makes a fork render the unison it
-    /// was taken with.
+    /// half of `PolySynth`'s `fork_fresh` that makes a fork render the unison
+    /// it was taken with.
     pub fn detach(&mut self) {
         self.detune.detach();
         self.spread.detach();

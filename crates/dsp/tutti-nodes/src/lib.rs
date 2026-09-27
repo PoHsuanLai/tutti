@@ -82,7 +82,8 @@ pub use distortion::{DistortionNode, ShapeKind, DISTORTION_PARAMS};
 mod filter;
 pub use filter::{
     compute_ladder_coeffs, compute_svf_coeffs, BandState, EqBandNode, LadderCoeffs,
-    LadderFilterNode, LadderType, Real, SvfCoeffs, SvfFilterNode, SvfType, LADDER_PARAMS, SVF_PARAMS,
+    LadderFilterNode, LadderType, Real, SvfCoeffs, SvfFilterNode, SvfType, LADDER_PARAMS,
+    SVF_PARAMS,
 };
 
 mod dynamics;
@@ -161,5 +162,6 @@ pub mod automation;
 // NOTE: the spatial-panner graph binding (`spatial_graph`) and the automation
 // graph binding (`automation::graph`) moved host-side — they bound DAW
 // `Volume`/`Pan`/`PluginParam` components, which are not this engine's
-// vocabulary. This crate keeps only the pure DSP: the spatial panner nodes
-// (`spatial/`) + the automation `AudioUnit` (`automation::{lane, recording}`).
+// vocabulary. This crate keeps only the pure DSP: the automation lane node
+// (`automation::{lane, recording}`); the spatial panner nodes are
+// `tutti-spatial`'s.

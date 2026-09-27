@@ -67,8 +67,8 @@ impl<U: Unit<Raw = f32>> Param<U> {
     /// UI handle, a mod target) keeps it; this copy no longer sees their
     /// writes, and they no longer see this copy's.
     ///
-    /// This is what `AudioUnit::isolate` calls on each control a node reads,
-    /// so an offline fork renders a snapshot of the controls taken at fork
+    /// This is what a node's fork (`ParamNode::fork_fresh`, a `ForkSource`)
+    /// calls on each control the node reads, so an offline fork renders a snapshot of the controls taken at fork
     /// time rather than following live knob moves while it runs. Keeping the
     /// value is the point — a fork that snapped to a default would render
     /// something nobody heard. Control-thread only: it allocates, like

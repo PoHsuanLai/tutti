@@ -12,7 +12,6 @@
 //! # Example
 //!
 //! ```
-//! use tutti_core::AudioUnit;
 //! use tutti_core::{Cents, StretchFactor};
 //! use tutti_sampler::stretch;
 //!
@@ -48,11 +47,12 @@
 
 /// Per-channel RT scratch capacity, in samples.
 ///
-/// **Deliberately not `tutti_core::MAX_BUFFER_SIZE`**, which is 64 (fundsp's
-/// per-block cap). This is the *scratch* the vocoder pre-reserves so `process`
-/// never reallocates, and it is sized for the FFT window rather than the block:
-/// at 8192 it covers the largest `FftSize` with headroom. Importing the core
-/// constant here instead would silently cut the reservation 128x — the tests
+/// **Deliberately not a block size.** (Until doc 013 Phase 5 the engine had a
+/// `tutti_core::MAX_BUFFER_SIZE` of 64, fundsp's per-block cap.) This is the
+/// *scratch* the vocoder pre-reserves so `process` never reallocates, and it
+/// is sized for the FFT window rather than the block: at 8192 it covers the
+/// largest `FftSize` with headroom. Sizing it to a
+/// 64-frame block instead would silently cut the reservation 128x — the tests
 /// still pass, because a `Vec` that reallocates is correct, just not RT-safe.
 const MAX_BUFFER_SIZE: usize = 8192;
 

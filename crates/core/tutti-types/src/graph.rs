@@ -94,7 +94,7 @@ pub struct InPort {
 ///
 /// Fan-in is unrepresentable: an [`InPort`] is a map *key*, so it has at most
 /// one source — exactly what `bevy_tutti::graph::PortSources` declares and what
-/// `Net` structurally requires (one port per input edge). Summing is a node,
+/// `Net` structurally required (one port per input edge). Summing is a node,
 /// never a property of an edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Source {
@@ -224,7 +224,8 @@ impl ParamValue {
 ///
 /// The whole point of the split: a spec is `Clone + Eq + Hash` and carries no
 /// DSP state, so a test can compare two graphs and a recompile can diff them.
-/// The `Box<dyn AudioUnit>` lives in the runtime, built from this by a catalog.
+/// The unit itself (a `tutti_graph::Node`) lives in the runtime, under the
+/// same `NodeKey`.
 ///
 /// Deliberately **not** `Ord`: [`Tail`] has no ordering upstream (`Unknown` and
 /// `Unbounded` are not points on a line), and inventing one here would be a
@@ -602,8 +603,9 @@ impl Topology {
 
     /// Evaluation order: deterministic, and a pure function of the value.
     ///
-    /// `Net` computes this too — inside itself, lazily, invalidated by every
-    /// mutation, and observable only by rendering. Here it is a return value.
+    /// `Net` computed this too (until doc 013 Phase 5) — inside itself,
+    /// lazily, invalidated by every mutation, and observable only by
+    /// rendering. Here it is a return value.
     /// `Err` carries the nodes a cycle left unplaceable.
     pub fn topo_order(&self) -> Result<Vec<NodeKey>, Vec<NodeKey>> {
         self.acyclic_order()

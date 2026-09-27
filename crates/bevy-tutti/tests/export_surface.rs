@@ -202,8 +202,8 @@ fn export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it() {
 /// A node with no outputs cannot be rendered from; that must be a reported
 /// failure, not a silent drop or a panic on the pool.
 ///
-/// "No outputs" means the *unit* produces none (`clone_isolated` and
-/// `Editor::fork` ask the node's own arity — not whether it happens to be
+/// "No outputs" means the *unit* produces none (`Editor::fork` asks the
+/// node's own arity, as `Net::clone_isolated` did — not whether it happens to be
 /// wired), so this needs a genuine sink. A `dc` pushed but left unwired still
 /// has one output and renders fine.
 #[test]

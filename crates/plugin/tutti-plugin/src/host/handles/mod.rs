@@ -1,7 +1,7 @@
 //! Per-plugin handles — the two values a loaded plugin yields.
 //!
 //! Every loaded plugin produces both a [`PluginClient`] (the audio-graph
-//! node, owned by fundsp) and a [`PluginHandle`] (the main-thread control
+//! node, owned by the graph's executor once inserted) and a [`PluginHandle`] (the main-thread control
 //! surface — editor, parameters, state). They share subprocess lifetime via
 //! `Arc`: the plugin stays alive as long as either does.
 //!

@@ -490,11 +490,10 @@ impl std::fmt::Display for ExportNode {
 /// [`ExportRequest::prepare`] receives this together with `&World`. Two things
 /// need it, and neither is something this crate can do on the caller's behalf:
 ///
-/// - **Filling voices.** An isolated copy is born *empty* — `isolate()` drops
-///   the voice pools' command channels and clears their voices, so nothing
-///   downstream of a sampler makes a sound until something re-inserts them. The
-///   data needed to do that (which clips exist, their decoded audio) lives in
-///   the app's ECS.
+/// - **Filling voices.** A fork of a voice pool is born *empty* — an empty
+///   pool at its width, with no command queue — so nothing a pool played
+///   makes a sound until something re-inserts its voices. The data needed to
+///   do that (which clips exist, their decoded audio) lives in the app's ECS.
 /// - **Shaping the output.** Widening the graph to the master's channel count
 ///   and pointing a node at the output, say — policy about what "the export"
 ///   means, which differs per host.

@@ -11,9 +11,10 @@ use tutti_types::{Phase, PhaseIncrement};
 /// modulator stores.
 ///
 /// - **`&self`, so it is trivially `Send + Sync`.** A stateful `&mut self`
-///   modulator could never be a fundsp graph node (`AudioUnit: Send + Sync`) or
-///   a shared `&self` plugin `Curve`. State-threading sidesteps that entirely —
-///   the modulator holds nothing mutable.
+///   modulator could never be a shared `&self` plugin `Curve` (nor, until doc
+///   013 Phase 5, a fundsp graph node: `AudioUnit: Send + Sync`).
+///   State-threading sidesteps that entirely — the modulator holds nothing
+///   mutable.
 ///
 /// Stateless shapes use `State = ()`. Stateful ones
 /// (sample & hold) use a small `Copy` state the caller round-trips.
@@ -22,8 +23,9 @@ pub trait Modulator {
     /// (purely phase-deterministic) modulator; a small `Copy` struct for a
     /// stateful one (e.g. sample & hold's RNG). `Default` provides the seed.
     ///
-    /// `Send + Sync` so a `ModulatorNode<M>` — which owns the state — can be a
-    /// fundsp graph node (`AudioUnit: Send + Sync`). A plain-data state always
+    /// `Send + Sync` so a `ModulatorNode<M>` — which owns the state — could be
+    /// a fundsp graph node (`AudioUnit: Send + Sync`, until doc 013 Phase 5; a
+    /// `tutti_graph::Node` needs only `Send`). A plain-data state always
     /// satisfies this; it costs stateless (`()`) modulators nothing.
     type State: Copy + Default + Send + Sync;
 

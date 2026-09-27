@@ -84,7 +84,7 @@ pub struct Unit {
     /// source sample the unit still owes itself before it may consume one.
     ///
     /// A time-stretcher emits `stretch` samples per source sample, but
-    /// [`AudioUnit::tick`] hands over exactly one and takes exactly one back. The
+    /// [`tick`](Self::tick) hands over exactly one and takes exactly one back. The
     /// only way to satisfy both is for the unit to consume the source at
     /// `1 / stretch` internally — dropping input above unity, repeating it below —
     /// which is what this accumulator paces. See [`Unit::hops`].
@@ -320,10 +320,10 @@ impl Unit {
     /// and `process` copy input to output directly at unity stretch and pitch, or
     /// when disabled.
     ///
-    /// The bypass case is what `route` reports to fundsp's PDC, and reporting a
-    /// window there while the audio passes straight through makes every other
-    /// branch of the graph get delayed to compensate for a delay that does not
-    /// exist — 46 ms at the default 2048 window. It is reachable through ordinary
+    /// The bypass case is what `route` reported to fundsp's PDC until doc 013
+    /// Phase 5, and reporting a window there while the audio passes straight
+    /// through made every other branch of the graph get delayed to compensate
+    /// for a delay that does not exist — 46 ms at the default 2048 window. It is reachable through ordinary
     /// use, not only at construction: `PlaybackSlot::set_stretch` keeps the resident
     /// filter and writes its atomics, so returning a stretched voice to 1.0 leaves
     /// a filter sitting at unity.
@@ -481,7 +481,7 @@ pub(super) const MAX_PITCH_CENTS: f32 = 2400.0;
 impl Unit {
     /// Filter frames `frames` of the lanes `input` into the same frames of
     /// `output`, `n` lanes each (`n` ≥ 1: the caller's width): **exactly**
-    /// what one [`tick`](AudioUnit::tick) per frame, each handed `n` input
+    /// what one [`tick`](Self::tick) per frame, each handed `n` input
     /// samples and an `n`-wide output frame cleared to zero, would write.
     ///
     /// This is the slot's block read through the filter
@@ -738,5 +738,4 @@ impl Unit {
             n => Tail::Finite(Samples(n)),
         }
     }
-
 }

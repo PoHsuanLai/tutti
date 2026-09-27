@@ -41,7 +41,7 @@
 //! - MIDI and transport unify — both backends own the same `Midi`, and both
 //!   map the transport through the same function (`transport_source`); the
 //!   subprocess node reads it from the graph's `Env`, the in-process VST2 node
-//!   (an `AudioUnit` until it is ported) from a polled reader.
+//!   from a polled reader.
 //! - Harmony, note-expression and param automation are subprocess-only, and
 //!   VST2 has no such concepts to begin with, so declining them is the honest
 //!   answer for the format rather than an artifact of where it runs.
@@ -76,7 +76,8 @@ enum Backend {
 /// inputs it can accept.
 ///
 /// See the module docs for why this replaces the old
-/// `(Box<dyn AudioUnit>, PluginHandle)` pair.
+/// `(Box<dyn AudioUnit>, PluginHandle)` pair (fundsp's node trait, deleted in
+/// design doc 013 Phase 5).
 pub struct Plugin {
     backend: Backend,
     handle: PluginHandle,
@@ -269,9 +270,8 @@ impl Plugin {
     /// Both backends deliver it, from different places. The subprocess node
     /// reads the transport from each block's `Env` once it is in a graph, so
     /// it takes only `meter` and `reader` is not used; the in-process VST2 node
-    /// has no `Env` (it is an `AudioUnit` until it is ported, doc 013) and
-    /// polls `reader` into the `TimeInfo` its `audioMasterGetTime` callback
-    /// serves.
+    /// does not read its `Env` yet and polls `reader` into the `TimeInfo` its
+    /// `audioMasterGetTime` callback serves.
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
     pub fn set_transport_source(
         &mut self,

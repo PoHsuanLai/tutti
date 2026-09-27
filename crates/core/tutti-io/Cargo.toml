@@ -29,7 +29,7 @@ ogg = ["dep:symphonia", "symphonia/ogg", "symphonia/vorbis"]
 bevy = ["dep:bevy_asset", "dep:bevy_reflect"]
 
 [dependencies]
-# The `AudioIn`/`AudioOut` traits this crate implements, plus `AudioUnit`,
+# The `AudioIn`/`AudioOut` traits this crate implements, plus `AudioTap`,
 # `ChannelLayout` and the PCM quantizers. `default-features = false` matches
 # every sibling and keeps this crate immune if tutti-core ever grows a default —
 # it has none today (`default = []`), so the flag currently suppresses nothing.

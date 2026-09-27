@@ -16,8 +16,8 @@ uv run python \
 
 `tutti-polysynth` is not an untested crate — it carries 3,134 lines of tests, over
 half its source. But they test **plumbing**: MIDI events reach voices, allocation
-picks the right slot, `isolate` severs a shared inbox, atomics propagate across
-clones. Almost nothing asserted what comes out of `process`.
+picks the right slot, a fork shares nothing with the live synth, atomics
+propagate across clones. Almost nothing asserted what comes out of `process`.
 
 `test_voice_stealing_in_polysynth` is representative: it plays three notes into a
 two-voice synth and checks that *a* voice reports note 67. It never listens. A

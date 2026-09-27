@@ -40,10 +40,11 @@ pub struct PlaybackParams {
     /// Linear output gain, an [`Amplitude`] in the cell.
     ///
     /// Here rather than on `DiskSource` for the reason `tutti_nodes`' crate docs
-    /// give: a control stored **by value** in a unit cannot be changed on a live
-    /// node, because `Net`'s frontend holds clones and `Net::migrate` discards
-    /// edits to them. A plain `Amplitude` field would make a clip's fader do
-    /// nothing once its voice existed — silently, with the knob still moving.
+    /// give: a live control is a shared cell the control thread writes through
+    /// `&self`, never a field of the node. (Under fundsp's `Net`, deleted in doc
+    /// 013 Phase 5, the frontend held clones and `Net::migrate` discarded edits
+    /// to them, so a plain `Amplitude` field made a clip's fader do nothing once
+    /// its voice existed — silently, with the knob still moving.)
     gain: AtomicF32,
     /// Source samples consumed per output sample by a wrapping time-stretcher:
     /// `1 / stretch`. 1.0 when the voice does not stretch.

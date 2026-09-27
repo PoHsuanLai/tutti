@@ -256,8 +256,9 @@ fn unconnected_is_reported_but_not_fatal() {
 
 /// Two topologies built in **different insertion orders** are equal and hash
 /// equal. This is what makes the value usable as a cache key and as the whole of
-/// a change check — `Net::revision` is monotone but is not a function of the
-/// graph, so it can order two states and cannot identify one.
+/// a change check — `Net::revision` (until doc 013 Phase 5) was monotone but
+/// not a function of the graph, so it could order two states and not
+/// identify one.
 ///
 /// Mutation: swap `Topology::nodes` to a `HashMap` → the derived `Hash` stops
 /// being order-independent and the hash assertion fails (intermittently, which

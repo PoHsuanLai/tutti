@@ -9,9 +9,10 @@
 //! capability it uses.
 //!
 //! Note the audio methods here ([`PluginAudio`]) are the *subprocess* render
-//! path — distinct from the host-side `AudioUnit` node (`PluginClient`) on the
+//! path — distinct from the host-side graph node (`PluginClient`) on the
 //! other end of the wire. Both are "process a block", but they are different
-//! objects in different processes, so this is not a duplicate of `AudioUnit`.
+//! objects in different processes, so this is not a duplicate of the graph's
+//! `Node`.
 //!
 //! # A plugin is a set of capabilities, not a state machine
 //!
@@ -84,9 +85,8 @@ use crate::{
 /// Static identity (name, vendor, native class, has-editor) is on
 /// [`descriptor`](Self::descriptor); per-bus widths / latency / f64 support on
 /// [`loaded`](Self::loaded). Both are snapshots of what the plugin reported at
-/// load time — pure `&self` queries with no live-plugin analogue on a fundsp
-/// node (`AudioUnit::get_id()` is a shared *type* tag, not per-instance
-/// identity).
+/// load time — pure `&self` queries with no live-plugin analogue on a graph
+/// node (a graph node carries no identity of its own; the graph keys it).
 pub trait PluginMeta {
     /// Static catalog identity as reported at load: name, vendor, native class,
     /// whether an editor exists.
@@ -99,7 +99,7 @@ pub trait PluginMeta {
 
 /// The subprocess audio render path.
 ///
-/// The loader-side counterpart of the host-side `AudioUnit` node: same "render
+/// The loader-side counterpart of the host-side graph node: same "render
 /// one block" job, different object across the IPC boundary.
 pub trait PluginAudio: Send {
     /// Process one audio block. The buffer carries the negotiated sample
@@ -169,7 +169,7 @@ pub trait PluginAudio: Send {
 
 /// Parameter enumeration, read, and write.
 ///
-/// A fundsp node has no parameter *catalog* ([`get_parameter_list`](Self::get_parameter_list)
+/// A graph node has no parameter *catalog* ([`get_parameter_list`](Self::get_parameter_list)
 /// returns id/name/range/default/unit/flags with no node analogue), so this
 /// stays plugin-specific.
 pub trait PluginParams {
@@ -294,7 +294,7 @@ pub trait PluginParams {
     fn get_parameter_list(&self) -> Vec<ParameterInfo>;
 }
 
-/// Opaque preset-chunk save/load. No fundsp node has serializable opaque state,
+/// Opaque preset-chunk save/load. A graph node has no serializable opaque state,
 /// so this is genuinely irreducible.
 pub trait PluginState: Send {
     /// The plugin's full state as an opaque chunk, for the host to persist.

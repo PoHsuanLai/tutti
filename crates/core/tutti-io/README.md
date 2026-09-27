@@ -55,7 +55,7 @@ vocabulary and its live impls from one place.
 ```text
 tutti-types    AudioIn/AudioOut, ChannelLayout, the PCM quantizers
     ↑
-tutti-core     AudioUnit, AudioTap; re-exports io
+tutti-core     Engine, AudioTap; re-exports io
     ↑
 tutti-io       MicMonitorNode, WavOut, TapIn, Recorder,  (device-free)
                Wave, FileIn, the decoder

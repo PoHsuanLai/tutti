@@ -8,7 +8,7 @@
 //! - [`subprocess`] — spawning / locating / probing the `tutti-plugin-server`.
 //! - [`ipc_client`] — the host-process client for an out-of-process plugin:
 //!   the RT-safe audio command bus plus the composited control surface.
-//! - [`node`] — the [`PluginClient`](node::PluginClient) fundsp node that the
+//! - [`node`] — the [`PluginClient`](node::PluginClient) graph node that the
 //!   out-of-process plugin presents to the audio graph.
 //! - [`handles`] — the public [`PluginHandle`](handles::PluginHandle) control
 //!   surface and the granular capability traits (`HostParams`/`HostState`/

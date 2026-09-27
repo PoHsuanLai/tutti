@@ -24,12 +24,11 @@
 //!
 //! It is vocabulary, and the value layer is where the confusion starts:
 //! `graph::NodeSpec::latency` and `LatencyGraph::latency` both mean exactly
-//! this and are both in this crate. They stay `Samples` for now — every
-//! `LatencyGraph` implementor (fundsp's `Net` among them) would have to move
-//! in the same change, and `Net` is deleted in doc 013's Phase 5 — so the
-//! fold signatures flip when there is one implementor left, not while there
-//! are three. New code (`tutti-graph`'s `Shape`) takes `Latency` from the
-//! start.
+//! this and are both in this crate. They are still `Samples`: every
+//! `LatencyGraph` implementor has to move in the same change, and while
+//! fundsp's `Net` was one of them (until doc 013 Phase 5) that change spanned
+//! a crate being deleted, so the fold signatures were left to flip on their
+//! own. New code (`tutti-graph`'s `Shape`) takes `Latency` from the start.
 //!
 //! # Algebra
 //!

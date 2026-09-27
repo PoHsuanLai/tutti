@@ -8,9 +8,9 @@
 //! One width-generic node, [`LadderFilterNode`]: the coefficients are solved
 //! once for every channel, and the channels run side by side in groups.
 
+use super::Real;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use super::Real;
 
 use tutti_core::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate, Tail};
 use tutti_graph::{

@@ -21,7 +21,7 @@
 //!
 //! [`open_with_monitor`](MicIn::open_with_monitor) tees the same capture
 //! callback into a *second*, shallow ring drained by a [`MicMonitorNode`] (a
-//! a `tutti_io` `AudioUnit`, so it's device-free and lives in the graph).
+//! `tutti_io` graph node, so it's device-free and lives in the graph).
 //! Add that node to the audio graph — through effects if you like — to hear the
 //! mic live while recording the same input. The two rings are independent: the
 //! recording ring is deep (dropout-resistant, latency irrelevant to a file); the
@@ -87,9 +87,9 @@ impl MicIn {
     ///
     /// **The rate is a parameter, not something read off the device**, and
     /// that is the point. [`MicMonitorNode`](tutti_io::MicMonitorNode) renders
-    /// the mic into the graph with no resampling — its `set_sample_rate` is a
-    /// documented no-op resting on the assumption that the device layer opened
-    /// the mic at the graph's rate. Nothing enforced that: this function used
+    /// the mic into the graph with no resampling — its `prepare` reconfigures
+    /// nothing, resting on the assumption that the device layer opened the
+    /// mic at the graph's rate. Nothing enforced that: this function used
     /// to take whatever `default_input_config` reported while
     /// `AudioEngine::start` independently took whatever the *output* device
     /// reported, and nothing compared them. A 44.1 kHz mic feeding a 48 kHz
@@ -154,7 +154,7 @@ impl MicIn {
             let (mon_prod, mon_cons) = mon_rb.split();
             let ring: MicRing = share_mic_ring(mon_cons);
             // `new_at`, not `new`: the node then carries the rate it was
-            // opened at, and its `set_sample_rate` debug-asserts the graph
+            // opened at, and its `prepare` debug-asserts the graph
             // agrees. That assertion is the unchecked half of the same
             // guarantee `Error::SampleRateMismatch` is the checked half of —
             // the two-check shape `pump`'s layout `debug_assert` and

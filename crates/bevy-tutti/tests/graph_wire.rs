@@ -180,7 +180,8 @@ mod graph_wire {
     /// A node naming itself is skipped with a warning, not a panic.
     ///
     /// `Net::set_source` asserted on a self-connection (the graph before doc
-    /// 013), and an assert inside a reconcile system takes the app down over a caller's typo.
+    /// 013), and an assert inside a reconcile system takes the app down over a
+    /// caller's typo.
     #[test]
     fn a_self_connection_is_skipped_not_panicked_on() {
         let mut app = app();

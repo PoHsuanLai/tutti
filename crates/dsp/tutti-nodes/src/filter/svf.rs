@@ -5,9 +5,9 @@
 //! [`SvfFilterNode`]: the coefficients are shared across channels and only the
 //! integrator state is per channel.
 
+use super::Real;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use super::Real;
 
 use tutti_core::{ChannelLayout, Db, Hz, Param, SampleRate, Tail, Q};
 use tutti_graph::{
@@ -266,8 +266,8 @@ fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over cutoff, Q and gain by [`UnitParam`], and a fork of it starts from
 /// the values last set through that set. The graph prepares it at the
-/// device rate before its first block, so unlike an `AudioUnit` it is never
-/// run at the placeholder rate it is built at.
+/// device rate before its first block, so it is never run at the placeholder
+/// rate it is built at (an `AudioUnit` could be, until doc 013 Phase 5).
 pub struct SvfFilterNode<F: Real = f64> {
     filter_type: SvfType,
     frequency: Param<Hz>,

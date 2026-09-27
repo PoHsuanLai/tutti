@@ -302,7 +302,7 @@ fn ring_available_saturates_at_capacity_and_reports_the_overrun() {
 ///
 /// It holds because the unit paces its own source intake at
 /// [`input_rate`](Unit::input_rate) internally. A stretcher emits `stretch`
-/// samples per source sample, but `AudioUnit::tick` hands over exactly one and
+/// samples per source sample, but [`Unit::tick`] hands over exactly one and
 /// takes one back — so the rate change has to happen on the source side, where
 /// the unit can drop or repeat, rather than on the output side, where it
 /// cannot.
@@ -1112,9 +1112,10 @@ fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
 
 /// PDC must not compensate for a delay that is not happening.
 ///
-/// `route` reports `latency_samples` to fundsp, which delays every parallel
-/// branch to match. A bypassing unit copies input to output, so reporting a
-/// window there desynchronises the whole graph by 46 ms at the default 2048.
+/// `route` reported `latency_samples` to fundsp until doc 013 Phase 5, and
+/// fundsp delayed every parallel branch to match. A bypassing unit copies input
+/// to output, so reporting a window there desynchronised the whole graph by
+/// 46 ms at the default 2048. A caller that reports it anywhere still would.
 #[test]
 fn latency_is_zero_while_bypassing_and_a_window_while_processing() {
     let mut u = Unit::with_channels(44_100.0, 2usize);
@@ -1527,10 +1528,10 @@ fn six_channel_stretch_reaches_every_channel() {
 /// samples it emits.
 ///
 /// The distinction is the whole shape of this unit. It emits exactly one
-/// sample per `tick`, because that is `AudioUnit`'s contract; the time-scaling
-/// shows up as the source being consumed at `1 / stretch`. So over a fixed
-/// number of ticks a 2x stretch consumes half the source a 1x pass does, and a
-/// 0.5x stretch consumes twice as much.
+/// sample per `tick`, because that is `tick`'s contract (it was `AudioUnit`'s);
+/// the time-scaling shows up as the source being consumed at `1 / stretch`.
+/// So over a fixed number of ticks a 2x stretch consumes half the source a 1x
+/// pass does, and a 0.5x stretch consumes twice as much.
 ///
 /// This replaces a test that asserted "2x queues up MORE output than 0.5x".
 /// That was true, but only because the surplus was piling into the output ring

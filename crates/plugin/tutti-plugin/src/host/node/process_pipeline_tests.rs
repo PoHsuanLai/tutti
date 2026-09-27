@@ -723,8 +723,9 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
 ///
 /// The synchronous design was individually defensible — each plugin waited at
 /// most half its own block period before giving up and emitting silence. But
-/// fundsp runs nodes *serially* within one callback (`for &node_index in
-/// self.order`), so the budgets summed:
+/// fundsp ran nodes *serially* within one callback (`for &node_index in
+/// self.order`), as the graph's serial executor does now, so the budgets
+/// summed:
 ///
 /// | Stalled plugins | Spent waiting | vs the 1333 us period @ 64/48k |
 /// |---|---|---|

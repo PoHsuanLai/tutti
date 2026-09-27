@@ -1,11 +1,12 @@
 //! No code in this crate reaches into the graph for a node by type.
 //!
 //! `Net`'s typed node accessors (the `node` + `_as` / `_as_mut` pair, until
-//! doc 013 Phase 5 deleted `Net`) handed back the graph's own copy of a node, downcast to a concrete type. This crate used
-//! to lean on them for three things — a synth's MIDI port, a node's modulatable
-//! params, and a hosted plugin's input slots and latency. MIDI is event edges
-//! now; the other two come from components captured off the unit as it is
-//! inserted (`bevy_tutti::graph::capture`).
+//! doc 013 Phase 5 deleted `Net`) handed back the graph's own copy of a node,
+//! downcast to a concrete type. This crate used to lean on them for three
+//! things — a synth's MIDI port, a node's modulatable params, and a hosted
+//! plugin's input slots and latency. MIDI is event edges now; the other two
+//! come from components captured off the unit as it is inserted
+//! (`bevy_tutti::graph::capture`).
 //!
 //! The downcast has to stay gone, because it is what ties a call site to one
 //! graph implementation: a graph that owns its nodes outright, rather than

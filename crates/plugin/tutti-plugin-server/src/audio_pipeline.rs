@@ -367,7 +367,7 @@ impl AudioPipeline {
                 )?;
                 // Sanitize before it leaves the subprocess: a misbehaving
                 // plugin can emit NaN/Inf that would otherwise poison the
-                // entire downstream fundsp graph. Unconditional — this is a
+                // entire downstream graph. Unconditional — this is a
                 // production hazard, and a finite-check per sample is cheap
                 // on an already memory-bound path.
                 for (ch, chan) in output.iter_mut().enumerate().take(out_n) {

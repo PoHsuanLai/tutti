@@ -3,7 +3,7 @@
 //! `tutti-clap-host`'s own suites load the probe in-process, so they assert what
 //! the CLAP loader does. These suites assert what the *host node* does: a real
 //! `plugin-server` subprocess, a real socket, a real shared-memory slab, and
-//! `PluginClient` as fundsp sees it. Everything between the graph and the
+//! `PluginClient` as the graph's executor sees it. Everything between the graph and the
 //! plugin's `process()` is under test, which is the half the in-process suites
 //! structurally cannot reach.
 //!

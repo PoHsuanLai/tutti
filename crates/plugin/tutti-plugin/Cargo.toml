@@ -33,7 +33,7 @@ au = ["dep:tutti-au-host"]
 vst2 = ["dep:tutti-vst2-host"]
 
 [dependencies]
-# Core types (for AudioUnit trait)
+# Core types (units, transport, metering)
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 # The AudioIn/AudioOut I/O vocabulary — the slab is the concrete process edge
 # realising those two roles (see util/transport/shm/slab.rs).

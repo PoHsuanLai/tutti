@@ -288,8 +288,8 @@ The node is a plain `tutti_graph::Node`; add it and declare what it feeds, like 
 ```rust
 // The graph's rate: the monitor node does not resample.
 let (mic, monitor) = MicIn::open_with_monitor(None, config.sample_rate)?;
-let id = graph.insert(monitor);
-commands.spawn(AudioNode(id));   // then name it in MasterSources or a PortSources
+let (node, _) = graph.insert(monitor);
+commands.spawn(node);   // then name it in MasterSources or a PortSources
 ```
 
 A monitor node that is never wired fills its ~10 ms ring and then silently drops

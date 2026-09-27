@@ -126,8 +126,8 @@ fn quad_surround_graph_exports_a_four_channel_wav_with_rear_energy() {
 /// The Stage-4 export path: a graph that starts at the **device (stereo)
 /// output** width — exactly what the live engine produces — is widened offline
 /// and re-piped to a surround master before export. This mirrors what a host
-/// does to the graph it exports (a `Net`'s `set_output_arity`; on
-/// `tutti_graph`, the topology's global outputs grown), and proves widening a stereo
+/// does to the graph it exports (on `tutti_graph`, the topology's global
+/// outputs grown; a `Net`'s `set_output_arity` until doc 013 Phase 5), and proves widening a stereo
 /// graph does NOT lose the surround channels.
 ///
 /// Mutation (run): widen *after* `pipe_output` → only the first two global

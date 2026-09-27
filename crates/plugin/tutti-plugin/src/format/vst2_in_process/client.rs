@@ -51,9 +51,9 @@ pub struct InProcessVst2Client {
     /// The block's MIDI in: its event input's.
     pub(super) midi: MidiEventVec,
     /// Per-block transport snapshot, gated on [`Features::TRANSPORT`]. The
-    /// producer cell is shared across fundsp graph-commit clones (see
-    /// [`InputSlot`]), so a `set_transport_source` on any clone reaches the one
-    /// the audio thread runs.
+    /// producer cell is shared across clones (see [`InputSlot`]), so a
+    /// `set_transport_source` on any clone reaches the one the audio thread
+    /// runs.
     pub(super) transport: InputSlot<PolledTransport>,
     /// What the loader reported for this plugin, as the gate `transport` is
     /// drained against. Stored rather than passed in per block so the node's
@@ -600,8 +600,9 @@ mod transport_tests {
 
     /// Installing on one clone reaches the clone the audio thread runs.
     ///
-    /// fundsp clones the unit on every graph commit, and a host installs the
-    /// transport through whichever clone it holds. Sharing the producer cell
+    /// A host installs the transport through whichever clone it holds, which
+    /// need not be the one in the graph (fundsp cloned the unit on every graph
+    /// commit; the graph no longer does, but the type is still `Clone`). Sharing the producer cell
     /// rather than the `Option` is what makes the install visible; the opposite
     /// is the shared-cell bug this rail already carries a regression guard for.
     #[test]

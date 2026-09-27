@@ -20,8 +20,9 @@
 //! keeping them `f64`.
 
 use ebur128::{EbuR128, Mode};
-// `SampleRate` is fundsp's, reached through the engine root like `yin.rs` does;
-// the rest of the vocabulary comes straight from `tutti-types`.
+// `SampleRate` is reached through the engine root like `yin.rs` does (it is
+// `tutti-types`' too, re-exported there); the rest comes straight from
+// `tutti-types`.
 use tutti_core::SampleRate;
 use tutti_types::{ChannelLayout, Db, Interleaved};
 

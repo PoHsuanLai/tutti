@@ -91,8 +91,9 @@ pub(super) struct PluginInterfaces {
 // inside the plugin, which no signature on this side would catch. The
 // `tutti_plugin_types::assert_main_thread()` guard at the top of each such
 // method is what enforces the single-threaded discipline the spec requires;
-// `Sync` only exists so `Vst3Loaded` can satisfy the `Send + Sync` bound that
-// fundsp's `dyn AudioUnit` imposes on the audio path.
+// `Sync` exists because `Vst3Loaded` once had to satisfy the `Send + Sync`
+// bound fundsp's `dyn AudioUnit` imposed on the audio path (deleted in design
+// doc 013 Phase 5).
 unsafe impl Send for PluginInterfaces {}
 unsafe impl Sync for PluginInterfaces {}
 
@@ -152,8 +153,9 @@ pub(super) enum EditorState {
 //
 // `Open` is reachable only through `open_editor`, which asserts the main
 // thread, so the view is *created* there and every subsequent use is gated the
-// same way. The one deliberate exception is `Drop`: the fundsp graph can
-// release the instance on the audio thread, so `close_editor_unchecked` runs
+// same way. The one deliberate exception is `Drop`: it has no main-thread
+// guarantee (it once ran on the audio thread when fundsp's graph released the
+// instance), so `close_editor_unchecked` runs
 // `detach_view` without the assert rather than panicking off it. That is a
 // known, accepted deviation from the spec's UI-thread rule and is documented
 // at both `close_editor_unchecked` and `Vst3Loaded::drop` — it is not

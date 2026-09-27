@@ -130,9 +130,10 @@ pub struct Vst2Instance {
 // addressed via a wrapper (`SendEditor`, `SendParams`). The raw pointers
 // inside `vst::host::PluginInstance` point at heap memory this crate owns;
 // callers serialize access externally (subprocess server is single-
-// threaded; in-process backend uses `parking_lot::Mutex`). `Sync` is
-// needed by the in-process callers — fundsp's `dyn AudioUnit` requires
-// `Send + Sync` and the audio unit holds `Arc<Mutex<Vst2Instance>>`.
+// threaded; in-process backend uses `parking_lot::Mutex`). `Sync` was
+// needed by the in-process callers when fundsp's `dyn AudioUnit` required
+// `Send + Sync` of a node holding `Arc<Mutex<Vst2Instance>>` (a graph node
+// needs only `Send`).
 unsafe impl Send for Vst2Instance {}
 unsafe impl Sync for Vst2Instance {}
 

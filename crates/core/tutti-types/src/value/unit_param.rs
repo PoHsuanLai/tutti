@@ -6,16 +6,18 @@
 //! setters (`set_frequency`, `set_q`, `set_mix`, …) reached by downcasting,
 //! which makes every generic host path a match on concrete node types.
 //!
-//! This module is the **pure vocabulary** half: the enum and its `u16`
-//! conversions, with no audio-engine dependency. The other half — carrying a
-//! `UnitParam` through fundsp's lock-free `Setting` channel (`setting` /
-//! `from_setting`) — lives in `fundsp-tutti` (which owns `Setting`), and
-//! `tutti-core` re-exports both so consumers reach them together.
+//! This module is the **pure vocabulary**: the enum and its `u16`
+//! conversions, with no audio-engine dependency. A node maps each
+//! `UnitParam` it exposes to one of its `f32` cells in a
+//! `tutti_graph::ParamSet`, which is how a host sets a param by address.
+//! (Until doc 013 Phase 5 the other half carried a `UnitParam` through
+//! fundsp's `Setting` channel, in `fundsp-tutti`.)
 
 /// The full set of scalar parameters any built-in tutti unit may expose.
 ///
-/// Discriminants are **stable** — they ride through fundsp's `Setting` as an
-/// address index and (potentially) persist in tooling, so existing values must
+/// Discriminants are **stable** — they are the address a `ParamSet` and a
+/// host's `AudioParam<U, P>` name a param by, and (potentially) persist in
+/// tooling, so existing values must
 /// never be renumbered. Append new params at the end.
 #[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -69,18 +71,18 @@ pub enum UnitParam {
     /// Stereo balance, `-1..1` (left to right). The mixer-strip control.
     ///
     /// Distinct from [`StereoSpread`](Self::StereoSpread), which widens a source
-    /// about its centre; this moves the centre. Also distinct from fundsp's
-    /// `Parameter::Pan`, which addresses its mono-to-stereo `Panner` through a
-    /// different channel entirely — this id rides the ordinary
-    /// `Setting::value(..).index(..)` path like every other `UnitParam`, which is
-    /// what makes it reachable from a generic param reconciler.
+    /// about its centre; this moves the centre. It is addressed through a
+    /// node's `ParamSet` like every other `UnitParam` (unlike fundsp's
+    /// `Parameter::Pan`, which reached its `Panner` through a different
+    /// channel until doc 013 Phase 5), which is what makes it reachable from a
+    /// generic param reconciler.
     Pan = 20,
     /// Mute toggle: **`>= 0.5` is muted**, below is unmuted.
     ///
-    /// The threshold encoding is forced, not chosen: `Setting` carries an `f32`,
-    /// so a boolean has to ride one. Stated here because the decode lives in each
-    /// unit's `set` and a unit that picked `!= 0.0` instead would mute on a
-    /// denormal.
+    /// The threshold encoding is forced, not chosen: a `ParamSet` cell carries
+    /// an `f32`, so a boolean has to ride one. Stated here because the decode
+    /// lives in each node that reads the cell, and a node that picked `!= 0.0`
+    /// instead would mute on a denormal.
     Mute = 21,
 }
 
@@ -379,8 +381,8 @@ mod tests {
         }
     }
 
-    /// The discriminants are **stable**: they ride `Setting` as an address index,
-    /// so renumbering one silently re-points every setting built against the old
+    /// The discriminants are **stable**: they are a param's address, so
+    /// renumbering one silently re-points every param set against the old
     /// value. Pinning the two newest by name is what
     /// [`u16_round_trips`](self::u16_round_trips) cannot do — that loop passes as
     /// long as each id maps to *some* variant, including a swapped pair.

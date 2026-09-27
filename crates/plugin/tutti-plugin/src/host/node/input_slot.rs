@@ -8,11 +8,11 @@
 //! (parameter automation, chords and scales) on its event input, from nodes of
 //! their own (doc 013 item 5).
 //!
-//! **Why the slot is a shared cell.** fundsp's frontend/backend split means the
-//! box the audio thread runs is a *different clone* than the one a host-side
-//! `set_*_source` call mutates, and `Net::migrate` discards `node_mut`/clone
-//! edits on commit. So the *slot itself* is an `Arc<ArcSwapOption<…>>` shared
-//! across clones: an install on any clone is seen live by whichever clone the
+//! **Why the slot is a shared cell.** The box the audio thread runs can be a
+//! *different clone* than the one a host-side `set_*_source` call mutates (the
+//! rule came from fundsp's frontend/backend split, which ran a clone and
+//! discarded edits to it on commit; the node is still `Clone`). So the *slot
+//! itself* is an `Arc<ArcSwapOption<…>>` shared across clones: an install on any clone is seen live by whichever clone the
 //! audio thread runs, lock-free, no commit needed. The contract lives here
 //! once rather than copy-pasted into each producer slot, because a slot that
 //! forgets to share silently never fires. See
@@ -51,7 +51,7 @@ pub(crate) trait BlockInput: Send + Sync {
     fn refill(&self, out: &mut Self::Out);
 }
 
-/// One installed [`BlockInput`], shared across fundsp graph-commit clones.
+/// One installed [`BlockInput`], shared across the node's clones.
 ///
 /// `source` is the shared cell (see module docs); `drain` is per-clone scratch
 /// (each clone fills its own, no cross-talk). `gate` is the feature the plugin

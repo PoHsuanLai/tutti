@@ -301,8 +301,9 @@ impl PluginBridge {
     }
 
     /// Editor-close without the main-thread assert. Used by `Drop`, which can
-    /// run on a worker thread when the fundsp graph releases a plugin node
-    /// during a graph rebuild (`commit_graph` runs off the main thread).
+    /// run on a worker thread: the graph's editor drops a retired plugin node
+    /// on whichever control thread collects the commit, which need not be the
+    /// main one.
     /// Asserting there would false-fire on a teardown that is benign — the
     /// public [`close_editor`](Self::close_editor) keeps the guard for the
     /// real UI-thread call path.
@@ -620,9 +621,10 @@ impl Drop for PluginBridge {
         // Leaking the GUI instance avoids the crash. The OS reclaims all memory
         // on process exit anyway.
         //
-        // Use the *_inner variant: Drop can run on a worker thread (the fundsp
-        // graph releases this node during commit_graph, which runs off-main),
-        // so the main-thread assert in the public close_editor would false-fire.
+        // Use the *_inner variant: Drop can run on a worker thread (the graph's
+        // editor drops a retired node on the thread that collects the commit,
+        // which can be off-main), so the main-thread assert in the public
+        // close_editor would false-fire.
         self.close_editor_inner();
         if let Ok(mut guard) = self.gui.lock() {
             if let Some(gui) = guard.take() {

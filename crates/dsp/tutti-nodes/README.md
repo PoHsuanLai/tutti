@@ -5,8 +5,10 @@ mixing and automation.
 
 ## What this is
 
-`AudioUnit` implementations, plus the `set(UnitParam)` surface a host drives them
-through. Every node here goes into a `Net`, gets wired, and renders.
+Graph nodes (`tutti_graph::Node`), each inserted with the `ParamSet` a host
+drives it through by `UnitParam`. Every node here goes into a graph
+(`tutti_graph::{GraphBuilder, Editor}`), gets wired, is prepared at the device
+rate, and renders.
 
 - **Filters** — `SvfFilterNode`, `LadderFilterNode` (both any width, one
   coefficient solve shared across the channels) and `EqBandNode`.
@@ -30,7 +32,7 @@ through. Every node here goes into a `Net`, gets wired, and renders.
   and recording units, and `ConvolverNode` with its IR generators (behind a
   feature).
 
-Note the suffix convention: a `*Node` is the graph-facing `AudioUnit`, while the
+Note the suffix convention: a `*Node` is the graph-facing `Node`, while the
 inner DSP objects it is built from — `DelayLine`, `Lfo`, `Modulator`, `BandState`
 — deliberately carry no suffix, because they are not nodes.
 
@@ -46,7 +48,7 @@ fail here, and it left with the panners.
   geometry → DSP and never back.
 - **No Bevy, and no feature to add it.** The entire ECS binding layer — param and
   marker components, reconcile/spawn systems, deferred convolver load — is
-  app-side. Engine Bevy is the `Net` pump only.
+  app-side. The engine's Bevy side (`bevy-tutti`) only drives the graph.
 - **No sample playback and no synthesis.** Those are `tutti-sampler`,
   `tutti-polysynth` and `tutti-soundfont`.
 
@@ -98,11 +100,11 @@ that you did.
 
 | the value | mechanism |
 |---|---|
-| one `f32` with a unit newtype | `Param<U>` + `&self` setter + a `UnitParam` arm in `AudioUnit::set` |
-| one `bool`, or a small `Copy` enum | `Arc<AtomicBool>` / `Arc<AtomicU8>` + `&self` setter. A bool rides `UnitParam`'s documented `>= 0.5` encoding — `Setting` carries an `f32`, so it has to. |
+| one `f32` with a unit newtype | `Param<U>` + `&self` setter + its `UnitParam` address in the node's `ParamNode::param_set` |
+| one `bool`, or a small `Copy` enum | `Arc<AtomicBool>` / `Arc<AtomicU8>` + `&self` setter. A bool rides `UnitParam`'s documented `>= 0.5` encoding — `ParamSet::set` carries an `f32`, so it has to. |
 | a multi-field struct, or anything heap-backed | a command queue: flatten the struct into scalar fields, allocate sender-side, drain in the callback |
 
-`Param<U>` stops where `Setting` stops: its payload is one `f32`, so anything
+`Param<U>` stops where `ParamSet::set` stops: its payload is one `f32`, so anything
 wider leaves the `set()` path entirely. That is a property of the transport, not
 a limitation of `Param`.
 
@@ -111,24 +113,19 @@ audio thread — routing tables, PDC vectors, meter maps. Reaching for it to sha
 a 16-byte `Copy` struct pays a slot CAS, a `SeqCst` fence and one of the cell's
 reader slots for none of its benefit.
 
-### The failure is silent at three layers, and counted at the fourth
+### A wrong address is visible; past it, nothing is
 
-Worth knowing before assuming a setting arrived. `AudioUnit::set` has an **empty
-default body**, so a unit that does not implement it swallows every setting; a
-unit that does implement it ignores params it does not own (which is deliberate —
-it is what lets a host push without dispatching on node type); and `from_setting`
-answers `None` for an unknown id. Those three are silent.
+Worth knowing before assuming a value arrived. `ParamSet::set` returns `false`
+for a param the node was not inserted with, so a write to an address the node
+does not own shows at the call site (a host pushing one value to many nodes can
+ignore the `false` from the ones that do not own it; that is deliberate).
 
-The fourth is counted. `Net::take_unaddressed_settings` reports settings aimed at
-a node id the graph does not hold, kept deliberately separate from
-`Net::take_dropped_settings`: a *dropped* setting is backpressure that clears
-itself, an *unaddressed* one is a wiring bug that will lose every future write to
-the same target.
-
-Neither counter reaches the first three layers, and no counter can — a unit that
-ignores a param it does not own is indistinguishable, from `Net`, from one that
-owns it and does nothing. That is what a host's audible end-to-end tests are
-for, and they necessarily live wherever the DAW param vocabulary does.
+Past the address nothing can tell: a node that registers a cell and never reads
+it is indistinguishable, from the control side, from one that reads it and does
+nothing. That is what a host's audible end-to-end tests are for, and they
+necessarily live wherever the DAW param vocabulary does. (Under fundsp's `Net`,
+deleted in design doc 013 Phase 5, it was worse: `AudioUnit::set` had an empty
+default body that swallowed every setting, with no `false` to see.)
 
 ## Where it sits
 

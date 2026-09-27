@@ -6,8 +6,8 @@
 //! swapped by accident. The [`Unit`] marker trait carries the raw type as an
 //! associated type so [`Param`](super::Param) can be generic over the unit.
 //!
-//! [`SampleRate`] is defined here too, and re-exported by `fundsp-tutti` for
-//! the `AudioNode` / `AudioUnit` trait surfaces that take one.
+//! [`SampleRate`] is defined here too, the one type every engine crate names
+//! for a rate (`tutti_graph::Prepare` carries it).
 //!
 //! # Operators are opt-in, and every omission is deliberate
 //!
@@ -1579,10 +1579,11 @@ unit_newtype!(
     /// carries ~6e-8 of relative error, and a phase accumulator integrating
     /// that over a long render drifts audibly).
     ///
-    /// Also used at the `AudioNode` / `AudioUnit` trait surfaces in
-    /// `fundsp-tutti`, which re-exports it rather than defining its own: a
-    /// second `SampleRate` in the crate the traits live in would not unify with
-    /// this one, and every engine crate would have to pick a side.
+    /// Defined once, here, so every engine crate names the same type (a
+    /// node gets it in `tutti_graph::Prepare`). Until doc 013 Phase 5
+    /// `fundsp-tutti` re-exported it for its `AudioNode` / `AudioUnit`
+    /// traits rather than defining its own: a second `SampleRate` would not
+    /// have unified with this one.
     ///
     /// Builds from `f64` and from `u32` (file headers, device configs) — both
     /// widen exactly. Deliberately **not** from `f32`: that widening is
@@ -1619,8 +1620,8 @@ impl SampleRate {
     /// 48 kHz — the typical pro-audio default.
     pub const SR_48K: Self = Self(48_000.0);
 
-    /// The placeholder rate a node is born at, before a host hands it the
-    /// device's through `AudioUnit::set_sample_rate`.
+    /// The placeholder rate a node is born at, before its `prepare` hands it
+    /// the device's.
     ///
     /// The engine's **one** such constant. There used to be two — the fork's
     /// typed `DEFAULT_SAMPLE_RATE` and `tutti-node`'s raw `DEFAULT_SR: f64` —
@@ -1631,7 +1632,7 @@ impl SampleRate {
     ///
     /// 44.1 kHz rather than 48 kHz: it is what every node and the fork have
     /// always seeded, and moving it would shift every rate-dependent default
-    /// (a filter's coefficients before `set_sample_rate`) for no gain — the
+    /// (a filter's coefficients before `prepare`) for no gain — the
     /// placeholder is corrected before the first real block either way.
     pub const DEFAULT: Self = Self::SR_44K1;
 

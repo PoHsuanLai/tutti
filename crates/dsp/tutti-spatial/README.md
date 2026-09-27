@@ -130,10 +130,9 @@ before it renders, and its placement is the one set when it was taken.
 
 ## Node ids
 
-The `AudioUnit` fingerprints in `node_id.rs` are **persisted values** and must not
-be renumbered. Both panners are graph nodes now and report none, but the ids
-stay reserved. `assert_unique` guards them within this crate; cross-crate
-uniqueness rests on the mnemonic convention described in `tutti_core::node_id`.
+There are none. The panners' `AudioUnit` fingerprints (`node_id.rs`, guarded
+by `assert_unique`) went with fundsp in design doc 013 Phase 5; a graph node
+is identified by the `NodeKey` the graph hands out when it is inserted.
 
 ## RT safety
 

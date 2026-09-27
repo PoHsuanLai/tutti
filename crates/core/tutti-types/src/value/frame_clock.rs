@@ -14,8 +14,8 @@
 //! origin of its current [`TimelineSegment`]. The segment restarts, at an
 //! integer frame, on a seek, a tempo or rate change and a loop wrap; a
 //! stopped transport simply does not count. So the beat at a frame is the
-//! same `f64` whether the clock got there one frame at a time (a `Net`'s
-//! `TransportClock`, the graph's `Env::for_each_beat`) or a block at a time (the graph
+//! same `f64` whether the clock got there one frame at a time (the graph's
+//! `Env::for_each_beat`, and a `Net`'s `TransportClock` before it) or a block at a time (the graph
 //! engine's walk, the offline timeline): they emit the same beats, bit for
 //! bit, by construction rather than by agreeing to rounding.
 

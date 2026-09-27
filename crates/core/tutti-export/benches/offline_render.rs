@@ -39,7 +39,7 @@ const SR: f64 = 48_000.0;
 /// `g`, built for an export at `rate` — the config's render rate, which the
 /// graph must be prepared at.
 ///
-/// Built per iteration, like the `Net` it replaces was: an export consumes its
+/// Built per iteration, like the `Net` it replaced was: an export consumes its
 /// graph, so the build (preparing every unit, compiling the plan) is part of
 /// what a bounce costs.
 fn built(g: GraphBuilder, rate: f64) -> RenderGraph {

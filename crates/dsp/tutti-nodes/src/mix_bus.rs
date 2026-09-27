@@ -7,11 +7,12 @@
 //! job, and every consumer that mixes needs one — a surround master folding its
 //! panners, a DAW bus folding its tracks.
 //!
-//! fundsp's stock combinators do not cover it, for two independent reasons.
-//! `join`/`multijoin` **average** (they divide by the source count), so adding a
-//! source would quieten the others; `sumi` sums correctly but takes its arity as
-//! a `typenum` and builds its children from a generator, so it can neither read a
-//! count at runtime nor accept wires arriving from elsewhere in the graph. A
+//! fundsp's stock combinators (the engine's until design doc 013 Phase 5) did
+//! not cover it, for two independent reasons. `join`/`multijoin` **average**
+//! (they divide by the source count), so adding a source would quieten the
+//! others; `sumi` sums correctly but takes its arity as a `typenum` and builds
+//! its children from a generator, so it can neither read a count at runtime nor
+//! accept wires arriving from elsewhere in the graph. A
 //! mixer folds a *runtime* number of sources at a *runtime* channel count, which
 //! is why this is a small hand-written graph node.
 //!
@@ -236,7 +237,7 @@ mod tests {
         }
     }
 
-    /// Summing, not averaging — the property that rules out fundsp's
+    /// Summing, not averaging — the property that ruled out fundsp's
     /// `join`/`multijoin` for a mixer bus.
     ///
     /// Worth pinning because the failure is quiet and musical rather than a

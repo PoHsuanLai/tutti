@@ -12,7 +12,7 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [features]
-# The DSP graph runtime (Net, transport, metering, PDC) is framework-free.
+# The graph engine, transport and metering are framework-free.
 # `bevy` adds only the `Component` derive on `AudioNode`, so that an entity can
 # *be* a node in the graph; the systems that reconcile against it live in the
 # host adapter.

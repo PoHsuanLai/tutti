@@ -31,6 +31,7 @@ use tutti_graph::{
 };
 
 use super::clock::{BlockClock, Clock};
+use super::fault::FaultLatch;
 use super::interp::{past_window, place, Gate};
 use super::live_read::LiveRead;
 use super::memory_source::VoiceWindow;
@@ -39,7 +40,6 @@ use super::types::Direction;
 use crate::butler::control::StreamOrigin;
 use crate::butler::{RtState, SharedReader};
 use crate::lanes::Lanes;
-use super::fault::FaultLatch;
 
 /// Frames a free-running block's positions are computed for at a time:
 /// `process` renders a longer block in pieces this long, so the positions

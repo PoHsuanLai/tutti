@@ -16,7 +16,7 @@ default = ["wav"]
 # handles, and nothing else. The Plugins and asset loaders moved to bevy-tutti
 # (house rule R1), so this feature adds only `derive(Component)` — the DSP
 # leaves (MemorySource, DiskVoice, VoicePool, the butler streaming engine, the
-# stretch::Unit) compile Bevy-free for direct FunDSP-graph use either way.
+# stretch::Unit) compile Bevy-free for direct `tutti_graph` use either way.
 bevy = ["dep:bevy_ecs"]
 
 # Drive the butler's cycle by hand instead of by its thread.

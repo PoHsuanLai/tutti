@@ -100,7 +100,7 @@ impl<T: Copy + Default> CircularBuffer<T> {
 
     /// Zeroes every slot and returns the write cursor to 0.
     ///
-    /// This is what a node's `AudioUnit::reset` calls to drop the tail of the
+    /// This is what a node's `Node::reset` calls to drop the tail of the
     /// previous take; without it a restarted delay bleeds the old signal. Does
     /// not reallocate, so it is safe on the audio thread.
     pub fn clear(&mut self) {

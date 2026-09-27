@@ -11,7 +11,7 @@
 //! evidence about the encoder rather than a shared bug reflected back.
 //!
 //! Worth checking rather than assuming, because `symphonia` *is* already in the
-//! lockfile as a production dependency of `fundsp-tutti`: nothing in
+//! lockfile as a production dependency of `tutti-io` (the file decoder): nothing in
 //! `tutti-export/src` names it. The encode path and the decode oracle share no
 //! code, which is what makes this differential rather than circular. (Being
 //! present already is also why this dev-dep is nearly free — see the PR body.)

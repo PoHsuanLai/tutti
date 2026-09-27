@@ -9,7 +9,7 @@
 //! capability traits in `tutti-plugin-types` (`PluginParams`/`PluginState`/
 //! `PluginEditorHost`), which live *inside the subprocess*. The two rows are named
 //! apart because they are different objects doing the same job on opposite sides of
-//! the IPC boundary — exactly as the host-side `AudioUnit` node mirrors the
+//! the IPC boundary — exactly as the host-side graph node mirrors the
 //! loader-side `PluginAudio`. So the host-side control traits take the `Host*`
 //! prefix.
 //!

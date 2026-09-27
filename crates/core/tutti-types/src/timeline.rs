@@ -9,9 +9,9 @@
 //! nothing, and transport-aware units rendered against a playhead nothing
 //! advanced. The trait names only `Beat` and `Bpm`, so it moved down to the
 //! layer every crate already depends on, and the context is typed end to
-//! end: `ForkMode::Offline(&OfflineTransport)`,
-//! `AudioUnit::rebind_offline(&OfflineTransport)`. A wrong type is now a
-//! compile error:
+//! end: `ForkMode::Offline(&OfflineTransport)`, which every
+//! `ForkSource::fork` receives (it was `AudioUnit::rebind_offline` until doc
+//! 013 Phase 5). A wrong type is now a compile error:
 //!
 //! ```compile_fail,E0308
 //! fn rebind(ctx: &tutti_types::OfflineTransport) {}
@@ -94,8 +94,8 @@ pub trait Timeline: Send + Sync {
 pub trait OfflineClock: Timeline {}
 
 /// The timeline an offline render advances, one block at a time: what
-/// `tutti_graph::ForkMode::Offline` carries and what
-/// `AudioUnit::rebind_offline` receives, typed on both sides, so a context
+/// `tutti_graph::ForkMode::Offline` carries to every `ForkSource::fork`,
+/// typed on both sides, so a context
 /// of another type is a compile error rather than a rebind that silently
 /// does nothing.
 ///
@@ -109,7 +109,7 @@ pub trait OfflineClock: Timeline {}
 ///
 /// Nodes holding a transport re-point at this. Nodes carrying their own
 /// internal clock re-seat it from [`Timeline::beat`] and [`Timeline::tempo`]:
-/// `isolate()` severs the live links but leaves the clock at whatever beat
+/// severing the live links (`Param::detach`) leaves the clock at whatever beat
 /// the *live* playhead held, so without this every beat-driven node (LFO,
 /// automation) renders from an arbitrary position and the output depends on
 /// *when* the render started. Read at rebind time, before the renderer has

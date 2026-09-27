@@ -41,8 +41,9 @@ pub struct TimedParam {
 /// This is the plugin *adapter* over the pure modulator: it owns the transport
 /// mapping (beat → phase) and the output mapping (`base + value·depth·range`,
 /// clamped to `[min, max]`), while the waveform math stays in `tutti-mod`. It
-/// closes the LFO→plugin gap without any fundsp node — a plugin param never
-/// enters the graph, so the value is IPC-encoded like any other automation.
+/// closes the LFO→plugin gap without an audio-rate LFO node: the LFO is one
+/// more curve the plugin's automation node samples, so the value reaches the
+/// plugin as automation events and is IPC-encoded like any other automation.
 ///
 /// `Curve::value_at` is `&self` and stateless, so the waveform comes from
 /// [`BeatLfo`](tutti_nodes::BeatLfo) — `tutti-mod`'s beat-clocked formulation,

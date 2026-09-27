@@ -154,8 +154,8 @@ pub struct ConvolverNode {
     dry: Vec<DryAlign>,
     config: IrChannelConfig,
     params: WetDry,
-    /// The rate the host last announced. Seeded at [`SampleRate::DEFAULT`] and
-    /// updated by `set_sample_rate`, but **never read** — no coefficient here
+    /// The rate the graph last prepared the node at. Seeded at
+    /// [`SampleRate::DEFAULT`] and updated by `prepare`, but **never read** — no coefficient here
     /// derives from it, because an FIR convolution's only time constant is the
     /// IR itself. Kept so the node can answer for its rate if a future
     /// resampling path needs to know what it was built against; see the type

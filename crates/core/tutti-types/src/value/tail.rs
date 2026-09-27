@@ -211,10 +211,10 @@ mod tests {
 
     /// The merge rule is where tail and latency part company.
     ///
-    /// fundsp's latency takes the *minimum* across a merge, because it asks when
-    /// a signal first arrives. Tail asks when it last leaves, so it must take
-    /// the maximum — which is why tail cannot ride the `Signal` carrier latency
-    /// already uses.
+    /// fundsp's latency took the *minimum* across a merge, because it asked
+    /// when a signal first arrives. Tail asks when it last leaves, so it must
+    /// take the maximum — which is why tail could not ride the `Signal` carrier
+    /// fundsp's latency used.
     #[test]
     fn a_merge_is_not_the_shorter_leg() {
         let slow = Tail::Finite(Samples(3000));

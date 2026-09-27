@@ -18,8 +18,8 @@ default = []
 hrtf = ["dep:hrtf"]
 
 [dependencies]
-# AudioUnit trait + DSP primitives. default-features = false: this crate is pure
-# DSP and needs none of tutti-core's Bevy layer.
+# Engine vocabulary (units, `Param`, `ChannelLayout`, `Tail`). default-features
+# = false: this crate is pure DSP and needs none of tutti-core's Bevy layer.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
 
 # `ChannelLayout` and `NodeKey`, named directly by `build_vbap_mix`'s signature.

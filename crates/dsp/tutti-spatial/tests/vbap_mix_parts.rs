@@ -10,7 +10,7 @@
 //! `build_vbap_mix` and once from the parts through this file's own
 //! [`insert`], and asserts the renders are **bit-identical**. (The first side
 //! was a `Net` until the LFE low-pass became a `tutti_graph::Node`, which a `Net`
-//! cannot hold.)
+//! could not hold; `Net` itself went in doc 013 Phase 5.)
 //!
 //! Exact equality is portable: both sides run the same unit code on the same
 //! machine, in the same blocks.

@@ -71,7 +71,7 @@ impl LfoDrive {
         self.phase = Phase::START;
     }
 
-    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// Detach every cell (see [`Param::detach`]): the `fork_fresh` half of this
     /// group, keeping the current values.
     pub fn detach(&mut self) {
         self.rate.detach();
@@ -129,7 +129,7 @@ impl LinearModMix {
         )
     }
 
-    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// Detach every cell (see [`Param::detach`]): the `fork_fresh` half of this
     /// group, keeping the current values.
     pub fn detach(&mut self) {
         self.depth.detach();
@@ -189,7 +189,7 @@ impl TimeModMix {
         )
     }
 
-    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// Detach every cell (see [`Param::detach`]): the `fork_fresh` half of this
     /// group, keeping the current values.
     pub fn detach(&mut self) {
         self.depth.detach();

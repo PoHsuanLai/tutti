@@ -1,8 +1,8 @@
 //! Parametric EQ band: an SVF plus a zero-cost bypass.
 
+use super::Real;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use super::Real;
 use tutti_core::{ChannelLayout, Db, Hz, Q};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 

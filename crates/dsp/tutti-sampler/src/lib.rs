@@ -99,8 +99,8 @@ mod lanes;
 // voice-playback concern: it owns no source and imports nothing from `voice`.
 pub mod stretch;
 
-// Bevy-free DSP leaves + value types from `voice` — usable for direct
-// FunDSP-graph integration without the ECS layer. The butler's `LruCache` /
+// Bevy-free DSP leaves + value types from `voice` — usable as plain
+// `tutti_graph` nodes without the ECS layer. The butler's `LruCache` /
 // `StreamPin` are internal machinery a consumer never constructs, so they stay
 // `pub(crate)`.
 // `DiskVoiceConfig` and `DiskSource` are deliberately NOT re-exported: nothing

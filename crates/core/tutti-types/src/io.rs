@@ -102,7 +102,7 @@ pub enum OnEmpty {
     /// Live source (microphone, socket): the producer has not caught up. A
     /// consumer that loops should back off and poll again.
     Starved,
-    /// Finite source (decoded file, rendered net): there is no more. A consumer
+    /// Finite source (decoded file, rendered graph): there is no more. A consumer
     /// that loops should stop.
     ///
     /// **This is a promise about the *first* zero, not an eventual one.** A

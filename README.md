@@ -38,9 +38,11 @@ Every crate sits in one of four tiers, and the arrows only ever point down.
 **The floor.** `tutti-types` is the vocabulary every other crate speaks — the
 unit newtypes (`Hz`, `Db`, `Beat`, `Samples`, `SampleRate`), the channel
 layouts, the `AudioIn`/`AudioOut` edge traits, and `RtPublish`, the one
-sanctioned way to hand non-scalar state to the audio thread. `tutti-core` builds
-the runtime on it: the graph (FunDSP's `Net`), `Transport`, metering, and
-latency compensation.
+sanctioned way to hand non-scalar state to the audio thread. `tutti-graph` is
+the graph: the `Node` contract, a compiler from a `Topology` to an immutable
+plan (latency compensation included), and the executor. `tutti-core` builds the
+runtime on both: the `Engine` that renders the graph, `Transport`, and
+metering.
 
 **The edges.** `tutti-cpal` is the only path to a sound card. `tutti-io` is the
 live edge — a microphone monitor, a WAV sink, `Recorder`. `tutti-export` is its

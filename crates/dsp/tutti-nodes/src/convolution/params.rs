@@ -32,7 +32,7 @@ impl WetDry {
         }
     }
 
-    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// Detach every cell (see [`Param::detach`]): the `fork_fresh` half of this
     /// group, keeping the current values.
     pub fn detach(&mut self) {
         self.mix.detach();

@@ -49,7 +49,8 @@ The graph is `tutti_graph`'s, built with its `GraphBuilder` and
 prepared at the render's rate (`RenderGraph::prepare`): a graph prepared at
 another rate is refused rather than re-rated. A host exporting its live graph
 forks it instead, with `RenderGraph::fork`. That graph is the only one
-an export renders: fundsp's `Net` is not accepted (doc 013 Phase 3 PR 14).
+an export renders (fundsp's `Net` stopped being a source in doc 013 Phase 3
+PR 14, and was deleted in Phase 5).
 
 ```rust
 use tutti_core::{FrozenClock, Hz, SampleRate};

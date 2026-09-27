@@ -748,7 +748,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// the reported layout are two separate copies of the same fact, and only
     /// the scratch was being updated: `resolve_scratch_from_counts` fixes what
     /// this instance renders through, while `PluginInfo` is what every caller
-    /// above reads — `PluginClient::new` sizes its fundsp node from it. A
+    /// above reads — `PluginClient::new` sizes its graph node from it. A
     /// plugin that refused therefore had its *proposed* width reported while it
     /// ran another. Reconciling on the accepting branch too is not belt-and-
     /// braces: a plugin may accept the arrangement and still restructure its

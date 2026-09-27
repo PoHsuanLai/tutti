@@ -1117,3 +1117,82 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
         plane.len()
     );
 }
+
+/// **An export renders a graph of plugins the same on a worker pool as
+/// alone** (doc 013 Phase 6): two out-of-process probes side by side, each
+/// at its own gain, forked offline twice — once rendered on the export's
+/// thread, once on a four-participant `WorkerPool`, where the two plugins'
+/// blocks go to their servers from different threads at once — and the two
+/// renders agree bit for bit on both channels.
+///
+/// Mutation: in `tutti-graph`'s `Shared::run_op`, run `Op::Output` for
+/// channel 0 from the slot of channel 1 → the pooled render's channel 0
+/// differs → fails.
+#[test]
+fn an_export_of_plugins_is_bit_identical_on_a_pool() {
+    let _lock = exclusive();
+    let _env = env();
+    let a = load_probe(SAMPLE_RATE);
+    let b = load_probe(SAMPLE_RATE);
+    a.client.set_parameter(GAIN, gain_at(-6.0));
+    b.client.set_parameter(GAIN, gain_at(-12.0));
+    let (mut live, _exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
+    let _ = live.insert(NodeKey(9), "a", a.client.bind());
+    let _ = live.insert(NodeKey(10), "b", b.client.bind());
+    live.spec_mut().topology.outputs = vec![
+        Source::Node(OutPort {
+            node: NodeKey(9),
+            port: 0,
+        }),
+        Source::Node(OutPort {
+            node: NodeKey(10),
+            port: 0,
+        }),
+    ];
+    let export = |pooled: bool| {
+        let rate = SampleRate(SAMPLE_RATE);
+        let offline = offline();
+        let mut graph = tutti_export::RenderGraph::fork(
+            &live,
+            ForkTarget::Master,
+            ForkMode::Offline(&offline),
+            rate,
+        )
+        .expect("a graph holding plugins forks");
+        if pooled {
+            graph.set_pool(Some(Arc::new(tutti_core::WorkerPool::new(4))));
+        }
+        let config = tutti_export::ExportConfig {
+            render: tutti_export::RenderConfig {
+                sample_rate: rate,
+                duration_seconds: 0.5,
+                ..Default::default()
+            },
+            encode: tutti_export::EncodeConfig {
+                channels: tutti_export::ChannelLayout::STEREO,
+                ..Default::default()
+            },
+            dither: tutti_export::Dither::Off,
+            ..Default::default()
+        };
+        let parallel = graph.is_parallel();
+        let rendered =
+            tutti_export::render_to_buffers(graph, &config, &tutti_export::FrozenClock)
+                .expect("the fork exports");
+        (rendered.planes, parallel)
+    };
+    let (serial, was_parallel) = export(false);
+    assert!(!was_parallel);
+    let (pooled, was_parallel) = export(true);
+    assert!(was_parallel, "two plugins spread over the pool");
+    assert!(
+        serial.iter().all(|c| c.iter().any(|&s| s != 0.0)),
+        "both channels audible"
+    );
+    let bits = |p: &[Vec<f32>]| -> Vec<Vec<u32>> {
+        p.iter()
+            .map(|c| c.iter().map(|s| s.to_bits()).collect())
+            .collect()
+    };
+    assert_eq!(bits(&serial), bits(&pooled));
+}

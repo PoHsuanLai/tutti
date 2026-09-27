@@ -246,7 +246,11 @@ fn process_is_allocation_free_in_steady_state_on(workers: usize) {
     .expect("under capacity");
     assert_eq!(ed.commands_outstanding(), 202);
 
-    assert_eq!(exec.is_parallel(), workers > 1, "the gate runs the mode it names");
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..2_000 {
             let n = sizes[i % sizes.len()];
@@ -368,7 +372,11 @@ fn crossfades_are_allocation_free_on(workers: usize) {
     assert_eq!(ed.fades_in_flight(), 3);
 
     let sizes = [256usize, 1, 7, 64, 100, 255, 33];
-    assert_eq!(exec.is_parallel(), workers > 1, "the gate runs the mode it names");
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..200 {
             block(&mut exec, sizes[i % sizes.len()]);
@@ -519,7 +527,11 @@ fn declared_event_capacities_are_allocation_free_on(workers: usize) {
         exec.process(n, &transport, &[], &mut []);
     }
     let before = refused.load(Ordering::Relaxed);
-    assert_eq!(exec.is_parallel(), workers > 1, "the gate runs the mode it names");
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..2_000 {
             exec.process(sizes[i % sizes.len()], &transport, &[], &mut []);
@@ -674,7 +686,11 @@ fn modulated_params_are_allocation_free_on(workers: usize) {
         }
     };
     exec.apply_pending();
-    assert_eq!(exec.is_parallel(), workers > 1, "the gate runs the mode it names");
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
     assert_no_alloc::assert_no_alloc(|| run(&mut exec));
 
     // A connection made (Q, behind the lag's PDC: the gain is the early
@@ -684,7 +700,11 @@ fn modulated_params_are_allocation_free_on(workers: usize) {
     ed.spec_mut().disconnect_param(cut, gain);
     ed.commit().expect("commits");
     exec.apply_pending();
-    assert_eq!(exec.is_parallel(), workers > 1, "the gate runs the mode it names");
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
     assert_no_alloc::assert_no_alloc(|| run(&mut exec));
     let plan = exec.plan().expect("a plan");
     assert!(

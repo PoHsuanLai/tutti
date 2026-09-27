@@ -38,14 +38,15 @@
 //! 6. **Colour** ([`colour`]) — slot sharing that is correct under any
 //!    parallel schedule, with in-place aliasing where legal.
 //! 7. **Coarsen** — fuse single-successor/single-predecessor chains into
-//!    tasks. The serial executor ignores tasks; the plan carries them so the
-//!    phase-2 parallel executor needs no format change.
+//!    tasks, and level the task DAG (`Plan::task_width`). The serial
+//!    executor ignores tasks; the parallel one (`par.rs`) dispatches them.
 //! 8. **Verify** ([`verify`]) in debug builds.
 //! 9. **Place** units: `NodeKey` → dense [`UnitIdx`], diffed against `prev`
 //!    into a [`Delta`].
 //!
-//! Doc 013's step 6 (a serial-vs-parallel cost model) is phase 6 work; there
-//! is only a serial executor to pick.
+//! Doc 013's step 6 (a serial-vs-parallel cost model) is Phase 6 part (b):
+//! for now a plan with more than one task spreads whenever the executor has
+//! a pool of more than one participant.
 
 mod colour;
 mod order;

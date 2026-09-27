@@ -1,5 +1,6 @@
 //! The audio graph: a pure compiler from a graph **value** to an
-//! immutable [`Plan`], a serial executor for plans, and the naive
+//! immutable [`Plan`], an executor for plans (serial, or parallel on a
+//! [`Pool`]), and the naive
 //! [`Reference`] interpreter the executor is proven against.
 //!
 //! This is Phase 1 of `docs/design/013-native-graph.md` (PR #2): the road off
@@ -23,7 +24,8 @@
 //!      │ compile(&ValidGraph, &Shapes, prev) -> (Plan, Delta)      pure, control thread
 //!  Plan (SoA)          ops, slots, CSR DAG, delay + feedback tables
 //!      │ commit box { plan, delta, units }  ──SPSC──▶  and back with retirees
-//!  Executor            unit store + arena, serial walk of the ops
+//!  Executor            unit store + arena, serial walk of the ops, or the
+//!                      tasks spread over a Pool's threads (Phase 6)
 //! ```
 //!
 //! # Invariants carried by types
@@ -126,6 +128,10 @@
 //!   correct under *any* schedule the op DAG allows, not only the serial one.
 //! - [`Editor`] and [`Executor`] — the runtime pair, the queues between them
 //!   (commits, and timestamped commands), and their back-pressure.
+//! - [`Pool`] and [`Executor::set_pool`] — the parallel executor (doc 013
+//!   Phase 6): a block's tasks across a pool's threads, bit for bit the
+//!   serial render, borrowing every buffer through run-time claims so this
+//!   crate stays free of `unsafe`.
 //! - [`Editor::replace`] and [`Fade`] — swapping a running unit with a
 //!   crossfade: both units run for the fade, the old one retires on the
 //!   control thread, and a replace during a fade waits for it.

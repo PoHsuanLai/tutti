@@ -81,7 +81,7 @@ use crate::exec::{
 use crate::node::{Env, MaxBlock, MAX_PORTS};
 use crate::param::MAX_PARAM_SOURCES;
 use crate::plan::{Op, Plan, Span};
-use crate::slots::{ArenaView, EventSlots, EventsView};
+use crate::slots::{ArenaView, EventSlots, EventsView, SharedFlags};
 
 /// A pool of threads that runs one job at a time on several of them — what
 /// the parallel executor asks of a worker pool. `tutti_core::WorkerPool`
@@ -134,6 +134,10 @@ pub(crate) struct Worker {
 /// state, `exec.rs`'s `rebuild`) for the pool's participant count.
 pub(crate) struct Par {
     graph: TaskGraph,
+    /// The per-slot flags, shared by the block's workers: seeded from the
+    /// executor's own before each block (slot 0, the feedback reads), and
+    /// every other slot written by its op before it is read.
+    flags: Vec<AtomicU8>,
     audio: ClaimTable,
     events: ClaimTable,
     units: ClaimTable,
@@ -183,6 +187,7 @@ impl Par {
         let held = 2 * MAX_PORTS + crate::param::MAX_PARAM_PORTS * MAX_PARAM_SOURCES + 1;
         Self {
             graph,
+            flags: (0..plan.audio_slots).map(|_| AtomicU8::new(0)).collect(),
             audio: ClaimTable::new(plan.audio_slots as usize),
             events: ClaimTable::new(plan.event_slots as usize),
             units: ClaimTable::new(store_len),
@@ -218,7 +223,7 @@ pub(crate) struct Block<'b, 'o> {
     pub(crate) inputs: &'b [&'b [f32]],
     pub(crate) outputs: &'b mut [&'o mut [f32]],
     pub(crate) arena: &'b mut Arena,
-    pub(crate) flags: &'b [AtomicU8],
+    pub(crate) flags: &'b mut [u8],
     pub(crate) events: &'b mut [Vec<Event>],
     pub(crate) store: &'b mut [Option<Unit>],
     pub(crate) rings: &'b mut [Option<Ring>],
@@ -269,8 +274,14 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
         w.dropped = 0;
         w.fade_ended = false;
     }
+    // Slot 0 and the feedback reads were set before the ops; the rest is
+    // written by the op that writes each slot. A byte per slot.
+    for (a, &f) in par.flags.iter().zip(b.flags.iter()) {
+        a.store(f, std::sync::atomic::Ordering::Relaxed);
+    }
     let Par {
         graph,
+        flags,
         audio,
         events,
         units,
@@ -295,7 +306,7 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
             inputs: b.inputs,
             graph,
             arena: b.arena.split(audio),
-            flags: b.flags,
+            flags,
             events: SplitRw::new(b.events, 1, events),
             store: SplitMut::new(b.store, units),
             rings: SplitMut::new(b.rings, rings),
@@ -364,7 +375,8 @@ impl Shared<'_, '_> {
             fade_ended,
         } = ws;
         let frames = self.frames;
-        let flags = self.flags;
+        let mut flags = SharedFlags(self.flags);
+        let flags = &mut flags;
         match *op {
             Op::GlobalIn { channel, dst } => {
                 let mut a = ArenaView {
@@ -421,8 +433,9 @@ impl Shared<'_, '_> {
                     flags,
                     events: &mut e,
                     inject: &mut inject,
-                    has_inject: &mut has_inject,
-                    has_due: &mut has_due,
+                    has_inject: std::slice::from_mut(&mut *has_inject),
+                    has_due: std::slice::from_mut(&mut *has_due),
+                    at: 0,
                     overlay,
                     due: self.due,
                     dropped,

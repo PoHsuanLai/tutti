@@ -7,7 +7,8 @@ Phases 1 and 2) has landed, and `Engine` renders it
 beside `Net` behind `GraphBackend`), export forks the graph (PR 12) and
 renders only it (PR 14). **Phase 3 is done**, and so is Phase 4: every node
 is a `tutti_graph::Node` and the `Legacy` adapter is deleted
-([below](#legacy-deleted)); Phases 5–6 are next. Rewrite-order item 4's plugin
+([below](#legacy-deleted)); Phase 5 is under way and Phase 6 has begun (the
+parallel executor, [below](#phase-6-part-a-the-parallel-executor)). Rewrite-order item 4's plugin
 half has landed (the plugin node is a `Node`, bound by typestate; see
 [below](#item-4s-plugin-half-landed)). With `Net` no longer a runtime and
 `Legacy` gone, "native" no longer distinguishes anything: the design's title
@@ -2972,6 +2973,137 @@ shows it, the fix is per-thread slots (one line per worker, indexed by worker
 id) inside `RtPublish` — another change with no call site moving. Better still
 is the design in §4: the executor reads the plan cell once per block and hands
 workers a reference, so only one reader touches the cell at all.
+
+That is how it landed: the executor reads the plan once per block on the
+calling thread and hands every worker `&Plan`; no worker reads an
+`RtPublish` cell for the plan. Nodes that read their own `RtPublish` cells
+still do so from whichever worker runs them, one read per block each.
+
+#### Phase 6, part (a): the parallel executor
+
+**Status: landed** (2026-09-27). A block's tasks run across a pool's
+threads, bit for bit the render the serial walk makes; the serial walk is
+the one-participant case.
+
+What each layer holds:
+
+- **The plan (pure compiler).** Nothing new is derived on the audio
+  thread. The compiler already fused chains into tasks and emitted the task
+  DAG (CSR successors, per-task activation counts); it now also records the
+  DAG's widest level (`Plan::task_width`, a longest-path levelling), which
+  bounds how many participants a block can use and how many helpers the
+  executor wakes.
+- **The contract (`tutti_graph::Pool`).** A trait of two methods:
+  `participants()` and `run(wake, job)`, which runs `job(0)` on the caller
+  and `job(i)` on at most `participants - 1` other threads and returns only
+  when none is inside it. It may run the job on the caller alone (a pool
+  busy with another caller's job does), and the executor's job is correct
+  with any number of participants. `Executor::set_pool` installs one
+  (control thread: it builds the parallel state for the running plan);
+  `Executor::is_parallel` reports whether blocks spread.
+- **The pool (`tutti_core::WorkerPool`).** Helper threads that spin, then
+  yield, then park between jobs (crill's progressive backoff); the caller
+  wakes at most `wake - 1` parked helpers per block (`Thread::unpark`, the
+  one system call the audio thread makes for the pool) and never waits for a
+  helper to wake. `WorkerPoolBuilder::on_start` runs a host hook on each
+  helper before it takes work: where RT priority, MMCSS or a macOS audio
+  workgroup join goes. The engine does not promote threads itself, for the
+  reason it does not promote the callback.
+- **The runtime primitives (`tutti-types`, loom-checked).**
+  `JobGate` lends one borrowed job to helper threads per call (the only
+  lifetime erasure, and the reason the pool needs no `std::thread::scope`
+  per block); `TaskGraph` runs a DAG of tasks once per block over any
+  number of participants (self-resetting activation counters, a ready list,
+  the first ready successor run inline); `SplitMut` / `SplitRw` hand one
+  slice's elements or chunks to several threads, each claimed before use.
+
+**Safety without `unsafe` in `tutti-graph`.** The crate stays
+`#![forbid(unsafe_code)]`: a parallel op borrows the arena, the event slots,
+its unit, its delay ring, its feedback state and its output channel through
+claims (`SplitRw`/`SplitMut`), so if two ops that share a slot ever ran at
+once — a compiler bug — the second claim panics instead of aliasing. The op
+code is one body for both executors: generic over two small traits
+(`AudioSlots`, `EventSlots`, `src/slots.rs`) that the serial arena and the
+parallel views both implement. The per-slot flags became `AtomicU8`
+(`Relaxed`, a plain byte move) so workers can share them.
+
+Decisions:
+
+1. **A shared FIFO ready list with inline continuation, not per-worker
+   LIFO deques with stealing** (§4 sketched the latter). After chain fusion
+   a block dispatches tens to hundreds of tasks, not the millions work
+   stealing is built for, and one list keeps the loom model small enough to
+   run exhaustively (`tests/task_graph_loom.rs`, ~8 minutes at
+   `LOOM_MAX_PREEMPTIONS=3`). Revisit if profiling shows the head's cache
+   line contended.
+2. **The unsafe goes in `tutti-types`**, next to `RtPublish`, where the loom
+   infrastructure is, and not in `tutti-graph` or `tutti-core`: the three
+   primitives are generic (no graph types), and `tutti-graph`'s dependency
+   limits did not change.
+3. **`SeqCst` fences, not `SeqCst` accesses**, for the pool's store-load
+   pairs (the gate's close against a helper's entry; a sleeper's flag against
+   the gate's open): loom models fences exactly and treats `SeqCst` accesses
+   as `AcqRel`, under which the first version of the gate failed its model.
+   `RtPublish` made the same choice.
+4. **A panic on a worker** aborts the block's task graph (the other
+   participants stop taking tasks), and the caller panics once every
+   participant has left, naming the cause.
+5. **Opt-in.** `Executor::set_pool` defaults to none; bevy-tutti's
+   `TuttiPlugin::render_workers` defaults to 1. An export forks onto a pool
+   of its own (`RenderGraph::set_pool`), never the live one: a job that
+   finds a pool busy runs on its caller alone.
+6. **The node contract gains one sentence**: nodes communicate only through
+   ports. Two nodes sharing mutable state outside the graph (one
+   `Arc<Mutex<_>>`) are ordered serially by accident and not at all in
+   parallel.
+
+Evidence:
+
+- **Bit-identical renders.** `tests/parallel.rs` renders one graph with
+  fan-out, fan-in, PDC rings, event fan-in and an event delay,
+  compiler-owned param modulation (an audio source behind a latent sibling,
+  and ramp events), a feedback loop and scheduled commands, at 2, 3, 4 and 8
+  participants and block schedules from 1 frame to the maximum (ragged ones
+  included), and holds every output to the serial render bit for bit; and
+  the same for an offline fork (what export renders) on a pool. The
+  differential suite (`tests/differential.rs`) runs every random case twice
+  — serial, and parallel at a participant count the seed picks — against
+  the reference interpreter: plain renders, scheduled commands, transport
+  changes inside blocks, recompiles, crossfades and re-prepares.
+- **Real time.** `tests/rt_no_alloc.rs` runs each of its four executor
+  gates on a four-participant pool whose every participant, helpers
+  included, runs inside `assert_no_alloc` (which also refuses frees);
+  `tutti-core`'s `rt_no_alloc_engine` does the same through `Engine` on a
+  real `WorkerPool`, including blocks that wake parked helpers; `alloc_budget`
+  bounds what the parallel state costs per plan on the control side. The
+  helpers' idle loop between jobs is outside the gates (it touches atomics
+  and `Thread::park` only).
+- **loom.** `tests/split_loom.rs`, `tests/task_graph_loom.rs` and
+  `tests/job_gate_loom.rs` in `tutti-types` model the three primitives
+  against the shipped code (their atomics switch to loom's under the flag);
+  each file lists the mutations it catches. **miri** runs `tutti-types`'
+  lib tests in CI, which include each primitive's threaded unit test
+  (fewer iterations under miri); it checks the raw-pointer arithmetic in
+  `SplitMut`/`SplitRw` and the lifetime erasure in `JobGate` against Stacked
+  Borrows on the interleavings those runs take, which loom does not see.
+
+Benchmarks (`tutti-nodes/benches/parallel_render.rs`, criterion medians,
+one 256-frame block at 48 kHz, this crate's `SvfFilterNode`s; a 4-core
+container; `1` is the serial executor with no pool, the others
+`WorkerPool::new(n)`):
+
+BENCH_TABLE
+
+Where a pool loses: `tiny/16` (16 single gains, one multiply per sample)
+costs 2.7× the serial walk at two and four participants and 10× at eight,
+because each task is cheaper than dispatching it. That is what the cost
+model (part b) is for. `deep/128` is one fused task: the executor takes the
+serial walk and the pool costs nothing. Eight participants oversubscribe the
+four cores and lose to four everywhere; those rows are measured, not
+dropped.
+
+Serial cost of the refactor (`tutti-graph`'s `graph_render`, the base
+branch against this one, same machine, same flags): SERIAL_TABLE
 
 ## Per-node rewrite plan
 

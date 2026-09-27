@@ -6,10 +6,8 @@
 //! wrongly runs at once panic on the slot they share instead of aliasing
 //! it. Neither needs `unsafe` here.
 //!
-//! The per-slot silence/constant flags are atomics in both modes (a load or
-//! store of an `AtomicU8` with `Relaxed` is a plain byte move), so they need
-//! no trait: the parallel executor shares one flag array between workers,
-//! and a slot's claim orders its flag like its samples.
+//! The per-slot silence/constant flags go behind a third trait,
+//! [`SlotFlags`]: plain bytes serially, shared atomics in parallel.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -19,16 +17,44 @@ use crate::arena::{borrow_sorted, Arena, Line, Role};
 use crate::event::Event;
 use crate::plan::Direct;
 
-/// A slot's flags.
-#[inline]
-pub(crate) fn flag_of(flags: &[AtomicU8], s: u32) -> u8 {
-    flags[s as usize].load(Ordering::Relaxed)
+/// The per-slot silence/constant flags an op reads and writes: a plain
+/// byte slice serially, and the parallel executor's shared atomics
+/// ([`SharedFlags`]) there. Two impls rather than atomics everywhere: a
+/// `Relaxed` atomic is a plain byte move, but the compiler may not forward
+/// a store to a later load through it, and on a chain of cheap nodes that
+/// measured about 2.5 ns a node (doc 013 Phase 6).
+pub(crate) trait SlotFlags {
+    /// Slot `s`'s flags.
+    fn get(&self, s: u32) -> u8;
+    /// Set slot `s`'s flags.
+    fn set(&mut self, s: u32, v: u8);
 }
 
-/// Set a slot's flags.
-#[inline]
-pub(crate) fn set_flag(flags: &[AtomicU8], s: u32, v: u8) {
-    flags[s as usize].store(v, Ordering::Relaxed);
+impl SlotFlags for [u8] {
+    #[inline(always)]
+    fn get(&self, s: u32) -> u8 {
+        self[s as usize]
+    }
+    #[inline(always)]
+    fn set(&mut self, s: u32, v: u8) {
+        self[s as usize] = v;
+    }
+}
+
+/// The flags every worker of a parallel block shares. A slot's flag is
+/// written by the op that writes the slot and read by the ops that read it,
+/// so the slot's claim orders its flag like its samples.
+pub(crate) struct SharedFlags<'a>(pub(crate) &'a [AtomicU8]);
+
+impl SlotFlags for SharedFlags<'_> {
+    #[inline]
+    fn get(&self, s: u32) -> u8 {
+        self.0[s as usize].load(Ordering::Relaxed)
+    }
+    #[inline]
+    fn set(&mut self, s: u32, v: u8) {
+        self.0[s as usize].store(v, Ordering::Relaxed);
+    }
 }
 
 /// The audio slots an op borrows: [`Arena`]'s own methods, by name.

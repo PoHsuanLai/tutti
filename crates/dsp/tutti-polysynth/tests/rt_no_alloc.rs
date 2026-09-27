@@ -366,8 +366,8 @@ fn a_first_block_on_a_cold_thread_is_allocation_free() {
     });
 }
 
-/// **The native path is allocation-free too:** a clip node playing a dense
-/// clip into a native synth, through the executor, rolling, then across a
+/// **The graph path is allocation-free too:** a clip node playing a dense
+/// clip into a synth, through the executor, rolling, then across a
 /// stop (the clip ends its held notes) and a restart. Nothing is published
 /// inside the gate: publishing is the control thread's.
 ///
@@ -375,7 +375,7 @@ fn a_first_block_on_a_cold_thread_is_allocation_free() {
 /// Mutation: the synth's `gather_events` collecting the event input into a
 /// `Vec` before merging → the gate aborts.
 #[test]
-fn a_clip_into_a_native_synth_is_allocation_free() {
+fn a_clip_into_a_synth_is_allocation_free() {
     use tutti_core::{Beat, Bpm, NodeKey, Samples};
     use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Prepare, Transport};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};

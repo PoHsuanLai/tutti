@@ -2,8 +2,8 @@
 //! tutti-core stays the bottom layer.
 //!
 //! Public via [`crate::backend`] so out-of-crate in-process plugin nodes report
-//! the same stable `AudioUnit::get_id()` fingerprint as the native plugin
-//! clients — fundsp uses this id to treat the node as identity-stable across
+//! the same stable `AudioUnit::get_id()` fingerprint as this crate's own
+//! plugin clients — fundsp uses this id to treat the node as identity-stable across
 //! graph commits.
 /// Stable `AudioUnit::get_id()` fingerprint for every plugin-client node.
 ///

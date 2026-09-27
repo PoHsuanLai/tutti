@@ -37,7 +37,7 @@ use tutti_plugin::handles::{Bound, PluginClient, PluginControls, PluginHandle};
 use tutti_plugin::BridgeConfig;
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
 
-/// A bound plugin as the only node of a native graph: the global inputs feed
+/// A bound plugin as the only node of a graph: the global inputs feed
 /// its inputs in order, its outputs feed the global outputs. What a test
 /// drives where it once drove the client as an `AudioUnit` — the executor
 /// hands the node its `Env` and its whole block, as the engine does.

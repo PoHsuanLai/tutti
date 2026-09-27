@@ -1,9 +1,7 @@
 //! One scene, rendered through the adapter and pinned to what fundsp's `Net`
 //! rendered for it (design doc 013, Phase 3).
 //!
-//! The scene is built through the ECS — `spawn_audio_node` and
-//! `spawn_audio_node` (the filter, the waveshaper and the limiter are native
-//! nodes), `PortSources`,
+//! The scene is built through the ECS — `spawn_audio_node`, `PortSources`,
 //! `MasterSources`, `AudioParam`, `crossfade_audio_node`,
 //! `LatencyCompensationPlugin` — so what is checked is the whole adapter,
 //! not a hand-wired graph. It takes the audio side
@@ -288,7 +286,7 @@ fn unaligned_blocks_render_per_sample_units_identically() {
 /// its queue at the start of its next 64-frame `process` call), which
 /// `NetEra` pinned until doc 013 PR 15.
 ///
-/// Mutation (run): `NativeGraph::set_param` sending the setting with the node
+/// Mutation (run): `GraphRuntime::set_param` sending the setting with the node
 /// address `Net` needed (`unit_param::node_setting`) instead of the leaf's →
 /// the waveshaper ignores it and the render after the write stays the old
 /// scene's.
@@ -452,7 +450,7 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
 /// is gone; the half that stays is what tells a compiled compensation from a
 /// spliced one.
 ///
-/// Mutation (run): `NativeGraph::lift` answering `Silence` for a node source
+/// Mutation (run): `GraphRuntime::lift` answering `Silence` for a node source
 /// → the channel no longer reads the waveshaper; the rebuild's own
 /// consistency check (`topology::disagreements`) panics on it first.
 #[test]

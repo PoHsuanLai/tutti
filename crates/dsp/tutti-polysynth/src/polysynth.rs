@@ -3374,7 +3374,7 @@ mod tests {
     /// with, audibly: for each param, a move set through the synth's
     /// `ParamSet` after a fork is not in that fork's render, and one before a
     /// fork is (the `ParamNode` fork `param_parts` inserts; it replaced the
-    /// `AudioUnit` era's `IsolateRow`). Each rendered fork is handed its own
+    /// `AudioUnit` era's isolate row). Each rendered fork is handed its own
     /// chord, as its clip would.
     ///
     /// Mutations (run): `fork_instance` not detaching `master_volume` →

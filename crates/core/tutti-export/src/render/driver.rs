@@ -1,6 +1,6 @@
 //! The render source: a graph presented as a block-at-a-time frame source.
 //!
-//! [`GraphSource`] block-renders a native `tutti_graph` executor into
+//! [`GraphSource`] block-renders a `tutti_graph` executor into
 //! interleaved frames and advances the caller's [`RenderClock`] in lockstep
 //! (doc 013 Phase 3 PR 7; the `Net` source beside it went in PR 14).
 //! Everything downstream — gating, dither, the encoder — pulls from it (or
@@ -150,7 +150,7 @@ pub(crate) trait FrameSource {
     fn max_block(&self) -> usize;
 }
 
-/// The render source for the native graph: a `tutti_graph::Executor` (a
+/// The render source for the graph: a `tutti_graph::Executor` (a
 /// fork, or a pair built for the render) rendered one block at a time.
 ///
 /// One block per [`fill`](FrameSource::fill), folded onto the caller's width,

@@ -58,7 +58,7 @@
 //! `set_sample_rate` reallocates. That is why the RT no-alloc suites call it
 //! outside their no-alloc gate rather than inside it.
 //!
-//! **Native nodes are exempt**: [`SvfFilterNode`], [`EqBandNode`],
+//! **Graph nodes are exempt**: [`SvfFilterNode`], [`EqBandNode`],
 //! [`LadderFilterNode`], [`CompressorNode`], [`GateNode`], [`LimiterNode`],
 //! [`BrickwallLimiterNode`], [`DelayLineNode`], [`ModDelayNode`],
 //! [`PhaserNode`], [`LfoNode`], the automation lane and (with `convolution`)
@@ -68,7 +68,7 @@
 //! (`tutti_graph::contract::prepared`, or a `tutti_graph::Solo`).
 //!
 //! Nodes carrying no rate-dependent quantity — [`BusStripNode`],
-//! [`ChannelSumNode`], [`DownmixNode`], [`DistortionNode`], all native too —
+//! [`ChannelSumNode`], [`DownmixNode`], [`DistortionNode`], all graph nodes too —
 //! are exempt and say nothing, because a wrong rate has nothing to skew. The placeholder is also
 //! what makes a rate-free constructor representable at all:
 //! [`ModDelayNode::chorus`] takes only a width, yet builds delay lines.
@@ -132,7 +132,7 @@ pub use dynamics::{
 };
 
 // The shaping an audio-rate modulation edge authors; the edge itself is the
-// native graph's (design doc 013 item 6).
+// graph's (design doc 013 item 6).
 pub mod param_mod;
 pub use param_mod::ParamModShaping;
 

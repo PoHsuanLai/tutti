@@ -46,7 +46,7 @@ fn app_with_target() -> (App, Entity) {
 
     let dist = DistortionNode::new(ShapeKind::Tanh, 5.0);
     // Its controls, captured from the node before it moves — the step every
-    // insertion path in `bevy_tutti::graph` runs; a native node's are its
+    // insertion path in `bevy_tutti::graph` runs; a `ParamNode`'s are its
     // `ParamSet`'s cells, with no registry entry.
     let controls = GraphNode::captured(&dist);
     let node = app

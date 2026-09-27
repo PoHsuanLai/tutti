@@ -5,9 +5,14 @@ Phases 1 and 2) has landed, and `Engine` renders it
 ([Phase 2](#phase-2--runtime-behind-the-engine), 2b) and nothing else
 (Phase 3 PR 15); the Bevy adapter runs on it alone (PR 13; PR 11 had put it
 beside `Net` behind `GraphBackend`), export forks the graph (PR 12) and
-renders only it (PR 14). **Phase 3 is done**; Phases 4–6 are next, and
-rewrite-order item 4's plugin half has landed (the plugin node is native and
-bound by typestate; see [below](#item-4s-plugin-half-landed)). Work that does not need the graph has
+renders only it (PR 14). **Phase 3 is done**, and so is Phase 4: every node
+is a `tutti_graph::Node` and the `Legacy` adapter is deleted
+([below](#legacy-deleted)); Phases 5–6 are next. Rewrite-order item 4's plugin
+half has landed (the plugin node is a `Node`, bound by typestate; see
+[below](#item-4s-plugin-half-landed)). With `Net` no longer a runtime and
+`Legacy` gone, "native" no longer distinguishes anything: the design's title
+and this file's name keep it, but the code and the crate docs say "the
+graph" (rewrite-order item 9). Work that does not need the graph has
 landed too: the D1–D3 latency fixes (#3), Phase 0 (#14, see
 [below](#phase-0--shrink-the-surface-no-behaviour-change)), Phase 0b (#6),
 rewrite-order item 3 (#10, see [below](#item-3-landed-10)), and §4's
@@ -1187,7 +1192,7 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    bridge only notices a dead peer when it next sends) and times out when a
    block misses `BridgeConfig::timeout_ms`; after the first miss it stops
    waiting, so a hung server costs one budget per render, not per block.
-   **tutti-export checks `fork_health()` after every native-graph render**
+   **tutti-export checks `fork_health()` after every graph render**
    (`render::with_source`) and turns a fault into
    `Error::ForkFailed { key, kind, cause }`: an export through a crashed or
    hung plugin fork fails by name, promptly, instead of returning silence as
@@ -3018,7 +3023,7 @@ Read from the code; each one is confirmed at the file:line given.
 | D8 | **The click track starts only on block boundaries** (up to 64 frames of jitter), and reads the beat from the clock's writeback of the previous block | `click.rs:410-412` | Metronome jitter |
 | D9 | **Plugin automation is evaluated "now"**, against a plugin whose audio PDC may have delayed. This one is inferred, not measured | `param_automation_source.rs` | Automation misaligned behind latent paths |
 
-D1–D3 are one class of bug. The native `Shape { latency }` is declared,
+D1–D3 are one class of bug. The graph's `Shape { latency }` is declared,
 separately from the DSP, which makes the class impossible. Until then, fix each
 `route` so it reports processing latency only.
 
@@ -3094,7 +3099,7 @@ vocoder retirement channel for voices the pool removes.
 | 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
 | 7 | **Done (item 7 PR; `VoiceNode` on typed controls in the per-node port).** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **Folded into 9: a node's fork is ported with the node** ([below](#items-8-and-9-the-per-node-port)). **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s (the count at the time; ~29 `isolate`s by the 2026-09-26 audit). The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
-| 9 | **Done.** Every node in the tree is native ([below](#items-8-and-9-the-per-node-port)) and **`Legacy` is deleted** ([below](#legacy-deleted)); next: drop the "native" naming | With `Legacy` gone, **drop the "native" naming**: it is just the graph. "Native graph" (as against `Net`) and "native node" (as against a `Legacy` one) both stop meaning anything: bevy-tutti's `NativeGraph` / `graph/native.rs`, `SynthFork::native`, this doc's own filename, CLAUDE.md and the crate docs. (`native_module_in_bundle` and the plugin GUI's native windows are another sense and stay) | Yes |
+| 9 | **Done.** Every node in the tree is a `tutti_graph::Node` ([below](#items-8-and-9-the-per-node-port)), **`Legacy` is deleted** ([below](#legacy-deleted)) and **the "native" naming is dropped** | With `Legacy` gone, the "native" naming was dropped: it is just the graph. "Native graph" (as against `Net`) and "native node" (as against a `Legacy` one) had stopped meaning anything: bevy-tutti's `NativeGraph` / `graph/native.rs` are `GraphRuntime` / `graph/runtime.rs`, `NATIVE_MAX_BLOCK` is `LIVE_MAX_BLOCK`, `NativeIsolateRow` is `IsolateRow`, the test and bench nodes lost their `Native` prefix, and CLAUDE.md and the crate docs say "the graph". This doc's filename and title keep the old name (dated audits link to it). (`native_module_in_bundle` and the plugin GUI's native windows are another sense and stay) | Yes |
 
 #### Item 4's plugin half landed
 
@@ -3235,7 +3240,7 @@ vocoder retirement channel for voices the pool removes.
     makeup/range.
   - VBAP solves its gains once per block and ramps them. The ramp is a chord,
     not constant-power. That is documented on the node, and a larger
-    native-graph block must revisit it.
+    graph block must revisit it.
 - **Non-finite control values.** A NaN or ±∞ written to a raw control cell
   reads as unchanged, so it never reaches a coefficient solve or recursive
   state.
@@ -3250,7 +3255,7 @@ vocoder retirement channel for voices the pool removes.
   transformed IR, so sharing waits on `Fork` (item 8). `shared_ir` clones one
   convolver, so the IR is transformed only once.
 - **`copy_within` fast path** for integer delays.
-- **Filter type switchable live via `Controls`.** Needs the native `Controls`.
+- **Filter type switchable live via `Controls`.** Needs the graph's `Controls`.
   `set_filter_type` is still `&mut self`.
 - **Buffers allocated in `prepare`.** The delay rings are an example; there is
   no `prepare` before the node contract.
@@ -3376,7 +3381,7 @@ under both.
 - **Tests** (each mutation-tested; the mutation is on the test):
   `tutti-midi-runtime/tests/clip_node.rs` (frames across block sizes, a
   seek inside a block, a loop wrap inside a block, a stop, a replaced clip,
-  the fork's snapshot), `tutti-polysynth/tests/native_node.rs` (clip →
+  the fork's snapshot), `tutti-polysynth/tests/graph_node.rs` (clip →
   synth onset on its frame; a forked graph plays the clip), the merge order
   (`polysynth::node` unit test), and `rt_no_alloc`'s clip → native synth
   through a stop and a restart.
@@ -3708,9 +3713,10 @@ fail on, by name.
 
 **Deferred / open.**
 
-- A native node declaring params reads `Io::param` itself; none of the
-  ported nodes is native yet (they are `Legacy` + `ParamFeed`), so the
-  per-frame slice crosses one copy per 64-frame chunk into the feed.
+- A node declaring params reads `Io::param` itself. When this landed none
+  of the ported nodes did yet (they were `Legacy` + `ParamFeed`), so the
+  per-frame slice crossed one copy per 64-frame chunk into the feed; both
+  went with `Legacy` ([below](#legacy-deleted)).
 - **Follow-up: a range change recompiles** (the range is part of the
   value, and of the plan's `ParamPortOp`). The old `ClampBounds` moved
   without one, so a UI dragging a range now costs a commit per move where
@@ -3989,7 +3995,7 @@ reference):
 
 Decisions made in the ports: a `ParamSet` addresses what `set(Setting)`
 did and nothing it did not (a gate's hold, a compressor's knee stay
-unaddressed; `NativeIsolateRow` still pins their fork); one cell, one
+unaddressed; `IsolateRow`, then `NativeIsolateRow`, still pins their fork); one cell, one
 address (the compressor's makeup is `GainDb`, which retires a route on
 `Makeup` — to reconcile in the vocabulary; the delay's `DelayTime` is
 channel 0's, so a fork keeps a ping-pong's two times); a node declares the
@@ -4004,7 +4010,7 @@ time-stretched voice is silent for its filter's refill after a seek
 
 #### Legacy deleted
 
-With every node in the tree native, `Legacy` (the adapter that ran an
+With every node in the tree a `Node`, `Legacy` (the adapter that ran an
 `AudioUnit` inside the graph in 64-frame chunks) had only tests and a
 host's own units left to carry, so it went, with everything that existed
 for it:
@@ -4013,7 +4019,8 @@ for it:
   `Delivery`, `LEGACY_CHUNK`, `LEGACY_SETTINGS_CAPACITY`; `Shape::legacy`,
   `Plan::has_legacy`, `GraphBuilder::{add_unit, add_pure_unit,
   chain_unit}`, `contract::{Row::legacy, IsolateRow,
-  assert_isolate_snapshots}`, the editor's settings outboxes, and the
+  assert_isolate_snapshots}` (that `IsolateRow` was `Legacy`'s; the
+  `NativeIsolateRow` that replaced it has since taken the name), the editor's settings outboxes, and the
   `tutti-node` dependency: the crate names no tutti crate but
   `tutti-types`.
 - **tutti-core**: the chunk-major render (a graph with a `Legacy` in it
@@ -4038,7 +4045,7 @@ for it:
 
 The tests whose subject was `Legacy` itself (its chunking, its settings
 ring, its fork hook, the chunk-major playhead) went with it; every other
-test that wired an `AudioUnit` was moved onto a native test node with its
+test that wired an `AudioUnit` was moved onto a test `Node` with its
 assertions kept. `stretch::Unit` stays an `AudioUnit`: a slot's internal
 filter, never inserted into a graph.
 

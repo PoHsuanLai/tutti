@@ -28,7 +28,7 @@
 //!             └──────────── dry ───────────────────────────▶ ┘
 //! ```
 //!
-//! A native `tutti-graph` graph, compiled and rendered as the engine renders
+//! A `tutti-graph` graph, compiled and rendered as the engine renders
 //! one: the compiler's PDC pass delays the dry path, so both arrivals land on
 //! the same sample and sum to exactly twice the impulse. The plugin path alone
 //! arrives [`EXPECTED_TOTAL_LATENCY`] late. And a latency the plugin changes at
@@ -183,7 +183,7 @@ fn arrivals(samples: &[f32]) -> Vec<(usize, f32)> {
         .collect()
 }
 
-/// A native graph with one global input and one output, holding `plugin`
+/// A graph with one global input and one output, holding `plugin`
 /// fed by the input on every port; `sum` decides what reaches the output.
 struct Rig {
     graph: Renderer,
@@ -317,7 +317,7 @@ fn the_probe_declares_the_latency_this_suite_expects() {
 /// third of the three numbers that must agree. The two tests together say the
 /// declared figure and the suffered delay are the same; either alone says only
 /// that one of them has some value. (Under `Net` this ran the two-path graph
-/// uncompensated; the native graph always compensates, so the plugin path is
+/// uncompensated; the graph always compensates, so the plugin path is
 /// measured on its own, where there is nothing to compensate.)
 #[test]
 fn the_plugin_path_alone_arrives_a_full_latency_late() {

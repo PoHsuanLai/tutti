@@ -17,7 +17,7 @@ default = []
 [dependencies]
 tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types" }
 tutti-core = { version = "0.0.1", path = "../../core/tutti-core", default-features = false, features = ["midi"] }
-# The native graph's node contract and event ports: `MidiClipNode` is an event
+# The graph's node contract and event ports: `MidiClipNode` is an event
 # source node (doc 013 item 5). No cycle: tutti-graph names no MIDI crate.
 tutti-graph = { version = "0.0.1", path = "../../core/tutti-graph" }
 

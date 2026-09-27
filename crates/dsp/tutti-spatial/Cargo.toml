@@ -32,7 +32,7 @@ tutti-types = { path = "../../core/tutti-types", default-features = false }
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 
 # `build_vbap_mix` builds into a `tutti_graph::GraphBuilder`, and the LFE
-# low-pass is a native graph node (doc 013).
+# low-pass is a graph node (doc 013).
 tutti-graph = { path = "../../core/tutti-graph" }
 
 # Vector Base Amplitude Panning: the speaker-field placement math.

@@ -135,7 +135,7 @@ impl VbapMixParts {
     /// [`VbapMixNode::Source`]`(i)` to `sources[i]`. Returns the sum's key.
     ///
     /// The [`GraphBuilder`] adapter. It adds in `build_vbap_mix`'s historical
-    /// order (panners, the LFE send, the sum). The panners are native nodes,
+    /// order (panners, the LFE send, the sum). The panners are graph nodes,
     /// added with their controls, which are dropped here with the low-pass's:
     /// the placement is the one [`vbap_mix_parts`] set, and the send's cutoff
     /// is fixed. A caller that moves sources later takes each panner's

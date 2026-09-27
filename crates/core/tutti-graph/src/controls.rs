@@ -8,9 +8,10 @@
 //! — bevy-tutti's `AudioParam<U, P>`, which names a param by `UnitParam` and
 //! reaches the node through its graph key — needs the same cells by address.
 //! Under `Net` that was `AudioUnit::set(Setting)`, a settings ring per node
-//! and a shadow copy of the unit to fork from. A native node has neither: its controls **are** its cells, shared with the
-//! running unit, so a write lands on the next block without a ring and a fork
-//! reads the values it needs from the controls rather than from a shadow.
+//! and a shadow copy of the unit to fork from. A graph node has neither: its
+//! controls **are** its cells, shared with the running unit, so a write lands
+//! on the next block without a ring and a fork reads the values it needs from
+//! the controls rather than from a shadow.
 //!
 //! # Live and authored
 //!
@@ -177,12 +178,12 @@ impl ParamSetBuilder {
     }
 }
 
-/// A native node whose controls are its `Param<U>` cells, addressed by a
+/// A node whose controls are its `Param<U>` cells, addressed by a
 /// [`ParamSet`]: what [`param_parts`] inserts, with a fork that shares
 /// nothing and starts from the authored values.
 ///
 /// This replaces `AudioUnit::isolate` + `rebind_offline` for such a node: a
-/// native node reads time from its block's `Env`, so there is nothing to
+/// graph node reads time from its block's `Env`, so there is nothing to
 /// rebind, and [`fork_fresh`](Self::fork_fresh) is the isolate.
 pub trait ParamNode: Node + Sized {
     /// A [`ParamSet`] over this node's cells (every param a host may set by

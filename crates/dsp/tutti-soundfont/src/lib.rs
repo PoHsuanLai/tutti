@@ -6,8 +6,8 @@
 //! channel. A host that wants asset-managed loading wires it in its own adapter
 //! layer; this crate only needs the decoded `SoundFont`.
 //!
-//! Zero inputs, two outputs — the unit *is* the source. It is a native graph
-//! node (`tutti_graph::Node`): notes arrive on its event input, each applied
+//! Zero inputs, two outputs — the unit *is* the source. It is a graph node
+//! (`tutti_graph::Node`): notes arrive on its event input, each applied
 //! at its own offset within a block — to an 8-frame resolution, which is
 //! RustySynth's floor rather than this crate's choice; see
 //! [`SoundFontUnit`]'s "How an event's offset is honoured" and
@@ -23,7 +23,7 @@
 mod error;
 pub use error::{Error, Result};
 
-// `SoundFontUnit::fork_instance`: the unit in a fork of the native graph
+// `SoundFontUnit::fork_instance`: the unit in a fork of the graph
 // (an export), with its clip.
 mod fork;
 mod node;

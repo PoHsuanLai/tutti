@@ -17,7 +17,7 @@
 //!
 //! A host spawns a [`PluginRequest`]. [`load`] picks it up, runs the subprocess
 //! launch on a worker, and promotes the result to an `AudioNode` carrying a
-//! [`PluginEmitter`]: the plugin is bound into the graph as a native node
+//! [`PluginEmitter`]: the plugin is bound into the graph as a graph node
 //! (reading its transport from each block's `Env`), and its controls and MIDI
 //! port are captured on the way. [`bind`] then gives it the project meter and
 //! builds accumulators for whichever params the host declared modulatable;

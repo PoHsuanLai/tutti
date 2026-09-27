@@ -1,4 +1,4 @@
-//! `Engine` renders the native graph only: fundsp's `NetBackend` stays out
+//! `Engine` renders `tutti_graph` only: fundsp's `NetBackend` stays out
 //! of this crate's code.
 //!
 //! Design doc 013, Phase 3 PR 15 removed `Engine::new(MotionFsm, NetBackend)`,
@@ -86,7 +86,7 @@ fn no_net_backend_in_the_crates_code() {
     assert!(
         found.is_empty(),
         "fundsp's `NetBackend` in tutti-core's code (doc 013, PR 15 removed \
-         the engine's `Net` backend; `Engine::new` takes the native graph):\n  {}",
+         the engine's `Net` backend; `Engine::new` takes a `tutti_graph::Executor`):\n  {}",
         found.join("\n  ")
     );
 }

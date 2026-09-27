@@ -10,7 +10,7 @@ transport, level metering, and delay compensation. Sibling crates
 re-export them, so a consumer usually meets them through whichever subsystem it
 already depends on.
 
-- `Engine` — the graph render the RT callback runs. It renders the native
+- `Engine` — the graph render the RT callback runs. It renders the
   graph (`tutti-graph`'s `Executor`, whose `Editor` the control thread keeps),
   and only that since design doc 013's Phase 3 PR 15.
 - `Transport` — playback control, split into `settings` (anyone may store into)
@@ -23,7 +23,7 @@ already depends on.
 - `latency` — delay compensation: explicit, opt-in, over any graph.
 - `topology` — `compile(&Valid, &dyn Catalog, rate) -> Compiled`, turning
   `tutti_types::graph::Topology` (the graph as a *value*) into fundsp's `Net`.
-  Only tests call it; the native graph compiles the same value itself, and
+  Only tests call it; `tutti-graph` compiles the same value itself, and
   this seam goes with `Net` (doc 013, Phase 5).
 - `dsp::Net` — **fundsp's** graph container, re-exported, which the nodes'
   own tests still wire units in. `Engine` does not render it.
@@ -130,7 +130,7 @@ tutti-core is a std crate whose DSP graph runtime is Bevy-agnostic. The optional
 derive on `AudioNode`, so an entity can *be* a node in the graph. Everything
 that reconciles against it — the set hierarchy, the graph resources, the param
 components, the declarative wiring — lives in `bevy_tutti::graph`. A non-Bevy
-host edits the native graph through `tutti_graph::Editor` (or builds one with
+host edits the graph through `tutti_graph::Editor` (or builds one with
 `GraphBuilder`) directly.
 
 ## Features

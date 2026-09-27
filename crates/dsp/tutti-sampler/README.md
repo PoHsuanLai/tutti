@@ -46,7 +46,7 @@ in one tier's setter is a bound the other tier silently ignores.
 A voice placed on the transport derives its read position from the playhead
 every frame rather than carrying a cursor, matching `tutti-core`'s transport:
 one clock advances, everything else reads. The playhead reaches a node through
-its block's `Env` (the sampler's nodes are native `tutti_graph` nodes), so a
+its block's `Env` (the sampler's nodes are `tutti_graph` nodes), so a
 clip enters, exits, wraps and follows a seek on its frame, wherever that falls
 in a block.
 

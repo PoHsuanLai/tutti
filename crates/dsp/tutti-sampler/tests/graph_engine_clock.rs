@@ -236,7 +236,7 @@ fn a_voice_plays_in_time_at_2048_frame_blocks() {
 /// other's render as a jump. Under the `AudioUnit` era two such clones
 /// shared one `BeatCursor` on a shared timeline, and only a chunk-major
 /// render kept them from seeing a rewind every block; this pins that the
-/// native nodes share nothing to get wrong.
+/// graph nodes share nothing to get wrong.
 ///
 /// Dry, not pitched: a stretch filter's fill-up would only delay the tone.
 #[test]

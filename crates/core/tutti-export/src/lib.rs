@@ -166,7 +166,7 @@ pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) ->
 /// ([`RenderClock::render_graph`]) — pass
 /// [`FrozenClock`] for a graph with no time-dependent nodes.
 ///
-/// `graph` is a native graph, built for the render or forked from a live one
+/// `graph` is a graph, built for the render or forked from a live one
 /// ([`RenderGraph`]).
 pub fn render_to_file(
     mut graph: RenderGraph,

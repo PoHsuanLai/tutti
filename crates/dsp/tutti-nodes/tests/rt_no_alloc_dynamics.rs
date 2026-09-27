@@ -2,7 +2,7 @@
 //!
 //! Covers the four `tutti-nodes` dynamics nodes: `CompressorNode` (mono +
 //! stereo), `GateNode` (mono + stereo), `LimiterNode` (lookahead), and
-//! `BrickwallLimiterNode` (zero-latency clipper). Each runs natively, alone
+//! `BrickwallLimiterNode` (zero-latency clipper). Each runs alone
 //! in a graph through `tutti_graph::contract::BlockRig`, so the gate walks
 //! the executor's block path as well as the node's.
 //!

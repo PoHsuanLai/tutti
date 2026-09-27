@@ -19,7 +19,7 @@
 //! prepares it at the render's rate, and the node's `prepare` swaps in
 //! [`SoundFontUnit::with_sample_rate`], keeping the preset. (Under `Legacy`
 //! this took a `RateFollowing` wrapper whose `set_sample_rate` re-rated; a
-//! native node's `prepare` runs on the control thread, where rebuilding is
+//! graph node's `prepare` runs on the control thread, where rebuilding is
 //! allowed, so the node does it itself.)
 //!
 //! What the fork does **not** carry: sounding voices, and channel state the

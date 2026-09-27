@@ -24,12 +24,12 @@
 //! # The fixture has to render
 //!
 //! A graph with nothing wired renders silence without running a node — an
-//! allocation gate around that proves nothing. The graph below (the native
-//! graph, the only one `Engine` renders since doc 013 Phase 3 PR 15) is a
-//! sine through a filter into both device channels, so the render path runs
-//! real nodes, hands buffers between them, and folds to the device width.
-//! `renders_something_to_gate` asserts that, so the gates cannot pass by
-//! rendering nothing.
+//! allocation gate around that proves nothing. The graph below
+//! (`tutti_graph`'s, the only one `Engine` renders since doc 013 Phase 3
+//! PR 15) is a sine through a filter into both device channels, so the render
+//! path runs real nodes, hands buffers between them, and folds to the device
+//! width. `renders_something_to_gate` asserts that, so the gates cannot pass
+//! by rendering nothing.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::graph::{Edge, InPort, OutPort, Source};

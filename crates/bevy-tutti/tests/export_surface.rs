@@ -31,8 +31,8 @@ use tutti_export::{
 use tutti_nodes::testing::{Const, Sink};
 use tutti_types::graph::{OutPort, Source};
 
-/// A tiny CPAL-free graph with one node piped to the output bus, so a copy
-/// of it (a `Net` clone, a native fork) has something to render.
+/// A tiny CPAL-free graph with one node piped to the output bus, so a fork
+/// of it has something to render.
 fn graph_with_one_node_on() -> (AudioGraphRes, tutti_core::AudioNode) {
     let mut graph = AudioGraphRes::headless(0, 2);
     let (node, _) = graph.insert(Const::mono(0.5));

@@ -9,7 +9,7 @@
 //! each case builds the mix twice from the same sources, once with
 //! `build_vbap_mix` and once from the parts through this file's own
 //! [`insert`], and asserts the renders are **bit-identical**. (The first side
-//! was a `Net` until the LFE low-pass became a native node, which a `Net`
+//! was a `Net` until the LFE low-pass became a `tutti_graph::Node`, which a `Net`
 //! cannot hold.)
 //!
 //! Exact equality is portable: both sides run the same unit code on the same

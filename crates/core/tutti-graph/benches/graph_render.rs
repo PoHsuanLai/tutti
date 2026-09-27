@@ -4,18 +4,18 @@
 //!
 //! - **`net`** — fundsp's `Net`, running `AudioUnit`s: a `sine_hz` source, a
 //!   chain or fan of `lowpass_hz` filters, and (for the fan) one summing unit.
-//! - **`native`** — the plan executor running nodes written directly against
+//! - **`graph`** — the plan executor running nodes written directly against
 //!   `Io`, with the same arithmetic as the fundsp units (the SVF's `tick`, the
 //!   sum's loop). The one difference is the source: fundsp evaluates the sine
-//!   with `wide`'s SIMD `sin`, the native node with `f32::sin`. A shape has one
+//!   with `wide`'s SIMD `sin`, the graph's node with `f32::sin`. A shape has one
 //!   source, so that shifts every row of a group by about the same constant.
 //!
 //! `overhead/<n>` isolates the runtime's **fixed per-node cost**: a chain of
-//! `n` nodes that do no work (a `Net` unit whose `process` is empty; a native
+//! `n` nodes that do no work (a `Net` unit whose `process` is empty; a graph
 //! node that returns `Status::Modified` on its in-place channel). The
 //! per-node figure is the
 //! slope between `n = 1` and `n = 128`. `overhead_form/<form>` does the same
-//! for each of the executor's borrow forms (native nodes only): the
+//! for each of the executor's borrow forms (graph nodes only): the
 //! one-channel and stereo direct forms, the audio walk and the general walk.
 //!
 //! The shapes mirror `tutti-nodes/benches/engine_render.rs`: `nodes/<depth>`
@@ -53,7 +53,7 @@ const MAX_BLOCK: usize = 1024;
 // ---- `Net` units (`net` runs these) -----------------------------------------
 
 /// Sums every input onto one output — the fan's merge, as a plain unit
-/// (`NativeSum` is the same loop).
+/// (`Sum` is the same loop).
 #[derive(Clone)]
 struct SumUnit(usize);
 
@@ -138,16 +138,16 @@ fn cutoff(i: usize) -> f32 {
     500.0 + (i as f32) * 7.0
 }
 
-// ---- native nodes (`native` runs these) -------------------------------------
+// ---- graph nodes (`graph` runs these) ---------------------------------------
 
 /// `sine_hz(hz)`: phase accumulator, `sin(phase · τ)`.
-struct NativeSine {
+struct Sine {
     hz: f32,
     phase: f32,
     dt: f32,
 }
 
-impl Node for NativeSine {
+impl Node for Sine {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
@@ -171,7 +171,7 @@ impl Node for NativeSine {
 
 /// `lowpass_hz(cutoff, q)`: fundsp's `FixedSvf<f32, LowpassMode>` — the same
 /// coefficients and the same `tick`, one sample at a time.
-struct NativeLowpass {
+struct Lowpass {
     cutoff: f32,
     q: f32,
     a1: f32,
@@ -184,7 +184,7 @@ struct NativeLowpass {
     ic2eq: f32,
 }
 
-impl NativeLowpass {
+impl Lowpass {
     fn new(cutoff: f32, q: f32) -> Self {
         let mut f = Self {
             cutoff,
@@ -211,7 +211,7 @@ impl NativeLowpass {
     }
 }
 
-impl Node for NativeLowpass {
+impl Node for Lowpass {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
             .with_tail(Tail::Unknown)
@@ -242,9 +242,9 @@ impl Node for NativeLowpass {
 }
 
 /// `SumUnit`'s loop, against `Io`.
-struct NativeSum(usize);
+struct Sum(usize);
 
-impl Node for NativeSum {
+impl Node for Sum {
     fn shape(&self) -> Shape {
         Shape::audio(
             ChannelLayout::from_count(self.0 as u16),
@@ -268,9 +268,9 @@ impl Node for NativeSum {
 
 /// No work: its one channel is in place, so its output already holds its
 /// input.
-struct NativeNop;
+struct Nop;
 
-impl Node for NativeNop {
+impl Node for Nop {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_in_place()
     }
@@ -339,13 +339,13 @@ fn executor_for(shape: &Topo) -> Executor {
     let prepare = Prepare::new(SampleRate(SR), Samples(MAX_BLOCK));
     let (mut ed, mut exec) = Editor::new(prepare);
     let sine = || -> Box<dyn Node> {
-        Box::new(NativeSine {
+        Box::new(Sine {
             hz: 440.0,
             phase: 0.0,
             dt: 0.0,
         })
     };
-    let lowpass = |i: usize| -> Box<dyn Node> { Box::new(NativeLowpass::new(cutoff(i), 0.7)) };
+    let lowpass = |i: usize| -> Box<dyn Node> { Box::new(Lowpass::new(cutoff(i), 0.7)) };
     let wire = |ed: &mut Editor, sink: NodeKey, port: u16, from: Source| {
         ed.spec_mut()
             .topology
@@ -370,7 +370,7 @@ fn executor_for(shape: &Topo) -> Executor {
             let src = NodeKey(0);
             ed.insert(src, "sine", Unforkable(sine()));
             let sum = NodeKey(u64::MAX);
-            let s: Box<dyn Node> = Box::new(NativeSum(width));
+            let s: Box<dyn Node> = Box::new(Sum(width));
             ed.insert(sum, "sum", Unforkable(s));
             for i in 0..width {
                 let k = NodeKey(1 + i as u64);
@@ -386,7 +386,7 @@ fn executor_for(shape: &Topo) -> Executor {
             let mut last = NodeKey(0);
             for i in 0..n {
                 let k = NodeKey(i as u64);
-                let nop: Box<dyn Node> = Box::new(NativeNop);
+                let nop: Box<dyn Node> = Box::new(Nop);
                 ed.insert(k, "nop", Unforkable(nop));
                 wire(&mut ed, k, 0, from);
                 from = node(k);
@@ -440,7 +440,7 @@ fn compare(c: &mut Criterion, group: &str, cases: &[(String, Topo, usize)]) {
         let graph_in = vec![0.25f32; MAX_BLOCK];
         let mut out = vec![0.0f32; MAX_BLOCK];
         let mut exec = executor_for(shape);
-        g.bench_with_input(BenchmarkId::new("native", label), &frames, |b, _| {
+        g.bench_with_input(BenchmarkId::new("graph", label), &frames, |b, _| {
             b.iter(|| render_graph(&mut exec, frames, &graph_in, black_box(&mut out)));
         });
     }
@@ -493,7 +493,7 @@ fn bench_overhead(c: &mut Criterion) {
     compare(c, "overhead", &cases);
 }
 
-// ---- per-form overhead (native only) ----------------------------------------
+// ---- per-form overhead (graph only) -----------------------------------------
 
 /// A do-nothing node of a chosen shape, to time each of the executor's
 /// borrow forms: `in_place` aliases every channel (otherwise the node writes
@@ -559,7 +559,7 @@ fn form_executor(n: usize, nop: impl Fn() -> FormNop) -> Executor {
 
 /// The fixed per-node cost of each borrow form, at 64 frames: the slope
 /// between 1 and 128 nodes, as in `overhead`. `in-place` is the `overhead`
-/// group's native row; `split` is one channel in two slots; `stereo` and
+/// group's graph row; `split` is one channel in two slots; `stereo` and
 /// `stereo-split` are two channels in place and in two slots each (the
 /// stereo direct form); `audio` is three in-place channels (the presorted
 /// borrow walk); `general` is one in-place channel plus an unconnected event

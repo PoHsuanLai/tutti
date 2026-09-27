@@ -1,4 +1,4 @@
-//! RT-safety regression: a bound out-of-process plugin, run by the native
+//! RT-safety regression: a bound out-of-process plugin, run by the
 //! graph's executor, does not allocate on the audio thread in steady state —
 //! the FIFO and ring, the transport snapshot from `Env` (with a meter
 //! installed), the per-chunk payload (MIDI from the live inbox, parameter

@@ -1,6 +1,6 @@
 //! The per-buffer graph render, called from the audio callback.
 //!
-//! [`Engine`] ticks the native graph's
+//! [`Engine`] ticks the graph's
 //! [`Executor`](tutti_graph::Executor) and the transport, and renders one
 //! output buffer per block (doc 013; fundsp's `Net` rendered here too until
 //! Phase 3 PR 15). It folds the graph's outputs to the device width, keeps
@@ -129,10 +129,10 @@ impl core::fmt::Display for GraphEngineError {
 
 impl std::error::Error for GraphEngineError {}
 
-/// The transport as a native graph block sees it.
+/// The transport as a graph block sees it.
 type GraphTransport = tutti_graph::Transport;
 
-/// The audio engine: ticks the native graph + transport and renders one
+/// The audio engine: ticks the graph + transport and renders one
 /// output buffer per block from the audio callback.
 ///
 /// # What it owns, and what it deliberately does not
@@ -168,7 +168,7 @@ pub struct Engine {
     capacity: Samples,
 }
 
-/// The native graph's executor, the clock that feeds its `Env`, and the
+/// The graph's executor, the clock that feeds its `Env`, and the
 /// planar scratch its outputs land in before the fold.
 struct GraphRender {
     exec: Executor,
@@ -184,7 +184,7 @@ struct GraphRender {
 }
 
 impl Engine {
-    /// Build an engine that renders a native graph: `executor`, the audio
+    /// Build an engine that renders a graph: `executor`, the audio
     /// half of `editor`'s pair, whose `Prepare` comes from the device
     /// configuration (its rate, and the largest block the device hands
     /// over). The block capacity is the larger of that maximum and

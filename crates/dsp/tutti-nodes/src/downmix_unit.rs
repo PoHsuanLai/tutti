@@ -45,7 +45,7 @@ use tutti_types::fold_frame;
 /// shape's input is the source width, its output the target. Changing either
 /// is a re-insert, not a mutation — a shape change is a recompile.
 ///
-/// A native node with no controls: inserted, its controls are `()` and a
+/// A graph node with no controls: inserted, its controls are `()` and a
 /// fork of it is a clone (it shares nothing).
 #[derive(Clone, Debug)]
 pub struct DownmixNode {

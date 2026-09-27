@@ -1,6 +1,6 @@
 //! Polyphonic subtractive and wavetable synthesis for the Tutti audio engine.
 //!
-//! One type does the work: [`PolySynth`], a native graph node
+//! One type does the work: [`PolySynth`], a graph node
 //! (`tutti_graph::Node`) built from a [`SynthConfig`] and driven by MIDI. It
 //! takes no audio input — notes arrive on its event input, on their frames —
 //! and renders stereo. Its live params (master volume, unison detune and
@@ -53,7 +53,7 @@ pub use synth::{
 
 mod polysynth;
 // `PolySynth::fork_instance`: the synth in a fork of the
-// native graph (an export), with its clip.
+// graph (an export), with its clip.
 mod fork;
 pub use polysynth::PolySynth;
 

@@ -5,7 +5,8 @@
 //!
 //! Behind the `contract` feature (off by default): it is test support, for
 //! this crate's suite and for node crates adding rows (Phase 4 ports each
-//! node natively and adds its row here). Enable it from a dev-dependency.
+//! node to [`Node`] and adds its row here). Enable it from a
+//! dev-dependency.
 //!
 //! # A row
 //!
@@ -68,7 +69,7 @@
 //!
 //! # The fork's snapshot
 //!
-//! [`NativeIsolateRow`] checks the other promise a node crate makes here:
+//! [`IsolateRow`] checks the other promise a node crate makes here:
 //! that a [`ParamNode`]'s fork, `fork_fresh`, severs every live control it
 //! reads (every cell a control writes, addressed by its `ParamSet` or not),
 //! so a fork renders the controls as they were at fork time. See
@@ -93,7 +94,7 @@ use crate::param::{ParamFrom, ParamIn, ParamInput, ParamShaping};
 use crate::spec::EventIn;
 
 mod snapshot;
-pub use snapshot::{NativeIsolateRow, SNAPSHOT_FRAMES};
+pub use snapshot::{IsolateRow, SNAPSHOT_FRAMES};
 
 /// The rate every contract graph runs at.
 pub const SAMPLE_RATE: SampleRate = SampleRate(48_000.0);
@@ -193,7 +194,7 @@ pub enum Path {
     /// input. Whole [`MAX_BLOCK`] blocks.
     ///
     /// Mutation (run): in `SubBlocks::next`, hand the whole block over as
-    /// one chunk carrying every event → the native `Sample` rows apply their
+    /// one chunk carrying every event → the `Sample` rows apply their
     /// event at offset 0 → every path fails but `Blocks1` (where every
     /// offset is 0).
     Direct,
@@ -1116,7 +1117,7 @@ impl Node for ParamEcho {
 ///
 /// Written against [`Io::sub_blocks`](crate::Io::sub_blocks), so at
 /// [`Resolution::Sample`] (the default) it is sample-accurate by
-/// construction: this is the native row, and the source the engine-level
+/// construction: this is the graph-level row, and the source the engine-level
 /// rows play. [`with_resolution`](Self::with_resolution) makes it as coarse
 /// as it declares:
 ///
@@ -1218,8 +1219,8 @@ impl Node for Pulse {
     }
 }
 
-/// A native audio delay that declares its delay as processing latency — a
-/// lookahead with nothing to look ahead for. The native audio-impulse row.
+/// An audio delay that declares its delay as processing latency — a
+/// lookahead with nothing to look ahead for. The graph-level audio-impulse row.
 #[derive(Clone, Debug)]
 pub struct Lookahead {
     latency: Latency,

@@ -63,7 +63,7 @@ use crate::SpatialTarget;
 /// block sit slightly below unit energy (by `1 - cos(Δ/2)` for a gain vector
 /// turning through `Δ` in one block; a 64-frame block at the 50 ms de-zipper
 /// keeps `Δ` to a few degrees, a dip of well under 0.1 dB). A held source is
-/// exact everywhere. A native-graph block larger than 64 frames widens `Δ`
+/// exact everywhere. A graph block larger than 64 frames widens `Δ`
 /// and so deepens the dip: whoever grows the block must revisit this — ramp
 /// in sub-blocks, or renormalise the ramped vector.
 ///
@@ -473,7 +473,7 @@ fn render_channel(
     }
 }
 
-/// A native node: stereo in, the layout's width out, no latency.
+/// A graph node: stereo in, the layout's width out, no latency.
 ///
 /// # Reset clears time, not placement
 ///

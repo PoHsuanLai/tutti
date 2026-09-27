@@ -1,7 +1,7 @@
 //! [`ParamModShaping`]: how one audio-rate modulation edge turns a raw
 //! `[-1, 1]` modulator into an offset on a param.
 //!
-//! The edge itself is the native graph's (design doc 013 item 6): a
+//! The edge itself is the graph's (design doc 013 item 6): a
 //! `GraphSpec::connect_param` from the modulator's output to the node's
 //! declared param, which the compiler fuses with the node's own control (the
 //! base) and every other source into one step of the node's op —

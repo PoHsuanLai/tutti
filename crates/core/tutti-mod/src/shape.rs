@@ -1,8 +1,8 @@
 //! Value vocabulary + the pure shaping / folding math.
 //!
 //! [`Polarity`] and [`LfoShape`] are the small enums a modulator needs;
-//! [`curve_apply`], [`shape`], and [`fold`] are the pure functions the native
-//! LUT bake and the control-rate path share — ONE copy each.
+//! [`curve_apply`], [`shape`], and [`fold`] are the pure functions the audio-rate
+//! node's LUT bake and the control-rate path share — ONE copy each.
 
 pub use audio_automation::CurveType;
 

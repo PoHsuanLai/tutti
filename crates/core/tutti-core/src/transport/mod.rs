@@ -54,7 +54,7 @@ pub use tutti_types::{OfflineClock, OfflineTransport, Timeline};
 /// advances by exactly that much.
 ///
 /// A renderer driving a `Net` needs nothing else: its clock nodes are inside
-/// the net, so it only ever advances this. A renderer driving the native graph
+/// the net, so it only ever advances this. A renderer driving the graph
 /// (`tutti_graph::Executor`) must also *hand* each block a transport, since
 /// the graph's clock is the executor's `Env`, not a node — that is
 /// [`graph_block`](Self::graph_block), and [`render_graph`](Self::render_graph)
@@ -75,7 +75,7 @@ pub trait RenderClock: Send + Sync {
     /// Call after the block has been processed, never before.
     fn advance(&self, frames: tutti_types::Samples);
 
-    /// The block about to be rendered as the native graph takes it: the
+    /// The block about to be rendered as the graph takes it: the
     /// transport at the block's first frame, and the changes inside it. Read
     /// **before** the block is processed, as [`render_graph`](Self::render_graph)
     /// does.

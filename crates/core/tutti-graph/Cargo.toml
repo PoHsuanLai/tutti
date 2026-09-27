@@ -2,7 +2,7 @@
 name = "tutti-graph"
 version = "0.0.1"
 edition = "2021"
-description = "The native audio graph for the Tutti engine — a pure Topology→Plan compiler, a serial plan executor and the reference interpreter it is checked against"
+description = "The audio graph for the Tutti engine — a pure Topology→Plan compiler, a serial plan executor and the reference interpreter it is checked against"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "real-time", "dsp"]

@@ -58,8 +58,8 @@ mod mod_audio_rate_reconcile {
         // was built with, so there is no port to be born with any more.
         let dist = DistortionNode::new(ShapeKind::Tanh, 5.0);
         // Its controls, captured from the node before it moves — the same
-        // step every insertion path in `bevy_tutti::graph` runs; a native
-        // node's are its `ParamSet`, addressed on the node so `write_param`
+        // step every insertion path in `bevy_tutti::graph` runs; a
+        // `ParamNode`'s are its `ParamSet`, addressed on the node so `write_param`
         // reaches it (what `spawn_audio_node` does).
         let controls = GraphNode::captured(&dist);
         let drive = DriveCell(dist.drive());

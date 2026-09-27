@@ -17,7 +17,7 @@
 //!
 //! The engine's tests, examples and simple hosts were written against
 //! fundsp's `Net` (`push`, `connect`, `pipe_output`, …). Doc 013's Phase 3
-//! moves them to the native graph (PR 8 for `tutti-export`), and that port
+//! moves them to this graph (PR 8 for `tutti-export`), and that port
 //! should be mechanical: same call, same meaning, including `Net`'s
 //! fan-out rules, which are quoted on each method below. Writing a
 //! [`GraphSpec`] by hand instead is several `BTreeMap` inserts per edge.

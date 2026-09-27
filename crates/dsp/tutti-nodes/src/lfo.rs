@@ -1,4 +1,4 @@
-//! The native audio-rate modulation adapter.
+//! The audio-rate modulation adapter.
 //!
 //! [`ModulatorNode<M>`] is the graph adapter over a pure
 //! [`tutti_mod::Modulator`]: it owns everything *audio* — the
@@ -78,7 +78,7 @@ impl core::fmt::Display for LfoMode {
     }
 }
 
-/// The native audio-rate modulation node: a graph node (`tutti_graph::Node`,
+/// The audio-rate modulation node: a graph node (`tutti_graph::Node`,
 /// no inputs, one output) that computes a phase — free-running, or from the
 /// transport beat of its block's `Env` — and drives a pure [`Modulator`] `M`.
 ///
@@ -90,7 +90,7 @@ impl core::fmt::Display for LfoMode {
 ///
 /// # In a graph
 ///
-/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over the depth ([`UnitParam::Depth`]) and, free-running, the rate
 /// ([`UnitParam::Rate`], in [`Hz`]); a beat-synced node's rate cell holds a
 /// span in beats, which is not a `Rate`, so it has no address there (set it
@@ -107,8 +107,8 @@ pub struct ModulatorNode<M: Modulator> {
     modulator: M,
     /// The modulator's threaded state — the node owns it (it has exclusive
     /// access during `process`), threading it through `Modulator::value` each
-    /// sample. This is where a stateful modulator's state lives on the native
-    /// path: in the node, not in the (stateless, `Sync`) modulator.
+    /// sample. This is where a stateful modulator's state lives: in the node,
+    /// not in the (stateless, `Sync`) modulator.
     mod_state: M::State,
     mode: LfoMode,
     /// `FreeRunning`: oscillator frequency in Hz. `BeatSynced`: beats per

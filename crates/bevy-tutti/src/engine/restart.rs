@@ -484,7 +484,7 @@ mod tests {
     /// host gets the graph's reason. The capacity is the engine's
     /// (`DEFAULT_BLOCK_CAPACITY`, 8 192 frames).
     ///
-    /// Mutation (run): `NativeGraph::check_reprepare` not checking the
+    /// Mutation (run): `GraphRuntime::check_reprepare` not checking the
     /// block → the stream stops first and the refusal comes from the
     /// re-prepare in the hook, with the device stopped → fails.
     #[test]
@@ -537,8 +537,8 @@ mod tests {
     /// floor) — so a host routing to the surround channels finds them there
     /// rather than zero-filled by the fold — `AudioConfig` publishes the
     /// device's six, and the audio side renders six: the compensation
-    /// table, which the committed graph's figures fill (on `Native` the
-    /// re-prepare's resumed plan's), has an entry per root channel. Then
+    /// table, which the committed graph's figures fill (the re-prepare's
+    /// resumed plan's), has an entry per root channel. Then
     /// back onto a stereo device: the root keeps its six and the engine
     /// folds, while `AudioConfig` says two.
     ///
@@ -835,7 +835,7 @@ mod tests {
     /// Until PR 13's review this crossfade waited in `PendingCrossfades`
     /// (#32), because the re-prepare's second half only landed on a later
     /// frame; the waiting itself is still pinned, on a graph re-prepared
-    /// while it runs, by `graph::native`'s
+    /// while it runs, by `graph::runtime`'s
     /// `a_crossfade_during_a_re_prepare_lands_after_it`.
     ///
     /// Mutation (run): `rerate` not settling the engine and collecting

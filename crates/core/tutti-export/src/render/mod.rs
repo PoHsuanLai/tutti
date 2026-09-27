@@ -1,7 +1,7 @@
 //! The render stage: a graph, pulled one block at a time.
 //!
 //! - [`plan::RenderPlan`] — frame counts, derived once.
-//! - [`driver::GraphSource`] — a native graph as a [`driver::FrameSource`],
+//! - [`driver::GraphSource`] — a graph as a [`driver::FrameSource`],
 //!   built by [`driver::with_source`].
 //! - [`driver::Frames`] — interleaved samples that know their own width.
 //! - [`driver::drive`] — the pull loop, applying the [`sink::BlockCursor`] gate.

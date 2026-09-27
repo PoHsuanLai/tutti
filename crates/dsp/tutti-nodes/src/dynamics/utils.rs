@@ -10,7 +10,7 @@ use tutti_graph::{Inputs, Outputs};
 /// Max-abs sidechain detector level for sample `i` of a block.
 ///
 /// `input.get(0..ch)` are audio channels, `input.get(ch..2*ch)` sidechain
-/// channels. A native node declares all `2 * ch` inputs, and the graph feeds
+/// channels. A graph node declares all `2 * ch` inputs, and the graph feeds
 /// an unconnected one silence, so every sidechain channel is there to read.
 #[inline]
 pub(crate) fn sidechain_level(input: &Inputs<'_>, ch: usize, i: usize) -> f32 {

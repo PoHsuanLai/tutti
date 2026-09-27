@@ -431,13 +431,13 @@ fn chain_extends_the_series_as_net_does() {
     }
 }
 
-/// `chain` takes native nodes too, and `add_with_controls` hands back what
+/// `chain` takes an `IntoNode` with controls too, and `add_with_controls` hands back what
 /// `IntoNode` returns.
 ///
 /// Mutation: skip `pipe_input` for the first node in `link` → the chain
 /// reads silence → 0 instead of 6 → fails.
 #[test]
-fn chain_and_add_take_native_nodes() {
+fn chain_and_add_take_nodes() {
     struct Tagged;
     impl tutti_graph::IntoNode for Tagged {
         type Controls = u32;

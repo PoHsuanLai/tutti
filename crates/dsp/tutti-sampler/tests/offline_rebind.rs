@@ -4,7 +4,7 @@
 //! transport-aware unit re-pointed its clock at the render's timeline), and
 //! these guards pinned that every such node — `VoicePool`, `VoiceNode`, a bare
 //! `MemorySource`, one nested in a sub-net — was reached. The sampler's nodes
-//! are native now (doc 013 items 8 and 9): each reads the transport from its
+//! are graph nodes now (doc 013 items 8 and 9): each reads the transport from its
 //! block's `Env`, so a fork (`Editor::fork`, the export's) has nothing to
 //! rebind — it plays on whatever transport its own renderer hands it. What is
 //! left to pin is the outcome, for every node shape: a fork rendered on a
@@ -253,7 +253,7 @@ impl Node for Pass {
 ///
 /// Mutation (run): `place` ignoring `run.rolling()` → the fork sounds on the
 /// stopped transport → fails. (The `Net`-era mutation — the fork keeping the
-/// live clock — has no counterpart: a native node holds no clock to keep.)
+/// live clock — has no counterpart: a graph node holds no clock to keep.)
 #[test]
 fn a_voice_behind_another_node_is_forked_too() {
     let (mut ed, mut exec) = Editor::new(prepare());

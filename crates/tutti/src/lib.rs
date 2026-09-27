@@ -88,7 +88,7 @@ pub mod dsp {
     pub use tutti_core::dsp::{Net, NodeId, Source};
 }
 
-/// The native graph (design doc 013): `GraphBuilder`, `Editor`, `Executor`,
+/// The audio graph (design doc 013): `GraphBuilder`, `Editor`, `Executor`,
 /// `Fork`. What `export` renders and what `Engine::new` runs; the
 /// successor to `dsp::Net`.
 pub use tutti_graph as graph;

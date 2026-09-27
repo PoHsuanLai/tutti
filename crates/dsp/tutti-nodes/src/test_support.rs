@@ -30,21 +30,21 @@ pub(crate) struct ChangeRun<N> {
     pub h: Vec<Vec<f32>>,
 }
 
-/// The rate the native helpers below prepare and drive nodes at.
+/// The rate the node helpers below prepare and drive nodes at.
 pub(crate) const RATE: SampleRate = SampleRate(48_000.0);
 
-/// A native node prepared at [`RATE`] for blocks of up to 1024 frames.
+/// A node prepared at [`RATE`] for blocks of up to 1024 frames.
 pub(crate) fn prepared<N: Node>(node: N) -> N {
     tutti_graph::contract::prepared(node, RATE, 1024)
 }
 
-/// One `process` call of a native node over `inputs` (one slice per input
+/// One `process` call of a node over `inputs` (one slice per input
 /// port), its params at their bases.
 pub(crate) fn drive_block(node: &mut dyn Node, inputs: &[&[f32]]) -> Vec<Vec<f32>> {
     drive(node, RATE, inputs, &[])
 }
 
-/// A native node over `inputs`, one frame per call: a change lands whole on
+/// A node over `inputs`, one frame per call: a change lands whole on
 /// the first frame, as `tick` landed it.
 pub(crate) fn drive_frames(node: &mut dyn Node, inputs: &[&[f32]]) -> Vec<Vec<f32>> {
     let n = inputs[0].len();
@@ -60,7 +60,7 @@ pub(crate) fn drive_frames(node: &mut dyn Node, inputs: &[&[f32]]) -> Vec<Vec<f3
     out
 }
 
-/// [`change_between_blocks`] for a native node: `make` builds it unprepared,
+/// [`change_between_blocks`] for a graph node: `make` builds it unprepared,
 /// and each copy is [`prepared`]. `jumped` renders `block2` one frame per
 /// call ([`drive_frames`]).
 pub(crate) fn change_between_node_blocks<N: Node>(
@@ -113,13 +113,13 @@ impl<N> ChangeRun<N> {
 /// The rate the per-frame unit tests ran their nodes at before the port.
 pub(crate) const RATE_44K: SampleRate = SampleRate(44_100.0);
 
-/// A native node prepared at `rate` for blocks of up to 1024 frames: what
+/// A node prepared at `rate` for blocks of up to 1024 frames: what
 /// `set_sample_rate(rate)` did for an `AudioUnit`.
 pub(crate) fn prepared_at<N: Node>(node: N, rate: SampleRate) -> N {
     tutti_graph::contract::prepared(node, rate, 1024)
 }
 
-/// One frame of a native node — a block of one, what `tick` was: `input`
+/// One frame of a node — a block of one, what `tick` was: `input`
 /// holds one sample per audio input, and `out` receives one per output.
 pub(crate) fn tick(node: &mut dyn Node, input: &[f32], out: &mut [f32]) {
     tick_fed(node, input, &[], out);

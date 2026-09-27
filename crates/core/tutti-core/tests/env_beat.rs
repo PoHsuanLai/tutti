@@ -1,4 +1,4 @@
-//! The beat signal on the native graph (doc 013 Phase 3, PR 6).
+//! The beat signal on the graph (doc 013 Phase 3, PR 6).
 //!
 //! What is pinned here:
 //!
@@ -299,14 +299,14 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
         .collect()
 }
 
-/// `ClickNode`, native, clicks on the frame the beat model reaches each new
+/// `ClickNode` clicks on the frame the beat model reaches each new
 /// beat on: across a tempo step, a seek and loop wraps, landing inside
 /// blocks. It reads the beat of each frame from its block's `Env`, so it
 /// needs no clock wired to it.
 ///
 /// The transport rolls throughout. (A start or a stop inside a block gates
-/// the click on its frame, since the native port; `ClickNode`'s own tests
-/// pin that.)
+/// the click on its frame, since its port to `tutti_graph::Node`; `ClickNode`'s
+/// own tests pin that.)
 ///
 /// Until doc 013 PR 15 the oracle was the same click behind a `TransportClock`
 /// in a `Net` engine: the same onset frames and the same samples. The onsets

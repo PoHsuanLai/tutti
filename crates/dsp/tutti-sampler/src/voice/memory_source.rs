@@ -231,7 +231,7 @@ impl Default for MemorySourceConfig {
 ///
 /// # As a graph node
 ///
-/// A native [`Node`]: no inputs, [`channels`](Self::channels) outputs. It is
+/// A graph [`Node`]: no inputs, [`channels`](Self::channels) outputs. It is
 /// a [`ParamNode`] whose one param is its gain ([`UnitParam::Volume`]), so it
 /// goes in through [`param_parts`]: its controls are that [`ParamSet`], and a
 /// fork of it ([`fork_fresh`](ParamNode::fork_fresh)) shares nothing — its own
@@ -1328,7 +1328,7 @@ mod tests {
     // A node is handed blocks of any length, so N one-frame blocks — the
     // transport moved a frame between each, as a host moves it — must equal
     // one N-frame block sample for sample. (The `AudioUnit` era asked this of
-    // `tick` against `process`; the native node has one entry point, and
+    // `tick` against `process`; the graph node has one entry point, and
     // the question is now its block length.)
     //
     // KNOWN LIMIT: these are CONSISTENCY checks, not correctness ones. Both
@@ -2558,7 +2558,7 @@ mod tests {
     }
 
     /// **A fork of the node shares nothing with it, and starts from the gain
-    /// last set** — the native graph's fork check (`assert_param_fork`,
+    /// last set** — the graph's fork check (`assert_param_fork`,
     /// which replaced the `IsolateRow` row): gain is this node's one cell.
     ///
     /// Mutation (run): `fork_fresh` without `detach_gain` → "a live write

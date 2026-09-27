@@ -360,8 +360,8 @@ fn event_at_last_frame_of_block_still_applies() {
 /// synthesizer, see `the_node_follows_its_graphs_rate`), so the property at
 /// the same rate is *continuity*: rendering, re-preparing, then rendering on
 /// must equal rendering straight through. This pins that no stale-cursor bug
-/// took the place of the unit's old buffer-position state. (Until the native
-/// port it pinned `AudioUnit::set_sample_rate`, a no-op.)
+/// took the place of the unit's old buffer-position state. (Until the port to
+/// `tutti_graph::Node` it pinned `AudioUnit::set_sample_rate`, a no-op.)
 ///
 /// Mutation (run): `prepare` rebuilding the synthesizer whatever the rate
 /// (drop the rate comparison) → the second half starts from fresh channel

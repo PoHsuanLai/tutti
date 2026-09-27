@@ -11,10 +11,10 @@
 //!
 //! Under `Net` the door was `Net::set(Setting)` → `VoiceNode::set`, which
 //! wrote `slot.voice.play.gain` (a plain `Copy` field) on the copy the backend
-//! rendered; under the native graph's first cut it was `Legacy::controlled`'s
+//! rendered; under the graph's first cut it was `Legacy::controlled`'s
 //! settings ring into the same `set`, with a shadow copy for forks
 //! (`voice_gain_through_legacy_settings.rs`). Both went with `AudioUnit` (doc
-//! 013 items 8 and 9): a `VoiceNode` is a native node whose `IntoNode` hands
+//! 013 items 8 and 9): a `VoiceNode` is a graph node whose `IntoNode` hands
 //! back a `VoiceNodeHandle` — its gain a `Param<Amplitude>` cell, addressable
 //! as `UnitParam::Volume` through the handle's `ParamSet` — and the node reads
 //! the cell once per block into its `Playback` record and its source. A fork

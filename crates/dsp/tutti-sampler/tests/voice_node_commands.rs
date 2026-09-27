@@ -16,7 +16,7 @@
 //!
 //! All are silent, and all are the reason the channel is more than a field.
 //!
-//! 1. **The node the graph renders must hold the receiver.** The native graph
+//! 1. **The node the graph renders must hold the receiver.** The graph
 //!    renders the unit it was given, across commits and re-prepares (units
 //!    move, they are not cloned), so the receiver is the node's own.
 //!    [`a_command_reaches_a_node_across_a_commit`] fails if the rendering unit
@@ -146,7 +146,7 @@ fn a_queued_placement_moves_a_live_voice() {
 
 /// **A command reaches a node across a commit and a re-prepare.**
 ///
-/// The native graph renders the unit it was given: a commit that adds a node
+/// The graph renders the unit it was given: a commit that adds a node
 /// leaves it in place, and a re-prepare (a rate change) checks the unit out,
 /// prepares it and sends it back — moved, never cloned. So the receiver is
 /// the node's own, and what this pins is that the node inserted through its
@@ -158,7 +158,7 @@ fn a_queued_placement_moves_a_live_voice() {
 /// the node is boxed (the handle's sender paired with a receiver the node
 /// never holds) → fails. (The `AudioUnit` era's `Legacy` mutation — the
 /// adapter rendering a clone taken at insert — has no counterpart: nothing
-/// clones a native node.)
+/// clones a graph node.)
 #[test]
 fn a_command_reaches_a_node_across_a_commit() {
     let (mut ed, mut exec, handle) = graph_with(node_at(0.0));

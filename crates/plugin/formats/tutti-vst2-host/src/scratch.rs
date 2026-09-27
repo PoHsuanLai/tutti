@@ -11,7 +11,7 @@
 //! `AudioBufferMut` variant, and does not know at construction which it will
 //! be asked for; growing a buffer on the first f64 block would allocate on
 //! the audio thread. (The in-process node, `InProcessVst2Client`, renders
-//! `f32` only: the native graph is `f32`.)
+//! `f32` only: the graph is `f32`.)
 
 use tutti_plugin_types::ChannelLayout;
 

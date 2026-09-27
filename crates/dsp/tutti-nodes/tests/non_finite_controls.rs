@@ -40,7 +40,7 @@ fn noise_block(channels: usize, seed: u32) -> BufferVec {
 /// A control cell, and a finite value it can be moved to.
 type Cell = (&'static str, Arc<AtomicF32>, f32);
 
-/// [`render_finite`] for a native node: `blocks` 64-frame blocks through
+/// [`render_finite`] for a graph node: `blocks` 64-frame blocks through
 /// `tutti_graph::contract::drive` at `rate`.
 fn render_node_finite(node: &mut dyn Node, rate: SampleRate, blocks: usize, seed: u32) -> bool {
     let width = usize::from(node.shape().audio_in.count());
@@ -57,7 +57,7 @@ fn render_node_finite(node: &mut dyn Node, rate: SampleRate, blocks: usize, seed
     all
 }
 
-/// [`survives`] for a native node: the same cases, the rate change a
+/// [`survives`] for a graph node: the same cases, the rate change a
 /// re-`prepare`.
 fn survives_node<N: Node>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -> Vec<Cell>) {
     let (a, b) = (SampleRate(48_000.0), SampleRate(44_100.0));

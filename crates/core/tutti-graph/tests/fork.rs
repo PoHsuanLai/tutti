@@ -249,7 +249,7 @@ impl IntoNode for Level {
 /// A test node made forkable the way the engine's nodes are: an `IntoNode`
 /// whose `into_parts` hands over a `ForkSource`. The fork is a fresh node of
 /// the same kind.
-struct Native(Kind);
+struct Forkable(Kind);
 
 struct KindFork(Kind);
 
@@ -259,7 +259,7 @@ impl ForkSource for KindFork {
     }
 }
 
-impl IntoNode for Native {
+impl IntoNode for Forkable {
     type Controls = ();
     fn into_node(self) -> (Box<dyn Node>, ()) {
         (Box::new(TestNode::new(self.0)), ())
@@ -274,8 +274,8 @@ impl IntoNode for Native {
 }
 
 /// A forkable ×2 gain.
-fn gain() -> Native {
-    Native(Kind::Gain {
+fn gain() -> Forkable {
+    Forkable(Kind::Gain {
         gain: 2.0,
         width: 1,
     })
@@ -295,8 +295,8 @@ fn render(ed: Editor, exec: tutti_graph::Executor, frames: usize) -> Vec<Vec<f32
 fn chain() -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     let osc = g.add(Sine::new(440.0));
-    let mix = g.add(Native(Kind::Sum { inputs: 2 }));
-    let lp = g.add(Native(Kind::Smooth));
+    let mix = g.add(Forkable(Kind::Sum { inputs: 2 }));
+    let lp = g.add(Forkable(Kind::Smooth));
     g.connect(osc, 0, mix, 0)
         .feedback(lp, 0, mix, 1, Samples(256))
         .connect(mix, 0, lp, 0)
@@ -451,7 +451,7 @@ fn a_node_without_a_fork_source_is_not_forkable() {
     ed.insert(NodeKey(1), "gain", gain());
     ed.insert(
         NodeKey(2),
-        "native",
+        "unforkable",
         Unforkable(TestNode::new(Kind::Gain {
             gain: 1.0,
             width: 1,
@@ -756,12 +756,12 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
     );
     let (mut ed, _exec) = Editor::new(prepare(64));
     ed.insert(osc, "osc", Sine::new(220.0));
-    ed.insert(a, "mix", Native(Kind::Sum { inputs: 2 }));
+    ed.insert(a, "mix", Forkable(Kind::Sum { inputs: 2 }));
     ed.insert(fb, "fb", consts(1, 0.25));
     ed.insert(
         emit,
         "emit",
-        Native(Kind::Emitter {
+        Forkable(Kind::Emitter {
             period: 50,
             phase: 7,
         }),
@@ -769,7 +769,7 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
     ed.insert(
         target,
         "target",
-        Native(Kind::Mixed {
+        Forkable(Kind::Mixed {
             width: 1,
             events_in: 1,
             events_out: 0,
@@ -987,15 +987,15 @@ fn a_fork_carries_params_event_capacity_and_its_own_marks() {
     let pre = prepare(64);
     let (mut ed, _exec) = Editor::with_event_capacity(pre, 8);
     let emitter = || {
-        Native(Kind::Emitter {
+        Forkable(Kind::Emitter {
             period: 1,
             phase: 0,
         })
     };
     ed.insert(emit, "emit", emitter());
-    ed.insert(fold, "fold", Native(Kind::Consumer { inputs: 1 }));
+    ed.insert(fold, "fold", Forkable(Kind::Consumer { inputs: 1 }));
     ed.insert(emit2, "emit", emitter());
-    ed.insert(fold2, "fold", Native(Kind::Consumer { inputs: 1 }));
+    ed.insert(fold2, "fold", Forkable(Kind::Consumer { inputs: 1 }));
     let spec = ed.spec_mut();
     spec.topology.outputs = vec![out(fold, 0), out(fold2, 0)];
     for (e, f) in [(emit, fold), (emit2, fold2)] {

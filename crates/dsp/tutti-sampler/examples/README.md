@@ -60,7 +60,7 @@ from the playhead, which advances once per block. `process` walked the block
 with an offset; `tick` had none, so 64 calls against one transport reading
 emitted the same sample 64 times — a staircase that resamples the source
 downward. The first draft drove `tick` and every case failed, *including*
-`dry`. The sampler's nodes are native now, with one entry point: each block's
+`dry`. The sampler's nodes are graph nodes now, with one entry point: each block's
 `Env` carries the playhead, and a placed read seats on it and steps through
 the block. The harness drives blocks, under a transport it moves after each,
 as a host does.

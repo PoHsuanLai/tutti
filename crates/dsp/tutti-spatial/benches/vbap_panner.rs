@@ -9,7 +9,7 @@
 //! stereo pair at the default width, the branch that solves two virtual
 //! sources.
 //!
-//! The panner is a native graph node, called by hand through
+//! The panner is a graph node, called by hand through
 //! `tutti_graph::contract::Direct` (no graph around it, no allocation per
 //! block).
 

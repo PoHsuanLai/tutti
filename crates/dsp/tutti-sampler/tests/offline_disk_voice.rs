@@ -178,7 +178,7 @@ fn render(node: &mut dyn Node, clock: &Clock, frames: usize) -> [Vec<f32>; 2] {
 }
 
 /// A render clock at `rate`, and the offline context a fork is asked for
-/// (the export's `ForkMode::Offline`; a native node reads its render's
+/// (the export's `ForkMode::Offline`; a graph node reads its render's
 /// transport from its `Env`, not from this).
 fn clock_at(rate: f64) -> (Clock, OfflineTransport) {
     looping_clock_at(rate, None)

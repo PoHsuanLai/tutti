@@ -3,7 +3,7 @@
 //!
 //! Doc 013 item 7 made the voice read block-at-a-time (`PlaybackSlot::render_into`)
 //! and pinned it against the per-frame read it replaced; items 8 and 9 took
-//! the per-frame read away with `AudioUnit` (a native node has one entry
+//! the per-frame read away with `AudioUnit` (a graph node has one entry
 //! point) and moved the transport into each block's `Env`. What a block read
 //! must now hold to is the host's side of that: a host hands the graph
 //! blocks of any length, and a start, a stop or a seek lands inside a block

@@ -251,7 +251,7 @@ impl NodeNames {
         {
             nodes.insert(entity, *node);
             by_key.insert(
-                crate::graph::native::key(*node),
+                crate::graph::runtime::key(*node),
                 (entity, name.map(|n| n.as_str().to_owned())),
             );
         }

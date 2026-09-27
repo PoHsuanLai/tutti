@@ -1,4 +1,4 @@
-//! `InProcessVst2Client` — the native graph node (`node.rs`) that drives a
+//! `InProcessVst2Client` — the graph node (`node.rs`) that drives a
 //! VST2 plugin from the host audio thread.
 //!
 //! The instance lives behind `Arc<Mutex<tutti_vst2_host::Vst2Instance>>` shared

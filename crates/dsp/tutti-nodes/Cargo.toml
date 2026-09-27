@@ -48,7 +48,7 @@ tutti-types = { path = "../../core/tutti-types", default-features = false }
 # this deliberately bevy-free crate; `routing` is std-only, no bevy.
 tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
 
-# The native graph's param-modulation vocabulary (`ParamShaping`, `ShapeLut`):
+# The graph's param-modulation vocabulary (`ParamShaping`, `ShapeLut`):
 # `ParamModShaping::shaping` bakes `tutti_mod::shape` into the table the
 # compiler's fused step reads (design doc 013 item 6). tutti-graph depends on
 # no tutti crate but tutti-types, so the edge adds no cycle.
@@ -76,7 +76,7 @@ approx = "0.5"
 biquad = "0.5"
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
-# `engine_render`'s Graph backend rows: the native graph behind `Engine`.
+# `engine_render`'s Graph backend rows: the graph behind `Engine`.
 # `contract`: the sample-accuracy contract harness (doc 013 §6), which
 # `tests/contract.rs` runs the latency-bearing nodes through.
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }

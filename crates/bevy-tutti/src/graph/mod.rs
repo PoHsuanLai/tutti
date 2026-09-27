@@ -1,6 +1,6 @@
 //! Binding the DSP graph to an ECS world.
 //!
-//! The engine itself needs none of this: the graph is the native
+//! The engine itself needs none of this: the graph is the
 //! `tutti-graph` runtime (design doc 013), and transport, metering and PDC are
 //! plain value types a host can drive directly. This module is the adapter
 //! that lets
@@ -32,11 +32,11 @@ pub mod despawn;
 pub mod events;
 pub mod latency;
 pub mod metering;
-pub(crate) mod native;
 pub mod param;
 pub mod plugin;
 pub mod pump;
 pub mod resources;
+pub(crate) mod runtime;
 pub mod schedule;
 pub mod spawn;
 pub mod tap;
@@ -51,15 +51,15 @@ pub use events::{
     EventFeeds, EventSource, EventSources, EventWiring, GraphEventsPlugin, GraphNode, NodeControls,
 };
 pub use metering::MeteringRes;
-#[cfg(feature = "plugin")]
-pub(crate) use native::clamp_latency;
-pub use native::{AudioSide, ReplaceRefused};
 pub use param::{reconcile_audio_param, write_param, AudioParam, AudioParamAppExt};
 pub use plugin::GraphReconcilePlugin;
 pub use pump::{
     drain_audio_pumps, finalize_removed_pumps, AudioPump, AudioPumpAppExt, PumpFinished, IDLE_PARK,
 };
 pub use resources::{AudioConfig, AudioGraphRes, GraphSource};
+#[cfg(feature = "plugin")]
+pub(crate) use runtime::clamp_latency;
+pub use runtime::{AudioSide, ReplaceRefused};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
 #[cfg(feature = "plugin")]
 pub use spawn::crossfade_plugin_node;

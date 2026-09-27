@@ -1,5 +1,5 @@
 //! [`AutomationLaneNode`]: a curve evaluated at the transport's beat, as a
-//! native graph node.
+//! graph node.
 
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ use super::Curve;
 ///
 /// # In a graph
 ///
-/// A native node ([`IntoNode`]) with no controls: a live curve swap is a
+/// A graph node ([`IntoNode`]) with no controls: a live curve swap is a
 /// respawn ([`set_curve`](Self::set_curve) takes `&mut self`). A fork reads
 /// the curve's [`frozen`](Curve::frozen) copy when it has one (a curve that
 /// reads state written after it was built), and shares the `Arc` otherwise

@@ -116,7 +116,7 @@ impl LookaheadRing {
 ///
 /// # In a graph
 ///
-/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over threshold, ceiling and release, and a fork of it starts from the
 /// values last set through that set. The graph prepares it at the device
 /// rate before its first block, which sizes the ring.
@@ -533,7 +533,7 @@ impl Clone for LimiterNode {
 /// [`BRICKWALL_PARAMS`]): modulated → the param port overrides the ceiling
 /// cell per sample, unmodulated → bit-identical to a node nothing modulates.
 ///
-/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over the ceiling.
 pub struct BrickwallLimiterNode {
     ceiling_db: Param<Db>,
@@ -1049,7 +1049,7 @@ mod tests {
     /// leaves the other silent: the graph hands an unconnected input
     /// silence, which the linked detector reads as such. (What replaced the
     /// `tick` short-frame fallback, which duplicated the last channel: a
-    /// native node is always handed every input it declares.)
+    /// graph node is always handed every input it declares.)
     ///
     /// Mutation (run): read `inputs.get(0)` for every channel in `process`
     /// → ch1 carries ch0's signal → fails.

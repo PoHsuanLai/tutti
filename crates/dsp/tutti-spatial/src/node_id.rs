@@ -1,6 +1,6 @@
 //! Node-id fingerprints for this crate's AudioUnit types (returned by `get_id()`).
 //!
-//! Both panners are native graph nodes now (doc 013), with no `get_id`; their
+//! Both panners are graph nodes now (doc 013), with no `get_id`; their
 //! ids stay reserved here so nothing reuses them.
 //!
 //! **Persisted values — do not renumber.** `assert_unique` guards them within

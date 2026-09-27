@@ -5,7 +5,7 @@
 //! gates can run it).
 //!
 //! What replaced the synth's own `queue_midi` + `AudioUnit::process` when
-//! the synth became a native node only: the node plays its event input and
+//! the synth became a graph node only: the node plays its event input and
 //! nothing else.
 
 #![allow(dead_code)] // each test binary uses its own subset

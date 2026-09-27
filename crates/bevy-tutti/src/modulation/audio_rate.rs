@@ -418,7 +418,7 @@ mod tests {
         app.insert_resource(crate::AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
         let dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 5.0);
-        // A native node: its `ParamSet`'s cells are its targets, no registry
+        // A `ParamNode`: its `ParamSet`'s cells are its targets, no registry
         // entry.
         let controls = crate::graph::GraphNode::captured(&dist);
         let (node, _params) = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);

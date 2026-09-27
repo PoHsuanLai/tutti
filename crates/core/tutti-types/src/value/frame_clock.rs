@@ -75,7 +75,7 @@ impl LoopRange {
     /// Arming a loop whose end is at or behind the playhead does not jump
     /// (the common DAW behaviour, and doc 013's decision): the loop takes
     /// effect once the playhead is inside it, by a seek or by playing into it
-    /// from before `start`. The native graph reads a transport the same way
+    /// from before `start`. The graph reads a transport the same way
     /// (`tutti_graph::Env::due` treats a playhead at or past the loop end as
     /// not looping, and `transport_at` walks with [`FrameClock`]), so the two agree.
     #[inline]
@@ -113,7 +113,7 @@ impl LoopRange {
 /// Where a counted playhead is: the beat at its current segment's first
 /// frame, the frames rolled since, and the rate they are counted at. What a
 /// [`FrameClock`] reports ([`FrameClock::origin`]) and rebuilds from
-/// ([`FrameClock::from_origin`], with the tempo it moves at); what a native
+/// ([`FrameClock::from_origin`], with the tempo it moves at); what a
 /// graph block's transport carries, so a node continues the host's clock
 /// with the host's arithmetic.
 ///

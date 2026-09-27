@@ -46,7 +46,7 @@ fn sweep(lo: f32, hi: f32) -> [f32; BLOCK] {
     std::array::from_fn(|i| lo + (hi - lo) * (i as f32 / BLOCK as f32))
 }
 
-/// [`run`] for a native node, called by hand through
+/// [`run`] for a graph node, called by hand through
 /// `tutti_graph::contract::Direct`; `fed` feeds its first param port.
 fn run_node(c: &mut Criterion, group: &str, width: usize, node: impl Node, fed: Option<&[f32]>) {
     let mut g = c.benchmark_group(group);

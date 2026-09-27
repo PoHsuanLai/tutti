@@ -210,7 +210,7 @@ impl CompressorCore {
 ///
 /// # In a graph
 ///
-/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over threshold, ratio, attack, release and makeup (as
 /// [`UnitParam::GainDb`]), and a fork of it starts from the values last set
 /// through that set. The graph prepares it at the device rate before its

@@ -2,7 +2,7 @@
 //! params, returning a ready-made [`ModTarget`] a router accumulates into.
 //!
 //! The control-rate sibling of a node's declared modulatable params (which
-//! the native graph modulates per frame; `tutti_graph::Shape::params`). A
+//! the graph modulates per frame; `tutti_graph::Shape::params`). A
 //! thing is control-rate-modulatable **iff** it implements
 //! this trait — the enforced opt-in. It keys on [`ParamAddr`]
 //! ([`UnitParam`](tutti_types::UnitParam) for native params, an opaque id for

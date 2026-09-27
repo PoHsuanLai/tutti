@@ -6,7 +6,7 @@
 //! oscillator → bell EQ → mixer strip → lookahead limiter chain into the graph
 //! so the gate covers the per-buffer hot path through the nodes the engine
 //! actually ships: `EqBandNode` (over `SvfFilterNode`), `BusStripNode` and
-//! `LimiterNode`, each a native graph node. A regression in any of those — or
+//! `LimiterNode`, each a graph node. A regression in any of those — or
 //! in the executor's walk — shows up here as an allocation panic.
 //!
 //! It lived in `tutti-core` while that chain was fundsp's (`sine_hz`, `pan`,
@@ -19,7 +19,7 @@
 //! one gates them *inside the engine*, where the executor drives them through
 //! its own buffers and the transport advances on the same `process` call.
 //! (Until doc 013 Phase 3 PR 15 the chain was a `Net` with a transport clock
-//! node; the engine renders only the native graph now, and drives its clock
+//! node; the engine renders only the graph now, and drives its clock
 //! itself.)
 
 use assert_no_alloc::AllocDisabler;

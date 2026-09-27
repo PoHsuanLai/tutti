@@ -172,7 +172,7 @@ mod plugins_without_engine {
 /// What reaches the speakers, and who decides.
 ///
 /// "This node is the master" is not a mix. `AudioGraphRes::set_outputs_from`
-/// (the native graph's form of `Net::pipe_output`, which these tests drove
+/// (the graph's form of `Net::pipe_output`, which these tests drove
 /// until design doc 013's PR 15 retired the last `Net` fixtures) walks
 /// *every* global output channel and overwrites that channel's source, so
 /// two callers do not layer — the second silently disconnects the first.
@@ -208,7 +208,7 @@ mod master_bus {
     /// This is the whole defect in four lines: nothing warns, nothing logs, and the
     /// first node is simply gone from the output.
     ///
-    /// Mutation (run): `NativeGraph::set_outputs_from` writing only the
+    /// Mutation (run): `GraphRuntime::set_outputs_from` writing only the
     /// channels that read nothing yet (a layering "mix") → the second claim
     /// does not land and this fails.
     #[test]

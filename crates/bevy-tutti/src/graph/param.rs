@@ -26,7 +26,7 @@
 //! // A graph with no device: its audio side stays here, and `render_frame`
 //! // plays it.
 //! let mut graph = AudioGraphRes::headless(0, 1);
-//! // A native node: its controls are its `ParamSet`, addressed on the node so
+//! // A `ParamNode`: its controls are its `ParamSet`, addressed on the node so
 //! // a param write lands on its cell (what `spawn_audio_node` does).
 //! let (node, params) = graph.insert(unit);
 //! graph.set_node_params(node, Some(params));

@@ -306,10 +306,10 @@ pub fn plugin_load_promote(
                 // binding systems drive (and the MIDI target) come from it.
                 //
                 // An out-of-process plugin is bound as it goes in
-                // (`PluginClient::bind`): a native node, with its own fork
+                // (`PluginClient::bind`): a graph node, with its own fork
                 // source so an export can fork it (by state transfer; doc
-                // 013, PR 12). An in-process VST2 plugin is a native node with
-                // no fork source yet: it goes in `Unforkable`, and an export
+                // 013, PR 12). An in-process VST2 plugin is a graph node too,
+                // with no fork source yet: it goes in `Unforkable`, and an export
                 // of a graph holding it is refused, naming it.
                 let (id, controls) = match plugin.into_client() {
                     Ok(client) => {

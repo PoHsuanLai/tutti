@@ -74,7 +74,7 @@ impl tutti_graph::Node for TransportTone {
     fn reset(&mut self) {}
 }
 
-/// `Engine::process` over the native graph, with timestamped transport
+/// `Engine::process` over the graph, with timestamped transport
 /// commands (play, seek, tempo, loop, a declick stop) scheduled and landing
 /// inside the gate, and graph notes at beats landing in blocks with transport
 /// changes: the walk, the change list, the executor and the fold never
@@ -158,7 +158,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     assert_eq!(transport.settings.steady_time(), 1024 * (1 + 20 * 8));
 }
 
-/// The metronome on the native graph: `ClickNode` and a node walking its
+/// The metronome on the graph: `ClickNode` and a node walking its
 /// block's beat (`Env::for_each_beat`, what `EnvClock` did: whole beats and
 /// fraction to outputs 2 and 3) side by side, with timestamped seeks, tempo and loop changes landing
 /// inside blocks, so both walk several segments per block. Neither segment

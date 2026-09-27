@@ -1,4 +1,4 @@
-//! [`ConvolverNode`]: [`Convolver`] as a native graph node, at any channel
+//! [`ConvolverNode`]: [`Convolver`] as a graph node, at any channel
 //! width.
 //!
 //! One node for every width. It used to be two — a 1-in/1-out `ConvolverNode`
@@ -111,7 +111,7 @@ pub enum IrChannelConfig {
     Stereo,
 }
 
-/// Convolution reverb as a native graph node, `width`-in / `width`-out.
+/// Convolution reverb as a graph node, `width`-in / `width`-out.
 ///
 /// Built at a fixed width with an [`IrChannelConfig`] saying which IR each
 /// channel hears; [`new`](Self::new) / [`with_ir`](Self::with_ir) build the
@@ -125,7 +125,7 @@ pub enum IrChannelConfig {
 ///
 /// # In a graph
 ///
-/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over the mix ([`UnitParam::Wet`]); the wet gain has no address and is
 /// set through [`gain`](Self::gain) / [`set_gain`](Self::set_gain). A fork
 /// starts from the mix last set through the set and the gain as it is when

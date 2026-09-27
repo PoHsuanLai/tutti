@@ -131,7 +131,7 @@ pub struct PoolTooWide {
 ///
 /// # As a graph node
 ///
-/// A native `tutti_graph::Node`. Its controls ([`IntoNode`]) are its
+/// A `tutti_graph::Node`. Its controls ([`IntoNode`]) are its
 /// [`VoicePoolHandle`]: the command queue it drains at the top of each block
 /// (a bounded lock-free queue the node owns the receiving end of), and the
 /// retirement channel back. Voices placed on the timeline read the transport

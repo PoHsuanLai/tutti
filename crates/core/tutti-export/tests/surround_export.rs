@@ -7,7 +7,7 @@
 //! placed energy — i.e. the surround producer and the multi-channel export path
 //! work together without any DAW/ECS layer.
 //!
-//! The graphs are native (`tutti_graph::GraphBuilder`, rendered as a
+//! The graphs are `tutti_graph`'s (`GraphBuilder`, rendered as a
 //! `RenderGraph`; doc 013 Phase 3 PR 8), and the mix is
 //! `tutti_spatial::build_vbap_mix` on the builder (`tutti-spatial`'s
 //! `tests/vbap_mix_parts.rs` pins it against the parts wired by hand).
@@ -126,8 +126,8 @@ fn quad_surround_graph_exports_a_four_channel_wav_with_rear_energy() {
 /// The Stage-4 export path: a graph that starts at the **device (stereo)
 /// output** width — exactly what the live engine produces — is widened offline
 /// and re-piped to a surround master before export. This mirrors what a host
-/// does to the graph it exports (a `Net`'s `set_output_arity`; on the native
-/// graph, the topology's global outputs grown), and proves widening a stereo
+/// does to the graph it exports (a `Net`'s `set_output_arity`; on
+/// `tutti_graph`, the topology's global outputs grown), and proves widening a stereo
 /// graph does NOT lose the surround channels.
 ///
 /// Mutation (run): widen *after* `pipe_output` → only the first two global

@@ -43,11 +43,11 @@ use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape
 /// re-inserts it under the same key, so declarations naming it stay valid.
 ///
 /// **It adds no latency, and hides none.** A sum is only as early as its latest
-/// arrival; under the native graph that alignment is the compiler's PDC, which
+/// arrival; in the graph that alignment is the compiler's PDC, which
 /// delays every earlier input of the bus to its latest one — the bus itself
 /// declares zero.
 ///
-/// A native node with no controls: inserted, its controls are `()` and a fork
+/// A graph node with no controls: inserted, its controls are `()` and a fork
 /// of it is a clone (it shares nothing).
 #[derive(Clone, Debug)]
 pub struct ChannelSumNode {
@@ -203,7 +203,7 @@ mod tests {
     /// graph aligns every input of the bus to its latest one, so an impulse
     /// on both sources at frame 0 sums **once**, at the late side's latency.
     /// (Under `Net` this was the bus's `route` reporting the largest input
-    /// latency; natively it is the compiler's PDC, and this pins that the bus
+    /// latency; in the graph it is the compiler's PDC, and this pins that the bus
     /// declares nothing that defeats it — no latency of its own, and every
     /// input a real port.)
     ///

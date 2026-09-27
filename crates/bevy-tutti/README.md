@@ -40,7 +40,7 @@ TuttiPlugin::default()
 // Custom I/O
 TuttiPlugin { inputs: 2, outputs: 2, ..Default::default() }
 
-// The graph is the native tutti-graph runtime (design doc 013); there is no
+// The graph is the tutti-graph runtime (design doc 013); there is no
 // runtime to choose. (`graph_backend: GraphBackend::Net | Native` was removed
 // with fundsp's `Net` arm.)
                // select device by index
@@ -326,9 +326,9 @@ Spawn the node itself; its params are `AudioParam` components on the entity,
 and you insert only the ones you drive.
 
 ```rust
-// DSP nodes come from `tutti-nodes`, spawned like any other node: a native
-// graph node (the filters, the dynamics, the distortion, the strip, the
-// delays, the LFO, the convolver) through `spawn_audio_node`. There are no
+// DSP nodes come from `tutti-nodes`, spawned like any other graph
+// node (the filters, the dynamics, the distortion, the strip, the delays,
+// the LFO, the convolver) through `spawn_audio_node`. There are no
 // marker components and no per-node ECS wrappers.
 use tutti_nodes::{CompressorNode, GateNode, LfoNode, LfoShape};
 
@@ -349,7 +349,7 @@ Requires `spatial` feature.
 
 ```rust
 // `tutti-spatial` is re-exported whole. The VBAP and binaural panners are
-// native graph nodes (the binaural one with the `hrtf` feature): spawned with
+// graph nodes (the binaural one with the `hrtf` feature): spawned with
 // `spawn_audio_node`, their controls land on the entity as `NodeControls`.
 use bevy_tutti::spatial::{VbapPannerControls, VbapPannerNode};
 

@@ -1,7 +1,7 @@
 //! fundsp's `Net` stays out of this crate's non-test code.
 //!
 //! Design doc 013, Phase 3 PR 13 deleted bevy-tutti's `Net` runtime; the
-//! native graph is its only one. PR 15 retired the test-only `Net`-era
+//! `tutti-graph` one is its only one. PR 15 retired the test-only `Net`-era
 //! oracles that were left (in what is now `tests/scene_render.rs`,
 //! `engine::build`'s `engine_tests` and `tests/export_fork.rs`), so nothing
 //! in the crate names `Net` any more, tests included; the cut below stays
@@ -89,7 +89,7 @@ fn no_net_in_the_crates_code() {
     assert!(
         found.is_empty(),
         "fundsp's `Net` in bevy-tutti's code (doc 013, PR 13 removed it; the \
-         graph is `AudioGraphRes`, the native runtime):\n  {}",
+         graph is `AudioGraphRes`, the `tutti-graph` runtime):\n  {}",
         found.join("\n  ")
     );
 }

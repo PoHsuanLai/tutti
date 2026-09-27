@@ -1,6 +1,6 @@
 //! Metronome click node — click sounds synced to the transport.
 //!
-//! The click node is a native graph node (doc 013): it reads the playhead
+//! The click node is a graph node (doc 013): it reads the playhead
 //! **per frame** from its block's [`Env`] — walked piece by piece across the
 //! block's transport changes, with the host's own clock
 //! ([`Env::for_each_beat`](tutti_graph::Env::for_each_beat)) — the play and record state from
@@ -20,7 +20,7 @@
 //! whose beat first reaches it. A start or a stop inside a block gates the
 //! click on its frame too, not at the block's start.
 //!
-//! Until the native port the beat arrived on two input ports from a clock
+//! Until its port to `tutti_graph::Node` the beat arrived on two input ports from a clock
 //! node, and the click had to be wired to one; it now needs no wiring.
 //!
 //! # Meter arrives here, not through the transport
@@ -207,7 +207,7 @@ impl Default for ClickSettings {
 /// cell as state rather than settings.
 pub type ClickState = ClickSettings;
 
-/// The metronome, as a native graph node.
+/// The metronome, as a graph node.
 ///
 /// No inputs; the click, stereo, on its two outputs. The beat of each frame
 /// comes from the block's [`Env`] (see the module docs), so each onset
@@ -1055,7 +1055,7 @@ mod tests {
     /// inside one sounds the beat it lands on from its frame: the play state
     /// is the block's pieces', not the block start's.
     ///
-    /// Before the native port the click read the live play flag once per
+    /// Before its port to `tutti_graph::Node` the click read the live play flag once per
     /// 64-frame chunk, so a mid-block start or stop gated it from the
     /// block's start (the gap `tests/env_beat.rs` recorded).
     ///
@@ -1103,7 +1103,7 @@ mod tests {
     /// # What this pins, and why a hash
     ///
     /// The `impl AudioNode` → `impl AudioUnit` rewrite (graph plan PR 4b), and
-    /// then the native port (doc 013 item 8), each had to be an *identity*:
+    /// then the port to `tutti_graph::Node` (doc 013 item 8), each had to be an *identity*:
     /// the same samples, not merely samples that still pass the behavioural
     /// tests above. Those tests check onsets, accents and mode gating — every
     /// one of them would pass a click whose envelope had drifted by an LSB,
@@ -1130,7 +1130,7 @@ mod tests {
     ///
     /// The `AudioUnit` era's `get_id` pin went with `get_id`: it mattered
     /// because `Net`'s `ping` hashed it into the seed of every pseudorandom
-    /// phase in the net, and the native graph has no such hash.
+    /// phase in the net, and the graph has no such hash.
     #[test]
     fn render_is_bit_identical_to_the_audionode_era() {
         /// FNV-1a over the little-endian `f32` bits, in emission order.

@@ -185,9 +185,17 @@ fn building_a_graph_allocates_in_proportion_to_its_size() {
 /// renders.) The executor takes each commit between measurements, as the
 /// audio thread would, so the editor's queue never backs up.
 ///
-/// Mutation (run): in `Editor::commit`, push a copy of the spec onto a
-/// `Vec` the editor keeps → the tenth commit's figure grows past twice the
-/// first → fails.
+/// A no-op commit sends nothing and compiles nothing, so the tenth allocates
+/// **nothing at all** — the strongest form of "bounded", and the one that
+/// bites: any per-commit clone or compile shows up as a nonzero count.
+///
+/// Mutation (run): drop the unchanged check in `Editor::commit` → each no-op
+/// commit compiles and sends a plan, ~100 KiB for this chain → the byte
+/// ceiling and the zero count both fail. Mutation (run): push a clone of the
+/// spec onto a `Vec` the editor keeps, at the top of `commit` → passed the
+/// growth and byte checks alone (both commits clone alike, the clone is under
+/// 64 KiB, the `Vec` need not reallocate between them), which is why the
+/// zero count is asserted; with it → fails.
 #[test]
 fn a_no_op_commit_allocates_a_bounded_amount() {
     let (mut ed, mut exec) = graph(32);
@@ -219,6 +227,11 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
         tenth_bytes < 64 * 1024,
         "a no-op commit allocated {tenth_bytes} bytes; a reconcile that runs \
          every frame should be reserving, not allocating"
+    );
+    assert_eq!(
+        (tenth, tenth_bytes),
+        (0, 0),
+        "a no-op commit sends nothing, so it has nothing to allocate"
     );
 }
 

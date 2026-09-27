@@ -116,7 +116,7 @@ fn every_crate_reexport_is_aliased() {
         .filter(|(_, l)| {
             l.starts_with("pub use tutti_")
                 && !l.contains(" as ")
-                // `pub use tutti_core::dsp;` and `::prelude::*` are module
+                // `pub use tutti_core::meter;` and `::prelude::*` are module
                 // re-exports, not crate ones; they carry no `tutti_` segment
                 // into a consumer's path.
                 && !l.contains("::")

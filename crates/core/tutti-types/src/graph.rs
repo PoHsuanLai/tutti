@@ -2,19 +2,15 @@
 //!
 //! # Ownership rule
 //!
-//! [`Topology`] **is** the graph. `tutti_core::dsp::Net` is one *interpreter* of
-//! it — the runtime that renders it — and nothing reads a topology back out of a
-//! `Net`. That direction is the point. Today the only way to answer "what is
-//! wired to what" is to read `Net::source` port by port, so every question about
-//! the graph needs a live runtime, and every layer that wants to remember what
-//! it built keeps shadow state that goes stale (`bevy_tutti`'s
-//! `modulation::audio_rate` carries a `shaping` vector for exactly this reason).
-//! A value fixes that by *being* the answer: `Eq` compares two graphs, `Hash`
-//! keys a cache on one, and every static property — latency, tail, evaluation
-//! order, width agreement — is a pure fold over it.
-//!
-//! `Net::revision` approximates that with a counter. Monotone, but not a
-//! function of the graph, so it can order two states and cannot identify one.
+//! [`Topology`] **is** the graph. `tutti_graph`'s compiler is its interpreter —
+//! a `Topology` in, an immutable plan out — and nothing reads a topology back
+//! out of a plan. That direction is the point. Under fundsp's `Net` (deleted in
+//! doc 013 Phase 5) the only way to answer "what is wired to what" was to read
+//! `Net::source` port by port, so every question about the graph needed a live
+//! runtime, and every layer that wanted to remember what it built kept shadow
+//! state that went stale. A value fixes that by *being* the answer: `Eq`
+//! compares two graphs, `Hash` keys a cache on one, and every static property —
+//! latency, tail, evaluation order, width agreement — is a pure fold over it.
 //!
 //! # What replaces the type index
 //!
@@ -35,7 +31,7 @@
 //! [`LatencyGraph`] / [`TailGraph`]; neither needed a line changed. The two
 //! impls at the bottom of this module are the whole adaptation, and they are
 //! what let the engine's best-tested graph math answer questions about a value a
-//! unit test can write down, instead of only about a `Net` behind a device.
+//! unit test can write down, instead of only about a runtime behind a device.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -46,14 +42,33 @@ use crate::ChannelLayout;
 
 /// Stable identity for a node, chosen by the **author** of the topology.
 ///
-/// This is the fix for stale ids. fundsp's `NodeId` is minted by a global
-/// counter inside `Net::push`, so a crossfade — which pushes a replacement —
-/// changes it, and any handle a caller stored goes stale silently. A `NodeKey`
+/// This is the fix for stale ids. fundsp's `NodeId` (the key before doc 013
+/// Phase 5) was minted by a global counter inside `Net::push`, so a crossfade
+/// — which pushed a replacement — changed it, and any handle a caller stored
+/// went stale silently. A `NodeKey`
 /// is supplied from outside (a Bevy `Entity`'s bits, a document node id, a
 /// test's literal) and is therefore stable across any number of recompiles. The
 /// runtime's own id is derived from it while compiling and never escapes.
+///
+/// A host with no id of its own to supply takes one from
+/// [`NodeKey::fresh`], a process-wide counter (what fundsp's `NodeId::new`
+/// was, before doc 013 Phase 5 deleted it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeKey(pub u64);
+
+impl NodeKey {
+    /// A key no earlier call in this process returned: a process-wide
+    /// counter from 0, one step per call, from any thread.
+    ///
+    /// Unique among its own calls only. A key a host writes itself (an
+    /// `Entity`'s bits, a literal) is not reserved against it, so a host
+    /// mixing the two keeps them in ranges that cannot meet, as fundsp's
+    /// `NodeId::new` required before it.
+    pub fn fresh() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
 
 /// Which **output** port of which node a signal leaves from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -109,7 +109,7 @@ use super::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems, Grap
 ///
 /// [`GraphSource`] with the node named by *entity* rather than by
 /// [`AudioNode`]. That one difference is load-bearing: a
-/// [`crossfade`](super::crossfade_audio_node) keeps a node's `NodeId` but an id
+/// [`crossfade`](super::crossfade_audio_node) keeps a node's `NodeKey` but an id
 /// stored on an entity is stale the moment anything else replaces the node, so
 /// the declaration names the entity and [`rebuild`] re-derives the id every
 /// time. It also means a host never handles an engine id.
@@ -117,7 +117,7 @@ use super::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems, Grap
 pub enum PortSource {
     /// Output `port` of the node bound to `entity`. Mirrors [`GraphSource::Node`].
     Node {
-        /// The entity carrying the source node. Resolved to a `NodeId` on every
+        /// The entity carrying the source node. Resolved to a `NodeKey` on every
         /// rebuild, so a crossfade cannot strand it.
         entity: Entity,
         /// Which of that node's **output** ports to take.
@@ -302,7 +302,7 @@ impl MasterSources {
 /// routinely names an entity whose node arrives a frame later, and nothing about
 /// the declaration changes when it does. And an entity can be *re-bound* to a
 /// different node, which must re-derive every wire naming it — that is the whole
-/// reason [`PortSource::Node`] holds an `Entity` rather than a `NodeId`.
+/// reason [`PortSource::Node`] holds an `Entity` rather than a `NodeKey`.
 ///
 /// The gate is `Changed<AudioNode>`, not `Added`: a replacement `insert` on an
 /// entity that already has the component fires `Changed` but **not** `Added`, so
@@ -397,16 +397,16 @@ pub fn rebuild(
     // and nodes with no entity at all are allowed, so the graph cannot key by
     // entity.) The consequence is
     // that the value **cannot see a re-bind** — `insert`ing a different
-    // `AudioNode` on the same entity changes which `NodeId` the declaration
+    // `AudioNode` on the same entity changes which `NodeKey` the declaration
     // resolves to while leaving the entity, and therefore the key, alone. If the
     // replacement has the same shape (two mono oscillators do), the two values
     // are equal and every edge naming that entity would keep pointing at the
     // retired node — silently, since nothing renders it.
     //
-    // The entity→`NodeId` mapping is engine state the value does not carry, so
+    // The entity→`NodeKey` mapping is engine state the value does not carry, so
     // it takes an engine-side signal to notice it moved. `Changed<AudioNode>` is
     // exactly that signal, and it is why this early return is skipped rather
-    // than the value being taught to carry a `NodeId` — carrying one would
+    // than the value being taught to carry a `NodeKey` — carrying one would
     // reintroduce the stale-id problem `PortSource::Node(Entity)` exists to
     // remove, and would make a crossfade look like a topology change.
     let rebound_this_frame = !rebound.is_empty();

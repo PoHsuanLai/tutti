@@ -60,7 +60,7 @@ impl EventSource {
 
     /// A total order for a set of sources: by node, then port.
     fn key(&self) -> (u64, u16) {
-        (self.node.0.value(), self.port)
+        (self.node.key().0, self.port)
     }
 }
 

@@ -3,10 +3,10 @@
 //!
 //! Design doc 013, Phase 3 PR 15 removed `Engine::new(MotionFsm, NetBackend)`,
 //! the `Backend::Net` arm and `render_net`; `Engine::new` takes a
-//! `tutti_graph::Executor`. `Net` itself is still here, legitimately, until
-//! Phase 5: `topology::compile` builds one and `dsp::Net` re-exports it for
-//! the nodes' own tests. What must not come back is the engine running one,
-//! and the only way in is its audio half, so that is what this scans for.
+//! `tutti_graph::Executor`. Doc 013 Phase 5 then took `topology::compile`
+//! and the `dsp` re-exports, so this crate names no `Net` at all. What must
+//! not come back is the engine running one, and the only way in is its audio
+//! half, so that is what this scans for.
 //! Nothing else stops a new `use fundsp::realnet::NetBackend` from compiling,
 //! and clippy's `disallowed_types` is workspace-wide, where fundsp's own
 //! crate still names the type. So this text scan is the enforcement, in the

@@ -15,10 +15,10 @@ once, and events as ports. Phase 3 is done: `Engine` renders only the
 graph (`Engine::new(&transport, &mut editor, executor)`, PR 15), it
 is `bevy-tutti`'s only runtime (`AudioGraphRes` holds an `Editor`, PDC is
 the compiler's, export forks the live graph with `Editor::fork`), and
-tutti-export renders only it. `Net` is left as a container, not a runtime,
-until Phase 5 deletes fundsp: `topology::compile`, the nodes' own tests and
-`tutti-graph`'s A/B bench wire units in one (`tests/no_net_backend.rs` keeps
-`NetBackend` out of tutti-core). Phase 4 is done: every node is a
+tutti-export renders only it. Phase 5 is under way: nothing but the fork
+itself names `Net` (part 1: `topology::compile`, `tutti_core::dsp` and the
+`Net`-backed tests and bench are gone, and `AudioNode` wraps a `NodeKey`);
+the fork and then `AudioUnit` go next. Phase 4 is done: every node is a
 `tutti_graph::Node` (doc 013, "Items 8 and 9: the per-node port"), and the
 `Legacy` adapter that ran an `AudioUnit` as one is deleted ("Legacy
 deleted"). A node with params is a `Node` + `ParamNode`, inserted through

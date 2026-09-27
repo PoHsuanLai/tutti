@@ -54,7 +54,7 @@ use crate::graph::{CapturedControls, GraphNode, NodeControls};
 ///
 /// The node id itself lives in `AudioNode`, like every other graph node — this
 /// says only *what kind* it is, so a system can query voices without inspecting
-/// the unit behind a `NodeId`.
+/// the unit behind a `NodeKey`.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SamplerVoice;
 

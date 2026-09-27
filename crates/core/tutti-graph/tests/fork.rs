@@ -9,13 +9,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use common::{bits, prepare, Kind, TestNode};
-// `Net`'s side of `a_node_fork_fans_out_as_clone_isolated_does` names the
-// contract through the fork's re-exports; both go in doc 013's Phase 5.
-use fundsp::audiounit::AudioUnit;
-use fundsp::buffer::{BufferMut, BufferRef, BufferVec};
-use fundsp::net::Net;
-use fundsp::signal::{Signal, SignalFrame};
-use fundsp::MAX_BUFFER_SIZE;
 use tutti_graph::{
     param_parts, CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventOut, Fade, ForkByClone,
     ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkSource, ForkTarget,
@@ -24,13 +17,12 @@ use tutti_graph::{
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{
-    Amplitude, Beat, Bpm, ChannelLayout, NodeKey, OfflineClock, OfflineTransport, Param,
-    SampleRate, Samples, Tail, Timeline, UnitParam,
+    Amplitude, Beat, Bpm, ChannelLayout, NodeKey, OfflineClock, OfflineTransport, Param, Samples,
+    Tail, Timeline, UnitParam,
 };
 
-/// Output `c` is `base + c`: a graph node, and (for the `Net` comparison) a
-/// `Net` unit with the same arithmetic. Its `Clone` shares nothing, so it is
-/// inserted [`ForkByClone`].
+/// Output `c` is `base + c`, so which port feeds a channel reads straight off
+/// the render. Its `Clone` shares nothing, so it is inserted [`ForkByClone`].
 #[derive(Clone)]
 struct Consts {
     outs: usize,
@@ -52,44 +44,6 @@ impl Node for Consts {
         Status::Modified
     }
     fn reset(&mut self) {}
-}
-
-impl AudioUnit for Consts {
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        for (c, o) in output.iter_mut().enumerate() {
-            *o = self.base + c as f32;
-        }
-    }
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        for c in 0..self.outs {
-            output.channel_f32_mut(c)[..size].fill(self.base + c as f32);
-        }
-    }
-    fn inputs(&self) -> usize {
-        0
-    }
-    fn outputs(&self) -> usize {
-        self.outs
-    }
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(self.outs);
-        for c in 0..self.outs {
-            out.set(c, Signal::Latency(0.0));
-        }
-        out
-    }
-    fn get_id(&self) -> u64 {
-        0x464f_524b
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn footprint(&self) -> usize {
-        0
-    }
 }
 
 /// [`Consts`], forkable.
@@ -680,30 +634,15 @@ fn a_failing_fork_source_is_a_named_error_with_its_cause() {
         .is_ok());
 }
 
-/// Render `net` for `frames` frames of silence, planar.
-fn render_net(net: &mut Net, frames: usize) -> Vec<Vec<f32>> {
-    net.set_sample_rate(SampleRate(48_000.0));
-    net.allocate();
-    let ibuf = BufferVec::new(net.inputs());
-    let mut obuf = BufferVec::new(net.outputs());
-    let mut out = vec![Vec::new(); net.outputs()];
-    let mut done = 0;
-    while done < frames {
-        let n = (frames - done).min(MAX_BUFFER_SIZE);
-        net.process(n, &ibuf.buffer_ref(), &mut obuf.buffer_mut());
-        for (c, o) in out.iter_mut().enumerate() {
-            o.extend_from_slice(&obuf.channel_f32_mut(c)[..n]);
-        }
-        done += n;
-    }
-    out
-}
-
-/// **A node fork's outputs follow `Net::clone_isolated`, checked against
-/// `Net` itself**: channel `c` reads the node's port `min(c, outs - 1)` — a
-/// mono node on every channel, and a wider graph *clamped* to the node's
+/// **A node fork's outputs follow fundsp's `Net::clone_isolated`**, the
+/// rule it replaced: channel `c` reads the node's port `min(c, outs - 1)` —
+/// a mono node on every channel, and a wider graph *clamped* to the node's
 /// last port (stereo into six is L R R R R R), not wrapped as `pipe_output`
-/// wraps. Walked over a grid of node and graph widths.
+/// wraps. Walked over a grid of node and graph widths; since port `p` of
+/// [`Consts`] carries `base + p`, channel `c` must carry
+/// `base + min(c, outs - 1)` on every frame. (Until doc 013 Phase 5 this was
+/// checked against a `Net`'s render; `Net` is gone, so the rule is the
+/// figure.)
 ///
 /// Mutation: `c % outs` instead of the clamp → 2-into-3 reads port 0 on
 /// channel 2 → fails.
@@ -715,10 +654,9 @@ fn a_node_fork_fans_out_as_clone_isolated_does() {
                 outs: node_outs,
                 base: 10.0,
             };
-            let mut net = Net::new(0, graph_outs);
-            let id = net.push(Box::new(unit.clone()));
-            let mut want = net.clone_isolated(id).expect("has outputs").isolate();
-            let want = render_net(&mut want, 64);
+            let want: Vec<Vec<f32>> = (0..graph_outs)
+                .map(|c| vec![10.0 + c.min(node_outs - 1) as f32; 64])
+                .collect();
 
             let (mut ed, _exec) = Editor::new(prepare(64));
             let key = NodeKey(7);

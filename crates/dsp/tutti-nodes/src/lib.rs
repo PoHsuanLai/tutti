@@ -1,83 +1,44 @@
 //! DSP nodes for the Tutti audio engine.
 //!
-//! Every node here is an `AudioUnit`: it goes into a [`Net`](tutti_core::dsp::Net),
-//! gets wired, and renders. Nothing in this crate is fallible — there is no
-//! `Error` type — so a node is ready to run the moment it is built.
+//! Every node here is a graph node (`tutti_graph::Node`): it is inserted into
+//! a graph (`tutti_graph::{GraphBuilder, Editor}`), wired, prepared and
+//! rendered. Nothing in this crate is fallible — there is no `Error` type — so
+//! a node is ready to insert the moment it is built.
 //!
-//! # Live control values must live in shared storage (MANDATORY)
+//! # Live control values live in shared storage
 //!
-//! > A value a user can change **while the node is rendering** lives behind an
-//! > `Arc` — a [`Param<U>`], an `Arc<AtomicBool>`, an `Arc<AtomicU8>` — and its
-//! > setter takes **`&self`**. A `&mut self` setter on an `AudioUnit` means
-//! > exactly one thing: *restructure me, and expect a respawn.*
+//! A value a user can change **while the node is rendering** is a [`Param<U>`]
+//! cell (or an `Arc`'d atomic), reached through the controls or the
+//! `ParamSet` the node was inserted with, and its setter takes `&self`. The
+//! graph never clones a node to commit it, so a node's own fields are the
+//! running node's; the shared cell is how the control thread reaches them
+//! without a lock. (Under fundsp's `Net`, deleted in design doc 013 Phase 5,
+//! the frontend held clones of every vertex, so a control stored by value was
+//! silently lost on a live node; the rule predates the graph and still holds.)
 //!
-//! `Net`'s frontend holds **clones** of its vertices, and `Net::migrate` swaps
-//! the backend's unit back over any vertex it considers unchanged — so a control
-//! stored **by value** cannot be changed on a live node, and the failure is
-//! silent. `&self` is necessary but not sufficient: a plain `AtomicBool` field
-//! also permits `&self` and is still lost, because `Clone` copies the atomic
-//! rather than sharing it. The property that matters is **shared across clones**.
+//! A [`Param<U>`] carries one `f32` with its unit; anything wider (a layout, a
+//! table) is a typed control of its own, not a param.
 //!
-//! [`Param<U>`] stops where [`Setting`](tutti_core::Setting) stops: its
-//! payload is one `f32`, so anything wider leaves the `set()` path entirely.
-//! That is a property of the transport, not a limitation of `Param`.
-//!
-//! [`AudioUnit::set`] has an **empty default body**, which is the first of the
-//! three silent layers the README lists; the counted fourth is
-//! `Net::take_unaddressed_settings`.
-//!
-//! # Rate-dependent nodes are born at a placeholder rate (MANDATORY)
-//!
-//! > A node whose constructor doc says it **starts at [`SampleRate::DEFAULT`]**
-//! > is *not* ready to run. Call [`AudioUnit::set_sample_rate`] with the real
-//! > device rate before the first `process`, or the node renders **silently
-//! > wrong-rate audio**.
+//! # The graph supplies the rate
 //!
 //! Every time constant in this crate is derived from a sample rate: delay taps
 //! and ring lengths from [`Seconds`], filter coefficients from a cutoff in
 //! [`Hz`] against Nyquist, envelope attack/release coefficients, LFO phase
-//! increments. None can be computed until the rate is known, and the rate is a
-//! property of the *device*, not of the code — so these constructors seed
-//! [`SampleRate::DEFAULT`] and are corrected afterwards.
-//!
-//! **The failure is neither a panic nor silence.** At 48 kHz an uncorrected
-//! node is off by the 44100/48000 ratio — every delay time and filter cutoff
-//! lands ~8.8% away from what was asked for. A 500 ms echo returns at 459 ms; a
-//! 1 kHz cutoff sits at 1088 Hz. It sounds like plausible audio, which is why
-//! nothing downstream catches it. Same hazard and same ratio that
-//! `bevy_tutti`'s engine builder documents on the MIDI port manager.
-//!
-//! In practice the correction arrives through the graph:
-//! [`Net`](tutti_core::dsp::Net)'s own [`AudioUnit::set_sample_rate`] forwards
-//! to every unit it holds, and the engine calls it once the device is open. A
-//! node driven directly — a test, a bench, an offline render assembled by hand
-//! — has no such host and must make the call itself.
-//!
-//! Three of these constructors **allocate** against the placeholder rate (the
-//! delay lines, and the limiter's lookahead ring), so the corrective
-//! `set_sample_rate` reallocates. That is why the RT no-alloc suites call it
-//! outside their no-alloc gate rather than inside it.
-//!
-//! **Graph nodes are exempt**: [`SvfFilterNode`], [`EqBandNode`],
-//! [`LadderFilterNode`], [`CompressorNode`], [`GateNode`], [`LimiterNode`],
-//! [`BrickwallLimiterNode`], [`DelayLineNode`], [`ModDelayNode`],
-//! [`PhaserNode`], [`LfoNode`], the automation lane and (with `convolution`)
-//! the convolver are graph nodes (`tutti_graph::Node`), and the graph calls
-//! their `prepare` with the device rate before their first block — there is
-//! no path on which they run at the placeholder. A test drives one prepared
-//! (`tutti_graph::contract::prepared`, or a `tutti_graph::Solo`).
+//! increments. A constructor that needs one seeds [`SampleRate::DEFAULT`], and
+//! the graph calls the node's `prepare` with the device rate before its first
+//! block, so there is no path on which a node in a graph runs at the
+//! placeholder. A test drives one prepared (`tutti_graph::contract::prepared`,
+//! or a `tutti_graph::Solo`).
 //!
 //! Nodes carrying no rate-dependent quantity — [`BusStripNode`],
-//! [`ChannelSumNode`], [`DownmixNode`], [`DistortionNode`], all graph nodes too —
-//! are exempt and say nothing, because a wrong rate has nothing to skew. The placeholder is also
-//! what makes a rate-free constructor representable at all:
-//! [`ModDelayNode::chorus`] takes only a width, yet builds delay lines.
+//! [`ChannelSumNode`], [`DownmixNode`], [`DistortionNode`] — have nothing for a
+//! wrong rate to skew. The placeholder is also what makes a rate-free
+//! constructor representable at all: [`ModDelayNode::chorus`] takes only a
+//! width, yet builds delay lines.
 //!
-//! The quick start, the mechanism table, the full silent-failure ladder and the
-//! features are in the crate README, included below.
+//! The quick start, the mechanism table and the features are in the crate
+//! README, included below.
 //!
-//! [`AudioUnit::set`]: tutti_core::AudioUnit::set
-//! [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
 //! [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
 #![doc = include_str!("../README.md")]
 
@@ -98,16 +59,15 @@ pub use tutti_core::{
     Q,
 };
 
-// The boundary this crate holds: pure DSP unit types plus the `set(UnitParam)`
-// surface a host drives them through. DAW-param ECS policy — the shared param
-// pool, node authoring markers, spawners, reconcilers, deferred convolver load —
-// is the host's, and deliberately outside this workspace. Engine Bevy is the Net
-// pump only.
+// The boundary this crate holds: pure DSP graph nodes plus the `ParamSet` /
+// controls surface a host drives them through. DAW-param ECS policy — the
+// shared param pool, node authoring markers, spawners, reconcilers, deferred
+// convolver load — is the host's, and deliberately outside this workspace.
 
 pub mod buffer;
 
 mod lfo;
-// `LfoNode` is now `ModulatorNode<Lfo>` — the fundsp adapter over a pure
+// `LfoNode` is `ModulatorNode<Lfo>` — the graph node over a pure
 // `tutti_mod::Modulator`. `LfoShape`/`Lfo`/`Modulator` are re-exported from
 // `tutti-mod` through `lfo` so existing `use tutti_nodes::LfoShape` sites are
 // untouched.

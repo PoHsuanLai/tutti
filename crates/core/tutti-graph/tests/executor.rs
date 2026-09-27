@@ -1002,3 +1002,58 @@ fn a_sink_is_never_parked() {
     }
     assert_eq!(calls.load(Ordering::Relaxed), 10, "a sink runs every block");
 }
+
+/// **A commit that changes nothing sends nothing**, and every kind of change
+/// still sends: an edit through `spec_mut`, a new unit, a latency set by
+/// hand. The unchanged commits leave `in_flight` and the base plan where
+/// they were, so a host committing every frame compiles only when it edits.
+///
+/// Mutation (run): drop the unchanged check in `Editor::commit` → the second
+/// commit is in flight → fails here, and tutti-core's
+/// `a_no_op_commit_allocates_a_bounded_amount` allocates ~97 KiB → fails.
+/// Mutation (run): compare only the spec, not the shapes, and drop the
+/// `latency_cuts` term → still passes: `set_latency` writes the figure into
+/// the spec's node as well, so the spec comparison alone sees it. Those two
+/// terms are defensive (every path that writes a shape writes the spec
+/// too); nothing here can reach one without the other.
+#[test]
+fn an_unchanged_commit_sends_nothing_and_a_change_still_sends() {
+    let (mut ed, mut exec) = Editor::new(prepare(8));
+    ed.insert(SRC, "c", Unforkable(const_node(1.0)));
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
+    ed.commit().expect("commits");
+    assert_eq!(ed.in_flight(), 1);
+    let base = Arc::clone(ed.base().expect("sent"));
+
+    ed.commit().expect("an unchanged commit is Ok");
+    assert_eq!(ed.in_flight(), 1, "an unchanged commit sends nothing");
+    assert!(Arc::ptr_eq(ed.base().unwrap(), &base), "nor moves the base");
+
+    // Drained, and still nothing to send.
+    exec.apply_pending();
+    ed.collect();
+    ed.commit().expect("commits");
+    assert_eq!(
+        ed.in_flight(),
+        0,
+        "nothing changed since the executor took it"
+    );
+
+    // An edit through `spec_mut` sends.
+    ed.spec_mut().topology.outputs.push(Source::Zero);
+    ed.commit().expect("commits");
+    assert_eq!(ed.in_flight(), 1, "a spec edit sends");
+
+    // A new unit at the same key sends.
+    ed.insert(SRC, "c", Unforkable(const_node(2.0)));
+    ed.commit().expect("commits");
+    assert_eq!(ed.in_flight(), 2, "a pending unit sends");
+
+    // A latency set by hand sends.
+    ed.set_latency(SRC, tutti_types::Latency::new(Samples(3)))
+        .expect("a node");
+    ed.commit().expect("commits");
+    assert_eq!(ed.in_flight(), 3, "a latency change sends");
+    ed.commit().expect("commits");
+    assert_eq!(ed.in_flight(), 3, "and once sent, is unchanged again");
+}

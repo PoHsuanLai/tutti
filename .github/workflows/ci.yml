@@ -248,7 +248,8 @@ jobs:
   # Benchmarks: proved to RUN, never compared.
   #
   # GitHub's runners are shared and swing 30-50% on this workload, and the
-  # engine's own profile_stretch_clone documents an 81x spread on a QUIET
+  # engine's own profile_stretch_clone harness (deleted with `Net`, doc 013
+  # Phase 5; its figures are in doc 013) measured an 81x spread on a QUIET
   # machine. A timing threshold here would flap, and a flapping gate gets
   # `continue-on-error: true` within a month and then tests nothing — the same
   # death the pre-extraction workflow died. So this job runs every benchmark

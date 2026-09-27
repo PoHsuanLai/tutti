@@ -5,7 +5,7 @@ edition = "2021"
 description = "Core audio engine kernel - graph render, Transport, Metering, PDC"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
-keywords = ["audio", "dsp", "real-time", "daw", "fundsp"]
+keywords = ["audio", "dsp", "real-time", "daw"]
 categories = ["multimedia::audio"]
 
 [lints]
@@ -41,16 +41,10 @@ dyn-clone = { version = "1.0", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
 
 # The node contract — `AudioUnit`, the planar block buffers, the numeric tower,
-# the `Signal` routing vocabulary, `Setting`. Named directly rather than reached
+# the `Signal` routing vocabulary. Named directly rather than reached
 # through the fork: this crate re-exports the contract to the rest of the
 # engine, and a re-export should name the crate that *defines* what it forwards.
 tutti-node = { version = "0.0.1", path = "../tutti-node" }
-
-# Audio: fundsp's graph container (`Net`, which `Engine` no longer renders; doc
-# 013 Phase 3 PR 15) and DSP node library. What a consumer may reach through
-# this crate is the named list in `dsp` — see that module's docs. Goes in
-# Phase 5.
-fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../../vendor/fundsp-tutti", default-features = false }
 
 # The graph runtime (doc 013): the `tutti_graph::Executor` `Engine`
 # renders, its only runtime since Phase 3 PR 15. No cycle: tutti-graph depends

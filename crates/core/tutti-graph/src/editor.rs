@@ -271,6 +271,12 @@ pub struct Editor {
     /// The plan sent last: what the executor will be running once the queue
     /// drains, and what the next commit is compiled against.
     plan: Option<Arc<Plan>>,
+    /// The spec and shapes that plan was compiled from, when
+    /// [`commit`](Self::commit) sent it; `None` after a send by any other
+    /// path (a re-prepare, [`package`](Self::package)). A commit that finds
+    /// both unchanged, with nothing pending, sends nothing: it would compile
+    /// the same plan with an empty delta.
+    committed: Option<(GraphSpec, Shapes)>,
     /// A re-prepare between its two commits.
     repreparing: Option<Reprepare>,
     /// Why a re-prepare failed with the units out, if one did.
@@ -354,6 +360,7 @@ impl Editor {
             latency_cuts: BTreeSet::new(),
             next_gen: BTreeMap::new(),
             plan: None,
+            committed: None,
             repreparing: None,
             poisoned: None,
             limits: Limits::NONE,
@@ -996,7 +1003,10 @@ impl Editor {
             self.finish_reprepare(returned, rep)
         }));
         match outcome {
-            Ok(Ok((plan, resume, units))) => self.send(plan, resume, units),
+            Ok(Ok((plan, resume, units))) => {
+                self.committed = None;
+                self.send(plan, resume, units)
+            }
             Ok(Err(e)) => {
                 self.poisoned = Some(format!(
                     "the re-prepared units' shapes no longer compile against the graph: {e}"
@@ -1079,6 +1089,12 @@ impl Editor {
     /// it starts would put more than [`FADE_CAPACITY`] in flight. A running
     /// fade holds neither: its commit comes back when applied, and its slot
     /// on the fade-return ring is its own.
+    ///
+    /// A commit that changes nothing — the spec and shapes those of the last
+    /// commit, no unit pending, no crossfade or latency cut waiting — sends
+    /// nothing and returns `Ok`: it would compile the plan the executor
+    /// already has, with an empty delta. So it costs a comparison, not a
+    /// compile, and a host may commit every frame.
     pub fn commit(&mut self) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;
@@ -1089,6 +1105,16 @@ impl Editor {
             return Err(CommitError::Backpressure);
         }
         self.limits.outputs(self.spec.topology.outputs.len())?;
+        if self.pending.is_empty()
+            && self.fades.is_empty()
+            && self.latency_cuts.is_empty()
+            && self
+                .committed
+                .as_ref()
+                .is_some_and(|(spec, shapes)| *spec == self.spec && *shapes == self.shapes)
+        {
+            return Ok(());
+        }
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
         let (plan, mut delta) = compile(
             &valid,
@@ -1144,6 +1170,7 @@ impl Editor {
             .collect();
         self.fades.clear();
         self.send(plan, delta, units);
+        self.committed = Some((self.spec.clone(), self.shapes.clone()));
         Ok(())
     }
 
@@ -1169,6 +1196,7 @@ impl Editor {
         self.fade_room(&delta)?;
         crate::compile::verify::verify_fades(self.base().map(|p| &**p), &plan, &delta)
             .map_err(CommitError::Fade)?;
+        self.committed = None;
         self.send(plan, delta, units);
         Ok(())
     }

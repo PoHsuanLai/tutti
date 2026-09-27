@@ -194,13 +194,6 @@ bench-cmp BASE="main":
 bench-smoke:
     just bench -- --test
 
-# The profiling harnesses. These deliberately do NOT use criterion — read
-# their module docs for why (81x wall-clock spread; the question is the tail,
-# not the mean).
-profile-stretch:
-    cargo build -p tutti-sampler --profile profiling --example profile_stretch_clone
-    samply record target/profiling/examples/profile_stretch_clone
-
 # Samply a criterion bench. `--profile-time` turns criterion's own analysis
 # off, so the profile is of the code rather than of the statistics.
 profile-bench BENCH="engine_render" PKG="tutti-nodes" SECS="10":

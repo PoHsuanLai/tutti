@@ -6,10 +6,12 @@
 //!
 //! Memory sources only — **no butler, no disk, no page cache.** Streaming
 //! from disk is dominated by the filesystem and by prefetch state, which is
-//! not something criterion can summarise honestly; `examples/profile_stretch_clone.rs`
-//! is the harness for anything shaped like that, and its module doc explains
-//! why (an 81× wall-clock spread on identical work, where criterion's outlier
-//! *rejection* would discard exactly the samples that matter).
+//! not something criterion can summarise honestly; a counting-allocator and
+//! sampling-profiler harness is the instrument for anything shaped like that
+//! (the `profile_stretch_clone` example was one until doc 013 Phase 5
+//! deleted it with `Net`: an 81× wall-clock spread on identical work, where
+//! criterion's outlier *rejection* would discard exactly the samples that
+//! matter).
 //!
 //! `voices/stretch` is the case to watch: the phase vocoder is by far the
 //! most expensive thing in this crate, and `StretchFactor(1.0)` is a bypass,

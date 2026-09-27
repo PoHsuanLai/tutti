@@ -44,8 +44,7 @@ use bevy_ecs::prelude::*;
 #[cfg(feature = "modulation")]
 use bevy_log::warn;
 
-use tutti_core::dsp::NodeId;
-use tutti_core::AudioNode;
+use tutti_core::{AudioNode, NodeKey};
 use tutti_plugin::handles::PluginControls;
 
 use crate::graph::MetronomeRes;
@@ -64,18 +63,18 @@ use crate::plugin_host::editor::PluginEmitter;
 /// left behind by a node replaced by hand drives nothing.
 #[derive(Component, Debug, Clone)]
 pub struct PluginShadow {
-    node: NodeId,
+    node: NodeKey,
     controls: PluginControls,
 }
 
 impl PluginShadow {
     /// The controls captured from the plugin node that became `node`.
-    pub fn new(node: NodeId, controls: PluginControls) -> Self {
+    pub fn new(node: NodeKey, controls: PluginControls) -> Self {
         Self { node, controls }
     }
 
     /// The graph node these controls were captured from.
-    pub fn node(&self) -> NodeId {
+    pub fn node(&self) -> NodeKey {
         self.node
     }
 

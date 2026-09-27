@@ -8,7 +8,7 @@
 //!
 //! | `AudioGraphRes` | here |
 //! |---|---|
-//! | `insert` | `Editor::insert` of the node's own [`IntoNode`] at a [`NodeKey`] minted from a fresh `NodeId`, its controls handed back |
+//! | `insert` | `Editor::insert` of the node's own [`IntoNode`] at a [`NodeKey`] minted by `AudioNode::fresh`, its controls handed back |
 //! | `set_source`, `set_output_source`, `widen_outputs` | written into `editor.spec_mut()` |
 //! | `set_param` | the node's [`ParamSet`], when it has one |
 //! | `replace` | `Editor::replace_or_swap` with a [`Fade`]: a plain swap when there is nothing to fade from |
@@ -41,7 +41,6 @@
 
 use std::collections::BTreeMap;
 
-use tutti_core::dsp::NodeId;
 use tutti_core::{AudioNode, Compensation, CrossfadeCurve, Samples, Tail};
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
@@ -129,11 +128,11 @@ pub(crate) enum Committed {
     Retry,
 }
 
-/// `node`'s key: its `NodeId`'s bits. `NodeId::new` draws from a global
-/// counter, so a key minted this way is unique without a map, and
-/// [`AudioNode`] keeps wrapping a `NodeId`.
+/// `node`'s key. [`AudioNode::fresh`] draws it from
+/// [`NodeKey::fresh`]'s process-wide counter, so a key minted this way is
+/// unique without a map.
 pub(crate) fn key(node: AudioNode) -> NodeKey {
-    NodeKey(node.0.value())
+    node.0
 }
 
 /// The graph's `Prepare`: `rate`, `max_block`, and the device's callback
@@ -308,7 +307,7 @@ impl GraphRuntime {
     /// plays: a clip node's events, a synth's installed clip) goes to the
     /// editor. Address its params with [`set_node_params`](Self::set_node_params).
     pub(crate) fn insert<N: IntoNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
-        let id = AudioNode(NodeId::new());
+        let id = AudioNode::fresh();
         let controls = self.editor.insert(key(id), N::kind(), node);
         self.nodes.insert(
             key(id),
@@ -336,7 +335,7 @@ impl GraphRuntime {
         &mut self,
         client: Box<tutti_plugin::handles::PluginClient>,
     ) -> AudioNode {
-        let node = AudioNode(NodeId::new());
+        let node = AudioNode::fresh();
         let _controls = self.editor.insert(key(node), PLUGIN_KIND, client.bind());
         self.nodes.insert(key(node), Entry { node, params: None });
         self.edited = true;

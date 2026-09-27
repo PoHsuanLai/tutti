@@ -64,8 +64,9 @@ use super::{AudioGraphRes, GraphSource};
 
 /// The catalog id every entity-bound node carries.
 ///
-/// The value's `kind` is what a [`Catalog`](tutti_core::topology::Catalog)
-/// dispatches on when *building* a unit. Nothing in this adapter builds units
+/// A value's `kind` is what a catalog would dispatch on when *building* a
+/// unit from it (tutti-core's `topology::Catalog` did, until doc 013 Phase 5
+/// deleted that route). Nothing in this adapter builds units
 /// from a value — a unit arrives already boxed, from a host that owns it — so
 /// there is no kind to dispatch on, and inventing one per node type here would
 /// be a second, disagreeing name for something the host already knows.
@@ -117,7 +118,7 @@ impl LiveGraph {
 /// `NodeKey` is a stable identity chosen by the topology's author. Reusing the
 /// bits rather than allocating a parallel numbering means there is no second
 /// map to keep honest — the same reason [`PortSource::Node`] names an entity
-/// rather than a `NodeId`.
+/// rather than a `NodeKey`.
 pub fn key_of(entity: Entity) -> NodeKey {
     NodeKey(entity.to_bits())
 }

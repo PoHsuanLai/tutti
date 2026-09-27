@@ -1,13 +1,11 @@
 //! The `Topology` value: validation, folds, and structural identity.
 //!
-//! Every test here is a plain unit test with no `Net`, no `World`, no device and
-//! no audio callback — which is the point of the layer. The equivalent
-//! assertions today need `bevy_tutti`'s `App` plus a committed graph, which is
-//! why PDC is tested on a fixture and never on a production graph.
+//! Every test here is a plain unit test with no runtime, no `World`, no device
+//! and no audio callback — which is the point of the layer.
 //!
-//! The `Net` half — that a compiled graph agrees with the value it was compiled
-//! from — lives in `tutti-core/tests/topology_compile.rs`, because it needs the
-//! runtime this crate deliberately cannot name.
+//! The runtime half — that a compiled plan agrees with the value it was
+//! compiled from — is `tutti-graph`'s (`tests/compile_passes.rs`), because it
+//! needs the compiler this crate deliberately cannot name.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -383,4 +381,25 @@ fn topo_order_is_deterministic() {
     for _ in 0..10 {
         assert_eq!(t.clone().topo_order().expect("acyclic"), order);
     }
+}
+
+/// **`NodeKey::fresh` never hands out the same key twice**, from one thread
+/// or from several at once: 8 threads × 1000 calls, every key distinct.
+///
+/// Mutation (run): `fetch_add(0, …)` → every call returns the same key →
+/// fails. Mutation (run): a non-atomic `load` then `store(+1)` → racing
+/// threads read the same value → fails (in practice within one run of 8×1000).
+#[test]
+fn fresh_keys_are_distinct_across_threads() {
+    use std::collections::HashSet;
+    let handles: Vec<_> = (0..8)
+        .map(|_| std::thread::spawn(|| (0..1000).map(|_| NodeKey::fresh()).collect::<Vec<_>>()))
+        .collect();
+    let mut seen = HashSet::new();
+    for h in handles {
+        for k in h.join().expect("joins") {
+            assert!(seen.insert(k), "{k:?} handed out twice");
+        }
+    }
+    assert_eq!(seen.len(), 8000);
 }

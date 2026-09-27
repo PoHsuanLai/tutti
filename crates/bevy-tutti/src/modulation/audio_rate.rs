@@ -537,7 +537,7 @@ mod tests {
         assert!(
             !m.sources
                 .iter()
-                .any(|s| s.from.node() == tutti_types::graph::NodeKey(dropped_node.0.value())),
+                .any(|s| s.from.node() == dropped_node.key()),
             "the last route's source is the one left out"
         );
         assert!(commits(&app), "the graph still commits");

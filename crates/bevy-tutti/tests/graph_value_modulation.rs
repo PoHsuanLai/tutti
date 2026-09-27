@@ -32,7 +32,7 @@ use tutti_core::AudioNode;
 use tutti_graph::{ParamFrom, ParamMod};
 use tutti_mod::LfoShape;
 use tutti_nodes::{DistortionNode, ShapeKind};
-use tutti_types::graph::{NodeKey, OutPort};
+use tutti_types::graph::OutPort;
 use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 
 /// An app with the engine's plugins and one distortion, ready to modulate.
@@ -91,7 +91,7 @@ fn source_of(app: &App, lfo: Entity) -> ParamFrom {
         .0;
     let node = *app.world().get::<AudioNode>(e).expect("AudioNode");
     ParamFrom::Audio(OutPort {
-        node: NodeKey(node.0.value()),
+        node: node.key(),
         port: 0,
     })
 }

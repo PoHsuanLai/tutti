@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Nothing uses fundsp's `Net`** (design doc 013, "Phase 5, part 1").
+  **Breaking.** `AudioNode` wraps a `NodeKey`; the `Topology → Net`
+  compile route and the `dsp` re-exports are gone. `Editor::commit` with
+  nothing changed since the last commit sends nothing and compiles nothing.
+
+  | Was | Now |
+  |---|---|
+  | `tutti_core::dsp::{Net, NodeId, Source}`, `tutti::dsp`, `tutti_core::prelude::NodeId` | removed: build a graph with `tutti_graph::{GraphBuilder, Editor}`; a node's key is `NodeKey` |
+  | `AudioNode(NodeId)`, `AudioNode::id() -> NodeId`, `From<NodeId>` | `AudioNode(NodeKey)`, `AudioNode::key()`, `AudioNode::fresh()`, `From<NodeKey>` |
+  | `NodeId::new()` (a fresh key) | `NodeKey::fresh()` |
+  | `tutti_core::topology::{compile, Catalog, CompileError, Compiled}` | removed: `tutti_graph`'s compiler (`Editor::commit`) |
+  | `tutti_core::{unit_param, PdcDelay, PDC_DELAY_ID, Setting}` | removed: params are `ParamSet` ports; PDC delays are the plan's |
+  | bevy: `PluginShadow::{new, node}`, `ModParamsHandle::{new, of, node}` over `NodeId` | over `NodeKey` |
+  | tutti-sampler `VoicePoolNode(NodeId)` | `VoicePoolNode(NodeKey)` |
+  | tutti-sampler example `profile_stretch_clone`, `just profile-stretch` | removed (its subject was `Net::commit`; its findings are in doc 013) |
+  | tutti-graph bench `graph_render`'s `net` rows | removed; the `graph` rows stay |
+  | `Editor::commit` always compiled and sent a plan | an unchanged commit returns `Ok` and sends nothing |
+
 - **"Native" is dropped from the graph's names** (design doc 013, item 9).
   With `Legacy` gone every node is a `tutti_graph::Node`, so "native graph"
   (as against `Net`) and "native node" (as against a `Legacy` one) no

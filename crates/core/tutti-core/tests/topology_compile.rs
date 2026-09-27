@@ -10,8 +10,8 @@
 //!    best-tested files in the engine now answer questions about a value a unit
 //!    test can write down, and their answer is the runtime's.
 //! 3. A compiled graph renders the samples the value predicts. (Until doc 013
-//!    Phase 3 PR 15 it rendered through `Engine`; the engine takes only the
-//!    native graph now, and its end-to-end tests are `engine_graph.rs`'s.)
+//!    Phase 3 PR 15 it rendered through `Engine`; the engine takes only
+//!    `tutti_graph` now, and its end-to-end tests are `engine_graph.rs`'s.)
 
 use std::any::Any;
 use std::sync::Arc;
@@ -651,7 +651,7 @@ fn a_feedback_edge_is_refused_explicitly() {
 ///
 /// Until doc 013 Phase 3 PR 15 this rendered through `Engine::new(NetBackend)`
 /// with a `TransportClock` pushed beside the compiled graph, and also checked
-/// the playhead moved. The engine renders only the native graph now; the
+/// the playhead moved. The engine renders only `tutti_graph` now; the
 /// compiled `Net` is rendered as the `AudioUnit` it is (the compile seam goes
 /// with `Net` in Phase 5), and "the render ran" is the sample count.
 ///

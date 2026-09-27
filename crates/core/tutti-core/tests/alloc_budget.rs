@@ -198,7 +198,7 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
 /// engine, and so the two cannot drift apart unnoticed: if `rt_no_alloc` were
 /// ever deleted or made inert, this still fails.
 ///
-/// The chain is the native graph's (a sine and 16 gains): `Engine` renders
+/// The chain is the graph's (a sine and 16 gains): `Engine` renders
 /// nothing else
 /// since doc 013 Phase 3 PR 15. The build and commit budgets above stay on
 /// `Net`, which is still what `topology::compile` builds.

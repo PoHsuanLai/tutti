@@ -1,5 +1,5 @@
 //! The sample-accuracy contract suite (doc 013 §6, "Proof"), for the
-//! graph's own native nodes: an event at offset `k` produces output at frame
+//! graph's own nodes: an event at offset `k` produces output at frame
 //! `k + arrival + latency`, exactly, on every path — direct, behind PDC,
 //! through an event fan-in, across a recompile (an unrelated edit, and a
 //! generation bump upstream), across ragged blocks (1, 63, 64, 65, `MaxBlock`,

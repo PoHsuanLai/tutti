@@ -195,7 +195,7 @@ fn load_probe(env: &mut ProbeEnv, render_mode: u32) -> (PluginClient, PluginHand
     (client, handle)
 }
 
-/// `client`, bound, as the only node of a native graph rendering `BLOCK`-frame
+/// `client`, bound, as the only node of a graph rendering `BLOCK`-frame
 /// blocks: the global inputs feed its inputs, its outputs the global outputs.
 fn graph_of(client: PluginClient) -> Renderer {
     let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));

@@ -1,4 +1,4 @@
-//! A node's declared latency (`Shape::latency` for a native node,
+//! A node's declared latency (`Shape::latency` for a graph node,
 //! `AudioUnit::latency()` for a unit) must be the delay the output actually
 //! has — design doc 013, defects D1 and D3.
 //!
@@ -46,7 +46,7 @@ fn impulse_response<N: Node>(node: N, frames: usize) -> Vec<Vec<f32>> {
     out
 }
 
-/// The latency a node declares: one figure for its whole output. (A native
+/// The latency a node declares: one figure for its whole output. (A graph
 /// node has no per-output latency to get half wrong, which is what the
 /// `AudioUnit` form of these tests had to check through `route` per port.)
 fn declared(node: &dyn Node) -> Latency {
@@ -161,7 +161,7 @@ fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
 /// the compiler delayed the dry output by 24 000 samples and the chorus one
 /// by 24 000, i.e. PDC dragged the whole rest of the mix half a second late
 /// to line up with an echo. (This was `latency::plan` over a `Net`; the
-/// native graph's compiler is the PDC now.)
+/// graph's compiler is the PDC now.)
 ///
 /// Mutation (run): declaring `with_latency(Latency::new(Samples(24_000)))` in
 /// `DelayLineNode::shape` makes the compensation `[0, 24000, 24000]` and adds
@@ -194,7 +194,7 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
 /// `ChannelSumNode` replaced fundsp's `sum` as the engine's fan-in, and under
 /// `Net` its `route` once answered `Latency(0)` whatever arrived: a lookahead
 /// limiter summed with a dry path then read as a zero-latency graph, and an
-/// export pre-rolled by nothing. Both are native graph nodes now, and the
+/// export pre-rolled by nothing. Both are graph nodes now, and the
 /// compiler's PDC owns the fold: the graph reports the limiter's lookahead,
 /// and the dry path is delayed to meet it, so the impulse leaves **once**, at
 /// exactly that frame.

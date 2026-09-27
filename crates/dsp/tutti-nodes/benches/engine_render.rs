@@ -217,13 +217,13 @@ fn bench_transport_overhead(c: &mut Criterion) {
 // one executor block per device block.
 
 /// `sine_hz`, against `Io`.
-struct NativeSine {
+struct Sine {
     hz: f32,
     phase: f32,
     dt: f32,
 }
 
-impl tutti_graph::Node for NativeSine {
+impl tutti_graph::Node for Sine {
     fn shape(&self) -> tutti_graph::Shape {
         tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
             .with_tail(tutti_core::Tail::Unbounded)
@@ -252,14 +252,14 @@ impl tutti_graph::Node for NativeSine {
 
 /// An SVF lowpass with fundsp's `FixedSvf<f32, LowpassMode>` arithmetic,
 /// against `Io`, in place.
-struct NativeLowpass {
+struct Lowpass {
     cutoff: f32,
     q: f32,
     a: [f32; 3],
     ic: [f32; 2],
 }
 
-impl NativeLowpass {
+impl Lowpass {
     fn new(cutoff: f32, q: f32) -> Self {
         Self {
             cutoff,
@@ -270,7 +270,7 @@ impl NativeLowpass {
     }
 }
 
-impl tutti_graph::Node for NativeLowpass {
+impl tutti_graph::Node for Lowpass {
     fn shape(&self) -> tutti_graph::Shape {
         tutti_graph::Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
             .with_tail(tutti_core::Tail::Unknown)
@@ -318,7 +318,7 @@ fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
     let src: Box<dyn tutti_graph::Node> = if ours {
         tutti_graph::IntoNode::into_node(Osc::sine(Hz(440.0))).0
     } else {
-        Box::new(NativeSine {
+        Box::new(Sine {
             hz: 440.0,
             phase: 0.0,
             dt: 0.0,
@@ -336,7 +336,7 @@ fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
             ))
             .0
         } else {
-            Box::new(NativeLowpass::new(cutoff, 0.7))
+            Box::new(Lowpass::new(cutoff, 0.7))
         };
         let k = NodeKey(1 + i as u64);
         ed.insert(k, "lowpass", Unforkable(f));

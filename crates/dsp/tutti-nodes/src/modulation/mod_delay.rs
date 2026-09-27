@@ -116,7 +116,7 @@ struct ModDelayControls {
 ///
 /// # In a graph
 ///
-/// A native node ([`IntoNode`]), `N` in and `N` out, with zero latency: the
+/// A graph node ([`IntoNode`]), `N` in and `N` out, with zero latency: the
 /// modulated delay is the effect's sound, not processing latency, and PDC
 /// would otherwise delay every other path by the base delay (design doc 013,
 /// D1). Inserted, its controls are a [`ParamSet`] over rate

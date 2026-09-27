@@ -3,7 +3,7 @@
 //! behind an `Arc`, and shared by every convolver built from it.
 //!
 //! The partitioned convolution is the one `fft-convolver` 0.3 runs (its
-//! `FFTConvolver`, which this crate used until the native port), written here
+//! `FFTConvolver`, which this crate used until the `tutti_graph::Node` port), written here
 //! over the same `realfft` transforms with the same arithmetic in the same
 //! order: an output is bit-identical to it (checked bit for bit against
 //! `fft-convolver` 0.3 when this landed, IRs of 0 to 5000 samples at

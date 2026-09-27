@@ -7,7 +7,7 @@ out to a file.
 
 Four live pieces, and recording is just a pump between two of them:
 
-- `MicMonitorNode` — the read side, a native graph node over a device-filled
+- `MicMonitorNode` — the read side, a graph node over a device-filled
   ring, so a live input can sit anywhere in the graph. Inserted unforkable: an
   export of a graph holding the live mic is refused, naming it.
 - `TapIn` — the *other* read side: the analysis tap's consumer end adapted to

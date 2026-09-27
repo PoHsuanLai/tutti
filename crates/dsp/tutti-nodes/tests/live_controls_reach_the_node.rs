@@ -13,7 +13,7 @@
 //! Under `Net` the second half was a trap: its frontend held a clone of every
 //! unit, a by-value write landed on the clone, and the next commit discarded
 //! it — no error, the fader moved on screen and not in the sound. This file
-//! pinned that as `live_value_survives_commit.rs`. A native node leaves no
+//! pinned that as `live_value_survives_commit.rs`. A graph node leaves no
 //! clone to write: once inserted it belongs to the executor, so a `&mut self`
 //! setter on it does not compile. What is left to pin is the other half —
 //! that the shared path reaches the node that renders, across a commit — and

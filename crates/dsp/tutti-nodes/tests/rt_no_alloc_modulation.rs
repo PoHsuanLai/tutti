@@ -2,7 +2,7 @@
 //!
 //! Covers `LfoNode` (free-running and beat-synced), `DelayLineNode` (mono,
 //! stereo cross-fed, 6-wide), and the modulation effects `ModDelayNode`
-//! (chorus and flanger) and `PhaserNode`. They are native graph nodes, each
+//! (chorus and flanger) and `PhaserNode`. They are graph nodes, each
 //! driven alone in a graph by `tutti_graph::contract::BlockRig`: its `prepare`
 //! (which sizes the delay lines and the block scratch) runs when the rig is
 //! built, outside the gate; the gate walks only `process`.
@@ -16,7 +16,7 @@ use tutti_nodes::{DelayLineNode, LfoNode, LfoShape, ModDelayNode, PhaserNode};
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-/// A native node through `BlockRig`: its inputs an alternating signal of
+/// A node through `BlockRig`: its inputs an alternating signal of
 /// `amplitude`, 32 warm-up blocks, then `blocks` blocks under
 /// `assert_no_alloc`, `between(i)` run before each (a control move).
 fn gate<N: IntoNode>(node: N, amplitude: f32, blocks: usize, mut between: impl FnMut(usize)) {

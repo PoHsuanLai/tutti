@@ -18,7 +18,7 @@
 //! [`graph`](crate::graph) with the rest of the per-frame machinery.
 //!
 //! The rest is already the right shape to hold directly: [`WavOut`] is handed
-//! to a pump, and [`MicMonitorNode`] is a native graph node
+//! to a pump, and [`MicMonitorNode`] is a graph node
 //! ([`AudioGraphRes::insert`](crate::graph::AudioGraphRes::insert),
 //! unforkable: an export of a graph holding the live mic is refused, naming
 //! it) declared through [`PortSources`](crate::graph::PortSources) like any

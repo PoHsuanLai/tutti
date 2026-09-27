@@ -91,7 +91,7 @@ fn allpass_coeff(sweep_hz: f32, sr: f32) -> f32 {
 ///
 /// # In a graph
 ///
-/// A native node ([`IntoNode`]), `N` in and `N` out, with no latency.
+/// A graph node ([`IntoNode`]), `N` in and `N` out, with no latency.
 /// Inserted, its controls are a [`ParamSet`] over rate ([`UnitParam::Rate`]),
 /// depth ([`UnitParam::Depth`]), feedback ([`UnitParam::Feedback`]) and mix
 /// ([`UnitParam::Wet`]); a fork starts from the values last set through it.

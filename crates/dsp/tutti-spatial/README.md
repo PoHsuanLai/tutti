@@ -48,7 +48,7 @@ not click.
 
 ## Quick start
 
-A panner alone: stereo in, one output per speaker. Both panners are native
+A panner alone: stereo in, one output per speaker. Both panners are
 graph nodes (`tutti_graph::Node`); inserting one hands back its controls.
 
 ```rust
@@ -131,7 +131,7 @@ before it renders, and its placement is the one set when it was taken.
 ## Node ids
 
 The `AudioUnit` fingerprints in `node_id.rs` are **persisted values** and must not
-be renumbered. Both panners are native nodes now and report none, but the ids
+be renumbered. Both panners are graph nodes now and report none, but the ids
 stay reserved. `assert_unique` guards them within this crate; cross-crate
 uniqueness rests on the mnemonic convention described in `tutti_core::node_id`.
 

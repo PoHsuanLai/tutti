@@ -241,17 +241,17 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
 fn exports_render_their_graph_as_wired_fresh() {
     let mut app = app_over(graph_on());
     let filter = chain(&mut app);
-    let native_master = export(&mut app, buffers(ExportSource::Master, 0.25)).planes();
-    let native_node = export(&mut app, buffers(ExportSource::Node(filter), 0.25)).planes();
+    let forked_master = export(&mut app, buffers(ExportSource::Master, 0.25)).planes();
+    let forked_node = export(&mut app, buffers(ExportSource::Node(filter), 0.25)).planes();
     let (fresh_master, fresh_node) = chain_fresh(0.25);
-    for (what, fresh, native) in [
-        ("master", &fresh_master, &native_master),
-        ("node", &fresh_node, &native_node),
+    for (what, fresh, forked) in [
+        ("master", &fresh_master, &forked_master),
+        ("node", &fresh_node, &forked_node),
     ] {
-        assert_eq!(fresh.len(), native.len(), "{what}: width");
-        let peak = native[0].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert_eq!(fresh.len(), forked.len(), "{what}: width");
+        let peak = forked[0].iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.1, "{what}: silent");
-        for (c, (a, b)) in fresh.iter().zip(native).enumerate() {
+        for (c, (a, b)) in fresh.iter().zip(forked).enumerate() {
             assert_eq!(a.len(), b.len(), "{what}: length of channel {c}");
             if let Some(i) = a
                 .iter()
@@ -267,14 +267,14 @@ fn exports_render_their_graph_as_wired_fresh() {
     }
     assert_golden(
         "the master export",
-        digest(&native_master),
+        digest(&forked_master),
         0xccbc_b417_89a0_36e4,
     );
     // And the node export is the node: both channels are the filter (a mono
     // node clamps across a stereo root), which is the master's channel 0.
-    assert_eq!(native_node[0], native_master[0]);
-    assert_eq!(native_node[1], native_master[0]);
-    assert_ne!(native_master[1], native_master[0]);
+    assert_eq!(forked_node[0], forked_master[0]);
+    assert_eq!(forked_node[1], forked_master[0]);
+    assert_ne!(forked_master[1], forked_master[0]);
 }
 
 /// A source that steps from 0 to 1 at frame `LATE` and declares `LATE`
@@ -761,7 +761,7 @@ mod plugin {
         unsafe { std::env::set_var(key, value.to_string()) };
     }
 
-    /// An engine-less native app with the hosting and sequencing plugins, and
+    /// An engine-less app with the hosting and sequencing plugins, and
     /// the reference plugin loaded on an entity named "Probe" in `mode`.
     fn app_with_probe(mode: u32) -> (App, Entity) {
         app_with_probe_at(mode, clap_probe())
@@ -1297,7 +1297,7 @@ mod synths {
     /// value an export's fork starts from: the exported note at a quarter
     /// volume peaks at a quarter of the note at unity. Before the synth's
     /// params were a `ParamSet` (its controls were `()`), an `AudioParam` on
-    /// a native synth reached nothing.
+    /// the synth node reached nothing.
     ///
     /// Mutation (run): the synth registered with no params (`impl GraphNode
     /// for PolySynth {}` instead of `param_graph_node!`) → the live cell
@@ -1384,12 +1384,12 @@ mod synths {
     fn a_synth_node_export_plays_its_clip() {
         let (mut app, synth) = app_with(poly());
         install_clip(&mut app, synth);
-        let native = export(&mut app, request(ExportSource::Node(synth), RATE)).planes();
+        let exported = export(&mut app, request(ExportSource::Node(synth), RATE)).planes();
         let reference = reference(poly(), RATE);
-        assert_note_at_beat_1("PolySynth node export", RATE, &native, &reference);
+        assert_note_at_beat_1("PolySynth node export", RATE, &exported, &reference);
         assert_golden(
             "the synth's node export",
-            digest(&native),
+            digest(&exported),
             0x2f47_791e_730f_81b5,
         );
     }
@@ -1681,7 +1681,7 @@ mod disk {
     /// `detached`) — the offline read never asks that cell's butler to seek,
     /// so the live side plays on untouched with or without it (run: every
     /// disk test passes). Under `Net` the fork took the live path, and that
-    /// sharing made the live frames jump; a native fork has no live path to
+    /// sharing made the live frames jump; a fork now has no live path to
     /// take, so the live-side assertion pins an outcome the structure
     /// guarantees rather than one a one-line mutation can break.
     #[test]

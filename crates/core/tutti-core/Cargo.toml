@@ -52,7 +52,7 @@ tutti-node = { version = "0.0.1", path = "../tutti-node" }
 # Phase 5.
 fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../../vendor/fundsp-tutti", default-features = false }
 
-# The native graph runtime (doc 013): the `tutti_graph::Executor` `Engine`
+# The graph runtime (doc 013): the `tutti_graph::Executor` `Engine`
 # renders, its only runtime since Phase 3 PR 15. No cycle: tutti-graph depends
 # on no tutti crate but tutti-types.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }

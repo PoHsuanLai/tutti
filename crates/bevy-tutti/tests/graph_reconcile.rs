@@ -325,7 +325,7 @@ mod audio_param {
         let drive = DriveCell(unit.drive());
         let mut graph = AudioGraphRes::headless(0, 1);
         graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        // A native node: a param set by address writes the cell it reads, which
+        // A `ParamNode`: a param set by address writes the cell it reads, which
         // it reads on its next block. `node_drive` renders a frame before it
         // reads all the same.
 
@@ -337,8 +337,8 @@ mod audio_param {
         app.add_plugins(TuttiModulationPlugin);
         app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 
-        // Captured before it goes in, as every insertion path does: a native
-        // node's controls are its `ParamSet`, addressed on the node so an
+        // Captured before it goes in, as every insertion path does: a
+        // `ParamNode`'s controls are its `ParamSet`, addressed on the node so an
         // `AudioParam` writes through it (what `spawn_audio_node` does).
         let controls = unit.captured();
         let node = {
@@ -613,10 +613,10 @@ mod engine_nodes {
     /// this test's assertion on its two ports, went with `Legacy`: no node
     /// reads the beat as a signal any more.)
     ///
-    /// Until the click's native port it took the beat from the clock's two
+    /// Until the click's `Node` port it took the beat from the clock's two
     /// ports (the edge `build_into` declared, `PortSources::stereo_from`), and
     /// this pinned that edge: without it the click read beat 0 forever. The
-    /// native click reads its block's transport (D8, design doc 013) and
+    /// click now reads its block's transport (D8, design doc 013) and
     /// cannot miss a wire.
     ///
     /// Ignored: `build_into`

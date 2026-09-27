@@ -162,7 +162,7 @@ fn print_goldens() {
 /// per-block read and the per-sample read coincide, and the table was
 /// captured from 64-frame blocks — agreement is also the old
 /// `process_matches_tick` property. The table was captured through
-/// `AudioUnit::process` before the port; the native node renders it
+/// `AudioUnit::process` before the port; the graph node renders it
 /// unchanged.
 ///
 /// Mutation (each tried): dropping the `* gain` for every channel but 0 in the

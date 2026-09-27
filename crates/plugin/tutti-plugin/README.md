@@ -5,7 +5,7 @@ Out-of-process VST2, VST3, CLAP and AU plugin hosting.
 ## What this is
 
 Loads audio plugins in isolated subprocesses, bridges audio + MIDI over shared
-memory, and exposes each plugin as a node of tutti's native graph
+memory, and exposes each plugin as a node of tutti's graph
 (`tutti_graph`). A crash inside a plugin stays contained to its subprocess — the
 host keeps running and reports the error.
 

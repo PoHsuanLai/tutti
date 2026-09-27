@@ -9,7 +9,7 @@
 //! `stretch::Unit`, whose fixed-capacity `RtScratch` buffers make `process`
 //! non-allocating for any block size up to the preallocated maximum.
 //!
-//! The sampler's nodes are native (doc 013 items 8 and 9): each is driven
+//! The sampler's nodes are graph nodes (doc 013 items 8 and 9): each is driven
 //! through `tutti_graph::contract::Direct`, whose buffers are built once, under
 //! a rolling transport moved after every block as a host moves it. The
 //! `AudioUnit` era's `tick` gates are one-frame blocks now — the node has no
@@ -260,7 +260,7 @@ fn voice_pool_process_steady_state_is_allocation_free() {
 /// a clone. Since doc 013 item 7 the clone needs no `allocate` first: its
 /// filters build their own scratch, and the pool builds its own block lanes
 /// (the slot reads through `stretch::Unit::filter_lanes` into them). (The
-/// native graph never clones a node — a pool's fork is a fresh, empty pool —
+/// graph never clones a node — a pool's fork is a fresh, empty pool —
 /// so a clone is what a host holding a template makes.)
 ///
 /// Mutation (run): the pool building its block lanes in `process` rather

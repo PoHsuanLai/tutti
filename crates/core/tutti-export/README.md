@@ -45,10 +45,10 @@ A config is a struct literal, so a caller states what it means and lets
 so forgetting a transport is a compile error rather than a silently silent
 render.
 
-The graph is the native one (`tutti_graph`), built with its `GraphBuilder` and
+The graph is `tutti_graph`'s, built with its `GraphBuilder` and
 prepared at the render's rate (`RenderGraph::prepare`): a graph prepared at
 another rate is refused rather than re-rated. A host exporting its live graph
-forks it instead, with `RenderGraph::fork`. The native graph is the only one
+forks it instead, with `RenderGraph::fork`. That graph is the only one
 an export renders: fundsp's `Net` is not accepted (doc 013 Phase 3 PR 14).
 
 ```rust

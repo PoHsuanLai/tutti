@@ -179,7 +179,7 @@ impl HrtfBinauralNode {
     }
 }
 
-/// A native node: stereo in, stereo out.
+/// A graph node: stereo in, stereo out.
 ///
 /// # Latency and tail
 ///
@@ -419,7 +419,7 @@ mod tests {
     }
 
     /// Through PDC: a binaural track on outputs 0/1 beside a dry path on 2,
-    /// in a native graph. The compiler must delay the dry path by the
+    /// in a graph. The compiler must delay the dry path by the
     /// declared latency, so an impulse leaves all three outputs on one frame;
     /// with the old pass-through `route` nothing was compensated and the
     /// binaural track simply arrived late.

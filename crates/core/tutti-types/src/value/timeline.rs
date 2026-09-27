@@ -44,7 +44,7 @@ use super::units::{Beat, BeatDuration, Bpm, SampleRate};
 /// How far past a frame a beat may fall, in frames, and still land on it.
 ///
 /// A millionth of a frame is far below anything musical (20 ns at 48 kHz).
-/// The native graph's beat-timed commands (`tutti_graph::Env::due`) have used
+/// The graph's beat-timed commands (`tutti_graph::Env::due`) have used
 /// this tolerance since they landed; it moved here so every reader uses the
 /// same one.
 ///

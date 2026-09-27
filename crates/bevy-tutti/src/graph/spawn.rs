@@ -220,7 +220,7 @@ where
             return;
         }
         let controls = node.captured();
-        let swap: Box<dyn NativeSwap> = Box::new(Swap(node));
+        let swap: Box<dyn ErasedSwap> = Box::new(Swap(node));
         apply_crossfade(
             world,
             entity,
@@ -260,7 +260,7 @@ enum Incoming {
     /// A [`GraphNode`], its type erased. In a `Mutex` only to be
     /// `Sync` (a node is `Send`, not `Sync`), which a parked request in
     /// [`PendingCrossfades`] must be; it is only ever taken whole.
-    Node(std::sync::Mutex<Box<dyn NativeSwap>>),
+    Node(std::sync::Mutex<Box<dyn ErasedSwap>>),
     /// A hosted plugin, bound on the way in.
     #[cfg(feature = "plugin")]
     Plugin(Box<tutti_plugin::handles::PluginClient>),
@@ -272,7 +272,7 @@ type Bind = Box<dyn FnOnce(&mut EntityWorldMut) + Send>;
 /// A node waiting to be swapped in, its type erased: what
 /// [`crossfade_audio_node`] hands [`apply_crossfade`], and parks while the
 /// graph re-prepares.
-trait NativeSwap: Send {
+trait ErasedSwap: Send {
     /// Swap it in under `node`; on success, what binds its controls.
     fn swap(
         self: Box<Self>,
@@ -280,12 +280,12 @@ trait NativeSwap: Send {
         node: AudioNode,
         fade: tutti_core::Seconds,
         curve: tutti_core::CrossfadeCurve,
-    ) -> Result<Bind, ReplaceRefused<Box<dyn NativeSwap>>>;
+    ) -> Result<Bind, ReplaceRefused<Box<dyn ErasedSwap>>>;
 }
 
 struct Swap<N>(N);
 
-impl<N> NativeSwap for Swap<N>
+impl<N> ErasedSwap for Swap<N>
 where
     N: GraphNode,
     N::Controls: Send + Sync + 'static,
@@ -296,7 +296,7 @@ where
         node: AudioNode,
         fade: tutti_core::Seconds,
         curve: tutti_core::CrossfadeCurve,
-    ) -> Result<Bind, ReplaceRefused<Box<dyn NativeSwap>>> {
+    ) -> Result<Bind, ReplaceRefused<Box<dyn ErasedSwap>>> {
         match graph.replace(node, self.0, fade, curve) {
             Ok(controls) => {
                 graph.set_node_params(node, N::params(&controls));

@@ -210,7 +210,7 @@ impl OfflineTimeline {
         self.loop_range
     }
 
-    /// The block about to be rendered, as a native graph executor takes it:
+    /// The block about to be rendered, as a graph executor takes it:
     /// the transport at the block's first frame, and the changes inside it.
     ///
     /// The transport is this timeline at its current playhead: rolling (an

@@ -31,7 +31,7 @@ pub(crate) fn tempo_in_effect(asked: Bpm, in_force: Bpm) -> Bpm {
     }
 }
 
-/// The untimed transport inputs a native graph block is rendered under,
+/// The untimed transport inputs a graph block is rendered under,
 /// read **once** per block (at the start of the engine's walk): a store from
 /// the control thread lands at the next block, never at a cut in this one.
 /// Only a command the engine applies changes them mid-block
@@ -221,7 +221,7 @@ impl TransportClock {
     }
 
     /// Take a pending seek (when `take_seek`) and `control`'s tempo, and
-    /// report the transport from this frame on under `control`, as a native
+    /// report the transport from this frame on under `control`, as a
     /// graph block sees it ([`tutti_graph::Transport`]). The seek is taken
     /// only at a block's start and after a motion command, the two points
     /// where the motion machine (this thread) can have requested one.

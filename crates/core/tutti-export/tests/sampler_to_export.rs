@@ -12,7 +12,7 @@
 //! A placed voice derives its read position from the playhead. Live, that
 //! playhead is the audio callback; here it is `render_to_file` advancing an
 //! [`OfflineTimeline`] once per block. The voice reads that clock from its
-//! block's `Env` (the sampler's nodes are native, doc 013 items 8 and 9), so
+//! block's `Env` (the sampler's nodes are graph nodes, doc 013 items 8 and 9), so
 //! this test also pins that what the export's `RenderClock` hands the graph
 //! is what the voice plays — a render whose clock advanced at a different rate
 //! from the voice's would produce a file that is silent, truncated, or
@@ -38,7 +38,7 @@
 //! of band, and `render_graph` had to render a graph holding one chunk-major,
 //! 64 frames across every node, or every chunk of a 1024-frame block read the
 //! block's first beat (measured, the dry voice exported at ~768 Hz, not
-//! 440). A native graph renders whole blocks.
+//! 440). The graph renders whole blocks.
 //!
 //! Mutation (run): `interp::place` seating each piece at the block's first
 //! beat (`run.beat_at(e)` → `run.beat_at(0)`, the `Legacy` failure moved

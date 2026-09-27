@@ -117,7 +117,7 @@ pub mod sampler;
 pub mod soundfont;
 
 /// The polyphonic synth, re-exported whole from `tutti-polysynth`. There is no
-/// adapter code: `PolySynth` is a native graph node spawned with
+/// adapter code: `PolySynth` is a graph node spawned with
 /// `spawn_audio_node`, its one ECS touchpoint the `GraphNode` registration in
 /// `graph/events.rs` (its params by address, so an `AudioParam` reaches it).
 #[cfg(feature = "synth")]
@@ -125,7 +125,7 @@ pub use tutti_polysynth as polysynth;
 
 /// Spatial audio, re-exported whole from `tutti-spatial`. The only adapter
 /// code is a `GraphNode` impl per panner (`graph::events`): the VBAP /
-/// binaural panners are native graph nodes, spawned with `spawn_audio_node`
+/// binaural panners are graph nodes, spawned with `spawn_audio_node`
 /// (the binaural one with the `hrtf` feature), and `build_vbap_mix` assembles
 /// a subgraph into a `tutti_graph::GraphBuilder`.
 #[cfg(feature = "spatial")]

@@ -94,8 +94,8 @@ fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
     r.render_input(&refs)
 }
 
-/// A native node's parts, its controls dropped.
-fn native<N: IntoNode>(node: N) -> NodeParts<()> {
+/// A node's parts, its controls dropped.
+fn parts_of<N: IntoNode>(node: N) -> NodeParts<()> {
     let NodeParts { node, fork, .. } = node.into_parts();
     NodeParts {
         node,
@@ -145,7 +145,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_frequency(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: 200.0,
             hi: 8_000.0,
@@ -158,7 +158,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_q(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: 0.5,
             hi: 8.0,
@@ -171,7 +171,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_frequency(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: 200.0,
             hi: 8_000.0,
@@ -184,7 +184,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_resonance(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: 0.0,
             hi: 0.9,
@@ -197,7 +197,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_drive(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: 1.0,
             hi: 8.0,
@@ -210,7 +210,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_feedback(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: 0.0,
             hi: 0.9,
@@ -223,7 +223,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_delay_time(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: 0.0002,
             hi: 0.0008,
@@ -236,7 +236,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_drive(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: 0.5,
             hi: 5.0,
@@ -249,7 +249,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: -40.0,
             hi: 0.0,
@@ -262,7 +262,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: -60.0,
             // Above the noise's peak: the gate stays shut.
@@ -276,7 +276,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_ceiling(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: -12.0,
             hi: -0.3,
@@ -289,7 +289,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: -20.0,
             hi: -1.0,
@@ -302,7 +302,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_ceiling(v);
                 }
-                native(n)
+                parts_of(n)
             },
             lo: -12.0,
             hi: 0.0,
@@ -315,7 +315,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_volume(Amplitude(v));
                 }
-                native(n)
+                parts_of(n)
             },
             lo: 0.2,
             hi: 0.9,
@@ -328,7 +328,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_pan(tutti_types::Pan(v));
                 }
-                native(n)
+                parts_of(n)
             },
             lo: -1.0,
             hi: 1.0,
@@ -396,7 +396,7 @@ fn each_fed_param_is_the_one_the_dsp_reads() {
 /// output of a modulated drive, from the unmodulated node.
 fn plain_distortion(d: f32) -> Vec<f32> {
     render(
-        native(DistortionNode::with_channels(1, ShapeKind::Tanh, d)),
+        parts_of(DistortionNode::with_channels(1, ShapeKind::Tanh, d)),
         None,
     )
     .remove(0)

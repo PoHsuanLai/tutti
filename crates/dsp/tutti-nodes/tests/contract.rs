@@ -8,7 +8,7 @@
 //!
 //! Each row is a defect class from doc 013:
 //!
-//! - **LimiterNode** (native) — a lookahead: its latency is real, and the
+//! - **LimiterNode** — a lookahead: its latency is real, and the
 //!   ring must delay by exactly the figure its shape declares.
 //! - **ConvolverNode** — one FFT block of latency for the *whole* output
 //!   (D3): at mix 0 the output is all dry, so a dry half that is not delayed
@@ -73,7 +73,7 @@ fn stereo_limiter_row() -> Row {
 }
 
 /// A 500 ms echo at mix 0.5: the dry half is the response, on the
-/// excitation's own frame. A native node, so the row runs it as itself.
+/// excitation's own frame. A `tutti_graph::Node`, so the row runs it as itself.
 fn delay_line_row() -> Row {
     Row::new(
         "DelayLineNode (500 ms echo, mix 0.5)",
@@ -100,7 +100,7 @@ mod convolution {
     /// A unit-impulse IR, so the wet path is a pure delay of the block; at
     /// `mix` the dry and wet shares leave on one frame. The FFT leaves noise
     /// far under the threshold; the response is `0.25` (dry + wet shares of
-    /// the impulse). A native node, so the row runs it as itself.
+    /// the impulse). A `tutti_graph::Node`, so the row runs it as itself.
     fn convolver_row(mix: f32) -> Row {
         Row::new(
             &format!("ConvolverNode (256-frame block, mix {mix})"),

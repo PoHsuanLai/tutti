@@ -21,7 +21,7 @@ pub use tutti_types::value::{
 
 mod engine;
 
-// The shape of a node swap: the native graph's (`Editor::replace` follows
+// The shape of a node swap: the graph's (`Editor::replace` follows
 // it), at the engine root. (`net_fade`, its conversion to fundsp's
 // `sequencer::Fade` for `Net::crossfade`, went with the last `Net` fixture
 // that crossfaded, doc 013 Phase 3 PR 15; the law is pinned in tutti-graph's
@@ -190,7 +190,7 @@ pub mod dsp {
     //! Putting the contract *below* the fork is the one direction that is none
     //! of those, which is what `tutti-node` does.
     //!
-    //! # Per-block param delivery (`Env`) — the native graph's
+    //! # Per-block param delivery (`Env`) — `tutti_graph`'s
     //!
     //! The open question this module inherited: a `Net` node learns a param
     //! change through [`Setting`](crate::Setting), a queued message its
@@ -210,8 +210,8 @@ pub mod dsp {
     //! the buffers — the audio thread takes a single `RtRef` per block and every
     //! node reads from it, rather than each node draining its own mailbox. The
     //! trait is now `tutti-node`'s, so *adding the method* is finally available.
-    //! That is what the native graph did: its nodes take an `Env` per block
-    //! (`tutti_graph::Cx`), and `Engine` renders only the native graph. A
+    //! That is what `tutti_graph` did: its nodes take an `Env` per block
+    //! (`tutti_graph::Cx`), and `Engine` renders only that graph. A
     //! `Net` never gets one: its backend keeps its `Net` private and exposes no
     //! `set`, which is the stop condition graph plan PR 3 hit.
     // ── The graph runtime ───────────────────────────────────────────────────
@@ -225,7 +225,7 @@ pub mod dsp {
     //
     // `NetBackend`, `Net`'s audio-thread half, is not re-exported anywhere:
     // it existed here so a host could hand one to `Engine::new`, and that
-    // constructor now takes the native graph.
+    // constructor now takes a `tutti_graph::Executor`.
     pub use fundsp::net::{Net, NodeId, Source};
 
     // Deliberately absent, because the engine owns better: the operator-DSL

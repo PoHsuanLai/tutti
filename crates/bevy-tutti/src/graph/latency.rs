@@ -365,7 +365,7 @@ mod tests {
     /// compiled plan compensates by, zeros and all (the fold reports no
     /// channels when nothing is latent; the plan a zero per output).
     ///
-    /// Mutation (run): `NativeGraph::planned_compensation` returning the
+    /// Mutation (run): `GraphRuntime::planned_compensation` returning the
     /// plan's channels reversed → the check panics on the skewed graph.
     #[cfg(debug_assertions)]
     #[test]

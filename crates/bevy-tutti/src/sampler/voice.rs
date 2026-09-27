@@ -1,8 +1,8 @@
 //! Spawning a sampler voice as an ECS-owned graph node.
 //!
 //! One [`VoiceNode`] per entity, wired like any other node — it goes in as a
-//! native [`GraphNode`] (`spawn_audio_node` / `insert_and_bind`, the path every
-//! ported node takes), [`PortSources`](crate::graph::PortSources) on a sink
+//! [`GraphNode`] (`spawn_audio_node` / `insert_and_bind`, the path every
+//! node takes), [`PortSources`](crate::graph::PortSources) on a sink
 //! names it as a source, and the `On<Remove, AudioNode>` observer takes it
 //! back out. Its controls are typed: a [`VoiceNodeHandle`] (gain as a param
 //! cell, also addressable as `UnitParam::Volume`; placement over the node's
@@ -82,7 +82,7 @@ pub struct SamplerVoice;
 /// (or `spawn_audio_node`), which is every voice this crate builds.
 pub type VoiceCommands = NodeControls<VoiceNodeHandle>;
 
-/// A voice as a native graph node: its params (the gain) addressed by its
+/// A voice as a graph node: its params (the gain) addressed by its
 /// set, so an [`AudioParam`](crate::graph::AudioParam) on the entity writes
 /// the cell the node reads and a fork starts from the authored gain.
 impl GraphNode for VoiceNode {
@@ -95,11 +95,11 @@ impl GraphNode for VoiceNode {
     }
 }
 
-/// A pool as a native graph node; its controls are its
+/// A pool as a graph node; its controls are its
 /// [`VoicePoolHandle`](tutti_sampler::VoicePoolHandle).
 impl GraphNode for VoicePool {}
 
-/// A bare clip reader as a native graph node, its gain addressed by its set.
+/// A bare clip reader as a graph node, its gain addressed by its set.
 impl GraphNode for MemorySource {
     fn captured(&self) -> CapturedControls {
         CapturedControls::for_params(&tutti_graph::ParamNode::param_set(self))
@@ -110,7 +110,7 @@ impl GraphNode for MemorySource {
     }
 }
 
-/// A streamed voice as a native graph node; its controls are its
+/// A streamed voice as a graph node; its controls are its
 /// [`DiskVoiceControls`](tutti_sampler::DiskVoiceControls).
 impl GraphNode for DiskVoice {}
 

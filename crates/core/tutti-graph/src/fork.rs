@@ -25,7 +25,7 @@
 //! (a [`ParamNode`](crate::ParamNode)'s `fork_fresh`, from the values last
 //! set through its [`ParamSet`](crate::ParamSet)), and a node's own (a
 //! hosted plugin's state transfer, a sampler voice's typed controls). A
-//! native node reads time from its block's [`Env`](crate::Env), so a fork
+//! graph node reads time from its block's [`Env`](crate::Env), so a fork
 //! has nothing to rebind: the fork's renderer hands it the render's
 //! transport.
 //!
@@ -370,7 +370,7 @@ impl Error for ForkError {
     }
 }
 
-/// A native [`Node`] inserted **forkably, by clone**: its [`IntoNode`] hands
+/// A [`Node`] inserted **forkably, by clone**: its [`IntoNode`] hands
 /// the editor a [`ForkSource`] that clones the node as it was inserted, then
 /// [`reset`](Node::reset)s it.
 ///
@@ -438,7 +438,7 @@ impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
     }
 }
 
-/// A native [`Node`] inserted **refusing every fork**: its [`IntoNode`] hands
+/// A [`Node`] inserted **refusing every fork**: its [`IntoNode`] hands
 /// the editor no [`ForkSource`], so a fork that needs it is
 /// [`ForkError::NotForkable`] naming its key, never a copy that shares its
 /// state.

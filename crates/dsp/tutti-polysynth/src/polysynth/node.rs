@@ -1,4 +1,4 @@
-//! The synth as a native graph node (doc 013, rewrite item 5): MIDI arrives
+//! The synth as a graph node (doc 013, rewrite item 5): MIDI arrives
 //! on an event input port, on its frame, from whatever feeds it — a
 //! [`MidiClipNode`](tutti_midi_runtime::MidiClipNode), an arpeggiator, a
 //! hardware source — in the same block it was written.
@@ -118,7 +118,7 @@ impl ParamNode for PolySynth {
     }
 }
 
-/// The synth, inserted natively with its [`ParamSet`] as its controls and a
+/// The synth, inserted with its [`ParamSet`] as its controls and a
 /// fork that starts from the values last set through it
 /// ([`tutti_graph::param_parts`]; see the `fork` module docs for what a fork
 /// carries).

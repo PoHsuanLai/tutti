@@ -183,7 +183,7 @@ impl GateCore {
 ///
 /// # In a graph
 ///
-/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over threshold, attack and release, and a fork of it starts from the
 /// values last set through that set. The graph prepares it at the device
 /// rate before its first block.

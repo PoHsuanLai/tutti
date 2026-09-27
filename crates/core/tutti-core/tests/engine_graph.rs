@@ -1,4 +1,4 @@
-//! `Engine` over the native graph (doc 013 Phase 2), and timestamped
+//! `Engine` over the graph (doc 013 Phase 2), and timestamped
 //! transport commands through it.
 //!
 //! What is pinned here:

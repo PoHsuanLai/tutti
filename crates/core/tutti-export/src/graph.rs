@@ -1,4 +1,4 @@
-//! What an export renders: the native graph.
+//! What an export renders: the graph.
 //!
 //! Doc 013 Phase 3. PR 7 put [`RenderGraph`] beside fundsp's `Net` as a second
 //! backend; PR 14 removed the `Net` one, so an export renders a `tutti_graph`
@@ -12,7 +12,7 @@ use tutti_types::{GraphTail, Samples};
 
 use crate::{Error, Result};
 
-/// The `MaxBlock` a native graph is prepared at for an export
+/// The `MaxBlock` a graph is prepared at for an export
 /// ([`RenderGraph::prepare`], [`RenderGraph::fork`]).
 ///
 /// 1024 frames: long enough that the executor's per-block walk is paid rarely
@@ -24,7 +24,7 @@ use crate::{Error, Result};
 /// over from `Legacy` chunking").
 pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 
-/// The graph an export renders: a native `tutti_graph` editor/executor pair.
+/// The graph an export renders: a `tutti_graph` editor/executor pair.
 ///
 /// The pair is already installed (the executor running its plan) and
 /// prepared **at the render's sample rate** — the render refuses any other
@@ -162,7 +162,7 @@ impl RenderGraph {
         (&mut self.editor, &mut self.executor)
     }
 
-    /// What a native graph is prepared at to render at `sample_rate`: that
+    /// What a graph is prepared at to render at `sample_rate`: that
     /// rate, and [`GRAPH_MAX_BLOCK`].
     pub fn prepare(sample_rate: SampleRate) -> Prepare {
         Prepare::new(sample_rate, GRAPH_MAX_BLOCK)

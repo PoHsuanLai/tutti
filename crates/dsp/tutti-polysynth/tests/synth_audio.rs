@@ -486,7 +486,7 @@ fn render_tick(synth: &mut Hand, samples: usize) -> (Vec<f32>, Vec<f32>) {
 
 /// One-frame blocks and 64-frame blocks render the same mix.
 ///
-/// Until the native port this pinned `AudioUnit::tick` against
+/// Until the port to `tutti_graph::Node` this pinned `AudioUnit::tick` against
 /// `AudioUnit::process`, two paths a host could call (the sabotage pass found
 /// that zeroing the right channel inside `tick` broke nothing else). The node
 /// has one path now, and a graph may hand it a block of any length, down to

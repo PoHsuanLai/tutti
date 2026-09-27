@@ -35,7 +35,7 @@
 //!
 //! The butler's writer holds one handle, every voice taken from the stream
 //! another. A voice in a live graph is dropped where the graph frees units:
-//! under the native executor, retired units travel back to the control thread
+//! under the graph's executor, retired units travel back to the control thread
 //! (`tutti_graph::Editor::collect`), so the last handle is never dropped on
 //! the audio thread, and the ring's slots and its `RtPublish` are freed off it.
 //!

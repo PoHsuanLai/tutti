@@ -7,12 +7,12 @@ use assert_no_alloc::AllocDisabler;
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-/// A native node through `BlockRig`, silent inputs: 16 warm-up blocks (past
+/// A node through `BlockRig`, silent inputs: 16 warm-up blocks (past
 /// the first FFT partition, so `process` takes the hot path), then 1 000
 /// blocks under `assert_no_alloc`. Its `prepare` (which sizes the fold's
 /// scratch) runs when the rig is built, outside the gate.
 #[cfg(feature = "convolution")]
-fn native_gate<N: tutti_graph::IntoNode>(node: N) {
+fn gate<N: tutti_graph::IntoNode>(node: N) {
     let (mut rig, _controls) =
         tutti_graph::contract::BlockRig::new(node, tutti_core::SampleRate(48_000.0), 64);
     for _ in 0..16 {
@@ -31,7 +31,7 @@ fn convolver_process_is_allocation_free() {
     use tutti_nodes::{generate_test_ir, ConvolverNode};
 
     let ir = generate_test_ir(2048, 0.3, 48_000.0);
-    native_gate(ConvolverNode::new(&ir, 512));
+    gate(ConvolverNode::new(&ir, 512));
 }
 
 #[cfg(feature = "convolution")]
@@ -41,7 +41,7 @@ fn stereo_convolver_process_is_allocation_free() {
 
     let ir_l = generate_test_ir(2048, 0.3, 48_000.0);
     let ir_r = generate_test_ir(2048, 0.4, 48_000.0);
-    native_gate(ConvolverNode::stereo(&ir_l, &ir_r, 512));
+    gate(ConvolverNode::stereo(&ir_l, &ir_r, 512));
 }
 
 /// The fold path is the one with scratch: a width-long frame buffer and a
@@ -60,13 +60,13 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
         .map(|c| generate_test_ir(1024, 0.2 + 0.05 * c as f32, 48_000.0))
         .collect();
     let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
-    native_gate(ConvolverNode::folded(&refs, 256));
+    gate(ConvolverNode::folded(&refs, 256));
 }
 
 /// `DownmixNode::process` gathers an interleaved frame per sample and folds it.
 /// Both scratch buffers are sized at construction and taken with `mem::take`
 /// precisely so that path never allocates — this is the test that makes those
-/// two fields load-bearing rather than incidental. Driven natively, alone in a
+/// two fields load-bearing rather than incidental. Driven alone in a
 /// graph (`BlockRig`).
 ///
 /// 6→2 is the shape that matters: it is the only one where the fold does real

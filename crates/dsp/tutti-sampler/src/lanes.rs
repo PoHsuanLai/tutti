@@ -23,7 +23,7 @@ use tutti_core::SamplePosition;
 /// more (its buffers are that long, and the voice renders in pieces of that),
 /// so a block is one lane and nothing is split. Lanes 4x longer cost
 /// every voice a memset of scratch it could never use. When the sampler's
-/// nodes port natively (doc 013 items 4 and 9) the node sizes its scratch
+/// nodes port to `tutti_graph::Node` (doc 013 items 4 and 9) the node sizes its scratch
 /// from `Prepare::max_block` instead, where blocks may grow past 64.
 pub(crate) const LANE_FRAMES: usize = tutti_core::MAX_BUFFER_SIZE;
 

@@ -1,4 +1,4 @@
-//! [`MidiClipNode`]: a MIDI clip as a native graph node, playing its events
+//! [`MidiClipNode`]: a MIDI clip as a graph node, playing its events
 //! out of an event port (doc 013, rewrite item 5).
 //!
 //! The node reads the transport from its block's [`Env`], not from a shared

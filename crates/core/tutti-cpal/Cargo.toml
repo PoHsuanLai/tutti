@@ -52,9 +52,9 @@ criterion.workspace = true
 # Stimulus nodes (`tutti_nodes::testing`) and a real filter for the fixture
 # graphs. No cycle: `tutti-nodes` names nothing above `tutti-core`.
 tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["testing"] }
-# The fixture graphs are native graphs (`Engine::new` takes an editor and its
+# The fixture graphs are `tutti_graph`'s (`Engine::new` takes an editor and its
 # executor, doc 013 Phase 3 PR 15). No cycle: tutti-graph names only
-# tutti-types and tutti-node.
+# tutti-types.
 tutti-graph = { path = "../tutti-graph" }
 
 [[bench]]

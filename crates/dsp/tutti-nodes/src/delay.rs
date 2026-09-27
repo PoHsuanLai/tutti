@@ -222,7 +222,7 @@ struct DelayControls {
 ///
 /// # In a graph
 ///
-/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over feedback ([`UnitParam::Feedback`]), channel 0's delay time
 /// ([`UnitParam::DelayTime`], the modulation's base too) and the mix
 /// ([`UnitParam::Wet`]); a fork of it starts from the values last set

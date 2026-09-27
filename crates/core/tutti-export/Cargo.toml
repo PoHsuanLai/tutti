@@ -22,7 +22,7 @@ ogg = ["vorbis_rs"]
 thiserror.workspace = true
 tutti-core = { path = "../tutti-core", default-features = false }
 tutti-types = { path = "../tutti-types", default-features = false }
-# The native graph (doc 013): `RenderGraph` is a forked or built
+# The graph (doc 013): `RenderGraph` is a forked or built
 # `Editor`/`Executor` pair, the only thing an export renders. Acyclic:
 # tutti-graph depends on no tutti crate but tutti-types.
 tutti-graph = { path = "../tutti-graph" }

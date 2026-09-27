@@ -548,7 +548,7 @@ mod engine_tests {
     /// click reads the beat of every frame from its block's `Env` (the
     /// transport the engine's own `TransportClock` reports; the graph holds
     /// no second one); on `Net` it read a `TransportClock` in the graph,
-    /// wired to its inputs, and until its native port an `EnvClock` wired the
+    /// wired to its inputs, and until its `Node` port an `EnvClock` wired the
     /// same way. The transport starts before the first block, so the play
     /// gate opens on the first frame (a start inside a block opens it on its
     /// frame: `ClickNode`'s own tests pin that).
@@ -573,13 +573,13 @@ mod engine_tests {
     #[test]
     fn the_click_sounds_on_every_beat_across_the_seek() {
         let frames = 3 * RATE as usize;
-        let native = render_click(frames);
+        let rendered = render_click(frames);
         assert_eq!(
-            onsets(&native),
+            onsets(&rendered),
             vec![1, 24_001, 48_001, 60_417, 66_417, 90_417, 114_417, 138_417],
             "a click on every beat, across the seek"
         );
-        assert_golden("the click", digest(&native), 0x9ac0_787e_520a_8085);
+        assert_golden("the click", digest(&rendered), 0x9ac0_787e_520a_8085);
     }
 
     /// **The graph runs at the device's rate.** At 120 BPM and 48 kHz the
@@ -637,7 +637,7 @@ mod engine_tests {
     /// global outputs, the transport rolling from the first block. `frames`
     /// stereo frames in `block`-frame device blocks.
     ///
-    /// The voice is a clip reader, a native node: it reads the playhead from
+    /// The voice is a clip reader, a graph node: it reads the playhead from
     /// each block's `Env`, per frame, seating its read on the first frame of
     /// each 64-frame piece it renders. (Until the sampler's nodes ported it
     /// polled the transport out of band from a `Legacy` call, and read the
@@ -718,11 +718,11 @@ mod engine_tests {
         // The dry voice is pinned to the tone itself; only the pitched one,
         // which has no closed form, carries a digest.
         for (cents, want) in [(0.0f32, None), (700.0, Some(0x5681_b9dc_0fbe_0695u64))] {
-            let native = render_voice(cents, frames, block);
-            let peak = native.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            let rendered = render_voice(cents, frames, block);
+            let peak = rendered.iter().fold(0.0f32, |m, s| m.max(s.abs()));
             assert!(peak > 0.5, "{block}-frame blocks, {cents} cents: silent");
             if cents == 0.0 {
-                for (i, s) in native.as_chunks::<2>().0.iter().enumerate() {
+                for (i, s) in rendered.as_chunks::<2>().0.iter().enumerate() {
                     let want = tone_at(i).to_bits();
                     assert!(
                         s[0].to_bits() == want && s[1].to_bits() == want,
@@ -734,7 +734,7 @@ mod engine_tests {
                 // Portable, where the digest is not: a fifth up from 440 Hz
                 // is 440 · 2^(7/12) ≈ 659.26 Hz. Past the vocoder's first few
                 // thousand frames, within 1% (a semitone is 6%).
-                let left: Vec<f32> = native.iter().step_by(2).copied().collect();
+                let left: Vec<f32> = rendered.iter().step_by(2).copied().collect();
                 let want = 440.0 * 2f64.powf(7.0 / 12.0);
                 let got = dominant_frequency(&left, 4_096, RATE);
                 assert!(
@@ -744,7 +744,7 @@ mod engine_tests {
                 let by64 = render_voice(cents, frames, 64);
                 if let Some(i) = by64
                     .iter()
-                    .zip(&native)
+                    .zip(&rendered)
                     .position(|(a, b)| a.to_bits() != b.to_bits())
                 {
                     panic!(
@@ -752,13 +752,13 @@ mod engine_tests {
                          frame {} (channel {}): {} vs {}",
                         i / 2,
                         i % 2,
-                        native[i],
+                        rendered[i],
                         by64[i]
                     );
                 }
             }
             if let Some(want) = want {
-                assert_golden(&format!("voice, {cents} cents"), digest(&native), want);
+                assert_golden(&format!("voice, {cents} cents"), digest(&rendered), want);
             }
         }
     }

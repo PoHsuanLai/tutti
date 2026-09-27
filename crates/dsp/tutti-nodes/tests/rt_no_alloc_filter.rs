@@ -16,7 +16,7 @@ use tutti_nodes::{EqBandNode, LadderFilterNode, LadderType, SvfFilterNode, SvfTy
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-/// A native node through `BlockRig`: 16 warm-up blocks, then 2 000 blocks
+/// A node through `BlockRig`: 16 warm-up blocks, then 2 000 blocks
 /// under `assert_no_alloc`, `between` run before each (a control move).
 fn gate<N: IntoNode>(node: N, mut between: impl FnMut(&N::Controls, usize)) {
     let (mut rig, controls) = BlockRig::new(node, SampleRate(48_000.0), 64);

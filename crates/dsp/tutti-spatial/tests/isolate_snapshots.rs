@@ -2,7 +2,7 @@
 //! taken from the source their insert hands the editor, no live move of the
 //! position, spread, width or blend reaches it (doc 013, gap 6's audit).
 //!
-//! The panners are native nodes whose controls are typed cells no
+//! The panners are graph nodes whose controls are typed cells no
 //! `UnitParam` addresses, so their fork is not `tutti_graph::param_parts`'
 //! and `assert_param_fork` cannot check it. [`check_fork`] runs the steps
 //! the graph contract's isolate row runs, on the panners' own fork:

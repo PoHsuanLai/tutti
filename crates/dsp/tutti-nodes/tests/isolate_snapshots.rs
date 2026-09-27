@@ -1,7 +1,7 @@
 //! Every forkable node in this crate forks to a **snapshot** of its
 //! controls: no live control move reaches the fork (doc 013, gap 6's
 //! audit). One row per node, one control per cell the node reads;
-//! `tutti_graph::contract::NativeIsolateRow` runs each control through
+//! `tutti_graph::contract::IsolateRow` runs each control through
 //! fork → render → move live → render again (must be unchanged) → fork
 //! again → render (must differ, so the control is audible and the row can
 //! fail). A node's fork is `fork_fresh` (`tutti_graph::param_parts`), so
@@ -18,7 +18,7 @@
 //! Mutations (run): delete any one `detach` line from a node's `fork_fresh`
 //! (or, while they were units, from an `isolate`) → that
 //! row fails on exactly that control, with "a live move reached the fork"
-//! (run natively on the compressor's knee — `fork.core.threshold.detach()`
+//! (run on the compressor's knee — `fork.core.threshold.detach()`
 //! — the gate's hold, `DelayLineNode`'s `cross_feedback`, `LfoNode`'s
 //! `phase_offset` and the convolver's `params`). Make `Param::detach`
 //! reset to `U::default()` instead of keeping the value → rows whose
@@ -29,7 +29,7 @@ use tutti_core::{
     Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Hz, Pan, PhaseIncrement,
     Resonance, Seconds, Q,
 };
-use tutti_graph::contract::NativeIsolateRow;
+use tutti_graph::contract::IsolateRow;
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, EqBandNode,
     GateNode, LadderFilterNode, LadderType, LfoNode, LfoShape, LimiterNode, ModDelayNode,
@@ -38,7 +38,7 @@ use tutti_nodes::{
 
 #[test]
 fn compressor() {
-    NativeIsolateRow::new("CompressorNode (stereo)", || {
+    IsolateRow::new("CompressorNode (stereo)", || {
         CompressorNode::stereo(Db(-20.0), 4.0, Seconds(0.005), Seconds(0.05))
             .with_soft_knee(Db(3.0))
             .with_makeup(Db(2.0))
@@ -58,7 +58,7 @@ fn compressor() {
 
 #[test]
 fn gate() {
-    NativeIsolateRow::new("GateNode (stereo)", || {
+    IsolateRow::new("GateNode (stereo)", || {
         GateNode::stereo(Db(-15.0), Seconds(0.001), Seconds(0.005), Seconds(0.02))
             .with_range(Db(-40.0))
     })
@@ -76,7 +76,7 @@ fn gate() {
 
 #[test]
 fn limiter() {
-    NativeIsolateRow::new("LimiterNode (stereo)", || {
+    IsolateRow::new("LimiterNode (stereo)", || {
         LimiterNode::new(Db(-6.0), Db(-3.0))
     })
     .control("threshold", |l| l.set_threshold(Db(-12.0)))
@@ -87,7 +87,7 @@ fn limiter() {
 
 #[test]
 fn brickwall_limiter() {
-    NativeIsolateRow::new("BrickwallLimiterNode (stereo)", || {
+    IsolateRow::new("BrickwallLimiterNode (stereo)", || {
         BrickwallLimiterNode::new(Db(-3.0))
     })
     .control("ceiling", |l| {
@@ -98,7 +98,7 @@ fn brickwall_limiter() {
 
 #[test]
 fn delay_line() {
-    NativeIsolateRow::new("DelayLineNode (stereo, ping-pong)", || {
+    IsolateRow::new("DelayLineNode (stereo, ping-pong)", || {
         let d = DelayLineNode::stereo(Seconds(1.0), Seconds(0.05), Seconds(0.07), 0.5_f32);
         d.set_cross_feedback(0.3_f32);
         d.set_mix(0.5_f32);
@@ -114,7 +114,7 @@ fn delay_line() {
 
 #[test]
 fn distortion() {
-    NativeIsolateRow::new("DistortionNode (stereo)", || {
+    IsolateRow::new("DistortionNode (stereo)", || {
         DistortionNode::new(ShapeKind::Tanh, Drive(2.0))
     })
     .control("drive", |d| d.set_drive(Drive(8.0)))
@@ -123,7 +123,7 @@ fn distortion() {
 
 #[test]
 fn lfo() {
-    NativeIsolateRow::new("LfoNode (sine, 3 Hz)", || {
+    IsolateRow::new("LfoNode (sine, 3 Hz)", || {
         LfoNode::new(LfoShape::Sine)
             .with_frequency(Hz(3.0))
             .with_depth(Depth::new_clamped(0.8))
@@ -136,7 +136,7 @@ fn lfo() {
 
 #[test]
 fn chorus() {
-    NativeIsolateRow::new("ModDelayNode (stereo chorus)", || {
+    IsolateRow::new("ModDelayNode (stereo chorus)", || {
         let c = ModDelayNode::chorus(ChannelLayout::STEREO);
         c.set_feedback(0.3_f32);
         c
@@ -150,7 +150,7 @@ fn chorus() {
 
 #[test]
 fn phaser() {
-    NativeIsolateRow::new("PhaserNode (stereo, 4 stages)", || {
+    IsolateRow::new("PhaserNode (stereo, 4 stages)", || {
         let p = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
         p.set_feedback(0.3_f32);
         p
@@ -164,7 +164,7 @@ fn phaser() {
 
 #[test]
 fn ladder() {
-    NativeIsolateRow::new("LadderFilterNode (LP12)", || {
+    IsolateRow::new("LadderFilterNode (LP12)", || {
         LadderFilterNode::<f64>::new(LadderType::LP12, Hz(1_000.0), Resonance::new_clamped(0.3))
     })
     .control("cutoff", |l| l.set_frequency(Hz(3_000.0)))
@@ -175,7 +175,7 @@ fn ladder() {
     .check();
 }
 
-/// The SVF and the EQ band are native nodes: their fork is
+/// The SVF and the EQ band are graph nodes: their fork is
 /// `tutti_graph::param_parts`', from the values set through their
 /// `ParamSet`, and `assert_param_fork` is its snapshot check (their own
 /// unit tests run it, with its mutations).
@@ -198,7 +198,7 @@ fn eq_band() {
 
 #[test]
 fn bus_strip() {
-    NativeIsolateRow::new("BusStripNode (stereo)", BusStripNode::new)
+    IsolateRow::new("BusStripNode (stereo)", BusStripNode::new)
         .control("volume", |s| s.set_volume(Amplitude(0.5)))
         .control("pan", |s| s.set_pan(Pan::new_clamped(-0.7)))
         .control("mute", |s| s.set_muted(true))
@@ -218,7 +218,7 @@ fn convolver() {
             white * (-(n as f32) / 128.0).exp()
         })
         .collect();
-    NativeIsolateRow::new("ConvolverNode (mono)", move || {
+    IsolateRow::new("ConvolverNode (mono)", move || {
         let c = ConvolverNode::new(&ir, 64);
         c.set_mix(Mix::new_clamped(0.5));
         c

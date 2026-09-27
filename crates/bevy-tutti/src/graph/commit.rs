@@ -49,7 +49,7 @@ pub fn commit_graph(
     // shapes are new (a lookahead is a time, so a rate change moves
     // latencies). Its figures are the ones to publish now.
     let resumed = repreparing && !graph.is_repreparing();
-    // A native commit can be refused for now (commits still in flight, or a
+    // A commit can be refused for now (commits still in flight, or a
     // re-prepare between its halves): the flag stays set and the whole frame's
     // edits go out on a later frame, together.
     let committed = dirty.0 && graph.commit();

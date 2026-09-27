@@ -1,7 +1,7 @@
 //! [`Timeline`], what a transport-aware node reads, and
 //! [`OfflineTransport`], the one shape an offline render hands every node.
 //!
-//! Both lived in tutti-core until the native graph needed to *name* the
+//! Both lived in tutti-core until the graph needed to *name* the
 //! offline context. `tutti_graph::ForkMode::Offline` hands it to every forked
 //! unit, and tutti-graph cannot depend on tutti-core (tutti-core depends on
 //! it), so the context crossed as `&dyn Any` and every unit downcast it. A

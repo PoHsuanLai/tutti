@@ -128,7 +128,7 @@ fn main() {
     app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>()
         .add_audio_param::<Hz, { UnitParam::Cutoff as u16 }>();
 
-    // Captured here: a native node's controls are its `ParamSet`, taken once,
+    // Captured here: a `ParamNode`'s controls are its `ParamSet`, taken once,
     // before it moves into the graph, and bound with its `AudioNode`; the set
     // is addressed on the node, so an `AudioParam` writes through it (what
     // `spawn_audio_node` does in one call).

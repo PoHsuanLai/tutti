@@ -59,7 +59,7 @@ use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_types::{SampleRate, Samples};
 
 // A lowpass alone in a graph, fed by the graph's input. The filter is a
-// native graph node: inserted, it hands back its `ParamSet` — cutoff, Q and
+// graph node: inserted, it hands back its `ParamSet` — cutoff, Q and
 // gain by `UnitParam` — and the graph prepares it at the graph's rate.
 let filter = SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(800.0), Q(0.707));
 let mut solo = Solo::new(filter, Prepare::new(SampleRate(48_000.0), Samples(64)));

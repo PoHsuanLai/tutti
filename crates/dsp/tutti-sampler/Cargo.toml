@@ -54,7 +54,7 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 # `tutti-core`.
 tutti-io = { path = "../../core/tutti-io" }
 
-# The native graph (doc 013): every node here is a `tutti_graph::Node`, reads
+# The graph (doc 013): every node here is a `tutti_graph::Node`, reads
 # the transport from its block's `Env`, and hands its controls and its fork
 # source over through `IntoNode`. No cycle: `tutti-graph` names only
 # `tutti-types` and `tutti-node`.

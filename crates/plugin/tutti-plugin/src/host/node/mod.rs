@@ -1,4 +1,4 @@
-//! `PluginClient` — the native graph node for an out-of-process plugin.
+//! `PluginClient` — the graph node for an out-of-process plugin.
 //!
 //! # Loaded, then bound
 //!
@@ -6,7 +6,7 @@
 //! its control surface, not yet a node. [`bind`](PluginClient::bind) turns it
 //! into a [`PluginClient<Bound>`], which owns the audio path (the IPC
 //! [`Batcher`](batcher::Batcher) and its scratch) and is the only state that
-//! goes into a graph ([`tutti_graph::IntoNode`]), as the native node
+//! goes into a graph ([`tutti_graph::IntoNode`]), as the `Node` that
 //! `graph_node` implements. Inserting it hands back its [`PluginControls`]:
 //!
 //! ```no_run

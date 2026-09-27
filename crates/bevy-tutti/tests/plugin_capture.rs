@@ -59,7 +59,7 @@ use tutti_plugin::catalog::PluginId;
 const SAMPLE_RATE: f64 = 48_000.0;
 /// The plugin's pipeline chunk here: one device callback when the graph knows
 /// the device's (doc 013, decision 8 reversed); this headless graph knows none,
-/// so the chunk is its `MaxBlock` (bevy-tutti's `NATIVE_MAX_BLOCK`).
+/// so the chunk is its `MaxBlock` (bevy-tutti's `LIVE_MAX_BLOCK`).
 const CHUNK: usize = 1024;
 
 fn app() -> App {

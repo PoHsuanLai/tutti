@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **"Native" is dropped from the graph's names** (design doc 013, item 9).
+  With `Legacy` gone every node is a `tutti_graph::Node`, so "native graph"
+  (as against `Net`) and "native node" (as against a `Legacy` one) no
+  longer distinguish anything. **Breaking** for `contract::NativeIsolateRow`
+  only; the rest is crate-private, test or bench naming. Other senses of
+  "native" (a plugin's native window or module, native f64, MIDI 2.0 native
+  per-note) are unchanged, as is doc 013's filename.
+
+  | Was | Now |
+  |---|---|
+  | `tutti_graph::contract::NativeIsolateRow` | `tutti_graph::contract::IsolateRow` |
+  | bevy-tutti `graph/native.rs`, `NativeGraph`, `NATIVE_MAX_BLOCK`, `AudioSide::native` (crate-private) | `graph/runtime.rs`, `GraphRuntime`, `LIVE_MAX_BLOCK`, `AudioSide::live` |
+  | tutti-graph bench `graph_render`'s `native` row | `graph` |
+  | `tutti-polysynth/tests/native_node.rs` | `tests/graph_node.rs` |
+
 - **`Legacy` is deleted; every graph node is a `tutti_graph::Node`**
   (design doc 013, "Legacy deleted"). **Breaking.** An `AudioUnit` can no
   longer go into a graph: a host's own node implements `Node` (and

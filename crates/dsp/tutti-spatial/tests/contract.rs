@@ -1,5 +1,5 @@
 //! The sample-accuracy contract (doc 013 §6, "Proof") for the binaural
-//! renderer, a native node, on the audio-impulse path: an impulse at
+//! renderer, a graph node, on the audio-impulse path: an impulse at
 //! frame `F` leaves at exactly `F + arrival + FRAME_LEN - 1` on every path
 //! (direct, behind PDC, across a recompile, across ragged blocks — see
 //! `tutti_graph::contract`).

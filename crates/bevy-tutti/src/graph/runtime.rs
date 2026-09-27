@@ -23,10 +23,10 @@
 //! # Where the audio side lives
 //!
 //! `Editor::new` builds the pair. The executor stays here ("local") until
-//! [`take_executor`](NativeGraph::take_executor) hands it to the engine or to
+//! [`take_executor`](GraphRuntime::take_executor) hands it to the engine or to
 //! a test's [`AudioSide`](super::AudioSide). While it is local, a commit is
 //! applied at once on this thread and its box collected, so a headless graph
-//! never meets back-pressure, and [`render_frame`](NativeGraph::render_frame)
+//! never meets back-pressure, and [`render_frame`](GraphRuntime::render_frame)
 //! runs it.
 //!
 //! # `set_param` lands on the next block, never at once
@@ -55,13 +55,13 @@ use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitParam};
 
 use super::resources::GraphSource;
 
-/// The largest block the native graph is prepared for.
+/// The largest block the graph is prepared for.
 ///
 /// A device block longer than this is rendered by `tutti_core::Engine` as
 /// consecutive graph blocks of at most this many frames, so it bounds the
 /// arena, not the device. 1024 frames covers every buffer size a DAW offers
 /// by default.
-pub(crate) const NATIVE_MAX_BLOCK: Samples = Samples(1024);
+pub(crate) const LIVE_MAX_BLOCK: Samples = Samples(1024);
 
 /// The spec `kind` of a hosted plugin.
 #[cfg(feature = "plugin")]
@@ -94,7 +94,7 @@ impl<U> std::fmt::Debug for ReplaceRefused<U> {
 /// One node's handle, and its params by address when it has any.
 struct Entry {
     node: AudioNode,
-    /// What [`set_param`](NativeGraph::set_param) writes through, and what a
+    /// What [`set_param`](GraphRuntime::set_param) writes through, and what a
     /// fork of the node starts from.
     params: Option<ParamSet>,
 }
@@ -108,7 +108,7 @@ pub(crate) struct Local {
 }
 
 /// The graph runtime. See the module docs.
-pub(crate) struct NativeGraph {
+pub(crate) struct GraphRuntime {
     editor: Editor,
     local: Option<Local>,
     nodes: BTreeMap<NodeKey, Entry>,
@@ -154,7 +154,7 @@ pub(crate) fn prepare_for(
 }
 
 /// The graph's current `Prepare`.
-impl NativeGraph {
+impl GraphRuntime {
     pub(crate) fn prepared(&self) -> Prepare {
         *self.editor.prepare()
     }
@@ -171,7 +171,7 @@ pub(crate) fn clamp_latency(latency: Latency) -> Latency {
     )
 }
 
-impl NativeGraph {
+impl GraphRuntime {
     /// An empty graph with `inputs` global inputs and `outputs` global
     /// outputs, prepared for `rate` and the device's callback `quantum` (when
     /// known: see [`prepare_for`]), its executor local.
@@ -181,7 +181,7 @@ impl NativeGraph {
         rate: SampleRate,
         quantum: Option<Samples>,
     ) -> Self {
-        let (mut editor, exec) = Editor::new(prepare_for(rate, NATIVE_MAX_BLOCK, quantum));
+        let (mut editor, exec) = Editor::new(prepare_for(rate, LIVE_MAX_BLOCK, quantum));
         let topology = &mut editor.spec_mut().topology;
         topology.inputs = ChannelLayout::from_count(inputs as u16);
         topology.outputs = vec![Source::Zero; outputs];
@@ -204,7 +204,7 @@ impl NativeGraph {
     pub(crate) fn take_executor(&mut self) -> Executor {
         self.local
             .take()
-            .expect("the native graph's audio side was already taken")
+            .expect("the graph's audio side was already taken")
             .exec
     }
 
@@ -223,7 +223,7 @@ impl NativeGraph {
             current.max_block().samples(),
             current.quantum(),
         )) {
-            bevy_log::error!("native graph: re-prepare at {} Hz refused: {e}", rate.get());
+            bevy_log::error!("graph: re-prepare at {} Hz refused: {e}", rate.get());
             return;
         }
         self.pump_local();
@@ -322,7 +322,7 @@ impl NativeGraph {
     }
 
     /// Insert a hosted plugin: bound (`PluginClient::bind`, the typestate
-    /// transition doc 013 §2 describes) and inserted as the native node it
+    /// transition doc 013 §2 describes) and inserted as the `Node` it
     /// then is, which hands the editor its own
     /// [`ForkSource`](tutti_graph::ForkSource) (a fork by state transfer) and
     /// declares its latency in its `Shape`.
@@ -393,7 +393,7 @@ impl NativeGraph {
         )
     }
 
-    /// Address `node`'s params by `params` (a native node's controls), so
+    /// Address `node`'s params by `params` (a `ParamNode`'s controls), so
     /// [`set_param`](Self::set_param) and the fork snapshot reach it.
     pub(crate) fn set_node_params(&mut self, node: AudioNode, params: Option<ParamSet>) {
         if let Some(entry) = self.nodes.get_mut(&key(node)) {
@@ -837,7 +837,7 @@ impl NativeGraph {
                 true
             }
             Err(e) => {
-                bevy_log::error!("native graph: latency of {node:?} refused: {e}");
+                bevy_log::error!("graph: latency of {node:?} refused: {e}");
                 false
             }
         }
@@ -861,7 +861,7 @@ impl NativeGraph {
             Err(e) => {
                 // Not retried: the same spec fails the same way next frame.
                 // The next edit marks the graph dirty again.
-                bevy_log::error!("native graph: commit refused: {e}");
+                bevy_log::error!("graph: commit refused: {e}");
                 Committed::Done
             }
         }
@@ -931,7 +931,7 @@ pub struct AudioSide {
 }
 
 impl AudioSide {
-    pub(crate) fn native(exec: Executor) -> Self {
+    pub(crate) fn live(exec: Executor) -> Self {
         Self {
             exec,
             transport: Transport::default(),
@@ -1031,11 +1031,11 @@ mod tests {
     /// through `param_parts` (so its fork starts from the set's authored
     /// values) and spawned as a `GraphNode` with its params.
     #[derive(Clone)]
-    struct NativeKnob {
+    struct Knob {
         drive: tutti_types::Param<Drive>,
     }
 
-    impl NativeKnob {
+    impl Knob {
         const BUILT_WITH: f32 = 1.0;
 
         fn new() -> Self {
@@ -1049,7 +1049,7 @@ mod tests {
         }
     }
 
-    impl tutti_graph::Node for NativeKnob {
+    impl tutti_graph::Node for Knob {
         fn shape(&self) -> tutti_graph::Shape {
             tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
         }
@@ -1065,7 +1065,7 @@ mod tests {
         fn reset(&mut self) {}
     }
 
-    impl tutti_graph::ParamNode for NativeKnob {
+    impl tutti_graph::ParamNode for Knob {
         fn param_set(&self) -> ParamSet {
             ParamSet::builder()
                 .param(UnitParam::Drive, self.drive.as_atomic())
@@ -1078,14 +1078,14 @@ mod tests {
         }
     }
 
-    impl IntoNode for NativeKnob {
+    impl IntoNode for Knob {
         type Controls = ParamSet;
         fn into_parts(self) -> NodeParts<ParamSet> {
             tutti_graph::param_parts(self)
         }
     }
 
-    impl crate::graph::GraphNode for NativeKnob {
+    impl crate::graph::GraphNode for Knob {
         fn captured(&self) -> crate::graph::CapturedControls {
             crate::graph::CapturedControls::for_params(&tutti_graph::ParamNode::param_set(self))
         }
@@ -1115,7 +1115,7 @@ mod tests {
     /// adapter's settings ring and shadow, deleted with it.)
     ///
     /// Mutations (run; each fails its channel):
-    /// - `NativeGraph::set_param` skipping a node's `ParamSet` → channels 0
+    /// - `GraphRuntime::set_param` skipping a node's `ParamSet` → channels 0
     ///   and 1 stay at 1;
     /// - `set_param_snapshot` skipping it → channel 2 forks at the live
     ///   composite, not 6 (and channel 3 not at 2.5);
@@ -1139,7 +1139,7 @@ mod tests {
         app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 
         let mut commands = app.world_mut().commands();
-        let knobs = [(); 4].map(|()| commands.spawn_audio_node(NativeKnob::new()).id());
+        let knobs = [(); 4].map(|()| commands.spawn_audio_node(Knob::new()).id());
         commands.insert_resource(
             MasterSources::default()
                 .with(0, PortSource::node(knobs[0]))
@@ -1252,7 +1252,7 @@ mod tests {
         let knob = app
             .world_mut()
             .commands()
-            .spawn_audio_node(NativeKnob::new())
+            .spawn_audio_node(Knob::new())
             .id();
         app.world_mut()
             .commands()
@@ -1261,18 +1261,14 @@ mod tests {
         app.update();
         let mut out = [0.0f32];
         side.tick(&[], &mut out);
-        assert_eq!(out[0], NativeKnob::BUILT_WITH, "the knob plays");
+        assert_eq!(out[0], Knob::BUILT_WITH, "the knob plays");
 
         // The rate changes on the running graph: the first half is sent, and
         // the executor has not run it yet.
         app.world_mut()
             .resource_mut::<AudioGraphRes>()
             .set_sample_rate(tutti_core::SampleRate(44_100.0));
-        crate::graph::crossfade_audio_node(
-            &mut app.world_mut().commands(),
-            knob,
-            NativeKnob::at(3.0),
-        );
+        crate::graph::crossfade_audio_node(&mut app.world_mut().commands(), knob, Knob::at(3.0));
         app.world_mut().flush();
         assert_eq!(
             app.world()
@@ -1343,7 +1339,7 @@ mod tests {
     /// as they were — the incoming unit's are not bound to a node it never
     /// reached.
     ///
-    /// Mutation (run): `NativeGraph::replace` answering `Busy` on a poisoned
+    /// Mutation (run): `GraphRuntime::replace` answering `Busy` on a poisoned
     /// graph → the request is parked for good, and this fails.
     #[test]
     fn a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls() {
@@ -1361,7 +1357,7 @@ mod tests {
             app.add_plugins(crate::modulation::TuttiModulationPlugin);
         }
         let mut commands = app.world_mut().commands();
-        let knob = commands.spawn_audio_node(NativeKnob::new()).id();
+        let knob = commands.spawn_audio_node(Knob::new()).id();
         commands.spawn_audio_node(tutti_graph::Unforkable(Grenade));
         app.world_mut().flush();
         app.update();
@@ -1373,11 +1369,7 @@ mod tests {
         #[cfg(feature = "modulation")]
         let before = handle_ptr(&app, knob);
 
-        crate::graph::crossfade_audio_node(
-            &mut app.world_mut().commands(),
-            knob,
-            NativeKnob::at(3.0),
-        );
+        crate::graph::crossfade_audio_node(&mut app.world_mut().commands(), knob, Knob::at(3.0));
         app.world_mut().flush();
         app.update();
         assert!(

@@ -2,7 +2,7 @@
 //!
 //! The rolling-graph fixture now exists in three places — `output.rs`'s
 //! `build_callback_state`, `tests/rt_no_alloc.rs`'s `rolling_state`, and
-//! whatever the next test binary needs. Each is a native graph (doc 013
+//! whatever the next test binary needs. Each is a graph (doc 013
 //! Phase 3 PR 15: `Engine` renders nothing else); the nodes are graph
 //! nodes, rendered whole blocks at a time. Two copies were already acknowledged
 //! in `rt_no_alloc.rs`'s header ("duplicated rather than shared because that
@@ -35,7 +35,7 @@ use tutti_nodes::{SvfFilterNode, SvfType};
 
 pub const SAMPLE_RATE: f64 = 48_000.0;
 
-/// An engine over `transport` rendering the native graph `build` wires into
+/// An engine over `transport` rendering the graph `build` wires into
 /// a fresh editor (prepared for 512-frame blocks at [`SAMPLE_RATE`]). The
 /// editor is leaked: a test process is the whole lifetime, and nothing here
 /// commits again.

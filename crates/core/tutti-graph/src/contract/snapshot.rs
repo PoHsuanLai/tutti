@@ -5,7 +5,7 @@
 //! cell a control writes. A `Param` cell the node only *reads* is shared
 //! mutable state too: a UI knob or an automation lane writes it, so a copy
 //! still holding it follows every live move while an offline export runs.
-//! [`NativeIsolateRow::check`] pins the promise from the outside, per
+//! [`IsolateRow::check`] pins the promise from the outside, per
 //! control, and does not care how the node stores it.
 //!
 //! For each control, on a freshly made node:
@@ -36,7 +36,7 @@ use crate::controls::{ParamFork, ParamNode};
 
 use super::SAMPLE_RATE;
 
-/// Frames rendered per comparison unless [`NativeIsolateRow::frames`] says
+/// Frames rendered per comparison unless [`IsolateRow::frames`] says
 /// otherwise: long enough for a 100 ms release, a 1 s LFO cycle's first
 /// quarter and several loud/quiet stimulus cycles.
 pub const SNAPSHOT_FRAMES: usize = 16_384;
@@ -57,7 +57,7 @@ type Write<N> = Box<dyn Fn(&N)>;
 /// here with "a live move reached the fork".
 ///
 /// ```
-/// use tutti_graph::contract::NativeIsolateRow;
+/// use tutti_graph::contract::IsolateRow;
 /// # use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 /// # use tutti_types::{Amplitude, ChannelLayout, Param, UnitParam};
 /// # #[derive(Clone)]
@@ -79,18 +79,18 @@ type Write<N> = Box<dyn Fn(&N)>;
 /// #     }
 /// #     fn fork_fresh(&self) -> Self { let mut f = self.clone(); f.0.detach(); f }
 /// # }
-/// NativeIsolateRow::new("gain", || Gain(Param::new(Amplitude::new(0.5))))
+/// IsolateRow::new("gain", || Gain(Param::new(Amplitude::new(0.5))))
 ///     .control("gain", |g| g.0.store(Amplitude::new(0.25)))
 ///     .check();
 /// ```
-pub struct NativeIsolateRow<N> {
+pub struct IsolateRow<N> {
     name: String,
     make: Make<N>,
     frames: usize,
     controls: Vec<(String, Write<N>)>,
 }
 
-impl<N: ParamNode + Clone> NativeIsolateRow<N> {
+impl<N: ParamNode + Clone> IsolateRow<N> {
     /// A row for the node `make` builds, fresh for every control.
     pub fn new(name: &str, make: impl Fn() -> N + 'static) -> Self {
         Self {
@@ -283,8 +283,8 @@ mod tests {
         }
     }
 
-    fn row(detach_trim: bool) -> NativeIsolateRow<TwoCells> {
-        NativeIsolateRow::new("two cells", move || TwoCells::new(detach_trim))
+    fn row(detach_trim: bool) -> IsolateRow<TwoCells> {
+        IsolateRow::new("two cells", move || TwoCells::new(detach_trim))
             .frames(256)
             .control("addressed", |n| n.addressed.store(Amplitude::new(0.1)))
             .control("trim", |n| n.trim.store(Amplitude::new(0.1)))
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "moving it did not change a fresh fork's output")]
     fn an_inaudible_control_fails() {
-        NativeIsolateRow::new("two cells", || TwoCells::new(true))
+        IsolateRow::new("two cells", || TwoCells::new(true))
             .frames(256)
             .control("no-op", |_| {})
             .check();

@@ -366,7 +366,7 @@ mod tests {
 
         // Captured, then pushed: the capture is what makes the node
         // modulatable, and it only runs on the node before insertion. A
-        // native node's capture is its `ParamSet`'s cells — no registry
+        // `ParamNode`'s capture is its `ParamSet`'s cells — no registry
         // entry.
         let unit = DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0);
         let drive = DriveCell(unit.drive());

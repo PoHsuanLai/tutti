@@ -1,6 +1,6 @@
 //! Live-input monitoring node.
 //!
-//! [`MicMonitorNode`] drains a ring a *capture device* fills: a native graph
+//! [`MicMonitorNode`] drains a ring a *capture device* fills: a graph
 //! node with no inputs and two outputs whose whole job is "pop the next frame
 //! the producer pushed, or emit silence on underrun." The producer end lives
 //! in the device layer (`tutti-cpal`'s `MicIn`); this node is device-free so
@@ -25,7 +25,7 @@
 //!
 //! - The node is **not `Clone`**: under `Net`, every commit cloned every unit
 //!   and kept a clone on the main thread over the same consumer, which is why
-//!   `reset` had to be a no-op. The native graph owns its unit and never
+//!   `reset` had to be a no-op. The graph owns its unit and never
 //!   clones it, and without `Clone` no second consumer can be made from the
 //!   node at all:
 //!
@@ -91,7 +91,7 @@ pub fn share_mic_ring(consumer: HeapCons<[f32; 2]>) -> MicRing {
     MicRing(Arc::new(AudioThreadCell::new(consumer)))
 }
 
-/// Live microphone monitoring as a native graph node (0 in → 2 out),
+/// Live microphone monitoring as a graph node (0 in → 2 out),
 /// inserted unforkable (see the module docs).
 ///
 /// Drains the capture ring one frame per output sample; an empty ring (the

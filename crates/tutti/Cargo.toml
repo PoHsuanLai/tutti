@@ -15,7 +15,7 @@ tutti-core = { path = "../core/tutti-core", default-features = false }
 tutti-types = { path = "../core/tutti-types", default-features = false }
 tutti-node = { path = "../core/tutti-node" }
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
-# The native graph (doc 013): what an export renders, and what `Engine`
+# The audio graph (doc 013): what an export renders, and what `Engine`
 # runs (the only graph it runs, since Phase 3 PR 15). tutti-core already
 # depends on it, so naming it here links nothing new.
 tutti-graph = { path = "../core/tutti-graph" }

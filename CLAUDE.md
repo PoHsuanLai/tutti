@@ -5,13 +5,14 @@ and commands. The reasoning and history behind them is in
 [`docs/engineering-notes.md`](docs/engineering-notes.md): read the matching
 section there before you relax or work around a rule.
 
-## Direction: the native graph
+## Direction: `tutti-graph` replaces `Net`
 
-**fundsp's `Net` is being replaced by a native graph**, per
-[`docs/design/013-native-graph.md`](docs/design/013-native-graph.md): a
+**fundsp's `Net` is being replaced by `tutti-graph`**, per
+[`docs/design/013-native-graph.md`](docs/design/013-native-graph.md) (the
+filename keeps the design's old "native graph" name; it is just the graph): a
 `Topology` value, a pure compiler producing an immutable plan, units stored
 once, and events as ports. Phase 3 is done: `Engine` renders only the
-native graph (`Engine::new(&transport, &mut editor, executor)`, PR 15), it
+graph (`Engine::new(&transport, &mut editor, executor)`, PR 15), it
 is `bevy-tutti`'s only runtime (`AudioGraphRes` holds an `Editor`, PDC is
 the compiler's, export forks the live graph with `Editor::fork`), and
 tutti-export renders only it. `Net` is left as a container, not a runtime,
@@ -230,7 +231,7 @@ Non-scalar state handed to the audio thread goes through
 
 ## Wiring is declared, not called
 
-`bevy-tutti` runs on the native graph only (doc 013, Phase 3 PR 13).
+`bevy-tutti` runs on `tutti-graph` only (doc 013, Phase 3 PR 13).
 
 - `spawn_audio_node` adds an *unwired* node. `PortSources` on a sink and the
   `MasterSources` resource declare what feeds each port. The rebuild builds a

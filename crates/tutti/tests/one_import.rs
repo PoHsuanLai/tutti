@@ -16,7 +16,7 @@ use tutti::prelude::*;
 /// façade stopped re-exporting something, this stops compiling.
 ///
 /// (Until doc 013 Phase 3 PR 15 this built a `tutti::dsp::Net` and handed
-/// its backend to `Engine::new`; the engine renders only the native graph
+/// its backend to `Engine::new`; the engine renders only `tutti_graph`
 /// now, built here with `tutti::graph::GraphBuilder`.)
 #[test]
 fn one_import_renders_a_block() {

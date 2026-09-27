@@ -1,10 +1,10 @@
-//! The native graph's exports, pinned to what fundsp's `Net` rendered for
+//! The graph's exports, pinned to what fundsp's `Net` rendered for
 //! the same units.
 //!
 //! # The oracles
 //!
 //! Until doc 013 Phase 3 PR 14 this file compared tutti-export's two backends,
-//! `RenderGraph::Net` and the native graph, bit for bit; PR 14 kept the
+//! `RenderGraph::Net` and the `tutti_graph` one, bit for bit; PR 14 kept the
 //! comparisons against `net_render`, a test-only `Net` renderer here. PR 15
 //! retired that last `Net` oracle with the engine's `Net` backend: each
 //! comparison is now pinned to what it stood for, case by case, and two
@@ -18,7 +18,7 @@
 //!   trimmed render is the untrimmed one shifted by the trim; a fork of a
 //!   graph renders the fresh graph).
 //! - **Golden digests, Linux/glibc only:** FNV-1a over the planes' (or the
-//!   file's) bits, recorded from the native render on the commit that
+//!   file's) bits, recorded from the graph's render on the commit that
 //!   retired the `Net` oracle, which rendered exactly what the `Net` did
 //!   (that was asserted there, bit for bit). They catch the drift an analytic
 //!   tolerance lets through (an output scaled by `1 + f32::EPSILON`), but
@@ -775,7 +775,7 @@ impl Node for BeatPorts {
     fn reset(&mut self) {}
 }
 
-// ---- a clip reader: a native node that reads the render's transport ------
+// ---- a clip reader: a node that reads the render's transport -------------
 
 /// A 440 Hz sine at the render's rate, one second long: a plain wave table,
 /// so a voice reading it at unit rate reproduces it sample for sample.

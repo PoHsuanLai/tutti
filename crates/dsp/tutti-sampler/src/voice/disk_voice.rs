@@ -1786,10 +1786,10 @@ mod tests {
     /// render *from* the clone and write through the original, because
     /// `Net::commit` handed its backend a clone of every node; the clone then
     /// shared the ring's one reader through a `try_lock`. No engine renders a
-    /// `Net` since #49: the native graph renders the node it was given, and
+    /// `Net` since #49: the graph renders the node it was given, and
     /// the only copy it takes (a fork, `fork_copy`) never renders the live
     /// stream. So the reader is the original's
-    /// alone. What native does, and this pins: the original renders at the
+    /// alone. What the graph does, and this pins: the original renders at the
     /// gain a copy wrote (a copy holding the cell is how a host's handle,
     /// `DiskVoiceControls`, reaches it), and a clone, holding no reader,
     /// renders silence — it cannot claim the live ring.

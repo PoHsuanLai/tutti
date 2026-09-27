@@ -30,7 +30,7 @@
 //!     ModSourceRate::beat_synced(BeatDuration(1.0)),
 //! )).id();
 //!
-//! // The target: a native node, whose params its `ParamSet` addresses (no
+//! // The target: a `ParamNode`, whose params its `ParamSet` addresses (no
 //! // registration: see the last section), declaring what is modulatable and
 //! // over what range — the engine does not invent a param's sensible bounds.
 //! let drive = app

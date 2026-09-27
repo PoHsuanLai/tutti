@@ -73,7 +73,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tutti_core::{BufferMut, BufferRef, BufferVec, F32};
 
-/// A loaded plugin as the only node of a native graph, driven with the
+/// A loaded plugin as the only node of a graph, driven with the
 /// buffer types this suite fills and measures (`fill_sine`, `peak`).
 ///
 /// The plugin node is a `tutti_graph` node now, not an `AudioUnit`: a block

@@ -1,4 +1,4 @@
-//! The synth as a native node, fed by a clip node's event port (doc 013,
+//! The synth as a graph node, fed by a clip node's event port (doc 013,
 //! rewrite item 5): a clip's note sounds on its frame, in the block it is
 //! written, and a forked graph plays it offline with nothing rebound.
 //!
@@ -40,7 +40,7 @@ fn note_on_at(frame: u64) -> TimedMidiEvent {
     )
 }
 
-/// A clip (key 1) playing a note at `frame` into a native synth (key 2) on
+/// A clip (key 1) playing a note at `frame` into a synth (key 2) on
 /// the global outputs, committed.
 fn graph(frame: u64) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(BLOCK)));
@@ -120,7 +120,7 @@ fn a_forked_graph_plays_the_clip() {
     let prepare = *live.prepare();
     let (fork, fork_exec) = live
         .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
-        .expect("a clip and a native synth fork");
+        .expect("a clip and a synth fork");
     let out = render(fork, fork_exec, 2_048);
     assert_eq!(onset(&out), Some(1_000 + lead()));
 }

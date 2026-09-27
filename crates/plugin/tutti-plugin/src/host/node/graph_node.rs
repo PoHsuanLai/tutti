@@ -1,4 +1,4 @@
-//! A bound [`PluginClient`] as a native [`Node`]: the shape it declares, and
+//! A bound [`PluginClient`] as a [`Node`]: the shape it declares, and
 //! the chunk walk that feeds the IPC pipeline.
 //!
 //! Replaces the `AudioUnit<F32>` and `AudioUnit<F64>` impls (doc 013,

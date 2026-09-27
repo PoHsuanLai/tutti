@@ -325,7 +325,7 @@ impl ForkSource for PluginFork {
     fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         let fork = self.instance(mode).map_err(ForkCause::new)?;
         let health = fork.fork_health();
-        // The fork runs as the live node does, natively; boxed bare, so it
+        // The fork runs as the live node does; boxed bare, so it
         // carries no fork source of its own.
         let forked = Forked::new(Box::new(fork));
         Ok(match health {

@@ -1,4 +1,4 @@
-//! The native audio graph: a pure compiler from a graph **value** to an
+//! The audio graph: a pure compiler from a graph **value** to an
 //! immutable [`Plan`], a serial executor for plans, and the naive
 //! [`Reference`] interpreter the executor is proven against.
 //!

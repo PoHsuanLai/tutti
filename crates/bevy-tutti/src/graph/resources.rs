@@ -14,7 +14,7 @@ use tutti_types::{ChannelLayout, SampleRate, UnitParam};
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use super::native::{AudioSide, Committed, NativeGraph, ReplaceRefused};
+use super::runtime::{AudioSide, Committed, GraphRuntime, ReplaceRefused};
 
 /// Audio device configuration captured at engine build time.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Reflect)]
@@ -77,7 +77,7 @@ pub enum GraphSource {
 /// per-frame [`commit_graph`](crate::graph::commit_graph) publishes every edit
 /// of the frame to the audio thread at once. Nothing here commits inline.
 ///
-/// The graph is the native `tutti-graph` runtime (design doc 013): an
+/// The graph is the `tutti-graph` runtime (design doc 013): an
 /// `Editor` on this side, its `Executor` on the audio thread. Every node goes
 /// in through its own `IntoNode`, and PDC is the compiler's — nothing is
 /// spliced into the graph to align it. fundsp's `Net` ran behind this type
@@ -103,8 +103,8 @@ pub enum GraphSource {
 /// let graph = AudioGraphRes::headless(0, 2);
 /// let _editor = graph.0;
 /// ```
-// Mutation: `pub struct AudioGraphRes(pub Mutex<NativeGraph>)` (and a `pub`
-// `NativeGraph`) makes the doctest above compile, which fails it. Everything
+// Mutation: `pub struct AudioGraphRes(pub Mutex<GraphRuntime>)` (and a `pub`
+// `GraphRuntime`) makes the doctest above compile, which fails it. Everything
 // else in it compiles as written, so the privacy of the field is the only
 // thing it can be failing on.
 #[derive(Resource)]
@@ -112,7 +112,7 @@ pub enum GraphSource {
 // not (it holds boxed nodes and ring ends). Every `&mut self` method reaches
 // it with `get_mut`, lock-free; a `&self` query takes the lock, uncontended —
 // the resource's own borrow already serializes access.
-pub struct AudioGraphRes(Mutex<NativeGraph>);
+pub struct AudioGraphRes(Mutex<GraphRuntime>);
 
 /// The per-channel pre-roll and the total a compensation pass arrived at —
 /// what [`commit_graph`](crate::graph::commit_graph) publishes.
@@ -124,12 +124,12 @@ pub(crate) struct PdcFigures {
 impl AudioGraphRes {
     /// `&self` access. Poison is recovered: a panic mid-edit leaves a spec
     /// the next commit validates, never a torn audio thread.
-    fn read(&self) -> MutexGuard<'_, NativeGraph> {
+    fn read(&self) -> MutexGuard<'_, GraphRuntime> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// `&mut self` access: no lock needed.
-    fn write(&mut self) -> &mut NativeGraph {
+    fn write(&mut self) -> &mut GraphRuntime {
         self.0.get_mut().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -165,7 +165,9 @@ impl AudioGraphRes {
         rate: SampleRate,
         quantum: Option<Samples>,
     ) -> Self {
-        Self(Mutex::new(NativeGraph::new(inputs, outputs, rate, quantum)))
+        Self(Mutex::new(GraphRuntime::new(
+            inputs, outputs, rate, quantum,
+        )))
     }
 
     /// What every node is prepared for: the rate, the largest block, and the
@@ -182,7 +184,7 @@ impl AudioGraphRes {
     /// If the audio side was already taken — by an earlier call, or by the
     /// engine builder.
     pub fn take_audio_side(&mut self) -> AudioSide {
-        AudioSide::native(self.write().take_executor())
+        AudioSide::live(self.write().take_executor())
     }
 
     /// Re-prepare every node in the graph, and every node inserted after,
@@ -212,7 +214,7 @@ impl AudioGraphRes {
     /// `max_block`: what a device restart does between the stop and the
     /// start ([`restart_device`](crate::engine::restart_device)).
     ///
-    /// The first half of `Editor::reprepare` ([`NativeGraph::reprepare`]);
+    /// The first half of `Editor::reprepare` ([`GraphRuntime::reprepare`]);
     /// the executor adopts it on its next blocks, the engine following the
     /// rate on the first of them. Every unit instance is kept; only
     /// time-based state restarts.
@@ -636,7 +638,7 @@ impl AudioGraphRes {
         }
         let target = match node {
             None => tutti_graph::ForkTarget::Master,
-            Some(node) => tutti_graph::ForkTarget::Node(super::native::key(node)),
+            Some(node) => tutti_graph::ForkTarget::Node(super::runtime::key(node)),
         };
         match self.read().fork_for_export(target, ctx, rate) {
             Ok(graph) => Ok(graph),

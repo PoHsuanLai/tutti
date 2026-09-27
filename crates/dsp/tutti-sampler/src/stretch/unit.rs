@@ -49,7 +49,7 @@ use tutti_core::{
 /// token and `AudioThreadCell`s to catch two handles ticking one bank: `Net`
 /// cloned every node on every graph commit, and a deep copy was 201.8 MB per
 /// commit over 640 stereo nodes (`examples/profile_stretch_clone.rs`). The
-/// native graph does not clone a node to commit it (doc 013 item 7), so the
+/// graph does not clone a node to commit it (doc 013 item 7), so the
 /// sharing, the claim and the cells went, and so did the `allocate` hook that
 /// sized the scratch a sharing clone left empty.
 ///

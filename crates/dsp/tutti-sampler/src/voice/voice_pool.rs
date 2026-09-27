@@ -333,16 +333,25 @@ mod tests {
     /// a 60 dB gain error live in the vocoder. Here, parking the playhead in the
     /// silent half means any output above the floor is provably material the
     /// filter should not still be holding.
+    ///
+    /// Mutation (run): `PlaybackSlot::render_into` skipping
+    /// `flush_playhead_state` on a jump (priming kept) → peak 0.20 after the
+    /// seek, fails.
     #[test]
     fn a_transport_seek_flushes_stretch_state() {
         const SR: f64 = 44_100.0;
         // Ten seconds, so the playhead has room to run for thousands of blocks
         // inside one half without leaving it.
         const LEN: usize = 441_000;
-        // 120 BPM = 2 beats/s, so the wave spans 20 beats and the halves split at
-        // beat 10.
+        // 120 BPM = 2 beats/s, and a placed read stretched 2x takes half a
+        // source frame per output frame, so the wave spans 40 beats and the
+        // halves split at beat 20. (This said 20 and 10, forgetting the
+        // stretch: beat 12 is source frame 132 300, loud, and the assertion
+        // held only because a flushed filter was silent for its 4 096-frame
+        // refill, longer than the 2 048 measured. Priming the filter on the
+        // jump removed that gap and exposed it.)
         const LOUD_BEAT: f64 = 2.0;
-        const SILENT_BEAT: f64 = 12.0;
+        const SILENT_BEAT: f64 = 30.0;
 
         // Loud first half at 3 kHz (a real signal — the vocoder needs a changing
         // input to synthesise from), exactly silent second half.
@@ -434,12 +443,17 @@ mod tests {
     /// nodes, and a timeline clip is one. A scrub across a stretched correction would drag pre-seek audio
     /// over the new region with nothing in the suite to notice, because every
     /// other assertion on this path checks only that output is non-zero.
+    ///
+    /// Mutation (run): the jump's `flush_playhead_state` skipped (priming
+    /// kept) → peak 0.22 after the seek, fails.
     #[test]
     fn a_transport_seek_flushes_a_standalone_voice_node() {
         const SR: f64 = 44_100.0;
         const LEN: usize = 441_000;
+        // Beat 30 is source frame 330 750 at 2x, in the silent half: see the
+        // pool's test above.
         const LOUD_BEAT: f64 = 2.0;
-        const SILENT_BEAT: f64 = 12.0;
+        const SILENT_BEAT: f64 = 30.0;
 
         let data: Vec<f32> = (0..LEN)
             .map(|i| {

@@ -44,10 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source no longer reads beat 0 forever (its beat inputs were never
   wired); `tutti-core`'s `alloc_budget` no longer counts another thread's
   allocations (it failed about 1 run in 4 under CPU load: libtest's main
-  thread allocating inside the window). **Known:** a time-stretched
-  sampler voice is silent for its stretch filter's refill (~4 100 frames)
-  after a seek; it always was for a pool bound to a transport, and every
-  pool is now (`verify-audio`'s `seek_while_stretched` shows it).
+  thread allocating inside the window). A time-stretched memory voice is
+  no longer silent for its stretch filter's refill (a window times the
+  stretch, ~4 100 frames at 2x) after a seek or loop wrap: the jump primes
+  the flushed filter with the source leading up to the new position
+  (`verify-audio`'s `seek_while_stretched` passes). The sampler's two
+  seek-flush tests had parked their "silent" playhead in the loud half
+  (they forgot the 2x stretch) and passed only inside that gap; they now
+  park it in the silent half, and still fail without the flush. A disk
+  voice still refills after a seek: its ring reads forward only.
 
 - **Nodes are ported to the native graph contract, one at a time; the
   first are the SVF and the EQ band** (design doc 013, "Items 8 and 9: the

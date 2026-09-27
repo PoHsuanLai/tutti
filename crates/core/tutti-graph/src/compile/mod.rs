@@ -1220,6 +1220,7 @@ pub fn compile(
 
     // ---- 7. coarsen -------------------------------------------------------
     let (tasks, task_ops, task_succ, task_activation) = coarsen(&em.preds, &succ_rows);
+    let task_width = level_width(&task_succ, tasks.len());
 
     // ---- 9. place ---------------------------------------------------------
     let prev_units: BTreeMap<NodeKey, PlanUnit> = prev
@@ -1301,6 +1302,7 @@ pub fn compile(
         task_ops,
         task_succ,
         task_activation,
+        task_width,
         audio_slots: audio_fixed + audio_colour.count,
         event_slots: event_fixed + event_colour.count,
         event_slot_capacity,
@@ -1379,6 +1381,26 @@ fn merge_tree(em: &mut Emitted, refs: Vec<ERef>) -> ERef {
             merge_tree(em, runs)
         }
     }
+}
+
+/// The most tasks on one level of the task DAG (a task's level is the
+/// longest path to it): how many workers a block can keep busy at once, at
+/// best. Tasks are numbered in a topological order (each is numbered by its
+/// first op, and every predecessor of that op is in an earlier task), so one
+/// forward pass finds every level.
+fn level_width(succ: &Csr, tasks: usize) -> u32 {
+    let mut level = vec![0u32; tasks];
+    for t in 0..tasks {
+        for &s in succ.row(t) {
+            debug_assert!(s as usize > t, "tasks are topologically numbered");
+            level[s as usize] = level[s as usize].max(level[t] + 1);
+        }
+    }
+    let mut count = vec![0u32; tasks];
+    for &l in &level {
+        count[l as usize] += 1;
+    }
+    count.into_iter().max().unwrap_or(0)
 }
 
 /// Fuse chains: op `b` joins its only predecessor's task when that

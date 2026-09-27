@@ -490,6 +490,16 @@ impl Pair {
         }
     }
 
+    /// As [`new`](Self::new), with the executor running blocks on a shared
+    /// [`TestPool`] of `workers` participants (`1`: serially, no pool).
+    pub fn with_workers(max_block: usize, workers: usize) -> Self {
+        let mut pair = Self::new(max_block);
+        if workers > 1 {
+            pair.exec.set_pool(Some(test_pool(workers)));
+        }
+        pair
+    }
+
     /// Switch both to `graph`, building fresh units for whatever is new or
     /// regenerated.
     pub fn switch(&mut self, graph: &ValidGraph, kinds: &BTreeMap<NodeKey, Kind>) {
@@ -653,4 +663,104 @@ pub fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
     v.iter()
         .map(|c| c.iter().map(|x| x.to_bits()).collect())
         .collect()
+}
+
+/// A pool of `participants - 1` helper threads over `tutti_types::JobGate`,
+/// for tests: helpers spin (yielding) for work and never sleep, so every
+/// job gets its helpers promptly and the parallel paths are exercised hard.
+/// `tutti_core::WorkerPool` is the production pool (it cannot be named here:
+/// `tutti-core` depends on this crate).
+///
+/// With `no_alloc`, every participant runs its share of the job inside
+/// `assert_no_alloc::assert_no_alloc` — the helpers included, which a gate
+/// around the caller alone would not see (`assert_no_alloc` is per thread).
+pub struct TestPool {
+    gate: Arc<tutti_types::JobGate>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    helpers: Vec<std::thread::JoinHandle<()>>,
+    no_alloc: bool,
+}
+
+impl TestPool {
+    pub fn new(participants: usize) -> Arc<Self> {
+        Self::build(participants, false)
+    }
+
+    /// See the type docs.
+    pub fn no_alloc(participants: usize) -> Arc<Self> {
+        Self::build(participants, true)
+    }
+
+    fn build(participants: usize, no_alloc: bool) -> Arc<Self> {
+        let gate = Arc::new(tutti_types::JobGate::new(participants));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let helpers = (1..participants)
+            .map(|_| {
+                let (gate, stop) = (Arc::clone(&gate), Arc::clone(&stop));
+                std::thread::spawn(move || {
+                    let mut served = 0;
+                    while !stop.load(Ordering::Relaxed) {
+                        if !gate.help(&mut served) {
+                            std::thread::yield_now();
+                        }
+                    }
+                })
+            })
+            .collect();
+        Arc::new(Self {
+            gate,
+            stop,
+            helpers,
+            no_alloc,
+        })
+    }
+}
+
+impl tutti_graph::Pool for TestPool {
+    fn participants(&self) -> usize {
+        self.gate.participants()
+    }
+
+    fn run(&self, _wake: usize, job: &(dyn Fn(usize) + Sync)) {
+        if self.no_alloc {
+            self.gate
+                .run(&|i| assert_no_alloc::assert_no_alloc(|| job(i)), || {});
+        } else {
+            self.gate.run(job, || {});
+        }
+    }
+}
+
+impl Drop for TestPool {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for h in self.helpers.drain(..) {
+            let _ = h.join();
+        }
+    }
+}
+
+/// A shared [`TestPool`] per participant count, for a whole test binary.
+pub fn test_pool(participants: usize) -> Arc<dyn tutti_graph::Pool> {
+    use std::sync::{Mutex, OnceLock};
+    static POOLS: OnceLock<Mutex<BTreeMap<usize, Arc<TestPool>>>> = OnceLock::new();
+    let pools = POOLS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let pool = Arc::clone(
+        pools
+            .lock()
+            .expect("pool map")
+            .entry(participants)
+            .or_insert_with(|| TestPool::new(participants)),
+    );
+    pool
+}
+
+/// The worker counts the parallel suites cover: two, three (odd, so a
+/// block's tasks rarely split evenly), four and eight (more participants
+/// than a small graph has tasks).
+pub const WORKERS: [usize; 4] = [2, 3, 4, 8];
+
+/// A participant count from `WORKERS` for a proptest `seed`.
+pub fn workers_for(seed: u64) -> usize {
+    WORKERS[(seed.rotate_left(17) % WORKERS.len() as u64) as usize]
 }

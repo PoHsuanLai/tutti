@@ -214,9 +214,11 @@ mod fork;
 mod io;
 mod kernels;
 mod node;
+mod par;
 mod param;
 mod plan;
 mod reference;
+mod slots;
 mod spec;
 mod time;
 
@@ -241,6 +243,7 @@ pub use node::{
     Resolution, Scratch, Shape, SilenceMask, Status, Transport, TransportChange,
     TransportChangeRejected, TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
 };
+pub use par::Pool;
 pub use param::{
     ParamFrom, ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError, ParamRange,
     ParamShaping, ParamSource, ShapeLut, MAX_PARAM_PORTS, MAX_PARAM_SOURCES, PARAM_DECLICK,

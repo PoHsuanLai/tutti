@@ -93,6 +93,10 @@ harness = false
 name = "width_generic"
 harness = false
 
+[[bench]]
+name = "parallel_render"
+harness = false
+
 # docs.rs renders with every feature on. `default = []` keeps the engine
 # Bevy-free for consumers, but it would otherwise publish a page with the
 # feature-gated half of the public API missing.

@@ -243,8 +243,17 @@ impl AudioGraphRes {
         transport: &tutti_core::Transport,
     ) -> Result<tutti_core::Engine, tutti_core::GraphEngineError> {
         let graph = self.write();
-        let exec = graph.take_executor();
+        let mut exec = graph.take_executor();
+        exec.set_pool(graph.render_pool("tutti-worker"));
         tutti_core::Engine::new(transport, graph.editor_mut(), exec)
+    }
+
+    /// How many threads render a block, the callback included
+    /// ([`TuttiPlugin::render_workers`](crate::TuttiPlugin::render_workers)):
+    /// the live engine's pool, and each export's. Read when the engine is
+    /// built and when an export forks.
+    pub(crate) fn set_render_workers(&mut self, workers: usize) {
+        self.write().set_render_workers(workers);
     }
 
     // --- Nodes ---

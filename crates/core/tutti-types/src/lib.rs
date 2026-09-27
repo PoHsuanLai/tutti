@@ -40,9 +40,11 @@ pub mod tail;
 
 // RT-callback primitives.
 pub use rt::{
-    AudioThread, AudioThreadCell, AudioThreadGuard, BorrowGuard, BorrowRef, PosClaim, PosFrame,
-    PosReader, PosRing, PosWriter, Retire, RingWindow, RtEventBuf, RtPublish, RtRef, RtScratch,
-    RtScratchOverflow, RtVec, ScopedNoDenormals, MAX_POS_RING_FRAMES,
+    AudioThread, AudioThreadCell, AudioThreadGuard, BorrowGuard, BorrowRef, ClaimConflict,
+    ClaimTable, Claimed, ClaimedRun, Held, JobGate, Participant, PosClaim, PosFrame, PosReader,
+    PosRing, PosWriter, Retire, RingWindow, RtEventBuf, RtPublish, RtRef, RtScratch,
+    RtScratchOverflow, RtVec, RwView, ScopedNoDenormals, SplitMut, SplitRw, TaskGraph,
+    MAX_POS_RING_FRAMES,
 };
 
 // The cell a `Param` shares (`Param::as_atomic`), named here so a crate that

@@ -40,6 +40,7 @@
 //! first ([`render_frame`](super::AudioGraphRes::render_frame)).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use tutti_core::{AudioNode, Compensation, CrossfadeCurve, Samples, Tail};
 use tutti_graph::{
@@ -115,6 +116,9 @@ pub(crate) struct GraphRuntime {
     /// commit before it renders, so a local render plays the graph as
     /// edited, uncommitted edits included.
     edited: bool,
+    /// Threads per block, the caller included (`TuttiPlugin::render_workers`;
+    /// `0` for one per core).
+    render_workers: usize,
 }
 
 /// What a commit came to.
@@ -192,7 +196,26 @@ impl GraphRuntime {
             }),
             nodes: BTreeMap::new(),
             edited: true,
+            render_workers: 1,
         }
+    }
+
+    /// See `AudioGraphRes::set_render_workers`.
+    pub(crate) fn set_render_workers(&mut self, workers: usize) {
+        self.render_workers = workers;
+    }
+
+    /// A fresh pool of the configured size, its threads named `name`, or
+    /// `None` for one participant (render on the caller alone).
+    pub(crate) fn render_pool(&self, name: &str) -> Option<Arc<dyn tutti_graph::Pool>> {
+        let n = match self.render_workers {
+            0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+            n => n,
+        };
+        (n > 1).then(|| {
+            Arc::new(tutti_core::WorkerPool::builder(n).name(name).build())
+                as Arc<dyn tutti_graph::Pool>
+        })
     }
 
     /// Hand the executor over — to the engine, or to a test's audio side.
@@ -384,12 +407,16 @@ impl GraphRuntime {
         ctx: &tutti_core::transport::OfflineTransport,
         rate: SampleRate,
     ) -> tutti_export::Result<tutti_export::RenderGraph> {
-        tutti_export::RenderGraph::fork(
+        let mut graph = tutti_export::RenderGraph::fork(
             &self.editor,
             target,
             tutti_graph::ForkMode::Offline(ctx),
             rate,
-        )
+        )?;
+        // Its own pool, not the live engine's: the live callback would find
+        // a shared one busy with the export's job and render alone.
+        graph.set_pool(self.render_pool("tutti-export"));
+        Ok(graph)
     }
 
     /// Address `node`'s params by `params` (a `ParamNode`'s controls), so

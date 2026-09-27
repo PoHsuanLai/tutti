@@ -261,3 +261,88 @@ fn rendering_blocks_allocates_nothing() {
     // Not vacuous: the chain rendered sound.
     assert!(buf.iter().any(|&s| s != 0.0), "the chain is silent");
 }
+
+/// A sine fanned out to `nodes` gains, committed, with blocks run on a
+/// four-participant [`WorkerPool`](tutti_core::WorkerPool) when `pooled`:
+/// one task per gain, so the plan spreads.
+fn fan(nodes: usize, pooled: bool) -> (Editor, Executor) {
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    if pooled {
+        exec.set_pool(Some(std::sync::Arc::new(tutti_core::WorkerPool::new(4))));
+    }
+    ed.insert(NodeKey(0), "sine", ForkByClone(Sine::new(Hz(440.0))));
+    for i in 1..=nodes as u64 {
+        ed.insert(NodeKey(i), "gain", ForkByClone(Gain(0.5 + i as f32 * 1e-3)));
+        ed.spec_mut().topology.edges.insert(
+            InPort {
+                node: NodeKey(i),
+                port: 0,
+            },
+            Edge::Direct(Source::Node(OutPort {
+                node: NodeKey(0),
+                port: 0,
+            })),
+        );
+    }
+    ed.spec_mut().topology.outputs = [1, 2]
+        .map(|k| {
+            Source::Node(OutPort {
+                node: NodeKey(k),
+                port: 0,
+            })
+        })
+        .to_vec();
+    ed.commit().expect("commits");
+    (ed, exec)
+}
+
+/// **The parallel executor's state costs a bounded amount per plan.**
+/// Applying a plan on a pool also builds its task graph, claim tables and
+/// per-worker scratch (doc 013 Phase 6); that must scale with the graph, not
+/// worse, and stay within a small multiple of what applying costs without
+/// the pool. (Applying runs on the thread that calls `apply_pending`, so the
+/// count sees all of it; the pool's own threads are spawned before the
+/// measurement.)
+///
+/// Mutation (run): size each worker's claim lists by the plan's op count
+/// squared (in `Par::new`) → the pool's extra bytes grow about 4× with 4×
+/// the nodes → fails.
+#[test]
+fn the_parallel_state_allocates_in_proportion_to_the_plan() {
+    let apply = |nodes: usize, pooled: bool| {
+        let (_ed, mut exec) = fan(nodes, pooled);
+        let (allocs, bytes, ()) = measure(|| exec.apply_pending());
+        assert_eq!(exec.is_parallel(), pooled);
+        (allocs, bytes)
+    };
+    let _ = apply(8, true);
+    let (small, small_bytes) = apply(16, true);
+    let (large, large_bytes) = apply(64, true);
+    assert!(
+        (large as f64) < 8.0 * small.max(1) as f64
+            && (large_bytes as f64) < 8.0 * small_bytes.max(1) as f64,
+        "4x the nodes: {small} -> {large} allocations, {small_bytes} -> {large_bytes} bytes"
+    );
+    let (serial, serial_bytes) = apply(64, false);
+    let (small_serial, small_serial_bytes) = apply(16, false);
+    // What the pool adds is mostly per worker (claim lists, overlay
+    // buffers), so it barely grows with the graph: measured 44 KiB at 16
+    // gains and 53 KiB at 64, in 32 and 34 allocations.
+    let extra = |p: usize, s: usize| p.saturating_sub(s).max(1) as f64;
+    let (extra_small, extra_large) = (
+        extra(small_bytes, small_serial_bytes),
+        extra(large_bytes, serial_bytes),
+    );
+    assert!(
+        extra_large < 2.0 * extra_small,
+        "the parallel state grew from {extra_small} to {extra_large} bytes over \
+         the serial apply for 4x the nodes: something per-node is sized by more \
+         than the node"
+    );
+    assert!(
+        extra(large, serial) < 2.0 * extra(small, small_serial),
+        "the parallel state's allocations grew from {} to {} with 4x the nodes",
+        small - small_serial,
+        large - serial
+    );
+}

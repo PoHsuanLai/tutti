@@ -30,6 +30,8 @@
 //! residual case — the old `ArcSwap` guard degrading into an owning reference —
 //! is gone with the `ArcSwap`.)
 
+mod support;
+
 use assert_no_alloc::AllocDisabler;
 use std::sync::Arc;
 use tutti_core::Engine;
@@ -257,4 +259,101 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     });
     // Not vacuous: the click sounded inside the gate.
     assert!(clicked, "the metronome clicked");
+}
+
+/// A [`WorkerPool`](tutti_core::WorkerPool) whose every participant runs its
+/// share of a job inside `assert_no_alloc` — the helper threads too, which a
+/// gate around the callback alone would not see (`assert_no_alloc` is per
+/// thread).
+struct GatedPool(tutti_core::WorkerPool);
+
+impl tutti_core::Pool for GatedPool {
+    fn participants(&self) -> usize {
+        self.0.participants()
+    }
+    fn run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) {
+        self.0
+            .run(wake, &|i| assert_no_alloc::assert_no_alloc(|| job(i)));
+    }
+}
+
+/// The engine on the parallel executor, on the engine's own pool: a block's
+/// tasks spread over four participants, the callback wakes parked helpers
+/// (the pool's one system call), and neither the callback nor any helper
+/// allocates or frees while a block runs. The helpers' idle loop between
+/// blocks (spin, yield, park) runs outside the job and is not gated; it
+/// touches only atomics and `Thread::park`.
+///
+/// Mutation: in `WorkerPool::run`, collect the sleepers to wake into a `Vec`
+/// → the callback's gate aborts.
+#[test]
+fn graph_engine_on_a_worker_pool_is_allocation_free() {
+    use tutti_graph::{Editor, ForkByClone, Prepare};
+    use tutti_types::graph::{Edge, InPort, OutPort, Source};
+    use tutti_types::NodeKey;
+
+    let sample_rate = 48_000.0;
+    let transport = Transport::new(sample_rate);
+    let (mut ed, mut exec) = Editor::new(Prepare::new(
+        SampleRate(sample_rate),
+        tutti_core::Samples(512),
+    ));
+    // Parks quickly, so the gated blocks below wake parked helpers.
+    let pool = tutti_core::WorkerPool::builder(4)
+        .spin(std::time::Duration::from_micros(1))
+        .idle(std::time::Duration::from_micros(1))
+        .build();
+    exec.set_pool(Some(Arc::new(GatedPool(pool))));
+    for k in 0..6u64 {
+        ed.insert(
+            NodeKey(k + 1),
+            "sine",
+            ForkByClone(support::Sine::new(tutti_core::Hz(220.0 * (k + 1) as f32))),
+        );
+        ed.insert(
+            NodeKey(k + 11),
+            "gain",
+            ForkByClone(support::Gain(0.1 * (k + 1) as f32)),
+        );
+        ed.spec_mut().topology.edges.insert(
+            InPort {
+                node: NodeKey(k + 11),
+                port: 0,
+            },
+            Edge::Direct(Source::Node(OutPort {
+                node: NodeKey(k + 1),
+                port: 0,
+            })),
+        );
+    }
+    ed.spec_mut().topology.outputs = [11, 12]
+        .map(|k| {
+            Source::Node(OutPort {
+                node: NodeKey(k),
+                port: 0,
+            })
+        })
+        .to_vec();
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    assert!(exec.is_parallel(), "the plan spreads over the pool");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+    let mut output = vec![0.0f32; 512 * 2];
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    ed.collect();
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..200 {
+            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+        }
+    });
+    // Idle long enough for every helper to park, then render again: the
+    // wake is gated too.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..20 {
+            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+        }
+    });
+    assert!(output.iter().any(|&x| x != 0.0), "the graph rendered");
 }

@@ -144,14 +144,15 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_types::{AudioThread, Frame, NodeKey, Samples, ScopedNoDenormals, Tail};
 
-use crate::arena::{borrow_disjoint, borrow_sorted, Arena, Role};
-use crate::command::{overlay_capacity, CommandRx};
+use crate::arena::{Arena, Role};
+use crate::command::{overlay_capacity, CommandRx, Deliveries};
 use crate::event::{merge_into, Event, EventWriter, SortedEvents};
 use crate::fade::CrossfadeCurve;
 use crate::io::Io;
@@ -160,11 +161,13 @@ use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, MaxBlock, Node, Prepare, SilenceMask, Status, Transport,
     TransportChanges, MAX_PORTS,
 };
+use crate::par::{Block, Par, Pool};
 use crate::param::MAX_PARAM_SOURCES;
 use crate::param::{ParamFrom, ParamInput, ParamShaping, ParamState, SourceIn};
 use crate::plan::{
     DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, ParamSlot, Plan, UnitIdx,
 };
+use crate::slots::{borrow_events, event_pair, flag_of, set_flag, AudioSlots, EventSlots};
 use crate::spec::{EventIn, EventOut};
 
 /// Events per block an event output port holds when its node declares no
@@ -498,7 +501,7 @@ pub(crate) fn channels() -> (Channels, ExecutorEnds) {
     )
 }
 
-struct Unit {
+pub(crate) struct Unit {
     gen: u32,
     node: NodeBox,
     /// Consecutive frames of fully silent input, saturating.
@@ -531,15 +534,15 @@ impl Unit {
     }
 }
 
-enum Ring {
+pub(crate) enum Ring {
     Audio(AudioRing),
     Event(EventFifo),
 }
 
 /// Events flushed from a delay that went away, waiting for their sink's next
 /// call, at their offsets relative to the earliest (see the module docs).
-struct Inject {
-    unit: u32,
+pub(crate) struct Inject {
+    pub(crate) unit: u32,
     port: u16,
     events: Vec<Event>,
     /// Where `events` and the sink's own slot events are merged, sized when
@@ -555,8 +558,10 @@ struct State {
     arena: Arena,
     /// Per audio slot, what is known about its block: [`SILENT`] and
     /// [`CONSTANT`] bits. One byte per slot, so a node's input masks are
-    /// built with a load and two shifts per channel.
-    flags: Vec<u8>,
+    /// built with a load and two shifts per channel. Atomic (with
+    /// `Relaxed` loads and stores, plain byte moves) so the parallel
+    /// executor's workers can share it; see `slots.rs`.
+    flags: Vec<AtomicU8>,
     events: Vec<Vec<Event>>,
     rings: Vec<Option<Ring>>,
     audio_fb: Vec<Option<AudioRing>>,
@@ -568,13 +573,16 @@ struct State {
     /// Where a node's scheduled events are merged into its inputs; sized
     /// when applying so the merge never grows (`command::overlay_capacity`).
     overlay: Vec<Event>,
+    /// The parallel executor's state for this plan, when the executor has a
+    /// pool and the plan has tasks to spread (`par.rs`).
+    par: Option<Par>,
 }
 
 impl State {
     fn empty(max_block: usize) -> Self {
         Self {
             arena: Arena::new(1, max_block),
-            flags: vec![SILENT | CONSTANT],
+            flags: vec![AtomicU8::new(SILENT | CONSTANT)],
             events: Vec::new(),
             rings: Vec::new(),
             audio_fb: Vec::new(),
@@ -583,6 +591,7 @@ impl State {
             has_inject: Vec::new(),
             has_due: Vec::new(),
             overlay: Vec::new(),
+            par: None,
         }
     }
 }
@@ -616,6 +625,30 @@ pub struct Executor {
     /// The sample rate changed in a re-prepare: the next rebuild carries no
     /// time-based state (see `Editor::reprepare`).
     reset_time: bool,
+    /// The pool blocks run on, if any (see [`set_pool`](Self::set_pool)).
+    pool: Option<Arc<dyn Pool>>,
+}
+
+/// The parallel state for `plan` on `pool`, when it would run in
+/// parallel at all: a pool of more than one participant, and more than one
+/// task to spread.
+fn par_for(
+    plan: &Plan,
+    pool: Option<&Arc<dyn Pool>>,
+    store_len: usize,
+    inject: &[Inject],
+    overlay: usize,
+) -> Option<Par> {
+    let participants = pool?.participants();
+    (participants > 1 && plan.tasks.len() > 1).then(|| {
+        Par::new(
+            plan,
+            participants,
+            store_len,
+            inject.iter().map(|i| i.unit),
+            overlay,
+        )
+    })
 }
 
 fn tail_elapsed(tail: Tail, quiet: u64) -> bool {
@@ -649,7 +682,44 @@ impl Executor {
             suspended: false,
             next_prepare: None,
             reset_time: false,
+            pool: None,
         }
+    }
+
+    /// Run blocks on `pool` from now on — the parallel executor (see the
+    /// `par` module docs, `src/par.rs`) — or, with `None`, on the calling
+    /// thread alone. Returns the pool it replaces.
+    ///
+    /// **Control thread**: it builds the parallel state for the running
+    /// plan, which allocates. Set it before the executor goes to the audio
+    /// thread (before `Engine::new`, or before an export renders). A pool of
+    /// one participant, or a plan with fewer than two tasks, runs the serial
+    /// walk: the serial executor is the parallel one's one-worker case, and
+    /// both render the same samples.
+    pub fn set_pool(&mut self, pool: Option<Arc<dyn Pool>>) -> Option<Arc<dyn Pool>> {
+        let old = std::mem::replace(&mut self.pool, pool);
+        self.state.par = self.plan.as_deref().and_then(|plan| {
+            par_for(
+                plan,
+                self.pool.as_ref(),
+                self.store.len(),
+                &self.state.inject,
+                self.state.overlay.capacity(),
+            )
+        });
+        old
+    }
+
+    /// The pool blocks run on, if any.
+    pub fn pool(&self) -> Option<&Arc<dyn Pool>> {
+        self.pool.as_ref()
+    }
+
+    /// Whether the running plan's blocks are spread across the pool: a pool
+    /// of more than one participant is set, and the plan has more than one
+    /// task. Otherwise blocks run the serial walk.
+    pub fn is_parallel(&self) -> bool {
+        self.state.par.is_some()
     }
 
     /// The command ring's executor end, for the pair check.
@@ -1051,7 +1121,7 @@ impl Executor {
             .map(|c| c.events(cap))
             .max()
             .unwrap_or(0);
-        let inject = flushed
+        let inject: Vec<Inject> = flushed
             .into_iter()
             .map(|((unit, port), mut events)| {
                 has_inject[unit as usize] = true;
@@ -1069,13 +1139,13 @@ impl Executor {
             })
             .collect();
 
+        let overlay = overlay_capacity(plan, cap, flushed_total);
+        let par = par_for(plan, self.pool.as_ref(), self.store.len(), &inject, overlay);
         State {
             arena: Arena::new(plan.audio_slots as usize, max_block),
-            flags: {
-                let mut v = vec![0u8; plan.audio_slots as usize];
-                v[0] = SILENT | CONSTANT;
-                v
-            },
+            flags: (0..plan.audio_slots)
+                .map(|s| AtomicU8::new(if s == 0 { SILENT | CONSTANT } else { 0 }))
+                .collect(),
             events: plan
                 .event_slot_capacity
                 .iter()
@@ -1087,7 +1157,8 @@ impl Executor {
             inject,
             has_inject,
             has_due: vec![false; plan.units.len()],
-            overlay: Vec::with_capacity(overlay_capacity(plan, cap, flushed_total)),
+            overlay: Vec::with_capacity(overlay),
+            par,
         }
     }
 
@@ -1185,6 +1256,7 @@ impl Executor {
             suspended: _,
             next_prepare: _,
             reset_time: _,
+            pool,
         } = self;
         let Some(plan) = plan.as_ref() else {
             for o in outputs.iter_mut() {
@@ -1204,6 +1276,7 @@ impl Executor {
             has_inject,
             has_due,
             overlay,
+            par,
         } = state;
         // Slices, not `&mut Vec`s: a slice's pointer and length are locals
         // the op loop can keep in registers across the opaque node calls,
@@ -1232,7 +1305,7 @@ impl Executor {
         for (f, spec) in audio_fb.iter().zip(&plan.audio_feedback) {
             let ring = f.as_ref().expect("built by apply");
             let is_silent = ring.peek_oldest(arena.slot_mut(spec.slot, frames));
-            flags[spec.slot as usize] = flag(is_silent, is_silent);
+            set_flag(flags, spec.slot, flag(is_silent, is_silent));
         }
         for (f, spec) in event_fb.iter_mut().zip(&plan.event_feedback) {
             let fifo = f.as_mut().expect("built by apply");
@@ -1241,209 +1314,118 @@ impl Executor {
             fifo.pop_due(out, frames);
         }
 
-        for op in &plan.ops {
-            match *op {
-                Op::GlobalIn { channel, dst } => {
-                    arena
-                        .slot_mut(dst, frames)
-                        .copy_from_slice(&inputs[channel as usize][..frames]);
-                    flags[dst as usize] = 0;
-                }
-                Op::Delay { delay, src, dst } => {
-                    let Some(Ring::Audio(ring)) = &mut rings[delay as usize] else {
-                        unreachable!("audio delay on an event ring")
-                    };
-                    let src_silent = flags[src as usize] & SILENT != 0;
-                    let out_silent = if src == dst {
-                        ring.run_in_place(arena.slot_mut(dst, frames), src_silent)
-                    } else {
-                        let (s, d) = arena.pair(src, dst, frames);
-                        ring.run(s, d, src_silent)
-                    };
-                    flags[dst as usize] = flag(out_silent, out_silent);
-                }
-                Op::EventDelay { delay, src, dst } => {
-                    let Some(Ring::Event(fifo)) = &mut rings[delay as usize] else {
-                        unreachable!("event delay on an audio ring")
-                    };
-                    let (input, output) = event_pair(events, src, dst);
-                    output.clear();
-                    *dropped += fifo.run(input, output, frames) as u64;
-                }
-                Op::EventMerge { srcs, dst } => {
-                    let list = &plan.event_list[srcs.range()];
-                    let mut reqs = [(0u32, Role::Read(0)); MAX_PORTS + 1];
-                    for (i, &s) in list.iter().enumerate() {
-                        reqs[i] = (s, Role::Read(i as u8));
+        let flags = &flags[..];
+        let due = commands.deliveries();
+        if let (Some(par), Some(pool)) = (par.as_mut(), pool.as_ref()) {
+            let (lost, ended) = crate::par::run_block(
+                par,
+                pool,
+                Block {
+                    plan,
+                    env: &env,
+                    frames,
+                    max,
+                    cap,
+                    inputs,
+                    outputs,
+                    arena,
+                    flags,
+                    events,
+                    store,
+                    rings,
+                    audio_fb,
+                    event_fb,
+                    inject,
+                    has_inject,
+                    has_due,
+                    due,
+                },
+            );
+            *dropped += lost;
+            fade_ended |= ended;
+        } else {
+            for op in &plan.ops {
+                match *op {
+                    Op::GlobalIn { channel, dst } => {
+                        global_in(arena, flags, inputs, channel, dst, frames);
                     }
-                    reqs[list.len()] = (dst, Role::Write(0));
-                    let mut ins: [&[Event]; MAX_PORTS] = [&[]; MAX_PORTS];
-                    let mut output: Option<&mut Vec<Event>> = None;
-                    borrow_disjoint(
-                        events,
-                        1,
-                        &mut reqs[..=list.len()],
-                        |port, v| ins[port as usize] = &v[0],
-                        |_, v| output = Some(&mut v[0]),
-                    );
-                    let output = output.expect("dst borrowed");
-                    output.clear();
-                    // The slot holds all its inputs (`event_slot_capacity`), so
-                    // this never drops; counted anyway, in case it ever does.
-                    let room = output.capacity();
-                    *dropped += merge_into(&ins[..list.len()], output, room) as u64;
-                }
-                Op::Node { unit, .. } => {
-                    // One record per node op, lowered at compile time and
-                    // checked by the verifier: store index, generation,
-                    // arrival, tail, port slots and presorted borrows.
-                    let rec = &plan.nodes.recs[unit as usize];
-                    let u = store[rec.store as usize]
-                        .as_mut()
-                        .expect("the delta placed every unit the plan runs");
-                    debug_assert_eq!(u.gen, rec.gen, "unit generation matches the plan");
-                    let head = Head {
-                        rec,
-                        plan,
-                        frames,
-                        max,
-                        cap,
-                        env: &env,
-                    };
-                    let mut st = OpState {
-                        arena,
-                        flags,
-                        events,
-                        inject,
-                        has_inject,
-                        has_due,
-                        overlay,
-                        commands,
-                        dropped,
-                    };
-                    let borrows = &plan.nodes.borrows[..];
-                    if u.fade.is_some() {
-                        // A crossfade runs here: both units, then the blend.
-                        // Off the hot path, whatever the form.
-                        let ports = rec.ports(&plan.nodes.slots);
-                        fade_ended |= fading_node_op(u, &head, &mut st, ports, borrows);
-                        continue;
+                    Op::Delay { delay, src, dst } => {
+                        delay_op(
+                            audio_ring(&mut rings[delay as usize]),
+                            arena,
+                            flags,
+                            src,
+                            dst,
+                            frames,
+                        );
                     }
-                    // Each arm hands `node_op` its port slots. For the three
-                    // direct forms they are literal one-element arrays, so
-                    // once `node_op` is inlined every per-port loop in it —
-                    // masks, skip, finish — folds to straight-line code.
-                    match rec.form {
-                        Form::Source { out } => {
-                            node_op(
-                                u,
-                                &head,
-                                &mut st,
-                                [&[], &[out], &[], &[]],
-                                |call, node, st| {
-                                    let mut outs = [st.arena.slot_mut(out, frames)];
-                                    (call.process(node, &[], &mut outs), 0)
-                                },
-                            );
-                        }
-                        Form::Split { input, out } => node_op(
-                            u,
-                            &head,
-                            &mut st,
-                            [&[input], &[out], &[], &[]],
-                            |call, node, st| {
-                                let (i, o) = st.arena.pair(input, out, frames);
-                                (call.process(node, &[i], &mut [o]), 0)
-                            },
-                        ),
-                        Form::InPlace { slot } => node_op(
-                            u,
-                            &head,
-                            &mut st,
-                            [&[slot], &[slot], &[], &[]],
-                            |call, node, st| {
-                                let mut outs = [st.arena.slot_mut(slot, frames)];
-                                (call.process(node, &[&[]], &mut outs), 0)
-                            },
-                        ),
-                        // The stereo shapes: fixed widths, so `direct_op`
-                        // gets the same straight-line call path.
-                        Form::Direct(d) => {
-                            let slots = &plan.nodes.slots[..];
-                            match (d.ins, d.outs) {
-                                (0, 2) => direct_op::<0, 2>(u, &head, &mut st, &d, slots),
-                                (1, 2) => direct_op::<1, 2>(u, &head, &mut st, &d, slots),
-                                (2, 1) => direct_op::<2, 1>(u, &head, &mut st, &d, slots),
-                                (2, 2) => direct_op::<2, 2>(u, &head, &mut st, &d, slots),
-                                _ => unreachable!("rule 7 admits only `Direct::SHAPES`"),
-                            }
-                        }
-                        // Port tables are stack arrays; pick the smallest
-                        // bucket that fits so a two-port node does not
-                        // initialise 64 entries per call. An event-free node
-                        // builds no event table at all, whatever its width.
-                        Form::Audio => {
-                            let ports = rec.ports(&plan.nodes.slots);
-                            node_op(u, &head, &mut st, ports, |call, node, st| {
-                                let status = match rec.ain.max(rec.aout) {
-                                    0..=4 => call.run_audio::<4>(node, st.arena, borrows),
-                                    5..=16 => call.run_audio::<16>(node, st.arena, borrows),
-                                    _ => call.run_audio::<MAX_PORTS>(node, st.arena, borrows),
-                                };
-                                (status, 0)
-                            });
-                        }
-                        Form::General => {
-                            let ports = rec.ports(&plan.nodes.slots);
-                            node_op(u, &head, &mut st, ports, |call, node, st| {
-                                let a = rec.ain.max(rec.aout);
-                                let e = rec.ein.max(rec.eout);
-                                let (inject, overlay) = (&*st.inject, &st.overlay[..]);
-                                let extra = Extra { inject, overlay };
-                                let (arena, events) = (&mut *st.arena, &mut *st.events);
-                                match (a, e) {
-                                    (0..=4, 0..=4) => {
-                                        call.run::<4, 4>(node, arena, events, borrows, extra)
-                                    }
-                                    (0..=16, 0..=4) => {
-                                        call.run::<16, 4>(node, arena, events, borrows, extra)
-                                    }
-                                    _ => call.run::<MAX_PORTS, MAX_PORTS>(
-                                        node, arena, events, borrows, extra,
-                                    ),
-                                }
-                            });
-                        }
+                    Op::EventDelay { delay, src, dst } => {
+                        *dropped += event_delay_op(
+                            event_ring(&mut rings[delay as usize]),
+                            events,
+                            src,
+                            dst,
+                            frames,
+                        );
                     }
-                }
-                Op::Output {
-                    channel,
-                    src,
-                    delay,
-                } => {
-                    let out = &mut outputs[channel as usize][..frames];
-                    let s = arena.slot(src, frames);
-                    match delay {
-                        Some(d) => {
-                            let Some(Ring::Audio(ring)) = &mut rings[d as usize] else {
-                                unreachable!("output delay on an event ring")
-                            };
-                            ring.run(s, out, flags[src as usize] & SILENT != 0);
-                        }
-                        None => out.copy_from_slice(s),
+                    Op::EventMerge { srcs, dst } => {
+                        *dropped += event_merge_op(&plan.event_list[srcs.range()], dst, events);
                     }
-                }
-                Op::Capture { feedback, src } => {
-                    let ring = audio_fb[feedback as usize]
-                        .as_mut()
-                        .expect("built by apply");
-                    ring.push(arena.slot(src, frames), flags[src as usize] & SILENT != 0);
-                }
-                Op::EventCapture { feedback, src } => {
-                    let fifo = event_fb[feedback as usize]
-                        .as_mut()
-                        .expect("built by apply");
-                    *dropped += fifo.push(&events[src as usize]) as u64;
+                    Op::Node { unit, .. } => {
+                        // One record per node op, lowered at compile time and
+                        // checked by the verifier: store index, generation,
+                        // arrival, tail, port slots and presorted borrows.
+                        let rec = &plan.nodes.recs[unit as usize];
+                        let u = store[rec.store as usize]
+                            .as_mut()
+                            .expect("the delta placed every unit the plan runs");
+                        let head = Head {
+                            rec,
+                            plan,
+                            frames,
+                            max,
+                            cap,
+                            env: &env,
+                        };
+                        let mut st = OpState {
+                            arena,
+                            flags,
+                            events,
+                            inject,
+                            has_inject: &mut has_inject[unit as usize],
+                            has_due: &mut has_due[unit as usize],
+                            overlay,
+                            due,
+                            dropped,
+                        };
+                        fade_ended |= node_dispatch(u, &head, &mut st);
+                    }
+                    Op::Output {
+                        channel,
+                        src,
+                        delay,
+                    } => {
+                        let ring = delay.map(|d| audio_ring(&mut rings[d as usize]));
+                        output_op(
+                            ring,
+                            &mut outputs[channel as usize][..frames],
+                            arena,
+                            flags,
+                            src,
+                        );
+                    }
+                    Op::Capture { feedback, src } => {
+                        let ring = audio_fb[feedback as usize]
+                            .as_mut()
+                            .expect("built by apply");
+                        capture_op(ring, arena, flags, src, frames);
+                    }
+                    Op::EventCapture { feedback, src } => {
+                        let fifo = event_fb[feedback as usize]
+                            .as_mut()
+                            .expect("built by apply");
+                        *dropped += fifo.push(events.ev(src)) as u64;
+                    }
                 }
             }
         }
@@ -1484,6 +1466,227 @@ fn end_fades(plan: &Plan, store: &mut [Option<Unit>], fade_back: &mut HeapProd<B
     }
 }
 
+/// An audio delay's ring.
+#[inline]
+pub(crate) fn audio_ring(r: &mut Option<Ring>) -> &mut AudioRing {
+    match r {
+        Some(Ring::Audio(a)) => a,
+        _ => unreachable!("an audio delay on an event ring"),
+    }
+}
+
+/// An event delay's FIFO.
+#[inline]
+pub(crate) fn event_ring(r: &mut Option<Ring>) -> &mut EventFifo {
+    match r {
+        Some(Ring::Event(f)) => f,
+        _ => unreachable!("an event delay on an audio ring"),
+    }
+}
+
+/// [`Op::GlobalIn`].
+#[inline]
+pub(crate) fn global_in<A: AudioSlots>(
+    arena: &mut A,
+    flags: &[AtomicU8],
+    inputs: &[&[f32]],
+    channel: u16,
+    dst: u32,
+    frames: usize,
+) {
+    arena
+        .slot_mut(dst, frames)
+        .copy_from_slice(&inputs[channel as usize][..frames]);
+    set_flag(flags, dst, 0);
+}
+
+/// [`Op::Delay`]; `src == dst` is the in-place form.
+#[inline]
+pub(crate) fn delay_op<A: AudioSlots>(
+    ring: &mut AudioRing,
+    arena: &mut A,
+    flags: &[AtomicU8],
+    src: u32,
+    dst: u32,
+    frames: usize,
+) {
+    let src_silent = flag_of(flags, src) & SILENT != 0;
+    let out_silent = if src == dst {
+        ring.run_in_place(arena.slot_mut(dst, frames), src_silent)
+    } else {
+        let (s, d) = arena.pair(src, dst, frames);
+        ring.run(s, d, src_silent)
+    };
+    set_flag(flags, dst, flag(out_silent, out_silent));
+}
+
+/// [`Op::EventDelay`]. Returns the events its FIFO refused.
+#[inline]
+pub(crate) fn event_delay_op<E: EventSlots + ?Sized>(
+    fifo: &mut EventFifo,
+    events: &mut E,
+    src: u32,
+    dst: u32,
+    frames: usize,
+) -> u64 {
+    let (input, output) = event_pair(events, src, dst);
+    output.clear();
+    fifo.run(input, output, frames) as u64
+}
+
+/// [`Op::EventMerge`] of the slots `list` into `dst`. Returns the events it
+/// dropped, which is none: the slot holds all its inputs
+/// (`event_slot_capacity`). Counted anyway, in case it ever does.
+pub(crate) fn event_merge_op<E: EventSlots + ?Sized>(
+    list: &[u32],
+    dst: u32,
+    events: &mut E,
+) -> u64 {
+    let mut reqs = [(0u32, Role::Read(0)); MAX_PORTS + 1];
+    for (i, &s) in list.iter().enumerate() {
+        reqs[i] = (s, Role::Read(i as u8));
+    }
+    reqs[list.len()] = (dst, Role::Write(0));
+    let mut ins: [&[Event]; MAX_PORTS] = [&[]; MAX_PORTS];
+    let mut output: Option<&mut Vec<Event>> = None;
+    borrow_events(
+        events,
+        &mut reqs[..=list.len()],
+        |port, v| ins[port as usize] = v,
+        |_, v| output = Some(v),
+    );
+    let output = output.expect("dst borrowed");
+    output.clear();
+    let room = output.capacity();
+    merge_into(&ins[..list.len()], output, room) as u64
+}
+
+/// [`Op::Output`]: slot `src` into `out`, through the channel's alignment
+/// ring if it has one.
+#[inline]
+pub(crate) fn output_op<A: AudioSlots>(
+    ring: Option<&mut AudioRing>,
+    out: &mut [f32],
+    arena: &A,
+    flags: &[AtomicU8],
+    src: u32,
+) {
+    let s = arena.slot(src, out.len());
+    match ring {
+        Some(ring) => {
+            ring.run(s, out, flag_of(flags, src) & SILENT != 0);
+        }
+        None => out.copy_from_slice(s),
+    }
+}
+
+/// [`Op::Capture`].
+#[inline]
+pub(crate) fn capture_op<A: AudioSlots>(
+    ring: &mut AudioRing,
+    arena: &A,
+    flags: &[AtomicU8],
+    src: u32,
+    frames: usize,
+) {
+    ring.push(arena.slot(src, frames), flag_of(flags, src) & SILENT != 0);
+}
+
+/// [`Op::Node`]: run `u` for `h.rec`, by its borrow form. Returns whether a
+/// crossfade running there reached its end this block.
+#[inline(always)]
+pub(crate) fn node_dispatch<A: AudioSlots, E: EventSlots + ?Sized>(
+    u: &mut Unit,
+    head: &Head<'_, '_>,
+    st: &mut OpState<'_, A, E>,
+) -> bool {
+    let (rec, plan, frames) = (head.rec, head.plan, head.frames);
+    debug_assert_eq!(u.gen, rec.gen, "unit generation matches the plan");
+    let borrows = &plan.nodes.borrows[..];
+    if u.fade.is_some() {
+        // A crossfade runs here: both units, then the blend. Off the hot
+        // path, whatever the form.
+        let ports = rec.ports(&plan.nodes.slots);
+        return fading_node_op(u, head, st, ports, borrows);
+    }
+    // Each arm hands `node_op` its port slots. For the three direct forms
+    // they are literal one-element arrays, so once `node_op` is inlined every
+    // per-port loop in it — masks, skip, finish — folds to straight-line
+    // code.
+    match rec.form {
+        Form::Source { out } => {
+            node_op(u, head, st, [&[], &[out], &[], &[]], |call, node, st| {
+                let mut outs = [st.arena.slot_mut(out, frames)];
+                (call.process(node, &[], &mut outs), 0)
+            });
+        }
+        Form::Split { input, out } => node_op(
+            u,
+            head,
+            st,
+            [&[input], &[out], &[], &[]],
+            |call, node, st| {
+                let (i, o) = st.arena.pair(input, out, frames);
+                (call.process(node, &[i], &mut [o]), 0)
+            },
+        ),
+        Form::InPlace { slot } => node_op(
+            u,
+            head,
+            st,
+            [&[slot], &[slot], &[], &[]],
+            |call, node, st| {
+                let mut outs = [st.arena.slot_mut(slot, frames)];
+                (call.process(node, &[&[]], &mut outs), 0)
+            },
+        ),
+        // The stereo shapes: fixed widths, so `direct_op` gets the same
+        // straight-line call path.
+        Form::Direct(d) => {
+            let slots = &plan.nodes.slots[..];
+            match (d.ins, d.outs) {
+                (0, 2) => direct_op::<0, 2, A, E>(u, head, st, &d, slots),
+                (1, 2) => direct_op::<1, 2, A, E>(u, head, st, &d, slots),
+                (2, 1) => direct_op::<2, 1, A, E>(u, head, st, &d, slots),
+                (2, 2) => direct_op::<2, 2, A, E>(u, head, st, &d, slots),
+                _ => unreachable!("rule 7 admits only `Direct::SHAPES`"),
+            }
+        }
+        // Port tables are stack arrays; pick the smallest bucket that fits
+        // so a two-port node does not initialise 64 entries per call. An
+        // event-free node builds no event table at all, whatever its width.
+        Form::Audio => {
+            let ports = rec.ports(&plan.nodes.slots);
+            node_op(u, head, st, ports, |call, node, st| {
+                let status = match rec.ain.max(rec.aout) {
+                    0..=4 => call.run_audio::<4, A>(node, &mut *st.arena, borrows),
+                    5..=16 => call.run_audio::<16, A>(node, &mut *st.arena, borrows),
+                    _ => call.run_audio::<MAX_PORTS, A>(node, &mut *st.arena, borrows),
+                };
+                (status, 0)
+            });
+        }
+        Form::General => {
+            let ports = rec.ports(&plan.nodes.slots);
+            node_op(u, head, st, ports, |call, node, st| {
+                let a = rec.ain.max(rec.aout);
+                let e = rec.ein.max(rec.eout);
+                let (inject, overlay) = (&*st.inject, &st.overlay[..]);
+                let extra = Extra { inject, overlay };
+                let (arena, events) = (&mut *st.arena, &mut *st.events);
+                match (a, e) {
+                    (0..=4, 0..=4) => call.run::<4, 4, A, E>(node, arena, events, borrows, extra),
+                    (0..=16, 0..=4) => call.run::<16, 4, A, E>(node, arena, events, borrows, extra),
+                    _ => {
+                        call.run::<MAX_PORTS, MAX_PORTS, A, E>(node, arena, events, borrows, extra)
+                    }
+                }
+            });
+        }
+    }
+    false
+}
+
 /// A node op with a crossfade running: the outgoing unit on the op's inputs
 /// into its scratch, then the incoming unit as any op runs (events and all,
 /// through the general borrow), then the blend into the op's output slots.
@@ -1497,10 +1700,10 @@ fn end_fades(plan: &Plan, store: &mut [Option<Unit>], fade_back: &mut HeapProd<B
 /// cover the fade too.
 #[cold]
 #[inline(never)]
-fn fading_node_op(
+fn fading_node_op<A: AudioSlots, E: EventSlots + ?Sized>(
     u: &mut Unit,
     h: &Head<'_, '_>,
-    st: &mut OpState<'_>,
+    st: &mut OpState<'_, A, E>,
     [ain, aout, ein, eout]: [&[u32]; 4],
     borrows: &[(u32, Role)],
 ) -> bool {
@@ -1577,7 +1780,7 @@ fn fading_node_op(
             let (inject, overlay) = (&*st.inject, &st.overlay[..]);
             let extra = Extra { inject, overlay };
             let (arena, events) = (&mut *st.arena, &mut *st.events);
-            call.run::<MAX_PORTS, MAX_PORTS>(node, arena, events, borrows, extra)
+            call.run::<MAX_PORTS, MAX_PORTS, A, E>(node, arena, events, borrows, extra)
         },
     );
 
@@ -1592,7 +1795,7 @@ fn fading_node_op(
             let (g_in, g_out) = x.curve.gains(x.done + i, x.len);
             *y = *y * g_in + o * g_out;
         }
-        st.flags[s as usize] = 0;
+        set_flag(st.flags, s, 0);
     }
     x.done += n;
     // Never skipped while fading: the next block's skip test reads these.
@@ -1615,10 +1818,10 @@ fn flag(silent: bool, constant: bool) -> u8 {
 /// shifts per channel. Channels past 63 are never set (the masks are 64
 /// wide, and `compile` refuses a wider node anyway).
 #[inline]
-fn in_masks(ain: &[u32], flags: &[u8]) -> (SilenceMask, ConstantMask) {
+fn in_masks(ain: &[u32], flags: &[AtomicU8]) -> (SilenceMask, ConstantMask) {
     let (mut silent, mut constant) = (0u64, 0u64);
     for (c, &s) in (0..64u32).zip(ain) {
-        let f = u64::from(flags[s as usize]);
+        let f = u64::from(flag_of(flags, s));
         silent |= (f & u64::from(SILENT)) << c;
         constant |= ((f & u64::from(CONSTANT)) >> 1) << c;
     }
@@ -1626,29 +1829,34 @@ fn in_masks(ain: &[u32], flags: &[u8]) -> (SilenceMask, ConstantMask) {
 }
 
 /// A node op's constants: its record and the block's.
-struct Head<'p, 'e> {
-    rec: &'p NodeRec,
+pub(crate) struct Head<'p, 'e> {
+    pub(crate) rec: &'p NodeRec,
     /// The plan, for the param tables.
-    plan: &'p Plan,
-    frames: usize,
-    max: MaxBlock,
-    cap: usize,
-    env: &'e Env,
+    pub(crate) plan: &'p Plan,
+    pub(crate) frames: usize,
+    pub(crate) max: MaxBlock,
+    pub(crate) cap: usize,
+    pub(crate) env: &'e Env,
 }
 
-/// What a node op may write besides its own unit.
-struct OpState<'s> {
-    arena: &'s mut Arena,
-    flags: &'s mut [u8],
-    events: &'s mut [Vec<Event>],
-    inject: &'s mut [Inject],
-    has_inject: &'s mut [bool],
-    /// Plan units with a scheduled command landing this block.
-    has_due: &'s mut [bool],
+/// What a node op may write besides its own unit: every buffer through `A`
+/// and `E` (the arena and event slots themselves serially, a claimed view
+/// of them in parallel), and only its own unit's per-block flags.
+pub(crate) struct OpState<'s, A: ?Sized, E: ?Sized> {
+    pub(crate) arena: &'s mut A,
+    pub(crate) flags: &'s [AtomicU8],
+    pub(crate) events: &'s mut E,
+    /// Flushed events waiting for their sinks: every entry serially, only
+    /// this unit's in parallel. Either way, entries are matched by unit.
+    pub(crate) inject: &'s mut [Inject],
+    /// Whether flushed events wait for this unit.
+    pub(crate) has_inject: &'s mut bool,
+    /// Whether a scheduled command lands on this unit this block.
+    pub(crate) has_due: &'s mut bool,
     /// Where a node's scheduled events are merged into its inputs.
-    overlay: &'s mut Vec<Event>,
-    commands: &'s CommandRx,
-    dropped: &'s mut u64,
+    pub(crate) overlay: &'s mut Vec<Event>,
+    pub(crate) due: Deliveries<'s>,
+    pub(crate) dropped: &'s mut u64,
 }
 
 /// Run one node op: the silence skip, flushed-event injection, the call
@@ -1660,12 +1868,12 @@ struct OpState<'s> {
 /// folds to straight-line code. That, and not the borrow alone, is most of
 /// what the direct forms save.
 #[inline(always)]
-fn node_op(
+fn node_op<A: AudioSlots, E: EventSlots + ?Sized>(
     u: &mut Unit,
     h: &Head<'_, '_>,
-    st: &mut OpState<'_>,
+    st: &mut OpState<'_, A, E>,
     ports: [&[u32]; 4],
-    call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_>) -> (Status, u32),
+    call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_, A, E>) -> (Status, u32),
 ) {
     node_op_with(u, h, st, ports, false, call_node);
 }
@@ -1675,7 +1883,11 @@ fn node_op(
 /// the unit's param buffers. Off the hot path: only a unit with a modulated
 /// param, or one mid-declick, gets here.
 #[inline(never)]
-fn run_params(u: &mut Unit, h: &Head<'_, '_>, st: &OpState<'_>) {
+fn run_params<A: AudioSlots, E: EventSlots + ?Sized>(
+    u: &mut Unit,
+    h: &Head<'_, '_>,
+    st: &OpState<'_, A, E>,
+) {
     static IDENTITY: ParamShaping = ParamShaping::Identity;
     // Fills the unused tail of the source array; never read.
     const NO_SOURCE: ParamFrom = ParamFrom::Events(EventOut {
@@ -1702,7 +1914,7 @@ fn run_params(u: &mut Unit, h: &Head<'_, '_>, st: &OpState<'_>) {
                     *d = (
                         match s.slot {
                             ParamSlot::Audio(slot) => SourceIn::Audio(st.arena.slot(slot, frames)),
-                            ParamSlot::Event(slot) => SourceIn::Events(&st.events[slot as usize]),
+                            ParamSlot::Event(slot) => SourceIn::Events(st.events.ev(slot)),
                         },
                         &s.shaping,
                         s.from,
@@ -1724,25 +1936,25 @@ fn run_params(u: &mut Unit, h: &Head<'_, '_>, st: &OpState<'_>) {
 /// [`node_op`], with the unit's params already run this block when
 /// `params_done` (a crossfade runs them once for both units).
 #[inline(always)]
-fn node_op_with(
+fn node_op_with<A: AudioSlots, E: EventSlots + ?Sized>(
     u: &mut Unit,
     h: &Head<'_, '_>,
-    st: &mut OpState<'_>,
+    st: &mut OpState<'_, A, E>,
     [ain, aout, ein, eout]: [&[u32]; 4],
     params_done: bool,
-    call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_>) -> (Status, u32),
+    call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_, A, E>) -> (Status, u32),
 ) {
     let (rec, frames) = (h.rec, h.frames);
     let unit = rec.unit;
     // Flushed events and scheduled commands only ever go to an event input.
-    let injected = !ein.is_empty() && st.has_inject[unit as usize];
-    let scheduled = !ein.is_empty() && st.has_due[unit as usize];
+    let injected = !ein.is_empty() && *st.has_inject;
+    let scheduled = !ein.is_empty() && *st.has_due;
 
     let (in_silent, in_constant) = in_masks(ain, st.flags);
     let quiet_inputs = !injected
         && !scheduled
         && in_silent.covers(ain.len())
-        && ein.iter().all(|&s| st.events[s as usize].is_empty());
+        && ein.iter().all(|&s| st.events.ev(s).is_empty());
 
     // See the module docs: a node with event inputs parks only on its own
     // say-so (`Status::Idle`); one without parks when its inputs, its last
@@ -1768,10 +1980,10 @@ fn node_op_with(
     if skip {
         for &s in aout {
             st.arena.slot_mut(s, frames).fill(0.0);
-            st.flags[s as usize] = SILENT | CONSTANT;
+            set_flag(st.flags, s, SILENT | CONSTANT);
         }
         for &s in eout {
-            st.events[s as usize].clear();
+            st.events.ev_mut(s).clear();
         }
         return;
     }
@@ -1788,7 +2000,7 @@ fn node_op_with(
             inj.merged.clear();
             let cap_total = inj.merged.capacity();
             merge_into(
-                &[&inj.events, &st.events[slot as usize]],
+                &[&inj.events, st.events.ev(slot)],
                 &mut inj.merged,
                 cap_total,
             );
@@ -1805,9 +2017,9 @@ fn node_op_with(
             inject
                 .iter()
                 .find(|i| i.live && i.unit == unit && i.port == port)
-                .map_or(&events[ein[port as usize] as usize][..], |i| &i.merged)
+                .map_or(&events.ev(ein[port as usize])[..], |i| &i.merged)
         };
-        let (n, lost) = st.commands.overlay(unit, base, st.overlay, &mut views);
+        let (n, lost) = st.due.overlay(unit, base, st.overlay, &mut views);
         n_views = n;
         *st.dropped += u64::from(lost);
     }
@@ -1836,7 +2048,7 @@ fn node_op_with(
     let (status, drops) = call_node(&call, &mut *u.node, st);
     *st.dropped += drops as u64;
     if scheduled {
-        st.has_due[unit as usize] = false;
+        *st.has_due = false;
     }
     if injected {
         for inj in st.inject.iter_mut().filter(|i| i.unit == unit) {
@@ -1844,16 +2056,24 @@ fn node_op_with(
             inj.merged.clear();
             inj.live = false;
         }
-        st.has_inject[unit as usize] = false;
+        *st.has_inject = false;
     }
 
     u.last_idle = status == Status::Idle;
-    finish(status, frames, ain, aout, rec.in_place, st.arena, st.flags);
+    finish(
+        status,
+        frames,
+        ain,
+        aout,
+        rec.in_place,
+        &mut *st.arena,
+        st.flags,
+    );
     // A node with no outputs claims nothing by being "all silent": it is a
     // sink, called for its side effects, and a skip would starve them.
     u.last_quiet = !(aout.is_empty() && eout.is_empty())
-        && aout.iter().all(|&s| st.flags[s as usize] & SILENT != 0)
-        && eout.iter().all(|&s| st.events[s as usize].is_empty());
+        && aout.iter().all(|&s| flag_of(st.flags, s) & SILENT != 0)
+        && eout.iter().all(|&s| st.events.ev(s).is_empty());
 }
 
 /// A [`Form::Direct`] node op with `I` inputs and `O` outputs: its port
@@ -1861,10 +2081,10 @@ fn node_op_with(
 /// for the one-channel forms, and its buffers borrowed by
 /// [`Arena::direct`].
 #[inline(always)]
-fn direct_op<const I: usize, const O: usize>(
+fn direct_op<const I: usize, const O: usize, A: AudioSlots, E: EventSlots + ?Sized>(
     u: &mut Unit,
     h: &Head<'_, '_>,
-    st: &mut OpState<'_>,
+    st: &mut OpState<'_, A, E>,
     d: &Direct,
     slots: &[u32],
 ) {
@@ -1945,17 +2165,17 @@ impl<'p> Call<'p, '_> {
 
     /// Borrow an event-free node's audio buffers by its presorted requests
     /// (`borrows` is the plan's whole list; the record names its run) and
-    /// run it. `A` must hold the wider of its two sides.
-    fn run_audio<const A: usize>(
+    /// run it. `N` must hold the wider of its two sides.
+    fn run_audio<const N: usize, A: AudioSlots>(
         &self,
         node: &mut dyn Node,
-        arena: &mut Arena,
+        arena: &mut A,
         borrows: &[(u32, Role)],
     ) -> Status {
         let (n_in, n_out) = (self.rec.ain as usize, self.rec.aout as usize);
-        debug_assert!(n_in <= A && n_out <= A);
-        let mut ins: [&[f32]; A] = [&[]; A];
-        let mut outs: [&mut [f32]; A] = std::array::from_fn(|_| &mut [][..]);
+        debug_assert!(n_in <= N && n_out <= N);
+        let mut ins: [&[f32]; N] = [&[]; N];
+        let mut outs: [&mut [f32]; N] = std::array::from_fn(|_| &mut [][..]);
         arena.borrow(
             self.frames,
             &borrows[self.rec.borrows.range()],
@@ -1965,14 +2185,14 @@ impl<'p> Call<'p, '_> {
         self.process(node, &ins[..n_in], &mut outs[..n_out])
     }
 
-    /// Borrow a node's audio and event buffers and run it. `A` must hold the
-    /// wider audio side and `E` the wider event side. Returns the node's
+    /// Borrow a node's audio and event buffers and run it. `N` must hold the
+    /// wider audio side and `M` the wider event side. Returns the node's
     /// status and how many events its writers refused.
-    fn run<const A: usize, const E: usize>(
+    fn run<const N: usize, const M: usize, A: AudioSlots, E: EventSlots + ?Sized>(
         &self,
         node: &mut dyn Node,
-        arena: &mut Arena,
-        events: &mut [Vec<Event>],
+        arena: &mut A,
+        events: &mut E,
         borrows: &[(u32, Role)],
         extra: Extra<'_>,
     ) -> (Status, u32) {
@@ -1981,20 +2201,18 @@ impl<'p> Call<'p, '_> {
         let frames = self.frames;
         let (n_in, n_out) = (rec.ain as usize, rec.aout as usize);
         let (e_in, e_out) = (rec.ein as usize, rec.eout as usize);
-        debug_assert!(n_in.max(n_out) <= A && e_in.max(e_out) <= E);
+        debug_assert!(n_in.max(n_out) <= N && e_in.max(e_out) <= M);
 
-        let mut ins: [&[f32]; A] = [&[]; A];
-        let mut outs: [&mut [f32]; A] = std::array::from_fn(|_| &mut [][..]);
+        let mut ins: [&[f32]; N] = [&[]; N];
+        let mut outs: [&mut [f32]; N] = std::array::from_fn(|_| &mut [][..]);
         arena.borrow(frames, &borrows[rec.borrows.range()], &mut ins, &mut outs);
 
-        let mut evin: [SortedEvents<'_>; E] = [SortedEvents::EMPTY; E];
-        let mut evout_bufs: [Option<&mut Vec<Event>>; E] = std::array::from_fn(|_| None);
-        borrow_sorted(
-            events,
-            1,
+        let mut evin: [SortedEvents<'_>; M] = [SortedEvents::EMPTY; M];
+        let mut evout_bufs: [Option<&mut Vec<Event>>; M] = std::array::from_fn(|_| None);
+        events.borrow_sorted(
             &borrows[rec.event_borrows.range()],
-            |port, v| evin[port as usize] = SortedEvents::trusted(&v[0], frames),
-            |port, v| evout_bufs[port as usize] = Some(&mut v[0]),
+            |port, v| evin[port as usize] = SortedEvents::trusted(v, frames),
+            |port, v| evout_bufs[port as usize] = Some(v),
         );
         if self.injected {
             for inj in inject.iter().filter(|i| i.live && i.unit == rec.unit) {
@@ -2005,7 +2223,7 @@ impl<'p> Call<'p, '_> {
             evin[port as usize] = SortedEvents::trusted(&overlay[a as usize..b as usize], frames);
         }
         let drops = Cell::new(0u32);
-        let mut evout: [EventWriter<'_>; E] = std::array::from_fn(|_| EventWriter::detached());
+        let mut evout: [EventWriter<'_>; M] = std::array::from_fn(|_| EventWriter::detached());
         for (w, b) in evout.iter_mut().zip(evout_bufs.iter_mut()).take(e_out) {
             let b = b.take().expect("event output borrowed");
             b.clear();
@@ -2028,36 +2246,21 @@ impl<'p> Call<'p, '_> {
     }
 }
 
-/// Event slot `src` for reading and `dst` for writing, at once.
-fn event_pair(events: &mut [Vec<Event>], src: u32, dst: u32) -> (&[Event], &mut Vec<Event>) {
-    let mut reqs = [(src, Role::Read(0)), (dst, Role::Write(0))];
-    let mut input: &[Event] = &[];
-    let mut output: Option<&mut Vec<Event>> = None;
-    borrow_disjoint(
-        events,
-        1,
-        &mut reqs,
-        |_, v| input = &v[0],
-        |_, v| output = Some(&mut v[0]),
-    );
-    (input, output.expect("dst borrowed"))
-}
-
 /// Apply a node's [`Status`] to its output slots and their flags.
 #[inline(always)]
-fn finish(
+fn finish<A: AudioSlots>(
     status: Status,
     frames: usize,
     ain: &[u32],
     aout: &[u32],
     in_place: InPlaceMask,
-    arena: &mut Arena,
-    flags: &mut [u8],
+    arena: &mut A,
+    flags: &[AtomicU8],
 ) {
     match status {
         Status::Modified => {
             for &s in aout {
-                flags[s as usize] = 0;
+                set_flag(flags, s, 0);
             }
         }
         Status::Masked {
@@ -2065,13 +2268,13 @@ fn finish(
             constant: cm,
         } => {
             for (c, &s) in aout.iter().enumerate() {
-                flags[s as usize] = flag(sm.get(c), cm.get(c) || sm.get(c));
+                set_flag(flags, s, flag(sm.get(c), cm.get(c) || sm.get(c)));
             }
         }
         Status::Silent | Status::Idle => {
             for &s in aout {
                 arena.slot_mut(s, frames).fill(0.0);
-                flags[s as usize] = SILENT | CONSTANT;
+                set_flag(flags, s, SILENT | CONSTANT);
             }
         }
         Status::Constant => {
@@ -2079,7 +2282,7 @@ fn finish(
                 let buf = arena.slot_mut(s, frames);
                 let v = buf[0];
                 buf.fill(v);
-                flags[s as usize] = flag(v == 0.0 && v.is_sign_positive(), true);
+                set_flag(flags, s, flag(v == 0.0 && v.is_sign_positive(), true));
             }
         }
         Status::Bypass => {
@@ -2088,11 +2291,11 @@ fn finish(
                     Some(_) if in_place.get(c) => {}
                     Some(&i) => {
                         arena.copy_slot(i, s);
-                        flags[s as usize] = flags[i as usize];
+                        set_flag(flags, s, flag_of(flags, i));
                     }
                     None => {
                         arena.slot_mut(s, frames).fill(0.0);
-                        flags[s as usize] = SILENT | CONSTANT;
+                        set_flag(flags, s, SILENT | CONSTANT);
                     }
                 }
             }

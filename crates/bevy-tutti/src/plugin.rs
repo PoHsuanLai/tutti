@@ -89,6 +89,14 @@ pub struct TuttiPlugin {
     /// plugin — and any host plugin that schedules against its sets — on a
     /// machine with no sound card.
     pub disabled: bool,
+    /// How many threads render a block, the audio callback included (doc 013
+    /// Phase 6, the parallel executor). `1`, the default, renders on the
+    /// callback alone; more starts a `tutti_core::WorkerPool` of that many
+    /// participants, over which each block's independent nodes spread, and
+    /// an export forks onto a pool of its own of the same size. `0` means
+    /// one per core. The render is the same sample for sample whatever the
+    /// count.
+    pub render_workers: usize,
 }
 
 impl Default for TuttiPlugin {
@@ -98,6 +106,7 @@ impl Default for TuttiPlugin {
             inputs: 0,
             outputs: 2,
             disabled: false,
+            render_workers: 1,
         }
     }
 }

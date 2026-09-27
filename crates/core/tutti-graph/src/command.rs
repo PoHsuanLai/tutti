@@ -531,6 +531,26 @@ impl CommandRx {
         self.due_events.extend(self.due.iter().map(|d| d.event));
     }
 
+    /// This block's deliveries, as a `Sync` view the executor's workers
+    /// share.
+    pub(crate) fn deliveries(&self) -> Deliveries<'_> {
+        Deliveries {
+            due: &self.due,
+            events: &self.due_events,
+        }
+    }
+}
+
+/// This block's scheduled deliveries, sorted by unit and port: what
+/// [`overlay`](Self::overlay) merges into a node's event inputs. Plain
+/// slices, so every worker of a parallel block can read them at once.
+#[derive(Clone, Copy)]
+pub(crate) struct Deliveries<'a> {
+    due: &'a [DueItem],
+    events: &'a [Event],
+}
+
+impl Deliveries<'_> {
     /// Merge this block's deliveries for plan unit `unit` into `buf`, each
     /// port's after `base(port)` (the port's events as the executor would
     /// otherwise hand them), and record `(port, range in buf)` in `views`.
@@ -555,7 +575,7 @@ impl CommandRx {
             let run = self.due[i..end].partition_point(|d| d.port == port) + i;
             let from = buf.len() as u32;
             let room = buf.capacity();
-            dropped += merge_into(&[base(port), &self.due_events[i..run]], buf, room);
+            dropped += merge_into(&[base(port), &self.events[i..run]], buf, room);
             views[n] = (port, from, buf.len() as u32);
             n += 1;
             i = run;
@@ -566,7 +586,7 @@ impl CommandRx {
 
 /// Capacity of the executor's overlay buffer for `plan`: enough for the
 /// widest node's event inputs at full slots, every flushed event, and every
-/// outstanding command — so [`CommandRx::overlay`] can never be short.
+/// outstanding command — so [`Deliveries::overlay`] can never be short.
 pub(crate) fn overlay_capacity(plan: &Plan, cap: usize, flushed: usize) -> usize {
     let widest = plan
         .ops

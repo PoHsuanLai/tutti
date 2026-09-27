@@ -24,7 +24,7 @@
 //! checks each record's requests against its op. The walk still *checks*
 //! the order it relies on: a slot behind the cursor is a panic, in every
 //! build, never a wrong buffer. Ops whose requests are built per call (event
-//! merges) go through [`borrow_disjoint`], which sorts first. The port tables
+//! merges) go through `slots::borrow_events`, which sorts first. The port tables
 //! are stack arrays sized by a small set of const buckets (see `exec.rs`), so
 //! a two-port node does not initialise 128 entries, and the commonest shapes
 //! skip the walk entirely (`plan::Form`).
@@ -49,32 +49,17 @@ pub(crate) enum Role {
 
 /// Borrow the slots named by `reqs` out of `items` (slot `s` is
 /// `items[s * stride .. (s + 1) * stride]`), handing each read to `read` and
-/// each write to `write` along with its port index.
+/// each write to `write` along with its port index. The requests must be
+/// **sorted** — by the compiler, for node ops; per call, by
+/// `slots::borrow_events`, for event merges.
 ///
 /// Several reads of one slot share it; a written slot may appear only once.
-/// `reqs` is sorted in place, then walked by [`borrow_sorted`].
 ///
 /// # Panics
 ///
-/// If a written slot is requested twice, or read and written together. Either
-/// means the plan is unsound; the verifier rejects such plans in debug builds.
-pub(crate) fn borrow_disjoint<'a, T>(
-    items: &'a mut [T],
-    stride: usize,
-    reqs: &mut [(u32, Role)],
-    read: impl FnMut(u8, &'a [T]),
-    write: impl FnMut(u8, &'a mut [T]),
-) {
-    reqs.sort_unstable();
-    borrow_sorted(items, stride, reqs, read, write);
-}
-
-/// [`borrow_disjoint`] for requests that are **already sorted** — by the
-/// compiler, for node ops.
-///
-/// # Panics
-///
-/// As [`borrow_disjoint`], and also if `reqs` is not sorted by slot: a slot
+/// If a written slot is requested twice, or read and written together —
+/// either means the plan is unsound, and the verifier rejects such plans in
+/// debug builds — and also if `reqs` is not sorted by slot: a slot
 /// behind the cursor fails the `checked_sub` and panics, in every build
 /// (a debug build names the order earlier, in a `debug_assert!`). Never a
 /// wrong or aliased buffer.
@@ -242,6 +227,15 @@ impl Arena {
         {
             *o = &mut bytemuck::cast_slice_mut::<Line, f32>(lines)[..frames];
         }
+    }
+
+    /// The arena as one `SplitRw` of its slots, for the parallel executor:
+    /// each slot claimed by the op that touches it (`slots.rs`).
+    pub(crate) fn split<'a>(
+        &'a mut self,
+        table: &'a mut tutti_types::ClaimTable,
+    ) -> tutti_types::SplitRw<'a, Line> {
+        tutti_types::SplitRw::new(&mut self.lines, self.stride, table)
     }
 
     /// Copy slot `src` over slot `dst` (whole stride). Never allocates.

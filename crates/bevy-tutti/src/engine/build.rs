@@ -110,6 +110,7 @@ pub(crate) fn build_on(
         outputs,
         &transport,
         &click_settings,
+        plugin.render_workers,
     )?;
 
     // The engine's MIDI, as graph nodes (doc 013, rewrite item 5): the
@@ -259,8 +260,10 @@ fn assemble(
     outputs: usize,
     transport: &Transport,
     click_settings: &Arc<ClickSettings>,
+    render_workers: usize,
 ) -> Result<Assembled> {
     let mut graph = AudioGraphRes::for_device(inputs, outputs, rate, quantum);
+    graph.set_render_workers(render_workers);
 
     // Metronome. The beat, play and record state come from its
     // block's `Env`, and the count-in flag off the transport it is built over
@@ -526,7 +529,7 @@ mod engine_tests {
             engine,
             click,
             ..
-        } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings).expect("builds");
+        } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings, 1).expect("builds");
         for port in 0..2 {
             graph.set_output_source(port, GraphSource::Node(click, port));
         }
@@ -649,7 +652,7 @@ mod engine_tests {
         let settings = Arc::new(ClickSettings::new());
         let Assembled {
             mut graph, engine, ..
-        } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings).expect("builds");
+        } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings, 1).expect("builds");
         let (voice, _handle) = graph.insert(voice(cents));
         for port in 0..2 {
             graph.set_output_source(port, GraphSource::Node(voice, port));

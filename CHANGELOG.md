@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The parallel executor** (design doc 013, "Phase 6, part (a)"). A
+  block's independent nodes run across a pool's threads, bit for bit the
+  render the serial executor makes; the serial walk is the one-participant
+  case, and a pool is opt-in.
+
+  | Was | Now |
+  |---|---|
+  | blocks render on the calling thread only | `Executor::set_pool(Some(pool))` spreads each block's tasks over `pool`; `Executor::is_parallel()` |
+  | — | `tutti_graph::Pool` (the trait a pool implements: `participants`, `run(wake, job)`), re-exported as `tutti_core::Pool` |
+  | — | `tutti_core::{WorkerPool, WorkerPoolBuilder, OnStart}`: helper threads that spin, yield, then park; `on_start` hook for RT priority / workgroups |
+  | — | `tutti_types::{JobGate, TaskGraph, Participant, SplitMut, SplitRw, RwView, Held, ClaimTable, Claimed, ClaimedRun, ClaimConflict}` (loom-checked runtime primitives) |
+  | — | `Plan::task_width()` (the task DAG's widest level) |
+  | — | `RenderGraph::{set_pool, is_parallel}` (tutti-export) |
+  | — | `TuttiPlugin::render_workers` (bevy-tutti; default 1, `0` = one per core); an export forks onto a pool of its own |
+
 ### Changed
 
 - **The fundsp fork is deleted, and the latency solve is one pass**

@@ -10,8 +10,8 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 /// (including via despawn).
 ///
 /// `On<Remove, AudioNode>` fires *before* the component value is dropped, so
-/// the `NodeId` is still readable off the triggered entity — no local
-/// `(Entity, NodeId)` map needed. Only mutates the graph + sets `GraphDirty`;
+/// the `NodeKey` is still readable off the triggered entity — no local
+/// `(Entity, NodeKey)` map needed. Only mutates the graph + sets `GraphDirty`;
 /// the per-frame [`commit_graph`](crate::graph::commit_graph) (Commit phase)
 /// does the actual commit.
 ///

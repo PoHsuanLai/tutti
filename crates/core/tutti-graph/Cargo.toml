@@ -43,9 +43,6 @@ tutti-graph = { path = ".", features = ["contract"] }
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 proptest = "1.9.0"
-# The bench's other side: the fork's `Net`, rendering the same nodes. Dev-only —
-# the graph must not link the runtime it replaces.
-fundsp = { package = "fundsp-tutti", path = "../../vendor/fundsp-tutti", default-features = false }
 
 [[bench]]
 name = "graph_render"

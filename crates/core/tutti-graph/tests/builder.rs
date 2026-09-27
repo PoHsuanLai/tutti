@@ -1,26 +1,21 @@
 //! `GraphBuilder`: what it builds is what a host writing the `GraphSpec` by
 //! hand builds, and its fan-out calls mean exactly what fundsp's `Net` calls
-//! of the same name mean — which is what lets doc 013's PR 8 port the
-//! `Net` fixtures call for call.
+//! of the same name meant — which is what let doc 013's PR 8 port the `Net`
+//! fixtures call for call. `Net` itself is gone (doc 013 Phase 5), so the
+//! fan-out rules it followed are written out below ([`net_rule`]) and each
+//! render is pinned to the figure those rules give in closed form.
 
 mod common;
 
 use std::sync::{Arc, Mutex};
 
 use common::{prepare, Kind, TestNode};
-// `Net`'s side names the contract through the fork's re-exports; both go in
-// doc 013's Phase 5.
-use fundsp::audiounit::AudioUnit;
-use fundsp::buffer::{BufferMut, BufferRef, BufferVec};
-use fundsp::net::{Net, NodeId, Source as NetSource};
-use fundsp::signal::{Signal, SignalFrame};
-use fundsp::MAX_BUFFER_SIZE;
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventOut, ForkByClone, GraphBuilder, Io, Node, Prepare,
     Renderer, Shape, Status, Transport, Unforkable,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{Beat, ChannelLayout, Frame, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, ChannelLayout, Frame, NodeKey, Samples};
 
 fn signal(n: usize) -> Vec<f32> {
     (0..n)
@@ -33,9 +28,9 @@ fn bits(v: &[f32]) -> Vec<u32> {
 }
 
 /// `ins` inputs, `outs` outputs; output `c` is `c + 1` plus the sum of the
-/// inputs. Any width, so the fan-out rules can be walked over a grid —
-/// fundsp's own units fix their width in the type. The same arithmetic as
-/// a graph node and as a `Net` unit, so the two runtimes can be compared.
+/// inputs. Any width, so the fan-out rules can be walked over a grid, and
+/// every output is a small integer while the global inputs are silent, so
+/// what a wiring renders is known exactly ([`net_rule::constants`]).
 #[derive(Clone)]
 struct Width {
     ins: usize,
@@ -61,53 +56,6 @@ impl Node for Width {
     fn reset(&mut self) {}
 }
 
-impl AudioUnit for Width {
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        let sum: f32 = input.iter().sum();
-        for (c, o) in output.iter_mut().enumerate() {
-            *o = (c + 1) as f32 + sum;
-        }
-    }
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        for i in 0..size {
-            let sum: f32 = (0..self.ins).map(|c| input.channel_f32(c)[i]).sum();
-            for c in 0..self.outs {
-                output.channel_f32_mut(c)[i] = (c + 1) as f32 + sum;
-            }
-        }
-    }
-    fn inputs(&self) -> usize {
-        self.ins
-    }
-    fn outputs(&self) -> usize {
-        self.outs
-    }
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(self.outs);
-        for c in 0..self.outs {
-            out.set(c, Signal::Latency(0.0));
-        }
-        out
-    }
-    fn get_id(&self) -> u64 {
-        0x5749_4454
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn footprint(&self) -> usize {
-        0
-    }
-}
-
-/// [`Width`] as a `Net` unit.
-fn width(ins: usize, outs: usize) -> Box<dyn AudioUnit> {
-    Box::new(Width { ins, outs })
-}
-
 /// [`Width`] as a graph node.
 fn node(ins: usize, outs: usize) -> ForkByClone<Width> {
     ForkByClone(Width { ins, outs })
@@ -115,18 +63,6 @@ fn node(ins: usize, outs: usize) -> ForkByClone<Width> {
 
 fn ch(n: usize) -> ChannelLayout {
     ChannelLayout::from_count(n as u16)
-}
-
-/// `Net`'s source, in `Topology` terms, given which `NodeId` is which key.
-fn from_net(s: NetSource, ids: &[(NodeId, NodeKey)]) -> Source {
-    match s {
-        NetSource::Local(id, port) => Source::Node(OutPort {
-            node: ids.iter().find(|(i, _)| *i == id).expect("known id").1,
-            port: port as u16,
-        }),
-        NetSource::Global(i) => Source::Global(i as u16),
-        NetSource::Zero => Source::Zero,
-    }
 }
 
 /// What the builder feeds `node`'s input `port`. An absent edge reads
@@ -139,45 +75,167 @@ fn source_of(g: &GraphBuilder, node: NodeKey, port: u16) -> Source {
     }
 }
 
-/// Every input of every node, and every global output, is fed from the
-/// same place in both.
-fn assert_wired_like(net: &Net, g: &GraphBuilder, ids: &[(NodeId, NodeKey)], case: &str) {
-    for &(id, key) in ids {
-        for c in 0..net.inputs_in(id) {
+/// Every input of every node, and every global output, is fed from where
+/// `want` (one entry per node, in the order added: its width and what feeds
+/// each input) and `outputs` say.
+fn assert_wired(
+    g: &GraphBuilder,
+    want: &[(NodeKey, net_rule::Node)],
+    outputs: &[Source],
+    case: &str,
+) {
+    for (key, n) in want {
+        for (c, s) in n.sources.iter().enumerate() {
             assert_eq!(
-                source_of(g, key, c as u16),
-                from_net(net.source(id, c), ids),
+                source_of(g, *key, c as u16),
+                *s,
                 "{case}: {key:?} input {c}"
             );
         }
     }
-    assert_eq!(net.outputs(), g.outputs(), "{case}: global outputs");
-    for c in 0..net.outputs() {
-        assert_eq!(
-            g.spec().topology.outputs[c],
-            from_net(net.output_source(c), ids),
-            "{case}: global output {c}"
+    assert_eq!(g.spec().topology.outputs, outputs, "{case}: global outputs");
+}
+
+/// Assert `got` holds, on every frame, the constant each output channel of
+/// `want`'s wiring carries.
+fn assert_renders(
+    got: &[Vec<f32>],
+    want: &[(NodeKey, net_rule::Node)],
+    outputs: &[Source],
+    frames: usize,
+    case: &str,
+) {
+    let values = net_rule::constants(want, outputs);
+    assert_eq!(got.len(), values.len(), "{case}: channel count");
+    for (c, (ch, v)) in got.iter().zip(&values).enumerate() {
+        assert_eq!(ch.len(), frames, "{case}: channel {c} length");
+        assert!(
+            ch.iter().all(|x| x.to_bits() == v.to_bits()),
+            "{case}: channel {c} should be {v} on every frame, got {:?}",
+            &ch[..ch.len().min(4)]
         );
     }
 }
 
-/// Render `net` for `frames` of silent input, in 64-frame chunks, planar.
-fn render_net(net: &mut Net, frames: usize) -> Vec<Vec<f32>> {
-    net.set_sample_rate(SampleRate(48_000.0));
-    net.allocate();
-    let ibuf = BufferVec::new(net.inputs());
-    let mut obuf = BufferVec::new(net.outputs());
-    let mut out = vec![Vec::with_capacity(frames); net.outputs()];
-    let mut done = 0;
-    while done < frames {
-        let n = (frames - done).min(MAX_BUFFER_SIZE);
-        net.process(n, &ibuf.buffer_ref(), &mut obuf.buffer_mut());
-        for (c, o) in out.iter_mut().enumerate() {
-            o.extend_from_slice(&obuf.channel_f32_mut(c)[..n]);
-        }
-        done += n;
+/// fundsp's `Net` fan-out rules, as `fundsp-tutti`'s `net.rs` wrote them
+/// before doc 013 Phase 5 deleted it, over [`Width`] nodes.
+mod net_rule {
+    use super::*;
+
+    /// A node: its output width and what feeds each of its inputs.
+    pub struct Node {
+        pub outs: usize,
+        pub sources: Vec<Source>,
     }
-    out
+
+    fn port(node: NodeKey, port: usize) -> Source {
+        Source::Node(OutPort {
+            node,
+            port: port as u16,
+        })
+    }
+
+    /// `Net::pipe_all(a, b)`: input `c` of `b` reads `a`'s port
+    /// `c % a_outs`; silence when `a` has no outputs.
+    pub fn pipe_all(a: NodeKey, a_outs: usize, b_ins: usize) -> Vec<Source> {
+        (0..b_ins)
+            .map(|c| {
+                if a_outs > 0 {
+                    port(a, c % a_outs)
+                } else {
+                    Source::Zero
+                }
+            })
+            .collect()
+    }
+
+    /// `Net::pipe_output(n)`: global output `c` reads `n`'s port
+    /// `c % n_outs`; silence when `n` has no outputs.
+    pub fn pipe_output(n: NodeKey, n_outs: usize, outputs: usize) -> Vec<Source> {
+        (0..outputs)
+            .map(|c| {
+                if n_outs > 0 {
+                    port(n, c % n_outs)
+                } else {
+                    Source::Zero
+                }
+            })
+            .collect()
+    }
+
+    /// `Net::pipe_input(n)`: input `c` reads global input `c % globals`;
+    /// silence when there are none.
+    pub fn pipe_input(globals: usize, ins: usize) -> Vec<Source> {
+        (0..ins)
+            .map(|c| {
+                if globals > 0 {
+                    Source::Global((c % globals) as u16)
+                } else {
+                    Source::Zero
+                }
+            })
+            .collect()
+    }
+
+    /// `Net::chain` over `widths`: the first node takes `pipe_input` (when
+    /// there are global inputs; otherwise its inputs stay silent), each later
+    /// one reads what fed global output `i % outputs` (silence with no
+    /// outputs), and each takes over the outputs with `pipe_output`.
+    pub fn chain(
+        globals: usize,
+        outputs: usize,
+        widths: &[(usize, usize)],
+    ) -> (Vec<(NodeKey, Node)>, Vec<Source>) {
+        let mut nodes = Vec::new();
+        let mut outs = vec![Source::Zero; outputs];
+        for (k, &(ins, w)) in widths.iter().enumerate() {
+            let key = NodeKey(k as u64);
+            let sources = if k == 0 {
+                if globals > 0 {
+                    pipe_input(globals, ins)
+                } else {
+                    vec![Source::Zero; ins]
+                }
+            } else {
+                (0..ins)
+                    .map(|i| {
+                        if outputs > 0 {
+                            outs[i % outputs]
+                        } else {
+                            Source::Zero
+                        }
+                    })
+                    .collect()
+            };
+            nodes.push((key, Node { outs: w, sources }));
+            outs = pipe_output(key, w, outputs);
+        }
+        (nodes, outs)
+    }
+
+    /// What each global output carries with silent global inputs: a
+    /// [`Width`] node's output `c` is `c + 1` plus the sum of its inputs,
+    /// evaluated in the order the nodes were added (every source precedes
+    /// the node it feeds in these graphs).
+    pub fn constants(nodes: &[(NodeKey, Node)], outputs: &[Source]) -> Vec<f32> {
+        let mut value: Vec<(NodeKey, Vec<f32>)> = Vec::new();
+        let read = |value: &[(NodeKey, Vec<f32>)], s: &Source| match s {
+            Source::Node(OutPort { node, port }) => {
+                value
+                    .iter()
+                    .find(|(k, _)| k == node)
+                    .expect("source precedes")
+                    .1[*port as usize]
+            }
+            _ => 0.0,
+        };
+        for (key, n) in nodes {
+            let sum: f32 = n.sources.iter().map(|s| read(&value, s)).sum();
+            let outs = (0..n.outs).map(|c| (c + 1) as f32 + sum).collect();
+            value.push((*key, outs));
+        }
+        outputs.iter().map(|s| read(&value, s)).collect()
+    }
 }
 
 /// The same graph written twice — through the builder, and by hand through
@@ -298,8 +356,8 @@ fn builder_builds_what_a_hand_written_spec_builds() {
 }
 
 /// `pipe` connects ports in order, with `Net::pipe_all`'s fan-out — over a
-/// grid of widths, including a source with no outputs, and checked against
-/// `Net` itself.
+/// grid of widths, including a source with no outputs, checked against the
+/// rule written out ([`net_rule::pipe_all`]) and by the figure it renders.
 ///
 /// Mutation: `c % outs` → `(outs - 1).min(c)` (clamp) in `pipe` → mono
 /// source fine, 2 → 3 differs at input 2 → fails. Mutation: reverse the
@@ -309,20 +367,31 @@ fn pipe_connects_ports_in_order_as_net_pipe_all() {
     for outs in 0..=3 {
         for ins in 1..=3 {
             let case = format!("{outs} outputs → {ins} inputs");
-            let mut net = Net::new(0, 1);
-            let (na, nb) = (net.push(width(0, outs)), net.push(width(ins, 1)));
-            net.pipe_all(na, nb);
-            net.pipe_output(nb);
-
             let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
             let (a, b) = (g.add(node(0, outs)), g.add(node(ins, 1)));
             g.pipe(a, b).pipe_output(b);
-            assert_wired_like(&net, &g, &[(na, a), (nb, b)], &case);
+            let want = [
+                (
+                    a,
+                    net_rule::Node {
+                        outs,
+                        sources: vec![],
+                    },
+                ),
+                (
+                    b,
+                    net_rule::Node {
+                        outs: 1,
+                        sources: net_rule::pipe_all(a, outs, ins),
+                    },
+                ),
+            ];
+            let outputs = net_rule::pipe_output(b, 1, 1);
+            assert_wired(&g, &want, &outputs, &case);
 
-            // And it sounds the same.
-            let want = render_net(&mut net, 100);
+            // And it renders what that wiring carries.
             let got = g.renderer(prepare(64)).expect("builds").render(100);
-            assert_eq!(got, want, "{case}");
+            assert_renders(&got, &want, &outputs, 100, &case);
         }
     }
     // The plain case, spelled out: port c → port c.
@@ -341,27 +410,30 @@ fn pipe_connects_ports_in_order_as_net_pipe_all() {
 /// `Net::pipe_output` does: output `c` reads port `c % width`. Mono feeds
 /// every channel; stereo into six **wraps** (L R L R L R), it does not clamp
 /// to the last channel; a wider node's extra ports go unused; a node with no
-/// outputs feeds silence. Checked structurally and by render against `Net`.
+/// outputs feeds silence. Checked structurally and by the figure it renders.
 ///
 /// Mutation: clamp (`c.min(outs - 1)`) instead of `c % outs` → stereo into
-/// six differs from `Net` → fails. Mutation: feed a zero-output node's
+/// six differs from the rule → fails. Mutation: feed a zero-output node's
 /// channels from port 0 → out of range → panics.
 #[test]
 fn pipe_output_fans_out_as_net_does() {
     for (w, outs) in [(0, 2), (1, 1), (1, 2), (1, 6), (2, 6), (3, 2), (6, 2)] {
         let case = format!("{w}-wide node → {outs} outputs");
-        let mut net = Net::new(0, outs);
-        let id = net.push(width(0, w));
-        net.pipe_output(id);
-
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ch(outs));
         let key = g.add(node(0, w));
         g.pipe_output(key);
-        assert_wired_like(&net, &g, &[(id, key)], &case);
+        let want = [(
+            key,
+            net_rule::Node {
+                outs: w,
+                sources: vec![],
+            },
+        )];
+        let outputs = net_rule::pipe_output(key, w, outs);
+        assert_wired(&g, &want, &outputs, &case);
 
-        let want = render_net(&mut net, 70);
         let got = g.renderer(prepare(64)).expect("builds").render(70);
-        assert_eq!(got, want, "{case}");
+        assert_renders(&got, &want, &outputs, 70, &case);
     }
     // Stereo into six, spelled out.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ch(6));
@@ -390,15 +462,17 @@ fn pipe_input_wraps_as_net_does() {
     for globals in 0..=3 {
         for ins in 1..=3 {
             let case = format!("{globals} globals → {ins} inputs");
-            let mut net = Net::new(globals, 1);
-            let id = net.push(width(ins, 1));
-            net.pipe_input(id);
-            net.pipe_output(id);
-
             let mut g = GraphBuilder::new(ch(globals), ChannelLayout::MONO);
             let key = g.add(node(ins, 1));
             g.pipe_input(key).pipe_output(key);
-            assert_wired_like(&net, &g, &[(id, key)], &case);
+            let want = [(
+                key,
+                net_rule::Node {
+                    outs: 1,
+                    sources: net_rule::pipe_input(globals, ins),
+                },
+            )];
+            assert_wired(&g, &want, &net_rule::pipe_output(key, 1, 1), &case);
         }
     }
 }
@@ -406,10 +480,10 @@ fn pipe_input_wraps_as_net_does() {
 /// `chain` extends a series as `Net::chain` does: the first node reads the
 /// global inputs, each later one reads what fed the global outputs
 /// (wrapping), and every one takes over the outputs. Across width changes,
-/// with and without global inputs, and bit-identical in render.
+/// with and without global inputs, and to the bit in render.
 ///
 /// Mutation: skip `pipe_input` for the first node in `link` → it reads
-/// silence where `Net` reads the global input → fails. Mutation: read
+/// silence where the rule reads the global input → fails. Mutation: read
 /// `outputs[c]` without the modulo → the 2-input node after a mono-output
 /// graph is out of range → panics → fails.
 #[test]
@@ -417,17 +491,15 @@ fn chain_extends_the_series_as_net_does() {
     for globals in [0, 1, 2] {
         let widths = [(1, 1), (1, 3), (2, 2), (3, 1), (1, 2)];
         let case = format!("{globals} globals");
-        let mut net = Net::new(globals, 2);
         let mut g = GraphBuilder::new(ch(globals), ChannelLayout::STEREO);
-        let mut ids = Vec::new();
         for (ins, outs) in widths {
-            ids.push((net.chain(width(ins, outs)), g.chain(node(ins, outs))));
+            g.chain(node(ins, outs));
         }
-        assert_wired_like(&net, &g, &ids, &case);
+        let (want, outputs) = net_rule::chain(globals, 2, &widths);
+        assert_wired(&g, &want, &outputs, &case);
 
-        let want = render_net(&mut net, 70);
         let got = g.renderer(prepare(64)).expect("builds").render(70);
-        assert_eq!(got, want, "{case}");
+        assert_renders(&got, &want, &outputs, 70, &case);
     }
 }
 

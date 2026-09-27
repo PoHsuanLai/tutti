@@ -151,7 +151,7 @@ impl std::ops::Deref for MetronomeRes {
 /// That matters because [`PortSources`](crate::graph::PortSources) names
 /// sources by `Entity`. An unreachable entity is an unwirable node.
 ///
-/// It holds `Entity`, not `NodeId`, for the reason the whole wiring layer does:
+/// It holds `Entity`, not `NodeKey`, for the reason the whole wiring layer does:
 /// a declaration names entities, so a bare engine id would be unusable here.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineNodes {

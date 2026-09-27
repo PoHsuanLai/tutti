@@ -1,22 +1,18 @@
-//! The serial plan executor against fundsp's `Net`, on the same work.
+//! The serial plan executor, on a filter chain, a fan and a do-nothing chain.
 //!
-//! Two runtimes per shape:
+//! The nodes are written directly against `Io`: a sine source, a chain or
+//! fan of two-pole lowpass filters (the SVF's `tick`), and (for the fan) one
+//! summing node. Until doc 013 Phase 5 each shape also had a `net` row,
+//! fundsp's `Net` running the same arithmetic as `AudioUnit`s; `Net` is
+//! deleted, so the `graph` row is what is left, and the history of the
+//! comparison (the figures it recorded) is in doc 013.
 //!
-//! - **`net`** — fundsp's `Net`, running `AudioUnit`s: a `sine_hz` source, a
-//!   chain or fan of `lowpass_hz` filters, and (for the fan) one summing unit.
-//! - **`graph`** — the plan executor running nodes written directly against
-//!   `Io`, with the same arithmetic as the fundsp units (the SVF's `tick`, the
-//!   sum's loop). The one difference is the source: fundsp evaluates the sine
-//!   with `wide`'s SIMD `sin`, the graph's node with `f32::sin`. A shape has one
-//!   source, so that shifts every row of a group by about the same constant.
-//!
-//! `overhead/<n>` isolates the runtime's **fixed per-node cost**: a chain of
-//! `n` nodes that do no work (a `Net` unit whose `process` is empty; a graph
-//! node that returns `Status::Modified` on its in-place channel). The
-//! per-node figure is the
-//! slope between `n = 1` and `n = 128`. `overhead_form/<form>` does the same
-//! for each of the executor's borrow forms (graph nodes only): the
-//! one-channel and stereo direct forms, the audio walk and the general walk.
+//! `overhead/<n>` isolates the executor's **fixed per-node cost**: a chain of
+//! `n` nodes that do no work (a node that returns `Status::Modified` on its
+//! in-place channel). The per-node figure is the slope between `n = 1` and
+//! `n = 128`. `overhead_form/<form>` does the same for each of the
+//! executor's borrow forms: the one-channel and stereo direct forms, the
+//! audio walk and the general walk.
 //!
 //! The shapes mirror `tutti-nodes/benches/engine_render.rs`: `nodes/<depth>`
 //! (a chain of filters off one source) and `block_size/<frames>` (a fixed
@@ -24,8 +20,8 @@
 //! filters summed back to one — which `engine_render` cannot express without
 //! its transport and so does not have.
 //!
-//! `Net` is driven directly (`AudioUnit::process` in 64-frame chunks), not
-//! through `Engine`, so neither side pays the transport or the device fold.
+//! The executor is driven directly, not through `Engine`, so it pays neither
+//! the transport nor the device fold.
 //!
 //! ```text
 //! cargo bench -p tutti-graph --bench graph_render
@@ -35,14 +31,6 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use fundsp::net::{Net, NodeId};
-use fundsp::prelude32::{lowpass_hz, sine_hz};
-// `Net`'s side names the contract through the fork's re-exports, so the
-// graph's manifest names no `tutti-node`. Both go in doc 013's Phase 5.
-use fundsp::audiounit::AudioUnit;
-use fundsp::buffer::{BufferMut, BufferRef, BufferVec};
-use fundsp::signal::{Signal, SignalFrame};
-use fundsp::MAX_BUFFER_SIZE;
 use tutti_graph::{Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples, Tail};
@@ -50,97 +38,15 @@ use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples, Tail};
 const SR: f64 = 48_000.0;
 const MAX_BLOCK: usize = 1024;
 
-// ---- `Net` units (`net` runs these) -----------------------------------------
-
-/// Sums every input onto one output — the fan's merge, as a plain unit
-/// (`Sum` is the same loop).
-#[derive(Clone)]
-struct SumUnit(usize);
-
-impl AudioUnit for SumUnit {
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        output[0] = input.iter().sum();
-    }
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let out = output.channel_f32_mut(0);
-        out[..size].fill(0.0);
-        for c in 0..self.0 {
-            for (o, &i) in out[..size].iter_mut().zip(&input.channel_f32(c)[..size]) {
-                *o += i;
-            }
-        }
-    }
-    fn inputs(&self) -> usize {
-        self.0
-    }
-    fn outputs(&self) -> usize {
-        1
-    }
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(1);
-        out.set(0, Signal::Latency(0.0));
-        out
-    }
-    fn tail(&mut self) -> Tail {
-        Tail::None
-    }
-    fn get_id(&self) -> u64 {
-        0x5355_4d00
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-}
-
-/// One in, one out, and no work: the runtime's own cost, nothing else.
-#[derive(Clone)]
-struct NopUnit;
-
-impl AudioUnit for NopUnit {
-    fn tick(&mut self, _input: &[f32], _output: &mut [f32]) {}
-    fn process(&mut self, _size: usize, _input: &BufferRef, _output: &mut BufferMut) {}
-    fn inputs(&self) -> usize {
-        1
-    }
-    fn outputs(&self) -> usize {
-        1
-    }
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(1);
-        out.set(0, Signal::Latency(0.0));
-        out
-    }
-    fn tail(&mut self) -> Tail {
-        Tail::None
-    }
-    fn get_id(&self) -> u64 {
-        0x4e4f_5000
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-}
-
 fn cutoff(i: usize) -> f32 {
     // Vary the cutoff so nothing can be folded away as identical work.
     500.0 + (i as f32) * 7.0
 }
 
-// ---- graph nodes (`graph` runs these) ---------------------------------------
+// ---- graph nodes -------------------------------------------------------------
 
-/// `sine_hz(hz)`: phase accumulator, `sin(phase · τ)`.
+/// A sine: phase accumulator, `sin(phase · τ)` (fundsp's `sine_hz`, which
+/// the `net` row ran).
 struct Sine {
     hz: f32,
     phase: f32,
@@ -169,8 +75,9 @@ impl Node for Sine {
     }
 }
 
-/// `lowpass_hz(cutoff, q)`: fundsp's `FixedSvf<f32, LowpassMode>` — the same
-/// coefficients and the same `tick`, one sample at a time.
+/// A two-pole lowpass: the coefficients and `tick` of fundsp's
+/// `lowpass_hz(cutoff, q)` (`FixedSvf<f32, LowpassMode>`), one sample at a
+/// time.
 struct Lowpass {
     cutoff: f32,
     q: f32,
@@ -284,7 +191,7 @@ impl Node for Nop {
 
 // ---- shapes -----------------------------------------------------------------
 
-/// A shape, built on every side.
+/// A shape.
 enum Topo {
     /// A source into `depth` filters in series.
     Chain(usize),
@@ -292,47 +199,6 @@ enum Topo {
     Fan(usize),
     /// A global input through `n` no-op nodes.
     Nops(usize),
-}
-
-fn net_for(shape: &Topo) -> Net {
-    let inputs = matches!(shape, Topo::Nops(_)) as usize;
-    let mut net = Net::new(inputs, 1);
-    let last: NodeId = match *shape {
-        Topo::Chain(depth) => {
-            let mut last = net.push(Box::new(sine_hz(440.0)));
-            for i in 0..depth {
-                let f = net.push(Box::new(lowpass_hz(cutoff(i), 0.7)));
-                net.connect(last, 0, f, 0);
-                last = f;
-            }
-            last
-        }
-        Topo::Fan(width) => {
-            let src = net.push(Box::new(sine_hz(440.0)));
-            let sum = net.push(Box::new(SumUnit(width)));
-            for i in 0..width {
-                let f = net.push(Box::new(lowpass_hz(cutoff(i), 0.7)));
-                net.connect(src, 0, f, 0);
-                net.connect(f, 0, sum, i);
-            }
-            sum
-        }
-        Topo::Nops(n) => {
-            let first = net.push(Box::new(NopUnit));
-            net.connect_input(0, first, 0);
-            let mut last = first;
-            for _ in 1..n {
-                let f = net.push(Box::new(NopUnit));
-                net.connect(last, 0, f, 0);
-                last = f;
-            }
-            last
-        }
-    };
-    net.pipe_output(last);
-    net.set_sample_rate(SampleRate(SR));
-    net.allocate();
-    net
 }
 
 fn executor_for(shape: &Topo) -> Executor {
@@ -402,15 +268,6 @@ fn executor_for(shape: &Topo) -> Executor {
     exec
 }
 
-fn render_net(net: &mut Net, frames: usize, input: &BufferVec, output: &mut BufferVec) {
-    let mut done = 0;
-    while done < frames {
-        let n = (frames - done).min(MAX_BUFFER_SIZE);
-        net.process(n, &input.buffer_ref(), &mut output.buffer_mut());
-        done += n;
-    }
-}
-
 fn render_graph(exec: &mut Executor, frames: usize, input: &[f32], out: &mut [f32]) {
     let inputs: &[&[f32]] = if exec.plan().is_some_and(|p| p.global_inputs() > 0) {
         &[input]
@@ -425,18 +282,11 @@ fn render_graph(exec: &mut Executor, frames: usize, input: &[f32], out: &mut [f3
     );
 }
 
-fn compare(c: &mut Criterion, group: &str, cases: &[(String, Topo, usize)]) {
+fn shapes(c: &mut Criterion, group: &str, cases: &[(String, Topo, usize)]) {
     let mut g = c.benchmark_group(group);
     for (label, shape, frames) in cases {
         let frames = *frames;
         g.throughput(Throughput::Elements(frames as u64));
-        let mut net = net_for(shape);
-        let mut input = BufferVec::new(1);
-        input.channel_f32_mut(0).fill(0.25);
-        let mut output = BufferVec::new(1);
-        g.bench_with_input(BenchmarkId::new("net", label), &frames, |b, _| {
-            b.iter(|| render_net(&mut net, frames, &input, black_box(&mut output)));
-        });
         let graph_in = vec![0.25f32; MAX_BLOCK];
         let mut out = vec![0.0f32; MAX_BLOCK];
         let mut exec = executor_for(shape);
@@ -459,7 +309,7 @@ fn bench_depth(c: &mut Criterion) {
             ));
         }
     }
-    compare(c, "nodes", &cases);
+    shapes(c, "nodes", &cases);
 }
 
 /// Block size at a fixed 8-filter chain: the per-callback overhead.
@@ -468,7 +318,7 @@ fn bench_block_size(c: &mut Criterion) {
         .into_iter()
         .map(|f| (f.to_string(), Topo::Chain(8), f))
         .collect();
-    compare(c, "block_size", &cases);
+    shapes(c, "block_size", &cases);
 }
 
 /// One source into `width` parallel filters, summed.
@@ -479,7 +329,7 @@ fn bench_fan(c: &mut Criterion) {
             cases.push((format!("{w}-wide/{frames}"), Topo::Fan(w), frames));
         }
     }
-    compare(c, "fan", &cases);
+    shapes(c, "fan", &cases);
 }
 
 /// The fixed per-node cost: chains of nodes that do nothing.
@@ -490,7 +340,7 @@ fn bench_overhead(c: &mut Criterion) {
             cases.push((format!("{n}-nodes/{frames}"), Topo::Nops(n), frames));
         }
     }
-    compare(c, "overhead", &cases);
+    shapes(c, "overhead", &cases);
 }
 
 // ---- per-form overhead (graph only) -----------------------------------------

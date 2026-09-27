@@ -107,7 +107,7 @@ Every component is a thin wrapper over a tutti capability that already exists.
 
 | Component | Feature | What it binds |
 |-----------|---------|---------------|
-| `AudioNode(NodeId)` | always | Identity for "this entity owns a graph node." |
+| `AudioNode(NodeKey)` | always | Identity for "this entity owns a graph node." |
 | `AudioParam<U, P>` | always | One scalar param: unit `U`, address `P`. Registered with `App::add_audio_param`. |
 | `PortSources` | always | What feeds this entity's input ports. Index *i* is port *i*. |
 | `AudioPump<S>` | always | A running `AudioIn` → `AudioOut` transfer; `S` is the sample type, the width is runtime. Registered with `App::add_audio_pump`. |

@@ -44,7 +44,7 @@ mod mod_audio_rate_reconcile {
     use tutti_graph::{ParamFrom, ParamMod};
     use tutti_mod::LfoShape;
     use tutti_nodes::{DistortionNode, ShapeKind};
-    use tutti_types::graph::{NodeKey, OutPort};
+    use tutti_types::graph::OutPort;
     use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 
     /// An app with the engine's plugins and one distortion, ready to modulate.
@@ -112,7 +112,7 @@ mod mod_audio_rate_reconcile {
     /// `node`'s output 0 as a param source.
     fn from(node: AudioNode) -> ParamFrom {
         ParamFrom::Audio(OutPort {
-            node: NodeKey(node.0.value()),
+            node: node.key(),
             port: 0,
         })
     }

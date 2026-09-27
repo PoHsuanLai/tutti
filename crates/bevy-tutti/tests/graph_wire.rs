@@ -228,7 +228,7 @@ mod graph_wire {
     /// Re-binding an entity to a different node re-derives every wire naming it.
     ///
     /// This is the whole reason `PortSource::Node` holds an `Entity` rather than a
-    /// `NodeId` — and it did not work: the dirty gate was `Added<AudioNode>`, but a
+    /// `NodeKey` — and it did not work: the dirty gate was `Added<AudioNode>`, but a
     /// replacement `insert` on an entity that already has the component fires
     /// `Changed` without `Added`. Wires kept pointing at the retired node forever.
     #[test]

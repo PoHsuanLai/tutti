@@ -20,8 +20,8 @@
 //!
 //! Durations are kept short on purpose. Once the rendered planes get large
 //! the working set leaves criterion's domain — the same boundary
-//! `tutti-sampler`'s `profile_stretch_clone` documents at 81× wall-clock
-//! spread — and the honest instrument becomes `--profile-time` plus samply.
+//! `tutti-sampler`'s `profile_stretch_clone` harness measured at 81×
+//! wall-clock spread (doc 013 records it; the harness went with `Net`) — and the honest instrument becomes `--profile-time` plus samply.
 
 use std::hint::black_box;
 

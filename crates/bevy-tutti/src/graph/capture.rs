@@ -16,12 +16,12 @@
 //!
 //! Every one holds only state the node shares with the graph's copy (its
 //! `Param` cells, the plugin's controls), so the component reaches the
-//! running node without the graph. Each also records the [`NodeId`] it was
+//! running node without the graph. Each also records the [`NodeKey`] it was
 //! captured for, and its reader ignores it when that is not the entity's
 //! current [`AudioNode`] — a leftover from a node that was replaced by hand is
 //! inert rather than stale.
 //!
-//! **That guard is `NodeId` equality and nothing more.** It catches a different
+//! **That guard is `NodeKey` equality and nothing more.** It catches a different
 //! node bound to the entity; it cannot see a node replaced *under the same id*.
 //! `crossfade_audio_node` is such a replacement and re-captures, so it is safe;
 //! a host that calls [`AudioGraphRes::replace`](crate::graph::AudioGraphRes::replace)
@@ -45,8 +45,7 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::dsp::NodeId;
-use tutti_core::AudioNode;
+use tutti_core::{AudioNode, NodeKey};
 
 /// The controls captured from one node, before it moved into the graph.
 ///
@@ -116,7 +115,7 @@ impl CapturedControls {
     /// installed", and the incoming `PluginClient` has neither: left in place
     /// they would stop the binding systems from ever installing them.
     pub(crate) fn replace(self, entity: &mut EntityWorldMut, node: AudioNode) {
-        let node: NodeId = node.0;
+        let node: NodeKey = node.0;
         let _ = (&entity, node);
         #[cfg(feature = "plugin")]
         {

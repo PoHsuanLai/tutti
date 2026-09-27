@@ -100,7 +100,7 @@ impl ModTargetRegistry {
 /// it shares with the running node.
 #[derive(Component, Clone)]
 pub struct ModParamsHandle {
-    node: tutti_core::dsp::NodeId,
+    node: tutti_core::NodeKey,
     params: SharedModParams,
 }
 
@@ -109,21 +109,21 @@ impl ModParamsHandle {
     ///
     /// `node` is what makes a leftover handle inert: resolution skips one whose
     /// node is not the entity's current [`AudioNode`].
-    pub fn new(node: tutti_core::dsp::NodeId, params: Arc<dyn ModParams + Send + Sync>) -> Self {
+    pub fn new(node: tutti_core::NodeKey, params: Arc<dyn ModParams + Send + Sync>) -> Self {
         Self { node, params }
     }
 
     /// Capture a typed `unit` directly, for a caller that has the concrete type
     /// in hand (a host's own `ModParams` type).
     pub fn of<T: ModParams + Clone + Send + Sync + 'static>(
-        node: tutti_core::dsp::NodeId,
+        node: tutti_core::NodeKey,
         unit: &T,
     ) -> Self {
         Self::new(node, Arc::new(unit.clone()))
     }
 
     /// The graph node these params were captured from.
-    pub fn node(&self) -> tutti_core::dsp::NodeId {
+    pub fn node(&self) -> tutti_core::NodeKey {
         self.node
     }
 

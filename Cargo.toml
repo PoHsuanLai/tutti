@@ -161,8 +161,8 @@ core-foundation = "0.9"
 # *member* of this workspace, and Cargo ignores `[profile]` in non-root manifests
 # (with a warning that is easy to miss under `| tail`).
 #
-#   cargo build -p tutti-sampler --profile profiling --example profile_stretch_clone
-#   samply record target/profiling/examples/profile_stretch_clone
+#   cargo build -p tutti-nodes --profile profiling --bench engine_render
+#   samply record target/profiling/deps/engine_render-<hash> --bench
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"

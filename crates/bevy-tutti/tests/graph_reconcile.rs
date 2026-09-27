@@ -192,7 +192,7 @@ mod graph_reconcile {
 
         let mut app = test_app();
 
-        // Spawn the node in the normal way (so we can read its NodeId once
+        // Spawn the node in the normal way (so we can read its NodeKey once
         // the spawn command flushed).
         let entity = {
             let mut c = app.world_mut().commands();
@@ -260,7 +260,7 @@ mod graph_reconcile {
             .resource::<AudioGraphRes>()
             .contains(node_id_before));
 
-        // Replace with a different oscillator — same NodeId, new unit.
+        // Replace with a different oscillator — same NodeKey, new unit.
         {
             let mut c = app.world_mut().commands();
             crossfade_audio_node(
@@ -271,7 +271,7 @@ mod graph_reconcile {
         }
         app.update();
 
-        // Same NodeId stays — that's the contract of crossfade.
+        // Same NodeKey stays — that's the contract of crossfade.
         let node_id_after = *app.world().get::<AudioNode>(entity).expect("AudioNode");
         assert_eq!(node_id_before, node_id_after);
         assert!(app

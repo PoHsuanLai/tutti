@@ -56,7 +56,7 @@
 // be written in the first place. Same trick `bevy-tutti` uses for
 // `tutti_polysynth as polysynth`.
 
-/// The graph runtime: `Net`, `Engine`, `Transport`, metering, latency.
+/// The engine: `Engine`, `Transport`, metering, latency.
 ///
 /// Shadows the `core` extern-prelude crate *inside this crate only*, which is
 /// harmless here because this crate has no code. Write `::core::` in the
@@ -70,27 +70,9 @@ pub use tutti_types as types;
 /// Planar block buffers and the routing/contract arithmetic.
 pub use tutti_node as node;
 
-/// fundsp's graph container: `Net`, and the `NodeId` / `Source` a `Net`
-/// wiring call names an endpoint with. `Engine` no longer renders a `Net`
-/// (design doc 013, Phase 3 PR 15); a headless host builds on [`graph`],
-/// and this module goes with fundsp in Phase 5.
-///
-/// Three names, not `tutti_core::dsp` whole. That module also carries the
-/// fundsp combinators; they are the fork's, not the engine's vocabulary (no
-/// engine node builds from them: `tutti-polysynth` renders its voices in a
-/// SIMD voice bank of its own), and a consumer that wants a stimulus or a
-/// filter has `nodes` (`nodes::testing` for the former).
-///
-/// `Net` stays a name you spell out — `tutti::dsp::Net` — rather than joining
-/// the prelude, for the reason `tutti_core`'s own prelude gives for excluding
-/// it.
-pub mod dsp {
-    pub use tutti_core::dsp::{Net, NodeId, Source};
-}
-
 /// The audio graph (design doc 013): `GraphBuilder`, `Editor`, `Executor`,
 /// `Fork`. What `export` renders and what `Engine::new` runs; the
-/// successor to `dsp::Net`.
+/// successor to fundsp's `Net` (deleted in doc 013 Phase 5).
 pub use tutti_graph as graph;
 
 /// The DSP node library: LFOs, dynamics, convolution, automation.
@@ -171,8 +153,7 @@ pub use tutti_plugin as plugin;
 ///
 /// The exclusions are not oversights — they are `tutti_core`'s and
 /// `tutti_types`' own, forwarded unchanged. `Result`, `Sample` and `Unit`
-/// each shadow a name a consumer already has, and `Net` stays spelled out
-/// (through this crate, `tutti::dsp::Net`).
+/// each shadow a name a consumer already has.
 ///
 /// This is exactly `bevy_tutti`'s prelude with the ECS group removed, which
 /// is the point: it is not a new design, it is the Bevy-free half of a

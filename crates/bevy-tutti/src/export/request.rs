@@ -38,7 +38,7 @@ pub enum ExportSource {
     /// One node's output, isolated from everything downstream of it — "what
     /// does this point in the graph actually sound like".
     ///
-    /// Names the **entity**, not its `NodeId`, for the same reason every other
+    /// Names the **entity**, not its `NodeKey`, for the same reason every other
     /// edge in this crate does (`PortSources`, `MasterSources`): the id is
     /// resolved when the render starts, so a node replaced between spawning the
     /// request and starting it — a crossfade, a rebuilt chain — is followed
@@ -524,12 +524,12 @@ impl PreparedGraph<'_> {
     /// A key no node in any graph this adapter builds holds, for a node the
     /// hook inserts into a fork (`editor.insert(prepared.fresh_key(), ..)`).
     ///
-    /// Minted as the live graph mints its own (from `NodeId`'s process-wide
-    /// counter), so it cannot collide with a forked node's key, which is its
+    /// Minted as the live graph mints its own (from [`NodeKey::fresh`]'s
+    /// process-wide counter), so it cannot collide with a forked node's key, which is its
     /// live node's; a hand-picked key such as `NodeKey(u64::MAX)` would
     /// silently replace whatever node holds it.
     pub fn fresh_key(&self) -> NodeKey {
-        NodeKey(tutti_core::dsp::NodeId::new().value())
+        NodeKey::fresh()
     }
 }
 

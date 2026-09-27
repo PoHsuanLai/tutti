@@ -44,14 +44,14 @@ use tutti_graph::{
 #[derive(Component, Debug)]
 pub struct VoicePoolRef(pub VoicePoolHandle);
 
-/// The graph vertex the track's pool occupies, so a wiring system can name it as
-/// a source without searching the `Net`.
+/// The graph key the track's pool occupies, so a wiring system can name it as
+/// a source without searching the graph.
 ///
-/// The id, not the unit: the unit belongs to the audio thread, and holding one
+/// The key, not the unit: the unit belongs to the audio thread, and holding one
 /// here would be a second owner of state the graph already owns.
 #[cfg(feature = "bevy")]
 #[derive(Component, Debug, Clone, Copy)]
-pub struct VoicePoolNode(pub tutti_core::dsp::NodeId);
+pub struct VoicePoolNode(pub tutti_core::NodeKey);
 
 // ---------------------------------------------------------------------------
 // Retirement — values the audio thread must not drop.

@@ -4049,6 +4049,57 @@ test that wired an `AudioUnit` was moved onto a test `Node` with its
 assertions kept. `stretch::Unit` stays an `AudioUnit`: a slot's internal
 filter, never inserted into a graph.
 
+#### Phase 5, part 1: nothing uses `Net`
+
+Every user left on the list in [Phase 3](#phase-3--flip-the-adapter)
+("What of `Net` remains") moved off it, or went with it; after this PR only
+the fork itself names `Net`. Several items on that list had already moved in
+Phase 4 (the `Net` form of `build_vbap_mix` / `VbapMixParts::insert_into`,
+the nodes' own tests, `TransportClock`'s `AudioUnit` half); what was left:
+
+- **tutti-core**: `topology::compile` and `Catalog` (the from-scratch
+  `Topology → Net` route, which only its own tests called) and
+  `tests/topology_compile.rs` (whose subject was that route: the plan-over-
+  the-value = plan-over-the-compiled-`Net` equality is `tutti-graph`'s
+  `compile_passes.rs` now, over the compiler that runs); the `dsp` module
+  (`Net`, `NodeId`, `Source`) and `prelude::NodeId`; the `unit_param`,
+  `PdcDelay`, `PDC_DELAY_ID` and `Setting` re-exports.
+  `alloc_budget.rs`'s build and no-op-commit budgets measure the `Editor`
+  (a chain of `n` gains) instead of a `Net`, with their ceilings kept.
+- **`AudioNode` wraps a `NodeKey`**, not fundsp's `NodeId`; `NodeKey::fresh`
+  (tutti-types) is the process-wide counter `NodeId::new` was, and
+  `AudioNode::fresh` mints one. bevy-tutti's `PluginShadow`,
+  `ModParamsHandle` and `PreparedExport::fresh_key`, and tutti-sampler's
+  `VoicePoolNode`, carry the key.
+- **tutti-graph**: the fundsp dev-dependency. The builder suite checked its
+  fan-out calls against `Net`'s; `Net`'s rules (`pipe_all`, `pipe_output`,
+  `pipe_input`, `chain`) are written out in the test and each render is
+  pinned to the constant those rules give in closed form. The fork suite's
+  `clone_isolated` comparison is the closed form `base + min(c, outs − 1)`.
+  The `graph_render` bench loses its `net` rows; the `graph` rows stay.
+- **tutti-sampler**: the `profile_stretch_clone` example, whose subject
+  was `Net::commit`'s clone cost (a record of the `Net` era by its own
+  header). What it found stays true and is cited by several bench headers:
+  identical work spread **81×** in wall-clock (4.8 ms to 656 ms) on a quiet
+  machine because two live generations of 640 six-channel vocoders was
+  ~810 MB and the timings tracked paging, so allocation counts and a
+  sampling profiler, not criterion, were the instrument; sharing the
+  vocoder bank took a 640-voice commit from ~91–334 ms to ~0.2 ms.
+- **The umbrella**: `tutti::dsp`.
+
+**Found on the way: a no-op `Editor::commit` compiled and sent a plan.**
+`alloc_budget`'s no-op-commit budget (under 64 KiB, and not growing) held
+for `Net::commit`; moved onto the editor, a commit with nothing changed
+allocated ~97 KiB for a 32-node chain, because it recompiled the whole
+graph and queued an identical plan. bevy-tutti never paid it (its frame
+commit is gated on `GraphDirty`), but any host committing per frame would.
+`Editor::commit` now keeps the spec and shapes it last sent and returns
+`Ok` without compiling when they are unchanged and nothing (a unit, a
+crossfade, a latency cut) is pending; a re-prepare or `package` clears the
+record. Pinned in `executor.rs`
+(`an_unchanged_commit_sends_nothing_and_a_change_still_sends`) and by the
+budget itself.
+
 ## Decisions for the owner
 
 The owner delegated these on 2026-09-24. The migration uses the proposed

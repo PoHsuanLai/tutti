@@ -50,7 +50,7 @@ impl Plugin for GraphReconcilePlugin {
         // before this plugin is added; there is no transient to claim.
 
         // Graph-node removal is handled by an `On<Remove, AudioNode>`
-        // observer (fires at command-flush, reads the still-present NodeId).
+        // observer (fires at command-flush, reads the still-present NodeKey).
         app.add_observer(reconcile_node_despawn);
 
         // Declared wiring: `PortSources` per sink, `MasterSources` for the bus.

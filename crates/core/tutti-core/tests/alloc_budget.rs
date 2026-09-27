@@ -3,16 +3,16 @@
 //! # Why this is a test and not a benchmark
 //!
 //! Timing on a shared GitHub runner swings 30–50% run to run, and this
-//! engine's own `tutti-sampler/examples/profile_stretch_clone.rs` documents an
-//! **81× wall-clock spread** on identical work on a *quiet* machine. A
-//! threshold on a timing number would flap, and a flapping gate gets
+//! engine's own `profile_stretch_clone` harness (deleted with `Net` in doc 013
+//! Phase 5; its figures are in doc 013) measured an **81× wall-clock
+//! spread** on identical work on a *quiet* machine. A threshold on a timing number would flap, and a flapping gate gets
 //! `continue-on-error: true` within a month and then tests nothing — exactly
 //! how the pre-extraction workflow died (see the header of `ci.yml`).
 //!
 //! Allocation **counts and bytes are machine-independent**. The same code
 //! allocates the same amount on a laptop and on a runner, so a budget on them
 //! is a real regression gate that survives a noisy vCPU. That is the insight
-//! `profile_stretch_clone`'s counting allocator already carries; this
+//! `profile_stretch_clone`'s counting allocator carried; this
 //! generalises it into something that runs in the normal test job.
 //!
 //! # What this is *not*
@@ -41,11 +41,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod support;
 
 use support::{Gain, Sine};
-use tutti_core::dsp::Net;
 use tutti_core::Hz;
-use tutti_core::{AudioUnit, Engine, InterleavedMut};
 use tutti_core::{ChannelLayout, SampleRate, Samples, Transport};
-use tutti_graph::{Editor, ForkByClone, Prepare};
+use tutti_core::{Engine, InterleavedMut};
+use tutti_graph::{Editor, Executor, ForkByClone, Prepare};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::NodeKey;
 
@@ -59,7 +58,7 @@ thread_local! {
     static COUNTED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// A counting allocator, modelled on `profile_stretch_clone.rs`'s, that
+/// A counting allocator, modelled on `profile_stretch_clone`'s, that
 /// counts only the thread [`measure`] runs on.
 struct Counting;
 
@@ -112,26 +111,45 @@ fn measure<T>(f: impl FnOnce() -> T) -> (usize, usize, T) {
     )
 }
 
-fn graph(nodes: usize) -> Net {
-    let mut net = Net::new(0, 2);
-    let mut last = net.push(Box::new(Sine::new(Hz(440.0))));
-    for i in 0..nodes {
-        // Which node is chained does not matter to a budget on `Net` itself;
-        // it has to be one that takes an input, and `tutti-nodes`' filters are
-        // out of reach from here (see `support`).
-        let f = net.push(Box::new(Gain(0.5 + i as f32 * 1e-3)));
-        net.connect(last, 0, f, 0);
-        last = f;
+/// A sine into a chain of `nodes` gains, committed: the editor and the
+/// executor its commit is queued for. (A `Net` until doc 013 Phase 5; the
+/// budgets are on the graph `Engine` renders.)
+fn graph(nodes: usize) -> (Editor, Executor) {
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    ed.insert(NodeKey(0), "sine", ForkByClone(Sine::new(Hz(440.0))));
+    for i in 1..=nodes as u64 {
+        // Which node is chained does not matter to a budget on the graph
+        // itself; it has to be one that takes an input, and `tutti-nodes`'
+        // filters are out of reach from here (see `support`).
+        ed.insert(NodeKey(i), "gain", ForkByClone(Gain(0.5 + i as f32 * 1e-3)));
+        ed.spec_mut().topology.edges.insert(
+            InPort {
+                node: NodeKey(i),
+                port: 0,
+            },
+            Edge::Direct(Source::Node(OutPort {
+                node: NodeKey(i - 1),
+                port: 0,
+            })),
+        );
     }
-    net.pipe_output(last);
-    net.set_sample_rate(SampleRate(48_000.0));
-    net
+    let last = Source::Node(OutPort {
+        node: NodeKey(nodes as u64),
+        port: 0,
+    });
+    ed.spec_mut().topology.outputs = vec![last, last];
+    ed.commit().expect("commits");
+    (ed, exec)
 }
 
 /// **Building a graph allocates in proportion to its node count, not worse.**
 ///
 /// Catches an allocation moving inside a per-node loop it does not belong in
 /// — the shape the 180× stretch-clone regression had.
+///
+/// Mutation (run): in `graph`, `ed.commit()` after every insert (a commit
+/// per node, each compiling the whole graph so far) → quadratic → the
+/// 4×-nodes ratio passes 8 → fails.
 #[test]
 fn building_a_graph_allocates_in_proportion_to_its_size() {
     // Warm: the first graph built in a process pays one-off costs (lazy
@@ -158,24 +176,38 @@ fn building_a_graph_allocates_in_proportion_to_its_size() {
     );
 }
 
-/// **`Net::commit` in steady state does not allocate without bound.**
+/// **`Editor::commit` in steady state does not allocate without bound.**
 ///
 /// A commit with no pending edits is the common case in a running app — the
 /// reconcile runs every frame and usually has nothing to do. If that path
-/// allocates, it allocates sixty times a second forever.
+/// allocates, it allocates sixty times a second forever. (Measured on
+/// `Net::commit` until doc 013 Phase 5; the editor is the graph `Engine`
+/// renders.) The executor takes each commit between measurements, as the
+/// audio thread would, so the editor's queue never backs up.
+///
+/// Mutation (run): in `Editor::commit`, push a copy of the spec onto a
+/// `Vec` the editor keeps → the tenth commit's figure grows past twice the
+/// first → fails.
 #[test]
 fn a_no_op_commit_allocates_a_bounded_amount() {
-    let mut net = graph(32);
-    let _backend = net.backend();
-    net.commit();
+    let (mut ed, mut exec) = graph(32);
+    exec.apply_pending();
+    let mut commit = || {
+        let r = ed.commit();
+        exec.apply_pending();
+        r
+    };
+    commit().expect("commits");
 
     // Several no-op commits: whatever the first one costs, the tenth must not
     // cost more. A growing figure is the regression this catches.
-    let (first, _, _) = measure(|| net.commit());
+    let (first, _, r) = measure(&mut commit);
+    r.expect("commits");
     for _ in 0..8 {
-        net.commit();
+        commit().expect("commits");
     }
-    let (tenth, tenth_bytes, _) = measure(|| net.commit());
+    let (tenth, tenth_bytes, r) = measure(&mut commit);
+    r.expect("commits");
 
     assert!(
         tenth <= first.max(4) * 2,
@@ -198,10 +230,7 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
 /// engine, and so the two cannot drift apart unnoticed: if `rt_no_alloc` were
 /// ever deleted or made inert, this still fails.
 ///
-/// The chain is the graph's (a sine and 16 gains): `Engine` renders
-/// nothing else
-/// since doc 013 Phase 3 PR 15. The build and commit budgets above stay on
-/// `Net`, which is still what `topology::compile` builds.
+/// The chain is the graph's (a sine and 16 gains), as the budgets above.
 ///
 /// Mutation (run): allocate a `Vec` at the top of `Engine::walk` → 100
 /// blocks allocate → fails. (Counted because the engine renders on the
@@ -209,27 +238,7 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
 #[test]
 fn rendering_blocks_allocates_nothing() {
     let transport = Transport::new(48_000.0);
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
-    ed.insert(NodeKey(0), "sine", ForkByClone(Sine::new(Hz(440.0))));
-    for i in 1..=16u64 {
-        ed.insert(NodeKey(i), "gain", ForkByClone(Gain(0.5 + i as f32 * 1e-3)));
-        ed.spec_mut().topology.edges.insert(
-            InPort {
-                node: NodeKey(i),
-                port: 0,
-            },
-            Edge::Direct(Source::Node(OutPort {
-                node: NodeKey(i - 1),
-                port: 0,
-            })),
-        );
-    }
-    let last = Source::Node(OutPort {
-        node: NodeKey(16),
-        port: 0,
-    });
-    ed.spec_mut().topology.outputs = vec![last, last];
-    ed.commit().expect("commits");
+    let (mut ed, exec) = graph(16);
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
     let mut buf = vec![0.0f32; 256 * 2];

@@ -53,9 +53,8 @@ pub use tutti_types::{OfflineClock, OfflineTransport, Timeline};
 /// it: after each block it reports how many frames it produced, and the clock
 /// advances by exactly that much.
 ///
-/// A renderer driving a `Net` needs nothing else: its clock nodes are inside
-/// the net, so it only ever advances this. A renderer driving the graph
-/// (`tutti_graph::Executor`) must also *hand* each block a transport, since
+/// A renderer driving the graph (`tutti_graph::Executor`) must also *hand*
+/// each block a transport, since
 /// the graph's clock is the executor's `Env`, not a node — that is
 /// [`graph_block`](Self::graph_block), and [`render_graph`](Self::render_graph)
 /// is the one order the two are called in. It is still not a supertrait of

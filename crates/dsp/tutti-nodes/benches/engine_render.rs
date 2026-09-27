@@ -28,10 +28,10 @@
 //! this path is exactly that — `tests/rt_no_alloc_engine.rs` (beside this
 //! bench, in `tutti-nodes`) *proves* the
 //! precondition. It is the wrong tool where cost is dominated by allocation
-//! churn or by the scheduler: `tutti-sampler`'s
-//! `examples/profile_stretch_clone.rs` measured an **81× wall-clock spread**
-//! on identical work and deliberately reports a median with a sampling
-//! profiler instead, because criterion's outlier *rejection* would discard
+//! churn or by the scheduler: `tutti-sampler`'s `profile_stretch_clone`
+//! harness (deleted with `Net` in doc 013 Phase 5; its figures are in doc
+//! 013) measured an **81× wall-clock spread** on identical work and
+//! deliberately reported a median with a sampling profiler instead, because criterion's outlier *rejection* would discard
 //! precisely the samples that decide whether audio drops out. Anything with
 //! that shape belongs in a harness of that kind, not here.
 //!

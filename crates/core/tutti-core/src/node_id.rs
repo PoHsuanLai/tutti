@@ -85,12 +85,3 @@ pub const fn assert_unique(ids: &[u64]) {
         i += 1;
     }
 }
-
-// ──────────────────────────────────────────────────────────────────────
-// PDC marker — re-exported from fundsp, which owns the delay node and the
-// `clear_delays` scan that looks for it.
-// ──────────────────────────────────────────────────────────────────────
-pub use fundsp::latency::PDC_DELAY_ID;
-
-// Compile-time intra-crate uniqueness guard for core's own ids.
-const _: () = assert_unique(&[PDC_DELAY_ID]);

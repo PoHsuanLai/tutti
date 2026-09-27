@@ -17,7 +17,8 @@
 //! every block's latency into a pre-sized vector, then p50/p90/p99/p99.9/max
 //! plus a deadline-miss count against the 1.333 ms frame budget, scaled over
 //! instance counts until p99 crosses. That is the shape
-//! `tutti-sampler/examples/profile_stretch_clone.rs` argues for, and it is a
+//! `tutti-sampler`'s `profile_stretch_clone` harness argued for (deleted with
+//! `Net` in doc 013 Phase 5; its figures are in doc 013), and it is a
 //! harness rather than a benchmark.
 //!
 //! Read the numbers as `engine_render`'s header describes: elem/s ÷ 48 000 is

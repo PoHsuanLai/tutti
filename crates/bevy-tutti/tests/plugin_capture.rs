@@ -235,7 +235,7 @@ fn record_dirty(
 #[derive(Debug, PartialEq)]
 struct Observed {
     event_inputs: usize,
-    shadow_node: Option<tutti_core::dsp::NodeId>,
+    shadow_node: Option<tutti_core::NodeKey>,
     meter_bound: bool,
 }
 

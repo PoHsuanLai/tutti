@@ -229,10 +229,8 @@ impl TransportClock {
     /// The engine has no clock node in its graph: it holds a
     /// `TransportClock` of its own and drives it with this and
     /// [`advance`](Self::advance), so the playhead a graph node reads in its
-    /// `Env` is computed by the same code, in the same order, as the beat
-    /// this clock emits on its ports in a `Net`. `process` is `begin`, then
-    /// emit-and-advance frame by frame; `begin` + `advance(n)` is the same
-    /// arithmetic without the emit.
+    /// `Env` is computed by the same code, in the same order, as every other
+    /// reader of this clock.
     pub(crate) fn begin(&mut self, control: &Control, take_seek: bool) -> tutti_graph::Transport {
         if take_seek {
             self.apply_pending_seek();

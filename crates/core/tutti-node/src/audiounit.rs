@@ -28,9 +28,10 @@ use crate::signal::{Signal, SignalFrame};
 use crate::value::Tail;
 use dyn_clone::DynClone;
 
-/// Whether a unit rendering offline has failed in a way its output cannot say
-/// ([`AudioUnit::render_fault`]). Read on the control thread, after or
-/// between rendered spans, never from the audio path.
+/// Whether a node rendering offline has failed in a way its output cannot say
+/// (the sampler's disk voice latches a [`FaultLatch`], and its fork hands the
+/// graph a `tutti_graph::ForkHealth` probe that reads it). Read on the control
+/// thread, after or between rendered spans, never from the audio path.
 pub trait RenderFault: Send + Sync {
     /// `None` while the unit renders what it describes; the first failure
     /// otherwise. Latched: once failed, it stays failed.
@@ -169,8 +170,13 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     }
 
     /// Whether a clone of this unit, after [`Self::isolate`], may run on
-    /// another thread beside the live one: the graph's fork
-    /// (`tutti_graph::Editor::fork`, the offline export) trusts it.
+    /// another thread beside the live one.
+    ///
+    /// Only `Net`'s own forwarding reads it (a `Net` answers for its units)
+    /// since the `Legacy` adapter went: `tutti_graph::Editor::fork` forks
+    /// graph nodes, which say how they fork when inserted (`ForkByClone`,
+    /// `Unforkable`, their own `IntoNode`), and never asks an `AudioUnit`. It
+    /// goes with `Net` (doc 013, Phase 5).
     ///
     /// **`true` is a promise that `isolate` severs all shared mutable
     /// state** — every channel end, ring, atomic the unit writes, bridge to
@@ -181,26 +187,10 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     ///
     /// Return `false` from a unit whose clone cannot be severed — a mic
     /// monitor's ring consumer, a plugin's process bridge — or whose
-    /// `isolate` is known to be incomplete. A fork of a graph holding it is
-    /// then refused (`ForkError::NotForkable`) instead of racing the live
-    /// unit. A unit holding other units answers for all of them.
+    /// `isolate` is known to be incomplete. A unit holding other units
+    /// answers for all of them.
     fn forkable(&self) -> bool {
         true
-    }
-
-    /// For a copy made for an offline render (after `isolate` and
-    /// `rebind_offline`): a probe that says whether it has failed since, in a
-    /// way its output cannot say. `None` (the default) for a unit that
-    /// cannot fail while it renders.
-    ///
-    /// Silence is valid audio, so a copy that could not read its input
-    /// (a disk voice whose file went missing) renders a silent span that
-    /// looks like success. A fork keeps the probe
-    /// (`tutti_graph::ForkHealth`) and fails the render, naming the node,
-    /// rather than write that span as if it were the graph's. A unit holding
-    /// other units answers for them.
-    fn render_fault(&self) -> Option<std::sync::Arc<dyn RenderFault>> {
-        None
     }
 
     /// Set the sample rate of the unit.

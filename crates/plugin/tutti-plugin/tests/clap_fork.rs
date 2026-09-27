@@ -743,18 +743,18 @@ fn feed_note(live: &mut Editor, plugin: NodeKey, frame: usize) {
 /// begins 240 frames into the block from 6 000 and ends inside the next. The
 /// note at 6 300 is in that chunk; the probe's gate opens one chunk after it.
 ///
-/// Rendered twice: the plugin alone, whose plan renders whole blocks (the
-/// plugin is not `legacy`), and beside a `legacy`-flagged node, whose plan
-/// renders 64-frame passes with the timeline moved between them (the
-/// chunk from 6 240 then begins 48 frames into the pass from 6 192).
+/// Rendered twice: in whole blocks, and in 64-frame passes from each block's
+/// start with the timeline moved between them (what the engine did while a
+/// `Legacy` node was in the graph, and what any host rendering short calls
+/// does: the chunk from 6 240 then begins 48 frames into the pass from
+/// 6 192).
 ///
 /// Mutation (run): an event's chunk frame taken as its offset in the call
 /// (`o` for `at + o - from` in `Chunks::take`) → the note lands late →
-/// fails. Mutation: the plugin's shape `legacy` again → the whole-block plan
-/// has legacy → fails.
+/// fails.
 #[test]
 fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
-    for legacy in [false, true] {
+    for passes in [false, true] {
         let _lock = exclusive();
         let _env = ProbeEnv::new().render_mode(render::NOTES);
         let probe = load_probe(SAMPLE_RATE);
@@ -768,13 +768,6 @@ fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
         let _controls = live.insert(key, "plugin", probe.client.bind());
         feed_note(&mut live, key, NOTE_FRAME);
         live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
-        if legacy {
-            live.insert(NodeKey(2), "flag", tutti_graph::ForkByClone(LegacyFlag));
-            live.spec_mut().topology.outputs.push(Source::Node(OutPort {
-                node: NodeKey(2),
-                port: 0,
-            }));
-        }
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             sample_rate: SampleRate(SAMPLE_RATE),
             ..Default::default()
@@ -785,52 +778,23 @@ fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
             .expect("forks");
 
         let mut out = Vec::new();
-        let (mut block, mut flag) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+        let mut block = vec![0.0f32; BLOCK];
+        let pass = if passes { 64 } else { BLOCK };
         while out.len() < NOTE_FRAME + 2 * CHUNK {
-            let outs: &mut [&mut [f32]] = if legacy {
-                &mut [&mut block[..], &mut flag[..]]
-            } else {
-                &mut [&mut block[..]]
-            };
-            timeline.render_graph(&mut fork_exec, BLOCK, &[], outs);
+            let mut done = 0;
+            while done < BLOCK {
+                let n = pass.min(BLOCK - done);
+                timeline.render_graph(&mut fork_exec, n, &[], &mut [&mut block[done..done + n]]);
+                done += n;
+            }
             out.extend_from_slice(&block);
         }
         assert_eq!(
-            fork_exec.plan().map(|p| p.has_legacy()),
-            Some(legacy),
-            "a plan holding a plugin renders whole blocks unless a legacy node is beside it"
-        );
-        assert_eq!(
             out.iter().position(|&s| s != 0.0),
             Some(NOTE_FRAME + CHUNK),
-            "legacy passes: {legacy}: the note sounds on its frame, one chunk late"
+            "64-frame passes: {passes}: the note sounds on its frame, one chunk late"
         );
     }
-}
-
-/// A silent mono source whose shape is `legacy`: on an output of its own
-/// (so a `Master` fork takes it), it puts the plan in `LEGACY_CHUNK` passes.
-#[derive(Clone)]
-struct LegacyFlag;
-
-impl tutti_graph::Node for LegacyFlag {
-    fn shape(&self) -> tutti_graph::Shape {
-        tutti_graph::Shape::audio(
-            tutti_types::ChannelLayout::EMPTY,
-            tutti_types::ChannelLayout::MONO,
-        )
-        .with_legacy()
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(
-        &mut self,
-        _: &tutti_graph::Cx<'_>,
-        mut io: tutti_graph::Io<'_>,
-    ) -> tutti_graph::Status {
-        io.output(0).fill(0.0);
-        tutti_graph::Status::Modified
-    }
-    fn reset(&mut self) {}
 }
 
 /// **A clip node's note reaches the plugin's event input on its frame**,

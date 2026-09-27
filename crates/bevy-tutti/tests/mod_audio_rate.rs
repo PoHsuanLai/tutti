@@ -60,12 +60,12 @@ mod mod_audio_rate_reconcile {
         // Its controls, captured from the node before it moves — the same
         // step every insertion path in `bevy_tutti::graph` runs; a native
         // node's are its `ParamSet`, addressed on the node so `write_param`
-        // reaches it (what `spawn_graph_node` does).
+        // reaches it (what `spawn_audio_node` does).
         let controls = GraphNode::captured(&dist);
         let drive = DriveCell(dist.drive());
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, params) = graph.insert_node(dist);
+            let (node, params) = graph.insert(dist);
             graph.set_node_params(node, DistortionNode::params(&params));
             node
         };
@@ -167,7 +167,7 @@ mod mod_audio_rate_reconcile {
             let node = app
                 .world_mut()
                 .resource_mut::<AudioGraphRes>()
-                .insert_node(strip)
+                .insert(strip)
                 .0;
             assert!(
                 app.world()
@@ -470,7 +470,7 @@ mod mod_audio_rate_reconcile {
         let node = app
             .world_mut()
             .resource_mut::<AudioGraphRes>()
-            .insert_node(dist)
+            .insert(dist)
             .0;
         let mut sink = app.world_mut().entity_mut(target);
         controls.bind(&mut sink, node);
@@ -738,7 +738,7 @@ mod mod_audio_rate_reconcile {
         let target_node = node_id(&app, target);
         {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let dc = graph.insert(tutti_nodes::testing::Const::mono(0.5));
+            let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.5));
             graph.set_source(target_node, 0, GraphSource::Node(dc, 0));
             graph.set_source(target_node, 1, GraphSource::Node(dc, 0));
             graph.set_output_source(0, GraphSource::Node(target_node, 0));
@@ -904,8 +904,8 @@ mod mod_tier_parity {
         let render = |min: f32, max: f32| -> f32 {
             let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
             let n = g.add(tutti_graph::Unforkable(Echo));
-            let a = g.add_unit(Box::new(Const::mono(1.0)));
-            let b = g.add_unit(Box::new(Const::mono(1.0)));
+            let a = g.add(Const::mono(1.0));
+            let b = g.add(Const::mono(1.0));
             let at = ParamIn {
                 node: n,
                 param: UnitParam::Drive,

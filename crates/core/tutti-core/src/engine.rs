@@ -19,15 +19,6 @@
 //! with `Env::transport_at`, and the graph's own `At::Beat` commands resolve
 //! against the piece that reaches their beat.
 //!
-//! **Chunk-major while the plan holds a `Legacy` unit**
-//! (`Plan::has_legacy`, doc 013's `Legacy` compatibility mode). A `Legacy`
-//! unit reads no `Env`: one that follows the transport (a sampler voice, a
-//! MIDI clip source) polls the live `Transport` on every 64-frame call. So
-//! the engine then renders graph blocks of at most [`LEGACY_CHUNK`] frames,
-//! across every node, each with its own walk, and publishes the playhead
-//! after each: through a chunk it reads the chunk's first frame, and it only
-//! moves forward. A graph with no `Legacy` unit renders whole blocks.
-//!
 //! A block holds at most
 //! [`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES) cuts. A command due past
 //! that lands at the start of the next block and is counted late, like any
@@ -85,7 +76,6 @@
 
 use tutti_graph::{
     CommitError, Due, Editor, Env, Executor, Limits, Offset, Playhead, TransportChanges,
-    LEGACY_CHUNK,
 };
 
 use crate::transport::fsm::DEFAULT_DECLICK_FRAMES;
@@ -184,8 +174,8 @@ struct GraphRender {
     exec: Executor,
     /// The engine's playhead. The graph reads the transport from `Env`, so
     /// the engine drives the clock itself ([`TransportClock::begin`] /
-    /// [`TransportClock::advance`]); an `EnvClock` in the graph continues it
-    /// with the same arithmetic.
+    /// [`TransportClock::advance`]); every node reads what it publishes
+    /// from its block's `Env`.
     clock: TransportClock,
     /// `MAX_ROOT_CHANNELS` planar channels of `stride` frames each.
     scratch: Vec<f32>,
@@ -212,8 +202,7 @@ impl Engine {
     /// to `capacity` frames (or the prepared maximum, if larger).
     ///
     /// The engine renders whole device blocks through the executor — no
-    /// 64-frame chunking unless a `Legacy` unit is present (module docs); a
-    /// device block longer than the prepared maximum is rendered as
+    /// 64-frame chunking; a device block longer than the prepared maximum is rendered as
     /// consecutive graph blocks of at most that — and builds each block's
     /// `Env` from `transport`: the frame is the executor's clock, which
     /// tracks device time, and the transport snapshot comes from a
@@ -238,10 +227,8 @@ impl Engine {
     ///
     /// Nor can the graph hold a second writer: a `TransportClock` can only
     /// write a playhead through links from that one call. A node that
-    /// takes the beat as a signal (`ClickNode`, a beat-driven LFO or
-    /// automation lane) is fed by an [`EnvClock`](crate::EnvClock) instead,
-    /// which emits the same samples from the block's `Env` and shares
-    /// nothing.
+    /// follows the beat (`ClickNode`, a beat-synced LFO or automation lane)
+    /// reads it from its block's `Env`, which shares nothing.
     ///
     /// Control thread. Allocates the fold scratch
     /// (`MAX_ROOT_CHANNELS × capacity` samples).
@@ -297,8 +284,8 @@ impl Engine {
     /// its own width — with no transport motion and no declick: the pure
     /// render.
     ///
-    /// One executor block per device block (up to its prepared maximum, or
-    /// [`LEGACY_CHUNK`] while a `Legacy` unit is present), under the
+    /// One executor block per device block (up to its prepared maximum),
+    /// under the
     /// transport as it stands. The graph root has no inputs. The root is
     /// rendered at its **own** output width (at most [`MAX_ROOT_CHANNELS`],
     /// which the editor's limits enforce) into scratch, then each frame is
@@ -832,14 +819,7 @@ impl GraphRender {
         let bound = self.exec.prepare().max_block().get();
         // The editor's limits keep every `MaxBlock` within the scratch.
         debug_assert!(bound <= self.stride, "MaxBlock {bound} past the scratch");
-        let bound = bound.min(self.stride);
-        // Chunk-major while a `Legacy` unit may poll the transport (the
-        // module docs): after `apply_pending`, so a commit that adds or
-        // removes the last one switches at this block.
-        if self.exec.plan().is_some_and(|p| p.has_legacy()) {
-            return (bound.min(LEGACY_CHUNK), rate);
-        }
-        (bound, rate)
+        (bound.min(self.stride), rate)
     }
 
     /// Render one graph block of `len` frames into frames
@@ -872,8 +852,7 @@ impl GraphRender {
             .process_with_changes(len, transport, changes, &[], &mut outs[..width]);
         // Published after the block, not by the walk before it: through the
         // block the live playhead still reads its first frame (the last
-        // block's end), which is what a `Legacy` unit polling it takes for
-        // its call's first frame. And it only moves forward.
+        // block's end), and it only moves forward.
         self.clock.publish_position();
         if width == 0 {
             block.fill(0.0);

@@ -434,9 +434,9 @@ fn the_callers_read_rate_is_bounded_by_the_stretch_clamp() {
 /// pin the opposite — a clone sharing the original's `Arc<Bank>`, and
 /// `isolate` severing it — because `Net::commit` cloned every node per graph
 /// edit and a deep copy was 201.8 MB per commit over 640 stereo nodes. The
-/// native graph clones a unit only for `Legacy::controlled`'s shadow and for a
-/// fork, both of which reset what they clone, so the clone is what those need:
-/// fresh.
+/// graph clones a unit only for a fork (and, while it existed, for the
+/// `Legacy` adapter's shadow), which resets what it clones, so the clone is
+/// what that needs: fresh.
 ///
 /// Mutation (run): `Unit::clone` cloning the vocoders' running state instead
 /// of `clone_fresh` (a `Vocoder` copy of the rings) → the clone's input ring
@@ -1592,21 +1592,60 @@ fn stretch_factor_changes_the_source_consumption_rate() {
 }
 
 /// A fork of the stretch unit renders the stretch and pitch it was taken
-/// at: `Clone` already gives every copy fresh control cells (and `isolate`
-/// a fresh bank), so no live move reaches it — pinned through the fork
-/// contract's harness like every forkable unit.
+/// at: `Clone` already gives every copy fresh control cells, so no live move
+/// reaches it. The four steps the graph contract's isolate row runs (it
+/// ran them here through `tutti_graph::contract::IsolateRow` while that
+/// harness took an `AudioUnit`; the unit is a slot's internal filter, not a
+/// graph node, so the steps are written out): clone and render (*before*);
+/// move the control on the original through `&Unit`; render the clone again
+/// (must be bit-identical); clone again and render (must differ, so the move
+/// is audible and the check can fail).
 ///
 /// Mutation: in `Unit::clone`, share the cells
 /// (`stretch_factor: Arc::clone(&self.stretch_factor)`, likewise pitch) →
 /// "a live move reached the fork" on the matching control.
 #[test]
 fn isolate_snapshots_stretch_and_pitch() {
-    tutti_graph::contract::IsolateRow::new("stretch::Unit (stereo)", || {
+    const FRAMES: usize = 16_384;
+    let make = || {
         let unit = Unit::with_channels(48_000.0, 2usize);
         unit.set_stretch_factor(StretchFactor::new(1.5));
         unit
-    })
-    .control("stretch", |u| u.set_stretch_factor(StretchFactor::new(2.0)))
-    .control("pitch", |u| u.set_pitch_cents(Cents::new(300.0)))
-    .check();
+    };
+    // A copy of `unit`, reset, rendered over a tone under a loud/quiet
+    // envelope.
+    let render = |unit: &Unit| -> Vec<f32> {
+        let mut u = unit.clone();
+        u.reset();
+        let mut out = [0.0f32; 2];
+        let mut rendered = Vec::with_capacity(FRAMES * 2);
+        for i in 0..FRAMES {
+            let env = if (i / 1024) % 2 == 0 { 0.9 } else { 0.05 };
+            let x = env * (core::f32::consts::TAU * 220.0 * i as f32 / 48_000.0).sin();
+            u.tick(&[x, x], &mut out);
+            rendered.extend_from_slice(&out);
+        }
+        rendered
+    };
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let controls: [(&str, fn(&Unit)); 2] = [
+        ("stretch", |u| u.set_stretch_factor(StretchFactor::new(2.0))),
+        ("pitch", |u| u.set_pitch_cents(Cents::new(300.0))),
+    ];
+    for (name, write) in controls {
+        let live = make();
+        let forked = live.clone();
+        let before = render(&forked);
+        write(&live);
+        assert_eq!(
+            bits(&render(&forked)),
+            bits(&before),
+            "{name}: a live move reached the fork"
+        );
+        assert_ne!(
+            bits(&render(&live.clone())),
+            bits(&before),
+            "{name}: moving it did not change a fresh fork's output"
+        );
+    }
 }

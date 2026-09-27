@@ -17,7 +17,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::entity::Entity;
 
 use bevy_tutti::graph::{
-    AudioConfig, AudioGraphRes, GraphNode, GraphReconcilePlugin, SpawnGraphNode, TransportRes,
+    AudioConfig, AudioGraphRes, GraphNode, GraphReconcilePlugin, SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::midi::{MidiSourceInstall, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
@@ -136,7 +136,7 @@ fn spawn_tap(app: &mut App) -> (Entity, Seen) {
     let entity = app
         .world_mut()
         .commands()
-        .spawn_graph_node(Tap(Arc::clone(&seen)))
+        .spawn_audio_node(Tap(Arc::clone(&seen)))
         .id();
     app.world_mut().flush();
     (entity, seen)
@@ -310,7 +310,7 @@ fn velocity_keeps_its_full_width() {
 /// A synth inserted as a graph node, with a MIDI event input.
 fn spawn_graph_synth(app: &mut App) -> Entity {
     let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
-    let entity = app.world_mut().commands().spawn_graph_node(synth).id();
+    let entity = app.world_mut().commands().spawn_audio_node(synth).id();
     app.world_mut().flush();
     entity
 }
@@ -323,7 +323,7 @@ fn node_of(app: &App, entity: Entity) -> tutti_core::AudioNode {
 
 /// **`EventSources` wires a clip node's events to a synth's event input, and
 /// removing it unwires them.** Both are inserted as graph nodes
-/// (`spawn_graph_node`); the declaration on the synth reaches the graph's
+/// (`spawn_audio_node`); the declaration on the synth reaches the graph's
 /// event edges on the next update, and its removal empties them.
 ///
 /// Mutation: `reconcile` never writing (`set_event_sources` skipped) → the
@@ -339,7 +339,7 @@ fn event_sources_wire_a_clip_node_to_a_graph_synth() {
     let clip = app
         .world_mut()
         .commands()
-        .spawn_graph_node(MidiClipNode::new(note(
+        .spawn_audio_node(MidiClipNode::new(note(
             60,
             Beat(0.0),
             BeatDuration(1.0),

@@ -85,8 +85,6 @@
 // Speaker-layout construction was the only fallible thing here, and it lives in
 // `tutti-spatial` with the panners.
 
-mod node_id;
-
 // Per-block control reads and the ramps that keep them from stepping.
 mod ramp;
 
@@ -138,10 +136,9 @@ pub use dynamics::{
 pub mod param_mod;
 pub use param_mod::ParamModShaping;
 
-// The native `ModParams` impls (the trait itself lives in tutti-mod).
-mod mod_params;
-
-// Re-export the `ModParams` trait + modulation *target* surface from tutti-mod so
+// A node's control-rate modulation surface is its `ParamSet` (a host
+// resolves a route on its cells). Re-export the `ModParams` trait +
+// modulation *target* surface from tutti-mod so
 // downstream crates (e.g. tutti-plugin implementing `ModParams`) reach it here
 // alongside `Lfo`, without a separate tutti-mod dep. The routing feature is on
 // (tutti-nodes deps tutti-mod with `features = ["routing"]`).

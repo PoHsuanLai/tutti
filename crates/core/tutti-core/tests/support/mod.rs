@@ -9,7 +9,9 @@
 //!
 //! Neither is a DSP node anyone should reach for: the tests that use them are
 //! about the `Net` and the `Engine` (root folding, allocation budgets), and the
-//! node inside is only there so the graph renders something non-zero.
+//! node inside is only there so the graph renders something non-zero. Each is
+//! a graph node, and (for `alloc_budget`'s `Net` side, until doc 013's
+//! Phase 5 deletes `Net`) an `AudioUnit` with the same arithmetic.
 //!
 //! Below them, the beat model the engine tests hold the transport to.
 
@@ -20,11 +22,13 @@
 use std::f64::consts::TAU;
 
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Hz, SampleRate, Signal, SignalFrame, Tail};
+use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
+use tutti_types::ChannelLayout;
 
 /// A mono sine source, phase 0 at the first sample.
 ///
-/// Starts at [`SampleRate::DEFAULT`]; a `Net` corrects that through
-/// `set_sample_rate`.
+/// Starts at [`SampleRate::DEFAULT`]; a graph corrects that through
+/// `prepare`, a `Net` through `set_sample_rate`.
 #[derive(Clone)]
 pub struct Sine {
     frequency: Hz,
@@ -46,6 +50,27 @@ impl Sine {
         self.phase += f64::from(self.frequency.get()) / self.sample_rate.get();
         self.phase -= self.phase.floor();
         y
+    }
+}
+
+impl Node for Sine {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+    }
+
+    fn prepare(&mut self, prepare: &Prepare) {
+        self.sample_rate = prepare.sample_rate();
+    }
+
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for y in io.output(0) {
+            *y = self.next();
+        }
+        Status::Modified
+    }
+
+    fn reset(&mut self) {
+        self.phase = 0.0;
     }
 }
 
@@ -112,6 +137,24 @@ impl AudioUnit for Sine {
 /// work — it is a test knob, not a control a host sets.
 #[derive(Clone)]
 pub struct Gain(pub f32);
+
+impl Node for Gain {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+    }
+
+    fn prepare(&mut self, _: &Prepare) {}
+
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let (ins, mut outs) = io.split();
+        for (y, x) in outs.get(0).iter_mut().zip(ins.get(0)) {
+            *y = x * self.0;
+        }
+        Status::Modified
+    }
+
+    fn reset(&mut self) {}
+}
 
 impl AudioUnit for Gain {
     fn inputs(&self) -> usize {

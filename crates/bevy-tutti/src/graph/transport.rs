@@ -5,11 +5,10 @@
 //! transport manager `Arc` is shared with the RT callback as it is built — and
 //! inserted from there.
 //!
-//! [`TransportRes`] and [`EngineNodes`] are the two halves of "time", and which
-//! one a consumer wants follows from *how it reads*: [`TransportRes`] is time as
-//! a **value**, read per frame or (via [`timeline`](TransportRes::timeline)) per
-//! block; [`EngineNodes::clock`] is time as a **signal**, wired into a node's
-//! input ports and read per sample.
+//! [`TransportRes`] is time as a **value**, read per frame or (via
+//! [`timeline`](TransportRes::timeline)) per block. A graph node reads it per
+//! frame from its block's `Env`, with nothing wired into it (the metronome, a
+//! beat-synced LFO, an automation lane).
 
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
@@ -137,16 +136,17 @@ impl std::ops::Deref for MetronomeRes {
     }
 }
 
-/// The entities of the two nodes [`build_into`](crate::engine::build_into) puts
-/// in the graph before any host system runs.
+/// The entity of the node [`build_into`](crate::engine::build_into) puts in
+/// the graph before any host system runs: the metronome. (It named the beat
+/// clock too, `clock`, until every beat reader read its block's `Env` and the
+/// clock was deleted with `Legacy`.)
 ///
-/// Not a second way to name a node — the *only* way to name these two. Every
+/// Not a second way to name a node — the *only* way to name this one. Every
 /// other node is spawned by the host, which keeps the `Entity`
 /// [`spawn_audio_node`](crate::graph::SpawnAudioNode::spawn_audio_node) hands
-/// back. These two are built during engine construction, so without this
-/// resource their entities are unreachable: they carry
-/// [`AudioNode`](tutti_core::AudioNode) and nothing else, and a query cannot
-/// tell them apart from each other.
+/// back. This one is built during engine construction, so without this
+/// resource its entity is unreachable: it carries
+/// [`AudioNode`](tutti_core::AudioNode) and nothing else.
 ///
 /// That matters because [`PortSources`](crate::graph::PortSources) names
 /// sources by `Entity`. An unreachable entity is an unwirable node.
@@ -155,87 +155,6 @@ impl std::ops::Deref for MetronomeRes {
 /// a declaration names entities, so a bare engine id would be unusable here.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineNodes {
-    /// The beat clock: an [`EnvClock`](tutti_core::EnvClock), which emits a
-    /// `TransportClock`'s beat ports from each block's `Env` (the graph engine
-    /// drives its own `TransportClock`, and the graph must not hold a
-    /// second: see `Engine::new`).
-    ///
-    /// Emits the beat on [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS)
-    /// output ports — **port 0 whole beats, port 1 the fraction** — which is the
-    /// convention every beat-driven node reads and
-    /// [`beat_from_ports`](tutti_core::transport::beat_from_ports) reassembles.
-    /// The split exists because one `f32` cannot carry a musical position past
-    /// beat 16384 without audible stair-stepping.
-    ///
-    /// Wire both ports, in that order, to a node that takes the beat as a
-    /// signal (a legacy `AudioUnit` reading [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS)).
-    /// The native beat readers — `tutti_nodes::LfoNode` in beat-synced mode,
-    /// `tutti_nodes::automation::AutomationLaneNode` — read the beat from
-    /// their block's `Env` and take no wire:
-    ///
-    /// ```rust
-    /// use bevy_app::prelude::*;
-    /// use bevy_ecs::prelude::*;
-    /// use bevy_tutti::prelude::*;
-    /// use tutti_core::transport::BEAT_PORTS;
-    /// use tutti_nodes::testing::Through;
-    ///
-    /// /// Stands in for a node that reads the beat as a signal. What matters
-    /// /// is that it takes the beat on two input ports, in port order.
-    /// fn beat_driven_node() -> impl tutti_core::AudioUnit {
-    ///     Through::new(tutti_core::ChannelLayout::STEREO)
-    /// }
-    ///
-    /// fn wire_to_clock(mut commands: Commands, nodes: Res<EngineNodes>) {
-    ///     commands
-    ///         .spawn_audio_node(beat_driven_node())
-    ///         .insert(PortSources(vec![
-    ///             PortSource::Node { entity: nodes.clock, port: 0 },
-    ///             PortSource::Node { entity: nodes.clock, port: 1 },
-    ///         ]));
-    /// }
-    ///
-    /// // `build_into` builds the clock and inserts `EngineNodes`; a device-less
-    /// // app does the same two steps by hand.
-    /// let transport = Transport::new(48_000.0);
-    /// let mut graph = AudioGraphRes::headless(0, 2);
-    /// let clock_id = graph.insert_beat_clock();
-    ///
-    /// let mut app = App::new();
-    /// app.insert_resource(graph);
-    /// app.insert_resource(AudioEngineState::Running);
-    /// app.add_plugins(GraphReconcilePlugin);
-    /// let clock = app.world_mut().spawn(clock_id).id();
-    /// app.insert_resource(EngineNodes { clock, click: clock });
-    /// app.insert_resource(TransportRes(transport));
-    /// app.add_systems(Startup, wire_to_clock);
-    /// app.update();
-    ///
-    /// // Both beat ports reached the engine, in order. Wiring only port 0 would
-    /// // stair-step past beat 16384 — which is why the split exists.
-    /// let sink = app
-    ///     .world_mut()
-    ///     .query::<&AudioNode>()
-    ///     .iter(app.world())
-    ///     .copied()
-    ///     .find(|id| *id != clock_id)
-    ///     .unwrap();
-    /// let graph = app.world().resource::<AudioGraphRes>();
-    /// for port in 0..BEAT_PORTS {
-    ///     assert_eq!(graph.source(sink, port), GraphSource::Node(clock_id, port));
-    /// }
-    /// ```
-    ///
-    /// **This crate wires it to one node only: the [`click`](Self::click)**,
-    /// whose beat inputs `build_into` declares so every onset lands on its exact
-    /// frame. bevy-tutti's own modulation reads the beat per *frame* from
-    /// [`TransportRes`] and pushes it into the driver (see
-    /// `modulation::driver`), trading sample accuracy for
-    /// a scalar that ECS change detection can carry; a sink that wants the
-    /// smooth form asks for a beat-evaluated curve instead. So this field exists
-    /// for host-spawned nodes, and is the seam a host reaches for when it wants
-    /// the per-sample path this crate's own modulation forgoes.
-    pub clock: Entity,
     /// The [`ClickNode`](tutti_core::ClickNode) — the metronome.
     ///
     /// Its **outputs are deliberately unwired**: where the click lands is the
@@ -247,11 +166,9 @@ pub struct EngineNodes {
     /// Declare it with [`MasterSources`](crate::graph::MasterSources), or feed
     /// it into a mixer with [`PortSources`](crate::graph::PortSources).
     ///
-    /// Its **inputs are wired by the engine**: the entity is born with a
-    /// [`PortSources`](crate::graph::PortSources) taking the beat from
-    /// [`clock`](Self::clock)'s two ports, which is how each click starts on its
-    /// exact frame rather than on a block boundary. Replacing that component
-    /// re-points the metronome's beat; removing it leaves the click on beat 0.
+    /// It has **no inputs**: it reads the beat of every frame from its
+    /// block's `Env`, so each click starts on its exact frame rather than on a
+    /// block boundary.
     ///
     /// Volume, mode and meter are separate — those are atomics on
     /// [`MetronomeRes`], not graph edges.

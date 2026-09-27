@@ -867,7 +867,6 @@ pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(
             && was.in_place == now.in_place
             && was.event_resolution == now.event_resolution
             && was.event_capacity == now.event_capacity
-            && was.legacy == now.legacy
             && was.params == now.params;
         if !same {
             return Err(VerifyError(format!(

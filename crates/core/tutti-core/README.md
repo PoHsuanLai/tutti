@@ -16,9 +16,9 @@ already depends on.
 - `Transport` — playback control, split into `settings` (anyone may store into)
   and `motion` (a state machine that may defer or reject), with commands
   timed to a frame or a beat (`MotionFsm::schedule`). The engine drives the
-  transport's clock and hands each block its transport in `Env`; `EnvClock`
-  puts the beat on graph ports, so beat-driven sources read musical time as a
-  signal rather than consulting the transport.
+  transport's clock and hands each block its transport in `Env`, so a
+  beat-driven node reads musical time per frame (`Env::for_each_beat`,
+  `Env::transport_at`) rather than consulting the transport.
 - `MasterMeter` / `AudioTap` — level monitoring and the analysis tap.
 - `latency` — delay compensation: explicit, opt-in, over any graph.
 - `topology` — `compile(&Valid, &dyn Catalog, rate) -> Compiled`, turning
@@ -60,10 +60,31 @@ the whole thing runs headless.
 ```rust
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{
-    Beat, Bpm, ChannelLayout, Engine, EnvClock, InterleavedMut, MotionEvent, NodeKey,
-    SampleRate, Samples, Timeline, Transport,
+    Beat, Bpm, ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate, Samples,
+    Tail, Timeline, Transport,
 };
-use tutti_graph::{Editor, ForkByClone, Prepare};
+use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status};
+
+// A node reads the transport from each block's `Env`. This one puts the beat
+// on two ports (whole beats, then the fraction). Tone generators and filters
+// are `tutti-nodes`', a crate above this one.
+#[derive(Clone)]
+struct Beats;
+
+impl Node for Beats {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO).with_tail(Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        cx.env.for_each_beat(|i, beat| {
+            io.output(0)[i] = beat.floor().get() as f32;
+            io.output(1)[i] = beat.fract().get() as f32;
+        });
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
 
 let transport = Transport::new(48_000.0);
 
@@ -71,15 +92,12 @@ let transport = Transport::new(48_000.0);
 // the engine. Every edit reaches it through a `commit`.
 let (mut editor, executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
 
-// A node reads the transport from each block's `Env`; `EnvClock` puts the beat
-// on two ports (whole beats, then the fraction), for a node that wants it as
-// a signal. Tone generators and filters are `tutti-nodes`', a crate above
-// this one. Every insert says whether the node forks (for an export): the
-// clock reads only its block's `Env`, so a clone of it is a fork.
-let clock = NodeKey(1);
-editor.insert(clock, "clock", ForkByClone(EnvClock::new()));
+// Every insert says whether the node forks (for an export): `Beats` reads
+// only its block's `Env`, so a clone of it is a fork.
+let beats = NodeKey(1);
+editor.insert(beats, "beats", ForkByClone(Beats));
 editor.spec_mut().topology.outputs = (0..2)
-    .map(|port| Source::Node(OutPort { node: clock, port }))
+    .map(|port| Source::Node(OutPort { node: beats, port }))
     .collect();
 editor.commit().expect("the graph compiles");
 
@@ -98,7 +116,7 @@ transport
 let mut block = vec![0.0f32; 256 * 2];
 engine.process(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
 
-// The first frame carries beat 8 on the clock's ports; the block moved the
+// The first frame carries beat 8 on the node's ports; the block moved the
 // playhead on by 256 frames at 90 BPM.
 assert_eq!((block[0], block[1]), (8.0, 0.0));
 assert!(transport.is_rolling());

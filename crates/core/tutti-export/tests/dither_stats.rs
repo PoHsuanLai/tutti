@@ -50,7 +50,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
 
 fn dc_graph(level: f32) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(Const::frame(&[level, level])));
+    let id = g.add(Const::frame(&[level, level]));
     g.pipe_output(id);
     built(g)
 }

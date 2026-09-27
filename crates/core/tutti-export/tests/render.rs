@@ -16,12 +16,12 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
-use tutti_core::{Amplitude, AudioUnit, Hz, SampleRate};
+use tutti_core::{Amplitude, Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
     ExportConfig, FrozenClock, RenderClock, RenderConfig, RenderGraph, Resample,
 };
-use tutti_graph::GraphBuilder;
+use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::{Const, Osc};
 
 /// The rate [`config`] renders at.
@@ -37,7 +37,7 @@ fn built(g: GraphBuilder, rate: SampleRate) -> RenderGraph {
 /// A stereo DC at 0.5, built for an export at `rate`.
 fn dc(rate: SampleRate) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(Const::frame(&[0.5, 0.5])));
+    let id = g.add(Const::frame(&[0.5, 0.5]));
     g.pipe_output(id);
     built(g, rate)
 }
@@ -99,7 +99,7 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("q.wav");
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let id = g.add_unit(Box::new(Const::mono(0.5)));
+    let id = g.add(Const::mono(0.5));
     g.pipe_output(id);
     render_to_file(
         built(g, RATE),
@@ -218,7 +218,7 @@ fn a_tail_lengthens_the_output_by_exactly_the_tail() {
 fn a_convolver_reports_its_ir_ring_out() {
     let ir = vec![0.5f32; 4096];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(Const::mono(0.5)));
+    let src = g.add(Const::mono(0.5));
     let conv = g
         .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir))
         .0;
@@ -238,7 +238,7 @@ fn cascaded_convolvers_sum_their_tails() {
     let a = vec![0.5f32; 1024];
     let b = vec![0.5f32; 2048];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(Const::mono(0.5)));
+    let src = g.add(Const::mono(0.5));
     let first = g
         .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&a))
         .0;
@@ -263,54 +263,30 @@ fn cascaded_convolvers_sum_their_tails() {
 /// constructed deliberately now that the stock fundsp nodes all answer.
 #[test]
 fn one_silent_node_makes_the_figure_partial_without_losing_it() {
-    /// A node that has never been taught to report a tail: the `AudioUnit`
-    /// default, which is what any newly-written node starts as.
+    /// A node that does not know its tail (`Tail::Unknown`): what an
+    /// `AudioUnit` said by default, and what a node that has not measured
+    /// its own ring-out declares.
     #[derive(Clone, Default)]
     struct Unreporting;
 
-    impl AudioUnit for Unreporting {
+    impl Node for Unreporting {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+                .with_tail(tutti_types::Tail::Unknown)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            let (ins, mut outs) = io.split();
+            outs.get(0).copy_from_slice(ins.get(0));
+            Status::Modified
+        }
         fn reset(&mut self) {}
-        fn set_sample_rate(&mut self, _: tutti_core::SampleRate) {}
-        fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-            output[0] = input[0];
-        }
-        fn process(
-            &mut self,
-            size: usize,
-            input: &tutti_core::BufferRef,
-            output: &mut tutti_core::BufferMut,
-        ) {
-            for i in 0..size {
-                output.set_f32(0, i, input.at_f32(0, i));
-            }
-        }
-        fn inputs(&self) -> usize {
-            1
-        }
-        fn outputs(&self) -> usize {
-            1
-        }
-        fn route(&mut self, input: &tutti_core::SignalFrame, _: f64) -> tutti_core::SignalFrame {
-            input.clone()
-        }
-        fn get_id(&self) -> u64 {
-            0xDEAD_BEEF
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
-        }
-        fn footprint(&self) -> usize {
-            std::mem::size_of::<Self>()
-        }
     }
 
     let ir = vec![0.5f32; 4096];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(Const::mono(0.5)));
-    let quiet = g.add_unit(Box::new(Unreporting));
+    let src = g.add(Const::mono(0.5));
+    let quiet = g.add(ForkByClone(Unreporting));
     let conv = g
         .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir))
         .0;
@@ -358,48 +334,24 @@ fn a_graph_of_stock_nodes_reports_a_spendable_tail() {
 #[derive(Clone, Default)]
 struct Integrator([f32; 2]);
 
-impl AudioUnit for Integrator {
-    fn inputs(&self) -> usize {
-        2
+impl Node for Integrator {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
+            .with_tail(tutti_types::Tail::Unbounded)
     }
-    fn outputs(&self) -> usize {
-        2
-    }
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.0[0] += input[0];
-        self.0[1] += input[1];
-        output[..2].copy_from_slice(&self.0);
-    }
-    fn process(
-        &mut self,
-        size: usize,
-        input: &tutti_core::BufferRef,
-        output: &mut tutti_core::BufferMut,
-    ) {
-        for i in 0..size {
-            for c in 0..2 {
-                self.0[c] += input.at_f32(c, i);
-                output.set_f32(c, i, self.0[c]);
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let (ins, mut outs) = io.split();
+        for c in 0..2 {
+            for (y, &x) in outs.get(c).iter_mut().zip(ins.get(c)) {
+                self.0[c] += x;
+                *y = self.0[c];
             }
         }
+        Status::Modified
     }
-    fn route(&mut self, input: &tutti_core::SignalFrame, _: f64) -> tutti_core::SignalFrame {
-        input.clone()
-    }
-    fn get_id(&self) -> u64 {
-        tutti_core::mnemonic(b"TSTINTEG")
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn tail(&mut self) -> tutti_types::Tail {
-        tutti_types::Tail::Unbounded
-    }
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
+    fn reset(&mut self) {
+        self.0 = [0.0; 2];
     }
 }
 
@@ -414,8 +366,8 @@ impl AudioUnit for Integrator {
 #[test]
 fn resolving_an_unbounded_graph_spends_the_cap() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let src = g.add_unit(Box::new(Const::frame(&[0.5, 0.5])));
-    let rev = g.add_unit(Box::new(Integrator::default()));
+    let src = g.add(Const::frame(&[0.5, 0.5]));
+    let rev = g.add(ForkByClone(Integrator::default()));
     g.connect(src, 0, rev, 0)
         .connect(src, 1, rev, 1)
         .pipe_output(rev);
@@ -439,7 +391,7 @@ fn resolving_an_unbounded_graph_spends_the_cap() {
 fn resolving_a_reported_graph_keeps_its_own_figure() {
     let ir = vec![0.5f32; 4096];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(Const::mono(0.5)));
+    let src = g.add(Const::mono(0.5));
     let conv = g
         .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir))
         .0;
@@ -840,7 +792,7 @@ fn surround_normalizes_rather_than_falling_back_to_peak() {
 
     let d = tempfile::tempdir().unwrap();
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
-    let id = g.add_unit(Box::new(Const::frame(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6])));
+    let id = g.add(Const::frame(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]));
     g.pipe_output(id);
 
     let mut cfg = config(
@@ -948,7 +900,7 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
 
     let silence = || {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-        let id = g.add_unit(Box::new(Const::frame(&[0.0, 0.0])));
+        let id = g.add(Const::frame(&[0.0, 0.0]));
         g.pipe_output(id);
         built(g, RATE)
     };
@@ -1018,7 +970,7 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
             .with_phase(tutti_core::Phase(0.546))
             .with_amplitude(Amplitude(0.98))
             .with_layout(ChannelLayout::STEREO);
-        let id = g.add_unit(Box::new(tone));
+        let id = g.add(tone);
         g.pipe_output(id);
         built(g, RATE)
     };
@@ -1117,7 +1069,7 @@ fn a_width_the_old_dispatch_rejected_now_exports() {
         // a dropped or duplicated channel is visible.
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
         for c in 0..width as usize {
-            let id = g.add_unit(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
+            let id = g.add(Const::mono(0.1 + 0.05 * c as f32));
             g.connect_output(id, 0, c);
         }
 
@@ -1172,7 +1124,7 @@ fn an_odd_width_round_trips_through_buffers() {
         let layout = ChannelLayout::from(width);
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
         for c in 0..width as usize {
-            let id = g.add_unit(Box::new(Const::mono(0.25)));
+            let id = g.add(Const::mono(0.25));
             g.connect_output(id, 0, c);
         }
 
@@ -1198,7 +1150,7 @@ fn an_odd_width_survives_a_resample() {
     let width = 5u16;
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(width));
     for c in 0..width as usize {
-        let id = g.add_unit(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
+        let id = g.add(Const::mono(0.1 + 0.05 * c as f32));
         g.connect_output(id, 0, c);
     }
 

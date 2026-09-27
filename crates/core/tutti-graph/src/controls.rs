@@ -8,8 +8,7 @@
 //! — bevy-tutti's `AudioParam<U, P>`, which names a param by `UnitParam` and
 //! reaches the node through its graph key — needs the same cells by address.
 //! Under `Net` that was `AudioUnit::set(Setting)`, a settings ring per node
-//! and a shadow copy of the unit to fork from ([`Legacy::controlled`]). A
-//! native node has neither: its controls **are** its cells, shared with the
+//! and a shadow copy of the unit to fork from. A native node has neither: its controls **are** its cells, shared with the
 //! running unit, so a write lands on the next block without a ring and a fork
 //! reads the values it needs from the controls rather than from a shadow.
 //!
@@ -26,11 +25,9 @@
 //! A fork of the node starts from the **authored** values ([`ParamFork`]), so
 //! an export renders the knob the user set, not whatever a modulation source
 //! had added to it at the instant of the fork (the export runs its own
-//! modulation). That is what [`Legacy::controlled`]'s shadow gave, for the
+//! modulation). That is what the old adapter's shadow copy gave, for the
 //! same reason; here it is a second number per param instead of a second
 //! copy of the unit.
-//!
-//! [`Legacy::controlled`]: crate::Legacy::controlled
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

@@ -10,7 +10,7 @@
 //! - the pipeline, one file per duty: [`schedule`] (the set order, the
 //!   [`engine_ready`] gate, [`GraphDirty`]), [`spawn`] ([`SpawnAudioNode`],
 //!   [`crossfade_audio_node`]), [`capture`] (what an insertion keeps of the
-//!   unit: [`CapturedControls`]), [`despawn`] ([`reconcile_node_despawn`]) and
+//!   node: [`CapturedControls`]), [`despawn`] ([`reconcile_node_despawn`]) and
 //!   [`commit`] ([`commit_graph`]) — composed by [`GraphReconcilePlugin`],
 //! - params ([`AudioParam`]) in [`param`],
 //! - the graph as a **value** ([`LiveGraph`]) in [`topology`] — built in the
@@ -44,12 +44,11 @@ pub mod topology;
 pub mod transport;
 pub mod wire;
 
-pub use capture::{CapturedControls, ControlCapture};
+pub use capture::CapturedControls;
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
 pub use events::{
     EventFeeds, EventSource, EventSources, EventWiring, GraphEventsPlugin, GraphNode, NodeControls,
-    SpawnGraphNode,
 };
 pub use metering::MeteringRes;
 #[cfg(feature = "plugin")]
@@ -65,7 +64,7 @@ pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
 #[cfg(feature = "plugin")]
 pub use spawn::crossfade_plugin_node;
 pub use spawn::{
-    crossfade_audio_node, crossfade_graph_node, InsertAudioNode, PendingCrossfades, SpawnAudioNode,
+    crossfade_audio_node, insert_and_bind, InsertAudioNode, PendingCrossfades, SpawnAudioNode,
 };
 pub use tap::AudioTapRes;
 pub use topology::LiveGraph;

@@ -216,8 +216,8 @@ impl PolySynth {
         self.master_volume.load().get()
     }
 
-    /// The shared master-volume atomic, for control-rate modulation
-    /// (`tutti_mod::ModParams`). Clones the `Arc`; call it during setup, not
+    /// The shared master-volume atomic, for control-rate modulation (the
+    /// cell the synth's `ParamSet` addresses as `Volume`). Clones the `Arc`; call it during setup, not
     /// from the audio path.
     pub fn volume_atomic(&self) -> Arc<tutti_core::AtomicF32> {
         self.master_volume.as_atomic()
@@ -884,40 +884,6 @@ impl PolySynth {
     }
 }
 
-impl tutti_mod::ModParams for PolySynth {
-    /// The synth's control-rate-modulatable params: `Volume`, and — only when
-    /// this synth has a unison engine — `Detune` and `StereoSpread`.
-    ///
-    /// `Volume` mirrors the master atomic, which the mix is scaled by once per
-    /// block. `Detune`/`StereoSpread` mirror the unison atomics, folded back
-    /// into the per-sub-voice params once per block; they change pitch ratios
-    /// and pans, never anything per-sample, so block-rate folding is exact
-    /// rather than an approximation.
-    ///
-    /// Everything else returns `None`. Discrete params (voice count) are
-    /// deliberately not modulatable, and a foreign `ParamAddr::Id` is not this
-    /// synth's vocabulary — a WASM node's param names are, which is why that
-    /// arm belongs to the extension host and not here.
-    fn mod_target(
-        &self,
-        param: tutti_core::ParamAddr,
-        base: f32,
-        min: f32,
-        max: f32,
-    ) -> Option<Arc<dyn tutti_mod::ModTarget>> {
-        use tutti_core::{ParamAddr, UnitParam};
-        let atomic = match param {
-            ParamAddr::Unit(UnitParam::Volume) => self.volume_atomic(),
-            ParamAddr::Unit(UnitParam::Detune) => self.detune_atomic()?,
-            ParamAddr::Unit(UnitParam::StereoSpread) => self.spread_atomic()?,
-            _ => return None,
-        };
-        Some(Arc::new(tutti_mod::AtomicTarget::with_mirror(
-            base, min, max, atomic,
-        )))
-    }
-}
-
 impl Clone for PolySynth {
     fn clone(&self) -> Self {
         // The clone's MIDI scratch is its own (a clone is a fork's template,
@@ -1220,10 +1186,30 @@ mod tests {
         assert!(synth.unison.is_some());
     }
 
+    /// A control-rate route onto `synth`'s param `p`, resolved as a host
+    /// resolves one (bevy-tutti's `ParamSetTargets`): the `ParamSet`'s cell,
+    /// mirrored by an `AtomicTarget`. `None` for a param the set lacks.
+    /// (These tests pinned the synth's `ModParams` impl, the route before
+    /// the `ParamSet` was its one address.)
+    fn route(
+        synth: &PolySynth,
+        p: tutti_core::UnitParam,
+        base: f32,
+        min: f32,
+        max: f32,
+    ) -> Option<std::sync::Arc<dyn tutti_mod::ModTarget>> {
+        tutti_graph::ParamNode::param_set(synth)
+            .cell(p)
+            .map(|cell| {
+                std::sync::Arc::new(tutti_mod::AtomicTarget::with_mirror(base, min, max, cell))
+                    as std::sync::Arc<dyn tutti_mod::ModTarget>
+            })
+    }
+
     #[test]
     fn mod_params_volume_moves_the_master_atomic() {
-        use tutti_core::{ParamAddr, UnitParam};
-        use tutti_mod::{LayerKey, ModParams};
+        use tutti_core::UnitParam;
+        use tutti_mod::LayerKey;
 
         let synth = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
@@ -1231,9 +1217,8 @@ mod tests {
             ..Default::default()
         });
         let vol_atomic = synth.volume_atomic();
-        let target = synth
-            .mod_target(ParamAddr::Unit(UnitParam::Volume), 1.0, 0.0, 1.0)
-            .expect("volume is modulatable");
+        let target =
+            route(&synth, UnitParam::Volume, 1.0, 0.0, 1.0).expect("volume is modulatable");
 
         target.accumulate(LayerKey(1), -0.4);
         assert!((target.final_value() - 0.6).abs() < 1e-4);
@@ -1241,15 +1226,13 @@ mod tests {
             (vol_atomic.load(core::sync::atomic::Ordering::Acquire) - 0.6).abs() < 1e-4,
             "the synth's master-volume atomic reflects the modulation"
         );
-
-        // A foreign (plugin) id is not the synth's vocabulary.
-        assert!(synth.mod_target(ParamAddr::Id(0), 0.5, 0.0, 1.0).is_none());
+        // (A foreign `ParamAddr::Id` is not expressible: a `ParamSet` is
+        // addressed by `UnitParam`.)
     }
 
     #[test]
     fn mod_params_detune_is_present_with_unison_absent_without() {
-        use tutti_core::{ParamAddr, UnitParam};
-        use tutti_mod::ModParams;
+        use tutti_core::UnitParam;
 
         let with_unison = synth(SynthConfig {
             unison: Some(UnisonConfig {
@@ -1260,23 +1243,17 @@ mod tests {
             }),
             ..Default::default()
         });
-        assert!(with_unison
-            .mod_target(ParamAddr::Unit(UnitParam::Detune), 10.0, 0.0, 100.0)
-            .is_some());
-        assert!(with_unison
-            .mod_target(ParamAddr::Unit(UnitParam::StereoSpread), 0.5, 0.0, 1.0)
-            .is_some());
+        assert!(route(&with_unison, UnitParam::Detune, 10.0, 0.0, 100.0).is_some());
+        assert!(route(&with_unison, UnitParam::StereoSpread, 0.5, 0.0, 1.0).is_some());
 
         let no_unison = synth(SynthConfig::default());
-        assert!(no_unison
-            .mod_target(ParamAddr::Unit(UnitParam::Detune), 0.0, 0.0, 100.0)
-            .is_none());
+        assert!(route(&no_unison, UnitParam::Detune, 0.0, 0.0, 100.0).is_none());
     }
 
     #[test]
     fn mod_params_detune_recomputes_unison_on_process() {
-        use tutti_core::{ParamAddr, UnitParam};
-        use tutti_mod::{LayerKey, ModParams};
+        use tutti_core::UnitParam;
+        use tutti_mod::LayerKey;
 
         let mut synth = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
@@ -1299,9 +1276,7 @@ mod tests {
 
         // Route a modulation offset into the detune atomic, then run a block:
         // `sync_from_atomics` must fold it into a recompute.
-        let target = synth
-            .mod_target(ParamAddr::Unit(UnitParam::Detune), 0.0, 0.0, 100.0)
-            .expect("detune modulatable");
+        let target = route(&synth, UnitParam::Detune, 0.0, 0.0, 100.0).expect("detune modulatable");
         target.accumulate(LayerKey(1), 30.0);
 
         let mut out = [0.0f32; 64];

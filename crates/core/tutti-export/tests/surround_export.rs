@@ -66,8 +66,8 @@ fn vbap_mix(
 fn quad_surround_graph() -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
 
-    let src_front = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
-    let src_rear = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src_front = g.add(Const::frame(&[1.0, 1.0]));
+    let src_rear = g.add(Const::frame(&[1.0, 1.0]));
 
     let mix = vbap_mix(
         &mut g,
@@ -138,8 +138,8 @@ fn stereo_net_widened_then_exports_four_channels() {
     // Build the surround producer inside a STEREO-output graph (like the live one).
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     assert_eq!(g.outputs(), 2, "starts at device stereo width");
-    let src_front = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
-    let src_rear = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src_front = g.add(Const::frame(&[1.0, 1.0]));
+    let src_rear = g.add(Const::frame(&[1.0, 1.0]));
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::QUAD,
@@ -203,7 +203,7 @@ fn stereo_net_widened_then_exports_four_channels() {
 #[test]
 fn surround_5_1_export_places_center_and_feeds_lfe() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
-    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src = g.add(Const::frame(&[1.0, 1.0]));
     // A single dead-center source.
     let mix = vbap_mix(
         &mut g,
@@ -274,7 +274,7 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
 #[test]
 fn surround_5_1_downmixes_center_to_both_stereo_channels() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
-    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src = g.add(Const::frame(&[1.0, 1.0]));
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(6u16),
@@ -331,7 +331,7 @@ fn surround_5_1_downmixes_center_to_both_stereo_channels() {
 fn stereo_graph_exports_folded_mono_not_left_only() {
     // Const::frame(&[0.8, 0.2]): left=0.8, right=0.2 → mono average = 0.5, NOT 0.8.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let src = g.add_unit(Box::new(Const::frame(&[0.8, 0.2])));
+    let src = g.add(Const::frame(&[0.8, 0.2]));
     g.connect_output(src, 0, 0).connect_output(src, 1, 1);
 
     let dir = tempfile::tempdir().unwrap();
@@ -356,7 +356,7 @@ fn stereo_graph_exports_folded_mono_not_left_only() {
 #[test]
 fn surround_5_1_exports_folded_mono_keeps_center() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
-    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src = g.add(Const::frame(&[1.0, 1.0]));
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(6u16),
@@ -396,7 +396,7 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
 #[test]
 fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(12u16));
-    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src = g.add(Const::frame(&[1.0, 1.0]));
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(12u16),
@@ -439,7 +439,7 @@ fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
 #[test]
 fn atmos_7_1_4_downmixes_surround_into_front() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(12u16));
-    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src = g.add(Const::frame(&[1.0, 1.0]));
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(12u16),

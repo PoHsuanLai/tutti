@@ -5,7 +5,7 @@
 //! The panners are native nodes whose controls are typed cells no
 //! `UnitParam` addresses, so their fork is not `tutti_graph::param_parts`'
 //! and `assert_param_fork` cannot check it. [`check_fork`] runs the steps
-//! `IsolateRow` ran for their `AudioUnit` forms, on the native fork:
+//! the graph contract's isolate row runs, on the panners' own fork:
 //!
 //! 1. take two forks, and render the first;
 //! 2. move one control through the controls the insert handed back;

@@ -34,13 +34,15 @@
 //!
 //! # Blocks
 //!
-//! The graph renders `GRAPH_MAX_BLOCK` (1024) frames a block. A `Legacy` unit
-//! is run in 64-frame chunks from each block's start, so at a multiple of 64
-//! every chunk lands on the frames a `Net`'s 64-frame block did, and a unit
-//! whose output depends on the call partition (the VBAP panner, which ramps
-//! its gains across each call) rendered the same. That is why
-//! `GRAPH_MAX_BLOCK` is a multiple of 64; the durations below are
-//! deliberately *not*, so the last block is short.
+//! The graph renders `GRAPH_MAX_BLOCK` (1024) frames a block, a multiple of
+//! 64: while nodes ran through the `Legacy` adapter, in 64-frame chunks from
+//! each block's start, that put every chunk on the frames a `Net`'s 64-frame
+//! block did, so a node whose output depends on the call partition (the VBAP
+//! panner, which ramps its gains across each call) rendered the same, and
+//! the digests below were recorded so. Since `Legacy` went every node renders
+//! whole blocks; of the digests, only the gliding panners' moved (see
+//! `a_surround_mix_folds_to_every_width`). The durations below are
+//! deliberately *not* multiples, so the last block is short.
 //!
 //! # What these do not cover
 //!
@@ -58,7 +60,9 @@ use tutti_export::{
     BitDepth, ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock, Normalize,
     RenderConfig, RenderGraph, Rendered, Resample, GRAPH_MAX_BLOCK,
 };
-use tutti_graph::{ForkMode, ForkTarget, GraphBuilder, Legacy, Prepare, Unforkable};
+use tutti_graph::{
+    Cx, ForkMode, ForkTarget, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
+};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::{Db, Samples};
 
@@ -125,9 +129,8 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// The builder's graph as an export gets it from a live one: built at a
 /// device's block, then forked offline at the render's.
 ///
-/// A fork **resets** every unit it makes (a `Legacy` unit's fundsp sequence:
-/// clone, isolate, rebind, reset; a native one's fork source hands a reset
-/// copy), which is what the `Net` export did to the `Net` it cloned. For most
+/// A fork **resets** every unit it makes (each node's fork source hands a
+/// reset copy), which is what the `Net` export did to the `Net` it cloned. For most
 /// units a reset one renders what a fresh one does; not for all: a reset
 /// `VbapPannerNode` starts on its commanded bearing where a fresh one glides
 /// there from front-centre.
@@ -177,11 +180,11 @@ fn assert_same(what: &str, a: &[Vec<f32>], b: &[Vec<f32>]) {
 /// A stereo sine at half scale, `Osc` wired to both outputs.
 fn sine(freq: f32) -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let k = g.add_unit(Box::new(
+    let k = g.add(
         Osc::sine(Hz(freq))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
-    ));
+    );
     g.pipe_output(k);
     g
 }
@@ -197,7 +200,7 @@ fn sine_at(freq: f64, amplitude: f64, i: usize) -> f64 {
 /// A mono DC level fanned to stereo.
 fn dc(level: f32) -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let k = g.add_unit(Box::new(Const::mono(level)));
+    let k = g.add(Const::mono(level));
     g.pipe_output(k);
     g
 }
@@ -205,11 +208,11 @@ fn dc(level: f32) -> GraphBuilder {
 /// A tone through a lookahead limiter: a latency-bearing chain.
 fn limited() -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let src = g.add_unit(Box::new(
+    let src = g.add(
         Osc::sine(Hz(220.0))
             .with_amplitude(Amplitude(0.9))
             .with_layout(ChannelLayout::STEREO),
-    ));
+    );
     let (lim, _) = g.add_with_controls(
         tutti_nodes::LimiterNode::with_channels(ChannelLayout::STEREO, Db(-6.0), Db(-1.0))
             .with_lookahead(tutti_types::Seconds(0.005)),
@@ -226,9 +229,7 @@ fn ir() -> Vec<f32> {
 /// A tone through a convolver: a tail, a latency, and a block-oriented unit.
 fn convolved() -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(
-        Osc::sine(Hz(330.0)).with_amplitude(Amplitude(0.5)),
-    ));
+    let src = g.add(Osc::sine(Hz(330.0)).with_amplitude(Amplitude(0.5)));
     let conv = g
         .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir()))
         .0;
@@ -260,11 +261,11 @@ fn quad_vbap() -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
     let sum = g.add(ChannelSumNode::new(2, ChannelLayout::QUAD));
     for (s, (az, f)) in [(45.0, 300.0), (135.0, 500.0)].into_iter().enumerate() {
-        let src = g.add_unit(Box::new(
+        let src = g.add(
             Osc::sine(Hz(f))
                 .with_amplitude(Amplitude(0.5))
                 .with_layout(ChannelLayout::STEREO),
-        ));
+        );
         let pan = VbapPannerNode::for_layout(ChannelLayout::QUAD).expect("quad");
         pan.set_position(az, tutti_core::Elevation::LEVEL);
         let (pan, _) = g.add_with_controls(pan);
@@ -464,12 +465,21 @@ fn a_dithered_export_writes_its_dithered_render() {
 /// down to stereo and to mono. The narrower files are the quad render folded
 /// frame by frame with `fold_frame` (the ITU matrix), to the bit; the quad
 /// render puts the front-left source in channel 0 and the rear-left one in
-/// channel 2; and (Linux/glibc) the quad render, built and forked, is the
-/// `Net`'s.
+/// channel 2; and (Linux/glibc) the forked quad render is the `Net`'s (the
+/// built one was, until its panners ramped across whole blocks: below).
 ///
 /// This is also the case that pins the block rule in the module docs: the
 /// VBAP panner ramps its gains across each call, so it is the unit here whose
-/// output depends on where the 64-frame chunks fall.
+/// output depends on where the blocks fall.
+///
+/// The quad digest was re-recorded when `Legacy` went (doc 013, "Legacy
+/// deleted"): the sine sources were `Legacy` units, so the graph rendered
+/// chunk-major and the panners ramped across 64-frame calls, as `Net`'s
+/// did; now they ramp across the render's 1024-frame blocks. Only the fresh
+/// panners' glide in from front-centre moved (the difference decays from
+/// ~1.1 in the first block to ~0.04 past frame 8192, the smoother settling):
+/// the forked render, whose panners start on their bearing, kept its digest
+/// bit for bit, as did the fold-downs' identity with the quad render.
 ///
 /// Mutations (run): `fold_graph_frame` reading `planes[0]` for every source
 /// channel → the stereo file is not the quad render folded; `GRAPH_MAX_BLOCK
@@ -487,7 +497,7 @@ fn a_surround_mix_folds_to_every_width() {
     // front-left one in channel 0.
     assert!(quad[2].iter().any(|s| s.abs() > 0.05), "no rear energy");
     assert!(quad[0].iter().any(|s| s.abs() > 0.05), "no front energy");
-    assert_golden("quad", digest(&quad), 0x2df3_9481_9b23_375a);
+    assert_golden("quad", digest(&quad), 0x6f25_52d1_da4e_376c);
     // No digest for these: each is the quad render (whose digest is pinned)
     // folded, to the bit.
     for width in [ChannelLayout::STEREO, ChannelLayout::MONO] {
@@ -616,8 +626,8 @@ fn the_tail_extends_the_render_by_the_ring_out() {
     }
 }
 
-/// A graph holding a node that cannot be forked (a plugin, a mic monitor —
-/// here a `Legacy` built unforkable) is refused with the node's key, and
+/// A graph holding a node that cannot be forked (a mic monitor, a live disk
+/// voice — here a constant inserted `Unforkable`) is refused with the node's key, and
 /// nothing renders.
 ///
 /// Mutation (run): `ForkError::NotForkable` wrapped in `Error::Fork` in
@@ -625,8 +635,8 @@ fn the_tail_extends_the_render_by_the_ring_out() {
 #[test]
 fn an_unforkable_node_is_an_export_error_naming_it() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let fine = g.add_unit(Box::new(Const::mono(0.1)));
-    let plugin = g.add(Legacy::from_box(Box::new(Const::mono(0.2))).unforkable());
+    let fine = g.add(Const::mono(0.1));
+    let plugin = g.add(Unforkable(Const::mono(0.2)));
     g.connect_output(fine, 0, 0).connect_output(plugin, 0, 1);
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
 
@@ -699,8 +709,9 @@ fn a_graph_prepared_at_another_rate_is_refused() {
 }
 
 /// The graph is handed the render clock's transport, block by block, read
-/// before each block and advanced after: an `EnvClock` in the graph emits the
-/// offline timeline's beat on every frame, starting at its start beat, and the
+/// before each block and advanced after: a node walking each block's `Env`
+/// ([`BeatPorts`], what `EnvClock` did) emits the offline timeline's beat on
+/// every frame, starting at its start beat, and the
 /// timeline ends exactly the render's frames on.
 ///
 /// Mutations (run):
@@ -720,7 +731,7 @@ fn the_graph_reads_the_render_clocks_transport() {
     let bps = timeline.beats_per_sample().get();
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let clock = g.add(Unforkable(tutti_core::EnvClock::new()));
+    let clock = g.add(Unforkable(BeatPorts));
     g.connect_output(clock, 0, 0).connect_output(clock, 1, 1);
     let out = render_to_buffers(
         built(g),
@@ -742,6 +753,26 @@ fn the_graph_reads_the_render_clocks_transport() {
         (timeline.beat().get() - (start + bps * frames as f64)).abs() < 1e-9,
         "the timeline must advance by exactly the frames rendered"
     );
+}
+
+/// Each frame's beat from its block's `Env` (`Env::for_each_beat`), whole
+/// beats then the fraction.
+struct BeatPorts;
+
+impl Node for BeatPorts {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+            .with_tail(tutti_types::Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        cx.env.for_each_beat(|i, beat| {
+            io.output(0)[i] = beat.floor().get() as f32;
+            io.output(1)[i] = beat.fract().get() as f32;
+        });
+        Status::Modified
+    }
+    fn reset(&mut self) {}
 }
 
 // ---- a clip reader: a native node that reads the render's transport ------
@@ -855,12 +886,13 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 /// The voice reads the render clock's transport from each block's `Env`,
 /// per frame: it seats its read at the playhead on the first frame of each
 /// 64-frame piece it renders. The export asks for 1024-frame blocks. Under
-/// `Net`, and then as a `Legacy` unit, the voice polled the clock out of band
-/// once per 64-frame call, and a render that did not move the clock between
-/// chunks had every chunk of a block read the block's first beat, replaying
-/// the first 64 frames sixteen times (a dry 440 Hz voice measured 768 Hz);
-/// `render_graph` rendered such a graph chunk-major. A native graph renders
-/// whole blocks, and the voice finds each piece's beat in its `Env`.
+/// `Net`, and then through the `Legacy` adapter, the voice polled the clock
+/// out of band once per 64-frame call, and a render that did not move the
+/// clock between chunks had every chunk of a block read the block's first
+/// beat, replaying the first 64 frames sixteen times (a dry 440 Hz voice
+/// measured 768 Hz); `render_graph` rendered such a graph chunk-major. The
+/// graph renders whole blocks, and the voice finds each piece's beat in its
+/// `Env`.
 ///
 /// Why a digest and not a tolerance for the pitched voice: the vocoder turns
 /// an ulp of beat into far more. Measured with the clock advanced a block at

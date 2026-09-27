@@ -102,7 +102,6 @@ pub(crate) fn build_on(
         #[cfg_attr(not(feature = "midi"), allow(unused_mut))]
         mut graph,
         engine,
-        clock: clock_node,
         click: click_node,
     } = assemble(
         sample_rate,
@@ -132,9 +131,9 @@ pub(crate) fn build_on(
             .map(|io| Arc::clone(io.ports()) as Arc<dyn tutti_midi_types::MidiIn>);
         #[cfg(not(feature = "midi-hardware"))]
         let wire: Option<Arc<dyn tutti_midi_types::MidiIn>> = None;
-        let (input_node, input) = graph.insert_node(MidiInputNode::new(wire).with_mpe(mpe_mode));
-        let (clock_node, master) = graph.insert_node(ClockNode::new());
-        let (out_node, out) = graph.insert_node(MidiOutNode::new());
+        let (input_node, input) = graph.insert(MidiInputNode::new(wire).with_mpe(mpe_mode));
+        let (clock_node, master) = graph.insert(ClockNode::new());
+        let (out_node, out) = graph.insert(MidiOutNode::new());
         (input_node, input, clock_node, master, out_node, out)
     };
 
@@ -171,21 +170,17 @@ pub(crate) fn build_on(
     app.insert_non_send(driver);
     app.insert_resource(TransportRes(transport));
     app.insert_resource(MetronomeRes(metronome));
-    // The two engine-built nodes get entities like everything else in the graph,
-    // and `EngineNodes` publishes them. Spawned here, before any host system
-    // runs, they are otherwise unreachable: both carry `AudioNode` and nothing
-    // else, so a query cannot tell them apart — and `PortSources` names sources
-    // by `Entity`, so an unnameable node is an unwirable one. The clock exists
-    // precisely to be wired to, and the click's output is left unwired so that
-    // the host declares where it lands.
+    // The engine-built node gets an entity like everything else in the graph,
+    // and `EngineNodes` publishes it. Spawned here, before any host system
+    // runs, it is otherwise unreachable — and `PortSources` names sources by
+    // `Entity`, so an unnameable node is an unwirable one. The click's output
+    // is left unwired so that the host declares where it lands.
     //
-    // The click has no inputs: a native node, it reads the beat of every
-    // frame from its block's `Env`, so each click starts on the frame its beat
-    // lands on with nothing wired into it.
-    let clock_entity = app.world_mut().spawn(clock_node).id();
+    // The click has no inputs: it reads the beat of every frame from its
+    // block's `Env`, so each click starts on the frame its beat lands on with
+    // nothing wired into it.
     let click_entity = app.world_mut().spawn(click_node).id();
     app.insert_resource(EngineNodes {
-        clock: clock_entity,
         click: click_entity,
     });
     // Consumers read `MeteringRes::get()` directly, so the meter has to be
@@ -235,31 +230,28 @@ pub(crate) fn build_on(
     Ok(())
 }
 
-/// The graph, the engine over its audio side, and the two nodes the engine
+/// The graph, the engine over its audio side, and the node the engine
 /// builds into it.
 struct Assembled {
     graph: AudioGraphRes,
     engine: Engine,
-    /// What the beat ports come from.
-    clock: AudioNode,
     /// The metronome (no inputs: it reads its block's `Env`).
     click: AudioNode,
 }
 
-/// Build the graph, add the beat clock and the metronome, and build the
-/// engine over its audio side. The device-free half of [`build_into`], so the
-/// engine can be rendered in a test.
+/// Build the graph, add the metronome, and build the engine over its audio
+/// side. The device-free half of [`build_into`], so the engine can be
+/// rendered in a test.
 ///
-/// **The graph runs at the device's `rate`.** Every unit inserted is prepared
-/// at the graph's rate (`Legacy`'s prepare), so a graph left at its default
-/// 44.1 kHz would run every node — the beat clock included — at 44.1 kHz on a
-/// 48 kHz device: the clock and every oscillator about 8.8% slow. (That is
-/// what this builder did on `Net` before the rate was passed here.)
+/// **The graph runs at the device's `rate`.** Every node inserted is prepared
+/// at the graph's rate, so a graph left at its default 44.1 kHz would run
+/// every node at 44.1 kHz on a 48 kHz device: every oscillator about 8.8%
+/// slow. (That is what this builder did on `Net` before the rate was passed
+/// here.)
 ///
-/// The clock is an `EnvClock` ([`AudioGraphRes::insert_beat_clock`]): a
-/// graph engine drives its own `TransportClock`, and the graph must not hold a
-/// second. It emits the beat on two ports for the nodes that read it as a
-/// signal; the metronome is not one of them (it reads its block's `Env`).
+/// The graph holds no beat clock: a graph engine drives its own
+/// `TransportClock`, and every node that follows the beat reads it from its
+/// block's `Env`.
 fn assemble(
     rate: SampleRate,
     quantum: Option<tutti_core::Samples>,
@@ -270,12 +262,7 @@ fn assemble(
 ) -> Result<Assembled> {
     let mut graph = AudioGraphRes::for_device(inputs, outputs, rate, quantum);
 
-    // The beat clock — emits the beat on two ports. Beat-driven nodes take
-    // those ports as inputs, so the clock needs a name a host can address; it
-    // gets an entity in `build_into`, like every other node in the graph.
-    let clock = graph.insert_beat_clock();
-
-    // Metronome. A native node: the beat, play and record state come from its
+    // Metronome. The beat, play and record state come from its
     // block's `Env`, and the count-in flag off the transport it is built over
     // (read only). Its controls are the shared click settings, which
     // `MetronomeRes` already holds.
@@ -285,14 +272,12 @@ fn assemble(
     // every global output edge, so the first soundfont to load silently
     // disconnects the metronome. What the click feeds is the host's
     // declaration, like every other node; see `graph::wire`.
-    let (click, _settings) =
-        graph.insert_node(ClickNode::new(transport, Arc::clone(click_settings)));
+    let (click, _settings) = graph.insert(ClickNode::new(transport, Arc::clone(click_settings)));
 
     let engine = graph.engine(transport)?;
     Ok(Assembled {
         graph,
         engine,
-        clock,
         click,
     })
 }
@@ -438,7 +423,7 @@ mod tests {
 }
 
 /// The engine [`assemble`] builds, rendered from the builder's own wiring (the
-/// beat clock it picks, the click it builds).
+/// click it builds).
 ///
 /// From design doc 013's PR 13 to PR 15 these compared the engine with the
 /// one this builder made before PR 13 (fundsp's `Net` with a
@@ -665,7 +650,7 @@ mod engine_tests {
         let Assembled {
             mut graph, engine, ..
         } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings).expect("builds");
-        let (voice, _handle) = graph.insert_node(voice(cents));
+        let (voice, _handle) = graph.insert(voice(cents));
         for port in 0..2 {
             graph.set_output_source(port, GraphSource::Node(voice, port));
         }
@@ -717,14 +702,13 @@ mod engine_tests {
     ///
     /// Mutation (run): `Cents::to_pitch_ratio` dividing by 1 100 cents to
     /// the octave → the pitched voice is not a fifth up, on every target.
-    ///
-    /// Not caught here: the voice seating each 64-frame piece at its block's
-    /// first beat (`interp::place` reading `run.beat_at(0)`; run: passes).
-    /// The assembled graph still holds `Legacy` units (the click), so the
-    /// engine renders it chunk-major, 64 frames a block, and every piece is
-    /// a block's first. The voice's own read at longer blocks is pinned by
-    /// tutti-sampler's `block_render.rs` and tutti-export's `graph_source.rs`
-    /// and `sampler_to_export.rs`, which that mutation fails. (The `Net`-era
+    /// Mutation (run): the voice seating each 64-frame piece at its block's
+    /// first beat (`interp::place` reading `run.beat_at(0)`) → both block
+    /// sizes fail. (It passed here while the assembled graph held a `Legacy`
+    /// unit and the engine rendered it chunk-major, 64 frames a block, so
+    /// every piece was a block's first; it is also pinned by tutti-sampler's
+    /// `block_render.rs` and tutti-export's `graph_source.rs` and
+    /// `sampler_to_export.rs`.) (The `Net`-era
     /// mutation here, the engine publishing its playhead before the render,
     /// has no counterpart: the voice reads the playhead from its `Env`, not
     /// the published position.)

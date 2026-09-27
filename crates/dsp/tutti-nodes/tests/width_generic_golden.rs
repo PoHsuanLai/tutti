@@ -72,7 +72,8 @@ struct Case {
     node: Box<dyn Node>,
     inputs: Vec<Vec<f32>>,
     /// Per param of the node's feed, its values over the render when fed —
-    /// what the graph's modulation hands a `Legacy` unit. Empty: nothing fed.
+    /// what the graph's modulation hands the node's param ports. Empty:
+    /// nothing fed.
     /// (These were extra input channels, `with_param_inputs`' ports, when the
     /// goldens were captured; the values and the DSP that reads them are
     /// unchanged, so the pins are too.)

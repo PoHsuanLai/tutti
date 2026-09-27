@@ -265,7 +265,7 @@ pub fn promote_pending_soundfonts(
         // `MidiSourceInstall` plays through a clip node), a fork, and a node
         // that follows the graph's rate on a device restart (`Node::prepare`).
         let controls = crate::graph::GraphNode::captured(&unit);
-        let (id, ()) = graph.insert_node(unit);
+        let (id, ()) = graph.insert(unit);
         edited = true;
 
         // `AudioNode` is the whole binding: node teardown

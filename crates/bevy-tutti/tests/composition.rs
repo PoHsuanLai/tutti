@@ -214,8 +214,8 @@ mod master_bus {
     #[test]
     fn a_second_claim_on_the_master_silently_replaces_the_first() {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let first = graph.insert(Osc::sine(Hz(440.0)));
-        let second = graph.insert(Osc::sine(Hz(880.0)));
+        let (first, _) = graph.insert(Osc::sine(Hz(440.0)));
+        let (second, _) = graph.insert(Osc::sine(Hz(880.0)));
 
         graph.set_outputs_from(first);
         assert_eq!(
@@ -245,8 +245,8 @@ mod master_bus {
     #[test]
     fn a_master_claim_takes_every_channel_even_from_a_mono_source() {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let stereo = graph.insert(Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO));
-        let mono = graph.insert(Osc::sine(Hz(880.0)));
+        let (stereo, _) = graph.insert(Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO));
+        let (mono, _) = graph.insert(Osc::sine(Hz(880.0)));
 
         graph.set_outputs_from(stereo);
         assert_eq!(graph.output_source(1), GraphSource::Node(stereo, 1));
@@ -271,11 +271,11 @@ mod master_bus {
         let mut graph = AudioGraphRes::headless(0, 2);
 
         // Stand-in for the click node `build_into` piped to output.
-        let click = graph.insert(Osc::sine(Hz(1000.0)));
+        let (click, _) = graph.insert(Osc::sine(Hz(1000.0)));
         graph.set_outputs_from(click);
 
         // A soundfont finishes loading a few frames later.
-        let soundfont = graph.insert(Osc::sine(Hz(261.0)));
+        let (soundfont, _) = graph.insert(Osc::sine(Hz(261.0)));
         graph.set_outputs_from(soundfont);
 
         assert_ne!(

@@ -20,18 +20,14 @@
 //! contains it is [`ForkError::NotForkable`] naming its key — never a copy
 //! that quietly shares its state with the live node.
 //!
-//! [`Legacy`](crate::Legacy) gives one to every `AudioUnit` that says it can be
-//! forked (`AudioUnit::forkable`, a promise that `isolate` severs all its
-//! shared mutable state — the fork trusts it). Its fork is, per
-//! fundsp's own sequence, a clone of the unit, then `AudioUnit::isolate`
-//! (severs whatever live input the clone shares: a MIDI inbox, a command
-//! channel, a param cell), then — offline only — `AudioUnit::rebind_offline`
-//! with the caller's context (re-seats a transport-aware unit on the render's
-//! timeline; it must come after `isolate`, which would otherwise sever what it
-//! just bound), then `AudioUnit::reset`. What it clones is described on
-//! [`Legacy`](crate::Legacy): the isolated shadow of a
-//! [`Legacy::controlled`](crate::Legacy::controlled) node, which holds every
-//! setting sent to it, or a clone taken at insert for a plain one.
+//! The sources the crate provides: [`ForkByClone`] (a clone taken at insert,
+//! for a node whose `Clone` shares nothing), [`ParamFork`](crate::ParamFork)
+//! (a [`ParamNode`](crate::ParamNode)'s `fork_fresh`, from the values last
+//! set through its [`ParamSet`](crate::ParamSet)), and a node's own (a
+//! hosted plugin's state transfer, a sampler voice's typed controls). A
+//! native node reads time from its block's [`Env`](crate::Env), so a fork
+//! has nothing to rebind: the fork's renderer hands it the render's
+//! transport.
 //!
 //! # What a fork has, and what it does not
 //!
@@ -56,8 +52,8 @@
 //!   fork does not carry the live loop's circulating signal. The executor's
 //!   clock starts at frame 0, and no scheduled command is copied.
 //! - **No controls, and no link back.** A forked node is driven by nothing
-//!   the live graph's handles reach; its [`LegacyControls`](crate::LegacyControls)
-//!   still steer the live node only. **A fork is not itself forkable**: its
+//!   the live graph's handles reach; a node's controls still steer the live
+//!   node only. **A fork is not itself forkable**: its
 //!   nodes are inserted without fork sources (keeping one would cost every
 //!   forked unit a second clone, for an export that never needs it). Fork
 //!   the live editor again instead.
@@ -225,8 +221,8 @@ impl ForkCause {
         Self(Arc::new(error))
     }
 
-    /// Wrap an error already shared, as a unit's
-    /// [`RenderFault`](tutti_node::RenderFault) hands one over.
+    /// Wrap an error already shared, as a hosted plugin's fault latch hands
+    /// one over.
     pub fn from_arc(error: Arc<dyn Error + Send + Sync + 'static>) -> Self {
         Self(error)
     }
@@ -271,9 +267,8 @@ pub enum ForkMode<'a> {
     /// An offline render: isolated, then rebound onto the render's
     /// timeline, then reset.
     ///
-    /// Typed: the timeline is the one shape every unit's
-    /// `AudioUnit::rebind_offline` takes, [`OfflineTransport`]. It was a
-    /// `&dyn Any` each unit downcast, and a context of any other type (a
+    /// Typed: the timeline is one shape, [`OfflineTransport`], for every
+    /// [`ForkSource`] that reads it. It was a `&dyn Any` each unit downcast, and a context of any other type (a
     /// reference to a reference, the timeline inside it) silently rebound
     /// nothing; it is now a compile error:
     ///
@@ -317,15 +312,9 @@ pub enum ForkTarget {
 pub enum ForkError {
     /// A node the fork needs has no [`ForkSource`] for the unit now at its
     /// key: it was inserted as something that did not hand one over (an
-    /// [`Unforkable`] node, a `Legacy` built
-    /// [`unforkable`](crate::Legacy::unforkable) or whose unit says
-    /// `AudioUnit::forkable() == false` — a mic monitor, a plugin), or its
+    /// [`Unforkable`] node — a mic monitor, a live disk voice), or its
     /// generation moved on without a new source. The first such key, in
     /// key order.
-    ///
-    /// A `Legacy`'s forkability means **trusting `AudioUnit::isolate`**: the
-    /// unit's `forkable()` promises that `isolate` severs all its shared
-    /// mutable state, and the fork is only as separate as that promise.
     NotForkable {
         /// The node.
         key: NodeKey,
@@ -387,13 +376,11 @@ impl Error for ForkError {
 ///
 /// For a node whose `Clone` shares nothing with the original — no `Arc` cell,
 /// no channel end, no handle onto live state — so a clone *is* a fork. The
-/// wrapper is the caller's promise of that, as `AudioUnit::forkable` is a
-/// `Legacy` unit's: a `Clone` bound alone says nothing about sharing, so no
-/// node is forkable by clone unless inserted this way (a bare [`Node`] is not
-/// an [`IntoNode`] at all; see [`Unforkable`] for the other answer). A
-/// generator that
-/// reads only its block's [`Env`](crate::Env) (tutti-core's `EnvClock`)
-/// needs no rebinding offline: the fork's renderer hands it the render's
+/// wrapper is the caller's promise of that: a `Clone` bound alone says
+/// nothing about sharing, so no node is forkable by clone unless inserted
+/// this way (a bare [`Node`] is not an [`IntoNode`] at all; see
+/// [`Unforkable`] for the other answer). A generator that reads only its
+/// block's [`Env`](crate::Env) (a click, an LFO) needs no rebinding offline: the fork's renderer hands it the render's
 /// transport.
 ///
 /// ```

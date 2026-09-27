@@ -37,7 +37,7 @@ use tutti_core::{AudioTap, Engine, Hz, MasterMeter, NodeKey, SampleRate, Samples
 use tutti_core::{ChannelLayout, InterleavedMut};
 use tutti_core::{MotionEvent, Transport};
 use tutti_cpal::{process_audio, AudioCallbackState, MAX_FRAMES};
-use tutti_graph::{Editor, Legacy, Prepare};
+use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 
@@ -58,7 +58,7 @@ fn rolling_state() -> (Transport, AudioCallbackState) {
 
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(512)));
     let (source, filter) = (NodeKey(1), NodeKey(2));
-    ed.insert(source, "sine", Legacy::new(Osc::sine(Hz(220.0))));
+    ed.insert(source, "sine", Osc::sine(Hz(220.0)));
     ed.insert(
         filter,
         "filter",

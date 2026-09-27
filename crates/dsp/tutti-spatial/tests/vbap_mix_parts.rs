@@ -15,7 +15,7 @@
 //! Exact equality is portable: both sides run the same unit code on the same
 //! machine, in the same blocks.
 
-use tutti_core::{AudioUnit, SampleRate};
+use tutti_core::SampleRate;
 use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_spatial::{build_vbap_mix, vbap_mix_parts, VbapMixNode, VbapMixParts, VbapSource};
@@ -53,12 +53,10 @@ fn insert(g: &mut GraphBuilder, parts: VbapMixParts, sources: &[NodeKey]) -> Nod
 
 /// A stereo tone per source, so every source is distinguishable and the LFE
 /// low-pass has something above its cutoff to take out.
-fn tone(i: usize) -> Box<dyn AudioUnit> {
-    Box::new(
-        Osc::sine(Hz(200.0 + 150.0 * i as f32))
-            .with_amplitude(Amplitude(0.5))
-            .with_layout(ChannelLayout::STEREO),
-    )
+fn tone(i: usize) -> Osc {
+    Osc::sine(Hz(200.0 + 150.0 * i as f32))
+        .with_amplitude(Amplitude(0.5))
+        .with_layout(ChannelLayout::STEREO)
 }
 
 /// Render the mix of `positions` at `layout` both ways; returns
@@ -71,7 +69,7 @@ fn both(layout: ChannelLayout, positions: &[f32]) -> (Vec<Vec<f32>>, Vec<Vec<f32
     };
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
-    let keys: Vec<NodeKey> = (0..positions.len()).map(|i| g.add_unit(tone(i))).collect();
+    let keys: Vec<NodeKey> = (0..positions.len()).map(|i| g.add(tone(i))).collect();
     let sources: Vec<VbapSource> = keys
         .iter()
         .zip(positions)
@@ -82,7 +80,7 @@ fn both(layout: ChannelLayout, positions: &[f32]) -> (Vec<Vec<f32>>, Vec<Vec<f32
     let a = render(g);
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
-    let keys: Vec<NodeKey> = (0..positions.len()).map(|i| g.add_unit(tone(i))).collect();
+    let keys: Vec<NodeKey> = (0..positions.len()).map(|i| g.add(tone(i))).collect();
     let sources: Vec<VbapSource<NodeKey>> = keys
         .iter()
         .zip(positions)

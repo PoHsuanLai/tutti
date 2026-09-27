@@ -42,16 +42,16 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 tutti-types = { path = "../../core/tutti-types", default-features = false }
 
 # Pure, audio-free modulation math: the `Modulator` trait + `Lfo`/`LfoShape`,
-# plus the `routing` feature's `ModTarget`/`AtomicTarget` (for `ModParams`, the
-# node-side control-rate-modulation trait). `default-features = false` keeps
+# plus the `routing` feature's `ModTarget`/`AtomicTarget` and `ModParams`,
+# re-exported for the plugin host's impl. `default-features = false` keeps
 # tutti-mod's default-on `bevy` feature (Component/Reflect) from re-leaking into
 # this deliberately bevy-free crate; `routing` is std-only, no bevy.
 tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
 
 # The native graph's param-modulation vocabulary (`ParamShaping`, `ShapeLut`):
 # `ParamModShaping::shaping` bakes `tutti_mod::shape` into the table the
-# compiler's fused step reads (design doc 013 item 6). tutti-graph depends only
-# on tutti-types and tutti-node, so the edge adds no cycle.
+# compiler's fused step reads (design doc 013 item 6). tutti-graph depends on
+# no tutti crate but tutti-types, so the edge adds no cycle.
 tutti-graph = { path = "../../core/tutti-graph" }
 
 # The real FFT under the partitioned convolver (optional, gated by the

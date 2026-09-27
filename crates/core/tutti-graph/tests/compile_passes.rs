@@ -1001,18 +1001,15 @@ fn a_resolution_mark_without_its_edge_is_invalid() {
     );
 }
 
-/// New nodes promise sample accuracy by default; the `Legacy` adapter,
-/// whose units receive no events at all, declares `Block`.
+/// A node promises sample accuracy unless it declares otherwise.
 ///
-/// Mutation: drop `.with_event_resolution(Resolution::Block)` from
-/// `Legacy::probe` → fails.
+/// Mutation: `event_resolution: Resolution::Block` in `Shape::audio` →
+/// fails.
 #[test]
-fn nodes_default_to_sample_and_legacy_declares_block() {
-    use tutti_graph::{Legacy, Resolution};
+fn nodes_default_to_sample_resolution() {
+    use tutti_graph::Resolution;
     let s = Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO);
     assert_eq!(s.event_resolution, Resolution::Sample);
-    let legacy = Legacy::new(fundsp::prelude32::pass());
-    assert_eq!(legacy.shape().event_resolution, Resolution::Block);
 }
 
 /// Removing a node removes the resolution marks on its edges with it, so a

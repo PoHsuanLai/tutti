@@ -1,17 +1,17 @@
-//! Every insertion path captures a unit's controls before the unit enters the
+//! Every insertion path captures a node's controls before the node enters the
 //! graph, and the readers ignore a capture that belongs to another node.
 //!
 //! `bevy_tutti::graph::capture` replaced the graph downcasts that used to answer
 //! "what are this entity's modulatable params".
 //! These pin the replacement at the insertion paths themselves —
-//! `spawn_audio_node`, `insert_audio_node`, `crossfade_audio_node`, and a
-//! native node's `spawn_graph_node` — rather than at a fixture that captures
-//! by hand, because a path that forgot to capture would leave every
-//! hand-captured suite green.
+//! `spawn_audio_node`, `insert_audio_node`, `crossfade_audio_node` — rather
+//! than at a fixture that captures by hand, because a path that forgot to
+//! capture would leave every hand-captured suite green.
 //!
-//! The `AudioUnit` paths' fixture is the suites' own
-//! [`DriveUnit`](common::drive_unit::DriveUnit), captured through the
-//! `ModTargetRegistry` (it was `DistortionNode`, which is a native node now).
+//! The fixture is the suites' own [`DriveUnit`](common::drive_unit::DriveUnit),
+//! a host's `ParamNode` registered with `param_graph_node!` (it was an
+//! `AudioUnit` captured through the `ModTargetRegistry`'s type registration,
+//! which went with `Legacy`), beside an engine node, `DistortionNode`.
 
 #![cfg(feature = "modulation")]
 
@@ -23,12 +23,10 @@ mod modulation {
     use bevy_app::prelude::*;
     use bevy_ecs::system::RunSystemOnce;
 
-    use bevy_tutti::graph::{
-        AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode, SpawnGraphNode, TransportRes,
-    };
+    use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode, TransportRes};
     use bevy_tutti::modulation::{
         LfoShape, ModParamRange, ModParamsHandle, ModRoute, ModSource, ModSourceRate,
-        ModTargetRegistry, ModTargetResolver, TuttiModulationPlugin,
+        ModTargetResolver, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -46,9 +44,6 @@ mod modulation {
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-        app.world_mut()
-            .resource_mut::<ModTargetRegistry>()
-            .register::<DriveUnit>();
         app
     }
 
@@ -56,11 +51,12 @@ mod modulation {
         ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), BASE, 0.0, 10.0)
     }
 
-    /// A route onto a node spawned the ordinary way moves the node's own atomic.
+    /// A route onto a host's node spawned the ordinary way moves the node's
+    /// own cell.
     ///
-    /// Mutation: making `CapturedControls::from_registries` capture no params
-    /// (`params: None`) leaves the drive at its base — the route is well-formed
-    /// and binds to nothing.
+    /// Mutation (run): `param_graph_node!`'s `captured` returning
+    /// `CapturedControls::default()` leaves the drive at its base — the route
+    /// is well-formed and binds to nothing.
     #[test]
     fn a_route_binds_through_the_params_captured_at_spawn() {
         let mut app = app();
@@ -95,9 +91,8 @@ mod modulation {
         );
     }
 
-    /// A native node spawned through `spawn_graph_node` is captured by its
-    /// `ParamSet`, with no registry entry: a route onto it moves the node's
-    /// own cell.
+    /// An engine node spawned through `spawn_audio_node` is captured by its
+    /// `ParamSet`: a route onto it moves the node's own cell.
     ///
     /// Mutation (run): make `CapturedControls::for_params` capture no params
     /// (`params: None`) → the drive stays at its base → fails.
@@ -109,7 +104,7 @@ mod modulation {
         let target = app
             .world_mut()
             .commands()
-            .spawn_graph_node(node)
+            .spawn_audio_node(node)
             .insert(drive_range())
             .id();
         let lfo = app
@@ -133,8 +128,7 @@ mod modulation {
         );
     }
 
-    /// Taking the node away drops the handle — and with it the clone of the
-    /// unit it holds, which for a convolver or a synth is not small.
+    /// Taking the node away drops the handle, and the params it holds.
     ///
     /// Mutation: dropping the `drop_captured` call from
     /// `reconcile_node_despawn` leaves the handle on the entity.
@@ -179,7 +173,7 @@ mod modulation {
         };
         assert!(resolves(&mut app), "the fresh capture resolves");
 
-        let other = app
+        let (other, ()) = app
             .world_mut()
             .resource_mut::<AudioGraphRes>()
             .insert(tutti_nodes::testing::Const::mono(0.0));
@@ -207,7 +201,7 @@ mod crossfade_consumers {
     use bevy_app::prelude::*;
 
     use bevy_tutti::graph::{
-        crossfade_graph_node, AudioConfig, AudioGraphRes, GraphReconcilePlugin, SpawnGraphNode,
+        crossfade_audio_node, AudioConfig, AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode,
         TransportRes,
     };
     use bevy_tutti::modulation::{
@@ -244,9 +238,8 @@ mod crossfade_consumers {
             bevy_app::TaskPoolPlugin::default(),
             bevy_asset::AssetPlugin::default(),
         ));
-        // No `ModTargetRegistry` entry: the synth is a native `ParamNode`,
-        // whose params are control-rate targets through its `ParamSet`
-        // (`CapturedControls::for_params`).
+        // The synth is a `ParamNode`, whose params are control-rate targets
+        // through its `ParamSet` (`CapturedControls::for_params`).
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
 
         // One synth, modulated.
@@ -255,7 +248,7 @@ mod crossfade_consumers {
         let target = app
             .world_mut()
             .commands()
-            .spawn_graph_node(outgoing)
+            .spawn_audio_node(outgoing)
             .insert(ModParamRange::default().with(
                 ParamAddr::Unit(UnitParam::Volume),
                 BASE_VOLUME,
@@ -295,7 +288,7 @@ mod crossfade_consumers {
             "precondition: the incoming unit's own volume ({untouched}) is not already \
              the driven value ({driven}), or the assertion below proves nothing"
         );
-        crossfade_graph_node(&mut app.world_mut().commands(), target, incoming);
+        crossfade_audio_node(&mut app.world_mut().commands(), target, incoming);
         app.update();
         app.update();
         // The accumulator mirrors into the incoming unit's atomic.

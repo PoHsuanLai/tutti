@@ -52,7 +52,7 @@ fn app_with_target() -> (App, Entity) {
     let node = app
         .world_mut()
         .resource_mut::<AudioGraphRes>()
-        .insert_node(dist)
+        .insert(dist)
         .0;
     let mut target = app.world_mut().spawn(ModParamRange::default().with(
         ParamAddr::Unit(UnitParam::Drive),

@@ -4,13 +4,13 @@
 //! [`rebuild`] compiles those into a [`MidiClipNode`] of the target's own,
 //! wired to its MIDI event input ([`EventFeeds`]): a synth, a SoundFont
 //! player or a plugin inserted as a graph node
-//! ([`spawn_graph_node`](crate::graph::SpawnGraphNode), a plugin load). The
+//! ([`spawn_audio_node`](crate::graph::SpawnAudioNode), a plugin load). The
 //! clip reads the block's `Env`, so its notes land on their frames through
 //! seeks and loop wraps, in the same block, and an export forks it with the
 //! target (doc 013 item 5). An edit replaces its events in place, ending the
 //! notes the old events left sounding; so does removing the last install
-//! naming the target. A target with no event input (an `AudioUnit` inserted
-//! through `Legacy`) takes no MIDI, and is skipped.
+//! naming the target. A target with no event input (an effect) takes no
+//! MIDI, and is skipped.
 //!
 //! # Why the ECS cannot do the scheduling
 //!
@@ -65,7 +65,7 @@ use tutti_core::AudioNode;
 #[derive(Component, Debug, Clone)]
 pub struct MidiSourceInstall {
     /// The entity whose synth plays this: its `AudioNode` must have a MIDI
-    /// event input (a node inserted with `spawn_graph_node`, a plugin).
+    /// event input (a node inserted with `spawn_audio_node`, a plugin).
     pub target: Entity,
     /// Absolute-beat positioned events, in any order — the engine sorts them.
     pub events: Vec<TimedMidiEvent>,
@@ -106,7 +106,7 @@ pub fn rebuild(
     changed: Query<Entity, Changed<MidiSourceInstall>>,
     // A target rebound to a new node (a crossfade, a respawn) keeps its clip:
     // the event wiring re-derives its edge. One rebound to a node with no
-    // event input (a `Legacy` unit) loses its clip here.
+    // event input loses its clip here.
     rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<MidiSourceInstall>,
     mut clips: ResMut<SequencedClips>,
@@ -148,7 +148,7 @@ pub fn rebuild(
         })
         .collect();
 
-    // A clip whose target lost its event input (no node, or a `Legacy` one):
+    // A clip whose target lost its event input (no node, or one without):
     // its node goes, and there is nothing left for it to silence.
     let gone: Vec<Entity> = clips
         .0
@@ -179,7 +179,7 @@ pub fn rebuild(
         match clips.0.get(&target) {
             Some((_, controls)) => controls.set_events(events),
             None => {
-                let (clip, controls) = graph.insert_node(MidiClipNode::new(events));
+                let (clip, controls) = graph.insert(MidiClipNode::new(events));
                 clips.0.insert(target, (clip, controls));
                 feeds.set(target, SEQUENCER, vec![clip.into()]);
                 graph_dirty.0 = true;

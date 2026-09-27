@@ -76,14 +76,14 @@ fn build_chain(mut commands: Commands) {
     // `spawn_audio_node` adds the unit and binds an entity to it. The node is
     // unwired: it renders nothing until something declares it as a source.
     let osc = commands
-        .spawn_audio_node(Osc::saw(Hz(110.0)))
+        .spawn_audio_node(ForkByClone(Osc::saw(Hz(110.0))))
         .insert(Label("osc"))
         .id();
 
     // `PortSources` on the *sink* says what feeds each of its input ports.
     // Index 0 is input port 0. The filter takes the oscillator.
     let filter = commands
-        .spawn_graph_node(SvfFilterNode::<f64>::new(
+        .spawn_audio_node(SvfFilterNode::<f64>::new(
             SvfType::LowPass,
             Hz(800.0),
             Q(1.0),
@@ -94,7 +94,7 @@ fn build_chain(mut commands: Commands) {
     // A stereo pair fed from the same mono filter — `with` sets one port at a
     // time, so an asymmetric chain is just two different declarations.
     let out = commands
-        .spawn_audio_node(Through::new(ChannelLayout::STEREO))
+        .spawn_audio_node(ForkByClone(Through::new(ChannelLayout::STEREO)))
         .insert((
             Label("out"),
             PortSources::silent()

@@ -119,7 +119,7 @@ summation rule, the rate chosen by whoever reads it.
 |---|---|---|
 | per **frame** | `AtomicTarget` | the driver is handed the beat; it collapses to a scalar and mirrors it into an `AtomicF32` |
 | per **block** | a plugin's param producer | holds the `LayeredCurve` and samples it at each block's real beats |
-| per **sample** | `AutomationLaneNode`, `ModulatorNode` (`tutti-nodes`) | the beat arrives as a *signal* on the node's `BEAT_PORTS` inputs |
+| per **sample** | `AutomationLaneNode`, `ModulatorNode` (`tutti-nodes`) | the node reads the beat of each frame from its block's `Env` |
 
 **Which rate to reach for.** The frame rate is the default and is always
 correct — ask for more only when the sink reads faster than the frame rate,

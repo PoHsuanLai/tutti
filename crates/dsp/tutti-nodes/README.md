@@ -21,10 +21,11 @@ through. Every node here goes into a `Net`, gets wired, and renders.
   adapter over a pure `tutti_mod::Modulator`.
 - **Mixing** — `ChannelSumNode` (K sources × N channels → one N-wide output),
   `DownmixNode`, `BusStripNode` (volume / balance / mute).
-- **Param modulation** — each modulatable node carries a `ParamFeed` (its
-  `*_PARAMS` list: `SVF_PARAMS`, `DELAY_PARAMS`, …) that the native graph's
-  compiler-owned modulation fills per frame, and `ParamModShaping` turns a
-  route's depth / polarity / curve into the shaping the graph applies.
+- **Param modulation** — each modulatable node declares its params (its
+  `*_PARAMS` list: `SVF_PARAMS`, `DELAY_PARAMS`, …) as param ports the
+  graph's compiler-owned modulation fills per frame (read through
+  `Io::param`), and `ParamModShaping` turns a route's depth / polarity /
+  curve into the shaping the graph applies.
 - **Automation / convolution** — the `automation` module's `AutomationLaneNode`
   and recording units, and `ConvolverNode` with its IR generators (behind a
   feature).
@@ -84,8 +85,7 @@ node at all; the change is a replacement (a crossfade to a new node).
 `tests/live_controls_reach_the_node.rs` is that rule as assertions. (Under
 `Net` it was worse: its frontend held **clones** of its vertices, so a by-value
 write compiled, landed on a clone, and the next commit discarded it, with no
-error and no diagnostic. An `AudioUnit` still inserted through `Legacy` keeps
-its settings ring for the same reason.)
+error and no diagnostic.)
 
 **`&self` is necessary, not sufficient.** A plain `AtomicBool` field also permits
 `&self` and is *still* lost, because `Clone` copies the atomic rather than

@@ -295,7 +295,6 @@ pub fn build_vbap_mix(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::AudioUnit;
     use tutti_graph::Prepare;
     use tutti_types::Samples;
 
@@ -331,8 +330,8 @@ mod tests {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
 
         // Two DC sources (constant on both stereo inputs of each panner).
-        let src_front = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
-        let src_rear = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+        let src_front = g.add(Const::frame(&[1.0, 1.0]));
+        let src_rear = g.add(Const::frame(&[1.0, 1.0]));
 
         // Place one at the front-left speaker (45° → ch0) and one at the
         // rear-left speaker (135° → ch2). The builder wires each source through a
@@ -415,10 +414,10 @@ mod tests {
 
     /// Render a 5.1 `build_vbap_mix` graph and return settled per-channel
     /// energy over the last block. Positions are `(azimuth, elevation)` per
-    /// source; `src_signal(i)` is source `i`'s (stereo) unit.
+    /// source; `src_signal(i)` is source `i`'s (stereo) node.
     fn render_5_1_energy(
         sources: &[(f32, f32)],
-        src_signal: impl Fn(usize) -> Box<dyn AudioUnit>,
+        src_signal: impl Fn(usize) -> tutti_nodes::testing::Const,
     ) -> [f32; 6] {
         use tutti_types::ChannelLayout;
 
@@ -427,7 +426,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, &(az, el))| VbapSource {
-                node: g.add_unit(src_signal(i)),
+                node: g.add(src_signal(i)),
                 azimuth: Azimuth(az),
                 elevation: Elevation(el),
             })
@@ -449,7 +448,7 @@ mod tests {
         // One DC source, dead center. (No high frequencies, so the LFE low-pass
         // passes the DC send — the assertion is that center DOMINATES and LFE
         // is a smaller (bass-managed) share, not that LFE is zero.)
-        let energy = render_5_1_energy(&[(0.0, 0.0)], |_| Box::new(Const::frame(&[1.0, 1.0])));
+        let energy = render_5_1_energy(&[(0.0, 0.0)], |_| Const::frame(&[1.0, 1.0]));
         let total: f32 = energy.iter().sum();
         assert!(total > 0.0);
         // Center (ch2) carries the panned source.
@@ -477,7 +476,7 @@ mod tests {
 
         // A DC (0 Hz) source is entirely below the 120 Hz cutoff, so the LFE
         // send passes it — LFE must be non-silent.
-        let energy = render_5_1_energy(&[(30.0, 0.0)], |_| Box::new(Const::frame(&[1.0, 1.0])));
+        let energy = render_5_1_energy(&[(30.0, 0.0)], |_| Const::frame(&[1.0, 1.0]));
         let total: f32 = energy.iter().sum();
         assert!(
             energy[3] > total * 0.02,

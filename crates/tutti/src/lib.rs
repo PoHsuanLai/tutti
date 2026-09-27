@@ -180,8 +180,7 @@ pub use tutti_plugin as plugin;
 pub mod prelude {
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::{
-        beat_from_ports, ClickState, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent,
-        MotionState, Then, BEAT_PORTS,
+        ClickState, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState, Then,
     };
     pub use tutti_core::CrossfadeCurve;
 

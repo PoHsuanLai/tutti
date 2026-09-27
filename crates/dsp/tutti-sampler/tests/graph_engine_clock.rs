@@ -4,9 +4,8 @@
 //! position from the playhead, which it reads from each block's `Env` — per
 //! frame, through the transport's own frame clock, with every transport
 //! change inside the block (a locate, a loop wrap) on its frame (doc 013
-//! items 8 and 9). So the engine (`Engine::new`) renders whole device blocks:
-//! with no `Legacy` unit in the plan there is no chunk-major mode, and a
-//! voice neither replays a stretch of a block nor waits for a chunk boundary.
+//! items 8 and 9). So the engine (`Engine::new`) renders whole device blocks,
+//! and a voice neither replays a stretch of a block nor waits for a chunk boundary.
 //!
 //! Until the sampler's nodes ported, a voice polled an `Arc<dyn Timeline>`
 //! on every `AudioUnit::process` call, one per 64-frame `Legacy` chunk, and

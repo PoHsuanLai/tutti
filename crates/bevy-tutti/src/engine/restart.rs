@@ -247,7 +247,7 @@ mod tests {
     use crate::engine::build::build_on;
     use crate::graph::latency::{ChannelCompensation, GraphLatency};
     use crate::graph::{GraphReconcilePlugin, MasterSources, PortSource, PortSources};
-    use crate::graph::{PendingCrossfades, SpawnAudioNode, SpawnGraphNode};
+    use crate::graph::{PendingCrossfades, SpawnAudioNode};
     use crate::{AudioEngineState, LatencyCompensationPlugin, TuttiPlugin};
     use bevy_app::App;
     use tutti_core::{At, ChannelLayout, Db, Frame, Hz, MotionEvent, SampleRate};
@@ -283,9 +283,11 @@ mod tests {
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, LatencyCompensationPlugin));
         let mut commands = app.world_mut().commands();
-        let osc = commands.spawn_audio_node(Osc::sine(Hz(1_000.0))).id();
+        let osc = commands
+            .spawn_audio_node(tutti_graph::ForkByClone(Osc::sine(Hz(1_000.0))))
+            .id();
         let lim = commands
-            .spawn_graph_node(LimiterNode::with_channels(
+            .spawn_audio_node(LimiterNode::with_channels(
                 ChannelLayout::MONO,
                 Db(0.0),
                 Db(0.0),
@@ -620,7 +622,7 @@ mod tests {
     #[cfg(feature = "sampler")]
     #[test]
     fn a_restart_re_rates_a_disk_streamed_clip() {
-        use crate::graph::SpawnGraphNode;
+        use crate::graph::SpawnAudioNode;
         use crate::sampler::DiskStreamerRes;
         use tutti_core::{Beat, SamplePosition};
         use tutti_sampler::{Command, DiskStreamer};
@@ -662,7 +664,7 @@ mod tests {
             .take_disk_voice(0, Beat(0.0), None)
             .expect("the link is installed");
         app.world_mut().insert_resource(DiskStreamerRes(streamer));
-        let clip = app.world_mut().commands().spawn_graph_node(voice).id();
+        let clip = app.world_mut().commands().spawn_audio_node(voice).id();
         // The master shrinks to the clip alone: channel 1, which carried the
         // limiter, is released while the limiter stays in the graph — the
         // shrink `topology::build` makes the value as wide as the root for.
@@ -847,7 +849,7 @@ mod tests {
         crate::graph::crossfade_audio_node(
             &mut app.world_mut().commands(),
             osc,
-            Box::new(Osc::sine(Hz(2_000.0))),
+            tutti_graph::ForkByClone(Osc::sine(Hz(2_000.0))),
         );
         app.world_mut().flush();
         assert!(

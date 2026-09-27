@@ -9,7 +9,7 @@ use bevy_reflect::prelude::*;
 
 #[cfg(feature = "export")]
 use tutti_core::transport::OfflineTransport;
-use tutti_core::{AudioNode, AudioUnit, Compensation, CrossfadeCurve, Samples, Seconds, Tail};
+use tutti_core::{AudioNode, Compensation, CrossfadeCurve, Samples, Seconds, Tail};
 use tutti_types::{ChannelLayout, SampleRate, UnitParam};
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -78,17 +78,18 @@ pub enum GraphSource {
 /// of the frame to the audio thread at once. Nothing here commits inline.
 ///
 /// The graph is the native `tutti-graph` runtime (design doc 013): an
-/// `Editor` on this side, its `Executor` on the audio thread. Every unit goes
-/// in as a `Legacy::controlled` node, and PDC is the compiler's — nothing is
+/// `Editor` on this side, its `Executor` on the audio thread. Every node goes
+/// in through its own `IntoNode`, and PDC is the compiler's — nothing is
 /// spliced into the graph to align it. fundsp's `Net` ran behind this type
 /// until Phase 3 PR 13, which deleted it.
 ///
 /// # Why opaque
 ///
 /// Every method is named in graph terms — insert a node, set a port's source,
-/// replace a unit under a fade — and takes an [`AudioNode`] and a
+/// replace a node under a fade — and takes an [`AudioNode`] and a
 /// [`GraphSource`], never a runtime type, so what is behind it can change
-/// without the signatures moving (it did: `Net`, then both, then native).
+/// without the signatures moving (it did: `Net`, then both, then the graph
+/// alone).
 ///
 /// No `Deref`, for the same reason there never was one: graph mutation is paired
 /// with the per-frame commit, and keeping it behind named methods keeps the
@@ -244,76 +245,32 @@ impl AudioGraphRes {
         tutti_core::Engine::new(transport, graph.editor_mut(), exec)
     }
 
-    /// Add the node the engine's beat ports come from — an
-    /// [`EnvClock`](tutti_core::EnvClock), forkable, as
-    /// [`build_into`](crate::engine::build_into) inserts it for
-    /// [`EngineNodes::clock`](crate::graph::EngineNodes::clock) — unwired.
-    ///
-    /// For a headless graph that wants the beat clock an engine-built one
-    /// has. A graph engine drives its own `TransportClock`, and the graph
-    /// must not hold a second; an `EnvClock` emits the same samples from each
-    /// block's `Env` (doc 013, Phase 3 gap 5).
-    pub fn insert_beat_clock(&mut self) -> AudioNode {
-        self.write().insert_env_clock()
-    }
-
     // --- Nodes ---
 
-    /// Add `unit` to the graph, unwired, and return its handle.
+    /// Add `node` to the graph, unwired, through its own
+    /// [`IntoNode`](tutti_graph::IntoNode), and return its handle and its
+    /// controls. Its fork source goes to the editor, so an export forks it as
+    /// its type says; it is prepared at the graph's rate.
     ///
     /// Binding the handle to an entity is the caller's (see
-    /// [`CapturedControls::bind`](crate::graph::CapturedControls::bind));
-    /// [`spawn_audio_node`](crate::graph::SpawnAudioNode) does both.
-    ///
-    /// The unit is prepared at the graph's rate.
-    pub fn insert<U: AudioUnit + 'static>(&mut self, unit: U) -> AudioNode {
-        self.insert_boxed(Box::new(unit))
+    /// [`CapturedControls::bind`](crate::graph::CapturedControls::bind)), as
+    /// is addressing its params ([`set_node_params`](Self::set_node_params));
+    /// [`spawn_audio_node`](crate::graph::SpawnAudioNode) does all three, for
+    /// a [`GraphNode`](crate::graph::GraphNode).
+    pub fn insert<N: tutti_graph::IntoNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
+        self.write().insert(node)
     }
 
-    /// [`insert`](Self::insert) for a unit that is already boxed (a plugin, a
-    /// trait-object factory's product).
-    pub fn insert_boxed(&mut self, unit: Box<dyn AudioUnit>) -> AudioNode {
-        self.write().insert(unit)
-    }
-
-    /// Insert a node that brings its own [`IntoNode`](tutti_graph::IntoNode)
-    /// — a MIDI clip node, a synth inserted as a graph node — handing back
-    /// its controls. Its fork source
-    /// goes to the editor, so an export forks it as its type says.
-    ///
-    /// [`spawn_graph_node`](crate::graph::SpawnGraphNode::spawn_graph_node)
-    /// is the ECS form, which binds an entity to it.
-    pub fn insert_node<N: tutti_graph::IntoNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
-        self.write().insert_node(node)
-    }
-
-    /// Address `node`'s params by `params`, a native node's controls: what
+    /// Address `node`'s params by `params`, its controls: what
     /// [`set_param`](Self::set_param) writes through for it, and what a fork
     /// of it starts from. `None` takes the address away.
-    /// [`spawn_graph_node`](crate::graph::SpawnGraphNode::spawn_graph_node)
+    /// [`spawn_audio_node`](crate::graph::SpawnAudioNode::spawn_audio_node)
     /// does this from [`GraphNode::params`](crate::graph::GraphNode::params).
     pub fn set_node_params(&mut self, node: AudioNode, params: Option<tutti_graph::ParamSet>) {
         self.write().set_node_params(node, params);
     }
 
-    /// [`replace`](Self::replace) for a native node: a fade when its shape
-    /// fits the running unit's, else a plain swap on the next commit. Hands
-    /// back its controls; address its params with
-    /// [`set_node_params`](Self::set_node_params).
-    /// [`crossfade_graph_node`](crate::graph::crossfade_graph_node) does both,
-    /// and re-captures.
-    pub fn replace_node<N: tutti_graph::IntoNode>(
-        &mut self,
-        node: AudioNode,
-        incoming: N,
-        fade: Seconds,
-        curve: CrossfadeCurve,
-    ) -> Result<N::Controls, ReplaceRefused<N>> {
-        self.write().replace_node(node, incoming, fade, curve)
-    }
-
-    /// How many event inputs `node` declares: 0 for a unit inserted as an
-    /// `AudioUnit` (through `Legacy`).
+    /// How many event inputs `node` declares.
     pub fn node_event_inputs(&self, node: AudioNode) -> usize {
         self.read().node_event_inputs(node)
     }
@@ -339,7 +296,7 @@ impl AudioGraphRes {
     }
 
     /// Insert a hosted plugin: bound (`PluginClient::bind`) and inserted as
-    /// the native node it then is, handing the editor its fork source (a fork
+    /// the node it then is, handing the editor its fork source (a fork
     /// by state transfer) and its latency (its `Shape`). Capture its controls
     /// first ([`CapturedControls::for_plugin`](crate::graph::CapturedControls::for_plugin)):
     /// the plugin is out of reach once inserted.
@@ -378,50 +335,38 @@ impl AudioGraphRes {
         self.read().contains(node)
     }
 
-    /// Swap the unit behind `node` for `unit`, fading from one to the other over
-    /// `fade`. `node` keeps its handle and every edge to and from it.
+    /// Swap the node behind `node` for `incoming`, fading from one to the
+    /// other over `fade` along `curve`. `node` keeps its handle and every edge
+    /// to and from it. Hands back `incoming`'s controls; address its params
+    /// with [`set_node_params`](Self::set_node_params).
     ///
-    /// `unit` must have `node`'s input and output counts: this replaces a unit,
-    /// not a node's shape. A shape change is a remove and an insert.
-    ///
-    /// The fade needs a running unit of the same latency to fade from; without
-    /// one (the node not committed yet, or a latency change) the new unit
-    /// lands as a plain swap on the next commit. And it can be refused: while
-    /// the graph re-prepares, with the unit handed back
+    /// The fade needs a running node whose shape `incoming`'s fits (ports,
+    /// latency, in-place acceptance, event resolution and capacity, declared
+    /// params); without one (the node not committed yet, or a shape change)
+    /// `incoming` lands as a plain swap on the next commit. And it can be
+    /// refused: while the graph re-prepares, with `incoming` handed back
     /// ([`ReplaceRefused::Busy`], retry after the re-prepare resumes), and for
     /// good on a poisoned graph. Swap the captured controls only on `Ok` —
     /// [`crossfade_audio_node`](crate::graph::crossfade_audio_node) does all
-    /// of this, with the incoming unit's captured controls.
-    pub fn replace(
+    /// of this, re-capturing from `incoming`.
+    pub fn replace<N: tutti_graph::IntoNode>(
         &mut self,
         node: AudioNode,
-        unit: Box<dyn AudioUnit>,
+        incoming: N,
         fade: Seconds,
         curve: CrossfadeCurve,
-    ) -> Result<(), ReplaceRefused> {
-        self.write().replace(node, unit, fade, curve)
+    ) -> Result<N::Controls, ReplaceRefused<N>> {
+        self.write().replace(node, incoming, fade, curve)
     }
 
-    /// Write `value` to `node`'s scalar param `param`, through the node's own
-    /// settings ring, drained at the start of its next block — on every graph,
-    /// including a [`headless`](Self::headless) one. Not by mutating the node.
+    /// Write `value` to `node`'s scalar param `param`, through the node's
+    /// [`ParamSet`](tutti_graph::ParamSet) (its controls, addressed with
+    /// [`set_node_params`](Self::set_node_params)): the cell it reads at the
+    /// start of its next block — on every graph, including a
+    /// [`headless`](Self::headless) one — and the value a fork starts from.
+    /// A node without the param takes nothing.
     pub fn set_param(&mut self, node: AudioNode, param: UnitParam, value: f32) {
         self.write().set_param(node, param, value);
-    }
-
-    /// Run `f` on the unit behind `node`, for inspection: `None` if `node` is
-    /// not in the graph.
-    ///
-    /// The node's shadow — never the unit the audio thread runs: a copy
-    /// isolated when the unit was inserted, with every
-    /// [`set_param`](Self::set_param) applied since, never processed. So it is
-    /// for tests and diagnostics that probe a unit's construction (its ports,
-    /// a LUT baked in when it was built), not a way to reach live state. A
-    /// host that drives a node keeps the handles it captured at insertion;
-    /// see [`capture`](crate::graph::capture). `None` for the engine's beat
-    /// generator, which is not an `AudioUnit`.
-    pub fn inspect<R>(&self, node: AudioNode, f: impl FnOnce(&dyn AudioUnit) -> R) -> Option<R> {
-        self.read().inspect(node, f)
     }
 
     // --- Edges ---
@@ -444,7 +389,7 @@ impl AudioGraphRes {
     // --- Param modulation ---
 
     /// Whether `node` declares `param` modulatable by the graph (design doc
-    /// 013 item 6): a unit with a `ParamFeed` that lists it. False for a node
+    /// 013 item 6): its shape lists it among its params. False for a node
     /// not in the graph.
     pub fn declares_param(&self, node: AudioNode, param: UnitParam) -> bool {
         self.read().declares_param(node, param)
@@ -533,9 +478,9 @@ impl AudioGraphRes {
         self.read().node_outputs(node)
     }
 
-    /// The latency `node` reports: the shape the editor holds, probed when
-    /// the unit was inserted (at the graph's rate, rounded to the nearest
-    /// frame) and moved since only by a hosted plugin's latency change.
+    /// The latency `node` reports: the shape the editor holds, read when the
+    /// node was inserted (prepared at the graph's rate) and moved since only
+    /// by a hosted plugin's latency change.
     pub fn node_latency(&self, node: AudioNode) -> Samples {
         self.read().node_latency(node)
     }
@@ -583,7 +528,7 @@ impl AudioGraphRes {
 
     /// A live duplicate of the whole graph that shares no state with it,
     /// rendered through its own [`AudioSide`]: `Editor::fork`, each node
-    /// forked from its shadow — what an export renders from (offline, through
+    /// forked from its own fork source — what an export renders from (offline, through
     /// [`export`](Self::export)), so a test can check that a control write
     /// reaches it. `None` when a node cannot be forked.
     #[cfg(test)]
@@ -592,7 +537,7 @@ impl AudioGraphRes {
     }
 
     /// Record the value a fork of `node` starts `param` at, without touching
-    /// the live unit: the node's shadow, which its forks clone. For a param
+    /// the live node: its `ParamSet`'s authored value. For a param
     /// the modulation driver owns: live, the driver writes `base + Σ layers`
     /// into the node's cell every frame; a fork is not driven by it and must
     /// carry the authored base.
@@ -732,8 +677,8 @@ mod tests {
     #[test]
     fn every_source_reads_back_as_written() {
         let mut graph = AudioGraphRes::headless(1, 2);
-        let stereo = graph.insert(Const::frame(&[1.0, 2.0]));
-        let sink = graph.insert(Through::mono());
+        let (stereo, _) = graph.insert(Const::frame(&[1.0, 2.0]));
+        let (sink, _) = graph.insert(Through::mono());
         for source in [
             GraphSource::Node(stereo, 1),
             GraphSource::Node(stereo, 0),
@@ -754,7 +699,7 @@ mod tests {
     #[test]
     fn removing_a_node_twice_is_a_no_op() {
         let mut graph = AudioGraphRes::headless(0, 1);
-        let node = graph.insert(Const::mono(1.0));
+        let (node, _) = graph.insert(Const::mono(1.0));
         assert!(graph.contains(node));
         assert!(graph.remove(node));
         assert!(!graph.contains(node));

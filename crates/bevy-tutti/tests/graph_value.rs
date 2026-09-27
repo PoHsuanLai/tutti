@@ -40,20 +40,11 @@ fn app() -> App {
     app
 }
 
-/// Add a node to the graph and bind an entity to it.
-fn spawn_node<U: tutti_core::AudioUnit + 'static>(app: &mut App, unit: U) -> Entity {
-    let id = {
-        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        graph.insert(unit)
-    };
-    app.world_mut().spawn(id).id()
-}
-
-/// [`spawn_node`] for a native graph node, its controls dropped.
-fn spawn_graph<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
+/// Add a node to the graph and bind an entity to it, its controls dropped.
+fn spawn_node<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
     let (id, _controls) = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        graph.insert_node(node)
+        graph.insert(node)
     };
     app.world_mut().spawn(id).id()
 }
@@ -77,7 +68,7 @@ fn live(app: &App) -> &tutti_types::graph::Topology {
 fn a_declaration_becomes_an_edge_in_the_value() {
     let mut app = app();
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-    let sink = spawn_graph(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
+    let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
         .entity_mut(sink)
         .insert(PortSources::silent().with(0, PortSource::node(osc)));
@@ -175,11 +166,11 @@ fn an_imperative_engine_write_is_repaired_from_the_value() {
     let mut app = app();
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
     let other = spawn_node(&mut app, Osc::sine(Hz(880.0)));
-    let tampered = spawn_graph(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
+    let tampered = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     // A second, entirely unrelated sink. Editing *this* one is what provokes the
     // rebuild, so the repair below is not the pass merely revisiting the
     // declaration it was asked about.
-    let bystander = spawn_graph(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
+    let bystander = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
         .entity_mut(tampered)
         .insert(PortSources::silent().with(0, PortSource::node(osc)));
@@ -271,7 +262,7 @@ fn an_imperative_engine_write_is_repaired_from_the_value() {
 fn removing_the_component_without_despawning_takes_the_node_out_of_the_value() {
     let mut app = app();
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-    let sink = spawn_graph(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
+    let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
         .entity_mut(sink)
         .insert(PortSources::silent().with(0, PortSource::node(osc)));
@@ -316,7 +307,7 @@ fn removing_the_component_without_despawning_takes_the_node_out_of_the_value() {
 fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key() {
     let mut app = app();
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-    let sink = spawn_graph(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
+    let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
         .entity_mut(sink)
         .insert(PortSources::silent().with(0, PortSource::node(osc)));
@@ -328,7 +319,11 @@ fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key() {
     {
         let world = app.world_mut();
         let mut commands = world.commands();
-        bevy_tutti::graph::crossfade_audio_node(&mut commands, osc, Box::new(Osc::sine(Hz(880.0))));
+        bevy_tutti::graph::crossfade_audio_node(
+            &mut commands,
+            osc,
+            tutti_graph::ForkByClone(Osc::sine(Hz(880.0))),
+        );
     }
     app.world_mut().flush();
     app.update();
@@ -375,7 +370,7 @@ fn the_latency_plan_shrinks_when_the_latency_bearing_node_leaves() {
     // dry channel must pre-roll to match, which is the whole figure.
     let dry = spawn_node(&mut app, Const::mono(1.0));
     let src = spawn_node(&mut app, Const::mono(1.0));
-    let lim = spawn_graph(
+    let lim = spawn_node(
         &mut app,
         LimiterNode::with_channels(ChannelLayout::MONO, Db(-1.0), Db(-0.3)),
     );
@@ -437,7 +432,7 @@ fn many_spawns_in_one_frame_coalesce_into_one_commit() {
         .collect();
     // One declaration, so the wire pass has something to do and the value is
     // built rather than skipped by the dirty gate.
-    let sink = spawn_graph(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
+    let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
         .entity_mut(sink)
         .insert(PortSources::silent().with(0, PortSource::node(spawned[0])));
@@ -474,7 +469,7 @@ fn many_spawns_in_one_frame_coalesce_into_one_commit() {
 fn an_entity_whose_node_has_not_arrived_is_absent_rather_than_a_placeholder() {
     let mut app = app();
     let pending = app.world_mut().spawn_empty().id();
-    let sink = spawn_graph(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
+    let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
         .entity_mut(sink)
         .insert(PortSources::silent().with(0, PortSource::node(pending)));
@@ -520,7 +515,7 @@ fn the_value_the_adapter_builds_validates() {
     let mut app = app();
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
     // Two inputs, one declared: port 1 is undeclared, which is legal.
-    let sink = spawn_graph(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
+    let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
         .entity_mut(sink)
         .insert(PortSources::silent().with(0, PortSource::node(osc)));
@@ -567,7 +562,7 @@ fn the_value_the_adapter_builds_validates() {
 fn a_rebind_moves_the_wire_though_the_value_is_unchanged() {
     let mut app = app();
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-    let sink = spawn_graph(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
+    let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
         .entity_mut(sink)
         .insert(PortSources::silent().with(0, PortSource::node(osc)));
@@ -577,7 +572,7 @@ fn a_rebind_moves_the_wire_though_the_value_is_unchanged() {
     let sink_id = node_id(&app, sink);
 
     // Same entity, a different node of the same shape.
-    let second = {
+    let (second, ()) = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         graph.insert(Osc::sine(Hz(880.0)))
     };

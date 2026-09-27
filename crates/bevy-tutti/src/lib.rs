@@ -17,7 +17,7 @@
 //! use tutti_nodes::testing::Osc;
 //!
 //! fn build_chain(mut commands: Commands) {
-//!     let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
+//!     let osc = commands.spawn_audio_node(ForkByClone(Osc::sine(Hz(440.0)))).id();
 //!     // Wiring is *declared*, never called: the resource names what feeds each
 //!     // global output channel, so two nodes cannot both claim the master.
 //!     commands.insert_resource(MasterSources::mono_from(osc));
@@ -78,7 +78,7 @@
 //!     // `try_send` — the motion queue is bounded, so a send can fail and the
 //!     // caller decides what that means.
 //!     let _ = transport.motion.try_send(MotionEvent::Play);
-//!     let node = graph.insert(tutti_nodes::testing::Osc::sine(tutti_core::Hz(440.0)));
+//!     let (node, _) = graph.insert(tutti_nodes::testing::Osc::sine(tutti_core::Hz(440.0)));
 //!     // Staged, not committed: `commit_graph` publishes the frame's edits once.
 //!     dirty.0 = true;
 //!     let _ = node;
@@ -118,14 +118,14 @@ pub mod soundfont;
 
 /// The polyphonic synth, re-exported whole from `tutti-polysynth`. There is no
 /// adapter code: `PolySynth` is a native graph node spawned with
-/// `spawn_graph_node`, its one ECS touchpoint the `GraphNode` registration in
+/// `spawn_audio_node`, its one ECS touchpoint the `GraphNode` registration in
 /// `graph/events.rs` (its params by address, so an `AudioParam` reaches it).
 #[cfg(feature = "synth")]
 pub use tutti_polysynth as polysynth;
 
 /// Spatial audio, re-exported whole from `tutti-spatial`. The only adapter
 /// code is a `GraphNode` impl per panner (`graph::events`): the VBAP /
-/// binaural panners are native graph nodes, spawned with `spawn_graph_node`
+/// binaural panners are native graph nodes, spawned with `spawn_audio_node`
 /// (the binaural one with the `hrtf` feature), and `build_vbap_mix` assembles
 /// a subgraph into a `tutti_graph::GraphBuilder`.
 #[cfg(feature = "spatial")]
@@ -140,6 +140,13 @@ pub mod export;
 pub mod engine;
 
 pub use plugin::TuttiPlugin;
+
+// What `param_graph_node!` expands to names, reachable from a host crate that
+// does not depend on `tutti-graph` itself. Not API.
+#[doc(hidden)]
+pub mod __private {
+    pub use tutti_graph::{ParamNode, ParamSet};
+}
 
 // Latency (plugin delay) compensation. Opt-in: `TuttiPlugin` does not add it,
 // because it costs a graph walk per commit and a host with no latency-reporting
@@ -167,11 +174,11 @@ pub use engine::AudioEngineState;
 /// Everything a typical host needs, in one import.
 pub mod prelude {
     pub use crate::graph::{
-        commit_graph, crossfade_audio_node, crossfade_graph_node, engine_ready, AudioConfig,
-        AudioGraphRes, AudioParam, AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes,
-        EngineNodes, GraphDirty, GraphNode, GraphReconcilePlugin, GraphReconcileSystems,
-        GraphSource, InsertAudioNode, MasterSources, MeteringRes, MetronomeRes, PortSource,
-        PortSources, PumpFinished, SpawnAudioNode, SpawnGraphNode, TransportRes,
+        commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioParam,
+        AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes, EngineNodes, GraphDirty,
+        GraphNode, GraphReconcilePlugin, GraphReconcileSystems, GraphSource, InsertAudioNode,
+        MasterSources, MeteringRes, MetronomeRes, PortSource, PortSources, PumpFinished,
+        SpawnAudioNode, TransportRes,
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,
@@ -215,10 +222,12 @@ pub mod prelude {
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::ClickState;
     pub use tutti_core::CrossfadeCurve;
+    /// A plain node's fork, said at insert: the wrappers that make any
+    /// `tutti_graph::Node` a [`crate::graph::GraphNode`].
+    pub use tutti_graph::{ForkByClone, Unforkable};
 
     pub use tutti_core::transport::{
-        beat_from_ports, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState,
-        Then, BEAT_PORTS,
+        FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState, Then,
     };
 }
 

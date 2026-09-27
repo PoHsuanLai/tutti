@@ -19,7 +19,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::entity::Entity;
 
 use bevy_tutti::graph::{
-    AudioConfig, AudioGraphRes, EventSource, GraphReconcilePlugin, SpawnGraphNode, TransportRes,
+    AudioConfig, AudioGraphRes, EventSource, GraphReconcilePlugin, SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::midi::{MidiEngineNodes, MidiRouteFallback, MidiRouteRule, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
@@ -36,7 +36,7 @@ const SAMPLE_RATE: f64 = 48_000.0;
 fn app() -> App {
     let mut app = App::new();
     let mut graph = AudioGraphRes::headless(0, 2);
-    let (input_node, _) = graph.insert_node(MidiInputNode::new(None));
+    let (input_node, _) = graph.insert(MidiInputNode::new(None));
     app.insert_resource(graph);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
@@ -65,7 +65,7 @@ fn app() -> App {
 /// A synth inserted as a graph node.
 fn synth(app: &mut App) -> Entity {
     let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
-    let entity = app.world_mut().commands().spawn_graph_node(synth).id();
+    let entity = app.world_mut().commands().spawn_audio_node(synth).id();
     app.world_mut().flush();
     entity
 }
@@ -181,7 +181,7 @@ mod routes {
         let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert_node(synth).0
+            graph.insert(synth).0
         };
         app.world_mut().entity_mut(lead).insert(node);
         app.update();

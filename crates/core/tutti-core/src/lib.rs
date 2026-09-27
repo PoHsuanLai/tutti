@@ -40,11 +40,10 @@ pub mod topology;
 
 pub mod transport;
 pub use transport::{
-    beat_from_ports, ClickNode, ClickSettings, ClickState, EnvClock, FadeOut, FrozenClock,
-    LoopRange, MetronomeMode, MotionEvent, MotionFsm, MotionState, OfflineTimeline,
-    OfflineTimelineConfig, QueueFull, RenderClock, ScheduleFull, Then, Timeline, Transport,
-    TransportClock, TransportCommand, TransportSettings, TransportState, BEAT_PORTS,
-    SCHEDULE_CAPACITY,
+    ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange, MetronomeMode,
+    MotionEvent, MotionFsm, MotionState, OfflineTimeline, OfflineTimelineConfig, QueueFull,
+    RenderClock, ScheduleFull, Then, Timeline, Transport, TransportClock, TransportCommand,
+    TransportSettings, TransportState, SCHEDULE_CAPACITY,
 };
 // The time a scheduled command names, and the engine's frame clock. Homed in
 // `tutti-types` so the graph's `Editor::schedule` and the transport's
@@ -195,8 +194,7 @@ pub mod dsp {
     //!
     //! The open question this module inherited: a `Net` node learns a param
     //! change through [`Setting`](crate::Setting), a queued message its
-    //! backend drains at the top of each `process` (on the native graph a
-    //! `Legacy` node's settings ring does the same). Measurement
+    //! backend drains at the top of each `process`. Measurement
     //! (graph plan PR 3) settled two things about it — the 256-slot queue does
     //! *not* overflow under a pumped backend (~750 drains/s against ~60
     //! writes/s), and the "~4 s overflow" is a stalled backend rather than an
@@ -256,7 +254,7 @@ pub mod dsp {
 pub use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
 pub use tutti_node::setting::Setting;
 pub use tutti_node::signal::{Signal, SignalFrame};
-pub use tutti_node::{AudioUnit, FaultLatch, ParamFeed, RenderFault, MAX_BUFFER_SIZE};
+pub use tutti_node::{AudioUnit, FaultLatch, RenderFault, MAX_BUFFER_SIZE};
 // The numeric tower the contract is generic over — the part of it consumers
 // actually name. `Sample` is the trait's own type parameter and `F32`/`F64` its
 // two instantiations (the plugin hosts really do implement `AudioUnit<F64>`);

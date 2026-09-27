@@ -322,7 +322,7 @@ mod tests {
     use tutti_core::{Beat, BeatDuration, MotionEvent, Transport};
     use tutti_core::{Engine, NodeKey, SampleRate, Samples};
     use tutti_core::{Hz, Q};
-    use tutti_graph::{Editor, Legacy, Prepare};
+    use tutti_graph::{Editor, Prepare};
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{SvfFilterNode, SvfType};
 
@@ -343,7 +343,7 @@ mod tests {
 
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(sample_rate), Samples(512)));
         let (source, filter) = (NodeKey(1), NodeKey(2));
-        ed.insert(source, "sine", Legacy::new(Osc::sine(Hz(220.0))));
+        ed.insert(source, "sine", Osc::sine(Hz(220.0)));
         ed.insert(
             filter,
             "filter",

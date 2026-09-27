@@ -437,7 +437,7 @@ mod tests {
         Node::reset(&mut node);
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
         let (hrtf, _) = g.add_with_controls(node);
-        let dry = g.add_unit(Box::new(Through::mono()));
+        let dry = g.add(Through::mono());
         g.connect_input(0, hrtf, 0);
         g.connect_input(0, hrtf, 1);
         g.connect_input(0, dry, 0);

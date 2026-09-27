@@ -7,8 +7,7 @@
 //! so the gate covers the per-buffer hot path through the nodes the engine
 //! actually ships: `EqBandNode` (over `SvfFilterNode`), `BusStripNode` and
 //! `LimiterNode`, each a native graph node. A regression in any of those — or
-//! in the executor's walk, or `Legacy`'s adapter around the oscillator —
-//! shows up here as an allocation panic.
+//! in the executor's walk — shows up here as an allocation panic.
 //!
 //! It lived in `tutti-core` while that chain was fundsp's (`sine_hz`, `pan`,
 //! `bell_hz`, `limiter_stereo`), which gated fundsp's filters rather than ours.
@@ -27,7 +26,7 @@ use assert_no_alloc::AllocDisabler;
 use tutti_core::graph::{Edge, InPort, OutPort, Source};
 use tutti_core::{ChannelLayout, Db, Engine, Hz, InterleavedMut, NodeKey, SampleRate, Samples, Q};
 use tutti_core::{MotionEvent, Transport};
-use tutti_graph::{Editor, Legacy, Prepare};
+use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, LimiterNode, SvfType};
 
@@ -42,7 +41,7 @@ fn build_engine_with_chain() -> Engine {
     let transport = Transport::new(sample_rate);
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(sample_rate), Samples(512)));
     let [osc, eq, strip, limiter] = [1, 2, 3, 4].map(NodeKey);
-    ed.insert(osc, "osc", Legacy::new(Osc::sine(Hz(440.0))));
+    ed.insert(osc, "osc", Osc::sine(Hz(440.0)));
     ed.insert(
         eq,
         "eq",

@@ -45,9 +45,8 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tutti_core::{Amplitude, AtomicF32, ChannelLayout, Pan, Param, ParamAddr, Tail, UnitParam};
+use tutti_core::{Amplitude, AtomicF32, ChannelLayout, Pan, Param, Tail, UnitParam};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
-use tutti_mod::{AtomicTarget, ModParams, ModTarget};
 
 /// The params a [`BusStripNode`] lets the graph modulate, in port order.
 pub const STRIP_PARAMS: [UnitParam; 2] = [UnitParam::Volume, UnitParam::Pan];
@@ -201,9 +200,9 @@ impl BusStripNode {
 
     /// Atomic handle for the UI / automation to share the volume cell.
     ///
-    /// Untyped by the shape of the contract, not by omission: this is what
-    /// [`ModParams::mod_target`] hands to an [`AtomicTarget`], and that boundary
-    /// speaks `Arc<AtomicF32>`. To *read* the value, use
+    /// Untyped by the shape of the contract, not by omission: this is the
+    /// cell the strip's `ParamSet` addresses as `Volume`, and a control-rate
+    /// route's target speaks `Arc<AtomicF32>`. To *read* the value, use
     /// [`volume_value`](Self::volume_value), which keeps the unit.
     pub fn volume(&self) -> Arc<tutti_core::AtomicF32> {
         self.volume.as_atomic()
@@ -498,23 +497,6 @@ impl IntoNode for BusStripNode {
 
     fn into_parts(self) -> NodeParts<ParamSet> {
         tutti_graph::param_parts(self)
-    }
-}
-
-impl ModParams for BusStripNode {
-    fn mod_target(
-        &self,
-        p: ParamAddr,
-        base: f32,
-        min: f32,
-        max: f32,
-    ) -> Option<Arc<dyn ModTarget>> {
-        let atomic = match p {
-            ParamAddr::Unit(UnitParam::Volume) => self.volume(),
-            ParamAddr::Unit(UnitParam::Pan) => self.pan(),
-            _ => return None,
-        };
-        Some(Arc::new(AtomicTarget::with_mirror(base, min, max, atomic)))
     }
 }
 

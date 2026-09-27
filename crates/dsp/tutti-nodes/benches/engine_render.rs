@@ -53,7 +53,7 @@ use tutti_core::graph::{Edge, InPort, OutPort, Source};
 use tutti_core::{ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate};
 use tutti_core::{Db, Hz, Q};
 use tutti_core::{Samples, Transport};
-use tutti_graph::{Editor, Legacy, Prepare, Unforkable};
+use tutti_graph::{Editor, Prepare, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
 
@@ -71,14 +71,14 @@ fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey, out: u16) {
 }
 
 /// A rolling transport driving a three-node chain (this crate's nodes: the
-/// oscillator through `Legacy`, the EQ and strip native), the shape `tests/rt_no_alloc_engine.rs` already pins
+/// oscillator, the EQ and the strip), the shape `tests/rt_no_alloc_engine.rs` already pins
 /// as allocation-free, on `outputs` global outputs (the strip's pair,
 /// repeated).
 fn chain_engine(outputs: usize) -> Engine {
     let transport = Transport::new(SR);
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
     let [osc, eq, strip] = [1, 2, 3].map(NodeKey);
-    ed.insert(osc, "osc", Legacy::new(Osc::sine(Hz(440.0))));
+    ed.insert(osc, "osc", Osc::sine(Hz(440.0)));
     ed.insert(
         eq,
         "eq",
@@ -110,7 +110,7 @@ fn chain_engine(outputs: usize) -> Engine {
 }
 
 /// `depth` filters in series off one source — the "how many nodes" axis:
-/// this crate's `Osc` (through `Legacy`) and `SvfFilterNode` (native).
+/// this crate's `Osc` and `SvfFilterNode`.
 fn depth_engine(depth: usize) -> Engine {
     depth_graph_engine(depth, true)
 }
@@ -123,8 +123,6 @@ fn render(engine: &Engine, buf: &mut [f32], layout: ChannelLayout) {
 /// elem/s at 64 frames is materially below elem/s at 1024, the difference is
 /// what the engine pays *per callback* rather than per sample — the prologue
 /// (installing commits, the transport walk, the fold) rather than the DSP.
-/// The chain's units are `Legacy`, so every block renders chunk-major, in
-/// 64-frame graph blocks.
 fn bench_block_size(c: &mut Criterion) {
     let mut group = c.benchmark_group("block_size");
     let engine = chain_engine(2);
@@ -197,7 +195,7 @@ fn bench_transport_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-// ---- node contract: `Legacy` against native (doc 013) -----------------------
+// ---- this crate's nodes against a reference pair (doc 013) -------------------
 //
 // `backend/<runtime>/<depth>/<frames>`: the `nodes` shape — a source into
 // `depth` filters in series, stereo device — through the whole `Engine`
@@ -205,15 +203,15 @@ fn bench_transport_overhead(c: &mut Criterion) {
 // (A `net` row ran fundsp's `Net` through the engine until doc 013 Phase 3
 // PR 15 removed that backend.)
 //
-// - `graph-legacy`: this crate's own nodes — `Osc` through
-//   `tutti_graph::Legacy`, which copies in and out of fundsp buffers, and
-//   `SvfFilterNode`, a native node since it was ported (before that it ran
-//   through `Legacy` too, so figures from then price the adapter on every
-//   filter);
-// - `graph-native`: the native executor running nodes written against `Io`
-//   (a phase-accumulator sine and an SVF lowpass with fundsp's `FixedSvf`
-//   arithmetic, the `graph_render` bench's native pair): a reference filter
-//   of the same order of work as `SvfFilterNode`, for the runtime's cost.
+// - `graph-crate`: this crate's own nodes, `Osc` and `SvfFilterNode`. (The
+//   row was `graph-legacy` while `Osc` ran through `tutti_graph::Legacy`,
+//   which copied in and out of fundsp buffers, and before `SvfFilterNode`
+//   was ported, through `Legacy` too: figures from then price the adapter.)
+// - `graph-reference`: nodes written for this bench against `Io` (a
+//   phase-accumulator sine and an SVF lowpass with fundsp's `FixedSvf`
+//   arithmetic, the `graph_render` bench's pair): a reference filter of the
+//   same order of work as `SvfFilterNode`, for the runtime's cost. (It was
+//   `graph-native`.)
 //
 // The graph engines are prepared for 512-frame blocks, so every row here is
 // one executor block per device block.
@@ -308,17 +306,17 @@ impl tutti_graph::Node for NativeLowpass {
     }
 }
 
-/// The `nodes` shape on the native graph: `legacy` runs this crate's own
-/// units through `Legacy`, otherwise the native pair.
-fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
+/// The `nodes` shape on the graph: `ours` runs this crate's own nodes,
+/// otherwise the reference pair.
+fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
     use tutti_core::graph::{Edge, InPort, OutPort, Source};
     use tutti_core::NodeKey;
     let (mut ed, exec) = tutti_graph::Editor::new(tutti_graph::Prepare::new(
         SampleRate(SR),
         tutti_core::Samples(512),
     ));
-    let src: Box<dyn tutti_graph::Node> = if legacy {
-        tutti_graph::IntoNode::into_node(tutti_graph::Legacy::new(Osc::sine(Hz(440.0)))).0
+    let src: Box<dyn tutti_graph::Node> = if ours {
+        tutti_graph::IntoNode::into_node(Osc::sine(Hz(440.0))).0
     } else {
         Box::new(NativeSine {
             hz: 440.0,
@@ -330,7 +328,7 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
     let mut last = NodeKey(0);
     for i in 0..depth {
         let cutoff = 500.0 + (i as f32) * 7.0;
-        let f: Box<dyn tutti_graph::Node> = if legacy {
+        let f: Box<dyn tutti_graph::Node> = if ours {
             tutti_graph::IntoNode::into_node(SvfFilterNode::<f64>::new(
                 SvfType::LowPass,
                 Hz(cutoff),
@@ -363,14 +361,14 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
     engine
 }
 
-/// `Legacy` units against native nodes, through the whole engine, on the
+/// This crate's nodes against the reference pair, through the whole engine, on the
 /// `nodes` shape. See the section comment above for what each row runs.
 fn bench_backend(c: &mut Criterion) {
     let mut group = c.benchmark_group("backend");
     for depth in [1usize, 8, 128] {
         let engines = [
-            ("graph-legacy", depth_graph_engine(depth, true)),
-            ("graph-native", depth_graph_engine(depth, false)),
+            ("graph-crate", depth_graph_engine(depth, true)),
+            ("graph-reference", depth_graph_engine(depth, false)),
         ];
         for (name, engine) in &engines {
             for frames in [64usize, 512] {

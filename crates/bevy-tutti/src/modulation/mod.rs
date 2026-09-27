@@ -8,7 +8,7 @@
 //! ```rust
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
-//! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, SpawnGraphNode, TransportRes};
+//! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode, TransportRes};
 //! use bevy_tutti::modulation::*;
 //! use bevy_tutti::AudioEngineState;
 //! use tutti_core::transport::Transport;
@@ -36,7 +36,7 @@
 //! let drive = app
 //!     .world_mut()
 //!     .commands()
-//!     .spawn_graph_node(DistortionNode::new(ShapeKind::Tanh, 5.0))
+//!     .spawn_audio_node(DistortionNode::new(ShapeKind::Tanh, 5.0))
 //!     .insert(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0))
 //!     .id();
 //! app.world_mut().flush();
@@ -160,7 +160,7 @@
 //! use tutti_nodes::{LfoNode, LfoShape};
 //!
 //! fn spawn_lfo(mut commands: Commands) {
-//!     commands.spawn_graph_node(LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration(1.0)));
+//!     commands.spawn_audio_node(LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration(1.0)));
 //! }
 //!
 //! let mut app = App::new();
@@ -188,15 +188,12 @@
 //!
 //! # What the host must supply
 //!
-//! For a native node whose controls are a `tutti_graph::ParamSet` — every
-//! node in `tutti-nodes`, the synth — nothing: `spawn_graph_node` captures
-//! its params by address, and a route on any of them resolves.
-//!
-//! An `AudioUnit` of the host's own, inserted through `spawn_audio_node`,
-//! has no address book: resolving its params needs its concrete type (see
-//! [`target`]), so the app registers it with [`ModTargetRegistry::register`]
-//! before it spawns one, since the registry is read once per node, as it is
-//! inserted.
+//! For a node whose controls are a `tutti_graph::ParamSet` — every node in
+//! `tutti-nodes`, the synth, and a host's own `ParamNode` registered with
+//! [`param_graph_node!`](crate::param_graph_node) — nothing:
+//! `spawn_audio_node` captures its params by address, and a route on any of
+//! them resolves. A sink no node owns (a plugin's per-block target) the host
+//! supplies with [`ModTargetRegistry::insert_target`] (see [`target`]).
 
 pub mod audio_rate;
 pub mod components;

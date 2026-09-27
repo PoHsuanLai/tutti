@@ -76,13 +76,6 @@ use crate::spec::EventOut;
 /// Most params one node can declare modulatable.
 pub const MAX_PARAM_PORTS: usize = 8;
 
-// A `Legacy` unit declares its feed's params as its ports, so a feed can
-// never carry more than a shape can declare.
-const _: () = assert!(
-    tutti_node::MAX_FED_PARAMS == MAX_PARAM_PORTS,
-    "a ParamFeed and a Shape bound modulatable params alike"
-);
-
 /// Most sources one param port can sum. A spec past it is refused
 /// ([`GraphInvalid::TooManyParamSources`](crate::GraphInvalid::TooManyParamSources)):
 /// the per-source ramp state lives in a fixed array, so the audio thread never

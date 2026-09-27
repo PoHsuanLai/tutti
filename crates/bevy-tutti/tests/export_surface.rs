@@ -28,7 +28,6 @@ use bevy_tutti::graph::{AudioConfig, AudioGraphRes};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
 };
-use tutti_graph::Legacy;
 use tutti_nodes::testing::{Const, Sink};
 use tutti_types::graph::{OutPort, Source};
 
@@ -36,7 +35,7 @@ use tutti_types::graph::{OutPort, Source};
 /// of it (a `Net` clone, a native fork) has something to render.
 fn graph_with_one_node_on() -> (AudioGraphRes, tutti_core::AudioNode) {
     let mut graph = AudioGraphRes::headless(0, 2);
-    let node = graph.insert(Const::mono(0.5));
+    let (node, _) = graph.insert(Const::mono(0.5));
     graph.set_outputs_from(node);
     (graph, node)
 }
@@ -214,7 +213,7 @@ fn an_unrenderable_node_reports_a_failure() {
     // `Sink::mono()` consumes one channel and produces nothing.
     let orphan = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let id = graph.insert(Sink::mono());
+        let (id, _) = graph.insert(Sink::mono());
         app.world_mut().spawn(id).id()
     };
 
@@ -330,7 +329,7 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
         let graph: &mut RenderGraph = prepared.graph;
         let editor = graph.editor_mut();
         let key = prepared_key;
-        editor.insert(key, "test:level", Legacy::pure(Const::mono(level)));
+        editor.insert(key, "test:level", Const::mono(level));
         for out in editor.spec_mut().topology.outputs.iter_mut() {
             *out = Source::Node(OutPort { node: key, port: 0 });
         }

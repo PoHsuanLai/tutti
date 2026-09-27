@@ -21,7 +21,7 @@ use tutti::prelude::*;
 
 // A graph, rendered with no device and no Bevy.
 let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+let tone = g.add(Osc::sine(Hz(440.0)));
 g.pipe_output(tone);
 // The editor stays on the control thread; the executor goes to the engine.
 let (mut editor, executor) = g

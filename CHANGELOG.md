@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`Legacy` is deleted; every graph node is a `tutti_graph::Node`**
+  (design doc 013, "Legacy deleted"). **Breaking.** An `AudioUnit` can no
+  longer go into a graph: a host's own node implements `Node` (and
+  `ParamNode` for params) and says how it forks (`ForkByClone`,
+  `Unforkable`, `param_parts`, or its own `IntoNode`). The engine renders
+  every block in one pass (no 64-frame chunk-major mode).
+
+  | Was | Now |
+  |---|---|
+  | `tutti_graph::{Legacy, LegacyControls, LegacyForkHook, Delivery, LEGACY_CHUNK, LEGACY_SETTINGS_CAPACITY}`, `Shape::legacy`, `Plan::has_legacy` | removed: implement `Node` |
+  | `GraphBuilder::{add_unit, add_pure_unit, chain_unit}` | `GraphBuilder::{add, chain, add_with_controls}` over an `IntoNode` |
+  | `contract::{Row::legacy, IsolateRow, assert_isolate_snapshots}` | `contract::NativeIsolateRow` (a node's fork snapshot) |
+  | `EnvClock`, `BEAT_PORTS`, `beat_from_ports`, `TransportClock::split_beat`; bevy `EngineNodes::clock` | removed: a node reads the beat from its block's `Env` (`Env::for_each_beat`, `Env::transport_at`) |
+  | `ParamFeed`, `AudioUnit::{param_feed, param_base}` | removed: a param port is `Io::param(k)` |
+  | `impl ModParams` for the tutti-nodes nodes and `PolySynth` (`mod_params.rs`) | a route resolves to the node's `ParamSet` cell. The compressor's makeup is addressed only as `UnitParam::GainDb`; a route on `Makeup` does not bind. Plugins keep `ModParams` |
+  | bevy: `spawn_audio_node` / `insert_audio_node` / `crossfade_audio_node` over an `AudioUnit`, and the `spawn_graph_node` / `crossfade_graph_node` / `SpawnGraphNode` twins | one family, `spawn_audio_node` / `insert_audio_node` / `crossfade_audio_node` over `N: GraphNode` |
+  | bevy: `AudioGraphRes::{insert (AudioUnit), insert_node, insert_boxed, replace (AudioUnit), replace_node, inspect}`, `Boxed` | `AudioGraphRes::insert<N: IntoNode>` and `replace<N: IntoNode>`; `replace_plugin` crossfades when the shapes fit, like any node |
+  | bevy: `CapturedControls::capture(&dyn AudioUnit)`, `ModTargetRegistry::register::<T>()` | `CapturedControls::for_params` / `for_plugin`; `ModTargetRegistry::insert_target` |
+  | bevy: `param_graph_node!` crate-private | exported (`bevy_tutti::param_graph_node!(MyNode)`), the one line a host writes for its own `ParamNode`; `ForkByClone` and `Unforkable` in the prelude |
+
 - **Every node is a native graph node** (design doc 013, "Items 8 and 9: the
   per-node port"; the rest of tutti-nodes, tutti-spatial, tutti-sampler,
   the click, the mic and the instruments). **Breaking.** No node in the

@@ -38,7 +38,7 @@
 //! };
 //!
 //! let mut graph = AudioGraphRes::headless(0, 2);
-//! let node = graph.insert(Const::mono(0.5));
+//! let (node, _) = graph.insert(Const::mono(0.5));
 //! graph.set_outputs_from(node);
 //!
 //! let mut app = App::new();

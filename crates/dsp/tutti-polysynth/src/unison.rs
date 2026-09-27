@@ -72,8 +72,8 @@ pub struct UnisonEngine {
     voices: [UnisonVoiceParams; MAX_UNISON_VOICES],
     rng_state: u32,
     /// Control-rate-modulatable mirrors of `config.detune_cents` /
-    /// `config.stereo_spread`. A modulator writes these (via
-    /// [`ModParams`](crate::ModParams)); [`sync_from_atomics`](Self::sync_from_atomics),
+    /// `config.stereo_spread`. A modulator writes these (through the
+    /// synth's `ParamSet`); [`sync_from_atomics`](Self::sync_from_atomics),
     /// called once per block, folds any change back into `config` + a
     /// recompute. Detune/spread only affect per-voice params on recompute (not
     /// per-sample), so a block-rate sync is exact.

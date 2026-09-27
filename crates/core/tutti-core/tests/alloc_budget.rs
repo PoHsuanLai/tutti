@@ -45,7 +45,7 @@ use tutti_core::dsp::Net;
 use tutti_core::Hz;
 use tutti_core::{AudioUnit, Engine, InterleavedMut};
 use tutti_core::{ChannelLayout, SampleRate, Samples, Transport};
-use tutti_graph::{Editor, Legacy, Prepare};
+use tutti_graph::{Editor, ForkByClone, Prepare};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::NodeKey;
 
@@ -198,8 +198,8 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
 /// engine, and so the two cannot drift apart unnoticed: if `rt_no_alloc` were
 /// ever deleted or made inert, this still fails.
 ///
-/// The chain is the native graph's (a sine and 16 gains, each a `Legacy`
-/// node, so the engine renders chunk-major): `Engine` renders nothing else
+/// The chain is the native graph's (a sine and 16 gains): `Engine` renders
+/// nothing else
 /// since doc 013 Phase 3 PR 15. The build and commit budgets above stay on
 /// `Net`, which is still what `topology::compile` builds.
 ///
@@ -210,9 +210,9 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
 fn rendering_blocks_allocates_nothing() {
     let transport = Transport::new(48_000.0);
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
-    ed.insert(NodeKey(0), "sine", Legacy::new(Sine::new(Hz(440.0))));
+    ed.insert(NodeKey(0), "sine", ForkByClone(Sine::new(Hz(440.0))));
     for i in 1..=16u64 {
-        ed.insert(NodeKey(i), "gain", Legacy::new(Gain(0.5 + i as f32 * 1e-3)));
+        ed.insert(NodeKey(i), "gain", ForkByClone(Gain(0.5 + i as f32 * 1e-3)));
         ed.spec_mut().topology.edges.insert(
             InPort {
                 node: NodeKey(i),

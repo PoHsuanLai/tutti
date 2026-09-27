@@ -1,8 +1,7 @@
 //! The node contract: [`Node`], and everything its four methods name.
 //!
-//! Doc 013 §2. This is deliberately *smaller* than `tutti_node::AudioUnit`,
-//! and it sits beside it rather than replacing it — the [`Legacy`](crate::Legacy)
-//! adapter runs every existing `AudioUnit` through this trait unmodified.
+//! Doc 013 §2. This is deliberately *smaller* than fundsp's `AudioUnit`,
+//! which it replaces for every node in the graph.
 //!
 //! What it drops, and why each drop is safe:
 //!
@@ -111,15 +110,6 @@ pub struct Shape {
     /// refuses an event edge that requires a finer resolution than its sink
     /// declares (see [`GraphSpec::require_resolution`](crate::GraphSpec::require_resolution)).
     pub event_resolution: Resolution,
-    /// Whether this node is a [`Legacy`](crate::Legacy) `AudioUnit`, which
-    /// may read time **out of band**: a shared timeline polled on every
-    /// 64-frame call rather than [`Env`]. A plan holding one
-    /// ([`Plan::has_legacy`](crate::Plan::has_legacy)) must be rendered in
-    /// blocks of at most [`LEGACY_CHUNK`](crate::LEGACY_CHUNK) with the
-    /// timeline moved between them, as `Net` rendered every node (see the
-    /// `legacy` module docs, `src/legacy.rs`). Set only by `Legacy`; a
-    /// native node reads [`Env`] and leaves it `false`.
-    pub legacy: bool,
     /// The params this node lets the graph modulate, in **port order** —
     /// the index [`Io::param`](crate::Io::param) and
     /// [`Node::param_base`] take (design doc 013 item 6; see
@@ -185,7 +175,6 @@ impl Shape {
             tail: Tail::None,
             in_place: false,
             event_resolution: Resolution::Sample,
-            legacy: false,
             params: ParamPorts::NONE,
         }
     }
@@ -289,14 +278,6 @@ impl Shape {
     #[must_use]
     pub const fn with_params(mut self, params: &[UnitParam]) -> Self {
         self.params = ParamPorts::new(params);
-        self
-    }
-
-    /// This shape, marked [`legacy`](Self::legacy). `Legacy`'s; a native
-    /// node has no reason to call it.
-    #[must_use]
-    pub const fn with_legacy(mut self) -> Self {
-        self.legacy = true;
         self
     }
 }
@@ -594,8 +575,8 @@ impl Transport {
     /// rate), moving at `tempo`. A host that counts frames derives its beat
     /// in closed form from the same origin, never by accumulating a
     /// per-frame step, so frame 96 000 at 90 BPM / 48 kHz is beat 3 to the
-    /// bit; a node that walks the block frame by frame (tutti-core's
-    /// `EnvClock`, [`Env::transport_at`]) continues the host's
+    /// bit; a node that walks the block frame by frame
+    /// ([`Env::for_each_beat`], [`Env::transport_at`]) continues the host's
     /// [`FrameClock`] from here and lands on the host's bits.
     pub const fn counted(
         playing: bool,
@@ -920,8 +901,6 @@ pub trait Node: Send + 'static {
 ///   taken at insert (the node's `Clone` shares nothing with the original);
 /// - [`Unforkable`](crate::Unforkable)`(node)` — refuses every fork that
 ///   needs it, by name ([`ForkError::NotForkable`](crate::ForkError::NotForkable));
-/// - [`Legacy`](crate::Legacy) for an `AudioUnit`, forkable when its
-///   `forkable()` is true;
 /// - its own `IntoNode`, for a node with controls or a fork of its own.
 ///
 /// ```compile_fail,E0277

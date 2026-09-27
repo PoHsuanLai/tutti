@@ -45,20 +45,12 @@ mod graph_wire {
         app
     }
 
-    /// Add a node to the graph and bind an entity to it.
-    fn spawn_node<U: tutti_core::AudioUnit + 'static>(app: &mut App, unit: U) -> Entity {
-        let id = {
-            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(unit)
-        };
-        app.world_mut().spawn(id).id()
-    }
-
-    /// [`spawn_node`] for a native graph node, its controls dropped.
-    fn spawn_graph<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
+    /// Add a node to the graph and bind an entity to it, its controls
+    /// dropped.
+    fn spawn_node<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
         let (id, _controls) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert_node(node)
+            graph.insert(node)
         };
         app.world_mut().spawn(id).id()
     }
@@ -170,7 +162,7 @@ mod graph_wire {
         );
 
         // The node turns up. The declaration is untouched.
-        let id = {
+        let (id, ()) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.insert(Osc::sine(Hz(440.0)))
         };
@@ -257,7 +249,7 @@ mod graph_wire {
         );
 
         // Same entity, different node.
-        let second = {
+        let (second, ()) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.insert(Osc::sine(Hz(880.0)))
         };
@@ -338,7 +330,7 @@ mod graph_wire {
     fn a_hand_wired_master_behind_a_latent_node_is_not_a_disagreement() {
         let mut app = app();
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-        let lim = spawn_graph(&mut app, latent());
+        let lim = spawn_node(&mut app, latent());
         let (osc_id, lim_id) = (node_id(&app, osc), node_id(&app, lim));
         // Declared: the limiter's input, so the rebuild runs this frame.
         app.world_mut()
@@ -385,7 +377,7 @@ mod graph_wire {
     fn a_hand_wired_port_behind_a_latent_node_is_not_a_disagreement() {
         let mut app = app();
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-        let lim = spawn_graph(&mut app, latent());
+        let lim = spawn_node(&mut app, latent());
         let sink = spawn_node(&mut app, Through::new(ChannelLayout::STEREO));
         let (osc_id, lim_id, sink_id) =
             (node_id(&app, osc), node_id(&app, lim), node_id(&app, sink));
@@ -648,7 +640,7 @@ mod graph_wire {
 
         let mut app = app();
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-        let lim = spawn_graph(
+        let lim = spawn_node(
             &mut app,
             LimiterNode::with_channels(ChannelLayout::MONO, Db(0.0), Db(0.0)),
         );
@@ -813,19 +805,12 @@ mod param_mod_wire {
         app
     }
 
-    fn spawn_node<U: tutti_core::AudioUnit + 'static>(app: &mut App, unit: U) -> Entity {
-        let id = {
-            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(unit)
-        };
-        app.world_mut().spawn(id).id()
-    }
-
-    /// [`spawn_node`] for a native graph node, its controls dropped.
-    fn spawn_graph<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
+    /// Add a node to the graph and bind an entity to it, its controls
+    /// dropped.
+    fn spawn_node<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
         let (id, _controls) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert_node(node)
+            graph.insert(node)
         };
         app.world_mut().spawn(id).id()
     }
@@ -839,7 +824,7 @@ mod param_mod_wire {
     #[test]
     fn audio_ports_and_a_param_modulation_reach_the_graph_together() {
         let mut app = app();
-        let target = spawn_graph(&mut app, DistortionNode::new(ShapeKind::Tanh, 5.0));
+        let target = spawn_node(&mut app, DistortionNode::new(ShapeKind::Tanh, 5.0));
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let lfo = spawn_node(&mut app, Osc::sine(Hz(2.0)));
         let (target_id, osc_id, lfo_id) = (
@@ -893,7 +878,7 @@ mod param_mod_wire {
     #[test]
     fn redeclaring_audio_does_not_disturb_the_param_modulation() {
         let mut app = app();
-        let target = spawn_graph(&mut app, DistortionNode::new(ShapeKind::Tanh, 5.0));
+        let target = spawn_node(&mut app, DistortionNode::new(ShapeKind::Tanh, 5.0));
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let other = spawn_node(&mut app, Osc::sine(Hz(220.0)));
         let lfo = spawn_node(&mut app, Osc::sine(Hz(2.0)));

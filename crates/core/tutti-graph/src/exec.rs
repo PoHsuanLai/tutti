@@ -95,8 +95,8 @@
 //!   skip would save no work downstream).
 //!
 //! A node that makes no silence claim ([`Status::Modified`]) is never
-//! parked: that is how `Legacy` stays callable for a unit fed out of band
-//! (see `src/legacy.rs`).
+//! parked: that is how a node fed out of band (a synth steered through its
+//! own queue, a mic monitor) stays callable.
 //!
 //! # Crossfades
 //!

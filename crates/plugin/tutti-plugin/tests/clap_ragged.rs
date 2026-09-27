@@ -94,9 +94,9 @@ fn assert_delayed(out: &[f32], latency: usize, what: &str) {
     );
 }
 
-/// `n` device blocks of `quantum` frames, each rendered as the engine renders
-/// a graph holding a `Legacy`-flagged node: 64-frame passes plus the
-/// remainder (`LEGACY_CHUNK`).
+/// `n` device blocks of `quantum` frames, each rendered in 64-frame passes
+/// plus the remainder (as the engine rendered a graph holding a `Legacy`
+/// node, and as any host calling in short passes does).
 fn live_shaped(quantum: usize, n: usize) -> Vec<usize> {
     let mut blocks = Vec::new();
     for _ in 0..n {

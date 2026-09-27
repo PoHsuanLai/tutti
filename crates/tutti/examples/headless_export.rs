@@ -50,11 +50,11 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// A 440 Hz tone at −12 dBFS, in stereo.
 fn tone() -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(
+    let id = g.add(
         Osc::sine(Hz(440.0))
             .with_amplitude(Amplitude(0.25))
             .with_layout(ChannelLayout::STEREO),
-    ));
+    );
     g.pipe_output(id);
     built(g)
 }
@@ -62,7 +62,7 @@ fn tone() -> RenderGraph {
 /// A mono graph, to show the channel fold.
 fn mono_tone() -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let id = g.add_unit(Box::new(Const::mono(0.5)));
+    let id = g.add(Const::mono(0.5));
     g.pipe_output(id);
     built(g)
 }

@@ -17,12 +17,11 @@ use crate::{Error, Result};
 ///
 /// 1024 frames: long enough that the executor's per-block walk is paid rarely
 /// on a long bounce, short enough that a block's planes stay in cache. A
-/// multiple of 64 on purpose: a `Legacy` unit runs in 64-frame chunks from
-/// each block's start, so at a multiple of 64 its chunks fall on the frames
-/// `Net`'s 64-frame blocks did, and a unit whose output depends on how its
-/// calls are cut (the VBAP panner ramps its gains across each call) renders
-/// what it rendered under `Net` (doc 013, "Two things carry over from
-/// `Legacy` chunking"; pinned by `tests/graph_source.rs`).
+/// multiple of 64 on purpose: a node that renders in 64-frame pieces from
+/// each block's start (the sampler's clip readers) cuts them on the frames
+/// `Net`'s 64-frame blocks did, and the golden digests
+/// `tests/graph_source.rs` pins were recorded so (doc 013, "Two things carry
+/// over from `Legacy` chunking").
 pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 
 /// The graph an export renders: a native `tutti_graph` editor/executor pair.
@@ -57,11 +56,9 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///
 /// The executor renders in blocks of its prepared `MaxBlock`, each handed the
 /// transport the render's clock reports ([`RenderClock::graph_block`]), and
-/// the clock is advanced after each block. A graph holding a `Legacy` unit (a
-/// sampler voice, which polls the clock per 64-frame call) is rendered
-/// chunk-major, 64 frames at a time across every node
-/// ([`RenderClock::render_graph`]), so its clip readers read the clock where
-/// each chunk starts.
+/// the clock is advanced after each block ([`RenderClock::render_graph`]).
+/// A clip reader reads the transport at any frame of its block from its
+/// `Env`.
 ///
 /// [`RenderClock::graph_block`]: tutti_core::transport::RenderClock::graph_block
 /// [`RenderClock::render_graph`]: tutti_core::transport::RenderClock::render_graph
@@ -85,7 +82,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///
 /// let rate = SampleRate(48_000.0);
 /// let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-/// let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+/// let tone = g.add(Osc::sine(Hz(440.0)));
 /// g.pipe_output(tone);
 /// let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
 /// let graph = RenderGraph::new(editor, executor).expect("built together, so paired");
@@ -224,7 +221,7 @@ impl RenderGraph {
     /// # use tutti_types::ChannelLayout;
     /// # let rate = SampleRate(48_000.0);
     /// # let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    /// # let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+    /// # let tone = g.add(Osc::sine(Hz(440.0)));
     /// # g.pipe_output(tone);
     /// # let (editor, executor) = g.build(RenderGraph::prepare(rate)).unwrap();
     /// # let graph = RenderGraph::new(editor, executor).unwrap();
@@ -264,7 +261,7 @@ impl RenderGraph {
     /// # use tutti_types::ChannelLayout;
     /// # let rate = SampleRate(48_000.0);
     /// # let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    /// # let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+    /// # let tone = g.add(Osc::sine(Hz(440.0)));
     /// # g.pipe_output(tone);
     /// # let (editor, executor) = g.build(RenderGraph::prepare(rate)).unwrap();
     /// # let graph = RenderGraph::new(editor, executor).unwrap();

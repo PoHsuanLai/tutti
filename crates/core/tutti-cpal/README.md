@@ -26,7 +26,7 @@ A driver is built from an opened device plus the state its callback reads
 use std::sync::Arc;
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{AudioTap, Engine, Hz, MasterMeter, NodeKey, Samples, Transport};
-use tutti_graph::{Editor, Legacy, Prepare};
+use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
@@ -40,7 +40,7 @@ let sample_rate = audio_engine.sample_rate();
 let transport = Transport::new(sample_rate);
 let (mut editor, executor) = Editor::new(Prepare::new(sample_rate, Samples(512)));
 let tone = NodeKey(1);
-editor.insert(tone, "tone", Legacy::new(Osc::sine(Hz(440.0))));
+editor.insert(tone, "tone", Osc::sine(Hz(440.0)));
 editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: tone, port: 0 }); 2];
 editor.commit()?;
 

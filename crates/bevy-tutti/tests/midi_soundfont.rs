@@ -183,8 +183,10 @@ mod soundfont_spawn {
     /// node, whose event input a `MidiSourceInstall`, a route or a keyboard
     /// is wired to.
     ///
-    /// Mutation: promoting it through `Legacy` (`graph.insert(unit)`) → a
-    /// node with no event input → fails.
+    /// Mutation (run while `Legacy` existed): promoting it through `Legacy`
+    /// (`graph.insert(unit)`) → a node with no event input → fails. Now:
+    /// the soundfont's shape declaring no event input (`with_events(0, 0)`)
+    /// is the same mutation.
     #[test]
     fn a_promoted_soundfont_has_a_midi_event_input() {
         let asset = soundfont_asset();
@@ -360,7 +362,7 @@ mod midi_soundfont_audio {
         // what the clip node and the keyboard wire to.
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, ()) = graph.insert_node(unit);
+            let (node, ()) = graph.insert(unit);
             graph.set_outputs_from(node);
             node
         };
@@ -564,13 +566,13 @@ mod midi_route {
         let mut graph = AudioGraphRes::headless(0, 2);
         graph.set_sample_rate(SampleRate(SAMPLE_RATE));
         let wire = Arc::new(Wire::default());
-        let (input_node, _) = graph.insert_node(MidiInputNode::new(Some(
+        let (input_node, _) = graph.insert(MidiInputNode::new(Some(
             Arc::clone(&wire) as Arc<dyn MidiIn>
         )));
         let mut settings = SynthesizerSettings::new(SAMPLE_RATE as i32);
         settings.enable_reverb_and_chorus = false;
         let unit = SoundFontUnit::new(soundfont(), &settings).expect("build the SoundFontUnit");
-        let (synth_node, ()) = graph.insert_node(unit);
+        let (synth_node, ()) = graph.insert(unit);
         graph.set_outputs_from(synth_node);
         app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));

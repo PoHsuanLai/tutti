@@ -2,9 +2,9 @@
 //! rendered for it (design doc 013, Phase 3).
 //!
 //! The scene is built through the ECS — `spawn_audio_node` and
-//! `spawn_graph_node` (the filter, the waveshaper and the limiter are native
+//! `spawn_audio_node` (the filter, the waveshaper and the limiter are native
 //! nodes), `PortSources`,
-//! `MasterSources`, `AudioParam`, `crossfade_graph_node`,
+//! `MasterSources`, `AudioParam`, `crossfade_audio_node`,
 //! `LatencyCompensationPlugin` — so what is checked is the whole adapter,
 //! not a hand-wired graph. It takes the audio side
 //! (`AudioGraphRes::take_audio_side`) and plays it in device-sized blocks.
@@ -45,9 +45,8 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use bevy_tutti::graph::latency::LatencyCompensationPlugin;
 use bevy_tutti::graph::{
-    crossfade_graph_node, AudioGraphRes, AudioParam, AudioParamAppExt, AudioSide,
+    crossfade_audio_node, AudioGraphRes, AudioParam, AudioParamAppExt, AudioSide,
     GraphReconcilePlugin, GraphSource, MasterSources, PortSource, PortSources, SpawnAudioNode,
-    SpawnGraphNode,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::{ChannelLayout, Db, Drive, Hz, SampleRate, Samples, UnitParam, Q};
@@ -60,8 +59,8 @@ const RATE: f64 = 48_000.0;
 type DriveParam = AudioParam<Drive, { UnitParam::Drive as u16 }>;
 
 /// The scene's units, built once for every side.
-fn saw() -> Osc {
-    Osc::saw(Hz(110.0))
+fn saw() -> tutti_graph::ForkByClone<Osc> {
+    tutti_graph::ForkByClone(Osc::saw(Hz(110.0)))
 }
 fn low_pass(cutoff: f32) -> SvfFilterNode<f64> {
     SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(cutoff), Q(0.9))
@@ -117,16 +116,16 @@ fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
     let mut commands = world.commands();
     let osc = commands.spawn_audio_node(saw()).id();
     let filter = commands
-        .spawn_graph_node(low_pass(1_200.0))
+        .spawn_audio_node(low_pass(1_200.0))
         .insert(PortSources::from(osc))
         .id();
     let drive = commands
-        .spawn_graph_node(shaper(drive))
+        .spawn_audio_node(shaper(drive))
         .insert(PortSources::from(filter))
         .id();
     let right = if with_limiter {
         commands
-            .spawn_graph_node(limiter())
+            .spawn_audio_node(limiter())
             .insert(PortSources::from(osc))
             .id()
     } else {
@@ -235,7 +234,7 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
     );
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let osc = g.add_unit(Box::new(saw()));
+    let osc = g.add(saw());
     let lim = g.add_with_controls(limiter()).0;
     g.connect(osc, 0, lim, 0).connect_output(lim, 0, 0);
     let latent = render_builder(g, 9_600);
@@ -256,9 +255,10 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
 }
 
 /// **A block length that is not a multiple of 64 changes nothing for
-/// per-sample units**: `Legacy` chunks each 100-frame block from its own
-/// start, and an oscillator, a filter and a waveshaper render the same
-/// samples as in 64-frame blocks, to the bit.
+/// per-sample nodes**: an oscillator, a filter and a waveshaper render the
+/// same samples in 100-frame blocks as in 64-frame blocks, to the bit. (It
+/// pinned the `Legacy` adapter's chunking of each 100-frame block from its
+/// own start, until the nodes were ported; the property is the nodes' now.)
 ///
 /// Until doc 013 PR 15 the oracle was `NetEra` in 64-frame chunks of device
 /// time; the scene in 64-frame blocks is that grid.
@@ -352,7 +352,7 @@ impl Node for From {
     fn reset(&mut self) {}
 }
 
-/// **A crossfade follows its law to the new filter.** `crossfade_graph_node`
+/// **A crossfade follows its law to the new filter.** `crossfade_audio_node`
 /// fades the filter to one with another cutoff over 5 ms (240 frames),
 /// starting on the first frame of the next block (1 024), along
 /// `CrossfadeCurve::EqualAmplitude`:
@@ -380,7 +380,7 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
     const FADE: usize = 240;
     let mut s = scene(false);
     let mut b = render(&mut s.side, FADE_AT, 256);
-    crossfade_graph_node(&mut s.app.world_mut().commands(), s.filter, low_pass(300.0));
+    crossfade_audio_node(&mut s.app.world_mut().commands(), s.filter, low_pass(300.0));
     s.app.world_mut().flush();
     s.app.update();
     for (c, rest) in b.iter_mut().zip(render(&mut s.side, 3_072 - FADE_AT, 256)) {
@@ -392,7 +392,7 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
     // the old filter, the new one heard from the fade's start, and the new
     // one shaped.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from_count(3));
-    let osc = g.add_unit(Box::new(saw()));
+    let osc = g.add(saw());
     let old_filter = g.add_with_controls(low_pass(1_200.0)).0;
     let gate = g.add(Unforkable(From {
         from: FADE_AT as u64,

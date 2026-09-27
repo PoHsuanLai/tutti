@@ -179,8 +179,10 @@ mod graph_wire {
 
     /// A node naming itself is skipped with a warning, not a panic.
     ///
-    /// `Net::set_source` asserts on a self-connection, and an assert inside a
-    /// reconcile system takes the app down over a caller's typo.
+    /// A self-connection is a cycle, which the graph refuses at commit — the
+    /// whole commit, not the one edge (fundsp's `Net::set_source` asserted on
+    /// one, which took the app down) — so the rebuild drops the edge rather
+    /// than lose every edit over a caller's typo.
     #[test]
     fn a_self_connection_is_skipped_not_panicked_on() {
         let mut app = app();

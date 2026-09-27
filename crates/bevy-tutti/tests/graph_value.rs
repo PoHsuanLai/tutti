@@ -299,9 +299,9 @@ fn removing_the_component_without_despawning_takes_the_node_out_of_the_value() {
 /// exactly the identity `NodeKey` exists to provide and fundsp's `NodeId` (the
 /// key before doc 013 Phase 5) did not.
 ///
-/// **Mutation note.** Keying the value on `AudioNode.0` (the engine's own id)
-/// instead of the entity's bits fails this: `Net::crossfade` keeps the id
-/// today, but nothing in the value would then survive the *rebind* case above,
+/// **Mutation note.** Keying the value on `AudioNode.0` (the engine's own key)
+/// instead of the entity's bits fails this: a crossfade keeps that key, but
+/// nothing in the value would then survive the *rebind* case above,
 /// and the edge assertion would name whichever id happened to win. Verified by
 /// checking the key against `key_of(osc)` rather than against a captured value.
 #[test]
@@ -356,9 +356,9 @@ fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key() {
 /// PDC shrinks when the latency-bearing node leaves.
 ///
 /// The plan is a fold over the value, so this needs no device and no
-/// compensation pass — `latency::plan` over `LiveGraph` is the same function
-/// `compensate_graph` drives against the `Net`, and the figure it produces is
-/// the one a DAW displays.
+/// compensation pass — `latency::plan` over `LiveGraph` is the same fold
+/// `compensate_graph` checks against the compiled plan, and the figure it
+/// produces is the one a DAW displays.
 ///
 /// **Mutation note.** Reading `NodeSpec::latency` as `Samples::ZERO` for every
 /// node (the tempting simplification, since only the shape is "topology") makes

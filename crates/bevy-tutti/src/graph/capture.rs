@@ -16,13 +16,14 @@
 //!
 //! Every one holds only state the node shares with the graph's copy (its
 //! `Param` cells, the plugin's controls), so the component reaches the
-//! running node without the graph. Each also records the [`NodeKey`] it was
-//! captured for, and its reader ignores it when that is not the entity's
+//! running node without the graph. Each also records the node's `AudioNode`
+//! key it was captured for, and its reader ignores it when that is not the entity's
 //! current [`AudioNode`] — a leftover from a node that was replaced by hand is
 //! inert rather than stale.
 //!
-//! **That guard is `NodeKey` equality and nothing more.** It catches a different
-//! node bound to the entity; it cannot see a node replaced *under the same id*.
+//! **That guard is `AudioNode` key equality and nothing more.** It catches a
+//! different node bound to the entity; it cannot see a node replaced *under the
+//! same key*.
 //! `crossfade_audio_node` is such a replacement and re-captures, so it is safe;
 //! a host that calls [`AudioGraphRes::replace`](crate::graph::AudioGraphRes::replace)
 //! directly bypasses both the capture and the guard, and the entity keeps

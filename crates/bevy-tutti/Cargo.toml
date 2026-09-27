@@ -244,7 +244,8 @@ tutti-fixture-resolve = { path = "../plugin/vendor/tutti-fixture-resolve" }
 
 # NOTE: examples 29_node_entities / 30_full_pipeline were removed — they
 # demonstrated engine-side ECS param reconcile (Volume/SamplerSpeed/…), which
-# moved host-side ("engine Bevy = Net pump only").
+# moved host-side ("engine Bevy = Net pump only", the rule while fundsp's
+# `Net` was the runtime).
 # `AudioParam` brought the generic half of that reconcile back engine-side, so a
 # param example belongs here again — but only the modulation-aware read path,
 # which is the part an app cannot reconstruct on its own.

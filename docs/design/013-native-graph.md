@@ -4090,7 +4090,7 @@ the nodes' own tests, `TransportClock`'s `AudioUnit` half); what was left:
 **Found on the way: a no-op `Editor::commit` compiled and sent a plan.**
 `alloc_budget`'s no-op-commit budget (under 64 KiB, and not growing) held
 for `Net::commit`; moved onto the editor, a commit with nothing changed
-allocated ~97 KiB for a 32-node chain, because it recompiled the whole
+allocated ~100 KiB for a 32-node chain (97–114 KiB, by build), because it recompiled the whole
 graph and queued an identical plan. bevy-tutti never paid it (its frame
 commit is gated on `GraphDirty`), but any host committing per frame would.
 `Editor::commit` now keeps the spec and shapes it last sent and returns
@@ -4098,7 +4098,7 @@ commit is gated on `GraphDirty`), but any host committing per frame would.
 crossfade, a latency cut) is pending; a re-prepare or `package` clears the
 record. Pinned in `executor.rs`
 (`an_unchanged_commit_sends_nothing_and_a_change_still_sends`) and by the
-budget itself.
+budget itself, which now asserts a no-op commit allocates nothing at all.
 
 ## Decisions for the owner
 

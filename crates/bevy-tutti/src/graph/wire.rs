@@ -109,9 +109,9 @@ use super::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems, Grap
 ///
 /// [`GraphSource`] with the node named by *entity* rather than by
 /// [`AudioNode`]. That one difference is load-bearing: a
-/// [`crossfade`](super::crossfade_audio_node) keeps a node's `NodeKey` but an id
-/// stored on an entity is stale the moment anything else replaces the node, so
-/// the declaration names the entity and [`rebuild`] re-derives the id every
+/// [`crossfade`](super::crossfade_audio_node) keeps a node's `AudioNode` key but a
+/// key stored on an entity is stale the moment anything else replaces the node, so
+/// the declaration names the entity and [`rebuild`] re-derives the key every
 /// time. It also means a host never handles an engine id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PortSource {
@@ -397,16 +397,17 @@ pub fn rebuild(
     // and nodes with no entity at all are allowed, so the graph cannot key by
     // entity.) The consequence is
     // that the value **cannot see a re-bind** — `insert`ing a different
-    // `AudioNode` on the same entity changes which `NodeKey` the declaration
-    // resolves to while leaving the entity, and therefore the key, alone. If the
+    // `AudioNode` on the same entity changes which node (which `AudioNode`
+    // key) the declaration resolves to while leaving the entity, and therefore
+    // the value's key for it (`key_of(entity)`), alone. If the
     // replacement has the same shape (two mono oscillators do), the two values
     // are equal and every edge naming that entity would keep pointing at the
     // retired node — silently, since nothing renders it.
     //
-    // The entity→`NodeKey` mapping is engine state the value does not carry, so
+    // The entity→`AudioNode` mapping is engine state the value does not carry, so
     // it takes an engine-side signal to notice it moved. `Changed<AudioNode>` is
     // exactly that signal, and it is why this early return is skipped rather
-    // than the value being taught to carry a `NodeKey` — carrying one would
+    // than the value being taught to carry the `AudioNode` key — carrying it would
     // reintroduce the stale-id problem `PortSource::Node(Entity)` exists to
     // remove, and would make a crossfade look like a topology change.
     let rebound_this_frame = !rebound.is_empty();

@@ -7,14 +7,18 @@ use super::fft::{inverse_fft, real_fft, Complex32};
 use super::unit::*;
 use super::vocoder::*;
 use super::*;
-use tutti_core::{
-    AudioUnit, Cents, ChannelLayout, Radians, ReadRate, Samples, SignalFrame, StretchFactor,
-};
+use tutti_core::{Cents, ChannelLayout, Radians, ReadRate, Samples, StretchFactor};
 
 use std::f32::consts::PI;
 use std::sync::Arc;
 use tutti_analysis::CosineWindow;
-use tutti_core::BufferVec;
+
+/// `size` frames of planar `input` through `Unit::process` into `output`.
+fn planar(u: &mut Unit, size: usize, input: &[Vec<f32>], output: &mut [Vec<f32>]) {
+    let ins: Vec<&[f32]> = input.iter().map(|c| &c[..]).collect();
+    let mut outs: Vec<&mut [f32]> = output.iter_mut().map(|c| &mut c[..]).collect();
+    u.process(size, &ins, &mut outs);
+}
 
 fn sine(freq: f32, sample_rate: f32, len: usize) -> Vec<f32> {
     (0..len)
@@ -574,17 +578,11 @@ fn a_clone_renders_identically() {
 
     let mut clone = original.clone();
 
-    // fundsp's `Buffer` is fixed at 64 samples per channel; a larger `size`
-    // reads past it rather than being clamped.
     let size = 64;
-    let mut input_vec = BufferVec::new(2);
-    for i in 0..size {
-        let s = (i as f32 * 0.05).sin() * 0.5;
-        input_vec.buffer_mut().set_f32(0, i, s);
-        input_vec.buffer_mut().set_f32(1, i, s);
-    }
-    let mut out_a = BufferVec::new(2);
-    let mut out_b = BufferVec::new(2);
+    let lane: Vec<f32> = (0..size).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+    let input_vec = vec![lane.clone(), lane];
+    let mut out_a = vec![vec![0.0f32; size]; 2];
+    let mut out_b = vec![vec![0.0f32; size]; 2];
 
     // Enough blocks to clear the fill-up latency: at 2x stretch the vocoder
     // emits nothing until its FIFO holds a whole 2048-sample window, which
@@ -592,15 +590,12 @@ fn a_clone_renders_identically() {
     // silence to silence and prove nothing.
     let mut heard_signal = false;
     for block in 0..128 {
-        original.process(size, &input_vec.buffer_ref(), &mut out_a.buffer_mut());
-        clone.process(size, &input_vec.buffer_ref(), &mut out_b.buffer_mut());
+        planar(&mut original, size, &input_vec, &mut out_a);
+        planar(&mut clone, size, &input_vec, &mut out_b);
 
         for ch in 0..2 {
             for i in 0..size {
-                let (x, y) = (
-                    out_a.buffer_ref().at_f32(ch, i),
-                    out_b.buffer_ref().at_f32(ch, i),
-                );
+                let (x, y) = (out_a[ch][i], out_b[ch][i]);
                 assert_eq!(
                     x, y,
                     "block {block}, channel {ch}, sample {i}: the clone \
@@ -1025,8 +1020,8 @@ fn stretching_preserves_the_signals_level() {
         u.set_stretch_factor(StretchFactor::new(factor));
 
         let size = 64;
-        let mut input = BufferVec::new(1);
-        let mut out = BufferVec::new(1);
+        let mut input = vec![vec![0.0f32; size]];
+        let mut out = vec![vec![0.0f32; size]];
         let mut phase = 0.0f32;
         let inc = 2.0 * PI * 440.0 / 44_100.0;
         let (mut in_sq, mut in_n) = (0.0f64, 0usize);
@@ -1036,19 +1031,19 @@ fn stretching_preserves_the_signals_level() {
         // the FIFO reaches a whole window.
         const WARM: usize = 500;
         for blk in 0..2000 {
-            for i in 0..size {
+            for slot in input[0].iter_mut() {
                 let s = phase.sin() * 0.5;
                 phase += inc;
-                input.buffer_mut().set_f32(0, i, s);
+                *slot = s;
                 if blk >= WARM {
                     in_sq += (s as f64).powi(2);
                     in_n += 1;
                 }
             }
-            u.process(size, &input.buffer_ref(), &mut out.buffer_mut());
+            planar(&mut u, size, &input, &mut out);
             if blk >= WARM {
-                for i in 0..size {
-                    let v = out.buffer_ref().at_f32(0, i) as f64;
+                for &x in &out[0] {
+                    let v = x as f64;
                     out_sq += v * v;
                     out_n += 1;
                 }
@@ -1080,27 +1075,27 @@ fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
         u.set_stretch_factor(StretchFactor::new(factor));
 
         let size = 64;
-        let mut input = BufferVec::new(1);
-        let mut out = BufferVec::new(1);
+        let mut input = vec![vec![0.0f32; size]];
+        let mut out = vec![vec![0.0f32; size]];
         let mut phase = 0.0f32;
         let inc = 2.0 * PI * 440.0 / 44_100.0;
         let (mut in_sq, mut in_n) = (0.0f64, 0usize);
         let (mut out_sq, mut out_n) = (0.0f64, 0usize);
 
         for blk in 0..2000 {
-            for i in 0..size {
+            for slot in input[0].iter_mut() {
                 let s = phase.sin() * 0.5;
                 phase += inc;
-                input.buffer_mut().set_f32(0, i, s);
+                *slot = s;
                 if blk >= 500 {
                     in_sq += (s as f64).powi(2);
                     in_n += 1;
                 }
             }
-            u.process(size, &input.buffer_ref(), &mut out.buffer_mut());
+            planar(&mut u, size, &input, &mut out);
             if blk >= 500 {
-                for i in 0..size {
-                    let v = out.buffer_ref().at_f32(0, i) as f64;
+                for &x in &out[0] {
+                    let v = x as f64;
                     out_sq += v * v;
                     out_n += 1;
                 }
@@ -1181,8 +1176,8 @@ fn overlap_add_flushes_subnormals() {
 fn creation_and_width() {
     let unit = Unit::new(44100.0);
     assert_eq!(unit.channels(), ChannelLayout::STEREO);
-    assert_eq!(unit.inputs(), 2);
-    assert_eq!(unit.outputs(), 2);
+    // Its in/out arity is its width: one vocoder per channel.
+    assert_eq!(unit.channels().count(), 2);
 
     assert_eq!(
         Unit::with_channels(44_100.0, 6usize).channels(),
@@ -1190,7 +1185,7 @@ fn creation_and_width() {
     );
 }
 
-/// A zero-wide filter would make `inputs()`/`outputs()` lie to the graph.
+/// A zero-wide filter would have no vocoder to carry a channel.
 #[test]
 fn zero_width_is_clamped_to_one() {
     assert_eq!(
@@ -1272,18 +1267,6 @@ fn clone_carries_parameters_and_width() {
     // The atomics are independent after the clone.
     u.set_stretch_factor(StretchFactor::new(2.0));
     assert!((c.stretch_factor().get() - 1.5).abs() < 0.001);
-}
-
-/// `route` must agree with `outputs()`. If it does not, fundsp mis-plans
-/// this node's latency — which corrupts PDC without crashing or obviously
-/// mis-routing audio, so nothing else in the suite would notice.
-#[test]
-fn route_width_tracks_outputs_at_every_width() {
-    for w in [1usize, 2, 6, 8] {
-        let mut u = Unit::with_channels(44_100.0, w);
-        let out = u.route(&SignalFrame::new(w), 44_100.0);
-        assert_eq!(out.len(), u.outputs(), "at channels={w}");
-    }
 }
 
 #[test]

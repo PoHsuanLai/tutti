@@ -656,7 +656,7 @@ mod tests {
         let node = prepared(
             ClickNode::new(&transport, Arc::clone(&settings)),
             crate::SampleRate(SR),
-            crate::MAX_BUFFER_SIZE,
+            64,
         );
         (transport, settings, node)
     }

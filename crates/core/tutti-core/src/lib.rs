@@ -115,38 +115,11 @@ pub use tutti_types::{fold_frame, fold_frame_to_mono, fold_frame_to_stereo};
 // engine — the CPAL callback above all — names this type at its own boundary.
 pub use tutti_types::{Interleaved, InterleavedMut};
 
-// ── The node contract, from the crate that defines it ───────────────────────
-//
-// [`AudioUnit`] and everything its signatures name — the planar block buffers,
-// the numeric tower they are generic over, the [`Signal`] vocabulary `route`
-// speaks — are **`tutti-node`'s**, a leaf crate below the fork, re-exported
-// here at the spellings the engine has always used. No graph node implements
-// the trait any more (doc 013 Phase 4); what is left of it goes in Phase 5.
-pub use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
-pub use tutti_node::signal::{Signal, SignalFrame};
-pub use tutti_node::{AudioUnit, FaultLatch, RenderFault, MAX_BUFFER_SIZE};
-// The numeric tower the contract is generic over — the part of it consumers
-// actually name. `Sample` is the trait's own type parameter and `F32`/`F64` its
-// two instantiations (the plugin hosts really do implement `AudioUnit<F64>`);
-// `Real` is the bound a filter writes when its coefficient arithmetic is
-// generic rather than fixed at f32.
-//
-// `Num`, `Int` and `Float` are the rest of the tower and are NOT here: nothing
-// outside the fork writes those bounds, and every symbol on this list is one
-// that had a caller. They are `tutti_node`'s to add back if one appears.
-pub use tutti_node::{Real, Sample, F32, F64};
-
 // `Wave`, `FileIn`, `WaveMetadata`, `WaveError`, `WaveAsset` and the
 // `can_decode`/`decodable_extensions` pair used to be re-exported here from the
 // fork's `wave`/`read`/`stream` modules, with this crate's codec features
 // forwarding to `fundsp/…`. They are file I/O, so they moved to `tutti-io`
 // with the codec features (design doc 013, Phase 0). This crate decodes nothing.
-
-mod node_id;
-// The node-id helpers. `assert_unique` is the one every DSP crate calls from its
-// own `node_id` module to prove its ids do not collide; the other two are the
-// vocabulary that call sites build ids out of.
-pub use node_id::{assert_unique, mnemonic};
 
 // MIDI vocabulary types (MidiEvent, MidiIn, MidiOut, …) live in the
 // `tutti-midi-types` crate; consumers import them from there directly rather
@@ -170,7 +143,7 @@ pub use node::AudioNode;
 pub mod prelude {
     pub use tutti_types::prelude::*;
 
-    pub use crate::{AudioNode, AudioUnit, BufferMut, BufferRef, SignalFrame};
+    pub use crate::AudioNode;
     pub use crate::{AudioTap, MasterMeter, MeterReading, TapBusy};
     pub use crate::{Engine, Error, MAX_ROOT_CHANNELS};
     pub use crate::{MotionEvent, Timeline, Transport, TransportState};

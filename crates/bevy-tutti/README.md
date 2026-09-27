@@ -283,7 +283,7 @@ two drain **independent rings** fed by the same callback — a deep one for
 recording, a shallow one for monitoring — so polling one never steals frames
 from the other.
 
-The node is a plain `AudioUnit`; add it and declare what it feeds, like any node:
+The node is a plain `tutti_graph::Node`; add it and declare what it feeds, like any node:
 
 ```rust
 // The graph's rate: the monitor node does not resample.

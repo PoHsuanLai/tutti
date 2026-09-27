@@ -109,10 +109,10 @@ test-features:
 # in cpal's Linux/BSD target table. Enabling it on macOS or Windows compiles
 # clean and reaches nothing, which is exactly the silent-no-op shape
 # `check-windows` exists to catch — hence this recipe.
-# Miri over the non-FFI unsafe: the pointer arithmetic in `tutti-node`'s planar
-# buffers, the aliasing in `tutti-types`' `AudioThreadCell`, and `RtPublish`'s
-# hazard-slot reclamation. See
-# `docs/design/012-unsafe-policy.md` for why these two and not the rest — miri
+# Miri over the non-FFI unsafe: the aliasing in `tutti-types`' `AudioThreadCell`
+# and `RtPublish`'s hazard-slot reclamation (and, until doc 013 Phase 5 deleted
+# it, the pointer arithmetic in `tutti-node`'s planar buffers). See
+# `docs/design/012-unsafe-policy.md` for why this crate and not the rest — miri
 # does not execute FFI at all, so the ~95% of this repo's unsafe that is a C ABI
 # is out of its reach by construction, and out-of-process hosting is the
 # structural answer there instead.
@@ -122,7 +122,6 @@ test-features:
 miri:
     cargo +nightly miri test -p tutti-types --lib
     MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test -p tutti-types --lib rt::publish
-    cargo +nightly miri test -p tutti-node
 
 # The loom models: `RtPublish`'s reclamation protocol and `PosRing`'s no-tear
 # protocol (against the shipped code) and the plugin shm header protocol (a

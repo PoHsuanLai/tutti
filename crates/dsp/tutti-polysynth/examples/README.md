@@ -56,17 +56,19 @@ was applied to the engine, confirmed to fail the right checks, and reverted:
 
 ## What the sabotage pass found
 
-`AudioUnit` requires both `tick` (per-sample) and `process` (per-block), and
-`PolySynth` implements the mixing logic **twice**. Every test in this file — and
-every pre-existing test in the crate — drove `process`. Zeroing the right channel
-inside `tick` broke nothing.
+`PolySynth` was then an `AudioUnit`, which required both `tick` (per-sample)
+and `process` (per-block), and it implemented the mixing logic **twice**. Every
+test in this file — and every pre-existing test in the crate — drove `process`.
+Zeroing the right channel inside `tick` broke nothing.
 
-That is a real hole, not a hypothetical: a host may call either. It is now
-covered by `the_tick_path_matches_the_block_path`, which asserts the two agree on
-pitch, level and channel layout. They are deliberately *not* compared
-sample-by-sample — `process` applies MIDI at block boundaries while `tick`
-advances the allocator every sample, so their phase relative to a note-on differs
-by up to one block.
+That was a real hole, not a hypothetical: a host could call either. It was
+closed by `the_tick_path_matches_the_block_path`. Since the port to
+`tutti_graph::Node` (design doc 013) the node has one path, `Node::process`,
+and a graph may hand it a block of any length down to one frame, so the test
+now pins one-frame blocks against 64-frame blocks: the same pitch, level and
+channel layout. They are deliberately *not* compared sample-by-sample — the
+voice's control steps are cut at the block edges, so their phase relative to a
+note-on differs by up to one block.
 
 ## One thing the judge gets right that is easy to get wrong
 

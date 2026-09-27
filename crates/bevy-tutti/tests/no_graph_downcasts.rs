@@ -1,7 +1,7 @@
 //! No code in this crate reaches into the graph for a node by type.
 //!
-//! `Net`'s typed node accessors (the `node` + `_as` / `_as_mut` pair) hand back
-//! the graph's own copy of a node, downcast to a concrete type. This crate used
+//! `Net`'s typed node accessors (the `node` + `_as` / `_as_mut` pair, until
+//! doc 013 Phase 5 deleted `Net`) handed back the graph's own copy of a node, downcast to a concrete type. This crate used
 //! to lean on them for three things — a synth's MIDI port, a node's modulatable
 //! params, and a hosted plugin's input slots and latency. MIDI is event edges
 //! now; the other two come from components captured off the unit as it is
@@ -10,11 +10,10 @@
 //! The downcast has to stay gone, because it is what ties a call site to one
 //! graph implementation: a graph that owns its nodes outright, rather than
 //! keeping a frontend clone of each, has nothing to downcast to. Neither rustc
-//! nor clippy can say "not this inherent method on a vendored type, in this
-//! crate only" — clippy's `disallowed_methods` lives in the workspace-wide
-//! `clippy.toml`, and the node-level `Net` tests in `tutti-nodes` and
-//! `tutti-sampler` use these methods legitimately — so this text scan is the
-//! enforcement.
+//! nor clippy can say "not this method, in this crate only" — clippy's
+//! `disallowed_methods` lives in the workspace-wide `clippy.toml`, and other
+//! crates' node-level tests once used these methods legitimately — so this
+//! text scan is the enforcement.
 //!
 //! Three spellings are watched, because the typed accessor is not the only way
 //! to write the downcast: `graph.0.node(id).as_any().downcast_ref::<T>()` is

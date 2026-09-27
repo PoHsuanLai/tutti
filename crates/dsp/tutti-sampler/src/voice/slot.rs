@@ -15,7 +15,7 @@ use crate::stretch;
 
 use super::clock::BlockClock;
 use super::types::{Playback, SlotId, Voice, VoiceSource};
-use tutti_core::{AudioUnit as _, Cents, ChannelLayout, ReadRate, SampleRate, StretchFactor};
+use tutti_core::{Cents, ChannelLayout, ReadRate, SampleRate, StretchFactor};
 
 /// A [`Voice`] plus the resident time-stretch DSP processor, and the read that
 /// turns the pair into audio.

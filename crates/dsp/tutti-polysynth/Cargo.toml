@@ -42,8 +42,8 @@ tutti-graph = { path = "../../core/tutti-graph" }
 # same functions `SvfFilterNode`/`LadderFilterNode` use, rather than a copy.
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 
-# `f32x8` lanes for the voice bank. The same crate and version line `tutti-node`
-# already builds on, so this adds nothing to the tree.
+# `f32x8` lanes for the voice bank. Its own: the tree's other user of `wide`,
+# `tutti-node`'s numeric tower, went with fundsp in design doc 013 Phase 5.
 wide = { version = "1.6", default-features = false }
 
 # Error handling

@@ -2,7 +2,10 @@
 
 pub mod eq_band;
 pub mod ladder;
+mod real;
 pub mod svf;
+
+pub use real::Real;
 
 pub use eq_band::{BandState, EqBandNode};
 pub use ladder::{

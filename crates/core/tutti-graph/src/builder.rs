@@ -17,9 +17,10 @@
 //!
 //! The engine's tests, examples and simple hosts were written against
 //! fundsp's `Net` (`push`, `connect`, `pipe_output`, …). Doc 013's Phase 3
-//! moves them to this graph (PR 8 for `tutti-export`), and that port
-//! should be mechanical: same call, same meaning, including `Net`'s
-//! fan-out rules, which are quoted on each method below. Writing a
+//! moved them to this graph (PR 8 for `tutti-export`), and the port was
+//! mechanical: same call, same meaning, including `Net`'s fan-out rules,
+//! which are quoted on each method below. (`Net` itself went in Phase 5;
+//! the `Net::…` names below say which call each one spells.) Writing a
 //! [`GraphSpec`] by hand instead is several `BTreeMap` inserts per edge.
 //!
 //! # Keys
@@ -40,7 +41,7 @@
 //!
 //! # Panics, not errors
 //!
-//! Like `Net`, the wiring calls assert their port indices: a builder is for
+//! As `Net`'s did, the wiring calls assert their port indices: a builder is for
 //! code whose graph is fixed in its source, where an out-of-range port is a
 //! typo to fix, not a condition to handle. Anything that needs the shapes
 //! *and* the edges together (a cycle, a feedback delay shorter than the
@@ -322,7 +323,7 @@ impl GraphBuilder {
 
     /// Feed `to`'s input `to_port` from `from`'s output `from_port` as it
     /// was `delay` frames ago — a declared cycle
-    /// ([`FeedbackFrom`](tutti_types::graph::FeedbackFrom)). `Net` has no
+    /// ([`FeedbackFrom`](tutti_types::graph::FeedbackFrom)). `Net` had no
     /// counterpart. `delay` must be at least the maximum block the graph is
     /// built for; [`build`](Self::build) refuses a shorter one.
     pub fn feedback(

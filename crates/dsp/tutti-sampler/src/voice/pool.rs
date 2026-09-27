@@ -24,7 +24,7 @@ use super::types::Playback;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use tutti_core::{AudioUnit as _, ChannelLayout, SampleRate, Tail};
+use tutti_core::{ChannelLayout, SampleRate, Tail};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare, Shape,
     Status,

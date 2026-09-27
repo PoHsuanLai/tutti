@@ -44,7 +44,6 @@ assert!(out.iter().any(|&s| s != 0.0));
 | `tutti::types` | `tutti-types` | always |
 | `tutti::graph` | `tutti-graph` | always |
 | `tutti::nodes` | `tutti-nodes` | always |
-| `tutti::node` | `tutti-node` | always |
 | `tutti::device` | `tutti-cpal` | `device` |
 | `tutti::io` | `tutti-io` | `io` (implied by `audio-io` and by every codec) |
 | `tutti::export` | `tutti-export` | `export` |

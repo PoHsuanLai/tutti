@@ -68,11 +68,6 @@ pub(crate) fn nonempty(layout: tutti_core::ChannelLayout) -> tutti_core::Channel
     }
 }
 
-#[macro_use]
-mod macros;
-
-mod node_id;
-
 // One mock transport and block driver for every test of the crate, in-crate
 // and in `tests/` (through `test-support`): a node reads the transport from
 // its block's `Env`, and this is what hands it one.

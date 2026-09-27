@@ -58,7 +58,7 @@
 //! invent one.
 //!
 //! An edge-component model is also ruled out. Such a component needs a tracked
-//! `HashMap<Entity, (NodeId, PortIndex)>` to know what to disconnect — adapter
+//! `HashMap<Entity, (NodeKey, PortIndex)>` to know what to disconnect — adapter
 //! shadow state mirroring the engine. The declaration *is* that record, and
 //! [`LiveGraph`] holds what it last compiled to, so nothing here mirrors the
 //! engine port by port.

@@ -20,7 +20,7 @@ use super::disk_voice::VoiceHealth;
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice};
 use crossbeam_channel::{bounded, Receiver};
-use tutti_core::{Amplitude, AudioUnit as _, ChannelLayout, Param, SampleRate, Tail, UnitParam};
+use tutti_core::{Amplitude, ChannelLayout, Param, SampleRate, Tail, UnitParam};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, ParamSet, Prepare,
     Shape, Status,

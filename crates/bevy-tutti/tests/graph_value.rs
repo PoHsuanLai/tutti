@@ -300,7 +300,7 @@ fn removing_the_component_without_despawning_takes_the_node_out_of_the_value() {
 /// key before doc 013 Phase 5) did not.
 ///
 /// **Mutation note.** Keying the value on `AudioNode.0` (the engine's own id)
-/// instead of the entity's bits fails this: `Net::crossfade` keeps the id
+/// instead of the entity's bits fails this: a crossfade keeps the id
 /// today, but nothing in the value would then survive the *rebind* case above,
 /// and the edge assertion would name whichever id happened to win. Verified by
 /// checking the key against `key_of(osc)` rather than against a captured value.
@@ -356,8 +356,8 @@ fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key() {
 /// PDC shrinks when the latency-bearing node leaves.
 ///
 /// The plan is a fold over the value, so this needs no device and no
-/// compensation pass — `latency::plan` over `LiveGraph` is the same function
-/// `compensate_graph` drives against the `Net`, and the figure it produces is
+/// compensation pass — `latency::plan` over `LiveGraph` is the same fold
+/// `latency_plan` runs over the whole spec, and the figure it produces is
 /// the one a DAW displays.
 ///
 /// **Mutation note.** Reading `NodeSpec::latency` as `Samples::ZERO` for every

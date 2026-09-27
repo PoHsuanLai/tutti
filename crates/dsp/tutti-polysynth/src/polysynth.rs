@@ -1321,8 +1321,9 @@ mod tests {
         queue_midi(&mut synth, &[note_on]);
 
         // Process samples and accumulate max output
-        // Note: FunDSP EnvelopeIn samples at 2ms intervals (~88 samples at 44100Hz)
-        // so several hundred samples are needed to see envelope output
+        // Note: the envelope is evaluated once per control step (at most
+        // `CONTROL_BLOCK` frames) and ramps from zero on its attack, so several
+        // hundred samples are rendered before the output is judged
         let mut output = [0.0f32; 2];
         let mut max_left = 0.0f32;
         let mut max_right = 0.0f32;
@@ -2978,18 +2979,18 @@ mod tests {
         );
     }
 
-    /// A block far longer than `MAX_BUFFER_SIZE` renders every frame, with
+    /// A block far longer than 64 frames renders every frame, with
     /// MIDI landing inside it past frame 64 — and is sample-identical to the
     /// same audio rendered as eight 64-frame blocks.
     ///
     /// This is design doc 013's D4: the block path mixed into
-    /// `[f32; MAX_BUFFER_SIZE]` stack arrays and clamped `size` to them, so in
+    /// `[f32; MAX_BUFFER_SIZE]` (64-frame) stack arrays and clamped `size` to them, so in
     /// release a 512-frame block rendered 64 frames and silence. The renderer
     /// now has no block-sized scratch at all; the identity with short blocks is
     /// what shows the long block is not merely non-silent but *right* —
     /// control steps, glides and event offsets all land where they would have.
     ///
-    /// *Mutation:* clamping `size` to `MAX_BUFFER_SIZE` at the top of
+    /// *Mutation:* clamping `size` to 64 (the old `MAX_BUFFER_SIZE`) at the top of
     /// `render_events` fails this (frame 64 onward goes silent and the event at
     /// 200 is never reached in the long block).
     #[test]

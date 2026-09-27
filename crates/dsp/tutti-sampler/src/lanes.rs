@@ -17,15 +17,15 @@
 use crate::MAX_SAMPLER_CHANNELS;
 use tutti_core::SamplePosition;
 
-/// Frames one lane holds: the longest block a voice is rendered in.
+/// Frames one lane holds: the longest piece a voice is rendered in.
 ///
-/// `tutti_core::MAX_BUFFER_SIZE` (64): `AudioUnit::process` is never handed
-/// more (its buffers are that long, and the voice renders in pieces of that),
-/// so a block is one lane and nothing is split. Lanes 4x longer cost
-/// every voice a memset of scratch it could never use. When the sampler's
-/// nodes port to `tutti_graph::Node` (doc 013 items 4 and 9) the node sizes its scratch
-/// from `Prepare::max_block` instead, where blocks may grow past 64.
-pub(crate) const LANE_FRAMES: usize = tutti_core::MAX_BUFFER_SIZE;
+/// 64: a voice node renders its block in 64-frame pieces from the block's
+/// start, re-seated per piece (doc 013, "The ports landed"), so a piece is
+/// one lane and nothing is split. Lanes 4x longer would cost every voice a
+/// memset of scratch it could never use. (It was `tutti_core::MAX_BUFFER_SIZE`,
+/// fundsp's block, until doc 013 Phase 5 deleted that constant with the
+/// tower; the pieces kept its length.)
+pub(crate) const LANE_FRAMES: usize = 64;
 
 /// One channel of a block, planar.
 pub(crate) type Lane = [f32; LANE_FRAMES];

@@ -67,9 +67,6 @@ pub use tutti_core as core;
 /// edge traits, `RtPublish`.
 pub use tutti_types as types;
 
-/// Planar block buffers and the routing/contract arithmetic.
-pub use tutti_node as node;
-
 /// The audio graph (design doc 013): `GraphBuilder`, `Editor`, `Executor`,
 /// `Fork`. What `export` renders and what `Engine::new` runs; the
 /// successor to fundsp's `Net` (deleted in doc 013 Phase 5).

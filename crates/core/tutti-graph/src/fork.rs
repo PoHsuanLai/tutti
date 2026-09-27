@@ -3,10 +3,10 @@
 //! rendered on a worker thread while the live graph plays, or a live
 //! duplicate.
 //!
-//! Doc 013 Phase 3 PR 2, and the replacement for fundsp's
+//! Doc 013 Phase 3 PR 2. It replaced fundsp's
 //! `Net::clone_isolated` → `PendingClone::isolate_for_offline` → `rebind_offline`
-//! → `Net::reset` sequence (`fundsp-tutti/src/net.rs`, driven by
-//! `bevy-tutti/src/export/run.rs`).
+//! → `Net::reset` sequence (`fundsp-tutti/src/net.rs`, then driven by
+//! `bevy-tutti/src/export/run.rs`; fundsp went in doc 013 Phase 5).
 //!
 //! # Where a forked unit comes from: [`ForkSource`]
 //!
@@ -81,13 +81,14 @@
 //! reaches walking back along audio edges, feedback edges and event edges —
 //! and nothing else: a sibling branch that does not feed it is not forked
 //! (and so need not be forkable). The fork's global outputs all read the
-//! node, by `Net::clone_isolated`'s rule: output channel `c` reads the
+//! node, by the rule `Net::clone_isolated` had: output channel `c` reads the
 //! node's port `min(c, outs - 1)`, so a mono node fans out to every channel
 //! and a wider graph **clamps** its extra channels to the node's last port
 //! (stereo into six is L R R R R R). That differs on purpose from
 //! `pipe_output`'s wrap (`c % outs`, see [`GraphBuilder`](crate::GraphBuilder)):
-//! it is what the export this replaces rendered, and a test pins it against
-//! `Net` itself. The fork keeps the live graph's global input width.
+//! it is what the export this replaced rendered, and `tests/fork.rs` pins
+//! the rule in closed form (against a `Net`'s render until doc 013 Phase 5
+//! deleted `Net`). The fork keeps the live graph's global input width.
 
 use std::collections::BTreeSet;
 use std::error::Error;

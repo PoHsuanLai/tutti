@@ -1,13 +1,15 @@
 # A native audio graph, and the road off fundsp
 
-Status: **in progress** (2026-09-26). The graph crate (`tutti-graph`,
+Status: **in progress** (2026-09-27): Phases 0–5 have landed and Phase 6 is
+next. **fundsp is gone** (Phase 5: `Net`, the vendored fork, `tutti-node` and
+its `AudioUnit`, [below](#phase-5-part-1-nothing-uses-net)). The graph crate (`tutti-graph`,
 Phases 1 and 2) has landed, and `Engine` renders it
 ([Phase 2](#phase-2--runtime-behind-the-engine), 2b) and nothing else
 (Phase 3 PR 15); the Bevy adapter runs on it alone (PR 13; PR 11 had put it
 beside `Net` behind `GraphBackend`), export forks the graph (PR 12) and
 renders only it (PR 14). **Phase 3 is done**, and so is Phase 4: every node
 is a `tutti_graph::Node` and the `Legacy` adapter is deleted
-([below](#legacy-deleted)); Phases 5–6 are next. Rewrite-order item 4's plugin
+([below](#legacy-deleted)). Rewrite-order item 4's plugin
 half has landed (the plugin node is a `Node`, bound by typestate; see
 [below](#item-4s-plugin-half-landed)). With `Net` no longer a runtime and
 `Legacy` gone, "native" no longer distinguishes anything: the design's title
@@ -2945,6 +2947,14 @@ its last `Legacy` unit is gone, and goes with `Legacy`. Delete `Legacy`.
 
 ### Phase 5 — delete
 
+**Done** (2026-09-27), in three parts: [nothing uses
+`Net`](#phase-5-part-1-nothing-uses-net), [the fork is
+deleted](#phase-5-part-2-the-fork-is-deleted), [`AudioUnit` and `tutti-node`
+are deleted](#phase-5-part-3-audiounit-and-tutti-node-are-deleted). Every row
+below is gone; the "rehomed I/O & kernels" had all moved before (nothing
+non-test used the fork by then), and of `tutti-node` only the filters'
+`Real` and the sampler's `FaultLatch` were kept, each in its one user.
+
 | Goes | Lines |
 |---|---|
 | `crates/vendor/fundsp-tutti` src (runtime 3.9k, static framework 6.3k, preludes 8.7k, unused DSP ~9.9k, rehomed I/O & kernels) | 32,724 |
@@ -4003,11 +4013,13 @@ channel 0's, so a fork keeps a ping-pong's two times); a node declares the
 tail `Legacy` read from it (`Unknown` for a resonant filter) rather than
 the shape's default `None`.
 
-Still open: `stretch::Unit` (a slot's internal filter, not a graph node)
-is an `AudioUnit`; a native beat reader **with inputs** would
+Still open: a native beat reader **with inputs** would
 need frames before its block, which `Env` cannot give (none exists); a
 time-stretched voice is silent for its filter's refill after a seek
-(proposed: prime the filter from the source ahead of the jump).
+(proposed: prime the filter from the source ahead of the jump; open as
+#67). (`stretch::Unit`, a slot's internal filter and never a graph node, was
+the last `AudioUnit`; it has plain methods since
+[Phase 5](#phase-5-part-3-audiounit-and-tutti-node-are-deleted).)
 
 #### Legacy deleted
 
@@ -4153,6 +4165,39 @@ only.
 `tests/no_net.rs`, text scans keeping `NetBackend` / `Net` out of those
 crates' code. With the fork gone neither type exists, so a line naming one
 cannot compile and the scans can no longer fail on anything.
+
+#### Phase 5, part 3: `AudioUnit` and `tutti-node` are deleted
+
+With the fork gone, `tutti-node` (the leaf crate that held the node contract
+*below* the fork so a crate could implement a node without depending on it)
+had no implementor left but `stretch::Unit`, a slot's internal filter that
+was never inserted into a graph. The whole crate went:
+
+- **`AudioUnit`** and everything its signatures named: the planar
+  `BufferRef`/`BufferMut`/`BufferVec` (and their `unsafe` pointer
+  arithmetic, one of miri's three subjects), `Signal`/`SignalFrame`/`Routing`
+  and `route`, `Setting`/`Parameter`/`Address`/`NodeAddr`, the
+  `Num`/`Float`/`Real`/`F32x` tower with its `wide`/`numeric-array` SIMD
+  lanes, `MAX_BUFFER_SIZE`, `AttoHash`, and `tutti_core`'s re-exports of all
+  of them (and `tutti::node`).
+- **The node-id fingerprints** `AudioUnit::get_id` returned —
+  `tutti_core::{mnemonic, assert_unique}` and every crate's `node_id`
+  module (`PLUGIN_CLIENT_ID` and `route_with_latency` in tutti-plugin's
+  `backend`) — and tutti-sampler's `audio_unit_boilerplate!`.
+- **`stretch::Unit`** has inherent `reset`, `set_sample_rate`, `tick`,
+  `process` (planar slices: `&[&[f32]]` in, `&mut [&mut [f32]]` out) and
+  `tail`, the same names and meaning; `latency_samples`, `input_rate` and
+  `filter_lanes` are unchanged. Its `route` is gone with `Signal`: the voice
+  node declares the latency in its `Shape`.
+
+What was kept, rehomed to its one user: the filters' float trait (`Real`,
+`f32`/`f64`, the same `libm` calls, so they render the same bits) is
+`tutti-nodes`'; `FaultLatch` is `tutti-sampler`'s (the `RenderFault` trait
+it was the only implementor of went); the 64-frame block `MAX_BUFFER_SIZE`
+named survives as the sampler's `LANE_FRAMES` (its voices render in 64-frame
+pieces) and as tutti-export's in-memory source's encoder pacing. Tests that
+built planar data with `BufferVec` build it with `Vec`s; the stretch unit's
+`route_width_tracks_outputs_at_every_width` went with `route` (its subject).
 
 ## Decisions for the owner
 

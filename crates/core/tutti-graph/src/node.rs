@@ -1,7 +1,8 @@
 //! The node contract: [`Node`], and everything its four methods name.
 //!
 //! Doc 013 §2. This is deliberately *smaller* than fundsp's `AudioUnit`,
-//! which it replaces for every node in the graph.
+//! which it replaced for every node in the graph (Phase 4; Phase 5 deleted
+//! `AudioUnit`).
 //!
 //! What it drops, and why each drop is safe:
 //!

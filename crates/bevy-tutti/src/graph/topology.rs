@@ -19,7 +19,7 @@
 //! [`spawn_audio_node`](super::SpawnAudioNode) / `insert_audio_node` and removed
 //! by the `On<Remove, AudioNode>` observer, exactly as before. The value names
 //! nodes by [`NodeKey`] and carries a spec describing each one's *shape*
-//! (widths, latency, tail) — never a `Box<dyn AudioUnit>`, and never a catalog
+//! (widths, latency, tail) — never a boxed node, and never a catalog
 //! id it could be rebuilt from.
 //!
 //! That split is forced by what a unit is: live state a host built, not a
@@ -41,7 +41,7 @@
 //! Widths, latency and tail are read off the editor's shapes — probed from
 //! the **live unit** when it was inserted — because that is the only place
 //! they exist. A node's arity is not authored
-//! anywhere in the ECS: `spawn_audio_node` takes a `U: AudioUnit`, and the four
+//! anywhere in the ECS: `spawn_audio_node` takes an `N: GraphNode`, and the four
 //! sites that push a unit directly (soundfont promotion, plugin load, the
 //! audio-rate chain, the mod-source LFO) take one already built. The unit is the
 //! sole author of its own shape.
@@ -132,7 +132,7 @@ pub fn entity_of(key: NodeKey) -> Entity {
 ///
 /// Widths, latency and tail come from the **live unit**, as the editor probed
 /// it at insert — the only place they exist today. A node's arity is not authored
-/// anywhere in the ECS: `spawn_audio_node` takes a `U: AudioUnit` and the four
+/// anywhere in the ECS: `spawn_audio_node` takes an `N: GraphNode` and the four
 /// direct-`add` sites take an already-built unit, so the unit is the sole
 /// author of its own shape.
 ///

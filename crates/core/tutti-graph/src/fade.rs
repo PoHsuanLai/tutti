@@ -24,7 +24,7 @@
 //!   one latency, and both units must be aligned to it. Swap a unit whose
 //!   latency differs with a plain [`Editor::insert`](crate::Editor::insert).
 //! - **A replace while a fade runs at that key is queued**, as fundsp's
-//!   `Net::crossfade` queues it: the running fade finishes, and a fade from
+//!   `Net::crossfade` queued it: the running fade finishes, and a fade from
 //!   its incoming unit to the newest one starts at the next block. Only two
 //!   units ever run at once, and no swap is ever a step. A third replace
 //!   while one waits supersedes the waiting unit, which never ran.

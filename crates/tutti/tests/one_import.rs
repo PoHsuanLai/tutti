@@ -63,9 +63,13 @@ fn the_measurement_vocabulary_arrives_and_converts() {
 fn the_dsp_library_and_the_node_contract_are_reachable() {
     // A `tutti-nodes` unit, built and driven through `tutti::` alone.
     let _lfo = tutti::nodes::Lfo::default();
-    // The planar block buffers: `tutti-node`'s, at the engine root.
-    let buf: tutti::core::BufferVec = tutti::core::BufferVec::new(2);
-    assert_eq!(buf.buffer_ref().channels(), 2);
+    // The node contract, `tutti_graph::Node` (it was `tutti-node`'s
+    // `AudioUnit` and planar buffers until doc 013 Phase 5), on a node
+    // reached through `tutti::` too.
+    let node = tutti::nodes::testing::Const::frame(&[0.5, 0.5]);
+    let shape = tutti::graph::Node::shape(&node);
+    assert_eq!(shape.audio_out, ChannelLayout::STEREO);
+    assert_eq!(shape.audio_in, ChannelLayout::EMPTY);
 }
 
 /// Offline export, end to end, through the façade only.

@@ -18,7 +18,7 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::{BufferVec, ChannelLayout, SampleRate};
+use tutti_core::{ChannelLayout, SampleRate};
 use tutti_graph::contract::Direct;
 use tutti_graph::Node;
 use tutti_nodes::{
@@ -29,13 +29,14 @@ const BLOCK: usize = 64;
 const SR: SampleRate = SampleRate(48_000.0);
 
 /// Deterministic broadband input: a cheap LCG, so the bench needs no `rand`.
-fn noise_block(channels: usize) -> BufferVec {
-    let mut buf = BufferVec::new(channels);
+/// Planar, `channels` × `BLOCK`.
+fn noise_block(channels: usize) -> Vec<[f32; BLOCK]> {
+    let mut buf = vec![[0.0f32; BLOCK]; channels];
     let mut state = 0x2545_f491_u32;
-    for c in 0..channels {
-        for i in 0..BLOCK {
+    for ch in &mut buf {
+        for s in ch.iter_mut() {
             state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            buf.set_f32(c, i, (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0);
+            *s = (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
         }
     }
     buf
@@ -55,7 +56,7 @@ fn run_node(c: &mut Criterion, group: &str, width: usize, node: impl Node, fed: 
     let input = noise_block(width);
     for (ch, buf) in d.inputs_mut().iter_mut().enumerate() {
         for (i, x) in buf.iter_mut().enumerate() {
-            *x = input.at_f32(ch, i);
+            *x = input[ch][i];
         }
     }
     // Live until cleared: every block of the bench reads it. A node with no

@@ -255,7 +255,7 @@ mod tests {
     ///
     /// The limiter is the engine's own `LimiterNode`, whose lookahead is what
     /// it reports as latency — so the plan is exercised on the latency-bearing
-    /// node the engine ships, not on fundsp's.
+    /// node the engine ships.
     fn skewed_graph() -> (AudioGraphRes, Samples) {
         let mut graph = AudioGraphRes::headless(0, 2);
         let (a, _) = graph.insert(Const::mono(1.0));

@@ -45,8 +45,6 @@ pub mod backend {
         HostAutomationState, HostEditor, HostParams, HostPresets, HostState,
     };
     pub use crate::host::node::ParameterChangeSink;
-    pub use crate::util::node::node_id::PLUGIN_CLIENT_ID;
-    pub use crate::util::node::route_with_latency;
 }
 
 /// Load a VST2 plugin in-process (audio + native editor on the host

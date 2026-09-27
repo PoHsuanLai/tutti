@@ -182,9 +182,10 @@ impl ParamSetBuilder {
 /// [`ParamSet`]: what [`param_parts`] inserts, with a fork that shares
 /// nothing and starts from the authored values.
 ///
-/// This replaces `AudioUnit::isolate` + `rebind_offline` for such a node: a
-/// graph node reads time from its block's `Env`, so there is nothing to
-/// rebind, and [`fork_fresh`](Self::fork_fresh) is the isolate.
+/// It took the place of `AudioUnit::isolate` + `rebind_offline` (deleted
+/// with fundsp in doc 013 Phase 5) for such a node: a graph node reads time
+/// from its block's `Env`, so there is nothing to rebind, and
+/// [`fork_fresh`](Self::fork_fresh) is the isolate.
 pub trait ParamNode: Node + Sized {
     /// A [`ParamSet`] over this node's cells (every param a host may set by
     /// address). Control thread; may allocate.

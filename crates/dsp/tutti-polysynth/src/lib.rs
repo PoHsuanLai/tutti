@@ -22,8 +22,6 @@
 #![doc = include_str!("../README.md")]
 
 mod error;
-
-mod node_id;
 pub use error::{Error, Result};
 
 mod voice;

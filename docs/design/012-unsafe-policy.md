@@ -15,7 +15,7 @@ together — an upper bound, not a block count:
 | `crates/plugin/tutti-plugin-server/` | 52 | the subprocess side: shm, signals |
 | `crates/plugin/tutti-plugin/` | 46 | shm slab, IPC transport |
 | `crates/midi/tutti-midi-hardware/` | 33 | CoreMIDI / ALSA seq-UMP |
-| `crates/core/` | 46 | see below |
+| `crates/core/` | 32 | see below (was 46; `tutti-node`'s 14 went with it in doc 013 Phase 5) |
 | `crates/dsp/` | 14 | see below |
 | `crates/plugin/tutti-plugin-types/` | 7 | bundle/ABI value types |
 
@@ -25,7 +25,8 @@ question is the other 5%.
 
 ## The non-FFI `unsafe`, in full
 
-There are eight sites. Each exists because a safe construct would have cost
+There are seven sites (there were eight until design doc 013 Phase 5 deleted
+`tutti-node` and its planar buffers). Each exists because a safe construct would have cost
 something on the audio thread (or, for the last, because an invariant the
 type system cannot see must be stated at the call), and each is named here
 so the list can be checked against the tree.
@@ -46,10 +47,6 @@ so the list can be checked against the tree.
   well as by miri over the module's concurrent stress test.
 - **`tutti-types/src/rt/denormals.rs`** — `read_mxcsr` and the FTZ/DAZ
   set. x86 SSE control-register intrinsics; there is no safe spelling.
-- **`tutti-node/src/buffer.rs`** — `slice::from_raw_parts{,_mut}` over the
-  planar block buffers. The single highest-value target for a checker in this
-  list: it is pointer arithmetic over a fixed `MAX_BUFFER_SIZE` stride, in the
-  crate every node in the graph processes through.
 - **`tutti-sampler/src/butler/prefetch.rs`** — `unsafe impl Send`/`Sync` on
   `SendProd`, the ring producer handed to the disk butler. The file says it
   "concentrates the unsafe impls in one place", which is the right shape.
@@ -122,8 +119,11 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
   to run it. It cannot go everywhere:
   it does not execute FFI at all, and it cannot run x86 intrinsics, so
   `denormals.rs`'s tests are `#[cfg_attr(miri, ignore)]`. What it does cover
-  is the pointer arithmetic in `tutti-node`'s buffers and the aliasing in
-  `AudioThreadCell`, which is where a mistake would be silent.
+  is the aliasing in `AudioThreadCell` and `RtPublish`'s reclamation, which is
+  where a mistake would be silent. (It covered the pointer arithmetic in
+  `tutti-node`'s planar buffers too, until doc 013 Phase 5 deleted them: a
+  graph node gets its buffers from `tutti-graph`, which is
+  `#![forbid(unsafe_code)]`.)
 
   **First run: 243 of 245 `tutti-types` tests passed under miri with no
   memory-safety finding at all.** The two failures were float precision, not

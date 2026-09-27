@@ -276,7 +276,7 @@ pub struct MidiFileWritten {
 /// Move every new write request onto the task pool.
 ///
 /// No cap on in-flight writes, unlike [`ExportInFlight`](crate::export::ExportInFlight)
-/// which admits one render at a time because each deep-clones the live net.
+/// which admits one render at a time because each forks the live graph.
 /// Nothing here touches the graph: the main-thread cost of a request is moving a
 /// `PathBuf` and a `Vec<u8>` onto the pool, so a queue would add latency and
 /// prevent nothing.

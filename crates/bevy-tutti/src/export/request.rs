@@ -303,7 +303,7 @@ impl std::fmt::Debug for ExportRequest {
 
 /// Present while a render occupies the task pool.
 ///
-/// **At most one of these exists at a time.** The per-request net clone is
+/// **At most one of these exists at a time.** The per-request graph fork is
 /// main-thread work (see [`ExportSource::Node`]), so starting a batch of them in
 /// one frame is what stalls the audio callback. The limit is enforced where the
 /// renders start, not advertised as a run condition for callers to apply: a

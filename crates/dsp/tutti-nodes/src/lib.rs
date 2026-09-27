@@ -82,7 +82,7 @@ pub use distortion::{DistortionNode, ShapeKind, DISTORTION_PARAMS};
 mod filter;
 pub use filter::{
     compute_ladder_coeffs, compute_svf_coeffs, BandState, EqBandNode, LadderCoeffs,
-    LadderFilterNode, LadderType, SvfCoeffs, SvfFilterNode, SvfType, LADDER_PARAMS, SVF_PARAMS,
+    LadderFilterNode, LadderType, Real, SvfCoeffs, SvfFilterNode, SvfType, LADDER_PARAMS, SVF_PARAMS,
 };
 
 mod dynamics;

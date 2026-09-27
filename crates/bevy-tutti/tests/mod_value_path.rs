@@ -973,7 +973,7 @@ mod mod_curve_delivery {
         sink
     }
 
-    /// A sink no `AudioUnit` owns is reachable at all — the gap `insert_target`
+    /// A sink no graph node owns is reachable at all — the gap `insert_target`
     /// closes. Without it, resolution needs an `AudioNode` and a registered node
     /// type, so this entity could never have been modulated.
     #[test]

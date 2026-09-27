@@ -179,8 +179,8 @@ mod graph_wire {
 
     /// A node naming itself is skipped with a warning, not a panic.
     ///
-    /// `Net::set_source` asserts on a self-connection, and an assert inside a
-    /// reconcile system takes the app down over a caller's typo.
+    /// `Net::set_source` asserted on a self-connection (the graph before doc
+    /// 013), and an assert inside a reconcile system takes the app down over a caller's typo.
     #[test]
     fn a_self_connection_is_skipped_not_panicked_on() {
         let mut app = app();
@@ -472,9 +472,9 @@ mod graph_wire {
     /// A rebuild that finds the engine already agreeing writes nothing — it does not
     /// re-set ports that already hold the declared source.
     ///
-    /// This is what the diff buys. `Net::set_source` calls `invalidate_order()`,
-    /// throwing away the cached topological sort, so re-writing an unchanged port is
-    /// not free; and marking `GraphDirty` forces a commit the frame did not need.
+    /// This is what the diff buys. Re-writing an unchanged port is not free (on
+    /// `Net`, before doc 013, it threw away the cached topological sort), and
+    /// marking `GraphDirty` forces a commit the frame did not need.
     ///
     /// Driven by adding a *second, unrelated* node, which dirties the rebuild via
     /// `Added<AudioNode>` without changing any existing declaration. Without the
@@ -560,8 +560,8 @@ mod graph_wire {
         }
     }
 
-    /// Widening must survive the real commit path. A plain `Net::commit` panics on
-    /// an arity change, so this is what proves the arity-permitting commit is
+    /// Widening must survive the real commit path. A plain `Net::commit` panicked
+    /// on an arity change (the graph before doc 013), so this is what proves the arity-permitting commit is
     /// genuinely the one reached.
     #[test]
     fn a_widened_root_survives_a_real_commit() {

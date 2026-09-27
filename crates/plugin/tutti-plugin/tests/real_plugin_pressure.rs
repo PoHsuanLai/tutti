@@ -71,7 +71,27 @@ mod clap_probe;
 #[cfg(not(feature = "clap"))]
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tutti_core::{BufferMut, BufferRef, BufferVec, F32};
+
+/// Planar scratch, `channels` × [`BLOCK`] frames: what this harness fills and
+/// measures. (fundsp's `BufferVec`, `BLOCK` = its 64 frames, until design doc
+/// 013 Phase 5 deleted it.)
+struct Planes(Vec<Vec<f32>>);
+
+impl Planes {
+    fn new(channels: usize) -> Self {
+        Self(vec![vec![0.0; BLOCK]; channels])
+    }
+
+    fn clear(&mut self) {
+        for c in &mut self.0 {
+            c.fill(0.0);
+        }
+    }
+
+    fn at(&self, channel: usize, i: usize) -> f32 {
+        self.0[channel][i]
+    }
+}
 
 /// A loaded plugin as the only node of a graph, driven with the
 /// buffer types this suite fills and measures (`fill_sine`, `peak`).
@@ -142,7 +162,7 @@ impl GraphUnit {
     /// into `output`'s first `outputs` channels. [`stage`](Self::stage),
     /// [`run`](Self::run) and [`read`](Self::read) in one, for the untimed
     /// callers.
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+    fn process(&mut self, size: usize, input: &Planes, output: &mut Planes) {
         self.stage(size, input);
         self.run(size);
         self.read(size, output);
@@ -150,10 +170,10 @@ impl GraphUnit {
 
     /// Copy `input` into this unit's planar input buffers. Not the plugin
     /// path: outside a timed region.
-    fn stage(&mut self, size: usize, input: &BufferRef) {
+    fn stage(&mut self, size: usize, input: &Planes) {
         for (c, ch) in self.ins.iter_mut().enumerate() {
             for (i, s) in ch[..size].iter_mut().enumerate() {
-                *s = input.at_f32(c, i);
+                *s = input.at(c, i);
             }
         }
     }
@@ -181,11 +201,11 @@ impl GraphUnit {
 
     /// Copy the last block's output out, and drain what the executor sent
     /// back. Outside a timed region.
-    fn read(&mut self, size: usize, output: &mut BufferMut) {
+    fn read(&mut self, size: usize, output: &mut Planes) {
         self.renderer.editor_mut().collect();
         for (c, ch) in self.outs.iter().enumerate() {
             for (i, &s) in ch[..size].iter().enumerate() {
-                output.set_f32(c, i, s);
+                output.0[c][i] = s;
             }
         }
     }
@@ -376,21 +396,21 @@ fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::Pl
 }
 
 /// A sine block at full-ish scale, so "audio arrived" is unambiguous.
-fn fill_sine(input: &mut BufferVec<F32>, channels: usize, block_index: usize) {
+fn fill_sine(input: &mut Planes, channels: usize, block_index: usize) {
     for ch in 0..channels {
         for i in 0..BLOCK {
             let t = (block_index * BLOCK + i) as f32 / SAMPLE_RATE as f32;
-            input.set_scalar(ch, i, (t * 440.0 * std::f32::consts::TAU).sin() * 0.5);
+            input.0[ch][i] = (t * 440.0 * std::f32::consts::TAU).sin() * 0.5;
         }
     }
 }
 
 #[cfg(any(feature = "clap", feature = "vst3"))]
-fn peak(buf: &BufferVec<F32>, channels: usize) -> f32 {
+fn peak(buf: &Planes, channels: usize) -> f32 {
     (0..channels)
         .map(|ch| {
             (0..BLOCK)
-                .map(|i| buf.at_scalar(ch, i).abs())
+                .map(|i| buf.at(ch, i).abs())
                 .fold(0.0f32, f32::max)
         })
         .fold(0.0f32, f32::max)
@@ -409,8 +429,8 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
         .map(|u| u.inputs().max(u.outputs()).max(1))
         .max()
         .unwrap_or(2);
-    let mut input = BufferVec::<F32>::new(max_ch);
-    let mut output = BufferVec::<F32>::new(max_ch);
+    let mut input = Planes::new(max_ch);
+    let mut output = Planes::new(max_ch);
 
     for block in 0..blocks {
         fill_sine(&mut input, max_ch, block);
@@ -431,7 +451,7 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
         // unit's planar buffers, and the editor's collect, are the harness's
         // and happen outside the region.
         for unit in units.iter_mut() {
-            unit.stage(BLOCK, &input.buffer_ref());
+            unit.stage(BLOCK, &input);
         }
         let start = Instant::now();
         for unit in units.iter_mut() {
@@ -441,7 +461,7 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
         costs.push(cost);
         for unit in units.iter_mut() {
             output.clear();
-            unit.read(BLOCK, &mut output.buffer_mut());
+            unit.read(BLOCK, &mut output);
         }
 
         if peak(&output, max_ch) > 0.0 {
@@ -697,8 +717,8 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
         .map(|u| u.inputs().max(u.outputs()).max(1))
         .max()
         .unwrap_or(2);
-    let mut input = BufferVec::<F32>::new(max_ch);
-    let mut output = BufferVec::<F32>::new(max_ch);
+    let mut input = Planes::new(max_ch);
+    let mut output = Planes::new(max_ch);
 
     // No sleep anywhere: as fast as the loop will go.
     let mut echoed = 0usize;
@@ -709,12 +729,12 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
 
         for unit in units.iter_mut() {
             output.clear();
-            unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+            unit.process(BLOCK, &input, &mut output);
         }
 
         // The bypass signature: output identical to the input we just fed in.
         let matches_input = (0..max_ch).all(|ch| {
-            (0..BLOCK).all(|i| (output.at_scalar(ch, i) - input.at_scalar(ch, i)).abs() < 1e-6)
+            (0..BLOCK).all(|i| (output.at(ch, i) - input.at(ch, i)).abs() < 1e-6)
         });
         if matches_input && in_peak > 0.0 {
             echoed += 1;
@@ -925,16 +945,16 @@ fn assert_nulls_at_declared_latency(mut unit: GraphUnit, path: &str) {
     let mut sent: Vec<Vec<f32>> = Vec::with_capacity(blocks);
     let mut got: Vec<Vec<f32>> = Vec::with_capacity(blocks);
 
-    let mut input = BufferVec::new(channels);
-    let mut output = BufferVec::new(channels);
+    let mut input = Planes::new(channels);
+    let mut output = Planes::new(channels);
 
     for b in 0..blocks {
         fill_sine(&mut input, channels, b);
-        sent.push((0..BLOCK).map(|i| input.at_scalar(0, i)).collect());
+        sent.push((0..BLOCK).map(|i| input.at(0, i)).collect());
 
         let start = Instant::now();
-        unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        got.push((0..BLOCK).map(|i| output.at_scalar(0, i)).collect());
+        unit.process(BLOCK, &input, &mut output);
+        got.push((0..BLOCK).map(|i| output.at(0, i)).collect());
 
         // Real callback pacing: without it the subprocess never runs and every
         // block reads back silent (see the module doc).

@@ -10,7 +10,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::Real;
+use super::Real;
 
 use tutti_core::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate, Tail};
 use tutti_graph::{

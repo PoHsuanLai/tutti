@@ -24,8 +24,7 @@ use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{
-    AudioUnit, Beat, BeatDuration, Bpm, BufferVec, Cents, ChannelLayout, SamplePosition,
-    SampleRate, StretchFactor,
+    Beat, BeatDuration, Bpm, Cents, ChannelLayout, SamplePosition, SampleRate, StretchFactor,
 };
 use tutti_graph::contract::Direct;
 use tutti_graph::Node;
@@ -119,36 +118,37 @@ fn memory_source_one_frame_blocks_are_allocation_free() {
     });
 }
 
+/// One 64-frame stereo block through `Unit::process`, planar slices built on
+/// the stack (no allocation of the harness's own).
+fn process_stereo(node: &mut TimeStretchUnit, input: &[[f32; 64]; 2], output: &mut [[f32; 64]; 2]) {
+    let ins = [&input[0][..], &input[1][..]];
+    let [o0, o1] = output;
+    let mut outs = [&mut o0[..], &mut o1[..]];
+    node.process(64, &ins, &mut outs);
+}
+
 #[test]
 fn time_stretch_process_is_allocation_free() {
     // The stretcher is now a pure filter: it owns no source and reads the stereo
-    // frames the caller feeds in. Feed a 2-channel input buffer (matching its
-    // `inputs() == 2`) primed with a constant source signal.
+    // frames the caller feeds in. Feed a 2-channel input (matching its two
+    // vocoders) primed with a constant source signal.
     let mut node = TimeStretchUnit::new(48_000.0);
     node.set_sample_rate(SampleRate(48_000.0));
     node.set_stretch_factor(StretchFactor::new(1.5));
     assert!(node.is_processing());
 
-    let mut input_vec = BufferVec::new(2);
-    for i in 0..64 {
-        input_vec.buffer_mut().set_f32(0, i, 0.25);
-        input_vec.buffer_mut().set_f32(1, i, 0.25);
-    }
-    let mut output_vec = BufferVec::new(2);
+    let input = [[0.25f32; 64]; 2];
+    let mut output = [[0.0f32; 64]; 2];
 
     // Warm up past the phase-vocoder fill-up latency so `process` is on its
     // steady-state path inside the guarded loop.
     for _ in 0..64 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
+        process_stereo(&mut node, &input, &mut output);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
+            process_stereo(&mut node, &input, &mut output);
         }
     });
 }
@@ -178,24 +178,16 @@ fn cloned_time_stretch_process_is_allocation_free() {
     let mut node = original.clone();
     assert!(node.is_processing());
 
-    let mut input_vec = BufferVec::new(2);
-    for i in 0..64 {
-        input_vec.buffer_mut().set_f32(0, i, 0.25);
-        input_vec.buffer_mut().set_f32(1, i, 0.25);
-    }
-    let mut output_vec = BufferVec::new(2);
+    let input = [[0.25f32; 64]; 2];
+    let mut output = [[0.0f32; 64]; 2];
 
     for _ in 0..64 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
+        process_stereo(&mut node, &input, &mut output);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
+            process_stereo(&mut node, &input, &mut output);
         }
     });
 }

@@ -402,7 +402,7 @@ mod audio_param {
     }
 
     /// Change detection is the whole gate: without it every param would push every
-    /// frame, and `Net::set` would enqueue a message per param per frame forever.
+    /// frame, re-sending every param to the audio thread each frame forever.
     #[test]
     fn an_unchanged_param_does_not_push() {
         let (mut app, entity) = app_with_node();

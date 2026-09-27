@@ -15,7 +15,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tutti_core::{AtomicF32, BufferVec, ChannelLayout, SampleRate, Samples};
+use tutti_core::{AtomicF32, ChannelLayout, SampleRate, Samples};
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::{
@@ -25,13 +25,14 @@ use tutti_nodes::{
 
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
 
-fn noise_block(channels: usize, seed: u32) -> BufferVec {
-    let mut buf = BufferVec::new(channels);
+/// 64 frames of noise per channel, planar.
+fn noise_block(channels: usize, seed: u32) -> Vec<Vec<f32>> {
+    let mut buf = vec![vec![0.0f32; 64]; channels];
     let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    for c in 0..channels {
-        for i in 0..64 {
+    for ch in &mut buf {
+        for s in ch.iter_mut() {
             state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            buf.set_f32(c, i, (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0);
+            *s = (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
         }
     }
     buf
@@ -46,10 +47,7 @@ fn render_node_finite(node: &mut dyn Node, rate: SampleRate, blocks: usize, seed
     let width = usize::from(node.shape().audio_in.count());
     let mut all = true;
     for b in 0..blocks {
-        let input = noise_block(width, seed + b as u32);
-        let chans: Vec<Vec<f32>> = (0..width)
-            .map(|c| (0..64).map(|i| input.at_f32(c, i)).collect())
-            .collect();
+        let chans = noise_block(width, seed + b as u32);
         let refs: Vec<&[f32]> = chans.iter().map(|c| &c[..]).collect();
         let out = drive(node, rate, &refs, &[]);
         all &= out.iter().flatten().all(|s| s.is_finite());

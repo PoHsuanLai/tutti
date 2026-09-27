@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use super::disk_voice::DiskVoice;
 use super::memory_source::{LoopSetting, MemorySource, VoiceWindow};
+use super::fault::FaultLatch;
 use tutti_core::{
-    Amplitude, Beat, BeatDuration, Cents, FaultLatch, PlaybackRate, SampleRate, StretchFactor,
+    Amplitude, Beat, BeatDuration, Cents, PlaybackRate, SampleRate, StretchFactor,
 };
 use tutti_graph::{ForkCause, ForkMode, Node};
 

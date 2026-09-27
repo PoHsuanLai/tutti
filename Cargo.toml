@@ -23,7 +23,6 @@ members = [
     "crates/core/tutti-core",
     "crates/core/tutti-cpal",
     "crates/core/tutti-types",
-    "crates/core/tutti-node",
     "crates/core/tutti-graph",
     "crates/core/tutti-mod",
     "crates/core/tutti-export",

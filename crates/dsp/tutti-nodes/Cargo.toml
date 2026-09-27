@@ -32,6 +32,9 @@ convolution = ["dep:realfft"]
 testing = []
 
 [dependencies]
+# The filters' `Real` (`src/filter/real.rs`) calls the same `libm`
+# transcendentals `tutti-node`'s tower did, so they render the same bits.
+libm = "0.2.15"
 # AudioUnit trait + DSP primitives from tutti-core. default-features = false:
 # tutti-nodes is pure DSP and needs none of tutti-core's Bevy layer.
 tutti-core = { path = "../../core/tutti-core", default-features = false }

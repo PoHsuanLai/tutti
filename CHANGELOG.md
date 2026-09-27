@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`AudioUnit` and `tutti-node` are deleted** (design doc 013, "Phase 5,
+  part 3"). **Breaking.** fundsp's node contract had no implementor left
+  but the sampler's internal stretch filter. The node contract is
+  `tutti_graph::Node`.
+
+  | Was | Now |
+  |---|---|
+  | crate `tutti-node`, `tutti::node` | removed |
+  | `tutti_core::{AudioUnit, BufferRef, BufferMut, BufferVec, Signal, SignalFrame, MAX_BUFFER_SIZE, Real, Sample, F32, F64}`, `tutti_core::prelude::{AudioUnit, BufferRef, BufferMut, SignalFrame}` | removed: implement `tutti_graph::Node`; planar data is `&[&[f32]]` / `&mut [&mut [f32]]` |
+  | `tutti_core::{FaultLatch, RenderFault}` | removed (the latch is tutti-sampler's, crate-private) |
+  | `tutti_core::Real` (the filters' float bound) | `tutti_nodes::Real` (`f32`, `f64`) |
+  | `tutti_core::{mnemonic, assert_unique}`; `tutti_plugin::backend::{PLUGIN_CLIENT_ID, route_with_latency}` | removed (`get_id` fingerprints and `route` went with `AudioUnit`) |
+  | `tutti_sampler::stretch::Unit` implements `AudioUnit` | inherent `reset`, `set_sample_rate`, `tick`, `process(size, &[&[f32]], &mut [&mut [f32]])`, `tail`; `latency_samples`, `input_rate`, `filter_lanes` unchanged |
+  | `just miri` / CI `miri` ran `tutti-node` | removed (its planar buffers were the subject) |
+
 - **The fundsp fork is deleted, and the latency solve is one pass**
   (design doc 013, "Phase 5, part 2"). **Breaking.**
   `crates/vendor/fundsp-tutti` is gone. `tutti_types::latency` no longer

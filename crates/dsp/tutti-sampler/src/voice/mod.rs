@@ -22,6 +22,8 @@ pub mod memory_source;
 // Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) butler
 // engine, which a non-Bevy host drives via `DiskStreamer`.
 pub mod disk_voice;
+// The first error an offline voice hit, for its fork's health probe.
+mod fault;
 // A live disk voice reads the butler's ring by position here.
 mod live_read;
 // A forked disk voice reads its file here instead of the butler's ring.

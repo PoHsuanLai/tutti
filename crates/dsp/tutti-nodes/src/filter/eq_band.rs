@@ -2,7 +2,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::Real;
+use super::Real;
 use tutti_core::{ChannelLayout, Db, Hz, Q};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 

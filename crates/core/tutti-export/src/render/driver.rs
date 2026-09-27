@@ -27,7 +27,6 @@
 use crate::render::BlockCursor;
 use crate::RenderGraph;
 use tutti_core::transport::RenderClock;
-use tutti_core::MAX_BUFFER_SIZE;
 use tutti_types::Samples;
 
 /// Widest graph output the fold handles (mono … 7.1.4). Channels past this are
@@ -343,9 +342,11 @@ impl FrameSource for PlaneSource<'_> {
         self.pos
     }
 
-    /// The planes are already rendered, so the size only paces the encoder.
+    /// The planes are already rendered, so the size only paces the encoder:
+    /// 64 frames, the block this source has always handed out (fundsp's
+    /// `MAX_BUFFER_SIZE`, until doc 013 Phase 5 deleted it).
     fn max_block(&self) -> usize {
-        MAX_BUFFER_SIZE
+        64
     }
 }
 

@@ -140,7 +140,7 @@
 //!   [`Editor::set_latency`].
 //! - [`Editor::fork`] — a copy of the graph, or of the sub-graph feeding
 //!   one node, that shares no state with the live one: the offline export
-//!   (and live duplicate) that replaces `Net::clone_isolated` +
+//!   (and live duplicate) that replaced `Net::clone_isolated` +
 //!   `isolate_for_offline` + `reset`. A node is forkable only if it handed
 //!   the editor a [`ForkSource`] at insert ([`IntoNode::into_parts`]);
 //!   [`ForkByClone`] and [`param_parts`] do, [`Unforkable`] does not (a mic
@@ -149,8 +149,9 @@
 //! # Building a graph in a test
 //!
 //! Test authors, examples and simple hosts: start from [`GraphBuilder`]. It
-//! speaks `Net`'s calls (`add` for `push`, `connect`, `pipe_input`,
-//! `pipe_output`, `chain`, …, with `Net`'s fan-out rules), builds the
+//! speaks the calls of fundsp's since-deleted `Net` (`add` for `push`,
+//! `connect`, `pipe_input`, `pipe_output`, `chain`, …, with `Net`'s fan-out
+//! rules), builds the
 //! [`Editor`]/[`Executor`] pair through the public editor API, and its
 //! [`Renderer`] drives the executor block by block and hands back planar or
 //! interleaved output. It is not a second graph model: all it produces is a

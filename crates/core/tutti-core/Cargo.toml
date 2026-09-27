@@ -37,14 +37,7 @@ serde = ["tutti-types/serde"]
 
 [dependencies]
 thiserror.workspace = true
-dyn-clone = { version = "1.0", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
-
-# The node contract — `AudioUnit`, the planar block buffers, the numeric tower,
-# the `Signal` routing vocabulary. Named directly rather than reached
-# through the fork: this crate re-exports the contract to the rest of the
-# engine, and a re-export should name the crate that *defines* what it forwards.
-tutti-node = { version = "0.0.1", path = "../tutti-node" }
 
 # The graph runtime (doc 013): the `tutti_graph::Executor` `Engine`
 # renders, its only runtime since Phase 3 PR 15. No cycle: tutti-graph depends

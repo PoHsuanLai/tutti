@@ -10,7 +10,7 @@
 //! so the cost is proportional to the sounding sub-voices rounded up to a
 //! group, not to `max_voices`.
 //!
-//! This replaces one `Box<dyn AudioUnit>` per sub-voice built from fundsp's
+//! This replaced one `Box<dyn AudioUnit>` per sub-voice built from fundsp's
 //! operator DSL, each ticked per sample through a virtual call and four
 //! `Shared` atomics. Surge's `QuadFilterChain` and Vital's `poly_float` are the
 //! same idea.

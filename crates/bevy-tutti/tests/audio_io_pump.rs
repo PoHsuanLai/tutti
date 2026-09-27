@@ -568,9 +568,8 @@ mod io_graph_composition {
 
     /// Render `frames` from the graph, per-sample.
     ///
-    /// `tick` rather than a `process` block for the reason `midi_soundfont_audio.rs`
-    /// gives: `BufferVec` holds one SIMD block per channel, so `process` needs
-    /// fundsp's buffer types rather than plain slices. `tick` polls the same units.
+    /// One `render_frame` per sample, so each call renders a one-frame block
+    /// of the graph and the result is collected frame by frame.
     fn render(app: &mut App, frames: usize) -> Vec<[f32; 2]> {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         (0..frames)

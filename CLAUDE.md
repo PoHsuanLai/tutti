@@ -5,33 +5,29 @@ and commands. The reasoning and history behind them is in
 [`docs/engineering-notes.md`](docs/engineering-notes.md): read the matching
 section there before you relax or work around a rule.
 
-## Direction: `tutti-graph` replaces `Net`
+## Direction: the graph is `tutti-graph`
 
-**fundsp's `Net` is being replaced by `tutti-graph`**, per
+**fundsp is gone; the audio graph is `tutti-graph`**, per
 [`docs/design/013-native-graph.md`](docs/design/013-native-graph.md) (the
 filename keeps the design's old "native graph" name; it is just the graph): a
 `Topology` value, a pure compiler producing an immutable plan, units stored
-once, and events as ports. Phase 3 is done: `Engine` renders only the
-graph (`Engine::new(&transport, &mut editor, executor)`, PR 15), it
-is `bevy-tutti`'s only runtime (`AudioGraphRes` holds an `Editor`, PDC is
-the compiler's, export forks the live graph with `Editor::fork`), and
-tutti-export renders only it. Phase 5 is under way: `Net` and the fundsp
-fork are deleted (`AudioNode` wraps a `NodeKey`; `tutti_types::latency` is a
-pure pass, the compiler's solve), and `AudioUnit` goes next. Phase 4 is done: every node is a
-`tutti_graph::Node` (doc 013, "Items 8 and 9: the per-node port"), and the
-`Legacy` adapter that ran an `AudioUnit` as one is deleted ("Legacy
-deleted"). A node with params is a `Node` + `ParamNode`, inserted through
-`param_parts`; a plain one is inserted `ForkByClone` or `Unforkable`; none
-implements `AudioUnit` (only `stretch::Unit`, a voice's internal filter, and
-the units `Net` holds until Phase 5 do). Until Phase 5 lands:
+once, and events as ports. Phases 3–5 are done: `Engine` renders only the
+graph (`Engine::new(&transport, &mut editor, executor)`), it is
+`bevy-tutti`'s only runtime (`AudioGraphRes` holds an `Editor`, PDC is the
+compiler's, export forks the live graph with `Editor::fork`), and every node
+is a `tutti_graph::Node`. Phase 5 deleted fundsp's `Net`, the vendored fork,
+`tutti-node` and its `AudioUnit` trait, `Setting` and the numeric tower;
+`AudioNode` wraps a `NodeKey`, and `tutti_types::latency` is a pure pass that
+is the compiler's own solve. Phase 6 (a parallel executor) is next.
 
-- Do not add new dependencies on `Net`, `NetBackend`, `Setting`, `AudioUnit`
-  or the fundsp combinators. Write nodes against `tutti_graph::Node`
-  (`shape`, `prepare`, `process`, `reset`: declared latency and tail in the
-  shape).
-  Do not compare against a `Net` render in a new test: pin an analytic
-  figure, an invariant of the render, or (for samples that call libm) a
-  golden digest asserted only on the target it was recorded on.
+- Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
+  `reset`: declared latency and tail in the shape). A node with params is a
+  `Node` + `ParamNode`, inserted through `param_parts`; a plain one is
+  inserted `ForkByClone` or `Unforkable`. An internal filter that is never a
+  graph node (the sampler's `stretch::Unit`) has plain methods, not a trait.
+- Do not compare a render against another reference render in a new test:
+  pin an analytic figure, an invariant of the render, or (for samples that
+  call libm) a golden digest asserted only on the target it was recorded on.
 - Musical delay is not latency. Report only processing latency to PDC.
 - Transport commands meant for playback take an `At`
   (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
@@ -139,7 +135,7 @@ crates/
   bevy-tutti     Bevy umbrella + adapter; the only Bevy-mandatory member.
   core/          tutti-core (graph runtime, transport, metering, PDC)
                  tutti-types (value vocabulary, units, io edges, rt primitives, Topology)
-                 tutti-node (fundsp's `AudioUnit`, for `Net` until Phase 5), tutti-cpal (device),
+                 tutti-cpal (device),
                  tutti-io (I/O edge: live + file decode)
                  tutti-mod (modulation), tutti-export (offline render)
                  tutti-graph (doc 013: the `Node` contract, Topology→Plan compiler,
@@ -154,8 +150,7 @@ crates/
 
 - `tutti-types` names no other tutti crate.
 - `tutti-graph` depends on no tutti crate but `tutti-types` (its outside
-  deps are `bytemuck` and `ringbuf`, the editor→executor queue; the edge to
-  `tutti-node` existed for the `Legacy` adapter and went with it), keeps every
+  deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
   the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
@@ -296,7 +291,9 @@ read the `Cargo.toml`, grep for the type, run the probe.
   to a new app-side path.
 - **Dead crate names:** `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
-  crates. A comment or doc that disagrees with the code is the bug.
+  crates, `tutti-node` and `fundsp-tutti` → deleted (the node contract is
+  `tutti_graph::Node`; the filters' `Real` is `tutti-nodes`'). A comment or
+  doc that disagrees with the code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is
   gated off MSVC, because `sin` differs in the last ulp between CRTs.
 

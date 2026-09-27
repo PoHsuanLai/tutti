@@ -57,7 +57,7 @@ tutti-io = { path = "../../core/tutti-io" }
 # The graph (doc 013): every node here is a `tutti_graph::Node`, reads
 # the transport from its block's `Env`, and hands its controls and its fork
 # source over through `IntoNode`. No cycle: `tutti-graph` names only
-# `tutti-types` and `tutti-node`.
+# `tutti-types`.
 tutti-graph = { path = "../../core/tutti-graph" }
 
 # The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an

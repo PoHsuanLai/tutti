@@ -39,7 +39,7 @@ use super::types::Direction;
 use crate::butler::control::StreamOrigin;
 use crate::butler::{RtState, SharedReader};
 use crate::lanes::Lanes;
-use tutti_core::{FaultLatch, RenderFault};
+use super::fault::FaultLatch;
 
 /// Frames a free-running block's positions are computed for at a time:
 /// `process` renders a longer block in pieces this long, so the positions

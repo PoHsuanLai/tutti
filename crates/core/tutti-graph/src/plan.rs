@@ -64,7 +64,7 @@ pub const EMPTY_SLOT: u32 = 0;
 /// A dense index into the runtime's unit store.
 ///
 /// Resolved from a [`NodeKey`] on the **control** side by `compile`, so the
-/// audio thread never hashes a key (FunDSP's `migrate` does a HashMap lookup on
+/// audio thread never hashes a key (FunDSP's `migrate` did a HashMap lookup on
 /// the RT side; doc 013 §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitIdx(pub u32);

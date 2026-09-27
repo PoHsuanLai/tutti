@@ -40,7 +40,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tutti_core::{FaultLatch, SamplePosition};
+use super::fault::FaultLatch;
+use tutti_core::SamplePosition;
 use tutti_io::Wave;
 
 use super::interp::{interpolate_taps, read_frame, read_looped_frame, tap_indices};

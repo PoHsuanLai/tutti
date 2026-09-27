@@ -166,8 +166,9 @@ libc = "0.2"
 
 # NOTE: the `loom` model of this crate's shared-memory header protocol lives in
 # the sibling `tutti-shm-model` crate, not here. `--cfg loom` is a global
-# RUSTFLAG and `lfqueue` — a mandatory transitive dependency of this crate, via
-# fundsp-tutti → tutti-core — fails to compile under it. See that crate's
+# RUSTFLAG, and the model's target must not depend on what the rest of this
+# crate's tree does under it (`lfqueue`, via the fundsp fork, failed to compile
+# under it until doc 013 Phase 5 deleted the fork). See that crate's
 # Cargo.toml for the full reasoning.
 
 # docs.rs renders with every feature on. `default = []` keeps the engine

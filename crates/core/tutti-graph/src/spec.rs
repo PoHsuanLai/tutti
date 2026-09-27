@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tutti_types::graph::{Invalid, Valid};
+use tutti_types::latency::{Feed, LatencyGraph};
 use tutti_types::{NodeKey, Samples, Topology};
 
 use crate::node::Resolution;
@@ -434,5 +435,54 @@ impl ValidGraph {
     /// The checked modulated params: only ports with at least one source.
     pub fn params(&self) -> &BTreeMap<ParamIn, ParamMod> {
         &self.params
+    }
+}
+
+/// The latency folds over the whole spec: the topology's audio ports, plus
+/// each node's event and param-modulation sources, which the compiler counts
+/// toward a node's arrival. So `tutti_types::latency::plan(&spec)` is the
+/// compensation `compile` gives the spec's plan (`tests/compile_passes.rs`
+/// pins it); over `spec.topology` alone, a node fed events by a latent node
+/// would arrive early.
+impl LatencyGraph for GraphSpec {
+    type Node = NodeKey;
+
+    fn nodes(&self) -> impl Iterator<Item = NodeKey> {
+        LatencyGraph::nodes(&self.topology)
+    }
+
+    fn latency(&self, node: NodeKey) -> Samples {
+        LatencyGraph::latency(&self.topology, node)
+    }
+
+    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = Feed<NodeKey>> {
+        LatencyGraph::inputs(&self.topology, node)
+    }
+
+    /// Direct event sources (a feedback edge carries last block's events, so
+    /// nothing along this block's path) and param-modulation sources.
+    fn other_sources(&self, node: NodeKey) -> impl Iterator<Item = NodeKey> {
+        let ports = EventIn { node, port: 0 }..=EventIn {
+            node,
+            port: u16::MAX,
+        };
+        let events = self
+            .events
+            .range(ports)
+            .flat_map(|(_, sources)| sources)
+            .filter_map(|e| match *e {
+                EventEdge::Direct(from) => Some(from.node),
+                EventEdge::Feedback { .. } => None,
+            });
+        let params = self
+            .params
+            .iter()
+            .filter(move |(at, _)| at.node == node)
+            .flat_map(|(_, m)| m.sources.iter().map(|s| s.from.node()));
+        events.chain(params)
+    }
+
+    fn outputs(&self) -> impl Iterator<Item = Option<NodeKey>> {
+        LatencyGraph::outputs(&self.topology)
     }
 }

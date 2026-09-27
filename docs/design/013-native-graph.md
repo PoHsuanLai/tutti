@@ -232,8 +232,9 @@ the interpreter.
   *events* of a vanished delay are flushed to the surviving sink at offset 0,
   so a note-off is never lost. Feedback keys include the unit generation.
 - **Global inputs are aligned like any other source** at a merge point with a
-  latent path. `tutti_types::latency::plan` (the fundsp side) does not do
-  this; the difference goes away when `Net` does (Phase 5).
+  latent path. `tutti_types::latency::plan` (the fundsp side) did not; since
+  Phase 5 it is the same solve as the compiler's, and does
+  ([part 2](#phase-5-part-2-the-fork-is-deleted)).
 - **Env and PDC**: today the beat travels as an audio signal, so PDC delays it
   along with everything else. Once it comes from `Env`, `Cx` has to carry each
   node's compiled **arrival latency** so the node reads the transport at its
@@ -4099,6 +4100,59 @@ crossfade, a latency cut) is pending; a re-prepare or `package` clears the
 record. Pinned in `executor.rs`
 (`an_unchanged_commit_sends_nothing_and_a_change_still_sends`) and by the
 budget itself.
+
+#### Phase 5, part 2: the fork is deleted
+
+`crates/vendor/fundsp-tutti` is gone (the 32.7k-line row of the
+[Phase 5 table](#phase-5--delete)), with its workspace membership and its
+`--exclude fundsp-tutti` in CI's and `just`'s clippy, rustdoc and Windows
+runs. No non-test crate used any of its DSP kernels or I/O by then (the
+decoder had moved to `tutti-io` in Phase 0, the FFT to the sampler and the
+convolver, the filters and panners to `tutti-nodes`), so nothing was
+rehomed. Two side effects: nothing pulls `font-kit` any more (the fork's
+bare `plotters` dev-dependency did), so CI stops installing
+`libfontconfig1-dev`; and `lfqueue`, which broke `--cfg loom` and is why
+`tutti-shm-model` is its own crate, left the tree.
+
+**The Net-facing half of `tutti_types::latency` became a pass.**
+`DelayInsertion` and `compensate(&mut G)` existed so `Net` could have its
+delays inserted into it; `latency::delays(&G) -> Delays<N>` returns the same
+lists (per audio port, per output channel, and the `Compensation`) as a
+value. Every assertion of the module's tests is kept on the returned lists;
+`compensate_clears_before_planning`, whose subject was `clear_delays`,
+became `plan_is_the_compensation_of_delays_and_both_are_pure` (a pure pass
+has nothing to stack).
+
+**And the two latency solves are one**, as the compiler's module docs had
+promised for "when `Net` goes":
+
+- `LatencyGraph::inputs` yields a `Feed` (`Node`, `Outside`, `None`), so a
+  global input is a merge-point source arriving at zero, aligned as the
+  compiler aligns it;
+- `LatencyGraph::other_sources` (default none) lists what else counts
+  toward a node's arrival; `GraphSpec`'s impl (tutti-graph) lists direct
+  event sources and param-modulation sources, as the compiler's arrival
+  does;
+- every audio port closes its gap to the node's *arrival*, the compiler's
+  rule (the old pass aligned only to the latest audio port, which is the
+  same figure when audio is all there is).
+
+So `latency::plan(&spec)` is the compensation `compile` gives the spec's
+plan, events included. bevy-tutti's `latency_plan` (and the debug check
+comparing it with the compiled plan) folds over the spec, not its topology:
+over the topology alone a node fed events by a latent node arrived early,
+and that check would have fired. Pinned in `compile_passes.rs`
+(`pdc_delays_equal_latency_delays`,
+`a_global_input_merging_with_a_latent_path_is_delayed`,
+`an_event_source_counts_toward_arrival_in_both_solves`) and the module's own
+`a_global_input_meeting_a_latent_path_is_delayed` and
+`other_sources_count_toward_arrival`. The tail fold still walks audio edges
+only.
+
+**Deleted with it:** `tutti-core/tests/no_net_backend.rs` and bevy-tutti's
+`tests/no_net.rs`, text scans keeping `NetBackend` / `Net` out of those
+crates' code. With the fork gone neither type exists, so a line naming one
+cannot compile and the scans can no longer fail on anything.
 
 ## Decisions for the owner
 

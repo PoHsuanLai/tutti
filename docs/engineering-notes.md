@@ -133,19 +133,19 @@ crates/
     tutti-plugin-types / tutti-plugin-server
     tutti-shm-model     # Test-only loom model of tutti-plugin's shm header
                         #   protocol. A separate crate because `--cfg loom` is
-                        #   global and breaks a transitive dep of tutti-plugin.
+                        #   global and reaches every dep of tutti-plugin.
     formats/            # vst2-host / vst3-host / clap-host / au-host
     vendor/vst-tutti    # Vendored VST2 bindings
     vendor/vst3-sdk     # The three Steinberg submodules
   vendor/
-    fundsp-tutti                  # Vendored FunDSP
     rustysynth-tutti/rustysynth   # SoundFont synth (inner crate is the member)
     tutti-clap-test-plugin
 ```
 
-The two vendored forks (`fundsp-tutti`, `rustysynth-tutti`) are excluded from
-clippy and rustdoc in CI: they are third-party code we do not restyle, and they
-carry pre-existing lint debt that is not ours to pay.
+The vendored fork (`rustysynth-tutti`) is excluded from clippy and rustdoc in
+CI: it is third-party code we do not restyle, and it carries pre-existing lint
+debt that is not ours to pay. (The FunDSP fork, `fundsp-tutti`, was the other
+until design doc 013 Phase 5 deleted it.)
 
 ## Unit Types (MANDATORY)
 

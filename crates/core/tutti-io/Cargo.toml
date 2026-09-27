@@ -15,7 +15,7 @@ workspace = true
 # No codec by default, as on every engine crate: a host doing only mic → WAV
 # needs no decoder. Each feature pulls exactly one symphonia container (and
 # its codec) for `Wave::load`, `Wave::probe_metadata` and `FileIn`. They moved
-# here from `tutti-core` (which forwarded them to the fundsp fork) with the
+# here from `tutti-core` (which forwarded them to the since-deleted fundsp fork) with the
 # decoder, design doc 013 Phase 0. `wav` needs `pcm`: WAV is only the container.
 default = []
 wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]

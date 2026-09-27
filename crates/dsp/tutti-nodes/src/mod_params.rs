@@ -133,7 +133,9 @@ impl ModParams for CompressorNode {
             UnitParam::Ratio => self.ratio(),
             UnitParam::Attack => self.attack_time(),
             UnitParam::Release => self.release_time(),
-            UnitParam::Makeup => self.makeup_gain(),
+            // `GainDb`, the address its `ParamSet` gives the makeup: one
+            // name for one cell, whichever path a host takes to it.
+            UnitParam::GainDb => self.makeup_gain(),
             _ => return None,
         };
         atomic_target(atomic, base, min, max)
@@ -352,6 +354,34 @@ mod tests {
         assert!(node
             .mod_target(unit(UnitParam::Feedback), 0.0, 0.0, 1.0)
             .is_none());
+    }
+
+    /// The compressor's makeup is `GainDb` on both of its paths: a
+    /// control-rate target here, and its `ParamSet` (what bevy-tutti
+    /// resolves a native node's routes through). A route on `Makeup` binds
+    /// on neither, rather than on one.
+    ///
+    /// Mutation (run): name it `UnitParam::Makeup` here again → `GainDb`
+    /// resolves to nothing → fails.
+    #[test]
+    fn compressor_makeup_is_gain_db_on_both_paths() {
+        use tutti_graph::ParamNode;
+
+        let node = crate::CompressorNode::stereo(-20.0, 4.0, 0.005, 0.05);
+        let makeup = node.makeup_gain();
+        let target = node
+            .mod_target(unit(UnitParam::GainDb), 0.0, -24.0, 24.0)
+            .expect("the makeup is modulatable as GainDb");
+        target.accumulate(LayerKey(1), 6.0);
+        assert!(
+            (makeup.load(core::sync::atomic::Ordering::Acquire) - 6.0).abs() < 1e-3,
+            "the route reaches the makeup cell"
+        );
+        assert!(node.param_set().get(UnitParam::GainDb).is_some());
+        assert!(node
+            .mod_target(unit(UnitParam::Makeup), 0.0, -24.0, 24.0)
+            .is_none());
+        assert!(node.param_set().get(UnitParam::Makeup).is_none());
     }
 
     // ── End-to-end: modulate a REAL audio node through the ModMatrix ──

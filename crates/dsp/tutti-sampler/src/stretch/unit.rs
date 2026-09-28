@@ -333,6 +333,19 @@ impl Unit {
             .map_or(0, |v| v.geometry.window().get())
     }
 
+    /// Output frames a flushed filter must be fed before its output is
+    /// steady: the [`latency`](Self::latency_samples) (one window of the
+    /// vocoder's own input) over the [`intake_rate`](Self::intake_rate) it
+    /// takes that input at, so a window of input times the effective
+    /// stretch — 4 096 frames at 2x on the default window. Zero when
+    /// bypassing.
+    ///
+    /// Not a PDC figure: it counts output frames of *feed*, the refill a
+    /// jump costs (`PlaybackSlot::prime_stretch`).
+    pub(crate) fn refill_frames(&self) -> usize {
+        (self.latency_samples() as f64 / self.intake_rate()).ceil() as usize
+    }
+
     /// Time-scaling the vocoder actually performs: `stretch × pitch_ratio`.
     ///
     /// **Not** [`stretch_factor`](Self::stretch_factor), and deliberately not

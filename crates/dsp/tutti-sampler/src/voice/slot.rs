@@ -15,7 +15,7 @@ use crate::stretch;
 
 use super::clock::BlockClock;
 use super::types::{Playback, SlotId, Voice, VoiceSource};
-use tutti_core::{Cents, ChannelLayout, ReadRate, SampleRate, StretchFactor};
+use tutti_core::{Cents, ChannelLayout, ReadRate, SamplePosition, SampleRate, StretchFactor};
 
 /// A [`Voice`] plus the resident time-stretch DSP processor, and the read that
 /// turns the pair into audio.
@@ -277,9 +277,91 @@ impl PlaybackSlot {
                     from = run.start;
                 }
                 self.flush_playhead_state();
+                self.prime_stretch(clock, run.start, n, scratch);
             }
         }
         self.render_piece(clock, from..range.end, n, scratch, out);
+    }
+
+    /// After a jump's flush, feed a memory voice's stretch filter the
+    /// source it would have read in the [`refill`](stretch::Unit::refill_frames)
+    /// frames leading up to block frame `at`, and discard what it says. A
+    /// flushed filter holds no window of input, so it is otherwise silent
+    /// after every seek or wrap for as long as it takes to take one in (a
+    /// window times the effective stretch: about 4 100 frames at 2x);
+    /// primed, its output from `at` on is what it would have been had the
+    /// voice been playing there all along — the same lag, no gap.
+    ///
+    /// The positions are the placed read's own, extended backwards from
+    /// `at`'s by its step (`read_rate × stretch_rate`); one before the
+    /// wave's start feeds nothing. Only the memory tier primes: it can read
+    /// any position, where the disk tier reads a ring forward and has nothing
+    /// before the jump. No-op when the voice does not stretch or has no read
+    /// at `at` (outside its window, a standing transport).
+    ///
+    /// Audio-thread safe: the scratch is the slot's owner's, and the filter
+    /// runs as it does for a block. Costs the filter's work for the refill,
+    /// once per jump.
+    fn prime_stretch(
+        &mut self,
+        clock: &BlockClock<'_>,
+        at: usize,
+        n: usize,
+        scratch: &mut BlockScratch,
+    ) {
+        if !self.needs_stretch() {
+            return;
+        }
+        let direction = self.voice.play.direction;
+        let gain = self.voice.play.gain.get();
+        let (VoiceSource::Memory(sampler), Some(unit)) =
+            (&mut self.voice.source, self.stretch.as_mut())
+        else {
+            return;
+        };
+        let refill = unit.refill_frames();
+        if refill == 0 {
+            return;
+        }
+        let stretch_rate = unit.input_rate();
+        let BlockScratch {
+            out,
+            raw,
+            positions,
+            gather,
+        } = scratch;
+        sampler.placed_positions(clock, at..at + 1, stretch_rate, &mut positions[..1]);
+        let Some(origin) = positions[0] else {
+            return;
+        };
+        let step = sampler.read_rate().then(stretch_rate).get();
+        let mut done = 0;
+        while done < refill {
+            let frames = (refill - done).min(LANE_FRAMES);
+            for (i, slot) in positions[..frames].iter_mut().enumerate() {
+                let back = (refill - done - i) as f64;
+                let pos = origin.get() - back * step;
+                *slot = (pos >= 0.0).then_some(SamplePosition(pos));
+            }
+            sampler.read_placed_lanes(&positions[..frames], direction, raw, n, gather);
+            for lane in raw.lanes_mut().iter_mut().take(n) {
+                scale(&mut lane[..frames], gain);
+            }
+            // Only the frames with a read feed the filter, as in the block.
+            let mut i = 0;
+            while i < frames {
+                let inside = positions[i].is_some();
+                let mut j = i + 1;
+                while j < frames && positions[j].is_some() == inside {
+                    j += 1;
+                }
+                if inside {
+                    unit.filter_lanes(raw.lanes(), out.lanes_mut(), n, i..j);
+                }
+                i = j;
+            }
+            done += frames;
+        }
     }
 
     /// [`render_lanes`](Self::render_lanes) for `range`, added into `out`.

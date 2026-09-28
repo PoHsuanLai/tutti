@@ -45,7 +45,7 @@ pub struct StreamConfig {
 }
 
 impl StreamConfig {
-    /// Build a config from explicit values.
+    /// Builds a config from explicit values.
     pub fn new(sample_rate: f64, block_size: u32, channels: AuBusLayout) -> Self {
         Self {
             sample_rate,
@@ -54,7 +54,7 @@ impl StreamConfig {
         }
     }
 
-    /// Query the AU's current stream format on bus 0 to discover its channel
+    /// Queries the AU's current stream format on bus 0 to discover its channel
     /// layout.
     ///
     /// Bus 0 only, deliberately: this layout is what the render scratch is sized
@@ -104,7 +104,7 @@ impl StreamConfig {
     /// is 8%), so a genuinely rejected rate never slips through.
     const SAMPLE_RATE_TOLERANCE: f64 = 1e-6;
 
-    /// Write this configuration onto the AU and return the *effective* channel
+    /// Writes this configuration onto the AU and return the *effective* channel
     /// layout the AU actually accepted.
     ///
     /// Sets `MaximumFramesPerSlice`, then the input/output stream formats.
@@ -244,7 +244,7 @@ impl StreamConfig {
         Ok(effective)
     }
 
-    /// Read `MaximumFramesPerSlice` back and fail if the AU kept a different
+    /// Reads `MaximumFramesPerSlice` back and fail if the AU kept a different
     /// value than [`StreamConfig::block_size`].
     ///
     /// Separate from [`Self::apply`], which `?`s on the *set* alone. A successful

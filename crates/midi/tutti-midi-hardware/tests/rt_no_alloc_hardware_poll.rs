@@ -1,50 +1,75 @@
 //! Regression gate for the **hardware** MIDI poll on the audio thread.
 //!
-//! `tutti-midi-runtime`'s own `rt_no_alloc_pre_block` gate drives `MidiPreBlock`
-//! through a `FixedInput` fake, which copies from a pre-built `Vec` and can
-//! never allocate — so it proves nothing about the production input. That is
-//! `HardwareMidiInputs`, and reaching it needs this crate, because
-//! `tutti-midi-runtime` cannot depend on `tutti-midi-hardware` (the dependency runs
-//! the other way).
+//! `tutti-midi-runtime`'s own gate drives `MidiInputNode` through a fake wire,
+//! which copies from a pre-built batch and can never allocate — so it proves
+//! nothing about the production input. That is `HardwareMidiInputs`, and
+//! reaching it needs this crate, because `tutti-midi-runtime` cannot depend on
+//! `tutti-midi-hardware` (the dependency runs the other way).
 //!
 //! What the real path does that the fake does not: drain N port rings into a
 //! timestamp scratch, convert arrival `Instant`s to per-block `frame_offset`s,
 //! and copy the result into a fixed-capacity scratch buffer. Each of those is a
 //! place a buffer could grow, and growing means `realloc` inside the callback.
+//!
+//! Each gate runs the node in a graph, channel 0's port wired to a
+//! `MidiOutNode` whose ring the test drains, so what was polled is counted.
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use assert_no_alloc::AllocDisabler;
+use tutti_core::{NodeKey, SampleRate, Samples};
+use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Executor, Prepare, Transport};
 use tutti_midi_hardware::HardwareMidiInputs;
-use tutti_midi_runtime::MidiPreBlock;
+use tutti_midi_runtime::{MidiInputNode, MidiOutControls, MidiOutNode};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup, RtPublish};
-use tutti_midi_types::{MidiRoute, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-/// Counts routed events so a test can confirm the poll actually carried
-/// something. A relaxed counter bump is alloc-free.
-struct CountingQueue {
-    count: std::sync::atomic::AtomicUsize,
+/// A graph holding an input node over `inputs`, its channel-0 port feeding a
+/// MIDI-out node.
+struct Rig {
+    _editor: Editor,
+    exec: Executor,
+    out: MidiOutControls,
+    drain: Vec<MidiEvent>,
+    /// Events that reached the out node.
+    carried: usize,
 }
 
-impl MidiRouter for CountingQueue {
-    fn queue(&self, _unit_id: MidiUnitId, events: &[MidiEvent]) -> usize {
-        self.count
-            .fetch_add(events.len(), std::sync::atomic::Ordering::Relaxed);
-        events.len()
+impl Rig {
+    fn new(inputs: Arc<HardwareMidiInputs>) -> Self {
+        let (mut editor, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(1024)));
+        editor.insert(NodeKey(1), "in", MidiInputNode::new(Some(inputs)));
+        let out = editor.insert(NodeKey(2), "out", MidiOutNode::new());
+        editor.spec_mut().connect_events(
+            EventIn {
+                node: NodeKey(2),
+                port: 0,
+            },
+            EventEdge::Direct(EventOut {
+                node: NodeKey(1),
+                port: 0,
+            }),
+        );
+        editor.commit().expect("commits");
+        Self {
+            _editor: editor,
+            exec,
+            out,
+            drain: vec![MidiEvent::noop(); 2048],
+            carried: 0,
+        }
     }
-}
 
-/// One route on channel 0 to a target unit, so polled events have somewhere to go.
-fn routing() -> Arc<RtPublish<MidiRoutingSnapshot>> {
-    let route = MidiRoute::for_channel(MidiChannel::FIRST).with_target(MidiUnitId::new(42));
-    Arc::new(RtPublish::from_arc(Arc::new(
-        MidiRoutingSnapshot::from_routes(vec![route], None),
-    )))
+    /// One block of `frames`, and drain what reached the out node.
+    fn run(&mut self, frames: usize) {
+        self.exec
+            .process(frames, &Transport::default(), &[], &mut []);
+        self.carried += self.out.poll_into(&mut self.drain);
+    }
 }
 
 fn note() -> MidiEvent {
@@ -65,12 +90,7 @@ fn hardware_poll_is_allocation_free() {
     inputs.set_sample_rate(48_000.0);
     let port = inputs.create_input_port("Test Input");
 
-    let mut pre = MidiPreBlock::new(routing());
-    pre.set_input(inputs.clone());
-    let queue = Arc::new(CountingQueue {
-        count: std::sync::atomic::AtomicUsize::new(0),
-    });
-    pre.set_queue(Arc::clone(&queue) as Arc<dyn MidiRouter>);
+    let mut pre = Rig::new(inputs.clone());
 
     // Warm up: the first poll primes the scratch buffers, which is the engine's
     // cost rather than the audio thread's.
@@ -85,7 +105,7 @@ fn hardware_poll_is_allocation_free() {
     });
 
     assert!(
-        queue.count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        pre.carried > 0,
         "the poll must have carried events — an empty drain would prove nothing"
     );
 }
@@ -103,8 +123,7 @@ fn hardware_poll_over_capacity_is_allocation_free() {
         .map(|i| inputs.create_input_port(format!("Input {i}")))
         .collect();
 
-    let mut pre = MidiPreBlock::new(routing());
-    pre.set_input(inputs.clone());
+    let mut pre = Rig::new(inputs.clone());
 
     // Warm with a *light* load — one event per port.
     //
@@ -137,8 +156,7 @@ fn hardware_poll_across_block_sizes_is_allocation_free() {
     inputs.set_sample_rate(48_000.0);
     let port = inputs.create_input_port("Test Input");
 
-    let mut pre = MidiPreBlock::new(routing());
-    pre.set_input(inputs.clone());
+    let mut pre = Rig::new(inputs.clone());
 
     const SIZES: [usize; 5] = [64, 128, 256, 512, 1024];
     for frames in SIZES {
@@ -167,8 +185,7 @@ fn hardware_poll_with_stale_timestamps_is_allocation_free() {
     inputs.set_sample_rate(48_000.0);
     let port = inputs.create_input_port("Test Input");
 
-    let mut pre = MidiPreBlock::new(routing());
-    pre.set_input(inputs.clone());
+    let mut pre = Rig::new(inputs.clone());
 
     let handle = inputs.get_input_producer_handle(port).expect("port exists");
     // An arrival a full second ago converts to a `samples_ago` far past any

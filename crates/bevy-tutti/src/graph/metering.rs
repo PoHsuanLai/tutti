@@ -45,7 +45,11 @@ use bevy_ecs::prelude::*;
 
 use tutti_core::MasterMeter;
 
-/// The master output's lock-free peak/RMS meter.
+/// The master output's lock-free peak/RMS meter, as a Bevy resource.
+///
+/// Derefs to [`MasterMeter`]: read it with [`MasterMeter::get`], switch it with
+/// `enable`/`disable`. Reading is lock-free and safe from any system; the audio
+/// callback writes it.
 #[derive(Resource, Clone, Default)]
 pub struct MeteringRes(pub MasterMeter);
 

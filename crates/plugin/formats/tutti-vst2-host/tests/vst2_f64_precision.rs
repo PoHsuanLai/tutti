@@ -90,9 +90,8 @@ where
     // write is discarded with the unload and the next load maps a fresh image
     // reading the default.
     //
-    // Measured on this bug in `vst2_latency.rs`: 2 of 6 runs failed without
-    // this, 0 of 6 with it. It reads as flakiness because it passes whenever
-    // another test's instance happens to keep the image resident.
+    // Without the leak the lost write reads as flakiness, because it passes
+    // whenever another test's instance happens to keep the image resident.
     std::mem::forget(lib);
     r
 }
@@ -164,8 +163,8 @@ fn render_f64(
 /// A plugin declaring `effFlagsCanDoubleReplacing` must be entered through
 /// `processReplacingF64`.
 ///
-/// Pre-fix this reads `Replacing`: `process_block` built an
-/// `AudioBuffer<f32>` for both public entry points.
+/// A host that built an `AudioBuffer<f32>` for both public entry points would
+/// read `Replacing` here.
 #[test]
 fn f64_capable_plugin_is_entered_through_the_f64_slot() {
     let _guard = lock_probe();
@@ -202,8 +201,8 @@ fn f64_render_preserves_precision_f32_cannot_carry() {
     let meta = instance.metadata().clone();
 
     // Guard the fixture, per channel, against the tag rounding the difference
-    // back off. Checking only the bare round trip is not enough — that is
-    // exactly how the first version of this test passed against the bug.
+    // back off. Checking only the bare round trip is not enough: a narrowing
+    // host can pass it.
     for ch in 0..meta.num_outputs.count() as usize {
         let tag = tutti_vst2_test_plugin::channel_tag(ch) as f64;
         assert_ne!(

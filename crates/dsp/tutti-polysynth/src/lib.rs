@@ -1,28 +1,17 @@
-//! Polyphonic subtractive and wavetable synthesis for the Tutti audio engine.
-//!
-//! One type does the work: [`PolySynth`], an `AudioUnit` built from a
-//! [`SynthConfig`] and driven by MIDI. It takes no audio input — notes arrive
-//! through its own lock-free MIDI inbox, reached via
-//! [`midi_sender`](PolySynth::midi_sender) — and renders stereo.
-//!
-//! Around it sit the voice engine's parts, all configured through
-//! [`SynthConfig`]: allocation ([`AllocationStrategy`], [`VoiceMode`]), unison
-//! ([`UnisonConfig`]), portamento ([`PortamentoConfig`]) and [`Tuning`].
-//!
-//! `.sf2` playback is [`tutti-soundfont`]'s, a peer crate rather than a feature
-//! of this one: a sample player shares no voice engine, envelope model or filter
-//! with a subtractive synth, so the two have nothing to hold in common beyond
-//! the `AudioUnit` trait.
-//!
-//! The quick start, what is fixed at construction, the `max_voices` ceiling and
-//! the features are in the crate README, included below.
-//!
-//! [`tutti-soundfont`]: https://docs.rs/tutti-soundfont
 #![doc = include_str!("../README.md")]
+//!
+//! ## Items
+//!
+//! - [`PolySynth`]: the synth, a graph node with one MIDI event input.
+//! - [`SynthConfig`]: everything a synth is built from, with
+//!   [`OscillatorType`], [`FilterType`] and [`SvfMode`], [`EnvelopeConfig`]
+//!   and [`FilterModConfig`].
+//! - Voice allocation: [`VoiceMode`] and [`AllocationStrategy`].
+//! - [`UnisonConfig`], [`PortamentoConfig`] (with [`PortamentoMode`] and
+//!   [`PortamentoCurve`]) and [`Tuning`].
+//! - [`enum@Error`] and [`Result`]: what construction can fail with.
 
 mod error;
-
-mod node_id;
 pub use error::{Error, Result};
 
 mod voice;
@@ -51,8 +40,8 @@ pub use synth::{
 };
 
 mod polysynth;
-// `PolySynth::fork_source` / `fork_instance`: the synth in a fork of the
-// native graph (an export), with its clip.
+// `PolySynth::fork_instance`: the synth in a fork of the
+// graph (an export), with its clip.
 mod fork;
 pub use polysynth::PolySynth;
 

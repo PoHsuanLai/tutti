@@ -59,7 +59,7 @@ unsafe impl Send for UmpVirtualSource {}
 unsafe impl Sync for UmpVirtualSource {}
 
 impl UmpVirtualSource {
-    /// Create a MIDI-2.0 virtual source named `name`, visible to other apps as a
+    /// Creates a MIDI-2.0 virtual source named `name`, visible to other apps as a
     /// UMP-capable MIDI source.
     ///
     /// Keep the value alive: dropping it disposes the endpoint and its client.

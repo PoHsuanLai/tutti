@@ -88,13 +88,19 @@ pub enum PluginLiveness {
     Healthy,
     /// Recently unhealthy, but not yet written off — see the module docs on why
     /// one observation is not enough.
-    Failing { consecutive: u8 },
+    Failing {
+        /// How many polls in a row have found the plugin unhealthy.
+        consecutive: u8,
+    },
     /// Written off. The node has been unwired; the plugin is not coming back
     /// without a fresh load, because the engine offers no relaunch.
     ///
     /// The cause comes from the engine's latch, so it names the actual failure
     /// — a refused connection, a protocol mismatch, a dropped stream.
-    Dead { cause: String },
+    Dead {
+        /// The engine's description of the failure.
+        cause: String,
+    },
 }
 
 /// Liveness and last-known-good state for one loaded plugin.
@@ -171,7 +177,7 @@ impl PluginHealth {
 // immediately, so it waits out only the command actually in flight. The
 // ten-second bound needs a `save_state` crossing the wire at that instant.
 
-/// Poll liveness, and unwire plugins that have failed often enough to be
+/// Polls liveness, and unwires plugins that have failed often enough to be
 /// declared dead.
 ///
 /// Removing `AudioNode` is the whole teardown: the `On<Remove, AudioNode>`
@@ -367,15 +373,12 @@ mod tests {
             state,
             saves,
         });
-        let (sender, _receiver) =
-            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         PluginHandle::from_backend(
             backend,
             OptionalCapabilities::default(),
             Default::default(),
             Default::default(),
             Default::default(),
-            sender,
         )
     }
 

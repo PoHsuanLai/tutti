@@ -90,7 +90,7 @@ pub trait Vst3Sample: tutti_plugin_types::Sample {
     /// `ProcessData::symbolicSampleSize`.
     const VST3_SYMBOLIC_SIZE: i32;
 
-    /// Store a channel-pointer table into `bus`'s buffer union via the member
+    /// Stores a channel-pointer table into `bus`'s buffer union via the member
     /// that matches this format.
     ///
     /// `channelBuffers32`/`channelBuffers64` overlay the same machine pointer (a

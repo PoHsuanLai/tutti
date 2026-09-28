@@ -1,4 +1,4 @@
-//! The sample-accuracy contract (doc 013 §6, "Proof") at the engine: a
+//! The sample-accuracy contract at the engine: a
 //! graph rendered through `Engine::new`, a transport started by a
 //! timestamped command (`MotionFsm::schedule(At::Frame)`), and notes
 //! scheduled at `At::Beat` into two impulse nodes — one direct, one behind

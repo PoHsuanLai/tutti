@@ -2,230 +2,125 @@
 //!
 //! Covers the four `tutti-nodes` dynamics nodes: `CompressorNode` (mono +
 //! stereo), `GateNode` (mono + stereo), `LimiterNode` (lookahead), and
-//! `BrickwallLimiterNode` (zero-latency clipper).
+//! `BrickwallLimiterNode` (zero-latency clipper). Each runs alone
+//! in a graph through `tutti_graph::contract::BlockRig`, so the gate walks
+//! the executor's block path as well as the node's.
 //!
 //! Lookahead limiter is the most failure-prone of the group — it carries
 //! a monotonic deque + a ring buffer, both of which would historically
 //! be tempting to resize on `set_lookahead`. The gate here covers steady
-//! `process` only; lookahead changes are off-RT.
+//! blocks only; lookahead changes are off-RT (`prepare`).
+//!
+//! Mutation (run): size the compressor's gain lane in `process` rather
+//! than `prepare` (`self.gains = vec![0.0; size]` at the top of `process`)
+//! → both compressor gates fail on the first measured block.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{AudioUnit, BufferVec, ChannelLayout, SampleRate};
+use tutti_core::{ChannelLayout, SampleRate};
+use tutti_graph::contract::BlockRig;
+use tutti_graph::IntoNode;
 use tutti_nodes::{BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-fn fill_with_signal(vec: &mut BufferVec, amplitude: f32) {
-    let mut buf = vec.buffer_mut();
-    let channels = buf.channels();
-    for c in 0..channels {
-        for i in 0..64 {
-            // Alternating sign to keep the envelope follower active.
-            let sample = if i % 2 == 0 { amplitude } else { -amplitude };
-            buf.set_f32(c, i, sample);
+/// `node` alone in a graph through `BlockRig`: every input an alternating
+/// ±`amplitude` (to keep the envelope follower active), `warm` warm-up
+/// blocks, then `blocks` 64-frame blocks under `assert_no_alloc`.
+fn gate<N: IntoNode>(node: N, amplitude: f32, warm: usize, blocks: usize) {
+    let (mut rig, _controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
+    for c in rig.inputs_mut() {
+        for (i, x) in c.iter_mut().enumerate() {
+            *x = if i % 2 == 0 { amplitude } else { -amplitude };
         }
     }
+    for _ in 0..warm {
+        rig.block();
+    }
+    assert!(
+        rig.output(0).iter().any(|s| s.abs() > 1e-6),
+        "the node rendered silence; the gate would walk no DSP"
+    );
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..blocks {
+            rig.block();
+        }
+    });
 }
 
 #[test]
 fn compressor_mono_process_is_allocation_free() {
-    let mut node = CompressorNode::mono(-20.0, 4.0, 0.005, 0.050);
-    node.set_sample_rate(SampleRate(48_000.0));
-
     // 2 inputs (audio + sidechain), 1 output.
-    let mut input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(1);
-    fill_with_signal(&mut input_vec, 0.7);
-
-    for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    gate(
+        CompressorNode::mono(-20.0, 4.0, 0.005, 0.050),
+        0.7,
+        16,
+        2_000,
+    );
 }
 
 #[test]
 fn compressor_stereo_process_is_allocation_free() {
-    let mut node = CompressorNode::stereo(-18.0, 3.0, 0.003, 0.080).with_soft_knee(6.0);
-    node.set_sample_rate(SampleRate(48_000.0));
-
     // 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gain.
-    let mut input_vec = BufferVec::new(4);
-    let mut output_vec = BufferVec::new(2);
-    fill_with_signal(&mut input_vec, 0.8);
-
-    for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    gate(
+        CompressorNode::stereo(-18.0, 3.0, 0.003, 0.080).with_soft_knee(6.0),
+        0.8,
+        16,
+        2_000,
+    );
 }
 
 #[test]
 fn limiter_node_process_is_allocation_free() {
-    let mut node = LimiterNode::new(-3.0, -0.3).with_lookahead(0.005);
-    node.set_sample_rate(SampleRate(48_000.0));
-
-    // 2 inputs (L/R), 2 outputs.
-    let mut input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(2);
-    fill_with_signal(&mut input_vec, 1.5); // over ceiling
-
-    // Warm up — fill the lookahead ring + prime the deque.
-    for _ in 0..32 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    // Warm-up fills the lookahead ring and primes the deque; over ceiling.
+    gate(
+        LimiterNode::new(-3.0, -0.3).with_lookahead(0.005),
+        1.5,
+        32,
+        2_000,
+    );
 }
 
 #[test]
 fn limiter_node_wide_6ch_process_is_allocation_free() {
-    // The per-channel lookahead rings + frame scratch must be built at
-    // construction; the linked-gain wide path must not allocate per buffer.
-    let mut node =
-        LimiterNode::with_channels(ChannelLayout::from(6u16), -3.0, -0.3).with_lookahead(0.005);
-    node.set_sample_rate(SampleRate(48_000.0));
-
-    let mut input_vec = BufferVec::new(6);
-    let mut output_vec = BufferVec::new(6);
-    fill_with_signal(&mut input_vec, 1.5);
-
-    for _ in 0..32 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    // The per-channel lookahead rings + frame scratch must be built before
+    // the first block; the linked-gain wide path must not allocate per
+    // buffer.
+    gate(
+        LimiterNode::with_channels(ChannelLayout::from(6u16), -3.0, -0.3).with_lookahead(0.005),
+        1.5,
+        32,
+        2_000,
+    );
 }
 
 #[test]
 fn brickwall_limiter_wide_6ch_process_is_allocation_free() {
-    let mut node = BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), -0.3);
-    node.set_sample_rate(SampleRate(48_000.0));
-
-    let mut input_vec = BufferVec::new(6);
-    let mut output_vec = BufferVec::new(6);
-    fill_with_signal(&mut input_vec, 1.5);
-
-    {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..5_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    gate(
+        BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), -0.3),
+        1.5,
+        1,
+        5_000,
+    );
 }
 
 #[test]
 fn brickwall_limiter_process_is_allocation_free() {
-    let mut node = BrickwallLimiterNode::new(-0.3);
-    node.set_sample_rate(SampleRate(48_000.0));
-
-    let mut input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(2);
-    fill_with_signal(&mut input_vec, 1.5);
-
-    // Warm-up pass in its own scope so the buffer borrows end before the
-    // measured loop re-borrows `input_vec` / `output_vec`.
-    {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..5_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    gate(BrickwallLimiterNode::new(-0.3), 1.5, 1, 5_000);
 }
 
 #[test]
 fn gate_mono_process_is_allocation_free() {
-    let mut node = GateNode::mono(-40.0, 0.001, 0.010, 0.100).with_range(-60.0);
-    node.set_sample_rate(SampleRate(48_000.0));
-
     // 2 inputs (audio + sidechain), 1 output.
-    let mut input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(1);
-    fill_with_signal(&mut input_vec, 0.5);
-
-    for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    gate(
+        GateNode::mono(-40.0, 0.001, 0.010, 0.100).with_range(-60.0),
+        0.5,
+        16,
+        2_000,
+    );
 }
 
 #[test]
 fn gate_stereo_process_is_allocation_free() {
-    let mut node = GateNode::stereo(-40.0, 0.001, 0.010, 0.100);
-    node.set_sample_rate(SampleRate(48_000.0));
-
-    let mut input_vec = BufferVec::new(4);
-    let mut output_vec = BufferVec::new(2);
-    fill_with_signal(&mut input_vec, 0.6);
-
-    for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    gate(GateNode::stereo(-40.0, 0.001, 0.010, 0.100), 0.6, 16, 2_000);
 }

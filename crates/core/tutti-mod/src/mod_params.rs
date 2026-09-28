@@ -2,7 +2,7 @@
 //! params, returning a ready-made [`ModTarget`] a router accumulates into.
 //!
 //! The control-rate sibling of a node's declared modulatable params (which
-//! the native graph modulates per frame; `tutti_graph::Shape::params`). A
+//! the graph modulates per frame; `tutti_graph::Shape::params`). A
 //! thing is control-rate-modulatable **iff** it implements
 //! this trait — the enforced opt-in. It keys on [`ParamAddr`]
 //! ([`UnitParam`](tutti_types::UnitParam) for native params, an opaque id for
@@ -13,8 +13,8 @@
 //! The trait lives here, in `tutti-mod`, because it is node-agnostic — it names
 //! only [`ParamAddr`] (from `tutti-types`) and [`ModTarget`] (this crate). The
 //! *impls* live in each node's own crate (`tutti-nodes`, `tutti-polysynth`,
-//! `tutti-plugin`), which is why no single node crate owns the trait. `tutti-nodes`
-//! re-exports it so existing `tutti_nodes::ModParams` users are unaffected.
+//! `tutti-plugin`), which is why no single node crate owns the trait.
+//! `tutti-nodes` re-exports it.
 //!
 //! The node does **not** know its own `(base, min, max)` — that is DAW vocabulary
 //! (a per-effect-kind table, app-side). The caller supplies it; the node/plugin
@@ -25,18 +25,25 @@ use crate::target::ModTarget;
 use std::sync::Arc;
 use tutti_types::ParamAddr;
 
-/// A node/plugin that exposes control-rate modulation for its scalar params.
+/// A node or plugin that exposes control-rate (per-frame) modulation for its
+/// scalar params.
 ///
-/// Returns a [`ModTarget`] for `param` clamped to `[min, max]` around `base`, or
-/// `None` if this node exposes no control-rate modulation for it. The target
-/// writes its folded value into wherever the param actually lives (a native
-/// node's `AtomicF32`, a plugin's IPC stream).
+/// Implementing it is the opt-in: a thing is control-rate-modulatable exactly
+/// when it implements this trait. Native nodes and plugins implement the same
+/// trait, keyed on [`ParamAddr`]. [`mod_target`](Self::mod_target) returns a
+/// [`ModTarget`] that writes its folded value to wherever the param actually
+/// lives (a native node's `AtomicF32`, a plugin's IPC stream).
+///
+/// The node does not know its own `(base, min, max)`; the caller supplies
+/// them. Implementations live in the node crates (`tutti-nodes`,
+/// `tutti-polysynth`, `tutti-plugin`); `tutti-nodes` re-exports the trait.
+/// Requires the `routing` feature.
 pub trait ModParams {
-    /// The [`ModTarget`] for `param`, or `None` if this node exposes no
-    /// control-rate modulation for that address.
+    /// Returns the [`ModTarget`] for `param`, clamped to `[min, max]` around
+    /// `base`, or `None` if this node exposes no control-rate modulation for
+    /// that address.
     ///
-    /// `base`, `min` and `max` are the caller's — the node does not know its
-    /// own range (see the module doc). They are bare `f32` because they are in
+    /// `base`, `min` and `max` are the caller's. They are bare `f32` because they are in
     /// the *param's* units, which differ per address: `Hz` for a cutoff, linear
     /// gain for a fader, `Semitones` for a pitch. No one newtype is right for
     /// the triple.

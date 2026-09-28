@@ -72,7 +72,7 @@ impl HostApplication {
 }
 
 impl HostApplication {
-    /// Construct with a private run loop. Test-only: production code shares the
+    /// Constructs with a private run loop. Test-only: production code shares the
     /// library-scoped loop so the host pumps a single one (see `run_loop.rs`).
     #[cfg(test)]
     pub(crate) fn new_for_test(name: &str) -> ComWrapper<Self> {

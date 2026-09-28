@@ -9,13 +9,9 @@
 //! concrete type.
 //!
 //! It is this crate's read edge, the counterpart of [`WavOut`](crate::WavOut).
-//! Moved here from the fundsp fork's `stream.rs` by design doc 013, Phase 0.
 //!
 //! **It does not downmix.** A caller wanting stereo folds the frames itself
-//! through [`tutti_core::fold_frame`], as every other engine edge does. This
-//! used to fold internally and present a fixed stereo `layout()`, which meant a
-//! 6-channel file came back silently downmixed — see the [`AudioIn`] impl for
-//! why that was wrong and what replaced it.
+//! through [`tutti_core::fold_frame`], as every other engine edge does.
 //!
 //! To read from an
 //! arbitrary position, call [`seek`] first — it hooks
@@ -42,18 +38,34 @@ use tutti_core::{ChannelLayout, Samples};
 use crate::decode::{decode_packet_into, first_audio_track, probe_path};
 use crate::WaveError;
 
-// `MAX_FILE_CHANNELS = 16` was removed with the stereo fold. It bounded the
-// stack scratch that fold chunked through and constrained nothing else — reads
-// were always at the file's own width, and still are. This decoder now has no
-// channel ceiling of its own.
-
-/// Incremental range decoder over a single audio track.
+/// A streaming decoder over an audio file's first audio track, as an
+/// [`AudioIn`].
 ///
-/// Holds a live `FormatReader` + `Decoder` positioned at `cursor` (the next
-/// file sample-frame that a sequential read will produce). The `leftover`
-/// buffer retains the tail of the last-decoded packet so back-to-back
-/// sequential reads consume it before pulling another packet — keeping the
-/// common refill path both seek-free and allocation-free.
+/// Decodes sequentially without loading the whole file into memory (compare
+/// [`Wave::load`](crate::Wave::load)). [`poll_into`](AudioIn::poll_into) fills a
+/// flat interleaved `f32` buffer **at the file's own channel width** and
+/// returns the frames produced; a short count and then `0` mark the end of the
+/// file. It does not downmix: a caller wanting stereo folds each frame through
+/// [`tutti_core::fold_frame`].
+///
+/// [`seek`](Self::seek) positions it at an exact frame. Decoding, seeking and
+/// file I/O all block, so use it from a loader or streaming thread, never the
+/// audio thread. Sequential reads reuse their decode buffers across calls.
+/// Requires a codec feature.
+///
+/// # Examples
+///
+/// ```no_run
+/// use tutti_io::{AudioIn, FileIn};
+///
+/// let mut file = FileIn::open("take.flac")?;
+/// let width = file.layout().count() as usize;
+/// let mut buf = vec![0.0f32; 1024 * width];
+/// file.seek(48_000)?; // start one second in, at 48 kHz
+/// let frames = file.poll_into(&mut buf);
+/// println!("read {} frames of {width} channels", frames.get());
+/// # Ok::<(), tutti_io::WaveError>(())
+/// ```
 pub struct FileIn {
     reader: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
@@ -83,34 +95,39 @@ pub struct FileIn {
 }
 
 impl FileIn {
-    /// Total sample frames if the container reports it.
+    /// Returns the file's length in frames, if the container reports it.
     pub fn total_frames(&self) -> Option<u64> {
         self.total_frames
     }
 
+    /// Returns the file's channel count (2 if the container does not say).
+    /// The same number as [`AudioIn::layout`], as a `usize`.
     pub fn channels(&self) -> usize {
         self.channels
     }
 
+    /// Returns the file's sample rate in Hz (44 100 if the container does not
+    /// say). Nothing is resampled.
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
 
-    /// Whether this decoder can serve arbitrary (seeking) ranges. When false,
-    /// callers must fall back to the whole-file load path.
+    /// Returns whether [`seek`](Self::seek) can serve arbitrary positions:
+    /// `true` when the container reports a frame count. When `false`, load the
+    /// whole file with [`Wave::load`](crate::Wave::load) instead.
     pub fn seekable(&self) -> bool {
         self.seekable
     }
 
-    /// Open `path` at its first known-codec track.
+    /// Opens `path` at its first audio track, positioned at frame 0.
     ///
-    /// Probes the container, makes a decoder, and allocates the persistent
-    /// scratch (`convert_buf` lazily on first decode; `leftover` reserved
-    /// here). Detects seekability from the reported frame count.
+    /// Probes the container and creates a decoder; no audio is decoded yet.
+    /// It reads the same track [`Wave::load`](crate::Wave::load) decodes.
     ///
-    /// `track` is not a parameter: the fork's `open(path, track)` was only ever
-    /// called with `None`, and the whole-file [`Wave::load`](crate::Wave::load)
-    /// decodes the same track, so the two paths cannot disagree about which.
+    /// # Errors
+    ///
+    /// A [`WaveError`] if the file cannot be opened, its container is not one
+    /// this build reads, or it has no audio track this build can decode.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, WaveError> {
         let reader = probe_path(path.as_ref())?;
         let track = first_audio_track(&*reader)?;
@@ -170,8 +187,8 @@ impl FileIn {
     /// A packet can decode to **zero** frames without the stream ending —
     /// Vorbis's first packet, and its first after a `reset`, only prime the
     /// decoder's overlap — and both callers read a 0 as end-of-stream, so such
-    /// a packet is skipped here rather than returned. Returning it made every
-    /// Ogg file stream as empty. The skip is also why the timestamp comes back:
+    /// a packet is skipped here rather than returned (returning it would make
+    /// every Ogg file stream as empty). The skip is also why the timestamp comes back:
     /// the frames in `leftover` start at the returned packet's `ts`, not at
     /// the first packet read, and [`seek`](Self::seek) must count its preroll
     /// from there.
@@ -200,11 +217,8 @@ impl FileIn {
 
             self.leftover.clear();
             self.leftover_pos = 0;
-            // Interleave every decoded channel at the file's own width. This
-            // used to keep channels 0 and 1 and drop the rest, so a 6-channel
-            // file was decoded in full and then thrown away down to its front
-            // pair. The mono→stereo duplication that lived here is gone too: a
-            // caller wanting stereo folds, as the `AudioIn` impl's doc says.
+            // Interleave every decoded channel at the file's own width; a
+            // caller wanting stereo folds.
             //
             // A packet whose channel count disagrees with the one read at
             // `open` (rare, malformed) is trusted per-packet for the read and
@@ -223,31 +237,23 @@ impl FileIn {
         }
     }
 
-    /// The next file sample-frame a sequential [`poll_into`](Self::poll_into)
-    /// will produce.
+    /// Returns the frame the next sequential read will produce.
     pub fn cursor(&self) -> u64 {
         self.cursor
     }
 
-    // `fill_sequential(&mut [[f32; 2]])` — the stereo-folding read — was
-    // **removed** with the stereo `AudioIn` impl it existed to serve. It had no
-    // other caller: the butler reads natively at both refill sites, and so does
-    // the waveform summariser.
-    //
-    // The replacement is the pair every other engine edge already uses:
-    // `fill_sequential_interleaved` for the read, then
-    // `tutti_core::fold_frame` per frame if the caller genuinely wants stereo.
-    // That is exactly what this method did internally, minus the decision being
-    // made on the caller's behalf. `mic.rs`, `wav_out.rs` and `engine.rs` are
-    // worked examples.
-
-    /// Fill `out` with the next sequential frames at the file's **own** channel
-    /// width, interleaved, and return how many frames were produced.
+    /// Fills `out` with the next sequential frames at the file's **own**
+    /// channel width, interleaved, and returns how many frames were produced
+    /// (fewer than fit only at the end of the file).
     ///
     /// `out.len()` should be a multiple of [`channels`](Self::channels); a
-    /// partial trailing frame is not filled. This is the native read, and the
-    /// fallible one — the [`AudioIn`] impl is this with a decode error folded
-    /// into end-of-stream.
+    /// partial trailing frame is not filled. This is the fallible form of
+    /// [`poll_into`](AudioIn::poll_into), which folds a decode error into
+    /// end-of-stream.
+    ///
+    /// # Errors
+    ///
+    /// A [`WaveError`] if reading or decoding a packet fails.
     pub fn fill_sequential_interleaved(&mut self, out: &mut [f32]) -> Result<usize, WaveError> {
         let ch = self.channels.max(1);
         let capacity_frames = out.len() / ch;
@@ -278,8 +284,16 @@ impl FileIn {
         Ok(filled)
     }
 
-    /// Accurate-seek to `start` so the next [`poll_into`](Self::poll_into)
-    /// produces frame `start`. Discards the preroll so `cursor == start`.
+    /// Positions the stream so the next read produces frame `start` exactly.
+    ///
+    /// Seeks the container to the packet holding `start`, then decodes and
+    /// discards the frames before it. Seeking past the end leaves the stream
+    /// at its end. Only meaningful when [`seekable`](Self::seekable).
+    ///
+    /// # Errors
+    ///
+    /// A [`WaveError`] if the container cannot seek or a packet fails to
+    /// decode.
     pub fn seek(&mut self, start: u64) -> Result<(), WaveError> {
         // Accurate seek lands on the packet containing `target`; decoding then
         // discards the preroll up to `start`. Two things make that subtler
@@ -290,8 +304,8 @@ impl FileIn {
         //    `decode_next_packet` skips it. The frames that come out then start
         //    at the *next* packet's `ts`, so the preroll is counted from the
         //    timestamp of the first packet that produced frames — never from
-        //    `actual_ts`. Counting from `actual_ts` landed every Ogg seek about
-        //    1024 frames late, with no error.
+        //    `actual_ts`; counting from `actual_ts` would land every Ogg seek
+        //    about 1024 frames late, with no error.
         // 2. **That packet can start after `start`** — or not exist, when the
         //    primer was the file's last packet. The primer was then the packet
         //    containing `start`, and the frames at `start` cannot be discarded
@@ -300,7 +314,7 @@ impl FileIn {
         //    Each retry targets strictly earlier, and target 0 ends it.
         //
         // For codecs whose first packet decodes (PCM, FLAC, MP3 here) the
-        // first attempt succeeds and this is one seek, as before.
+        // first attempt succeeds and this is one seek.
         let mut target = start;
         loop {
             self.leftover.clear();
@@ -348,39 +362,21 @@ impl FileIn {
     }
 }
 
-/// Sequential read half, at the file's **own** channel width. A decode error
-/// surfaces as end-of-stream (`0`): the butler refill treats a short/zero poll
-/// as a boundary, and the fallible detail is available through
-/// [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved) for
-/// callers that want it.
+/// Sequential reads at the file's **own** channel width. A decode error
+/// surfaces as end-of-stream (`0`); use
+/// [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved) to see
+/// it.
 ///
-/// # This impl used to fold to stereo, and stopping was the fix
-///
-/// `layout()` returned `STEREO` unconditionally while `channels()` returned the
-/// truth, so a 6-channel file polled through the trait came back downmixed with
-/// nothing to indicate it. That is the one thing a runtime `layout()` exists to
-/// prevent: `AudioIn`'s contract is that `layout()` describes what `poll_into`
-/// produces, and a fixed answer over a variable source cannot.
-///
-/// It was survivable only because nothing used it — every real consumer
-/// (`butler/io/refill.rs` at both sites, a host's waveform summariser) already called
-/// `fill_sequential_interleaved` and read `channels()`, precisely to escape the
-/// fold. The trait path's only callers were this file's own tests.
-///
-/// **Folding is not lost, it moved to the caller**, which is where every other
-/// engine edge already puts it: `mic.rs`, `wav_out.rs`, `engine.rs` and
-/// `tutti-nodes`' `DownmixNode` all narrow through [`tutti_core::fold_frame`]
-/// themselves. A caller wanting stereo does the same, and now *chooses* to.
+/// No downmix happens here: `layout()` describes exactly what `poll_into`
+/// produces. A caller wanting stereo folds each frame through
+/// [`tutti_core::fold_frame`].
 impl AudioIn for FileIn {
     /// A file has an end, and this impl folds a decode error into it (see the
     /// doc above): either way `0` means there is no more to read.
     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
 
     /// The file's own width — what [`poll_into`](Self::poll_into) actually
-    /// produces.
-    ///
-    /// `channels()` is the same number. It stays because it is `usize` and
-    /// predates the trait; this returns the layout the trait is denominated in.
+    /// produces. [`FileIn::channels`] is the same number as a `usize`.
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::from(self.channels.max(1) as u16)
     }
@@ -392,9 +388,8 @@ impl AudioIn for FileIn {
     /// A trailing partial frame is not filled: a short frame desynchronises the
     /// interleave for everything after it.
     ///
-    /// The inherent [`fill_sequential_interleaved`](Self::fill_sequential_interleaved)
-    /// keeps its bare `usize` frame count — it is the decoder's own count, and
-    /// the engine's frame type is applied here, at the trait boundary.
+    /// The inherent [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved)
+    /// returns the same count as a bare `usize`.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
         Samples(self.fill_sequential_interleaved(out).unwrap_or(0))
     }
@@ -407,7 +402,6 @@ mod tests {
 
     /// Write `wave` as a 16-bit WAV named `name` and return its path.
     ///
-    /// The fork's tests wrote through its own `Wave::save_wav16`; the engine's
     /// `Wave` has no writer (the engine's WAV sink is `WavOut`), so this uses
     /// `hound` directly. The directory is per process, and nextest runs each
     /// test in its own, so no two tests share a file.
@@ -638,9 +632,6 @@ mod tests {
     /// **`poll_into` preserves every channel.** A centre-only 5.1 file must come
     /// back with the energy still in channel 2 and the other five silent — no
     /// fold, no truncation.
-    ///
-    /// This replaces `stereo_poll_folds_surround_instead_of_truncating`, which
-    /// asserted the opposite and was correct until the impl stopped folding.
     #[test]
     fn poll_into_delivers_the_files_own_width() {
         let frames = 64;
@@ -676,22 +667,14 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// **A mono file stays one channel wide.** It is not duplicated to stereo,
-    /// which is what the old impl did via `fold_frame`'s 1→2 arm.
-    ///
-    /// The predecessor of this test (`mono_file_still_duplicates_to_both_stereo_sides`)
-    /// kept passing after the fold was removed, for the wrong reason: it read a
-    /// flattened `[[f32; 2]]` buffer, so `out[0]` was two *consecutive frames*
-    /// of a constant signal rather than one duplicated frame, and `out[0][0] ==
-    /// out[0][1]` held either way. Asserting the width is what makes it real.
+    /// **A mono file stays one channel wide.** It is not duplicated to stereo.
     #[test]
     fn a_mono_file_is_not_widened() {
         let frames = 64;
         let sample_rate = 44100.0;
         let mut wave = Wave::zero(1, sample_rate, frames as f64 / sample_rate);
         // A ramp, not a constant: a constant cannot distinguish "one frame
-        // duplicated" from "two frames read", which is exactly how the old test
-        // fooled itself.
+        // duplicated" from "two frames read".
         for i in 0..frames {
             wave.set(0, i, i as f32 / frames as f32);
         }
@@ -706,7 +689,7 @@ mod tests {
         assert!(!got.is_zero());
 
         // One sample per frame, so consecutive slots differ by one ramp step.
-        // Under the old duplicating impl they would have come in equal pairs.
+        // A duplicating read would deliver them in equal pairs.
         assert!(
             (out[1] - out[0]).abs() > 1e-3,
             "consecutive samples are equal — is this still duplicating? {:?}",
@@ -716,8 +699,7 @@ mod tests {
     }
 
     /// A caller that *wants* stereo still gets the engine's fold — it just asks
-    /// for it. This is the replacement path named in the impl docs, exercised so
-    /// the removal shipped with a working substitute rather than a promise.
+    /// for it, as the impl docs describe.
     #[test]
     fn a_caller_can_still_fold_to_stereo_itself() {
         let frames = 64;
@@ -738,7 +720,7 @@ mod tests {
         tutti_core::fold_frame(&native[..ch], &mut stereo);
 
         // The centre reaches both sides rather than being dropped with the
-        // surrounds — the property the old in-decoder fold guaranteed.
+        // surrounds.
         assert!(
             stereo[0].abs() > 0.1 && stereo[1].abs() > 0.1,
             "centre was lost in the caller-side fold: {stereo:?}"

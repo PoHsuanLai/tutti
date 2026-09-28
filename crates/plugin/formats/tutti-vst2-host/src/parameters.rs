@@ -3,12 +3,11 @@
 //! VST2 parameters are identified by a dense `i32` index in
 //! `[0, get_info().parameters)` and the value is a normalized `f32` in
 //! `[0, 1]`. Names and labels come from the plugin's `PluginParameters`
-//! table, so [`Vst2Instance::parameters`] reports values only — every
-//! parameter is automatable in practice.
+//! table.
 //!
 //! Real min/max/step metadata is *optional* in VST2 rather than absent:
 //! `effGetParameterProperties` (opcode 56) reports it for plugins that
-//! implement it, and [`Vst2Instance::parameter_list`] reads it per parameter.
+//! implement it, and [`Vst2Instance::get_parameter_list`] reads it per parameter.
 //! A plugin that declines is reported as normalized with unknown steps, which
 //! is what the ABI alone says.
 
@@ -58,7 +57,7 @@ impl Vst2Instance {
         (id >= 0 && id < count).then_some(id)
     }
 
-    /// Read a parameter's current normalized value, in `[0.0, 1.0]`.
+    /// Returns a parameter's current normalized value, in `[0.0, 1.0]`.
     ///
     /// `None` when `id` addresses no declared parameter, or when the plugin
     /// exposes no `getParameter` at all — which VST 2.4 permits for a plugin
@@ -69,12 +68,12 @@ impl Vst2Instance {
         self.params.get_parameter(self.param_index(id)?)
     }
 
-    /// Write a parameter's normalized value. The plugin clamps internally
-    /// if the value is out of range.
+    /// Sets a parameter's normalized value, in `[0.0, 1.0]`.
     ///
-    /// `false` when `id` addresses no declared parameter, or the plugin exposes
-    /// no `setParameter` — either way the value was discarded rather than
-    /// applied.
+    /// Out-of-range values are passed through; clamping is up to the plugin.
+    /// Returns `false` when `id` addresses no declared parameter, or the plugin
+    /// exposes no `setParameter`: either way the value was discarded rather
+    /// than applied.
     pub fn set_parameter(&self, id: i32, value: f32) -> bool {
         match self.param_index(id) {
             Some(index) => self.params.set_parameter(index, value),
@@ -82,10 +81,11 @@ impl Vst2Instance {
         }
     }
 
-    /// The plugin's own display string for a parameter's **current** value,
-    /// with its unit label appended — `"800 Hz"`, `"Plate"`, `"-6.0 dB"`.
+    /// Returns the plugin's own display string for a parameter's **current**
+    /// value, with its unit label appended — `"800 Hz"`, `"Plate"`, `"-6.0 dB"`.
     ///
-    /// `None` when `id` addresses no declared parameter.
+    /// `None` when `id` addresses no declared parameter, or the plugin returns
+    /// an empty string.
     ///
     /// ## Why this takes no value
     ///
@@ -95,11 +95,9 @@ impl Vst2Instance {
     /// (`getParamStringByValue`, `value_to_text`, `ParameterStringFromValue`),
     /// so this is the format's limit rather than this crate's.
     ///
-    /// The shared-seam method is therefore only answerable for the value the
-    /// plugin is already at; its loader impl compares before calling rather than
-    /// setting the parameter to ask. Writing a parameter to read its label would
-    /// make a display query audible, and would race automation writing the same
-    /// parameter.
+    /// To format some other value, a caller would have to set the parameter
+    /// first, which makes a display query audible and races automation writing
+    /// the same parameter; this method never does that.
     ///
     /// The unit comes from the separate `effGetParamLabel` opcode — VST2 splits
     /// the number and its unit across two calls, so a caller joining them
@@ -115,9 +113,8 @@ impl Vst2Instance {
         })
     }
 
-    /// Hand `text` to the plugin's `effString2Parameter`, letting it parse the
-    /// string with its own interpretation and write the result to parameter
-    /// `id`.
+    /// Parses `text` with the plugin's `effString2Parameter` and writes the
+    /// result to parameter `id`.
     ///
     /// Returns the value the plugin arrived at, normalized — read back after
     /// the write, because the opcode reports only whether the string was
@@ -130,9 +127,7 @@ impl Vst2Instance {
     ///
     /// Unlike the other three formats' parse calls, `effString2Parameter` is a
     /// *setter*: there is no VST2 opcode that parses without applying. So a
-    /// caller cannot preview a typed string here — asking is committing. The
-    /// read-back is what makes the answer usable at the shared seam, which
-    /// expects a value rather than a bool.
+    /// caller cannot preview a typed string here — asking is committing.
     pub fn set_parameter_from_string(&self, id: i32, text: &str) -> Option<f32> {
         let index = self.param_index(id)?;
         if !self.params.string_to_parameter(index, text.to_string()) {
@@ -141,12 +136,14 @@ impl Vst2Instance {
         self.params.get_parameter(index)
     }
 
-    /// List every parameter as the SHARED [`tutti_plugin_types::ParameterInfo`],
-    /// the boundary vocabulary both consumers speak.
+    /// Returns a descriptor for every parameter, as the format-neutral
+    /// [`ParameterInfo`](crate::ParameterInfo).
     ///
-    /// This is the single VST2 `narrow → shared` mapping: the server loader's
-    /// `PluginFormatHost::get_parameter_list` and the in-process
-    /// `HostParams::parameter_descriptors` both call it, so the map lives in one place.
+    /// Each entry's [`id`](crate::ParameterInfo::id) is
+    /// [`ParamAddress::Index`](crate::ParamAddress::Index), the position to pass
+    /// to [`get_parameter`](Self::get_parameter) and
+    /// [`set_parameter`](Self::set_parameter). The list dispatches several
+    /// opcodes per parameter, so call it from the main thread, not per block.
     ///
     /// Range and steps come from `effGetParameterProperties` (opcode 56) per
     /// parameter that answers it. The query is per-parameter because the opcode
@@ -257,8 +254,7 @@ impl Vst2Instance {
         }
     }
 
-    /// Look up a single parameter by ID, as the shared
-    /// [`tutti_plugin_types::ParameterInfo`]. `None` if it addresses no
+    /// Returns the descriptor for one parameter, or `None` if `id` addresses no
     /// declared parameter.
     ///
     /// The descriptor is a *catalog* entry — name, unit, range, steps, flags —
@@ -270,10 +266,11 @@ impl Vst2Instance {
         Some(self.build_parameter_info(index))
     }
 
-    /// Drain any plugin-internal parameter changes (knobs moved on the
-    /// editor surface).
+    /// Takes the parameter changes the plugin reported itself (for example,
+    /// knobs moved on its editor), oldest first.
     ///
-    /// Control-thread only — it allocates the returned `Vec`. The queue it
+    /// Each entry is `(index, normalized_value)`. Call from a control thread,
+    /// not the audio thread: it allocates the returned `Vec`. The queue it
     /// drains is filled from the audio thread, which is why that side is
     /// bounded and this side is not.
     ///
@@ -289,8 +286,8 @@ impl Vst2Instance {
         out
     }
 
-    /// How many `audioMasterAutomate` reports the plugin made that were
-    /// **dropped** because the queue was full, since load. Monotonic.
+    /// Returns how many `audioMasterAutomate` reports were **dropped** since
+    /// load because the queue was full. Monotonic.
     ///
     /// Non-zero means automation was lost, which is otherwise invisible: a
     /// dropped knob move and a knob that never moved produce the same empty
@@ -301,8 +298,8 @@ impl Vst2Instance {
         self.host_link.state.dropped_param_changes()
     }
 
-    /// How many plugin-emitted MIDI events were **dropped** because the
-    /// MIDI-out queue was full, since load. Monotonic.
+    /// Returns how many plugin-emitted MIDI events were **dropped** since load
+    /// because the MIDI-out queue was full. Monotonic.
     ///
     /// Counted apart from [`dropped_param_changes`](Self::dropped_param_changes)
     /// because the consequence differs: a dropped note-off whose note-on landed

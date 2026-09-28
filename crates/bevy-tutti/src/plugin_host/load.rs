@@ -37,7 +37,7 @@ use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::BridgeError;
 
-use crate::graph::{AudioGraphRes, CapturedControls, ControlCapture, GraphDirty};
+use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty};
 use crate::plugin_host::editor::PluginEmitter;
 use crate::plugin_host::health::PluginHealth;
 use crate::plugin_host::PluginsRes;
@@ -215,13 +215,13 @@ type LoadNotStarted = (
     Without<tutti_core::AudioNode>,
 );
 
-/// Start loads for requests that have not been attempted yet.
+/// Starts loads for requests that have not been attempted yet.
 ///
 /// Steady-state query rather than `Added<PluginRequest>`: an entity may carry a
 /// request before `PluginsRes` exists (it is inserted lazily) or before the
 /// engine is up, and `Added` fires exactly once. Anything unresolvable on that
-/// one frame would never load at all — the same fire-once trap
-/// `register_midi_senders` and the soundfont trigger both document.
+/// one frame would never load at all — the same fire-once trap the soundfont
+/// trigger documents.
 pub fn plugin_load_start(
     mut commands: Commands,
     plugins: Option<Res<PluginsRes>>,
@@ -259,7 +259,7 @@ pub fn plugin_load_start(
     }
 }
 
-/// Drain finished loads: add the node, bind the handle, report the outcome.
+/// Drains finished loads: adds the node, binds the handle, reports the outcome.
 ///
 /// Deliberately **not** gated on `engine_ready`. A load already in flight when
 /// the engine tears down still has to be reported rather than left hanging —
@@ -269,7 +269,6 @@ pub fn plugin_load_promote(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
-    capture: ControlCapture,
     mut pending: Query<(Entity, &PluginRequest, &mut PendingPlugin)>,
 ) {
     let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
@@ -307,21 +306,19 @@ pub fn plugin_load_promote(
                 // binding systems drive (and the MIDI target) come from it.
                 //
                 // An out-of-process plugin is bound as it goes in
-                // (`PluginClient::bind`): a native node, with its own fork
-                // source so an export can fork it (by state transfer; doc
-                // 013, PR 12). An in-process VST2 plugin is an `AudioUnit` with
-                // no fork source yet: it goes in boxed, and an export of a
-                // native graph holding it is refused, naming it.
+                // (`PluginClient::bind`): a graph node, with its own fork
+                // source so an export can fork it (by state transfer). An
+                // in-process VST2 plugin is a graph node too,
+                // with no fork source yet: it goes in `Unforkable`, and an export
+                // of a graph holding it is refused, naming it.
                 let (id, controls) = match plugin.into_client() {
                     Ok(client) => {
                         let controls = CapturedControls::for_plugin(&client);
                         (graph.insert_plugin(client), controls)
                     }
-                    Err(unit) => {
-                        let controls = capture.capture(unit.as_ref());
-                        // `insert_boxed`: the unit is already boxed, and
-                        // `insert` boxes what it is given.
-                        (graph.insert_boxed(unit), controls)
+                    Err(node) => {
+                        let (id, ()) = graph.insert(tutti_graph::Unforkable(node));
+                        (id, CapturedControls::default())
                     }
                 };
                 edited = true;

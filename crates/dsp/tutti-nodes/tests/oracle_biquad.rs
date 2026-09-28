@@ -39,7 +39,6 @@
 //! blunt the test, since a 1% cutoff error only moves the response 0.17 dB.
 
 use biquad::{Biquad, Coefficients, DirectForm1, ToHertz, Type as BqType};
-use tutti_core::AudioUnit;
 use tutti_nodes::{SvfFilterNode, SvfType};
 
 const SR: f64 = 48_000.0;
@@ -69,18 +68,13 @@ fn measured_gain_db(mut render: impl FnMut(f32) -> f32, freq: f32) -> f64 {
     20.0 * (rms(&output) / rms(&input)).log10()
 }
 
-/// Drive tutti's SVF one sample at a time through its `AudioUnit` surface.
+/// Drive tutti's SVF one sample at a time, as a graph node prepared at `SR`.
 fn svf_gain_db(kind: SvfType, freq: f32) -> f64 {
-    let mut node = SvfFilterNode::<f64>::new(kind, CUTOFF, Q);
-    // The node is born at a placeholder rate; without this the corner sits
-    // ~8.8% high and every comparison below is wrong for that reason alone.
-    node.set_sample_rate(tutti_core::SampleRate(SR));
+    let rate = tutti_core::SampleRate(SR);
+    let mut node =
+        tutti_graph::contract::prepared(SvfFilterNode::<f64>::new(kind, CUTOFF, Q), rate, 1);
     measured_gain_db(
-        move |x| {
-            let mut out = [0.0f32; 1];
-            node.tick(&[x], &mut out);
-            out[0]
-        },
+        move |x| tutti_graph::contract::drive(&mut node, rate, &[&[x]], &[])[0][0],
         freq,
     )
 }

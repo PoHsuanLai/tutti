@@ -66,14 +66,14 @@ impl ParameterChangesImpl {
         }
     }
 
-    /// Clear all queues in place (reuse-friendly variant of drop-and-refill).
+    /// Clears all queues in place (reuse-friendly variant of drop-and-refill).
     ///
     /// **Note:** If the previous buffer left queues behind (e.g. the
     /// plugin's output side pushed some via `addParameterData`),
     /// dropping their `ComWrapper`s here does allocate through
     /// refcount bookkeeping. That makes this call *not* strictly
-    /// allocation-free on the output-side recycling path — the RT
-    /// audit accepts that cost because VST3 plugins rarely emit param
+    /// allocation-free on the output-side recycling path — that cost is
+    /// accepted because VST3 plugins rarely emit param
     /// output events every buffer. If profiling shows it matters,
     /// swap this for a pool that recycles `ComWrapper` slots instead
     /// of dropping them.
@@ -81,7 +81,7 @@ impl ParameterChangesImpl {
         self.queues.borrow_mut().clear();
     }
 
-    /// Drain the plugin's emitted parameter changes into a caller-supplied
+    /// Drains the plugin's emitted parameter changes into a caller-supplied
     /// pooled [`ParameterChanges`]. Clears `out.queues` first; reuses any
     /// per-queue inline `points` storage on the destination side, so it is
     /// allocation-free after warmup.

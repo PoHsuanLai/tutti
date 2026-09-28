@@ -11,9 +11,9 @@ use tutti_types::{Phase, PhaseIncrement};
 /// modulator stores.
 ///
 /// - **`&self`, so it is trivially `Send + Sync`.** A stateful `&mut self`
-///   modulator could never be a fundsp graph node (`AudioUnit: Send + Sync`) or
-///   a shared `&self` plugin `Curve`. State-threading sidesteps that entirely —
-///   the modulator holds nothing mutable.
+///   modulator could never be a shared `&self` [`Curve`](crate::Curve) (with
+///   the `routing` feature). State-threading sidesteps that entirely — the
+///   modulator holds nothing mutable.
 ///
 /// Stateless shapes use `State = ()`. Stateful ones
 /// (sample & hold) use a small `Copy` state the caller round-trips.
@@ -22,13 +22,13 @@ pub trait Modulator {
     /// (purely phase-deterministic) modulator; a small `Copy` struct for a
     /// stateful one (e.g. sample & hold's RNG). `Default` provides the seed.
     ///
-    /// `Send + Sync` so a `ModulatorNode<M>` — which owns the state — can be a
-    /// fundsp graph node (`AudioUnit: Send + Sync`). A plain-data state always
+    /// `Send + Sync` so a node that owns the state (`tutti_nodes::ModulatorNode`)
+    /// can move to the audio thread and be shared. A plain-data state always
     /// satisfies this; it costs stateless (`()`) modulators nothing.
     type State: Copy + Default + Send + Sync;
 
-    /// Pure sample: given the incoming `state` and a [`Phase`], return the
-    /// `(next_state, value)`. `value` is typically `[-1, 1]`.
+    /// Samples the modulator: given the incoming `state` and a [`Phase`],
+    /// returns `(next_state, value)`. `value` is typically in `[-1, 1]`.
     ///
     /// `&self` — the modulator holds no mutable state; the `state` value is the
     /// only thing that carries between samples (the `scan` accumulator).
@@ -38,9 +38,9 @@ pub trait Modulator {
     /// precondition, and it is one only [`Phase::wrapped`] can establish.
     fn value(&self, state: Self::State, phase: Phase) -> (Self::State, f32);
 
-    /// Block form, alloc-free: fill `out` starting at `phase`, advancing by
-    /// `dphase` per sample and threading `state` through. Returns the final
-    /// state. The default loops [`Modulator::value`]; impls may override for a
+    /// Fills `out` starting at `phase`, advancing by `dphase` per sample and
+    /// threading `state` through, and returns the final state. Does not
+    /// allocate. The default loops [`Modulator::value`]; impls may override for a
     /// tighter inner loop.
     ///
     /// A negative `dphase` runs the modulator backwards, and

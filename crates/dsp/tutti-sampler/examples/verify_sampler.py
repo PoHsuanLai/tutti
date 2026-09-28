@@ -94,11 +94,11 @@ EXPECTED = {
 # looser level bound.
 ZERO_OVERLAP = {"pitch_down_two_octaves", "stretch_half_pitch_down"}
 
-# Was: the six stretch_* cases, because `VoicePool` stepped the source by
-# `window_rate()` (varispeed only) and never called `stretch::Unit::input_rate`.
-# Fixed — the stretch rate now reaches both the block origin and the within-block
-# step, via `MemorySource::stretched_window_position`. Empty rather than deleted,
-# so the mechanism stays documented next to the check that would catch it again.
+# Cases with a known pitch defect, reported as KNOWN-BUG rather than failed.
+# Empty: every stretch_* case keeps its pitch, because the stretch rate reaches
+# both the block origin and the within-block step
+# (`MemorySource::stretched_window_position`). Kept so a regression of that
+# kind can be recorded here instead of widening a tolerance.
 KNOWN_BROKEN: set[str] = set()
 
 TOL_PCT = 2.0

@@ -144,7 +144,7 @@ pub struct AudioPump<S = f32> {
 }
 
 impl<S> AudioPump<S> {
-    /// Start pumping `src` into `dst` on a background thread.
+    /// Starts pumping `src` into `dst` on a background thread.
     ///
     /// `capacity` is the scratch buffer in **frames** — a [`Samples`], so a
     /// caller cannot hand over a sample count by mistake and get a buffer
@@ -220,7 +220,7 @@ impl<S> AudioPump<S> {
         }
     }
 
-    /// Ask the pump to finish. Idempotent.
+    /// Asks the pump to finish. Idempotent.
     ///
     /// Returns immediately — the thread notices the flag on its next pass, then
     /// finalizes. [`drain_audio_pumps`] reports the outcome once it has.
@@ -296,7 +296,7 @@ pub fn drain_audio_pumps<S: Send + Sync + 'static>(
     }
 }
 
-/// Finalize a pump whose component is being removed.
+/// Finalizes a pump whose component is being removed.
 ///
 /// `On<Remove, AudioPump<S>>` fires at command-flush with the value still
 /// readable, mirroring
@@ -334,8 +334,8 @@ struct RegisteredAudioPumps(std::collections::HashSet<core::any::TypeId>);
 
 /// Registers the drain and removal observer for one [`AudioPump`] element type.
 pub trait AudioPumpAppExt {
-    /// Drive `AudioPump<S>` — join finished pumps, emit [`PumpFinished`], and
-    /// finalize on removal.
+    /// Schedules the systems that drive `AudioPump<S>`: joining finished
+    /// pumps, emitting [`PumpFinished`], and finalizing on removal.
     ///
     /// Idempotent, so a host and a library plugin can both declare the element
     /// type they share.

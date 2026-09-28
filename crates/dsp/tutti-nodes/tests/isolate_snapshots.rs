@@ -1,19 +1,25 @@
-//! Every forkable unit in this crate forks to a **snapshot** of its
-//! controls: after `clone` + `isolate`, no live control move reaches the
-//! fork (doc 013, gap 6's audit). One row per unit, one control per cell
-//! the unit reads; `tutti_graph::contract::IsolateRow` runs each control
-//! through fork → render → move live → render again (must be unchanged) →
-//! fork again → render (must differ, so the control is audible and the row
-//! can fail).
+//! Every forkable node in this crate forks to a **snapshot** of its controls:
+//! no live control move reaches the fork. One row per node, one control per
+//! cell the node reads; `tutti_graph::contract::IsolateRow` runs each control
+//! through fork → render → move live → render again (must be unchanged) → fork
+//! again → render (must differ, so the control is audible and the row can
+//! fail). A node's fork is `fork_fresh` (`tutti_graph::param_parts`), so every
+//! cell a control writes is checked — addressed by its `ParamSet` or not (a
+//! compressor's knee, a gate's hold) — with the fork taken as the graph takes
+//! it.
 //!
 //! Units with no live cell are not rows — there is nothing to move:
 //! `ChannelSumNode`, `DownmixNode`, `AutomationLaneNode` (its `Arc<dyn Curve>`
-//! is read-only; `set_curve` takes `&mut self` and so cannot reach a live
-//! node) and the `testing` stimulus nodes.
+//! is read-only, or frozen by its fork when it is not — its own unit test
+//! `a_fork_freezes_a_live_curve`; `set_curve` takes `&mut self` and so cannot
+//! reach a live node) and the `testing` stimulus nodes.
 //!
-//! Mutations (run): delete any one `detach` line from a unit's `isolate`
-//! (or the whole `isolate`) → that unit's row fails on exactly that
-//! control, with "a live move reached the fork". Make `Param::detach`
+//! Mutations (run): delete any one `detach` line from a node's `fork_fresh`
+//! (or, while they were units, from an `isolate`) → that
+//! row fails on exactly that control, with "a live move reached the fork"
+//! (run on the compressor's knee — `fork.core.threshold.detach()`
+//! — the gate's hold, `DelayLineNode`'s `cross_feedback`, `LfoNode`'s
+//! `phase_offset` and the convolver's `params`). Make `Param::detach`
 //! reset to `U::default()` instead of keeping the value → rows whose
 //! default differs fail. Make a control's write a no-op → that control
 //! fails with "moving it did not change a fresh fork's output".
@@ -168,30 +174,25 @@ fn ladder() {
     .check();
 }
 
+/// The SVF and the EQ band are graph nodes: their fork is
+/// `tutti_graph::param_parts`', from the values set through their
+/// `ParamSet`, and `assert_param_fork` is its snapshot check (their own
+/// unit tests run it, with its mutations).
 #[test]
 fn svf() {
-    IsolateRow::new("SvfFilterNode (bell)", || {
-        SvfFilterNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(0.7)).with_gain_db(Db(6.0))
-    })
-    .control("cutoff", |s| s.set_frequency(Hz(3_000.0)))
-    .control("q", |s| s.set_q(Q(4.0)))
-    .control("gain", |s| s.set_gain_db(Db(-6.0)))
-    .check();
+    tutti_graph::contract::assert_param_fork(
+        SvfFilterNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(0.7)).with_gain_db(Db(6.0)),
+    );
 }
 
 #[test]
 fn eq_band() {
-    IsolateRow::new("EqBandNode (bell)", || {
-        EqBandNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(0.7), Db(6.0))
-    })
-    .control("cutoff", |b| {
-        b.frequency().store(3_000.0, tutti_core::Ordering::Release)
-    })
-    .control("q", |b| b.q().store(4.0, tutti_core::Ordering::Release))
-    .control("gain", |b| {
-        b.gain_db().store(-6.0, tutti_core::Ordering::Release)
-    })
-    .check();
+    tutti_graph::contract::assert_param_fork(EqBandNode::<f64>::new(
+        SvfType::Bell,
+        Hz(1_000.0),
+        Q(0.7),
+        Db(6.0),
+    ));
 }
 
 #[test]

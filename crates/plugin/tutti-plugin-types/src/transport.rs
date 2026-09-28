@@ -15,7 +15,25 @@
 
 use tutti_types::meter::{BarNumber, TimeSignature};
 
-/// Transport snapshot passed into a plugin's process call.
+/// A transport snapshot passed into a plugin's process call.
+///
+/// The default is a stopped transport at 120 BPM, 4/4, with a `sample_rate` of
+/// `0.0`; the `with_*` builders fill in the rest.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_plugin_types::{BarNumber, TransportInfo};
+///
+/// let info = TransportInfo::new()
+///     .with_sample_rate(48_000.0)
+///     .with_tempo(128.0)
+///     .with_playing(true)
+///     .with_position_quarters(16.0)
+///     .with_bar(16.0, BarNumber::default());
+/// assert!(info.state.playing);
+/// assert_eq!(info.position.samples, None); // no project-time sample clock
+/// ```
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransportInfo {
@@ -37,7 +55,7 @@ pub struct TransportInfo {
     pub sample_rate: f64,
 }
 
-/// Whether a transport `f64` is worth advertising to a plugin as valid.
+/// Returns whether a transport `f64` may be advertised to a plugin as valid.
 ///
 /// Every plugin API has per-field "this value is filled in" flags, and setting
 /// one for a NaN or an infinity is worse than leaving it clear: a plugin that
@@ -45,12 +63,7 @@ pub struct TransportInfo {
 /// through its timing math into the audio buffer. A cleared flag makes the
 /// plugin fall back to its own defaults, which is always recoverable.
 ///
-/// Lives here rather than in one format host because every format needs the
-/// same gate, and per-host copies drift: a path that sets `kTempoValid` from the
-/// plugin's requirement mask alone, without checking the value, sends a NaN or
-/// zero tempo flagged valid.
-///
-/// This is the finiteness half only. A field with an additional domain rule
+/// Every format host uses this one gate. This is the finiteness half only. A field with an additional domain rule
 /// (tempo must also be positive) applies that at the call site, since the rule
 /// is per-field rather than per-type.
 pub fn is_usable(value: f64) -> bool {
@@ -77,7 +90,7 @@ pub struct TransportFlags {
     pub cycle_active: bool,
 }
 
-/// Musical timing — tempo and time signature.
+/// Tempo and time signature at the playhead.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MusicalTiming {
@@ -106,9 +119,10 @@ impl Default for MusicalTiming {
     }
 }
 
-/// Play head position in three coordinate systems. Hosts populate
-/// whichever the underlying plugin format understands; format-specific
-/// bridge code reads only the fields it needs.
+/// The playhead position in several coordinate systems.
+///
+/// Hosts populate whichever the underlying plugin format understands; each
+/// format host reads only the fields it needs.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransportPosition {
@@ -159,7 +173,7 @@ pub struct LoopRegion {
     pub end_beats: f64,
 }
 
-/// Current-bar metadata.
+/// Where the current bar starts, and its number.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BarInfo {
@@ -174,8 +188,7 @@ pub struct BarInfo {
 }
 
 impl Default for TransportInfo {
-    /// Defaults to a stopped transport at 120 BPM, 4/4 — musical defaults
-    /// that consumers expect when no transport state has been negotiated yet.
+    /// Returns a stopped transport at 120 BPM, 4/4, with a zero sample rate.
     fn default() -> Self {
         Self {
             state: TransportFlags::default(),
@@ -189,7 +202,7 @@ impl Default for TransportInfo {
 }
 
 impl TransportInfo {
-    /// Alias for [`Default::default`].
+    /// Creates the default transport: stopped, 120 BPM, 4/4.
     pub fn new() -> Self {
         Self::default()
     }
@@ -224,14 +237,14 @@ impl TransportInfo {
         self
     }
 
-    /// Set CLAP-style position (beats + seconds).
+    /// Sets the CLAP-style position (beats and seconds) (builder).
     pub fn with_position_beats(mut self, beats: f64, seconds: f64) -> Self {
         self.position.beats = beats;
         self.position.seconds = seconds;
         self
     }
 
-    /// Set VST-style musical position (quarter notes).
+    /// Sets the VST-style musical position in quarter notes (builder).
     ///
     /// Deliberately does **not** take a sample position: the two are not
     /// derivable from one another once tempo moves. A host that genuinely has a
@@ -243,8 +256,8 @@ impl TransportInfo {
         self
     }
 
-    /// Set the project-time sample position (vst2 `samplePos`; vst3
-    /// `projectTimeSamples`) — the one that jumps on loop/relocate.
+    /// Sets the project-time sample position (vst2 `samplePos`; vst3
+    /// `projectTimeSamples`), the one that jumps on loop/relocate (builder).
     ///
     /// Only call this if the host actually tracks project time in samples. No
     /// producer in this engine does; see [`TransportPosition::samples`].
@@ -253,22 +266,22 @@ impl TransportInfo {
         self
     }
 
-    /// Set the monotonic continuous sample counter (vst3 `continousTimeSamples`
-    /// / clap `steady_time`) — the one that does not reset on loop. Leave unset
-    /// (0) and consumers fall back to the project-time `samples`.
+    /// Sets the monotonic continuous sample counter (vst3
+    /// `continousTimeSamples`, clap `steady_time`), the one that does not reset
+    /// on loop (builder).
+    ///
+    /// Left at `0`, consumers fall back to the project-time `samples`.
     pub fn with_continuous_samples(mut self, continuous_samples: i64) -> Self {
         self.position.continuous_samples = continuous_samples;
         self
     }
 
-    /// Set every bar field.
+    /// Sets every bar field (builder).
     ///
     /// `position_quarters` and `start_beats` take the same value because the
     /// engine measures both in quarter notes — the distinction exists only for
-    /// hosts whose CLAP beat axis is notated beats rather than quarters.
-    /// Populating both matters: VST2's `bar_start_pos` and VST3's
-    /// `barPositionMusic` read `position_quarters`, which the previous
-    /// `with_bar` left at zero, so every VST plugin saw bar 0 at position 0.
+    /// hosts whose CLAP beat axis is notated beats rather than quarters. VST2
+    /// and VST3 read `position_quarters`; CLAP reads `start_beats`.
     pub fn with_bar(mut self, start_quarters: f64, number: BarNumber) -> Self {
         self.bar.position_quarters = start_quarters;
         self.bar.start_beats = start_quarters;
@@ -276,17 +289,11 @@ impl TransportInfo {
         self
     }
 
-    /// Set every loop field, plus the cycle-active flag.
+    /// Sets every loop field, plus the cycle-active flag (builder).
     ///
     /// The `_beats` and `_quarters` pairs take the same value for the same
-    /// reason [`with_bar`](Self::with_bar) does: the engine measures both in
-    /// quarter notes, and the distinction exists only for hosts whose CLAP beat
-    /// axis is notated beats rather than quarters. Populating both matters:
-    /// VST2's `cycle_start_pos`/`cycle_end_pos` and VST3's
-    /// `cycleStartMusic`/`cycleEndMusic` read the `_quarters` pair, which the
-    /// previous `with_loop` left at zero — and both hosts set their
-    /// cycle-valid bit off `active` regardless, so every VST plugin was told a
-    /// 0..0 loop region was real.
+    /// reason [`with_bar`](Self::with_bar) does. VST2 and VST3 read the
+    /// `_quarters` pair; CLAP reads the `_beats` pair.
     pub fn with_loop(mut self, active: bool, start_beats: f64, end_beats: f64) -> Self {
         self.state.cycle_active = active;
         self.loop_region.start_beats = start_beats;

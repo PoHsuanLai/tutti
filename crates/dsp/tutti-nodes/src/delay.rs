@@ -1,7 +1,7 @@
 //! Delay lines and the delay nodes built on them.
 //!
 //! [`DelayLine`] is the bare fractional-read ring; [`DelayLineNode`] wraps it
-//! into a width-generic `AudioUnit` with feedback, an explicit cross-feedback
+//! into a width-generic graph node with feedback, an explicit cross-feedback
 //! routing matrix, wet/dry [`Mix`], and feedback and delay time the graph can
 //! modulate per frame. The fractional read is the
 //! reason this is not just a [`CircularBuffer`](crate::buffer::CircularBuffer):
@@ -10,9 +10,9 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
 
-use tutti_core::{ChannelLayout, Feedback, Mix, Param, ParamFeed, SampleRate, Seconds};
+use tutti_core::{ChannelLayout, Feedback, Mix, Param, SampleRate, Seconds, Tail};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::UnitParam;
 
 use crate::ramp::{finite_or, LastGood, Ramp};
@@ -74,7 +74,7 @@ impl DelayLine {
     /// The length is rounded **up**, so the line always holds at least the
     /// requested duration. Note that the size is baked in here: a node changing
     /// its sample rate has to rebuild the line, which is what
-    /// `AudioUnit::set_sample_rate` does.
+    /// [`DelayLineNode`]'s `prepare` does.
     pub fn from_seconds(
         max_delay_secs: impl Into<Seconds>,
         sample_rate: impl Into<SampleRate>,
@@ -185,25 +185,23 @@ struct DelayControls {
     mix: f32,
 }
 
-/// Delay with feedback, of any width: `N` audio inputs, `N` outputs, one
-/// delay line and one delay time per channel.
+/// A feedback delay of any width: `N` audio inputs, `N` outputs, one delay
+/// line and one delay time per channel.
 ///
-/// This used to be a mono `DelayLineNode` and a `StereoDelayLineNode` whose
-/// L↔R cross-feedback existed only at exactly width 2 — a special case in the
-/// sample loop. The cross-feed is now an explicit **routing matrix**: entry
-/// `(c, j)` is how much of channel `j`'s delayed tap recirculates into channel
-/// `c`'s line, scaled by the [`cross_feedback`](Self::cross_feedback) amount.
-/// Width 2 defaults to the swap matrix `[[0, 1], [1, 0]]` — exactly the old
-/// stereo cross-feed, bit for bit — and every other width to no routing, as
-/// before; [`with_cross_feedback_matrix`](Self::with_cross_feedback_matrix)
-/// routes any width.
+/// Cross-feedback is an explicit **routing matrix**: entry `(c, j)` is how
+/// much of channel `j`'s delayed tap recirculates into channel `c`'s line,
+/// scaled by the [`cross_feedback`](Self::cross_feedback) amount. Width 2
+/// defaults to the swap matrix `[[0, 1], [1, 0]]` (a stereo ping-pong cross
+/// feed) and every other width to no routing;
+/// [`with_cross_feedback_matrix`](Self::with_cross_feedback_matrix) routes any
+/// width.
 ///
 /// [`Seconds`] delay times, [`Feedback`] recirculation, cross-feedback and
 /// wet/dry [`Mix`] are live [`Param`]s shared across clones, all read **once
 /// per block**. A value that moved since the last block is ramped linearly
 /// across the block — a delay time glides (a brief pitch bend) rather than
-/// jumping (a click), and a mix change fades rather than stepping. `tick` is a
-/// block of one.
+/// jumping (a click), and a mix change fades rather than stepping. A block of
+/// one takes a change whole.
 ///
 /// The maximum delay is baked at construction and the lines are never
 /// reallocated on the audio thread; a longer request is clamped rather than
@@ -212,16 +210,27 @@ struct DelayControls {
 /// # Modulated params
 ///
 /// `N` audio inputs, `N` outputs. **Feedback** and **delay time** are
-/// modulatable by the graph (design doc 013 item 6), in that port order
-/// ([`DELAY_PARAMS`]): the `Legacy` adapter feeds the node's
-/// [`ParamFeed`](tutti_core::ParamFeed) per frame, and a fed delay time
-/// drives *every* channel through one shared value (the natural
-/// flanger/chorus control — the lines interpolate). An unfed param reads its
-/// own control, which costs nothing, the common case. Cross-feedback and mix
-/// are not modulatable.
+/// modulatable by the graph, in that port order
+/// ([`DELAY_PARAMS`]): a per-frame value on the param port
+/// ([`Io::param`](tutti_graph::Io::param)) overrides the control, and a
+/// modulated delay time drives *every* channel through one shared value (the
+/// natural flanger/chorus control — the lines interpolate). An unmodulated
+/// param reads its own control, which costs nothing, the common case.
+/// Cross-feedback and mix are not modulatable.
+///
+/// # In a graph
+///
+/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// over feedback ([`UnitParam::Feedback`]), channel 0's delay time
+/// ([`UnitParam::DelayTime`], the modulation's base too) and the mix
+/// ([`UnitParam::Wet`]); a fork of it starts from the values last set
+/// through that set, and every other cell at its value when forked. The graph
+/// prepares it at the device rate, which sizes the lines, before its first
+/// block. Its tail is [`Tail::Unknown`]: a recirculating line rings for as
+/// long as its feedback says, so the executor never skips it.
 pub struct DelayLineNode {
     /// Per-channel delay lines; `len()` is the audio width. Built at
-    /// construction — never resized in `tick`/`process` (RT no-alloc).
+    /// construction and on `prepare` — never resized in `process` (RT no-alloc).
     delays: Vec<DelayLine>,
     /// Per-channel delay time.
     delay_time: Vec<Param<Seconds>>,
@@ -241,9 +250,6 @@ pub struct DelayLineNode {
     /// The longest delay this line can hold. Kept typed: it is a duration the
     /// setters clamp against, not scratch.
     max_delay: Seconds,
-    /// Per-frame feedback and delay time from the graph, when it modulates
-    /// them ([`DELAY_PARAMS`]).
-    feed: ParamFeed,
     /// The controls the previous block ended on — where this block's ramp
     /// starts. `None` until the first block (and after `reset`), which then
     /// starts on its targets rather than ramping in from nothing.
@@ -275,16 +281,9 @@ impl DelayLineNode {
     /// self-oscillates and grows without bound. `mix` starts fully wet
     /// ([`Mix::WET`]); set it for a parallel send.
     ///
-    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**: the line is sized
-    /// there and rebuilt by [`AudioUnit::set_sample_rate`], which is what makes
-    /// `max_delay_secs` hold at whatever rate the graph ends up running at. Call
-    /// that setter before the first `process` — skip it at 48 kHz and every tap
-    /// lands 8.8% short (a 500 ms echo returns at 459 ms), audibly wrong but not
-    /// detectably so. See the crate-level "born at a placeholder rate" section.
-    /// Allocates, and `set_sample_rate` reallocates.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
+    /// The lines are sized at the rate [`Node::prepare`] hands it, which is
+    /// what makes `max_delay_secs` hold at whatever rate the graph runs at.
+    /// Allocates, and `prepare` reallocates.
     pub fn new(
         max_delay_secs: impl Into<Seconds>,
         delay_secs: impl Into<Seconds>,
@@ -325,7 +324,7 @@ impl DelayLineNode {
     /// [`stereo`](Self::stereo) with equal times; any other width starts with
     /// no cross routing (cross-feedback inert) until
     /// [`with_cross_feedback_matrix`](Self::with_cross_feedback_matrix) gives
-    /// it one. Placeholder rate as [`new`](Self::new); allocates.
+    /// it one. Sized at `prepare` as [`new`](Self::new); allocates.
     pub fn with_channels(
         channels: impl Into<ChannelLayout>,
         max_delay_secs: impl Into<Seconds>,
@@ -354,7 +353,6 @@ impl DelayLineNode {
             interpolation: InterpolationMode::Linear,
             sample_rate: SampleRate::DEFAULT,
             max_delay,
-            feed: ParamFeed::new(&DELAY_PARAMS),
             last: None,
             last_delay: vec![0.0; n],
             delay_ramps: vec![Ramp::new(0.0, 0.0, 1); n],
@@ -534,12 +532,13 @@ impl DelayLineNode {
 }
 
 impl DelayLineNode {
-    /// The one render kernel behind `tick` and `process`.
+    /// The render kernel behind `process`.
     ///
     /// Every control atomic is read once, here. `fb_port` / `dt_port` are the
     /// graph's per-frame feedback and delay time for the block when it
-    /// modulates them (the node's param feed); they are read per sample. Everything else ramps from where the previous block
-    /// ended (see [`ramp`](crate::ramp)).
+    /// modulates them (the node's param ports); they are read per sample.
+    /// Everything else ramps from where the previous block ended (see
+    /// [`ramp`](crate::ramp)).
     fn render(
         &mut self,
         size: usize,
@@ -718,23 +717,47 @@ fn delay_step(
     Mix(mix).blend(x, line.read_sample(d, interp))
 }
 
-impl AudioUnit for DelayLineNode {
-    fn inputs(&self) -> usize {
-        self.width()
+impl Node for DelayLineNode {
+    /// `N` in, `N` out, feedback and delay time as param ports.
+    ///
+    /// Zero latency, whatever the delay time: the echo is the *effect*, not
+    /// processing latency. PDC compensates whatever a node declares by
+    /// delaying every other path, so reporting the delay time would push the
+    /// whole rest of the mix late to "line up" with an echo that is supposed
+    /// to be late. The dry half of the blend is undelayed, so the output's earliest
+    /// energy leaves with the input.
+    fn shape(&self) -> Shape {
+        let width = ChannelLayout::from_count(self.width() as u16);
+        Shape::audio(width, width)
+            .with_params(&DELAY_PARAMS)
+            .with_tail(Tail::Unknown)
     }
 
-    fn outputs(&self) -> usize {
-        self.width()
+    fn prepare(&mut self, p: &Prepare) {
+        self.sample_rate = p.sample_rate();
+        for d in &mut self.delays {
+            *d = DelayLine::from_seconds(self.max_delay, self.sample_rate);
+        }
+        // Delay positions are in samples of the previous rate: start the next block
+        // on its targets rather than gliding across a rate change.
+        self.last = None;
     }
 
-    /// Detach every control cell this node reads (see `Param::detach`), so
-    /// a fork renders the controls as they were when it was taken, not the
-    /// live knob moves made while it runs. Values are kept.
-    fn isolate(&mut self) {
-        self.delay_time.iter_mut().for_each(Param::detach);
-        self.feedback.detach();
-        self.cross_feedback.detach();
-        self.mix.detach();
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let size = io.frames();
+        if size == 0 {
+            return Status::Modified;
+        }
+        let (fb, dt) = (io.param(0).frames(), io.param(1).frames());
+        let (inputs, mut outputs) = io.split();
+        self.render(
+            size,
+            |c, i| inputs.get(c)[i],
+            |c, i, v| outputs.get(c)[i] = v,
+            fb,
+            dt,
+        );
+        Status::Modified
     }
 
     fn reset(&mut self) {
@@ -744,117 +767,49 @@ impl AudioUnit for DelayLineNode {
         self.last = None;
     }
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate;
-        for d in &mut self.delays {
-            *d = DelayLine::from_seconds(self.max_delay, sample_rate);
-        }
-        // Delay positions are in samples of the old rate: start the next block
-        // on its targets rather than gliding across a rate change.
-        self.last = None;
-    }
-
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        // A block of one through the same kernel as `process`: the one-sample
-        // ramps land on the new values at once, as the old per-sample read did.
-        let feed = ParamFeed::take(&mut self.feed);
-        self.render(
-            1,
-            |c, _| input[c],
-            |c, _, v| output[c] = v,
-            feed.get(0, 1),
-            feed.get(1, 1),
-        );
-        self.feed = feed;
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        if size == 0 {
-            return;
-        }
-        // The feed is moved out for the call so the render can take `&mut
-        // self` while reading it; moving it allocates nothing.
-        let feed = ParamFeed::take(&mut self.feed);
-        self.render(
-            size,
-            |c, i| input.at_f32(c, i),
-            |c, i, v| output.set_f32(c, i, v),
-            feed.get(0, size),
-            feed.get(1, size),
-        );
-        self.feed = feed;
-    }
-
-    fn set(&mut self, setting: tutti_core::Setting) {
-        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
-            match param {
-                tutti_core::UnitParam::DelayTime => self.set_delay_time(value),
-                tutti_core::UnitParam::Feedback => self.set_feedback(value),
-                tutti_core::UnitParam::Wet => self.set_mix(value),
-                _ => {}
-            }
-        }
-    }
-
-    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
-        Some(&mut self.feed)
-    }
-
     fn param_base(&self, k: usize) -> Option<f32> {
-        // Delay time's base is the first channel's: a fed delay time drives
-        // every channel through one shared value.
+        // Delay time's base is the first channel's: a modulated delay time
+        // drives every channel through one shared value.
         match k {
             0 => Some(self.feedback.load().get()),
             1 => Some(self.delay_time[0].load().get()),
             _ => None,
         }
     }
+}
 
-    fn get_id(&self) -> u64 {
-        if self.width() == 1 {
-            crate::node_id::DELAY_LINE_ID
-        } else {
-            crate::node_id::STEREO_DELAY_LINE_ID
-        }
+impl ParamNode for DelayLineNode {
+    /// Feedback, channel 0's delay time and the mix. The other channels'
+    /// times and the cross-feedback have no address: set them through the
+    /// node's own handles.
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Feedback, self.feedback.as_atomic())
+            .param(UnitParam::DelayTime, self.delay_time[0].as_atomic())
+            .param(UnitParam::Wet, self.mix.as_atomic())
+            .build()
     }
 
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
+    /// A clone with every control cell detached (at its value now), so a
+    /// write to either never reaches the other, and its lines cleared.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.delay_time.iter_mut().for_each(Param::detach);
+        fork.feedback.detach();
+        fork.cross_feedback.detach();
+        fork.mix.detach();
+        Node::reset(&mut fork);
+        fork
     }
+}
 
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
+/// Inserted with its [`ParamSet`] as its controls and a fork that starts
+/// from the values last set through it ([`tutti_graph::param_parts`]).
+impl IntoNode for DelayLineNode {
+    type Controls = ParamSet;
 
-    /// Zero latency, whatever the delay time: the echo is the *effect*, not
-    /// processing latency.
-    ///
-    /// `AudioUnit::latency` is derived from `route`, and PDC compensates
-    /// whatever it reports by delaying every other path. This used to report
-    /// `input.delay(delay_time)`, so a 500 ms echo insert pushed the whole rest
-    /// of the mix 500 ms late to "line up" with an echo that is supposed to be
-    /// late (design doc 013, D1). The dry half of the blend is undelayed, so the
-    /// output's earliest energy leaves with the input.
-    ///
-    /// `distort` rather than a pass-through: a recirculating, modulatable delay
-    /// has no fixed frequency response to report, and the blend with `mix` means
-    /// a constant input does not come out unchanged either.
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(self.width());
-        for c in 0..self.width() {
-            out.set(c, input.at(c).distort(0.0));
-        }
-        out
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
-            + self
-                .delays
-                .iter()
-                .map(|d| d.buffer.len() * core::mem::size_of::<f32>())
-                .sum::<usize>()
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
 
@@ -871,7 +826,6 @@ impl Clone for DelayLineNode {
             interpolation: self.interpolation,
             sample_rate: self.sample_rate,
             max_delay: self.max_delay,
-            feed: self.feed.clone(),
             last: self.last,
             last_delay: self.last_delay.clone(),
             delay_ramps: self.delay_ramps.clone(),
@@ -885,6 +839,7 @@ impl Clone for DelayLineNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_graph::contract::{assert_param_fork, drive, prepared};
 
     #[test]
     fn test_delay_line_basic() {
@@ -932,98 +887,130 @@ mod tests {
         assert!((val).abs() < 0.001, "After reset, should read 0.0");
     }
 
+    /// `node`, prepared at `sr` for blocks of up to 1024 frames.
+    fn at(node: DelayLineNode, sr: f64) -> DelayLineNode {
+        prepared(node, SampleRate(sr), 1024)
+    }
+
+    /// `node` over `inputs` one frame per `process` call (a change lands
+    /// whole on its frame), `params[k][i]` on
+    /// param port `k` at frame `i` when `Some`.
+    fn frames(
+        node: &mut DelayLineNode,
+        inputs: &[&[f32]],
+        params: &[Option<&[f32]>],
+    ) -> Vec<Vec<f32>> {
+        let rate = node.sample_rate;
+        let n = inputs[0].len();
+        let mut out = vec![Vec::with_capacity(n); inputs.len()];
+        for i in 0..n {
+            let ins: Vec<&[f32]> = inputs.iter().map(|c| &c[i..=i]).collect();
+            let ps: Vec<Option<&[f32]>> = params.iter().map(|p| p.map(|v| &v[i..=i])).collect();
+            for (o, v) in out.iter_mut().zip(drive(node, rate, &ins, &ps)) {
+                o.push(v[0]);
+            }
+        }
+        out
+    }
+
+    /// An impulse of `len` frames on each of `width` channels where `hot`.
+    fn impulses(width: usize, len: usize, hot: &[usize]) -> Vec<Vec<f32>> {
+        (0..width)
+            .map(|c| {
+                let mut v = vec![0.0; len];
+                if hot.contains(&c) {
+                    v[0] = 1.0;
+                }
+                v
+            })
+            .collect()
+    }
+
+    fn refs(v: &[Vec<f32>]) -> Vec<&[f32]> {
+        v.iter().map(|c| &c[..]).collect()
+    }
+
+    /// A fork starts from the values last set through the node's
+    /// `ParamSet` and shares no cell with it (see
+    /// `tutti_graph::contract::assert_param_fork`).
+    ///
+    /// Mutation (run): drop the `mix` detach in `fork_fresh` → "a live write
+    /// reached the fork" for `Wet`. Leave `Wet` out of `param_set` → the
+    /// address list below fails.
+    #[test]
+    fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
+        let node = DelayLineNode::stereo(1.0, 0.05, 0.07, 0.4);
+        assert_eq!(
+            node.param_set().params().collect::<Vec<_>>(),
+            [UnitParam::Feedback, UnitParam::DelayTime, UnitParam::Wet]
+        );
+        assert_param_fork(node);
+    }
+
+    /// The cells a fork detaches beyond its `ParamSet`'s: channel 1's delay
+    /// time and the cross-feedback keep their values at the fork and follow
+    /// no live write.
+    ///
+    /// Mutation (run): drop the `delay_time` detach in `fork_fresh` → the
+    /// fork's right time follows the live write → fails.
+    #[test]
+    fn a_fork_detaches_the_unaddressed_cells_too() {
+        let node = DelayLineNode::stereo(1.0, 0.05, 0.07, 0.4);
+        node.set_cross_feedback(0.2);
+        let fork = node.fork_fresh();
+        node.set_delay_time_r(0.3);
+        node.set_cross_feedback(0.6);
+        assert_eq!(fork.delay_time[1].load(), Seconds(0.07));
+        assert_eq!(fork.cross_feedback.load(), Feedback(0.2));
+    }
+
     #[test]
     fn test_delay_node_passthrough_no_feedback() {
-        let mut node = DelayLineNode::new(1.0, 0.0, 0.0);
-        node.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut node = at(DelayLineNode::new(1.0, 0.0, 0.0), 44_100.0);
         node.set_mix(0.0);
-
-        let mut output = [0.0f32];
-        node.tick(&[0.5], &mut output);
+        let out = frames(&mut node, &[&[0.5]], &[]);
         assert!(
-            (output[0] - 0.5).abs() < 0.001,
+            (out[0][0] - 0.5).abs() < 0.001,
             "Dry-only should pass through input"
         );
     }
 
     #[test]
     fn test_delay_node_echoes() {
-        let sr = 1000.0;
-        let delay_secs = 0.01; // 10 samples
-        let mut node = DelayLineNode::new(1.0, delay_secs, 0.5);
-        node.set_sample_rate(tutti_core::SampleRate(sr));
-
-        // Send impulse
-        let mut output = [0.0f32];
-        node.tick(&[1.0], &mut output);
-
-        // Advance past delay
-        for _ in 0..9 {
-            node.tick(&[0.0], &mut output);
-        }
-
+        let delay_secs = 0.01; // 10 samples at 1 kHz
+        let mut node = at(DelayLineNode::new(1.0, delay_secs, 0.5), 1_000.0);
+        let x = impulses(1, 11, &[0]);
+        let out = frames(&mut node, &refs(&x), &[]);
         // At sample 10, we should see the delayed signal
-        node.tick(&[0.0], &mut output);
         assert!(
-            output[0].abs() > 0.3,
+            out[0][10].abs() > 0.3,
             "Should hear echo at delay time, got {}",
-            output[0]
+            out[0][10]
         );
     }
 
     #[test]
     fn test_stereo_delay_independent_channels() {
-        let sr = 1000.0;
-        let mut node = DelayLineNode::stereo(1.0, 0.005, 0.01, 0.0);
-        node.set_sample_rate(tutti_core::SampleRate(sr));
-
-        let mut out = [0.0f32; 2];
-        node.tick(&[1.0, 1.0], &mut out);
-
-        // After 5 samples, left should echo; right should not yet
-        for _ in 0..4 {
-            node.tick(&[0.0, 0.0], &mut out);
-        }
-        node.tick(&[0.0, 0.0], &mut out);
-        let left_5 = out[0];
-
-        // After 10 samples total, right should echo
-        for _ in 0..4 {
-            node.tick(&[0.0, 0.0], &mut out);
-        }
-        node.tick(&[0.0, 0.0], &mut out);
-        let right_10 = out[1];
-
+        let mut node = at(DelayLineNode::stereo(1.0, 0.005, 0.01, 0.0), 1_000.0);
+        let x = impulses(2, 11, &[0, 1]);
+        let out = frames(&mut node, &refs(&x), &[]);
+        // After 5 samples the left echoes; after 10, the right.
+        let (left_5, right_10) = (out[0][5], out[1][10]);
         assert!(left_5.abs() > 0.5, "Left echo at 5 samples: {left_5}");
         assert!(right_10.abs() > 0.5, "Right echo at 10 samples: {right_10}");
     }
 
     #[test]
     fn test_stereo_delay_cross_feedback() {
-        let sr = 1000.0;
-        let mut node = DelayLineNode::stereo(1.0, 0.01, 0.01, 0.0);
-        node.set_sample_rate(tutti_core::SampleRate(sr));
+        let mut node = at(DelayLineNode::stereo(1.0, 0.01, 0.01, 0.0), 1_000.0);
         node.set_cross_feedback(0.5);
-
-        // Send impulse only on left
-        let mut out = [0.0f32; 2];
-        node.tick(&[1.0, 0.0], &mut out);
-
-        // After delay, right channel should have cross-fed signal
-        for _ in 0..9 {
-            node.tick(&[0.0, 0.0], &mut out);
-        }
-        node.tick(&[0.0, 0.0], &mut out);
-        let right_at_delay = out[1];
-
-        // After another delay period, right should have picked up left's cross-feedback
-        for _ in 0..9 {
-            node.tick(&[0.0, 0.0], &mut out);
-        }
-        node.tick(&[0.0, 0.0], &mut out);
-
+        // Impulse on the left only.
+        let x = impulses(2, 21, &[0]);
+        let out = frames(&mut node, &refs(&x), &[]);
+        // After a delay period or two the right has picked up the left's
+        // cross-feedback.
         assert!(
-            right_at_delay.abs() > 0.01 || out[1].abs() > 0.01,
+            out[1][10].abs() > 0.01 || out[1][20].abs() > 0.01,
             "Cross-feedback should produce signal in right channel"
         );
     }
@@ -1032,55 +1019,49 @@ mod tests {
 
     #[test]
     fn delay_with_channels_2_matches_new() {
-        // with_channels(2, ...) with equal times == new(...) with equal L/R.
-        let mut a = DelayLineNode::stereo(1.0, 0.01, 0.01, 0.4);
-        a.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        let mut b = DelayLineNode::with_channels(ChannelLayout::STEREO, 1.0, 0.01, 0.4);
-        b.set_sample_rate(tutti_core::SampleRate(48_000.0));
-
-        let mut oa = [0.0f32; 2];
-        let mut ob = [0.0f32; 2];
+        // with_channels(2, ...) with equal times == stereo(...) with equal L/R.
+        let mut a = at(DelayLineNode::stereo(1.0, 0.01, 0.01, 0.4), 48_000.0);
+        let mut b = at(
+            DelayLineNode::with_channels(ChannelLayout::STEREO, 1.0, 0.01, 0.4),
+            48_000.0,
+        );
+        let x = impulses(2, 2000, &[0, 1]);
+        let (oa, ob) = (
+            frames(&mut a, &refs(&x), &[]),
+            frames(&mut b, &refs(&x), &[]),
+        );
         for i in 0..2000 {
-            let x = if i == 0 { 1.0 } else { 0.0 };
-            a.tick(&[x, x], &mut oa);
-            b.tick(&[x, x], &mut ob);
-            assert_eq!(oa[0].to_bits(), ob[0].to_bits(), "L bit-diff at {i}");
-            assert_eq!(oa[1].to_bits(), ob[1].to_bits(), "R bit-diff at {i}");
+            assert_eq!(oa[0][i].to_bits(), ob[0][i].to_bits(), "L bit-diff at {i}");
+            assert_eq!(oa[1][i].to_bits(), ob[1][i].to_bits(), "R bit-diff at {i}");
         }
     }
 
     #[test]
     fn delay_with_channels_reports_arity() {
         let d = DelayLineNode::with_channels(6usize, 1.0, 0.01, 0.3);
-        assert_eq!(d.inputs(), 6);
-        assert_eq!(d.outputs(), 6);
+        let shape = d.shape();
+        assert_eq!(shape.audio_in.count(), 6);
+        assert_eq!(shape.audio_out.count(), 6);
     }
 
     #[test]
     fn wide_delay_channels_are_independent_no_crossfeed() {
         // 6-channel delay: an impulse on channel 3 echoes only on channel 3,
         // and cross_feedback (a stereo-only notion) is inert.
-        let sr = 1000.0;
-        let mut node = DelayLineNode::with_channels(6usize, 1.0, 0.01, 0.0);
-        node.set_sample_rate(tutti_core::SampleRate(sr));
+        let mut node = at(
+            DelayLineNode::with_channels(6usize, 1.0, 0.01, 0.0),
+            1_000.0,
+        );
         node.set_cross_feedback(0.9); // must have NO effect above width 2
 
-        let mut inbuf = [0.0f32; 6];
-        let mut outbuf = [0.0f32; 6];
-        inbuf[3] = 1.0;
-        node.tick(&inbuf, &mut outbuf);
-        inbuf[3] = 0.0;
-
-        // Advance to the 10-sample delay (0.01s @ 1000Hz).
-        let mut ch3_echo = 0.0f32;
-        let mut other_energy = 0.0f32;
-        for _ in 0..12 {
-            node.tick(&inbuf, &mut outbuf);
-            ch3_echo = ch3_echo.max(outbuf[3].abs());
-            for c in [0usize, 1, 2, 4, 5] {
-                other_energy += outbuf[c] * outbuf[c];
-            }
-        }
+        let x = impulses(6, 13, &[3]);
+        let out = frames(&mut node, &refs(&x), &[]);
+        // Frames 1..=12 cover the 10-sample delay (0.01 s at 1 kHz).
+        let ch3_echo = out[3][1..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let other_energy: f32 = [0usize, 1, 2, 4, 5]
+            .iter()
+            .map(|&c| out[c][1..].iter().map(|s| s * s).sum::<f32>())
+            .sum();
         assert!(ch3_echo > 0.5, "ch3 should echo; peak {ch3_echo}");
         assert!(
             other_energy < 1e-10,
@@ -1088,38 +1069,41 @@ mod tests {
         );
     }
 
-    // ── Modulated params (the graph's param feed) ───────────────────────────
+    // ── Modulated params (the graph's param ports) ───────────────────────────
 
-    /// Tick a stereo delay sample by sample with `params` (feedback, delay
-    /// time: `Some` held at a value, `None` unfed) in its feed each sample.
-    fn tick_stereo_delay(
-        node: &mut dyn AudioUnit,
+    /// A stereo delay frame by frame with `params` (feedback, delay time:
+    /// `Some` held at a value, `None` unmodulated) on its param ports.
+    fn stereo_delay_fed(
+        node: &mut DelayLineNode,
         l: &[f32],
         r: &[f32],
         params: [Option<f32>; 2],
     ) -> (Vec<f32>, Vec<f32>) {
         let held: Vec<Option<Vec<f32>>> =
             params.iter().map(|p| p.map(|v| vec![v; l.len()])).collect();
-        let refs: Vec<Option<&[f32]>> = held.iter().map(|p| p.as_deref()).collect();
-        let out = crate::testing::tick_fed(node, &[l, r], &refs);
-        (out[0].clone(), out[1].clone())
+        let ps: Vec<Option<&[f32]>> = held.iter().map(|p| p.as_deref()).collect();
+        let mut out = frames(node, &[l, r], &ps);
+        let r = out.pop().expect("two outputs");
+        (out.pop().expect("two outputs"), r)
     }
 
-    /// The feed declares feedback then delay time, and never changes the
-    /// arity: a modulatable delay is as wide as it was built, in and out.
+    /// The node declares feedback then delay time as its params, and never
+    /// changes the arity: a modulatable delay is as wide as it was built, in
+    /// and out.
     ///
     /// Mutation (run): swap `DELAY_PARAMS`' order → the first assertion
     /// fails (and `feedback_feed_modulates` reads a delay time as feedback).
     #[test]
     fn the_feed_declares_feedback_then_delay_time() {
-        let mut d = DelayLineNode::stereo(1.0, 0.01, 0.01, 0.5);
+        let d = DelayLineNode::stereo(1.0, 0.01, 0.01, 0.5);
+        let shape = d.shape();
         assert_eq!(
-            d.param_feed().map(|f| f.params()),
-            Some(&[UnitParam::Feedback, UnitParam::DelayTime][..])
+            shape.params.as_slice(),
+            &[UnitParam::Feedback, UnitParam::DelayTime][..]
         );
-        assert_eq!((d.inputs(), d.outputs()), (2, 2));
-        let wide = DelayLineNode::with_channels(6usize, 1.0, 0.01, 0.5);
-        assert_eq!((wide.inputs(), wide.outputs()), (6, 6));
+        assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (2, 2));
+        let wide = DelayLineNode::with_channels(6usize, 1.0, 0.01, 0.5).shape();
+        assert_eq!((wide.audio_in.count(), wide.audio_out.count()), (6, 6));
         assert_eq!(d.param_base(0), Some(0.5), "feedback's base is its control");
         assert_eq!(
             d.param_base(1),
@@ -1131,20 +1115,18 @@ mod tests {
     #[test]
     fn feedback_feed_modulates() {
         // An impulse through the delay: a higher fed feedback produces a
-        // longer / louder tail than a low one. Proves the feed drives the
-        // feedback per sample.
-        let sr = 1000.0;
+        // longer / louder tail than a low one. Proves the param port drives
+        // the feedback per sample.
         let delay_secs = 0.01; // 10 samples
         let n = 200;
 
         let run = |fb: f32| -> f32 {
-            let mut node = DelayLineNode::stereo(1.0, delay_secs, delay_secs, 0.0);
-            node.set_sample_rate(tutti_core::SampleRate(sr));
-            let mut l = vec![0.0f32; n];
-            let mut r = vec![0.0f32; n];
-            l[0] = 1.0;
-            r[0] = 1.0;
-            let (out_l, _) = tick_stereo_delay(&mut node, &l, &r, [Some(fb), None]);
+            let mut node = at(
+                DelayLineNode::stereo(1.0, delay_secs, delay_secs, 0.0),
+                1_000.0,
+            );
+            let x = impulses(2, n, &[0, 1]);
+            let (out_l, _) = stereo_delay_fed(&mut node, &x[0], &x[1], [Some(fb), None]);
             // Late-buffer energy (well past the first echo) — feedback governs
             // how much survives.
             out_l[50..].iter().map(|s| s * s).sum()
@@ -1160,10 +1142,9 @@ mod tests {
 
     #[test]
     fn unmodulated_matches_held_constant() {
-        // A delay whose feed holds its params at the atomic values must
+        // A delay whose param ports hold its params at the atomic values must
         // produce the same output as one reading its controls — the fed path
         // is a faithful superset.
-        let sr = 1000.0;
         let delay_secs = 0.01;
         let fb = 0.5;
         let n = 256;
@@ -1175,15 +1156,19 @@ mod tests {
             input_r[i] = ((i * 5 + 1) % 100) as f32 / 50.0 - 1.0;
         }
 
-        let mut plain = DelayLineNode::stereo(1.0, delay_secs, delay_secs, fb);
-        plain.set_sample_rate(tutti_core::SampleRate(sr));
-        let (plain_l, plain_r) = tick_stereo_delay(&mut plain, &input_l, &input_r, [None, None]);
+        let mut plain = at(
+            DelayLineNode::stereo(1.0, delay_secs, delay_secs, fb),
+            1_000.0,
+        );
+        let (plain_l, plain_r) = stereo_delay_fed(&mut plain, &input_l, &input_r, [None, None]);
 
         // Both params fed, held at the atomic values.
-        let mut modn = DelayLineNode::stereo(1.0, delay_secs, delay_secs, fb);
-        modn.set_sample_rate(tutti_core::SampleRate(sr));
+        let mut modn = at(
+            DelayLineNode::stereo(1.0, delay_secs, delay_secs, fb),
+            1_000.0,
+        );
         let (mod_l, mod_r) =
-            tick_stereo_delay(&mut modn, &input_l, &input_r, [Some(fb), Some(delay_secs)]);
+            stereo_delay_fed(&mut modn, &input_l, &input_r, [Some(fb), Some(delay_secs)]);
 
         for i in 0..n {
             assert!(
@@ -1217,14 +1202,10 @@ mod tests {
     /// even when primed) fails `assert_ramps_in`.
     #[test]
     fn a_delay_time_change_glides_across_the_next_block() {
-        use crate::test_support::change_between_blocks;
+        use crate::test_support::change_between_node_blocks;
         let x = slow_sine(4_096 + 64);
-        let run = change_between_blocks(
-            || {
-                let mut n = DelayLineNode::stereo(1.0, 0.010, 0.012, 0.0);
-                n.set_sample_rate(tutti_core::SampleRate(48_000.0));
-                n
-            },
+        let run = change_between_node_blocks(
+            || DelayLineNode::stereo(1.0, 0.010, 0.012, 0.0),
             |n| n.set_delay_time(0.200),
             &[&x[..4_096], &x[..4_096]],
             &[&x[4_096..], &x[4_096..]],
@@ -1239,14 +1220,10 @@ mod tests {
     /// Mutation: `Ramp::new(target.mix, target.mix, size)` fails.
     #[test]
     fn a_mix_change_fades_across_the_next_block() {
-        use crate::test_support::{change_between_blocks, noise};
+        use crate::test_support::{change_between_node_blocks, noise};
         let x = noise(4, 128);
-        let run = change_between_blocks(
-            || {
-                let mut n = DelayLineNode::with_channels(6usize, 0.1, 0.0005, 0.3);
-                n.set_sample_rate(tutti_core::SampleRate(48_000.0));
-                n
-            },
+        let run = change_between_node_blocks(
+            || DelayLineNode::with_channels(6usize, 0.1, 0.0005, 0.3),
             |n| n.set_mix(0.0),
             &(0..6).map(|_| &x[..64]).collect::<Vec<_>>(),
             &(0..6).map(|_| &x[64..]).collect::<Vec<_>>(),
@@ -1267,23 +1244,18 @@ mod tests {
         for c in 0..n {
             ring[c * n + (c + n - 1) % n] = 1.0; // c is fed by c - 1
         }
-        let mut node =
-            DelayLineNode::with_channels(n, 1.0, 0.01, 0.0).with_cross_feedback_matrix(&ring);
-        node.set_sample_rate(tutti_core::SampleRate(1_000.0));
+        let mut node = at(
+            DelayLineNode::with_channels(n, 1.0, 0.01, 0.0).with_cross_feedback_matrix(&ring),
+            1_000.0,
+        );
         node.set_cross_feedback(0.8);
 
         // Impulse on channel 0; fully wet, so the output is the lines alone.
-        let mut inp = [0.0f32; 6];
-        let mut out = [0.0f32; 6];
-        inp[0] = 1.0;
-        node.tick(&inp, &mut out);
-        inp[0] = 0.0;
+        let x = impulses(n, 26, &[0]);
+        let out = frames(&mut node, &refs(&x), &[]);
         let mut energy = [0.0f32; 6];
-        for _ in 0..25 {
-            node.tick(&inp, &mut out);
-            for c in 0..n {
-                energy[c] += out[c] * out[c];
-            }
+        for c in 0..n {
+            energy[c] = out[c][1..].iter().map(|s| s * s).sum();
         }
         assert!(
             energy[0] > 0.5,
@@ -1306,17 +1278,18 @@ mod tests {
     #[test]
     fn a_dense_matrix_at_full_feedback_stays_bounded() {
         let n = 4usize;
-        let mut node = DelayLineNode::with_channels(n, 0.1, 0.002, 0.99)
-            .with_cross_feedback_matrix(&vec![1.0; n * n]);
-        node.set_sample_rate(tutti_core::SampleRate(8_000.0));
+        let mut node = at(
+            DelayLineNode::with_channels(n, 0.1, 0.002, 0.99)
+                .with_cross_feedback_matrix(&vec![1.0; n * n]),
+            8_000.0,
+        );
         node.set_cross_feedback(0.99);
-        let mut out = [0.0f32; 4];
-        node.tick(&[1.0; 4], &mut out);
-        let mut peak = 0.0f32;
-        for _ in 0..20_000 {
-            node.tick(&[0.0; 4], &mut out);
-            peak = out.iter().fold(peak, |p, s| p.max(s.abs()));
-        }
+        let x = impulses(n, 20_001, &[0, 1, 2, 3]);
+        let out = frames(&mut node, &refs(&x), &[]);
+        let peak = out
+            .iter()
+            .flat_map(|c| &c[1..])
+            .fold(0.0f32, |p, s| p.max(s.abs()));
         assert!(
             peak.is_finite() && peak < 4.0,
             "the loop ran away: peak {peak}"

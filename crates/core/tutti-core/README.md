@@ -1,44 +1,44 @@
 # tutti-core
 
-Real-time audio engine core — DSP graph, transport, metering, latency.
+Real-time audio engine core — DSP graph render, transport, metering, latency.
 
 ## What this is
 
-The engine's runtime kernel and its vocabulary: the DSP graph, playback
-transport, level metering, and delay compensation. Sibling crates
-(`tutti-plugin`, `tutti-sampler`, `tutti-nodes`, …) build on these types and
-re-export them, so a consumer usually meets them through whichever subsystem it
-already depends on.
+The engine's runtime kernel and its vocabulary: the per-block graph render,
+playback transport, level metering, and delay compensation. Use it directly
+when you drive the audio callback yourself (a custom device layer, an offline
+renderer, a test harness); otherwise take the `tutti` facade, which re-exports
+this crate as `tutti::core`, or `bevy-tutti` for a Bevy app. Sibling crates
+(`tutti-plugin`, `tutti-sampler`, `tutti-nodes`, …) build on these types, so a
+consumer often meets them through whichever subsystem it already depends on.
 
-- `Engine` — the graph render the RT callback runs. It renders the native
-  graph (`tutti-graph`'s `Executor`, whose `Editor` the control thread keeps),
-  and only that since design doc 013's Phase 3 PR 15.
+- `Engine` — the graph render the RT callback runs: each block it renders
+  `tutti-graph`'s `Executor` (whose `Editor` the control thread keeps), folds
+  the output to the device width, and applies transport commands on their
+  frame.
 - `Transport` — playback control, split into `settings` (anyone may store into)
   and `motion` (a state machine that may defer or reject), with commands
   timed to a frame or a beat (`MotionFsm::schedule`). The engine drives the
-  transport's clock and hands each block its transport in `Env`; `EnvClock`
-  puts the beat on graph ports, so beat-driven sources read musical time as a
-  signal rather than consulting the transport.
+  transport's clock and hands each block its transport in `Env`, so a
+  beat-driven node reads musical time per frame (`Env::for_each_beat`,
+  `Env::transport_at`) rather than consulting the transport.
 - `MasterMeter` / `AudioTap` — level monitoring and the analysis tap.
-- `latency` — delay compensation: explicit, opt-in, over any graph.
-- `topology` — `compile(&Valid, &dyn Catalog, rate) -> Compiled`, turning
-  `tutti_types::graph::Topology` (the graph as a *value*) into fundsp's `Net`.
-  Only tests call it; the native graph compiles the same value itself, and
-  this seam goes with `Net` (doc 013, Phase 5).
-- `dsp::Net` — **fundsp's** graph container, re-exported, which the nodes'
-  own tests still wire units in. `Engine` does not render it.
+- `latency` — delay compensation as a pure pass over any graph: what each
+  output needs, and (`latency::delays`) which ports to delay by how much. The
+  graph compiler applies it; this crate inserts nothing.
 
-A consumer that wants the whole engine behind one dependency takes `bevy-tutti`,
-the umbrella. A consumer that wants audio without Bevy takes the `tutti` facade crate,
-which re-exports all of them behind one dependency; it can also depend on
-these crates
-directly.
+- `prelude` — what a host driving the engine names, in one import.
+
+A consumer that wants the whole engine behind one dependency takes `tutti`
+(no Bevy) or `bevy-tutti` (a Bevy plugin); either can be mixed with direct
+dependencies on these crates.
 
 ## What this crate does not own
 
 - **MIDI.** The vocabulary is `tutti-midi-types`', the state machines
   `tutti-midi-runtime`'s, and the OS edge `tutti-midi-hardware`'s. `Engine` is
-  MIDI-free; pre-block delivery is `MidiPreBlock`, one crate over.
+  MIDI-free; MIDI travels on the graph's event ports (tutti-graph), and the
+  MIDI nodes are `tutti-midi-runtime`'s.
 - **The device.** Opening a stream and driving the real-time callback is
   `tutti-cpal`'s job. This crate only knows how to render a block.
 - **The value vocabulary.** The unit newtypes, the RT primitives, the
@@ -59,10 +59,31 @@ the whole thing runs headless.
 ```rust
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{
-    Beat, Bpm, ChannelLayout, Engine, EnvClock, InterleavedMut, MotionEvent, NodeKey,
-    SampleRate, Samples, Timeline, Transport,
+    Beat, Bpm, ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate, Samples,
+    Tail, Timeline, Transport,
 };
-use tutti_graph::{Editor, ForkByClone, Prepare};
+use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status};
+
+// A node reads the transport from each block's `Env`. This one puts the beat
+// on two ports (whole beats, then the fraction). Tone generators and filters
+// are `tutti-nodes`', a crate above this one.
+#[derive(Clone)]
+struct Beats;
+
+impl Node for Beats {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO).with_tail(Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        cx.env.for_each_beat(|i, beat| {
+            io.output(0)[i] = beat.floor().get() as f32;
+            io.output(1)[i] = beat.fract().get() as f32;
+        });
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
 
 let transport = Transport::new(48_000.0);
 
@@ -70,15 +91,12 @@ let transport = Transport::new(48_000.0);
 // the engine. Every edit reaches it through a `commit`.
 let (mut editor, executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
 
-// A node reads the transport from each block's `Env`; `EnvClock` puts the beat
-// on two ports (whole beats, then the fraction), for a node that wants it as
-// a signal. Tone generators and filters are `tutti-nodes`', a crate above
-// this one. Every insert says whether the node forks (for an export): the
-// clock reads only its block's `Env`, so a clone of it is a fork.
-let clock = NodeKey(1);
-editor.insert(clock, "clock", ForkByClone(EnvClock::new()));
+// Every insert says whether the node forks (for an export): `Beats` reads
+// only its block's `Env`, so a clone of it is a fork.
+let beats = NodeKey(1);
+editor.insert(beats, "beats", ForkByClone(Beats));
 editor.spec_mut().topology.outputs = (0..2)
-    .map(|port| Source::Node(OutPort { node: clock, port }))
+    .map(|port| Source::Node(OutPort { node: beats, port }))
     .collect();
 editor.commit().expect("the graph compiles");
 
@@ -97,7 +115,7 @@ transport
 let mut block = vec![0.0f32; 256 * 2];
 engine.process(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
 
-// The first frame carries beat 8 on the clock's ports; the block moved the
+// The first frame carries beat 8 on the node's ports; the block moved the
 // playhead on by 256 frames at 90 BPM.
 assert_eq!((block[0], block[1]), (8.0, 0.0));
 assert!(transport.is_rolling());
@@ -111,7 +129,7 @@ tutti-core is a std crate whose DSP graph runtime is Bevy-agnostic. The optional
 derive on `AudioNode`, so an entity can *be* a node in the graph. Everything
 that reconciles against it — the set hierarchy, the graph resources, the param
 components, the declarative wiring — lives in `bevy_tutti::graph`. A non-Bevy
-host edits the native graph through `tutti_graph::Editor` (or builds one with
+host edits the graph through `tutti_graph::Editor` (or builds one with
 `GraphBuilder`) directly.
 
 ## Features
@@ -120,9 +138,8 @@ All are off by default (`default = []`), which is what keeps this crate
 Bevy-free unless a consumer asks:
 
 - `bevy` — the `Component` derive on `AudioNode` described above.
-- `bevy_ecs` — a back-compat alias for `bevy`, kept because sibling crates still
-  spell it that way.
-- `midi` — reserved; the MIDI subsystems are separate crates.
+- `bevy_ecs` — an alias for `bevy`.
+- `midi` — gates nothing here; the MIDI subsystems are separate crates.
 - `serde` — `Serialize`/`Deserialize` on the shared value vocabulary (forwards
   to `tutti-types/serde`). Off by default, since the engine itself never
   serializes.

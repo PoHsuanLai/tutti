@@ -350,7 +350,7 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
 /// (`a_clap_tail_change_reaches_the_event_list`, in `tutti-plugin-server`)
 /// proves the notification becomes a message; this proves the message becomes
 /// an event. `PluginClient` itself needs a live subprocess to build, so the
-/// final hop — the listener storing into the cell that `AudioUnit::tail` reads
+/// final hop — the listener storing into the cell the node's `Shape` tail reads
 /// — is exercised by the plugin-server integration suite rather than here.
 ///
 /// `Unbounded` is the arm under test deliberately: it is the one a count

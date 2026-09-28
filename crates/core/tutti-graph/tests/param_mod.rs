@@ -1,4 +1,4 @@
-//! Compiler-owned param modulation (design doc 013, "Rewrite order" item 6):
+//! Compiler-owned param modulation:
 //! a node declares modulatable params in its `Shape`, a spec drives them from
 //! audio or event outputs, and the compiler fuses base + shaped offsets +
 //! clamp into one step of the node's op.

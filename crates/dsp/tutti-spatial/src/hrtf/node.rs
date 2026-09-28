@@ -1,45 +1,128 @@
-//! [`HrtfBinauralNode`] — the binaural `AudioUnit`, 2 in / 2 out.
+//! [`HrtfBinauralNode`] — the binaural graph node, 2 in / 2 out.
 //!
 //! Construction needs a measured HRIR sphere, so [`HrtfBinauralNode::new`]
 //! takes the dataset bytes.
 
 use tutti_core::ChannelLayout;
-use tutti_core::{
-    fold_frame_to_mono, AudioUnit, Azimuth, BufferMut, BufferRef, Elevation, Mix, Param,
-    SampleRate, Samples, SignalFrame, Tail,
-};
+use tutti_core::{fold_frame_to_mono, Azimuth, Elevation, Mix, Param, SampleRate, Samples, Tail};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
+use tutti_types::Latency;
 
 use super::panner::{BridgeSample, HrtfBinaural, HrtfBinauralError, LATENCY};
+use crate::fork::{fresh_fork_parts, FreshFork};
 use crate::SpatialTarget;
 
-/// FFT-convolution binaural panner for headphone 3D audio.
+/// A binaural panner for headphones: FFT convolution against a measured HRIR
+/// sphere, stereo in, stereo out.
 ///
-/// Position is controlled via lock-free atomics ([`SpatialTarget`]); the audio
-/// path reads them once per block. Output — wet *and* dry — lags input by one
-/// HRTF frame less one sample, which `route` reports so PDC can compensate it.
+/// Build it with [`new`](Self::new) from the dataset bytes. The input pair is
+/// folded to mono, placed at the commanded bearing and height, and blended
+/// against the (equally delayed) dry mono by [`set_blend`](Self::set_blend).
+/// It is a graph node (`tutti_graph::Node`); inserting it hands back its
+/// [`HrtfBinauralControls`], which move the source lock-free while it renders.
+/// Position changes are de-zippered over 50 ms.
+///
+/// Output lags input by 511 samples (one 512-sample HRTF frame less one), on
+/// both the wet and the dry half. The node declares this as latency, so the
+/// graph's delay compensation lines the other paths up with it. Rendering a
+/// block allocates nothing; preparing at a new rate resamples the dataset and
+/// allocates.
+///
+/// Available with the `hrtf` feature.
 pub struct HrtfBinauralNode {
     panner: HrtfBinaural,
-    target: SpatialTarget,
-    width: Param<Mix>,
+    /// The position and blend cells — the same ones the
+    /// [`HrtfBinauralControls`] an insert hands back write.
+    controls: HrtfBinauralControls,
     sample_rate: SampleRate,
 }
 
+/// The live controls of an [`HrtfBinauralNode`]: its position and its
+/// HRTF/dry blend, shared with the node (and every clone of these controls).
+///
+/// Inserting the node hands these back ([`IntoNode::Controls`]);
+/// [`HrtfBinauralNode::controls`] returns them too. Every method is lock-free
+/// and may be called from any thread while the node renders; a write lands
+/// on the node's next block.
+///
+/// Its own type rather than a [`tutti_graph::ParamSet`]: `UnitParam` has no
+/// bearing or height, and a position is a pair (a bearing wraps, a height
+/// saturates) that one `f32` address would split.
+#[derive(Clone)]
+pub struct HrtfBinauralControls {
+    target: SpatialTarget,
+    blend: Param<Mix>,
+}
+
+impl HrtfBinauralControls {
+    /// Sets the source's position in degrees: bearing (wraps; 0 = front,
+    /// 90 = left) and height (clamped to -90..90; 0 = ear level). Lock-free.
+    pub fn set_position(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
+        self.target.store(azimuth, elevation);
+    }
+
+    /// Returns the commanded bearing in [`Azimuth`] degrees: the target, not
+    /// the smoothed direction the convolver is currently rendering.
+    pub fn azimuth(&self) -> Azimuth {
+        self.target.azimuth.load()
+    }
+
+    /// Returns the commanded height in [`Elevation`] degrees: the target, not
+    /// the smoothed direction the convolver is currently rendering.
+    pub fn elevation(&self) -> Elevation {
+        self.target.elevation.load()
+    }
+
+    /// Sets the blend between the HRTF-rendered signal and the dry mono
+    /// center, clamped to `0..1`: 1.0 (the default) is full HRTF, 0.0 the
+    /// dry mono. Lock-free.
+    ///
+    /// Not to be confused with the VBAP panner's `set_width`, a mid/side
+    /// [`StereoWidth`](tutti_core::StereoWidth).
+    pub fn set_blend(&self, blend: impl Into<Mix>) {
+        self.blend.store(Mix::new_clamped(blend.into().get()));
+    }
+
+    /// Returns the current HRTF/dry [`Mix`], `0..1`.
+    pub fn blend(&self) -> Mix {
+        self.blend.load()
+    }
+
+    /// Stop sharing every cell, keeping the values (see `Param::detach`):
+    /// what a fork's copy does, so it renders the placement it was taken at.
+    fn detach(&mut self) {
+        self.target.detach();
+        self.blend.detach();
+    }
+}
+
 impl Clone for HrtfBinauralNode {
+    /// Shares the controls (a clone is the fork's template, which must read
+    /// the cells as they are when the fork is taken); the renderer is rebuilt
+    /// with cleared streaming state.
     fn clone(&self) -> Self {
         Self {
             panner: self.panner.clone(),
-            target: self.target.clone(),
-            width: self.width.handle(),
+            controls: self.controls.clone(),
             sample_rate: self.sample_rate,
         }
     }
 }
 
 impl HrtfBinauralNode {
-    /// Build a renderer from HRIR sphere bytes (e.g. an embedded IRCAM `.bin`).
+    /// Creates a renderer from HRIR sphere bytes (for example an embedded
+    /// IRCAM `.bin`, in the format the `hrtf` crate reads), aimed straight
+    /// ahead at full HRTF blend.
     ///
-    /// Fails if the data is unreadable or built for an incompatible rate — the
-    /// crate resamples the sphere to `sample_rate` on load.
+    /// The sphere is resampled to `sample_rate` on load. The graph prepares
+    /// the node at the device rate before its first block, resampling again if
+    /// that differs. The bytes are copied. Allocates; call it on the control
+    /// thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HrtfBinauralError::Sphere`] if the bytes cannot be parsed as
+    /// an HRIR sphere or cannot be resampled to `sample_rate`.
     pub fn new(
         hrir_bytes: &[u8],
         sample_rate: impl Into<SampleRate>,
@@ -47,52 +130,57 @@ impl HrtfBinauralNode {
         let sample_rate = sample_rate.into();
         Ok(Self {
             panner: HrtfBinaural::new(hrir_bytes, sample_rate)?,
-            target: SpatialTarget::new(),
-            width: Param::new(Mix::WET),
+            controls: HrtfBinauralControls {
+                target: SpatialTarget::new(),
+                blend: Param::new(Mix::WET),
+            },
             sample_rate,
         })
     }
 
-    /// Bearing (wraps: 0=front, 90=left) and height (saturates: -90..90,
-    /// 0=ear level). Lock-free.
+    /// Returns the node's controls: a handle sharing its cells, the same one
+    /// inserting the node hands back.
+    pub fn controls(&self) -> HrtfBinauralControls {
+        self.controls.clone()
+    }
+
+    /// Sets the source's position in degrees, lock-free. See
+    /// [`HrtfBinauralControls::set_position`].
     pub fn set_position(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
-        self.target.store(azimuth, elevation);
+        self.controls.set_position(azimuth, elevation);
     }
 
-    /// The commanded bearing in [`Azimuth`] degrees — the target, not the
-    /// smoothed direction the convolver is currently rendering.
+    /// Returns the commanded bearing in [`Azimuth`] degrees: the target, not
+    /// the smoothed direction the convolver is currently rendering.
     pub fn azimuth(&self) -> Azimuth {
-        self.target.azimuth.load()
+        self.controls.azimuth()
     }
 
-    /// The commanded height in [`Elevation`] degrees — the target, not the
-    /// smoothed direction the convolver is currently rendering.
+    /// Returns the commanded height in [`Elevation`] degrees: the target, not
+    /// the smoothed direction the convolver is currently rendering.
     pub fn elevation(&self) -> Elevation {
-        self.target.elevation.load()
+        self.controls.elevation()
     }
 
-    /// Blend between the HRTF-rendered signal and the dry mono center:
-    /// 1.0 = full HRTF, 0.0 = passthrough.
-    ///
-    /// Named `blend`, not `width`: VBAP's `set_width` is a virtual-source
-    /// spread in `StereoWidth`, while this is a `Mix`. Same word, different
-    /// unit and different meaning.
+    /// Sets the blend between the HRTF-rendered signal and the dry mono
+    /// center. See
+    /// [`HrtfBinauralControls::set_blend`].
     pub fn set_blend(&self, blend: impl Into<Mix>) {
-        self.width.store(Mix::new_clamped(blend.into().get()));
+        self.controls.set_blend(blend);
     }
 
-    /// The current HRTF/dry [`Mix`], `0..1`.
+    /// Returns the current HRTF/dry [`Mix`], `0..1`.
     pub fn blend(&self) -> Mix {
-        self.width.load()
+        self.controls.blend()
     }
 
     #[inline]
     fn sync_position(&mut self) {
-        let (azimuth, elevation) = self.target.load();
+        let (azimuth, elevation) = self.controls.target.load();
         self.panner.set_position(azimuth, elevation);
     }
 
-    /// Render one interleaved input sample pair to a binaural output pair.
+    /// Render one input sample pair to a binaural output pair.
     #[inline]
     fn render(&mut self, left: f32, right: f32, width: Mix) -> (f32, f32) {
         // The engine's one fold, not a local `* 0.5`. Identical at width 2, but
@@ -100,8 +188,9 @@ impl HrtfBinauralNode {
         // belongs to `downmix.rs` rather than to this node.
         let mono = fold_frame_to_mono(&[left, right]);
         // The dry mono comes back out of the frame bridge beside the wet pair,
-        // equally late. Blending against `mono` itself led the wet signal by
-        // the whole frame, so at any `blend < 1` the dry half arrived early.
+        // equally late. Blending against `mono` itself would lead the wet
+        // signal by a whole frame, so at any `blend < 1` the dry half would
+        // arrive early.
         let BridgeSample {
             dry,
             wet: (wet_l, wet_r),
@@ -111,121 +200,94 @@ impl HrtfBinauralNode {
     }
 }
 
-impl AudioUnit for HrtfBinauralNode {
-    fn inputs(&self) -> usize {
-        2
+/// A graph node: stereo in, stereo out.
+///
+/// # Latency and tail
+///
+/// The frame bridge's delay, 511 samples (one 512-sample frame less one), is
+/// declared as the node's processing latency, true of both outputs at every
+/// blend, so the graph's delay compensation lines the rest of the mix up with
+/// it. The tail is the frame bridge plus the convolution overlap, both fixed
+/// sizes, so it is exact rather than an estimate.
+///
+/// # Reset clears time, not placement
+///
+/// [`reset`](Node::reset) clears the frame bridge, the convolution tails and
+/// the de-zipper ramp. Position and blend are caller-set configuration and
+/// survive, and the ramp is seated on the commanded position, so the first
+/// block after a reset already renders there.
+impl Node for HrtfBinauralNode {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
+            .with_latency(Latency::new(Samples(LATENCY)))
+            .with_tail(Tail::Finite(Samples(self.panner.ring_out())))
     }
 
-    fn outputs(&self) -> usize {
-        2
+    /// Resamples the sphere to the graph's rate (allocates; control thread).
+    fn prepare(&mut self, p: &Prepare) {
+        self.sample_rate = p.sample_rate();
+        self.panner.set_sample_rate(self.sample_rate);
     }
 
-    /// Clears the frame bridge, the convolution tails and the de-zipper ramp.
-    /// Position and blend are caller-set configuration and survive — see
-    /// [`VbapPannerNode::reset`](crate::VbapPannerNode) for why a reset that
-    /// re-aims is a silent bug rather than a tidy default.
-    ///
-    /// The leading [`sync_position`](Self::sync_position) is the same fix, and
-    /// for the same reason: the commanded direction lives in this node's
-    /// [`SpatialTarget`] and the inner panner's own copy, joined only by that
-    /// call, which used to run only inside `tick`/`process`. Without it a
-    /// `set_position` → `reset` seeded the ramp at the panner's stale direction
-    /// and the first block after the reset rendered from front-centre.
-    /// Detach the position and width cells (see `Param::detach`), so a fork
-    /// renders the placement it was taken at, not a source moved while it
-    /// runs. Values are kept.
-    fn isolate(&mut self) {
-        self.target.detach();
-        self.width.detach();
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        self.sync_position();
+        let width = self.controls.blend.load();
+        let size = io.frames();
+        let (inputs, mut outputs) = io.split();
+        let (left, right) = (&inputs.get(0)[..size], &inputs.get(1)[..size]);
+        for i in 0..size {
+            let (out_left, out_right) = self.render(left[i], right[i], width);
+            outputs.get(0)[i] = out_left;
+            outputs.get(1)[i] = out_right;
+        }
+        Status::Modified
     }
 
     fn reset(&mut self) {
+        // `sync_position` first: the commanded direction lives in
+        // `controls.target` and in the inner panner's own copy, joined only by
+        // this call. Without it `set_position` → `reset` would seed the ramp
+        // at the panner's stale direction.
         self.sync_position();
         self.panner.reset_state();
     }
+}
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate;
-        self.panner.set_sample_rate(sample_rate);
+impl FreshFork for HrtfBinauralNode {
+    /// A clone (a rebuilt renderer) with its position and blend cells
+    /// detached at their values now, and reset.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.controls.detach();
+        Node::reset(&mut fork);
+        fork
     }
+}
 
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.sync_position();
-        let width = self.width.load();
+/// Inserted with its [`HrtfBinauralControls`], and a fork that shares
+/// nothing with it and starts from the placement last set through them.
+impl IntoNode for HrtfBinauralNode {
+    type Controls = HrtfBinauralControls;
 
-        let left = input.first().copied().unwrap_or(0.0);
-        let right = input.get(1).copied().unwrap_or(left);
-
-        let (out_left, out_right) = self.render(left, right, width);
-        if output.len() >= 2 {
-            output[0] = out_left;
-            output[1] = out_right;
-        }
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        self.sync_position();
-        let width = self.width.load();
-
-        // Hoisted once per block: is a second input channel present?
-        let has_stereo_in = ChannelLayout::from(input.channels()).is_multi();
-
-        for i in 0..size {
-            let left = input.at_f32(0, i);
-            let right = if has_stereo_in {
-                input.at_f32(1, i)
-            } else {
-                left
-            };
-            let (out_left, out_right) = self.render(left, right, width);
-            output.set_f32(0, i, out_left);
-            output.set_f32(1, i, out_right);
-        }
-    }
-
-    fn get_id(&self) -> u64 {
-        crate::node_id::HRTF_BINAURAL_ID
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    /// The frame bridge's [`LATENCY`] on both outputs.
-    ///
-    /// This used to pass input 0 straight through — zero latency — while every
-    /// output sample left a frame late, so PDC never compensated a binaural
-    /// track and it arrived late against the rest of the mix (design doc 013,
-    /// D2). Both outputs are a fold of *both* inputs, hence the combine; and a
-    /// moving HRIR has no fixed frequency response, hence nonlinear.
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut output = SignalFrame::new(2);
-        let rendered = input.at(0).combine_nonlinear(input.at(1), LATENCY as f64);
-        output.set(0, rendered);
-        output.set(1, rendered);
-        output
-    }
-
-    /// The frame bridge plus the convolution overlap, both fixed sizes.
-    ///
-    /// HRTF rendering convolves against a measured HRIR, so this is exact in the
-    /// same way the convolver's is — not an estimate.
-    fn tail(&mut self) -> Tail {
-        Tail::Finite(Samples(self.panner.ring_out()))
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
+    fn into_parts(self) -> NodeParts<HrtfBinauralControls> {
+        let controls = self.controls();
+        fresh_fork_parts(self, controls)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_graph::contract::{drive, prepared};
+
+    const RATE: SampleRate = SampleRate(44_100.0);
+    const BLOCK: usize = 64;
+
+    /// One block of one frame.
+    fn tick(node: &mut HrtfBinauralNode, input: [f32; 2]) -> [f32; 2] {
+        let out = drive(node, RATE, &[&input[..1], &input[1..]], &[]);
+        [out[0][0], out[1][0]]
+    }
 
     /// Serialize a minimal but format-valid HRIR sphere: a tetrahedron of 4
     /// vertices with unit-impulse HRIRs (left = identity delta, right scaled).
@@ -276,7 +338,8 @@ mod tests {
 
     fn make_node() -> HrtfBinauralNode {
         let bytes = synthetic_hrir_sphere(44_100, 64);
-        HrtfBinauralNode::new(&bytes, 44_100.0).expect("synthetic sphere should parse")
+        let node = HrtfBinauralNode::new(&bytes, RATE).expect("synthetic sphere should parse");
+        prepared(node, RATE, BLOCK)
     }
 
     #[test]
@@ -293,10 +356,9 @@ mod tests {
         // Drive a steady tone through more than one HRTF frame and confirm the
         // renderer eventually emits non-silence (output lags by one frame).
         let mut produced_nonzero = false;
-        let mut out = [0.0f32; 2];
         for n in 0..(crate::hrtf::panner::FRAME_LEN * 2) {
             let s = ((n as f32) * 0.05).sin();
-            node.tick(&[s, s], &mut out);
+            let out = tick(&mut node, [s, s]);
             if out[0].abs() > 1e-6 || out[1].abs() > 1e-6 {
                 produced_nonzero = true;
             }
@@ -308,33 +370,23 @@ mod tests {
     }
 
     /// Run `node` over `frames` frames with a unit impulse on both inputs at
-    /// frame `at`, through `process` in 64-frame blocks (the hot path, not
-    /// `tick`). Returns the (left, right) outputs.
+    /// frame `at`, in 64-frame blocks (the hot path, not one frame at a
+    /// time). Returns the (left, right) outputs.
     fn impulse_response(
         node: &mut HrtfBinauralNode,
         at: usize,
         frames: usize,
     ) -> (Vec<f32>, Vec<f32>) {
-        use tutti_core::BufferVec;
-        const BLOCK: usize = 64;
-        let mut input = BufferVec::new(2);
-        let mut output = BufferVec::new(2);
         let (mut l, mut r) = (Vec::new(), Vec::new());
         let mut done = 0;
         while done < frames {
             let n = BLOCK.min(frames - done);
-            {
-                let mut b = input.buffer_mut();
-                for c in 0..2 {
-                    for i in 0..BLOCK {
-                        b.set_f32(c, i, if done + i == at { 1.0 } else { 0.0 });
-                    }
-                }
-            }
-            node.process(n, &input.buffer_ref(), &mut output.buffer_mut());
-            let o = output.buffer_ref();
-            l.extend((0..n).map(|i| o.at_f32(0, i)));
-            r.extend((0..n).map(|i| o.at_f32(1, i)));
+            let input: Vec<f32> = (0..n)
+                .map(|i| if done + i == at { 1.0 } else { 0.0 })
+                .collect();
+            let out = drive(node, RATE, &[&input, &input], &[]);
+            l.extend_from_slice(&out[0]);
+            r.extend_from_slice(&out[1]);
             done += n;
         }
         (l, r)
@@ -348,12 +400,11 @@ mod tests {
             .collect()
     }
 
-    /// `route` must report the delay the output really has, on both outputs —
-    /// design doc 013, D2. It used to pass the input straight through (zero),
-    /// so PDC never compensated a binaural track.
+    /// The declared latency must be the delay the output really has, on both
+    /// outputs, or PDC would not compensate a binaural track.
     ///
-    /// The figure is **measured**, not read off the doc comment: the module doc
-    /// said "one HRTF frame" (512), and an impulse says 511 — the bridge renders
+    /// The figure is **measured**: "one HRTF frame" (512) is the intuitive
+    /// answer, and an impulse says 511 — the bridge renders
     /// on the push that completes a frame and drains that frame's first sample
     /// in the same call. The synthetic sphere's HRIRs are deltas at t = 0, so
     /// every frame of delay seen here is the bridge's.
@@ -362,67 +413,63 @@ mod tests {
     /// and across a frame boundary), because a bridge whose delay depended on
     /// the in-frame phase would have no single latency to report.
     ///
-    /// Mutation: restoring the pass-through `route` fails the `latency()`
-    /// assertion (reports 0). Mutation: `LATENCY = FRAME_LEN` fails every
-    /// impulse (the doc's figure is one frame too late).
+    /// Mutation (run): declaring `Latency::ZERO` in `shape` fails the
+    /// declaration assertion (reports 0). Mutation: `LATENCY = FRAME_LEN`
+    /// fails every impulse (the doc's figure is one frame too late).
     #[test]
     fn reported_latency_is_the_measured_impulse_delay() {
         use crate::hrtf::panner::{FRAME_LEN, LATENCY};
-        let mut node = make_node();
-        assert_eq!(node.latency(), Some((FRAME_LEN - 1) as f64));
-        let mut input = SignalFrame::new(2);
-        input.set(0, tutti_core::Signal::Latency(0.0));
-        input.set(1, tutti_core::Signal::Latency(0.0));
-        let routed = node.route(&input, 1.0);
-        for o in 0..2 {
-            assert!(
-                matches!(routed.at(o), tutti_core::Signal::Latency(l) if l == LATENCY as f64),
-                "output {o} does not report Latency({LATENCY})"
-            );
-        }
+        let node = make_node();
+        assert_eq!(node.shape().latency, Latency::new(Samples(FRAME_LEN - 1)));
 
         for at in [0, 1, FRAME_LEN - 1, FRAME_LEN, 2 * FRAME_LEN + 37] {
             let mut node = make_node();
             node.set_position(Azimuth(90.0), Elevation::LEVEL);
-            node.reset();
+            Node::reset(&mut node);
             let (l, r) = impulse_response(&mut node, at, at + 3 * FRAME_LEN);
             assert_eq!(onsets(&l), vec![at + LATENCY], "left, impulse at {at}");
             assert_eq!(onsets(&r), vec![at + LATENCY], "right, impulse at {at}");
         }
     }
 
-    /// Through PDC: a binaural track on outputs 0/1 beside a dry path on 2. The
-    /// dry path must now pre-roll by the bridge's latency; with the old
-    /// pass-through `route` the plan was empty and the binaural track simply
-    /// arrived late.
+    /// Through PDC: a binaural track on outputs 0/1 beside a dry path on 2,
+    /// in a graph. The compiler must delay the dry path by the
+    /// declared latency, so an impulse leaves all three outputs on one frame.
     ///
-    /// Mutation: restoring the pass-through `route` fails (an empty plan).
+    /// Mutation (run): declaring `Latency::ZERO` in `shape` → the dry onset
+    /// leaves at frame 0, `LATENCY` early → fails.
     #[test]
     fn pdc_compensates_the_other_path_by_the_binaural_latency() {
         use crate::hrtf::panner::LATENCY;
-        use tutti_core::dsp::{Net, Source};
-        use tutti_core::latency;
+        use tutti_graph::GraphBuilder;
         use tutti_nodes::testing::Through;
 
-        let mut net = Net::new(1, 3);
-        let hrtf = net.add(make_node());
-        let dry = net.add(Through::mono());
-        net.set_source(hrtf, 0, Source::Global(0));
-        net.set_source(hrtf, 1, Source::Global(0));
-        net.set_source(dry, 0, Source::Global(0));
-        net.set_output_source(0, Source::Local(hrtf, 0));
-        net.set_output_source(1, Source::Local(hrtf, 1));
-        net.set_output_source(2, Source::Local(dry, 0));
-
-        let plan = latency::plan(&net);
-        assert_eq!(plan.total(), Samples(LATENCY));
-        assert_eq!(plan.channels(), &[Samples(0), Samples(0), Samples(LATENCY)]);
+        let mut node = make_node();
+        node.set_position(Azimuth(90.0), Elevation::LEVEL);
+        Node::reset(&mut node);
+        let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
+        let (hrtf, _) = g.add_with_controls(node);
+        let dry = g.add(Through::mono());
+        g.connect_input(0, hrtf, 0);
+        g.connect_input(0, hrtf, 1);
+        g.connect_input(0, dry, 0);
+        g.connect_output(hrtf, 0, 0);
+        g.connect_output(hrtf, 1, 1);
+        g.connect_output(dry, 0, 2);
+        let mut r = g
+            .renderer(Prepare::new(RATE, Samples(BLOCK)))
+            .expect("builds");
+        let mut impulse = vec![0.0f32; 2 * LATENCY];
+        impulse[0] = 1.0;
+        let out = r.render_input(&[&impulse]);
+        for (o, ch) in out.iter().enumerate() {
+            assert_eq!(onsets(ch), vec![LATENCY], "output {o}");
+        }
     }
 
     /// The dry half of the blend leaves with the wet half, so the reported
-    /// latency is true of the whole output at any blend — the D3 shape, which
-    /// this node had too: it blended the undelayed `mono` against a wet signal
-    /// a frame late.
+    /// latency is true of the whole output at any blend. Blending the undelayed
+    /// `mono` against a wet signal a frame late would break that.
     ///
     /// Mutation: blending against `mono` instead of the bridge's `dry` fails
     /// blend 0.0 and 0.5 (an onset at the impulse itself). Mutation: dropping
@@ -435,7 +482,7 @@ mod tests {
             let mut node = make_node();
             node.set_position(Azimuth(90.0), Elevation::LEVEL);
             node.set_blend(Mix(blend));
-            node.reset();
+            Node::reset(&mut node);
             let at = 100;
             let (l, r) = impulse_response(&mut node, at, at + 2 * FRAME_LEN);
             assert_eq!(onsets(&l), vec![at + LATENCY], "left, blend {blend}");
@@ -449,16 +496,16 @@ mod tests {
     }
 
     /// Same contract as the VBAP panner's: `reset` clears the streaming
-    /// buffers and the de-zipper ramp, never the caller's placement. The
-    /// exporter resets a cloned net before rendering, and `Clone` shares these
-    /// atomics, so a reset that re-aimed would move the live source too.
+    /// buffers and the de-zipper ramp, never the caller's placement. A fork is
+    /// reset before it renders, and a clone shares these atomics, so a reset
+    /// that re-aimed would move the live source too.
     #[test]
     fn reset_keeps_the_authored_placement() {
         let mut node = make_node();
         node.set_position(Azimuth(45.0), Elevation(10.0));
         node.set_blend(Mix(0.4));
 
-        node.reset();
+        Node::reset(&mut node);
 
         assert_eq!(node.azimuth(), Azimuth(45.0));
         assert_eq!(node.elevation(), Elevation(10.0));
@@ -478,19 +525,18 @@ mod tests {
         node.set_position(Azimuth(90.0), Elevation::LEVEL);
 
         // Fill the bridge and the overlap tails with a loud take.
-        let mut out = [0.0f32; 2];
         for n in 0..(crate::hrtf::panner::FRAME_LEN * 3) {
             let s = ((n as f32) * 0.05).sin();
-            node.tick(&[s, s], &mut out);
+            tick(&mut node, [s, s]);
         }
 
-        node.reset();
+        Node::reset(&mut node);
 
         // Silence in. With the tail dropped the frames that follow are silent
         // too; a retained tail would ring out through them.
         let mut peak = 0.0f32;
         for _ in 0..(crate::hrtf::panner::FRAME_LEN * 2) {
-            node.tick(&[0.0, 0.0], &mut out);
+            let out = tick(&mut node, [0.0, 0.0]);
             peak = peak.max(out[0].abs()).max(out[1].abs());
         }
         assert!(
@@ -502,8 +548,10 @@ mod tests {
     /// `Clone` **shares** the position atomics rather than snapshotting them —
     /// parity with [`VbapPannerNode`](crate::vbap::VbapPannerNode), and the
     /// reason `reset` must never write them (see `reset_keeps_the_authored_placement`).
-    /// The offline exporter clones the live net, so a snapshotting clone would
-    /// silently freeze a render at whatever bearing was set at clone time.
+    /// A clone is the fork source's template, taken at insert, so a
+    /// snapshotting clone would silently freeze every later export at the
+    /// bearing set at insert. (The fork itself detaches; see
+    /// `tests/isolate_snapshots.rs`.)
     #[test]
     fn clone_shares_the_position_atomics() {
         let node = make_node();

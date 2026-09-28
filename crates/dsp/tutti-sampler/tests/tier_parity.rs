@@ -1,11 +1,10 @@
 //! The two playback tiers must sound the same.
 //!
 //! `VoiceSource` has two variants: `Memory` indexes an `Arc<Wave>` resident in
-//! RAM, `Disk` pops a ring the butler thread refills from a file. The crate's
-//! own design invariant says they "differ ONLY in the *essential* per-sample
-//! read" — same interpolation kernel, same channel policy, same placement gate.
-//! Nothing tested that. The butler is ~4,000 lines whose only end-to-end
-//! coverage was a smoke test asserting a fresh streamer has an empty plan map.
+//! RAM, `Disk` reads a ring the butler thread refills from a file. The crate's
+//! own invariant says they "differ ONLY in the *essential* per-sample read" —
+//! same interpolation kernel, same channel policy, same placement gate. This
+//! file tests that end to end, through the butler.
 //!
 //! # Why this specific comparison
 //!
@@ -17,12 +16,10 @@
 //! feeds that kernel from its own 4-tap ring history rather than an indexable
 //! `Wave`, and that fetch path is what has no coverage.
 //!
-//! The divergence is not hypothetical. `disk_voice.rs` carries two comments
-//! recording times these paths drifted: a hand-rolled `speed * src_ratio` that
-//! bypassed the one composition point, and a `tick` path that drained its ring
-//! at full speed while `process` did not. Both were live bugs. A file that
-//! *sounds different* depending on whether it fit in RAM is the class of defect
-//! this test exists to catch.
+//! The paths can drift apart: a hand-rolled `speed * src_ratio` that bypasses
+//! the one composition point, or one read path draining its ring at a
+//! different speed from another. A file that *sounds different* depending on
+//! whether it fit in RAM is the class of defect this test exists to catch.
 //!
 //! # How readiness is handled: by counting, not by waiting
 //!
@@ -31,16 +28,14 @@
 //! sleep, no `Instant`, and no timeout anywhere in this file.
 //!
 //! That is not cosmetic. The threaded butler parks 1 ms when idle and 3 ms when
-//! its rings are healthy, and the earlier version of this file polled at 5–10 ms
-//! against a 5 s liveness ceiling — so every readiness check was a race against
-//! a producer the test could not see, and the ceiling was really a guess about
-//! the machine. Worse, the polling was itself made of *renders*: each attempt
-//! advanced the clock, so a warm-up that needed several attempts walked the
-//! transport deep into the file and the subsequent measurement was taken
-//! somewhere else entirely.
+//! its rings are healthy, so polling it at 5–10 ms against a liveness ceiling
+//! races a producer the test cannot see, and the ceiling is really a guess
+//! about the machine. Worse, polling by *rendering* advances the clock, so a
+//! warm-up that needs several attempts walks the transport deep into the file
+//! and the measurement is taken somewhere else entirely.
 //!
 //! Stepping removes both. [`prime`] runs cycles until the butler stops making
-//! progress ([`StepOutcome`] is no longer `Busy`), which is exactly the point
+//! progress ([`StepOutcome`] other than `Busy`), which is exactly the point
 //! the threaded butler would park — and it takes single-digit cycles. Where a
 //! test still needs the butler to keep up with a long render, [`render_streamed`]
 //! interleaves a step per block, which is the same relationship the thread has
@@ -53,11 +48,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_core::BufferVec;
-use tutti_core::{
-    AudioUnit, Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate, Timeline,
-};
+use tutti_core::{Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate};
+use tutti_graph::{contract, Node};
 use tutti_io::Wave;
+use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{Command, DiskStreamer, DiskStreamerConfig, StepOutcome};
 use tutti_sampler::{DiskVoice, MemorySource, VoiceWindow};
 
@@ -115,24 +109,17 @@ const SEEK_FILE_SECS: f64 = 31.0;
 /// sized by what the assertions need and nothing else.
 const OFFSET_FILE_SECS: f64 = 12.0;
 
-/// A rolling transport the test advances by hand, once per block.
-///
-/// `MockTransport` is `#[cfg(test)]` inside the crate, so an integration test
-/// cannot reach it. Reimplemented here for the same reason `render_cases.rs`
-/// does: `Timeline` is three methods, and widening a test-only surface so an
-/// integration test can borrow it would make the production API answer to this
-/// file.
-struct Clock {
-    beat: std::sync::atomic::AtomicU64,
-    tempo: f64,
-}
+/// A rolling transport the test advances by hand, once per block, in
+/// seconds of file time at the call sites that seek: the crate's
+/// [`MockTransport`], with the seek verb this file speaks.
+struct Clock(Arc<MockTransport>);
 
 impl Clock {
     fn new(tempo: f64) -> Arc<Self> {
-        Arc::new(Self {
-            beat: std::sync::atomic::AtomicU64::new(0f64.to_bits()),
-            tempo,
-        })
+        Arc::new(Self(MockTransport::rolling(
+            Beat::new(0.0),
+            Bpm::new(tempo),
+        )))
     }
 
     /// Jump the playhead to an absolute position in **seconds** of file time.
@@ -141,36 +128,17 @@ impl Clock {
     /// moving the playhead is what repositions the clip. Seconds rather than
     /// beats at the call site because the material's frequency encodes seconds.
     fn seek_seconds(&self, sec: f64) {
-        let beats = sec * self.tempo / 60.0;
-        self.beat
-            .store(beats.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.0.seek(Beat::new(sec * self.0.tempo().get() / 60.0));
     }
 
-    /// Move by `samples`, the way a block-driven transport does after `process`.
+    /// Move by `samples`, the way a host's transport moves after a block.
     fn advance(&self, samples: usize) {
-        let beats = samples as f64 * self.tempo / 60.0 / SR;
-        let now = f64::from_bits(self.beat.load(std::sync::atomic::Ordering::Relaxed));
-        self.beat.store(
-            (now + beats).to_bits(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.0.advance(samples as i64, SR);
     }
-}
 
-impl Timeline for Clock {
-    fn beat(&self) -> Beat {
-        Beat::new(f64::from_bits(
-            self.beat.load(std::sync::atomic::Ordering::Relaxed),
-        ))
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(self.tempo)
-    }
-    fn is_rolling(&self) -> bool {
-        true
-    }
-    fn segment_generation(&self) -> u64 {
-        0
+    /// The next block's `Env`: where the playhead stands.
+    fn env(&self) -> tutti_graph::Env {
+        self.0.env(BLOCK, SR)
     }
 }
 
@@ -279,27 +247,24 @@ fn load_wave(path: &Path) -> Arc<Wave> {
 /// Render `blocks` blocks of a unit into interleaved stereo, advancing `clock`
 /// once per block.
 ///
-/// Block-driven via `process`, as a host drives a unit. A placed voice derives
-/// its position from the playhead, which advances once per *block*. `tick` used
-/// to re-read the playhead per call, so calling it BLOCK times against one
-/// transport reading emitted the same sample BLOCK times — a staircase that
-/// resampled the source downward (`examples/README.md`'s first trap). A placed
-/// memory read now seats on the clock and steps through the block through
-/// either entry point (`MemorySource::seated_position`).
-fn render(unit: &mut dyn AudioUnit, clock: &Clock, blocks: usize) -> Vec<(f32, f32)> {
-    let input = BufferVec::new(2);
-    let mut output = BufferVec::new(2);
+/// Block-driven, as a host drives a node: each block's `Env` carries the
+/// playhead where it stands, and it advances once per *block*. A placed voice
+/// seats on the block's transport and steps through the block.
+fn render(unit: &mut dyn Node, clock: &Clock, blocks: usize) -> Vec<(f32, f32)> {
     let mut out = Vec::with_capacity(blocks * BLOCK);
 
     for _ in 0..blocks {
-        unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        let b = output.buffer_ref();
-        for i in 0..BLOCK {
-            out.push((b.at_f32(0, i), b.at_f32(1, i)));
-        }
-        clock.advance(BLOCK);
+        push_block(unit, clock, &mut out);
     }
     out
+}
+
+/// One block of `unit` under `clock`, appended to `out` as frames; the clock
+/// then advances.
+fn push_block(unit: &mut dyn Node, clock: &Clock, out: &mut Vec<(f32, f32)>) {
+    let b = contract::drive_in(unit, &clock.env(), &[], &[], &[]).audio;
+    out.extend(b[0].iter().copied().zip(b[1].iter().copied()));
+    clock.advance(BLOCK);
 }
 
 /// [`render`], with one butler cycle run per block.
@@ -319,17 +284,10 @@ fn render_streamed(
     clock: &Clock,
     blocks: usize,
 ) -> Vec<(f32, f32)> {
-    let input = BufferVec::new(2);
-    let mut output = BufferVec::new(2);
     let mut out = Vec::with_capacity(blocks * BLOCK);
 
     for _ in 0..blocks {
-        voice.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        let b = output.buffer_ref();
-        for i in 0..BLOCK {
-            out.push((b.at_f32(0, i), b.at_f32(1, i)));
-        }
-        clock.advance(BLOCK);
+        push_block(voice, clock, &mut out);
         let _ = streamer.step_once();
     }
     out
@@ -371,11 +329,10 @@ fn prime(streamer: &mut DiskStreamer) {
 /// Build a hand-driven streamer plus a disk voice on `channel`, streaming
 /// `path` from `at_sec`, with its ring already primed.
 ///
-/// Two properties this shape buys over the polling version it replaces. The
-/// clock is placed at `at_sec` and **stays** there through priming, because
-/// priming is stepping rather than rendering — the old warm-up rendered on every
-/// poll and walked the transport forward, so the measurement that followed was
-/// taken somewhere the caller had not asked for. And `take_disk_voice` is called
+/// Two properties this shape buys. The clock is placed at `at_sec` and
+/// **stays** there through priming, because priming is stepping rather than
+/// rendering (a warm-up that rendered would walk the transport forward, and
+/// the measurement would be taken somewhere the caller had not asked for). And `take_disk_voice` is called
 /// exactly once, after the `Stream` command has demonstrably been applied,
 /// rather than in a retry loop that cannot tell "not yet" from "never".
 fn stream_at(
@@ -398,21 +355,16 @@ fn stream_at(
 
     prime(streamer);
 
-    let mut voice = streamer
+    let voice = streamer
         .status()
-        .take_disk_voice(
-            channel,
-            clock.clone() as Arc<dyn Timeline>,
-            Beat::new(0.0),
-            None,
-        )
+        .take_disk_voice(channel, Beat::new(0.0), None)
         .unwrap_or_else(|e| {
             panic!(
                 "the butler applied its commands and reported its rings full, but gave no \
                  voice for channel {channel} streaming from {at_sec}s: {e}"
             )
         });
-    voice.set_sample_rate(SampleRate(SR));
+    let voice = contract::prepared(voice, SampleRate(SR), BLOCK);
     clock.seek_seconds(at_sec);
 
     (voice, clock)
@@ -437,10 +389,10 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
     // ---- memory tier -----------------------------------------------------
     let mem_clock = Clock::new(120.0);
     let wave = load_wave(&path);
-    let mut mem = MemorySource::with_config(
+    let mem = MemorySource::with_config(
         wave,
         tutti_sampler::MemorySourceConfig {
-            timeline: Some(mem_clock.clone() as Arc<dyn Timeline>),
+            placed: true,
             window: VoiceWindow {
                 start: Beat::new(0.0),
                 duration: None,
@@ -449,7 +401,7 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
             ..Default::default()
         },
     );
-    mem.set_sample_rate(SampleRate(SR));
+    let mut mem = contract::prepared(mem, SampleRate(SR), BLOCK);
 
     // ---- disk tier -------------------------------------------------------
     let mut streamer =
@@ -457,9 +409,7 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
     let (mut disk, disk_clock) = stream_at(&mut streamer, &path, 0.0, 0);
 
     // Both tiers start at the playhead's origin, so no warm-up realignment is
-    // needed — the old version had to advance the memory tier to wherever its
-    // polling warm-up had left the disk clock, which is exactly the coupling
-    // stepping removes.
+    // needed: priming by stepping leaves the disk clock where it was placed.
     let mem_out = render(&mut mem, &mem_clock, COMPARE_BLOCKS);
     let disk_out = render_streamed(&mut disk, &mut streamer, &disk_clock, COMPARE_BLOCKS);
 
@@ -778,12 +728,11 @@ fn disk_varispeed_transposes_by_its_factor() {
     // right for a channel-identity check and wrong here: under varispeed the
     // transposed partials land on each other's bands (660 x 1.5 = 990 sits where
     // the left fundamental is looked for), and the measurement silently reports
-    // the wrong peak. This test first "failed" at 1.5x reading 990 Hz for
-    // exactly that reason — the harness, not the engine.
+    // the wrong peak (990 Hz at 1.5x): a harness failure, not the engine's.
     //
     // 8 s rather than 20: the fastest factor here is 2x over 128 blocks from the
-    // file's head, which reaches ~0.35 s in. The old length was sized for a
-    // warm-up that walked the clock forward, and stepping removed that walk.
+    // file's head, which reaches ~0.35 s in; priming by stepping does not walk
+    // the clock forward.
     write_tone_wav(&path, (SR * 8.0) as usize, 440.0);
 
     let mut streamer =
@@ -872,8 +821,7 @@ fn the_tiers_agree_under_varispeed() {
         disk_clock.seek_seconds(0.0);
         disk.set_speed(PlaybackRate::new(factor));
         // The gate re-seeks on a varispeed change; the butler applies it on the
-        // next cycle. This replaced a fixed 30 ms sleep whose adequacy was a
-        // property of the machine.
+        // next cycle, so step rather than sleep.
         prime(&mut streamer);
         disk_clock.seek_seconds(0.0);
         let disk_out = render_streamed(&mut disk, &mut streamer, &disk_clock, 128);
@@ -882,10 +830,10 @@ fn the_tiers_agree_under_varispeed() {
 
         // --- memory, same speed, fresh so neither tier's history leaks in ---
         let mem_clock = Clock::new(120.0);
-        let mut mem = MemorySource::with_config(
+        let mem = MemorySource::with_config(
             load_wave(&path),
             tutti_sampler::MemorySourceConfig {
-                timeline: Some(mem_clock.clone() as Arc<dyn Timeline>),
+                placed: true,
                 window: VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
@@ -895,7 +843,7 @@ fn the_tiers_agree_under_varispeed() {
                 ..Default::default()
             },
         );
-        mem.set_sample_rate(SampleRate(SR));
+        let mut mem = contract::prepared(mem, SampleRate(SR), BLOCK);
         let mem_out = render(&mut mem, &mem_clock, 128);
         let mem_left: Vec<f32> = mem_out.iter().map(|&(l, _)| l).collect();
         let mem_hz = dominant_hz_in(&mem_left, 150.0, 1200.0);

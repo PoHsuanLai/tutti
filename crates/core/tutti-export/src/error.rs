@@ -71,9 +71,9 @@ pub enum Error {
     #[error("Cannot measure loudness: {0}")]
     Unmeasurable(String),
 
-    /// A native graph could not be forked for the render because the node at
+    /// The graph could not be forked for the render because the node at
     /// `key` cannot be: it handed the editor no fork source (a mic monitor, an
-    /// in-process VST2 plugin, a `Legacy` built unforkable), so a copy would share
+    /// in-process VST2 plugin, a node inserted `Unforkable`), so a copy would share
     /// the live node. From [`RenderGraph::fork`](crate::RenderGraph::fork);
     /// nothing was rendered.
     ///
@@ -86,7 +86,7 @@ pub enum Error {
         key: tutti_types::NodeKey,
     },
 
-    /// A native graph could not be forked for the render for any reason other
+    /// The graph could not be forked for the render for any reason other
     /// than [`NotForkable`](Self::NotForkable): the target node is missing or
     /// has no outputs, or the forked graph did not commit.
     #[error("Cannot fork the graph for export: {0}")]
@@ -96,7 +96,7 @@ pub enum Error {
     /// server crashed, or stopped answering (`kind`). Past that point the
     /// render holds silence where the unit's output belongs, so the export is
     /// reported as failed rather than written as if it had succeeded. The
-    /// editor's `fork_health` is checked after every native-graph render
+    /// editor's `fork_health` is checked after every graph render
     /// (see "When a forked unit fails" in tutti-graph's `fork` docs). A file
     /// export may already have written the file; it is not a valid render.
     #[error("Export failed: forked node {key:?} {kind:?} during the render: {cause}")]

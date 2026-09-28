@@ -32,7 +32,7 @@ impl TryFrom<&[u8]> for MidiEvent {
 }
 
 impl MidiEvent {
-    /// Parse raw MIDI 1.0 wire bytes (2-3 byte channel-voice or 1-byte system
+    /// Parses raw MIDI 1.0 wire bytes (2-3 byte channel-voice or 1-byte system
     /// real-time message) into a UMP [`MidiEvent`] of type 0x2 (Channel Voice 1)
     /// or 0x1 (System). Returns `None` on malformed input or SysEx (use
     /// [`Self::sysex7_fragments`] for that).
@@ -124,7 +124,7 @@ fn midi1_channel_voice_to_ump(channel: MidiChannel, msg: midly::MidiMessage) -> 
 }
 
 impl MidiEvent {
-    /// Emit the MIDI 1.0 wire form of this event (1-3 bytes), if the message
+    /// Emits the MIDI 1.0 wire form of this event (1-3 bytes), if the message
     /// has a 1.0 representation. Returns `None` for MIDI 2.0-only messages
     /// (per-note controllers, RPN/NRPN, utility, SysEx) and non-channel-voice
     /// UMP types that don't correspond to a 1.0 status byte.

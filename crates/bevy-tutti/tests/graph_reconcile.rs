@@ -6,8 +6,8 @@
 //!   node's own value. What a live node's scalars do.
 //! - `audio_tap` — the tap the audio callback pushes into, reachable from the
 //!   ECS. What a live node's output is observed through.
-//! - `engine_nodes` — the clock and click `build_into` makes, and the beat edge
-//!   it declares between them.
+//! - `engine_nodes` — the clock and click `build_into` makes (the click reads
+//!   its block's `Env`, with no edge from the clock).
 //!
 //! Grouped because params and taps are both per-node state whose reconcilers
 //! run in the same phase ordering as spawn and despawn, and a lifecycle change
@@ -22,7 +22,6 @@ mod common;
 /// These moved out of `graph/reconcile.rs` when that file was split by duty.
 /// They exercise only public API, so an integration test is their natural home —
 /// and it proves the split kept the surface a host actually reaches intact.
-/// (Was `tests/graph_reconcile.rs`.)
 mod graph_reconcile {
     use bevy_app::App;
     use bevy_ecs::prelude::*;
@@ -143,7 +142,7 @@ mod graph_reconcile {
         let mut app = test_app();
         let mut commands_q = app.world_mut().commands();
         commands_q
-            .spawn_audio_node(Osc::sine(Hz(440.0)))
+            .spawn_audio_node(tutti_graph::ForkByClone(Osc::sine(Hz(440.0))))
             .insert(Probe(0.5));
         app.update();
 
@@ -164,7 +163,8 @@ mod graph_reconcile {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
+            c.spawn_audio_node(tutti_graph::ForkByClone(Osc::sine(Hz(440.0))))
+                .id()
         };
         app.update();
 
@@ -191,11 +191,12 @@ mod graph_reconcile {
 
         let mut app = test_app();
 
-        // Spawn the node in the normal way (so we can read its NodeId once
+        // Spawn the node in the normal way (so we can read its NodeKey once
         // the spawn command flushed).
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
+            c.spawn_audio_node(tutti_graph::ForkByClone(Osc::sine(Hz(440.0))))
+                .id()
         };
         app.update();
         let node_id = *app.world().get::<AudioNode>(entity).expect("AudioNode");
@@ -247,7 +248,8 @@ mod graph_reconcile {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
+            c.spawn_audio_node(tutti_graph::ForkByClone(Osc::sine(Hz(440.0))))
+                .id()
         };
         app.update();
 
@@ -257,14 +259,18 @@ mod graph_reconcile {
             .resource::<AudioGraphRes>()
             .contains(node_id_before));
 
-        // Replace with a different oscillator — same NodeId, new unit.
+        // Replace with a different oscillator — same NodeKey, new unit.
         {
             let mut c = app.world_mut().commands();
-            crossfade_audio_node(&mut c, entity, Box::new(Osc::sine(Hz(220.0))));
+            crossfade_audio_node(
+                &mut c,
+                entity,
+                tutti_graph::ForkByClone(Osc::sine(Hz(220.0))),
+            );
         }
         app.update();
 
-        // Same NodeId stays — that's the contract of crossfade.
+        // Same NodeKey stays — that's the contract of crossfade.
         let node_id_after = *app.world().get::<AudioNode>(entity).expect("AudioNode");
         assert_eq!(node_id_before, node_id_after);
         assert!(app
@@ -280,7 +286,6 @@ mod graph_reconcile {
 /// steady frame doing nothing, and — the reason the claim set exists — an
 /// authored write on a *modulated* param going to the accumulator base instead
 /// of the atomic.
-/// (Was `tests/audio_param.rs`.)
 mod audio_param {
     // The plain-reconcile tests below run in every configuration; the ones that
     // need a modulation driver are gated individually. Gating the whole file would
@@ -289,13 +294,11 @@ mod audio_param {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::graph::{
-        AudioGraphRes, AudioParam, AudioParamAppExt, CapturedControls, GraphReconcilePlugin,
-        TransportRes,
+        AudioGraphRes, AudioParam, AudioParamAppExt, GraphNode, GraphReconcilePlugin, TransportRes,
     };
     #[cfg(feature = "modulation")]
     use bevy_tutti::modulation::{
-        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
-        TuttiModulationPlugin,
+        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -320,32 +323,26 @@ mod audio_param {
         let drive = DriveCell(unit.drive());
         let mut graph = AudioGraphRes::headless(0, 1);
         graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        // A setting goes into the node's settings ring and reaches the unit on
-        // its next block, on any graph. So `node_drive` renders a frame before
-        // it reads. (On `Net`, before design doc 013's PR 13, these tests used
-        // a graph with no audio side, where a setting applied straight to the
-        // only copy of the node.)
+        // A `ParamNode`: a param set by address writes the cell it reads, which
+        // it reads on its next block. `node_drive` renders a frame before it
+        // reads all the same.
 
         app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(GraphReconcilePlugin);
         #[cfg(feature = "modulation")]
-        {
-            app.add_plugins(TuttiModulationPlugin);
-            // Before the node is bound: the registry is consulted once, when the
-            // node's controls are captured, so a type registered afterwards
-            // would leave this node unmodulatable.
-            app.world_mut()
-                .resource_mut::<ModTargetRegistry>()
-                .register::<DistortionNode>();
-        }
+        app.add_plugins(TuttiModulationPlugin);
         app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 
-        let controls = CapturedControls::capture(app.world(), &unit);
+        // Captured before it goes in, as every insertion path does: a
+        // `ParamNode`'s controls are its `ParamSet`, addressed on the node so an
+        // `AudioParam` writes through it (what `spawn_audio_node` does).
+        let controls = unit.captured();
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.insert(unit);
+            let (node, params) = graph.insert(unit);
+            graph.set_node_params(node, DistortionNode::params(&params));
             graph.set_outputs_from(node);
             node
         };
@@ -403,7 +400,7 @@ mod audio_param {
     }
 
     /// Change detection is the whole gate: without it every param would push every
-    /// frame, and `Net::set` would enqueue a message per param per frame forever.
+    /// frame, re-sending every param to the audio thread each frame forever.
     #[test]
     fn an_unchanged_param_does_not_push() {
         let (mut app, entity) = app_with_node();
@@ -480,8 +477,8 @@ mod audio_param {
     #[cfg(feature = "modulation")]
     #[test]
     fn an_authored_write_to_a_modulated_param_moves_the_base() {
-        // `app_with_node` registers `DistortionNode` for modulation before it
-        // binds the node — the registry is read once, at capture.
+        // `app_with_node` captures the node's `ParamSet` before it binds the
+        // node — the capture is read once, before insertion.
         let (mut app, entity) = app_with_node();
 
         app.world_mut().entity_mut(entity).insert((
@@ -529,7 +526,6 @@ mod audio_param {
 /// These drive the wrapper directly. The build-time publish itself needs a real
 /// audio device (`TuttiPlugin { disabled: true }` skips `build_into` entirely),
 /// so it is covered by the ignored test at the bottom rather than claimed here.
-/// (Was `tests/audio_tap.rs`.)
 mod audio_tap {
     use bevy_app::App;
     use bevy_tutti::graph::AudioTapRes;
@@ -603,46 +599,34 @@ mod audio_tap {
     // which builds device-free and checks the frames reach the published tap.
 }
 
-/// The nodes the engine builds for itself, and the one edge between them.
+/// The node the engine builds for itself.
 mod engine_nodes {
     use bevy_app::App;
-    use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, EngineNodes};
-    use tutti_core::transport::BEAT_PORTS;
     use tutti_core::AudioNode;
 
-    /// The metronome takes its beat from the clock's two ports, per sample.
-    ///
-    /// That edge is what makes a click start on the frame its beat lands on
-    /// (D8, design doc 013). Without it the click reads beat 0 forever and
-    /// sounds once — and nothing else would notice, because its *outputs* are
-    /// the host's to declare, so a default app renders no click either way.
+    /// The metronome reads the beat of every frame from its block's `Env`,
+    /// so it has no inputs to wire and cannot miss a wire.
     ///
     /// Ignored: `build_into`
     /// opens a real CPAL device. It passes on a machine with ALSA's default
     /// device, which is how it was run.
     ///
-    /// Mutation: spawning the click with `PortSources::silent()` instead of
-    /// `stereo_from(clock_entity)` in `build_into` leaves both ports on
-    /// `GraphSource::Silence` and fails.
+    /// Mutation (not run here: needs a device): inserting the click as a
+    /// two-input node → "the click has no inputs" fails.
     #[test]
     #[ignore = "requires an audio device"]
-    fn the_click_reads_the_beat_from_the_clock() {
+    fn the_click_reads_the_beat_from_its_env() {
         let mut app = App::new();
         app.add_plugins(bevy_tutti::TuttiPlugin::default());
         app.update();
 
         let nodes = *app.world().resource::<EngineNodes>();
         let id_of = |entity| *app.world().get::<AudioNode>(entity).unwrap();
-        let (clock, click) = (id_of(nodes.clock), id_of(nodes.click));
+        let click = id_of(nodes.click);
 
         let graph = app.world().resource::<AudioGraphRes>();
-        for port in 0..BEAT_PORTS {
-            assert_eq!(
-                graph.source(click, port),
-                GraphSource::Node(clock, port),
-                "click beat port {port} must come from the clock's port {port}"
-            );
-        }
+        assert_eq!(graph.node_inputs(click), 0, "the click has no inputs");
+        assert_eq!(graph.node_outputs(click), 2, "the click is stereo");
     }
 }

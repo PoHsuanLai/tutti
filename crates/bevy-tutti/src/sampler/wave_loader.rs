@@ -3,7 +3,7 @@
 //! The **resident** tier only: the whole file is read into memory and decoded
 //! up front, so this is for samples short enough to hold whole. A clip too long
 //! for that goes through the disk streamer instead, which never becomes an
-//! asset. The asset type itself lives in `tutti-core`; this is only its loader.
+//! asset. The asset type itself lives in `tutti-io`; this is only its loader.
 
 use bevy_asset::{io::Reader, AssetLoader, LoadContext};
 use bevy_reflect::TypePath;

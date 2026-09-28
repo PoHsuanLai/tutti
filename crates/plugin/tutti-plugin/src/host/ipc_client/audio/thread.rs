@@ -83,11 +83,10 @@ fn run_thread(
 
     // A bridge that never connects is as dead as one whose socket drops later,
     // and the audio thread tells them apart only through `is_crashed`. Both
-    // exits below used to return silently, leaving the flag false forever — so
-    // the batcher's crash check could never fire, and the output was silent
-    // only because the slab sequence happened never to match. That made correct
-    // behaviour a coincidence of the numbering rather than the decision the
-    // check exists to make.
+    // exits below must mark the crash: returning silently would leave the flag
+    // false forever, so the batcher's crash check could never fire, and the
+    // output would be silent only because the slab sequence happened never to
+    // match.
     let stream = ipc::connect(&socket_path);
     let mut stream = match stream {
         Ok(s) => s,
@@ -143,8 +142,7 @@ fn pump(
         let Some(cmd) = channels.pop_command() else {
             // Park rather than sleep: `push_command` unparks us the instant a
             // block arrives, so the socket round-trip starts immediately
-            // instead of after a fixed poll interval. That latency used to sit
-            // inside the audio thread's wait budget for the reply.
+            // instead of after a fixed poll interval.
             //
             // `park_timeout` may also return spuriously — harmless, the loop
             // just re-polls. An unpark racing with this re-poll is likewise
@@ -160,8 +158,8 @@ fn pump(
         if let Err(e) = result {
             // The error is stringified here, at the only place it exists.
             // `BridgeError` is not `Clone`, and the crash notification outlives
-            // this frame, so the alternative is the hardcoded placeholder the
-            // host used to report for every death alike.
+            // this frame, so the alternative is a hardcoded placeholder that
+            // reports every death alike.
             crash(lifecycle, listener, format!("{e}"));
             // Connection-level: the stream is gone, so this ends every
             // in-flight and queued block, not just one. `None` matches

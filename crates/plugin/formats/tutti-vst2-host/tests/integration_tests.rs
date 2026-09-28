@@ -114,9 +114,8 @@ where
     // value is written and then discarded with the unload, and the next load
     // maps a fresh image reading the default.
     //
-    // Measured on the same bug in `vst2_latency.rs`: 2 of 6 runs failed without
-    // this, 0 of 6 with it. It reads as flakiness because it passes whenever
-    // another test's instance happens to keep the image resident.
+    // Without the leak the lost write reads as flakiness, because it passes
+    // whenever another test's instance happens to keep the image resident.
     std::mem::forget(lib);
     r
 }
@@ -299,7 +298,7 @@ fn an_explicit_can_do_refusal_beats_the_synth_category() {
 }
 
 /// `Maybe` (`0`, "don't know") must keep deferring to the category — the
-/// common case the OR was written for. Pins the tolerance the fix preserves.
+/// common case the OR was written for.
 #[test]
 fn a_silent_can_do_still_defers_to_the_synth_category() {
     let _guard = lock_probe();
@@ -380,11 +379,10 @@ fn an_undocumented_can_do_answer_is_not_an_affirmative() {
 /// A plugin declaring MIDI output pins and answering `Maybe` to
 /// `sendVstMidiEvent` emits MIDI.
 ///
-/// This is the bug D-10 hid. `emits_midi`'s only inferred term was
-/// `info.midi_outputs > 0`, and `get_info()` hardcodes that to 0 — so the term
-/// was a dead `false`, `Maybe` resolved to `false`, and the plugin's MIDI
-/// output was dropped. `Maybe` is the common answer: plugins that route MIDI
-/// routinely declare pins and never implement `effCanDo`.
+/// `get_info()` hardcodes `midi_outputs` to 0, so a pin term read from it would
+/// be a dead `false`: `Maybe` would resolve to `false` and the plugin's MIDI
+/// output would be dropped. `Maybe` is the common answer: plugins that route
+/// MIDI routinely declare pins and never implement `effCanDo`.
 #[test]
 fn a_maybe_answer_with_declared_output_pins_emits_midi() {
     let _guard = lock_probe();
@@ -599,8 +597,8 @@ fn chunk_state_round_trips() {
 
 /// The benign half of the `copy_chunk` split: "nothing saved" must still fall
 /// back to a parameter snapshot rather than erroring. (`len == 0` and
-/// `len == -1` used to fold into the same empty `Vec`, so a *failed* chunk save
-/// silently became a parameter snapshot; the failure half is asserted in
+/// `len == -1` must not fold into the same empty `Vec`, or a *failed* chunk
+/// save silently becomes a parameter snapshot; the failure half is asserted in
 /// `vst-tutti`'s `failed_chunk_save_is_distinguishable_from_an_empty_one`.)
 ///
 /// Reached via `NO_CHUNKS` rather than an emptied chunk: the probe seeds its
@@ -999,9 +997,9 @@ fn declining_the_effect_name_falls_back_to_the_product_string() {
 /// and `effGetParameterProperties` carries a range but no default. So the only
 /// observable default is the plugin's initial state, snapshotted at load.
 ///
-/// This is what the field used to get wrong: it was filled from the *current*
-/// value, so after a user turned a knob the "default" followed it, and a
-/// reset-to-default control would have been a no-op that looked broken.
+/// Filling the field from the *current* value would be wrong: after a user
+/// turned a knob the "default" would follow it, and a reset-to-default control
+/// would be a no-op that looked broken.
 ///
 /// The probe starts parameter `i` at `i/16`, so the defaults here are distinct
 /// and non-zero — a mapping that returned `0.0` or echoed the live value fails.

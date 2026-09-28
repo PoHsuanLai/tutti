@@ -14,14 +14,10 @@ use tutti::prelude::*;
 
 /// Everything below is reached through `tutti::` and nothing else. If the
 /// façade stopped re-exporting something, this stops compiling.
-///
-/// (Until doc 013 Phase 3 PR 15 this built a `tutti::dsp::Net` and handed
-/// its backend to `Engine::new`; the engine renders only the native graph
-/// now, built here with `tutti::graph::GraphBuilder`.)
 #[test]
 fn one_import_renders_a_block() {
     let mut g = tutti::graph::GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let tone = g.add_unit(Box::new(tutti::nodes::testing::Osc::sine(Hz(440.0))));
+    let tone = g.add(tutti::nodes::testing::Osc::sine(Hz(440.0)));
     g.pipe_output(tone);
     let (mut editor, executor) = g
         .build(tutti::graph::Prepare::new(
@@ -63,9 +59,12 @@ fn the_measurement_vocabulary_arrives_and_converts() {
 fn the_dsp_library_and_the_node_contract_are_reachable() {
     // A `tutti-nodes` unit, built and driven through `tutti::` alone.
     let _lfo = tutti::nodes::Lfo::default();
-    // The planar block buffers: `tutti-node`'s, at the engine root.
-    let buf: tutti::core::BufferVec = tutti::core::BufferVec::new(2);
-    assert_eq!(buf.buffer_ref().channels(), 2);
+    // The node contract, `tutti_graph::Node`, on a node reached through
+    // `tutti::` too.
+    let node = tutti::nodes::testing::Const::frame(&[0.5, 0.5]);
+    let shape = tutti::graph::Node::shape(&node);
+    assert_eq!(shape.audio_out, ChannelLayout::STEREO);
+    assert_eq!(shape.audio_in, ChannelLayout::EMPTY);
 }
 
 /// Offline export, end to end, through the façade only.
@@ -74,7 +73,7 @@ fn the_dsp_library_and_the_node_contract_are_reachable() {
 fn a_graph_bounces_to_buffers_through_the_facade() {
     let rate = SampleRate(48_000.0);
     let mut g = tutti::graph::GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let node = g.add_unit(Box::new(tutti::nodes::testing::Const::frame(&[0.5, 0.5])));
+    let node = g.add(tutti::nodes::testing::Const::frame(&[0.5, 0.5]));
     g.pipe_output(node);
     let (editor, executor) = g
         .build(tutti::export::RenderGraph::prepare(rate))

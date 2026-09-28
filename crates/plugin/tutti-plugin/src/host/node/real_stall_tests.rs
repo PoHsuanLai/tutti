@@ -195,7 +195,7 @@ fn load_probe(env: &mut ProbeEnv, render_mode: u32) -> (PluginClient, PluginHand
     (client, handle)
 }
 
-/// `client`, bound, as the only node of a native graph rendering `BLOCK`-frame
+/// `client`, bound, as the only node of a graph rendering `BLOCK`-frame
 /// blocks: the global inputs feed its inputs, its outputs the global outputs.
 fn graph_of(client: PluginClient) -> Renderer {
     let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
@@ -283,11 +283,10 @@ fn a_real_plugin_that_stops_answering_is_abandoned_and_later_drained() {
 
     // --- The session survived. A missed budget is not a death.
     //
-    // This is the regression the `Owed` work fixed: before it, a `Timeout`
-    // propagated out of `handle` into `pump`, which treats every error as
-    // connection-level — so one late block crashed the bridge permanently and
-    // the plugin was silent for the rest of the session while the server was
-    // still running and still correct.
+    // A `Timeout` must not propagate out of `handle` into `pump`, which treats
+    // every error as connection-level — one late block would crash the bridge
+    // permanently and silence the plugin for the rest of the session while the
+    // server was still running and still correct.
     assert!(
         !handle.status().is_dead(),
         "a plugin that missed its block budget must not be marked dead: {:?}",

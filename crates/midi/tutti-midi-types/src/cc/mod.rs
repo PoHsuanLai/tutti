@@ -3,12 +3,11 @@
 //! The named controller numbers below are [`CCNumber`], not `u8`. They are
 //! aliases for the associated constants on that type — the roster lives on
 //! `CCNumber` itself (in `tutti-types`, alongside the newtype it belongs to),
-//! and is surfaced here under the bare names call sites have always used, so
-//! `cc::MOD_WHEEL` keeps resolving.
+//! and is surfaced here under short names such as `cc::MOD_WHEEL`.
 //!
-//! Typing them is the payoff of the newtype: `MOD_WHEEL` can no longer be
-//! passed where a [`MidiChannel`] is expected, which is the swap these two
-//! adjacent `u8`s invited.
+//! Typing them is the payoff of the newtype: `MOD_WHEEL` cannot be passed
+//! where a [`MidiChannel`] is expected, the swap two adjacent `u8`s would
+//! invite.
 
 pub mod mapping;
 

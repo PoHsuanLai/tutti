@@ -1,28 +1,27 @@
-//! The host's error type, and the conversions that widen and narrow it.
+//! Error types for plugin hosting.
 //!
-//! [`BridgeError`] is the rich host-side error: it names the subprocess, the
-//! shared memory and the wire, none of which a format loader knows about. The
-//! lean [`PluginError`] the shared `PluginFormatHost` trait speaks is re-exported
-//! here, and the two `From` impls move a value between them at the IPC boundary.
+//! [`BridgeError`] is the host-side error most calls return: it names the
+//! subprocess, the shared memory and the wire, none of which a format loader
+//! knows about. The lean [`PluginError`] the format loaders' capability traits
+//! return is re-exported here, and `From` impls convert between the two.
+//! [`PluginForkError`] and [`PluginRenderFault`] describe why forking a plugin
+//! for an offline render failed.
 
 use std::path::PathBuf;
 use thiserror::Error;
 
-/// Plugin-load phase label, shared with the format-specific host crates via
-/// `tutti-plugin-types`. Re-exported so `BridgeError` and callers keep
-/// referring to `crate::error::LoadStage`.
+/// The phase of plugin loading an error came from, carried by
+/// [`BridgeError::LoadFailed`].
 pub use tutti_plugin_types::LoadStage;
 
-/// Structured editor-open failures, shared via `tutti-plugin-types`.
-/// Re-exported so callers keep referring to `crate::error::EditorError`.
+/// Why opening a plugin editor failed.
 pub use tutti_plugin_types::EditorError;
 
-/// Re-exported alongside [`EditorError`], for the same reason: a caller naming
-/// `crate::error::StateError` should not have to know which crate defines it.
+/// Whether a fire-and-forget command reached the plugin, and why restoring
+/// saved state failed.
 pub use tutti_plugin_types::{Delivered, StateError};
 
-/// The lean, format-agnostic error the shared `PluginFormatHost` trait speaks.
-/// Re-exported so callers keep referring to `crate::error::PluginError`.
+/// The lean, format-agnostic error a format loader's capability traits return.
 pub use tutti_plugin_types::PluginError;
 
 /// Anything that can go wrong hosting a plugin out of process.
@@ -89,9 +88,8 @@ pub enum BridgeError {
     ///
     /// Only [`Plugins::open`](crate::catalog::Plugins::open) returns this —
     /// [`Plugin::open`](crate::catalog::Plugin::open) has no catalog and so no
-    /// crash history. Carrying `reason` rather than answering a bool is what
-    /// lets a host say *which* plugin misbehaved and offer to load it anyway,
-    /// which is the unguarded door.
+    /// crash history. `reason` lets a host say *which* plugin misbehaved and
+    /// offer to load it anyway through [`Plugin::open`](crate::catalog::Plugin::open).
     ///
     /// False positives are expected: the scanner's dead-man's pedal fires on a
     /// force-quit, a power loss, or an OOM kill as readily as on a real crash.
@@ -187,8 +185,10 @@ pub enum BridgeError {
 /// A host operation's result, erroring as [`BridgeError`].
 pub type Result<T> = std::result::Result<T, BridgeError>;
 
-/// Why a hosted plugin could not be forked by state transfer
-/// ([`PluginClient::fork_instance`](crate::handles::PluginClient::fork_instance)).
+/// Why a hosted plugin could not be forked by state transfer.
+///
+/// Returned by
+/// [`PluginClient::fork_instance`](crate::handles::PluginClient::fork_instance).
 ///
 /// Every arm means **no fork exists**: a fresh instance that was started is
 /// shut down with this value, never returned half-restored, and never replaced
@@ -234,22 +234,13 @@ pub enum PluginForkError {
     /// The fresh instance refused the live instance's state.
     #[error("the fresh instance refused the live instance's state: {0}")]
     LoadState(#[source] StateError),
-
-    /// The live instance plays a MIDI source (installed on its port) that
-    /// cannot be carried into an offline render: it is not a function of a
-    /// timeline (`MidiUnitIn::rebind_offline` answered `None`). The fork
-    /// would render without the notes it feeds, so it is refused instead.
-    #[error(
-        "the live instance plays a MIDI source that cannot be rebound for an offline \
-         render; its notes would render as silence"
-    )]
-    MidiSource,
 }
 
-/// How a forked plugin instance failed **while rendering** — the cause behind
-/// a `tutti_graph::ForkFault` (see `PluginClient::fork_health`). After a crash
-/// or a timeout the fork renders silence; after a latency change it renders
-/// misaligned.
+/// How a forked plugin instance failed while rendering.
+///
+/// This is the cause behind a `tutti_graph::ForkFault` for a plugin node. After
+/// a crash or a timeout the fork renders silence; after a latency change it
+/// renders misaligned.
 #[derive(Error, Debug)]
 pub enum PluginRenderFault {
     /// The fork's plugin-server died.
@@ -287,10 +278,11 @@ pub enum PluginRenderFault {
     },
 }
 
-/// Widen the lean, format-agnostic [`PluginError`] (what the shared
-/// `PluginFormatHost` trait returns) into the host's richer `BridgeError` at
-/// the IPC boundary. Lets the pipeline/session `?` a trait-method result inside
-/// a `BridgeError`-returning function without losing the message.
+/// Widens the lean [`PluginError`] a format loader returns into a
+/// `BridgeError`, keeping the message and load stage.
+///
+/// A [`PluginError::Load`] becomes [`BridgeError::LoadFailed`] with an empty
+/// `path`.
 impl From<PluginError> for BridgeError {
     fn from(e: PluginError) -> Self {
         match e {
@@ -307,12 +299,11 @@ impl From<PluginError> for BridgeError {
     }
 }
 
-/// Narrow a `BridgeError` into the lean [`PluginError`] the shared trait
-/// speaks. The reverse of [`From<PluginError>`](BridgeError) — used inside the
-/// format loaders' trait-method bodies, whose helpers still produce
-/// `BridgeError`, so the value can flow out as a `PluginError`. The IPC-only
-/// `BridgeError` variants (`ServerNotFound`, `ProtocolMismatch`, `IpcError`, …)
-/// collapse into `PluginError::Other`, preserving their `Display` text.
+/// Narrows a `BridgeError` into the lean [`PluginError`] a format loader
+/// returns.
+///
+/// The IPC-only variants (`ServerNotFound`, `ProtocolMismatch`, `IpcError`, …)
+/// collapse into [`PluginError::Other`], preserving their `Display` text.
 impl From<BridgeError> for PluginError {
     fn from(e: BridgeError) -> Self {
         match e {
@@ -329,8 +320,7 @@ impl From<BridgeError> for PluginError {
 
 impl BridgeError {
     /// Build an `UnexpectedMessage` error by Debug-formatting the received
-    /// `BridgeMessage`. Centralizes the three call sites in `client/` that
-    /// would otherwise each hand-roll a `format!` + `ProtocolError`.
+    /// `BridgeMessage`.
     pub(crate) fn unexpected_message(
         expected: &'static str,
         got: &crate::protocol::BridgeMessage,

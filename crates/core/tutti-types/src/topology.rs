@@ -60,8 +60,6 @@ const INLINE_CHANNELS: usize = 8;
 /// That arm is not merely for logging. A topology is **positional**, so an
 /// unnameable speaker must still occupy its channel's slot: dropping it would
 /// renumber every channel after it and silently re-route the tail of the bus.
-/// This is not hypothetical — the CLAP host shipped exactly that bug by
-/// `filter_map`ping unknown positions out of a channel map.
 ///
 /// The variants are the positions common to more than one format. A
 /// format-specific speaker (VST3's proximity pair, AU's matrix-total Lt/Rt)
@@ -117,7 +115,7 @@ pub enum Speaker {
 }
 
 impl Speaker {
-    /// Whether this is the LFE / `.1` channel.
+    /// Returns whether this is the LFE / `.1` channel.
     ///
     /// Worth a predicate rather than an `==` at each call site because the LFE
     /// is the one position with different *handling* rather than a different
@@ -130,15 +128,39 @@ impl Speaker {
 
 /// The speaker each channel of a bus feeds, in channel order.
 ///
-/// `positions()[i]` is the speaker fed by channel `i`, so the length **is** the
-/// channel count — see [`layout`](Self::layout).
+/// *Which speaker*, as opposed to [`ChannelLayout`]'s *how many*. Reach for this
+/// type only when the placement is the thing needed; a caller that wants a
+/// width keeps the count. `positions()[i]` is the speaker fed by channel `i`,
+/// so the length **is** the channel count (see [`layout`](Self::layout)); it
+/// is derived, never stored beside the list, so the two cannot drift.
 ///
-/// # No stored width
+/// # An ordered list, not a set
 ///
-/// The count is derived, never stored beside the list. A stored copy would be a
-/// second owner of the same fact and would need invalidation on every mutation;
-/// deriving it cannot drift. This is the same rule that keeps
-/// `LoadedPlugin::multi_bus` a method rather than a flag.
+/// The plugin formats disagree. VST3 stores a speaker **set** (a 64-bit mask)
+/// and derives buffer order from ascending bit index, so it cannot express two
+/// orders of the same speakers. AU, CLAP and VST2 store **ordered lists**
+/// (Apple's `MPEG_5_1_A/B/C/D` are four orders of the same six speakers). A
+/// list is the more expressive of the two: every VST3 arrangement converts to
+/// one without loss, and the one lossy direction is *out* to VST3.
+///
+/// # Ambisonics is not speaker positions
+///
+/// B-format `W X Y Z` is a spherical-harmonic encoding, not four speaker feeds,
+/// and is not modelled here as four invented [`Speaker`]s.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
+///
+/// let bed = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
+/// assert_eq!(bed.index_of(Speaker::FrontCenter), Some(2));
+/// assert_eq!(bed.lfe_index(), Some(3));
+/// assert_eq!(bed.layout().count(), 6);
+///
+/// // A width of 4 is ambiguous (quad or B-format), so it has no default order.
+/// assert!(ChannelTopology::smpte(ChannelLayout::QUAD).is_none());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChannelTopology {
@@ -146,7 +168,7 @@ pub struct ChannelTopology {
 }
 
 impl ChannelTopology {
-    /// Build a topology from an ordered list of speakers.
+    /// Creates a topology from an ordered list of speakers.
     ///
     /// Takes any iterator rather than a slice so a format's decode loop can
     /// feed it directly without collecting twice.
@@ -163,27 +185,27 @@ impl ChannelTopology {
         }
     }
 
-    /// The speaker each channel feeds, in channel order.
+    /// Returns the speaker each channel feeds, in channel order.
     pub fn positions(&self) -> &[Speaker] {
         &self.positions
     }
 
-    /// The channel count, as a [`ChannelLayout`].
+    /// Returns the channel count, as a [`ChannelLayout`].
     ///
-    /// The bridge back to the count-only vocabulary: every existing signature
-    /// keeps taking a width, and this is how a topology satisfies one.
+    /// The bridge back to the count-only vocabulary, for a signature that
+    /// takes a width.
     pub fn layout(&self) -> ChannelLayout {
         ChannelLayout::from(self.positions.len() as u16)
     }
 
-    /// Which channel feeds `speaker`, or `None` if this bus has none.
+    /// Returns which channel feeds `speaker`, or `None` if this bus has none.
     ///
     /// The first match when a speaker appears twice (see [`new`](Self::new)).
     pub fn index_of(&self, speaker: Speaker) -> Option<usize> {
         self.positions.iter().position(|&p| p == speaker)
     }
 
-    /// The LFE channel's index, if this bus has one.
+    /// Returns the LFE channel's index, if this bus has one.
     ///
     /// Named because it is the lookup with a consequence: the LFE is dropped
     /// from a consumer downmix and is fed by a separate bass-management send
@@ -193,7 +215,7 @@ impl ChannelTopology {
         self.positions.iter().position(|p| p.is_lfe())
     }
 
-    /// Whether every position is one this vocabulary names.
+    /// Returns whether every position is one this vocabulary names.
     ///
     /// A caller that intends to *route* by speaker needs this: an
     /// [`Unknown`](Speaker::Unknown) channel keeps its slot, but nothing can be
@@ -205,14 +227,13 @@ impl ChannelTopology {
             .any(|p| matches!(p, Speaker::Unknown(_)))
     }
 
-    /// The engine's own channel order for a width, or `None` for a width with
-    /// no defined one.
+    /// Returns the engine's own channel order for a width, or `None` for a
+    /// width with no defined one.
     ///
     /// This is the SMPTE / WAV `WAVEFORMATEXTENSIBLE` order that
-    /// [`crate::fold_frame`] already folds by and that the spatial panner already
-    /// maps to — `FL FR C LFE SL SR [BL BR]`. Written down here rather than
-    /// left implicit in a `match` on channel count at each site, which is a
-    /// convention nothing can state or check.
+    /// [`crate::fold_frame`] folds by and that the spatial panner maps to:
+    /// `FC` for mono, `FL FR` for stereo, `FL FR C LFE SL SR [BL BR]` for 5.1
+    /// and 7.1.
     ///
     /// `None` for a width the engine has no order for — including **4**, which
     /// is genuinely ambiguous: quad `FL FR BL BR` and ambisonic B-format
@@ -249,7 +270,7 @@ impl ChannelTopology {
         Some(Self::new(positions.iter().copied()))
     }
 
-    /// Quad — `FL FR BL BR`, four speaker feeds.
+    /// Returns the quad topology, `FL FR BL BR`: four speaker feeds.
     ///
     /// Separate from [`smpte`](Self::smpte) because a bare width of 4 cannot
     /// say whether it means this or B-format; a caller that *knows* it has quad

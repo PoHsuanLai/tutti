@@ -1,5 +1,5 @@
-//! The synth itself: an [`AudioUnit`] that owns a MIDI inbox, an allocator and
-//! a fixed set of voices, and renders their sum.
+//! The synth itself: a graph node that owns an
+//! allocator and a fixed set of voices, and renders their sum.
 //!
 //! This is where MIDI becomes sound. Everything else in the crate is a piece
 //! this module drives — allocation (`crate::voice`), per-note DSP
@@ -7,9 +7,8 @@
 //! that routes a per-note message to exactly one voice lives here because only
 //! this module holds both the note-id map and the voices.
 //!
-//! Both render paths are real-time and share one renderer: `process` splits
-//! its block at MIDI event boundaries so events land on the right frame, and
-//! `tick` is the same renderer run for a single frame. Neither allocates.
+//! The render path is real-time: `Node::process` splits its block at MIDI
+//! event boundaries so events land on the right frame. It never allocates.
 //!
 //! The renderer works in control steps of at most `CONTROL_BLOCK` frames:
 //! each step the voices (and any glide) write their lane targets into the
@@ -21,13 +20,9 @@ use crate::bank::{VoiceBank, CONTROL_BLOCK};
 use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
-use tutti_core::{
-    Amplitude, AudioUnit, BufferMut, BufferRef, ChannelLayout, Param, SignalFrame, Tail,
-    MAX_BUFFER_SIZE,
-};
-use tutti_midi_runtime::{MidiInPort, MidiSender};
+use tutti_core::{Amplitude, Param, Tail};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{cc, MidiUnitId, MidiUnitIn, NoteId};
+use tutti_midi_types::{cc, NoteId};
 use tutti_midi_types::{CCNumber, MidiChannel};
 
 use std::sync::Arc;
@@ -47,16 +42,47 @@ fn q7_9_to_fractional_note(bits: u16) -> f32 {
     bits as f32 / (1u16 << 9) as f32
 }
 
-/// Polyphonic subtractive synthesizer: a MIDI-driven voice allocator over a
+/// A polyphonic subtractive synthesizer: a MIDI-driven voice allocator over a
 /// SIMD voice bank.
 ///
-/// Construct one from a [`SynthConfig`] via [`PolySynth::new`]. The synth always
-/// owns a lock-free MIDI inbox; callers push events via [`PolySynth::midi_sender`].
-/// For offline export, a [`MidiSnapshotReader`] is layered over that inbox via
-/// [`PolySynth::set_midi_source`] (on an isolated clone, which has no live
-/// inbox of its own).
+/// Construct one from a [`SynthConfig`] with [`PolySynth::new`]. It is a
+/// graph node (`tutti_graph::Node`) with no audio input, stereo output and
+/// one MIDI event input; each event is applied on its own frame. Inserting it
+/// hands back a `tutti_graph::ParamSet` over its live params, by
+/// `UnitParam`: `Volume` (master gain, linear), and with a unison engine
+/// `Detune` (cents) and `StereoSpread` (0..1).
 ///
-/// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
+/// The event input accepts MIDI 1.0 and MIDI 2.0 (UMP) channel-voice
+/// messages, including MPE and MIDI 2.0 per-note controllers when
+/// [`SynthConfig::mpe_enabled`] is set. Up to 512 events per block are
+/// applied; any beyond that are dropped.
+///
+/// Rendering allocates nothing and takes no lock. Construction, forking and
+/// changing the unison voice count allocate and belong on the control thread.
+/// The oscillator, filter and envelope are fixed at construction: to change
+/// them, build a new synth and replace the node.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_core::{Hz, Resonance, SampleRate, Samples};
+/// use tutti_graph::{Prepare, Solo};
+/// use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
+///
+/// let synth = PolySynth::new(SynthConfig {
+///     oscillator: OscillatorType::Saw,
+///     max_voices: 8,
+///     filter: FilterType::Moog { cutoff: Hz(2_000.0), resonance: Resonance(0.5) },
+///     ..Default::default()
+/// })?;
+/// assert_eq!(synth.active_voice_count(), 0);
+///
+/// // Alone in a graph; a host wires a clip or keyboard to its event input.
+/// let mut solo = Solo::new(synth, Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let out = solo.render(64);
+/// assert_eq!(out.len(), 2); // stereo
+/// # Ok::<(), tutti_polysynth::Error>(())
+/// ```
 pub struct PolySynth {
     config: SynthConfig,
     allocator: VoiceAllocator,
@@ -67,26 +93,28 @@ pub struct PolySynth {
     unison: Option<UnisonEngine>,
     pitch_bend: f32,
     master_volume: Param<Amplitude>,
-    /// This synth's MIDI input endpoint: routing address, push mailbox, and the
-    /// current pull source (the live receiver by default; an override installs a
-    /// `MidiClipSource`/`MidiSnapshotReader`). See [`MidiInPort`] for the fundsp
-    /// clone/isolate sharing semantics all three obey.
-    midi: MidiInPort,
+    /// The block's MIDI, sorted by offset: its event input's.
     midi_buffer: Vec<MidiEvent>,
+    /// MIDI queued by this crate's unit tests for the next block they drive
+    /// by hand (`tests::Hand`). Test builds only: the synth itself plays
+    /// nothing but its event input.
+    #[cfg(test)]
+    queued: Vec<MidiEvent>,
     /// Voices that finished this block, collected during the render loop and
     /// drained after it.
     ///
     /// Sized to `max_voices` at construction and only ever `clear()`ed, so it
     /// never reallocates: the worst case is every voice releasing at once,
     /// which is exactly its capacity. Growing it would be a `malloc` on the
-    /// audio thread, which is what the `debug_assert` in `tick` watches for.
+    /// audio thread, which the allocation gates (`tests/rt_no_alloc.rs`)
+    /// watch for.
     finished_indices: Vec<usize>,
 }
 
 impl PolySynth {
-    /// Build a synth from a [`SynthConfig`]. Configure the config the idiomatic
-    /// Bevy way — `Default` plus struct-update — e.g.
-    /// `SynthConfig { oscillator: OscillatorType::Saw, max_voices: 8, ..default() }`.
+    /// Creates a synth from a [`SynthConfig`], usually written as `Default`
+    /// plus struct update:
+    /// `SynthConfig { oscillator: OscillatorType::Saw, max_voices: 8, ..Default::default() }`.
     ///
     /// Every voice — and every unison sub-voice within it — is built here, so
     /// this allocates in proportion to `max_voices * unison.voice_count` and
@@ -95,15 +123,9 @@ impl PolySynth {
     /// # Errors
     ///
     /// Returns [`Error::InvalidConfig`](crate::Error::InvalidConfig) if
-    /// `max_voices` is 0. There is **no upper bound**: the per-block
-    /// finished-voice list is sized to `max_voices` here and only ever
-    /// `clear()`ed, so it never reallocates however large that is.
-    ///
-    /// It used to reject anything above 16, which was the inline capacity of
-    /// a `SmallVec` — a real constraint, since a spill would have put a
-    /// `malloc` in the audio callback, but one the `Vec` removes rather than
-    /// enforces. Every voice is fully constructed up front, so `max_voices`
-    /// is a memory and CPU budget.
+    /// `max_voices` is 0. There is no upper bound: every voice is built up
+    /// front, so `max_voices` is a memory and CPU budget, not a real-time
+    /// risk.
     pub fn new(config: SynthConfig) -> crate::Result<Self> {
         if config.max_voices == 0 {
             return Err(crate::Error::InvalidConfig(
@@ -147,8 +169,9 @@ impl PolySynth {
             unison,
             pitch_bend: 0.0,
             master_volume,
-            midi: MidiInPort::new(),
-            midi_buffer: vec![MidiEvent::noop(); 256],
+            midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
+            #[cfg(test)]
+            queued: Vec::new(),
             finished_indices: Vec::with_capacity(max_voices),
         })
     }
@@ -164,66 +187,17 @@ impl PolySynth {
         )
     }
 
-    /// This synth's MIDI input endpoint — routing address, push mailbox, and the
-    /// source-install slot, in one borrow.
+    /// Applies one MIDI event now, as if it arrived at the start of the next
+    /// rendered block.
     ///
-    /// The whole-port accessor exists so a host can reach all three through a
-    /// single downcast — one borrow beats three, and it keeps the routing
-    /// address, the mailbox and the source slot from drifting apart.
-    /// `tutti_soundfont::SoundFontUnit::midi_port` is the same shape.
-    pub fn midi_port(&self) -> &MidiInPort {
-        &self.midi
+    /// Takes `&mut self`, so it cannot reach a synth that is already in a
+    /// graph; there, send MIDI on the event input instead. Useful for setting
+    /// a synth up before insertion or driving it by hand.
+    pub fn apply_midi(&mut self, event: &MidiEvent) {
+        self.process_midi_event(event);
     }
 
-    /// Producer handle for this synth's MIDI inbox. Cheap to clone; insert
-    /// into a `MidiBus` or hand to anything that pushes MIDI events.
-    pub fn midi_sender(&self) -> MidiSender {
-        self.midi.sender()
-    }
-
-    /// Layer a MIDI source over the live inbox. Used by offline export for a
-    /// [`MidiSnapshotReader`], or by clip playback for a
-    /// [`tutti_midi_runtime::MidiClipSource`]. Both the source and the inbox
-    /// are polled, so clip playback does not silence live input.
-    ///
-    /// The install is visible across fundsp's clone-on-commit (see
-    /// [`MidiInPort`]), so the same instance reaches the box the audio thread runs.
-    ///
-    /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
-    pub fn set_midi_source(&mut self, source: Arc<dyn MidiUnitIn>) {
-        self.midi.install(source);
-    }
-
-    /// Drop a previously-layered source; subsequent ticks poll only the
-    /// live `MidiReceiver`.
-    pub fn clear_midi_source(&mut self) {
-        self.midi.clear();
-    }
-
-    fn poll_count(&mut self, block_size: usize) -> usize {
-        self.midi
-            .poll(block_size, self.bank.sample_rate(), &mut self.midi_buffer)
-    }
-
-    fn poll_midi_events(&mut self) {
-        // Single-sample tick path: treat the "block" as one sample
-        // wide so a scheduler can still target this position.
-        let count = self.poll_count(1);
-        for i in 0..count {
-            let event = self.midi_buffer[i];
-            self.process_midi_event(&event);
-        }
-    }
-
-    fn poll_midi_events_sorted(&mut self, block_size: usize) -> usize {
-        let count = self.poll_count(block_size);
-        if count > 1 {
-            self.midi_buffer[..count].sort_unstable_by_key(|e| e.frame_offset);
-        }
-        count
-    }
-
-    /// Whether per-note (MPE) expression is applied at render time.
+    /// Returns whether per-note (MPE) expression is applied at render time.
     ///
     /// Ask before concluding MPE is active: the per-note setters accept
     /// unconditionally, and the per-note pitch-bend *sensitivity* RPN applies
@@ -235,7 +209,7 @@ impl PolySynth {
         self.config.mpe_enabled
     }
 
-    /// Turn per-note (MPE) expression on or off, affecting sounding notes as
+    /// Turns per-note (MPE) expression on or off, affecting sounding notes as
     /// well as future ones.
     ///
     /// Disabling **resets** each voice's per-note state rather than merely
@@ -250,73 +224,69 @@ impl PolySynth {
         }
     }
 
-    /// Set the master output gain as a linear [`Amplitude`]: `1.0` is unity,
-    /// `0.0` silence, and values above unity boost.
+    /// Sets the master output gain as a linear [`Amplitude`]: `1.0` (the
+    /// default) is unity, `0.0` silence, and values above unity boost.
+    /// Negative values clamp to 0.
     ///
-    /// Only the lower bound is enforced. A ceiling here would constrain nothing
-    /// — `volume_atomic()` writes the same cell on the modulation path with no
-    /// cap — and a boost above unity is legal for an `Amplitude`.
-    ///
-    /// Applied once per block to the summed mix, not per voice.
-    ///
-    /// `&self`, matching every other atomic-backed volume setter in the engine
-    /// (`BusStripNode`, `ClickSettings`): the write lands in a shared cell, and
-    /// [`volume_atomic`](Self::volume_atomic) hands that same cell to the
-    /// modulation path — so `&mut` would advertise an exclusivity this type
-    /// does not have.
+    /// Applied once per block to the summed mix, not per voice. The write is
+    /// a lock-free store into the cell the node reads, the same one the
+    /// synth's `ParamSet` addresses as `Volume` and
+    /// [`volume_atomic`](Self::volume_atomic) returns, so it reaches a synth
+    /// that is already rendering.
     pub fn set_volume(&self, volume: f32) {
         self.master_volume.store(Amplitude(volume.max(0.0)));
     }
 
-    /// The current master gain as a linear amplitude. Reflects modulation
+    /// Returns the current master gain as a linear amplitude. Reflects modulation
     /// written through [`volume_atomic`](Self::volume_atomic) as well as
     /// [`set_volume`](Self::set_volume) — they share one cell.
     pub fn volume(&self) -> f32 {
         self.master_volume.load().get()
     }
 
-    /// The shared master-volume atomic, for control-rate modulation
-    /// (`tutti_mod::ModParams`). Clones the `Arc`; call it during setup, not
-    /// from the audio path.
+    /// Returns the shared master-volume cell, for control-rate modulation (the
+    /// cell the synth's `ParamSet` addresses as `Volume`). Clones the `Arc`;
+    /// call it during setup, not from the audio path.
     pub fn volume_atomic(&self) -> Arc<tutti_core::AtomicF32> {
         self.master_volume.as_atomic()
     }
 
-    /// The shared unison-detune atomic (cents), for control-rate modulation.
+    /// Returns the shared unison-detune cell (cents), for control-rate
+    /// modulation.
     /// `None` when this synth has no unison engine.
     pub fn detune_atomic(&self) -> Option<Arc<tutti_core::AtomicF32>> {
         self.unison.as_ref().map(|u| u.detune_atomic())
     }
 
-    /// The shared unison-stereo-spread atomic (0..1), for control-rate modulation.
+    /// Returns the shared unison stereo-spread cell (0..1), for control-rate
+    /// modulation.
     /// `None` when this synth has no unison engine.
     pub fn spread_atomic(&self) -> Option<Arc<tutti_core::AtomicF32>> {
         self.unison.as_ref().map(|u| u.spread_atomic())
     }
 
-    /// How many voices are currently sounding, counting those in their release
+    /// Returns how many voices are currently sounding, counting those in their release
     /// stage. A voice stays counted until its envelope reaches silence, which is
     /// why this can exceed the number of keys held.
     pub fn active_voice_count(&self) -> usize {
         self.voices.iter().filter(|v| v.is_active()).count()
     }
 
-    /// This synth's unison settings, or `None` when it was built without a
-    /// [`UnisonConfig`](crate::UnisonConfig). A synth built without one cannot
-    /// gain unison later —
-    /// every unison setter below is a no-op on it.
+    /// Returns this synth's unison settings, or `None` when it was built
+    /// without a [`UnisonConfig`](crate::UnisonConfig). A synth built without
+    /// one cannot gain unison later: every unison setter is a no-op on it.
     pub fn unison_config(&self) -> Option<&crate::UnisonConfig> {
         self.unison.as_ref().map(|u| u.config())
     }
 
-    /// Sub-voices stacked per note, clamped to 1..=16. Returns `1` when this
+    /// Returns the number of sub-voices stacked per note (1..=16), or `1` when this
     /// synth has no unison engine, so the total oscillator count is always
     /// `max_voices * this`.
     pub fn unison_voice_count(&self) -> usize {
         self.unison.as_ref().map_or(1, |u| u.voice_count())
     }
 
-    /// Set the unison detune in [`Cents`](tutti_core::Cents), applied
+    /// Sets the unison detune in [`Cents`](tutti_core::Cents), applied
     /// symmetrically either side of the written pitch. Negative values clamp to
     /// zero. Recomputes the per-sub-voice pitch ratios immediately, so it
     /// affects sounding notes as well as future ones. No-op without unison.
@@ -326,7 +296,7 @@ impl PolySynth {
         }
     }
 
-    /// Set how wide the sub-voices are panned, 0.0 (all centre) to 1.0
+    /// Sets how wide the sub-voices are panned, 0.0 (all centre) to 1.0
     /// (outermost pair hard left and right); out-of-range values are clamped.
     /// Takes effect on sounding notes. No-op without unison.
     pub fn set_unison_stereo_spread(&mut self, spread: f32) {
@@ -335,7 +305,7 @@ impl PolySynth {
         }
     }
 
-    /// Set the number of stacked sub-voices per note, clamped to 1..=16.
+    /// Sets the number of stacked sub-voices per note, clamped to 1..=16.
     ///
     /// **Allocates**: the voice bank is rebuilt at the new width (sounding
     /// sub-voices keep their state). Call it from the control thread, never the
@@ -350,7 +320,7 @@ impl PolySynth {
         }
     }
 
-    /// Replace all unison settings at once. Carries the same allocation warning
+    /// Replaces all unison settings at once. Carries the same allocation warning
     /// as [`set_unison_voice_count`](Self::set_unison_voice_count) when the
     /// count grows. No-op without unison.
     pub fn set_unison_config(&mut self, config: crate::UnisonConfig) {
@@ -368,7 +338,7 @@ impl PolySynth {
         }
     }
 
-    /// Seed the phase-randomisation generator, making a render with
+    /// Seeds the phase-randomisation generator, making a render with
     /// `phase_randomize` reproducible. A seed of `0` is remapped to `1`, since
     /// the xorshift generator cannot leave that state. No-op without unison.
     pub fn seed_unison_rng(&mut self, seed: u32) {
@@ -377,7 +347,7 @@ impl PolySynth {
         }
     }
 
-    /// The computed per-sub-voice pitch ratio, pan, phase offset and amplitude
+    /// Returns the computed per-sub-voice pitch ratio, pan, phase offset and amplitude
     /// — one entry per active sub-voice. Derived state, recomputed on every
     /// unison setter; for inspection, not for driving the audio path.
     /// `None` without unison.
@@ -776,10 +746,9 @@ impl PolySynth {
     ///
     /// The glide is ticked per frame and the voices are aimed at where it will
     /// be at the *end* of the step; the bank ramps each lane there sample by
-    /// sample. So a glide moves the pitch every frame in `process` as it does
-    /// in `tick`. The block path used to tick the glide `block_len` times and
-    /// then render the whole sub-block at the final pitch: a staircase, one
-    /// step per MIDI sub-block, that `tick` never produced.
+    /// sample. So a glide moves the pitch every frame at any block length.
+    /// Rendering a whole sub-block at the glide's final pitch would instead
+    /// produce a staircase, one step per MIDI sub-block.
     fn control_step(&mut self, frames: usize) {
         if let Some(ref mut porta) = self.portamento {
             if porta.is_gliding() {
@@ -871,9 +840,7 @@ impl PolySynth {
     ///
     /// The block is split at each event so the event lands on its frame, and
     /// the pieces go to [`render_span`](Self::render_span). Nothing here is
-    /// bounded by a block size: this used to mix into `[f32; MAX_BUFFER_SIZE]`
-    /// stack arrays and clamp `size` to them, which in a release build silently
-    /// rendered only the first 64 frames of a longer block.
+    /// bounded by a block size, so any block length renders every frame.
     fn render_events(
         &mut self,
         size: usize,
@@ -908,31 +875,12 @@ impl PolySynth {
             event_idx += 1;
         }
     }
-
-    /// Render `left.len()` frames into planar slices, MIDI included — the
-    /// block path without `BufferMut`'s 64-frame channel stride, so a test can
-    /// hand it a block of any length.
-    #[cfg(test)]
-    pub(crate) fn render_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
-        assert_eq!(left.len(), right.len());
-        let size = left.len();
-        if size == 0 {
-            return;
-        }
-        if let Some(unison) = &mut self.unison {
-            unison.sync_from_atomics();
-        }
-        let midi_count = self.poll_midi_events_sorted(size);
-        let volume = self.master_volume.load().get();
-        self.render_events(size, midi_count, volume, &mut |i, l, r| {
-            left[i] = l;
-            right[i] = r;
-        });
-    }
 }
 
-impl AudioUnit for PolySynth {
-    fn reset(&mut self) {
+impl PolySynth {
+    /// Silence every voice and forget the glide: a freshly prepared synth's
+    /// state. Its `Param` cells and MPE mode are untouched.
+    pub(crate) fn reset_voices(&mut self) {
         for voice in &mut self.voices {
             voice.reset();
         }
@@ -943,221 +891,29 @@ impl AudioUnit for PolySynth {
         }
     }
 
-    /// Sever every live handle this clone shares with the original synth, so a
-    /// worker thread can tick it concurrently with live playback safely.
-    ///
-    /// `clone()` shares two layers of live state by `Arc` (correct for the
-    /// commit-clone, where only the original is ticked, but unsafe for an offline
-    /// render ticked on a worker thread while the live synth keeps playing):
-    ///
-    /// 1. **MIDI input** — the [`MidiInPort`]. A shared inbox is drained to
-    ///    exactly one consumer, so the worker would *steal* the live synth's
-    ///    note-ons/offs/CC, and a shared source cell means clearing here would
-    ///    sever the live clip. Both are fixed by [`MidiInPort::isolate`], which
-    ///    mints a fresh private mailbox + source cell (nothing holds this new
-    ///    sender, so the port stays permanently empty).
-    ///
-    /// 2. **Sounding voices.** Voice state is plain data — the per-sub-voice
-    ///    `Shared` atomics a clone used to alias are gone with the fundsp chain
-    ///    that read them — but a clone still carries the live synth's sounding
-    ///    notes, which an offline render must not replay. The voices and the
-    ///    bank are reset to a clean, inactive set, which is exactly the correct
-    ///    event-free render state, and the allocator is reset to agree the
-    ///    slots are free.
-    ///
-    /// 3. **Control cells.** The master volume and the unison detune/spread are
-    ///    `Param` cells a host (or a mod target, see `mod_target`) writes while
-    ///    the synth plays. Detached at their current values, so a fork renders
-    ///    the controls it was taken with rather than following live moves.
-    ///
-    /// After `isolate()` the synth reads nothing from, and writes nothing into,
-    /// the live world — it renders silence until its own (now-empty) inbox feeds
-    /// it events, which it never will.
-    fn isolate(&mut self) {
-        // Control cells (see #3 above).
+    /// Detach the control cells (master volume, unison detune and spread)
+    /// at their values now: this synth reads and writes cells of its own
+    /// from here on. A fork's half of `fork_instance`.
+    pub(crate) fn detach_controls(&mut self) {
         self.master_volume.detach();
         if let Some(unison) = &mut self.unison {
             unison.detach();
         }
-
-        // Fresh private mailbox + source cell, same unit id — severs both the
-        // shared inbox (no event theft) and the shared source (clearing here
-        // can't disturb the live clip). See [`MidiInPort::isolate`].
-        self.midi.isolate();
-
-        // A clean, inactive voice set (see #2 above).
-        for voice in &mut self.voices {
-            voice.reset();
-        }
-        self.bank.reset();
-        self.allocator.reset();
     }
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
+    /// Re-rate the voice bank and the glide.
+    pub(crate) fn set_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.bank.set_sample_rate(sample_rate);
         if let Some(ref mut porta) = self.portamento {
             porta.set_sample_rate(sample_rate);
         }
     }
-
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        self.poll_midi_events();
-
-        // Fold any control-rate detune/spread modulation in (no-op when unchanged).
-        if let Some(unison) = &mut self.unison {
-            unison.sync_from_atomics();
-        }
-
-        // The block renderer, one frame long: `tick` and `process` share every
-        // line of DSP, so they cannot drift apart.
-        let volume = self.master_volume.load().get();
-        let mut frame = [0.0f32; 2];
-        self.render_span(0, 1, volume, &mut |_, l, r| frame = [l, r]);
-
-        output[0] = frame[0];
-        if output.len() > 1 {
-            output[1] = frame[1];
-        }
-    }
-
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        if size == 0 {
-            return;
-        }
-
-        // Fold any control-rate detune/spread modulation into the unison params
-        // once per block before rendering (a no-op when nothing moved).
-        if let Some(unison) = &mut self.unison {
-            unison.sync_from_atomics();
-        }
-
-        let midi_count = self.poll_midi_events_sorted(size);
-        let stereo = ChannelLayout::from(output.channels()).is_multi();
-
-        // The renderer has no block ceiling; `BufferMut` does. Each of its
-        // channels holds exactly `MAX_BUFFER_SIZE` frames — frame 64 of channel
-        // 0 *is* frame 0 of channel 1 — so a larger `size` cannot have come
-        // from a well-formed buffer, and the debug assert catches that contract
-        // breach in tests. In release the synth still renders all `size`
-        // frames, so its clock and every MIDI offset stay where the host put
-        // them, and writes the frames the buffer can hold.
-        debug_assert!(
-            size <= MAX_BUFFER_SIZE,
-            "process size {size} exceeds the BufferMut channel stride ({MAX_BUFFER_SIZE})"
-        );
-
-        let volume = self.master_volume.load().get();
-        self.render_events(size, midi_count, volume, &mut |i, l, r| {
-            if i < MAX_BUFFER_SIZE {
-                output.set_f32(0, i, l);
-                if stereo {
-                    output.set_f32(1, i, r);
-                }
-            }
-        });
-    }
-
-    fn inputs(&self) -> usize {
-        0
-    }
-
-    fn outputs(&self) -> usize {
-        2
-    }
-
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        SignalFrame::new(self.outputs())
-    }
-
-    /// The amplitude envelope's release stage.
-    ///
-    /// This node takes no audio input — it is driven by MIDI — so "after the
-    /// input stops" means after the last note-off, at which point every
-    /// still-sounding voice rings for its release time. That time is an authored
-    /// parameter rather than an estimate, which is what makes this exact.
-    ///
-    /// A bounce that ends at the last note-off without it chops the release off
-    /// every note in the project.
-    fn tail(&mut self) -> Tail {
-        match self
-            .config
-            .envelope
-            .release
-            .to_samples_ceil(self.config.sample_rate)
-        {
-            s if s.is_zero() => Tail::None,
-            s => Tail::Finite(s),
-        }
-    }
-
-    fn set(&mut self, _setting: tutti_core::Setting) {}
-
-    fn get_id(&self) -> u64 {
-        crate::node_id::POLY_SYNTH_ID
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
-            + self.voices.capacity() * core::mem::size_of::<SynthVoice>()
-            + self.bank.footprint()
-            + self.midi_buffer.capacity() * core::mem::size_of::<MidiEvent>()
-    }
-}
-
-impl PolySynth {
-    /// This unit's MIDI routing address.
-    pub fn midi_unit_id(&self) -> MidiUnitId {
-        self.midi.unit_id()
-    }
-}
-
-impl tutti_mod::ModParams for PolySynth {
-    /// The synth's control-rate-modulatable params: `Volume`, and — only when
-    /// this synth has a unison engine — `Detune` and `StereoSpread`.
-    ///
-    /// `Volume` mirrors the master atomic, which the mix is scaled by once per
-    /// block. `Detune`/`StereoSpread` mirror the unison atomics, folded back
-    /// into the per-sub-voice params once per block; they change pitch ratios
-    /// and pans, never anything per-sample, so block-rate folding is exact
-    /// rather than an approximation.
-    ///
-    /// Everything else returns `None`. Discrete params (voice count) are
-    /// deliberately not modulatable, and a foreign `ParamAddr::Id` is not this
-    /// synth's vocabulary — a WASM node's param names are, which is why that
-    /// arm belongs to the extension host and not here.
-    fn mod_target(
-        &self,
-        param: tutti_core::ParamAddr,
-        base: f32,
-        min: f32,
-        max: f32,
-    ) -> Option<Arc<dyn tutti_mod::ModTarget>> {
-        use tutti_core::{ParamAddr, UnitParam};
-        let atomic = match param {
-            ParamAddr::Unit(UnitParam::Volume) => self.volume_atomic(),
-            ParamAddr::Unit(UnitParam::Detune) => self.detune_atomic()?,
-            ParamAddr::Unit(UnitParam::StereoSpread) => self.spread_atomic()?,
-            _ => return None,
-        };
-        Some(Arc::new(tutti_mod::AtomicTarget::with_mirror(
-            base, min, max, atomic,
-        )))
-    }
 }
 
 impl Clone for PolySynth {
     fn clone(&self) -> Self {
-        // The `MidiInPort` clone shares the mailbox + source cell (so an
-        // outstanding sender and any install keep reaching the running box);
-        // `isolate()` is what severs it for an offline render.
+        // The clone's MIDI scratch is its own (a clone is a fork's template,
+        // and later a fork: it plays only its own event input).
         Self {
             config: self.config.clone(),
             allocator: self.allocator.clone(),
@@ -1167,8 +923,9 @@ impl Clone for PolySynth {
             unison: self.unison.clone(),
             pitch_bend: self.pitch_bend,
             master_volume: self.master_volume.clone(),
-            midi: self.midi.clone(),
-            midi_buffer: vec![MidiEvent::noop(); 256],
+            midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
+            #[cfg(test)]
+            queued: Vec::new(),
             finished_indices: Vec::with_capacity(self.config.max_voices),
         }
     }
@@ -1192,18 +949,85 @@ mod tests {
         PolySynth::new(config).expect("synth builds")
     }
 
-    /// A full-ceiling block renders every frame it was asked for.
+    /// A synth driven by hand the way a graph drives it
+    /// (`tutti_graph::contract::drive_in`): what these tests queue with
+    /// [`queue_midi`] is the next block's event input.
     ///
-    /// `size == MAX_BUFFER_SIZE` is the largest block `BufferMut` can carry —
-    /// each channel is exactly that many frames — so this is the boundary where
-    /// an off-by-one in writing the output would show. Blocks longer than that
-    /// cannot be expressed through `process`; the renderer behind it handles
-    /// any length, which `a_long_block_renders_every_frame_like_short_blocks`
-    /// covers.
-    #[test]
-    fn a_full_ceiling_block_renders_every_frame() {
-        use tutti_core::BufferVec;
+    /// - [`tick`](Hand::tick) is a one-frame block: every queued event lands
+    ///   on its frame.
+    /// - [`render_planar`](Hand::render_planar) is one block of `left.len()`
+    ///   frames: each queued event on its `frame_offset`, and one past the
+    ///   block applied after it (as the renderer applies an event at or past
+    ///   the block's end).
+    ///
+    /// The queue is the test-only `queued` field: the synth itself plays
+    /// only its event input.
+    trait Hand {
+        fn tick(&mut self, input: &[f32], output: &mut [f32]);
+        fn render_planar(&mut self, left: &mut [f32], right: &mut [f32]);
+    }
 
+    impl Hand for PolySynth {
+        fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+            let mut queued = std::mem::take(&mut self.queued);
+            for e in &mut queued {
+                e.frame_offset = 0;
+            }
+            let [l, r] = self.drive(1, queued);
+            output[0] = l[0];
+            if output.len() > 1 {
+                output[1] = r[0];
+            }
+        }
+
+        fn render_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
+            assert_eq!(left.len(), right.len());
+            let queued = std::mem::take(&mut self.queued);
+            let [l, r] = self.drive(left.len(), queued);
+            left.copy_from_slice(&l);
+            right.copy_from_slice(&r);
+        }
+    }
+
+    impl PolySynth {
+        /// One block of `frames` under `queued` (stable-sorted by offset),
+        /// through `Node::process`.
+        fn drive(&mut self, frames: usize, mut queued: Vec<MidiEvent>) -> [Vec<f32>; 2] {
+            queued.sort_by_key(|e| e.frame_offset);
+            let block = tutti_core::Samples(frames);
+            let (inside, past): (Vec<MidiEvent>, Vec<MidiEvent>) = queued
+                .into_iter()
+                .partition(|e| (e.frame_offset as usize) < frames);
+            let events: Vec<tutti_graph::Event> = inside
+                .iter()
+                .map(|e| {
+                    let at = tutti_graph::Offset::new(e.frame_offset as usize, block)
+                        .expect("inside the block");
+                    tutti_graph::Event::midi(at, e.data)
+                })
+                .collect();
+            let env = tutti_graph::Env {
+                frame: tutti_core::Frame(0),
+                sample_rate: self.config.sample_rate,
+                block_len: block,
+                transport: tutti_graph::Transport::default(),
+                changes: tutti_graph::TransportChanges::NONE,
+            };
+            let out = tutti_graph::contract::drive_in(self, &env, &[], &[], &[&events]).audio;
+            for e in &past {
+                self.apply_midi(e);
+            }
+            out.try_into().expect("stereo")
+        }
+    }
+
+    /// A long block renders every frame it was asked for.
+    ///
+    /// A graph block is as long as the graph was prepared for, so this renders
+    /// four 512-frame blocks, each read in full.
+    /// `a_long_block_renders_every_frame_like_short_blocks` covers longer.
+    #[test]
+    fn a_full_block_renders_every_frame() {
         let mut synth = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
@@ -1217,32 +1041,24 @@ mod tests {
             },
             ..Default::default()
         });
-        queue_midi(&synth, &[ev_note_on(0, 69, 100)]);
+        queue_midi(&mut synth, &[ev_note_on(0, 69, 100)]);
 
-        let input = BufferVec::new(2);
-        let mut output = BufferVec::new(2);
-
-        // Several full-ceiling blocks, not one: the voice's own smoothing ramps
-        // mean the first blocks after a note-on are legitimately near-silent, so a
-        // single block proves nothing about the buffer sizing.
+        // Several blocks, not one: the voice's own smoothing ramps mean the
+        // first frames after a note-on are legitimately near-silent.
         let mut peak = 0.0f32;
+        let (mut left, mut right) = (vec![0.0f32; 512], vec![0.0f32; 512]);
         for _ in 0..4 {
-            synth.process(
-                MAX_BUFFER_SIZE,
-                &input.buffer_ref(),
-                &mut output.buffer_mut(),
-            );
-            let left = output.buffer_ref().channel_f32(0);
-            // Read all MAX_BUFFER_SIZE frames — indexing the full width is itself
-            // the check that `process` wrote them.
-            peak = left[..MAX_BUFFER_SIZE]
-                .iter()
-                .fold(peak, |a, s| a.max(s.abs()));
+            synth.render_planar(&mut left, &mut right);
+            peak = left.iter().fold(peak, |a, s| a.max(s.abs()));
         }
+        assert!(
+            left[448..].iter().any(|&s| s != 0.0),
+            "the block's last frames were rendered"
+        );
 
         assert!(
             peak > 0.0,
-            "a held note must produce audio across full-ceiling blocks"
+            "a held note must produce audio across the blocks"
         );
         assert_eq!(
             synth.active_voice_count(),
@@ -1251,9 +1067,9 @@ mod tests {
         );
     }
 
-    /// Push events directly through the synth's own MIDI sender.
-    fn queue_midi(synth: &PolySynth, events: &[MidiEvent]) {
-        synth.midi_sender().queue(events);
+    /// Queue events for the synth's next hand-driven block ([`Hand`]).
+    fn queue_midi(synth: &mut PolySynth, events: &[MidiEvent]) {
+        synth.queued.extend_from_slice(events);
     }
 
     // --- Test event builders (MIDI 1.0 7-bit values upconverted to UMP CV2) ---
@@ -1296,15 +1112,13 @@ mod tests {
         )
     }
 
-    /// Regression: an offline render clones the live synth and ticks the clone
-    /// on a worker thread. Before `isolate()`, the clone shared the live MIDI
-    /// receiver, so ticking it drained — *stole* — the events the live synth
-    /// needed (each event is delivered to exactly one consumer), garbling live
-    /// playback for the whole render. After `isolate()` the clone has its own
-    /// dead inbox: events sent on the original's sender reach ONLY the original,
-    /// and the clone receives nothing.
+    /// **A fork carries no sounding note**: a note playing on the live synth
+    /// is not in its fork, which plays only what its own event input brings.
+    ///
+    /// Mutation (run): `fork_instance` not resetting the voices → the fork
+    /// sounds the live note → fails.
     #[test]
-    fn isolate_severs_shared_midi_inbox_no_theft() {
+    fn a_fork_carries_no_sounding_note() {
         let mut live = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
@@ -1312,112 +1126,24 @@ mod tests {
             oscillator: OscillatorType::Sine,
             ..Default::default()
         });
-
-        // The render's clone, isolated as `rebind_net_transport` does.
-        let mut render = live.clone();
-        render.isolate();
-
-        // Queue a note via the LIVE synth's sender (what the app holds).
-        queue_midi(&live, &[ev_note_on(0, 60, 100)]);
-
-        // Tick the render clone FIRST — if it still shared the inbox it would
-        // drain the note here, stealing it from the live synth.
+        queue_midi(&mut live, &[ev_note_on(0, 60, 100)]);
         let mut out = [0.0f32; 2];
-        render.tick(&[], &mut out);
-        assert_eq!(
-            render.active_voice_count(),
-            0,
-            "isolated clone must not receive events from the original's sender"
-        );
-
-        // The live synth still gets its note — nothing was stolen.
         live.tick(&[], &mut out);
-        assert_eq!(
-            live.active_voice_count(),
-            1,
-            "live synth must still receive its note after the clone is ticked"
-        );
+        assert_eq!(live.active_voice_count(), 1, "the original played its note");
+
+        let mut render = live.fork_instance();
+        assert_eq!(render.active_voice_count(), 0, "the fork holds no voice");
+        let (mut l, mut r) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+        render.render_planar(&mut l, &mut r);
+        assert!(l.iter().all(|&s| s == 0.0), "and sounds nothing");
     }
 
-    /// A source that emits one note-on at offset 0 on its first poll — enough to
-    /// prove it was the thing polled (activates exactly one voice).
-    struct NoteOnceSource {
-        note: u8,
-    }
-    impl MidiUnitIn for NoteOnceSource {
-        fn poll_unit(
-            &self,
-            _unit: MidiUnitId,
-            _block: usize,
-            _rate: tutti_core::SampleRate,
-            buffer: &mut [MidiEvent],
-        ) -> usize {
-            if buffer.is_empty() {
-                return 0;
-            }
-            buffer[0] = ev_note_on(0, self.note, 100);
-            1
-        }
-        fn rebind_offline(
-            &self,
-            _unit: MidiUnitId,
-            _ctx: &tutti_core::transport::OfflineTransport,
-        ) -> Option<Arc<dyn MidiUnitIn>> {
-            None
-        }
-    }
-
-    /// The regression guard for [[plugin-source-install-shared-cell]] on the synth
-    /// side: installing a clip source on ONE clone must be visible to ANOTHER
-    /// clone, because fundsp runs a different clone than the one the install call
-    /// mutates. A per-clone `Option<Arc<…>>` fails this silently — the install
-    /// succeeds and synth clip playback never reaches the audio thread.
+    /// A clone's voice state is its own. If a voice held its gate, pitch or
+    /// filter state in shared cells, `clone()` would alias them, and a worker
+    /// rendering the clone would overwrite what the live voice reads. Driving
+    /// the clone's voice must leave the live voice's gate untouched.
     #[test]
-    fn midi_source_install_propagates_across_clones() {
-        let live = synth(SynthConfig {
-            sample_rate: tutti_core::SampleRate::SR_44K1,
-            max_voices: 4,
-            voice_mode: VoiceMode::Poly,
-            oscillator: OscillatorType::Sine,
-            ..Default::default()
-        });
-        // `clone_a` is the ECS-handle-style clone the install call mutates;
-        // `audio_clone` is the box the audio thread would run.
-        let mut clone_a = live.clone();
-        let mut audio_clone = live.clone();
-
-        clone_a.set_midi_source(Arc::new(NoteOnceSource { note: 60 }));
-
-        // The audio clone must see the install (shared slot) and activate a voice.
-        let mut out = [0.0f32; 2];
-        audio_clone.tick(&[], &mut out);
-        assert_eq!(
-            audio_clone.active_voice_count(),
-            1,
-            "install on clone_a must reach audio_clone via the shared slot"
-        );
-
-        // Clearing on one clone clears for the other.
-        clone_a.clear_midi_source();
-        let mut fresh = live.clone();
-        fresh.tick(&[], &mut out);
-        assert_eq!(
-            fresh.active_voice_count(),
-            0,
-            "clear on clone_a must propagate — no source polled"
-        );
-    }
-
-    /// Regression: the deeper half of the same bug. `SynthVoice` used to hold
-    /// its `gate`/`pitch`/`filter_*` as `Shared` (`Arc<AtomicU32>`), which
-    /// `clone()` aliases — and the voice *wrote* them every tick. So a worker
-    /// ticking the render clone would stomp the atomics the live voice reads
-    /// into its output, even with the MIDI inbox already severed. The voice
-    /// bank made those plain fields, so the property is now structural; this
-    /// keeps it pinned. Driving the clone's voice must leave the live voice's
-    /// gate untouched.
-    #[test]
-    fn isolate_unaliases_voice_shared_params() {
+    fn a_clone_unaliases_voice_state() {
         let mut live = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
@@ -1427,17 +1153,16 @@ mod tests {
         });
 
         // Activate a voice on the live synth and tick so its gate Shared = 1.0.
-        queue_midi(&live, &[ev_note_on(0, 60, 100)]);
+        queue_midi(&mut live, &[ev_note_on(0, 60, 100)]);
         let mut out = [0.0f32; 2];
         live.tick(&[], &mut out);
         assert_eq!(live.active_voice_count(), 1);
         let live_gate_before = live.voices[0].gate_value();
         assert_eq!(live_gate_before, 1.0, "live voice gate should be open");
 
-        // Clone + isolate (the render path). Then drive a note-off through the
-        // clone's *own* (fresh) machinery: gate the clone's voice shut.
+        // A clone (a fork's template), then a note-off driven through the
+        // clone's *own* machinery: gate the clone's voice shut.
         let mut render = live.clone();
-        render.isolate();
         // A clone that still ALIASED the voice Shared would, by note_off on its
         // voice, also slam the live voice's gate to 0.0.
         if let Some(v) = render.voices.get_mut(0) {
@@ -1478,10 +1203,30 @@ mod tests {
         assert!(synth.unison.is_some());
     }
 
+    /// A control-rate route onto `synth`'s param `p`, resolved as a host
+    /// resolves one (bevy-tutti's `ParamSetTargets`): the `ParamSet`'s cell,
+    /// mirrored by an `AtomicTarget`. `None` for a param the set lacks.
+    /// (These tests pinned the synth's `ModParams` impl, the route before
+    /// the `ParamSet` was its one address.)
+    fn route(
+        synth: &PolySynth,
+        p: tutti_core::UnitParam,
+        base: f32,
+        min: f32,
+        max: f32,
+    ) -> Option<std::sync::Arc<dyn tutti_mod::ModTarget>> {
+        tutti_graph::ParamNode::param_set(synth)
+            .cell(p)
+            .map(|cell| {
+                std::sync::Arc::new(tutti_mod::AtomicTarget::with_mirror(base, min, max, cell))
+                    as std::sync::Arc<dyn tutti_mod::ModTarget>
+            })
+    }
+
     #[test]
     fn mod_params_volume_moves_the_master_atomic() {
-        use tutti_core::{ParamAddr, UnitParam};
-        use tutti_mod::{LayerKey, ModParams};
+        use tutti_core::UnitParam;
+        use tutti_mod::LayerKey;
 
         let synth = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
@@ -1489,9 +1234,8 @@ mod tests {
             ..Default::default()
         });
         let vol_atomic = synth.volume_atomic();
-        let target = synth
-            .mod_target(ParamAddr::Unit(UnitParam::Volume), 1.0, 0.0, 1.0)
-            .expect("volume is modulatable");
+        let target =
+            route(&synth, UnitParam::Volume, 1.0, 0.0, 1.0).expect("volume is modulatable");
 
         target.accumulate(LayerKey(1), -0.4);
         assert!((target.final_value() - 0.6).abs() < 1e-4);
@@ -1499,15 +1243,13 @@ mod tests {
             (vol_atomic.load(core::sync::atomic::Ordering::Acquire) - 0.6).abs() < 1e-4,
             "the synth's master-volume atomic reflects the modulation"
         );
-
-        // A foreign (plugin) id is not the synth's vocabulary.
-        assert!(synth.mod_target(ParamAddr::Id(0), 0.5, 0.0, 1.0).is_none());
+        // (A foreign `ParamAddr::Id` is not expressible: a `ParamSet` is
+        // addressed by `UnitParam`.)
     }
 
     #[test]
     fn mod_params_detune_is_present_with_unison_absent_without() {
-        use tutti_core::{ParamAddr, UnitParam};
-        use tutti_mod::ModParams;
+        use tutti_core::UnitParam;
 
         let with_unison = synth(SynthConfig {
             unison: Some(UnisonConfig {
@@ -1518,23 +1260,17 @@ mod tests {
             }),
             ..Default::default()
         });
-        assert!(with_unison
-            .mod_target(ParamAddr::Unit(UnitParam::Detune), 10.0, 0.0, 100.0)
-            .is_some());
-        assert!(with_unison
-            .mod_target(ParamAddr::Unit(UnitParam::StereoSpread), 0.5, 0.0, 1.0)
-            .is_some());
+        assert!(route(&with_unison, UnitParam::Detune, 10.0, 0.0, 100.0).is_some());
+        assert!(route(&with_unison, UnitParam::StereoSpread, 0.5, 0.0, 1.0).is_some());
 
         let no_unison = synth(SynthConfig::default());
-        assert!(no_unison
-            .mod_target(ParamAddr::Unit(UnitParam::Detune), 0.0, 0.0, 100.0)
-            .is_none());
+        assert!(route(&no_unison, UnitParam::Detune, 0.0, 0.0, 100.0).is_none());
     }
 
     #[test]
     fn mod_params_detune_recomputes_unison_on_process() {
-        use tutti_core::{ParamAddr, UnitParam};
-        use tutti_mod::{LayerKey, ModParams};
+        use tutti_core::UnitParam;
+        use tutti_mod::LayerKey;
 
         let mut synth = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
@@ -1557,9 +1293,7 @@ mod tests {
 
         // Route a modulation offset into the detune atomic, then run a block:
         // `sync_from_atomics` must fold it into a recompute.
-        let target = synth
-            .mod_target(ParamAddr::Unit(UnitParam::Detune), 0.0, 0.0, 100.0)
-            .expect("detune modulatable");
+        let target = route(&synth, UnitParam::Detune, 0.0, 0.0, 100.0).expect("detune modulatable");
         target.accumulate(LayerKey(1), 30.0);
 
         let mut out = [0.0f32; 64];
@@ -1601,11 +1335,12 @@ mod tests {
 
         // Trigger a note via registry
         let note_on = ev_note_on(0, 60, 100);
-        queue_midi(&synth, &[note_on]);
+        queue_midi(&mut synth, &[note_on]);
 
         // Process samples and accumulate max output
-        // Note: FunDSP EnvelopeIn samples at 2ms intervals (~88 samples at 44100Hz)
-        // so several hundred samples are needed to see envelope output
+        // Note: the envelope is evaluated once per control step (at most
+        // `CONTROL_BLOCK` frames) and ramps from zero on its attack, so several
+        // hundred samples are rendered before the output is judged
         let mut output = [0.0f32; 2];
         let mut max_left = 0.0f32;
         let mut max_right = 0.0f32;
@@ -1650,10 +1385,6 @@ mod tests {
 
     /// One sub-voice's chain — oscillator, envelope, gains — is silent while
     /// its gate is closed and sounds once it opens.
-    ///
-    /// This drove fundsp's `var(&pitch) >> (saw() * (var(&gate) >>
-    /// adsr_live(..)))` until that chain was replaced by the voice bank; the
-    /// claim is the same, made of the chain the synth now runs.
     ///
     /// *Mutation:* dropping `gate_on`'s `enter(Attack)` (so the gate never
     /// opens the envelope) fails the second half.
@@ -1734,7 +1465,7 @@ mod tests {
 
         // Verify it still produces sound
         let note_on = ev_note_on(0, 60, 100);
-        queue_midi(&synth, &[note_on]);
+        queue_midi(&mut synth, &[note_on]);
 
         let mut output = [0.0f32; 2];
         let mut max_out = 0.0f32;
@@ -1770,7 +1501,7 @@ mod tests {
         // note_on(MidiGroup::new(frame_offset), MidiChannel::new(channel), note, velocity)
         let note_on_ch0 = ev_note_on(0, 60, 100);
         let note_on_ch1 = ev_note_on(1, 60, 100);
-        queue_midi(&synth, &[note_on_ch0, note_on_ch1]);
+        queue_midi(&mut synth, &[note_on_ch0, note_on_ch1]);
 
         // Process to trigger both notes
         let mut output = [0.0f32; 2];
@@ -1780,7 +1511,7 @@ mod tests {
         // Note off on channel 0 only
         // note_off(MidiGroup::new(frame_offset), MidiChannel::new(channel), note, velocity)
         let note_off_ch0 = ev_note_off(0, 60);
-        queue_midi(&synth, &[note_off_ch0]);
+        queue_midi(&mut synth, &[note_off_ch0]);
         synth.tick(&[], &mut output);
 
         // Channel 1's voice should still be active (gate=1.0)
@@ -1820,19 +1551,19 @@ mod tests {
 
         // Play note
         let note_on = ev_note_on(0, 60, 100);
-        queue_midi(&synth, &[note_on]);
+        queue_midi(&mut synth, &[note_on]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 1);
 
         // Press sustain pedal (CC64 >= 64 = on)
         let sustain_on = ev_cc(0, cc::SUSTAIN, 127);
-        queue_midi(&synth, &[sustain_on]);
+        queue_midi(&mut synth, &[sustain_on]);
         synth.tick(&[], &mut output);
 
         // Release note — voice should stay active (sustained)
         let note_off = ev_note_off(0, 60);
-        queue_midi(&synth, &[note_off]);
+        queue_midi(&mut synth, &[note_off]);
         synth.tick(&[], &mut output);
 
         // Voice is still active due to sustain pedal
@@ -1843,7 +1574,7 @@ mod tests {
 
         // Release sustain pedal (CC64 < 64 = off)
         let sustain_off = ev_cc(0, cc::SUSTAIN, 0);
-        queue_midi(&synth, &[sustain_off]);
+        queue_midi(&mut synth, &[sustain_off]);
         synth.tick(&[], &mut output);
 
         // Voice should now be releasing (gate off)
@@ -1872,17 +1603,17 @@ mod tests {
 
         // Play note, then press sostenuto
         let note_on = ev_note_on(0, 60, 100);
-        queue_midi(&synth, &[note_on]);
+        queue_midi(&mut synth, &[note_on]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
         let sostenuto_on = ev_cc(0, cc::SOSTENUTO, 127);
-        queue_midi(&synth, &[sostenuto_on]);
+        queue_midi(&mut synth, &[sostenuto_on]);
         synth.tick(&[], &mut output);
 
         // Release note — should be held by sostenuto
         let note_off = ev_note_off(0, 60);
-        queue_midi(&synth, &[note_off]);
+        queue_midi(&mut synth, &[note_off]);
         synth.tick(&[], &mut output);
 
         assert!(
@@ -1892,10 +1623,10 @@ mod tests {
 
         // Play a NEW note AFTER sostenuto — this should NOT be held
         let note_on2 = ev_note_on(0, 64, 100);
-        queue_midi(&synth, &[note_on2]);
+        queue_midi(&mut synth, &[note_on2]);
         synth.tick(&[], &mut output);
         let note_off2 = ev_note_off(0, 64);
-        queue_midi(&synth, &[note_off2]);
+        queue_midi(&mut synth, &[note_off2]);
         synth.tick(&[], &mut output);
 
         // Second note's voice should be releasing (gate off)
@@ -1908,7 +1639,7 @@ mod tests {
 
         // Release sostenuto — original note should now release
         let sostenuto_off = ev_cc(0, cc::SOSTENUTO, 0);
-        queue_midi(&synth, &[sostenuto_off]);
+        queue_midi(&mut synth, &[sostenuto_off]);
         synth.tick(&[], &mut output);
 
         assert_eq!(
@@ -1936,14 +1667,14 @@ mod tests {
 
         // Play multiple notes
         let events: Vec<MidiEvent> = (60..64).map(|n| ev_note_on(0, n, 100)).collect();
-        queue_midi(&synth, &events);
+        queue_midi(&mut synth, &events);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 4);
 
         // CC120 = All Sound Off (immediate silence)
         let all_sound_off = ev_cc(0, cc::ALL_SOUND_OFF, 0);
-        queue_midi(&synth, &[all_sound_off]);
+        queue_midi(&mut synth, &[all_sound_off]);
         synth.tick(&[], &mut output);
 
         // All voices should be immediately reset (not just releasing)
@@ -1972,14 +1703,14 @@ mod tests {
 
         // Play multiple notes
         let events: Vec<MidiEvent> = (60..64).map(|n| ev_note_on(0, n, 100)).collect();
-        queue_midi(&synth, &events);
+        queue_midi(&mut synth, &events);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 4);
 
         // CC123 = All Notes Off (release with envelope tail)
         let all_notes_off = ev_cc(0, cc::ALL_NOTES_OFF, 0);
-        queue_midi(&synth, &[all_notes_off]);
+        queue_midi(&mut synth, &[all_notes_off]);
         synth.tick(&[], &mut output);
 
         // Voices should still be active (releasing with long tail)
@@ -2014,14 +1745,14 @@ mod tests {
         // Play notes on channel 0 and channel 1
         let note_ch0 = ev_note_on(0, 60, 100);
         let note_ch1 = ev_note_on(1, 64, 100);
-        queue_midi(&synth, &[note_ch0, note_ch1]);
+        queue_midi(&mut synth, &[note_ch0, note_ch1]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 2);
 
         // All Notes Off on channel 0 only
         let all_notes_off = ev_cc(0, cc::ALL_NOTES_OFF, 0);
-        queue_midi(&synth, &[all_notes_off]);
+        queue_midi(&mut synth, &[all_notes_off]);
         synth.tick(&[], &mut output);
 
         // Channel 1 voice should still have gate open
@@ -2057,7 +1788,7 @@ mod tests {
 
         // Play note
         let note_on = ev_note_on(0, 60, 100);
-        queue_midi(&synth, &[note_on]);
+        queue_midi(&mut synth, &[note_on]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 1);
@@ -2065,7 +1796,7 @@ mod tests {
 
         // Note on with velocity 0 = note off (MIDI standard)
         let vel0_off = ev_note_on(0, 60, 0);
-        queue_midi(&synth, &[vel0_off]);
+        queue_midi(&mut synth, &[vel0_off]);
         synth.tick(&[], &mut output);
 
         assert_eq!(
@@ -2095,7 +1826,7 @@ mod tests {
 
         // First note triggers normally
         let note1 = ev_note_on(0, 60, 100);
-        queue_midi(&synth, &[note1]);
+        queue_midi(&mut synth, &[note1]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 1);
@@ -2103,7 +1834,7 @@ mod tests {
 
         // Second note should legato (update pitch, no retrigger)
         let note2 = ev_note_on(0, 64, 100);
-        queue_midi(&synth, &[note2]);
+        queue_midi(&mut synth, &[note2]);
         synth.tick(&[], &mut output);
 
         assert_eq!(
@@ -2138,14 +1869,14 @@ mod tests {
 
         // First note
         let note1 = ev_note_on(0, 60, 100);
-        queue_midi(&synth, &[note1]);
+        queue_midi(&mut synth, &[note1]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.voices[0].note(), 60);
 
         // Second note should retrigger (new allocation, not legato)
         let note2 = ev_note_on(0, 64, 100);
-        queue_midi(&synth, &[note2]);
+        queue_midi(&mut synth, &[note2]);
         synth.tick(&[], &mut output);
         assert_eq!(synth.voices[0].note(), 64);
     }
@@ -2189,17 +1920,17 @@ mod tests {
         // Held: sound the note, then bend it.
         let mut held = synth(config());
         let mut out = [0.0f32; 2];
-        queue_midi(&held, &[ev_note_on(0, 60, 100)]);
+        queue_midi(&mut held, &[ev_note_on(0, 60, 100)]);
         held.tick(&[], &mut out);
-        queue_midi(&held, &[bend_up]);
+        queue_midi(&mut held, &[bend_up]);
         held.tick(&[], &mut out);
         let held_freq = held.voices[0].sounding_freq();
 
         // Struck: bend first, then sound the note.
         let mut struck = synth(config());
-        queue_midi(&struck, &[bend_up]);
+        queue_midi(&mut struck, &[bend_up]);
         struck.tick(&[], &mut out);
-        queue_midi(&struck, &[ev_note_on(0, 60, 100)]);
+        queue_midi(&mut struck, &[ev_note_on(0, 60, 100)]);
         struck.tick(&[], &mut out);
         let struck_freq = struck.voices[0].sounding_freq();
 
@@ -2235,7 +1966,7 @@ mod tests {
 
         // Play first note to initialize portamento
         let note1 = ev_note_on(0, 60, 100);
-        queue_midi(&synth, &[note1]);
+        queue_midi(&mut synth, &[note1]);
         let mut output = [0.0f32; 2];
         for _ in 0..4410 {
             synth.tick(&[], &mut output);
@@ -2243,12 +1974,12 @@ mod tests {
 
         // Play second note — triggers portamento glide
         let note2 = ev_note_on(0, 72, 100);
-        queue_midi(&synth, &[note2]);
+        queue_midi(&mut synth, &[note2]);
         synth.tick(&[], &mut output);
 
         // Apply pitch bend while portamento is gliding
         let bend_up = ev_bend(0, 16383);
-        queue_midi(&synth, &[bend_up]);
+        queue_midi(&mut synth, &[bend_up]);
 
         // Process samples during glide — should not crash or produce silence
         let mut max_out = 0.0f32;
@@ -2292,13 +2023,13 @@ mod tests {
 
         // Play notes
         let events: Vec<MidiEvent> = (60..64).map(|n| ev_note_on(0, n, 100)).collect();
-        queue_midi(&synth, &events);
+        queue_midi(&mut synth, &events);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 4);
 
         // Reset
-        synth.reset();
+        tutti_graph::Node::reset(&mut synth);
         assert_eq!(
             synth.active_voice_count(),
             0,
@@ -2326,14 +2057,14 @@ mod tests {
 
         // Play note on channel 1 (MPE member channel)
         let note_on = ev_note_on(1, 60, 100);
-        queue_midi(&synth, &[note_on]);
+        queue_midi(&mut synth, &[note_on]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 1);
 
         // Play note on channel 2
         let note_on2 = ev_note_on(2, 64, 100);
-        queue_midi(&synth, &[note_on2]);
+        queue_midi(&mut synth, &[note_on2]);
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 2);
 
@@ -2343,7 +2074,7 @@ mod tests {
         // ever sees native per-note messages.
         let bend =
             MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
-        queue_midi(&synth, &[bend]);
+        queue_midi(&mut synth, &[bend]);
         synth.tick(&[], &mut output);
 
         let voice_ch1 = synth
@@ -2392,7 +2123,10 @@ mod tests {
         });
 
         // Two notes, same channel, different pitches.
-        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        queue_midi(
+            &mut synth,
+            &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)],
+        );
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 2);
@@ -2400,7 +2134,7 @@ mod tests {
         // Native per-note pitch bend addressed to note 60 only (full positive).
         let bend =
             MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
-        queue_midi(&synth, &[bend]);
+        queue_midi(&mut synth, &[bend]);
         synth.tick(&[], &mut output);
 
         let voice_60 = synth
@@ -2447,14 +2181,17 @@ mod tests {
         });
 
         // Two notes on the same channel.
-        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        queue_midi(
+            &mut synth,
+            &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)],
+        );
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 2);
 
         // Bend BOTH notes fully (per-note, so each is addressed independently).
         queue_midi(
-            &synth,
+            &mut synth,
             &[
                 MidiEvent::per_note_pitch_bend(
                     MidiGroup::FIRST,
@@ -2487,7 +2224,7 @@ mod tests {
 
         // Per-Note Management Reset addressed to note 60 only.
         queue_midi(
-            &synth,
+            &mut synth,
             &[MidiEvent::per_note_management(
                 MidiGroup::FIRST,
                 MidiChannel::new(1),
@@ -2530,7 +2267,10 @@ mod tests {
             ..Default::default()
         });
 
-        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        queue_midi(
+            &mut synth,
+            &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)],
+        );
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
@@ -2544,7 +2284,7 @@ mod tests {
             69u32 << 25,
             true,
         );
-        queue_midi(&synth, &[pitch]);
+        queue_midi(&mut synth, &[pitch]);
         synth.tick(&[], &mut output);
 
         let freq = |synth: &PolySynth, note: u8| {
@@ -2589,13 +2329,13 @@ mod tests {
             ..Default::default()
         });
 
-        queue_midi(&synth, &[ev_note_on(1, 60, 100)]);
+        queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
         // Bend fully, then Detach.
         queue_midi(
-            &synth,
+            &mut synth,
             &[MidiEvent::per_note_pitch_bend(
                 MidiGroup::FIRST,
                 MidiChannel::new(1),
@@ -2619,7 +2359,7 @@ mod tests {
 
         // Detach (D=1, S=0).
         queue_midi(
-            &synth,
+            &mut synth,
             &[MidiEvent::per_note_management(
                 MidiGroup::FIRST,
                 MidiChannel::new(1),
@@ -2632,7 +2372,7 @@ mod tests {
 
         // A further per-note bend to zero must be IGNORED — the note holds its value.
         queue_midi(
-            &synth,
+            &mut synth,
             &[MidiEvent::per_note_pitch_bend(
                 MidiGroup::FIRST,
                 MidiChannel::new(1),
@@ -2678,13 +2418,13 @@ mod tests {
             tutti_midi_types::ump::RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
             sens.to_rpn_bits(),
         );
-        queue_midi(&synth, &[ev_note_on(1, 60, 100), rpn]);
+        queue_midi(&mut synth, &[ev_note_on(1, 60, 100), rpn]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
         // Full per-note bend up — now clamped to the 12-semitone range.
         queue_midi(
-            &synth,
+            &mut synth,
             &[MidiEvent::per_note_pitch_bend(
                 MidiGroup::FIRST,
                 MidiChannel::new(1),
@@ -2727,12 +2467,12 @@ mod tests {
             ..Default::default()
         });
 
-        queue_midi(&synth, &[ev_note_on(1, 60, 100)]);
+        queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         // Set a per-note bend.
         queue_midi(
-            &synth,
+            &mut synth,
             &[MidiEvent::per_note_pitch_bend(
                 MidiGroup::FIRST,
                 MidiChannel::new(1),
@@ -2743,7 +2483,7 @@ mod tests {
         synth.tick(&[], &mut output);
 
         // Reset All Controllers on channel 1.
-        queue_midi(&synth, &[ev_cc(1, cc::RESET_ALL, 0)]);
+        queue_midi(&mut synth, &[ev_cc(1, cc::RESET_ALL, 0)]);
         synth.tick(&[], &mut output);
 
         let bend = synth
@@ -2784,14 +2524,17 @@ mod tests {
         });
 
         // Two notes on the same channel.
-        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        queue_midi(
+            &mut synth,
+            &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)],
+        );
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 2);
 
         // Registered per-note Brightness (index 74) addressed to note 60, full value.
         queue_midi(
-            &synth,
+            &mut synth,
             &[MidiEvent::per_note_controller(
                 MidiGroup::FIRST,
                 MidiChannel::new(1),
@@ -2846,7 +2589,10 @@ mod tests {
             ..Default::default()
         });
 
-        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        queue_midi(
+            &mut synth,
+            &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)],
+        );
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
@@ -2866,7 +2612,7 @@ mod tests {
 
         // Assignable per-note CC7 (the clip Gain-lane encoding) → half gain on 60.
         queue_midi(
-            &synth,
+            &mut synth,
             &[MidiEvent::per_note_controller(
                 MidiGroup::FIRST,
                 MidiChannel::new(1),
@@ -2909,7 +2655,7 @@ mod tests {
         // Play notes on two different channels
         let note1 = ev_note_on(1, 60, 100);
         let note2 = ev_note_on(2, 64, 100);
-        queue_midi(&synth, &[note1, note2]);
+        queue_midi(&mut synth, &[note1, note2]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
@@ -2917,7 +2663,7 @@ mod tests {
         // channel pressure is rewritten to this form at the input edge.
         let pressure =
             MidiEvent::poly_pressure(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
-        queue_midi(&synth, &[pressure]);
+        queue_midi(&mut synth, &[pressure]);
         synth.tick(&[], &mut output);
 
         let voice_ch1 = synth
@@ -2964,7 +2710,7 @@ mod tests {
 
         // Play note on channel 1
         let note1 = ev_note_on(1, 60, 100);
-        queue_midi(&synth, &[note1]);
+        queue_midi(&mut synth, &[note1]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
@@ -2978,7 +2724,7 @@ mod tests {
             0xFFFF_FFFF,
             false,
         );
-        queue_midi(&synth, &[slide]);
+        queue_midi(&mut synth, &[slide]);
         synth.tick(&[], &mut output);
 
         let voice = synth
@@ -3011,13 +2757,13 @@ mod tests {
         // MPE is disabled (default) - pitch bend should be global
         let note1 = ev_note_on(0, 60, 100);
         let note2 = ev_note_on(0, 64, 100);
-        queue_midi(&synth, &[note1, note2]);
+        queue_midi(&mut synth, &[note1, note2]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
         // Global pitch bend should NOT set MPE state
         let bend = ev_bend(0, 16383);
-        queue_midi(&synth, &[bend]);
+        queue_midi(&mut synth, &[bend]);
         synth.tick(&[], &mut output);
 
         // Both voices should have zero MPE pitch bend (global bend is handled differently)
@@ -3050,7 +2796,7 @@ mod tests {
 
         // Play note
         let note = ev_note_on(1, 60, 100);
-        queue_midi(&synth, &[note]);
+        queue_midi(&mut synth, &[note]);
 
         // Render baseline with no pressure
         let mut output = [0.0f32; 2];
@@ -3063,7 +2809,7 @@ mod tests {
         // Apply full pressure as a native per-note pressure on the note (60).
         let pressure =
             MidiEvent::poly_pressure(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
-        queue_midi(&synth, &[pressure]);
+        queue_midi(&mut synth, &[pressure]);
 
         let mut max_with_pressure = 0.0f32;
         for _ in 0..2000 {
@@ -3098,24 +2844,24 @@ mod tests {
 
         // Play note, set pressure, release, play again
         let note_on = ev_note_on(1, 60, 100);
-        queue_midi(&synth, &[note_on]);
+        queue_midi(&mut synth, &[note_on]);
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
         let pressure = ev_aftertouch(1, 127);
-        queue_midi(&synth, &[pressure]);
+        queue_midi(&mut synth, &[pressure]);
         synth.tick(&[], &mut output);
 
         // Release and wait for voice to finish
         let note_off = ev_note_off(1, 60);
-        queue_midi(&synth, &[note_off]);
+        queue_midi(&mut synth, &[note_off]);
         for _ in 0..10000 {
             synth.tick(&[], &mut output);
         }
 
         // Play again on channel 1
         let note_on2 = ev_note_on(1, 60, 100);
-        queue_midi(&synth, &[note_on2]);
+        queue_midi(&mut synth, &[note_on2]);
         synth.tick(&[], &mut output);
 
         let voice = synth
@@ -3170,7 +2916,7 @@ mod tests {
         .unwrap();
 
         let mut output = [0.0f32; 2];
-        queue_midi(&synth, &[ev_note_on(1, 60, 100)]);
+        queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 1);
 
@@ -3206,13 +2952,13 @@ mod tests {
         .unwrap();
 
         let mut output = [0.0f32; 2];
-        queue_midi(&synth, &[ev_note_on(1, 60, 100)]);
+        queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
         synth.tick(&[], &mut output);
 
         // Bend the sounding note well off centre.
         let bend =
             MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
-        queue_midi(&synth, &[bend]);
+        queue_midi(&mut synth, &[bend]);
         synth.tick(&[], &mut output);
         assert!(
             synth
@@ -3246,20 +2992,18 @@ mod tests {
         );
     }
 
-    /// A block far longer than `MAX_BUFFER_SIZE` renders every frame, with
+    /// A block far longer than 64 frames renders every frame, with
     /// MIDI landing inside it past frame 64 — and is sample-identical to the
     /// same audio rendered as eight 64-frame blocks.
     ///
-    /// This is design doc 013's D4: the block path mixed into
-    /// `[f32; MAX_BUFFER_SIZE]` stack arrays and clamped `size` to them, so in
-    /// release a 512-frame block rendered 64 frames and silence. The renderer
-    /// now has no block-sized scratch at all; the identity with short blocks is
-    /// what shows the long block is not merely non-silent but *right* —
-    /// control steps, glides and event offsets all land where they would have.
+    /// The renderer has no block-sized scratch; the identity with short
+    /// blocks is what shows the long block is not merely non-silent but
+    /// *right* — control steps, glides and event offsets all land where they
+    /// would have.
     ///
-    /// *Mutation:* clamping `size` to `MAX_BUFFER_SIZE` at the top of
-    /// `render_events` fails this (frame 64 onward goes silent and the event at
-    /// 200 is never reached in the long block).
+    /// *Mutation:* clamping `size` to 64 at the top
+    /// of `render_events` fails this (frame 64 onward goes silent and the event
+    /// at 200 is never reached in the long block).
     #[test]
     fn a_long_block_renders_every_frame_like_short_blocks() {
         let config = || SynthConfig {
@@ -3284,7 +3028,7 @@ mod tests {
         // the first released at 300.
         let mut long = synth(config());
         queue_midi(
-            &long,
+            &mut long,
             &[
                 ev_note_on(0, 60, 100),
                 ev_note_on(0, 67, 100).with_frame_offset(200),
@@ -3299,9 +3043,9 @@ mod tests {
         let (mut l_short, mut r_short) = (Vec::new(), Vec::new());
         for block in 0..8 {
             match block {
-                0 => queue_midi(&short, &[ev_note_on(0, 60, 100)]),
-                3 => queue_midi(&short, &[ev_note_on(0, 67, 100).with_frame_offset(8)]),
-                4 => queue_midi(&short, &[ev_note_off(0, 60).with_frame_offset(44)]),
+                0 => queue_midi(&mut short, &[ev_note_on(0, 60, 100)]),
+                3 => queue_midi(&mut short, &[ev_note_on(0, 67, 100).with_frame_offset(8)]),
+                4 => queue_midi(&mut short, &[ev_note_off(0, 60).with_frame_offset(44)]),
                 _ => {}
             }
             let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
@@ -3350,7 +3094,7 @@ mod tests {
             }),
             ..Default::default()
         });
-        queue_midi(&synth, &[ev_note_on(0, 57, 100)]);
+        queue_midi(&mut synth, &[ev_note_on(0, 57, 100)]);
         let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
         for _ in 0..16 {
             synth.render_planar(&mut l, &mut r);
@@ -3375,13 +3119,12 @@ mod tests {
 
     /// A portamento glide sounds the same through `process` as through `tick`.
     ///
-    /// This is design doc 013's D5. `tick` has always glided per sample, but
-    /// `process` ticked the glide `block_len` times and then rendered the whole
-    /// MIDI sub-block at the final pitch: a staircase, one step per block,
-    /// always ahead of the true glide. The phase error that leaves accumulates
-    /// over the glide, so the two paths' *waveforms* drift apart even though
-    /// their pitch at any block boundary agrees. Now both run the same
-    /// renderer, and inside a control step the pitch ramps per sample.
+    /// Rendering a whole MIDI sub-block at the glide's final pitch would make
+    /// a staircase, one step per block, always ahead of the true glide; the
+    /// phase error that leaves accumulates, so the waveforms would drift apart
+    /// even though their pitch at any block boundary agrees. Both paths run
+    /// the same renderer, and inside a control step the pitch ramps per
+    /// sample.
     ///
     /// Not asserted bit-identical: `tick` takes a control step every sample and
     /// `process` every 16, and between them the pitch ramps linearly rather
@@ -3425,8 +3168,8 @@ mod tests {
                 10 => &[ev_note_on(0, 84, 100)],
                 _ => &[],
             };
-            queue_midi(&ticked, events);
-            queue_midi(&blocked, events);
+            queue_midi(&mut ticked, events);
+            queue_midi(&mut blocked, events);
 
             let mut frame = [0.0f32; 2];
             for _ in 0..64 {
@@ -3454,10 +3197,10 @@ mod tests {
     /// Each note of a chord struck together gets its own stack of random
     /// start phases, and the lanes really start on them.
     ///
-    /// The phases used to live in the shared unison table, drawn once per
-    /// note-on and read when each voice started — so every note of a chord
-    /// read the last draw and all stacks started identically, the transient
-    /// spike `phase_randomize` exists to avoid, summed across the chord.
+    /// Phases drawn once per note-on into a shared table would make every
+    /// note of a chord read the last draw, so all stacks would start
+    /// identically: the transient spike `phase_randomize` exists to avoid,
+    /// summed across the chord.
     ///
     /// Both notes are the same pitch (on two channels) with no detune, so all
     /// six lanes run at one increment and their phases after the first block
@@ -3480,7 +3223,10 @@ mod tests {
             ..Default::default()
         });
         synth.seed_unison_rng(99);
-        queue_midi(&synth, &[ev_note_on(0, 60, 100), ev_note_on(1, 60, 100)]);
+        queue_midi(
+            &mut synth,
+            &[ev_note_on(0, 60, 100), ev_note_on(1, 60, 100)],
+        );
         let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
         synth.render_planar(&mut l, &mut r);
 
@@ -3536,7 +3282,7 @@ mod tests {
             ),
             ..Default::default()
         });
-        queue_midi(&synth, &[ev_note_on(0, 45, 127)]);
+        queue_midi(&mut synth, &[ev_note_on(0, 45, 127)]);
         let mut frame = [0.0f32; 2];
         let mut peak = 0.0f32;
         for _ in 0..4800 {
@@ -3549,7 +3295,7 @@ mod tests {
             synth.tick(&[], &mut frame);
             prev = frame[0];
         }
-        queue_midi(&synth, &[ev_note_on(1, 45, 20)]);
+        queue_midi(&mut synth, &[ev_note_on(1, 45, 20)]);
         let mut worst = 0.0f32;
         for _ in 0..256 {
             synth.tick(&[], &mut frame);
@@ -3570,8 +3316,8 @@ mod tests {
     /// Reset All Controllers returns CC74 to its centre, leaving the cutoff
     /// where the patch put it.
     ///
-    /// It used to set the CC74 position to 0.0, which the `4^(v - 0.5)` map
-    /// reads as half the cutoff.
+    /// Setting the CC74 position to 0.0 instead would read, through the
+    /// `4^(v - 0.5)` map, as half the cutoff.
     ///
     /// *Mutation:* `set_cc_cutoff(0.0)` in the `RESET_ALL` arm fails this.
     #[test]
@@ -3593,7 +3339,7 @@ mod tests {
             if reset {
                 events.push(ev_cc(0, cc::RESET_ALL, 0));
             }
-            queue_midi(&s, &events);
+            queue_midi(&mut s, &events);
             let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
             let mut out = Vec::new();
             for _ in 0..60 {
@@ -3636,16 +3382,18 @@ mod tests {
     }
 
     /// A fork of the synth renders the master volume and unison it was taken
-    /// with (`tutti_graph::contract::IsolateRow`). `isolate` empties the voices
-    /// and the inbox, so `excite` queues a chord into each rendered copy's
-    /// own (fresh) mailbox.
+    /// with, audibly: for each param, a move set through the synth's
+    /// `ParamSet` after a fork is not in that fork's render, and one before a
+    /// fork is (the `ParamNode` fork `param_parts` inserts). Each rendered fork is handed its own
+    /// chord, as its clip would.
     ///
-    /// Mutations (run): drop `self.master_volume.detach()` → "volume" fails
-    /// with "a live move reached the fork"; drop `unison.detach()` → "detune"
-    /// and "spread" fail.
+    /// Mutations (run): `fork_instance` not detaching `master_volume` →
+    /// "Volume: a live move reached the fork" → fails; not detaching the
+    /// unison → "Detune" and "StereoSpread" fail the same way.
     #[test]
-    fn isolate_snapshots_volume_and_unison() {
-        tutti_graph::contract::IsolateRow::new("PolySynth (saw, 3-voice unison)", || {
+    fn a_fork_renders_the_volume_and_unison_it_was_taken_with() {
+        use tutti_graph::ParamFork;
+        let live = || {
             let synth = synth(SynthConfig {
                 sample_rate: tutti_core::SampleRate(48_000.0),
                 max_voices: 4,
@@ -3661,19 +3409,63 @@ mod tests {
             });
             synth.set_volume(0.5);
             synth
-        })
-        .excite(|s| queue_midi(s, &[ev_note_on(0, 60, 100), ev_note_on(0, 64, 100)]))
-        .control("volume", |s| s.set_volume(0.9))
-        .control("detune", |s| {
-            s.detune_atomic()
-                .expect("unison")
-                .store(40.0, tutti_core::Ordering::Release)
-        })
-        .control("spread", |s| {
-            s.spread_atomic()
-                .expect("unison")
-                .store(1.0, tutti_core::Ordering::Release)
-        })
-        .check();
+        };
+        let render = |mut fork: PolySynth| {
+            queue_midi(&mut fork, &[ev_note_on(0, 60, 100), ev_note_on(0, 64, 100)]);
+            let (mut l, mut r) = (vec![0.0f32; 2_048], vec![0.0f32; 2_048]);
+            fork.render_planar(&mut l, &mut r);
+            (l, r)
+        };
+        for (param, value) in [
+            (tutti_core::UnitParam::Volume, 0.9),
+            (tutti_core::UnitParam::Detune, 40.0),
+            (tutti_core::UnitParam::StereoSpread, 1.0),
+        ] {
+            let synth = live();
+            let source = ParamFork::new(&synth);
+            let baseline = render(source.fork_node());
+            assert!(baseline.0.iter().any(|&s| s != 0.0), "the chord sounds");
+            let taken = source.fork_node();
+            assert!(
+                source.params().set(param, value),
+                "{param:?} is addressable"
+            );
+            assert_eq!(
+                render(taken),
+                baseline,
+                "{param:?}: a live move reached the fork"
+            );
+            assert_ne!(
+                render(source.fork_node()),
+                baseline,
+                "{param:?}: a fork taken after the move does not hear it"
+            );
+        }
     }
 }
+
+impl PolySynth {
+    /// The amplitude envelope's release stage, as the node's tail.
+    ///
+    /// This node takes no audio input — it is driven by MIDI — so "after the
+    /// input stops" means after the last note-off, at which point every
+    /// still-sounding voice rings for its release time. That time is an
+    /// authored parameter rather than an estimate, which is what makes this
+    /// exact.
+    ///
+    /// A bounce that ends at the last note-off without it chops the release
+    /// off every note in the project.
+    pub(crate) fn release_tail(&self) -> Tail {
+        match self
+            .config
+            .envelope
+            .release
+            .to_samples_ceil(self.config.sample_rate)
+        {
+            s if s.is_zero() => Tail::None,
+            s => Tail::Finite(s),
+        }
+    }
+}
+
+mod node;

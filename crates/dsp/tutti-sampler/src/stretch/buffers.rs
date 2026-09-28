@@ -42,10 +42,8 @@ impl Ring {
     /// The cap is the load-bearing part. The cursors are monotonic so the raw
     /// subtraction keeps counting past the ring end, and a reader that trusted it
     /// would hand back slots overwritten laps ago as though they were fresh — a
-    /// plausible-sounding wrong answer rather than a detectable failure. That is
-    /// exactly how the vocoder's input-rate bug stayed hidden: `available()`
-    /// reported 79,231 pending in a 4,096-sample ring and every caller believed
-    /// it.
+    /// plausible-sounding wrong answer rather than a detectable failure (an
+    /// uncapped count can report 79,231 pending in a 4,096-sample ring).
     ///
     /// Capping does not *fix* an overrun — the data is already gone. It bounds
     /// the damage to "the oldest samples were dropped" instead of "the stream is
@@ -131,14 +129,13 @@ impl SampleFifo {
 ///
 /// Windowing twice — once on analysis, once on synthesis — means the overlapped
 /// frames sum to `Σw²` per sample rather than to unity, so synthesis has to
-/// divide it back out. This used to be a **precomputed scalar**
-/// (`COLA_GAIN = 1/1.5`, i.e. `1 / (4 · mean(hann²))`), correct only for a Hann
-/// window at exactly 75% overlap — its own doc comment said so.
+/// divide it back out. A **precomputed scalar** (`1 / (4 · mean(hann²))`) is
+/// correct only for a Hann window at exactly 75% overlap.
 ///
-/// It now accumulates the sum the same way `tutti_analysis::istft` always has:
-/// a parallel ring holding `Σw²`, divided out per sample at the read. That is
-/// what makes the vocoder correct for *any* window shape rather than for the
-/// one it was tuned on, and it costs one extra ring — sized once, in `new`, and
+/// So the sum is accumulated the same way `tutti_analysis::istft` does it:
+/// a parallel ring holding `Σw²`, divided out per sample at the read. That
+/// makes the vocoder correct for *any* window shape, and it costs one extra
+/// ring — sized once, in `new`, and
 /// never touched on the audio path.
 ///
 /// The two rings share every cursor operation, which is why they are one type:

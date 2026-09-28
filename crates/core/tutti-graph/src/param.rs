@@ -1,5 +1,4 @@
-//! Compiler-owned parameter modulation (design doc 013, "Rewrite order"
-//! item 6).
+//! Compiler-owned parameter modulation.
 //!
 //! A node declares the params it lets the graph modulate
 //! ([`Shape::params`](crate::Shape::params), by [`UnitParam`] id). A
@@ -12,50 +11,8 @@
 //!   value[i] = clamp(base_ramp[i] + Σ shape_j(source_j[i]), range)
 //! ```
 //!
-//! - **The base** is the node's own control — a `Param<U>` it hands out in
-//!   its `Controls` — read once per block through
-//!   [`Node::param_base`](crate::Node::param_base) and ramped linearly
-//!   across the block, landing exactly on the new value at its last frame,
-//!   so a fader move under modulation does not zipper.
-//! - **The offsets** come from audio outputs ([`ParamFrom::Audio`], one
-//!   value per frame) or from [`ParamRamp`](crate::ParamRamp) events
-//!   ([`ParamFrom::Events`], a sample-accurate ramp per source), each through
-//!   its own [`ParamShaping`]: the identity, or a [`ShapeLut`] (the
-//!   depth · polarity · curve table `tutti_mod::shape` bakes). They are summed
-//!   in source order and clamped once to the port's [`ParamRange`].
-//! - **An unconnected param resolves to its base, never to 0.** A port with
-//!   no source this block reads [`ParamInput::Base`], and the node uses its
-//!   own control, exactly as if nothing could modulate it: the fast path
-//!   costs one branch, and nothing is copied. Under `Net` an unconnected
-//!   input read 0, which is why a param port had to be fixed when a node was
-//!   built and fed by a base chain (`AtomicSourceNode` → `ParamSumNode`) from
-//!   birth. Here a port can be connected and disconnected by any commit.
-//! - **Connecting or disconnecting is declicked.** When a port's sources
-//!   change (a new source, one gone, a new shaping), its output crossfades
-//!   from where it was — the last value it delivered, or the base — to the
-//!   new value over [`PARAM_DECLICK`] frames. Nothing else is smoothed: a
-//!   step in a modulator lands on its frame (the sample-accuracy contract,
-//!   doc 013 §6). A unit's **first** block is not a change: a unit placed by
-//!   a commit (an insert, a hard replace, a fork, a re-prepare's resume)
-//!   starts at its modulated value, as its audio starts at its first frame.
-//! - **A source's state is the source's, not its slot's.** An event
-//!   source's ramp (the value it holds, and a ramp under way) is kept by
-//!   [`ParamFrom`], so adding or removing *another* source, or reshaping
-//!   this one, does not reset it. A PDC delay that appears on an audio
-//!   source (the node's arrival moved) starts full of the source's last
-//!   value, and one that grows is padded with it, so the port holds rather
-//!   than dropping to 0 for the delay's length.
-//! - **A crossfade's base.** A [`replace`](crate::Editor::replace) with a
-//!   fade keeps the key's param state, so both units hear one modulation;
-//!   the base is the incoming unit's control, ramped over one block like
-//!   any control move, not over the fade. Ramping it over the fade would
-//!   hold the incoming unit off its own control for the fade's length, and
-//!   the audio crossfade already covers the swap.
-//! - **PDC.** A param source is aligned to the node's arrival like any of
-//!   its inputs: a source that arrives earlier is delayed
-//!   ([`DelayKey::ParamAudio`](crate::DelayKey::ParamAudio),
-//!   [`DelayKey::ParamEvent`](crate::DelayKey::ParamEvent)), and a later one
-//!   raises the node's arrival.
+//! The rules are documented on
+//! [`GraphSpec::connect_param`](crate::GraphSpec::connect_param).
 //!
 //! The step is fused into the node op rather than being an op of its own:
 //! its only output is the per-frame values the node reads in the same op, so
@@ -76,13 +33,6 @@ use crate::spec::EventOut;
 /// Most params one node can declare modulatable.
 pub const MAX_PARAM_PORTS: usize = 8;
 
-// A `Legacy` unit declares its feed's params as its ports, so a feed can
-// never carry more than a shape can declare.
-const _: () = assert!(
-    tutti_node::MAX_FED_PARAMS == MAX_PARAM_PORTS,
-    "a ParamFeed and a Shape bound modulatable params alike"
-);
-
 /// Most sources one param port can sum. A spec past it is refused
 /// ([`GraphInvalid::TooManyParamSources`](crate::GraphInvalid::TooManyParamSources)):
 /// the per-source ramp state lives in a fixed array, so the audio thread never
@@ -90,8 +40,8 @@ const _: () = assert!(
 pub const MAX_PARAM_SOURCES: usize = 16;
 
 /// How long a param port crossfades when its sources change: from where it
-/// was to where the new sources put it (see the `param` module docs,
-/// `src/param.rs`). 256 frames is about 5 ms at 48 kHz: long enough that a
+/// was to where the new sources put it (see
+/// [`GraphSpec::connect_param`](crate::GraphSpec::connect_param)). 256 frames is about 5 ms at 48 kHz: long enough that a
 /// modulator connected at full swing is not a click, short enough that the
 /// connection is heard where it was made.
 pub const PARAM_DECLICK: Samples = Samples(256);
@@ -128,8 +78,13 @@ impl ParamPorts {
         }
     }
 
-    /// [`new`](Self::new), refusing with a [`ParamPortsError`] a list of
-    /// more than [`MAX_PARAM_PORTS`] or one naming a param twice.
+    /// [`new`](Self::new), without the panic.
+    ///
+    /// # Errors
+    ///
+    /// [`ParamPortsError::TooMany`] for a list of more than
+    /// [`MAX_PARAM_PORTS`], [`ParamPortsError::Duplicate`] for one naming a
+    /// param twice.
     pub const fn try_new(ids: &[UnitParam]) -> Result<Self, ParamPortsError> {
         if ids.len() > MAX_PARAM_PORTS {
             return Err(ParamPortsError::TooMany { count: ids.len() });
@@ -243,11 +198,10 @@ pub const SHAPE_LUT_LEN: usize = 256;
 /// A response curve over a modulator's `[-1, 1]` range, baked into a table
 /// and read back with linear interpolation.
 ///
-/// The bake and the lookup are `ParamShaperNode`'s, operation for operation —
-/// the table is sampled at `x_i = i / 255 · 2 − 1` and read at
-/// `(clamp(x, −1, 1) + 1) / 2 · 255` — so a table baked from
-/// `tutti_mod::shape` gives the old shaper's output bit for bit. It clamps
-/// its input to `[-1, 1]`: a modulator is a normalised signal.
+/// The table is sampled at `x_i = i / 255 · 2 − 1` and read at
+/// `(clamp(x, −1, 1) + 1) / 2 · 255`, so a table baked from
+/// `tutti_mod::shape` reproduces that shaper bit for bit. It clamps its
+/// input to `[-1, 1]`: a modulator is a normalised signal.
 ///
 /// Compared and hashed by the table's bits, so a [`GraphSpec`](crate::GraphSpec)
 /// holding one is still `Eq + Hash`, and a depth that moved by an ulp is a
@@ -256,7 +210,7 @@ pub const SHAPE_LUT_LEN: usize = 256;
 pub struct ShapeLut(Arc<[f32; SHAPE_LUT_LEN]>);
 
 impl ShapeLut {
-    /// Bake `f` over `[-1, 1]`. Allocates: build it on the control thread.
+    /// Bakes `f` over `[-1, 1]`. Allocates: build it on the control thread.
     pub fn from_fn(f: impl Fn(f32) -> f32) -> Self {
         let mut t = [0.0f32; SHAPE_LUT_LEN];
         for (i, slot) in t.iter_mut().enumerate() {
@@ -753,7 +707,7 @@ impl ParamState {
         match m {
             Some((_, range, sources)) => {
                 // `f32`'s `Sum` folds from `-0.0`; so does this, so the sum is
-                // bit-identical to the old `ParamSumNode`'s `base + Σ`.
+                // bit-identical to an iterator `base + Σ`.
                 out.fill(-0.0);
                 for (j, (src, shaping, _)) in sources.iter().enumerate() {
                     let s = &mut st.srcs[j];

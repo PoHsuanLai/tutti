@@ -479,8 +479,7 @@ fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
 /// sized for the old maximum. They render as silence rather than panic, and
 /// the new maximum is adopted only when the resume commit lands.
 ///
-/// Mutation: adopt the new `Prepare` when the suspend lands (the old rule:
-/// `self.prepare = prepare` in `Executor::apply`'s suspend branch) → the
+/// Mutation: adopt the new `Prepare` when the suspend lands (`self.prepare = prepare` in `Executor::apply`'s suspend branch) → the
 /// "not yet adopted" check fails, and with the bound checked before the
 /// suspended branch the 256-frame block panics against 64.
 #[test]

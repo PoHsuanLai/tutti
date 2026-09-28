@@ -32,7 +32,7 @@ pub(crate) enum StateHeader<'a> {
     Params { count: i32, values: &'a [u8] },
 }
 
-/// Validate the framing of a state blob and split off its payload.
+/// Validates the framing of a state blob and split off its payload.
 ///
 /// Pure: performs only the header/length/count checks that don't need a live
 /// plugin (the plugin-parameter-count cross-check stays in `set_state`).
@@ -90,19 +90,28 @@ pub(crate) fn parse_state_header(data: &[u8]) -> Result<StateHeader<'_>> {
 }
 
 impl Vst2Instance {
-    /// Capture the current plugin state as a portable byte blob.
+    /// Captures the plugin's current state as a byte blob that
+    /// [`set_state`](Self::set_state) can restore.
     ///
-    /// Prefers the plugin's own chunk format if it advertises one;
-    /// otherwise falls back to a parameter snapshot.
+    /// Uses the plugin's own chunk format (`effGetChunk`) when it declares
+    /// `effFlagsProgramChunks` and returns a non-empty chunk; otherwise saves
+    /// every parameter's normalized value, which loses any state the plugin
+    /// keeps outside its parameters. The blob starts with a four-byte tag
+    /// (`CHK\0` or `PRM\0`) and is only meaningful to this crate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Vst2Error::StateError`] if the plugin's chunk save fails, or if
+    /// it declares parameters but exposes no `getParameter` to read them.
     pub fn get_state(&self) -> Result<Vec<u8>> {
         let info = self.handle.instance.get_info();
 
         if info.preset_chunks {
             // `try_get_preset_data`, not `get_preset_data`: the infallible one
             // folds "nothing saved" and "the save failed" into the same empty
-            // `Vec`, so a failed `getChunk` silently downgraded to a parameter
-            // snapshot, losing the non-parameter state chunks exist to carry.
-            // A failure is now an error; an *empty* chunk still falls through
+            // `Vec`, so a failed `getChunk` would silently downgrade to a
+            // parameter snapshot, losing the non-parameter state chunks exist
+            // to carry. A failure is an error; an *empty* chunk still falls through
             // to the parameter snapshot, keeping a fresh plugin saveable.
             let chunk = self.params.try_get_preset_data().map_err(|e| {
                 Vst2Error::StateError(format!(
@@ -145,15 +154,24 @@ impl Vst2Instance {
         Ok(state)
     }
 
-    /// Restore a state blob previously produced by [`get_state`](Self::get_state).
+    /// Restores a state blob previously produced by
+    /// [`get_state`](Self::get_state).
+    ///
+    /// Parameter values are clamped to `[0.0, 1.0]` before they are written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Vst2Error::StateError`] if the blob is malformed (unknown
+    /// header, truncated, or an empty chunk), if a parameter snapshot holds
+    /// more parameters than the plugin declares, if the plugin rejects the
+    /// chunk, or if it exposes no `setParameter` to write parameters with.
     pub fn set_state(&self, data: &[u8]) -> Result<()> {
         match parse_state_header(data)? {
             StateHeader::Chunk(payload) => {
-                // `effSetChunk` reports whether the plugin took the blob. This
-                // arm used to discard that answer and always return `Ok(())`,
-                // so a plugin refusing a chunk (truncated, foreign, or a format
-                // version it no longer reads) reported a successful restore
-                // while sitting at its defaults.
+                // `effSetChunk` reports whether the plugin took the blob.
+                // Discarding that answer would let a plugin refusing a chunk
+                // (truncated, foreign, or a format version it does not read)
+                // report a successful restore while sitting at its defaults.
                 if !self.params.load_preset_data(payload) {
                     return Err(Vst2Error::StateError(format!(
                         "plugin rejected the {} byte preset chunk (effSetChunk \

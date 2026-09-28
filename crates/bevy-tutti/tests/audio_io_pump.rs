@@ -27,7 +27,6 @@ mod common;
 /// Every test writes a real `WavOut` into a `tempfile` and reads it back with
 /// `hound`, so "was it finalized" is answered by the file rather than by a flag
 /// this crate set. No audio device is involved.
-/// (Was `tests/audio_pump.rs`.)
 mod audio_pump {
     use std::path::PathBuf;
 
@@ -375,7 +374,6 @@ mod audio_pump {
 /// `TapIn` is the join. These pin that it holds, and that audio survives the
 /// trip — a type that satisfied the bound but dropped every frame would compile
 /// just as well.
-/// (Was `tests/master_record.rs`.)
 mod master_record {
     use std::path::PathBuf;
 
@@ -530,7 +528,6 @@ mod master_record {
 /// These read the engine back rather than trusting the component, for the same
 /// reason `graph_wire.rs` does: the diff this layer performs is only meaningful
 /// if the engine is what gets compared against.
-/// (Was `tests/io_graph_composition.rs`.)
 mod io_graph_composition {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
@@ -568,9 +565,8 @@ mod io_graph_composition {
 
     /// Render `frames` from the graph, per-sample.
     ///
-    /// `tick` rather than a `process` block for the reason `midi_soundfont_audio.rs`
-    /// gives: `BufferVec` holds one SIMD block per channel, so `process` needs
-    /// fundsp's buffer types rather than plain slices. `tick` polls the same units.
+    /// One `render_frame` per sample, so each call renders a one-frame block
+    /// of the graph and the result is collected frame by frame.
     fn render(app: &mut App, frames: usize) -> Vec<[f32; 2]> {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         (0..frames)
@@ -594,7 +590,7 @@ mod io_graph_composition {
 
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(monitor)
+            graph.insert(monitor).0
         };
         let entity = app.world_mut().spawn(id).id();
         app.insert_resource(MasterSources::from(entity));
@@ -622,7 +618,7 @@ mod io_graph_composition {
 
         let (mon_id, fx_id) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            (graph.insert(monitor), graph.insert(Through::mono()))
+            (graph.insert(monitor).0, graph.insert(Through::mono()).0)
         };
         let mon = app.world_mut().spawn(mon_id).id();
         let fx = app.world_mut().spawn(fx_id).id();
@@ -654,7 +650,7 @@ mod io_graph_composition {
 
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(monitor)
+            graph.insert(monitor).0
         };
         let entity = app.world_mut().spawn(id).id();
         app.insert_resource(MasterSources::from(entity));
@@ -694,7 +690,7 @@ mod io_graph_composition {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             // Added to the graph — but never declared to `MasterSources`, which is
             // the step a host forgets.
-            let _ = graph.insert(monitor);
+            let _ = graph.insert(monitor).0;
         }
         app.update();
 

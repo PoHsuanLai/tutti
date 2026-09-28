@@ -21,13 +21,13 @@ pub(super) const FORMAT_BY_EXTENSION: &[(&str, PluginFormat)] = &[
     ("component", PluginFormat::AudioUnit),
 ];
 
-/// Infer [`PluginFormat`] from a file extension.
+/// Infers the [`PluginFormat`] from a path's extension.
 ///
 /// Matching is **case-insensitive**. macOS (APFS/HFS+ by default) and Windows
 /// (NTFS) are case-insensitive volumes, so a vendor shipping `Reverb.VST3` is
-/// a real and common case. Matching case-sensitively made those bundles
-/// invisible — and since a `.VST3` bundle *is* a directory, the scanner then
-/// recursed *into* it and silently found nothing.
+/// a real and common case. Matching case-sensitively would make those bundles
+/// invisible — and since a `.VST3` bundle *is* a directory, the scanner would
+/// recurse *into* it and silently find nothing.
 pub fn format_from_path(path: &Path) -> Option<PluginFormat> {
     let ext = path.extension().and_then(|s| s.to_str())?;
     let ext = ext.to_ascii_lowercase();
@@ -37,7 +37,7 @@ pub fn format_from_path(path: &Path) -> Option<PluginFormat> {
         .map(|(_, format)| *format)
 }
 
-/// Get a file's modification time as seconds since the Unix epoch.
+/// Returns a file's modification time as seconds since the Unix epoch.
 pub fn file_modification_time(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -46,7 +46,8 @@ pub fn file_modification_time(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-/// Recursively discover plugin files across `dirs`.
+/// Recursively discovers plugin files across `dirs`, with the format each
+/// extension names.
 ///
 /// The pure half of a scan: walks the filesystem and returns what it found,
 /// touching no catalog and spawning no subprocess. Pair with
@@ -123,11 +124,10 @@ mod tests {
         assert_eq!(format_from_path(Path::new("a.wasm")), None);
     }
 
-    /// Regression for `.VST3` / `.CLAP` are the same extension on a
-    /// case-insensitive volume (macOS APFS, Windows NTFS). Matching
-    /// case-sensitively made those bundles invisible, and because a `.VST3`
-    /// bundle is a *directory*, the scanner then recursed into it and found
-    /// nothing — silently, with no warning.
+    /// `.VST3` / `.CLAP` are the same extension on a case-insensitive volume
+    /// (macOS APFS, Windows NTFS). Matching case-sensitively would make those
+    /// bundles invisible, and because a `.VST3` bundle is a *directory*, the
+    /// scanner would then recurse into it and find nothing — silently.
     #[test]
     fn format_from_path_is_case_insensitive() {
         assert_eq!(
@@ -152,10 +152,9 @@ mod tests {
         );
     }
 
-    /// Regression for VST2 on Windows/Linux ships as a bare
-    /// `.dll` / `.so`. `PluginRecord::EXTENSIONS` advertised both while
-    /// `format_from_path` rejected both, so no VST2 plugin was discoverable
-    /// on those platforms at all.
+    /// VST2 on Windows/Linux ships as a bare `.dll` / `.so`, and
+    /// `format_from_path` must agree with `PluginRecord::EXTENSIONS` on both,
+    /// or no VST2 plugin is discoverable on those platforms.
     #[test]
     fn vst2_bare_libraries_are_recognised() {
         assert_eq!(

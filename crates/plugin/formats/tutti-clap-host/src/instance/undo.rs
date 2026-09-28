@@ -6,7 +6,7 @@ use crate::types::UndoDeltaProperties;
 use clap_sys::ext::draft::undo::clap_undo_delta_properties;
 
 impl ClapLoaded {
-    /// Query the plugin's undo delta capabilities (whether it produces
+    /// Queries the plugin's undo delta capabilities (whether it produces
     /// deltas, whether they persist across sessions, format version).
     pub fn undo_get_delta_properties(&self) -> Option<UndoDeltaProperties> {
         let ext = unsafe { ext::opt(self.extensions.undo.delta) }?;
@@ -20,7 +20,7 @@ impl ClapLoaded {
         })
     }
 
-    /// Ask whether the plugin can decode undo deltas of the given format
+    /// Asks whether the plugin can decode undo deltas of the given format
     /// version. Useful before restoring deltas saved by an older release.
     pub fn undo_can_use_format_version(&self, version: u32) -> bool {
         let Some(ext) = (unsafe { ext::opt(self.extensions.undo.delta) }) else {
@@ -49,7 +49,7 @@ impl ClapLoaded {
             .unwrap_or(false)
     }
 
-    /// Redo a previously-undone change.
+    /// Redoes a previously undone change.
     pub fn redo_apply_delta(&mut self, format_version: u32, delta: &[u8]) -> bool {
         let Some(ext) = (unsafe { ext::opt(self.extensions.undo.delta) }) else {
             return false;
@@ -66,7 +66,7 @@ impl ClapLoaded {
             .unwrap_or(false)
     }
 
-    /// Update the plugin's UI to reflect whether the host currently has an
+    /// Updates the plugin's UI to reflect whether the host currently has an
     /// undoable action.
     pub fn undo_set_can_undo(&self, can_undo: bool) {
         let Some(ext) = (unsafe { ext::opt(self.extensions.undo.context) }) else {
@@ -77,7 +77,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Update the plugin's UI to reflect whether redo is currently available.
+    /// Updates the plugin's UI to reflect whether redo is currently available.
     pub fn undo_set_can_redo(&self, can_redo: bool) {
         let Some(ext) = (unsafe { ext::opt(self.extensions.undo.context) }) else {
             return;
@@ -87,7 +87,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Publish the human-readable name of the currently available undo step.
+    /// Publishes the human-readable name of the currently available undo step.
     pub fn undo_set_undo_name(&self, name: &str) {
         let Some(ext) = (unsafe { ext::opt(self.extensions.undo.context) }) else {
             return;
@@ -99,7 +99,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Publish the human-readable name of the currently available redo step.
+    /// Publishes the human-readable name of the currently available redo step.
     pub fn undo_set_redo_name(&self, name: &str) {
         let Some(ext) = (unsafe { ext::opt(self.extensions.undo.context) }) else {
             return;

@@ -1,17 +1,10 @@
-//! [`Timeline`], what a transport-aware node reads, and
+//! [`Timeline`], what a transport-aware reader reads, and
 //! [`OfflineTransport`], the one shape an offline render hands every node.
 //!
-//! Both lived in tutti-core until the native graph needed to *name* the
-//! offline context. `tutti_graph::ForkMode::Offline` hands it to every forked
-//! unit, and tutti-graph cannot depend on tutti-core (tutti-core depends on
-//! it), so the context crossed as `&dyn Any` and every unit downcast it. A
-//! context of any other type was not an error: every rebind silently did
-//! nothing, and transport-aware units rendered against a playhead nothing
-//! advanced. The trait names only `Beat` and `Bpm`, so it moved down to the
-//! layer every crate already depends on, and the context is typed end to
-//! end: `ForkMode::Offline(&OfflineTransport)`,
-//! `AudioUnit::rebind_offline(&OfflineTransport)`. A wrong type is now a
-//! compile error:
+//! Both live here, below `tutti-core` and `tutti-graph`, so the graph's
+//! `ForkMode::Offline(&OfflineTransport)` can name the offline context by
+//! type: a context of the wrong type is a compile error rather than a rebind
+//! that silently does nothing.
 //!
 //! ```compile_fail,E0308
 //! fn rebind(ctx: &tutti_types::OfflineTransport) {}
@@ -28,24 +21,20 @@ use crate::value::{Beat, Bpm};
 /// Implemented by tutti-core's live `Transport` and by its `OfflineTimeline`,
 /// so a beat-driven source can be handed either one and not care which.
 ///
-/// # When to use this instead of a beat edge
+/// # When to use this instead of a block's `Env`
 ///
-/// Pure DSP nodes should **not** implement against this trait. A node that is
-/// a function of musical time takes the beat as a signal on its input ports
-/// (tutti-core's `BEAT_PORTS`), which is per-sample accurate, works unchanged
-/// offline, and makes the timeline→node relationship a visible graph edge.
+/// Graph nodes should **not** implement against this trait. A node that is a
+/// function of musical time reads the transport of each frame from its
+/// block's `Env` (`tutti_graph::Env::transport_at`, `Env::for_each_beat`),
+/// which is per-sample accurate, carries the play state and every change
+/// inside the block, and works unchanged offline (a fork's `Env` is the
+/// render's).
 ///
-/// What legitimately remains here is what a beat signal cannot express:
-///
-/// - **Boolean gating**: `is_rolling` drives early returns with state-reset
-///   side effects. "Emit nothing" is not the same as "emit a level", and a
-///   paused timeline still has a valid beat, so rolling-ness is not
-///   recoverable from the beat.
-/// - **Nodes with no ports**: the MIDI sources implement `poll_into` and have
-///   no `BufferRef` to read a beat from.
-/// - **Discontinuities** ([`segment_generation`](Self::segment_generation)): a
-///   seek to where the playhead already stands reads the same beat, and only
-///   the generation says the timeline jumped.
+/// What legitimately remains here is a reader outside the graph, which has
+/// no `Env`: a host's UI, the control-rate modulation driver, a renderer
+/// deciding what to hand its graph next — including
+/// [`segment_generation`](Self::segment_generation), the one way to tell a
+/// seek to where the playhead already stands from standing still.
 ///
 /// # What is deliberately NOT here
 ///
@@ -56,14 +45,14 @@ use crate::value::{Beat, Bpm};
 /// `TransportSettings` (preroll), read only where a genuinely live transport
 /// is required.
 pub trait Timeline: Send + Sync {
-    /// The playhead, as a [`Beat`] position. May be negative during a
+    /// Returns the playhead, as a [`Beat`] position. May be negative during a
     /// count-in.
     fn beat(&self) -> Beat;
-    /// The tempo in force, in [`Bpm`].
+    /// Returns the tempo in force, in [`Bpm`].
     fn tempo(&self) -> Bpm;
-    /// Whether time is advancing. An offline render is always rolling.
+    /// Returns whether time is advancing. An offline render is always rolling.
     fn is_rolling(&self) -> bool;
-    /// Which segment of the timeline the playhead is on: a count that moves
+    /// Returns which segment of the timeline the playhead is on: a count that moves
     /// on at every discontinuity (a seek, a tempo or rate change, a loop
     /// wrap, a play start) and at nothing else. Two reads with the same
     /// generation are on one straight line; a new generation means the
@@ -71,10 +60,9 @@ pub trait Timeline: Send + Sync {
     /// (a seek to where it stands, or a transport loop exactly one block
     /// long that lands on the beat it left).
     ///
-    /// Required, not defaulted: a constant default is exactly the beat-only
-    /// key this exists to replace, and a timeline that seeks and forgot to
-    /// say so would re-seat nothing on a seek to the same beat. A timeline
-    /// that never jumps (a test clock, a stopped export) returns a constant.
+    /// Required, not defaulted: a timeline that seeks and forgot to say so
+    /// would re-seat nothing on a seek to the same beat. A timeline that never
+    /// jumps (a test clock, a stopped export) returns a constant.
     ///
     /// Read **after** [`beat`](Self::beat) when both are wanted: a live
     /// timeline publishes the generation before the beat, so that order can
@@ -96,11 +84,11 @@ pub trait Timeline: Send + Sync {
 /// own clock, or a render's stopped timeline.
 pub trait OfflineClock: Timeline {}
 
-/// The timeline an offline render advances, one block at a time: what
-/// `tutti_graph::ForkMode::Offline` carries and what
-/// `AudioUnit::rebind_offline` receives, typed on both sides, so a context
-/// of another type is a compile error rather than a rebind that silently
-/// does nothing.
+/// The timeline an offline render advances, one block at a time.
+///
+/// What `tutti_graph::ForkMode::Offline` carries to every `ForkSource::fork`,
+/// typed on both sides, so a context of another type is a compile error rather
+/// than a rebind that silently does nothing.
 ///
 /// A newtype over `Arc<dyn Timeline>`, built only from an [`OfflineClock`]
 /// ([`new`](Self::new)): a timeline of the right *type* but the wrong
@@ -112,7 +100,7 @@ pub trait OfflineClock: Timeline {}
 ///
 /// Nodes holding a transport re-point at this. Nodes carrying their own
 /// internal clock re-seat it from [`Timeline::beat`] and [`Timeline::tempo`]:
-/// `isolate()` severs the live links but leaves the clock at whatever beat
+/// severing the live links (`Param::detach`) leaves the clock at whatever beat
 /// the *live* playhead held, so without this every beat-driven node (LFO,
 /// automation) renders from an arbitrary position and the output depends on
 /// *when* the render started. Read at rebind time, before the renderer has
@@ -129,13 +117,13 @@ pub trait OfflineClock: Timeline {}
 pub struct OfflineTransport(Arc<dyn Timeline>);
 
 impl OfflineTransport {
-    /// The offline context for a render advancing `timeline`.
+    /// Creates the offline context for a render advancing `timeline`.
     pub fn new<T: OfflineClock + 'static>(timeline: Arc<T>) -> Self {
         Self(timeline)
     }
 
-    /// The timeline, as the shared handle a node keeps (a clip reader's
-    /// cursor, a voice's transport).
+    /// Returns the timeline, as the shared handle a node keeps (a clip
+    /// reader's cursor, a voice's transport).
     pub fn timeline(&self) -> Arc<dyn Timeline> {
         Arc::clone(&self.0)
     }

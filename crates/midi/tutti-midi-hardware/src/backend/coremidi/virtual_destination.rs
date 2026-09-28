@@ -50,7 +50,7 @@ impl core::fmt::Debug for UmpVirtualDestination {
 }
 
 impl UmpVirtualDestination {
-    /// Create a MIDI-2.0 virtual destination named `name`, invoking `on_event`
+    /// Creates a MIDI-2.0 virtual destination named `name`, invoking `on_event`
     /// for every UMP message received.
     ///
     /// `on_event` runs on CoreMIDI's delivery thread, so it must not block —
@@ -97,13 +97,17 @@ impl UmpVirtualDestination {
         })
     }
 
-    /// Create a MIDI-2.0 virtual destination that pushes every received message
+    /// Creates a MIDI-2.0 virtual destination that pushes every received message
     /// into an input ring, exactly like a hardware input port does.
     ///
     /// This is the wiring an app wants: the events land in the same
     /// [`HardwareMidiInputs`](crate::HardwareMidiInputs) rings a physical
     /// endpoint feeds, so downstream consumers see one merged stream regardless
     /// of which transport a message arrived on.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
     pub fn with_producer(name: &str, producer: crate::InputProducerHandle) -> Result<Self> {
         Self::new(name, move |event| {
             if !producer.push(event, std::time::Instant::now()) {

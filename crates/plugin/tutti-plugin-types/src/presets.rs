@@ -7,10 +7,8 @@
 //!
 //! - **Not every format can do both halves.** CLAP loads a preset by
 //!   filesystem path but cannot *enumerate* — discovery is a factory-level
-//!   extension this host does not bind. VST3 enumerates richly but has no load
-//!   call at all: a program is selected by writing the parameter flagged
-//!   `kIsProgramChange`. That is why [`Features::PRESET_LIST`] and
-//!   [`Features::PRESET_LOAD`] stay two separate bits.
+//!   extension this host does not bind. That is why [`Features::PRESET_LIST`]
+//!   and [`Features::PRESET_LOAD`] stay two separate bits.
 //! - **A preset identifier is not an index.** See [`PresetId`].
 //!
 //! [`Features::PRESET_LIST`]: crate::Features::PRESET_LIST
@@ -88,7 +86,7 @@ pub enum PresetId {
 }
 
 impl PresetId {
-    /// The raw number, for the formats that name a preset with one.
+    /// Returns the raw number, for the formats that name a preset with one.
     ///
     /// `None` for VST3 and CLAP rather than a fabricated value — their
     /// identifiers genuinely are not a single number, and inventing one is how
@@ -100,7 +98,7 @@ impl PresetId {
         }
     }
 
-    /// The preset file's location, for CLAP.
+    /// Returns the preset file's location, for CLAP.
     pub fn location(&self) -> Option<&std::path::Path> {
         match self {
             Self::Location(p) => Some(p),
@@ -109,8 +107,7 @@ impl PresetId {
     }
 }
 
-/// What a plugin's preset surface can actually do — one answer instead of two
-/// capability bits and two method returns.
+/// What a plugin's preset surface can do, as one answer for a preset UI.
 ///
 /// The bits ([`Features::PRESET_LIST`], [`Features::PRESET_LOAD`]) report the
 /// two halves separately because no *format* offers both unconditionally. This
@@ -140,8 +137,8 @@ pub enum PresetSupport {
     LoadByPath,
     /// Enumerable, but the plugin will not load one — show the list read-only.
     ///
-    /// No format reaches this today. It exists because the two halves are
-    /// genuinely independent capabilities, and collapsing this case into
+    /// No format's loader produces this. It exists because the two halves are
+    /// independent capabilities, and collapsing this case into
     /// [`Full`](Self::Full) would have a caller offer a load that fails.
     ListOnly,
     /// No preset mechanism at all.
@@ -152,7 +149,7 @@ pub enum PresetSupport {
 }
 
 impl PresetSupport {
-    /// Derive from a capability report.
+    /// Derives the support level from a capability report.
     ///
     /// Takes a [`FeatureReport`](crate::FeatureReport) rather than a bare
     /// [`Features`](crate::Features) mask, because the report is the type that
@@ -160,14 +157,9 @@ impl PresetSupport {
     /// host never asks"); for a preset-less AU it is `Some(false)` ("the unit
     /// declined"). Both yield an empty list, and only the first should offer a
     /// file picker.
-    ///
-    /// Within a report those two collapse: `FeatureReport::new` stores
-    /// `features & probed`, so an unprobed bit is already clear and
-    /// `get(f) == Some(true)` is provably equivalent to `enabled(f)`. Swapping
-    /// one for the other here is an *equivalent* mutation, not an untested
-    /// branch — verified. The `get` form is kept because it states the
-    /// intent: this is a UI decision reading a three-state answer, not the
-    /// hot-path "pick a side" that `enabled` exists for.
+    // `get(f) == Some(true)` is equivalent to `enabled(f)` here, because
+    // `FeatureReport::new` stores `features & probed`. `get` is kept because it
+    // states the intent: a UI decision reading a three-state answer.
     pub fn from_report(report: &crate::FeatureReport) -> Self {
         use crate::Features;
         let can_load = report.get(Features::PRESET_LOAD) == Some(true);
@@ -178,23 +170,22 @@ impl PresetSupport {
             // could list and declined, while still loading — same UI either
             // way: there is nothing to show, and a path still works.
             (false, true) => Self::LoadByPath,
-            // Lists but will not load. No format reaches this today — VST3 was
-            // the only candidate and now loads through its program-change
-            // parameter — but a plugin that declines only the load half puts a
-            // handle here, so it gets its own variant rather than being folded
-            // into `Full` (which would claim a load that fails) or `None`
-            // (which would hide presets the user can see named).
+            // Lists but will not load. No loader produces this, but a plugin
+            // that declines only the load half puts a handle here, so it gets
+            // its own variant rather than being folded into `Full` (which would
+            // claim a load that fails) or `None` (which would hide presets the
+            // user can see named).
             (true, false) => Self::ListOnly,
             (false, false) => Self::None,
         }
     }
 
-    /// Whether a caller can enumerate presets to show.
+    /// Returns whether a caller can enumerate presets to show.
     pub fn can_list(self) -> bool {
         matches!(self, Self::Full | Self::ListOnly)
     }
 
-    /// Whether a caller can ask the plugin to load one.
+    /// Returns whether a caller can ask the plugin to load one.
     pub fn can_load(self) -> bool {
         matches!(self, Self::Full | Self::LoadByPath)
     }
@@ -221,7 +212,7 @@ pub struct Preset {
 }
 
 impl Preset {
-    /// A preset in a format with one flat set.
+    /// Creates a preset in a format with one flat set.
     pub fn new(id: PresetId, name: impl Into<String>) -> Self {
         Self {
             id,
@@ -230,7 +221,7 @@ impl Preset {
         }
     }
 
-    /// A preset belonging to a named set (VST3 program lists).
+    /// Creates a preset belonging to a named set (a VST3 program list).
     pub fn in_bank(id: PresetId, name: impl Into<String>, bank: impl Into<String>) -> Self {
         Self {
             id,

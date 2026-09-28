@@ -5,7 +5,7 @@
 //! at another rate would play a graph built for the old one, every oscillator
 //! off pitch, the beat clock off tempo, every figure in samples (PDC, a
 //! lookahead) wrong — with no error anywhere. That is why a plain
-//! `TuttiDriver::restart` now refuses a rate change, and why this module
+//! `TuttiDriver::restart` refuses a rate change, and why this module
 //! exists: [`restart_device`] runs the driver's restart with a hook that, while
 //! no callback runs, moves everything the adapter owns to the new
 //! configuration:
@@ -24,27 +24,26 @@
 //!   [`AudioConfig`], which takes the device's width and rate;
 //! - [`TransportRes`]'s rate, the hardware MIDI input's timestamp rate, the
 //!   sampler's disk streamer (every open stream's conversion ratio, so a
-//!   streamed clip keeps its pitch and speed) and the MIDI clock master (its
-//!   24-PPQN ticks and MTC quarter-frames land on the new rate's frames);
+//!   streamed clip keeps its pitch and speed) — and, through the graph's
+//!   re-prepare, the MIDI clock node (its 24-PPQN ticks and MTC
+//!   quarter-frames land on the new rate's frames);
 //! - the compensation figures in samples (`ChannelCompensation`,
 //!   `GraphLatency`), published before the first block, so a disk source
 //!   seeking in it pre-rolls by the new rate's.
 //!
 //! Every unit instance is kept across the re-prepare, and only time-based
-//! state resets (`Editor::reprepare`'s rule). (On `Net`, before design doc
-//! 013's PR 13, a re-rate swapped in never-run control-side copies of every
-//! unit, losing voices mid-note, tails, filter memory and LFO phase.)
+//! state resets (`Editor::reprepare`'s rule): voices keep sounding, and
+//! filter memory and LFO phase carry over.
 //!
 //! **Recovery after a failed hook:** the stream is left stopped, and the
 //! driver keeps the old spec and graph rate (`TuttiDriver::graph_rate`). A
 //! restart onto the old device at the old rate — `restart_device` with it,
 //! or a plain `TuttiDriver::restart` — moves nothing and plays again.
 //!
-//! Not re-rated here, and recorded in design doc 013 (Phase 3 follow-ups):
-//! a `SoundFontUnit` (rustysynth fixes its rate at construction) and a
-//! host-built `UmpOutRes` (its JR clock). An installed MIDI clip needs
-//! nothing: it holds no rate, and its unit hands it the rate it runs at on
-//! every poll (`MidiInPort::poll`), so re-rating the unit re-rates the clip.
+//! Not re-rated here: a `SoundFontUnit` (rustysynth fixes its rate at
+//! construction) and a host-built `UmpOutRes` (its JR clock). A MIDI clip
+//! node needs nothing: it places its events by its block's `Env`, rate
+//! included.
 
 use bevy_ecs::prelude::*;
 
@@ -71,7 +70,7 @@ pub struct DeviceRestart {
     pub max_block: Option<Samples>,
 }
 
-/// Restart the output device and move the graph, the transport and every
+/// Restarts the output device and moves the graph, the transport and every
 /// rate-derived resource to the configuration it comes back with.
 ///
 /// Call from an exclusive system or a queued command
@@ -229,12 +228,6 @@ fn rerate(
     if let Some(streamer) = world.get_resource::<crate::sampler::DiskStreamerRes>() {
         streamer.set_sample_rate(rate);
     }
-    // Ticked by the pre-block, which runs in the callback: nothing ticks it
-    // while the hook runs.
-    #[cfg(feature = "midi")]
-    if let Some(clock) = world.get_resource::<crate::midi::ClockMasterRes>() {
-        clock.master.set_sample_rate(rate);
-    }
     // The device's width, as the build publishes it; the root is at least
     // as wide (widened above).
     world.insert_resource(AudioConfig {
@@ -289,7 +282,9 @@ mod tests {
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, LatencyCompensationPlugin));
         let mut commands = app.world_mut().commands();
-        let osc = commands.spawn_audio_node(Osc::sine(Hz(1_000.0))).id();
+        let osc = commands
+            .spawn_audio_node(tutti_graph::ForkByClone(Osc::sine(Hz(1_000.0))))
+            .id();
         let lim = commands
             .spawn_audio_node(LimiterNode::with_channels(
                 ChannelLayout::MONO,
@@ -377,7 +372,7 @@ mod tests {
     /// - `rerate` not calling `latency::publish_sent` → the 44.1 kHz figure
     ///   is still published before the first block → fails;
     /// - `rerate` not settling the engine and collecting (leaving the second
-    ///   half to `commit_graph`, as before PR 13's review) → the first block
+    ///   half to `commit_graph`) → the first block
     ///   is silent, and the figures are old before it → fails.
     #[test]
     fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
@@ -488,7 +483,7 @@ mod tests {
     /// host gets the graph's reason. The capacity is the engine's
     /// (`DEFAULT_BLOCK_CAPACITY`, 8 192 frames).
     ///
-    /// Mutation (run): `NativeGraph::check_reprepare` not checking the
+    /// Mutation (run): `GraphRuntime::check_reprepare` not checking the
     /// block → the stream stops first and the refusal comes from the
     /// re-prepare in the hook, with the device stopped → fails.
     #[test]
@@ -541,14 +536,14 @@ mod tests {
     /// floor) — so a host routing to the surround channels finds them there
     /// rather than zero-filled by the fold — `AudioConfig` publishes the
     /// device's six, and the audio side renders six: the compensation
-    /// table, which the committed graph's figures fill (on `Native` the
-    /// re-prepare's resumed plan's), has an entry per root channel. Then
+    /// table, which the committed graph's figures fill (the re-prepare's
+    /// resumed plan's), has an entry per root channel. Then
     /// back onto a stereo device: the root keeps its six and the engine
     /// folds, while `AudioConfig` says two.
     ///
     /// Mutations (run):
     /// - `rerate` not widening → the root stays two → fails;
-    /// - `rerate` publishing the old `AudioConfig::channels` (as it did) →
+    /// - `rerate` publishing the old `AudioConfig::channels` →
     ///   two after the 5.1 restart → fails.
     #[test]
     fn a_restart_onto_a_wider_device_widens_the_root() {
@@ -626,6 +621,7 @@ mod tests {
     #[cfg(feature = "sampler")]
     #[test]
     fn a_restart_re_rates_a_disk_streamed_clip() {
+        use crate::graph::SpawnAudioNode;
         use crate::sampler::DiskStreamerRes;
         use tutti_core::{Beat, SamplePosition};
         use tutti_sampler::{Command, DiskStreamer};
@@ -662,10 +658,9 @@ mod tests {
             streamer.step_until_settled(1_000) < 1_000,
             "the ring primes"
         );
-        let timeline = app.world().resource::<TransportRes>().timeline();
         let voice = streamer
             .status()
-            .take_disk_voice(0, timeline, Beat(0.0), None)
+            .take_disk_voice(0, Beat(0.0), None)
             .expect("the link is installed");
         app.world_mut().insert_resource(DiskStreamerRes(streamer));
         let clip = app.world_mut().commands().spawn_audio_node(voice).id();
@@ -696,31 +691,32 @@ mod tests {
         );
     }
 
-    /// Render `blocks` blocks of `frames` on `stream` and drain the clock
-    /// master's mailbox after each, a frame of the app between: every
-    /// event's status byte and its absolute frame (counted from `*frame`).
+    /// Render `blocks` blocks of `frames` on `stream` and drain the hardware
+    /// out the clock is wired to after each, a frame of the app between: every
+    /// event's status byte and its frame on the graph's clock (which the out
+    /// node stamps it with).
     #[cfg(feature = "midi")]
     fn clock(
         app: &mut App,
         stream: &ManualStream,
         (frames, blocks): (usize, usize),
-        frame: &mut u64,
+        rendered: &mut u64,
     ) -> Vec<(u32, u64)> {
         let mut out = Vec::new();
         let mut buf = [tutti_midi_types::ump::MidiEvent::noop(); 64];
         for _ in 0..blocks {
             stream.render_block(frames).expect("the stream is open");
-            let receiver = &app
+            let n = app
                 .world()
                 .resource::<crate::midi::ClockMasterRes>()
-                .receiver;
-            let n = receiver.poll_into(&mut buf);
+                .out
+                .poll_into(&mut buf);
             out.extend(
                 buf[..n]
                     .iter()
-                    .map(|e| ((e.data[0] >> 16) & 0xFF, *frame + u64::from(e.frame_offset))),
+                    .map(|e| ((e.data[0] >> 16) & 0xFF, u64::from(e.frame_offset))),
             );
-            *frame += frames as u64;
+            *rendered += frames as u64;
             app.update();
         }
         out
@@ -728,15 +724,16 @@ mod tests {
 
     /// **A restart re-rates the MIDI clock master.** At 120 BPM a 24-PPQN
     /// tick is 1/48 s: 918.75 frames at 44.1 kHz, 1 000 at 48 kHz. Through
-    /// the engine's own pre-block, the ticks are 918.75 frames apart before
+    /// the engine's own clock node, the ticks are 918.75 frames apart before
     /// the restart and 1 000 after it, and the restart sends no Song
     /// Position (it is not a locate: 512-frame blocks move the beat further
-    /// at 44.1 kHz than at 48, past the seek epsilon of the old check).
+    /// at 44.1 kHz than at 48, which a seek check with a fixed epsilon would
+    /// take for a locate).
     ///
     /// Mutations (run):
-    /// - `rerate` not calling `ClockMaster::set_sample_rate` → the ticks
-    ///   after the restart stay 918.75 frames apart (the receiving gear ~8.8%
-    ///   fast) → fails;
+    /// - `ClockNode::prepare` not calling `ClockMaster::set_sample_rate` →
+    ///   the ticks after the restart stay 918.75 frames apart (the receiving
+    ///   gear ~8.8% fast) → fails;
     /// - `ClockMaster::tick` comparing the beat's move with this block's
     ///   advance rather than the previous block's (as it did) → a Song
     ///   Position at the restart → fails.
@@ -835,10 +832,8 @@ mod tests {
     /// graph is not between its halves and nothing waits. The incoming 2 kHz
     /// sine plays at the new rate: 24 frames a cycle.
     ///
-    /// Until PR 13's review this crossfade waited in `PendingCrossfades`
-    /// (#32), because the re-prepare's second half only landed on a later
-    /// frame; the waiting itself is still pinned, on a graph re-prepared
-    /// while it runs, by `graph::native`'s
+    /// The waiting case (a crossfade in `PendingCrossfades` while a graph
+    /// re-prepares) is pinned by `graph::runtime`'s
     /// `a_crossfade_during_a_re_prepare_lands_after_it`.
     ///
     /// Mutation (run): `rerate` not settling the engine and collecting
@@ -852,7 +847,7 @@ mod tests {
         crate::graph::crossfade_audio_node(
             &mut app.world_mut().commands(),
             osc,
-            Box::new(Osc::sine(Hz(2_000.0))),
+            tutti_graph::ForkByClone(Osc::sine(Hz(2_000.0))),
         );
         app.world_mut().flush();
         assert!(
@@ -873,8 +868,7 @@ mod tests {
 
     /// **A restart onto a device with another callback size re-declares a
     /// hosted plugin's latency, and PDC follows.** A live plugin ships one
-    /// device callback per chunk to its server (doc 013, decision 8
-    /// reversed), so its declared latency is its own 137 frames plus the
+    /// device callback per chunk to its server, so its declared latency is its own 137 frames plus the
     /// callback: 137 + 512 on the first device, 137 + 256 once the restart
     /// re-prepares the graph for the second (`OutputSpec::quantum` →
     /// `Prepare::quantum`). The graph's latency (`GraphLatency`, the plugin

@@ -6,7 +6,10 @@ the `AudioIn`/`AudioOut` I/O traits.
 ## What this is
 
 The common definitions every other Tutti crate shares rather than duplicating —
-`tutti-core`, the plugin hosts, export, analysis. Eight families:
+`tutti-core`, the graph, the plugin hosts, export, analysis. Use it directly
+when you need only the vocabulary (a crate that implements `AudioIn`, or one
+that only needs `Beat`); otherwise reach it through `tutti-core` or the `tutti`
+umbrella, which re-export it. What is in it:
 
 - **`value`** — what a parameter *is* and how it is carried: the `Unit` marker
   trait, the measurement newtypes (`Hz`, `Seconds`, `Db`, `Beat`, `Bpm`,
@@ -30,13 +33,14 @@ The common definitions every other Tutti crate shares rather than duplicating �
 - **`pcm`** — the canonical float→fixed-point quantization, shared by every codec
   and sink so a recorded and an exported file quantize a sample identically.
 - **`latency`** / **`tail`** — PDC planning (`LatencyGraph`, `plan`,
-  `compensate`) and how long a graph rings after its input stops (`TailGraph`,
+  `delays`) and how long a graph rings after its input stops (`TailGraph`,
   `graph_tail`), as pure graph math over any graph representation.
 - **`graph`** — the audio graph *as a value*: `Topology` (nodes, edges, outputs),
   `validate` → `Valid`, `topo_order`. `Clone + Eq + Hash`, so two graphs compare
   and one hashes; it implements both traits above, so latency and tail are folds
-  over it. Compiling one into a runtime is `tutti_core::topology::compile` —
-  that half names `Net` and so cannot live here.
+  over it. Compiling one into a runtime is `tutti-graph`'s compiler (a
+  `GraphSpec` over a `Topology`, to a `Plan`) — that half names the units and
+  so cannot live here.
 - **`meter`** — musical meter: `TimeSignature`, the `MeterMap` timeline of
   changes, and the `Meter` trait that turns a `Beat` into a bar and beat. Pure
   musical math, so it layers *over* a transport rather than living inside one.
@@ -50,8 +54,9 @@ are private for that reason; the ones that stay public do so because
 ## What this crate does not own
 
 Anything that renders, decodes, or opens a device. It is the **root leaf** —
-Bevy-free, engine-free, depending only on `smallvec` / `atomic_float`
-(`RtPublish` is its own `AtomicPtr` protocol, no longer `arc-swap`). The graph is `tutti-core`'s, the device `tutti-cpal`'s, the file
+Bevy-free, engine-free, depending only on `smallvec` and `atomic_float` (plus
+`serde` and `bevy_reflect` behind their features). The graph runtime is
+`tutti-graph`'s, the engine `tutti-core`'s, the device `tutti-cpal`'s, the file
 codecs `tutti-io`'s and `tutti-export`'s. Two consequences make the split
 load-bearing:
 
@@ -67,7 +72,7 @@ root usually needs no direct dependency.
 
 ## Example — the measurement vocabulary
 
-Nothing above this crate in the stack, so there is nothing to integrate with:
+This crate depends on no other engine crate, so there is nothing to integrate with:
 what a consumer meets first is the units. Cross a family boundary with the
 **named converter**, never with arithmetic on the inner float.
 
@@ -79,10 +84,9 @@ let trim = Db(-6.0);
 assert!((trim.to_amplitude().get() - 0.501_187).abs() < 1e-5);
 
 // Cascaded gain stages ADD in dB — that operator is opted in because it
-// means something. Multiplication is NOT, and this is why: scaling the dB
-// value squares the amplitude, so `trim * 2.0` would be a quarter of the
-// signal, not half of it. The omission ledger withholds `Mul` and points at
-// the amplitude domain, which is where a factor of two actually lives.
+// means something. Multiplication is NOT: scaling the dB value squares the
+// amplitude, so `trim * 2.0` would be a quarter of the signal, not half of
+// it. `Db` has no `Mul`; a factor of two lives in the amplitude domain.
 assert_eq!(trim + trim, Db(-12.0));
 let quartered = Db(-12.0).to_amplitude().get();
 let squared = trim.to_amplitude().get() * trim.to_amplitude().get();
@@ -102,12 +106,12 @@ assert_eq!(Cents(1200.0).to_semitones(), Semitones(12.0));
 
 ## Operators are opt-in, and every omission is deliberate
 
-The **omission ledger** in `value/units.rs`'s tests is the reference for why
-`Db * 2.0`, `Beat + Beat` and `Azimuth: Ord` do not exist, and which named
-method replaces each. Read it before adding an operator: if the operator is
-listed there, the answer is a named method, not an `impl`. An omission ships
-with its replacement in the same change — the alternative is call sites escaping
-to raw `f32`.
+A unit gets exactly the algebra it has. `Db * 2.0`, `Beat + Beat` and
+`Azimuth: Ord` do not exist, because each would compile and mean the wrong
+thing (a squared amplitude, two positions added with no origin, an ordering
+on a circle). Each type's docs name what it omits and the named method that
+replaces it, so the answer to a missing operator is always a method, never an
+escape to raw `f32`.
 
 ## Features
 

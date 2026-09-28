@@ -450,7 +450,7 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
     // plugin advertising `Features::SEQUENCER_CONTEXT`, and each entry carries a
     // UTF-16 `text` buffer, so building them fresh allocated once per event.
     // An absent extension truncates its buffer to empty, which is what the
-    // plugin should see — the same thing the old `unwrap_or_default()` produced.
+    // plugin should see.
     let expr = ctx.expressive.as_ref();
     match expr.and_then(|e| e.chords) {
         Some(c) => convert_chords_into(c, &mut seq.chords),
@@ -484,8 +484,7 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
     );
     // `out` was cleared by the caller, so both of these extend into storage
     // that already has capacity — no `to_owned`, no `clone`, and in particular
-    // no fresh `SmallVec` per block for the MIDI, which is what the discarded
-    // borrow used to cost.
+    // no fresh `SmallVec` per block for the MIDI.
     out.midi_events.extend(output.midi_events.iter().copied());
     for queue in &output.parameter_changes.queues {
         for point in &queue.points {
@@ -1077,10 +1076,8 @@ mod tests {
     /// The reference VST3 plugin, built by `tutti-vst3-host`'s build script
     /// from the in-repo SDK submodules during this same `cargo test`.
     ///
-    /// This replaced a hard-coded `/Library/Audio/Plug-Ins/VST3/…` path, and
-    /// then briefly a skip macro — the probe used to need an external
-    /// `VST3_SDK_DIR` checkout, so most machines had nothing to load. The SDK is
-    /// a submodule now, so these tests simply run, like their CLAP siblings.
+    /// The SDK is a submodule, so these tests run on any machine, like their
+    /// CLAP siblings.
     fn vst3_plugin() -> &'static str {
         crate::test_utils::vst3_probe_path()
     }
@@ -1089,10 +1086,8 @@ mod tests {
     /// submodule by `tutti-vst3-host`'s build script during this same
     /// `cargo test`.
     ///
-    /// This used to read `VST3_SAMPLE_PLUGIN_DIR` and hand back an `Option`, so
-    /// the three tests below skipped unless someone had hand-built the SDK's
-    /// samples and pointed at them — which was every machine. It is a build
-    /// artifact now, so absence is a build failure and the tests assert.
+    /// It is a build artifact, so absence is a build failure and the tests
+    /// assert rather than skip.
     fn multi_program_sample() -> &'static str {
         crate::test_utils::vst3_program_sample_path()
     }
@@ -1172,9 +1167,8 @@ mod tests {
     /// A program listed through the loader loads, and reads back.
     ///
     /// VST3 has no load-preset call — this *is* the load, routed through the
-    /// `kIsProgramChange` parameter that owns the list. Before this the loader
-    /// reported `false` and a caller had to find and drive that parameter
-    /// itself, which is the branch a cross-format API exists to remove.
+    /// `kIsProgramChange` parameter that owns the list, so a caller does not
+    /// have to find and drive that parameter itself.
     ///
     /// Round-tripped rather than merely accepted: `load_preset` returning
     /// `true` says the parameter was written, and only reading it back through

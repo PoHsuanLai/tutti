@@ -49,11 +49,11 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// clipping at the rail would mask that as a flat top rather than reporting it.
 fn tone_graph() -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(
+    let id = g.add(
         Osc::sine(Hz(TONE_HZ))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
-    ));
+    );
     g.pipe_output(id);
     built(g)
 }
@@ -61,7 +61,7 @@ fn tone_graph() -> RenderGraph {
 /// Constant DC — the case whose correct output is knowable exactly.
 fn dc_graph(level: f32) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(Const::frame(&[level, level])));
+    let id = g.add(Const::frame(&[level, level]));
     g.pipe_output(id);
     built(g)
 }
@@ -69,9 +69,7 @@ fn dc_graph(level: f32) -> RenderGraph {
 /// A mono graph, for the upmix/fold cases.
 fn mono_graph() -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let id = g.add_unit(Box::new(
-        Osc::sine(Hz(TONE_HZ)).with_amplitude(Amplitude(0.5)),
-    ));
+    let id = g.add(Osc::sine(Hz(TONE_HZ)).with_amplitude(Amplitude(0.5)));
     g.pipe_output(id);
     built(g)
 }
@@ -84,11 +82,11 @@ fn mono_graph() -> RenderGraph {
 /// difference is unmissable in a spectrum and invisible to a frame count.
 fn near_nyquist_graph() -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(
+    let id = g.add(
         Osc::sine(Hz(18_000.0))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
-    ));
+    );
     g.pipe_output(id);
     built(g)
 }

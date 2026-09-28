@@ -49,7 +49,18 @@
 
 /// Whether the host is processing this plugin under realtime pressure.
 ///
-/// Set at configure time, not per block — see the module docs.
+/// A plugin may use the answer to pick a more expensive algorithm (longer FFT
+/// windows, more oversampling, look-ahead) when rendering offline, so a bounce
+/// that never sets it gets the cheap result.
+///
+/// Set at configure time, beside sample rate and block size, not per block:
+/// CLAP's `clap_plugin_render.set` is a main-thread call, AU's
+/// `kAudioUnitProperty_OfflineRender` may size buffers at initialization, and
+/// VST3 reaches `kOffline` only through `setupProcessing`.
+///
+/// There is no prefetch variant (VST3 `kPrefetch`, VST2
+/// `ProcessLevel::Prefetch`): it is a live-playback mode that no mainstream
+/// host selects, and a plugin treats it like realtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RenderMode {
@@ -64,7 +75,7 @@ pub enum RenderMode {
 }
 
 impl RenderMode {
-    /// Whether this mode is free of realtime pressure.
+    /// Returns whether this mode is free of realtime pressure.
     ///
     /// Named rather than a bare `== Offline` comparison because every format
     /// edge reduces to this one boolean, and each of them spells it
@@ -73,7 +84,7 @@ impl RenderMode {
         matches!(self, RenderMode::Offline)
     }
 
-    /// The mode implied by whether the caller is rendering offline.
+    /// Returns the mode implied by whether the caller is rendering offline.
     ///
     /// The inverse of [`is_offline`](Self::is_offline), for the call sites that
     /// hold a bool — an export driver, or an engine reporting that it is

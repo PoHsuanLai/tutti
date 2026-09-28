@@ -57,7 +57,7 @@ impl MidiLearnProducer {
         self.armed.load(Ordering::Relaxed)
     }
 
-    /// Capture a single live CC `(channel, controller)` if armed. Allocation-free
+    /// Captures a single live CC `(channel, controller)` if armed. Allocation-free
     /// (`try_send` into a pre-sized bounded channel); drops the CC on a full or
     /// disconnected channel rather than blocking the audio thread.
     ///
@@ -87,7 +87,7 @@ pub(super) struct MidiLearnConsumer {
 }
 
 impl MidiLearnConsumer {
-    /// Build the consumer from the plugin's `IMidiLearn` (queried off
+    /// Builds the consumer from the plugin's `IMidiLearn` (queried off
     /// `IEditController`), or `None` if the plugin doesn't implement it — in
     /// which case [`forward_pending`](Self::forward_pending) is a no-op and
     /// arming has no observable effect.
@@ -123,7 +123,7 @@ impl MidiLearnConsumer {
         self.armed.load(Ordering::Relaxed)
     }
 
-    /// Drain every captured CC and forward it to the plugin's `IMidiLearn` on
+    /// Drains every captured CC and forward it to the plugin's `IMidiLearn` on
     /// this (main/UI) thread, honouring the SDK's threading contract. No-op if
     /// the plugin doesn't implement the interface. Returns the number of CCs
     /// forwarded.

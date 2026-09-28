@@ -92,13 +92,13 @@ impl Frame {
         Self(v)
     }
 
-    /// The raw position.
+    /// Returns the raw position.
     #[inline]
     pub const fn get(self) -> u64 {
         self.0
     }
 
-    /// How many frames `earlier` is before `self`, or `None` when it is not
+    /// Returns how many frames `earlier` is before `self`, or `None` when it is not
     /// before (it is later) or the distance does not fit a `Samples` on this
     /// target.
     ///

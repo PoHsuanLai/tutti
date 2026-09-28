@@ -5,25 +5,20 @@
 //! whole budget — for one instrument, before any other track, effect or
 //! plugin. Divide criterion's elem/s by 48 000 for the realtime multiple.
 //!
-//! # Two traps the first draft of this file fell into
+//! # Two traps
 //!
-//! **`max_voices` must be raised with the note count, and it caps at 16.** It
-//! defaults to 8, so holding 16, 32 or 64 notes against the default steals
-//! back down to 8 and every case above 8 measured *identically* — the axis
-//! looked flat and the flatness was the benchmark's fault, not the synth's.
-//! Each case here sets `max_voices` to its own note count.
+//! **`max_voices` must be raised with the note count.** It defaults to 8, so
+//! holding 16, 32 or 64 notes against the default steals back down to 8 and
+//! every case above 8 would measure *identically*. Each case here sets
+//! `max_voices` to its own note count. `max_voices` has no upper bound; the
+//! axis stops at 16 because that is where the numbers in `docs/benchmarks.md`
+//! were taken and the scaling is linear — extend it if you need a figure past
+//! there, rather than extrapolating.
 //!
-//! The 16-voice ceiling these axes were originally written against is gone:
-//! `finished_indices` became a `Vec` sized at construction, so `max_voices`
-//! has no upper bound. The axis still stops at 16 because that is where the
-//! numbers in `docs/benchmarks.md` were taken and the scaling is linear —
-//! extend it if you need a figure past there, rather than extrapolating.
-//!
-//! **The block size is fixed at 64 frames.** `BufferVec` is
-//! `MAX_BUFFER_SIZE` frames wide and `MAX_BUFFER_SIZE` is 64, so there is no
-//! 512-frame case to measure — an earlier draft had one and it reported the
-//! 64-frame cost under a 512-frame label. Block size is `engine_render`'s axis,
-//! where the graph really does render longer segments; here it is a constant.
+//! **The block size is fixed at 64 frames**, the figures in
+//! `docs/benchmarks.md`. The synth is driven as a graph drives it,
+//! `Node::process` through `tutti_graph::contract::Direct`, so a longer block
+//! is measurable; block size is `engine_render`'s axis.
 //!
 //! `voices/unison` matters more than it looks: unison *multiplies* the voice
 //! count, so 8 notes at 7-way unison is 56 voices of work. A synth that
@@ -38,8 +33,9 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::BufferVec;
-use tutti_core::{Amplitude, AudioUnit, Hz, Resonance, Seconds, Q};
+use tutti_core::{Amplitude, Hz, Resonance, SampleRate, Samples, Seconds, Q};
+use tutti_graph::contract::Direct;
+use tutti_graph::{Event, Offset};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -48,8 +44,8 @@ use tutti_polysynth::{
 };
 
 const SR: f64 = 48_000.0;
-/// `BufferVec` is `MAX_BUFFER_SIZE` frames wide, and that is 64. A
-/// synth block cannot be longer, so this is a constant rather than an axis.
+/// The block every case renders: a constant here, not an axis (see the
+/// module header).
 const BLOCK: usize = 64;
 
 /// Flat and organ-like, so the measured block is a stationary sustain.
@@ -75,13 +71,18 @@ fn config() -> SynthConfig {
 /// Raises `max_voices` to `n`: at the default of 8 every case above 8 steals
 /// voices and measures the same work. Panics above 16, which is the synth's
 /// own hard ceiling — see the module header.
-fn held(cfg: SynthConfig, n: usize) -> PolySynth {
+fn held(cfg: SynthConfig, n: usize) -> Direct<PolySynth> {
     let cfg = SynthConfig {
         max_voices: n.max(cfg.max_voices),
         ..cfg
     };
-    let mut synth = PolySynth::new(cfg).expect("synth builds");
-    let events: Vec<MidiEvent> = (0..n)
+    let mut synth = Direct::new(
+        PolySynth::new(cfg).expect("synth builds"),
+        SampleRate(SR),
+        BLOCK,
+    );
+    let at = Offset::new(0, Samples(BLOCK)).expect("inside");
+    let events: Vec<Event> = (0..n)
         .map(|i| {
             MidiEvent::note_on(
                 MidiGroup::FIRST,
@@ -92,23 +93,20 @@ fn held(cfg: SynthConfig, n: usize) -> PolySynth {
                 midi1_velocity_to_midi2(100),
             )
         })
+        .map(|e: MidiEvent| Event::midi(at, e.data))
         .collect();
-    synth.midi_sender().queue(&events);
+    synth.events(0, &events);
 
     // Run past the attack so the benchmark measures sustain.
-    let input = BufferVec::new(2);
-    let mut buf = BufferVec::new(2);
     for _ in 0..64 {
-        synth.process(64, &input.buffer_ref(), &mut buf.buffer_mut());
+        synth.block();
     }
     synth
 }
 
-fn drive(synth: &mut PolySynth, frames: usize) {
-    let input = BufferVec::new(2);
-    let mut buf = BufferVec::new(2);
-    synth.process(frames, &input.buffer_ref(), &mut buf.buffer_mut());
-    black_box(buf.buffer_ref().at_f32(0, 0));
+fn drive(synth: &mut Direct<PolySynth>) {
+    synth.block();
+    black_box(synth.output(0)[0]);
 }
 
 /// **The headline: cost against held-voice count.**
@@ -118,7 +116,7 @@ fn bench_voices(c: &mut Criterion) {
     for n in [1usize, 2, 4, 8, 16] {
         let mut synth = held(config(), n);
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| drive(&mut synth, BLOCK))
+            b.iter(|| drive(&mut synth))
         });
     }
     group.finish();
@@ -141,7 +139,7 @@ fn bench_oscillator(c: &mut Criterion) {
             },
             16,
         );
-        group.bench_function(name, |b| b.iter(|| drive(&mut synth, BLOCK)));
+        group.bench_function(name, |b| b.iter(|| drive(&mut synth)));
     }
     group.finish();
 }
@@ -169,7 +167,7 @@ fn bench_filter(c: &mut Criterion) {
         ),
     ] {
         let mut synth = held(SynthConfig { filter, ..config() }, 16);
-        group.bench_function(name, |b| b.iter(|| drive(&mut synth, BLOCK)));
+        group.bench_function(name, |b| b.iter(|| drive(&mut synth)));
     }
     group.finish();
 }
@@ -193,7 +191,7 @@ fn bench_unison(c: &mut Criterion) {
             8,
         );
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| drive(&mut synth, BLOCK))
+            b.iter(|| drive(&mut synth))
         });
     }
     group.finish();

@@ -27,7 +27,7 @@ pub fn native_view_ptr(raw: raw_window_handle::RawWindowHandle) -> Option<u64> {
     }
 }
 
-/// Attach a child window to a parent so the two move together.
+/// Attaches a child window to a parent so the two move together.
 ///
 /// - **macOS**: `addChildWindow:ordered:` — the child follows the parent.
 /// - **Windows**: `SetWindowLongPtrW(GWL_HWNDPARENT)` — an owned window.
@@ -97,7 +97,7 @@ pub fn attach_child_window(
     }
 }
 
-/// Make every existing subview of `host`'s `NSView` resize with its parent.
+/// Makes every existing subview of `host`'s `NSView` resize with its parent.
 ///
 /// Plugins like Surge XT attach their content as a subview of the parent
 /// `NSView` passed to `IPlugView::attached`; without an autoresizing mask they

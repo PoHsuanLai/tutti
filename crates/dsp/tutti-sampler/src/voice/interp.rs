@@ -18,14 +18,17 @@
 //! Everything here is pure per-sample arithmetic — no allocation, no locks —
 //! so it is safe to call from `process`/`tick` hot paths.
 
+use std::ops::Range;
 use std::sync::Arc;
 use tutti_core::{
-    fold_frame, snap_to_whole_frame, Beat, BeatDuration, Frame, ReadRate, SamplePosition,
-    SampleRate, Samples, Timeline, TimelineSegment,
+    fold_frame, snap_to_whole_frame, Beat, BeatDuration, Bpm, Frame, ReadRate, SamplePosition,
+    SampleRate, Samples, TimelineSegment,
 };
 use tutti_io::Wave;
 
+use super::clock::{BlockClock, Run};
 use super::loop_span::{blend, LoopSpan};
+use super::memory_source::VoiceWindow;
 use crate::MAX_SAMPLER_CHANNELS;
 
 /// Where the playhead sits in source samples, or `None` when it is outside the
@@ -33,7 +36,8 @@ use crate::MAX_SAMPLER_CHANNELS;
 ///
 /// The single source of truth for the transport-placement gate, shared by the
 /// in-memory [`MemorySource`](super::memory_source::MemorySource) and the
-/// disk-streaming [`DiskVoice`](super::disk_voice::DiskVoice).
+/// disk-streaming [`DiskVoice`](super::disk_voice::DiskVoice), read at the
+/// transport a block's `Env` gives (`tutti_graph::Env::transport_at`).
 ///
 /// # A placed voice has no position of its own
 ///
@@ -73,197 +77,182 @@ use crate::MAX_SAMPLER_CHANNELS;
 /// # Reached by frame, not by comparing beats
 ///
 /// "Has the playhead reached `start_beat`?" is the engine's one beat→frame
-/// rule ([`TimelineSegment::reached_by`], doc 013 §6): the voice enters on
+/// rule ([`TimelineSegment::reached_by`]): the voice enters on
 /// the first frame at or after its start, within a millionth of a frame. A
 /// bare `beat < start` puts a clip whose start is exactly on the playhead's
-/// frame, but whose `f64` came out an ulp later than the clock's, a whole
-/// 64-frame call late. The window's end is the same rule, so a voice leaves
-/// on the frame its successor enters. The frames are the source's own at unit
-/// speed (`source_rate`): the gate sees no session rate, and a millionth of
-/// either kind of frame is far below anything audible.
+/// frame, but whose `f64` came out an ulp later than the clock's, a frame
+/// late. The window's end is the same rule, so a voice leaves on the frame its
+/// successor enters. The frames are the source's own at unit speed
+/// (`source_rate`): the gate sees no session rate, and a millionth of either
+/// kind of frame is far below anything audible.
 ///
-/// Pure arithmetic: no allocation, no locks — safe from `tick`/`process` hot
-/// paths.
+/// Pure arithmetic: no allocation, no locks — safe on the audio thread.
 #[inline]
 pub fn window_position(
-    transport: &dyn Timeline,
+    transport: &tutti_graph::Transport,
     start_beat: Beat,
     duration: Option<BeatDuration>,
     source_rate: SampleRate,
     rate: ReadRate,
 ) -> Option<SamplePosition> {
-    if !transport.is_rolling() {
+    if !transport.playing {
         return None;
     }
-    let tempo = transport.tempo();
+    let tempo = transport.tempo;
     if tempo.get() <= 0.0 {
         return None;
     }
     let now = transport.beat();
-    // The playhead's frame is frame zero of this segment.
-    let playhead = TimelineSegment::new(Frame::ZERO, now, tempo, source_rate);
-    if !playhead.reached_by(Frame::ZERO, start_beat) {
+    let gate = Gate {
+        window: VoiceWindow {
+            start: start_beat,
+            duration,
+        },
+        source_rate,
+        rate,
+    };
+    if !gate.reached(now, tempo, start_beat) {
         return None;
     }
     if let Some(dur) = duration {
-        if playhead.reached_by(Frame::ZERO, start_beat + dur) {
+        if gate.reached(now, tempo, start_beat + dur) {
             return None;
         }
     }
-    // Reached within the tolerance may be a hair before `start_beat`: that
-    // is the start itself.
-    let beat_offset = (now - start_beat).get().max(0.0);
-    let tempo = tempo.get();
-    let seconds_offset = beat_offset * 60.0 / tempo;
-    let position = seconds_offset * source_rate.get() * rate.get();
-    // The clock's beat is its frame count in closed form; back through
-    // seconds it lands a hair off the whole frame it is (frame 128 of a
-    // clip at 120 BPM, 48 kHz came out 127.99999999999). Landed on the
-    // frame by the engine's one tolerance, a clip on a beat plays its own
-    // samples exactly.
-    Some(SamplePosition(snap_to_whole_frame(position)))
+    Some(gate.origin(now, tempo))
 }
 
-/// A placed read's position seated from the clock, and how far it has run
-/// since.
-///
-/// The clock moves between calls (per block, or per 64-frame chunk under
-/// `Legacy`), not per frame, and a voice in a `VoiceNode` is read a frame at a
-/// time through `tick`. So a placed read seats where the gate puts the
-/// playhead whenever the clock reads a beat it did not read last time, and
-/// steps from there by the read rate: frame `frames` of the seat is `origin +
-/// rate × frames`. Shared by both tiers that index a file (`MemorySource` and
-/// a forked `DiskVoice`), so the same clock gives them the same positions.
-///
-/// # The step rate is the seat's own
-///
-/// A rate change (varispeed, the stretch filter's) between two frames of one
-/// seat re-anchors it where it stands: the next frame is one step at the new
-/// rate from the last one. Scaling the whole run instead (`origin + new_rate ×
-/// frames`) jumped the read by `frames × Δrate` mid-block. The next clock move
-/// re-seats at the gate, which measures elapsed time at the new speed — that
-/// relocation is what a varispeed change on a placed voice means.
-///
-/// # What re-seats: a new beat, or a new segment
-///
-/// The seat is keyed on the clock's beat, compared exactly, **and** its
-/// [`segment_generation`](Timeline::segment_generation). The beat alone
-/// cannot see a jump that lands where the playhead already stood — a seek to
-/// the beat it is on, or a transport loop exactly one block long that lands
-/// on the beat it left — and a seat keyed on it ran on through one, stepping
-/// on instead of replaying from the gate. The generation moves on at every
-/// discontinuity, so either change re-seats.
+/// A placed read's gate: its window, the rate the window is measured in
+/// (the source's frames at unit speed), and the rate elapsed time maps onto
+/// the source at (varispeed and a stretcher's rate; see [`window_position`]).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Seat {
-    /// The beat the clock read when the read seated.
-    beat: Beat,
-    /// The clock's segment generation when the read seated.
-    generation: u64,
-    /// The file position of frame 0 of this seat.
-    origin: SamplePosition,
-    /// Frames read since.
-    frames: usize,
-    /// File frames per output frame this seat steps by.
-    rate: ReadRate,
+pub(crate) struct Gate {
+    pub(crate) window: VoiceWindow,
+    pub(crate) source_rate: SampleRate,
+    pub(crate) rate: ReadRate,
 }
 
-impl Seat {
-    /// This frame's seat, stepping by `rate`: the last one a frame on while
-    /// `timeline` still reads the beat and segment it seated on (re-anchored
-    /// where it stands if `rate` changed), else a fresh one at the position `gate`
-    /// gives — `None` when the gate gives none (outside the window), or the
-    /// clock is stopped.
+impl Gate {
+    /// Whether a playhead at `now` has reached `target`, at `tempo`: the
+    /// engine's one rule ([`TimelineSegment::reached_by`]), in the source's
+    /// frames.
     #[inline]
-    pub(crate) fn next(
-        last: Option<Self>,
-        timeline: &dyn Timeline,
-        rate: ReadRate,
-        gate: impl FnOnce() -> Option<SamplePosition>,
-    ) -> Option<Self> {
-        // A stopped clock reads one beat for ever: running on from the last
-        // seat would play through a stop.
-        if !timeline.is_rolling() {
-            return None;
-        }
-        // The beat, then the generation: the order `segment_generation`
-        // documents, which never pairs this beat with an older segment.
-        let beat = timeline.beat();
-        let generation = timeline.segment_generation();
-        match last.filter(|seat| seat.beat == beat && seat.generation == generation) {
-            Some(seat) if seat.rate.get() == rate.get() => Some(Self {
-                frames: seat.frames + 1,
-                ..seat
-            }),
-            // Re-anchored where it stands: one step at the new rate on.
-            Some(seat) => Some(Self {
-                origin: seat.position(),
-                frames: 1,
-                rate,
-                ..seat
-            }),
-            None => gate().map(|origin| Self {
-                beat,
-                generation,
-                origin,
-                frames: 0,
-                rate,
-            }),
-        }
+    fn reached(&self, now: Beat, tempo: Bpm, target: Beat) -> bool {
+        TimelineSegment::new(Frame::ZERO, now, tempo, self.source_rate)
+            .reached_by(Frame::ZERO, target)
     }
 
-    /// The seats of the next `out.len()` frames, their positions written to
-    /// `out` (`None` outside the window, or on a stopped clock), and the seat
-    /// of the last one: what `out.len()` calls of [`next`](Self::next) give,
-    /// **reading the clock once**.
-    ///
-    /// The clock moves between blocks, never inside one (the renderer
-    /// advances it after a block is rendered), so every frame of a block reads
-    /// the beat and segment the first read: a seat taken at the first frame
-    /// steps on through the block (`frames + k` from it, the arithmetic
-    /// [`position`](Self::position) does per frame), and a first frame with no
-    /// seat means none for the block (the gate, asked again of the same clock
-    /// reading, gives the same answer).
+    /// The source position of a playhead at `now` (inside the window): its
+    /// elapsed time since the window's start, in the source's frames at the
+    /// gate's rate.
     #[inline]
-    pub(crate) fn run(
-        last: Option<Self>,
-        timeline: &dyn Timeline,
-        rate: ReadRate,
-        gate: impl FnOnce() -> Option<SamplePosition>,
-        out: &mut [Option<SamplePosition>],
-    ) -> Option<Self> {
-        if out.is_empty() {
-            return last;
+    fn origin(&self, now: Beat, tempo: Bpm) -> SamplePosition {
+        // Reached within the tolerance may be a hair before the start: that
+        // is the start itself.
+        let beat_offset = (now - self.window.start).get().max(0.0);
+        let seconds_offset = beat_offset * 60.0 / tempo.get();
+        let position = seconds_offset * self.source_rate.get() * self.rate.get();
+        // The clock's beat is its frame count in closed form; back through
+        // seconds it lands a hair off the whole frame it is (frame 128 of a
+        // clip at 120 BPM, 48 kHz came out 127.99999999999). Landed on the
+        // frame by the engine's one tolerance, a clip on a beat plays its own
+        // samples exactly.
+        SamplePosition(snap_to_whole_frame(position))
+    }
+
+    /// The first block frame in `from..to` of `run` whose beat has reached
+    /// `target`, or `to` when none has. The beat never falls inside a run,
+    /// so the answer is found from the closed-form estimate by stepping.
+    fn first_reaching(&self, run: &Run, from: usize, to: usize, target: Beat) -> usize {
+        let tempo = run.tempo();
+        let at = |j: usize| self.reached(run.beat_at(j), tempo, target);
+        if from >= to || at(from) {
+            return from;
         }
-        let Some(first) = Self::next(last, timeline, rate, gate) else {
-            out.fill(None);
-            return None;
+        if to - from == 1 || !at(to - 1) {
+            return to;
+        }
+        let fpb = run.frames_per_beat().unwrap_or(1.0);
+        let est = ((target - run.beat_at(from)).get() * fpb).ceil();
+        let mut j = if est.is_finite() && est >= 1.0 {
+            (from + est as usize).min(to - 1)
+        } else {
+            from + 1
         };
-        for (k, p) in out.iter_mut().enumerate() {
-            *p = Some(
-                Self {
-                    frames: first.frames + k,
-                    ..first
-                }
-                .position(),
-            );
+        while j > from + 1 && at(j - 1) {
+            j -= 1;
         }
-        Some(Self {
-            frames: first.frames + out.len() - 1,
-            ..first
-        })
+        while !at(j) {
+            j += 1;
+        }
+        j
     }
+}
 
-    /// The clock's segment generation this seat seated in.
-    #[inline]
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation
+/// The positions a placed read plays over block frames `range`, one per
+/// frame into `out` (`out.len() == range.len()`): `None` outside the
+/// window, or while the transport stands.
+///
+/// **Frame-exact at the window's edges.** Each run of the block
+/// ([`BlockClock::runs`]) is gated frame by frame by the one beat→frame
+/// rule: the read enters on the first frame whose beat reaches the window's
+/// start and leaves on the first that reaches its end, wherever in the block
+/// they fall — a clip placed mid-block starts on its frame, not at the next
+/// block.
+///
+/// **Seated, then stepped.** At the first frame of the range a run sounds
+/// on (or its entry frame), the read seats where the gate puts the
+/// playhead ([`window_position`]'s origin) and steps from there by `step`
+/// per frame: `origin + step × k`. The owner renders a block in pieces of at
+/// most `LANE_FRAMES` (64), so the read re-seats on the clock at each piece,
+/// as it did when the graph called it once per 64-frame chunk — the same
+/// positions, bit for bit, wherever the window is open throughout. The step
+/// is the read's own rate (with the conversion to the render rate), the
+/// origin the gate's (in the source's frames); they agree to rounding.
+pub(crate) fn place(
+    clock: &BlockClock<'_>,
+    range: Range<usize>,
+    gate: Gate,
+    step: ReadRate,
+    out: &mut [Option<SamplePosition>],
+) {
+    debug_assert_eq!(out.len(), range.len(), "one position per frame");
+    let base = range.start;
+    for run in clock.runs_in(range) {
+        let (a, b) = (run.start, run.end);
+        let slots = &mut out[a - base..b - base];
+        if !run.rolling() || run.frames_per_beat().is_none() {
+            slots.fill(None);
+            continue;
+        }
+        let window = gate.window;
+        let e = gate.first_reaching(&run, a, b, window.start);
+        let x = match window.duration {
+            Some(d) => gate.first_reaching(&run, e, b, window.start + d),
+            None => b,
+        };
+        slots[..e - a].fill(None);
+        slots[x - a..].fill(None);
+        if e < x {
+            let origin = gate.origin(run.beat_at(e), run.tempo());
+            for (k, p) in slots[e - a..x - a].iter_mut().enumerate() {
+                *p = Some(origin + step.advance(Samples(k)));
+            }
+        }
     }
+}
 
-    /// The position this seat reads at.
-    #[inline]
-    pub(crate) fn position(&self) -> SamplePosition {
-        self.origin + self.rate.advance(Samples(self.frames))
-    }
+/// Whether the playhead has left `window` for good by the last frame of
+/// `range` (rolling, past its end): a reader holding a file for it may let
+/// it go.
+pub(crate) fn past_window(clock: &BlockClock<'_>, range: Range<usize>, gate: Gate) -> bool {
+    let Some(duration) = gate.window.duration else {
+        return false;
+    };
+    let last = range.end.saturating_sub(1);
+    clock.runs_in(range).last().is_some_and(|run| {
+        run.rolling() && gate.reached(run.beat_at(last), run.tempo(), gate.window.start + duration)
+    })
 }
 
 /// Catmull-Rom cubic Hermite interpolation across four consecutive taps.
@@ -297,7 +286,7 @@ pub(crate) fn hermite_lanes(out: &mut [f32], y: [&[f32]; 4], t: &[f32]) {
     }
 }
 
-/// Read one `out.len()`-wide frame from `wave` at fractional position
+/// Reads one `out.len()`-wide frame from `wave` at fractional position
 /// `position` using 4-tap cubic Hermite interpolation per channel.
 ///
 /// The four taps are `idx-1, idx, idx+1, idx+2` (where `idx = floor(position)`),
@@ -490,8 +479,8 @@ pub fn read_stereo_frame(wave: &Arc<Wave>, position: f64) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_transport::MockTransport;
-    use tutti_core::{Bpm, PlaybackRate, SrcRatio};
+    use tutti_core::{PlaybackRate, SrcRatio};
+    use tutti_graph::{Env, Offset, Transport, TransportChanges};
 
     /// **A position a hair under a whole frame reads that frame exactly.**
     /// Its fraction rounds to 1.0 in `f32`; the kernel at `t` = 1.0 returns
@@ -544,11 +533,11 @@ mod tests {
         ] {
             let src = SrcRatio::for_rates(file_rate, session);
             let rate = PlaybackRate::new(speed);
-            let transport = MockTransport::rolling(Beat::new(4.0), Bpm::new(120.0));
+            let transport = Transport::new(true, Bpm(120.0), Beat(4.0), None);
 
             // Memory's split: the wave's own rate, times varispeed alone.
             let memory = window_position(
-                transport.as_ref(),
+                &transport,
                 Beat::new(0.0),
                 None,
                 SampleRate::new(file_rate),
@@ -559,7 +548,7 @@ mod tests {
             // Disk's split: a rate that already carries the conversion, times
             // varispeed alone.
             let disk = window_position(
-                transport.as_ref(),
+                &transport,
                 Beat::new(0.0),
                 None,
                 SampleRate::new(session * src.get() as f64),
@@ -588,10 +577,10 @@ mod tests {
     /// cannot read stale material by ignoring a `None`.
     #[test]
     fn window_position_is_none_outside_the_window() {
-        let stopped = MockTransport::stopped(Beat::new(4.0), Bpm::new(120.0));
+        let stopped = Transport::new(false, Bpm(120.0), Beat(4.0), None);
         assert!(
             window_position(
-                stopped.as_ref(),
+                &stopped,
                 Beat::new(0.0),
                 None,
                 SampleRate::new(44_100.0),
@@ -601,10 +590,10 @@ mod tests {
             "a stopped transport has no position"
         );
 
-        let rolling = MockTransport::rolling(Beat::new(2.0), Bpm::new(120.0));
+        let rolling = Transport::new(true, Bpm(120.0), Beat(2.0), None);
         assert!(
             window_position(
-                rolling.as_ref(),
+                &rolling,
                 Beat::new(8.0),
                 None,
                 SampleRate::new(44_100.0),
@@ -615,7 +604,7 @@ mod tests {
         );
         assert!(
             window_position(
-                rolling.as_ref(),
+                &rolling,
                 Beat::new(0.0),
                 Some(BeatDuration::new(1.0)),
                 SampleRate::new(44_100.0),
@@ -627,7 +616,7 @@ mod tests {
         // The boundary is half-open: beat 2 with duration 2 is already outside.
         assert!(
             window_position(
-                rolling.as_ref(),
+                &rolling,
                 Beat::new(0.0),
                 Some(BeatDuration::new(2.0)),
                 SampleRate::new(44_100.0),
@@ -855,52 +844,120 @@ mod tests {
         }
     }
 
-    /// **A seek to the beat the playhead already stands on re-seats**, on
-    /// the engine's own offline timeline: the beat reads the same, the
-    /// segment generation does not, and the read starts again from the gate
-    /// rather than stepping on. Both tiers seat through `Seat::next`
-    /// (`MemorySource`, a forked `DiskVoice`), so this covers both.
-    ///
-    /// Mutation (run): key the seat on the beat alone (drop
-    /// `seat.generation == generation` from the filter) → the seat runs on
-    /// at frame 4 of the old origin → fails. Mutation (run):
-    /// `OfflineTimeline::publish` not storing the generation → it reads 0
-    /// after the seek → fails.
-    #[test]
-    fn a_seek_to_the_same_beat_reseats() {
-        use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
-        let clock = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: Beat(4.0),
-            tempo: Bpm(120.0),
-            sample_rate: SampleRate(48_000.0),
-            loop_range: None,
-        });
-        let rate = ReadRate::UNITY;
-        let mut gate_at = 100.0;
-        let mut seat = None;
-        for _ in 0..4 {
-            seat = Seat::next(seat, &clock, rate, || Some(SamplePosition(gate_at)));
+    /// A block of `len` frames at 48 kHz under `transport`, with `changes`.
+    fn env(len: usize, transport: Transport, changes: &[(usize, Transport)]) -> Env {
+        let mut c = TransportChanges::NONE;
+        for &(at, to) in changes {
+            c.push(Offset::new(at, Samples(len)).unwrap(), to).unwrap();
         }
-        let ran = seat.expect("seated");
-        assert_eq!(ran.position(), SamplePosition(103.0), "ran on from 100");
+        Env {
+            frame: Frame(0),
+            sample_rate: SampleRate(48_000.0),
+            block_len: Samples(len),
+            transport,
+            changes: c,
+        }
+    }
 
-        // Seek to where it stands: the same beat, a new segment. The gate
-        // now puts the playhead elsewhere in the file (a loop's start, say).
-        let before = clock.beat();
-        clock.seek_to(before);
-        assert_eq!(clock.beat(), before, "the beat reads the same");
-        gate_at = 500.0;
-        let reseated = Seat::next(seat, &clock, rate, || Some(SamplePosition(gate_at)))
-            .expect("still inside the window");
-        assert_eq!(
-            reseated.position(),
-            SamplePosition(500.0),
-            "re-seated at the gate, not stepped on to 104"
+    /// 120 BPM at 48 kHz: 24 000 frames a beat.
+    const FPB: f64 = 24_000.0;
+
+    fn rolling(beat: f64) -> Transport {
+        Transport::new(true, Bpm(120.0), Beat(beat), None)
+    }
+
+    /// A gate over a 48 kHz source at unit rate, for `window`.
+    fn gate(window: VoiceWindow) -> Gate {
+        Gate {
+            window,
+            source_rate: SampleRate(48_000.0),
+            rate: ReadRate::UNITY,
+        }
+    }
+
+    fn placed(env: &Env, gate: Gate) -> Vec<Option<f64>> {
+        let block = super::super::clock::Clock::new().observe(env);
+        let mut out = vec![None; env.block_len.get()];
+        place(&block, 0..out.len(), gate, ReadRate::UNITY, &mut out);
+        out.into_iter().map(|p| p.map(|p| p.get())).collect()
+    }
+
+    /// **A window that opens and closes inside a block does so on its
+    /// frames**: a clip placed 10 frames into a 64-frame block reads its
+    /// frame 0 there, and one lasting 30 frames is silent from frame 40 on. A
+    /// gate asked once per 64-frame chunk would let it enter at the next
+    /// chunk instead.
+    ///
+    /// Mutation (run): `place` seating only if the range's first frame is
+    /// inside the window (the chunked gate) → frames 10..40 are `None` →
+    /// fails. Mutation (run): the exit never found inside the range
+    /// (`x = b`) → frame 40 sounds → fails.
+    #[test]
+    fn a_window_opens_and_closes_on_its_frames() {
+        let start = 1.0;
+        let env = env(64, rolling(start - 10.0 / FPB), &[]);
+        let got = placed(
+            &env,
+            gate(VoiceWindow::span(Beat(start), BeatDuration(30.0 / FPB))),
         );
+        for (i, p) in got.iter().enumerate() {
+            let want = (10..40).contains(&i).then(|| (i - 10) as f64);
+            assert_eq!(*p, want, "frame {i}");
+        }
+    }
 
-        // And a clock that did not jump runs the new seat on.
-        let on =
-            Seat::next(Some(reseated), &clock, rate, || Some(SamplePosition(0.0))).expect("seated");
-        assert_eq!(on.position(), SamplePosition(501.0));
+    /// **A seek inside a block moves the read on its frame**, re-seated at
+    /// the gate there: a clip playing from beat 0 is at source frame
+    /// `24 000 + i` at frame `i` of a block at beat 1, and after a seek to
+    /// beat 2 on frame 32, at `48 000 + (i - 32)`. A stop on frame 48 silences
+    /// it there.
+    ///
+    /// Mutation (run): `place` reading the block's transport for every frame
+    /// (ignoring `Env::changes`) → frame 32 reads 24 032 → fails.
+    #[test]
+    fn a_seek_and_a_stop_inside_a_block_land_on_their_frames() {
+        let stopped = Transport::new(false, Bpm(120.0), Beat(2.5), None);
+        let env = env(64, rolling(1.0), &[(32, rolling(2.0)), (48, stopped)]);
+        let got = placed(&env, gate(VoiceWindow::default()));
+        for (i, p) in got.iter().enumerate() {
+            let want = match i {
+                0..32 => Some(24_000.0 + i as f64),
+                32..48 => Some(48_000.0 + (i - 32) as f64),
+                _ => None,
+            };
+            assert_eq!(*p, want, "frame {i}");
+        }
+    }
+
+    /// **A loop wrap inside a block re-seats the read at the loop's start on
+    /// the wrap's frame**, and the clock reports it as a jump (a new
+    /// generation): the buffered state behind a read — a stretch filter, the
+    /// live disk reader — is flushed or crossfaded there.
+    ///
+    /// Mutation (run): `Runs` not cutting a run at a wrap (`wrap = None`) →
+    /// frames past the wrap read on past the loop's end → fails.
+    #[test]
+    fn a_loop_wrap_inside_a_block_reseats_at_the_loop_start() {
+        let looping = Some(tutti_graph::LoopRange {
+            start: Beat(0.0),
+            end: Beat(1.0),
+        });
+        let t = Transport::new(true, Bpm(120.0), Beat(1.0 - 20.0 / FPB), looping);
+        let env = env(64, t, &[]);
+        let got = placed(&env, gate(VoiceWindow::default()));
+        for (i, p) in got.iter().enumerate() {
+            let want = if i < 20 {
+                FPB - 20.0 + i as f64
+            } else {
+                (i - 20) as f64
+            };
+            assert_eq!(*p, Some(want), "frame {i}");
+        }
+        let mut clock = super::super::clock::Clock::new();
+        let block = clock.observe(&env);
+        let runs: Vec<_> = block.runs().collect();
+        assert_eq!(runs.len(), 2);
+        assert_eq!((runs[1].start, runs[1].jump), (20, true));
+        assert_eq!(runs[1].generation, runs[0].generation + 1);
     }
 }

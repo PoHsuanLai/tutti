@@ -102,24 +102,13 @@ pub use channel_layout::AuLayoutTag;
 // but is *empty* off macOS, so an ungated re-export names items that do not
 // exist and fails to compile on Linux.
 #[cfg(target_os = "macos")]
-pub use topology::{tag_for, topology_of};
-// `AuMidiOutput` is the registration a host holds to keep a MIDI-output callback
-// installed — dropping it is what withdraws the callback, so the type has to be
-// nameable in a struct field. `MidiOutSink` is the argument to
-// `install_midi_output`, and `MidiOutputInfo` its capability-query return.
-#[cfg(target_os = "macos")]
 pub use editor::AuEditor;
 #[cfg(target_os = "macos")]
 pub use handle::AuHandle;
 #[cfg(target_os = "macos")]
 pub use instance::{AuActive, AuInstance, AuLoaded};
-// Flat-re-exported for the same reason `TransportState` below is: `PushScratch`
-// is the argument type of `offline::process_push`, so a host cannot drive the
-// push render path without being able to name it, and there is no shared
-// `tutti_plugin_types` vocabulary for a per-bus buffer-list arena to translate
-// into. The two `process_*` functions stay behind `offline::` — they are `unsafe`
-// and take a raw `AudioUnit`, so reaching them should be as explicit as their
-// contract.
+#[cfg(target_os = "macos")]
+pub use topology::{tag_for, topology_of};
 // Flat-re-exported for the reason `AuLayoutTag` is: `AuMidiMapping` is the
 // argument and return type of the five `*_parameter_midi_mapping*` methods on
 // `AuInstance`, and `MidiTrigger` is the field of it a caller must construct, so
@@ -128,8 +117,19 @@ pub use instance::{AuActive, AuInstance, AuLoaded};
 // is a query, not a table, so the two formats have no common shape.
 #[cfg(target_os = "macos")]
 pub use midi_map::{AuMidiMapping, MidiTrigger};
+// `AuMidiOutput` is the registration a host holds to keep a MIDI-output callback
+// installed — dropping it is what withdraws the callback, so the type has to be
+// nameable in a struct field. `MidiOutSink` is the argument to
+// `install_midi_output`, and `MidiOutputInfo` its capability-query return.
 #[cfg(target_os = "macos")]
 pub use midi_out::{AuMidiOutput, MidiOutSink, MidiOutputInfo};
+// Flat-re-exported for the same reason `TransportState` below is: `PushScratch`
+// is the argument type of `offline::process_push`, so a host cannot drive the
+// push render path without being able to name it, and there is no shared
+// `tutti_plugin_types` vocabulary for a per-bus buffer-list arena to translate
+// into. The two `process_*` functions stay behind `offline::` — they are `unsafe`
+// and take a raw `AudioUnit`, so reaching them should be as explicit as their
+// contract.
 #[cfg(target_os = "macos")]
 pub use offline::{PushScratch, RENDER_QUALITY_MAX};
 // `AuParameter`/`ParamRange`/`ParamView`/`ParameterUnit` are AU-internal param

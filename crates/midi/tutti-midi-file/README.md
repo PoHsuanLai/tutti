@@ -1,22 +1,26 @@
 # tutti-midi-file
 
-MIDI **file** codecs: Standard MIDI File (SMF) and MIDI 2.0 Clip File (M2-116).
+MIDI **file** codecs for the Tutti audio engine: Standard MIDI File ([`smf`],
+`.mid`) and MIDI 2.0 Clip File ([`clip`], M2-116, `.midi2`). Re-exported by
+`tutti` as `tutti::midi_file` (feature `midi`).
 
-## What this is
+## What the two codecs cover
 
-Reading and writing `.mid` and `.midi2` files. Nothing here touches an OS MIDI
-API, and nothing is `cfg`-gated.
+- [`smf`]: SMF 1.0. Parse to beat-positioned events ([`ParsedMidiFile`]) or
+  per-track paired notes ([`smf::tracks`]), and write ([`encode_midi_file`] /
+  [`write_midi_file`]). Metrical timing only; the tempo map is reported, not
+  applied.
+- [`clip`]: the *file-level* (path) half of the MIDI 2.0 Clip File codec
+  ([`read_clip_file_from_path`], [`write_clip_file_to_path`]). The byte-level
+  codec is in `tutti-midi-types` and is re-exported here ([`read_clip_file`],
+  [`write_clip_file`]), so a clip round-trips through a path with one import.
 
-## Why it is its own crate
+[`MidiFileKind::sniff`] tells the two formats apart by magic bytes, not by
+extension. Errors are [`Error`](enum@Error).
 
-Reading a `.mid` file and talking to a MIDI port are different jobs, and this
-crate is the boundary that keeps them apart. Depend on this one for files, on
-[`tutti-midi-hardware`](../tutti-midi-hardware) for ports.
-
-The consequence worth stating: **a consumer that only reads files never links an
-OS MIDI API.** No CoreMIDI on macOS, no ALSA sequencer on Linux. That is a
-dependency edge rather than a feature flag, so it cannot be got wrong by
-forgetting `default-features = false`.
+Nothing here touches an OS MIDI API, and nothing is `cfg`-gated, so a consumer
+that only reads files never links CoreMIDI or the ALSA sequencer. Ports are in
+`tutti-midi-hardware`, which does not re-export these codecs.
 
 ## Quick start
 
@@ -56,11 +60,9 @@ assert_eq!(tracks[0].notes[0].duration_beats, BeatDuration(1.5));
 ### Tempo does not survive the round trip exactly, and that is the format
 
 SMF stores tempo as **microseconds per quarter note**, an integer. `174.0` BPM
-is not representable, so it comes back as `174.0002958…` — a wire quantisation,
-not a precision bug. Tempo is read back as `Bpm` (f64-backed, so nothing is
-lost after the wire); it is the *timecode* quantities that stay bare `f64` here,
-because `Seconds` is `f32` and cannot carry a long render duration or a SMPTE
-position.
+is not representable, so it comes back as `174.0002958…`: a wire quantisation,
+not a precision bug. Tempo is read back as `Bpm` (f64-backed, so nothing more is
+lost after the wire).
 
 ```rust
 # use tutti_midi_file::{encode_midi_file, MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfTimedEvent};
@@ -109,7 +111,7 @@ match MidiFileKind::sniff_path("song.mid")? {
 ## Constraints worth knowing
 
 - **Metrical timing only.** An SMF using SMPTE/timecode division returns
-  `Error::MidiUnsupportedTiming` — beats come from the file's division, and a
+  [`Error::MidiUnsupportedTiming`] — beats come from the file's division, and a
   timecode file has no beat grid to read them from.
 - **The tempo map is not applied.** Beat positions are as the file states them.
 

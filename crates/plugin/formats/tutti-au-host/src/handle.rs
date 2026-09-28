@@ -25,7 +25,7 @@ pub struct AuHandle {
 unsafe impl Send for AuHandle {}
 
 impl AuHandle {
-    /// Instantiate a component, returning a handle that owns the lifetime.
+    /// Instantiates a component, returning a handle that owns the lifetime.
     ///
     /// # Safety
     /// `component` must be a valid, non-null `AudioComponent` obtained from
@@ -103,7 +103,7 @@ impl AuHandle {
         self.au_type
     }
 
-    /// Copy the AU's display name. Returns `"<unknown>"` on failure.
+    /// Copies the AU's display name. Returns `"<unknown>"` on failure.
     pub fn get_name(&self) -> String {
         unsafe {
             let mut name_ref: coreaudio_sys::CFStringRef = std::ptr::null();

@@ -367,7 +367,7 @@ impl AudioPipeline {
                 )?;
                 // Sanitize before it leaves the subprocess: a misbehaving
                 // plugin can emit NaN/Inf that would otherwise poison the
-                // entire downstream fundsp graph. Unconditional — this is a
+                // entire downstream graph. Unconditional — this is a
                 // production hazard, and a finite-check per sample is cheap
                 // on an already memory-bound path.
                 for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
@@ -825,7 +825,7 @@ mod tests {
         assert_eq!(plugin.seen_inputs.borrow().as_slice(), &markers);
 
         // The server published this block's outputs, so the host-side check
-        // would pass. Under the old design nothing marked the region as written.
+        // would pass.
         assert!(shm.has_output(SEQ), "the pipeline must publish its outputs");
 
         // Outputs (echo of input ch 0,1) landed in the OUTPUT region, indexed
@@ -986,11 +986,9 @@ mod tests {
     ///
     /// **This one uses the `NanPlugin` fake, and that is its limit.** A fake
     /// exercises the pipeline's own scratch handling and *no loader at all*, so
-    /// it proved nothing about the per-block owning conversion the VST3 loader
-    /// used to perform. See
+    /// it proves nothing about a loader's per-block conversions. See
     /// [`process_through_the_real_vst3_loader_is_alloc_free`], which drives the
-    /// same gate through a real plugin and is the one that would have caught
-    /// it.
+    /// same gate through a real plugin.
     #[test]
     fn process_is_alloc_free() {
         const CH: usize = 2;

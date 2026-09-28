@@ -82,11 +82,18 @@ pub struct AudioSlab {
 impl AudioSlab {
     // ---- Construction: one side creates, the other opens ----
 
-    /// Create the slab: allocate the named backing file, size it to hold the
-    /// header and both rings, map it, and stamp the header. This side is the
-    /// `Owner` and unlinks the file on drop. Exactly one side calls this; the
-    /// other calls [`open`](Self::open) with a matching `layout`.
+    /// Creates the slab: allocates the named backing file, sizes it to hold
+    /// the header and both rings, maps it, and stamps the header.
     ///
+    /// This side is the owner and unlinks the file on drop. Exactly one side
+    /// calls this; the other calls [`open`](Self::open) with a matching
+    /// `layout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `layout` names no bus in a direction or a ring depth
+    /// other than [`RING_SLOTS`], or if the backing file cannot be created,
+    /// sized or mapped.
     pub fn create(name: impl Into<String>, layout: SlabLayout) -> Result<Self> {
         check_layout(&layout)?;
         let name = name.into();
@@ -104,15 +111,18 @@ impl AudioSlab {
         Ok(slab)
     }
 
-    /// Open an existing slab as a `View`, validating its header.
+    /// Opens an existing slab as a view, validating its header.
     ///
-    /// The `layout` must match the one the `Owner` created it with — both
-    /// sides agree on the shape out of band (over the control channel) before
-    /// mapping. Unlike the previous version, which validated *nothing*, this
-    /// rejects a file that is too short, is not a tutti slab, or was written by
-    /// a build with a different header shape. Detaches on drop without deleting
-    /// the backing file.
+    /// The `layout` must match the one the owner created it with; both sides
+    /// agree on the shape over the control channel before mapping. Detaches on
+    /// drop without deleting the backing file.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if `layout` is invalid (as for
+    /// [`create`](Self::create)), the file cannot be opened or mapped, or it is
+    /// too short, is not a tutti slab, or was written with a different header
+    /// version.
     pub fn open(name: impl Into<String>, layout: SlabLayout) -> Result<Self> {
         check_layout(&layout)?;
         let name = name.into();
@@ -138,18 +148,18 @@ impl AudioSlab {
 
     // ---- Accessors ----
 
-    /// The slab's name, used by the other side to [`open`](Self::open) it.
+    /// Returns the slab's name, used by the other side to [`open`](Self::open) it.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Clone the layout. For the allocation-free audio path, prefer
+    /// Returns a clone of the layout. For the allocation-free audio path, prefer
     /// [`layout_ref`](Self::layout_ref).
     pub fn layout(&self) -> SlabLayout {
         self.layout.clone()
     }
 
-    /// Borrow the layout without cloning its (heap-backed) bus list — for the
+    /// Borrows the layout without cloning its (heap-backed) bus list — for the
     /// allocation-free audio path. [`layout`](Self::layout) (which clones) is
     /// for callers that need to own a copy.
     pub fn layout_ref(&self) -> &SlabLayout {
@@ -164,26 +174,41 @@ impl AudioSlab {
     // once, after the last channel, or a reader can observe a slot marked valid
     // while later channels are still being copied.
 
-    /// Copy `data` into one channel of the input ring's slot for block `seq`.
+    /// Copies `data` into one channel of the input ring's slot for block `seq`.
     ///
     /// Host side. Call once per channel, then
-    /// [`publish_input`](Self::publish_input) once.
+    /// [`publish_input`](Self::publish_input) once. Allocation-free.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `channel` is out of range or `data` is longer than
+    /// the channel's capacity.
     pub fn write_input<T: Sample>(&self, seq: u64, channel: usize, data: &[T]) -> Result<()> {
         self.write_region(Direction::Input, seq, channel, data)
     }
 
-    /// Copy `data` into one channel of the output ring's slot for block `seq`.
+    /// Copies `data` into one channel of the output ring's slot for block `seq`.
     ///
     /// Server side. Call once per channel, then
-    /// [`publish_output`](Self::publish_output) once.
+    /// [`publish_output`](Self::publish_output) once. Allocation-free.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `channel` is out of range or `data` is longer than
+    /// the channel's capacity.
     pub fn write_output<T: Sample>(&self, seq: u64, channel: usize, data: &[T]) -> Result<()> {
         self.write_region(Direction::Output, seq, channel, data)
     }
 
-    /// Copy one channel of the input ring's slot for block `seq` into `output`.
+    /// Copies one channel of the input ring's slot for block `seq` into
+    /// `output`.
     ///
     /// Server side. Returns how many samples were copied — **not** whether they
     /// are this block's. Check [`input_sequence`](Self::input_sequence) first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `channel` is out of range.
     pub fn read_input_into<T: Sample>(
         &self,
         seq: u64,
@@ -193,10 +218,15 @@ impl AudioSlab {
         self.read_region(Direction::Input, seq, channel, output)
     }
 
-    /// Copy one channel of the output ring's slot for block `seq` into `output`.
+    /// Copies one channel of the output ring's slot for block `seq` into
+    /// `output`.
     ///
     /// Host side. Returns how many samples were copied — **not** whether they
     /// are this block's. Check [`output_sequence`](Self::output_sequence) first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `channel` is out of range.
     pub fn read_output_into<T: Sample>(
         &self,
         seq: u64,
@@ -206,8 +236,10 @@ impl AudioSlab {
         self.read_region(Direction::Output, seq, channel, output)
     }
 
-    /// Announce that block `seq`'s inputs are complete. Host side, once per
-    /// block, after the last [`write_input`](Self::write_input).
+    /// Announces that block `seq`'s inputs are complete.
+    ///
+    /// Host side, once per block, after the last
+    /// [`write_input`](Self::write_input).
     #[inline]
     pub fn publish_input(&self, seq: u64) {
         self.mmap
@@ -485,10 +517,9 @@ mod tests {
         assert_eq!(data, out);
     }
 
-    /// **The direct regression guard for the shipped bypass.** The host writes
-    /// its input and the server never answers; the output region must not hand
-    /// that input back. Before the reshape these two addresses were the same for
-    /// any plugin with one bus per direction — the common case.
+    /// **Guards against a silent bypass.** The host writes its input and the
+    /// server never answers; the output region must not hand that input back,
+    /// including for a plugin with one bus per direction — the common case.
     #[test]
     fn the_output_region_never_aliases_the_input_region() {
         let l = stereo_layout(64, SampleFormat::Float32);

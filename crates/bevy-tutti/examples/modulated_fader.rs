@@ -18,12 +18,11 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{
-    AudioGraphRes, AudioParam, AudioParamAppExt, CapturedControls, GraphReconcilePlugin,
-    TransportRes,
+    AudioGraphRes, AudioParam, AudioParamAppExt, GraphNode, GraphReconcilePlugin, TransportRes,
 };
 use bevy_tutti::modulation::{
-    LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
-    ModulationMatrix, TuttiModulationPlugin,
+    LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModulationMatrix,
+    TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::transport::Transport;
@@ -129,17 +128,16 @@ fn main() {
     app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>()
         .add_audio_param::<Hz, { UnitParam::Cutoff as u16 }>();
 
-    app.world_mut()
-        .resource_mut::<ModTargetRegistry>()
-        .register::<DistortionNode>();
-
-    // Registered above, captured here: the node's controls are taken from the
-    // unit once, before it moves into the graph, and bound with its `AudioNode`.
+    // Captured here: a `ParamNode`'s controls are its `ParamSet`, taken once,
+    // before it moves into the graph, and bound with its `AudioNode`; the set
+    // is addressed on the node, so an `AudioParam` writes through it (what
+    // `spawn_audio_node` does in one call).
     let unit = DistortionNode::new(ShapeKind::Tanh, 1.0);
-    let controls = CapturedControls::capture(app.world(), &unit);
+    let controls = unit.captured();
     let node = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let node = graph.insert(unit);
+        let (node, params) = graph.insert(unit);
+        graph.set_node_params(node, DistortionNode::params(&params));
         graph.set_outputs_from(node);
         node
     };

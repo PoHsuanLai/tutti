@@ -190,7 +190,7 @@ impl HardwareMidiInputs {
         }
     }
 
-    /// Set the [`SampleRate`] the arrival-timestamp → `frame_offset` conversion
+    /// Sets the [`SampleRate`] the arrival-timestamp → `frame_offset` conversion
     /// divides by.
     ///
     /// Call before starting the audio stream. A stale rate does not drop events;
@@ -214,7 +214,7 @@ impl HardwareMidiInputs {
         port_index
     }
 
-    /// Create an input port named `name` and return its index.
+    /// Creates an input port named `name` and returns its index.
     ///
     /// The port starts **active**. Control-thread only: this clones the port vec
     /// to append, so it allocates and must not be called from the audio thread.
@@ -261,7 +261,7 @@ impl HardwareMidiInputs {
             .collect()
     }
 
-    /// Set whether the drain reads this port. Returns `false` when
+    /// Sets whether the drain reads this port. Returns `false` when
     /// `port_index` names no port (always so for [`PortType::Output`]).
     ///
     /// Deactivating does not drain or clear the ring: a driver keeps pushing and
@@ -288,7 +288,7 @@ impl HardwareMidiInputs {
             .unwrap_or(false)
     }
 
-    /// Drain all active input port rings for this block, converting arrival
+    /// Drains all active input port rings for this block, converting arrival
     /// timestamps to sample-accurate `frame_offset`s, and hand each event to
     /// `visit` as `(port_index, event)`. Returns how many were visited.
     ///
@@ -362,7 +362,7 @@ impl HardwareMidiInputs {
             .map(|port| port.input_producer_handle())
     }
 
-    /// Push one event into `port_index`'s ring, timestamped `Instant::now()`.
+    /// Pushes one event into `port_index`'s ring, timestamped `Instant::now()`.
     ///
     /// Returns `false` when the ring is full (the event is dropped) or when
     /// `port_index` names no port — a caller wanting to tell those apart should
@@ -389,7 +389,7 @@ impl Default for HardwareMidiInputs {
 }
 
 impl tutti_midi_types::MidiIn for HardwareMidiInputs {
-    /// Drain every connected hardware input for this block into `buffer`.
+    /// Drains every connected hardware input for this block into `buffer`.
     ///
     /// `block_size` drives the timestamp → `frame_offset` conversion (it is the
     /// block's `nframes`). RT-safe: the events already sit in the manager's

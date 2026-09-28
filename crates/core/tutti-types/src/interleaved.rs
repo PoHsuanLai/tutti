@@ -1,56 +1,44 @@
 //! [`Interleaved`] / [`InterleavedMut`] — a flat buffer that carries its own
-//! frame width.
-//!
-//! [`ChannelLayout`] answers *how many* channels. It does not answer *how a
-//! buffer is laid out against that width*, and until this type existed the
-//! answer was written in prose at some fifteen sites — "flat interleaved at
-//! `channels` samples per frame" — and enforced by the compiler at none.
-//!
-//! # The bug this prevents
-//!
-//! A flat `&[f32]` plus a separate `channels: usize` reads identically whether
-//! an index is a *frame* index or a *sample* index. The two differ by a factor
-//! of the width, so a confusion between them is silent at stereo (where a
-//! stride bug and a correct stride coincide for several access patterns) and
-//! catastrophic at six. It has already shipped here at least once: a reverse
-//! refill called `Vec::reverse` on an interleaved buffer, which reversed
-//! individual *samples* and swapped every channel pair, once the element type
-//! stopped being `[f32; 2]`.
-//!
-//! So the width travels **with** the buffer, and [`window`](Interleaved::window)
-//! — the only way to take a sub-range — is denominated in frames and applies
-//! the stride itself. No call site multiplies by hand.
-//!
-//! # Why this carries a layout and [`crate::downmix`]'s frame helpers do not
+//! frame width — and [`StereoPlanes`].
 //!
 //! A *frame* (`&[f32]` whose length **is** the width, as
-//! [`fold_frame`](crate::fold_frame) takes) is already self-describing — there
-//! is nothing a wrapper could add. A *buffer* is not: its length is
-//! `frames × width`, and neither factor is recoverable from the slice alone.
-//! Each type therefore carries exactly the information its representation
-//! cannot recover, and nothing more. A planar buffer (`&[&[f32]]`) is
-//! self-describing in the same way a frame is — `planes.len()` *is* the count —
-//! which is why the planar side of this vocabulary does **not** carry a layout.
-//! Adding one there would create a second source of truth about width, and that
-//! duplication has its own shipped-bug history in the plugin transport.
-//!
-//! # Not for inner loops
-//!
-//! Take one at a **signature**, then destructure with
-//! [`samples`](Interleaved::samples) at the top of the body and index raw below.
-//! Every RT function in the engine can afford the type under that rule; none can
-//! afford a bounds-checked accessor per sample. `disk_voice`'s interpolator taps
-//! its history four times per output channel per sample — over a million reads a
-//! second at width six — and sites like it keep a cached `usize` stride
-//! deliberately.
+//! [`fold_frame`](crate::fold_frame) takes) and a planar buffer (`&[&[f32]]`,
+//! whose `len()` is the width) are already self-describing, so they carry no
+//! layout. An interleaved buffer is not: its length is `frames × width`, and
+//! neither factor is recoverable from the slice alone. Each type carries
+//! exactly the information its representation cannot recover, so there is
+//! never a second source of truth about width.
 
 use crate::ChannelLayout;
 use core::ops::Range;
 
 /// A borrowed run of interleaved frames that knows its own width.
 ///
-/// See this module header for why the width lives here rather than beside
-/// the buffer, and for the rule about inner loops.
+/// A flat `&[f32]` plus a separate `channels: usize` reads identically whether
+/// an index is a *frame* index or a *sample* index. The two differ by a factor
+/// of the width, so confusing them is silent at stereo and catastrophic at six
+/// channels. Here the width travels **with** the buffer:
+/// [`len`](Self::len) counts frames, and [`window`](Self::window), the only way
+/// to take a sub-range, is denominated in frames and applies the stride itself.
+///
+/// # Not for inner loops
+///
+/// Take one at a **signature**, then destructure with
+/// [`samples`](Self::samples) and [`stride`](Self::stride) at the top of the
+/// body and index raw below. A bounds-checked accessor per sample is too slow
+/// for a hot loop.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::{ChannelLayout, Interleaved};
+///
+/// let data = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]; // three stereo frames
+/// let buf = Interleaved::new(&data, ChannelLayout::STEREO);
+/// assert_eq!(buf.len(), 3); // frames, not samples
+/// assert_eq!(buf.frame(1), &[0.3, 0.4]);
+/// assert_eq!(buf.window(1..3).samples(), &[0.3, 0.4, 0.5, 0.6]);
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct Interleaved<'a> {
     data: &'a [f32],
@@ -58,17 +46,17 @@ pub struct Interleaved<'a> {
 }
 
 impl<'a> Interleaved<'a> {
-    /// Wrap `data` as frames `layout` wide.
+    /// Wraps `data` as frames `layout` wide.
     ///
     /// A **trailing partial frame is kept in `data` but not counted** by
-    /// [`len`](Self::len), matching [`fold_buffer_to_mono`](crate::fold_buffer_to_mono)'s
-    /// long-standing `chunks_exact` behaviour. Rejecting a ragged length here
-    /// would be the stricter contract, but it is not the one the engine has:
-    /// a chunked caller legitimately hands over a buffer that ends mid-frame and
-    /// carries the remainder forward itself.
+    /// [`len`](Self::len), matching
+    /// [`fold_buffer_to_mono`](crate::fold_buffer_to_mono). A chunked caller
+    /// legitimately hands over a buffer that ends mid-frame and carries the
+    /// remainder forward itself.
     ///
     /// # Panics
-    /// If `layout` has no channels — a zero width makes the frame count
+    ///
+    /// If `layout` has no channels: a zero width makes the frame count
     /// undefined rather than merely empty.
     #[inline]
     pub fn new(data: &'a [f32], layout: ChannelLayout) -> Self {
@@ -79,41 +67,47 @@ impl<'a> Interleaved<'a> {
         Self { data, layout }
     }
 
-    /// The width these frames carry.
+    /// Returns the width these frames carry.
     #[inline]
     pub fn layout(&self) -> ChannelLayout {
         self.layout
     }
 
-    /// The interleave stride — `layout().count()`, as the `usize` the indexing
-    /// arithmetic wants. Named so a hoisted `let ch = …` at the top of an RT
-    /// function reads as the deliberate thing it is.
+    /// Returns the interleave stride: `layout().count()`, as the `usize` the
+    /// indexing arithmetic wants.
     #[inline]
     pub fn stride(&self) -> usize {
         self.layout.count() as usize
     }
 
-    /// Frame count — **not** sample count. A trailing partial frame is not
-    /// counted; see [`new`](Self::new).
+    /// Returns the frame count, **not** the sample count.
+    ///
+    /// A trailing partial frame is not counted; see [`new`](Self::new).
     #[inline]
     pub fn len(&self) -> usize {
         self.data.len() / self.stride()
     }
 
-    /// Whether there is not even one whole frame.
+    /// Returns whether there is not even one whole frame.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// The flat interleaved samples — the RT escape hatch, and what encoders,
-    /// ring buffers and device callbacks actually want.
+    /// Returns the flat interleaved samples: the RT escape hatch, and what
+    /// encoders, ring buffers and device callbacks want.
     #[inline]
     pub fn samples(&self) -> &'a [f32] {
         self.data
     }
 
-    /// The sub-run covering a **frame** range. The `× stride` happens here, once.
+    /// Returns the sub-run covering a **frame** range.
+    ///
+    /// The `× stride` happens here, once.
+    ///
+    /// # Panics
+    ///
+    /// If the range is out of bounds, like slice indexing.
     #[inline]
     pub fn window(&self, frames: Range<usize>) -> Interleaved<'a> {
         let ch = self.stride();
@@ -123,14 +117,18 @@ impl<'a> Interleaved<'a> {
         }
     }
 
-    /// One frame, by frame index.
+    /// Returns one frame, by frame index.
+    ///
+    /// # Panics
+    ///
+    /// If `i` is not below [`len`](Self::len).
     #[inline]
     pub fn frame(&self, i: usize) -> &'a [f32] {
         let ch = self.stride();
         &self.data[i * ch..(i + 1) * ch]
     }
 
-    /// Iterate frame by frame. Each item is a `stride()`-long slice, which is
+    /// Iterates frame by frame. Each item is a `stride()`-long slice, which is
     /// exactly what [`fold_frame`](crate::fold_frame) takes, so a fold over a
     /// whole buffer needs no index arithmetic at all.
     #[inline]
@@ -138,26 +136,22 @@ impl<'a> Interleaved<'a> {
         self.data.chunks_exact(self.stride())
     }
 
-    /// Fold every frame to a single mono sample, per the ITU/Dolby matrices.
+    /// Folds every frame to a single mono sample, per the ITU/Dolby matrices.
     ///
-    /// The method form of [`fold_buffer_to_mono`](crate::fold_buffer_to_mono),
-    /// which it delegates to: the free function takes exactly this type's two
-    /// fields, so a caller holding an `Interleaved` should never have to take
-    /// them apart to pass them back in. The free function stays because it also
-    /// serves callers that only ever hold a loose `(&[f32], ChannelLayout)`
-    /// pair — the app-side WASM bridge among them.
-    ///
-    /// A trailing partial frame is ignored, matching [`len`](Self::len).
+    /// The method form of [`fold_buffer_to_mono`](crate::fold_buffer_to_mono).
+    /// Allocates the result; [`fold_to_mono_into`](Self::fold_to_mono_into)
+    /// reuses a buffer instead. A trailing partial frame is ignored, matching
+    /// [`len`](Self::len).
     pub fn fold_to_mono(&self) -> Vec<f32> {
         crate::fold_buffer_to_mono(self.data, self.layout)
     }
 
-    /// Fold to mono into a caller-owned buffer, reusing its allocation.
+    /// Folds to mono into a caller-owned buffer, reusing its allocation.
     ///
     /// `out` is cleared first, so it is a destination and not an accumulator.
-    /// This exists because [`fold_to_mono`](Self::fold_to_mono) allocates once
-    /// per call, and the streaming consumers — waveform peaks above all — run it
-    /// per chunk on a path where that allocation is the only one left.
+    /// It grows only when it has less capacity than [`len`](Self::len), so a
+    /// streaming consumer that reuses one `out` stops allocating once it has
+    /// seen its largest chunk.
     pub fn fold_to_mono_into(&self, out: &mut Vec<f32>) {
         out.clear();
         let ch = self.stride();
@@ -169,13 +163,12 @@ impl<'a> Interleaved<'a> {
         out.extend(self.data.chunks_exact(ch).map(crate::fold_frame_to_mono));
     }
 
-    /// Deinterleave into caller-owned planes, reusing their allocations.
+    /// Deinterleaves into caller-owned planes, reusing their allocations.
     ///
-    /// `_into` rather than returning `Vec`s because the conversion is per-block
-    /// on paths that must not allocate: every existing hand-rolled version of
-    /// this loop already `clear()`s and reuses. Planes past `stride()` are
-    /// cleared, so a wider `planes` does not carry stale data from a previous
-    /// block.
+    /// Each plane is cleared and refilled; it grows only when it has less
+    /// capacity than [`len`](Self::len). Planes past `stride()` are cleared, so
+    /// a wider `planes` does not carry stale data from a previous block. Extra
+    /// channels beyond `planes.len()` are skipped.
     pub fn deinterleave_into(&self, planes: &mut [Vec<f32>]) {
         let ch = self.stride();
         let frames = self.len();
@@ -200,10 +193,12 @@ pub struct InterleavedMut<'a> {
 }
 
 impl<'a> InterleavedMut<'a> {
-    /// Wrap `data` as writable frames `layout` wide. Same ragged-tail contract
-    /// as [`Interleaved::new`].
+    /// Wraps `data` as writable frames `layout` wide.
+    ///
+    /// Same ragged-tail contract as [`Interleaved::new`].
     ///
     /// # Panics
+    ///
     /// If `layout` has no channels.
     #[inline]
     pub fn new(data: &'a mut [f32], layout: ChannelLayout) -> Self {
@@ -214,37 +209,37 @@ impl<'a> InterleavedMut<'a> {
         Self { data, layout }
     }
 
-    /// The width these frames carry.
+    /// Returns the width these frames carry.
     #[inline]
     pub fn layout(&self) -> ChannelLayout {
         self.layout
     }
 
-    /// The interleave stride as a `usize`.
+    /// Returns the interleave stride as a `usize`.
     #[inline]
     pub fn stride(&self) -> usize {
         self.layout.count() as usize
     }
 
-    /// Frame count — **not** sample count.
+    /// Returns the frame count, **not** the sample count.
     #[inline]
     pub fn len(&self) -> usize {
         self.data.len() / self.stride()
     }
 
-    /// Whether there is not even one whole frame.
+    /// Returns whether there is not even one whole frame.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// The flat interleaved samples — the RT escape hatch.
+    /// Returns the flat interleaved samples: the RT escape hatch.
     #[inline]
     pub fn samples_mut(&mut self) -> &mut [f32] {
         self.data
     }
 
-    /// Reborrow as a read-only view.
+    /// Reborrows as a read-only view.
     #[inline]
     pub fn as_ref(&self) -> Interleaved<'_> {
         Interleaved {
@@ -253,14 +248,18 @@ impl<'a> InterleavedMut<'a> {
         }
     }
 
-    /// One frame, by frame index.
+    /// Returns one frame mutably, by frame index.
+    ///
+    /// # Panics
+    ///
+    /// If `i` is not below [`len`](Self::len).
     #[inline]
     pub fn frame_mut(&mut self, i: usize) -> &mut [f32] {
         let ch = self.stride();
         &mut self.data[i * ch..(i + 1) * ch]
     }
 
-    /// Iterate frame by frame, mutably. Each item is `stride()` long — the
+    /// Iterates frame by frame, mutably. Each item is `stride()` long — the
     /// shape [`fold_frame`](crate::fold_frame) writes into.
     #[inline]
     pub fn frames_mut(&mut self) -> impl Iterator<Item = &mut [f32]> {
@@ -277,16 +276,15 @@ impl<'a> InterleavedMut<'a> {
 /// A planar buffer is normally `&[&[f32]]`, where `planes.len()` is the width.
 /// But mid/side and L/R correlation are only *defined* at exactly two, so an
 /// N-wide type would force those functions to answer "what if six?" — a question
-/// they do not have today. The arity stays in the type.
+/// they cannot answer. The arity stays in the type.
 ///
 /// # Why construction is fallible
 ///
 /// The pair's shared length is the whole point. A `(left, right)` signature
 /// that derives `frames = left.len()` and never checks `right` divides a sum of
-/// squares by the wrong count and publishes a quietly wrong RMS —
-/// `AtomicAmplitude::measure` had exactly that shape, unreachable only because
-/// its single caller happened to pass two equal prefixes. Fallible construction
-/// turns "the lengths match" into an obligation the compiler enforces.
+/// squares by the wrong count and publishes a quietly wrong RMS. Fallible
+/// construction turns "the lengths match" into an obligation the compiler
+/// enforces.
 #[derive(Clone, Copy, Debug)]
 pub struct StereoPlanes<'a> {
     left: &'a [f32],
@@ -294,7 +292,7 @@ pub struct StereoPlanes<'a> {
 }
 
 impl<'a> StereoPlanes<'a> {
-    /// Pair two planes, or `None` if their lengths disagree.
+    /// Pairs two planes, or returns `None` if their lengths disagree.
     ///
     /// Fallible rather than panicking because the audio thread is a bad place to
     /// unwind: a caller that cannot form the pair should skip the measurement,
@@ -304,25 +302,26 @@ impl<'a> StereoPlanes<'a> {
         (left.len() == right.len()).then_some(Self { left, right })
     }
 
-    /// Frames in each plane — one number, because there is only one.
+    /// Returns the frames in each plane (one number, because there is only
+    /// one).
     #[inline]
     pub fn frames(&self) -> usize {
         self.left.len()
     }
 
-    /// Whether the planes are empty.
+    /// Returns whether the planes are empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.left.is_empty()
     }
 
-    /// The left plane.
+    /// Returns the left plane.
     #[inline]
     pub fn left(&self) -> &'a [f32] {
         self.left
     }
 
-    /// The right plane.
+    /// Returns the right plane.
     #[inline]
     pub fn right(&self) -> &'a [f32] {
         self.right

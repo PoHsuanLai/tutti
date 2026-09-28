@@ -26,7 +26,10 @@
 //! // A graph with no device: its audio side stays here, and `render_frame`
 //! // plays it.
 //! let mut graph = AudioGraphRes::headless(0, 1);
-//! let node = graph.insert(unit);
+//! // A `ParamNode`: its controls are its `ParamSet`, addressed on the node so
+//! // a param write lands on its cell (what `spawn_audio_node` does).
+//! let (node, params) = graph.insert(unit);
+//! graph.set_node_params(node, Some(params));
 //! graph.set_sample_rate(SampleRate(48_000.0));
 //!
 //! let mut app = App::new();
@@ -41,7 +44,7 @@
 //!
 //! let entity = app.world_mut().spawn((node, DriveParam::new(Drive(4.0)))).id();
 //! app.update();
-//! // The write rides the node's settings ring, drained at the start of its
+//! // The write lands on the cell, which the node reads at the start of its
 //! // next block: render one.
 //! app.world_mut().resource_mut::<AudioGraphRes>().render_frame(&mut [0.0]);
 //!
@@ -52,19 +55,16 @@
 //! # Why this can be generic at all
 //!
 //! Pushing a param needs no node-type dispatch:
-//! [`AudioGraphRes::set_param`] carries a `(param, value)` pair to the
-//! addressed node, and the unit's own `set` decodes it — a unit ignores
-//! params it does not own. That is the opposite of resolving a *modulation
-//! target*, which needs the concrete node type (see
-//! `modulation::target`). Reconciling is uniform; resolving is not.
+//! [`AudioGraphRes::set_param`] writes a `(param, value)` pair through the
+//! node's [`ParamSet`](tutti_graph::ParamSet), and a node without that param
+//! takes nothing.
 //!
 //! # Modulated params
 //!
-//! A param the modulation driver owns must not be written here — modulation
-//! flushes `base + Σ layers` into the same atomic every frame, so a plain write
-//! is overwritten by the next flush and the fader snaps back. The reconciler
-//! asks `ModulationMatrix::is_modulated` and routes the authored value to the
-//! accumulator's *base* instead, which is what makes the two writers one.
+//! A param the control-rate modulation driver owns is not written directly:
+//! the driver writes `base + Σ layers` into the same cell every frame, so a
+//! plain write would snap back. The reconciler routes the authored value to
+//! the accumulator's *base* instead (see [`write_param`]).
 
 use bevy_app::{App, Update};
 use bevy_ecs::prelude::*;
@@ -98,7 +98,7 @@ pub struct AudioParam<U: Unit<Raw = f32>, const P: u16> {
 }
 
 impl<U: Unit<Raw = f32>, const P: u16> AudioParam<U, P> {
-    /// A param holding `value`.
+    /// Creates a param holding `value`.
     pub fn new(value: U) -> Self {
         Self { value }
     }
@@ -120,72 +120,30 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
     }
 }
 
-/// Write one authored scalar to `param` on `node`, respecting modulation.
+/// Writes one authored scalar to `param` on `node`, respecting modulation.
 ///
-/// **The single home for "an authored value reaches the graph".** A param write
-/// is two branches, not one, and the order is fixed:
+/// The one path by which an authored value reaches the graph. It is public for
+/// params whose address is known only at runtime, which an [`AudioParam`]
+/// cannot carry; the [`AudioParam`] reconciler calls it too. The value goes:
 ///
-/// 1. a **control-rate modulated** param has a second writer, so the value goes
-///    to the accumulator's *base* and rides under the modulation;
-/// 2. any other goes straight to the node's own control — including an
-///    **audio-rate** modulated one: the graph's param modulation rides on the
-///    node's own control as its base (design doc 013 item 6), so the authored
-///    value lands where the modulation reads it, and through the settings ring
-///    a fork records. (It used to go to a base chain's cell instead, which a
-///    fork could not see; that chain is gone.)
+/// 1. for a param **modulated at control rate**, to the modulation
+///    accumulator's *base*, where it rides under the modulation. The driver
+///    writes `clamp(base + Σ layers)` into the node's cell every frame, so a
+///    direct write would snap back on the next frame. A fork of the node (an
+///    export) starts from the base too;
+/// 2. for any other param, including one **modulated at audio rate**, straight
+///    to the node's own control ([`AudioGraphRes::set_param`]). The graph's
+///    audio-rate modulation rides on that control as its base.
 ///
-/// The two are mutually exclusive by construction — `ModDelivery` is one axis,
-/// and `a_per_sample_route_is_not_also_claimed_by_the_driver` pins that the
-/// driver does not claim an audio-rate param.
+/// Call it on the main thread (from a system); the node reads the value at the
+/// start of its next block. The `matrix` argument exists only with the
+/// `modulation` feature.
 ///
-/// Taking only the first silently drops every write to an unmodulated param —
-/// which is why `ModulationMatrix::set_base` is crate-private.
-///
-/// Taking only the second loses every write to a *modulated* param, and the
-/// loss is **deterministic rather than racy** — worth stating precisely, because
-/// the shape of the failure decides how you would find it.
-/// `modulation::drive` mirrors `clamp(base + Σ layers)` into the node's atomic
-/// every frame, so a direct write to that cell is overwritten by the next flush
-/// unconditionally. The symptom is a control that snaps back, reproducible on
-/// demand.
-///
-/// **System ordering is not what saves this, so do not try to fix it with a
-/// `.before()`.** `drive` and the param reconcilers do share
-/// `GraphReconcileSystems::Params` with no ordering between them, but the two
-/// writers never contend: `tutti_mod::AtomicTarget` holds a mutex-guarded
-/// `LayeredCurve`, and they touch *different fields* of it — `set_base` the
-/// base, `accumulate` a keyed layer — each recomputing the composite under the
-/// same lock. The writes commute and both survive in either order
-/// (`AtomicTarget`'s own `set_base_re_mirrors` pins exactly that). Adding an
-/// ordering constraint here would buy nothing and imply a hazard that is not
-/// there.
-///
-/// The engine tests the property that matters — that an authored write to a
-/// modulated param lands on the base and therefore *survives* — in
-/// `set_base_moves_a_modulated_param_without_fighting_the_driver`. This
-/// function's job is to route the write to the right field; the accumulator
-/// handles the rest.
-///
-/// # Why this is a free function and not a method on a component
-///
-/// [`AudioParam<U, P>`] is the statically-addressed carrier, and it is a good
-/// one: `U` stops a cutoff being assigned seconds and `P` stops a filter cutoff
-/// and an LFO rate — both `Hz` — being confused. But a const generic can only
-/// carry an address that is a property of the **code**, and most params here are
-/// a property of the **data**: a processor kind decides its key set at load
-/// time, a hosted plugin at instantiation. (The same limit that removed
-/// `AudioIn<S, const CH: usize>`; see `CLAUDE.md`.)
-///
-/// So three call sites had to route around the component, and each re-derived
-/// this write — one of them without the modulation branch at all. Extracting the
-/// write rather than generalising the component keeps `AudioParam`'s type safety
-/// for the params that genuinely have static addresses, and gives the runtime
-/// ones a door that is not a reimplementation.
-///
-/// **Hosted plugin parameters do not belong here.** They are runtime-discovered
-/// `u32` ids reached over a different transport (`set_parameter_rt` across the
-/// IPC bridge), not `AudioGraphRes::set_param` — a different write, not a
-/// different address for the same one.
+/// Hosted plugin parameters do not go through here: they are
+/// runtime-discovered `u32` ids with a transport of their own.
+// Ordering against `modulation::drive` does not matter: `set_base` and the
+// driver's `accumulate` touch different fields of the same mutex-guarded
+// `LayeredCurve` and each recomputes the composite, so the writes commute.
 pub fn write_param(
     graph: &mut AudioGraphRes,
     #[cfg(feature = "modulation")] matrix: &crate::modulation::ModulationMatrix,
@@ -215,14 +173,11 @@ pub fn write_param(
     graph.set_param(*node, param, value);
 }
 
-/// Push every changed [`AudioParam<U, P>`] into its node.
+/// Pushes every changed [`AudioParam<U, P>`] into its node.
 ///
-/// Change-detection-gated, so a steady frame does no work at all. Values reach
-/// the audio thread through `AudioGraphRes::set_param`, which enqueues rather
-/// than mutating — the RT-correct path, and the reason no downcast is needed.
-///
-/// The write itself is [`write_param`]'s; this system's job is the query and the
-/// `P` → [`UnitParam`] conversion.
+/// The system [`add_audio_param`](AudioParamAppExt::add_audio_param)
+/// schedules, in [`GraphReconcileSystems::Params`]. Change-detection-gated, so
+/// a steady frame does no work. Each write goes through [`write_param`].
 #[allow(
     clippy::type_complexity,
     reason = "Bevy queries are tuple-shaped by design"
@@ -259,7 +214,8 @@ struct RegisteredAudioParams(std::collections::HashSet<(core::any::TypeId, u16)>
 
 /// Registers the reconciler for one [`AudioParam`] type.
 pub trait AudioParamAppExt {
-    /// Reconcile `AudioParam<U, P>` into the graph every frame it changes.
+    /// Schedules [`reconcile_audio_param`] for `AudioParam<U, P>`, so the
+    /// component reaches the graph every frame it changes.
     ///
     /// Idempotent — registering the same `(U, P)` twice schedules one system —
     /// so a host and a library plugin can both declare a param they share.

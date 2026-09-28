@@ -241,10 +241,25 @@ impl<M: Modulator + Send + Sync> ErasedModulator for Sourced<M> {
     }
 }
 
-/// Once-per-frame modulation producer. Holds the source registry, a routing
-/// snapshot handle, and a router; [`run`](Self::run) samples + dispatches.
+/// The once-per-frame modulation producer: samples every routed source and
+/// writes its shaped offset into each target.
 ///
-/// The source registry indices must line up with [`crate::ModEdge::source`].
+/// Holds the source registry ([`set_sources`](Self::set_sources)), a handle to
+/// the published [`ModRoutingSnapshot`] and a [`ModRouter`]
+/// ([`set_router`](Self::set_router)); [`run`](Self::run) does one frame.
+/// Source indices must line up with [`ModEdge::source`](crate::ModEdge::source).
+///
+/// - Each source with at least one edge is sampled **once per frame** and its
+///   value fanned across all its edges, so a source driving three targets
+///   advances its phase and state exactly once. A source with no edges is not
+///   advanced.
+/// - When an edge disappears from the routing (a hot-swap through
+///   [`ModRoutingTable`](crate::ModRoutingTable)), its last offset is cleared
+///   from the target on the next `run`, so nothing is left stuck.
+///
+/// Runs on a control thread (a game or UI frame loop), not the audio thread.
+/// After the first few frames `run` reuses its buffers and does not allocate.
+/// [`ModMatrix::build`](crate::ModMatrix::build) assembles one for you.
 pub struct ModPreFrame {
     sources: Vec<Box<dyn ErasedModulator>>,
     routing: Arc<RtPublish<ModRoutingSnapshot>>,

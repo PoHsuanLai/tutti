@@ -5,11 +5,11 @@
 //!
 //! Not an `ArcSwap`: the audio thread is the *writer* here (once per block),
 //! and `store` would allocate the new snapshot and free the retired one inside
-//! the callback — what CLAUDE.md's "Publishing to the Audio Thread" forbids.
+//! the callback, which the audio thread must never do.
 //! `RtPublish` is control-thread→audio-thread and also takes ownership of a
 //! fresh value, so it does not fit either.
 //!
-//! Re-entrancy is the design constraint: the plugin calls `audioMasterGetTime`
+//! Re-entrancy is the governing constraint: the plugin calls `audioMasterGetTime`
 //! from inside `processReplacing`, on the same thread that just wrote, and a
 //! seqlock reader cannot make progress against a write in flight on its own
 //! thread. [`Vst2Instance::process_f32`] runs `update_transport` to completion
@@ -63,7 +63,7 @@ impl TransportCell {
         }
     }
 
-    /// Publish a new snapshot, overwriting in place — nothing is allocated or
+    /// Publishes a new snapshot, overwriting in place — nothing is allocated or
     /// freed. Single-writer only; see the `Sync` safety note on the type.
     pub(crate) fn write(&self, next: vst::api::TimeInfo) {
         let seq = self.seq.load(Ordering::Relaxed);
@@ -89,7 +89,7 @@ impl TransportCell {
         self.seq.store(seq.wrapping_add(2), Ordering::Release);
     }
 
-    /// Read the current snapshot, or `None` if none has been published yet or
+    /// Reads the current snapshot, or `None` if none has been published yet or
     /// the value could not be read cleanly within [`READ_RETRY_LIMIT`] tries.
     ///
     /// Wait-free: bounded retries, never blocks. Safe to call re-entrantly from

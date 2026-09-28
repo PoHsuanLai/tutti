@@ -40,8 +40,8 @@ pub const SYSEX8_STATUS_END: u8 = 0x3;
 pub const SYSEX8_BYTES_ABORT: u8 = 0xF;
 
 impl MidiEvent {
-    /// Build SysEx 8-bit packets (UMP MT 0x5, 128-bit each) carrying `data`, and
-    /// push them onto `out`. `data` is the raw 8-bit payload (no 0xF0/0xF7
+    /// Builds SysEx 8-bit packets (UMP MT 0x5, 128-bit each) carrying `data`, and
+    /// pushes them onto `out`. `data` is the raw 8-bit payload (no 0xF0/0xF7
     /// delimiters — SysEx8 is delimiter-free). `stream_id` groups the packets of
     /// one logical message so an interleaved second SysEx8 stream stays distinct.
     /// Payloads ≤ 13 bytes produce a single packet; longer payloads are
@@ -68,7 +68,7 @@ impl MidiEvent {
         }
     }
 
-    /// Read the `(status, stream_id)` of a single SysEx8 packet (UMP MT 0x5)
+    /// Reads the `(status, stream_id)` of a single SysEx8 packet (UMP MT 0x5)
     /// directly from its first word, without a full midi2 decode. `None` for any
     /// event that isn't a type-0x5 packet. Use [`sysex8_message`] to recover the
     /// reassembled payload of a whole (possibly multi-packet) message.
@@ -77,7 +77,7 @@ impl MidiEvent {
             .map(|(status, stream_id, _)| (status, stream_id))
     }
 
-    /// Read `(status, stream_id, byte_count)` from a SysEx8 packet's first word.
+    /// Reads `(status, stream_id, byte_count)` from a SysEx8 packet's first word.
     /// `None` for any event that isn't a type-0x5 packet.
     ///
     /// The byte count is what [`sysex8_status`](Self::sysex8_status) omits, and
@@ -107,7 +107,7 @@ impl MidiEvent {
     }
 }
 
-/// Reassemble a SysEx8 message from the packets in `events` (in order) into its
+/// Reassembles a SysEx8 message from the packets in `events` (in order) into its
 /// `(stream_id, payload)`, or `None` if the events don't form one valid SysEx8
 /// message. The inverse of [`MidiEvent::sysex8_fragments`]: pass back the same
 /// events (a `Single` packet, or a `Start … End` run sharing one `stream_id`).

@@ -1,14 +1,8 @@
-//! The native graph's exports, pinned to what fundsp's `Net` rendered for
-//! the same units.
+//! The graph's exports, pinned by analytic figures and golden digests.
 //!
 //! # The oracles
 //!
-//! Until doc 013 Phase 3 PR 14 this file compared tutti-export's two backends,
-//! `RenderGraph::Net` and the native graph, bit for bit; PR 14 kept the
-//! comparisons against `net_render`, a test-only `Net` renderer here. PR 15
-//! retired that last `Net` oracle with the engine's `Net` backend: each
-//! comparison is now pinned to what it stood for, case by case, and two
-//! kinds of check sit side by side.
+//! Two kinds of check sit side by side.
 //!
 //! - **Portable, on every target:** an analytic figure where the signal has
 //!   one (a sine's samples, a DC level, a lookahead's frames, a direct
@@ -18,9 +12,8 @@
 //!   trimmed render is the untrimmed one shifted by the trim; a fork of a
 //!   graph renders the fresh graph).
 //! - **Golden digests, Linux/glibc only:** FNV-1a over the planes' (or the
-//!   file's) bits, recorded from the native render on the commit that
-//!   retired the `Net` oracle, which rendered exactly what the `Net` did
-//!   (that was asserted there, bit for bit). They catch the drift an analytic
+//!   file's) bits, recorded from the graph's render against an independent
+//!   reference renderer it matched bit for bit. They catch the drift an analytic
 //!   tolerance lets through (an output scaled by `1 + f32::EPSILON`), but
 //!   they pin `sin`/`cos`/`exp`, which are libm quality-of-implementation and
 //!   differ in the last ulp between C runtimes (the reason
@@ -34,18 +27,16 @@
 //!
 //! # Blocks
 //!
-//! The graph renders `GRAPH_MAX_BLOCK` (1024) frames a block. A `Legacy` unit
-//! is run in 64-frame chunks from each block's start, so at a multiple of 64
-//! every chunk lands on the frames a `Net`'s 64-frame block did, and a unit
-//! whose output depends on the call partition (the VBAP panner, which ramps
-//! its gains across each call) rendered the same. That is why
-//! `GRAPH_MAX_BLOCK` is a multiple of 64; the durations below are
-//! deliberately *not*, so the last block is short.
+//! The graph renders `GRAPH_MAX_BLOCK` (1024) frames a block and every node
+//! renders whole blocks. A node whose output depends on the call partition
+//! (the VBAP panner, which ramps its gains across each call) is pinned at that
+//! partition (see `a_surround_mix_folds_to_every_width`). The durations below
+//! are deliberately *not* multiples, so the last block is short.
 //!
 //! # What these do not cover
 //!
-//! `Net`'s `ping` seeding of noise generators has no graph counterpart (doc
-//! 013), so no case here uses a seeded generator.
+//! The graph has no seeding of noise generators, so no case here uses a
+//! seeded generator.
 
 #![cfg(feature = "wav")]
 
@@ -58,7 +49,9 @@ use tutti_export::{
     BitDepth, ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock, Normalize,
     RenderConfig, RenderGraph, Rendered, Resample, GRAPH_MAX_BLOCK,
 };
-use tutti_graph::{ForkMode, ForkTarget, GraphBuilder, Legacy, Prepare, Unforkable};
+use tutti_graph::{
+    Cx, ForkMode, ForkTarget, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
+};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::{Db, Samples};
 
@@ -125,11 +118,10 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// The builder's graph as an export gets it from a live one: built at a
 /// device's block, then forked offline at the render's.
 ///
-/// A fork **resets** every unit it makes (fundsp's sequence: clone, isolate,
-/// rebind, reset), which is what the `Net` export did to the `Net` it
-/// cloned. For most units a reset one renders what a fresh one does; not
-/// for all: a reset `VbapPannerNode` starts on its commanded bearing where a
-/// fresh one glides there from front-centre.
+/// A fork **resets** every unit it makes (each node's fork source hands a
+/// reset copy). For most units a reset one renders what a fresh one does; not for all: a reset
+/// `VbapPannerNode` starts on its commanded bearing where a fresh one glides
+/// there from front-centre.
 fn forked(g: GraphBuilder) -> RenderGraph {
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
     let timeline: OfflineTransport =
@@ -176,11 +168,11 @@ fn assert_same(what: &str, a: &[Vec<f32>], b: &[Vec<f32>]) {
 /// A stereo sine at half scale, `Osc` wired to both outputs.
 fn sine(freq: f32) -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let k = g.add_unit(Box::new(
+    let k = g.add(
         Osc::sine(Hz(freq))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
-    ));
+    );
     g.pipe_output(k);
     g
 }
@@ -196,7 +188,7 @@ fn sine_at(freq: f64, amplitude: f64, i: usize) -> f64 {
 /// A mono DC level fanned to stereo.
 fn dc(level: f32) -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let k = g.add_unit(Box::new(Const::mono(level)));
+    let k = g.add(Const::mono(level));
     g.pipe_output(k);
     g
 }
@@ -204,15 +196,15 @@ fn dc(level: f32) -> GraphBuilder {
 /// A tone through a lookahead limiter: a latency-bearing chain.
 fn limited() -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let src = g.add_unit(Box::new(
+    let src = g.add(
         Osc::sine(Hz(220.0))
             .with_amplitude(Amplitude(0.9))
             .with_layout(ChannelLayout::STEREO),
-    ));
-    let lim = g.add_unit(Box::new(
+    );
+    let (lim, _) = g.add_with_controls(
         tutti_nodes::LimiterNode::with_channels(ChannelLayout::STEREO, Db(-6.0), Db(-1.0))
             .with_lookahead(tutti_types::Seconds(0.005)),
-    ));
+    );
     g.pipe(src, lim).pipe_output(lim);
     g
 }
@@ -225,10 +217,10 @@ fn ir() -> Vec<f32> {
 /// A tone through a convolver: a tail, a latency, and a block-oriented unit.
 fn convolved() -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(
-        Osc::sine(Hz(330.0)).with_amplitude(Amplitude(0.5)),
-    ));
-    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir())));
+    let src = g.add(Osc::sine(Hz(330.0)).with_amplitude(Amplitude(0.5)));
+    let conv = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir()))
+        .0;
     g.connect(src, 0, conv, 0).pipe_output(conv);
     g
 }
@@ -255,16 +247,16 @@ fn quad_vbap() -> GraphBuilder {
     use tutti_nodes::ChannelSumNode;
     use tutti_spatial::VbapPannerNode;
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
-    let sum = g.add_unit(Box::new(ChannelSumNode::new(2, ChannelLayout::QUAD)));
+    let sum = g.add(ChannelSumNode::new(2, ChannelLayout::QUAD));
     for (s, (az, f)) in [(45.0, 300.0), (135.0, 500.0)].into_iter().enumerate() {
-        let src = g.add_unit(Box::new(
+        let src = g.add(
             Osc::sine(Hz(f))
                 .with_amplitude(Amplitude(0.5))
                 .with_layout(ChannelLayout::STEREO),
-        ));
+        );
         let pan = VbapPannerNode::for_layout(ChannelLayout::QUAD).expect("quad");
         pan.set_position(az, tutti_core::Elevation::LEVEL);
-        let pan = g.add_unit(Box::new(pan));
+        let (pan, _) = g.add_with_controls(pan);
         g.pipe(src, pan);
         for c in 0..4 {
             g.connect(pan, c, sum, s * 4 + c);
@@ -312,10 +304,7 @@ fn float_samples(bytes: &[u8]) -> Vec<f32> {
 
 /// The sine, built for the export and forked from a live graph: the closed
 /// form on every frame of both channels, the fork the fresh graph to the
-/// bit, and (Linux/glibc) the digest the `Net` rendered.
-///
-/// Until doc 013 PR 15 both were compared bit for bit with a `Net`
-/// rendering the same unit (`net_render`).
+/// bit, and (Linux/glibc) its golden digest.
 ///
 /// Mutations (run): `block_size` rounded down to a multiple of 64 in
 /// `GraphSource::fill` (the last, short block is never rendered) → the
@@ -343,14 +332,9 @@ fn a_sine_renders_its_closed_form() {
 
 /// The resample case (48 k → 44.1 k), to a file: the file is the render's
 /// planes through the same conversion and encoder (`write_buffers`), byte
-/// for byte, at 44.1 kHz, and (Linux/glibc) the bytes the `Net` export
-/// wrote.
-///
-/// Until doc 013 PR 15 the planes written through `write_buffers` were a
-/// `Net`'s, rendered in 64-frame blocks against the graph's 1024 (the
-/// resampler's carry makes its output independent of the partition, which
-/// that pinned too; `oracle_resample.rs` holds the conversion to first
-/// principles).
+/// for byte, at 44.1 kHz, and (Linux/glibc) its golden digest. The
+/// resampler's carry makes its output independent of the block partition;
+/// `oracle_resample.rs` holds the conversion to first principles.
 ///
 /// Mutation (run): scale the graph path's output by `1.0 + f32::EPSILON` in
 /// `GraphSource::fill` → the digest moves.
@@ -382,7 +366,8 @@ fn a_resampled_export_writes_its_render() {
 /// is its render normalized and written (`Normalize::gain_for_rendered`,
 /// then `write_buffers`), byte for byte; its sample peak sits at the
 /// -1 dBTP target or just under it (the true peak, between samples, is
-/// what reaches -1 dB); and (Linux/glibc) the bytes are the `Net` export's.
+/// what reaches -1 dB); and (Linux/glibc) the bytes match their golden
+/// digest.
 ///
 /// Mutation (run): as above → the digest moves.
 #[test]
@@ -420,8 +405,8 @@ fn a_peak_normalized_export_writes_its_normalized_render() {
 /// codes, so every sample is perturbed. The file is its planes dithered and
 /// written (`write_buffers`), byte for byte; its samples scatter around the
 /// level's code (8 192.05) within the dither's two codes and average onto it;
-/// and it is the `Net` export's file to the byte, on **every** target: a DC
-/// level and a seeded integer dither use no libm.
+/// and its golden digest holds on **every** target: a DC level and a seeded
+/// integer dither use no libm.
 ///
 /// Mutation (run): as above → the digest moves.
 #[test]
@@ -461,12 +446,16 @@ fn a_dithered_export_writes_its_dithered_render() {
 /// down to stereo and to mono. The narrower files are the quad render folded
 /// frame by frame with `fold_frame` (the ITU matrix), to the bit; the quad
 /// render puts the front-left source in channel 0 and the rear-left one in
-/// channel 2; and (Linux/glibc) the quad render, built and forked, is the
-/// `Net`'s.
+/// channel 2; and (Linux/glibc) the built and forked quad renders match their
+/// golden digests.
 ///
 /// This is also the case that pins the block rule in the module docs: the
 /// VBAP panner ramps its gains across each call, so it is the unit here whose
-/// output depends on where the 64-frame chunks fall.
+/// output depends on where the blocks fall.
+///
+/// The panners ramp across the render's 1024-frame blocks. A fresh panner
+/// glides in from front-centre, so the built render's digest depends on the
+/// block partition; the forked render's panners start on their bearing.
 ///
 /// Mutations (run): `fold_graph_frame` reading `planes[0]` for every source
 /// channel → the stereo file is not the quad render folded; `GRAPH_MAX_BLOCK
@@ -484,7 +473,7 @@ fn a_surround_mix_folds_to_every_width() {
     // front-left one in channel 0.
     assert!(quad[2].iter().any(|s| s.abs() > 0.05), "no rear energy");
     assert!(quad[0].iter().any(|s| s.abs() > 0.05), "no front energy");
-    assert_golden("quad", digest(&quad), 0x2df3_9481_9b23_375a);
+    assert_golden("quad", digest(&quad), 0x6f25_52d1_da4e_376c);
     // No digest for these: each is the quad render (whose digest is pinned)
     // folded, to the bit.
     for width in [ChannelLayout::STEREO, ChannelLayout::MONO] {
@@ -512,7 +501,7 @@ fn a_surround_mix_folds_to_every_width() {
 
 /// A convolver — FFT-partitioned, latency- and tail-bearing — renders the
 /// direct time-domain convolution of its input, delayed by the latency it
-/// reports, at the graph's block; and (Linux/glibc) the `Net`'s render.
+/// reports, at the graph's block; and (Linux/glibc) its golden digest.
 ///
 /// It turns out not to be the block-sensitive unit: it buffers its
 /// partitions internally, so `GRAPH_MAX_BLOCK = 1000` still passes here
@@ -553,10 +542,6 @@ fn a_convolver_renders_the_direct_convolution_at_the_graph_block() {
 /// 48 kHz, 240 frames), and a render trimmed by it is the untrimmed render
 /// from frame 240 on, sample for sample.
 ///
-/// Until doc 013 PR 15 the figure was also compared with a `Net`'s
-/// (`net_latency`, re-rated to the render's rate) and the trimmed render
-/// with the `Net`'s trimmed render (`net_render`).
-///
 /// Mutations (run): `RenderGraph::reported_latency` returning
 /// `Samples::ZERO` → the figure is 0; `drive` trimming one frame more than
 /// the latency → the trimmed render is a frame short.
@@ -584,9 +569,6 @@ fn the_latency_trim_drops_the_lookahead() {
 /// 2 999 frames), and a render trimmed by its latency and extended by its
 /// tail is the direct convolution, frame for frame, through the tail.
 ///
-/// Until doc 013 PR 15 the figure was also compared with the tail fold over
-/// a `Net` (`graph_tail`), and the render with the `Net`'s (`net_render`).
-///
 /// Mutation (run): `RenderGraph::reported_tail` folding an empty topology
 /// → `Some(0)` against the convolver's 2999.
 #[test]
@@ -613,8 +595,8 @@ fn the_tail_extends_the_render_by_the_ring_out() {
     }
 }
 
-/// A graph holding a node that cannot be forked (a plugin, a mic monitor —
-/// here a `Legacy` built unforkable) is refused with the node's key, and
+/// A graph holding a node that cannot be forked (a mic monitor, a live disk
+/// voice — here a constant inserted `Unforkable`) is refused with the node's key, and
 /// nothing renders.
 ///
 /// Mutation (run): `ForkError::NotForkable` wrapped in `Error::Fork` in
@@ -622,8 +604,8 @@ fn the_tail_extends_the_render_by_the_ring_out() {
 #[test]
 fn an_unforkable_node_is_an_export_error_naming_it() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let fine = g.add_unit(Box::new(Const::mono(0.1)));
-    let plugin = g.add(Legacy::from_box(Box::new(Const::mono(0.2))).unforkable());
+    let fine = g.add(Const::mono(0.1));
+    let plugin = g.add(Unforkable(Const::mono(0.2)));
     g.connect_output(fine, 0, 0).connect_output(plugin, 0, 1);
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
 
@@ -696,8 +678,9 @@ fn a_graph_prepared_at_another_rate_is_refused() {
 }
 
 /// The graph is handed the render clock's transport, block by block, read
-/// before each block and advanced after: an `EnvClock` in the graph emits the
-/// offline timeline's beat on every frame, starting at its start beat, and the
+/// before each block and advanced after: a node walking each block's `Env`
+/// ([`BeatPorts`], what `EnvClock` did) emits the offline timeline's beat on
+/// every frame, starting at its start beat, and the
 /// timeline ends exactly the render's frames on.
 ///
 /// Mutations (run):
@@ -717,7 +700,7 @@ fn the_graph_reads_the_render_clocks_transport() {
     let bps = timeline.beats_per_sample().get();
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let clock = g.add(Unforkable(tutti_core::EnvClock::new()));
+    let clock = g.add(Unforkable(BeatPorts));
     g.connect_output(clock, 0, 0).connect_output(clock, 1, 1);
     let out = render_to_buffers(
         built(g),
@@ -741,7 +724,27 @@ fn the_graph_reads_the_render_clocks_transport() {
     );
 }
 
-// ---- a clip reader: a `Legacy` unit that polls the render clock ----------
+/// Each frame's beat from its block's `Env` (`Env::for_each_beat`), whole
+/// beats then the fraction.
+struct BeatPorts;
+
+impl Node for BeatPorts {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+            .with_tail(tutti_types::Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        cx.env.for_each_beat(|i, beat| {
+            io.output(0)[i] = beat.floor().get() as f32;
+            io.output(1)[i] = beat.fract().get() as f32;
+        });
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+// ---- a clip reader: a node that reads the render's transport -------------
 
 /// A 440 Hz sine at the render's rate, one second long: a plain wave table,
 /// so a voice reading it at unit rate reproduces it sample for sample.
@@ -768,17 +771,13 @@ fn timeline() -> Arc<OfflineTimeline> {
     }))
 }
 
-/// A voice placed at beat 0 on `clock`, pitched by `cents`, in a
-/// `VoicePool` (the unit a clip track renders).
-fn placed_pool(clock: &Arc<OfflineTimeline>, cents: f32) -> tutti_sampler::VoicePool {
+/// A voice placed at beat 0, pitched by `cents`, in a `VoicePool` (the node a
+/// clip track renders). It reads whatever transport its blocks' `Env` carry:
+/// here, the render clock's.
+fn placed_pool(cents: f32) -> tutti_sampler::VoicePool {
     use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-    let source = MemorySource::with_transport(
-        tone(),
-        Arc::clone(clock) as Arc<dyn tutti_core::Timeline>,
-        Beat(0.0),
-        None,
-    );
-    let (mut pool, _handle) = VoicePool::new();
+    let source = MemorySource::placed(tone(), Beat(0.0), None);
+    let mut pool = VoicePool::new();
     pool.insert_voice(
         SlotId(1),
         Voice {
@@ -851,39 +850,25 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 /// **A sampler voice renders in time at `GRAPH_MAX_BLOCK`**, dry and a fifth
 /// up: the dry one is the tone it plays, to the bit, on both channels; the
 /// render clock ends the render's frames on; and (Linux/glibc) the pitched
-/// one is the `Net`'s render.
+/// one matches its golden digest.
 ///
-/// The voice polls the render clock (its `Arc<dyn Timeline>`) on every
-/// `AudioUnit::process` call, which `Legacy` makes per 64-frame chunk. The
-/// export asks for 1024-frame blocks, so unless the render moves the clock
-/// between chunks every chunk of a block reads the block's first beat, and
-/// the voice replays its first 64 frames sixteen times (a dry 440 Hz voice
-/// measured 768 Hz). `RenderClock::render_graph` therefore renders a graph
-/// holding a `Legacy` unit chunk-major, 64 frames across every node with
-/// the clock advanced between (doc 013's `Legacy` compatibility mode), as
-/// a `Net` was rendered.
+/// The voice reads the render clock's transport from each block's `Env`,
+/// per frame: it seats its read at the playhead on the first frame of each
+/// 64-frame piece it renders, and the export asks for 1024-frame blocks. A
+/// voice that read only the block's first beat would replay the first 64
+/// frames sixteen times (a dry 440 Hz voice would measure 768 Hz).
 ///
 /// Why a digest and not a tolerance for the pitched voice: the vocoder turns
-/// an ulp of beat into far more. Measured with the clock advanced a block at
-/// a time and the chunk positions computed in one multiply each, the
-/// fifth-up voice left the `Net`'s render by 1e-3 at frame 3076. Until doc
-/// 013 PR 15 both voices were compared with a `Net` rendering them
-/// (`net_render`), bit for bit.
+/// an ulp of beat into far more — computing the chunk positions a different
+/// way moves the fifth-up voice by 1e-3 at frame 3076.
 ///
 /// Mutations (run): the graph path's output scaled by `1.0 + f32::EPSILON`
 /// → the dry render is not the tone, and the pitched digest moves;
 /// `Cents::to_pitch_ratio` dividing by 1 100 cents to the octave → the
-/// pitched voice is not a fifth up, on every target.
-///
-/// Not caught here: `render_graph` rendering whole blocks with a `Legacy`
-/// unit present (`has_legacy` ignored). A voice placed at beat 0 enters on
-/// frame 0 and then reads its own cursor, so with these fixtures a
-/// whole-block render is the same bits (measured: both voices, both
-/// digests). Where the polled beat matters, at a clip's entry mid-render,
-/// tutti-sampler's `frame_exact_entry.rs` catches it
-/// (`a_clip_enters_on_its_frame_offline_through_the_graph`). This test's
-/// note used to claim the backends parted at frame 64; that was measured
-/// before the sampler's own cursor took over, and no longer holds.
+/// pitched voice is not a fifth up, on every target; `interp::place`
+/// seating each piece at the block's first beat (`run.beat_at(e)` →
+/// `run.beat_at(0)`, the chunk replay above moved into the node) → the dry
+/// render is not the tone.
 #[test]
 fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get(), 1024, "the block this pins");
@@ -893,7 +878,7 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     ] {
         let clock = timeline();
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-        let k = g.add_unit(Box::new(placed_pool(&clock, cents)));
+        let (k, _handle) = g.add_with_controls(placed_pool(cents));
         g.pipe_output(k);
         let b = render_under(built(g), &clock, ChannelLayout::STEREO);
         assert_audible(&b);
@@ -924,35 +909,37 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     }
 }
 
-/// The same through a **fork**: a placed `MemorySource` in a live graph,
-/// forked offline onto the render's timeline (its `rebind_offline`
-/// re-points it), plays the tone from the render's start, to the bit, as a
-/// voice on that timeline from the start does. (Until doc 013 PR 15 it was
-/// compared with a `Net` rendering the source on that timeline.)
+/// The same through a **fork**: a placed `MemorySource` in a live graph that
+/// has played on another transport (at beat 0.25), forked offline, plays the
+/// tone from the render's start, to the bit, as a voice on the render's
+/// transport from the start does. The fork shares nothing with the live node
+/// and holds no clock: it reads the render's transport from its `Env`.
 ///
 /// Mutation (run): the graph path's output scaled by `1.0 + f32::EPSILON`
-/// → the render is not the tone. (Whole-block rendering is not caught
-/// here, for the reason the test above gives.)
+/// → the render is not the tone. Mutation (run): the `MemorySource`'s
+/// `ParamNode::fork_fresh` leaving the fork unplaced (`fork.placed = false`)
+/// → it ignores the render's transport → silent → fails. (Not caught: the
+/// fork not rewinding — a placed read derives every position from the
+/// transport, so it has no cursor to carry.)
 #[test]
 fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
     use tutti_sampler::MemorySource;
-    let placed = |clock: Arc<OfflineTimeline>| {
-        MemorySource::with_transport(
-            tone(),
-            clock as Arc<dyn tutti_core::Timeline>,
-            Beat(0.0),
-            None,
-        )
-    };
 
-    // Live, the voice follows another clock, somewhere else; the fork
-    // re-points it at the render's.
-    let live_clock = timeline();
-    live_clock.seek_to(Beat(3.0));
+    // Live, the voice plays on another transport, somewhere else.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let k = g.add_unit(Box::new(placed(live_clock)));
+    let (k, _params) = g.add_with_controls(MemorySource::placed(tone(), Beat(0.0), None));
     g.pipe_output(k);
-    let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
+    let (live, mut exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
+    exec.apply_pending();
+    let elsewhere = tutti_graph::Transport::new(true, Bpm(120.0), Beat(0.25), None);
+    let mut sink = vec![0.0f32; 256];
+    for _ in 0..8 {
+        exec.process(256, &elsewhere, &[], &mut [&mut sink[..]]);
+    }
+    assert!(
+        sink.iter().any(|&s| s != 0.0),
+        "sanity: the live reader played before the fork"
+    );
     let graph_clock = timeline();
     let rebind: OfflineTransport = OfflineTransport::new(graph_clock.clone());
     let forked = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline(&rebind), RATE)

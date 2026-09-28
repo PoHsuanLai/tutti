@@ -1,11 +1,11 @@
 //! Arbitrary MIDI-out to external hardware — the track/UI outbound path.
 //!
-//! The [`MidiBus`](tutti_midi_runtime::MidiBus) fans MIDI *inward* to synths; it
-//! has no tap for sending to external gear. This module adds the outbound
-//! mailbox: a [`MidiMailbox`] whose
+//! What the control thread sends to external gear (a track system, the UI,
+//! MIDI-CI and Flex metadata replies) rides this outbound mailbox: a
+//! [`MidiMailbox`] whose
 //! [`MidiSender`] anyone off-RT (a track system, the UI) — or a clip source on
 //! the audio thread — can push into lock-free, drained each frame and routed to
-//! hardware through the *same* [`MidiOutRouter`](super::clock_out) the
+//! hardware through the *same* [`MidiOutRouter`] the
 //! clock-master pump uses. So track MIDI out gets the identical JR-stamp/UMP-vs-
 //! MIDI-1 treatment (JR Timestamps reach the wire iff a native-UMP source +
 //! enabled stamper are present).
@@ -25,9 +25,9 @@
 //!   round-trip. Because it's a `dyn MidiOut`, the RT clip tap needs nothing
 //!   bespoke — it holds this sender and queues stamped events straight in.
 //!
-//! [`MidiOutRes`] is created and inserted by [`MidiOutPlugin`] (no engine
-//! handoff needed — the mailbox lives entirely off/on the audio thread via the
-//! traits), so the surface is always present once the plugin is added.
+//! [`MidiOutRes`] is created and inserted by [`MidiOutPlugin`], not by the
+//! engine build, so it is present once the plugin is added, with or without a
+//! running engine.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
@@ -35,7 +35,6 @@ use bevy_ecs::prelude::*;
 
 use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::MidiUnitId;
 
 use super::hardware_out::{drain_receiver_through, MidiOutRouter};
 
@@ -50,23 +49,16 @@ pub struct MidiOutRes {
 
 impl Default for MidiOutRes {
     fn default() -> Self {
-        let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
+        let (sender, receiver) = MidiMailbox::pair();
         Self { sender, receiver }
     }
 }
 
 impl MidiOutRes {
-    /// A cheaply-clonable push handle onto the mailbox, for a caller that pushes
+    /// Returns a cheaply-clonable push handle onto the mailbox, for a caller that pushes
     /// directly — the UI, or a clip source's `out_tap` (`Arc<dyn MidiOut>`).
     pub fn sender(&self) -> MidiSender {
         self.sender.clone()
-    }
-
-    /// The [`MidiUnitId`] this mailbox routes on — a caller pushing through the
-    /// `MidiOut` trait must address this id (a [`MidiSender`] clone already
-    /// carries it).
-    pub fn unit_id(&self) -> MidiUnitId {
-        self.sender.unit_id()
     }
 
     /// The drain half, for tests that assert a producer reached this mailbox
@@ -111,15 +103,15 @@ pub struct SendMidiOut(
     pub Vec<MidiEvent>,
 );
 
-/// Forward each [`SendMidiOut`] request into the outbound mailbox.
+/// Forwards each [`SendMidiOut`] request into the outbound mailbox.
 pub fn midi_out_send_system(out: Res<MidiOutRes>, mut requests: MessageReader<SendMidiOut>) {
     for SendMidiOut(events) in requests.read() {
         out.sender.queue(events);
     }
 }
 
-/// Per-frame: drain the track MIDI-out mailbox and route it to hardware, through
-/// the same [`MidiOutRouter`] the clock-out pump uses.
+/// Drains the track MIDI-out mailbox each frame and routes it to hardware,
+/// through the same [`MidiOutRouter`] the clock-out pump uses.
 pub fn pump_midi_out_system(
     out: Option<Res<MidiOutRes>>,
     drops: Res<super::hardware_out::MidiOutDrops>,

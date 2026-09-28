@@ -170,8 +170,7 @@ fn a_zero_presentation_latency_is_still_written() {
 /// The measurement is in the module docs: 0 of 39 accept it. This pins the
 /// *host's* half — that the refusal reaches the caller as an `Err` carrying the
 /// AU's own status. A host that flattened it to `Ok(())` would leave every
-/// caller's error handling unreachable, which is the bug `get_latency` carried
-/// before it was fixed.
+/// caller's error handling unreachable.
 #[test]
 fn every_corpus_unit_refuses_presentation_latency_and_the_refusal_is_reported() {
     let mut checked = 0usize;

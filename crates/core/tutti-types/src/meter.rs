@@ -8,13 +8,22 @@
 //! state inside it: nothing in this module touches the graph, the transport
 //! settings, or the audio thread.
 //!
-//! Before this, the same idea was re-encoded four ways: a `(u32, u32)` pair in
-//! `tutti-core`, a `(u8, u8)` pair in the app model and its CRDT bridge, an
-//! `(i32, i32)` pair in the plugin transport snapshot, and a `(u16, u16)` cast at
-//! the CLAP boundary. Two of them — the bar/beat readout and the timeline ruler —
-//! computed bar length as the numerator alone, which is wrong for anything but
-//! `x/4`; the plugin ones only forwarded the pair, and the `tutti-core` one was
-//! correct but had no consumers.
+//! ```
+//! use tutti_types::meter::{BarNumber, BeatsPerBar, Meter, MeterChange, MeterMap, TimeSignature};
+//! use tutti_types::{Beat, BeatDuration};
+//!
+//! // 4/4 for two bars, then 7/8.
+//! let map = MeterMap::new([
+//!     MeterChange::new(Beat(0.0), TimeSignature::from_parts(4, 4)),
+//!     MeterChange::new(Beat(8.0), TimeSignature::from_parts(7, 8)),
+//! ]);
+//!
+//! let pos = map.bar_at(Beat(9.0));
+//! assert_eq!(pos.bar, BarNumber(3));
+//! assert_eq!(pos.beat, BeatsPerBar::new(3)); // third eighth note of the bar
+//! assert_eq!(map.at(Beat(9.0)).bar_length(), BeatDuration(3.5));
+//! assert_eq!(map.bar_start(BarNumber(4)), Beat(11.5));
+//! ```
 //!
 //! # Value vs query
 //!
@@ -57,7 +66,7 @@ pub struct BeatsPerBar(u32);
 pub const MAX_BEATS_PER_BAR: u32 = 64;
 
 impl BeatsPerBar {
-    /// Construct, clamping to `1..=`[`MAX_BEATS_PER_BAR`].
+    /// Creates a numerator, clamping it to `1..=`[`MAX_BEATS_PER_BAR`].
     ///
     /// Total rather than fallible: the writers are a UI number field and a CRDT
     /// document, neither of which has a channel to report an error on. Zero would
@@ -74,7 +83,7 @@ impl BeatsPerBar {
         })
     }
 
-    /// The numerator, clamped into `1..=MAX_BEATS_PER_BAR` on the way in.
+    /// Returns the numerator, in `1..=MAX_BEATS_PER_BAR`.
     #[inline]
     pub const fn get(self) -> u32 {
         self.0
@@ -106,9 +115,9 @@ impl core::fmt::Display for BeatsPerBar {
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct NoteValue(u32);
 
-/// Largest note value a denominator may name (a whole note).
+/// The smallest denominator a signature may name: 1, a whole note.
 pub const MIN_NOTE_VALUE: u32 = 1;
-/// Smallest note value a denominator may name (a 64th note).
+/// The largest denominator a signature may name: 64, a sixty-fourth note.
 pub const MAX_NOTE_VALUE: u32 = 64;
 
 impl NoteValue {
@@ -123,13 +132,12 @@ impl NoteValue {
     /// A sixteenth note — `x/16`.
     pub const SIXTEENTH: Self = Self(16);
 
-    /// Construct, rounding up to a power of two and clamping to
-    /// [`MIN_NOTE_VALUE`]`..=`[`MAX_NOTE_VALUE`].
+    /// Creates a denominator, clamping it to
+    /// [`MIN_NOTE_VALUE`]`..=`[`MAX_NOTE_VALUE`] and rounding up to a power of
+    /// two.
     ///
-    /// Rounding up rather than rejecting matches what the inspector's number
-    /// field already does by hand (`.next_power_of_two().clamp(2, 16)`);
-    /// centralising it means the document and the UI cannot disagree about what
-    /// `x/5` means.
+    /// Rounding up rather than rejecting means a document and a UI number
+    /// field cannot disagree about what `x/5` means: it is `x/8`.
     ///
     /// The clamp comes **before** the rounding, not after: `next_power_of_two`
     /// overflows above 2³¹, which panics in debug and returns 0 in release. A
@@ -144,25 +152,20 @@ impl NoteValue {
         )
     }
 
-    /// The denominator as written — `8` for 7/8. Always a power of two.
+    /// Returns the denominator as written — `8` for 7/8. Always a power of two.
     #[inline]
     pub const fn get(self) -> u32 {
         self.0
     }
 
-    /// This note value as a Standard MIDI File denominator exponent — SMF stores
-    /// `3` to mean an eighth note, not `8`.
-    ///
-    /// Homed here rather than in the MIDI crate so the encode/decode pair stays
-    /// adjacent, and so the exponent↔value conversion has one spelling when a
-    /// MIDI file reader arrives. Nothing consumes it yet — SMF import currently
-    /// drops meter entirely.
+    /// Returns this note value as a Standard MIDI File denominator exponent —
+    /// SMF stores `3` to mean an eighth note, not `8`.
     #[inline]
     pub const fn to_smf_exponent(self) -> u8 {
         self.0.trailing_zeros() as u8
     }
 
-    /// Build from a Standard MIDI File denominator exponent (`3` → an eighth).
+    /// Converts a Standard MIDI File denominator exponent (`3` → an eighth).
     ///
     /// Saturates at [`MAX_NOTE_VALUE`], so a corrupt file cannot shift past the
     /// width of the underlying integer.
@@ -266,7 +269,7 @@ pub struct TimeSignature {
 }
 
 impl TimeSignature {
-    /// Construct from the two halves.
+    /// Creates a signature from its two halves.
     ///
     /// Total: both components clamp in their own constructors, so there is no
     /// invalid signature to reject.
@@ -278,7 +281,7 @@ impl TimeSignature {
         }
     }
 
-    /// Construct from raw numbers, coercing each to its legal range.
+    /// Creates a signature from raw numbers, coercing each to its legal range.
     ///
     /// For the document/ABI edges, where the numbers arrive untyped. Prefer
     /// [`new`](Self::new) in engine code, where the types make transposition a
@@ -288,20 +291,20 @@ impl TimeSignature {
         Self::new(BeatsPerBar::new(beats_per_bar), NoteValue::new(note_value))
     }
 
-    /// The numerator. **Not** a bar length — see
+    /// Returns the numerator. **Not** a bar length — see
     /// [`bar_length`](Self::bar_length).
     #[inline]
     pub const fn beats_per_bar(self) -> BeatsPerBar {
         self.beats_per_bar
     }
 
-    /// The denominator: which note value gets one notated beat.
+    /// Returns the denominator: which note value gets one notated beat.
     #[inline]
     pub const fn note_value(self) -> NoteValue {
         self.note_value
     }
 
-    /// One bar's length in quarter-note beats. 7/8 is 3.5, **not** 7.
+    /// Returns one bar's length in quarter-note beats. 7/8 is 3.5, **not** 7.
     ///
     /// This is the conversion every bar-math site needs, and treating the
     /// numerator as the bar length is the bug this type exists to prevent.
@@ -310,7 +313,7 @@ impl TimeSignature {
         BeatDuration(f64::from(self.beats_per_bar.get()) * 4.0 / f64::from(self.note_value.get()))
     }
 
-    /// One *notated* beat's length in quarter-note beats — 0.5 in 7/8.
+    /// Returns one *notated* beat's length in quarter-note beats — 0.5 in 7/8.
     ///
     /// What the metronome clicks and what the ruler subdivides, as distinct from
     /// [`bar_length`](Self::bar_length), which is what bars are counted in.
@@ -364,14 +367,14 @@ impl BarNumber {
         Self(n)
     }
 
-    /// The 1-based bar number as displayed. Signed, so a pickup bar before bar
+    /// Returns the 1-based bar number as displayed. Signed, so a pickup bar before bar
     /// 1 is representable.
     #[inline]
     pub const fn get(self) -> i64 {
         self.0
     }
 
-    /// How many whole bars precede this one — `BarNumber(1)` yields `0`.
+    /// Returns how many whole bars precede this one — `BarNumber(1)` yields `0`.
     ///
     /// The 1-based/0-based conversion, in one place, so callers indexing from a
     /// bar number do not each re-derive the off-by-one.
@@ -380,7 +383,8 @@ impl BarNumber {
         self.0 - 1
     }
 
-    /// Build from a 0-based index, the inverse of [`index`](Self::index).
+    /// Creates a bar number from a 0-based index, the inverse of
+    /// [`index`](Self::index).
     #[inline]
     pub const fn from_index(index: i64) -> Self {
         Self(index + 1)
@@ -394,7 +398,7 @@ impl BarCount {
         Self(n)
     }
 
-    /// The raw displacement in bars.
+    /// Returns the raw displacement in bars.
     #[inline]
     pub const fn get(self) -> i64 {
         self.0
@@ -493,7 +497,8 @@ pub struct BarPosition {
 }
 
 impl BarPosition {
-    /// Whether this position sits exactly on a bar's downbeat.
+    /// Returns whether this position sits on a bar's downbeat (within a
+    /// thousandth of a quarter note).
     #[inline]
     pub fn is_downbeat(&self) -> bool {
         self.beat == BeatsPerBar::new(1) && self.fraction.get().abs() < DOWNBEAT_EPSILON
@@ -524,13 +529,13 @@ const BAR_COUNT_EPSILON: f64 = 1e-9;
 /// Taking the position as an argument is the whole point: it is the one signature
 /// that a meter map would otherwise force every consumer to change.
 pub trait Meter: Send + Sync {
-    /// The signature in force at `beat`.
+    /// Returns the signature in force at `beat`.
     fn at(&self, beat: Beat) -> TimeSignature;
 
-    /// Where `beat` falls in bar/beat terms.
+    /// Returns where `beat` falls in bar/beat terms.
     fn bar_at(&self, beat: Beat) -> BarPosition;
 
-    /// Timeline position of a bar's downbeat.
+    /// Returns the timeline position of a bar's downbeat.
     ///
     /// The inverse of [`bar_at`](Self::bar_at) — the ruler iterates bar numbers
     /// and asks where each one goes.
@@ -694,7 +699,7 @@ mod meter_map_serde {
 }
 
 impl MeterMap {
-    /// Build from a set of changes, establishing the invariants above.
+    /// Creates a map from a set of changes, establishing the invariants above.
     ///
     /// Input may be unsorted and may omit a change at the timeline origin;
     /// duplicates at one beat resolve to the last one given, and non-finite
@@ -789,18 +794,17 @@ impl MeterMap {
         }
     }
 
-    /// The changes in force, in timeline order. Never empty.
+    /// Returns the changes in force, in timeline order. Never empty.
     #[inline]
     pub fn changes(&self) -> &[MeterChange] {
         &self.changes
     }
 
-    /// The bar number each change begins on, parallel to [`changes`](Self::changes).
+    /// Returns the bar number each change begins on, parallel to
+    /// [`changes`](Self::changes).
     ///
-    /// No production consumer — it exists so the prefix walk is assertable. The
-    /// bar-numbering bug this map originally shipped with (a short segment
-    /// contributing zero bars, so two changes claimed the same bar) is only
-    /// visible here or by comparing `bar_at` against `bar_start` across it.
+    /// A short bar before a mid-bar change still counts, so no two changes
+    /// share a bar number.
     #[inline]
     pub fn bar_numbers(&self) -> &[BarNumber] {
         &self.starts

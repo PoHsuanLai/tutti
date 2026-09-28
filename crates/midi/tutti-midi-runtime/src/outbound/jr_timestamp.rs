@@ -83,7 +83,7 @@ impl JrStamper {
         }
     }
 
-    /// Write each input event into `out`, preceded by a JR Timestamp for its
+    /// Writes each input event into `out`, preceded by a JR Timestamp for its
     /// `frame_offset`. `origin_samples` is the absolute sample position of this
     /// block's frame-offset zero, so stamps stay monotonic across blocks.
     ///
@@ -167,7 +167,9 @@ impl JrClockEmitter {
 
     /// An emitter with an explicit interval.
     ///
-    /// Panics if `interval` exceeds [`JR_CLOCK_MAX_INTERVAL`]: §7.2.2.1 makes
+    /// # Panics
+    ///
+    /// Panics if `interval` exceeds [`JR_CLOCK_MAX_INTERVAL`]: M2-104 §7.2.2.1 makes
     /// that bound a `shall`, so a longer interval is not a tuning choice, it is
     /// a non-conformant stream. Catching it here beats shipping one.
     pub fn with_interval(sample_rate: impl Into<SampleRate>, interval: Duration) -> Self {
@@ -247,7 +249,7 @@ impl JrStream {
         }
     }
 
-    /// Add the JR Clock cadence (M2-104 §7.2.2.1) at [`JR_CLOCK_INTERVAL`].
+    /// Adds the JR Clock cadence (M2-104 §7.2.2.1) at [`JR_CLOCK_INTERVAL`].
     ///
     /// Once set, [`stamp_span`](Self::stamp_span) prefixes a clock to each block
     /// where one is due — including blocks with no events at all, which is why
@@ -257,8 +259,12 @@ impl JrStream {
         self
     }
 
-    /// Add the JR Clock cadence with an explicit interval. Panics above
-    /// [`JR_CLOCK_MAX_INTERVAL`]; see [`JrClockEmitter::with_interval`].
+    /// Adds the JR Clock cadence with an explicit interval.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `interval` is above [`JR_CLOCK_MAX_INTERVAL`]; see
+    /// [`JrClockEmitter::with_interval`].
     pub fn with_clock_interval(
         mut self,
         sample_rate: impl Into<SampleRate>,
@@ -268,7 +274,7 @@ impl JrStream {
         self
     }
 
-    /// Stamp one block and advance the origin past it, so the next call
+    /// Stamps one block and advances the origin past it, so the next call
     /// continues monotonically.
     ///
     /// The origin advances by the *events'* span, which is zero for an empty
@@ -279,8 +285,8 @@ impl JrStream {
         self.stamp_span(events, JrStamper::block_span(events), out);
     }
 
-    /// Stamp one block of a known `block_samples` length, emitting a JR Clock
-    /// first if the cadence owes one, and advance the origin by the *block*
+    /// Stamps one block of a known `block_samples` length, emitting a JR Clock
+    /// first if the cadence owes one, and advances the origin by the *block*
     /// rather than by the events within it.
     ///
     /// This is the entry point a pump wants. §7.2.2.1 makes JR Clocks
@@ -337,7 +343,7 @@ impl JrReceiver {
         Self::default()
     }
 
-    /// Feed one event. On a JR Timestamp, records it and returns `None` (its delay
+    /// Feeds one event. On a JR Timestamp, records it and returns `None` (its delay
     /// applies to what follows). On any other event, returns the reconstructed
     /// delay since the previous timestamp — `Some(Duration::ZERO)` when two events
     /// share a timestamp, `None` before any timestamp has been seen.

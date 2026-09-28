@@ -3,7 +3,7 @@
 //! `tutti-clap-host`'s own suites load the probe in-process, so they assert what
 //! the CLAP loader does. These suites assert what the *host node* does: a real
 //! `plugin-server` subprocess, a real socket, a real shared-memory slab, and
-//! `PluginClient` as fundsp sees it. Everything between the graph and the
+//! `PluginClient` as the graph's executor sees it. Everything between the graph and the
 //! plugin's `process()` is under test, which is the half the in-process suites
 //! structurally cannot reach.
 //!
@@ -37,9 +37,8 @@ use tutti_plugin::handles::{Bound, PluginClient, PluginControls, PluginHandle};
 use tutti_plugin::BridgeConfig;
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
 
-/// A bound plugin as the only node of a native graph: the global inputs feed
-/// its inputs in order, its outputs feed the global outputs. What a test
-/// drives where it once drove the client as an `AudioUnit` — the executor
+/// A bound plugin as the only node of a graph: the global inputs feed
+/// its inputs in order, its outputs feed the global outputs. The executor
 /// hands the node its `Env` and its whole block, as the engine does.
 pub struct Rig {
     renderer: Renderer,
@@ -58,19 +57,62 @@ impl Rig {
 
     /// `client` in a graph prepared with `prepare` (a device quantum, say).
     pub fn prepared(client: PluginClient<Bound>, prepare: Prepare) -> Self {
+        Self::prepared_with(client, prepare, None)
+    }
+
+    /// As [`prepared`](Self::prepared), with `automation` (when given) feeding
+    /// the plugin's event input.
+    pub fn prepared_with(
+        client: PluginClient<Bound>,
+        prepare: Prepare,
+        automation: Option<tutti_plugin::handles::PluginAutomation>,
+    ) -> Self {
+        Self::build(client, prepare, automation, false).0
+    }
+
+    /// As [`prepared_with`](Self::prepared_with), with a keyboard: a
+    /// `MidiQueueNode` feeding the plugin's event input too, and its sender.
+    #[allow(dead_code)]
+    pub fn prepared_with_keys(
+        client: PluginClient<Bound>,
+        prepare: Prepare,
+        automation: Option<tutti_plugin::handles::PluginAutomation>,
+    ) -> (Self, tutti_midi_runtime::MidiSender) {
+        let (rig, keys) = Self::build(client, prepare, automation, true);
+        (rig, keys.expect("asked for keys"))
+    }
+
+    fn build(
+        client: PluginClient<Bound>,
+        prepare: Prepare,
+        automation: Option<tutti_plugin::handles::PluginAutomation>,
+        keys: bool,
+    ) -> (Self, Option<tutti_midi_runtime::MidiSender>) {
         let (inputs, outputs) = (client.inputs(), client.outputs());
         let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
         let mut g = GraphBuilder::new(layout(inputs), layout(outputs));
         let (key, controls) = g.add_with_controls(client);
         g.pipe_input(key).pipe_output(key);
-        let renderer = g.renderer(prepare).expect("a one-plugin graph compiles");
-        Self {
-            renderer,
-            key,
-            controls,
-            inputs,
-            outputs,
+        if let Some(automation) = automation {
+            let (from, _controls) = g.add_with_controls(automation);
+            g.event_connect(from, 0, key, 0);
         }
+        let sender = keys.then(|| {
+            let (from, sender) = g.add_with_controls(tutti_midi_runtime::MidiQueueNode::new());
+            g.event_connect(from, 0, key, 0);
+            sender
+        });
+        let renderer = g.renderer(prepare).expect("a one-plugin graph compiles");
+        (
+            Self {
+                renderer,
+                key,
+                controls,
+                inputs,
+                outputs,
+            },
+            sender,
+        )
     }
 
     /// The plugin's audio inputs.
@@ -206,8 +248,8 @@ pub mod cross_process_lock {
                 }
                 // An unusable lock path (a read-only temp dir, say) must not
                 // silently disable the serialization the suites depend on, but
-                // it must not fail them either — running unserialized is what
-                // they did before this existed.
+                // it must not fail them either — fall back to running
+                // unserialized.
                 Err(_) => return Guard,
             }
         }

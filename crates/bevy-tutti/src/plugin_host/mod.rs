@@ -1,23 +1,20 @@
-//! Plugin (VST2/VST3/CLAP/AU) hosting for Bevy.
+//! Plugin (VST2/VST3/CLAP/AU) hosting for Bevy (feature `plugin`; formats
+//! with `vst2`, `vst3`, `clap`, `au`).
 //!
 //! Turns `tutti-plugin`'s catalog and handles into an ECS surface: a
 //! [`PluginRequest`] becomes a loaded plugin bound to the transport, the MIDI
 //! bus and the modulation matrix, with a native GUI window and a liveness state.
 //!
-//! **Bevy-only by design.** Every module here is ECS / window glue; there is no
-//! Bevy-free core to gate. A non-Bevy host uses the (Bevy-free) `tutti-plugin`
-//! crate directly and wires the equivalent itself.
-//!
-//! This module mirrors the engine's `plugin/` *tier* (`tutti-plugin` plus the
-//! `tutti-plugin-server` subprocess it launches) rather than a single crate. It
-//! is `plugin_host`, not `plugin`, because that name belongs to the crate's
-//! composition root, [`TuttiPlugin`](crate::TuttiPlugin).
+//! Every module here is ECS and window glue over `tutti-plugin` and the
+//! `tutti-plugin-server` subprocess it launches; a non-Bevy host uses
+//! `tutti-plugin` directly. [`TuttiHostingPlugin`] adds it all, and
+//! [`TuttiPlugin`](crate::TuttiPlugin) adds that with the `plugin` feature.
 //!
 //! # Life of a plugin
 //!
 //! A host spawns a [`PluginRequest`]. [`load`] picks it up, runs the subprocess
 //! launch on a worker, and promotes the result to an `AudioNode` carrying a
-//! [`PluginEmitter`]: the plugin is bound into the graph as a native node
+//! [`PluginEmitter`]: the plugin is bound into the graph as a graph node
 //! (reading its transport from each block's `Env`), and its controls and MIDI
 //! port are captured on the way. [`bind`] then gives it the project meter and
 //! builds accumulators for whichever params the host declared modulatable;
@@ -67,7 +64,9 @@ pub use live_resize::{reap_orphaned_live_resize_observers, LiveResizeRegistry};
 
 pub use bind::{plugin_bind_meter, PluginMeterBound, PluginShadow};
 #[cfg(feature = "modulation")]
-pub use bind::{plugin_bind_params, PluginParamsBound};
+pub use bind::{
+    plugin_bind_params, remove_plugin_automation, PluginAutomationNode, PluginParamsBound,
+};
 pub use catalog::{poll_probes, start_probe, InFlightProbes, PluginProbed, ProbePlugin};
 pub use editor::{
     editor_is_open, plugin_editor_attach_system, plugin_editor_idle_system,
@@ -138,10 +137,10 @@ impl PluginsRes {
 // Hosted-plugin parameters have no ECS reconcile and no `AudioParam`-style
 // component. They are runtime-discovered `u32` ids with per-instance ranges,
 // which `AudioParam<U, P>` (const-generic over a closed `UnitParam` enum)
-// cannot express. Automation reaches them sample-accurately over the per-block
-// `ParamAutomationSource` path instead — see the `bind` module.
+// cannot express. Automation reaches them sample-accurately through an
+// automation node on the plugin's event input instead — see the `bind` module.
 
-/// Bevy plugin: plugin load, engine binding, health, editor lifecycle, and
+/// Adds plugin hosting: load, engine binding, health, editor lifecycle, and
 /// catalog scanning.
 ///
 /// Inserts:
@@ -334,13 +333,20 @@ impl Plugin for TuttiHostingPlugin {
         // A `plugin` build without `modulation` still loads, follows the
         // transport and receives MIDI — it just has no route to modulate a param with.
         #[cfg(feature = "modulation")]
-        app.add_systems(
-            Update,
-            plugin_bind_params
-                .after(GraphReconcileSystems::Spawn)
-                .before(GraphReconcileSystems::Commit)
-                .run_if(crate::graph::engine_ready),
-        );
+        {
+            app.init_resource::<crate::graph::EventFeeds>();
+            app.add_observer(remove_plugin_automation);
+            app.add_systems(
+                Update,
+                plugin_bind_params
+                    .after(GraphReconcileSystems::Spawn)
+                    // Before the event wiring, so a new automation node is
+                    // wired to its plugin on the frame it is made.
+                    .before(crate::graph::EventWiring)
+                    .before(GraphReconcileSystems::Commit)
+                    .run_if(crate::graph::engine_ready),
+            );
+        }
 
         // Reaps AppKit observers for editors that lost `PluginEditorOpen`
         // without going through `set_editor_visible_observer` — chiefly

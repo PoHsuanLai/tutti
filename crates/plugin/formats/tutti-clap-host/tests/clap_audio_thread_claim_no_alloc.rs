@@ -5,15 +5,14 @@
 //!
 //! That test drives a real plugin through `process` and would, in principle,
 //! catch a per-block allocation in the claim. It cannot catch this one: it is
-//! single-threaded, so the same OS thread claims every time. The mechanism this
-//! replaced kept a one-slot `Arc<ThreadId>` cache, which is only ever hit in
-//! exactly that pattern — so the test passed while the hazard was live, and the
-//! field's doc comment cited it as proof of a property it never checked.
+//! single-threaded, so the same OS thread claims every time. A claim backed by
+//! a one-slot `Arc<ThreadId>` cache is only ever hit in exactly that pattern,
+//! so a single-threaded test passes while the hazard is live.
 //!
-//! The interleaving that breaks it is ordinary: a user moves a plugin control
-//! during playback, so the GUI thread calls `flush_params` (which claims the
-//! role on an active instance) between two audio blocks. Every audio block then
-//! misses the cache and allocates.
+//! The interleaving that breaks such a cache is ordinary: a user moves a plugin
+//! control during playback, so the GUI thread calls `flush_params` (which claims
+//! the role on an active instance) between two audio blocks. Every audio block
+//! then misses the cache and allocates.
 //!
 //! # What is being tested
 //!
@@ -40,8 +39,8 @@ static A: AllocDisabler = AllocDisabler;
 
 /// Claiming repeatedly from one thread must not allocate.
 ///
-/// The weaker property, and the one the old mechanism did satisfy. Kept so a
-/// regression can be localised: if this fails too, the problem is the claim
+/// The weaker property, which even a one-slot cache satisfies. Kept so a
+/// failure can be localised: if this fails too, the problem is the claim
 /// itself rather than the cross-thread interleaving below.
 #[test]
 fn repeated_claims_from_one_thread_do_not_allocate() {
@@ -62,14 +61,14 @@ fn repeated_claims_from_one_thread_do_not_allocate() {
     });
 }
 
-/// **The test the old mechanism fails.** An audio thread claiming every block
-/// while a second thread claims in between must still not allocate.
+/// An audio thread claiming every block while a second thread claims in
+/// between must still not allocate.
 ///
 /// The two threads alternate through a pair of barriers, so every one of the
 /// audio thread's guarded claims is preceded by a claim from the other thread.
-/// Under the old one-slot `Arc` cache that is a miss every single time: the
+/// With a one-slot `Arc` cache that is a miss every single time: the
 /// interloper's claim evicts the audio thread's cached `Arc`, and the next
-/// audio claim calls `Arc::new`. Under a plain atomic there is nothing to
+/// audio claim calls `Arc::new`. With a plain atomic there is nothing to
 /// evict and nothing to allocate.
 ///
 /// The interloper stands in for a GUI thread running `flush_params` on an

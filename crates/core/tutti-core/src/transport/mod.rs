@@ -3,18 +3,17 @@
 //! Split by *who decides*. [`TransportSettings`] holds the plain values (tempo,
 //! loop region, recording) that anyone may store into; [`MotionFsm`] holds the
 //! state machine that may reject or defer a play/stop/locate. [`Transport`] is
-//! the two halves as one handle, and [`TransportClock`] is the graph node that
-//! turns them into a per-sample beat signal. [`EnvClock`] is the same signal
-//! on the native graph, read from each block's `Env`.
+//! the two halves as one handle, and [`TransportClock`] is the engine's
+//! playhead, which the graph reads from each block's `Env`.
 //!
 //! The traits below are the read side: [`Timeline`] is what a node consults,
 //! [`RenderClock`] is what a renderer drives, and [`TransportState`] adds the
 //! live-session facts (record, loop) a hosted plugin asks for.
 
+mod beat_walk;
 mod beat_window;
 mod click;
 mod clock;
-mod env_clock;
 pub(crate) mod fsm;
 mod handle;
 mod motion;
@@ -27,14 +26,12 @@ pub use beat_window::{BeatCursor, BeatPlacement, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub(crate) use clock::Control;
 pub use clock::TransportClock;
-pub use env_clock::EnvClock;
 pub use handle::Transport;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use settings::TransportSettings;
 pub use state::{
-    beat_from_ports, beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, PlayheadClaimed,
-    SeekSlot, BEAT_PORTS,
+    beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, PlayheadClaimed, SeekSlot,
 };
 pub(crate) use timed::{Schedule, Scheduled};
 pub use timed::{ScheduleFull, TransportCommand, SCHEDULE_CAPACITY};
@@ -56,30 +53,29 @@ pub use tutti_types::{OfflineClock, OfflineTransport, Timeline};
 /// it: after each block it reports how many frames it produced, and the clock
 /// advances by exactly that much.
 ///
-/// A renderer driving a `Net` needs nothing else: its clock nodes are inside
-/// the net, so it only ever advances this. A renderer driving the native graph
-/// (`tutti_graph::Executor`) must also *hand* each block a transport, since
+/// A renderer driving the graph (`tutti_graph::Executor`) must also *hand*
+/// each block a transport, since
 /// the graph's clock is the executor's `Env`, not a node — that is
 /// [`graph_block`](Self::graph_block), and [`render_graph`](Self::render_graph)
-/// is the one order the two are called in (chunk by chunk, for a graph
-/// holding `Legacy` units). It is still not a supertrait of
+/// is the one order the two are called in. It is still not a supertrait of
 /// `Timeline`: a clock that does not move (`FrozenClock`) has a transport to
 /// report — stopped, at beat zero — without being a timeline anything reads.
 ///
-/// **Advance AFTER processing, never before.** `TransportClock` (the in-net
-/// clock feeding beat-driven nodes) is emit-then-advance: sample 0 of a block
-/// carries the block's start beat, and only then does the beat increment. A
-/// clock advanced ahead of the net sits one `beats_per_sample` off the net's own
-/// clock for the entire render — a desync that reads as "the samplers are
+/// **Advance AFTER processing, never before.** `TransportClock` (the engine's
+/// clock, whose transport beat-driven nodes read from `Env`) is
+/// emit-then-advance: sample 0 of a block carries the block's start beat, and
+/// only then does the beat increment. A clock advanced ahead of the render
+/// sits one `beats_per_sample` off the transport its nodes read for the
+/// entire render — a desync that reads as "the samplers are
 /// slightly late" and nothing else.
 pub trait RenderClock: Send + Sync {
-    /// Advance the playhead by `frames` — a **frame** count, not a sample
+    /// Advances the playhead by `frames` — a **frame** count, not a sample
     /// count, so it is independent of the render's channel width.
     ///
     /// Call after the block has been processed, never before.
     fn advance(&self, frames: tutti_types::Samples);
 
-    /// The block about to be rendered as the native graph takes it: the
+    /// The block about to be rendered as the graph takes it: the
     /// transport at the block's first frame, and the changes inside it. Read
     /// **before** the block is processed, as [`render_graph`](Self::render_graph)
     /// does.
@@ -87,28 +83,18 @@ pub trait RenderClock: Send + Sync {
     /// Required, not defaulted. The obvious default — stopped, at beat zero —
     /// is right for a clock that does not move and wrong for every clock that
     /// does: a moving clock that fell back on it would advance its clip readers
-    /// while the graph's `EnvClock` and every `Env` reader held beat zero, a
+    /// while every `Env` reader held beat zero, a
     /// desync that renders without an error. A clock that moves must say where
     /// it is.
     fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges);
 
-    /// Render `frames` through `exec` under this clock, then advance the
+    /// Renders `frames` through `exec` under this clock, then advance the
     /// clock by it: [`graph_block`](Self::graph_block),
     /// `Executor::process_with_changes`, then [`advance`](Self::advance) —
     /// the one order that keeps every reader of this clock on the frame the
-    /// graph renders (emit-then-advance, as above).
-    ///
-    /// **Chunk-major while the graph holds a `Legacy` unit**
-    /// (`Plan::has_legacy`): that sequence runs once per `LEGACY_CHUNK` (64)
-    /// frames, across every node, as a `Net` render runs. A `Legacy` unit (a
-    /// sampler voice, a MIDI clip source) polls this clock as a [`Timeline`]
-    /// on every 64-frame call, so the clock must move between its calls, and
-    /// every reader of it must see it move forward only (doc 013,
-    /// "chunk-major `Legacy` compatibility mode"). A graph with none renders
-    /// `frames` in one block.
-    ///
-    /// Allocates two short slice lists per chunk when it chunks: an offline
-    /// render, not the audio thread.
+    /// graph renders (emit-then-advance, as above). `frames` is one block:
+    /// the executor never splits it, and a node reads a transport change
+    /// inside it from its `Env`.
     ///
     /// # Panics
     ///
@@ -121,32 +107,15 @@ pub trait RenderClock: Send + Sync {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
-        // Installs queued commits first, so the question is asked of the
-        // plan this block renders.
-        exec.apply_pending();
-        if !exec.plan().is_some_and(|p| p.has_legacy()) {
-            let (transport, changes) = self.graph_block();
-            exec.process_with_changes(frames, &transport, &changes, inputs, outputs);
-            self.advance(tutti_types::Samples(frames));
-            return;
-        }
-        let mut done = 0;
-        while done < frames {
-            let n = (frames - done).min(tutti_graph::LEGACY_CHUNK);
-            let ins: Vec<&[f32]> = inputs.iter().map(|i| &i[done..done + n]).collect();
-            let mut outs: Vec<&mut [f32]> =
-                outputs.iter_mut().map(|o| &mut o[done..done + n]).collect();
-            let (transport, changes) = self.graph_block();
-            exec.process_with_changes(n, &transport, &changes, &ins, &mut outs);
-            self.advance(tutti_types::Samples(n));
-            done += n;
-        }
+        let (transport, changes) = self.graph_block();
+        exec.process_with_changes(frames, &transport, &changes, inputs, outputs);
+        self.advance(tutti_types::Samples(frames))
     }
 }
 
 /// A clock that does not move.
 ///
-/// For rendering a net with no time-dependent nodes — a synth patch, a test
+/// For rendering a graph with no time-dependent nodes — a synth patch, a test
 /// tone, an impulse response. It exists so that "this graph has no transport"
 /// is something a caller *states* rather than something they omit: a renderer
 /// takes a clock, so forgetting one is a compile error instead of a silently
@@ -178,8 +147,7 @@ impl RenderClock for FrozenClock {
 /// `Timeline` only and keeps `loop_range` as an inherent method.
 ///
 /// The live [`Transport`] implements this; a consumer that needs record or loop
-/// state (the in-process VST2 plugin's polled transport,
-/// `ParamAutomationSource`) depends on
+/// state (the in-process VST2 plugin's polled transport) depends on
 /// `dyn TransportState`, never the concrete backend.
 pub trait TransportState: Timeline {
     /// Whether the transport is armed and recording. Always `false` offline.

@@ -1,147 +1,63 @@
-//! Forking a [`PolySynth`] for the native graph's export (`Editor::fork`,
-//! design doc 013 PR 12): a fresh synth that shares nothing with the live one
-//! and plays the live one's clip on the render's timeline.
+//! Forking a [`PolySynth`] for the graph's export (`Editor::fork`): a fresh
+//! synth that shares nothing with the live one. Its MIDI comes from its event
+//! input, as the live synth's does: the fork of the graph forks the clip node
+//! feeding it too.
 //!
-//! # Why not a clone of the graph's shadow
+//! # A `ParamNode` fork
 //!
-//! A host that inserts the synth through `tutti_graph::Legacy::controlled`
-//! gets a fork source for free: a clone of the node's **shadow**, isolated
-//! when the node was inserted. That copy is wrong for a synth twice over:
+//! The synth is a `tutti_graph::ParamNode`, inserted through
+//! `tutti_graph::param_parts`: the editor keeps a **template** (a clone taken
+//! at insert, never processed, sharing the live synth's `Param` cells) and
+//! the synth's `ParamSet`. A fork is the template's
+//! [`fork_fresh`](tutti_graph::ParamNode::fork_fresh) —
+//! [`fork_instance`](PolySynth::fork_instance): a clone with its `Param`
+//! cells **detached** (so a live move after the fork does not reach the
+//! render, nor a move on the fork the live synth) and every voice silenced —
+//! and then each param set to its **authored** value: what the host last
+//! set through the `ParamSet`, not whatever a modulation source had added to
+//! the cell at the instant of the fork (the export runs its own modulation).
 //!
-//! - **Its MIDI port was severed at insert** (`MidiInPort::isolate`), so it
-//!   never saw the clip a host installs on the live port afterwards
-//!   (bevy-tutti's `MidiSourceInstall`): the export rendered silence.
-//! - **Its `Param` cells were detached at insert**, and the synth's settings
-//!   path (`AudioUnit::set`) is a no-op, so no write after insert reaches the
-//!   shadow: the master volume and the unison detune and spread are read by
-//!   the live synth from cells a host (or a modulation target) writes, and the
-//!   export rendered the values the synth was built with.
-//!
-//! # What this forks from instead
-//!
-//! A **template**: a clone of the synth taken when the source is made, never
-//! processed and deliberately **not** isolated, so it shares the live synth's
-//! `Param` cells and its MIDI port (mailbox and source cell). It never polls
-//! the port and never renders, so holding it steals nothing. A fork is then,
-//! in order:
-//!
-//! 1. a clone of the template;
-//! 2. `AudioUnit::isolate` — detaches the `Param` cells **at their values
-//!    now**, so a live move after the fork does not reach the render; mints a
-//!    fresh private MIDI port; empties the voices;
-//! 3. **offline only:** the live port's source (a `MidiClipSource`) rebound
-//!    onto the fork's own port and the render's timeline
-//!    ([`MidiInPort::rebind_offline_into`](tutti_midi_runtime::MidiInPort::rebind_offline_into)).
-//!    A source that cannot be rebound fails the fork ([`Error::MidiSource`])
-//!    rather than render its notes as silence. A live duplicate
-//!    ([`ForkMode::Live`]) carries no clip, as a hosted plugin's does not;
-//! 4. `AudioUnit::reset`.
-//!
-//! What the fork does **not** carry: the live mailbox (a keyboard's notes, an
-//! all-notes-off), sounding voices, and by-value state the live synth reached
-//! through MIDI after the template was taken (a pitch bend, a CC-driven
-//! cutoff, an MPE toggle) — the clip replays whatever of that it holds.
-//!
-//! A `Param` cell read at the fork is its **live value**: the authored base
-//! plus whatever a modulation source had added at that instant, the value a
-//! `Net` export's `isolate` read too. The render then holds it.
+//! What the fork does **not** carry: sounding voices, and by-value state the
+//! live synth reached through MIDI after the template was taken (a pitch
+//! bend, a CC-driven cutoff, an MPE toggle) — the clip replays whatever of
+//! that it holds.
 
-use tutti_core::AudioUnit;
-use tutti_graph::{ForkCause, ForkMode, ForkSource, Forked, IntoNode, Legacy};
-use tutti_midi_runtime::OfflineRebind;
-
-use crate::{Error, PolySynth};
-
-/// [`PolySynth::fork_source`]'s source: the template in the module docs.
-struct SynthFork {
-    template: PolySynth,
-}
-
-impl SynthFork {
-    /// The fork, as a synth: what [`ForkSource::fork`] wraps.
-    fn synth(&self, mode: ForkMode<'_>) -> crate::Result<PolySynth> {
-        self.template.fork_instance(mode)
-    }
-}
-
-impl ForkSource for SynthFork {
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
-        let fork = self.synth(mode).map_err(ForkCause::new)?;
-        // The fork runs as a host runs the live synth, through `Legacy`;
-        // `into_node` so it carries no fork source of its own (a fork is not
-        // forked again).
-        Ok(Forked::new(Legacy::new(fork).into_node().0))
-    }
-}
+use crate::PolySynth;
 
 impl PolySynth {
-    /// A fresh synth for a fork of the graph this one plays in: the same
-    /// config, voices and control values (the `Param` cells read now), a
-    /// private MIDI port and no sounding voice, and — for
-    /// [`ForkMode::Offline`] — the clip installed on this synth's port,
-    /// rebound onto the render's timeline. See the `fork` module docs
-    /// (`src/fork.rs`) for the steps and what is not carried.
+    /// Returns a fresh synth for a fork of the graph this one plays in (an
+    /// offline export, for example).
     ///
-    /// Control thread. Reads this synth's port's source cell, never its
-    /// mailbox, so this synth keeps every event.
+    /// The copy has the same config and unison settings, control cells of its
+    /// own (at the values this synth's hold now, so later moves on either side
+    /// do not reach the other), and no sounding voice. State the live synth
+    /// reached through MIDI (a pitch bend, a CC-driven cutoff) is carried as
+    /// it is now. Allocates a copy of every voice, so call it off the audio
+    /// thread.
     ///
-    /// # Errors
-    ///
-    /// [`Error::MidiSource`] when a source is installed on this synth's port
-    /// that cannot be rebound for an offline render (it is not a function of
-    /// a timeline, or `mode`'s context is not one it reads): the render would
-    /// drop its notes.
-    pub fn fork_instance(&self, mode: ForkMode<'_>) -> crate::Result<PolySynth> {
+    /// A synth inserted into a graph registers this as its fork, so a graph
+    /// fork needs no call to it; it is for hosts building a copy by hand.
+    pub fn fork_instance(&self) -> PolySynth {
         let mut fork = self.clone();
-        fork.isolate();
-        if let ForkMode::Offline(ctx) = mode {
-            if self.midi_port().rebind_offline_into(fork.midi_port(), ctx)
-                == OfflineRebind::NotRebindable
-            {
-                return Err(Error::MidiSource);
-            }
-        }
-        fork.reset();
-        Ok(fork)
-    }
-
-    /// The [`ForkSource`] a host hands the graph's editor when it inserts
-    /// this synth, so that a fork of the graph (an export) forks it through
-    /// [`fork_instance`](Self::fork_instance) and plays its clip.
-    ///
-    /// For a host that wraps the synth in its own node builder (bevy-tutti's
-    /// `Legacy::controlled`, for a settings ring and a shadow):
-    /// `NodeParts { node, controls, fork: Some(synth.fork_source()) }`.
-    ///
-    /// Take it from the synth that goes into the graph, **before** it goes
-    /// in: it keeps a template clone that shares that synth's `Param` cells
-    /// and MIDI port (see the `fork` module docs), and costs a second copy of
-    /// the synth's voices for as long as the node is in the graph.
-    pub fn fork_source(&self) -> Box<dyn ForkSource> {
-        Box::new(self.fork_template())
-    }
-
-    fn fork_template(&self) -> SynthFork {
-        SynthFork {
-            template: self.clone(),
-        }
+        // Control cells: detached at their current values, so the fork
+        // renders the controls it was taken with rather than following live
+        // moves (and a move on the fork never reaches the live synth).
+        fork.detach_controls();
+        // A clean, inactive voice set: a clone carries the live synth's
+        // sounding notes, which a fork must not replay.
+        fork.reset_voices();
+        fork
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use tutti_core::{SampleRate, Seconds, UnitParam};
+    use tutti_graph::contract::{assert_param_fork, Direct};
+    use tutti_graph::{Event, Offset, ParamFork};
+    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 
-    use tutti_core::transport::{
-        OfflineTimeline, OfflineTimelineConfig, OfflineTransport, Timeline, Transport,
-    };
-    use tutti_core::{AudioUnit, Beat, Bpm, BufferVec, SampleRate, Seconds, MAX_BUFFER_SIZE};
-    use tutti_graph::ForkMode;
-    use tutti_midi_runtime::{MidiClipSource, MidiInPort, OfflineRebind, TimedClipEvent};
-    use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup, MidiUnitId, MidiUnitIn};
-
-    use crate::{EnvelopeConfig, Error, OscillatorType, PolySynth, SynthConfig};
+    use crate::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 
     const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -154,6 +70,7 @@ mod tests {
                 attack: Seconds(0.0),
                 ..Default::default()
             },
+            unison: Some(UnisonConfig::default()),
             ..Default::default()
         })
         .expect("synth builds")
@@ -163,160 +80,69 @@ mod tests {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
     }
 
-    /// A timeline at 90 BPM from beat 0: a beat is 32 000 frames at 48 kHz.
-    fn offline() -> Arc<OfflineTimeline> {
-        Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: Beat(0.0),
-            tempo: Bpm(90.0),
-            sample_rate: RATE,
-            loop_range: None,
-        }))
-    }
-
-    /// Render `frames` of channel 0 in 64-frame blocks, advancing `timeline`
-    /// past each block after it renders, as a renderer does.
-    fn render(unit: &mut PolySynth, timeline: &OfflineTimeline, frames: usize) -> Vec<f32> {
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
-        let mut out = Vec::with_capacity(frames);
-        while out.len() < frames {
-            let n = (frames - out.len()).min(MAX_BUFFER_SIZE);
-            unit.process(n, &input.buffer_ref(), &mut output.buffer_mut());
-            out.extend_from_slice(&output.buffer_ref().channel_f32(0)[..n]);
-            timeline.advance(n);
+    /// The peak of channel 0 over `frames` of `synth` with a note on at
+    /// frame 0, in 64-frame blocks.
+    fn peak(synth: PolySynth, frames: usize) -> f32 {
+        let mut hand = Direct::new(synth, RATE, 64);
+        let on = Offset::new(0, tutti_core::Samples(64)).expect("inside");
+        hand.events(0, &[Event::midi(on, note_on().data)]);
+        let mut peak = 0.0f32;
+        for _ in 0..frames / 64 {
+            hand.block();
+            peak = hand.output(0).iter().fold(peak, |a, s| a.max(s.abs()));
         }
-        out
+        peak
     }
 
-    /// **A fork plays the live synth's clip on the render's timeline, and
-    /// leaves the live clip alone.** The clip is installed on the live
-    /// synth's port after its fork source was made (as bevy-tutti's
-    /// `MidiSourceInstall` does after insert); the fork's note sounds from
-    /// beat 1 — frame 32 000 — and not a frame before; the live port still
-    /// holds its own source.
+    /// The synth's params by address fork as a `ParamNode`'s must: every one
+    /// in its `ParamSet` (volume, and with unison the detune and spread), a
+    /// fork starting from the authored value, and no cell shared either way.
     ///
-    /// Mutation (run): dropping the `rebind_offline_into` call in
-    /// `fork_instance` → the fork renders silence. Mutation (run):
-    /// `fork_template` isolating its template (as a `Legacy::controlled`
-    /// shadow is) → silence.
+    /// Mutations (run): drop `unison.detach()` from `fork_instance` →
+    /// "Detune: a live write reached the fork" → fails; `param_set` leaving
+    /// out `StereoSpread` → the list above is short (and
+    /// `a_fork_renders_the_volume_and_unison_it_was_taken_with`, which sets
+    /// it by address, is refused) → fails.
     #[test]
-    fn a_fork_plays_the_live_clip_on_the_render_timeline() {
-        let live = saw();
-        let source = live.fork_template();
-        live.midi_port().install(Arc::new(MidiClipSource::new(
-            live.midi_unit_id(),
-            vec![TimedClipEvent {
-                beat: Beat(1.0),
-                event: note_on(),
-            }],
-            Arc::new(Transport::new(RATE.0)) as Arc<dyn Timeline>,
-        )));
-
-        let timeline = offline();
-        // The render's timeline, the type `ForkMode::Offline` carries.
-        let ctx: OfflineTransport = OfflineTransport::new(timeline.clone());
-        let mut fork = source
-            .synth(ForkMode::Offline(&ctx))
-            .expect("the synth forks");
-        let out = render(&mut fork, &timeline, 40_000);
-        // Where the synth's first non-zero sample falls after a note-on at
-        // frame 0 (a saw starts from 0, so one frame in): the fork's must
-        // fall exactly that far after beat 1.
-        let lead = {
-            let mut reference = saw();
-            reference.midi_sender().queue(&[note_on()]);
-            render(&mut reference, &offline(), 64)
-                .iter()
-                .position(|&s| s != 0.0)
-                .expect("a note-on at frame 0 sounds in its block")
-        };
+    fn the_synth_forks_as_a_param_node() {
+        let synth = saw();
+        let params: Vec<UnitParam> = tutti_graph::ParamNode::param_set(&synth).params().collect();
         assert_eq!(
-            out.iter().position(|&s| s != 0.0),
-            Some(32_000 + lead),
-            "the note sounds from beat 1"
+            params,
+            [
+                UnitParam::Volume,
+                UnitParam::Detune,
+                UnitParam::StereoSpread
+            ]
         );
-        assert_eq!(
-            live.midi_port()
-                .rebind_offline_into(&MidiInPort::new(), &ctx),
-            OfflineRebind::Rebound,
-            "the live synth still holds its clip"
-        );
+        assert_param_fork(synth);
     }
 
-    /// A MIDI source that is not a function of a timeline.
-    struct Unrebindable;
-
-    impl MidiUnitIn for Unrebindable {
-        fn poll_unit(
-            &self,
-            _unit: MidiUnitId,
-            _block: usize,
-            _rate: SampleRate,
-            _buffer: &mut [MidiEvent],
-        ) -> usize {
-            0
-        }
-        fn rebind_offline(
-            &self,
-            _unit: MidiUnitId,
-            _ctx: &tutti_core::transport::OfflineTransport,
-        ) -> Option<Arc<dyn MidiUnitIn>> {
-            None
-        }
-    }
-
-    /// **A source that cannot be rebound fails the fork by name**, offline
-    /// (and through the `ForkSource`, as a cause a host can downcast); a
-    /// live duplicate carries no clip and does not ask.
+    /// **A fork renders the volume last set through the synth's params**: a
+    /// volume set before the fork is the fork's, one set after is not, and
+    /// what a modulation driver left in the live cell is not either.
     ///
-    /// Mutation (run): `fork_instance` ignoring `NotRebindable` → the offline
-    /// fork succeeds.
+    /// Mutation (run): `fork_instance` not detaching `master_volume` → the
+    /// move after the fork reaches it → fails. Mutation (run): the template
+    /// taken detached (`ParamFork::new(&synth.fork_instance())`) → the fork
+    /// renders the volume the synth was built with → fails.
     #[test]
-    fn an_unrebindable_source_is_a_named_fork_error() {
-        let live = saw();
-        live.midi_port().install(Arc::new(Unrebindable));
-        let ctx: OfflineTransport = OfflineTransport::new(offline());
-        assert!(matches!(
-            live.fork_instance(ForkMode::Offline(&ctx)),
-            Err(Error::MidiSource)
-        ));
-        let cause = live
-            .fork_source()
-            .fork(ForkMode::Offline(&ctx))
-            .err()
-            .expect("the source fails too");
-        assert!(matches!(
-            cause.downcast_ref::<Error>(),
-            Some(Error::MidiSource)
-        ));
-        assert!(live.fork_instance(ForkMode::Live).is_ok());
-    }
-
-    /// **A fork renders the controls as they stood at the fork**: a volume
-    /// set on the live synth after its source was made reaches the fork (the
-    /// cell is read at fork time), and one set after the fork does not
-    /// (`isolate` detached the cell).
-    ///
-    /// Mutation (run): dropping `self.master_volume.detach()` from
-    /// `PolySynth::isolate` → the move after the fork reaches it. Mutation
-    /// (run): `fork_template` isolating its template → the fork renders the
-    /// volume the synth was built with.
-    #[test]
-    fn a_fork_takes_the_controls_at_the_fork() {
-        let peak = |before: f32, after: f32| {
+    fn a_fork_takes_the_authored_volume_at_the_fork() {
+        let at = |before: f32, after: f32| {
             let live = saw();
-            let source = live.fork_template();
-            live.set_volume(before);
-            let mut fork = source.synth(ForkMode::Live).expect("forks");
-            live.set_volume(after);
-            fork.midi_sender().queue(&[note_on()]);
-            let out = render(&mut fork, &offline(), 4_096);
-            out.iter().map(|s| s.abs()).fold(0.0f32, f32::max)
+            let source = ParamFork::new(&live);
+            let set = source.params().clone();
+            set.set(UnitParam::Volume, before);
+            // A modulation driver's composite in the live cell: not authored.
+            live.set_volume(before * 3.0);
+            let fork = source.fork_node();
+            set.set(UnitParam::Volume, after);
+            peak(fork, 4_096)
         };
-        let half = peak(0.5, 0.5);
+        let half = at(0.5, 0.5);
         assert!(half > 0.0, "the note sounds");
-        assert_eq!(peak(0.5, 1.0), half, "a move after the fork reached it");
-        let full = peak(1.0, 1.0);
+        assert_eq!(at(0.5, 1.0), half, "a move after the fork reached it");
+        let full = at(1.0, 1.0);
         assert!(
             (full - 2.0 * half).abs() < 1e-5,
             "the volume set before the fork is the fork's: {full} vs 2 × {half}"

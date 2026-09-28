@@ -1,20 +1,18 @@
 //! No code in this crate reaches into the graph for a node by type.
 //!
-//! `Net`'s typed node accessors (the `node` + `_as` / `_as_mut` pair) hand back
-//! the graph's own copy of a node, downcast to a concrete type. This crate used
-//! to lean on them for three things — a synth's MIDI port, a node's modulatable
-//! params, and a hosted plugin's input slots and latency — and all three now
-//! come from components captured off the unit as it is inserted
+//! A typed node accessor hands back the graph's own copy of a node, downcast
+//! to a concrete type. This crate needs none: a synth's MIDI arrives over event
+//! edges, and a node's modulatable params and a hosted plugin's input slots
+//! and latency come from components captured off the unit as it is inserted
 //! (`bevy_tutti::graph::capture`).
 //!
-//! The downcast has to stay gone, because it is what ties a call site to one
+//! The downcast has to stay out, because it is what ties a call site to one
 //! graph implementation: a graph that owns its nodes outright, rather than
 //! keeping a frontend clone of each, has nothing to downcast to. Neither rustc
-//! nor clippy can say "not this inherent method on a vendored type, in this
-//! crate only" — clippy's `disallowed_methods` lives in the workspace-wide
-//! `clippy.toml`, and the node-level `Net` tests in `tutti-nodes` and
-//! `tutti-sampler` use these methods legitimately — so this text scan is the
-//! enforcement.
+//! nor clippy can say "not this method, in this crate only" — clippy's
+//! `disallowed_methods` lives in the workspace-wide `clippy.toml`, and other
+//! crates' node-level tests may use such methods legitimately — so this
+//! text scan is the enforcement.
 //!
 //! Three spellings are watched, because the typed accessor is not the only way
 //! to write the downcast: `graph.0.node(id).as_any().downcast_ref::<T>()` is
@@ -50,8 +48,7 @@ const PATTERNS: &[Pattern] = &[
     },
     Pattern {
         // `.0.node(` is the spelling through the resource's field; `net.node(`
-        // the one on a `Net` bound as `net` (the adapter's own arm, until PR
-        // 13; a test's `Net`-era oracle since).
+        // the one on a graph bound as `net`.
         name: "raw graph node access (.0.node( / net.node()",
         matches: |l| {
             l.contains(".0.node(")
@@ -65,35 +62,16 @@ const PATTERNS: &[Pattern] = &[
 /// `(file, pattern name, allowed count, why)`.
 ///
 /// A count rather than a path: a new use in an allow-listed file still fails.
-const ALLOWED: &[(&str, &str, usize, &str)] = &[
-    (
-        "src/midi/endpoint/target.rs",
-        "downcast_ref / downcast_mut",
-        1,
-        "MidiTargetRegistry's capture (`as_node`): a downcast of the *owned* unit \
-         before it is inserted, which is the whole point of capturing, and of a \
-         fork's own unit to find the port its clip goes on — never a read of the \
-         live graph.",
-    ),
-    (
-        "src/modulation/target.rs",
-        "downcast_ref / downcast_mut",
-        1,
-        "ModTargetRegistry's capture, on the owned unit before insertion.",
-    ),
-    (
-        "tests/export_fork.rs",
-        "downcast_ref / downcast_mut",
-        5,
-        "a_plugin_fork_that_cannot_be_built_is_a_named_failure, \
-         an_unrebindable_synth_source_is_a_named_failure and \
-         a_host_midi_unit_with_an_unrebindable_source_refuses_by_name downcast an export \
-         error's `ForkCause` to the node's own error (the cause's documented \
-         use), not a graph node. (The `Net`-era oracle's downcast of the synth \
+const ALLOWED: &[(&str, &str, usize, &str)] = &[(
+    "tests/export_fork.rs",
+    "downcast_ref / downcast_mut",
+    1,
+    "a_plugin_fork_that_cannot_be_built_is_a_named_failure downcasts an \
+         export error's `ForkCause` to the plugin's own error (the cause's \
+         documented use), not a graph node. (The `Net`-era oracle's downcast of the synth \
          in its own `Net`, and its raw node access, went with it in doc 013 \
          PR 15.)",
-    ),
-];
+)];
 
 fn scanned_files(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -172,7 +150,7 @@ fn no_graph_node_downcasts_outside_the_allow_list() {
     assert!(
         violations.is_empty(),
         "graph downcasts found:\n  {}\n\nRead the node's controls from the entity \
-         instead — `MidiTarget`, `ModParamsHandle`, `PluginShadow`, or a handle \
+         instead — `ModParamsHandle`, `PluginShadow`, or a handle \
          taken from the unit before it was inserted. See `bevy_tutti::graph::capture`.",
         violations.join("\n  ")
     );

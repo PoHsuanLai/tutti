@@ -123,7 +123,7 @@ pub struct RestartOutcome {
     /// deactivate/reactivate cycle) and then rewire.
     pub io_changed: bool,
     /// `kMidiCCAssignmentChanged` fired — the `IMidiMapping` CC→param table is
-    /// stale and should be re-queried (V3).
+    /// stale and should be re-queried.
     pub midi_cc_assignment_changed: bool,
     /// `kReloadComponent` fired — the plugin needs a full deactivate/reload.
     /// The host path cannot do that from a `&mut Vst3Loaded` (it requires
@@ -151,20 +151,17 @@ pub struct RestartOutcome {
     // The six fields above stop here, at the format layer, on purpose. Carrying
     // them further means new `AsyncEvent` variants, and bincode encodes a
     // discriminant, so appending one is a `PROTOCOL_VERSION` bump — paid for a
-    // signal nothing yet acts on. `AsyncEvent::IoChanged` already shows where
-    // that leads: it crosses the wire to a `BridgeMessage` and no consumer
-    // reads it. Decoding a flag and dropping it inside one crate is a gap;
-    // shipping six across a versioned boundary to no receiver is the
-    // `PluginTail` mistake, which stayed write-only for a release cycle.
+    // signal nothing acts on yet. Shipping flags across a versioned boundary to
+    // no receiver only adds write-only protocol surface.
     //
-    // What this fix buys is that the signal now *exists* where a consumer can
-    // reach it, and `every_decoded_restart_flag_reaches_the_outcome` keeps it
-    // that way. Plumbing follows a consumer, not the other way round.
+    // The signal *exists* here, where a consumer can reach it, and
+    // `every_decoded_restart_flag_reaches_the_outcome` keeps it that way.
+    // Plumbing follows a consumer, not the other way round.
 }
 
 impl RestartOutcome {
-    /// True if nothing actionable was reported — the caller can skip any
-    /// follow-up work.
+    /// Returns `true` if nothing actionable was reported, so the caller has
+    /// nothing to refresh.
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
@@ -216,10 +213,17 @@ pub struct PluginNotifications {
 }
 
 impl Vst3Loaded {
-    /// Lightweight metadata read: load the library, read factory and bus info,
-    /// return without calling `initialize()` or `setActive()`. Safe for plugins
-    /// that would otherwise pop license dialogs or hit the network during full
-    /// load.
+    /// Reads a plugin's metadata without initializing it.
+    ///
+    /// Loads the library and reads factory and bus info, but never calls
+    /// `initialize()` or `setActive()`. Safe for plugins that would otherwise
+    /// pop license dialogs or hit the network during a full load.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Vst3Error::LoadFailed`](crate::Vst3Error::LoadFailed) if the
+    /// file is missing, the DSO can't be opened, the factory is empty, no
+    /// audio class is found, or the component cannot be created.
     pub fn probe(path: &Path) -> Result<PluginInfo> {
         check_exists(path)?;
         let library = Vst3Library::load(path)?;
@@ -236,7 +240,7 @@ impl Vst3Loaded {
         ))
     }
 
-    /// Load a VST3 plugin for GUI / parameter work only — no audio processing
+    /// Loads a VST3 plugin for GUI / parameter work only — no audio processing
     /// will ever happen on the returned value. Stays in `Loaded` state, skipping
     /// the activation cost.
     ///
@@ -251,7 +255,7 @@ impl Vst3Loaded {
         Self::load_class(path, None)
     }
 
-    /// Load a specific audio class from a bundle, by display name.
+    /// Loads a specific audio class from a bundle, by display name.
     ///
     /// One VST3 bundle may export many plugins — that is the normal shape for a
     /// commercial suite, and the sample corpus has it too: `mda-vst3` exports
@@ -294,7 +298,7 @@ impl Vst3Loaded {
         Ok(loaded)
     }
 
-    /// Build `Self` from already-queried interfaces. No side effects — the
+    /// Builds `Self` from already-queried interfaces. No side effects — the
     /// caller runs [`initialize`](Self::initialize).
     fn assemble(
         library: Arc<Vst3Library>,
@@ -371,13 +375,21 @@ impl Vst3Loaded {
         }
     }
 
-    /// Transition to the processing state. Runs `setupProcessing`, activates
-    /// buses, calls `setActive(1)` and `setProcessing(1)`. Returns a
-    /// [`Vst3Active<T>`] that exposes `process()`.
+    /// Transitions to the processing state in [`ProcessMode::Realtime`].
+    ///
+    /// Runs `setupProcessing`, activates buses, and calls `setActive(1)` and
+    /// `setProcessing(1)`. Returns a [`Vst3Active<T>`] that exposes `process()`.
+    /// `sample_rate` is in Hz; `block_size` is the largest number of frames
+    /// any later `process` call may pass.
     ///
     /// `T` fixes the sample format: `f32` (the default) uses `kSample32`;
-    /// `f64` uses `kSample64` and returns [`Vst3Error::NotSupported`] if the
-    /// plugin does not advertise 64-bit support.
+    /// `f64` uses `kSample64`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Vst3Error::NotSupported`] if `T` is `f64` and the plugin does
+    /// not advertise 64-bit support, or [`Vst3Error::PluginError`] if
+    /// `setupProcessing` or `setActive` fails. `self` is consumed either way.
     pub fn activate<T: Vst3Sample>(
         self,
         sample_rate: f64,
@@ -420,22 +432,32 @@ impl Vst3Loaded {
         &self.info
     }
 
-    /// Read the current processing latency directly from
+    /// Reads the current processing latency directly from
     /// `IAudioProcessor::getLatencySamples`. Call this at load time and
     /// whenever [`RestartOutcome::latency_changed`] is set to get the fresh
     /// value for PDC.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn read_latency_samples(&self) -> u32 {
         tutti_plugin_types::assert_main_thread();
         unsafe { self.interfaces.processor.getLatencySamples() }
     }
 
-    /// Read the plugin's tail length from `IAudioProcessor::getTailSamples` —
+    /// Reads the plugin's tail length from `IAudioProcessor::getTailSamples` —
     /// how long it keeps sounding after its input goes silent.
     ///
     /// The raw count, so `0` (no tail) and the saturating `u32::MAX` (an
     /// effectively unbounded one) both reach the caller as the plugin stated
     /// them. `PluginTail::from_samples` is what turns those into the shared
     /// vocabulary; this stays at the ABI's own type so nothing is decided here.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn read_tail_samples(&self) -> u32 {
         tutti_plugin_types::assert_main_thread();
         unsafe { self.interfaces.processor.getTailSamples() }
@@ -470,7 +492,7 @@ impl Vst3Loaded {
         }
     }
 
-    /// Read the normalized (0.0 – 1.0) value of the parameter with **ParamID**
+    /// Reads the normalized (0.0 – 1.0) value of the parameter with **ParamID**
     /// `param_id` — *not* an index (see the note above; use
     /// [`parameter_by_index`](Self::parameter_by_index) to address by index).
     /// Returns `0.0` if the plugin has no controller.
@@ -481,7 +503,7 @@ impl Vst3Loaded {
         }
     }
 
-    /// Write a normalized (0.0 – 1.0) `value` to the parameter with **ParamID**
+    /// Writes a normalized (0.0 – 1.0) `value` to the parameter with **ParamID**
     /// `param_id` — *not* an index (use
     /// [`set_parameter_by_index`](Self::set_parameter_by_index) for that).
     /// No-op if the plugin has no controller.
@@ -506,6 +528,11 @@ impl Vst3Loaded {
     /// value first would answer a different question.
     ///
     /// Main/UI thread, as with every other `IEditController` call here.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn parameter_string_by_value(&self, param_id: u32, value: f64) -> Option<String> {
         tutti_plugin_types::assert_main_thread();
         let ctrl = self.interfaces.controller.as_ref()?;
@@ -514,7 +541,7 @@ impl Vst3Loaded {
         (result == kResultOk).then(|| utf16_to_string(&string))
     }
 
-    /// Parse `text` into a normalized value using the plugin's own
+    /// Parses `text` into a normalized value using the plugin's own
     /// interpretation — the inverse of
     /// [`parameter_string_by_value`](Self::parameter_string_by_value).
     ///
@@ -532,6 +559,11 @@ impl Vst3Loaded {
     /// that would otherwise have worked.
     ///
     /// Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn parameter_value_by_string(&self, param_id: u32, text: &str) -> Option<f64> {
         tutti_plugin_types::assert_main_thread();
         let ctrl = self.interfaces.controller.as_ref()?;
@@ -564,14 +596,14 @@ impl Vst3Loaded {
         self.parameter_info(index).map(|info| info.id)
     }
 
-    /// Read the normalized value of the parameter at **index**, resolving the
+    /// Reads the normalized value of the parameter at **index**, resolving the
     /// index to its ParamID first. `None` if the index is out of range or the
     /// plugin has no controller.
     pub fn parameter_by_index(&self, index: u32) -> Option<f64> {
         self.parameter_id_at(index).map(|id| self.get_parameter(id))
     }
 
-    /// Write a normalized `value` to the parameter at **index**, resolving the
+    /// Writes a normalized `value` to the parameter at **index**, resolving the
     /// index to its ParamID first. Returns `false` when the index is out of
     /// range or the plugin has no controller (nothing was written).
     pub fn set_parameter_by_index(&mut self, index: u32, value: f64) -> bool {
@@ -760,7 +792,7 @@ impl Vst3Loaded {
         (result == kResultOk).then(|| Vst3KeyswitchInfo::from_c(&raw))
     }
 
-    /// Ask the plugin (via `IRemapParamID`) for the parameter ID in *this*
+    /// Asks the plugin (via `IRemapParamID`) for the parameter ID in *this*
     /// plugin that corresponds to `old_param_id` from a *previous* plugin
     /// identified by `plugin_to_replace_uid` (its processor class ID / `TUID`).
     ///
@@ -773,6 +805,11 @@ impl Vst3Loaded {
     /// The host does **not** call this automatically anywhere — like JUCE, it's
     /// exposed for a caller-driven migration flow to use. Must run on the
     /// main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn remap_param_id(
         &self,
         plugin_to_replace_uid: &[i8; 16],
@@ -791,13 +828,18 @@ impl Vst3Loaded {
         (result == kResultTrue).then_some(new_param_id)
     }
 
-    /// Resolve a well-known parameter *function name* (the VST3 spec defines
+    /// Resolves a well-known parameter *function name* (the VST3 spec defines
     /// roles like "Wet/Dry Mix", "Master Volume", "Resonance") to the plugin's
     /// `ParamID` for that role, scoped to `unit_id`. Returns `None` if the role
     /// is unknown to the plugin or it doesn't implement `IParameterFunctionName`.
     ///
     /// Lets a host bind a generic "mix" knob to whatever parameter the plugin
     /// uses for it, without hard-coding parameter indices. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn param_id_for_function_name(&self, unit_id: i32, function_name: &str) -> Option<u32> {
         tutti_plugin_types::assert_main_thread();
         let ctrl = self.interfaces.parameter_function_name.as_ref()?;
@@ -814,6 +856,11 @@ impl Vst3Loaded {
     /// Read before [`units`](Self::units), which needs the list ids to tell a
     /// unit's real program list from one it names but the plugin never
     /// publishes. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn program_lists(&self) -> Vec<Vst3ProgramListInfo> {
         tutti_plugin_types::assert_main_thread();
         let Some(ctrl) = self.interfaces.unit_info.as_ref() else {
@@ -845,6 +892,11 @@ impl Vst3Loaded {
     /// `program_list: None` — see [`Vst3UnitInfo::program_list`] for why, and
     /// [`Vst3UnitInfo::has_dangling_program_list`] to detect it. Main/UI
     /// thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn units(&self) -> Vec<Vst3UnitInfo> {
         tutti_plugin_types::assert_main_thread();
         let Some(ctrl) = self.interfaces.unit_info.as_ref() else {
@@ -872,6 +924,11 @@ impl Vst3Loaded {
     /// `list_id` is a [`Vst3ProgramListInfo::id`], **not** an index into
     /// [`program_lists`](Self::program_lists) — the two spaces differ, and a
     /// plugin is free to number its lists however it likes. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn program_name(&self, list_id: i32, program_index: u32) -> Option<String> {
         tutti_plugin_types::assert_main_thread();
         let ctrl = self.interfaces.unit_info.as_ref()?;
@@ -887,19 +944,29 @@ impl Vst3Loaded {
     /// Unlike the other accessors here this cannot fail: `getSelectedUnit`
     /// returns the id directly with no result code, so a plugin that
     /// implements the interface always answers. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn selected_unit(&self) -> Option<i32> {
         tutti_plugin_types::assert_main_thread();
         let ctrl = self.interfaces.unit_info.as_ref()?;
         Some(unsafe { ctrl.getSelectedUnit() })
     }
 
-    /// Tell the plugin which unit the host's UI is now showing, so a plugin
+    /// Tells the plugin which unit the host's UI is now showing, so a plugin
     /// with its own editor can follow. Returns `false` if the plugin doesn't
     /// implement `IUnitInfo` or refuses the id.
     ///
     /// The one write on this interface. Pass
     /// [`unit_ids::ROOT`](crate::types::unit_ids::ROOT) to select the implicit
     /// top-level unit. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
     pub fn select_unit(&mut self, unit_id: i32) -> bool {
         tutti_plugin_types::assert_main_thread();
@@ -914,6 +981,11 @@ impl Vst3Loaded {
     ///
     /// `media_type` and `direction` take the same `K_AUDIO`/`K_EVENT` and
     /// `K_INPUT`/`K_OUTPUT` constants as the bus accessors. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn unit_by_bus(
         &self,
         media_type: i32,
@@ -929,7 +1001,7 @@ impl Vst3Loaded {
         (result == kResultOk).then_some(unit_id)
     }
 
-    /// Map the plugin's physical UI controls to the note-expression dimensions
+    /// Maps the plugin's physical UI controls to the note-expression dimensions
     /// they drive, on the given event `bus_index` / MIDI `channel`. Returns one
     /// `(physical_ui_type, note_expression_type)` pair per physical control
     /// (X/Y movement, pressure — see [`physical_ui_type`](crate::physical_ui_type)),
@@ -938,6 +1010,11 @@ impl Vst3Loaded {
     ///
     /// The host allocates the list; the plugin fills the note-expression id each
     /// physical control is wired to. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn physical_ui_mapping(&self, bus_index: i32, channel: i16) -> Vec<(u32, u32)> {
         tutti_plugin_types::assert_main_thread();
         let Some(ctrl) = self.interfaces.physical_ui_mapping.as_ref() else {
@@ -973,6 +1050,11 @@ impl Vst3Loaded {
     ///
     /// Hardware controller surfaces use this to lay out a plugin's parameters.
     /// Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn xml_representation(
         &self,
         vendor: &str,
@@ -999,7 +1081,7 @@ impl Vst3Loaded {
         (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// Read the bundle's machine-readable compatibility / migration info as a
+    /// Reads the bundle's machine-readable compatibility / migration info as a
     /// JSON string, via the factory's `IPluginCompatibility` class (the
     /// moduleinfo "compatibility" section). Describes which older plugins this
     /// one can replace, so a host can offer to swap an unavailable plugin for a
@@ -1010,6 +1092,11 @@ impl Vst3Loaded {
     /// finds the one in the "Plugin Compatibility Class" category, instantiates
     /// it, and reads its JSON. Returns `None` if the bundle ships no such class.
     /// Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn compatibility_json(&self) -> Option<String> {
         tutti_plugin_types::assert_main_thread();
         // The SDK category string for the compatibility class (kPluginCompatibilityClass).
@@ -1036,10 +1123,15 @@ impl Vst3Loaded {
         (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// Query the plugin's offline/prefetch processing support via
+    /// Queries the plugin's offline/prefetch processing support via
     /// `IPrefetchableSupport`. Returns one of the
     /// [`prefetchable_support`](crate::prefetchable_support) constants, or `None`
     /// if the plugin doesn't implement the interface. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn prefetchable_support(&self) -> Option<u32> {
         tutti_plugin_types::assert_main_thread();
         let proc = self.interfaces.prefetchable_support.as_ref()?;
@@ -1048,12 +1140,17 @@ impl Vst3Loaded {
         (result == kResultOk).then_some(support)
     }
 
-    /// Tell the plugin the downstream presentation latency (in samples) for a
+    /// Tells the plugin the downstream presentation latency (in samples) for a
     /// given bus, via `IAudioPresentationLatency` — the delay between the
     /// plugin's output and what the listener hears, so latency-aware plugins can
     /// compensate. `dir` is the VST3 `kInput` / `kOutput` bus-direction constant.
     /// Returns `true` if delivered; no-op if the plugin doesn't implement the
     /// interface. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn set_audio_presentation_latency(
         &mut self,
         dir: i32,
@@ -1072,7 +1169,7 @@ impl Vst3Loaded {
         }
     }
 
-    /// Drain every host-side notification channel the plugin's editor pushes
+    /// Drains every host-side notification channel the plugin's editor pushes
     /// to and return them as one [`PluginNotifications`] batch.
     ///
     /// This is the single polling entry point for everything the plugin reports
@@ -1092,6 +1189,11 @@ impl Vst3Loaded {
     ///
     /// Must be called on the main thread; not while inside
     /// [`process`](Vst3Active::process).
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn poll_plugin_notifications(&mut self) -> PluginNotifications {
         tutti_plugin_types::assert_main_thread();
         let mut notifications = PluginNotifications::default();
@@ -1124,7 +1226,7 @@ impl Vst3Loaded {
         notifications
     }
 
-    /// Arm or disarm VST3 MIDI learn (`IMidiLearn`).
+    /// Arms or disarms VST3 MIDI learn (`IMidiLearn`).
     ///
     /// While armed, the realtime path captures incoming MIDI CCs and the next
     /// [`poll_plugin_notifications`](Self::poll_plugin_notifications) forwards
@@ -1135,6 +1237,11 @@ impl Vst3Loaded {
     /// `kMidiCCAssignmentChanged` restart, then disarm.
     ///
     /// No observable effect if the plugin doesn't implement `IMidiLearn`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn arm_midi_learn(&mut self, armed: bool) {
         tutti_plugin_types::assert_main_thread();
         self.midi_learn.arm(armed);
@@ -1146,7 +1253,7 @@ impl Vst3Loaded {
         self.midi_learn.is_armed()
     }
 
-    /// Tell the plugin the host's current automation read/write mode via
+    /// Tells the plugin the host's current automation read/write mode via
     /// `IAutomationState`. `state` is one of the
     /// [`automation_state`](crate::automation_state) constants
     /// (`NONE` / `READ` / `WRITE` / `READ_WRITE`).
@@ -1155,6 +1262,11 @@ impl Vst3Loaded {
     /// (e.g. snapping a knob to the automation lane while reading). No-op if the
     /// plugin doesn't implement `IAutomationState`. Returns `true` if the call
     /// was delivered. Must run on the main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn set_automation_state(&mut self, state: i32) -> bool {
         tutti_plugin_types::assert_main_thread();
         match &self.interfaces.automation_state {
@@ -1166,7 +1278,7 @@ impl Vst3Loaded {
         }
     }
 
-    /// Capture the plugin's state as an opaque byte blob suitable for
+    /// Captures the plugin's state as an opaque byte blob suitable for
     /// persisting and later feeding back to [`set_state`](Self::set_state).
     ///
     /// This carries **both** of the plugin's streams. The spec gives the
@@ -1197,6 +1309,11 @@ impl Vst3Loaded {
     /// component half is the one a project cannot be restored without, and
     /// plenty of controllers have no UI state to give. That half degrades to
     /// empty and the component half is still returned.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn get_state(&self) -> Result<Vec<u8>> {
         tutti_plugin_types::assert_main_thread();
         let component = self.read_component_state()?;
@@ -1204,7 +1321,7 @@ impl Vst3Loaded {
         Ok(pack_state(&component, &controller))
     }
 
-    /// Read the controller's own `getState` stream, or `None` when there is no
+    /// Reads the controller's own `getState` stream, or `None` when there is no
     /// controller, it does not implement the call, or it fails.
     ///
     /// Failure is folded into `None` rather than surfaced: see
@@ -1224,7 +1341,7 @@ impl Vst3Loaded {
         (!data.is_empty()).then_some(data)
     }
 
-    /// Write the component's `getState` blob into a fresh `IBStream` and return
+    /// Writes the component's `getState` blob into a fresh `IBStream` and return
     /// the bytes. Shared by [`get_state`](Self::get_state) and the load-time
     /// controller state-sync in [`initialize`](Self::initialize).
     ///
@@ -1270,7 +1387,7 @@ impl Vst3Loaded {
         }
     }
 
-    /// Restore plugin state from a blob produced by [`get_state`](Self::get_state).
+    /// Restores plugin state from a blob produced by [`get_state`](Self::get_state).
     ///
     /// Three things happen, in the order the spec requires. The component gets
     /// its own stream via `IComponent::setState`. The controller is then shown
@@ -1288,6 +1405,11 @@ impl Vst3Loaded {
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
     /// rejects the component blob via `setState`. A controller that rejects its
     /// own stream is tolerated, matching [`get_state`](Self::get_state).
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
         tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
@@ -1324,7 +1446,7 @@ impl Vst3Loaded {
         Ok(())
     }
 
-    /// Hand the controller its own `setState` stream — the half
+    /// Hands the controller its own `setState` stream — the half
     /// `setComponentState` does not cover.
     ///
     /// Best-effort for the same reason as
@@ -1343,18 +1465,12 @@ impl Vst3Loaded {
         }
     }
 
-    /// True if the plugin actually publishes an editor view.
+    /// Returns `true` if the plugin actually publishes an editor view.
     ///
     /// **Asks `createView`, not `controller.is_some()`.** Those are different
-    /// questions and the old answer was the wrong one: nearly every VST3 has an
-    /// edit controller — that is where parameters live — while only some also
-    /// publish a UI. So this returned `true` unconditionally, for every plugin
-    /// in the sample corpus including the four whose `open_editor` fails.
-    ///
-    /// It is not a cosmetic mismatch. `tutti-plugin-server` feeds this straight
-    /// into `Features::EDITOR` on the plugin descriptor
-    /// (`loaders/vst3.rs:116,150`), so a DAW advertised an "open editor"
-    /// affordance for every VST3 it scanned and failed when the user took it.
+    /// questions: nearly every VST3 has an edit controller — that is where
+    /// parameters live — while only some also publish a UI. A host that shows
+    /// an "open editor" button from this answer needs the stronger question.
     ///
     /// The view is created and immediately released — the same
     /// `createView(kEditor)` the SDK's own `editorhost` uses to decide there is
@@ -1362,7 +1478,7 @@ impl Vst3Loaded {
     /// call, so callers needing it per-frame should cache it; the DAW asks
     /// once, at scan time.
     ///
-    /// A plugin with no controller at all still answers `false`, as before.
+    /// A plugin with no controller at all answers `false`.
     pub fn has_editor(&self) -> bool {
         let Some(ctrl) = self.interfaces.controller.as_ref() else {
             return false;
@@ -1379,7 +1495,7 @@ impl Vst3Loaded {
         true
     }
 
-    /// Create the plugin editor, attach it to `parent`, and return its initial
+    /// Creates the plugin editor, attach it to `parent`, and return its initial
     /// pixel size. Only one editor may be open at a time per instance —
     /// opening a second replaces the first.
     ///
@@ -1390,6 +1506,11 @@ impl Vst3Loaded {
     /// rejects this platform's window type, and
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
     /// `IPlugView::attached` fails.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         tutti_plugin_types::assert_main_thread();
         let ctrl = self
@@ -1470,15 +1591,20 @@ impl Vst3Loaded {
         Ok(EditorSize { width, height })
     }
 
-    /// Close the editor if open, calling `IPlugView::removed`. No-op otherwise.
+    /// Closes the editor if open, calling `IPlugView::removed`. No-op otherwise.
     /// Called automatically on `Drop`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn close_editor(&mut self) {
         tutti_plugin_types::assert_main_thread();
         self.close_editor_unchecked();
     }
 
-    /// Assert-free editor teardown for [`Drop`], which can run on the audio
-    /// thread when the fundsp graph releases the instance. The public
+    /// Assert-free editor teardown for [`Drop`], which has no main-thread
+    /// guarantee (an owner may drop the instance on any thread). The public
     /// [`close_editor`](Self::close_editor) asserts the main thread before
     /// delegating here; `Drop` calls this directly to avoid panicking off it.
     fn close_editor_unchecked(&mut self) {
@@ -1507,7 +1633,7 @@ impl Vst3Loaded {
         }
     }
 
-    /// Run one iteration of the event loop this host lends the plugin
+    /// Runs one iteration of the event loop this host lends the plugin
     /// (`Linux::IRunLoop`): fire any timers that came due and dispatch any
     /// plugin file descriptor that became readable.
     ///
@@ -1549,6 +1675,11 @@ impl Vst3Loaded {
     ///
     /// No-op on non-Linux targets, where the OS provides the run loop, so
     /// calling it unconditionally is portable.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn run_editor_loop_iteration(&mut self) {
         tutti_plugin_types::assert_main_thread();
         // The library-scoped loop, not the frame's — plugins register against
@@ -1589,7 +1720,7 @@ impl Vst3Loaded {
         latest
     }
 
-    /// Ask the plugin what it would snap `requested` to, without applying it.
+    /// Asks the plugin what it would snap `requested` to, without applying it.
     ///
     /// A read-only probe of `IPlugView::checkSizeConstraint`: the plugin clamps
     /// the rect to the nearest size it accepts, and this reports that size
@@ -1643,6 +1774,11 @@ impl Vst3Loaded {
     /// while the editor holds focus.
     ///
     /// Returns `false` if no editor is open. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
     pub fn send_key_down(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
         tutti_plugin_types::assert_main_thread();
@@ -1655,6 +1791,11 @@ impl Vst3Loaded {
     /// Offer a key release to the open editor. See
     /// [`send_key_down`](Self::send_key_down) — identical contract, and a host
     /// that forwards one without the other leaves plugins holding keys down.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
     pub fn send_key_up(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
         tutti_plugin_types::assert_main_thread();
@@ -1670,6 +1811,11 @@ impl Vst3Loaded {
     /// `IPlugView::onWheel` takes a single scalar, so horizontal scroll and
     /// modifier-qualified scroll have nowhere to go — a caller with either must
     /// handle it host-side. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
     pub fn send_wheel(&self, distance: f32) -> bool {
         tutti_plugin_types::assert_main_thread();
@@ -1679,12 +1825,17 @@ impl Vst3Loaded {
         send_wheel(view, distance)
     }
 
-    /// Tell the open editor whether it now has keyboard focus.
+    /// Tells the open editor whether it now has keyboard focus.
     ///
     /// Plugins use this to draw a focus ring and to arm their own key
     /// handling; one that never hears it may ignore keys the host forwards.
     /// A notification, not a request — there is no consumed/refused answer.
     /// No-op if no editor is open. Main/UI thread.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn set_editor_focus(&self, focused: bool) {
         tutti_plugin_types::assert_main_thread();
         let EditorState::Open { view, .. } = &self.editor else {
@@ -1693,7 +1844,16 @@ impl Vst3Loaded {
         set_view_focus(view, focused);
     }
 
-    /// Returns the snapped size the plugin applied.
+    /// Resizes the open editor and returns the size the plugin applied.
+    ///
+    /// The request is passed through the view's `checkSizeConstraint` first, so
+    /// the returned size can differ from `requested` (aspect-ratio locks,
+    /// min/max, size grids). Call from the main/UI thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Vst3Error::EditorError`] if no editor is open, or
+    /// [`Vst3Error::PluginError`] if the view rejects `onSize`.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
         let EditorState::Open { view, .. } = &self.editor else {
             return Err(Vst3Error::EditorError("editor not open".to_string()));
@@ -1981,7 +2141,7 @@ impl Vst3Loaded {
             .midi_output(emits_midi);
     }
 
-    /// Hand the controller this host's `IComponentHandler` so it can report
+    /// Hands the controller this host's `IComponentHandler` so it can report
     /// param edits, bus-activation requests, etc.
     fn attach_component_handler(&self) {
         let Some(ctrl) = self.interfaces.controller.as_ref() else {
@@ -2001,8 +2161,8 @@ impl Vst3Loaded {
 
 impl Drop for Vst3Loaded {
     fn drop(&mut self) {
-        // No main-thread assert: Drop can run on the audio thread when the
-        // fundsp graph releases the instance. See `close_editor_unchecked`.
+        // No main-thread assert: Drop has no main-thread guarantee. See
+        // `close_editor_unchecked`.
         self.close_editor_unchecked();
         // Mirror the load-time connect in reverse: for a separate controller,
         // tear the component↔controller connection down before terminating
@@ -2163,7 +2323,7 @@ fn pack_state(component: &[u8], controller: &Option<Vec<u8>>) -> Vec<u8> {
     out
 }
 
-/// Split a blob back into its component and controller halves.
+/// Splits a blob back into its component and controller halves.
 ///
 /// Anything not carrying [`STATE_MAGIC`] is a bare component stream — either
 /// saved by an older build of this host, or packed by [`pack_state`] for a
@@ -2199,7 +2359,7 @@ fn unpack_state(data: &[u8]) -> (&[u8], Option<&[u8]>) {
     (component, (!controller.is_empty()).then_some(controller))
 }
 
-/// Tear a view down: retract the host frame, then tell the view it is removed.
+/// Tears a view down: retract the host frame, then tell the view it is removed.
 ///
 /// The order is the point, and it matches `editorhost`'s `closePlugView`. The
 /// `HostPlugFrame` this view was given dies with the `EditorState` that owned
@@ -2251,7 +2411,7 @@ pub fn send_wheel(view: &ComPtr<IPlugView>, distance: f32) -> bool {
     unsafe { view.onWheel(distance) == kResultTrue }
 }
 
-/// Tell a view whether it now has keyboard focus.
+/// Tells a view whether it now has keyboard focus.
 ///
 /// Unlike the key forwarders this has no consumed/not-consumed answer — it is
 /// a notification, and the spec defines no meaning for a refusal.
@@ -2261,7 +2421,7 @@ pub fn set_view_focus(view: &ComPtr<IPlugView>, focused: bool) {
     }
 }
 
-/// Render a `kPlatformType*` constant as text for error messages. These are C
+/// Renders a `kPlatformType*` constant as text for error messages. These are C
 /// string literals from the SDK, not Rust `&str`, so they need decoding at the
 /// FFI edge; a malformed one degrades to a placeholder rather than failing the
 /// error path this is already on.
@@ -2277,7 +2437,7 @@ fn platform_type_name(platform_type: vst3::Steinberg::FIDString) -> String {
         .to_string()
 }
 
-/// Tell the view its content scale via `IPlugViewContentScaleSupport`, if it
+/// Tells the view its content scale via `IPlugViewContentScaleSupport`, if it
 /// implements that interface. No-op for views that don't (the cast returns
 /// `None`) — the common case for non-HiDPI-aware plugins.
 fn set_content_scale(view: &ComPtr<IPlugView>, scale: f32) {
@@ -2288,7 +2448,7 @@ fn set_content_scale(view: &ComPtr<IPlugView>, scale: f32) {
     }
 }
 
-/// Read the plug-view's `getSize()` and translate it into a `(width, height)`
+/// Reads the plug-view's `getSize()` and translate it into a `(width, height)`
 /// tuple. Returns `None` if the view refuses — callers fall back to a default.
 fn query_view_size(view: &ComPtr<IPlugView>) -> Option<(u32, u32)> {
     let mut rect = ViewRect {
@@ -2308,7 +2468,7 @@ fn query_view_size(view: &ComPtr<IPlugView>) -> Option<(u32, u32)> {
     }
 }
 
-/// Assemble `PluginInfo` from already-queried interfaces. Used by both
+/// Assembles `PluginInfo` from already-queried interfaces. Used by both
 /// [`Vst3Loaded::probe`] (which may not own an `IAudioProcessor`) and
 /// [`Vst3Loaded::load`] (which does).
 fn build_plugin_info_raw(
@@ -2427,7 +2587,7 @@ fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {
         })
 }
 
-/// Ask the plugin (via `IProcessContextRequirements`) which `ProcessContext`
+/// Asks the plugin (via `IProcessContextRequirements`) which `ProcessContext`
 /// fields it actually consumes, so [`crate::types::to_process_context`] can
 /// skip populating the rest.
 ///
@@ -2738,7 +2898,7 @@ fn unit_names(units: &[Vst3UnitInfo]) -> HashMap<i32, &str> {
         .collect()
 }
 
-/// Build a shared [`ParameterInfo`] from a VST3 parameter descriptor and the
+/// Builds a shared [`ParameterInfo`] from a VST3 parameter descriptor and the
 /// plain range probed from the plugin's controller.
 ///
 /// `plain` is [`None`] when the plugin has no edit controller to ask, or when
@@ -2824,7 +2984,7 @@ fn build_param_info(
 mod unit_group_tests {
     use super::*;
 
-    /// Build a unit as the plugin would report it, with no program list.
+    /// Builds a unit as the plugin would report it, with no program list.
     fn unit(id: i32, name: &str) -> Vst3UnitInfo {
         Vst3UnitInfo {
             id,

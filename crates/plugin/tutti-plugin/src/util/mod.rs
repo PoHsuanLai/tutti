@@ -5,9 +5,9 @@
 //! - [`config`] — host configuration ([`BridgeConfig`](config::BridgeConfig)
 //!   per-subprocess; [`CatalogConfig`](config::CatalogConfig) +
 //!   [`AudioConfig`](config::AudioConfig) app-facing).
-//! - [`node`] — fundsp audio-node primitives shared by every host path
-//!   (in-process and out-of-process): the MIDI inbox, the parameter/latency
-//!   change sinks, the signal-routing helper, and the node-id fingerprint.
+//! - [`node`] — node primitives shared by every host path (in-process and
+//!   out-of-process): the parameter-change sinks a plugin node reports
+//!   through.
 //! - [`window`] — platform window-handle plumbing for plugin editors.
 
 pub mod config;

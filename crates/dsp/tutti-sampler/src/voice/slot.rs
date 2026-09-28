@@ -1,22 +1,21 @@
 //! `PlaybackSlot` — a [`Voice`] plus its resident time-stretch processor, and
 //! the read that turns the pair into audio: a block at a time into planar
-//! lanes (`process_into`), or a frame at a time (`tick_frame_into`).
+//! lanes (`render_into`), on the block's transport.
 //!
 //! This is where the two source tiers and the two stretch states meet: four
 //! combinations, each of which has to agree with the others about how much
-//! source one output sample costs. Three separate pitch/stretch bugs have lived
-//! in these branches, so the reasoning is kept inline at each fork.
+//! source one output sample costs. They are easy to get subtly wrong, so the
+//! reasoning is kept inline at each fork.
+
+use std::ops::Range;
 
 use crate::lanes::{accumulate, scale, BlockScratch, LANE_FRAMES};
+use crate::nonempty;
 use crate::stretch;
-use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
-use super::memory_source::MemorySource;
-use super::types::{Direction, Playback, SlotId, Voice, VoiceSource};
-use tutti_core::{
-    Amplitude, AudioUnit, BufferMut, Cents, ChannelLayout, ReadRate, SamplePosition, SampleRate,
-    StretchFactor,
-};
+use super::clock::BlockClock;
+use super::types::{Playback, SlotId, Voice, VoiceSource};
+use tutti_core::{Cents, ChannelLayout, ReadRate, SamplePosition, SampleRate, StretchFactor};
 
 /// A [`Voice`] plus the resident time-stretch DSP processor, and the read that
 /// turns the pair into audio.
@@ -58,17 +57,17 @@ pub(crate) struct PlaybackSlot {
     /// the slot is created, and thereafter the audio thread only flips the
     /// lock-free `stretch_factor` / `pitch_cents` atomics inside it. It owns NO
     /// copy of the audio source: it is a pure frame-in → frame-out filter. At
-    /// tick time, the `needs_stretch()` gate (mirrored from those atomics into
-    /// `voice.play.stretch` / `voice.play.pitch`) chooses whether to tick the
-    /// single source and route its frame through this filter, or read the source
-    /// directly.
+    /// read time, the `needs_stretch()` gate (mirrored from those atomics into
+    /// `voice.play.stretch` / `voice.play.pitch`) chooses whether to read the
+    /// single source and route its frames through this filter, or read the
+    /// source directly.
     ///
     /// **"Built once" is not the same as "built off the audio thread".**
     /// Per-buffer *updates* are genuinely allocation-free —
     /// [`VoiceCommand::UpdateStretch`] only sets atomics. But the construction
     /// itself happens in `insert_voice`, reached from
-    /// [`VoiceCommand::AddVoice`], which `drain_commands` pulls from `tick` /
-    /// `process`. So adding a voice mid-playback DOES build the vocoders in the
+    /// [`VoiceCommand::AddVoice`], which `drain_commands` pulls from the
+    /// node's `process`. So adding a voice mid-playback DOES build the vocoders in the
     /// callback, and the cost scales with channel count: at width `n` that is
     /// `n` FFT setups plus `2n` scratch allocations.
     ///
@@ -80,7 +79,7 @@ pub(crate) struct PlaybackSlot {
     /// materialisation matches the reader rather than defaulting.
     pub(crate) channels: ChannelLayout,
     /// The engine rate the resident stretch unit is tuned to, kept in step by
-    /// the owner's `set_sample_rate`. A stale value here is a pitch error
+    /// the owner's `prepare`. A stale value here is a pitch error
     /// proportional to the device's real rate, reported nowhere.
     pub(crate) sample_rate: SampleRate,
 }
@@ -104,7 +103,7 @@ impl PlaybackSlot {
     ///   every voice spent that on the common case for nothing.
     /// - This constructor is reachable from the audio thread.
     ///   `VoiceCommand::AddVoice` is drained by `drain_commands`, which runs from
-    ///   `tick`/`process`, so eager construction meant adding a voice mid-playback
+    ///   the node's `process`, so eager construction meant adding a voice mid-playback
     ///   allocated in the callback.
     ///
     /// # Who builds one, when the voice needs it
@@ -131,11 +130,11 @@ impl PlaybackSlot {
     /// host that wants to change it respawns the voice, which is what the
     /// hosts we know of do.
     ///
-    /// If that gap is ever closed, `VoiceNode::set_sample_rate` has to close with
+    /// If that gap is ever closed, `VoiceNode`'s `prepare` has to close with
     /// it. It refreshes an existing unit (`if let Some(unit) = &mut
     /// self.slot.stretch`) and cannot create one, so a filter adopted mid-flight
-    /// would keep the `SR_44K1` its constructor assumed and never be corrected —
-    /// a pitch error proportional to the device's real rate, with nothing logged.
+    /// would keep the rate it was built at and never be corrected — a pitch
+    /// error proportional to the device's real rate, with nothing logged.
     pub(crate) fn with_channels(
         id: SlotId,
         voice: Box<Voice>,
@@ -165,20 +164,20 @@ impl PlaybackSlot {
 
     /// Drop every sample of audio this slot is holding mid-flight.
     ///
-    /// Called from two places, which is why it is one function: `AudioUnit::reset`
-    /// (a graph-level reset) and the per-block seek check (a transport
-    /// discontinuity). They must clear exactly the same state — a seek that
+    /// Called from two places, which is why it is one function: `Node::reset`
+    /// (a graph-level reset) and a transport jump (a seek or a loop wrap,
+    /// on its frame: [`render_into`](Self::render_into)). They must clear exactly the same state — a seek that
     /// flushed less than a reset would leave a subset of the stale audio behind,
     /// which sounds like an intermittent artifact rather than a bug.
     ///
     /// The stretch filter is the state that matters. A placed source re-derives
-    /// its position from the playhead every block, so it is correct the instant
+    /// its position from the playhead every frame, so it is correct the instant
     /// the playhead moves; the vocoder's FIFOs and per-bin phase accumulators are
     /// not, and nothing else clears them.
     ///
     /// RT-safe: `Vocoder::reset` is buffer fills and cursor resets, no allocation.
     pub(crate) fn flush_playhead_state(&mut self) {
-        self.voice.source.as_audio_unit_mut().reset();
+        self.voice.source.flush();
         if let Some(unit) = &mut self.stretch {
             unit.reset();
         }
@@ -235,92 +234,21 @@ impl PlaybackSlot {
         surplus
     }
 
-    /// Read ONE frame from this slot into `out`, whose length is the frame's
-    /// channel count: the exact per-variant read the `tick` mixdown does for a
-    /// single slot, routed through the resident stretch filter when
-    /// `needs_stretch()`. Factored so the mixer loop and the standalone
-    /// [`VoiceNode`] share one definition — no duplication, no per-sample dyn.
-    ///
-    /// **Audio-thread safe**: allocation-free, working out of a stack frame
-    /// capped at `MAX_SAMPLER_CHANNELS`, and the tier fork is a
-    /// [`VoiceSource`] match rather than a virtual call.
-    #[inline]
-    pub(crate) fn tick_frame_into(&mut self, out: &mut [f32]) {
-        let direction = self.voice.play.direction;
-        let gain = self.voice.play.gain;
-        // Borrow the source and the filter as DISJOINT fields: `active_stretch`
-        // would hold `&mut self` across the source read otherwise.
-        let stretching = self.needs_stretch() && self.stretch.is_some();
-        if stretching {
-            // Tick the SINGLE source once to get its raw frame (the same
-            // per-variant read the else-branch uses — the `VoiceSource` enum
-            // still owns the read), then feed that frame into the stretch filter.
-            // This is the one place a scratch frame is genuinely unavoidable:
-            // the filter's input and output cannot be the same slice. Stack
-            // array at the fixed ceiling, used as a prefix — no heap.
-            let n = out.len().min(MAX_SAMPLER_CHANNELS);
-            let mut raw = [0.0f32; MAX_SAMPLER_CHANNELS];
-            // Keep the disk ring's rate in step with the filter, as `process`
-            // does. A frame-at-a-time caller cannot supply the stretch itself
-            // (there is no block to spread), but the ring must still drain at
-            // the stretched rate or the two disagree about how much source a
-            // second of output costs.
-            let stretch_rate = self
-                .stretch
-                .as_ref()
-                .map_or(ReadRate::UNITY, |unit| unit.input_rate());
-            if let VoiceSource::Disk(reader) = &self.voice.source {
-                reader.set_stretch_rate(stretch_rate);
-            }
-            read_source_frame_into(
-                &mut self.voice.source,
-                direction,
-                gain,
-                stretch_rate,
-                &mut raw[..n],
-            );
-            out.fill(0.0);
-            if let Some(unit) = &mut self.stretch {
-                unit.tick(&raw[..n], out);
-            }
-        } else {
-            match &mut self.voice.source {
-                // Seated and stepped, as `process` reads it: a clock that moves
-                // once per block steps through the block here too.
-                VoiceSource::Memory(sampler) => match sampler.seated_position(ReadRate::UNITY) {
-                    Some(pos) => read_clip_sample_into(sampler, direction, pos, gain, out),
-                    None => out.fill(0.0),
-                },
-                VoiceSource::Disk(reader) => {
-                    // Unity when nothing stretches — see the `process` twin.
-                    reader.set_stretch_rate(ReadRate::UNITY);
-                    // The `DiskVoice` owns its placement gate: it
-                    // emits silence outside the voice window and pulls the
-                    // butler ring inside it. Alloc-free (preallocated
-                    // `fetch_scratch`).
-                    out.fill(0.0);
-                    reader.tick(&[], out);
-                }
-            }
-        }
-    }
-
-    /// Accumulate this slot's contribution to `size` FRAMES into `output`,
+    /// Accumulate this slot's contribution to block frames `range` (at most
+    /// [`LANE_FRAMES`]) into `out` (one slice per channel, block-long),
     /// **a block at a time**: the voice renders into `scratch`'s planar lanes
     /// ([`render_lanes`](Self::render_lanes)), and each lane is added into its
     /// output channel by one vectorised [`accumulate`]. Shared by the mixer
-    /// loop and the standalone [`VoiceNode`], so the per-voice read has one
-    /// definition.
+    /// loop and the standalone [`VoiceNode`](super::node::VoiceNode), so the
+    /// per-voice read has one definition.
     ///
-    /// Doc 013 item 7. This replaced a read that went through
-    /// `output.set_f32(c, i, output.at_f32(c, i) + s)` per sample and ticked
-    /// the stretch filter and the disk reader once per frame (a ring claim per
-    /// frame). It writes the same samples, bit for bit (the tier
-    /// bit-identity tables and `block_render_is_the_frame_read`), because each
-    /// frame goes through the same arithmetic in the same order; what moved
-    /// is where the per-block work runs (the clock and the controls read once
-    /// per block, the ring claimed once per block) and that the gain, the
-    /// interpolation kernel and the mix run along time over the lanes.
+    /// **A jump flushes on its frame.** Where the playhead jumps inside the
+    /// range (a seek, a loop wrap: a run of the block that starts with
+    /// [`jump`](super::clock::Run::jump)), the read stops there, the slot's
+    /// buffered state is flushed ([`flush_playhead_state`](Self::flush_playhead_state)),
+    /// and it goes on from the jump: a stretch filter never plays the old
+    /// region's material over the new one, and never loses what it held
+    /// before the jump.
     ///
     /// **Audio-thread safe**: allocation-free (the lanes are the owner's,
     /// built on the control thread), and the tier fork is a [`VoiceSource`]
@@ -328,37 +256,148 @@ impl PlaybackSlot {
     ///
     /// `width` is a plain `usize`, deliberately **not** a [`ChannelLayout`]: it is
     /// an already-intersected clamp that callers compute as
-    /// `slot width ∧ output.channels() ∧ MAX_SAMPLER_CHANNELS`, not a declaration
-    /// of how many channels anything *has*. Wrapping it back into a layout would
-    /// claim a width the caller has already narrowed away.
+    /// `slot width ∧ output channels ∧ MAX_SAMPLER_CHANNELS`, not a declaration
+    /// of how many channels anything *has*.
     #[inline]
-    pub(crate) fn process_into(
+    pub(crate) fn render_into(
         &mut self,
-        size: usize,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
         width: usize,
         scratch: &mut BlockScratch,
-        output: &mut BufferMut,
+        out: &mut [&mut [f32]],
     ) {
-        let n = width.min(output.channels()).min(MAX_SAMPLER_CHANNELS);
-        // A block is one lane: `process` is never handed more than
-        // `MAX_BUFFER_SIZE` frames (see `LANE_FRAMES`), and the output's own
-        // channels are no longer.
-        debug_assert!(size <= LANE_FRAMES, "a {size}-frame block, past the lanes");
-        let frames = size.min(LANE_FRAMES);
-        self.render_lanes(frames, n, scratch);
-        for (c, lane) in scratch.out.lanes().iter().enumerate().take(n) {
-            accumulate(&mut output.channel_f32_mut(c)[..frames], &lane[..frames]);
+        let n = width.min(out.len());
+        debug_assert!(range.len() <= LANE_FRAMES, "a piece longer than a lane");
+        let mut from = range.start;
+        for run in clock.runs_in(range.clone()) {
+            if run.jump {
+                if run.start > from {
+                    self.render_piece(clock, from..run.start, n, scratch, out);
+                    from = run.start;
+                }
+                self.flush_playhead_state();
+                self.prime_stretch(clock, run.start, n, scratch);
+            }
+        }
+        self.render_piece(clock, from..range.end, n, scratch, out);
+    }
+
+    /// After a jump's flush, feed a memory voice's stretch filter the
+    /// source it would have read in the [`refill`](stretch::Unit::refill_frames)
+    /// frames leading up to block frame `at`, and discard what it says. A
+    /// flushed filter holds no window of input, so it is otherwise silent
+    /// after every seek or wrap for as long as it takes to take one in (a
+    /// window times the effective stretch: about 4 100 frames at 2x);
+    /// primed, its output from `at` on is what it would have been had the
+    /// voice been playing there all along — the same lag, no gap.
+    ///
+    /// The positions are the placed read's own, extended backwards from
+    /// `at`'s by its step (`read_rate × stretch_rate`); one before the
+    /// wave's start feeds nothing. Only the memory tier primes: it can read
+    /// any position, where the disk tier reads a ring forward and has nothing
+    /// before the jump. No-op when the voice does not stretch or has no read
+    /// at `at` (outside its window, a standing transport).
+    ///
+    /// Audio-thread safe: the scratch is the slot's owner's, and the filter
+    /// runs as it does for a block. Costs the filter's work for the refill,
+    /// once per jump.
+    fn prime_stretch(
+        &mut self,
+        clock: &BlockClock<'_>,
+        at: usize,
+        n: usize,
+        scratch: &mut BlockScratch,
+    ) {
+        if !self.needs_stretch() {
+            return;
+        }
+        let direction = self.voice.play.direction;
+        let gain = self.voice.play.gain.get();
+        let (VoiceSource::Memory(sampler), Some(unit)) =
+            (&mut self.voice.source, self.stretch.as_mut())
+        else {
+            return;
+        };
+        let refill = unit.refill_frames();
+        if refill == 0 {
+            return;
+        }
+        let stretch_rate = unit.input_rate();
+        let BlockScratch {
+            out,
+            raw,
+            positions,
+            gather,
+        } = scratch;
+        sampler.placed_positions(clock, at..at + 1, stretch_rate, &mut positions[..1]);
+        let Some(origin) = positions[0] else {
+            return;
+        };
+        let step = sampler.read_rate().then(stretch_rate).get();
+        let mut done = 0;
+        while done < refill {
+            let frames = (refill - done).min(LANE_FRAMES);
+            for (i, slot) in positions[..frames].iter_mut().enumerate() {
+                let back = (refill - done - i) as f64;
+                let pos = origin.get() - back * step;
+                *slot = (pos >= 0.0).then_some(SamplePosition(pos));
+            }
+            sampler.read_placed_lanes(&positions[..frames], direction, raw, n, gather);
+            for lane in raw.lanes_mut().iter_mut().take(n) {
+                scale(&mut lane[..frames], gain);
+            }
+            // Only the frames with a read feed the filter, as in the block.
+            let mut i = 0;
+            while i < frames {
+                let inside = positions[i].is_some();
+                let mut j = i + 1;
+                while j < frames && positions[j].is_some() == inside {
+                    j += 1;
+                }
+                if inside {
+                    unit.filter_lanes(raw.lanes(), out.lanes_mut(), n, i..j);
+                }
+                i = j;
+            }
+            done += frames;
         }
     }
 
-    /// Render the next `frames` frames (at most [`LANE_FRAMES`]) of this
-    /// voice, `n` channels wide, into `scratch.out`: every frame of each of
-    /// the `n` lanes is written, silence as zero. `scratch.raw` is the
-    /// filter's input, when the voice stretches.
+    /// [`render_lanes`](Self::render_lanes) for `range`, added into `out`.
+    fn render_piece(
+        &mut self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        n: usize,
+        scratch: &mut BlockScratch,
+        out: &mut [&mut [f32]],
+    ) {
+        if range.is_empty() {
+            return;
+        }
+        let frames = range.len();
+        self.render_lanes(clock, range.clone(), n, scratch);
+        for (c, lane) in scratch.out.lanes().iter().enumerate().take(n) {
+            accumulate(&mut out[c][range.clone()], &lane[..frames]);
+        }
+    }
+
+    /// Render block frames `range` (at most [`LANE_FRAMES`]) of this voice,
+    /// `n` channels wide, into frames `0..range.len()` of `scratch.out`:
+    /// every frame of each of the `n` lanes is written, silence as zero.
+    /// `scratch.raw` is the filter's input, when the voice stretches.
     ///
-    /// Forks on the tier and the stretch as the frame read did, and reads
-    /// what it read: see the comments at each arm for the rule each keeps.
-    pub(crate) fn render_lanes(&mut self, frames: usize, n: usize, scratch: &mut BlockScratch) {
+    /// Forks on the tier and the stretch, and reads what each tier reads:
+    /// see the comments at each arm for the rule each keeps.
+    pub(crate) fn render_lanes(
+        &mut self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        n: usize,
+        scratch: &mut BlockScratch,
+    ) {
+        let frames = range.len();
         let direction = self.voice.play.direction;
         let gain = self.voice.play.gain.get();
         // Route through the filter only when the intent asks for it AND a unit
@@ -375,10 +414,10 @@ impl PlaybackSlot {
             (VoiceSource::Memory(sampler), Some(unit)) if stretching => {
                 // **The stretch rate must reach the origin, not only the
                 // step.** A placed voice re-derives its origin from the
-                // playhead every block, and the playhead runs at wall clock;
-                // seating there and stepping slower makes each block re-seat
-                // a full block ahead of where the previous one finished, so
-                // the stretch is discarded at every boundary.
+                // playhead as the clock moves, and the playhead runs at wall
+                // clock; seating there and stepping slower makes each seat
+                // land a full piece ahead of where the previous one finished,
+                // so the stretch is discarded at every boundary.
                 //
                 // Without this the factor degenerates to pure varispeed —
                 // 2.0x turns 440 Hz into 880 Hz with the duration unchanged.
@@ -387,32 +426,39 @@ impl PlaybackSlot {
                 // origin and step then disagree within each block as well as
                 // across them.
                 //
-                // Both come from `seated_positions`, which seats at
-                // `stretched_window_position` and steps by `read_rate` with
-                // the same stretch — the two must be derived together or they
-                // drift apart again. (The step is `read_rate`, not the gate's
+                // Both come from `placed_positions`, which seats at the gate
+                // with the stretch and steps by `read_rate` with the same
+                // stretch — the two must be derived together or they drift
+                // apart again. (The step is `read_rate`, not the gate's
                 // `window_rate`: a file at another rate than the session's
                 // moves `src_ratio` file frames per output frame.)
                 let stretch_rate = unit.input_rate();
-                sampler.seated_positions(stretch_rate, positions);
+                sampler.placed_positions(clock, range, stretch_rate, positions);
                 // Gain before the filter, as the frame read fed it.
                 sampler.read_placed_lanes(positions, direction, raw, n, gather);
                 for lane in raw.lanes_mut().iter_mut().take(n) {
                     scale(&mut lane[..frames], gain);
                 }
-                // A block outside the window (or on a stopped clock) feeds the
-                // filter nothing: it keeps what it holds, as it did when the
-                // frame read skipped a frame with no position. `Seat::run`
-                // seats a block whole or not at all, so the block is one or
-                // the other.
-                debug_assert!(
-                    positions.iter().all(Option::is_some) || positions.iter().all(Option::is_none),
-                    "a block read is seated whole or not at all"
-                );
-                if positions.first().is_some_and(Option::is_some) {
-                    unit.filter_lanes(raw.lanes(), out.lanes_mut(), n, 0..frames);
-                } else {
-                    out.clear(n, frames);
+                // Frames outside the window (or on a standing transport) feed
+                // the filter nothing: it keeps what it holds, and they are
+                // silent. The window opens and closes on its frames, so a
+                // piece may be partly inside: the filter runs over each
+                // stretch that is.
+                let mut i = 0;
+                while i < frames {
+                    let inside = positions[i].is_some();
+                    let mut j = i + 1;
+                    while j < frames && positions[j].is_some() == inside {
+                        j += 1;
+                    }
+                    if inside {
+                        unit.filter_lanes(raw.lanes(), out.lanes_mut(), n, i..j);
+                    } else {
+                        for lane in out.lanes_mut().iter_mut().take(n) {
+                            lane[i..j].fill(0.0);
+                        }
+                    }
+                    i = j;
                 }
             }
             (VoiceSource::Disk(reader), Some(unit)) if stretching => {
@@ -424,17 +470,17 @@ impl PlaybackSlot {
                 // publish unity again — a set-once would leave the stream
                 // reading at the old factor.
                 reader.set_stretch_rate(unit.input_rate());
-                reader.render_lanes(frames, raw, n);
+                reader.render_lanes(clock, range, raw, n);
                 unit.filter_lanes(raw.lanes(), out.lanes_mut(), n, 0..frames);
             }
             (VoiceSource::Memory(sampler), _) => {
                 // Seated at the gate's origin (`window_rate`, varispeed
                 // alone, in the wave's own frames) and stepped by `read_rate`
                 // (varispeed and `src_ratio`), per frame: see
-                // `MemorySource::seated_positions`. Stepping by the gate's
+                // `MemorySource::placed_positions`. Stepping by the gate's
                 // rate read a 24 kHz file on a 48 kHz clock one file frame per
                 // output frame, then jumped back at every block.
-                sampler.seated_positions(ReadRate::UNITY, positions);
+                sampler.placed_positions(clock, range, ReadRate::UNITY, positions);
                 sampler.read_placed_lanes(positions, direction, out, n, gather);
                 for lane in out.lanes_mut().iter_mut().take(n) {
                     scale(&mut lane[..frames], gain);
@@ -449,65 +495,8 @@ impl PlaybackSlot {
                 // is reachable through ordinary use, not just teardown. The
                 // reader applies its own gain (the stream's control cell).
                 reader.set_stretch_rate(ReadRate::UNITY);
-                reader.render_lanes(frames, out, n);
+                reader.render_lanes(clock, range, out, n);
             }
-        }
-    }
-}
-
-/// Read the reversed-or-forward source sample from an in-memory `MemorySource`, scaled
-/// by the voice's `gain`. Free function so both the mixer/`VoiceNode` read and
-/// the stretch feed share it.
-///
-/// The `MemorySource` is a PURE producer here: it reads the raw interpolated
-/// frame via `get_sample_raw` (no gain), and gain is applied ONCE at this
-/// Voice/Playback level from `gain` (mirrored from `voice.play.gain`). This
-/// matches the streaming tier, where gain lives in the source's shared state,
-/// and keeps a single, well-defined gain application point per tier.
-///
-/// The read itself — reverse, and a loop — is the source's own
-/// ([`MemorySource::read_placed_into`]), so a bare placed source and one in a
-/// slot read a position the same way.
-#[inline]
-fn read_clip_sample_into(
-    sampler: &MemorySource,
-    direction: Direction,
-    pos: SamplePosition,
-    gain: Amplitude,
-    out: &mut [f32],
-) {
-    sampler.read_placed_into(pos, direction, out);
-    let g = gain.get();
-    for s in out.iter_mut() {
-        *s *= g;
-    }
-}
-
-/// Read ONE frame from a single voice source into `out`, using the exact
-/// per-variant read the direct (non-stretch) path uses — the `VoiceSource` enum
-/// still owns the read. `gain` scales the in-memory read at the Voice level (see
-/// [`read_clip_sample_into`]); the streaming reader applies its own gain
-/// internally. Writes every element of `out`. Used to feed the stretch filter
-/// (which owns no source) on the hot path; `stretch_rate` is the filter's, which
-/// a placed memory read seats and steps by, as `process` does.
-#[inline]
-fn read_source_frame_into(
-    source: &mut VoiceSource,
-    direction: Direction,
-    gain: Amplitude,
-    stretch_rate: ReadRate,
-    out: &mut [f32],
-) {
-    match source {
-        VoiceSource::Memory(sampler) => match sampler.seated_position(stretch_rate) {
-            Some(pos) => read_clip_sample_into(sampler, direction, pos, gain, out),
-            None => out.fill(0.0),
-        },
-        VoiceSource::Disk(reader) => {
-            // `AudioUnit::tick` writes only as many channels as the unit has;
-            // clear first so a narrower reader leaves silence, not stale data.
-            out.fill(0.0);
-            reader.tick(&[], out);
         }
     }
 }

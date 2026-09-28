@@ -24,7 +24,7 @@ pub struct WetDry {
 }
 
 impl WetDry {
-    /// Build with the given wet/dry mix and wet-path gain.
+    /// Builds the group with the given wet/dry mix and wet-path gain.
     pub fn new(mix: impl Into<Mix>, gain: impl Into<Amplitude>) -> Self {
         Self {
             mix: Param::new(Mix::new_clamped(mix.into().get())),
@@ -32,7 +32,7 @@ impl WetDry {
         }
     }
 
-    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// Detaches every cell (see [`Param::detach`]): the `fork_fresh` half of this
     /// group, keeping the current values.
     pub fn detach(&mut self) {
         self.mix.detach();

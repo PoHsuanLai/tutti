@@ -1,7 +1,12 @@
-//! Loading `.sf2` files as Bevy assets and promoting them into playing voices.
+//! Loading `.sf2` files as Bevy assets and promoting them into playing
+//! instruments (feature `soundfont`).
 //!
-//! Named for `tutti-soundfont`, the engine crate it adapts — one adapter module
-//! per engine crate is this crate's shape.
+//! The adapter for `tutti-soundfont`. [`TuttiSoundFontPlugin`] registers the
+//! [`SoundFontAsset`] loader; spawning a [`PlaySoundFont`] builds a
+//! `SoundFontUnit` off the main thread and inserts it as a graph node with a
+//! MIDI event input. The node arrives unwired: declare what plays it (MIDI) and
+//! where it sounds ([`MasterSources`](crate::graph::MasterSources)) as for any
+//! node.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_asset::{io::Reader, AssetApp, AssetLoader, Assets, Handle, LoadContext};
@@ -33,7 +38,12 @@ impl SoundFontAsset {
     /// File extensions the asset loader recognises.
     pub const EXTENSIONS: &'static [&'static str] = &["sf2"];
 
-    /// Parse a complete SoundFont from an in-memory byte slice.
+    /// Parses a complete SoundFont from an in-memory byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns the parser's error when the bytes are not a well-formed
+    /// SoundFont.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, SoundFontError> {
         SoundFont::new(&mut std::io::Cursor::new(bytes)).map(|sf| Self(Arc::new(sf)))
     }
@@ -78,8 +88,8 @@ impl AssetLoader for SoundFontAssetLoader {
 
 // Compile-time proof that `SoundFontUnit` is `Send`, which is what permits
 // building it on the `AsyncComputeTaskPool` instead of the Bevy main thread. It
-// holds a rustysynth `Synthesizer` (a plain `Vec`/`Arc` struct) plus
-// `Arc<dyn MidiUnitIn>` where `MidiUnitIn: Send + Sync`, so the assertion holds.
+// holds a rustysynth `Synthesizer` (a plain `Vec`/`Arc` struct) and a queue of
+// plain `MidiEvent`s, so the assertion holds.
 // If it ever stops compiling, the async decode below is unsound and must move
 // back onto the main thread.
 const _: () = {
@@ -219,25 +229,19 @@ pub fn soundfont_playback_system(
 ///
 /// Entities whose build is still running are left alone for the next frame.
 ///
-/// Two things this deliberately does *not* do, for the same reason — neither is
-/// a decision a loader gets to make on the host's behalf:
+/// Two things this does *not* do, since neither is a loader's decision to
+/// make on the host's behalf:
 ///
-/// - **MIDI registration.** It belongs to
-///   [`register_midi_senders`](crate::midi::register_midi_senders), which sees
-///   this entity by its `AudioNode` and pairs insertion with removal. Doing it
-///   here open-coded would leave the sender on the bus forever, with no
-///   counterpart to take it back off.
-/// - **Output wiring.** A `pipe_output` here would make every soundfont that
-///   finished loading claim the entire master bus — overwriting the metronome,
-///   then the previous soundfont, silently, in query order. Whether a soundfont
-///   is audible is declared with
+/// - **MIDI wiring.** What plays the player is declared on its entity (a
+///   `MidiSourceInstall`, a route rule, a `LiveMidiInput`), and wired to its
+///   event input once it has a node.
+/// - **Output wiring.** Whether a soundfont is audible is declared with
 ///   [`MasterSources`](crate::graph::MasterSources) or an
 ///   [`PortSources`](crate::graph::PortSources) on a mixer.
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
-    capture: crate::graph::ControlCapture,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
     // `TuttiSoundFontPlugin` is `pub` and separately addable, but `GraphDirty`
@@ -264,16 +268,15 @@ pub fn promote_pending_soundfonts(
         };
         unit.program_change(pending_unit.channel, pending_unit.preset);
 
-        // Captured before the unit moves into the graph — the `MidiTarget` that
-        // makes this player addressable comes from here.
-        // `insert_with` so an export's fork of it plays its clip.
-        let mut controls = capture.capture(&unit);
-        let id = graph.insert_with(Box::new(unit), &mut controls);
+        // Inserted as a graph node: a MIDI event input (so a
+        // `MidiSourceInstall` plays through a clip node), a fork, and a node
+        // that follows the graph's rate on a device restart (`Node::prepare`).
+        let controls = crate::graph::GraphNode::captured(&unit);
+        let (id, ()) = graph.insert(unit);
         edited = true;
 
         // `AudioNode` is the whole binding: node teardown
-        // (`reconcile_node_despawn`) and MIDI unregistration both key on its
-        // removal.
+        // (`reconcile_node_despawn`) keys on its removal.
         commands
             .entity(entity)
             .remove::<PendingSoundFontUnit>()
@@ -287,36 +290,16 @@ pub fn promote_pending_soundfonts(
     }
 }
 
-/// Bevy plugin: SoundFont asset loader + deferred playback trigger systems.
+/// Registers the [`SoundFontAsset`] loader and the [`PlaySoundFont`] systems.
 ///
-/// # It also teaches the MIDI registry to reach a `SoundFontUnit`
-///
-/// Building the unit and putting it in the graph is not enough to make it
-/// *playable*: `MidiTargetRegistry` captures a node's `MidiInPort` from its
-/// concrete type as the node is inserted, so a unit type nothing registered has
-/// no reachable port and every `MidiSourceInstall` naming it resolves to nothing.
-///
-/// That registration belongs here rather than with each consumer, because the
-/// failure it prevents is invisible: the asset loads, the unit builds, the node
-/// appears in the graph, the install is emitted, and the graph is correctly
-/// wired end to end — every observable step succeeds and no note ever sounds.
-/// Leaving it to the caller means only a caller that already knows gets sound,
-/// which is a test rather than a host.
-///
-/// Registering the type this plugin exists to serve is what makes "add the plugin"
-/// sufficient. A host that wants a different unit type still registers its own.
+/// Added by [`TuttiPlugin`](crate::TuttiPlugin) with the `soundfont` feature.
+/// Needs an `AssetServer` (`bevy_asset::AssetPlugin`) already in the app; the
+/// systems run in [`GraphReconcileSystems::Spawn`], gated on [`engine_ready`].
 pub struct TuttiSoundFontPlugin;
 
 impl Plugin for TuttiSoundFontPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<PlaySoundFont>();
-        // `init_resource` first: `TuttiMidiPlugin` owns this resource, and plugin
-        // order between the two is the host's choice, so this must not depend on
-        // it already existing.
-        app.init_resource::<crate::midi::MidiTargetRegistry>()
-            .world_mut()
-            .resource_mut::<crate::midi::MidiTargetRegistry>()
-            .register::<SoundFontUnit>();
         // `promote_pending_soundfonts` stages graph edits and sets GraphDirty
         // rather than committing inline, so anchor the chain before the Commit
         // phase where `commit_graph` flushes it.
@@ -328,9 +311,9 @@ impl Plugin for TuttiSoundFontPlugin {
                     .chain()
                     .run_if(engine_ready)
                     // In `Spawn`, not merely before `Commit`: this adds a node
-                    // to the graph, and MIDI registration orders itself after
-                    // that phase so a promoted unit is registrable the same
-                    // frame it appears.
+                    // to the graph, and the MIDI wiring orders itself after
+                    // that phase so a promoted unit is wired the same frame
+                    // it appears.
                     .in_set(GraphReconcileSystems::Spawn),
             );
     }

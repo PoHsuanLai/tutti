@@ -157,7 +157,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Describe the audio port configuration at `index`.
+    /// Describes the audio port configuration at `index`.
     pub fn get_audio_port_config(&self, index: u32) -> Option<AudioPortConfig> {
         if self.extensions.audio.ports_config.is_null() {
             return None;
@@ -182,7 +182,7 @@ impl ClapLoaded {
         })
     }
 
-    /// Ask the plugin to switch to a previously reported port configuration.
+    /// Asks the plugin to switch to a previously reported port configuration.
     /// Returns whether the plugin accepted the request.
     pub fn select_audio_port_config(&mut self, config_id: u32) -> bool {
         if self.extensions.audio.ports_config.is_null() {
@@ -272,7 +272,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Switch between real-time (`false`) and offline (`true`) rendering
+    /// Switches between real-time (`false`) and offline (`true`) rendering
     /// modes per `CLAP_EXT_RENDER`. Returns whether the plugin accepted.
     pub fn set_render_mode(&mut self, offline: bool) -> bool {
         if self.extensions.system.render.is_null() {
@@ -339,7 +339,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Retrieve a single custom note name.
+    /// Retrieves a single custom note name.
     pub fn get_note_name(&self, index: u32) -> Option<NoteName> {
         if self.extensions.notes.name.is_null() {
             return None;
@@ -358,9 +358,8 @@ impl ClapLoaded {
         })
     }
 
-    /// Ask the plugin whether it could apply a set of port-configuration
-    /// requests without actually applying them. Speculative (audio-port
-    /// reconfiguration) — gated behind `clap-extras`.
+    /// Asks the plugin whether it could apply a set of port-configuration
+    /// requests without actually applying them. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn can_apply_audio_port_configuration(&self, requests: &[AudioPortConfigRequest]) -> bool {
         if self.extensions.audio.configurable_ports.is_null() {
@@ -381,9 +380,8 @@ impl ClapLoaded {
         }
     }
 
-    /// Apply a set of port-configuration requests via
-    /// `CLAP_EXT_CONFIGURABLE_AUDIO_PORTS`. Returns success. Speculative — gated
-    /// behind `clap-extras`.
+    /// Applies a set of port-configuration requests via
+    /// `CLAP_EXT_CONFIGURABLE_AUDIO_PORTS`. Returns success. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn apply_audio_port_configuration(&mut self, requests: &[AudioPortConfigRequest]) -> bool {
         if self.extensions.audio.configurable_ports.is_null() {
@@ -405,7 +403,7 @@ impl ClapLoaded {
     }
 
     /// Whether the plugin supports activating/deactivating ports while
-    /// processing is running. Speculative — gated behind `clap-extras`.
+    /// processing is running. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn can_activate_audio_port_while_processing(&self) -> bool {
         if self.extensions.audio.ports_activation.is_null() {
@@ -418,9 +416,8 @@ impl ClapLoaded {
         }
     }
 
-    /// Activate or deactivate a single audio port.
-    /// `sample_size` is the bit depth (32 or 64). Speculative — gated behind
-    /// `clap-extras`.
+    /// Activates or deactivates a single audio port.
+    /// `sample_size` is the bit depth (32 or 64). Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn set_audio_port_active(
         &mut self,
@@ -447,9 +444,9 @@ impl ClapLoaded {
         }
     }
 
-    /// Ask the plugin to add a new port via the draft
+    /// Asks the plugin to add a new port via the draft
     /// `CLAP_EXT_EXTENSIBLE_AUDIO_PORTS`. Returns whether the plugin added it.
-    /// Speculative — gated behind `clap-extras`.
+    /// Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn add_audio_port(
         &mut self,
@@ -482,7 +479,7 @@ impl ClapLoaded {
     }
 
     /// Counterpart to [`Self::add_audio_port`]. Returns whether the plugin
-    /// removed the port. Speculative — gated behind `clap-extras`.
+    /// removed the port. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn remove_audio_port(&mut self, is_input: bool, index: u32) -> bool {
         if self.extensions.audio.extensible_ports.is_null() {
@@ -495,7 +492,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Ask whether the plugin can process the given ambisonic ordering +
+    /// Asks whether the plugin can process the given ambisonic ordering +
     /// normalization. Returns false when `CLAP_EXT_AMBISONIC` is unsupported.
     pub fn is_ambisonic_config_supported(&self, config: &AmbisonicConfig) -> bool {
         if self.extensions.audio.ambisonic.is_null() {
@@ -522,7 +519,7 @@ impl ClapLoaded {
         unsafe { f(self.plugin.as_ptr(), &clap_config) }
     }
 
-    /// Retrieve the ambisonic config currently used on a given port.
+    /// Retrieves the ambisonic config currently used on a given port.
     pub fn get_ambisonic_config(&self, is_input: bool, port_index: u32) -> Option<AmbisonicConfig> {
         if self.extensions.audio.ambisonic.is_null() {
             return None;
@@ -550,7 +547,7 @@ impl ClapLoaded {
         })
     }
 
-    /// Ask whether the plugin can process the given
+    /// Asks whether the plugin can process the given
     /// [`SurroundChannel`]-bit channel mask (`CLAP_EXT_SURROUND`).
     pub fn is_surround_channel_mask_supported(&self, channel_mask: u64) -> bool {
         if self.extensions.audio.surround.is_null() {
@@ -563,7 +560,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Retrieve the channel-to-speaker mapping the plugin uses on a port.
+    /// Retrieves the channel-to-speaker mapping the plugin uses on a port.
     ///
     /// The result is indexed **by channel**: element `i` is the speaker fed by
     /// channel `i`, so it always has `count` elements. A position this crate
@@ -573,8 +570,7 @@ impl ClapLoaded {
     /// `None` means the plugin cannot answer — no `clap.surround` extension or
     /// no `get_channel_map`. An empty `Vec` means it answered with no channels:
     /// `get_channel_map` returns "the number of elements stored", so `0` is
-    /// data, not failure, and the old `count == 0 || count > map.len()` folded
-    /// the two together. Only the capacity overrun is genuinely broken — the
+    /// data, not failure. Only the capacity overrun is genuinely broken — the
     /// plugin claims to have written past the 64 elements it was given, so
     /// nothing in the buffer can be trusted.
     pub fn get_surround_channel_map(
@@ -619,7 +615,7 @@ impl ClapLoaded {
     }
 }
 
-/// Decode the first `count` entries of a plugin-filled surround channel map.
+/// Decodes the first `count` entries of a plugin-filled surround channel map.
 ///
 /// Split out of [`ClapLoaded::get_surround_channel_map`] so the count
 /// validation is testable without a live `ClapLoaded`, which no stub vtable can
@@ -641,7 +637,7 @@ fn decode_surround_channel_map(map: &[u8], count: usize) -> Option<Vec<SurroundC
     )
 }
 
-/// Convert a raw `clap_audio_port_info` into the safe [`AudioPortInfo`].
+/// Converts a raw `clap_audio_port_info` into the safe [`AudioPortInfo`].
 /// Shared by [`ClapLoaded::audio_port_info`] and
 /// [`ClapLoaded::audio_port_config_port_info`].
 fn audio_port_info_from_clap(info: &clap_audio_port_info) -> AudioPortInfo {
@@ -702,8 +698,8 @@ fn build_port_config_requests(
 mod surround_map_tests {
     use super::*;
 
-    /// A plugin reporting **zero** channels is answering, not failing — the old
-    /// `count == 0 || count > map.len()` guard folded that in with the error.
+    /// A plugin reporting **zero** channels is answering, not failing — a
+    /// `count == 0 || count > map.len()` guard would fold that in with the error.
     #[test]
     fn zero_count_is_an_empty_map_not_a_failure() {
         let map = [0u8; 64];

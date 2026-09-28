@@ -1,11 +1,8 @@
-//! Where MIDI entering from outside goes.
+//! Where MIDI entering from the hardware input goes.
 //!
-//! [`routing_table`] maps an inbound channel to the unit mailbox it feeds;
-//! [`route`] is the ECS declaration that rebuilds it. Only the *inbound* edge
-//! consults these — hardware in via the RT pre-block, and a plugin's MIDI-out
-//! re-entering as if it were a device. Anything already bound to a unit (clip
-//! playback, a preview, musical typing) writes to that unit's port directly
-//! and never asks a route.
+//! [`route`] is the ECS declaration: rules that wire the hardware input node's
+//! per-channel ports to the entities that should hear them. Anything already
+//! bound to a node (clip playback, a keyboard, a plugin's MIDI out) is wired
+//! to it directly and never asks a route.
 
 pub mod route;
-pub mod routing_table;

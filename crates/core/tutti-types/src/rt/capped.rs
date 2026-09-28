@@ -13,10 +13,9 @@
 //!   `&self` (behind an `Arc`, or from a COM object), and hides the storage
 //!   behind visitors rather than lending it.
 //!
-//! Keeping the policy here is what makes those three agree by construction.
-//! Before this existed the same refuse-at-`N` logic was written out three
-//! times, and the engine has twice shipped a buffer that grew on the audio
-//! thread because one copy of it was subtly different.
+//! Keeping the policy in one place is what makes them agree by construction:
+//! separate copies of the refuse-at-`N` logic drift, and a copy that is subtly
+//! different is a buffer that grows on the audio thread.
 
 use smallvec::SmallVec;
 

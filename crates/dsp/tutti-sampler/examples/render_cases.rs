@@ -1,11 +1,9 @@
 //! Render a matrix of sampler cases to WAV for independent analysis.
 //!
-//! This exists because four separate defects in this crate — a 60 dB gain error,
-//! a 17.5 dB phase-seeding error, an inert pitch shift, and a seek smear — were
-//! each invisible to every test in the suite. The tests that missed them were
-//! written against the same understanding of the DSP as the code, so they could
-//! not contradict it. An external tool re-deriving the expected answer from the
-//! signal alone has no such shared blind spot.
+//! Tests written against the same understanding of the DSP as the code cannot
+//! contradict it. An external tool re-deriving the expected answer from the
+//! signal alone (`verify_sampler.py`, beside this file) has no such shared
+//! blind spot.
 //!
 //! Drives the **real** `VoicePool`: placement gate, `MemorySource`, the resident
 //! stretch filter, and a block-advanced transport — not `stretch::Unit` in
@@ -16,59 +14,13 @@
 
 use std::f32::consts::TAU;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::BufferVec;
-use tutti_core::{AudioUnit, Beat, Bpm, Cents, StretchFactor, Timeline};
+use tutti_core::{Beat, Bpm, Cents, SampleRate, StretchFactor};
+use tutti_graph::contract;
 use tutti_io::Wave;
+use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
-
-/// A rolling transport whose beat this example advances by hand.
-///
-/// The crate's `MockTransport` is `#[cfg(test)]`, and an example is not a test.
-/// Reimplemented here rather than un-gating it: `Timeline` is three methods, and
-/// widening a test-only surface so a diagnostic can reach it would make the
-/// production API answer to this file.
-struct Clock {
-    beat: AtomicU64,
-    tempo: f64,
-}
-
-impl Clock {
-    fn new(tempo: f64) -> Arc<Self> {
-        Arc::new(Self {
-            beat: AtomicU64::new(0f64.to_bits()),
-            tempo,
-        })
-    }
-
-    fn set_beat(&self, beat: f64) {
-        self.beat.store(beat.to_bits(), Ordering::Relaxed);
-    }
-
-    /// Move by `samples`, the way a block-driven transport does after `process`.
-    fn advance(&self, samples: usize, sample_rate: f64) {
-        let beats = samples as f64 * self.tempo / 60.0 / sample_rate;
-        let now = f64::from_bits(self.beat.load(Ordering::Relaxed));
-        self.set_beat(now + beats);
-    }
-}
-
-impl Timeline for Clock {
-    fn beat(&self) -> Beat {
-        Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(self.tempo)
-    }
-    fn is_rolling(&self) -> bool {
-        true
-    }
-    fn segment_generation(&self) -> u64 {
-        0
-    }
-}
 
 const SR: f64 = 48_000.0;
 /// Long enough that the analysis window can settle well before the measurement
@@ -87,14 +39,16 @@ fn tone(freq: f32, frames: usize) -> Arc<Wave> {
 
 /// Render one case through a real pool and return interleaved stereo output.
 fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
-    let (mut pool, handle) = VoicePool::new();
-    let transport = Clock::new(120.0);
+    let (pool, handle) = VoicePool::new().with_handle();
+    let mut pool = contract::prepared(pool, SampleRate(SR), BLOCK);
+    // A rolling transport this example advances by hand, a block at a time.
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
     // 4x the output length: at the slowest factor the source is consumed far
     // faster than it is emitted, and a short wave would run dry mid-measurement
     // and look like an attenuation bug.
     let wave = tone(440.0, FRAMES * 4);
 
-    let source = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+    let source = MemorySource::placed(wave, Beat::new(0.0), None);
     let play = Playback {
         stretch: StretchFactor::new(stretch),
         pitch: Cents::new(cents),
@@ -113,22 +67,19 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
         })
         .expect("the command queue has room in a test");
 
-    // Block-driven via `process`, as a host drives a unit.
+    // Block-driven, as a host drives a node: each block's `Env` carries the
+    // playhead where it stands, and it advances once per block.
     //
-    // A placed voice derives its read position from the playhead, and the
-    // playhead advances once per block. When this harness was written, `tick`
-    // re-read the playhead per call, so calling it 64 times against one
-    // transport reading emitted the SAME sample 64 times — a staircase that
-    // resampled the source downward and failed every case, including an
-    // unprocessed one. A placed read now seats on the clock and steps through
-    // the block through either entry point (`MemorySource::seated_position`).
+    // A placed voice derives its read position from the playhead: a placed
+    // read seats on the block's transport and steps through the block. Driving
+    // it frame by frame against a transport that does not move would emit the
+    // SAME sample over and over — a staircase that resamples the source
+    // downward and fails every case, including an unprocessed one.
     //
     // The `dry` control is what distinguishes that from a real defect: driven
     // wrongly it renders 440 Hz as 308 Hz with no processing engaged. The
     // mistake is invisible in any single case, so only the control can say "the
     // harness is wrong, not the engine".
-    let ib = BufferVec::new(2);
-    let mut ob = BufferVec::new(2);
     let mut out = Vec::with_capacity(FRAMES * 2);
     let mut rendered = 0usize;
     while rendered < FRAMES {
@@ -139,17 +90,16 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
             if rendered <= at && at < rendered + BLOCK {
                 // Beat 5 of an 8-beat wave (FRAMES*4 samples at 120 BPM). A
                 // seek past the material renders correct silence and proves
-                // nothing about flushing — the first draft jumped to beat 20 and
-                // measured an empty region.
-                transport.set_beat(5.0);
+                // nothing about flushing.
+                transport.seek(Beat::new(5.0));
             }
         }
-        pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
-        for i in 0..BLOCK {
-            out.push(ob.buffer_ref().at_f32(0, i));
-            out.push(ob.buffer_ref().at_f32(1, i));
+        let block = contract::drive_in(&mut pool, &transport.env(BLOCK, SR), &[], &[], &[]).audio;
+        for (&l, &r) in block[0].iter().zip(&block[1]) {
+            out.push(l);
+            out.push(r);
         }
-        transport.advance(BLOCK, SR);
+        transport.advance(BLOCK as i64, SR);
         rendered += BLOCK;
     }
     out.truncate(FRAMES * 2);

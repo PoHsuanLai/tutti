@@ -2,15 +2,10 @@
 //!
 //! # This is the only `cfg(target_os)` that decides anything
 //!
-//! The bug this rewrite exists to remove was a `#[cfg]` ladder at the *use*
-//! site: `MidiOutRouter::route` chose between a macOS-only UMP path and a lossy
-//! portable one, so which messages survived depended on where you built. That
-//! ladder is unrepresentable once every backend yields the same types, and
-//! [`active`] is where the remaining platform choice lives — a **construction**
-//! -time `cfg`, not a hot-path one.
-//!
-//! Adding a backend is therefore additive: one arm here, one module, and nothing
-//! downstream changes.
+//! Every backend yields the same types, so which messages survive does not
+//! depend on where you built. [`active`] is where the platform choice lives: a
+//! **construction**-time `cfg`, not a hot-path one. Adding a backend is one arm
+//! here and one module; nothing downstream changes.
 //!
 //! # The platforms, and why they differ
 //!
@@ -41,7 +36,7 @@ pub mod alsa;
 
 pub mod stub;
 
-/// This platform's MIDI backend.
+/// Returns this platform's MIDI backend (the stub where there is none).
 ///
 /// Returns a boxed trait object rather than an `impl Trait` so the return type
 /// does not change per platform — a caller stores it in one field, which is what

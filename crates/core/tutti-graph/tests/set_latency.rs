@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use common::{prepare, Kind, TestNode};
 use tutti_graph::{
-    CommitError, Editor, Executor, IntoNode, Legacy, Node, Reference, Transport, Unforkable,
+    CommitError, Cx, Editor, Executor, Io, Node, Prepare, Reference, Shape, Status, Transport,
+    Unforkable,
 };
-use tutti_node::AudioUnit;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples};
@@ -20,13 +20,16 @@ use tutti_types::{ChannelLayout, Latency, NodeKey, Samples};
 const TRUE_LATENCY: usize = 16;
 
 /// A plugin that delays its input by [`TRUE_LATENCY`] frames all along, but
-/// *reports* whatever its latency cell holds — 0 at load, as a plugin that
-/// only learns its latency after activation does. Counts its calls, so a
-/// replacement would show.
+/// *reports* whatever its latency cell held when it was last prepared — 0 at
+/// load, as a plugin that only learns its latency after activation does. Its
+/// `shape` answers from that cache, so a running unit's own figure lags a
+/// change the host hands the editor. Counts its calls, so a replacement
+/// would show.
 #[derive(Clone)]
 struct Plugin {
     reported: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
+    probed: usize,
     ring: [f32; TRUE_LATENCY],
     pos: usize,
 }
@@ -36,65 +39,34 @@ impl Plugin {
         Self {
             reported: Arc::new(AtomicUsize::new(0)),
             calls: Arc::new(AtomicUsize::new(0)),
+            probed: 0,
             ring: [0.0; TRUE_LATENCY],
             pos: 0,
         }
     }
 }
 
-impl AudioUnit for Plugin {
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        output[0] = self.ring[self.pos];
-        self.ring[self.pos] = input[0];
-        self.pos = (self.pos + 1) % TRUE_LATENCY;
+impl Node for Plugin {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_latency(Latency::new(Samples(self.probed)))
     }
-    fn process(
-        &mut self,
-        size: usize,
-        input: &tutti_node::buffer::BufferRef,
-        output: &mut tutti_node::buffer::BufferMut,
-    ) {
+    fn prepare(&mut self, _: &Prepare) {
+        self.probed = self.reported.load(Ordering::Relaxed);
+    }
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        for i in 0..size {
-            let x = input.channel_f32(0)[i];
-            output.channel_f32_mut(0)[i] = self.ring[self.pos];
+        let (ins, mut outs) = io.split();
+        for (o, &x) in outs.get(0).iter_mut().zip(ins.get(0)) {
+            *o = self.ring[self.pos];
             self.ring[self.pos] = x;
             self.pos = (self.pos + 1) % TRUE_LATENCY;
         }
+        Status::Modified
     }
     fn reset(&mut self) {
         self.ring = [0.0; TRUE_LATENCY];
         self.pos = 0;
-    }
-    fn inputs(&self) -> usize {
-        1
-    }
-    fn outputs(&self) -> usize {
-        1
-    }
-    fn route(
-        &mut self,
-        _input: &tutti_node::signal::SignalFrame,
-        _frequency: f64,
-    ) -> tutti_node::signal::SignalFrame {
-        let mut out = tutti_node::signal::SignalFrame::new(1);
-        out.set(
-            0,
-            tutti_node::signal::Signal::Latency(self.reported.load(Ordering::Relaxed) as f64),
-        );
-        out
-    }
-    fn get_id(&self) -> u64 {
-        0x504c_5547
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn footprint(&self) -> usize {
-        0
     }
 }
 
@@ -106,7 +78,7 @@ const DRY: NodeKey = NodeKey(2);
 fn graph(plugin: Plugin) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(prepare(64));
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
-    ed.insert(PLUGIN, "plugin", Legacy::new(plugin));
+    ed.insert(PLUGIN, "plugin", Unforkable(plugin));
     ed.insert(
         DRY,
         "gain",
@@ -133,7 +105,7 @@ fn graph(plugin: Plugin) -> (Editor, Executor) {
 /// Units for a [`Reference`] of the same graph.
 fn fresh(plugin: Plugin) -> BTreeMap<NodeKey, Box<dyn Node>> {
     let mut m: BTreeMap<NodeKey, Box<dyn Node>> = BTreeMap::new();
-    m.insert(PLUGIN, Legacy::new(plugin).into_node().0);
+    m.insert(PLUGIN, Box::new(plugin));
     m.insert(
         DRY,
         Box::new(TestNode::new(Kind::Gain {

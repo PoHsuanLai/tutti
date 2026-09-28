@@ -429,12 +429,10 @@ fn queued_commits_apply_in_fifo_order() {
     assert_eq!(ed.collect(), vec![FX], "only the first gain was retired");
 }
 
-/// Review probe d, which the old API allowed: c1 applied; c2 (inserts node
-/// 2) in flight; c3 (inserts node 3) dropped unapplied; then every later
-/// commit failed with `MissingUnit { 2 }`. A commit can no longer be dropped
-/// — the caller never holds one — so the same interleaving, expressed in
-/// the API that remains, just works: c2 and c3 queue, run in order, and the
-/// next commit applies.
+/// Commits in flight run in order: c1 applied; c2 (inserts node 2) in
+/// flight; c3 (inserts node 3) sent behind it. The caller never holds a
+/// commit, so none can be dropped unapplied: c2 and c3 queue, run in order,
+/// and the next commit applies.
 ///
 /// Mutation: in `Editor::send`, set `self.plan` to the plan the executor
 /// last applied instead of the one just sent (a rebase) → the next commit's
@@ -680,7 +678,7 @@ fn a_held_note_keeps_sounding_and_a_released_one_is_skipped() {
     );
 }
 
-/// "An honest `Silent` means parked forever" (review): a synth whose attack
+/// An honest `Silent` does not mean parked forever: a synth whose attack
 /// starts 200 frames after its note-on is silent, with quiet inputs, well past
 /// its 40-frame tail — and must still be called, because it is not idle.
 ///
@@ -768,8 +766,7 @@ fn applying_refuses_a_plan_for_another_prepare() {
     exec.apply_pending();
 }
 
-/// Review: a merge used to drop past one slot's capacity with no note-off
-/// exception. The probe: capacity 32, two sources each sending 30 note-offs
+/// A merge never drops past one slot's capacity. The probe: capacity 32, two sources each sending 30 note-offs
 /// on one frame into one port — 60 must arrive, none dropped.
 ///
 /// Mutation: size merged slots at one capacity (all `event_slot_weight` 1)
@@ -833,4 +830,224 @@ fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
     render(&mut exec, 8, 0);
     assert_eq!(seen.load(Ordering::Relaxed), 60);
     assert_eq!(exec.dropped_events(), 0);
+}
+
+/// A node fed **out of band**: it adds `level` (a shared cell a control
+/// thread writes, as a synth's own MIDI queue or a mic's ring feeds it) to
+/// its audio inputs, and declares `Tail::None` — honest for what its
+/// *inputs* can do, which is exactly why the silence skip would park it.
+/// `claims_silence` makes it report the silent channels it wrote
+/// (`Status::Masked`); otherwise it makes no claim (`Status::Modified`).
+struct OutOfBand {
+    inputs: u16,
+    outputs: u16,
+    claims_silence: bool,
+    level: Arc<Param<Amplitude>>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl OutOfBand {
+    fn new(inputs: u16, outputs: u16, claims_silence: bool) -> Self {
+        Self {
+            inputs,
+            outputs,
+            claims_silence,
+            level: Arc::new(Param::new(Amplitude::new(0.0))),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl Node for OutOfBand {
+    fn shape(&self) -> Shape {
+        Shape::audio(
+            ChannelLayout::from_count(self.inputs),
+            ChannelLayout::from_count(self.outputs),
+        )
+        .with_tail(Tail::None)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let level = self.level.load().get();
+        let (ins, mut outs) = io.split();
+        let mut silent = 0u64;
+        for c in 0..usize::from(self.outputs) {
+            let out = outs.get(c);
+            for (i, o) in out.iter_mut().enumerate() {
+                let x = if c < usize::from(self.inputs) {
+                    ins.get(c)[i]
+                } else {
+                    0.0
+                };
+                *o = level + x;
+            }
+            if out.iter().all(|&x| x == 0.0) {
+                silent |= 1 << c;
+            }
+        }
+        if self.claims_silence {
+            Status::Masked {
+                silent: SilenceMask(silent),
+                constant: tutti_graph::ConstantMask::NONE,
+            }
+        } else {
+            Status::Modified
+        }
+    }
+    fn reset(&mut self) {}
+}
+
+/// `node` at key 1, its inputs wired to silence (`Source::Zero`, which the
+/// executor knows is silent), its first output (if any) the graph's.
+fn out_of_band_graph(node: OutOfBand) -> Executor {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    let key = NodeKey(1);
+    let (inputs, outputs) = (node.inputs, node.outputs);
+    ed.insert(key, "oob", Unforkable(node));
+    for port in 0..inputs {
+        ed.spec_mut()
+            .topology
+            .edges
+            .insert(InPort { node: key, port }, Edge::Direct(Source::Zero));
+    }
+    if outputs > 0 {
+        ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    }
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    exec
+}
+
+/// **A node that makes no silence claim is heard after any amount of
+/// silence**, fed out of band: silent for ten blocks, then its cell is
+/// written, and the next block carries the level. Run for a node with an
+/// audio input wired to silence (the live hazard: a plugin instrument with a
+/// sidechain) and for a 0-input source (a mic monitor).
+///
+/// Mutation (run): in `exec.rs`'s `node_op`, treat `Status::Modified` as a
+/// claim of silence on every output → the 1-input node is parked after its
+/// first silent block → fails. The 0-input case does not fail on that
+/// alone — the executor never skips a node without audio inputs — and
+/// fails when that rule (`!ain.is_empty()` in `node_op`) is dropped as well.
+#[test]
+fn a_node_that_claims_no_silence_is_heard_after_silence() {
+    for inputs in [1u16, 0] {
+        let node = OutOfBand::new(inputs, 1, false);
+        let (level, calls) = (Arc::clone(&node.level), Arc::clone(&node.calls));
+        let mut exec = out_of_band_graph(node);
+        let mut out = vec![0.0f32; 64];
+        for _ in 0..10 {
+            exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+            assert!(out.iter().all(|&x| x == 0.0));
+        }
+        level.store(Amplitude::new(0.5));
+        exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+        assert!(
+            out.iter().all(|&x| x == 0.5),
+            "{inputs}-input node: the out-of-band level must reach the output \
+             on the next block; got {:?}",
+            &out[..4]
+        );
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            11,
+            "{inputs}-input node: called every block"
+        );
+    }
+}
+
+/// The same node, **claiming** the silence it wrote, is parked — which is
+/// what the claim means. Pins that the claim is the switch, so the test
+/// above is not passing because nothing is ever skipped.
+///
+/// Mutation (run): drop the skip in `node_op` (always call the node) → the
+/// node is called every block and the late level is heard → fails.
+#[test]
+fn a_node_that_claims_silence_is_parked() {
+    let node = OutOfBand::new(1, 1, true);
+    let (level, calls) = (Arc::clone(&node.level), Arc::clone(&node.calls));
+    let mut exec = out_of_band_graph(node);
+    let mut out = vec![0.0f32; 64];
+    for _ in 0..10 {
+        exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    }
+    level.store(Amplitude::new(0.5));
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    assert_eq!(calls.load(Ordering::Relaxed), 1, "called once, then parked");
+    assert!(out.iter().all(|&x| x == 0.0), "and so never heard again");
+}
+
+/// A node with **no outputs** is never parked, even claiming silence with a
+/// silent input and `Tail::None`: it is a sink, called for its side effects
+/// (a meter, a tap), and "every output silent" is vacuous for it.
+///
+/// Mutation (run): drop the `!(aout.is_empty() && eout.is_empty())` term
+/// from `last_quiet` in `exec.rs`'s `node_op` → called once, then skipped →
+/// fails.
+#[test]
+fn a_sink_is_never_parked() {
+    let node = OutOfBand::new(1, 0, true);
+    let calls = Arc::clone(&node.calls);
+    let mut exec = out_of_band_graph(node);
+    for _ in 0..10 {
+        exec.process(64, &Transport::default(), &[], &mut []);
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 10, "a sink runs every block");
+}
+
+/// **A commit that changes nothing sends nothing**, and every kind of change
+/// still sends: an edit through `spec_mut`, a new unit, a latency set by
+/// hand. The unchanged commits leave `in_flight` and the base plan where
+/// they were, so a host committing every frame compiles only when it edits.
+///
+/// Mutation (run): drop the unchanged check in `Editor::commit` → the second
+/// commit is in flight → fails here, and tutti-core's
+/// `a_no_op_commit_allocates_a_bounded_amount` allocates ~100 KiB → fails.
+/// Mutation (run): compare only the spec, not the shapes, and drop the
+/// `latency_cuts` term → still passes: `set_latency` writes the figure into
+/// the spec's node as well, so the spec comparison alone sees it. Those two
+/// terms are defensive (every path that writes a shape writes the spec
+/// too); nothing here can reach one without the other.
+#[test]
+fn an_unchanged_commit_sends_nothing_and_a_change_still_sends() {
+    let (mut ed, mut exec) = Editor::new(prepare(8));
+    ed.insert(SRC, "c", Unforkable(const_node(1.0)));
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
+    ed.commit().expect("commits");
+    assert_eq!(ed.in_flight(), 1);
+    let base = Arc::clone(ed.base().expect("sent"));
+
+    ed.commit().expect("an unchanged commit is Ok");
+    assert_eq!(ed.in_flight(), 1, "an unchanged commit sends nothing");
+    assert!(Arc::ptr_eq(ed.base().unwrap(), &base), "nor moves the base");
+
+    // Drained, and still nothing to send.
+    exec.apply_pending();
+    ed.collect();
+    ed.commit().expect("commits");
+    assert_eq!(
+        ed.in_flight(),
+        0,
+        "nothing changed since the executor took it"
+    );
+
+    // An edit through `spec_mut` sends.
+    ed.spec_mut().topology.outputs.push(Source::Zero);
+    ed.commit().expect("commits");
+    assert_eq!(ed.in_flight(), 1, "a spec edit sends");
+
+    // A new unit at the same key sends.
+    ed.insert(SRC, "c", Unforkable(const_node(2.0)));
+    ed.commit().expect("commits");
+    assert_eq!(ed.in_flight(), 2, "a pending unit sends");
+
+    // A latency set by hand sends.
+    ed.set_latency(SRC, tutti_types::Latency::new(Samples(3)))
+        .expect("a node");
+    ed.commit().expect("commits");
+    assert_eq!(ed.in_flight(), 3, "a latency change sends");
+    ed.commit().expect("commits");
+    assert_eq!(ed.in_flight(), 3, "and once sent, is unchanged again");
 }

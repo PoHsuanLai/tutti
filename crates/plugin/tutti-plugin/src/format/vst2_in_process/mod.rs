@@ -6,9 +6,10 @@
 //! `editor_idle` call the audio thread emits silence and bumps a
 //! contention counter rather than blocking.
 
-mod audio_unit;
+mod client;
 mod control_backend;
 mod loader;
+mod node;
 
-pub use audio_unit::InProcessVst2Client;
-pub use loader::{load, load_client};
+pub use client::InProcessVst2Client;
+pub use loader::load_client;

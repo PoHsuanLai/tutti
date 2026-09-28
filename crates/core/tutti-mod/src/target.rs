@@ -26,33 +26,48 @@ use crate::id::LayerKey;
 
 /// A keyed modulation accumulator: `final = clamp(base + Σ keyed offsets,
 /// [min, max])`. The receive role of the modulation subsystem.
+///
+/// A target is the destination itself; the router, not the target, knows its
+/// [`ModTargetId`](crate::ModTargetId). Each contribution is stored under a
+/// [`LayerKey`], which gives:
+///
+/// - **idempotent re-assert** — a source re-writing its offset each frame
+///   overwrites its own layer in place, never doubling up;
+/// - **independent clear** — one contributor can be removed without disturbing
+///   the others (or the automation layer);
+/// - **order-independent sum** — `base + Σ offsets` is a set-sum.
+///
+/// Methods take `&self` (implementors use interior mutability) so a driver can
+/// hold an `Arc<dyn ModTarget>` and drive it once per frame, on a control
+/// thread. [`AtomicTarget`](crate::AtomicTarget) (feature `routing`) is the
+/// shipped implementation.
 pub trait ModTarget: Send + Sync {
-    /// The `(min, max)` clamp range. The driver reads this to scale a `[-1, 1]`
+    /// Returns the `(min, max)` clamp range. The driver reads this to scale a `[-1, 1]`
     /// raw modulator value into the target's units before accumulating — the
     /// range is the *target's* property, so it lives here (not on the source).
     fn range(&self) -> (f32, f32);
 
-    /// The authored base value. Modulation never mutates it — offsets are
+    /// Returns the authored base value. Modulation never mutates it — offsets are
     /// computed against it, which is what keeps summation drift-free.
     fn base(&self) -> f32;
 
-    /// Set the authored base — the one write reserved for the base's single
+    /// Sets the authored base — the one write reserved for the base's single
     /// owner (projection / UI), never modulation. Re-flushes `final_value`. The
     /// value is clamped into the target's range by the implementor.
     fn set_base(&self, value: f32);
 
-    /// Upsert this contributor's offset. Re-asserting `key` overwrites in place
+    /// Inserts or replaces this contributor's offset. Re-asserting `key` overwrites in place
     /// (idempotent); contributions across keys sum order-independently.
     fn accumulate(&self, key: LayerKey, offset: f32);
 
-    /// Remove one contributor's offset (edge deleted / source gone silent).
+    /// Removes one contributor's offset (edge deleted / source gone silent).
     /// No-op if the key is absent.
     fn clear(&self, key: LayerKey);
 
-    /// The folded, clamped result: `clamp(base + Σ offsets, [min, max])`.
+    /// Returns the folded, clamped result: `clamp(base + Σ offsets, [min, max])`.
     fn final_value(&self) -> f32;
 
-    /// Install a **beat-varying** contribution under `key`, replacing whatever
+    /// Installs a **beat-varying** contribution under `key`, replacing whatever
     /// that key held. Returns `false` if this sink only takes scalars.
     ///
     /// The difference from [`accumulate`](Self::accumulate) is *when the value

@@ -17,16 +17,27 @@ use crate::time_info::build_vst2_time_info;
 use crate::types::{MidiEvent, MidiEventVec, Vst2ProcessContext};
 
 impl Vst2Instance {
-    /// Render one f32 block. Returns a borrowed view into the
-    /// instance-owned MIDI-out pool — events the plugin produced during
-    /// the block (drain semantics; events not consumed before the next
-    /// `process_*` call are lost). The slice stays valid until the next
-    /// `process_f32` / `process_f64` call.
+    /// Renders one block of `num_samples` f32 frames and returns the MIDI the
+    /// plugin emitted during it.
     ///
-    /// `inputs` and `outputs` are slice-of-slices in channel-major
-    /// order. The host owns `scratch`, which must have been sized to
-    /// match the plugin's reported `num_inputs` / `num_outputs` and the
-    /// block size requested at [`load`](Self::load) time.
+    /// `inputs` and `outputs` hold one slice per channel. `ctx` carries this
+    /// block's MIDI input, transport and sample rate. `scratch` must have been
+    /// sized to the plugin's [`num_inputs`](crate::PluginInfo::num_inputs) /
+    /// [`num_outputs`](crate::PluginInfo::num_outputs) and the block size
+    /// passed to [`load`](Self::load). A zero-length block returns immediately
+    /// without entering the plugin.
+    ///
+    /// The returned events live in a buffer owned by the instance and are
+    /// replaced on the next `process_*` call; copy out what you need to keep.
+    ///
+    /// Real-time safe: no allocation or locking on this path. Call from the
+    /// audio thread, and never concurrently with main-thread calls on the same
+    /// instance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `num_samples` exceeds the block size `scratch` was created
+    /// with, or if an input slice is shorter than `num_samples`.
     pub fn process_f32(
         &mut self,
         inputs: &[&[f32]],
@@ -50,7 +61,8 @@ impl Vst2Instance {
         &self.midi.out
     }
 
-    /// Render one f64 block.
+    /// Renders one block of `num_samples` f64 frames and returns the MIDI the
+    /// plugin emitted during it.
     ///
     /// A plugin declaring `effFlagsCanDoubleReplacing` is entered through
     /// `processReplacingF64`, so the samples never pass through f32. One that
@@ -63,8 +75,13 @@ impl Vst2Instance {
     /// narrowing read `metadata().supports_f64` and choose
     /// [`process_f32`](Self::process_f32) themselves.
     ///
-    /// Returns a borrowed view into the instance-owned MIDI-out pool; see
-    /// [`process_f32`](Self::process_f32) for lifetime semantics.
+    /// Arguments, the returned events and real-time behaviour are as for
+    /// [`process_f32`](Self::process_f32).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `num_samples` exceeds the block size `scratch` was created
+    /// with.
     pub fn process_f64(
         &mut self,
         inputs: &[&[f64]],
@@ -95,7 +112,7 @@ impl Vst2Instance {
         &self.midi.out
     }
 
-    /// Drain the plugin's MIDI-out queue into the pooled `midi_out`
+    /// Drains the plugin's MIDI-out queue into the pooled `midi_out`
     /// SmallVec. Steady-state allocation-free: the `SmallVec` is pre-reserved
     /// past the queue's own capacity, so a full drain cannot grow it.
     fn drain_midi_out(&mut self) {
@@ -104,7 +121,7 @@ impl Vst2Instance {
         }
     }
 
-    /// Refresh the snapshot the plugin reads back via `audioMasterGetTime`.
+    /// Refreshes the snapshot the plugin reads back via `audioMasterGetTime`.
     ///
     /// The previously stored snapshot is loaded and handed to the builder:
     /// `kVstTransportChanged` is an *edge*, so the only way to know whether the
@@ -114,7 +131,7 @@ impl Vst2Instance {
     ///
     /// Runs on the audio thread, so it must not allocate — hence
     /// [`TransportCell`](crate::transport_cell::TransportCell), which overwrites
-    /// in place, rather than the `ArcSwap` store that allocated and freed a
+    /// in place, rather than an `ArcSwap` store that would allocate and free a
     /// snapshot per block inside the callback.
     ///
     /// Must complete *before* the plugin is entered: the plugin issues

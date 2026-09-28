@@ -105,7 +105,7 @@ impl Sysex7PacketReassembler {
         }
     }
 
-    /// Feed one inbound event. Returns the complete packet run when this event
+    /// Feeds one inbound event. Returns the complete packet run when this event
     /// finishes a message (a `SINGLE`, or the `END` of a started run), else
     /// `None`. Non-SysEx7 events are ignored (return `None`) — the caller can
     /// pass its whole inbound stream through without pre-filtering.

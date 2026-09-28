@@ -18,16 +18,16 @@ use crate::error::{ClapError, LoadStage};
 /// matching real-world DAW behavior where plugins run in subprocesses that exit
 /// cleanly.
 ///
-/// # Why the value is a `Weak`, not a `bool` (H6)
-/// A plain "initialized: bool" entry outlives the image it describes. `probe()`
-/// dlopens a library, registers the path, reads the descriptor, then **drops
-/// the library** — `dlclose` unmaps the image and its `init` side effects go
-/// with it, but the registry still said "initialized". The very next `load()`
-/// of that same path re-dlopens a *fresh* image and skipped `init` entirely,
-/// leaving the plugin uninitialized. That is the standard scan-then-load flow,
-/// so it was the common case, not an edge case.
+/// # Why the value is a `Weak`, not a `bool`
+/// A plain "initialized: bool" entry would outlive the image it describes.
+/// `probe()` dlopens a library, registers the path, reads the descriptor, then
+/// **drops the library** — `dlclose` unmaps the image and its `init` side
+/// effects go with it, but the registry would still say "initialized". The very
+/// next `load()` of that same path re-dlopens a *fresh* image and would skip
+/// `init` entirely, leaving the plugin uninitialized. That is the standard
+/// scan-then-load flow, so it is the common case, not an edge case.
 ///
-/// Tying the entry to a `Weak<LiveEntry>` fixes it structurally: the registry
+/// Tying the entry to a `Weak<LiveEntry>` solves it structurally: the registry
 /// holds no ownership, and every [`EntryGuard`] holds a strong reference. When
 /// the last guard for a path drops (the image is about to be unloaded), the
 /// `Weak` can no longer be upgraded, so the next acquire re-runs `init` on the
@@ -44,12 +44,12 @@ pub(crate) struct LiveEntry {
 
 /// RAII guard for CLAP entry lifetime. Does not call deinit on drop — but its
 /// drop does release the registry's claim that the path is initialized, so a
-/// later load of a re-dlopen'd image runs `init` again (H6).
+/// later load of a re-dlopen'd image runs `init` again.
 pub(crate) struct EntryGuard {
     _live: Arc<LiveEntry>,
 }
 
-/// Register a CLAP entry for the given path.
+/// Registers a CLAP entry for the given path.
 ///
 /// Calls `init_fn` on the first load of a given library, and again after every
 /// previous load of that path has been dropped (its image unloaded). While a
@@ -115,11 +115,11 @@ mod tests {
         false
     }
 
-    /// H6 regression: `probe()` registers a path then drops the library, so the
-    /// registry entry must NOT outlive the guard. A later `load()` of the same
-    /// path re-dlopens a fresh image and MUST run `init` again — the old
-    /// `HashMap<PathBuf, bool>` marked the path initialized forever and skipped
-    /// it, leaving the second image uninitialized.
+    /// `probe()` registers a path then drops the library, so the registry entry
+    /// must NOT outlive the guard. A later `load()` of the same path re-dlopens a
+    /// fresh image and MUST run `init` again; a `HashMap<PathBuf, bool>` would
+    /// mark the path initialized forever and skip it, leaving the second image
+    /// uninitialized.
     #[test]
     fn init_runs_again_after_every_guard_for_a_path_is_dropped() {
         let path = Path::new("/test/h6-reinit-after-unload.clap");

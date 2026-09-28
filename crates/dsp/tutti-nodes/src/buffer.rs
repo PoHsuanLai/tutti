@@ -60,7 +60,7 @@ impl<T: Copy + Default> CircularBuffer<T> {
         self.write
     }
 
-    /// Write `sample` at the current write position, then advance.
+    /// Writes `sample` at the current write position, then advances.
     #[inline]
     pub fn push(&mut self, sample: T) {
         self.buf[self.write] = sample;
@@ -100,7 +100,7 @@ impl<T: Copy + Default> CircularBuffer<T> {
 
     /// Zeroes every slot and returns the write cursor to 0.
     ///
-    /// This is what a node's `AudioUnit::reset` calls to drop the tail of the
+    /// This is what a node's `Node::reset` calls to drop the tail of the
     /// previous take; without it a restarted delay bleeds the old signal. Does
     /// not reallocate, so it is safe on the audio thread.
     pub fn clear(&mut self) {
@@ -180,7 +180,7 @@ impl MonotonicMinDeque {
         self.entries.push_back((index, value));
     }
 
-    /// Drop entries older than `min_index`.
+    /// Drops entries older than `min_index`.
     #[inline]
     pub fn evict_older_than(&mut self, min_index: u64) {
         while let Some(&(idx, _)) = self.entries.front() {

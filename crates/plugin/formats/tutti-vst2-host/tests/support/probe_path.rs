@@ -3,8 +3,7 @@
 //
 // The rules — absence panics rather than skipping, and the *newest* candidate
 // wins so a stale uplifted copy cannot shadow a fresh one — live in
-// `tutti-fixture-resolve`, along with what each cost when it was broken. They
-// used to be restated in three near-identical copies of this file.
+// `tutti-fixture-resolve`, along with what each costs when it is broken.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

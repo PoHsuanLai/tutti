@@ -1,5 +1,5 @@
-//! Events as ports (doc 013, "Rewrite order", item 5): the graph-side
-//! properties a MIDI or automation node will rely on once it is ported, each
+//! Events as ports: the graph-side properties a MIDI or automation node
+//! relies on, each
 //! checked on the executor **and** the reference interpreter, so the two
 //! cannot share one wrong decision unseen.
 //!

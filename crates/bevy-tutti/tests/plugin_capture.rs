@@ -48,7 +48,6 @@ use bevy_tutti::graph::{
     AudioGraphRes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
     MetronomeRes, TransportRes,
 };
-use bevy_tutti::midi::MidiTarget;
 use bevy_tutti::plugin_host::{
     PluginLoadTerminated, PluginMeterBound, PluginRequest, PluginShadow, TuttiHostingPlugin,
 };
@@ -59,8 +58,8 @@ use tutti_plugin::catalog::PluginId;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// The plugin's pipeline chunk here: one device callback when the graph knows
-/// the device's (doc 013, decision 8 reversed); this headless graph knows none,
-/// so the chunk is its `MaxBlock` (bevy-tutti's `NATIVE_MAX_BLOCK`).
+/// the device's; this headless graph knows none,
+/// so the chunk is its `MaxBlock` (bevy-tutti's `LIVE_MAX_BLOCK`).
 const CHUNK: usize = 1024;
 
 fn app() -> App {
@@ -121,16 +120,18 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     // went quiet rather than stopping at the first.
     let world = app.world();
     let observed = Observed {
-        midi_target_node: world.get::<MidiTarget>(entity).map(MidiTarget::node),
+        event_inputs: app
+            .world()
+            .resource::<AudioGraphRes>()
+            .node_event_inputs(AudioNode(node)),
         shadow_node: world.get::<PluginShadow>(entity).map(PluginShadow::node),
         meter_bound: world.get::<PluginMeterBound>(entity).is_some(),
     };
     assert_eq!(
         observed,
         Observed {
-            // `PluginClient` is registered for MIDI by the hosting plugin, so its
-            // port is captured at load, for this node.
-            midi_target_node: Some(node),
+            // A plugin takes MIDI (and automation) on its node's event input.
+            event_inputs: 1,
             // The shadow is captured at load, for this node.
             shadow_node: Some(node),
             // Installed through the shadow; no shadow, no binding.
@@ -233,8 +234,8 @@ fn record_dirty(
 /// What the capture's consumers left on the entity.
 #[derive(Debug, PartialEq)]
 struct Observed {
-    midi_target_node: Option<tutti_core::dsp::NodeId>,
-    shadow_node: Option<tutti_core::dsp::NodeId>,
+    event_inputs: usize,
+    shadow_node: Option<tutti_core::NodeKey>,
     meter_bound: bool,
 }
 
@@ -319,12 +320,25 @@ fn a_crossfaded_plugin_is_bound_again() {
         controls.has_meter(),
         "the incoming plugin must get the meter installed"
     );
-    #[cfg(feature = "modulation")]
-    assert!(
-        controls.has_param_automation_source(),
-        "and its param automation"
-    );
     let node = *app.world().get::<AudioNode>(entity).expect("still bound");
+    // The entity's automation node feeds whichever plugin it is bound to:
+    // the incoming one now. Mutation: `plugin_bind_params` not feeding the
+    // node (`feeds.set` dropped) → no event source → fails.
+    #[cfg(feature = "modulation")]
+    {
+        let automation = app
+            .world()
+            .get::<bevy_tutti::plugin_host::PluginAutomationNode>(entity)
+            .expect("the entity has an automation node")
+            .node;
+        assert_eq!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .event_sources(node, 0),
+            vec![automation.into()],
+            "and its param automation"
+        );
+    }
     assert_eq!(
         app.world().resource::<AudioGraphRes>().node_latency(node),
         Samples(INCOMING_LATENCY + CHUNK),
@@ -347,4 +361,18 @@ fn a_crossfaded_plugin_is_bound_again() {
     app.world_mut().entity_mut(entity).remove::<AudioNode>();
     app.update();
     assert!(app.world().get::<PluginShadow>(entity).is_none());
+
+    // And the entity's automation node leaves the graph with the entity.
+    // Mutation: drop the observer's `graph.remove` → it stays → fails.
+    #[cfg(feature = "modulation")]
+    {
+        let automation = app
+            .world()
+            .get::<bevy_tutti::plugin_host::PluginAutomationNode>(entity)
+            .expect("kept while the entity lives")
+            .node;
+        app.world_mut().despawn(entity);
+        app.update();
+        assert!(!app.world().resource::<AudioGraphRes>().contains(automation));
+    }
 }

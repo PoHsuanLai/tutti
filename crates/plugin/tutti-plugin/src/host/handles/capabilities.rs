@@ -1,15 +1,14 @@
 //! Granular host-side plugin-control capability traits.
 //!
-//! These replace the former `ControlBackend` god-trait: instead of one ~13-method
-//! trait every backend implemented in full (faking the capabilities it lacked with
-//! no-op/error stubs), a backend implements exactly the capabilities it honors, and
-//! a consumer depends only on the capability it uses.
+//! A backend implements exactly the capabilities it honors, and a consumer
+//! depends only on the capability it uses; there are no no-op or error stubs
+//! for missing capabilities.
 //!
 //! **Naming.** These are the *host-side* mirror of the loader-side `Plugin*`
 //! capability traits in `tutti-plugin-types` (`PluginParams`/`PluginState`/
 //! `PluginEditorHost`), which live *inside the subprocess*. The two rows are named
 //! apart because they are different objects doing the same job on opposite sides of
-//! the IPC boundary — exactly as the host-side `AudioUnit` node mirrors the
+//! the IPC boundary — exactly as the host-side graph node mirrors the
 //! loader-side `PluginAudio`. So the host-side control traits take the `Host*`
 //! prefix.
 //!
@@ -33,28 +32,33 @@ use crate::protocol::{
 };
 use crate::util::window::{EditorCapabilities, EditorSize};
 
-/// Parameter catalog, live-value read, and imperative value write — plus the
-/// backend's liveness (`is_crashed`), folded here rather than in a one-method
-/// trait of its own.
+/// Parameter catalog, live-value reads and writes, and the backend's liveness.
+///
+/// Every backend implements this; [`PluginHandle::params`](super::control_handle::PluginHandle::params)
+/// returns it. `is_crashed` lives here rather than in a one-method trait of its
+/// own.
 ///
 /// Method names say *what kind of thing* each deals in: `_descriptors` is the
 /// static metadata catalog; `_value` / `set_..._value` is the live number. This
 /// is deliberately NOT the automation/modulation path — sample-accurate parameter
-/// automation is a per-block `BlockInput` producer installed on the audio node
-/// (`set_param_automation_source`), never a method here.
+/// automation is an event source node wired to the plugin node
+/// (`PluginControls::automation`), never a method here.
 pub trait HostParams: Send + Sync {
-    /// The static parameter catalog (id, name, range, flags). `None` if the
-    /// backend cannot enumerate parameters.
+    /// Returns the static parameter catalog (id, name, range, flags), or
+    /// `None` if the backend cannot enumerate parameters.
     fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>>;
 
-    /// The plugin's current live value for one parameter. `None` if unavailable
-    /// — including when `id` uses the other addressing model, which addresses
-    /// no parameter of this backend. See [`ParamAddress`].
+    /// Returns the plugin's current value for one parameter.
+    ///
+    /// `None` if unavailable, including when `id` uses the other addressing
+    /// model, which addresses no parameter of this backend. See
+    /// [`ParamAddress`].
     fn parameter_value(&self, id: ParamAddress) -> Option<f32>;
 
-    /// Write one parameter value (a UI knob poke / initial preset value).
-    /// Main-thread; fire-and-forget. In-process backends `try_lock` internally so
-    /// a shared handle can never block the audio thread.
+    /// Writes one parameter value, for a UI knob or an initial value.
+    ///
+    /// Main thread; fire-and-forget. In-process backends `try_lock` internally
+    /// so a shared handle can never block the audio thread.
     ///
     /// [`Normalized`], not a bare float, because this is the *front door*: a
     /// caller here holds a [`ParameterInfo`] and can see a `[10, 22050]` Hz
@@ -64,22 +68,20 @@ pub trait HostParams: Send + Sync {
     /// [`PluginParams::set_parameter`](tutti_plugin_types::PluginParams::set_parameter)
     /// for the same argument one layer down.
     ///
-    /// The clamp is not merely documentation here. The subprocess path clamps
-    /// again on receipt, but the **in-process** backends
-    /// (`vst2_in_process`, and any other that owns the plugin directly) write
-    /// straight through to the plugin. Without the type, that path has no point
-    /// at which an out-of-range or NaN value is stopped.
+    /// The subprocess path clamps again on receipt, but in-process backends
+    /// write straight through to the plugin, so [`Normalized`] is what stops an
+    /// out-of-range or NaN value there.
     fn set_parameter_value(&self, id: ParamAddress, value: Normalized);
 
-    /// The plugin's own display string for `value` — `"800 Hz"`, `"Bandpass"`.
+    /// Returns the plugin's own display string for `value`, such as `"800 Hz"`
+    /// or `"Bandpass"`.
     ///
     /// `None` means the plugin did not answer, and the caller should render the
     /// number itself. That is not the same as an empty label, which is why this
     /// is an `Option<String>` rather than a `String` defaulting to `""`.
     ///
-    /// Defaulted to `None` so a backend opts in rather than being forced to
-    /// fabricate: an out-of-crate in-process backend keeps compiling, and one
-    /// whose format cannot answer says so.
+    /// Defaults to `None`, so a backend whose format cannot answer need not
+    /// implement it.
     ///
     /// See
     /// [`PluginParams::parameter_text`](tutti_plugin_types::PluginParams::parameter_text)
@@ -90,8 +92,8 @@ pub trait HostParams: Send + Sync {
         None
     }
 
-    /// Parse `text` with the plugin's own interpretation, for a user typing into
-    /// a parameter field.
+    /// Parses `text` with the plugin's own interpretation, for a user typing
+    /// into a parameter field.
     ///
     /// `None` when it cannot parse the string; the caller must then leave the
     /// field where it was, since a fabricated value would be committed to the
@@ -99,23 +101,22 @@ pub trait HostParams: Send + Sync {
     ///
     /// **Not a pure query on every format.** VST2's `effString2Parameter` is a
     /// setter with no parse-only counterpart, so on that backend asking applies
-    /// the value. Surfaced rather than hidden: the alternative is a VST2
-    /// parameter a user cannot type into at all.
+    /// the value.
     fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
         let _ = (id, text);
         None
     }
 
-    /// `true` if the underlying plugin is gone (subprocess crashed). In-process
-    /// backends never return `true` — a crash takes the host down with it.
+    /// Returns `true` if the underlying plugin is gone (the subprocess crashed).
+    ///
+    /// In-process backends never return `true`: a crash takes the host down
+    /// with it.
     fn is_crashed(&self) -> bool;
 
-    /// Why the plugin died, when the backend can say.
+    /// Returns why the plugin died, when the backend can say.
     ///
-    /// Defaulted to `None` so a backend that only tracks the bool keeps
-    /// compiling: an out-of-crate in-process loader implements this trait, and
-    /// a required method would have broken it for a fact it cannot report
-    /// anyway (an in-process crash takes the host down with it).
+    /// Defaults to `None`, so a backend that only tracks
+    /// [`is_crashed`](Self::is_crashed) need not implement it.
     ///
     /// `Some` only when [`is_crashed`](Self::is_crashed) is `true`. The
     /// subprocess backend latches the reason at the detection site, so this
@@ -126,94 +127,99 @@ pub trait HostParams: Send + Sync {
     }
 }
 
-/// Opaque preset-chunk save / load. Raw `Vec<u8>` — the bytes are the plugin's
-/// business (the same shape the loader-side `PluginState::get_state` returns).
+/// Saves and restores the plugin's state as an opaque byte blob.
+///
+/// Every backend implements this; the bytes are the plugin's own format, the
+/// same data a project save stores. Both calls block on a subprocess round
+/// trip for out-of-process plugins, so call them from a control thread.
 pub trait HostState: Send + Sync {
-    /// Serialize the plugin's current state.
+    /// Serializes the plugin's current state.
     ///
-    /// Returns [`Result`] for the same reason
-    /// [`load_state`](Self::load_state) does, and the argument is if anything
-    /// stronger here: this is the direction that **loses data**. The signature
-    /// was `Option<Vec<u8>>`, which has exactly one failure value and therefore
-    /// could not distinguish "the plugin declined" from "the plugin died" from
-    /// "the state was too large to carry". A DAW saving a project saw `None`,
-    /// wrote no state, and — because the transport reported an oversized state
-    /// as a crash — told the user their plugin had crashed when it had not.
+    /// A plugin that has nothing to save answers `Ok(vec![])`.
     ///
-    /// A plugin that legitimately has nothing to save answers `Ok(vec![])`, so
-    /// emptiness stays representable without overloading the error channel.
+    /// # Errors
     ///
-    /// [`Result`]: std::result::Result
+    /// Returns a [`StateError`] saying why no state was produced: the plugin
+    /// crashed, refused, the backend cannot carry state, the state exceeds the
+    /// transport's size limit, or the transfer stalled.
     fn save_state(&self) -> Result<Vec<u8>, StateError>;
 
-    /// Restore a blob previously produced by [`save_state`](Self::save_state).
+    /// Restores a blob produced by [`save_state`](Self::save_state).
     ///
-    /// Returns [`Result`] rather than `()` because a plugin declining a chunk is
-    /// **routine**, not exceptional: it is what happens when a preset saved by
-    /// an older build is loaded into a newer one, when a file is truncated, or
-    /// when a chunk from a different plugin is fed in by mistake.
+    /// # Errors
     ///
-    /// Discarding that outcome is silent and destructive: open a project, the
-    /// plugin rejects its state, and the DAW shows a loaded plugin sitting at
-    /// defaults while telling the user nothing. A caller must decide what to do
-    /// with a failure; it must not be possible to not notice one.
-    ///
-    /// [`Result`]: std::result::Result
+    /// Returns a [`StateError`] if the state was not applied. A plugin
+    /// declining a chunk ([`StateError::Rejected`]) is routine: it happens when
+    /// a state saved by an older build is loaded into a newer one, when a file
+    /// is truncated, or when a chunk from a different plugin is fed in. Report
+    /// it to the user rather than leaving the plugin silently at defaults.
     fn load_state(&self, data: &[u8]) -> Result<(), StateError>;
 }
 
-/// Editor / GUI hosting — **optional**. A backend implements this only if it can
-/// embed the plugin's editor; a headless one leaves it unimplemented, so its
-/// plugins report `PluginHandle::editor() == None` rather than erroring at open
-/// time.
+/// Hosts the plugin's editor window. **Optional.**
+///
+/// A backend implements this only if it can show the plugin's editor; for one
+/// that cannot, `PluginHandle::editor()` returns `None`. Call these on the main
+/// (UI) thread.
 ///
 /// `parent` is a raw platform window pointer (not a generic `HasWindowHandle`) so
 /// the trait stays object-safe; the ergonomic `HasWindowHandle` entry lives on
 /// [`PluginHandle::open_editor`](super::control_handle::PluginHandle::open_editor).
 pub trait HostEditor: Send + Sync {
-    /// Embed the plugin's editor as a child of `parent`, returning the size it
+    /// Embeds the plugin's editor as a child of `parent`, returning the size it
     /// asked for.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EditorError`] if the plugin has no editor or failed to
+    /// create or attach it, or if the backend is gone.
     fn open_editor(&self, parent: *mut c_void) -> Result<EditorSize, EditorError>;
 
-    /// Open the editor as a **floating** window the plugin creates and owns.
+    /// Opens the editor as a **floating** window the plugin creates and owns.
     ///
-    /// Takes no parent: that is the whole difference from
-    /// [`open_editor`](Self::open_editor), and returns no size because the host
-    /// does not lay out a window it did not create.
+    /// Takes no parent, unlike [`open_editor`](Self::open_editor), and returns
+    /// no size because the host does not lay out a window it did not create.
+    /// Only CLAP has floating editors; check
+    /// [`Features::EDITOR_FLOATING`](crate::protocol::Features) first.
     ///
-    /// Defaulted to a refusal rather than left abstract. Only CLAP has the
-    /// concept — VST3, VST2 and AU embed unconditionally — so a default keeps
-    /// three formats from carrying an override that could only say this. A
-    /// caller checks [`Features::EDITOR_FLOATING`](crate::protocol::Features)
-    /// before reaching here; the error is for one that did not.
+    /// # Errors
+    ///
+    /// Returns an [`EditorError`] if the format or plugin has no floating
+    /// editor (the default implementation always does) or the plugin failed
+    /// to open it.
     fn open_floating_editor(&self) -> Result<(), EditorError> {
         Err(EditorError::PluginError(
             "this plugin format has no floating-window editor".into(),
         ))
     }
 
-    /// Tear down the editor, whether embedded or floating.
+    /// Closes the editor, whether embedded or floating.
     fn close_editor(&self);
 
-    /// Call periodically (~30 Hz) while the editor is open.
+    /// Services the editor; call periodically (about 30 Hz) while it is open.
     fn editor_idle(&self);
 
-    /// What this editor supports — resizing, DPI scaling, and the rest.
+    /// Returns what this editor supports: resizing, DPI scaling and the rest.
     ///
-    /// Defaulted so a backend that embeds but negotiates nothing need not
-    /// override it.
+    /// Defaults to [`EditorCapabilities::default`].
     fn editor_capabilities(&self) -> EditorCapabilities {
         EditorCapabilities::default()
     }
 
-    /// Returns the snapped/clamped size the plugin actually applied.
+    /// Asks the plugin to resize its editor and returns the size it actually
+    /// applied, which may be snapped or clamped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EditorError`] if the editor cannot be resized (the default
+    /// implementation always does) or the plugin refused.
     fn set_editor_size(&self, _requested: EditorSize) -> Result<EditorSize, EditorError> {
         Err(EditorError::PluginError(
             "set_editor_size not supported".into(),
         ))
     }
 
-    /// Take a pending plugin-initiated resize request, if one is queued.
+    /// Takes a pending plugin-initiated resize request, if one is queued.
     ///
     /// Polled rather than delivered by callback: the request arrives on the
     /// plugin's own thread, and the host resizes its window on the UI thread.
@@ -222,7 +228,7 @@ pub trait HostEditor: Send + Sync {
     }
 }
 
-/// Host → plugin automation-state advisory — **optional**, Direction C-in.
+/// Tells the plugin what the host is doing with automation. **Optional.**
 ///
 /// The host announces what it is doing with automation (reading / writing /
 /// neither) so the plugin's editor can show UI feedback (a glowing knob ring
@@ -234,17 +240,21 @@ pub trait HostEditor: Send + Sync {
 ///
 /// [`PluginHandle::automation_state`]: super::control_handle::PluginHandle::automation_state
 pub trait HostAutomationState: Send + Sync {
-    /// Announce the host's current automation mode to the plugin. **Global** (no
-    /// `param_id`) — the only wired sink (VST3 `IAutomationState`) is global.
+    /// Announces the host's current automation mode to the plugin.
     ///
-    /// Fallible: the call can fail because the backend is gone, there is no open
-    /// editor to deliver the feedback to, or the format's automation interface is
-    /// absent. `Ok(())` means *delivered / accepted*, not that the plugin visibly
-    /// reacted (no format confirms the reaction).
+    /// Applies to the whole plugin, not one parameter (VST3 `IAutomationState`
+    /// is global). `Ok(())` means delivered and accepted, not that the plugin
+    /// visibly reacted; no format confirms the reaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EditorError`] if the backend is gone, there is no open
+    /// editor to deliver the feedback to, or the plugin lacks the format's
+    /// automation-state interface.
     fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError>;
 }
 
-/// Host → plugin render-mode advisory — **optional**, Direction C-in.
+/// Tells the plugin whether it is rendering offline. **Optional.**
 ///
 /// The host tells the plugin whether it is rendering under realtime pressure so
 /// the plugin can pick a more expensive algorithm for an offline bounce. Unlike
@@ -263,7 +273,7 @@ pub trait HostAutomationState: Send + Sync {
 /// [`PluginHandle`]: super::control_handle::PluginHandle
 /// [`PluginHandle::render_mode`]: super::control_handle::PluginHandle::render_mode
 pub trait HostRenderMode: Send + Sync {
-    /// Tell the plugin whether it is rendering offline.
+    /// Tells the plugin whether it is rendering offline.
     ///
     /// Returns whether the plugin *accepted* the mode. `false` is a refusal, not
     /// an error: a CLAP plugin that does not implement `clap.render` renders
@@ -272,21 +282,19 @@ pub trait HostRenderMode: Send + Sync {
     fn set_render_mode(&self, mode: RenderMode) -> bool;
 }
 
-/// Preset enumeration and loading — **optional**.
+/// Lists and loads the plugin's presets. **Optional.**
 ///
-/// Two methods rather than one because **no format has both unconditionally**,
-/// and the pair a format answers differs:
+/// Formats differ in which half they support, which is why
+/// [`Features::PRESET_LIST`] and [`Features::PRESET_LOAD`] are two bits:
 ///
-/// - **CLAP** loads by filesystem path but cannot enumerate — discovery is a
-///   factory-level extension this host does not bind.
-/// - **VST3** enumerates richly but has no load call: a program is selected by
-///   writing the parameter flagged `kIsProgramChange`, through the ordinary
-///   parameter path.
-/// - **AU** and **VST2** answer both.
+/// - **CLAP** loads by filesystem path but cannot enumerate (discovery is a
+///   factory-level extension this host does not bind).
+/// - **VST3** lists and loads the programs of a plugin that exposes a program
+///   list; loading writes the parameter flagged `kIsProgramChange`.
+/// - **AU** and **VST2** list and load.
 ///
-/// That asymmetry is why [`Features::PRESET_LIST`] and
-/// [`Features::PRESET_LOAD`] are two bits, and why this is not one
-/// `presets_supported() -> bool`.
+/// Calls block on a subprocess round trip for out-of-process plugins, so make
+/// them from a control thread.
 ///
 /// A backend implements this only if it can reach presets at all; others do
 /// not, so [`PluginHandle::presets`] returns `None` — no stub.
@@ -295,7 +303,7 @@ pub trait HostRenderMode: Send + Sync {
 /// [`Features::PRESET_LOAD`]: crate::protocol::Features::PRESET_LOAD
 /// [`PluginHandle::presets`]: super::control_handle::PluginHandle::presets
 pub trait HostPresets: Send + Sync {
-    /// Every preset the plugin advertises, in the plugin's own order.
+    /// Returns every preset the plugin advertises, in the plugin's own order.
     ///
     /// Empty when the format cannot enumerate (CLAP), which is **not** the same
     /// as a plugin with no presets. A caller distinguishing the two reads
@@ -305,26 +313,20 @@ pub trait HostPresets: Send + Sync {
     /// [`Features::PRESET_LIST`]: crate::protocol::Features::PRESET_LIST
     fn presets(&self) -> Vec<Preset>;
 
-    /// Ask the plugin to load one, by an id [`presets`](Self::presets) produced.
+    /// Asks the plugin to load a preset, by an id [`presets`](Self::presets)
+    /// produced (or, for CLAP, a path id).
     ///
     /// Returns whether the plugin *accepted*. `false` is a refusal, not an
-    /// error — and it is also the honest answer for VST3, whose programs are
-    /// reached through the parameter path rather than a load call. Routing
-    /// program selection through here as well would give one operation two
-    /// write paths.
-    ///
-    /// The result is returned rather than swallowed for the reason
-    /// `HostRenderMode::set_render_mode` gives: a refusal changes what the
-    /// caller must do next — leave the UI selection where it was, rather than
-    /// move it to a preset the plugin never loaded.
+    /// error: leave the UI selection where it was rather than move it to a
+    /// preset the plugin never loaded.
     fn load_preset(&self, id: &PresetId) -> bool;
 
-    /// Which preset the plugin considers current, when it will say.
+    /// Returns the preset the plugin considers current, when it will say.
     ///
-    /// `None` means the format has no query for it (VST3, CLAP) or the plugin
-    /// declined — never "the first one". A caller must not substitute an index
-    /// of its own; see [`PresetId`], where three of four formats number in a
-    /// space that is not a position.
+    /// `None` means the format has no query for it (CLAP) or the plugin
+    /// declined — never "the first one". Do not substitute an index of your
+    /// own; see [`PresetId`], where most formats number presets in a space that
+    /// is not a position.
     fn current_preset(&self) -> Option<PresetId>;
 }
 

@@ -1,10 +1,8 @@
-//! How an [`OutputBlock`] is *run* — the `PumpDriver` analogue for output.
+//! How an [`OutputBlock`] is *run*.
 //!
-//! `tutti_io`'s recorder splits the same way and for the same reason:
-//! [`PumpLoop`] is one pass with no thread and no clock, [`PumpDriver`]
-//! decides where that pass runs, and `ManualDriver`'s doc makes the claim that
-//! justifies the whole split — *"It is not a second implementation of the
-//! loop"*, because both drivers call the same `pump_once`.
+//! `tutti_io`'s recorder splits the same way: `PumpLoop` is one pass with no
+//! thread and no clock, `PumpDriver` decides where that pass runs, and both of
+//! its drivers call the same `pump_once`.
 //!
 //! | `tutti-io` | here |
 //! |---|---|
@@ -15,13 +13,8 @@
 //! | `RunningPump` | [`RunningStream`] |
 //!
 //! [`CpalDriver`]'s closure body is `move |data, _| block.render(data)`, and
-//! [`ManualStream::callback_once`] calls the same method. Before the split,
-//! that body contained the `MAX_FRAMES` clamp, the zero-fill, the metering
-//! fold and the eight-way format conversion, and the only thing able to run
-//! any of it was CPAL with a sound card open.
-//!
-//! [`PumpLoop`]: https://docs.rs/tutti-io
-//! [`PumpDriver`]: https://docs.rs/tutti-io
+//! [`ManualStream::callback_once`] calls the same method, so a manual stream
+//! runs exactly the callback CPAL runs.
 
 use std::sync::{Arc, Mutex};
 
@@ -33,18 +26,22 @@ use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
 use crate::MAX_FRAMES;
 
-/// Everything a stream needs, resolved from a device once.
+/// The configuration an output stream is opened with: rate, width, sample
+/// format and callback size.
 ///
-/// `cpal::SampleFormat` is named directly rather than mirrored. This crate's
-/// [`Error`] already carries `cpal::BuildStreamError` and friends in public
-/// variants, so cpal is in the public surface either way, and a parallel
-/// format enum would be a second copy of the eight-way matrix these types
-/// exist to make testable.
+/// [`AudioEngine`](crate::AudioEngine) reads it from the device's default
+/// output config; build one with [`new`](Self::new) for a device-free engine
+/// ([`AudioEngine::from_spec`](crate::AudioEngine::from_spec)).
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct OutputSpec {
+    /// Frames per second the stream runs at.
     pub sample_rate: SampleRate,
+    /// The device's channel count; the graph root is folded to this width.
     pub channels: ChannelLayout,
+    /// The device's native sample type. `I8`/`I16`/`I32`, `U8`/`U16`/`U32`,
+    /// `F32` and `F64` are supported; any other fails to open with
+    /// [`Error::InvalidConfig`].
     pub sample_format: cpal::SampleFormat,
     /// The frames every callback carries, when the stream is opened with a
     /// fixed buffer size (`None`: the backend's default, whose size is not
@@ -61,7 +58,7 @@ pub struct OutputSpec {
 pub const PREFERRED_QUANTUM: Samples = Samples(512);
 
 impl OutputSpec {
-    /// A spec with no device behind it — what a test constructs.
+    /// Creates a spec with no fixed callback size (the backend's default).
     pub fn new(
         sample_rate: SampleRate,
         channels: ChannelLayout,
@@ -75,7 +72,10 @@ impl OutputSpec {
         }
     }
 
-    /// This spec, opening the stream with a fixed `quantum`-frame buffer.
+    /// Returns this spec with a fixed `quantum`-frame callback buffer.
+    ///
+    /// Keep `quantum` at or below [`MAX_FRAMES`]; a larger callback is
+    /// clamped and its tail silenced.
     #[must_use]
     pub fn with_quantum(mut self, quantum: Samples) -> Self {
         self.quantum = Some(quantum);
@@ -118,17 +118,23 @@ fn quantum_for(range: &cpal::SupportedBufferSize) -> Option<Samples> {
     }
 }
 
-/// How an [`OutputBlock`] is run.
+/// Decides where an output stream's callback runs.
 ///
-/// [`AudioEngine`](crate::AudioEngine) owns the take — the spec, the fault
-/// sink, the stop — and delegates only the execution. A driver decides where
-/// the callback runs and nothing about when the stream ends.
+/// [`AudioEngine`](crate::AudioEngine) owns the spec, the fault record and the
+/// stop, and hands a driver only the [`OutputBlock`] to run.
+/// [`CpalDriver`] runs it on a real device; [`ManualStreamDriver`] lets the
+/// caller run it by hand.
 pub trait StreamDriver {
-    /// A running stream, stoppable.
+    /// The handle of the started stream; dropping it stops the stream.
     type Running: RunningStream;
 
-    /// Open and start. The eight-way sample-format fan-out happens inside,
-    /// once, against `spec.sample_format`.
+    /// Opens and starts a stream at `spec`, running `block` once per callback
+    /// and recording backend errors into `faults`.
+    ///
+    /// # Errors
+    /// Whatever the driver cannot open; for [`CpalDriver`],
+    /// [`Error::InvalidConfig`] for an unsupported sample format, or
+    /// [`Error::BuildStream`] / [`Error::PlayStream`] from CPAL.
     fn open(
         self,
         spec: &OutputSpec,
@@ -138,21 +144,22 @@ pub trait StreamDriver {
 }
 
 /// The handle a [`StreamDriver`] hands back. Dropping it stops the stream.
-///
-/// `Box<Self>` rather than `self` for the same erasure reason
-/// `tutti_io::RunningPump::join` gives: [`AudioEngine`](crate::AudioEngine)
-/// stores this as a `dyn RunningStream` so its own type does not carry the
-/// driver, and a by-value `self` on a trait object is not something the
-/// compiler can size.
+// `Box<Self>` rather than `self`: `AudioEngine` stores this as a
+// `dyn RunningStream`, and a by-value `self` cannot be called on a trait
+// object.
 pub trait RunningStream: Send {
-    /// Stop, explicitly and once. Dropping does the same thing; this makes it
-    /// a statement rather than a side effect.
+    /// Stops the stream. Dropping the handle does the same; this makes the
+    /// stop explicit at the call site.
     fn stop(self: Box<Self>);
 }
 
 // ------------------------------------------------------------- production --
 
-/// The production driver: a real `cpal::Stream`.
+/// The device driver: runs the callback on a real `cpal::Stream`.
+///
+/// Created internally by [`AudioEngine::start`](crate::AudioEngine::start) and
+/// [`TuttiDriver::restart`](crate::TuttiDriver::restart) from the selected
+/// device.
 pub struct CpalDriver {
     device: cpal::Device,
 }
@@ -163,15 +170,13 @@ impl CpalDriver {
     }
 }
 
-/// Holds a [`cpal::Stream`] to keep it alive. CPAL runs the callback for as
-/// long as this value exists; dropping it stops the stream. The inner field is
-/// never read — ownership *is* the API.
+/// The running handle of a [`CpalDriver`] stream. CPAL runs the callback for
+/// as long as this value exists; dropping it stops the stream.
 pub struct CpalStream(
     #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] cpal::Stream,
 );
 
-// SAFETY: the same assertion `output.rs`'s `StreamHandle` made before this
-// module existed. A `cpal::Stream` is not `Send` because some backends tie it
+// SAFETY: a `cpal::Stream` is not `Send` because some backends tie it
 // to the thread that created it; this crate only ever creates one on the
 // control thread and only ever drops it there, and the handle is moved into
 // `AudioEngine`, which lives on that thread.
@@ -247,29 +252,60 @@ impl CpalDriver {
 
 // ------------------------------------------------------------------ tests --
 
-/// A driver that runs no callbacks of its own: the caller runs them.
+/// A driver that runs no callbacks of its own: the caller runs them through
+/// the paired [`ManualStream`].
 ///
-/// Shipped public, not `#[cfg(test)]`, for the same reason
-/// `tutti_io::ManualDriver` is: each integration-test binary compiles
-/// separately and cannot see a crate-private fixture, and a downstream host
-/// writing its own device-free tests needs this too.
+/// For device-free tests of a host's lifecycle: pass it to
+/// [`AudioEngine::start_with`](crate::AudioEngine::start_with) or
+/// [`TuttiDriver::start_with`](crate::TuttiDriver::start_with) and render
+/// blocks with [`ManualStream::render_block`].
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use tutti_core::{AudioTap, ChannelLayout, Engine, MasterMeter, SampleRate, Samples, Transport};
+/// use tutti_cpal::{AudioCallbackState, AudioEngine, ManualStreamDriver, OutputSpec};
+/// use tutti_graph::{Editor, Prepare};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let rate = SampleRate(48_000.0);
+/// let transport = Transport::new(rate);
+/// let (mut editor, executor) = Editor::new(Prepare::new(rate, Samples(512)));
+/// let engine = Engine::new(&transport, &mut editor, executor)?;
+/// let state = Arc::new(AudioCallbackState::new(engine, MasterMeter::new(), AudioTap::new()));
+///
+/// let spec = OutputSpec::new(rate, ChannelLayout::STEREO, tutti_cpal::cpal::SampleFormat::F32);
+/// let mut audio = AudioEngine::from_spec(spec);
+/// let (driver, stream) = ManualStreamDriver::new();
+/// audio.start_with(state, driver)?;
+///
+/// let block = stream.render_block(256).expect("the stream is open");
+/// assert_eq!(block.len(), 256 * 2);
+///
+/// audio.stop();
+/// assert!(!stream.is_open());
+/// # Ok(())
+/// # }
+/// ```
 pub struct ManualStreamDriver {
     slot: Arc<Mutex<Option<OutputBlock>>>,
     faults: Arc<Mutex<Option<Arc<StreamFaults>>>>,
 }
 
-/// The caller's half of a [`ManualStreamDriver`].
+/// The caller's half of a [`ManualStreamDriver`], used to run callbacks by
+/// hand.
 ///
-/// Held across the engine's life. Once the stream is stopped the block is
-/// gone, and every call here answers `None` — which is itself the assertion
-/// that the stop ran, rather than something inferred from silence.
+/// Once the stream is stopped every method returns `None` (or `false`), which
+/// is how a test observes the stop. Each call takes a mutex around the block;
+/// this type is for tests and tools, not the audio thread.
 pub struct ManualStream {
     slot: Arc<Mutex<Option<OutputBlock>>>,
     faults: Arc<Mutex<Option<Arc<StreamFaults>>>>,
 }
 
 impl ManualStreamDriver {
-    /// A driver and the handle that drives it.
+    /// Creates a driver and the handle that runs its callbacks.
     #[allow(clippy::new_without_default, reason = "returns a pair, not Self")]
     pub fn new() -> (Self, ManualStream) {
         let slot = Arc::new(Mutex::new(None));
@@ -290,8 +326,8 @@ impl ManualStream {
         guard.as_mut().map(f)
     }
 
-    /// Run exactly one callback, exactly as CPAL would, into a device buffer
-    /// of the caller's sample type. `None` once the stream has been stopped.
+    /// Runs one callback, exactly as CPAL would, into a device buffer of the
+    /// caller's sample type. Returns `None` if no stream is open.
     pub fn callback_once<T>(&self, data: &mut [T]) -> Option<()>
     where
         T: cpal::SizedSample + cpal::FromSample<f32>,
@@ -299,8 +335,9 @@ impl ManualStream {
         self.with_block(|b| b.render(data))
     }
 
-    /// `f32` convenience: render `frames` frames at the block's own width and
-    /// hand the interleaved buffer back.
+    /// Renders `frames` frames at the stream's width and returns the
+    /// interleaved `f32` buffer, or `None` if no stream is open. Allocates the
+    /// returned buffer.
     pub fn render_block(&self, frames: usize) -> Option<Vec<f32>> {
         let channels = self.with_block(|b| b.channels())?;
         let mut out = vec![0.0f32; frames * channels];
@@ -308,20 +345,20 @@ impl ManualStream {
         Some(out)
     }
 
-    /// Frames the last callback actually rendered, after the clamp.
+    /// Returns the frames the last callback actually rendered, after the
+    /// [`MAX_FRAMES`] clamp.
     pub fn last_rendered_frames(&self) -> Option<usize> {
         self.with_block(|b| b.last_rendered_frames())
     }
 
-    /// The device width this stream was opened at.
+    /// Returns the channel count this stream was opened at.
     pub fn channels(&self) -> Option<usize> {
         self.with_block(|b| b.channels())
     }
 
-    /// Deliver a backend error exactly as CPAL's error callback would.
-    ///
-    /// This is the only way to test the fault path without unplugging a real
-    /// sound card mid-run.
+    /// Delivers a backend error exactly as CPAL's error callback would, so a
+    /// test can exercise the fault path without unplugging a device. Does
+    /// nothing before the stream is first opened.
     pub fn fail(&self, err: cpal::StreamError) {
         if let Some(faults) = self
             .faults
@@ -333,7 +370,7 @@ impl ManualStream {
         }
     }
 
-    /// Whether a stream is currently open on this handle.
+    /// Returns whether a stream is currently open on this handle.
     pub fn is_open(&self) -> bool {
         self.slot
             .lock()
@@ -342,7 +379,8 @@ impl ManualStream {
     }
 }
 
-/// Dropping this stops the stream, by taking the block out of the shared slot.
+/// The running handle of a [`ManualStreamDriver`] stream. Dropping it stops
+/// the stream: every [`ManualStream`] call then returns `None`.
 pub struct ManualRunning {
     slot: Arc<Mutex<Option<OutputBlock>>>,
 }

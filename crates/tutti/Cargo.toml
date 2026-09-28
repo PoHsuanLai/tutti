@@ -1,4 +1,4 @@
-# The Bevy-free umbrella. See src/lib.rs for the one rule this crate has.
+# The Bevy-free umbrella. It holds no code: src/lib.rs is only re-exports.
 [package]
 name = "tutti"
 version = "0.0.1"
@@ -13,11 +13,9 @@ license = "MIT OR Apache-2.0"
 # CoreMIDI.
 tutti-core = { path = "../core/tutti-core", default-features = false }
 tutti-types = { path = "../core/tutti-types", default-features = false }
-tutti-node = { path = "../core/tutti-node" }
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
-# The native graph (doc 013): what an export renders, and what `Engine`
-# runs (the only graph it runs, since Phase 3 PR 15). tutti-core already
-# depends on it, so naming it here links nothing new.
+# The audio graph: what an export renders, and what `Engine` runs.
+# tutti-core already depends on it, so naming it here links nothing new.
 tutti-graph = { path = "../core/tutti-graph" }
 
 tutti-cpal = { path = "../core/tutti-cpal", default-features = false, optional = true }
@@ -98,7 +96,6 @@ midi = [
     "dep:tutti-midi-file",
     "dep:tutti-midi-runtime",
     "tutti-core/midi",
-    "tutti-cpal?/midi",
 ]
 midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 
@@ -118,9 +115,8 @@ spatial = ["dep:tutti-spatial"]
 modulation = ["dep:tutti-mod"]
 convolution = ["tutti-nodes/convolution"]
 
-# Axes bevy-tutti does not have. `tutti-analysis` in particular: bevy-tutti
-# does not depend on it at all, which is why `tutti-export`'s own
-# `examples/export.rs` could not have been written through that umbrella.
+# Axes bevy-tutti does not have: bevy-tutti does not depend on
+# `tutti-analysis` at all.
 analysis = ["dep:tutti-analysis"]
 
 # --- plugin hosting ---------------------------------------------------------

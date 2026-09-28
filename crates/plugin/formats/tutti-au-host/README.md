@@ -4,56 +4,63 @@ Audio Unit (AUv2) plugin hosting for macOS, via Apple's AudioToolbox framework.
 
 ## What this is
 
-The AU one of tutti's four format hosts: low-level bindings plus the host
-machinery around them. `AuInstance` is the entry point — load → initialize →
-render — and it tracks initialization state so `process` is only reachable once
-the AU is ready. Around it:
+The Audio Unit host among tutti's four plugin-format hosts. It enumerates the
+AUs installed on the system, instantiates and initializes them, renders audio
+and MIDI through them, and exposes parameters, presets, state save/restore,
+bus layouts, offline rendering and the Cocoa editor.
 
-- `component` — enumerating installed AUs by `AuType`.
-- `bus` / `stream` / `channel_layout` / `topology` — bus counts, stream formats,
-  Apple layout tags, and the tag ↔ `ChannelTopology` conversion.
-- `parameters` / `listener` — parameter query and set, plus change listeners.
-- `preset` / `aupreset` — factory presets, and `.aupreset` file I/O (the
-  interchange format Logic, Live, Reaper and GarageBand all read and write).
-- `midi_map` / `midi_out` — MIDI in and the output-callback registration.
-- `transport` / `render_notify` — host callbacks the AU pulls during render.
-- `offline` — bounce-time facilities a live-only host never needs and an
-  exporting host cannot do without: offline render mode, in-place processing,
-  and the push-model render path.
-- `editor` — the Cocoa view factory and editor lifecycle.
+Most applications do not use this crate directly: `tutti-plugin` (with its `au`
+feature) and `tutti-plugin-server` build on it and give every format one
+interface. Use it directly when you want an AU host without the rest of the
+engine.
+
+The main types:
+
+- `AuInstance`: a loaded AU — initialize, render, parameters, presets, state,
+  bus layouts, MIDI. The entry point for almost everything.
+- `AuLoaded` / `AuActive`: the two lifecycle states `AuInstance` switches
+  between, for callers that want the transitions as types (see
+  [below](#why-the-public-type-carries-its-state-as-data)).
+- [`AuComponentInfo`] and [`AuType`]: an installed AU, as returned by
+  `component::enumerate_components_of_type` (macOS).
+- `StreamConfig` / `AuBusLayout`: the sample rate, block size and channel
+  layout to instantiate with.
+- `AuParameterListener`: parameter and property change notifications.
+- `AuPreset`, `AuPresetIdentity` and `read_preset_metadata`: factory presets
+  and `.aupreset` files (the interchange format Logic, Live, Reaper and
+  GarageBand all read and write).
+- `AuMidiOutput`: keeps a MIDI-output callback installed while held.
+- `TransportState`: the tempo and position the AU's host callbacks read during
+  render.
+- `RenderNotify`: a pre/post-render callback on the AU's render thread.
+- `AuEditor`: the AU's Cocoa view, embedded in a host window.
+- [`AuError`]: the error type, with [`LoadStage`] for load failures.
+
+The public modules `parameters`, `midi_out`, `offline` and `render_notify` hold
+the lower-level functions that take a raw `AudioUnit`.
 
 ## What it does not own
 
 **The shared vocabulary.** `EditorSize`, `MidiEvent`, `TransportInfo` and
-`WindowHandle` are [`tutti-plugin-types`](../../tutti-plugin-types)', and
-`Samples` / `Seconds` are `tutti-types`' — all re-exported here (the latter two
-because `get_latency` and `get_tail_time` hand them back, and a consumer that
-cannot name a returned type cannot bind it), none defined here.
+`WindowHandle` come from `tutti-plugin-types`, and `Samples` / `Seconds` from
+`tutti-types`; all are re-exported here.
 
-**Subprocess isolation.** This crate hosts in-process;
-[`tutti-plugin-server`](../../tutti-plugin-server) wraps it in a subprocess
-behind its `au` feature, and [`tutti-plugin`](../../tutti-plugin) is the host
-side.
+**Subprocess isolation.** This crate hosts in-process. `tutti-plugin-server`
+wraps it in a subprocess behind its `au` feature, and `tutti-plugin` is the
+host side.
 
-**The comparison against the other three formats.** VST3, CLAP, AU and VST2 model
-the same two-state shape and reach three different answers. The comparative
-account, and the rule for choosing among the strategies, is in `tutti-plugin`'s
-crate documentation under *The plugin state machine*. Only AU's own half is
-below.
+**The comparison against the other three formats.** VST3, CLAP, AU and VST2
+model the same two-state shape and reach three different answers. The
+comparative account is in `tutti-plugin`'s crate documentation under *The
+plugin state machine*. Only AU's own half is below.
 
 ## Platform
 
-**macOS-only.** The crate compiles on other platforms but exposes no
-functionality: nearly every module is `#[cfg(target_os = "macos")]`, and
-`topology.rs` carries an inner `#![cfg(target_os = "macos")]`, which is why its
-re-exports are gated to match — an ungated re-export would name items that do not
-exist and fail to build on Linux.
+**macOS-only.** The crate compiles on other platforms but exposes only
+[`AuError`] and the [`component`] types there; everything else is
+`#[cfg(target_os = "macos")]`.
 
-That gate is load-bearing for the **doctests** as well as the build. Every
-example below is wrapped in `# #[cfg(target_os = "macos")] { … }`, so off macOS
-the body compiles to an empty block and a green `cargo test --doc` on Linux says
-nothing about whether the example is correct. Only a macOS run type-checks them.
-They are additionally `no_run`, because instantiating an AU needs a real
+The examples below are `no_run`, because instantiating an AU needs a real
 `.component` registered with the system.
 
 ## Quick start
@@ -61,7 +68,8 @@ They are additionally `no_run`, because instantiating an AU needs a real
 ```rust,no_run
 # #[cfg(target_os = "macos")]
 # {
-use tutti_au_host::component::{enumerate_components_of_type, AuType};
+use tutti_au_host::component::enumerate_components_of_type;
+use tutti_au_host::AuType;
 use tutti_au_host::AuInstance;
 
 let effects = enumerate_components_of_type(AuType::Effect);
@@ -83,7 +91,8 @@ if let Some(info) = effects.first() {
 ```rust,no_run
 # #[cfg(target_os = "macos")]
 # {
-use tutti_au_host::component::{enumerate_components_of_type, AuType};
+use tutti_au_host::component::enumerate_components_of_type;
+use tutti_au_host::AuType;
 use tutti_au_host::AuInstance;
 
 # let effects = enumerate_components_of_type(AuType::Effect);
@@ -162,13 +171,20 @@ surrounds into its 7.1 rear slots.
 
 None. Platform gating is `cfg`, not a feature.
 
-## Testing
+## Threading and real-time safety
 
-The Cocoa editor-lifecycle tests run on the main thread — `harness = false` on the
-`au_gui_lifecycle_main` target so it owns `main()`, which is the only way to reach
-the main thread under cargo and is what AppKit requires. Its `main()` also calls
-`mark_main_thread()`, which arms the affinity assert `AuEditor` makes.
+`AuInstance::process` belongs on the audio thread and does not allocate in the
+steady state: render buffers are sized at initialization. Loading,
+initialization, state, presets and the editor belong on the main thread; the
+editor, state and preset-file methods assert this in debug builds once
+`tutti_plugin_types::mark_main_thread` has been called.
 
 ## License
 
 MIT OR Apache-2.0
+
+[`AuComponentInfo`]: crate::AuComponentInfo
+[`AuType`]: crate::AuType
+[`component`]: crate::component
+[`AuError`]: crate::AuError
+[`LoadStage`]: crate::LoadStage

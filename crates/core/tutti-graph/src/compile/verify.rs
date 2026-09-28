@@ -1,4 +1,4 @@
-//! The plan verifier (doc 013 §3 step 7; Dropseed's verifier is the prior
+//! The plan verifier (compiler step 8; Dropseed's verifier is the prior
 //! art).
 //!
 //! It re-derives every slot access from the **ops** — what the executor will
@@ -189,7 +189,7 @@ fn verify_params(plan: &Plan) -> Result<(), VerifyError> {
     Ok(())
 }
 
-/// Check `plan` (see the [module docs](self) for the rules).
+/// Checks `plan` (see the [module docs](self) for the rules).
 pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
     let n = plan.ops.len();
     let rows: Vec<Vec<u32>> = (0..n).map(|i| plan.op_succ.row(i).to_vec()).collect();
@@ -867,7 +867,6 @@ pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(
             && was.in_place == now.in_place
             && was.event_resolution == now.event_resolution
             && was.event_capacity == now.event_capacity
-            && was.legacy == now.legacy
             && was.params == now.params;
         if !same {
             return Err(VerifyError(format!(

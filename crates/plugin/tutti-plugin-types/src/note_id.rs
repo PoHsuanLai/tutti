@@ -4,8 +4,7 @@
 //! VST3 and CLAP both address per-note events by a host-chosen `note_id` the
 //! plugin echoes back, so a note-on and any later per-note expression for the
 //! *same* `(channel, note)` must compute the *same* id to bind to the same voice.
-//! [`note_id_for`] is that derivation, kept in one place so the two hosts can't
-//! drift apart.
+//! [`note_id_for`] is that derivation, shared by both hosts.
 //!
 //! This is a **plugin-host convention**, deliberately distinct from
 //! [`tutti_midi_types::NoteId`] (the engine's per-note identity): the packing
@@ -13,11 +12,12 @@
 //! round-trip guard [`note_id_to_channel_note`] depends on, *not* `NoteId`'s
 //! `(channel << 8) | note`. They must not be conflated.
 
-/// Deterministic plugin `note_id` for a `(channel, note)` pair.
+/// Returns the plugin `note_id` for a `(channel, note)` pair.
 ///
 /// A note-on and any per-note expression for the same `(channel, note)` compute
-/// the same id and therefore bind to the same voice. The mapping is a bijection
-/// into `0..2048`, comfortably inside `i32`.
+/// the same id and therefore bind to the same voice. For `channel` in `0..16`
+/// and `note` in `0..128` the mapping is a bijection onto
+/// `0..=`[`MAX_HOST_NOTE_ID`], which [`note_id_to_channel_note`] inverts.
 ///
 /// This is distinct from the spec's "use `noteId = -1` for channel/pitch
 /// matching" fallback: that fallback only covers note-on/off, *not* note
@@ -31,8 +31,10 @@ pub fn note_id_for(channel: u8, note: u8) -> i32 {
 /// Largest `note_id` [`note_id_for`] can mint: channel 15, note 127.
 pub const MAX_HOST_NOTE_ID: i32 = 15 * 128 + 127;
 
-/// Recover the `(channel, note)` a [`note_id_for`] id was built from, or `None`
-/// if `note_id` is outside the host-minted range `0..=MAX_HOST_NOTE_ID`.
+/// Recovers the `(channel, note)` a [`note_id_for`] id was built from.
+///
+/// Returns `None` if `note_id` is outside the host-minted range
+/// `0..=MAX_HOST_NOTE_ID`.
 ///
 /// A plugin may assign per-note events its *own* `note_id` space; such an id is
 /// not `channel * 128 + note` and must not be force-decoded — masking it would

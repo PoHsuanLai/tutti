@@ -5,9 +5,8 @@
 //! spawn site, that a batch spawned in one frame starts one at a time, and that
 //! a request's `prepare` hook reaches the graph that is actually rendered.
 //!
-//! An export forks the graph (`Editor::fork`, design doc 013 PR 12). These
-//! ran on both graph runtimes until PR 13 removed the `Net` one; the surface
-//! did not change. What the fork renders is `export_fork.rs`'s.
+//! An export forks the graph (`Editor::fork`). What the fork renders is
+//! `export_fork.rs`'s.
 
 #![cfg(all(feature = "export", feature = "wav"))]
 
@@ -28,15 +27,14 @@ use bevy_tutti::graph::{AudioConfig, AudioGraphRes};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
 };
-use tutti_graph::Legacy;
 use tutti_nodes::testing::{Const, Sink};
 use tutti_types::graph::{OutPort, Source};
 
-/// A tiny CPAL-free graph with one node piped to the output bus, so a copy
-/// of it (a `Net` clone, a native fork) has something to render.
+/// A tiny CPAL-free graph with one node piped to the output bus, so a fork
+/// of it has something to render.
 fn graph_with_one_node_on() -> (AudioGraphRes, tutti_core::AudioNode) {
     let mut graph = AudioGraphRes::headless(0, 2);
-    let node = graph.insert(Const::mono(0.5));
+    let (node, _) = graph.insert(Const::mono(0.5));
     graph.set_outputs_from(node);
     (graph, node)
 }
@@ -203,8 +201,8 @@ fn export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it() {
 /// A node with no outputs cannot be rendered from; that must be a reported
 /// failure, not a silent drop or a panic on the pool.
 ///
-/// "No outputs" means the *unit* produces none (`clone_isolated` and
-/// `Editor::fork` ask the node's own arity — not whether it happens to be
+/// "No outputs" means the *unit* produces none (`Editor::fork` asks the
+/// node's own arity — not whether it happens to be
 /// wired), so this needs a genuine sink. A `dc` pushed but left unwired still
 /// has one output and renders fine.
 #[test]
@@ -214,7 +212,7 @@ fn an_unrenderable_node_reports_a_failure() {
     // `Sink::mono()` consumes one channel and produces nothing.
     let orphan = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let id = graph.insert(Sink::mono());
+        let (id, _) = graph.insert(Sink::mono());
         app.world_mut().spawn(id).id()
     };
 
@@ -330,7 +328,7 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
         let graph: &mut RenderGraph = prepared.graph;
         let editor = graph.editor_mut();
         let key = prepared_key;
-        editor.insert(key, "test:level", Legacy::pure(Const::mono(level)));
+        editor.insert(key, "test:level", Const::mono(level));
         for out in editor.spec_mut().topology.outputs.iter_mut() {
             *out = Source::Node(OutPort { node: key, port: 0 });
         }
@@ -364,12 +362,12 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
 /// **The caller's timeline is what the nodes get rebound onto.**
 ///
 /// `RenderClock` is advance-only, so this crate cannot read a timeline back out
-/// of the `clock` a caller supplies. It used to manufacture its own — hardcoded
-/// to 120 BPM at beat 0 — and rebind every transport-aware node in the clone
-/// onto *that*, while the renderer advanced the caller's. The two ends
-/// disagreed: a tap on a 90 BPM project bound its voices to a 120 BPM playhead
-/// that nothing then advanced, which is the silent-playhead failure the
-/// per-node rebind exists to prevent.
+/// of the `clock` a caller supplies. Manufacturing its own timeline (say 120 BPM
+/// at beat 0) and rebinding the clone's transport-aware nodes onto *that*,
+/// while the renderer advanced the caller's, would make the two ends disagree:
+/// a tap on a 90 BPM project would bind its voices to a 120 BPM playhead that
+/// nothing advances, which is the silent-playhead failure the per-node rebind
+/// exists to prevent.
 #[test]
 fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
@@ -427,10 +425,8 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
     );
 }
 
-/// **A master export is rebound onto the caller's timeline too.** The
-/// behaviour change of doc 013's PR 12, pinned where a host sees it: what
-/// the `prepare` hook is told. (Until PR 13 a `Net` master export kept its
-/// live bindings and said so with `ctx: None`; `ctx` is no longer optional.)
+/// **A master export is rebound onto the caller's timeline too**, pinned
+/// where a host sees it: what the `prepare` hook is told.
 ///
 /// Mutation (run): `prepare_graph` handing the hook a context of its own
 /// (`ExportClock::frozen().offline()`) instead of the one the fork was

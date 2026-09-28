@@ -11,18 +11,18 @@ workspace = true
 
 [features]
 default = []
-# Real HRTF (head-related transfer function) binaural rendering via FFT
-# convolution against a measured HRIR sphere, replacing the crude ITD/ILD
-# `BinauralPanner`. Pulls the `hrtf` crate. The HRIR dataset is supplied by the
+# HRTF (head-related transfer function) binaural rendering via FFT
+# convolution against a measured HRIR sphere (`HrtfBinauralNode`). Pulls the
+# `hrtf` crate. The HRIR dataset is supplied by the
 # caller as bytes (see `HrtfBinauralNode::new`).
 hrtf = ["dep:hrtf"]
 
 [dependencies]
-# AudioUnit trait + DSP primitives. default-features = false: this crate is pure
-# DSP and needs none of tutti-core's Bevy layer.
+# Engine vocabulary (units, `Param`, `ChannelLayout`, `Tail`). default-features
+# = false: this crate is pure DSP and needs none of tutti-core's Bevy layer.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
 
-# `ChannelLayout`, named directly by `build_vbap_mix`'s signature.
+# `ChannelLayout` and `NodeKey`, named directly by `build_vbap_mix`'s signature.
 tutti-types = { path = "../../core/tutti-types", default-features = false }
 
 # `build_vbap_mix` assembles its graph out of general-purpose units:
@@ -30,6 +30,10 @@ tutti-types = { path = "../../core/tutti-types", default-features = false }
 # This is a plain consumer edge — geometry depends on signal processing, not the
 # reverse, and neither unit has anything spatial in it.
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
+
+# `build_vbap_mix` builds into a `tutti_graph::GraphBuilder`, and the LFE
+# low-pass is a graph node.
+tutti-graph = { path = "../../core/tutti-graph" }
 
 # Vector Base Amplitude Panning: the speaker-field placement math.
 vbap = "0.1"
@@ -55,7 +59,7 @@ criterion.workspace = true
 # plain `cargo nextest run -p tutti-spatial` would report green without having
 # exercised the panner. Same pattern as `tutti-sampler`.
 tutti-spatial = { path = ".", features = ["hrtf"] }
-# The sample-accuracy contract harness (doc 013 §6): `tests/contract.rs` runs
+# The graph's sample-accuracy contract harness: `tests/contract.rs` runs
 # the binaural renderer through it.
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
 

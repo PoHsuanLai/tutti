@@ -3,9 +3,8 @@
 //! `tutti-nodes`' `engine_render` bench measures `Engine::process`. That is
 //! not what a sound card calls. The real callback also clamps to
 //! `MAX_FRAMES`, zero-fills the mix, folds the device buffer to stereo, calls
-//! `meter_output`, and converts to the device's sample format — and until
-//! [`OutputBlock`] existed none of that was reachable outside a live stream,
-//! so none of it had ever been measured.
+//! `meter_output`, and converts to the device's sample format. [`OutputBlock`]
+//! runs all of that without a live stream, so it can be measured here.
 //!
 //! **The case that justifies this file is `callback/vs_render`.** Its delta
 //! against `engine_render` is the metering-and-conversion tax the engine
@@ -23,14 +22,14 @@ use tutti_core::graph::{OutPort, Source};
 use tutti_core::{AudioTap, ChannelLayout, Engine, Hz, InterleavedMut, NodeKey, Samples};
 use tutti_core::{MasterMeter, SampleRate, Transport};
 use tutti_cpal::{process_audio, AudioCallbackState, OutputBlock};
-use tutti_graph::{Editor, Legacy, Prepare};
+use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 
 const SR: f64 = 48_000.0;
 
 fn state(outputs: usize, tap_open: bool) -> (Arc<AudioCallbackState>, Option<tutti_core::TapCons>) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
-    ed.insert(NodeKey(1), "sine", Legacy::new(Osc::sine(Hz(440.0))));
+    ed.insert(NodeKey(1), "sine", Osc::sine(Hz(440.0)));
     ed.spec_mut().topology.outputs = vec![
         Source::Node(OutPort {
             node: NodeKey(1),

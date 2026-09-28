@@ -24,8 +24,10 @@ use std::time::Duration;
 /// Where the plugin database lives and which directories to scan.
 #[derive(Debug, Clone)]
 pub struct CatalogConfig {
-    /// Where the plugin database file lives. Also fixes the location of the
-    /// dead-man's-pedal sentinel, which sits beside it.
+    /// Where the plugin database file lives.
+    ///
+    /// The scanner's crash sentinel (`.scanning`) is kept in the same
+    /// directory, so that directory must be writable.
     pub db_path: PathBuf,
 
     /// Directories to scan for plugins.
@@ -40,11 +42,9 @@ pub struct CatalogConfig {
 pub const NO_SCAN_DIRS: [PathBuf; 0] = [];
 
 impl CatalogConfig {
-    /// Start a config with the required paths.
+    /// Creates a config with the database path and the directories to scan.
     ///
-    /// `scan_dirs` takes the same bound as the [`scan_dirs`](Self::scan_dirs)
-    /// setter below, so the two agree about the one field they both write —
-    /// they disagreed before, and the constructor was the stricter of the pair.
+    /// Pass [`NO_SCAN_DIRS`] for an empty directory list.
     pub fn new(
         db_path: impl Into<PathBuf>,
         scan_dirs: impl IntoIterator<Item = impl Into<PathBuf>>,
@@ -92,8 +92,9 @@ pub struct AudioConfig {
     pub format: SampleFormat,
 
     /// Largest block, in **frames** per channel, that will cross the bridge.
-    /// Becomes `BridgeConfig::max_buffer_size` and sizes the shared slab, so a
-    /// later block may not exceed it.
+    ///
+    /// Becomes [`BridgeConfig::max_buffer_size`] and sizes the shared slab, so
+    /// a later block may not exceed it.
     pub buffer_size: usize,
 
     /// How long to wait on a subprocess reply before erroring.
@@ -111,7 +112,8 @@ impl Default for AudioConfig {
 }
 
 impl AudioConfig {
-    /// Defaults: `Float32`, 8192-sample blocks, 5 s IPC timeout.
+    /// Creates the default config: 32-bit float samples, 8192-frame blocks and
+    /// a 5 s IPC timeout.
     pub fn new() -> Self {
         Self::default()
     }
@@ -154,10 +156,8 @@ mod tests {
 
     /// The constructor accepts what the setter accepts.
     ///
-    /// The two write the same field, and before this they disagreed: `new` took
-    /// `Vec<PathBuf>` while `scan_dirs` took any `IntoIterator` of anything
-    /// `Into<PathBuf>`. The `&str` array below is the case that would not
-    /// compile.
+    /// The two write the same field, so they take the same bound; the `&str`
+    /// array below is the case a narrower `Vec<PathBuf>` would reject.
     #[test]
     fn new_takes_the_same_dirs_the_setter_does() {
         let from_new = CatalogConfig::new("/tmp/db.json", ["/usr/lib/vst3", "/usr/lib/clap"]);

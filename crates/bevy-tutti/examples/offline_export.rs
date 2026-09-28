@@ -37,7 +37,7 @@ fn main() {
     let mut app = App::new();
 
     // Same headless engine as `graph_wiring`, plus the export plugin. Each
-    // export renders a fork of the live graph (design doc 013, PR 12).
+    // export renders a fork of the live graph.
     let mut graph = AudioGraphRes::headless(0, 2);
     graph.set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
     app.insert_resource(graph);
@@ -71,7 +71,9 @@ fn main() {
 struct Remaining(usize);
 
 fn build_chain(mut commands: Commands) {
-    let osc = commands.spawn_audio_node(Osc::saw(Hz(110.0))).id();
+    let osc = commands
+        .spawn_audio_node(ForkByClone(Osc::saw(Hz(110.0))))
+        .id();
 
     let filter = commands
         .spawn_audio_node(SvfFilterNode::<f64>::new(
@@ -83,7 +85,7 @@ fn build_chain(mut commands: Commands) {
         .id();
 
     let out = commands
-        .spawn_audio_node(Through::new(ChannelLayout::STEREO))
+        .spawn_audio_node(ForkByClone(Through::new(ChannelLayout::STEREO)))
         .insert(
             PortSources::silent()
                 .with(

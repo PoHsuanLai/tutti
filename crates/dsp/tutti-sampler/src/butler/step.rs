@@ -33,7 +33,7 @@ use super::io::refill::{refill_all, refill_all_parallel};
 use super::loops::{apply_mapping, Mapping};
 use super::preroll::apply_pdc_updates;
 
-/// What the pacing layer should do after a [`ButlerCycle::step`].
+/// What the pacing layer should do after one butler cycle.
 ///
 /// The butler runs at maximum thread priority, so "keep going" and "there is
 /// nothing to do" must be distinguishable — spinning either one costs a core.

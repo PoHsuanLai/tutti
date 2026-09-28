@@ -58,7 +58,7 @@ impl EnvelopeFollower {
         }
     }
 
-    /// Smooth toward target using attack (target > current) or release (target < current).
+    /// Smooths toward target using attack (target > current) or release (target < current).
     #[inline]
     pub fn smooth(&mut self, target: f32) -> f32 {
         let coeff = if target > self.value {
@@ -70,7 +70,7 @@ impl EnvelopeFollower {
         self.value
     }
 
-    /// Smooth with explicit attack coeff (for cases where direction logic differs).
+    /// Smooths with explicit attack coeff (for cases where direction logic differs).
     #[inline]
     pub fn smooth_with_coeff(&mut self, target: f32, coeff: f32) -> f32 {
         self.value = smooth_envelope(self.value, target, coeff);
@@ -145,7 +145,7 @@ impl GateEnvelopeFollower {
             inner: EnvelopeFollower::new(attack, release, sample_rate),
             hold_counter: 0,
             // `_floor`: a hold is a countdown of whole elapsed frames, and
-            // the old `as usize` truncated, which is floor.
+            // a truncating `as usize` would agree, since truncation is floor.
             hold_samples: hold.to_samples_floor(sample_rate).get(),
             last_hold: hold.get(),
         }

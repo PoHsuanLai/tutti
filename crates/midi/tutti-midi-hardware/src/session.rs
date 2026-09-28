@@ -138,7 +138,7 @@ impl MidiSession {
 
     // --- Input ---
 
-    /// Open an input endpoint. Idempotent — connecting an already-open endpoint
+    /// Opens an input endpoint. Idempotent — connecting an already-open endpoint
     /// succeeds without reopening it, because a second driver connection to one
     /// device duplicates every inbound event.
     ///
@@ -173,7 +173,7 @@ impl MidiSession {
         Ok(())
     }
 
-    /// Open the first input endpoint whose name contains `name`.
+    /// Opens the first input endpoint whose name contains `name`.
     ///
     /// # Matching
     ///
@@ -204,14 +204,14 @@ impl MidiSession {
             .expect("port was just created")
     }
 
-    /// Close an input endpoint. Closing one that is not open is a no-op.
+    /// Closes an input endpoint. Closing one that is not open is a no-op.
     pub fn disconnect_input(&self, id: EndpointId) {
         let mut open = self.inner.open.lock().unwrap();
         open.inputs.remove(&id);
         open.input_names.remove(&id);
     }
 
-    /// Close one open input whose name contains `name`, matched
+    /// Closes one open input whose name contains `name`, matched
     /// case-insensitively.
     ///
     /// Closes **at most one**, and the search runs over a `HashMap` of open
@@ -237,7 +237,7 @@ impl MidiSession {
         }
     }
 
-    /// Close every open input.
+    /// Closes every open input.
     pub fn disconnect_all_inputs(&self) {
         let mut open = self.inner.open.lock().unwrap();
         open.inputs.clear();
@@ -271,7 +271,7 @@ impl MidiSession {
 
     // --- Output ---
 
-    /// Open an output endpoint, replacing any currently open one.
+    /// Opens an output endpoint, replacing any currently open one.
     ///
     /// One at a time: a session sends to a single destination, so connecting a
     /// second output closes the first rather than fanning out.
@@ -299,7 +299,7 @@ impl MidiSession {
         Ok(())
     }
 
-    /// Open the first output endpoint whose name contains `name`, replacing any
+    /// Opens the first output endpoint whose name contains `name`, replacing any
     /// currently open one.
     ///
     /// Matches exactly as
@@ -316,7 +316,7 @@ impl MidiSession {
         self.connect_output(info.id)
     }
 
-    /// Close the output endpoint, if one is open.
+    /// Closes the output endpoint, if one is open.
     pub fn disconnect_output(&self) {
         self.inner.open.lock().unwrap().output = None;
     }
@@ -348,7 +348,7 @@ impl MidiSession {
             .map(|o| o.id)
     }
 
-    /// Send events to the open output.
+    /// Sends events to the open output.
     ///
     /// Returns how many the device **accepted**: `0` when nothing is connected,
     /// and `< events.len()` when the endpoint refused part of the batch. That is
@@ -387,11 +387,8 @@ mod tests {
     use crate::test_support::FakeBackend;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // The fake backend used to live here. It moved to `crate::test_support` so
-    // `bevy-tutti` can test its own session wiring against it — a headless CI box
-    // has no MIDI port, and the fixture is the only thing standing between such a
-    // test and a real device. Nothing about these tests changed with the move;
-    // the fixture's behaviour, counters and device list are the same.
+    // The fake backend is in `crate::test_support` so `bevy-tutti` can test
+    // its own session wiring against it: a headless CI box has no MIDI port.
 
     /// A session over the shared fake backend, plus its two counters.
     ///

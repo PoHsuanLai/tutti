@@ -9,7 +9,7 @@
 //!   [`MidiOutRes`](super::track_out::MidiOutRes). The app raises it whenever the
 //!   corresponding project metadata changes.
 //!
-//!   Destination is the hardware-out mailbox, *not* the `MidiBus` synth fan-out:
+//!   Destination is the hardware-out mailbox, *not* the graph:
 //!   Flex metadata describes the session to downstream gear, and only the
 //!   outbound mailbox is drained to the wire.
 //!
@@ -91,7 +91,7 @@ pub enum BroadcastFlexMetadata {
     },
 }
 
-/// Send each requested Flex metadata value to external MIDI out as one or more
+/// Sends each requested Flex metadata value to external MIDI out as one or more
 /// UMP packets (text may span several 128-bit packets).
 ///
 /// Destination is the hardware-out mailbox, not the synth fan-out bus: Flex

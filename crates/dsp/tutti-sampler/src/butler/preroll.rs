@@ -15,8 +15,8 @@
 //! by the delta, from where it plays: the reader crossfades across it, and the
 //! refill follows it (`io::refill`), as it follows any jump. The frames the
 //! ring already holds stay valid for their positions, so a change inside the
-//! window costs no refill at all. (It used to move the *writer's* cursor by the
-//! delta and flush, skipping whatever lay buffered between the two.)
+//! window costs no refill at all. (Moving the *writer's* cursor by the delta
+//! and flushing instead would skip whatever lay buffered between the two.)
 
 use super::plan::ChannelPlan;
 use dashmap::DashMap;

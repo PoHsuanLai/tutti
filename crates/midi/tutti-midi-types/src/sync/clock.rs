@@ -57,7 +57,7 @@ impl MidiClockDecoder {
         }
     }
 
-    /// Feed one inbound [`MidiEvent`], dispatching System Real-Time transport
+    /// Feeds one inbound [`MidiEvent`], dispatching System Real-Time transport
     /// messages to the right handler — the ergonomic entry that mirrors
     /// [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed), so you can route raw
     /// input events straight in without demultiplexing the stream yourself.
@@ -81,7 +81,7 @@ impl MidiClockDecoder {
         true
     }
 
-    /// Process a timing clock message (0xF8). Call with the host timestamp in microseconds.
+    /// Processes a timing clock message (0xF8). Call with the host timestamp in microseconds.
     pub fn tick(&mut self, timestamp_us: u64) {
         if self.transport == ClockTransportState::Playing {
             self.tick_count += 1;
@@ -102,18 +102,18 @@ impl MidiClockDecoder {
         self.last_timestamp_us = Some(timestamp_us);
     }
 
-    /// Handle MIDI Start (0xFA).
+    /// Handles MIDI Start (0xFA).
     pub fn start_msg(&mut self) {
         self.tick_count = 0;
         self.transport = ClockTransportState::Playing;
     }
 
-    /// Handle MIDI Stop (0xFC).
+    /// Handles MIDI Stop (0xFC).
     pub fn stop_msg(&mut self) {
         self.transport = ClockTransportState::Stopped;
     }
 
-    /// Handle MIDI Continue (0xFB).
+    /// Handles MIDI Continue (0xFB).
     pub fn continue_msg(&mut self) {
         self.transport = ClockTransportState::Playing;
     }

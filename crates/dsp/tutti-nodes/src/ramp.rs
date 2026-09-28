@@ -1,29 +1,29 @@
 //! Per-block control reads and the ramps that keep them from stepping.
 //!
 //! The width-generic nodes read every [`Param`](tutti_core::Param) **once per
-//! `process` call** (and once per `tick` call) instead of once per sample — the
-//! per-sample load was up to four atomics per channel per sample on the ladder,
-//! and none of them could change faster than a block anyway, since the control
-//! thread writes between callbacks. What a block-rate read *can* do is step:
+//! `process` call** instead of once per sample — a per-sample load would be up
+//! to four atomics per channel per sample on the ladder, and none of them can
+//! change faster than a block anyway, since the control thread writes between
+//! callbacks. What a block-rate read *can* do is step:
 //! a cutoff or a delay time that jumps at a block edge clicks. So a value that
 //! moved since the last block is ramped **linearly across the block**, from the
 //! value the previous block ended on to the new one, arriving exactly on the
 //! block's last sample.
 //!
-//! Ending exactly on the target is what makes `tick` (a block of one) agree
-//! with the old per-sample read: a one-sample ramp *is* the new value.
+//! Ending exactly on the target is what makes a block of one agree with a
+//! per-sample read: a one-sample ramp *is* the new value.
 
 /// Samples between coefficient solves on a parameter that moves inside a block.
 ///
 /// A filter whose cutoff is swept (by a block ramp or an audio-rate param port)
-/// needs a `tan` per coefficient solve. Solving every sample was the dominant
+/// needs a `tan` per coefficient solve. Solving every sample is the dominant
 /// cost of a modulated SVF; solving every 16 samples and interpolating the
 /// coefficients linearly between solves costs a quarter of a 64-frame block's
 /// `tan`s. 16 samples is 0.33 ms at 48 kHz — far below the rate any musical
 /// sweep moves at, so the interpolation error is a small fraction of the change
-/// between two solves. Measured against the per-sample solve when the twins
-/// were merged: 3e-5 worst on a 200 Hz → 8 kHz cutoff sweep in 85 ms (4.6e-4
-/// at 64 samples; exactly 0 at 1), 3.5e-6 on a 2 Hz phaser. The `*_swept`
+/// between two solves. Measured against the per-sample solve: 3e-5 worst on a
+/// 200 Hz → 8 kHz cutoff sweep in 85 ms (4.6e-4 at 64 samples; exactly 0 at
+/// 1), 3.5e-6 on a 2 Hz phaser. The `*_swept`
 /// goldens in `tests/width_generic_golden.rs` pin the result.
 pub(crate) const COEFF_INTERVAL: usize = 16;
 
@@ -175,8 +175,8 @@ mod tests {
         }
     }
 
-    /// A one-sample ramp is the new value — which is what keeps `tick` equal
-    /// to the per-sample read it replaces.
+    /// A one-sample ramp is the new value — which keeps a block of one equal
+    /// to a per-sample read.
     #[test]
     fn a_one_sample_ramp_is_the_new_value() {
         assert_eq!(Ramp::new(3.0, 9.0, 1).at(0), 9.0);

@@ -132,7 +132,7 @@ impl AuPresetIdentity {
     }
 }
 
-/// Read a `.aupreset`'s identity and name **without applying it** to any AU.
+/// Reads a `.aupreset`'s identity and name **without applying it** to any AU.
 ///
 /// This is what a preset browser lists from. It deliberately takes a path rather
 /// than an `AuInstance`: a browser scanning a preset folder has hundreds of files
@@ -152,7 +152,7 @@ pub fn read_preset_metadata(path: &Path) -> Result<AuPresetIdentity> {
     identity_from_dictionary(&dict, path)
 }
 
-/// Serialize the AU's current state to `path` as a `.aupreset` file.
+/// Serializes the AU's current state to `path` as a `.aupreset` file.
 ///
 /// The identity keys are populated from the AU's **own** component description
 /// (`AudioComponentGetDescription` on the factory handle this instance was created
@@ -213,7 +213,7 @@ pub unsafe fn save_preset_file(
         .map_err(|e| AuError::preset_io(path.display().to_string(), e.to_string()))
 }
 
-/// Load a `.aupreset` from `path`, **validating its identity** against the AU
+/// Loads a `.aupreset` from `path`, **validating its identity** against the AU
 /// before applying it.
 ///
 /// Returns the identity that was accepted, so a caller can surface the preset's
@@ -306,7 +306,7 @@ fn component_description(
     Ok(desc)
 }
 
-/// Read `kAudioUnitProperty_ClassInfo` and confirm it is a dictionary.
+/// Reads `kAudioUnitProperty_ClassInfo` and confirm it is a dictionary.
 ///
 /// # Errors
 /// [`AuError::OsStatus`] if the AU refuses the property, or
@@ -347,7 +347,7 @@ fn read_class_info_dictionary(
     })
 }
 
-/// Decode `bytes` as a property list and confirm its root is a dictionary.
+/// Decodes `bytes` as a property list and confirm its root is a dictionary.
 ///
 /// # Errors
 /// [`AuError::InvalidPreset`] for anything that is not a plist (random bytes, a
@@ -421,7 +421,7 @@ fn as_dictionary(plist: CFPropertyList) -> Option<CFDictionary<CFString, CFType>
     Some(dict)
 }
 
-/// Read an integer-valued key out of a preset dictionary.
+/// Reads an integer-valued key out of a preset dictionary.
 ///
 /// Returns `None` when the key is absent or its value is not a number. Preset
 /// files in the wild store the four-char codes as plist integers, which
@@ -443,7 +443,7 @@ fn dictionary_i64(dict: &CFDictionary<CFString, CFType>, key: &str) -> Option<i6
     number.to_i64()
 }
 
-/// Read a string-valued key out of a preset dictionary.
+/// Reads a string-valued key out of a preset dictionary.
 ///
 /// Uses [`cfstring_to_string_checked`] rather than a bare conversion because this
 /// value came out of a **file**: a plist whose `name` slot holds a `CFData`, or a
@@ -458,7 +458,7 @@ fn dictionary_string(dict: &CFDictionary<CFString, CFType>, key: &str) -> Option
     unsafe { cfstring_to_string_checked(value.as_CFTypeRef() as crate::types::CFStringRef) }
 }
 
-/// Extract the identity triple, version and name from a preset dictionary.
+/// Extracts the identity triple, version and name from a preset dictionary.
 ///
 /// # Errors
 /// [`AuError::InvalidPreset`] naming the **first** missing or non-numeric identity
@@ -500,7 +500,7 @@ fn identity_from_dictionary(
     })
 }
 
-/// Rebuild `source` with `overrides` applied and `name` set, as a binary plist.
+/// Rebuilds `source` with `overrides` applied and `name` set, as a binary plist.
 ///
 /// Every key not named in `overrides` is carried across untouched, which is what
 /// preserves the `data` blob and the per-unit extras (`render-quality`, and

@@ -33,7 +33,7 @@ use crate::Complex;
 pub struct RawMagnitudes(Grid<f32>);
 
 impl RawMagnitudes {
-    /// Wrap a `frames x bins` grid of linear magnitudes.
+    /// Wraps a `frames x bins` grid of linear magnitudes.
     pub fn new(grid: Grid<f32>) -> Self {
         Self(grid)
     }
@@ -44,7 +44,7 @@ impl RawMagnitudes {
         &self.0
     }
 
-    /// Move the grid out, dropping the "raw" marker with it.
+    /// Moves the grid out, dropping the "raw" marker with it.
     #[inline]
     pub fn into_grid(self) -> Grid<f32> {
         self.0
@@ -61,7 +61,7 @@ impl RawMagnitudes {
         )
     }
 
-    /// Scale to `0..1` against the peak, returning the display-only form.
+    /// Scales to `0..1` against the peak, returning the display-only form.
     ///
     /// Lazy on purpose. Normalizing eagerly at construction means storing both
     /// forms — roughly 84 MB of duplication for a 4-minute file — when no
@@ -98,7 +98,7 @@ impl NormalizedMagnitudes {
         &self.values
     }
 
-    /// Move the `0..1` grid out, dropping the peak that scaled it.
+    /// Moves the `0..1` grid out, dropping the peak that scaled it.
     #[inline]
     pub fn into_grid(self) -> Grid<f32> {
         self.values
@@ -208,7 +208,7 @@ impl Stft {
         ))
     }
 
-    /// Convert to magnitude/phase. Lossless.
+    /// Converts to magnitude/phase. Lossless.
     pub fn to_polar(&self) -> StftPolar {
         let (mut magnitudes, mut phases) = (
             Vec::with_capacity(self.bins.as_slice().len()),
@@ -228,7 +228,7 @@ impl Stft {
         }
     }
 
-    /// Discard phase. One-way, and the return type says so.
+    /// Discards phase. One-way, and the return type says so.
     pub fn to_magnitude(&self) -> StftMagnitude {
         let magnitudes: Vec<f32> = self.bins.as_slice().iter().map(|b| b.norm()).collect();
         StftMagnitude {
@@ -240,12 +240,12 @@ impl Stft {
         }
     }
 
-    /// Resynthesize to audio.
+    /// Resynthesizes to audio.
     pub fn resynthesize(&self, fft: &mut FftScratch) -> Vec<f32> {
         istft(self, fft)
     }
 
-    /// Apply a complex mask and resynthesize — the edit path's whole operation
+    /// Applies a complex mask and resynthesizes — the edit path's whole operation
     /// in one call, so no caller hand-writes the zip plus the inverse.
     ///
     /// # Errors
@@ -311,13 +311,13 @@ impl StftPolar {
         }
     }
 
-    /// Move both grids out without cloning — consumers copy these into their
+    /// Moves both grids out without cloning — consumers copy these into their
     /// own asset types.
     pub fn into_grids(self) -> (Grid<f32>, Grid<f32>) {
         (self.magnitudes.into_grid(), self.phases)
     }
 
-    /// Resynthesize to audio, converting back to rectangular first. Lossless
+    /// Resynthesizes to audio, converting back to rectangular first. Lossless
     /// against the transform this came from.
     pub fn resynthesize(&self, fft: &mut FftScratch) -> Vec<f32> {
         istft(&self.to_rectangular(), fft)
@@ -439,7 +439,7 @@ impl StftRequest {
         }
     }
 
-    /// Analyse with a different window shape.
+    /// Analyses with a different window shape.
     ///
     /// A builder rather than a fourth argument to `new`, for the reason
     /// [`StftGeometry::with_window_fn`] gives: three `Samples`-adjacent
@@ -454,7 +454,7 @@ impl StftRequest {
         self
     }
 
-    /// Decimate to roughly `frames` frames — a display transform.
+    /// Decimates to roughly `frames` frames — a display transform.
     pub fn decimated_to(mut self, frames: FrameCount, min_hop: impl Into<Samples>) -> Self {
         self.hop = HopPolicy::TargetFrames {
             frames,
@@ -463,7 +463,7 @@ impl StftRequest {
         self
     }
 
-    /// Restrict the request to the half-open span `[start, end)`, clamped to
+    /// Restricts the request to the half-open span `[start, end)`, clamped to
     /// the buffer at resolve time.
     pub fn over(mut self, start: impl Into<Samples>, end: impl Into<Samples>) -> Self {
         self.range = SampleRange::Span {
@@ -512,7 +512,7 @@ impl StftRequest {
     }
 }
 
-/// Compute the complex STFT.
+/// Computes the complex STFT.
 ///
 /// The geometry must be COLA-compliant, because this result can be inverted.
 pub fn stft(samples: &[f32], request: StftRequest, fft: &mut FftScratch) -> Result<Stft> {
@@ -522,7 +522,7 @@ pub fn stft(samples: &[f32], request: StftRequest, fft: &mut FftScratch) -> Resu
     Ok(compute(slice, geometry, fft))
 }
 
-/// Compute the STFT in magnitude/phase form. Also invertible.
+/// Computes the STFT in magnitude/phase form. Also invertible.
 pub fn stft_polar(
     samples: &[f32],
     request: StftRequest,
@@ -531,7 +531,7 @@ pub fn stft_polar(
     Ok(stft(samples, request, fft)?.to_polar())
 }
 
-/// Compute a magnitude-only STFT — the display path.
+/// Computes a magnitude-only STFT — the display path.
 ///
 /// Accepts any overlapping geometry, including decimated hops that break COLA,
 /// because the result cannot be inverted anyway. That is the whole reason this
@@ -547,7 +547,7 @@ pub fn stft_magnitude(
     Ok(compute(slice, geometry, fft).to_magnitude())
 }
 
-/// Invert a complex STFT by overlap-add.
+/// Inverts a complex STFT by overlap-add.
 ///
 /// Weighted overlap-add with per-sample window-sum normalization, which is
 /// exact when the geometry is COLA — and [`Stft`] can only be built on one.
@@ -690,8 +690,7 @@ mod tests {
     }
 
     /// A decimated request breaks COLA, so the invertible entry point refuses
-    /// it — where the old code silently produced non-overlapping frames and
-    /// let them reach the inverse.
+    /// it rather than producing non-overlapping frames for the inverse.
     #[test]
     fn a_decimated_request_is_refused_by_the_invertible_path() {
         let samples = tone(200_000, 440.0, 44100.0);

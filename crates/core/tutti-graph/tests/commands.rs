@@ -1,4 +1,4 @@
-//! Timestamped commands (doc 013 §6, "Commands must say when"): a scheduled
+//! Timestamped commands: a scheduled
 //! event or parameter ramp lands on its exact frame — across ragged blocks and
 //! across a block boundary — in the executor and the reference alike; late is
 //! counted and never dropped; the queue back-pressures instead of growing.
@@ -45,6 +45,7 @@ impl Node for Probe {
                         self.level = r.foreign_target(0).expect("ramps address id 0");
                         u32::MAX
                     }
+                    EventKind::Harmony(_) => unreachable!("this test sends none"),
                 };
                 self.log.lock().unwrap().push((
                     cx.env.frame_at(e.offset).get(),
@@ -737,7 +738,7 @@ fn continuous(from: f64, tempo: f64, blocks: usize) -> Vec<Transport> {
 /// Mutation: in `Playhead::crossed`, treat every beat behind the playhead as
 /// crossed → the seek-over case lands late at the seek → fails. Mutation:
 /// after a wrap, call the whole loop crossed (`beat < loop end` instead of
-/// `beat < now`, the reviewed bug) → the beat ahead of the playhead fires
+/// `beat < now`) → the beat ahead of the playhead fires
 /// late at once → fails. Mutation:
 /// in `Env::beat_due`, drop the wrap branch → the loop case never lands →
 /// fails. Mutation: in `Env::due_at_arrival`, drop the arrival shift for a
@@ -935,8 +936,7 @@ fn beat_resolution_matches_a_hand_computed_table() {
         },
         Case {
             // Loop [1, 2) armed while the playhead is at 2.5, past its end:
-            // it does not jump (the doc 013 decision `TransportClock` follows
-            // too), so playback runs on linearly and beat 3.1 is reached
+            // it does not jump (as with `TransportClock`), so playback runs on linearly and beat 3.1 is reached
             // 0.1 beat into block 2 (frame 1 000, beat 3.0).
             name: "a loop armed behind the playhead: runs on past it",
             arrival: 0,

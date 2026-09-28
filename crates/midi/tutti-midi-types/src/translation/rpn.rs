@@ -69,7 +69,7 @@ impl Midi1ToMidi2Translator {
         Self::default()
     }
 
-    /// Feed one inbound event. Returns the MIDI-2 event(s) it translates to:
+    /// Feeds one inbound event. Returns the MIDI-2 event(s) it translates to:
     /// - a completed (N)RPN Data Entry yields a single Registered/Assignable
     ///   Controller message;
     /// - a parameter-select or partial Data Entry is *absorbed* (returns `None` —

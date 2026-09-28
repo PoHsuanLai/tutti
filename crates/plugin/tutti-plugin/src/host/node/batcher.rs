@@ -10,12 +10,12 @@
 //! # Pipelined, never waiting
 //!
 //! The batcher **submits chunk N and plays chunk N−1's output**, never waiting
-//! for a reply. This replaced a synchronous version that spun on the audio
-//! thread, where each node's wait was individually reasonable — half its own
-//! block period — but the budgets *summed*: the graph runs nodes serially in
-//! one callback, so three stalled plugins spent 3 × 667 µs against a 1333 µs
-//! deadline. Parallelising the graph would not have helped; plugins in series
-//! are a dependency chain. The defect was the waiting.
+//! for a reply. A synchronous wait on the audio thread fails even when each
+//! node's wait is individually reasonable — half its own block period —
+//! because the budgets *sum*: the graph runs nodes serially in one callback,
+//! so three stalled plugins spend 3 × 667 µs against a 1333 µs deadline.
+//! Parallelising the graph would not help; plugins in series are a dependency
+//! chain.
 //!
 //! Not waiting makes a stalled plugin cost zero, however many there are and
 //! whatever the graph's shape. The price is one chunk of latency per
@@ -27,10 +27,11 @@
 //! # A FIFO, so every chunk is whole
 //!
 //! The calls the node is handed need not line up with chunks: the engine
-//! renders a device callback in 64-frame passes while a `Legacy`-flagged node
-//! is in the graph, and an export may render 100-frame blocks. Shipping each
-//! call as it came (a 36-frame submission, then a 64-frame one collecting it)
-//! dropped or zero-padded frames wherever consecutive lengths differed. So a
+//! renders a device callback in 64-frame passes while a `Legacy` node is in
+//! the graph, a host may call in any lengths, and an export may render
+//! 100-frame blocks. Shipping each call as it came (a 36-frame submission,
+//! then a 64-frame one collecting it) would drop or zero-pad frames wherever
+//! consecutive lengths differ. So a
 //! call's input only ever fills the FIFO, a submission is always one whole
 //! chunk, and the output is read from the ring at the same position the input
 //! is written: output frame `t` is the plugin's output for input frame
@@ -46,12 +47,11 @@
 //! and the plugin's latency is one device block, as a DAW hosting plugins out
 //! of process has it.
 //!
-//! Doc 013 had decided the opposite first (decision 8: a fixed 64-frame
-//! pipeline, for the lower latency), and reversed it on measurement: with a
-//! 64-frame chunk inside a 480-frame callback, every chunk but the first is
-//! collected microseconds after it was submitted, and 186 of 200 blocks
-//! rendered silent (441: 198; 1024: 187); with the callback as the chunk, 0
-//! of 200 (`tests/clap_live.rs`). A chunk that is not the callback — a host
+//! A fixed 64-frame chunk would give lower latency but does not work: inside
+//! a 480-frame callback every chunk but the first is collected microseconds
+//! after it was submitted, and 186 of 200 blocks rendered silent (441: 198;
+//! 1024: 187); with the callback as the chunk, 0 of 200
+//! (`tests/clap_live.rs`). A chunk that is not the callback — a host
 //! that does not know its quantum, a device calling back with more than
 //! `MAX_CHUNK` frames, or one whose callbacks vary — still delays exactly
 //! `chunk` frames, but may collect chunks the server had no time to answer.
@@ -63,7 +63,7 @@
 //!
 //! # `f32` in the graph, the plugin's format on the wire
 //!
-//! The graph hands every node planar `f32` (doc 013, owner decision 2). The
+//! The graph hands every node planar `f32`. The
 //! wire carries whatever the plugin negotiated at load, so a plugin that
 //! processes in double is converted here, in the wire scratch, and nowhere
 //! else: the `f64` stays inside the node.
@@ -72,7 +72,7 @@ use super::fork::ForkWatch;
 use crate::error::Result;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
-use crate::protocol::{MidiEventVec, SampleFormat};
+use crate::protocol::{MidiEvent, MidiEventVec, SampleFormat};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tutti_core::Samples;
@@ -180,12 +180,32 @@ pub(super) trait Chunks {
     /// A chunk of `chunk` frames begins at frame `at` of this call (its first
     /// frame is the next input frame the batcher takes).
     fn begin(&mut self, at: usize, chunk: usize);
+    /// This call's frames `from..from + n` go into the current chunk at its
+    /// frame `at`.
+    fn take(&mut self, from: usize, n: usize, at: usize);
     /// The payload of the chunk being submitted now, `frames` long: what
     /// [`begin`](Self::begin) gathered for it.
     fn payload(&mut self, frames: usize) -> BlockPayload;
-    /// The plugin's MIDI-out drained with this submission, belonging to the
-    /// chunk submitted before it (`chunk` frames long).
-    fn midi_out(&mut self, events: &mut MidiEventVec, chunk: usize);
+    /// The plugin's MIDI-out for the chunk the ring now holds, at that
+    /// chunk's frames, sorted: handed over once, as its output starts to
+    /// play.
+    fn midi_out(&mut self, events: &MidiEventVec);
+    /// One of those events, at frame `frame` of this call: where the ring
+    /// plays the chunk frame it was emitted at, so it keeps its place against
+    /// the plugin's audio. Called in frame order.
+    fn emit(&mut self, frame: usize, event: MidiEvent);
+}
+
+/// Sort `events` by frame offset, stably, in place: an insertion sort, for
+/// lists that are short and nearly sorted. Allocation-free.
+pub(super) fn sort_by_offset(events: &mut MidiEventVec) {
+    for i in 1..events.len() {
+        let mut j = i;
+        while j > 0 && events[j - 1].frame_offset > events[j].frame_offset {
+            events.swap(j - 1, j);
+            j -= 1;
+        }
+    }
 }
 
 /// The pipeline between the plugin node and the plugin-server bridge: an
@@ -221,9 +241,9 @@ pub(crate) struct Batcher {
     /// collecting a chunk, wait up to this long for the server to publish it.
     /// See [`await_output`](Self::await_output).
     offline_wait: Option<OfflineWait>,
-    /// Per-submission scratch the plugin's MIDI-out is drained into. Its
-    /// steady-state capacity makes the drain alloc-free.
-    midi_out: MidiEventVec,
+    /// The plugin's MIDI-out for the chunk the ring holds, at that chunk's
+    /// frames, sorted (`collect`). Inline, so the drain never allocates.
+    reply: MidiEventVec,
 }
 
 /// An offline fork's wait: its [`ForkWatch`] holds the per-block budget and
@@ -248,7 +268,7 @@ impl Batcher {
             next_seq: 1,
             expect_seq: None,
             offline_wait: None,
-            midi_out: MidiEventVec::new(),
+            reply: MidiEventVec::new(),
         }
     }
 
@@ -311,7 +331,7 @@ impl Batcher {
     /// when it next reads the socket, which it does for a command, and this
     /// wait sends none. So the wait also asks the process itself
     /// ([`ForkWatch::server_died`]), every [`PROCESS_POLL`].
-    fn await_output(&self, bridge: &PluginBridge) {
+    fn await_output(&mut self, bridge: &PluginBridge) {
         const PROCESS_POLL: Duration = Duration::from_millis(5);
         let (Some(wait), Some(seq)) = (&self.offline_wait, self.expect_seq) else {
             return;
@@ -350,6 +370,17 @@ impl Batcher {
         // healthy fork.
         if bridge.is_crashed() {
             watch.latch_crash(bridge.crash_cause());
+            return;
+        }
+        // The server publishes a chunk's audio, then sends its reply: wait
+        // for the reply too, or an export's MIDI-out would depend on how the
+        // two raced. Within the same budget; a reply that never comes costs
+        // its MIDI, never the audio (no `give_up`).
+        while !bridge.take_replies(seq, &mut self.reply) {
+            if bridge.is_crashed() || Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_micros(50));
         }
     }
 
@@ -369,6 +400,7 @@ impl Batcher {
     pub(super) fn reset(&mut self) {
         self.expect_seq = None;
         self.pos = 0;
+        self.reply.clear();
         for row in self.fifo.iter_mut().chain(self.ring.iter_mut()) {
             row.fill(0.0);
         }
@@ -397,7 +429,12 @@ impl Batcher {
     /// Called when the ring's first frame is needed and not before, so a chunk
     /// submitted at the end of one call has until the next call's output to
     /// be answered — the time the pipeline exists to give the plugin.
-    fn collect(&mut self, bridge: &PluginBridge) {
+    ///
+    /// The chunk's MIDI-out comes with it: its reply (and any earlier one that
+    /// missed its own collection, at frame 0) is drained into `reply`, handed
+    /// to `host` once and then emitted as the ring plays it (`process`).
+    fn collect(&mut self, bridge: &PluginBridge, host: &mut impl Chunks) {
+        self.reply.clear();
         self.await_output(bridge);
         let chunk = self.chunk;
         match self.collectable(bridge) {
@@ -412,6 +449,13 @@ impl Batcher {
                 }
             }
         }
+        bridge.take_replies(self.expect_seq.unwrap_or(0), &mut self.reply);
+        let last = u32::try_from(chunk.saturating_sub(1)).unwrap_or(u32::MAX);
+        for e in self.reply.iter_mut() {
+            e.frame_offset = e.frame_offset.min(last);
+        }
+        sort_by_offset(&mut self.reply);
+        host.midi_out(&self.reply);
         self.expect_seq = None;
     }
 
@@ -446,7 +490,6 @@ impl Batcher {
             p.note_expression,
             p.harmony,
             p.transport,
-            &mut self.midi_out,
         );
         if submitted {
             self.next_seq += 1;
@@ -454,7 +497,6 @@ impl Batcher {
         } else {
             self.expect_seq = None;
         }
-        host.midi_out(&mut self.midi_out, chunk);
     }
 
     /// Take `frames` frames of `input` (one slice per input port) and write
@@ -477,13 +519,24 @@ impl Batcher {
         while i < frames {
             if self.pos == 0 {
                 // A new chunk: its output-side frames need the chunk before it.
-                self.collect(bridge);
+                self.collect(bridge, host);
                 host.begin(i, chunk);
             }
             let n = (chunk - self.pos).min(frames - i);
             let (at, to) = (self.pos, self.pos + n);
+            host.take(i, n, at);
             for (row, out) in self.ring.iter().zip(output.iter_mut()) {
                 out[i..i + n].copy_from_slice(&row[at..to]);
+            }
+            let first = self
+                .reply
+                .partition_point(|e| (e.frame_offset as usize) < at);
+            for e in &self.reply[first..] {
+                let o = e.frame_offset as usize;
+                if o >= to {
+                    break;
+                }
+                host.emit(i + o - at, *e);
             }
             for (ch, row) in self.fifo.iter_mut().enumerate() {
                 match input.get(ch) {
@@ -588,8 +641,8 @@ mod tests {
 
     /// The pipeline's chunk — and so the latency it declares — comes from
     /// `prepare`: the host's device quantum when it has one (one chunk per
-    /// callback: doc 013 reversed decision 8, a live plugin now keeps in step
-    /// with the device rather than a 64-frame grid), else the graph's
+    /// callback, so a live plugin keeps in step with the device rather than a
+    /// 64-frame grid), else the graph's
     /// `MaxBlock`, capped by the slab's ceiling either way.
     ///
     /// Mutation: `self.chunk = self.ceiling.min(64)` in `prepare` (the

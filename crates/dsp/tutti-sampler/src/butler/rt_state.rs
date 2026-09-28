@@ -40,10 +40,8 @@ pub struct PlaybackParams {
     /// Linear output gain, an [`Amplitude`] in the cell.
     ///
     /// Here rather than on `DiskSource` for the reason `tutti_nodes`' crate docs
-    /// give: a control stored **by value** in a unit cannot be changed on a live
-    /// node, because `Net`'s frontend holds clones and `Net::migrate` discards
-    /// edits to them. A plain `Amplitude` field would make a clip's fader do
-    /// nothing once its voice existed — silently, with the knob still moving.
+    /// give: a live control is a shared cell the control thread writes through
+    /// `&self`, never a field of the node.
     gain: AtomicF32,
     /// Source samples consumed per output sample by a wrapping time-stretcher:
     /// `1 / stretch`. 1.0 when the voice does not stretch.
@@ -111,8 +109,7 @@ pub struct RtState {
     /// Ring occupancy and underruns.
     pub health: BufferHealth,
     // No crossfaders: a loop's fade is written into the ring, and a jump's
-    // fade is the reader's own, from the ring (doc 013, "The live disk
-    // reposition (after #48)").
+    // fade is the reader's own, from the ring.
 }
 
 impl Default for RtState {
@@ -136,7 +133,7 @@ impl RtState {
     /// nothing else: no counters.
     ///
     /// What a disk voice severed for an offline render keeps
-    /// (`DiskVoice::isolate`): its controls as a snapshot, like every other
+    /// (`DiskVoice::fork_copy`): its controls as a snapshot, like every other
     /// forked unit's, in a cell no butler and no live voice shares.
     pub(crate) fn detached(&self) -> Self {
         let state = Self::new();

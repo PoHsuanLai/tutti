@@ -2,18 +2,20 @@
 //!
 //! The rate-agnostic `beat -> value` interface shared by automation and
 //! modulation: an automation envelope, an LFO, a constant, and the summing
-//! [`crate::LayeredCurve`] are all `Curve`s. Homed here (not in tutti-nodes)
-//! because modulation depends on it and tutti-nodes already depends on tutti-mod
-//! — so tutti-nodes re-exports it rather than owning it. The one foreign impl,
+//! [`crate::LayeredCurve`] are all `Curve`s. It lives here rather than in
+//! `tutti-nodes` because modulation depends on it and `tutti-nodes` depends on
+//! this crate. The one foreign impl,
 //! [`AutomationEnvelope`], is orphan-legal here since `audio_automation` is a
 //! direct dependency.
 
 use audio_automation::AutomationEnvelope;
 use tutti_types::Beat;
 
-/// A curve: a value as a pure function of a musical position.
+/// A value as a pure function of a musical position (`beat -> value`).
 ///
-/// The stored form — breakpoints, a constant, an LFO shape, an expression — is
+/// An automation envelope (`audio_automation::AutomationEnvelope`), a shaped
+/// LFO ([`ShapedCurve`](crate::ShapedCurve)), a constant, and the summing
+/// [`LayeredCurve`](crate::LayeredCurve) are all curves. The stored form — breakpoints, a constant, an LFO shape, an expression — is
 /// the implementor's business. Callers supply an already-resolved, already
 /// loop-wrapped [`Beat`]; the curve holds no clock and consults no loop range.
 /// That keeps it evaluable from a live transport, an offline render, or a
@@ -25,11 +27,13 @@ use tutti_types::Beat;
 /// automation lane substitutes `0.0`, a plugin parameter source leaves the
 /// plugin at its last value.
 pub trait Curve: Send + Sync {
-    /// Evaluate the curve at `beat`, or `None` if it has no value there.
+    /// Evaluates the curve at `beat`, or returns `None` if it has no value
+    /// there.
     fn value_at(&self, beat: Beat) -> Option<f32>;
 
-    /// A copy of this curve that **no later write reaches**, for a render that
-    /// runs beside the live graph (a graph fork: an offline export).
+    /// Returns a copy of this curve that **no later write reaches**, for a
+    /// render that runs beside the live graph (a graph fork: an offline
+    /// export).
     ///
     /// `None`, the default, says the curve is immutable once shared — an
     /// envelope, an LFO shape, anything whose `value_at` reads only what it was

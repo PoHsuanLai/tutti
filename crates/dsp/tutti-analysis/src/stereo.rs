@@ -91,7 +91,7 @@ impl StereoReading {
     }
 }
 
-/// Correlate one block of stereo audio. Stateless.
+/// Correlates one block of stereo audio. Stateless.
 ///
 /// Takes a [`StereoPlanes`] rather than two loose slices: mid/side and L/R
 /// correlation are only defined at exactly two channels, and every statistic
@@ -198,7 +198,7 @@ impl Ballistics {
         1.0 - (-dt.get() / time.get()).exp()
     }
 
-    /// Move `old` toward `new` by one step of `dt`.
+    /// Moves `old` toward `new` by one step of `dt`.
     ///
     /// The rise/fall decision is made from the two values rather than passed
     /// in, which is what stops a caller smoothing a falling level with the
@@ -228,14 +228,14 @@ impl BallisticsState {
         self.current
     }
 
-    /// Discard the smoothed reading, so the next step starts from silence
+    /// Discards the smoothed reading, so the next step starts from silence
     /// rather than decaying from the previous signal.
     pub fn reset(&mut self) {
         self.current = StereoReading::default();
     }
 }
 
-/// Smooth an instantaneous reading and return the result.
+/// Smooths an instantaneous reading and returns the result.
 ///
 /// Returns the *smoothed* value, which is the useful one — returning the
 /// instantaneous reading instead and hiding the smoothed one behind a separate
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(correlate(pair(&silence, &silence)).balance, Pan::CENTER);
     }
 
-    /// The invariant the old meter could break: width is derived, so it cannot
+    /// Width is derived, so it cannot
     /// drift from the correlation it is defined from — even after smoothing.
     #[test]
     fn width_cannot_contradict_correlation_even_when_smoothed() {

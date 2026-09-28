@@ -65,9 +65,8 @@ where
     // write is discarded with the unload and the next load maps a fresh image
     // reading the default.
     //
-    // Measured on this bug in `vst2_latency.rs`: 2 of 6 runs failed without
-    // this, 0 of 6 with it. It reads as flakiness because it passes whenever
-    // another test's instance happens to keep the image resident.
+    // Without the leak the lost write reads as flakiness, because it passes
+    // whenever another test's instance happens to keep the image resident.
     std::mem::forget(lib);
     r
 }

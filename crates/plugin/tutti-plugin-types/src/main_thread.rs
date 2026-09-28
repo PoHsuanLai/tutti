@@ -16,14 +16,26 @@ use std::thread::ThreadId;
 
 static MAIN: OnceLock<ThreadId> = OnceLock::new();
 
-/// Record the calling thread as the main/UI thread. Idempotent; the first
-/// call wins. Call once at host construction on the UI thread.
+/// Marks the calling thread as the host's main/UI thread.
+///
+/// Enables the debug-only affinity checks of [`assert_main_thread`]. Call once,
+/// on the UI thread, at host startup; later calls are ignored (the first call
+/// wins). Until it is called the checks are a no-op.
 pub fn mark_main_thread() {
     let _ = MAIN.set(std::thread::current().id());
 }
 
-/// Panic (debug builds only) if the caller is not on the marked main thread.
-/// No-op if [`mark_main_thread`] has not been called.
+/// Asserts that the caller is on the thread [`mark_main_thread`] marked.
+///
+/// All native plugin formats require non-audio calls (editor, state,
+/// parameter enumeration) on the host's main thread, and a violation tends to
+/// surface as corruption or a crash much later. Compiles to nothing in release
+/// builds, and is a no-op if no main thread was marked.
+///
+/// # Panics
+///
+/// In debug builds, panics if a main thread was marked and the caller is on a
+/// different thread.
 #[inline]
 pub fn assert_main_thread() {
     debug_assert!(

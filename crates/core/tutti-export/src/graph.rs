@@ -1,10 +1,8 @@
-//! What an export renders: the native graph.
+//! What an export renders: the graph.
 //!
-//! Doc 013 Phase 3. PR 7 put [`RenderGraph`] beside fundsp's `Net` as a second
-//! backend; PR 14 removed the `Net` one, so an export renders a `tutti_graph`
-//! editor/executor pair and nothing else. It becomes a frame source
-//! (`render::driver`), and the gate, resample, dither and encoders downstream
-//! see only frames.
+//! An export renders a `tutti_graph` editor/executor pair ([`RenderGraph`]) and
+//! nothing else. It becomes a frame source (`render::driver`), and the gate,
+//! resample, dither and encoders downstream see only frames.
 
 use tutti_core::SampleRate;
 use tutti_graph::{CommitError, Editor, Executor, ForkError, ForkMode, ForkTarget, Prepare};
@@ -12,20 +10,18 @@ use tutti_types::{GraphTail, Samples};
 
 use crate::{Error, Result};
 
-/// The `MaxBlock` a native graph is prepared at for an export
+/// The largest block, in frames, a graph is prepared for in an export
 /// ([`RenderGraph::prepare`], [`RenderGraph::fork`]).
 ///
 /// 1024 frames: long enough that the executor's per-block walk is paid rarely
-/// on a long bounce, short enough that a block's planes stay in cache. A
-/// multiple of 64 on purpose: a `Legacy` unit runs in 64-frame chunks from
-/// each block's start, so at a multiple of 64 its chunks fall on the frames
-/// `Net`'s 64-frame blocks did, and a unit whose output depends on how its
-/// calls are cut (the VBAP panner ramps its gains across each call) renders
-/// what it rendered under `Net` (doc 013, "Two things carry over from
-/// `Legacy` chunking"; pinned by `tests/graph_source.rs`).
+/// on a long bounce, short enough that a block's planes stay in cache.
+// A multiple of 64 on purpose: a node that renders in 64-frame pieces from each
+// block's start (the sampler's clip readers) cuts them on the same frames at
+// any multiple of 64, and the golden digests `tests/graph_source.rs` pins were
+// recorded with 64-frame pieces.
 pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 
-/// The graph an export renders: a native `tutti_graph` editor/executor pair.
+/// The graph an export renders: a `tutti_graph` editor/executor pair.
 ///
 /// The pair is already installed (the executor running its plan) and
 /// prepared **at the render's sample rate** — the render refuses any other
@@ -57,11 +53,9 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///
 /// The executor renders in blocks of its prepared `MaxBlock`, each handed the
 /// transport the render's clock reports ([`RenderClock::graph_block`]), and
-/// the clock is advanced after each block. A graph holding a `Legacy` unit (a
-/// sampler voice, which polls the clock per 64-frame call) is rendered
-/// chunk-major, 64 frames at a time across every node
-/// ([`RenderClock::render_graph`]), so its clip readers read the clock where
-/// each chunk starts.
+/// the clock is advanced after each block ([`RenderClock::render_graph`]).
+/// A clip reader reads the transport at any frame of its block from its
+/// `Env`.
 ///
 /// [`RenderClock::graph_block`]: tutti_core::transport::RenderClock::graph_block
 /// [`RenderClock::render_graph`]: tutti_core::transport::RenderClock::render_graph
@@ -85,7 +79,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///
 /// let rate = SampleRate(48_000.0);
 /// let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-/// let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+/// let tone = g.add(Osc::sine(Hz(440.0)));
 /// g.pipe_output(tone);
 /// let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
 /// let graph = RenderGraph::new(editor, executor).expect("built together, so paired");
@@ -165,7 +159,7 @@ impl RenderGraph {
         (&mut self.editor, &mut self.executor)
     }
 
-    /// What a native graph is prepared at to render at `sample_rate`: that
+    /// What a graph is prepared at to render at `sample_rate`: that
     /// rate, and [`GRAPH_MAX_BLOCK`].
     pub fn prepare(sample_rate: SampleRate) -> Prepare {
         Prepare::new(sample_rate, GRAPH_MAX_BLOCK)
@@ -224,7 +218,7 @@ impl RenderGraph {
     /// # use tutti_types::ChannelLayout;
     /// # let rate = SampleRate(48_000.0);
     /// # let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    /// # let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+    /// # let tone = g.add(Osc::sine(Hz(440.0)));
     /// # g.pipe_output(tone);
     /// # let (editor, executor) = g.build(RenderGraph::prepare(rate)).unwrap();
     /// # let graph = RenderGraph::new(editor, executor).unwrap();
@@ -264,7 +258,7 @@ impl RenderGraph {
     /// # use tutti_types::ChannelLayout;
     /// # let rate = SampleRate(48_000.0);
     /// # let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    /// # let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+    /// # let tone = g.add(Osc::sine(Hz(440.0)));
     /// # g.pipe_output(tone);
     /// # let (editor, executor) = g.build(RenderGraph::prepare(rate)).unwrap();
     /// # let graph = RenderGraph::new(editor, executor).unwrap();

@@ -28,7 +28,7 @@
 //!             └──────────── dry ───────────────────────────▶ ┘
 //! ```
 //!
-//! A native `tutti-graph` graph, compiled and rendered as the engine renders
+//! A `tutti-graph` graph, compiled and rendered as the engine renders
 //! one: the compiler's PDC pass delays the dry path, so both arrivals land on
 //! the same sample and sum to exactly twice the impulse. The plugin path alone
 //! arrives [`EXPECTED_TOTAL_LATENCY`] late. And a latency the plugin changes at
@@ -183,7 +183,7 @@ fn arrivals(samples: &[f32]) -> Vec<(usize, f32)> {
         .collect()
 }
 
-/// A native graph with one global input and one output, holding `plugin`
+/// A graph with one global input and one output, holding `plugin`
 /// fed by the input on every port; `sum` decides what reaches the output.
 struct Rig {
     graph: Renderer,
@@ -193,7 +193,7 @@ struct Rig {
 
 /// Build the two-path graph: one input fanned to a plugin path and a dry path,
 /// summed into output channel 0. The compiler's PDC pass aligns the two, as it
-/// does for every graph (doc 013 §3, "Latency solve").
+/// does for every graph.
 ///
 /// **`set_source` per edge, never `connect`/`pipe`.** The latter walk *every*
 /// port of a node, so a later wiring call silently clobbers an earlier one.
@@ -207,12 +207,12 @@ fn two_paths(plugin: PluginClient<Bound>) -> Rig {
     let (key, controls) = g.add_with_controls(plugin);
     // The dry twin. A pass-through rather than wiring the global input straight
     // to the sum, so each path is a node the compiler aligns.
-    let dry = g.add_unit(Box::new(Through::mono()));
+    let dry = g.add(Through::mono());
     // Summing is a node's job — a port holds one source, so a fan-in has to be
     // an explicit adder. `ChannelSumNode`, which sums rather than averages: two
     // aligned arrivals of `IMPULSE` must come out as `2 · IMPULSE`, which one
     // arrival alone cannot produce.
-    let sum = g.add_unit(Box::new(ChannelSumNode::new(2, ChannelLayout::MONO)));
+    let sum = g.add(ChannelSumNode::new(2, ChannelLayout::MONO));
 
     for port in 0..plugin_inputs {
         g.set_source(key, port, Source::Global(0));
@@ -316,9 +316,8 @@ fn the_probe_declares_the_latency_this_suite_expects() {
 /// in its own right: it pins the *actual* delay the audio suffers, which is the
 /// third of the three numbers that must agree. The two tests together say the
 /// declared figure and the suffered delay are the same; either alone says only
-/// that one of them has some value. (Under `Net` this ran the two-path graph
-/// uncompensated; the native graph always compensates, so the plugin path is
-/// measured on its own, where there is nothing to compensate.)
+/// that one of them has some value. (The graph always compensates, so the
+/// plugin path is measured on its own, where there is nothing to compensate.)
 #[test]
 fn the_plugin_path_alone_arrives_a_full_latency_late() {
     let _lock = exclusive();

@@ -1,24 +1,13 @@
 //! [`ParamModShaping`]: how one audio-rate modulation edge turns a raw
 //! `[-1, 1]` modulator into an offset on a param.
 //!
-//! The edge itself is the native graph's (design doc 013 item 6): a
+//! The edge itself is the graph's: a
 //! `GraphSpec::connect_param` from the modulator's output to the node's
 //! declared param, which the compiler fuses with the node's own control (the
 //! base) and every other source into one step of the node's op —
-//! `clamp(base + Σ shaped offsets)` — handed to the node per frame. That
-//! replaced a sub-graph of three node types built per modulated param:
-//!
-//! ```text
-//! AtomicSourceNode ─► ParamSumNode ◄─ ParamShaperNode ◄─ source   (× N)
-//!   (the base)        (base + Σ,        (depth·polarity·
-//!                      one clamp)         curve, LUT)
-//! ```
-//!
-//! with the node born with an extra input channel for the param
-//! (`with_param_inputs`), because an unconnected input read 0 and a param
-//! nothing fed would have dropped to it. The graph resolves an unconnected
-//! param to its base instead, so none of that is needed; what is left here
-//! is the shaping, which a host authors per edge.
+//! `clamp(base + Σ shaped offsets)` — handed to the node per frame. An
+//! unconnected param reads its base. What this module adds is the shaping
+//! (depth, polarity, curve), which a host authors per edge.
 
 use tutti_mod::{shape, CurveType, Polarity};
 
@@ -52,8 +41,6 @@ impl ParamModShaping {
     /// [`tutti_mod::shape`] — the same function the control-rate path applies
     /// — baked into a [`ShapeLut`](tutti_graph::ShapeLut) over the
     /// modulator's `[-1, 1]`, so the two tiers agree about a route's value.
-    /// The bake and the lookup are the old `ParamShaperNode`'s, so a route
-    /// sounds as it did (`tests/param_mod_oracle.rs` pins that bit for bit).
     ///
     /// Allocates the table: build it on the control thread.
     pub fn shaping(&self) -> tutti_graph::ParamShaping {
@@ -69,9 +56,9 @@ impl ParamModShaping {
 
     /// Several edges from **one** source into one param, as the one shaping
     /// the graph can hold for it (a param port lists a source once): the sum
-    /// of their shaped values, baked into one table. The old chain summed
-    /// one shaper per edge; linear interpolation is linear in the table, so
-    /// reading the summed table is that sum up to rounding. One shaping is
+    /// of their shaped values, baked into one table. Linear interpolation is
+    /// linear in the table, so reading the summed table equals summing one
+    /// shaped table per edge, up to rounding. One shaping is
     /// [`shaping`](Self::shaping) itself, bit for bit.
     ///
     /// Allocates the table: build it on the control thread.

@@ -1,11 +1,13 @@
-//! Pure data: one row in the plugin database, plus the catalog-identity
-//! [`PluginDescriptor`] it carries.
+//! One row in the plugin catalog, plus the catalog-identity types it carries.
 
 use crate::error::BridgeError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// On-disk record for a single discovered plugin.
+/// The catalog record for one discovered plugin.
+///
+/// Produced by [`probe`](Self::probe) or by a scan, and stored by a
+/// [`PluginCatalog`](crate::catalog::PluginCatalog).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginRecord {
     /// Where the plugin lives on disk.
@@ -52,26 +54,18 @@ impl Blacklist {
     }
 }
 
-/// Catalog-identity types, defined in `tutti-plugin-types` so crates depending
-/// only on the shared vocabulary — the four format host crates — can name them
-/// without pulling in `tutti-plugin`.
+// Catalog-identity types, defined in `tutti-plugin-types` so the format host
+// crates can name them without depending on `tutti-plugin`.
 pub use tutti_plugin_types::{AuComponentType, PluginClass, PluginDescriptor};
 
-/// The VST2 plugin-category mirror, which the VST2 loader maps its native
-/// category into.
-///
-/// Canonical in `tutti-plugin-types`, the unconditional shared dep, so this
-/// persisted wire vocabulary stays nameable without the optional `vst2` feature.
+// The classification vocabularies each format reports, and the normalized
+// `PluginRole` derived from all four. Defined in `tutti-plugin-types` so the
+// persisted catalog stays nameable with no format feature enabled.
 pub use tutti_plugin_types::Vst2Category;
 
-/// The classification vocabularies the other three formats report, and the
-/// normalized [`PluginRole`] derived from all four.
-///
-/// Canonical in `tutti-plugin-types` for the same reason as [`Vst2Category`]:
-/// the persisted catalog stays nameable with no format feature enabled.
 pub use tutti_plugin_types::{ClapFeature, PluginRole, Vst3PlugType, Vst3SubCategories};
 
-/// Audio plugin format.
+/// A plugin format, as recognized from a file's extension.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum PluginFormat {
     /// Steinberg VST3.
@@ -85,7 +79,8 @@ pub enum PluginFormat {
 }
 
 impl PluginFormat {
-    /// Short string used to build plugin IDs (e.g., `"vst3.my_reverb"`).
+    /// Returns the short format name used to build plugin IDs (`"vst3"` in
+    /// `"vst3.my_reverb"`).
     pub fn extension_id(&self) -> &'static str {
         match self {
             PluginFormat::Vst3 => "vst3",
@@ -119,20 +114,16 @@ const fn extension_names<const N: usize>() -> [&'static str; N] {
 const EXTENSION_NAMES: [&str; 6] = extension_names::<6>();
 
 impl PluginRecord {
-    /// Plugin file extensions a scanner / asset path recognises. Derived from
-    /// the one `FORMAT_BY_EXTENSION` table that `super::fs::format_from_path`
-    /// matches against, so the advertised list and the accepted list are the
-    /// same list.
+    /// The plugin file extensions (without the dot) a scan recognizes.
     pub const EXTENSIONS: &'static [&'static str] = &EXTENSION_NAMES;
 
-    /// What this plugin is, normalized across the formats — the browser-facing
-    /// question, without reaching through `descriptor.class` and matching each
-    /// format by hand.
+    /// Returns what this plugin is (instrument, effect, …), normalized across
+    /// the formats.
     pub fn role(&self) -> PluginRole {
         self.descriptor.class.role()
     }
 
-    /// Whether this plugin is a note-driven sound source.
+    /// Returns whether this plugin is a note-driven sound source.
     ///
     /// Sugar over [`role`](Self::role) for the common two-way browser split.
     /// A [`Generator`](PluginRole::Generator) is deliberately **not** an
@@ -141,12 +132,21 @@ impl PluginRecord {
         self.role() == PluginRole::Instrument
     }
 
-    /// Probe a plugin file into a full record. Spawns a
-    /// `tutti-plugin-server` subprocess to read metadata, falling back to
-    /// filename-derived metadata if the server binary isn't on PATH.
+    /// Probes a plugin file into a full record.
     ///
-    /// Yields the same row a [`crate::catalog::PluginCatalog`] would store,
-    /// so the asset-loader path and the scanner path converge on one shape.
+    /// Spawns a short-lived `plugin-server` subprocess to read the plugin's
+    /// metadata, so a plugin that crashes while being probed does not take the
+    /// caller down. Blocks for up to a few seconds; call it off the audio and
+    /// UI threads. Yields the same record a
+    /// [`PluginCatalog`](crate::catalog::PluginCatalog) stores.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BridgeError::LoadFailed`] for an unrecognized extension or a
+    /// plugin the server cannot load,
+    /// [`BridgeError::ServerNotFound`] when the `plugin-server` binary cannot
+    /// be located, and a timeout, I/O or protocol variant when the subprocess
+    /// cannot be reached.
     pub fn probe(path: &Path) -> Result<Self, BridgeError> {
         let format = super::fs::format_from_path(path).ok_or_else(|| BridgeError::LoadFailed {
             path: path.to_path_buf(),

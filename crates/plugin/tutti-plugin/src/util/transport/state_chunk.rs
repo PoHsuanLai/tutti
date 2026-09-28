@@ -3,10 +3,10 @@
 //! State is the one message whose size a *plugin* chooses rather than the
 //! protocol, and it does not fit the frame cap: a sample-embedding instrument
 //! or a convolution reverb carrying an impulse response routinely exceeds
-//! 64 MiB. Sending it as one frame forced a choice between a cap that silently
-//! loses presets and a cap so large it re-opens the allocation hazard for every
-//! other message. Chunking removes the choice — each frame stays small, and the
-//! *total* is bounded separately on reassembly.
+//! 64 MiB. So state travels as chunks of at most
+//! [`STATE_CHUNK_BYTES`](crate::server::STATE_CHUNK_BYTES): each frame stays
+//! small, and the *total* is bounded separately on reassembly by
+//! [`MAX_STATE_BYTES`](crate::server::MAX_STATE_BYTES).
 //!
 //! Both directions use the same two helpers, because the hazard is symmetric:
 //! the host reassembles what a plugin produced, and the server reassembles what
@@ -14,7 +14,7 @@
 
 use crate::protocol::{MAX_STATE_BYTES, STATE_CHUNK_BYTES};
 
-/// Split `data` into wire-sized pieces, as `(seq, last, bytes)`.
+/// Splits `data` into wire-sized pieces, as `(seq, last, bytes)`.
 ///
 /// **An empty state yields one empty chunk, not zero chunks.** A receiver waits
 /// for `last`, so a zero-chunk sequence would never terminate — the reader
@@ -48,9 +48,8 @@ pub struct Reassembler {
     next_seq: u32,
     done: bool,
     /// Ceiling on the reassembled total. A field rather than a direct read of
-    /// [`MAX_STATE_BYTES`] so the refusal path is reachable from a test without
-    /// allocating a gigabyte to reach it — a limit that can only be exercised
-    /// by exhausting it is a limit that goes untested.
+    /// `MAX_STATE_BYTES` so the refusal path is reachable from a test without
+    /// allocating a gigabyte to reach it.
     limit: usize,
 }
 
@@ -85,10 +84,10 @@ pub enum ChunkError {
 }
 
 impl Reassembler {
-    /// A reassembler bounded by `limit` rather than [`MAX_STATE_BYTES`].
+    /// Creates a reassembler bounded by `limit` rather than [`MAX_STATE_BYTES`].
     ///
-    /// Production uses [`Default`]; this exists so the over-limit path is
-    /// testable at a size a test can actually build.
+    /// [`Default`] uses [`MAX_STATE_BYTES`]; a smaller limit makes the
+    /// over-limit path testable at a size a test can build.
     pub fn with_limit(limit: usize) -> Self {
         Self {
             buf: Vec::new(),
@@ -98,11 +97,17 @@ impl Reassembler {
         }
     }
 
-    /// Take one chunk. `Ok(true)` means the sequence is complete.
+    /// Takes one chunk, returning `Ok(true)` when the sequence is complete.
     ///
     /// The size check runs against the *projected* total before extending, so
     /// an over-limit sequence is refused without ever allocating the bytes that
     /// would have broken it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChunkError::OutOfOrder`] for a chunk whose `seq` is not the
+    /// next expected one (or that arrives after `last`), and
+    /// [`ChunkError::TooLarge`] when the total would exceed the limit.
     pub fn push(&mut self, seq: u32, last: bool, bytes: &[u8]) -> Result<bool, ChunkError> {
         if self.done || seq != self.next_seq {
             return Err(ChunkError::OutOfOrder {
@@ -123,8 +128,9 @@ impl Reassembler {
         Ok(last)
     }
 
-    /// The reassembled state. Only meaningful once [`push`](Self::push)
-    /// returned `Ok(true)`.
+    /// Returns the reassembled state.
+    ///
+    /// Only meaningful once [`push`](Self::push) returned `Ok(true)`.
     pub fn into_inner(self) -> Vec<u8> {
         self.buf
     }

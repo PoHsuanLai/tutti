@@ -40,7 +40,7 @@
 //! Per-slot, because the reader wants a *specific* block — the one it submitted
 //! a fixed number of blocks ago — not the newest. A single newest-index would let
 //! a skipped block (server error, shm never set up) hand back N-2 as though it
-//! were N-1: the same defect class as the original bug, one block quieter.
+//! were N-1: wrong audio, not silence.
 //!
 //! Sequences start at **1**: a fresh slab is zeroed, so 0 must mean "nothing was
 //! ever published here".
@@ -63,9 +63,11 @@ pub(super) const SLAB_MAGIC: u64 = u64::from_le_bytes(*b"TTI_SLAB");
 /// region and reading it as audio) is not.
 pub(super) const HEADER_VERSION: u32 = 1;
 
-/// Ring depth. Two slots is the minimum that lets one block be published while
-/// another is read, which is all the pipelined protocol needs: the bridge pumps
-/// serially, so at most one block is ever in flight.
+/// The number of blocks the shared-memory ring holds.
+///
+/// Two slots is the minimum that lets one block be published while another is
+/// read, which is all the pipelined protocol needs: the bridge pumps serially,
+/// so at most one block is ever in flight.
 ///
 /// Fixed rather than negotiated because the reasoning above is not a tunable —
 /// raising it is only meaningful alongside a bridge that pipelines its own

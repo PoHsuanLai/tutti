@@ -29,7 +29,7 @@ pub struct BeatWindow {
     /// Beats advanced per output sample — the beat↔sample conversion factor.
     ///
     /// A span, not a position: two `Beat`s and one `BeatDuration`, so plugging
-    /// the rate into a position slot no longer compiles.
+    /// the rate into a position slot does not compile.
     pub beats_per_sample: BeatDuration,
     /// Largest in-block sample offset, i.e. `block_size - 1`. Offsets are
     /// clamped to this so a caller never splits past the end of its buffer.
@@ -53,7 +53,7 @@ pub enum BeatPlacement {
 ///
 /// The two discontinuity variants stay distinct rather than collapsing into one
 /// `Discontinuous`, because callers react to them differently. A cursor into a
-/// sorted event list (`MidiClipSource`, `HarmonySource`) must *rewind* on a
+/// sorted event list must *rewind* on a
 /// backward jump, but a forward jump is self-correcting for it — the cursor
 /// walks past stale events on its own. Merging them would force a needless
 /// backward rescan on every forward scrub.
@@ -146,7 +146,7 @@ impl BeatWindow {
     }
 
     /// Where `beat` falls against this block, by the engine's one beat→frame
-    /// rule ([`first_frame_at_or_after`], doc 013 §6): the first frame at or
+    /// rule ([`first_frame_at_or_after`]): the first frame at or
     /// after the beat, within a millionth of a frame, compared as an integer
     /// against the block's frames.
     ///
@@ -244,16 +244,16 @@ fn forward_slack(beats_per_sample: BeatDuration, block_size: usize) -> BeatDurat
 /// no local to forget, and `?` cannot skip a write that happens inside
 /// [`advance`](Self::advance).
 ///
-/// Cheap to clone — shares the cursor, so fundsp's clone-on-commit of the
-/// parent node does not restart playback.
+/// Cheap to clone — a clone shares the cursor, so cloning the node that owns
+/// it does not restart playback.
 #[derive(Clone)]
 pub struct BeatCursor {
     transport: Arc<dyn Timeline>,
     /// Shared for the same reason `last_beat` is: a cursor is cloned along with
-    /// whatever owns it, and fundsp commits a *different clone* than a setter
-    /// would touch. A plain field is not merely stale after a device rate
-    /// change — it is unreachable, since the owner sits behind an `Arc` and
-    /// there is no `&mut` to the running copy.
+    /// whatever owns it, and a setter may touch a different clone than the one
+    /// that runs. A plain field would be unreachable after a device rate
+    /// change, since the owner sits behind an `Arc` and there is no `&mut` to
+    /// the running copy.
     sample_rate: Arc<AtomicF64>,
     last_beat: Arc<AtomicF64>,
 }
@@ -322,7 +322,7 @@ impl BeatCursor {
         SampleRate::from(self.sample_rate.load(crate::Ordering::Acquire))
     }
 
-    /// Re-point at a new sample rate, as `AudioUnit::set_sample_rate` requires.
+    /// Re-point at a new sample rate (the owner's `prepare` hands it one).
     ///
     /// Affects `beats_per_sample`, hence `end_beat` — and hence the forward-jump
     /// threshold, which is derived from it. A cursor left at a stale rate would
@@ -330,7 +330,7 @@ impl BeatCursor {
     /// large and a real seek goes unnoticed.
     ///
     /// `&self`, not `&mut`: the rate is a shared atomic, so this reaches every
-    /// clone including the one fundsp is running.
+    /// clone, including one the audio thread is running.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
         self.sample_rate
             .store(sample_rate.into().get(), crate::Ordering::Release);

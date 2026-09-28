@@ -1,19 +1,11 @@
 //! Shared fixtures for this crate's integration tests.
 //!
-//! The rolling-graph fixture now exists in three places — `output.rs`'s
-//! `build_callback_state`, `tests/rt_no_alloc.rs`'s `rolling_state`, and
-//! whatever the next test binary needs. Each is a native graph (doc 013
-//! Phase 3 PR 15: `Engine` renders nothing else); the nodes are `Legacy`
-//! units, so the engine renders them chunk-major. Two copies were already acknowledged
-//! in `rt_no_alloc.rs`'s header ("duplicated rather than shared because that
-//! one is `#[cfg(test)]`-private"); three is the point at which the repo's own
-//! escalation applies.
+//! The rolling-graph fixture: a sine through a filter, rendered by an
+//! `Engine` whole blocks at a time. `output.rs`'s unit tests carry their own
+//! copy (`build_callback_state`) because a `#[cfg(test)]` module cannot see
+//! `tests/`.
 //!
-//! A support module, not a dev-dependency crate: `tutti-fixture-resolve`
-//! exists because *three separate crates* each carried a copy of the same
-//! probe-path logic. Three copies inside one crate is a `tests/support/`.
-//!
-//! `rt_no_alloc.rs` still keeps its own copy, deliberately — it declares a
+//! `rt_no_alloc.rs` keeps its own copy too, deliberately — it declares a
 //! `#[global_allocator]`, and every line it runs before the gate has to be
 //! auditable in one file.
 
@@ -29,13 +21,13 @@ use tutti_core::{
 };
 use tutti_core::{MotionEvent, Transport};
 use tutti_cpal::{AudioCallbackState, OutputSpec};
-use tutti_graph::{Editor, Legacy, Prepare};
+use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{SvfFilterNode, SvfType};
 
 pub const SAMPLE_RATE: f64 = 48_000.0;
 
-/// An engine over `transport` rendering the native graph `build` wires into
+/// An engine over `transport` rendering the graph `build` wires into
 /// a fresh editor (prepared for 512-frame blocks at [`SAMPLE_RATE`]). The
 /// editor is leaked: a test process is the whole lifetime, and nothing here
 /// commits again.
@@ -61,15 +53,11 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
     let transport = Transport::new(SAMPLE_RATE);
     let engine = graph_engine(&transport, |ed| {
         let (source, filter) = (NodeKey(1), NodeKey(2));
-        ed.insert(source, "sine", Legacy::new(Osc::sine(Hz(220.0))));
+        ed.insert(source, "sine", Osc::sine(Hz(220.0)));
         ed.insert(
             filter,
             "filter",
-            Legacy::new(SvfFilterNode::<f64>::new(
-                SvfType::LowPass,
-                Hz(2_000.0),
-                Q(0.7),
-            )),
+            SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(2_000.0), Q(0.7)),
         );
         ed.spec_mut().topology.edges.insert(
             InPort {
@@ -100,7 +88,7 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
 /// matrix assertable.
 pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
     let engine = graph_engine(&Transport::new(SAMPLE_RATE), |ed| {
-        ed.insert(NodeKey(1), "dc", Legacy::new(Const::mono(level)));
+        ed.insert(NodeKey(1), "dc", Const::mono(level));
         fan(ed, NodeKey(1), outputs);
     });
     Arc::new(AudioCallbackState::new(
@@ -123,7 +111,7 @@ pub fn dc_on_channel(
     outputs: usize,
 ) -> (Arc<AudioCallbackState>, tutti_core::TapCons) {
     let engine = graph_engine(&Transport::new(SAMPLE_RATE), |ed| {
-        ed.insert(NodeKey(1), "dc", Legacy::new(Const::mono(level)));
+        ed.insert(NodeKey(1), "dc", Const::mono(level));
         ed.spec_mut().topology.outputs = (0..outputs)
             .map(|ch| {
                 if ch == channel {

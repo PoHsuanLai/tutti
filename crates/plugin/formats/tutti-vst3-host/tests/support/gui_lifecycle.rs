@@ -364,10 +364,8 @@ fn editor_resize_respects_capabilities() {
     // constrains this size — a plugin with no limits has nothing to enforce and
     // must not be turned into a failure.
     //
-    // Without this leg the test was vacuous: it asserted only that the granted
-    // size was non-degenerate, which is equally true of a host that forwards
-    // the raw request. Measured — replacing `resize_editor`'s constrained rect
-    // with the unmodified request left the old test reporting `ok`.
+    // Without this leg the test would be vacuous: a non-degenerate granted size
+    // is equally true of a host that forwards the raw request unconstrained.
     const ABSURD: EditorSize = EditorSize {
         width: 10_000,
         height: 10_000,
@@ -585,13 +583,12 @@ gui_test! {
 /// exactly as much as for `host-checker` and `again`, whose succeeds.
 ///
 /// That is not cosmetic. `tutti-plugin-server` feeds this straight into
-/// `Features::EDITOR` on the plugin descriptor (`loaders/vst3.rs:116,150`), so
-/// a DAW would offer an "open editor" affordance for every VST3 it scanned and
-/// fail when the user took it.
+/// `Features::EDITOR` on the plugin descriptor, so a wrong answer makes a DAW
+/// offer an "open editor" affordance that fails when the user takes it.
 ///
 /// The check is a *contrast across four plugins* rather than a single
 /// assertion: two that open and two that do not. A `has_editor` hardcoded
-/// either way — which is what the bug amounted to — fails one of the pairs.
+/// either way fails one of the pairs.
 fn has_editor_agrees_with_opening_one() {
     if !has_display() {
         eprintln!("no DISPLAY/WAYLAND_DISPLAY; run under `xvfb-run -a`. Skipping.");

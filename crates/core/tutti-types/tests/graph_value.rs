@@ -1,13 +1,11 @@
 //! The `Topology` value: validation, folds, and structural identity.
 //!
-//! Every test here is a plain unit test with no `Net`, no `World`, no device and
-//! no audio callback — which is the point of the layer. The equivalent
-//! assertions today need `bevy_tutti`'s `App` plus a committed graph, which is
-//! why PDC is tested on a fixture and never on a production graph.
+//! Every test here is a plain unit test with no runtime, no `World`, no device
+//! and no audio callback — which is the point of the layer.
 //!
-//! The `Net` half — that a compiled graph agrees with the value it was compiled
-//! from — lives in `tutti-core/tests/topology_compile.rs`, because it needs the
-//! runtime this crate deliberately cannot name.
+//! The runtime half — that a compiled plan agrees with the value it was
+//! compiled from — is `tutti-graph`'s (`tests/compile_passes.rs`), because it
+//! needs the compiler this crate deliberately cannot name.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -15,7 +13,7 @@ use std::hash::{Hash, Hasher};
 use tutti_types::graph::{
     Edge, FeedbackFrom, InPort, Invalid, NodeKey, NodeSpec, OutPort, ParamValue, Source, Topology,
 };
-use tutti_types::latency::{self, LatencyGraph};
+use tutti_types::latency::{self, Feed, LatencyGraph};
 use tutti_types::tail::graph_tail;
 use tutti_types::{ChannelLayout, Samples, Tail};
 
@@ -106,8 +104,8 @@ fn latency_and_tail_are_folds_over_the_value() {
 
     // The trait view agrees with the structure: the mixer's port order is the
     // authored one, holes and all.
-    let preds: Vec<Option<NodeKey>> = t.inputs(C).collect();
-    assert_eq!(preds, vec![Some(B), Some(D)]);
+    let preds: Vec<Feed<NodeKey>> = t.inputs(C).collect();
+    assert_eq!(preds, vec![Feed::Node(B), Feed::Node(D)]);
 }
 
 /// A node whose tail was never declared is counted, not collapsed to zero —
@@ -226,8 +224,8 @@ fn a_cycle_is_rejected_unless_feedback_breaks_it() {
     // path — and treating it as live puts the walk back in the cycle it was just
     // told to cut, which `plan` resolves by silently appending the cyclic nodes
     // in arbitrary order.
-    let preds: Vec<Option<NodeKey>> = valid.get().inputs(A).collect();
-    assert_eq!(preds, vec![None]);
+    let preds: Vec<Feed<NodeKey>> = valid.get().inputs(A).collect();
+    assert_eq!(preds, vec![Feed::None]);
 
     // With a real latency inside the loop, the fold still terminates on the
     // acyclic reading and counts the node once.
@@ -258,8 +256,8 @@ fn unconnected_is_reported_but_not_fatal() {
 
 /// Two topologies built in **different insertion orders** are equal and hash
 /// equal. This is what makes the value usable as a cache key and as the whole of
-/// a change check — `Net::revision` is monotone but is not a function of the
-/// graph, so it can order two states and cannot identify one.
+/// a change check: a revision counter could order two states but not identify
+/// one.
 ///
 /// Mutation: swap `Topology::nodes` to a `HashMap` → the derived `Hash` stops
 /// being order-independent and the hash assertion fails (intermittently, which
@@ -338,12 +336,10 @@ fn param_equality_is_structural() {
 
 /// The default topology has **no** global inputs.
 ///
-/// Not a formality: when `ChannelLayout::default()` was `STEREO`, a *derived*
-/// `Default` on `Topology` silently gave every master graph two input channels
-/// nobody declared — and a `Source::Global(1)` typo then resolved against them
-/// instead of being rejected as out of range. `ChannelLayout` has no `Default`
-/// any more, so that derive no longer compiles; this pins the hand-written
-/// impl's *choice* of width, which the compiler cannot.
+/// Not a formality: with any global inputs, a `Source::Global(1)` typo would
+/// resolve against them instead of being rejected as out of range.
+/// `ChannelLayout` has no `Default`, so the impl is hand-written; this pins its
+/// *choice* of width, which the compiler cannot.
 ///
 /// Mutation: `inputs: ChannelLayout::STEREO` in the hand-written impl → the
 /// out-of-range edge validates → both assertions fail.
@@ -383,4 +379,25 @@ fn topo_order_is_deterministic() {
     for _ in 0..10 {
         assert_eq!(t.clone().topo_order().expect("acyclic"), order);
     }
+}
+
+/// **`NodeKey::fresh` never hands out the same key twice**, from one thread
+/// or from several at once: 8 threads × 1000 calls, every key distinct.
+///
+/// Mutation (run): `fetch_add(0, …)` → every call returns the same key →
+/// fails. Mutation (run): a non-atomic `load` then `store(+1)` → racing
+/// threads read the same value → fails (in practice within one run of 8×1000).
+#[test]
+fn fresh_keys_are_distinct_across_threads() {
+    use std::collections::HashSet;
+    let handles: Vec<_> = (0..8)
+        .map(|_| std::thread::spawn(|| (0..1000).map(|_| NodeKey::fresh()).collect::<Vec<_>>()))
+        .collect();
+    let mut seen = HashSet::new();
+    for h in handles {
+        for k in h.join().expect("joins") {
+            assert!(seen.insert(k), "{k:?} handed out twice");
+        }
+    }
+    assert_eq!(seen.len(), 8000);
 }

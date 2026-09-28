@@ -1,11 +1,8 @@
 //! The live audio I/O edge: mic in, WAV out, and the pump between them.
 //!
-//! One module per engine crate is this adapter's shape, and the engine's live
-//! edge is [`tutti_io`]. What that crate defines — [`MicMonitorNode`],
-//! [`WavOut`], [`Recorder`] — is surfaced here rather than through
-//! [`engine`](crate::engine), which is bootstrap and owns none of it. The
-//! device half ([`MicIn`]) is `tutti-cpal`'s and comes through with them, so a
-//! host reaches the whole capture path from one import.
+//! Re-exports [`tutti_io`]'s [`MicMonitorNode`], [`WavOut`], [`Recorder`] and
+//! [`TapIn`], and `tutti-cpal`'s capture device [`MicIn`], so a host reaches
+//! the whole capture path from one import.
 //!
 //! Gated on `audio-io`, independent of `sampler`: recording a take needs no
 //! clip playback, and playing a clip needs no microphone.
@@ -18,8 +15,11 @@
 //! [`graph`](crate::graph) with the rest of the per-frame machinery.
 //!
 //! The rest is already the right shape to hold directly: [`WavOut`] is handed
-//! to a pump, and [`MicMonitorNode`] is an `AudioUnit` declared through
-//! [`PortSources`](crate::graph::PortSources) like any other node.
+//! to a pump, and [`MicMonitorNode`] is a graph node
+//! ([`AudioGraphRes::insert`](crate::graph::AudioGraphRes::insert),
+//! unforkable: an export of a graph holding the live mic is refused, naming
+//! it) declared through [`PortSources`](crate::graph::PortSources) like any
+//! other node.
 //!
 //! # [`Recorder`] or [`AudioPump`](crate::graph::AudioPump)?
 //!
@@ -53,19 +53,13 @@
 //!     // than a drift nobody reports.
 //!     let (_mic, monitor) = MicIn::open_with_monitor(None, config.sample_rate)
 //!         .expect("a capture device at the graph rate");
-//!     let id = graph.insert(monitor);
+//!     let (id, ()) = graph.insert(monitor);
 //!     let node = commands.spawn(id).id();
 //!     // Without this the ring fills and every later frame is discarded, with
 //!     // no error and no counter.
 //!     commands.insert_resource(MasterSources::from(node));
 //! }
 //! ```
-//!
-//! That this composes at all — the monitor reconciling like any other node,
-//! reaching an effect chain, and carrying audio once declared — is pinned by
-//! `tests/audio_io_pump.rs`'s `io_graph_composition` module, including the
-//! undeclared-monitor silence described above. (It was its own file once; the
-//! move is recorded at that module's declaration.)
 //!
 //! **A source and sink that disagree produce a wrong-speed file.**
 //! [`Recorder`] and [`AudioPump`](crate::graph::AudioPump) both take an already

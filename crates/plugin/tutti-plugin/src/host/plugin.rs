@@ -1,50 +1,10 @@
-//! [`Plugin`] — one loaded plugin, whatever format it is and wherever it runs.
+//! [`Plugin`]: one loaded plugin, whatever format it is and wherever it runs.
 //!
-//! # Why this type exists
-//!
-//! Loading returns one owned type rather than a `(node, PluginHandle)` pair.
-//! Two reasons, the first of which is why the boxing:
-//!
-//! **The process boundary leaked.** VST2 runs in the host process (its `AEffect`
-//! fuses editor and audio processor into one instance, so the two cannot be
-//! split across processes); every other format runs in a subprocess. Those are
-//! different concrete types — a native graph node (`PluginClient<Bound>`)
-//! and an `AudioUnit` run through `tutti_graph::Legacy` — so the only thing
-//! a single return could name was a boxed node. Whether a plugin was
-//! in-process is an implementation detail, and it decided the caller's API
-//! surface.
-//!
-//! **A node misdescribes a plugin.** It says "a compute unit with N audio
-//! inputs". But a plugin also consumes per-block MIDI, chord/scale context and
-//! note-expression through side-channels the graph does not carry yet — so a
-//! synth has no audio inputs while consuming a MIDI stream every block.
-//! Handing back the node as the plugin's identity discards everything else it
-//! is.
-//!
-//! `Plugin` owns the node privately and gives it up as one deliberate step:
-//! it is itself an [`IntoNode`](tutti_graph::IntoNode), so inserting it into
-//! a graph is `editor.insert(key, kind, plugin)`. The per-block
-//! streams are reached through capability accessors that answer `None` when the
-//! plugin declined them, so the check is the shape of the call rather than
-//! something to remember.
-//!
-//! # The two backends answer the same questions
-//!
-//! [`PluginHandle`] was already unified this way — both loaders build one, and
-//! where a backend cannot do something the answer is an `Option`
-//! (`automation_state()` is `None` for in-process VST2) rather than a second
-//! type. This applies that to the node half.
-//!
-//! Where the two genuinely differ, the difference is a *format* capability and
-//! not a process-boundary one:
-//!
-//! - MIDI and transport unify — both backends own the same `Midi`, and both
-//!   map the transport through the same function (`transport_source`); the
-//!   subprocess node reads it from the graph's `Env`, the in-process VST2 node
-//!   (an `AudioUnit` until it is ported) from a polled reader.
-//! - Harmony, note-expression and param automation are subprocess-only, and
-//!   VST2 has no such concepts to begin with, so declining them is the honest
-//!   answer for the format rather than an artifact of where it runs.
+//! Loading returns one owned type rather than a `(node, PluginHandle)` pair
+//! because the two backends are different concrete node types
+//! (`PluginClient<Bound>` and `InProcessVst2Client`), and because a plugin is
+//! more than its node: it also takes per-block MIDI, chord/scale context and
+//! note expression, reached here through capability accessors.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -75,8 +35,30 @@ enum Backend {
 /// A loaded plugin: its audio node, its control surface, and the per-block
 /// inputs it can accept.
 ///
-/// See the module docs for why this replaces
-/// `(Box<dyn AudioUnit>, PluginHandle)`.
+/// Created by [`Plugin::open`] or [`Plugins::open`](super::plugins::Plugins::open).
+/// VST3, CLAP and AU plugins run in a `plugin-server` subprocess; with the
+/// `vst2` feature, VST2 plugins run in the host process. Which backend a plugin
+/// landed in does not change this API: where one cannot do something, the
+/// accessor answers `false` or `None`.
+///
+/// `Plugin` is a [`tutti_graph::IntoNode`], so inserting it into a graph is
+/// `editor.insert(key, kind, plugin)`. Keep a clone of [`handle`](Self::handle)
+/// first if you need the control surface afterwards; the plugin stays alive
+/// while either the node or a handle does.
+///
+/// # Examples
+///
+/// ```no_run
+/// use tutti_core::SampleRate;
+/// use tutti_plugin::catalog::Plugin;
+///
+/// let plugin = Plugin::open("/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;
+/// println!("{} ({:?})", plugin.descriptor().name, plugin.role());
+/// if plugin.takes_midi() {
+///     // wire a MIDI source to the node's event input
+/// }
+/// # Ok::<(), tutti_plugin::BridgeError>(())
+/// ```
 pub struct Plugin {
     backend: Backend,
     handle: PluginHandle,
@@ -102,13 +84,9 @@ impl std::fmt::Debug for Plugin {
 }
 
 impl Plugin {
-    /// Open a plugin file.
+    /// Opens a plugin file with the default bridge settings.
     ///
-    /// Takes a path, not a catalog entry: opening reads the file and the bridge
-    /// settings and nothing else, so requiring a [`Plugins`] first was an
-    /// artifact of where [`AudioConfig`] happened to be stored. Discovery — the
-    /// catalog's actual job — stays optional.
-    ///
+    /// No catalog is needed: discovery through [`Plugins`] is optional.
     /// ```no_run
     /// # fn ex() -> tutti_plugin::Result<()> {
     /// use tutti_plugin::catalog::Plugin;
@@ -119,14 +97,25 @@ impl Plugin {
     /// `sample_rate` takes anything convertible to [`SampleRate`] — `f64` and
     /// `u32` (which widens exactly), but deliberately not `f32`.
     ///
-    /// Format dispatch is internal. VST2 (with the `vst2` feature) runs in the
-    /// host process, since its `AEffect` fuses editor and audio processor into
-    /// one instance; every other format runs in a subprocess with an IPC
-    /// bridge. Which of the two a plugin landed in does not change the API.
+    /// The format is taken from the path's extension. VST2 (with the `vst2`
+    /// feature) runs in the host process, since its `AEffect` fuses editor and
+    /// audio processor into one instance; every other format runs in a
+    /// `plugin-server` subprocess with an IPC bridge. This call blocks while
+    /// the subprocess starts and the plugin loads, so call it off the audio
+    /// thread.
     ///
     /// **The blacklist is not consulted** — that is catalog state, and this
     /// path does not have one. A host that wants the scanner's crash history
     /// honoured should check [`Plugins::is_blacklisted`] before calling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BridgeError::ServerNotFound`](crate::BridgeError::ServerNotFound)
+    /// when the `plugin-server` binary cannot be located,
+    /// [`BridgeError::LoadFailed`](crate::BridgeError::LoadFailed) or
+    /// [`BridgeError::BundleResolutionFailed`](crate::BridgeError::BundleResolutionFailed)
+    /// when the plugin does not load, and a connection, protocol or timeout
+    /// variant when the subprocess cannot be reached.
     ///
     /// [`Plugins`]: super::plugins::Plugins
     /// [`Plugins::is_blacklisted`]: super::plugins::Plugins::is_blacklisted
@@ -135,12 +124,13 @@ impl Plugin {
         Self::open_with(&AudioConfig::default(), path.as_ref(), sample_rate)
     }
 
-    /// [`open`](Self::open) with explicit bridge settings.
+    /// Opens a plugin file with explicit bridge settings.
     ///
-    /// Separate rather than a builder because the settings are one plain
-    /// struct a host already holds — `AudioConfig::default()` covers every
-    /// caller in this tree, and a builder would be designing for a
-    /// configuration nobody has needed yet.
+    /// See [`open`](Self::open).
+    ///
+    /// # Errors
+    ///
+    /// The same as [`open`](Self::open).
     pub fn open_with(
         audio: &AudioConfig,
         path: impl AsRef<Path>,
@@ -189,7 +179,7 @@ impl Plugin {
 
     // ---- Identity ---------------------------------------------------------
 
-    /// The main-thread control surface: editor, parameters, state.
+    /// Returns the main-thread control surface: editor, parameters, state.
     ///
     /// Cheap to clone, and shares the plugin's lifetime — the plugin dies when
     /// the last handle *or* `Plugin` drops.
@@ -197,20 +187,18 @@ impl Plugin {
         &self.handle
     }
 
-    /// Catalog identity — name, vendor, native classification.
+    /// Returns the catalog identity: name, vendor, native classification.
     pub fn descriptor(&self) -> &PluginDescriptor {
         self.handle.descriptor()
     }
 
-    /// Load-time engine wiring: bus widths, latency, tail, capabilities.
+    /// Returns the load-time wiring: bus widths, latency, tail, capabilities.
     pub fn loaded(&self) -> &LoadedPlugin {
         self.handle.loaded()
     }
 
-    /// What this plugin is, normalized across formats.
-    ///
-    /// Answers the placement question — which subsystem should adopt it —
-    /// separately from the wiring question the accessors below answer.
+    /// Returns what this plugin is (instrument, effect, …), normalized across
+    /// formats.
     pub fn role(&self) -> PluginRole {
         self.descriptor().class.role()
     }
@@ -219,86 +207,29 @@ impl Plugin {
 
     /// Whether the plugin accepts this input, i.e. did not answer `false`.
     ///
-    /// Shares [`is_declined`] with the [`PluginClient`] accessors rather than
-    /// restating the rule, so the two cannot drift into disagreeing about what
-    /// an unprobed capability means. See that module for why `None` stays open.
+    /// Shares `is_declined` with the [`PluginClient`] accessors, so the two
+    /// agree about what an unprobed capability means.
     fn accepts(&self, f: Features) -> bool {
         !crate::host::node::is_declined(self.loaded(), f)
     }
 
-    /// Producer handle for this plugin's MIDI inbox, or `None` if it declared
-    /// no MIDI input. Cheap to clone; push events as they arrive.
-    pub fn midi_sender(&self) -> Option<tutti_midi_runtime::MidiSender> {
-        if !self.accepts(Features::MIDI_IN) {
-            return None;
-        }
-        Some(match &self.backend {
-            Backend::Subprocess(c) => c.midi_sender(),
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.midi_sender(),
-        })
-    }
-
-    /// Install a transport-aware MIDI source polled once per block, layered
-    /// over the live inbox. `false` if the plugin declared no MIDI input.
+    /// Returns whether the plugin takes MIDI, that is, it did not decline MIDI
+    /// input.
     ///
-    /// This is the clip-playback path; [`midi_sender`](Self::midi_sender) is the
-    /// live one. They coexist — the port drains both.
-    #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_midi_source(&mut self, source: Arc<dyn tutti_midi_types::MidiUnitIn>) -> bool {
-        if !self.accepts(Features::MIDI_IN) {
-            return false;
-        }
-        match &mut self.backend {
-            Backend::Subprocess(c) => c.set_midi_source(source),
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.set_midi_source(source),
-        }
-        true
+    /// When `true`, wire MIDI to its node's event input.
+    pub fn takes_midi(&self) -> bool {
+        self.accepts(Features::MIDI_IN)
     }
 
-    /// Drop a previously-installed MIDI source; subsequent blocks poll only the
-    /// live inbox again.
+    /// Returns whether the plugin sends MIDI, that is, it did not decline MIDI
+    /// output.
     ///
-    /// Returns nothing, unlike its installing counterpart: there is no input to
-    /// decline, and clearing a plugin that was never routed is already the
-    /// no-op the caller wants.
-    pub fn clear_midi_source(&mut self) {
-        match &mut self.backend {
-            Backend::Subprocess(c) => c.clear_midi_source(),
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.clear_midi_source(),
-        }
+    /// When `true`, its node's event output carries it.
+    pub fn sends_midi(&self) -> bool {
+        self.accepts(Features::MIDI_OUT)
     }
 
-    /// Route this plugin's MIDI-out back into the graph. `false` if it declared
-    /// no MIDI output.
-    #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_midi_out(&self, sink: Arc<tutti_midi_runtime::MidiOutSink>) -> bool {
-        if !self.accepts(Features::MIDI_OUT) {
-            return false;
-        }
-        match &self.backend {
-            Backend::Subprocess(c) => c.set_midi_out(sink),
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.set_midi_out(sink),
-        }
-        true
-    }
-
-    /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
-    ///
-    /// Returns nothing, for the same reason as
-    /// [`clear_midi_source`](Self::clear_midi_source).
-    pub fn clear_midi_out(&self) {
-        match &self.backend {
-            Backend::Subprocess(c) => c.clear_midi_out(),
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.clear_midi_out(),
-        }
-    }
-
-    /// Tell the plugin whether it is being rendered under realtime pressure.
+    /// Tells the plugin whether it is being rendered under realtime pressure.
     ///
     /// Set this **before** pulling blocks for an offline bounce: a plugin may
     /// spend more per block when it knows there is no deadline, and three of
@@ -323,15 +254,15 @@ impl Plugin {
         }
     }
 
-    /// Give the plugin the project transport and meter. `false` if the plugin
-    /// declared it does not want a transport snapshot.
+    /// Gives the plugin the project transport and meter.
     ///
-    /// Both backends deliver it, from different places. The subprocess node
-    /// reads the transport from each block's `Env` once it is in a graph, so
-    /// it takes only `meter` and `reader` is not used; the in-process VST2 node
-    /// has no `Env` (it is an `AudioUnit` until it is ported, doc 013) and
-    /// polls `reader` into the `TimeInfo` its `audioMasterGetTime` callback
-    /// serves.
+    /// Returns `false` if the plugin declared it does not want a transport
+    /// snapshot.
+    ///
+    /// The subprocess node reads the transport from each block's `Env` once it
+    /// is in a graph, so it takes only `meter` and ignores `reader`; the
+    /// in-process VST2 node polls `reader` into the `TimeInfo` its
+    /// `audioMasterGetTime` callback serves.
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
     pub fn set_transport_source(
         &mut self,
@@ -352,87 +283,62 @@ impl Plugin {
         true
     }
 
-    /// Install per-block chord/scale context. `false` if the plugin declared no
-    /// sequencer context.
-    #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_harmony_source(
-        &mut self,
-        chords: impl IntoIterator<Item = crate::host::node::TimedChord>,
-        scales: impl IntoIterator<Item = crate::host::node::TimedScale>,
-        transport: impl tutti_core::transport::Timeline + 'static,
-    ) -> bool {
-        if !self.accepts(Features::SEQUENCER_CONTEXT) {
-            return false;
-        }
-        match &mut self.backend {
-            Backend::Subprocess(c) => {
-                c.set_harmony_source(chords, scales, transport);
-                true
-            }
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(_) => false,
-        }
-    }
-
-    /// Install a per-block note-expression stream. `false` if the plugin
-    /// declared no note-expression support.
-    #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_note_expression_source(
-        &mut self,
-        source: Arc<crate::host::node::NoteExpressionSource>,
-    ) -> bool {
-        if !self.accepts(Features::NOTE_EXPRESSION) {
-            return false;
-        }
-        match &mut self.backend {
-            Backend::Subprocess(c) => {
-                c.set_note_expression_source(source);
-                true
-            }
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(_) => false,
-        }
-    }
-
-    /// Install sample-accurate parameter automation — one curve per parameter id.
+    /// Returns whether the plugin takes chord and scale context (it declared
+    /// sequencer context).
     ///
-    /// Returns `()`, not `bool`, and takes no capability gate: every format
-    /// carries parameter automation, so `PluginInputs` leaves this slot
-    /// ungated. There is no "declined" answer to report.
-    pub fn set_param_automation_source(
-        &mut self,
-        params: impl IntoIterator<Item = crate::host::node::TimedParam>,
-        transport: impl tutti_core::transport::TransportState + 'static,
-    ) {
-        match &mut self.backend {
-            Backend::Subprocess(c) => c.set_param_automation_source(params, transport),
-            // The in-process VST2 node has no automation slot; its parameters
-            // are driven through the handle instead.
+    /// When `true`, wire a `HarmonyNode` (from `tutti-midi-runtime`) to its
+    /// event input. `false` for a plugin that declined, and for the in-process
+    /// VST2 node, whose event input takes only MIDI.
+    pub fn takes_harmony(&self) -> bool {
+        match &self.backend {
+            Backend::Subprocess(c) => c.takes_harmony(),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(_) => {}
+            Backend::InProcessVst2(_) => false,
+        }
+    }
+
+    /// Creates a sample-accurate parameter automation source, one curve per
+    /// parameter.
+    ///
+    /// The returned [`PluginAutomation`](crate::handles::PluginAutomation) is
+    /// an event source node: insert it and wire it to this plugin node's event
+    /// input ([`PluginControls::automation`](crate::handles::PluginControls::automation)).
+    ///
+    /// No capability gate: every format carries parameter automation. `None`
+    /// for the in-process VST2 node, whose event input takes only MIDI (its
+    /// parameters are driven through the handle instead).
+    pub fn automation(
+        &self,
+        params: impl IntoIterator<Item = crate::host::node::TimedParam>,
+    ) -> Option<crate::host::node::PluginAutomation> {
+        match &self.backend {
+            Backend::Subprocess(c) => Some(c.automation(params)),
+            #[cfg(feature = "vst2")]
+            Backend::InProcessVst2(_) => None,
         }
     }
 
     // ---- The graph node ---------------------------------------------------
 
-    /// The node as the concrete out-of-process [`PluginClient`], unbound, for
-    /// a host that wants the typed client: its
+    /// Returns the node as the concrete out-of-process [`PluginClient`],
+    /// unbound.
+    ///
+    /// For a host that wants the typed client: its
     /// [`controls`](PluginClient::controls) before insertion, or its own
     /// insertion path ([`bind`](PluginClient::bind) then `Editor::insert`,
     /// which hands back its controls and the fork source that forks it by
     /// state transfer).
     ///
-    /// `Err` carries the node for a plugin that is not a `PluginClient` — an
-    /// in-process VST2 instance, an `AudioUnit` that goes in through
-    /// `tutti_graph::Legacy` and has no fork source yet; a fork of a graph
-    /// holding it is refused as not forkable. Clone the
-    /// [`handle`](Self::handle) first if the control surface is needed after
-    /// this.
+    /// Clone the [`handle`](Self::handle) first if the control surface is
+    /// needed after this. Boxed, because a `PluginClient` is several KiB.
     ///
-    /// Boxed, like the backend holding it: a `PluginClient` is several KiB.
-    pub fn into_client(
-        self,
-    ) -> std::result::Result<Box<PluginClient>, Box<dyn tutti_core::AudioUnit>> {
+    /// # Errors
+    ///
+    /// Returns the graph node for a plugin that is not a `PluginClient` — an
+    /// in-process VST2 instance, which has no fork source: insert it as
+    /// `tutti_graph::Unforkable(node)`, and a fork of a graph holding it is
+    /// refused as not forkable.
+    pub fn into_client(self) -> std::result::Result<Box<PluginClient>, Box<dyn tutti_graph::Node>> {
         match self.backend {
             Backend::Subprocess(c) => Ok(c),
             #[cfg(feature = "vst2")]
@@ -478,7 +384,7 @@ impl tutti_graph::IntoNode for Plugin {
             }
             #[cfg(feature = "vst2")]
             Backend::InProcessVst2(c) => {
-                let parts = tutti_graph::IntoNode::into_parts(tutti_graph::Legacy::new(*c));
+                let parts = tutti_graph::IntoNode::into_parts(*c);
                 tutti_graph::NodeParts {
                     node: parts.node,
                     controls: None,
@@ -516,8 +422,7 @@ mod tests {
         };
         assert!(!is_declined(&advertised, Features::TRANSPORT));
 
-        // Unprobed stays open — the AU and in-process-VST2 loaders both relied
-        // on this before they were taught to report what they deliver.
+        // Unprobed stays open.
         assert!(!is_declined(&LoadedPlugin::default(), Features::TRANSPORT));
     }
 }

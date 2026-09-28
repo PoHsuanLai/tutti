@@ -3,95 +3,7 @@
 //! rendered on a worker thread while the live graph plays, or a live
 //! duplicate.
 //!
-//! Doc 013 Phase 3 PR 2, and the replacement for fundsp's
-//! `Net::clone_isolated` → `PendingClone::isolate_for_offline` → `rebind_offline`
-//! → `Net::reset` sequence (`fundsp-tutti/src/net.rs`, driven by
-//! `bevy-tutti/src/export/run.rs`).
-//!
-//! # Where a forked unit comes from: [`ForkSource`]
-//!
-//! `Net` forked by cloning the running units, which is only possible because
-//! it kept a frontend copy of every one. The graph keeps none: once a unit is
-//! inserted it belongs to the executor, on the audio thread. So a node that
-//! can be forked hands the editor a **fork source** when it is inserted
-//! ([`IntoNode::into_parts`](crate::IntoNode::into_parts)), a control-side
-//! object that can produce a fresh unit on demand; the editor keeps one per
-//! key. A node that hands none is not forkable, and forking a graph that
-//! contains it is [`ForkError::NotForkable`] naming its key — never a copy
-//! that quietly shares its state with the live node.
-//!
-//! [`Legacy`](crate::Legacy) gives one to every `AudioUnit` that says it can be
-//! forked (`AudioUnit::forkable`, a promise that `isolate` severs all its
-//! shared mutable state — the fork trusts it). Its fork is, per
-//! fundsp's own sequence, a clone of the unit, then `AudioUnit::isolate`
-//! (severs whatever live input the clone shares: a MIDI inbox, a command
-//! channel, a param cell), then — offline only — `AudioUnit::rebind_offline`
-//! with the caller's context (re-seats a transport-aware unit on the render's
-//! timeline; it must come after `isolate`, which would otherwise sever what it
-//! just bound), then `AudioUnit::reset`. What it clones is described on
-//! [`Legacy`](crate::Legacy): the isolated shadow of a
-//! [`Legacy::controlled`](crate::Legacy::controlled) node, which holds every
-//! setting sent to it, or a clone taken at insert for a plain one.
-//!
-//! # What a fork has, and what it does not
-//!
-//! - **The graph value** as the editor holds it — its [`spec`](Editor::spec),
-//!   including edits not yet committed, which is what the next commit would
-//!   install. Wiring, event edges, resolution marks, param modulation and
-//!   parameter values are copied; generations start again at 0 in the new
-//!   editor. A modulated param starts at its modulated value on the fork's
-//!   first frame (no declick, `src/param.rs`), and an event source driving
-//!   one starts at the ramp value the live unit holds, a ramp under way
-//!   carrying on from where it is.
-//! - **Fresh units** from each node's fork source, prepared for the fork's
-//!   own [`Prepare`] (a render may run at a different rate or block from the
-//!   device). Latency and tail are probed again at that `Prepare`, as a
-//!   re-prepare does, so a figure set with
-//!   [`set_latency`](Editor::set_latency) is not carried over — the unit
-//!   reports it again at the fork's rate.
-//! - **No state** but those ramps. PDC delay rings, feedback edges' captured
-//!   blocks and event FIFOs belong to the executor, and a fork gets a new
-//!   one: it starts
-//!   silent, exactly as a `Net` did after `net.reset()`. A feedback loop in a
-//!   fork does not carry the live loop's circulating signal. The executor's
-//!   clock starts at frame 0, and no scheduled command is copied.
-//! - **No controls, and no link back.** A forked node is driven by nothing
-//!   the live graph's handles reach; its [`LegacyControls`](crate::LegacyControls)
-//!   still steer the live node only. **A fork is not itself forkable**: its
-//!   nodes are inserted without fork sources (keeping one would cost every
-//!   forked unit a second clone, for an export that never needs it). Fork
-//!   the live editor again instead.
-//! - **No limits.** The pair is new, so [`Limits`](crate::Limits) start at
-//!   `NONE`; a host that runs a live duplicate sets its own.
-//!
-//! # When a forked unit fails
-//!
-//! A unit forked from outside the process — a hosted plugin, a fresh
-//! instance in a server of its own — can fail **while it renders**: its
-//! process dies, or stops answering. `Node::process` has no error channel,
-//! and silence is a valid output, so on its own such a render finishes and
-//! writes a silent file. So a source may hand over a [`ForkHealth`] probe
-//! with the unit ([`Forked::with_health`]); the forked editor keeps it, and
-//! [`Editor::fork_health`] reports the first [`ForkFault`] —
-//! [`ForkFaultKind::Crashed`] or [`ForkFaultKind::TimedOut`], separately.
-//! **A renderer of a fork checks it after rendering** and turns a fault into
-//! a failed render (tutti-export does: `Error::ForkFailed { key, kind, cause
-//! }`). A unit that faults keeps rendering silence without further
-//! waiting, so a failed render ends promptly.
-//!
-//! # [`ForkTarget::Node`]: the sub-graph feeding one node
-//!
-//! The fork holds the node and **exactly** what feeds it — every node it
-//! reaches walking back along audio edges, feedback edges and event edges —
-//! and nothing else: a sibling branch that does not feed it is not forked
-//! (and so need not be forkable). The fork's global outputs all read the
-//! node, by `Net::clone_isolated`'s rule: output channel `c` reads the
-//! node's port `min(c, outs - 1)`, so a mono node fans out to every channel
-//! and a wider graph **clamps** its extra channels to the node's last port
-//! (stereo into six is L R R R R R). That differs on purpose from
-//! `pipe_output`'s wrap (`c % outs`, see [`GraphBuilder`](crate::GraphBuilder)):
-//! it is what the export this replaces rendered, and a test pins it against
-//! `Net` itself. The fork keeps the live graph's global input width.
+//! The rules are documented on [`Editor::fork`].
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -107,8 +19,8 @@ use crate::node::{IntoNode, Node, NodeParts, Prepare};
 use crate::spec::EventIn;
 
 /// Produces a fresh unit for a fork of the graph its node was inserted into:
-/// a per-node capability the [`Editor`] keeps from insert on. See the `fork`
-/// module's docs (`src/fork.rs`).
+/// a per-node capability the [`Editor`] keeps from insert on (see
+/// [`Editor::fork`]).
 ///
 /// Control thread only, and never touches the live unit's audio — which is on
 /// the audio thread by the time this is called. (A source may *ask* the live
@@ -144,7 +56,7 @@ impl Forked {
         Self { node, health: None }
     }
 
-    /// Attach `health`.
+    /// Attaches `health`.
     pub fn with_health(mut self, health: Arc<dyn ForkHealth>) -> Self {
         self.health = Some(health);
         self
@@ -220,13 +132,13 @@ impl Error for ForkFault {
 pub struct ForkCause(Arc<dyn Error + Send + Sync + 'static>);
 
 impl ForkCause {
-    /// Wrap a source's error.
+    /// Wraps a source's error.
     pub fn new(error: impl Error + Send + Sync + 'static) -> Self {
         Self(Arc::new(error))
     }
 
-    /// Wrap an error already shared, as a unit's
-    /// [`RenderFault`](tutti_node::RenderFault) hands one over.
+    /// Wraps an error already shared, as a hosted plugin's fault latch hands
+    /// one over.
     pub fn from_arc(error: Arc<dyn Error + Send + Sync + 'static>) -> Self {
         Self(error)
     }
@@ -271,9 +183,8 @@ pub enum ForkMode<'a> {
     /// An offline render: isolated, then rebound onto the render's
     /// timeline, then reset.
     ///
-    /// Typed: the timeline is the one shape every unit's
-    /// `AudioUnit::rebind_offline` takes, [`OfflineTransport`]. It was a
-    /// `&dyn Any` each unit downcast, and a context of any other type (a
+    /// Typed: the timeline is one shape, [`OfflineTransport`], for every
+    /// [`ForkSource`] that reads it. It was a `&dyn Any` each unit downcast, and a context of any other type (a
     /// reference to a reference, the timeline inside it) silently rebound
     /// nothing; it is now a compile error:
     ///
@@ -308,7 +219,7 @@ pub enum ForkTarget {
     /// forkable.
     Master,
     /// The sub-graph feeding this node, with every global output reading it
-    /// (see "`ForkTarget::Node`" in the `fork` module's docs).
+    /// (see "Forking one node" on [`Editor::fork`]).
     Node(NodeKey),
 }
 
@@ -317,15 +228,9 @@ pub enum ForkTarget {
 pub enum ForkError {
     /// A node the fork needs has no [`ForkSource`] for the unit now at its
     /// key: it was inserted as something that did not hand one over (an
-    /// [`Unforkable`] node, a `Legacy` built
-    /// [`unforkable`](crate::Legacy::unforkable) or whose unit says
-    /// `AudioUnit::forkable() == false` — a mic monitor, a plugin), or its
+    /// [`Unforkable`] node — a mic monitor, a live disk voice), or its
     /// generation moved on without a new source. The first such key, in
     /// key order.
-    ///
-    /// A `Legacy`'s forkability means **trusting `AudioUnit::isolate`**: the
-    /// unit's `forkable()` promises that `isolate` severs all its shared
-    /// mutable state, and the fork is only as separate as that promise.
     NotForkable {
         /// The node.
         key: NodeKey,
@@ -337,7 +242,6 @@ pub enum ForkError {
     },
     /// [`ForkTarget::Node`] names a node with no audio outputs, or the graph
     /// has no global outputs to point at it: there is nothing to render
-    /// (`Net::clone_isolated` returned `None` for the first).
     NoOutputs {
         /// The node.
         key: NodeKey,
@@ -381,19 +285,17 @@ impl Error for ForkError {
     }
 }
 
-/// A native [`Node`] inserted **forkably, by clone**: its [`IntoNode`] hands
+/// A [`Node`] inserted **forkably, by clone**: its [`IntoNode`] hands
 /// the editor a [`ForkSource`] that clones the node as it was inserted, then
 /// [`reset`](Node::reset)s it.
 ///
 /// For a node whose `Clone` shares nothing with the original — no `Arc` cell,
 /// no channel end, no handle onto live state — so a clone *is* a fork. The
-/// wrapper is the caller's promise of that, as `AudioUnit::forkable` is a
-/// `Legacy` unit's: a `Clone` bound alone says nothing about sharing, so no
-/// node is forkable by clone unless inserted this way (a bare [`Node`] is not
-/// an [`IntoNode`] at all; see [`Unforkable`] for the other answer). A
-/// generator that
-/// reads only its block's [`Env`](crate::Env) (tutti-core's `EnvClock`)
-/// needs no rebinding offline: the fork's renderer hands it the render's
+/// wrapper is the caller's promise of that: a `Clone` bound alone says
+/// nothing about sharing, so no node is forkable by clone unless inserted
+/// this way (a bare [`Node`] is not an [`IntoNode`] at all; see
+/// [`Unforkable`] for the other answer). A generator that reads only its
+/// block's [`Env`](crate::Env) (a click, an LFO) needs no rebinding offline: the fork's renderer hands it the render's
 /// transport.
 ///
 /// ```
@@ -451,7 +353,7 @@ impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
     }
 }
 
-/// A native [`Node`] inserted **refusing every fork**: its [`IntoNode`] hands
+/// A [`Node`] inserted **refusing every fork**: its [`IntoNode`] hands
 /// the editor no [`ForkSource`], so a fork that needs it is
 /// [`ForkError::NotForkable`] naming its key, never a copy that shares its
 /// state.
@@ -526,11 +428,84 @@ impl Editor {
     /// The live graph is not touched: this reads the spec and the fork
     /// sources, and sends nothing.
     ///
-    /// See the `fork` module's docs (`src/fork.rs`) for what is copied, what
-    /// is not (delay and feedback state: a fork starts silent), and the
-    /// output rule for [`ForkTarget::Node`]. Every node the fork needs must
-    /// be forkable, or this is [`ForkError::NotForkable`] naming it, checked
-    /// before any unit is forked.
+    /// Use it for an offline export rendered on a worker thread while the
+    /// live graph plays, or for a live duplicate. Control thread; allocates.
+    ///
+    /// # Where a forked unit comes from
+    ///
+    /// Once a unit is inserted it belongs to the executor, so the graph keeps
+    /// no copy of it. A node that can be forked hands the editor a
+    /// [`ForkSource`] when it is inserted
+    /// ([`IntoNode::into_parts`](crate::IntoNode::into_parts)): a
+    /// control-side object that produces a fresh unit on demand. The sources
+    /// this crate provides are [`ForkByClone`] (a clone taken at insert, for
+    /// a node whose `Clone` shares nothing) and
+    /// [`ParamFork`](crate::ParamFork) (a [`ParamNode`](crate::ParamNode)
+    /// rebuilt from the values last set through its
+    /// [`ParamSet`](crate::ParamSet)); a node may bring its own (a hosted
+    /// plugin's state transfer). A node inserted as [`Unforkable`] has none,
+    /// and a fork that needs it fails with [`ForkError::NotForkable`] —
+    /// never a copy that quietly shares state with the live node. A graph
+    /// node reads time from its block's [`Env`](crate::Env), so a fork has
+    /// nothing to rebind: the fork's renderer hands it the render's
+    /// transport.
+    ///
+    /// # What a fork has, and what it does not
+    ///
+    /// - **The graph value** as this editor holds it — its
+    ///   [`spec`](Self::spec), including edits not yet committed. Wiring,
+    ///   event edges, resolution marks, param modulation and parameter values
+    ///   are copied; generations start again at 0. A modulated param starts
+    ///   at its modulated value on the fork's first frame (no declick), and
+    ///   an event source driving one starts at the ramp value the live unit
+    ///   holds, a ramp under way carrying on from where it is.
+    /// - **Fresh units** from each node's fork source, prepared for
+    ///   `prepare` (a render may run at a different rate or block size from
+    ///   the device). Latency and tail are probed again at that `Prepare`, so
+    ///   a figure set with [`set_latency`](Self::set_latency) is not carried
+    ///   over.
+    /// - **No state** but those ramps. Delay rings, feedback edges' captured
+    ///   blocks and event FIFOs start silent, so a feedback loop in a fork
+    ///   does not carry the live loop's circulating signal. The executor's
+    ///   clock starts at frame 0, and no scheduled command is copied.
+    /// - **No controls, and no link back.** A node's controls still steer the
+    ///   live node only. **A fork is not itself forkable**: its nodes are
+    ///   inserted without fork sources. Fork the live editor again instead.
+    /// - **No limits.** [`Limits`](crate::Limits) start at `NONE`; a host
+    ///   that runs a live duplicate sets its own.
+    ///
+    /// # Forking one node
+    ///
+    /// [`ForkTarget::Node`] forks the node and **exactly** what feeds it —
+    /// every node it reaches walking back along audio, feedback and event
+    /// edges — and nothing else: a sibling branch that does not feed it need
+    /// not be forkable. Every global output of the fork reads the node:
+    /// output channel `c` reads the node's port `min(c, outs - 1)`, so a mono
+    /// node fans out to every channel and a wider graph **clamps** its extra
+    /// channels to the node's last port (stereo into six is L R R R R R).
+    /// That differs on purpose from [`GraphBuilder::pipe_output`](crate::GraphBuilder::pipe_output)'s wrap
+    /// (`c % outs`). The fork keeps the live graph's global input width.
+    ///
+    /// # When a forked unit fails
+    ///
+    /// A unit forked from outside the process — a hosted plugin in a server
+    /// of its own — can fail **while it renders**, and silence is a valid
+    /// output, so on its own such a render would finish and write a silent
+    /// file. A source may therefore hand over a [`ForkHealth`] probe with the
+    /// unit ([`Forked::with_health`]), and [`fork_health`](Self::fork_health)
+    /// on the forked editor reports the first [`ForkFault`]. **A renderer of
+    /// a fork checks it after rendering** and turns a fault into a failed
+    /// render. A unit that faults keeps rendering silence without further
+    /// waiting, so a failed render ends promptly.
+    ///
+    /// # Errors
+    ///
+    /// Nothing is built when this fails. [`ForkError::NotForkable`] names the
+    /// first node the fork needs that has no fork source (checked before any
+    /// unit is forked); [`ForkError::NoSuchNode`] and [`ForkError::NoOutputs`]
+    /// reject a [`ForkTarget::Node`] with nothing to render; and a source that
+    /// fails, or a copy that does not compile, is reported as the matching
+    /// variant.
     pub fn fork(
         &self,
         target: ForkTarget,
@@ -559,7 +534,7 @@ impl Editor {
                 if outs == 0 || live.topology.outputs.is_empty() {
                     return Err(ForkError::NoOutputs { key });
                 }
-                // `Net::clone_isolated`'s rule: clamp, not wrap (module docs).
+                // Clamp, not wrap (see `Editor::fork`'s docs).
                 let outputs = (0..live.topology.outputs.len())
                     .map(|c| {
                         Source::Node(OutPort {
@@ -663,11 +638,16 @@ impl Editor {
     /// what the graph describes: the first [`ForkFault`] in key order, or
     /// `Ok`. Always `Ok` on an editor that was not made by
     /// [`fork`](Self::fork), and on a fork whose units cannot fail at run
-    /// time. See "When a forked unit fails" in the `fork` module docs.
+    /// time. See "When a forked unit fails" on [`fork`](Self::fork).
     ///
     /// A renderer checks it **after** rendering (and may between spans): a
     /// fault means the output past some point is silence, and the render must
     /// be reported as failed, not written as if it had succeeded.
+    ///
+    /// # Errors
+    ///
+    /// The first [`ForkFault`] reported by a forked unit's health probe, in
+    /// key order.
     pub fn fork_health(&self) -> Result<(), ForkFault> {
         let mut probes: Vec<_> = self.fork_probes().iter().collect();
         probes.sort_by_key(|(key, _)| *key);

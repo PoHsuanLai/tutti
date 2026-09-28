@@ -1,8 +1,7 @@
 //! Golden decode digests for the committed fixtures in `assets/audio/`.
 //!
-//! Pins what the engine's decode path produces, bit for bit, so that moving
-//! the decoder out of the fundsp fork (design doc 013, Phase 0) can be shown to
-//! change nothing. Every sample of every channel is folded into an FNV-1a
+//! Pins what the engine's decode path produces, bit for bit, so any change to
+//! it shows up here. Every sample of every channel is folded into an FNV-1a
 //! digest over its `f32` bit pattern — a tolerance would let a changed
 //! conversion or a dropped packet through.
 //!
@@ -73,11 +72,6 @@ fn stream_digest(name: &str) -> (u64, usize) {
 
 /// `(file, load digest, streamed digest)`. The lossy rows are asserted only
 /// where they were recorded; see [`bit_portable`].
-///
-/// Recorded from the fundsp fork's decoder (`fundsp::read` / `fundsp::stream`,
-/// reached as `tutti_core::{Wave, FileIn}`) before the decoder moved to this
-/// crate; this file was written against that path first and then moved, so
-/// these rows are the fork's output and the rehomed decoder reproduces them.
 ///
 /// Mutation: shortening every decoded packet by one frame in the shared
 /// packet-decode helper changes every row that has audio (checked).

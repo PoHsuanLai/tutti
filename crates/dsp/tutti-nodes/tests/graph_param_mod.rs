@@ -1,39 +1,28 @@
 //! This crate's modulatable nodes under the graph's compiler-owned param
-//! modulation (design doc 013 item 6), run as they run in an engine: each
-//! through `Legacy`, its params fed per 64-frame chunk through its
-//! `ParamFeed`.
+//! modulation, run as they run in an engine: a node reading its param ports
+//! through `Io::param`.
 //!
-//! These replace the tests of the per-param sub-graph the graph made
-//! obsolete (`AtomicSourceNode → ParamSumNode ← ParamShaperNode`, wired into
-//! extra input channels a node had to be born with): `born_with_ports.rs`,
-//! `param_writer_ownership.rs`, `audio_rate_param_mod.rs` and
-//! `idle_chain_cost.rs`. What each pinned, and where it went:
+//! What is pinned:
 //!
-//! - "an unfed port reads the param as 0", "the base chain is mandatory",
-//!   "the idle chain costs two nodes per param": gone by construction — an
-//!   unconnected param reads its base (`tutti-graph`'s
+//! - an unconnected param reads its base (`tutti-graph`'s
 //!   `an_unconnected_param_reads_its_base_never_zero`), and an unmodulated
 //!   param adds nothing to the plan
 //!   (`an_unmodulated_param_adds_nothing_to_the_plan`, below);
-//! - "the port a node advertises is the one its DSP reads, at every width"
-//!   (`param_ports.rs`): `each_fed_param_is_the_one_the_dsp_reads`, below;
-//! - "the edge changes what the node produces", "the sum folds base + N
-//!   offsets and clamps", "a crossed range is survivable", "the shaper
-//!   agrees with the control-rate shaping": below, and
-//!   `param_mod_oracle.rs` (bit for bit against the old nodes);
-//! - "the authored value must land on the sum's base cell", "control rate
-//!   and audio rate share one base cell": the base is now the node's own
-//!   control, so an authored write — or a control-rate target mirroring
-//!   into that cell — moves the modulated param
-//!   (`an_authored_write_moves_the_base_under_modulation`);
-//! - "a param port is clobbered by `pipe_input`", "N edges land on ports
-//!   1..N": no ports, so nothing to clobber or number.
+//! - the port a node advertises is the one its DSP reads, at every width:
+//!   `each_fed_param_is_the_one_the_dsp_reads`, below;
+//! - the edge changes what the node produces, the sum folds base + N offsets
+//!   and clamps, a crossed range is survivable, and the shaper agrees with
+//!   the control-rate shaping: below, and `param_mod_oracle.rs` (bit for bit
+//!   against a reference chain);
+//! - the base is the node's own control, so an authored write — or a
+//!   control-rate target mirroring into that cell — moves the modulated
+//!   param (`an_authored_write_moves_the_base_under_modulation`).
 
 use std::sync::atomic::Ordering;
 
-use tutti_core::AudioUnit;
 use tutti_graph::{
-    GraphBuilder, ParamFrom, ParamIn, ParamRange, ParamShaping, Prepare, Renderer, PARAM_DECLICK,
+    GraphBuilder, IntoNode, NodeParts, ParamFrom, ParamIn, ParamRange, ParamShaping, Prepare,
+    Renderer, PARAM_DECLICK,
 };
 use tutti_nodes::testing::Const;
 use tutti_nodes::{
@@ -62,11 +51,15 @@ fn noise(seed: u32) -> Vec<f32> {
 /// `node` with every input on a global input carrying noise, its outputs
 /// the graph's, and — when `fed` — `param` driven to exactly `v` by a
 /// constant source through a degenerate range (`v..=v`), whatever the base.
-/// Renders `FRAMES` in 100-frame blocks (so `Legacy` chunks 64 + 36).
-fn render(node: Box<dyn AudioUnit>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
-    let (ins, outs) = (node.inputs(), node.outputs());
+/// Renders `FRAMES` in 100-frame blocks (not a multiple of 64).
+fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
+    let shape = node.node.shape();
+    let (ins, outs) = (
+        usize::from(shape.audio_in.count()),
+        usize::from(shape.audio_out.count()),
+    );
     let mut g = GraphBuilder::new(ChannelLayout::from(ins), ChannelLayout::from(outs));
-    let n = g.add_unit(node);
+    let n = g.add(node);
     for c in 0..ins {
         g.connect_input(c, n, c);
     }
@@ -74,7 +67,7 @@ fn render(node: Box<dyn AudioUnit>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f3
         g.connect_output(n, c, c);
     }
     if let Some((param, v)) = fed {
-        let src = g.add_unit(Box::new(Const::mono(0.0)));
+        let src = g.add(Const::mono(0.0));
         let at = ParamIn { node: n, param };
         g.spec_mut().connect_param(
             at,
@@ -91,13 +84,23 @@ fn render(node: Box<dyn AudioUnit>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f3
     r.render_input(&refs)
 }
 
+/// A node's parts, its controls dropped.
+fn parts_of<N: IntoNode>(node: N) -> NodeParts<()> {
+    let NodeParts { node, fork, .. } = node.into_parts();
+    NodeParts {
+        node,
+        controls: (),
+        fork,
+    }
+}
+
 /// One modulatable param of one node type: how to build the node at a
 /// width with the param's control at `v` (or its default), and two values
 /// far enough apart to be heard.
 struct Case {
     name: &'static str,
     param: UnitParam,
-    make: fn(usize, Option<f32>) -> Box<dyn AudioUnit>,
+    make: fn(usize, Option<f32>) -> NodeParts<()>,
     lo: f32,
     hi: f32,
 }
@@ -132,7 +135,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_frequency(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: 200.0,
             hi: 8_000.0,
@@ -145,7 +148,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_q(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: 0.5,
             hi: 8.0,
@@ -158,7 +161,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_frequency(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: 200.0,
             hi: 8_000.0,
@@ -171,7 +174,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_resonance(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: 0.0,
             hi: 0.9,
@@ -184,7 +187,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_drive(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: 1.0,
             hi: 8.0,
@@ -197,7 +200,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_feedback(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: 0.0,
             hi: 0.9,
@@ -210,7 +213,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_delay_time(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: 0.0002,
             hi: 0.0008,
@@ -223,7 +226,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_drive(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: 0.5,
             hi: 5.0,
@@ -236,7 +239,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: -40.0,
             hi: 0.0,
@@ -249,7 +252,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: -60.0,
             // Above the noise's peak: the gate stays shut.
@@ -263,7 +266,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_ceiling(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: -12.0,
             hi: -0.3,
@@ -276,7 +279,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: -20.0,
             hi: -1.0,
@@ -289,7 +292,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_ceiling(v);
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: -12.0,
             hi: 0.0,
@@ -302,7 +305,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_volume(Amplitude(v));
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: 0.2,
             hi: 0.9,
@@ -315,7 +318,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_pan(tutti_types::Pan(v));
                 }
-                Box::new(n)
+                parts_of(n)
             },
             lo: -1.0,
             hi: 1.0,
@@ -340,12 +343,12 @@ fn settled(out: &[Vec<f32>]) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
 /// The port of `param_ports.rs`' "the advertised port is the one the DSP
 /// reads at every width".
 ///
-/// Mutation (run): in the SVF's `process`, read the fed Q as its cutoff
-/// (`feed.get(1, …)` for `feed.get(0, …)`) → "svf cutoff" sounds nothing
-/// like a cutoff → fails. Declare `DELAY_PARAMS` in the other order →
+/// Mutation (run): in the SVF's `process`, read the Q port as its cutoff
+/// (`io.param(1)` for `io.param(0)`) → "svf cutoff" sounds nothing like a
+/// cutoff → fails. Declare `DELAY_PARAMS` in the other order →
 /// fails. (A swapped `param_base` is not seen here, since the degenerate
-/// range drives the value whatever the base: the node's own
-/// `the_feed_declares_*` tests pin the bases.)
+/// range drives the value whatever the base: the nodes' own
+/// `the_feed_declares_*` / `the_shape_is_*` tests pin the bases.)
 #[test]
 fn each_fed_param_is_the_one_the_dsp_reads() {
     for w in [1usize, 2, 6] {
@@ -383,7 +386,7 @@ fn each_fed_param_is_the_one_the_dsp_reads() {
 /// output of a modulated drive, from the unmodulated node.
 fn plain_distortion(d: f32) -> Vec<f32> {
     render(
-        Box::new(DistortionNode::with_channels(1, ShapeKind::Tanh, d)),
+        parts_of(DistortionNode::with_channels(1, ShapeKind::Tanh, d)),
         None,
     )
     .remove(0)
@@ -402,8 +405,8 @@ fn an_authored_write_moves_the_base_under_modulation() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let cell = node.drive();
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let n = g.add_unit(Box::new(node));
-    let src = g.add_unit(Box::new(Const::mono(0.5)));
+    let (n, _) = g.add_with_controls(node);
+    let src = g.add(Const::mono(0.5));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     g.spec_mut().connect_param(
         ParamIn {
@@ -444,8 +447,8 @@ fn an_authored_write_moves_the_base_under_modulation() {
 fn a_crossed_range_is_survivable() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let n = g.add_unit(Box::new(node));
-    let src = g.add_unit(Box::new(Const::mono(100.0)));
+    let (n, _) = g.add_with_controls(node);
+    let src = g.add(Const::mono(100.0));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let at = ParamIn {
         node: n,
@@ -479,8 +482,8 @@ fn a_crossed_range_is_survivable() {
 fn an_unmodulated_param_adds_nothing_to_the_plan() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let n = g.add_unit(Box::new(node));
-    let src = g.add_unit(Box::new(Const::mono(4.0)));
+    let (n, _) = g.add_with_controls(node);
+    let src = g.add(Const::mono(4.0));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let mut r: Renderer = g
         .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
@@ -547,8 +550,8 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
 fn a_fork_modulates_as_the_live_graph_does() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let n = g.add_unit(Box::new(node));
-    let src = g.add_unit(Box::new(Const::mono(2.0)));
+    let (n, _) = g.add_with_controls(node);
+    let src = g.add(Const::mono(2.0));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     g.spec_mut().connect_param(
         ParamIn {

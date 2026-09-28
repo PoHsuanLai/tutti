@@ -502,11 +502,8 @@ impl Session {
 
     /// Always answers, so the host's waiting caller is never left guessing.
     ///
-    /// Previously this replied only on failure, and did so with a
-    /// fire-and-forget `BridgeMessage::Error` that no caller was waiting on —
-    /// while the host's dispatcher fabricated its own `true`. Now every path
-    /// produces a `StateLoaded`, including "no plugin loaded", which is a
-    /// refusal rather than a silence.
+    /// Every path produces a `StateLoaded`, including "no plugin loaded",
+    /// which is a refusal rather than a silence.
     /// Accumulate one `LoadStateChunk`, applying the state once `last` lands.
     ///
     /// Answers **only** on the final chunk (or on a failure): a `StateLoaded`
@@ -771,8 +768,7 @@ mod tests {
     #[cfg(feature = "clap")]
     /// The reference CLAP plugin, built as a dev-dependency by this same
     /// `cargo test` run. Resolved rather than hard-coded so these tests run on
-    /// any machine — this used to name an absolute macOS path to a third-party
-    /// plugin, which failed everywhere else.
+    /// any machine.
     ///
     /// Uses the `.clap`-suffixed link: these tests load through
     /// `HostMessage::LoadPlugin`, which picks the format from the file

@@ -29,7 +29,7 @@ struct Sender {
 }
 
 impl AlsaOutput {
-    /// Send one UMP message, surfacing the real error.
+    /// Sends one UMP message, surfacing the real error.
     ///
     /// The inherent-method-plus-thin-trait-impl idiom: a caller holding the
     /// concrete type gets the ALSA code, while the erased [`MidiOut`] keeps the
@@ -113,7 +113,7 @@ impl MidiOut for AlsaOutput {
     }
 }
 
-/// Open `id` for output.
+/// Opens `id` for output.
 ///
 /// # Errors
 ///

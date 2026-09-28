@@ -98,9 +98,9 @@ impl VbapPanner {
     /// - `azimuth`: Horizontal angle (-180 to 180, 0 = front, 90 = left, -90 = right)
     /// - `elevation`: Vertical angle (-90 to 90, 0 = ear level, positive = up)
     pub(crate) fn set_position(&mut self, azimuth: Azimuth, elevation: Elevation) {
-        // Azimuth WRAPS, elevation SATURATES. These two lines used to be the
-        // same `clamp`, which is right for a height and wrong for a bearing:
-        // 190 degrees became 180 (hard left) when it is 170 to the right.
+        // Azimuth WRAPS, elevation SATURATES. A `clamp` is right for a height
+        // and wrong for a bearing: 190 degrees is 170 to the right, not 180
+        // (hard left).
         //
         // The atomics stay raw `f32`: they are the lock-free control→RT
         // boundary, which a newtype cannot cross. Normalizing here means the
@@ -182,7 +182,7 @@ impl VbapPanner {
     /// energy — and where every gain is negative it is discarded entirely and
     /// the source is silent.
     ///
-    /// Measured before this correction: a stereo pair held unity to 30°, then
+    /// Measured without this correction: a stereo pair held unity to 30°, then
     /// decayed (0.933 at 45°, 0.500 at 90°, 0.067 at 135°) and was **completely
     /// silent from 150° through 210°**. Atmos 7.1.4 leaked energy in the
     /// horizontal plane too — 0.800 dead ahead, 0.661 at 120°.
@@ -322,18 +322,17 @@ impl VbapPanner {
     /// the two channels become two virtual sources one `width`-scaled offset
     /// either side of the bearing.
     ///
-    /// # Spread applies to both virtual sources, and used not to
+    /// # Spread applies to both virtual sources
     ///
-    /// The `width > 0` branch once called the upstream solver directly and
-    /// never reached [`apply_spread`](Self::apply_spread), so a spread set on a
-    /// node fed any non-zero width silently did nothing — a parameter the
-    /// inspector shows, the document saves and the engine ignores. `width` and
+    /// The `width > 0` branch must reach [`apply_spread`](Self::apply_spread)
+    /// too, or a spread set on a node fed any non-zero width would silently do
+    /// nothing. `width` and
     /// `spread` are orthogonal: width says how far apart the two virtual
     /// sources sit, spread how far each one is smeared across the speaker
     /// field, so neither may suppress the other. Both go through
     /// [`source_gains`](Self::source_gains), which also gives each virtual
     /// source unit energy on its own — without that, the width branch would
-    /// reintroduce exactly the rear-arc silence the mono branch no longer has.
+    /// reintroduce the rear-arc silence the mono branch avoids.
     /// Covered by `tests/vbap_energy_sweep.rs::spread_reaches_the_stereo_width_path`.
     fn frame_gains(
         &mut self,
@@ -374,17 +373,15 @@ impl VbapPanner {
     /// Advance the de-zipper `frames` steps and solve the gains **once**, at
     /// the block's last frame.
     ///
-    /// The smoother still steps once per frame, exactly as when the gains were
-    /// solved per frame, so the 50 ms ramp keeps its timing and the returned
-    /// set is bit-for-bit the one the per-frame solver produced at that frame.
-    /// What changed is only that the frames in between are no longer solved:
-    /// the node ramps linearly towards this set instead (design doc 013,
-    /// "`VbapPannerNode` `process`" — two VBAP solves per frame was the
-    /// largest per-node waste it found).
+    /// The smoother still steps once per frame, so the 50 ms ramp keeps its
+    /// timing and the returned set is bit-for-bit what a per-frame solve would
+    /// produce at that frame. The frames in between are not solved: the node
+    /// ramps linearly towards this set instead, which saves two VBAP solves
+    /// per frame.
     ///
-    /// The target atomics are read once here. The per-frame path read them
-    /// every frame, but they are written once per block (by the node's
-    /// `sync_position`), so every frame saw the same value.
+    /// The target atomics are read once here: they are written once per block
+    /// (by the node's `sync_position`), so every frame would see the same
+    /// value.
     pub(crate) fn solve_block(&mut self, width: StereoWidth, frames: usize) -> BlockGains {
         let target_azimuth = Azimuth(self.azimuth_target.load(Ordering::Acquire));
         let target_elevation = Elevation(self.elevation_target.load(Ordering::Acquire));
@@ -438,9 +435,9 @@ mod tests {
 
     #[test]
     fn the_stereo_spread_wraps_instead_of_leaving_the_canonical_range() {
-        // Near the rear seam at full width, one source crosses 180. It used to
-        // be computed as a raw `f32` sum and handed to vbap as 185 degrees —
-        // outside the -180..180 range every other path maintains.
+        // Near the rear seam at full width, one source crosses 180. A raw
+        // `f32` sum would hand vbap 185 degrees, outside the -180..180 range
+        // every other path maintains.
         let (a, b) = virtual_sources(Azimuth(170.0), 1.0);
         assert_eq!(a, Azimuth(-175.0));
         assert_eq!(b, Azimuth(155.0));
@@ -464,8 +461,7 @@ mod tests {
     #[test]
     fn the_spread_is_symmetric_about_the_bearing_away_from_the_seam() {
         // Front and centre: no wrapping involved, so the two sources should
-        // straddle the bearing by exactly the offset. This is what the old
-        // arithmetic got right, and it must keep working.
+        // straddle the bearing by exactly the offset.
         let (a, b) = virtual_sources(Azimuth::FRONT, 1.0);
         assert_eq!(a, Azimuth(15.0));
         assert_eq!(b, Azimuth(-15.0));

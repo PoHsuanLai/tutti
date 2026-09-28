@@ -31,17 +31,17 @@ thread_local! {
     static OBSERVER: RefCell<Option<Observer>> = const { RefCell::new(None) };
 }
 
-/// Install an observer for the current thread, replacing any previous one.
+/// Installs an observer for the current thread, replacing any previous one.
 pub fn set_observer(f: Observer) {
     OBSERVER.with(|o| *o.borrow_mut() = Some(f));
 }
 
-/// Remove the current thread's observer.
+/// Removes the current thread's observer.
 pub fn clear_observer() {
     OBSERVER.with(|o| *o.borrow_mut() = None);
 }
 
-/// Hand the built `ProcessData` to the installed observer. Called by
+/// Hands the built `ProcessData` to the installed observer. Called by
 /// `Vst3Active::process` just before the plugin sees it.
 ///
 /// Borrow-safe against re-entrancy: an observer that somehow drove `process`

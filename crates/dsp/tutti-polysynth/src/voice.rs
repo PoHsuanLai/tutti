@@ -60,13 +60,13 @@ impl Default for MpeVoiceState {
 }
 
 impl MpeVoiceState {
-    /// Reset (S): controllers back to defaults; the voice keeps responding.
+    /// Resets (S): controllers back to defaults; the voice keeps responding.
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 
-    /// Detach (D): stop responding to further per-note controllers, but hold the
-    /// current values until the note ends.
+    /// Detaches (D): stops responding to further per-note controllers, but
+    /// holds the current values until the note ends.
     pub fn detach(&mut self) {
         self.detached = true;
     }
@@ -381,7 +381,7 @@ impl VoiceAllocator {
         }
     }
 
-    /// Process a note-off for `id`. Returns the slot whose voice should now be
+    /// Processes a note-off for `id`. Returns the slot whose voice should now be
     /// gated off (the note actually stopped sounding), or `None` when the note
     /// is held by sustain/sostenuto or no live voice matched `id`. The caller
     /// gates the returned slot's voice directly — no note/channel re-scan.

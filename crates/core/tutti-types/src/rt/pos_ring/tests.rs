@@ -69,16 +69,14 @@ fn a_write_never_goes_round_the_ring_onto_the_reader() {
 /// reading `[3 997, 4 069)` whose jump copy reads `[100, 200)` keeps both
 /// — the writer stops at 4 196, the first position whose slot is 100's —
 /// while it writes the block's own positions freely. And the window still
-/// holds 100..: the write took out only what it overwrote (the review of
-/// `PosRing`, B1: the start was raised to 204 for the 300 frames asked for,
-/// and left there when the write stopped at 196, so the block's jump copy
-/// was lost to the window).
+/// holds 100..: the write took out only what it overwrote, not the 204
+/// frames a raise for the full 300 asked for would have.
 ///
 /// Mutation (run): the alias check removed → 4 196.. overwrite 100.. →
 /// fails. Mutation (run): a position *in* the range counted as its own
 /// alias → the writer stops at once → fails. Mutation (run): the final
-/// window's start the raise's, with no first cap from the ranges (the
-/// shipped code) → the window no longer holds 150 → fails.
+/// window's start the raise's, with no first cap from the ranges → the
+/// window no longer holds 150 → fails.
 #[test]
 fn a_write_never_reuses_a_slot_the_block_in_flight_reads() {
     let (mut writer, mut reader) = ring(4_096, 1, 4);
@@ -90,17 +88,16 @@ fn a_write_never_reuses_a_slot_the_block_in_flight_reads() {
     assert!(writer.window().holds(150), "the jump copy left the window");
 }
 
-/// **A write cut short takes out of the window only what it overwrote**
-/// (the review of `PosRing`, B1). A block claims `[10, 14)` and `[2, 5)` of
-/// a full ring of 16; a push of 8 is cut to 2 by 2's alias at 18, so the
-/// window must still hold 2.. — and a reset then counts 2..5 as stale, so
-/// the rewrite at 2 waits for the reader. The shipped code raised the start
-/// to 8 for the 8 asked for and kept it, so the reset did not count 2..5
-/// and the rewrite landed under the claim.
+/// **A write cut short takes out of the window only what it overwrote**. A
+/// block claims `[10, 14)` and `[2, 5)` of a full ring of 16; a push of 8 is
+/// cut to 2 by 2's alias at 18, so the window must still hold 2.. — and a
+/// reset then counts 2..5 as stale, so the rewrite at 2 waits for the reader.
+/// Raising the start to 8 for the 8 asked for, and keeping it, would leave
+/// 2..5 uncounted and let the rewrite land under the claim.
 ///
-/// Mutation (run): the shipped code (no first cap from the ranges, the
-/// final window's start the raise's) → the window is left at `[8, 18)` →
-/// fails (past that assertion, the review's repro: `sample(3)` is -9). (Single-threaded, the first cap from the
+/// Mutation (run): no first cap from the ranges, and the final window's start
+/// the raise's → the window is left at `[8, 18)` → fails (past that
+/// assertion, `sample(3)` is -9). (Single-threaded, the first cap from the
 /// ranges alone also keeps it: removing *only* the final start's fix is
 /// caught by the loom model
 /// `a_partly_capped_push_then_reset_keeps_the_claim`.)
@@ -123,18 +120,17 @@ fn a_capped_write_keeps_what_it_did_not_overwrite() {
     }
 }
 
-/// **A shrink does not free what a block in flight holds** (the second
-/// review of #48, B3): a block claims `[600, 680)` in the window `[0,
-/// 1 000)`; the writer retracts to 620 and pushes a rewrite — it must not
+/// **A shrink does not free what a block in flight holds**: a block claims
+/// `[600, 680)` in the window `[0, 1 000)`; the writer retracts to 620 and pushes a rewrite — it must not
 /// touch 620.. until the reader claims again, after which it may. The
 /// same for a reset below the old end.
 ///
 /// Mutation (run): the generation check removed from `push` → frame 650
 /// changes under the claim → fails. And a reset that moves the window
 /// away from a claim frees the new place at once: what it removed is the
-/// old window, not everything below its end (a first cut blocked a seek's
-/// refill until the reader claimed again, and the refill reset the window
-/// again every cycle). Mutation (run): `shrink` bumping the
+/// old window, not everything below its end (otherwise a seek's refill would
+/// wait for the reader's next claim, and reset the window again every
+/// cycle). Mutation (run): `shrink` bumping the
 /// generation *before* storing the window → no single-threaded change
 /// (the loom model `retract_then_push` catches the order).
 #[test]
@@ -202,8 +198,7 @@ fn raising_the_start_drops_what_lies_below() {
     assert_eq!(writer.push(&[-1.0; 100]), 100, "the refill was held");
 }
 
-/// **A reader that stops claiming holds nothing back** (the review of
-/// `PosRing`, S2): a block claims `[97, 169)`, the reader goes idle, the
+/// **A reader that stops claiming holds nothing back**: a block claims `[97, 169)`, the reader goes idle, the
 /// writer moves the window to where `97`'s slot comes round again and
 /// fills — at once, not after a claim that never comes.
 ///
@@ -229,11 +224,11 @@ fn an_idle_reader_holds_nothing_back() {
 
 /// `first_alias` against a brute-force search, over ranges before, around
 /// and after the write's start, near and across a lap of the ring — up to
-/// twice the ring's length (the review of `PosRing`, N5).
+/// twice the ring's length.
 ///
 /// Mutation (run): `a + n` returned as `a` for a range containing the
 /// start → fails. Mutation (run): the start inside a range longer than the
-/// ring answered `a + n` (the code before N5) → fails.
+/// ring answered `a + n` → fails.
 ///
 /// Under miri, every seventh `to` and `a` (still before, inside and past a
 /// lap): miri checks the arithmetic for UB, and the full sweep is the native

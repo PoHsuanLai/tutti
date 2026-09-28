@@ -73,9 +73,9 @@ impl Vst2Instance {
                 inputs: single_bus(host_meta.num_inputs),
                 outputs: single_bus(host_meta.num_outputs),
                 latency_samples: host_meta.latency_samples,
-                // Asked and decoded, rather than the `Unknown` this used to
-                // hardcode. The decode is `tutti-vst2-host`'s `decode_tail` and
-                // deliberately not `PluginTail::from_samples`: VST2 inverts the
+                // Asked and decoded. The decode is `tutti-vst2-host`'s
+                // `decode_tail` and deliberately not
+                // `PluginTail::from_samples`: VST2 inverts the
                 // convention, so `0` is "no information" where every other
                 // format means "no tail". `Unknown` remains the answer for a
                 // plugin that declines the opcode.
@@ -85,8 +85,8 @@ impl Vst2Instance {
                 // VST2 reports no speaker placement. `effSetSpeakerArrangement`
                 // (opcode 42) exists, but the `VstSpeakerArrangement` struct its
                 // ABI needs is not defined anywhere in the vendored bindings and
-                // the host never sends it — see D-11 in the plugin-host audit.
-                // Empty lists claim nothing about any bus, which is the honest
+                // the host never sends it. Empty lists claim nothing about any
+                // bus, which is the honest
                 // answer for a format that cannot be asked.
                 input_topology: Default::default(),
                 output_topology: Default::default(),

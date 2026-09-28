@@ -27,24 +27,36 @@ use crate::graph::{
 #[cfg(feature = "midi-hardware")]
 use crate::midi::MidiIoRes;
 #[cfg(feature = "midi")]
-use crate::midi::{ClockMasterRes, MidiBusRes, MidiOutSinkRes, MidiRoutingRes};
+use crate::midi::{ClockMasterRes, MidiEngineNodes, MpeModeRes};
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::MidiSession;
 #[cfg(feature = "midi")]
-use tutti_midi_runtime::{MidiBus, MidiPostBlock, MidiPreBlock};
-#[cfg(feature = "midi")]
-use tutti_midi_types::MidiRoutingTable;
+use tutti_midi_runtime::{ClockNode, MidiInputNode, MidiOutNode};
 
 #[cfg(feature = "sampler")]
 use crate::sampler::DiskStreamerRes;
 #[cfg(feature = "sampler")]
 use tutti_sampler::DiskStreamer;
 
-/// Build the engine from a [`TuttiPlugin`](crate::TuttiPlugin) config and insert
+/// Builds the engine from a [`TuttiPlugin`](crate::TuttiPlugin) config and inserts
 /// every subsystem resource into `app`. The audio callback is live on return.
 ///
-/// On `Err`, nothing is inserted — the `engine_ready` run-condition gates all
-/// engine-dependent systems, so the app proceeds without audio.
+/// [`TuttiPlugin`](crate::TuttiPlugin) calls this during plugin build (unless
+/// `disabled`) and records the outcome in
+/// [`AudioEngineState`](crate::AudioEngineState). It opens the output device
+/// (`plugin.output_device`, or the system default), builds the graph at the
+/// device's rate, and inserts [`AudioGraphRes`], [`AudioConfig`],
+/// [`TransportRes`], [`MetronomeRes`], [`MeteringRes`] (enabled),
+/// [`AudioTapRes`] (closed), [`EngineNodes`] and the [`TuttiDriver`] (as a
+/// non-send resource), plus the MIDI and sampler resources when those features
+/// are on.
+///
+/// # Errors
+///
+/// Returns an error when the device cannot be opened or started, or the graph
+/// cannot be built over it. On `Err`, nothing is inserted; the
+/// [`engine_ready`](crate::graph::engine_ready) run condition gates every
+/// engine-dependent system, so the app proceeds without audio.
 pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     build_on(
         plugin,
@@ -65,8 +77,8 @@ pub(crate) fn build_on(
     start: impl FnOnce(&mut AudioEngine, Arc<AudioCallbackState>) -> tutti_cpal::Result<()>,
 ) -> Result<()> {
     // OS MIDI ports are opened iff the `midi-hardware` feature is compiled.
-    // Built first so the port manager can be handed to the processor's MIDI
-    // input. (Software fan-out via `MidiBus` is always present under `midi`.)
+    // Built first so the port manager can be handed to the graph's MIDI input
+    // node.
     #[cfg(feature = "midi-hardware")]
     let midi_io = {
         let port_manager = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(256));
@@ -101,9 +113,9 @@ pub(crate) fn build_on(
     let compensation = crate::graph::latency::ChannelCompensation::default();
 
     let Assembled {
-        graph,
+        #[cfg_attr(not(feature = "midi"), allow(unused_mut))]
+        mut graph,
         engine,
-        clock: clock_node,
         click: click_node,
     } = assemble(
         sample_rate,
@@ -114,101 +126,32 @@ pub(crate) fn build_on(
         &click_settings,
     )?;
 
-    // The routing table is a MIDI-subsystem concern, not a graph one: it maps a
-    // MIDI channel to a destination unit's mailbox, with no fundsp edge behind
-    // it. Built here only because the RT `MidiPreBlock` needs its snapshot at
-    // assembly time; the writer half is handed to `TuttiMidiPlugin` below.
+    // The engine's MIDI, as graph nodes: the
+    // hardware input (translating, and ingesting MPE in the app's
+    // `MpeModeConfig`, inserted before the engine builds; default `Disabled`),
+    // the clock (Beat Clock / MTC, disabled until a host enables it) and the
+    // hardware out the clock is wired to, which the frontend pump drains to
+    // the OS. Bound to entities below.
     #[cfg(feature = "midi")]
-    let midi_route = MidiRoutingTable::new();
-    #[cfg(feature = "midi")]
-    let midi_bus = MidiBus::new();
-
-    // Clock master — outbound MIDI Beat Clock / MTC generator. Reads the
-    // transport, pushes into its own output ring (independent of the routing
-    // path, so System Real-Time reaches hardware-out). Ticked once per block by
-    // the RT processor; its consumer is drained to the OS by the frontend pump.
-    // Starts disabled — no output until the UI connects a device + enables it.
-    #[cfg(feature = "midi")]
-    let (clock_master, clock_out_consumer) = {
-        let (sender, receiver) =
-            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
-        let master = Arc::new(tutti_midi_runtime::ClockMaster::new(
-            Arc::new(transport.clone()),
-            sample_rate,
-            sender,
-        ));
-        (master, receiver)
-    };
-
-    // MIDI runs as a once-per-block producer before the graph render: it ticks
-    // the clock, polls hardware, and routes events into node inboxes (which time
-    // each event by its `frame_offset`). See `MidiPreBlock`.
-    #[cfg(feature = "midi")]
-    let pre_block = {
-        let mut pre_block = MidiPreBlock::new(midi_route.snapshot_arc());
-        pre_block.set_queue(Arc::new(midi_bus.clone()));
-        pre_block.set_clock(clock_master.clone());
-
-        // Input-edge translation: assemble (N)RPN runs, then rewrite classic-MPE
-        // channel-spread into native per-note messages, so downstream synths see
-        // only native MIDI-2. MPE mode comes from the app's `MpeModeConfig`
-        // (inserted before the engine builds); default `Disabled` = passthrough.
-        pre_block.set_translator(tutti_midi_types::Midi1ToMidi2Translator::new());
+    let midi_nodes = {
         let mpe_mode = app
             .world()
             .get_resource::<crate::midi::MpeModeConfig>()
             .map(|c| c.0)
             .unwrap_or(tutti_midi_types::MpeMode::Disabled);
-        pre_block.set_mpe_ingest(tutti_midi_runtime::MpeIngest::new(mpe_mode));
-        // The live handle, so MPE stays configurable after build rather than
-        // being fixed here. `MpeModeConfig` above is the *seed*; a host that
-        // stores zone setup in a document overwrites it through this.
-        app.insert_resource(crate::midi::MpeModeRes(pre_block.mpe_mode_handle()));
-
-        // Hardware MIDI input only exists under `midi-hardware`.
         #[cfg(feature = "midi-hardware")]
-        if let Some(ref io) = midi_io {
-            pre_block.set_input(io.ports().clone());
-        }
-
-        pre_block
+        let wire: Option<Arc<dyn tutti_midi_types::MidiIn>> = midi_io
+            .as_ref()
+            .map(|io| Arc::clone(io.ports()) as Arc<dyn tutti_midi_types::MidiIn>);
+        #[cfg(not(feature = "midi-hardware"))]
+        let wire: Option<Arc<dyn tutti_midi_types::MidiIn>> = None;
+        let (input_node, input) = graph.insert(MidiInputNode::new(wire).with_mpe(mpe_mode));
+        let (clock_node, master) = graph.insert(ClockNode::new());
+        let (out_node, out) = graph.insert(MidiOutNode::new());
+        (input_node, input, clock_node, master, out_node, out)
     };
 
-    // The outbound half, run *after* the graph render: it fans out whatever the
-    // graph emitted (a hosted plugin's MIDI-out) into the same unit inboxes
-    // inbound events reach.
-    //
-    // `tutti-cpal` holds an `Option<MidiPostBlock>` and calls `run()` in the
-    // callback; assembling one needs the routing table and the bus, which are
-    // this adapter's to own, so it belongs here rather than in the device layer.
-    // The engine-side path itself needs no adapter — `tutti-midi-runtime`'s
-    // `outbound_block_path` test assembles the whole round trip with no Bevy in
-    // scope, and exists to keep that true.
-    //
-    // `midi_route.snapshot_arc()` is deliberately the *same* handle the pre-block
-    // took: a node's MIDI-out is routed by exactly the rules a hardware input is,
-    // and two tables would let the two directions disagree about where a channel
-    // goes.
-    #[cfg(feature = "midi")]
-    let post_block = {
-        let mut post_block = MidiPostBlock::new(midi_route.snapshot_arc());
-        post_block.set_queue(Arc::new(midi_bus.clone()));
-        post_block
-    };
-
-    // The collection point emitting nodes push into. Taken before the post-block
-    // moves into the callback state, and published as `MidiOutSinkRes` for a host
-    // to hand to whatever emits (`plugin.set_midi_out(sink.handle())`). Nothing
-    // is installed automatically — `midi::out_sink` states why.
-    #[cfg(feature = "midi")]
-    let midi_out_sink = post_block.sink();
-
-    let callback_state = {
-        let state = AudioCallbackState::new(engine, meter.clone(), tap.clone());
-        #[cfg(feature = "midi")]
-        let state = state.with_pre_block(pre_block).with_post_block(post_block);
-        Arc::new(state)
-    };
+    let callback_state = Arc::new(AudioCallbackState::new(engine, meter.clone(), tap.clone()));
     start(&mut audio_engine, callback_state.clone())?;
 
     #[cfg(feature = "sampler")]
@@ -241,30 +184,17 @@ pub(crate) fn build_on(
     app.insert_non_send(driver);
     app.insert_resource(TransportRes(transport));
     app.insert_resource(MetronomeRes(metronome));
-    // The two engine-built nodes get entities like everything else in the graph,
-    // and `EngineNodes` publishes them. Spawned here, before any host system
-    // runs, they are otherwise unreachable: both carry `AudioNode` and nothing
-    // else, so a query cannot tell them apart — and `PortSources` names sources
-    // by `Entity`, so an unnameable node is an unwirable one. The clock exists
-    // precisely to be wired to, and the click's *output* is left unwired so that
-    // the host declares where it lands.
+    // The engine-built node gets an entity like everything else in the graph,
+    // and `EngineNodes` publishes it. Spawned here, before any host system
+    // runs, it is otherwise unreachable — and `PortSources` names sources by
+    // `Entity`, so an unnameable node is an unwirable one. The click's output
+    // is left unwired so that the host declares where it lands.
     //
-    // The click's *inputs* are declared here: it takes the beat from the clock's
-    // two ports, per sample, so each click starts on the frame its beat lands on
-    // rather than on a block boundary. Declared rather than `set_source`d so
-    // the reconciler owns the edge like every other one — and the edge is also
-    // what orders the clock before the click, which two unconnected nodes do not
-    // get.
-    let clock_entity = app.world_mut().spawn(clock_node).id();
-    let click_entity = app
-        .world_mut()
-        .spawn((
-            click_node,
-            crate::graph::PortSources::stereo_from(clock_entity),
-        ))
-        .id();
+    // The click has no inputs: it reads the beat of every frame from its
+    // block's `Env`, so each click starts on the frame its beat lands on with
+    // nothing wired into it.
+    let click_entity = app.world_mut().spawn(click_node).id();
     app.insert_resource(EngineNodes {
-        clock: clock_entity,
         click: click_entity,
     });
     // Consumers read `MeteringRes::get()` directly, so the meter has to be
@@ -280,15 +210,28 @@ pub(crate) fn build_on(
 
     #[cfg(feature = "midi")]
     {
-        // Both must be the very values the pre-block above shares — a freshly
-        // built one publishes where the audio thread never reads.
-        app.insert_resource(MidiBusRes::new(midi_bus));
-        app.insert_resource(MidiRoutingRes::new(midi_route));
-        app.insert_resource(ClockMasterRes::new(clock_master, clock_out_consumer));
-        // The outbound collection point, from the post-block now living in the
-        // callback state. A host hands `handle()` to whatever emits; nothing is
-        // installed automatically — see `midi::out_sink` for why.
-        app.insert_resource(MidiOutSinkRes::new(midi_out_sink));
+        // The MIDI nodes get entities like every node, so a host can wire to
+        // (and from) them by entity: the route rules feed from the input's
+        // ports, and anything declared on the hardware out reaches the wire
+        // beside the clock.
+        let (input_node, input, clock_node, master, out_node, out) = midi_nodes;
+        let input_entity = app.world_mut().spawn(input_node).id();
+        let clock_entity = app.world_mut().spawn(clock_node).id();
+        let out_entity = app.world_mut().spawn(out_node).id();
+        app.world_mut()
+            .get_resource_or_init::<crate::graph::EventFeeds>()
+            .set(out_entity, "clock", vec![clock_node.into()]);
+        app.world_mut()
+            .get_resource_or_init::<crate::graph::GraphDirty>()
+            .0 = true;
+        app.insert_resource(MidiEngineNodes {
+            input: input_entity,
+            input_node,
+            clock: clock_entity,
+            hardware_out: out_entity,
+        });
+        app.insert_resource(MpeModeRes(input));
+        app.insert_resource(ClockMasterRes::new(master, out));
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = midi_io {
             app.insert_resource(MidiIoRes(io));
@@ -301,31 +244,27 @@ pub(crate) fn build_on(
     Ok(())
 }
 
-/// The graph, the engine over its audio side, and the two nodes the engine
+/// The graph, the engine over its audio side, and the node the engine
 /// builds into it.
 struct Assembled {
     graph: AudioGraphRes,
     engine: Engine,
-    /// What the beat ports come from.
-    clock: AudioNode,
-    /// The metronome, its inputs still undeclared.
+    /// The metronome (no inputs: it reads its block's `Env`).
     click: AudioNode,
 }
 
-/// Build the graph, add the beat clock and the metronome, and build the
-/// engine over its audio side. The device-free half of [`build_into`], so the
-/// engine can be rendered in a test.
+/// Build the graph, add the metronome, and build the engine over its audio
+/// side. The device-free half of [`build_into`], so the engine can be
+/// rendered in a test.
 ///
-/// **The graph runs at the device's `rate`.** Every unit inserted is prepared
-/// at the graph's rate (`Legacy`'s prepare), so a graph left at its default
-/// 44.1 kHz would run every node — the beat clock included — at 44.1 kHz on a
-/// 48 kHz device: the clock and every oscillator about 8.8% slow. (That is
-/// what this builder did on `Net` before the rate was passed here.)
+/// **The graph runs at the device's `rate`.** Every node inserted is prepared
+/// at the graph's rate, so a graph left at its default 44.1 kHz would run
+/// every node at 44.1 kHz on a 48 kHz device: every oscillator about 8.8%
+/// slow.
 ///
-/// The clock is an `EnvClock` ([`AudioGraphRes::insert_beat_clock`]): a
-/// graph engine drives its own `TransportClock`, and the graph must not hold a
-/// second. It emits the beat on a `TransportClock`'s two ports, and the
-/// metronome is wired to them by the `PortSources` [`build_into`] declares.
+/// The graph holds no beat clock: a graph engine drives its own
+/// `TransportClock`, and every node that follows the beat reads it from its
+/// block's `Env`.
 fn assemble(
     rate: SampleRate,
     quantum: Option<tutti_core::Samples>,
@@ -336,31 +275,22 @@ fn assemble(
 ) -> Result<Assembled> {
     let mut graph = AudioGraphRes::for_device(inputs, outputs, rate, quantum);
 
-    // The beat clock — emits the beat on two ports. Beat-driven nodes take
-    // those ports as inputs, so the clock needs a name a host can address; it
-    // gets an entity in `build_into`, like every other node in the graph.
-    let clock = graph.insert_beat_clock();
-
-    // Metronome. It only READS the transport (rolling/recording), so it takes a
-    // read view, not a control handle; the beat itself arrives on its two input
-    // ports from the clock, declared once both have entities.
+    // Metronome. The beat, play and record state come from its
+    // block's `Env`, and the count-in flag off the transport it is built over
+    // (read only). Its controls are the shared click settings, which
+    // `MetronomeRes` already holds.
     //
     // It is NOT wired to the output here, and must not be. `pipe_output` reads
     // like "mix the click into master" and is not what it does — it overwrites
     // every global output edge, so the first soundfont to load silently
     // disconnects the metronome. What the click feeds is the host's
     // declaration, like every other node; see `graph::wire`.
-    let click = graph.insert(ClickNode::with_transport(
-        transport.clone(),
-        click_settings.clone(),
-        rate,
-    ));
+    let (click, _settings) = graph.insert(ClickNode::new(transport, Arc::clone(click_settings)));
 
     let engine = graph.engine(transport)?;
     Ok(Assembled {
         graph,
         engine,
-        clock,
         click,
     })
 }
@@ -506,18 +436,13 @@ mod tests {
 }
 
 /// The engine [`assemble`] builds, rendered from the builder's own wiring (the
-/// beat clock it picks, the click it builds against it).
+/// click it builds).
 ///
-/// From design doc 013's PR 13 to PR 15 these compared the engine with the
-/// one this builder made before PR 13 (fundsp's `Net` with a
-/// `TransportClock` in it, over the engine's `Net` backend, rebuilt by hand
-/// as `net_era`), bit for bit. PR 15 removed that backend. Each test now
-/// stands on the analytic figures it also asserted (onset frames, the tone a
-/// dry voice reads), on what does not depend on the oracle (a voice's
-/// render at two block sizes whose 64-frame chunks coincide), and, for the
-/// samples themselves, on a golden digest recorded from this engine on the
-/// commit that retired the oracle, which rendered the `Net` era's samples
-/// bit for bit (asserted there). The click and the pitched voice call `sin`
+/// Each test stands on analytic figures (onset frames, the tone a dry voice
+/// reads), on what needs no oracle (a voice's render at two block sizes whose
+/// 64-frame chunks coincide), and, for the samples themselves, on a golden
+/// digest of a render checked against an independent reference implementation
+/// when it was recorded. The click and the pitched voice call `sin`
 /// (and the vocoder's FFT), libm quality-of-implementation that differs in
 /// the last ulp between C runtimes, so the digests are asserted on
 /// Linux/glibc only, where they were recorded ([`GOLDEN_HERE`]).
@@ -596,24 +521,21 @@ mod engine_tests {
         settings
     }
 
-    /// An engine from [`assemble`] at `RATE`, the click fed by the beat clock
-    /// and on both global outputs, rolling from the first block. `frames`
-    /// stereo frames rendered in 512-frame device blocks, with a seek past
-    /// the first second.
+    /// An engine from [`assemble`] at `RATE`, the click on both global
+    /// outputs, rolling from the first block. `frames` stereo frames rendered
+    /// in 512-frame device blocks, with a seek past the first second.
     ///
-    /// The click's inputs are wired here the way `build_into` declares them
-    /// (`PortSources::stereo_from(clock)`), without an `App`.
+    /// The click has no inputs: it reads its block's `Env`.
     fn render_click(frames: usize) -> Vec<f32> {
         let transport = Transport::new(SampleRate(RATE));
         let settings = loud_click();
         let Assembled {
             mut graph,
             engine,
-            clock,
             click,
+            ..
         } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings).expect("builds");
         for port in 0..2 {
-            graph.set_source(click, port, GraphSource::Node(clock, port));
             graph.set_output_source(port, GraphSource::Node(click, port));
         }
         assert!(graph.commit(), "the first commit goes through");
@@ -630,15 +552,12 @@ mod engine_tests {
     }
 
     /// **The builder's engine clicks on every beat, across a seek**, and
-    /// (Linux/glibc) clicks the samples the `Net`-era engine clicked. The
-    /// click reads an `EnvClock` (the engine drives its own `TransportClock`,
-    /// and the graph must not hold a second); on `Net` it read a `TransportClock` in the
-    /// graph, wired to the click the same way. The transport starts before
-    /// the first block, so `ClickNode`'s play gate — read once per 64-frame
-    /// chunk, from the live flag, which on the engine is already the whole
-    /// block's (doc 013, gap 5) — opens on the first frame. A start *inside*
-    /// a block would open it a block early; that is `ClickNode`'s gate, not
-    /// the beat, and is pinned in `tutti-core`'s `env_clock` suite.
+    /// (Linux/glibc) clicks the golden digest's samples. The click reads the
+    /// beat of every frame from its block's `Env` (the transport the engine's
+    /// own `TransportClock` reports; the graph holds no second one). The
+    /// transport starts before the first block, so the play
+    /// gate opens on the first frame (a start inside a block opens it on its
+    /// frame: `ClickNode`'s own tests pin that).
     ///
     /// A seek between two blocks is in the render, because that is where a
     /// wrong clock shows: a steady transport is counted alike by any clock.
@@ -647,34 +566,30 @@ mod engine_tests {
     /// the next beat is a quarter beat (6 000 frames) later; a click is heard
     /// from the frame after its beat (its first sample is `sin(0)`). The
     /// locate itself clicks too (60 417): it moves the whole beat from 2 to
-    /// 0, which the click takes for a new beat — as it did on `Net`.
-    ///
-    /// Until doc 013 PR 15 the samples were compared, bit for bit, with the
-    /// `Net`-era engine (`net_era`); the digest is what that render was.
+    /// 0, which the click takes for a new beat.
     ///
     /// Mutations (run):
-    /// - `AudioGraphRes::insert_beat_clock` inserting a `TransportClock`
-    ///   beside the engine's → two clocks consume the one transport's seek,
-    ///   the click's misses it, and the onsets after it move;
-    /// - inserting a silent two-port node in its place → no clicks at all;
+    /// - the click reading the block's first beat for the whole block
+    ///   (`piece_beats` emitting the piece's first beat) → the onsets land on
+    ///   block starts and move;
     /// - the click's volume at 0.99 → the digest moves.
     #[test]
     fn the_click_sounds_on_every_beat_across_the_seek() {
         let frames = 3 * RATE as usize;
-        let native = render_click(frames);
+        let rendered = render_click(frames);
         assert_eq!(
-            onsets(&native),
+            onsets(&rendered),
             vec![1, 24_001, 48_001, 60_417, 66_417, 90_417, 114_417, 138_417],
             "a click on every beat, across the seek"
         );
-        assert_golden("the click", digest(&native), 0x9ac0_787e_520a_8085);
+        assert_golden("the click", digest(&rendered), 0x9ac0_787e_520a_8085);
     }
 
     /// **The graph runs at the device's rate.** At 120 BPM and 48 kHz the
     /// click lands every 24 000 frames. Every unit inserted is prepared at
-    /// the graph's rate, so a graph left at its 44.1 kHz default — which is
-    /// what `build_into` built on `Net` before the rate was passed — runs the
-    /// beat clock 8.8% fast and clicks every 22 050 frames.
+    /// the graph's rate, so a graph left at its 44.1 kHz default would render
+    /// the click's waveform at 44.1 kHz (the click's own `prepare`) and click
+    /// every 22 050 frames.
     ///
     /// Mutation (run): `assemble` building the graph with
     /// `AudioGraphRes::headless` (the 44.1 kHz default) instead of at `rate`
@@ -695,22 +610,17 @@ mod engine_tests {
         (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin()
     }
 
-    /// One sampler voice on a second of the tone, placed at beat 0 on
-    /// `transport` and pitched by `cents`.
+    /// One sampler voice on a second of the tone, placed at beat 0 and
+    /// pitched by `cents`. It reads the transport from its blocks' `Env`.
     #[cfg(feature = "sampler")]
-    fn voice(transport: &Transport, cents: f32) -> tutti_sampler::VoicePool {
+    fn voice(cents: f32) -> tutti_sampler::VoicePool {
         use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
         let mut wave = tutti_io::Wave::new(1, RATE);
         for i in 0..RATE as usize {
             wave.push_frame(&[tone_at(i)]);
         }
-        let source = MemorySource::with_transport(
-            Arc::new(wave),
-            Arc::new(transport.clone()) as Arc<dyn tutti_core::Timeline>,
-            tutti_core::Beat(0.0),
-            None,
-        );
-        let (mut pool, _handle) = VoicePool::new();
+        let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(0.0), None);
+        let mut pool = VoicePool::new();
         pool.insert_voice(
             SlotId(1),
             Voice {
@@ -729,12 +639,9 @@ mod engine_tests {
     /// global outputs, the transport rolling from the first block. `frames`
     /// stereo frames in `block`-frame device blocks.
     ///
-    /// The voice is a clip reader: it polls the transport (its
-    /// `Arc<dyn Timeline>`) on every 64-frame call. That call is `Legacy`'s,
-    /// and it reads the right beat because the engine renders a plan holding
-    /// a `Legacy` unit chunk-major, 64 frames across every node with the
-    /// playhead published after each (doc 013, "chunk-major `Legacy`
-    /// compatibility mode").
+    /// The voice is a clip reader, a graph node: it reads the playhead from
+    /// each block's `Env`, per frame, seating its read on the first frame of
+    /// each 64-frame piece it renders.
     #[cfg(feature = "sampler")]
     fn render_voice(cents: f32, frames: usize, block: usize) -> Vec<f32> {
         let transport = Transport::new(SampleRate(RATE));
@@ -742,7 +649,7 @@ mod engine_tests {
         let Assembled {
             mut graph, engine, ..
         } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings).expect("builds");
-        let voice = graph.insert(voice(&transport, cents));
+        let (voice, _handle) = graph.insert(voice(cents));
         for port in 0..2 {
             graph.set_output_source(port, GraphSource::Node(voice, port));
         }
@@ -784,39 +691,30 @@ mod engine_tests {
     /// **A sampler voice plays in time through the builder's engine**, at
     /// `block`-frame device blocks with a rolling transport: the dry voice is
     /// the tone it plays, to the bit, on both channels; the voice a fifth up
-    /// renders the same bits as at 64-frame blocks (chunk-major, a device
-    /// block that is a multiple of 64 frames is the same 64-frame chunks),
-    /// and (Linux/glibc) the `Net`-era engine's.
+    /// renders the same bits as at 64-frame blocks, and (Linux/glibc) the
+    /// golden digest's.
     ///
     /// `scene_render.rs` renders under a stopped transport, where a clip
     /// reader sounds nothing; this is the adapter's path with the clock
-    /// moving (doc 013, the #32 follow-up). Until doc 013 PR 15 both voices
-    /// were compared, bit for bit, with the `Net`-era engine (`net_era`).
+    /// moving.
     ///
-    /// Mutations (run): the engine publishing its playhead in the walk,
-    /// before the render (`TransportClock::advance` writing back) → the voice
-    /// reads a chunk ahead and the dry render leaves the tone, at both block
-    /// sizes; `Cents::to_pitch_ratio` dividing by 1 100 cents to the octave
-    /// → the pitched voice is not a fifth up, on every target.
-    ///
-    /// Not caught here: the engine rendering whole device blocks with a
-    /// `Legacy` unit present (`GraphRender::settle` ignoring `has_legacy`).
-    /// A voice placed at beat 0 enters on frame 0 and then reads its own
-    /// cursor, so it renders the same bits (measured, both voices). The note
-    /// here used to say otherwise; tutti-sampler's `graph_engine_clock.rs`
-    /// and `frame_exact_entry.rs`, and tutti-core's `legacy_chunk_major.rs`,
-    /// catch that mode.
+    /// Mutation (run): `Cents::to_pitch_ratio` dividing by 1 100 cents to
+    /// the octave → the pitched voice is not a fifth up, on every target.
+    /// Mutation (run): the voice seating each 64-frame piece at its block's
+    /// first beat (`interp::place` reading `run.beat_at(0)`) → both block
+    /// sizes fail. (Also pinned by tutti-sampler's `block_render.rs` and
+    /// tutti-export's `graph_source.rs` and `sampler_to_export.rs`.)
     #[cfg(feature = "sampler")]
     fn a_voice_plays_in_time(block: usize) {
         let frames = 24_000;
         // The dry voice is pinned to the tone itself; only the pitched one,
         // which has no closed form, carries a digest.
         for (cents, want) in [(0.0f32, None), (700.0, Some(0x5681_b9dc_0fbe_0695u64))] {
-            let native = render_voice(cents, frames, block);
-            let peak = native.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            let rendered = render_voice(cents, frames, block);
+            let peak = rendered.iter().fold(0.0f32, |m, s| m.max(s.abs()));
             assert!(peak > 0.5, "{block}-frame blocks, {cents} cents: silent");
             if cents == 0.0 {
-                for (i, s) in native.as_chunks::<2>().0.iter().enumerate() {
+                for (i, s) in rendered.as_chunks::<2>().0.iter().enumerate() {
                     let want = tone_at(i).to_bits();
                     assert!(
                         s[0].to_bits() == want && s[1].to_bits() == want,
@@ -828,7 +726,7 @@ mod engine_tests {
                 // Portable, where the digest is not: a fifth up from 440 Hz
                 // is 440 · 2^(7/12) ≈ 659.26 Hz. Past the vocoder's first few
                 // thousand frames, within 1% (a semitone is 6%).
-                let left: Vec<f32> = native.iter().step_by(2).copied().collect();
+                let left: Vec<f32> = rendered.iter().step_by(2).copied().collect();
                 let want = 440.0 * 2f64.powf(7.0 / 12.0);
                 let got = dominant_frequency(&left, 4_096, RATE);
                 assert!(
@@ -838,7 +736,7 @@ mod engine_tests {
                 let by64 = render_voice(cents, frames, 64);
                 if let Some(i) = by64
                     .iter()
-                    .zip(&native)
+                    .zip(&rendered)
                     .position(|(a, b)| a.to_bits() != b.to_bits())
                 {
                     panic!(
@@ -846,13 +744,13 @@ mod engine_tests {
                          frame {} (channel {}): {} vs {}",
                         i / 2,
                         i % 2,
-                        native[i],
+                        rendered[i],
                         by64[i]
                     );
                 }
             }
             if let Some(want) = want {
-                assert_golden(&format!("voice, {cents} cents"), digest(&native), want);
+                assert_golden(&format!("voice, {cents} cents"), digest(&rendered), want);
             }
         }
     }

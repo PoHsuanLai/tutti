@@ -1,27 +1,25 @@
-//! Audio analysis algorithms over `&[f32]`. No framework dependencies, and no
-//! opinion about where the results go.
-//!
-//! - [`stft`] / [`istft_transform`] — the short-time Fourier transform, in
-//!   three result types so invertibility is a compile-time question
-//! - [`yin()`] — monophonic pitch estimation (de Cheveigné & Kawahara, 2002)
-//! - [`detect_onsets`] — onset detection over four selectable detection
-//!   functions
-//! - [`correlate`] — inter-channel phase correlation and stereo image
-//! - [`measure_loudness`] — integrated loudness
-//! - [`summarize`] — min/max/RMS waveform blocks for a timeline, **per
-//!   channel**; folding to one series is [`PeakBlocks::to_mono`], a caller's
-//!   choice rather than this crate's default
-//!
-//! Every algorithm takes an immutable, validated [`Error`]-returning config, so
-//! an invalid combination fails at construction rather than silently producing
-//! nothing. Two of them ([`detect_onsets`], [`summarize`]) additionally carry
-//! state between frames and expose it as an explicit value plus a `step`
-//! function, which their batch entry points fold — so the incremental and batch
-//! paths cannot drift.
-//!
-//! The quick start, the graph-tap seam, the fallibility rule and the features
-//! are in the crate README, included below.
 #![doc = include_str!("../README.md")]
+//!
+//! ## Items
+//!
+//! - Transform: [`stft`], [`stft_magnitude`], [`stft_polar`] and
+//!   [`istft_transform`], over a validated [`StftGeometry`] with a
+//!   [`CosineWindow`], producing [`Stft`], [`StftMagnitude`] or [`StftPolar`].
+//! - Pitch: [`yin()`] and [`yin_track`] with a [`YinConfig`], returning
+//!   [`PitchEstimate`] and [`Pitch`]; [`median_filter`] and [`penalize_jumps`]
+//!   clean up a track.
+//! - Onsets: [`detect_onsets`] with an [`OnsetConfig`] and a
+//!   [`DetectionFunction`], or incrementally with [`step_onset`] and
+//!   [`finish_onset`].
+//! - Waveform blocks: [`summarize`] with a [`PeakConfig`] into [`PeakBlocks`],
+//!   or incrementally with [`step_peaks`] and [`finish_peaks`].
+//! - Loudness: [`measure_loudness`] with a [`LoudnessConfig`] into
+//!   [`Loudness`], or incrementally with [`step_loudness`] and
+//!   [`finish_loudness`].
+//! - Stereo: [`correlate`] into a [`StereoReading`], smoothed for a meter by
+//!   [`step_ballistics`].
+//! - [`FftScratch`], reusable FFT plans and buffers; [`Grid`] and its typed
+//!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
 mod error;
 mod fft;
@@ -77,10 +75,8 @@ pub use tutti_types::{Note, PitchClass};
 /// Buffer-level mono folding, re-exported from the engine's downmix module.
 ///
 /// Every STFT and pitch entry point takes mono, so this is the step callers
-/// need first. It lives in `tutti-types` beside the ITU-R BS.775 matrices
-/// rather than here, so app-side consumers can reach it without depending on
-/// this crate — five of them had hand-rolled their own, two silently dropping
-/// channels 2..N.
+/// usually need first. Folding keeps every channel, rather than dropping
+/// channels past the second.
 pub use tutti_types::{fold_buffer_to_mono, fold_planar_to_mono};
 
 /// The generic complex type, re-exported so consumers can name a bin without
@@ -89,18 +85,8 @@ pub use rustfft::num_complex::Complex as GenericComplex;
 
 /// A single frequency bin: a rectangular complex number.
 ///
-/// A plain alias rather than a newtype, deliberately. Wrapping it would buy
-/// backend-swappability this crate does not want, and cost either `unsafe`
-/// transmutes at the `rustfft` boundary or a conversion on every bin of the
-/// spectral edit path's mask multiply. `num_complex::Complex<f32>` is stable,
-/// ubiquitous, and structurally transparent — there is no ambiguity for a
-/// newtype to close, unlike the unit types, where a bare `f32` genuinely does
-/// not say whether it means Hz or seconds.
-///
-/// **Why `rustfft` here** when the sampler's time-stretch vocoder uses
-/// `microfft` (`tutti-sampler`'s `stretch::fft`): analysis windows are arbitrary-size and
-/// cold-path, so `rustfft`'s planner and SIMD are the right trade. microfft is
-/// fixed-size and allocation-free, which is what the realtime graph needs and
-/// this crate does not. Both are `num_complex::Complex<f32>` underneath, so
-/// values cross freely — only the transform differs.
+/// A plain alias for `num_complex::Complex<f32>`, the type `rustfft` works
+/// in, so bins cross the FFT boundary without conversion. The engine's
+/// real-time FFT (`microfft`, in `tutti-sampler`) uses the same type, so values
+/// cross freely between the two.
 pub type Complex = rustfft::num_complex::Complex<f32>;

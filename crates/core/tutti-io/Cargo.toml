@@ -14,9 +14,8 @@ workspace = true
 [features]
 # No codec by default, as on every engine crate: a host doing only mic → WAV
 # needs no decoder. Each feature pulls exactly one symphonia container (and
-# its codec) for `Wave::load`, `Wave::probe_metadata` and `FileIn`. They moved
-# here from `tutti-core` (which forwarded them to the fundsp fork) with the
-# decoder, design doc 013 Phase 0. `wav` needs `pcm`: WAV is only the container.
+# its codec) for `Wave::load`, `Wave::probe_metadata` and `FileIn`. `wav` needs
+# `pcm`: WAV is only the container.
 default = []
 wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]
 flac = ["dep:symphonia", "symphonia/flac"]
@@ -29,13 +28,17 @@ ogg = ["dep:symphonia", "symphonia/ogg", "symphonia/vorbis"]
 bevy = ["dep:bevy_asset", "dep:bevy_reflect"]
 
 [dependencies]
-# The `AudioIn`/`AudioOut` traits this crate implements, plus `AudioUnit`,
+# The `AudioIn`/`AudioOut` traits this crate implements, plus `AudioTap`,
 # `ChannelLayout` and the PCM quantizers. `default-features = false` matches
 # every sibling and keeps this crate immune if tutti-core ever grows a default —
 # it has none today (`default = []`), so the flag currently suppresses nothing.
 tutti-core = { path = "../tutti-core", default-features = false }
 
 thiserror.workspace = true
+
+# The node contract `MicMonitorNode` is written against. No cycle:
+# tutti-graph names no tutti crate but tutti-types.
+tutti-graph = { path = "../tutti-graph" }
 
 # The capture ring `MicMonitorNode` drains. The producer half lives in the
 # device layer (`tutti-cpal`), which sits *above* this crate.
@@ -58,8 +61,10 @@ bevy_reflect = { workspace = true, optional = true }
 # instead *skip* `tests/decode_golden.rs` on a plain run and report green
 # having decoded nothing. Same device as `tutti-sampler`'s `test-support`.
 tutti-io = { path = ".", features = ["wav", "flac", "mp3", "ogg"] }
+# `contract::Direct`, the by-hand driver the monitor's allocation gate runs.
+tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 tempfile = "3.8"
-# The RT gate: `MicMonitorNode::{tick, process}` must not allocate.
+# The RT gate: `MicMonitorNode::process` must not allocate.
 assert_no_alloc = { version = "1", default-features = false }
 # The gate builds a ring by hand to feed the node under a disabled allocator.
 ringbuf = "0.4"

@@ -70,21 +70,21 @@ const OUTPUT_PARAM_QUEUE_RESERVE: usize = 32;
 /// The arrangement to propose for a bus of `layout` channels, when the host has
 /// no topology for it.
 ///
-/// Named layouts, not a synthesized mask. The previous version built
-/// `(1u64 << n) - 1` — the low `n` bits — which has the right *popcount* and the
-/// wrong *speakers*: at width 4 it asks for `L R C Lfe` where a four-channel bus
-/// means a surround pair, and at width 8 it asks for a front-of-centre pair
-/// rather than the extra surround pair. Only 5.1 came out right, and only
-/// because bits 0–5 happen to be contiguous and in the engine's own order.
+/// Named layouts, not a synthesized mask. `(1u64 << n) - 1` — the low `n`
+/// bits — has the right *popcount* and the wrong *speakers*: at width 4 it asks
+/// for `L R C Lfe` where a four-channel bus means a surround pair, and at width
+/// 8 it asks for a front-of-centre pair rather than the extra surround pair.
+/// Only 5.1 comes out right, and only because bits 0–5 happen to be contiguous
+/// and in the engine's own order.
 ///
 /// `None` for a width with no canonical arrangement, which is a real answer:
 /// `setBusArrangements` is a *proposal*, so proposing nothing and reading back
 /// what the plugin chose beats proposing a layout that names the wrong
 /// speakers.
 ///
-/// Prefers [`speakers::to_arrangement`] once a caller has a real
-/// [`ChannelTopology`] to offer; this is the width-only fallback for the path
-/// that still enumerates counts.
+/// [`speakers::to_arrangement`] is the conversion for a caller with a real
+/// [`ChannelTopology`]; this is the width-only fallback for the path that
+/// enumerates counts.
 fn default_arrangement_for(layout: ChannelLayout) -> Option<SpeakerArrangement> {
     Some(match layout.count() {
         0 => SpeakerArr::kEmpty,
@@ -176,7 +176,7 @@ struct OutputStaging<T: Vst3Sample> {
 }
 
 impl<T: Vst3Sample> OutputStaging<T> {
-    /// Reset the emitted-event return pools so a borrow into them reads empty.
+    /// Resets the emitted-event return pools so a borrow into them reads empty.
     /// Called at the top of every `process` block: the bail-out paths return
     /// `emitted_ref()` directly, and the steady-state path then drains the
     /// plugin's fresh events in. Clears in place, keeping heap capacity.
@@ -188,7 +188,7 @@ impl<T: Vst3Sample> OutputStaging<T> {
         self.emitted_param_changes.queues.clear();
     }
 
-    /// Borrow the emitted-event return pools as a [`ProcessOutputRef`].
+    /// Borrows the emitted-event return pools as a [`ProcessOutputRef`].
     fn emitted_ref(&self) -> ProcessOutputRef<'_> {
         ProcessOutputRef {
             midi_events: &self.emitted_midi,
@@ -196,7 +196,7 @@ impl<T: Vst3Sample> OutputStaging<T> {
         }
     }
 
-    /// Drain the plugin's emitted events from the COM output lists into the
+    /// Drains the plugin's emitted events from the COM output lists into the
     /// return pools. Both `fill_*` clear their destination first and reuse its
     /// heap capacity, so this is allocation-free after warmup.
     fn drain_emitted(&mut self) {
@@ -252,15 +252,17 @@ pub struct Vst3Active<T: Vst3Sample = f32> {
 }
 
 impl<T: Vst3Sample> Vst3Active<T> {
-    /// Lightweight metadata read: load the library, read factory and bus info,
-    /// return without calling `initialize()` or `setActive()`. Safe for plugins
-    /// that would otherwise pop license dialogs or hit the network during full
-    /// load.
+    /// Reads a plugin's metadata without initializing it; see
+    /// [`Vst3Loaded::probe`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Vst3Loaded::probe`].
     pub fn probe(path: &Path) -> Result<PluginInfo> {
         Vst3Loaded::probe(path)
     }
 
-    /// Load a VST3 plugin and bring it to the active processing state.
+    /// Loads a VST3 plugin and bring it to the active processing state.
     ///
     /// For GUI-only hosting, prefer [`Vst3Loaded::load`] — it skips the
     /// `setActive(1) + setProcessing(1)` cost.
@@ -277,7 +279,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
         Self::load_with_mode(path, sample_rate, block_size, ProcessMode::Realtime)
     }
 
-    /// Load a VST3 plugin and activate it for a specific [`ProcessMode`].
+    /// Loads a VST3 plugin and activate it for a specific [`ProcessMode`].
     ///
     /// Use this — with [`ProcessMode::Offline`] — for a bounce or export.
     /// [`load`](Self::load) is the [`Realtime`](ProcessMode::Realtime) case.
@@ -295,7 +297,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
         Self::from_loaded(loaded, sample_rate, block_size, mode)
     }
 
-    /// Load and activate one named audio class from a multi-plugin bundle.
+    /// Loads and activates one named audio class from a multi-plugin bundle.
     ///
     /// See [`Vst3Loaded::load_class`] for why a bundle may hold many: `load`
     /// takes the first audio class, which cannot address the other 33 in a
@@ -416,7 +418,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
         Ok(instance)
     }
 
-    /// Drop back to the non-processing [`Vst3Loaded`] state, reversing
+    /// Drops back to the non-processing [`Vst3Loaded`] state, reversing
     /// `setProcessing(1)` + `setActive(1)`.
     pub fn deactivate(mut self) -> Vst3Loaded {
         self.stop_processing();
@@ -440,7 +442,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
         self.audio.config.sample_rate
     }
 
-    /// Change the sample rate, re-running `setupProcessing` across a
+    /// Changes the sample rate, re-running `setupProcessing` across a
     /// deactivate/reactivate cycle.
     ///
     /// `setupProcessing` is `[UI-thread & (Initialized | Connected)]` and
@@ -462,7 +464,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
         self.reconfigure(rate)
     }
 
-    /// Deactivate → `setupProcessing` at `rate` → reactivate, restoring the
+    /// Deactivates → `setupProcessing` at `rate` → reactivate, restoring the
     /// previous rate if the plugin refuses the new one.
     ///
     /// Distinct from [`restart_bus_configuration`](Self::restart_bus_configuration),
@@ -511,7 +513,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
         self.audio.config.block_mode
     }
 
-    /// Toggle between [`Realtime`](ProcessMode::Realtime) and
+    /// Toggles between [`Realtime`](ProcessMode::Realtime) and
     /// [`Prefetch`](ProcessMode::Prefetch) on a live instance, without
     /// re-running `setupProcessing`.
     ///
@@ -543,7 +545,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
         true
     }
 
-    /// Run one realtime processing block.
+    /// Runs one realtime processing block.
     ///
     /// `events` bundles the MIDI and per-note-expressive streams staged into the
     /// plugin's input event list (sorted by `sample_offset`); chord/scale/text
@@ -557,6 +559,9 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// Falls back to an empty output if `buffer.num_samples == 0` or if the
     /// plugin returns a non-OK `tresult` (in which case `buffer.outputs` is
     /// also cleared).
+    ///
+    /// Call from the audio thread. Buffers and event lists are sized at
+    /// activation, so the steady-state path does not allocate.
     pub fn process(
         &mut self,
         buffer: &mut AudioBuffer<T>,
@@ -714,12 +719,17 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// Call this when
     /// [`RestartOutcome::midi_cc_assignment_changed`](crate::RestartOutcome::midi_cc_assignment_changed)
     /// is set.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn rebuild_midi_cc_mapping(&mut self) {
         tutti_plugin_types::assert_main_thread();
         self.audio.cc.mapping = MidiCcMapping::query(self.loaded.interfaces.controller.as_ref());
     }
 
-    /// Tell the plugin's audio processor to idle. Safe to call repeatedly;
+    /// Tells the plugin's audio processor to idle. Safe to call repeatedly;
     /// `deactivate` and `Drop` call it during teardown.
     fn stop_processing(&mut self) {
         unsafe {
@@ -727,7 +737,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
         }
     }
 
-    /// Negotiate per-bus speaker arrangements with the plugin via
+    /// Negotiates per-bus speaker arrangements with the plugin via
     /// `IAudioProcessor::setBusArrangements`, before `setupProcessing`.
     ///
     /// One arrangement per bus is proposed, derived from the channel counts the
@@ -748,7 +758,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// the reported layout are two separate copies of the same fact, and only
     /// the scratch was being updated: `resolve_scratch_from_counts` fixes what
     /// this instance renders through, while `PluginInfo` is what every caller
-    /// above reads — `PluginClient::new` sizes its fundsp node from it. A
+    /// above reads — `PluginClient::new` sizes its graph node from it. A
     /// plugin that refused therefore had its *proposed* width reported while it
     /// ran another. Reconciling on the accepting branch too is not belt-and-
     /// braces: a plugin may accept the arrangement and still restructure its
@@ -762,7 +772,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
         // bus, so there is no way to say "no opinion" about a single entry.
         // Skipping the call entirely is the honest move — the plugin keeps the
         // layout it already has, and the reconcile below reports it. Proposing
-        // a made-up mask for that bus is what this change exists to stop.
+        // a made-up mask for that bus would name the wrong speakers.
         let proposals = component
             .audio_bus_channels(K_INPUT)
             .into_iter()
@@ -861,7 +871,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
             .collect()
     }
 
-    /// Read the plugin's chosen layout for each of `num_buses` buses in
+    /// Reads the plugin's chosen layout for each of `num_buses` buses in
     /// `direction`. A bus whose query fails contributes an empty topology, so
     /// the length always equals `num_buses`.
     ///
@@ -939,7 +949,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
         Ok(())
     }
 
-    /// Activate the buses this host wants live, per
+    /// Activates the buses this host wants live, per
     /// [`wants_activation`](super::wants_activation).
     ///
     /// Event buses are activated on the same terms as audio ones: the spec
@@ -1000,8 +1010,8 @@ impl<T: Vst3Sample> Vst3Active<T> {
         Ok(())
     }
 
-    /// Run the deactivate → re-enumerate → reactivate cycle two `RestartFlags`
-    /// require, and report whether the plugin came back up.
+    /// Runs the deactivate, re-enumerate, reactivate cycle that `kIoChanged`
+    /// and `kLatencyChanged` restart requests require.
     ///
     /// `ivsteditcontroller.h:125-127` for `kIoChanged`: *"The host has to
     /// deactivate the plug-in, asks the plug-in for its wanted new bus
@@ -1014,11 +1024,17 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// through `DerefMut` on a live instance skips the cycle entirely — the bus
     /// layout is re-read while the plugin is still active, which is the one
     /// ordering the spec rules out, and a plugin that only recomputes its layout
-    /// or its group delay inside `setActive(true)` answers with the old figures.
+    /// or its group delay inside `setActive(true)` answers with stale figures.
     ///
     /// A refused reactivation is reported, not swallowed: `set_active` treats
     /// `kResultFalse` as the refusal it is, and a caller that ignored this
-    /// would go on to `process` a plugin that is no longer active.
+    /// would go on to `process` a plugin that is not active.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Vst3Error::PluginError`] if the plugin refuses `setActive`
+    /// (either direction) or `setupProcessing`. On error the plugin may be
+    /// left inactive, and must not be processed.
     pub fn restart_bus_configuration(&mut self) -> Result<()> {
         self.stop_processing();
         self.set_active(false)?;
@@ -1045,8 +1061,8 @@ impl<T: Vst3Sample> Vst3Active<T> {
         let result = unsafe { self.loaded.interfaces.component.setActive(flag) };
         // `kResultFalse` is a *refusal*, not a "didn't implement it". A plugin
         // whose licence check, dongle, or device claim fails reports it here,
-        // and it is the only way it can. Accepting it as success left the host
-        // believing an inactive plugin was live and calling `process` on it —
+        // and it is the only way it can. Accepting it as success would leave the
+        // host believing an inactive plugin was live and calling `process` on it —
         // which is undefined, and which the plugin has no way to prevent.
         //
         // Steinberg's own suite agrees: `validstatetransition.cpp` fails the
@@ -1115,8 +1131,8 @@ mod default_arrangement_tests {
     ///
     /// The table is asserted against `SpeakerArr`'s named constants rather than
     /// against literals: a literal would agree with a wrong mask that happened
-    /// to have the right popcount, which is precisely how the previous
-    /// `(1 << n) - 1` survived. Widths 4 and 8 are the two it got wrong.
+    /// to have the right popcount, such as `(1 << n) - 1`. Widths 4 and 8 are
+    /// the two such a mask gets wrong.
     #[test]
     fn each_width_proposes_its_named_arrangement() {
         for (width, expected, name) in [
@@ -1154,11 +1170,11 @@ mod default_arrangement_tests {
         }
     }
 
-    /// The 4- and 8-channel proposals are not the low-bit masks they replaced.
+    /// The 4- and 8-channel proposals are not the low-bit masks.
     ///
-    /// Named explicitly because those two are the defect: the old masks had the
+    /// Named explicitly because those two are where a low-bit mask has the
     /// right channel count and the wrong speakers, so every width-based check
-    /// passed while a quad bus was negotiated as a centre-plus-LFE 3.1.
+    /// passes while a quad bus is negotiated as a centre-plus-LFE 3.1.
     #[test]
     fn the_four_and_eight_channel_proposals_are_not_the_low_bit_masks() {
         for width in [4u16, 8] {

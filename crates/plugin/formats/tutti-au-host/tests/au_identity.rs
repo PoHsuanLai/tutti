@@ -33,13 +33,11 @@
 //! | **overview count `saturating_sub(1)`** (drop last entry) | `the_overview_decodes_every_entry_the_au_reported` |
 //! | **`element: p.mElement.wrapping_add(7)`** | `the_overview_decodes_every_entry_the_au_reported` |
 //!
-//! The five in bold **survived the first version of this suite** and were found
-//! by an adversarial review, not by the original audit. The first is the
-//! instructive one: `set_context_name` could be replaced by `Ok(())` outright,
-//! because the sweep asserted only that the write returned `Ok` — exactly the
-//! "a property that is merely accepted proves nothing" trap this header warns
-//! about, committed into the suite meant to prevent it. Choosing your own
-//! mutations tests what you already thought of.
+//! The five in bold are the easy ones to miss. The first is the instructive
+//! one: a sweep that asserts only that the write returned `Ok` lets
+//! `set_context_name` be replaced by `Ok(())` outright — exactly the "a
+//! property that is merely accepted proves nothing" trap this header warns
+//! about.
 //!
 //! ## Running
 //!

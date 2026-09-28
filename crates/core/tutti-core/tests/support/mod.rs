@@ -3,13 +3,12 @@
 //! The engine's stimulus nodes are `tutti_nodes::testing`, and every crate
 //! above `tutti-nodes` uses those. This crate cannot: `tutti-nodes` depends on
 //! `tutti-core`, so naming it here — even as a dev-dependency — is a dependency
-//! cycle. The fundsp one-liners these tests used before (`sine_hz`,
-//! `lowpass_hz`) are no longer forwarded by `tutti_core::dsp`, so the two
-//! shapes the tests need are written out here, as small as they can be.
+//! cycle. So the two shapes the tests need are written out here, as small as
+//! they can be.
 //!
 //! Neither is a DSP node anyone should reach for: the tests that use them are
-//! about the `Net` and the `Engine` (root folding, allocation budgets), and the
-//! node inside is only there so the graph renders something non-zero.
+//! about the `Engine` and the editor (root folding, allocation budgets), and
+//! the node inside is only there so the graph renders something non-zero.
 //!
 //! Below them, the beat model the engine tests hold the transport to.
 
@@ -19,12 +18,14 @@
 
 use std::f64::consts::TAU;
 
-use tutti_core::{AudioUnit, BufferMut, BufferRef, Hz, SampleRate, Signal, SignalFrame, Tail};
+use tutti_core::{Hz, SampleRate, Tail};
+use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
+use tutti_types::ChannelLayout;
 
 /// A mono sine source, phase 0 at the first sample.
 ///
-/// Starts at [`SampleRate::DEFAULT`]; a `Net` corrects that through
-/// `set_sample_rate`.
+/// Starts at [`SampleRate::DEFAULT`]; a graph corrects that through
+/// `prepare`.
 #[derive(Clone)]
 pub struct Sine {
     frequency: Hz,
@@ -49,58 +50,24 @@ impl Sine {
     }
 }
 
-impl AudioUnit for Sine {
+impl Node for Sine {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+    }
+
+    fn prepare(&mut self, prepare: &Prepare) {
+        self.sample_rate = prepare.sample_rate();
+    }
+
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for y in io.output(0) {
+            *y = self.next();
+        }
+        Status::Modified
+    }
+
     fn reset(&mut self) {
         self.phase = 0.0;
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: SampleRate) {
-        self.sample_rate = sample_rate;
-    }
-
-    fn inputs(&self) -> usize {
-        0
-    }
-
-    fn outputs(&self) -> usize {
-        1
-    }
-
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output[0] = self.next();
-    }
-
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        for i in 0..size {
-            let y = self.next();
-            output.set_f32(0, i, y);
-        }
-    }
-
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(1);
-        out.set(0, Signal::Latency(0.0));
-        out
-    }
-
-    fn get_id(&self) -> u64 {
-        tutti_core::mnemonic(b"CORETSIN")
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn tail(&mut self) -> Tail {
-        Tail::None
-    }
-
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
     }
 }
 
@@ -113,64 +80,34 @@ impl AudioUnit for Sine {
 #[derive(Clone)]
 pub struct Gain(pub f32);
 
-impl AudioUnit for Gain {
-    fn inputs(&self) -> usize {
-        1
+impl Node for Gain {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
     }
 
-    fn outputs(&self) -> usize {
-        1
-    }
+    fn prepare(&mut self, _: &Prepare) {}
 
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        output[0] = input[0] * self.0;
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        for i in 0..size {
-            output.set_f32(0, i, input.at_f32(0, i) * self.0);
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let (ins, mut outs) = io.split();
+        for (y, x) in outs.get(0).iter_mut().zip(ins.get(0)) {
+            *y = x * self.0;
         }
+        Status::Modified
     }
 
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(1);
-        out.set(0, input.at(0).scale(f64::from(self.0)));
-        out
-    }
-
-    fn get_id(&self) -> u64 {
-        tutti_core::mnemonic(b"CORETGAN")
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn tail(&mut self) -> Tail {
-        Tail::None
-    }
-
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
+    fn reset(&mut self) {}
 }
 
 // ---- the beat, in closed form ---------------------------------------------
 
-/// The beat, segment by segment, as the engine is specified to count it
-/// (doc 013 §6), written here without its code: each segment is an origin
+/// The beat, segment by segment, as the engine is specified to count it,
+/// written here without its code: each segment is an origin
 /// frame and beat and a tempo, and the beat at a frame is the origin beat
 /// plus `frames × tempo / (60 × rate)` in closed form. A loop wraps on the
 /// first frame whose beat reaches its end, onto
 /// `start + (beat − start) mod len`, when the playhead was inside it.
 ///
-/// Until doc 013 PR 15 the engine tests compared the graph's beats against
-/// a `Net`'s `TransportClock` rendered by the same engine; this is what that
-/// clock was pinned to, and the oracle now.
+/// The engine tests use it as the oracle for the graph's beats.
 #[derive(Clone, Copy, Debug)]
 pub struct Segment {
     pub frame: u64,

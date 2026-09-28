@@ -793,12 +793,11 @@ mod tests {
     /// is reading for `newest` and stamp the slot's sequence with its own —
     /// tearing the block being read, or destroying the evidence for it.
     ///
-    /// The previous version of this test asserted `MAX_BEHIND == RING_SLOTS`
-    /// and its sibling asserted `survivors == [8, 9, 10]`, which *pinned the
-    /// off-by-one as intended behaviour*: at depth 2, `slot_for(8) ==
-    /// slot_for(10)`. Asserting the numbers made the tests agree with the bug.
-    /// Asserting the property makes them independent of the ring depth, so
-    /// raising `RING_SLOTS` cannot silently reintroduce it.
+    /// Asserting specific numbers (`MAX_BEHIND == RING_SLOTS`, `survivors ==
+    /// [8, 9, 10]`) would pin an off-by-one as intended behaviour: at depth 2,
+    /// `slot_for(8) == slot_for(10)`. Asserting the property makes the tests
+    /// independent of the ring depth, so raising `RING_SLOTS` cannot silently
+    /// introduce it.
     #[test]
     fn no_admitted_block_shares_a_slot_with_the_newest() {
         // Mirrors `shm::header::slot_for`, which is private to that module.

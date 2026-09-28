@@ -5,14 +5,26 @@ wrapped so a caller writes no `unsafe` of its own.
 
 ## What this is
 
-The CLAP one of tutti's four format hosts. It loads a `.clap` bundle, drives
-audio and MIDI processing, exposes the parameter tree, audio- and note-port
-topology, state save/restore with CLAP's save contexts, the plugin's editor, and
-the host-callback polling surface.
+The CLAP host among tutti's four plugin-format hosts. It loads a `.clap` bundle,
+drives audio and MIDI processing, exposes the parameter tree, audio- and
+note-port topology, state save/restore with CLAP's save contexts, the plugin's
+editor, and the host-callback polling surface.
+
+Most applications reach it through `tutti-plugin` (feature `clap`) or
+`tutti-plugin-server`, which give every format one interface. Use it directly
+when you want a CLAP host without the rest of the engine.
 
 Two types carry the lifecycle: [`ClapLoaded`] is the mapped, instantiated plugin,
 and [`ClapActive<T>`][`ClapActive`] is the same plugin with buffers allocated and
 [`process`][`ClapActive::process`] legal. Both transitions take `self` by value.
+
+The other types you will meet first:
+
+- [`AudioBuffer32`] / [`AudioBuffer64`]: the per-block audio a
+  [`process`][`ClapActive::process`] call reads and writes.
+- [`ClapProcessContext`]: per-block MIDI, parameter changes and transport.
+- [`PluginInfo`]: the descriptor (id, name, vendor, features) read at load.
+- [`ClapError`]: the error type, with [`LoadStage`] for load failures.
 
 ## What it does not own
 
@@ -25,10 +37,6 @@ can stay format-agnostic, not defined here. MIDI is the workspace-wide UMP
 CLAP-specific MIDI event trait to implement**. What *is* CLAP-native is
 [`ClapNoteExpression`], the per-voice expression type, which keeps its own name
 precisely so it does not shadow the shared one.
-
-**`ClapInstance`.** That name belongs to
-[`tutti-plugin-server`](../../tutti-plugin-server), which wraps this crate's
-types as its per-format loader adapter. Nothing in this crate is called that.
 
 **Subprocess isolation.** This crate hosts in-process; `tutti-plugin-server` puts
 it in a subprocess and [`tutti-plugin`](../../tutti-plugin) is the host side.
@@ -177,22 +185,21 @@ host for calling on the wrong thread while the values are dropped in silence.
 
 `default = []`.
 
-- `clap-extras` — the speculative part of the CLAP surface that no consumer (the
-  `tutti-plugin-server` loader, the in-process GUI host) currently calls:
+- `clap-extras` — the less commonly needed part of the CLAP surface:
   param-indication, remote controls, context menus, triggers, tuning, audio-port
-  reconfiguration, POSIX-fd polling, preset load, and the plugin undo/redo and
-  resource-directory extensions. The code and its tests stay compiled either way
-  — the feature gates the public re-exports, so the default API surface stays
-  lean. The consumed extensions (audio and note ports, params, state, gui,
-  latency, voice-info, render mode, note names) are always on.
+  reconfiguration, POSIX-fd polling, preset load, track info, transport
+  requests, and the plugin undo/redo and resource-directory extensions. Without
+  it those methods and types are not public. The core extensions (audio and
+  note ports, params, state, gui, latency, voice-info, render mode, note names)
+  are always available.
 
-## Testing
+## Threading and real-time safety
 
-`tutti-clap-test-plugin` is a dev-dependency, so `cargo test` builds a real
-reference plugin's cdylib in the same invocation and the conformance suites load
-it — no third-party plugin need be installed, and the suite is not macOS-only.
-RT-safety regressions run under a disabled global allocator, the same wiring the
-VST2 and VST3 hosts use.
+CLAP tags every call `[main-thread]` or `[audio-thread]`, and this crate follows
+the tags. Load, activate, deactivate, state, the editor and polling belong on
+the thread that loaded the plugin; debug builds assert it.
+[`ClapActive::process`] belongs on the audio thread and does not allocate: the
+scratch it renders through is sized at activation.
 
 ## License
 
@@ -206,6 +213,11 @@ MIT OR Apache-2.0
 [`ClapActive`]: crate::ClapActive
 [`ClapActive::process`]: crate::ClapActive::process
 [`ClapError`]: crate::ClapError
+[`LoadStage`]: crate::LoadStage
+[`AudioBuffer32`]: crate::AudioBuffer32
+[`AudioBuffer64`]: crate::AudioBuffer64
+[`ClapProcessContext`]: crate::ClapProcessContext
+[`PluginInfo`]: crate::PluginInfo
 [`ClapNoteExpression`]: crate::ClapNoteExpression
 [`ParameterChanges`]: crate::ParameterChanges
 [`TransportInfo`]: crate::TransportInfo

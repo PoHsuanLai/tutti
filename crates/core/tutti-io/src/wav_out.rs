@@ -46,8 +46,33 @@ use tutti_core::SampleRate;
 /// this bounds fidelity, never alignment.
 pub const MAX_WAV_FOLD_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
 
-/// Live WAV [`AudioOut`]. Owns the `hound` writer plus the channel layout and
-/// depth needed to encode each frame.
+/// A WAV file sink: the [`AudioOut`] a recording writes into.
+///
+/// Writes incrementally through a buffered file writer, so a take of any
+/// length is never held in memory, at any [`BitDepth`] (integer depths are
+/// quantized without dither). Frames are written at the header's width with
+/// [`write_interleaved`](Self::write_interleaved) (or [`AudioOut::write`]), or
+/// folded from another width with [`write_folding`](Self::write_folding).
+///
+/// Writes do blocking file I/O: drive the sink from a pump thread such as
+/// [`Recorder`](crate::Recorder)'s, never from the audio thread. A write
+/// failure (a full disk, say) stops the sink and is reported from
+/// [`finalize`](AudioOut::finalize), which must run for the file to be
+/// readable: it back-patches the header's lengths.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_io::{AudioOut, BitDepth, WavOut};
+///
+/// # fn main() -> std::io::Result<()> {
+/// let dir = tempfile::tempdir()?;
+/// let mut wav = WavOut::create(dir.path().join("tone.wav"), 48_000.0, 2u16, BitDepth::Int24)?;
+/// wav.write_interleaved(&[0.5, -0.5, 0.25, -0.25]); // two stereo frames
+/// wav.finalize()?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct WavOut {
     writer: WavWriter<BufWriter<File>>,
     layout: ChannelLayout,
@@ -82,16 +107,13 @@ impl std::fmt::Debug for WavOut {
 }
 
 impl WavOut {
-    /// Create the file and WAV header for `file_path`.
+    /// Creates (or truncates) the file at `file_path` and writes a WAV header
+    /// for `channels` at `sample_rate` (rounded to whole Hz) and `depth`.
     ///
     /// # Errors
     ///
     /// The `io::Error` from creating the file (a missing directory, a
-    /// permission denial, a full disk) or from writing the header. Carried
-    /// rather than flattened to a sentinel, because those cases want different
-    /// responses from a caller and only the error distinguishes them —
-    /// [`Recorder::start`](crate::Recorder::start), which consumes this type,
-    /// already returns `io::Result` for the same reason.
+    /// permission denial, a full disk) or from writing the header.
     pub fn create(
         file_path: impl AsRef<Path>,
         sample_rate: impl Into<SampleRate>,
@@ -162,12 +184,12 @@ impl WavOut {
         }
     }
 
-    /// Declared channel layout — what the WAV header says, and therefore
-    /// exactly how many samples per frame
-    /// [`write_interleaved`](Self::write_interleaved) must emit.
+    /// Returns the declared channel layout — what the WAV header says, and
+    /// therefore how many samples per frame
+    /// [`write_interleaved`](Self::write_interleaved) expects.
     ///
-    /// This is also [`AudioOut::layout`]; the inherent copy exists so a caller
-    /// holding a concrete `WavOut` can ask without importing the trait.
+    /// The same as [`AudioOut::layout`], callable without importing the
+    /// trait.
     pub fn layout(&self) -> ChannelLayout {
         self.layout
     }
@@ -177,23 +199,21 @@ impl WavOut {
     /// Kept as a separate accessor rather than making every call site write
     /// `layout().count().max(1) as usize`, because that expression is the one
     /// piece of arithmetic that must be derived ONCE per call and hoisted above
-    /// any per-frame loop. Naming it is what makes a stray `.count()` inside a
-    /// loop stand out as the review failure it is.
+    /// any per-frame loop.
     fn stride(&self) -> usize {
         self.layout.count().max(1) as usize
     }
 
-    /// Sample rate written into the header.
+    /// Returns the sample rate written into the header.
     ///
-    /// Exposed so a caller pairing this sink with a source can compare the two:
-    /// feeding 48 kHz frames into a sink that declared 8 kHz produces a
-    /// perfectly valid WAV that plays back six times too slow, and nothing
-    /// downstream can detect it. Only the caller holds both halves.
+    /// Compare it with the source's before pumping: feeding 48 kHz frames into
+    /// a sink that declared 8 kHz produces a valid WAV that plays back six
+    /// times too slow, and nothing downstream can detect it.
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
-    /// Write flat interleaved frames at this sink's own declared width.
+    /// Writes flat interleaved frames at this sink's own declared width.
     ///
     /// `samples` is a flat interleaved buffer holding `frames *
     /// layout().count()` samples. Emits exactly `layout().count()` samples per
@@ -245,8 +265,8 @@ impl WavOut {
         true
     }
 
-    /// Write flat interleaved frames of some **other** width, folding each one
-    /// to this sink's declared width on the way in.
+    /// Writes flat interleaved frames of some **other** width, folding each
+    /// one to this sink's declared width on the way in.
     ///
     /// `src` is a flat interleaved buffer at `src_layout`'s width; the fold runs
     /// once per `src` FRAME and emits one whole destination frame. A trailing
@@ -255,11 +275,9 @@ impl WavOut {
     /// The fold is [`fold_frame`](tutti_core::fold_frame), the engine's single
     /// ITU/Dolby implementation, so a mono sink **averages** `(l + r) * 0.5` and
     /// a 5.1 source keeps its centre and surrounds instead of being truncated to
-    /// the front pair. The policy lives in exactly one place; this sink has no
-    /// private copy of it to get wrong.
+    /// the front pair.
     ///
-    /// Allocation-free: the destination frame is a fixed stack scratch used as a
-    /// prefix, per the engine's RT pattern.
+    /// Allocation-free: the destination frame is a fixed stack scratch.
     ///
     /// The scratch caps the width this can *fold into* at
     /// [`MAX_WAV_FOLD_CHANNELS`]. A sink declared wider than that still gets a
@@ -307,10 +325,8 @@ impl AudioOut for WavOut {
     /// operation. A caller feeding some *other* width folds first — see
     /// [`write_folding`](WavOut::write_folding).
     fn write(&mut self, frames: &[f32]) {
-        // Straight delegation, deliberately: a private re-fit here is what
-        // dropped the right channel at mono and allocated a `vec![0.0; ch]` per
-        // frame. Any width adaptation belongs in `write_folding`, over the
-        // engine's single `fold_frame`.
+        // Straight delegation, deliberately: any width adaptation belongs in
+        // `write_folding`, over the engine's single `fold_frame`.
         self.write_interleaved(frames);
     }
 
@@ -340,10 +356,8 @@ mod tests {
 
     /// A failed open reports *why*, and takes a path without ceremony.
     ///
-    /// Both halves of the signature change in one assertion. The kind matters:
-    /// a caller distinguishing "make the directory and retry" from "give up"
-    /// can only do so from the error, and the `Option` this used to return
-    /// collapsed every cause into `None`.
+    /// The kind matters: a caller distinguishing "make the directory and
+    /// retry" from "give up" can only do so from the error.
     #[test]
     fn a_failed_open_reports_the_cause() {
         let dir = tempfile::tempdir().unwrap();

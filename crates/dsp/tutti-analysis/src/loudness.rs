@@ -20,8 +20,9 @@
 //! keeping them `f64`.
 
 use ebur128::{EbuR128, Mode};
-// `SampleRate` is fundsp's, reached through the engine root like `yin.rs` does;
-// the rest of the vocabulary comes straight from `tutti-types`.
+// `SampleRate` is reached through the engine root like `yin.rs` does (it is
+// `tutti-types`' too, re-exported there); the rest comes straight from
+// `tutti-types`.
 use tutti_core::SampleRate;
 use tutti_types::{ChannelLayout, Db, Interleaved};
 
@@ -116,7 +117,7 @@ impl std::fmt::Debug for LoudnessState {
 }
 
 impl LoudnessState {
-    /// Build a meter for `cfg`.
+    /// Builds a meter for `cfg`.
     ///
     /// Returns `None` for a layout `ebur128` cannot meter (zero channels), so
     /// the failure is a value rather than a panic inside a render.
@@ -135,7 +136,7 @@ impl LoudnessState {
     }
 }
 
-/// Feed one chunk of frames.
+/// Feeds one chunk of frames.
 ///
 /// The chunk arrives as an [`Interleaved`], so its width travels with it rather
 /// than beside it — as a separate `cfg.layout` and a bare buffer, the two have
@@ -164,7 +165,7 @@ pub fn step_loudness(cfg: &LoudnessConfig, state: &mut LoudnessState, chunk: Int
     let _ = state.meter.add_frames_f32(whole.samples());
 }
 
-/// Read the meter.
+/// Reads the meter.
 ///
 /// Consumes the state: R128's integrated loudness is a whole-signal answer, and
 /// letting a caller read it mid-stream and keep feeding invites treating a
@@ -213,7 +214,7 @@ fn true_peak_db(peak_linear: f64) -> Db {
     }
 }
 
-/// Measure a whole buffer.
+/// Measures a whole buffer.
 ///
 /// Folds [`step_loudness`] — the same implementation the streaming path uses,
 /// so the two can never disagree. `None` when the layout has no channels.
@@ -382,11 +383,10 @@ mod tests {
 
     /// A chunk whose own width disagrees with the meter's is skipped, not fed.
     ///
-    /// Before the buffer carried its width, this disagreement could not be
-    /// stated at all: `step_loudness` took a bare slice and *assumed* it was
-    /// `cfg.layout`-wide. A quad chunk handed to a stereo meter would have been
-    /// split into twice as many frames of the wrong signal and silently folded
-    /// into the integrated reading.
+    /// The buffer carries its width, so the disagreement is detectable. Fed
+    /// anyway, a quad chunk handed to a stereo meter would be split into twice
+    /// as many frames of the wrong signal and silently folded into the
+    /// integrated reading.
     #[test]
     fn a_chunk_of_the_wrong_width_is_not_metered() {
         let c = cfg(48_000.0);

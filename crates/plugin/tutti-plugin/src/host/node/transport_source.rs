@@ -1,8 +1,8 @@
 //! The transport a hosted plugin is handed each block: a pure function of the
 //! block's [`Env`] and the project meter.
 //!
-//! Doc 013 (Verdicts, `TransportSource`): the plugin node no longer polls a
-//! shared timeline. The executor hands it the block's [`Env`], whose
+//! The plugin node does not poll a shared timeline. The executor hands it the
+//! block's [`Env`], whose
 //! transport is the engine's own playhead at the block's first frame, with
 //! every start, stop, seek, tempo or loop edit inside the block in
 //! [`Env::changes`]. [`from_env`] reads it at a frame with
@@ -11,10 +11,10 @@
 //! offline, where the forked node's `Env` is the render's.
 //!
 //! The mapping onto the plugin ABIs' snapshot is [`transport_info`], shared
-//! with the one node that still polls a timeline: the in-process VST2 client
-//! is an `AudioUnit` with no `Env` until it is ported (doc 013, "Port
-//! mechanically"), and builds the same [`Snapshot`] from its polled reader
-//! (`PolledTransport`, behind the `vst2` feature).
+//! with the one node that polls a timeline: the in-process VST2 client reads
+//! its transport from an installed reader rather than its `Env`, and builds
+//! the same
+//! [`Snapshot`] from it (`PolledTransport`, behind the `vst2` feature).
 
 use tutti_core::meter::{Meter, MeterMap};
 use tutti_core::{Beat, Bpm, SampleRate};
@@ -140,6 +140,7 @@ pub(crate) fn transport_info(s: &Snapshot, meter: &MeterMap) -> TransportInfo {
 
 // `BlockReset for TransportInfo` lives next to its definition's consumers; a
 // reset is a full default snapshot (the "no transport installed" state).
+#[cfg(feature = "vst2")]
 impl crate::host::node::input_slot::BlockReset for TransportInfo {
     fn reset(&mut self) {
         *self = TransportInfo::default();
@@ -147,9 +148,8 @@ impl crate::host::node::input_slot::BlockReset for TransportInfo {
 }
 
 /// A transport read by **polling** a live [`TransportState`], for the one
-/// plugin node that has no [`Env`]: the in-process VST2 client, an
-/// `AudioUnit` run through `Legacy` until it is ported (doc 013, "Port
-/// mechanically"). The subprocess plugin node reads [`from_env`] instead.
+/// plugin node that does not read its [`Env`] for time: the in-process VST2
+/// client. The subprocess plugin node reads [`from_env`] instead.
 ///
 /// [`TransportState`]: tutti_core::transport::TransportState
 #[cfg(feature = "vst2")]
@@ -166,7 +166,7 @@ mod polled {
     use tutti_core::SampleRate;
 
     use super::{transport_info, Snapshot};
-    use crate::host::node::input_slot::{BlockCtx, BlockInput};
+    use crate::host::node::input_slot::BlockInput;
     use crate::protocol::TransportInfo;
 
     /// A live [`TransportState`] and the project meter, snapshotted each
@@ -205,7 +205,7 @@ mod polled {
 
     impl BlockInput for PolledTransport {
         type Out = TransportInfo;
-        fn refill(&self, _ctx: BlockCtx, out: &mut TransportInfo) {
+        fn refill(&self, out: &mut TransportInfo) {
             let r = &self.reader;
             let snapshot = Snapshot {
                 playing: r.is_rolling(),
@@ -224,7 +224,6 @@ mod polled {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::host::node::input_slot::BlockCtx;
         use tutti_core::transport::Transport;
 
         /// The polled source reads the live transport through the shared
@@ -244,14 +243,13 @@ mod polled {
                 .set_playhead(2.0);
             let meter = Arc::new(tutti_core::RtPublish::new(MeterMap::default()));
             let src = PolledTransport::new(Arc::new(t.clone()), meter, 44_100.0);
-            let ctx = BlockCtx { block_size: 64 };
             let mut out = TransportInfo::default();
-            src.refill(ctx, &mut out);
+            src.refill(&mut out);
             assert!(out.state.playing);
             // seconds = beats * 60 / tempo = 2 * 60 / 120 = 1.0
             assert!((out.position.seconds - 1.0).abs() < 1e-6);
             src.set_sample_rate(48_000.0);
-            src.refill(ctx, &mut out);
+            src.refill(&mut out);
             assert_eq!(out.sample_rate, 48_000.0);
         }
     }

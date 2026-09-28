@@ -1,9 +1,8 @@
 //! The per-buffer graph render, called from the audio callback.
 //!
-//! [`Engine`] ticks the native graph's
+//! [`Engine`] ticks the graph's
 //! [`Executor`](tutti_graph::Executor) and the transport, and renders one
-//! output buffer per block (doc 013; fundsp's `Net` rendered here too until
-//! Phase 3 PR 15). It folds the graph's outputs to the device width, keeps
+//! output buffer per block. It folds the graph's outputs to the device width, keeps
 //! the declick, and applies timestamped transport commands on their frame.
 //!
 //! # Timestamped transport commands
@@ -12,21 +11,12 @@
 //! an [`At`]. Each block, the engine walks the commands due in it in time
 //! order and **cuts the block's transport** at each one's frame: the pieces
 //! before and after run under different transports. The executor never
-//! splits a block (doc 013 §6): the engine advances its own clock piece by
+//! splits a block: the engine advances its own clock piece by
 //! piece, records each cut as a
 //! [`TransportChange`](tutti_graph::TransportChange) in the block's `Env`,
 //! and renders the whole block once. A node reads the transport at a frame
 //! with `Env::transport_at`, and the graph's own `At::Beat` commands resolve
 //! against the piece that reaches their beat.
-//!
-//! **Chunk-major while the plan holds a `Legacy` unit**
-//! (`Plan::has_legacy`, doc 013's `Legacy` compatibility mode). A `Legacy`
-//! unit reads no `Env`: one that follows the transport (a sampler voice, a
-//! MIDI clip source) polls the live `Transport` on every 64-frame call. So
-//! the engine then renders graph blocks of at most [`LEGACY_CHUNK`] frames,
-//! across every node, each with its own walk, and publishes the playhead
-//! after each: through a chunk it reads the chunk's first frame, and it only
-//! moves forward. A graph with no `Legacy` unit renders whole blocks.
 //!
 //! A block holds at most
 //! [`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES) cuts. A command due past
@@ -85,7 +75,6 @@
 
 use tutti_graph::{
     CommitError, Due, Editor, Env, Executor, Limits, Offset, Playhead, TransportChanges,
-    LEGACY_CHUNK,
 };
 
 use crate::transport::fsm::DEFAULT_DECLICK_FRAMES;
@@ -94,7 +83,7 @@ use crate::transport::{
     FadeOut, MotionEvent, MotionFsm, MotionState, TransportClock, TransportCommand,
 };
 use crate::transport::{Schedule, Scheduled, SCHEDULE_CAPACITY};
-use crate::{AudioThreadCell, AudioUnit, InterleavedMut, SampleRate, Samples};
+use crate::{AudioThreadCell, InterleavedMut, SampleRate, Samples};
 use tutti_types::{At, Frame};
 
 /// The widest graph root an engine renders — the most global outputs it
@@ -139,10 +128,10 @@ impl core::fmt::Display for GraphEngineError {
 
 impl std::error::Error for GraphEngineError {}
 
-/// The transport as a native graph block sees it.
+/// The transport as a graph block sees it.
 type GraphTransport = tutti_graph::Transport;
 
-/// The audio engine: ticks the native graph + transport and renders one
+/// The audio engine: ticks the graph + transport and renders one
 /// output buffer per block from the audio callback.
 ///
 /// # What it owns, and what it deliberately does not
@@ -158,8 +147,8 @@ type GraphTransport = tutti_graph::Transport;
 /// That split is the reason this is a distinct type rather than a method on the
 /// transport or the graph. Both of those are edited from the control thread;
 /// this is touched only from the callback. Fusing it into either would put a
-/// control-thread API and an RT-only API on one object, where the compiler can
-/// no longer say which methods are safe to call from where — and the failure is
+/// control-thread API and an RT-only API on one object, where the compiler could
+/// not say which methods are safe to call from where — and the failure is
 /// silent, because a lock or an allocation on the audio thread produces a
 /// dropout rather than an error.
 ///
@@ -178,14 +167,14 @@ pub struct Engine {
     capacity: Samples,
 }
 
-/// The native graph's executor, the clock that feeds its `Env`, and the
+/// The graph's executor, the clock that feeds its `Env`, and the
 /// planar scratch its outputs land in before the fold.
 struct GraphRender {
     exec: Executor,
     /// The engine's playhead. The graph reads the transport from `Env`, so
     /// the engine drives the clock itself ([`TransportClock::begin`] /
-    /// [`TransportClock::advance`]); an `EnvClock` in the graph continues it
-    /// with the same arithmetic.
+    /// [`TransportClock::advance`]); every node reads what it publishes
+    /// from its block's `Env`.
     clock: TransportClock,
     /// `MAX_ROOT_CHANNELS` planar channels of `stride` frames each.
     scratch: Vec<f32>,
@@ -194,12 +183,18 @@ struct GraphRender {
 }
 
 impl Engine {
-    /// Build an engine that renders a native graph: `executor`, the audio
-    /// half of `editor`'s pair, whose `Prepare` comes from the device
-    /// configuration (its rate, and the largest block the device hands
-    /// over). The block capacity is the larger of that maximum and
-    /// [`DEFAULT_BLOCK_CAPACITY`]; see
-    /// [`with_capacity`](Self::with_capacity).
+    /// Creates an engine that renders the graph run by `executor`.
+    ///
+    /// `executor` is the audio half of `editor`'s pair, whose `Prepare` comes
+    /// from the device configuration (its rate, and the largest block the
+    /// device hands over). The block capacity is the larger of that maximum
+    /// and [`DEFAULT_BLOCK_CAPACITY`]; see
+    /// [`with_capacity`](Self::with_capacity) for what building an engine
+    /// does to the editor and the transport.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`with_capacity`](Self::with_capacity).
     pub fn new(
         transport: &crate::Transport,
         editor: &mut Editor,
@@ -212,8 +207,7 @@ impl Engine {
     /// to `capacity` frames (or the prepared maximum, if larger).
     ///
     /// The engine renders whole device blocks through the executor — no
-    /// 64-frame chunking unless a `Legacy` unit is present (module docs); a
-    /// device block longer than the prepared maximum is rendered as
+    /// 64-frame chunking; a device block longer than the prepared maximum is rendered as
     /// consecutive graph blocks of at most that — and builds each block's
     /// `Env` from `transport`: the frame is the executor's clock, which
     /// tracks device time, and the transport snapshot comes from a
@@ -238,13 +232,22 @@ impl Engine {
     ///
     /// Nor can the graph hold a second writer: a `TransportClock` can only
     /// write a playhead through links from that one call. A node that
-    /// takes the beat as a signal (`ClickNode`, a beat-driven LFO or
-    /// automation lane) is fed by an [`EnvClock`](crate::EnvClock) instead,
-    /// which emits the same samples from the block's `Env` and shares
-    /// nothing.
+    /// follows the beat (`ClickNode`, a beat-synced LFO or automation lane)
+    /// reads it from its block's `Env`, which shares nothing.
     ///
     /// Control thread. Allocates the fold scratch
     /// (`MAX_ROOT_CHANNELS × capacity` samples).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, leaving `editor` unchanged, when:
+    ///
+    /// - [`GraphEngineError::NotAPair`]: `executor` is not `editor`'s.
+    /// - [`GraphEngineError::PlayheadClaimed`]: another engine over
+    ///   `transport` (or a clone of it) is alive.
+    /// - [`GraphEngineError::Limits`]: what the editor already sent has more
+    ///   than [`MAX_ROOT_CHANNELS`] global outputs or a `MaxBlock` above the
+    ///   capacity.
     pub fn with_capacity(
         transport: &crate::Transport,
         editor: &mut Editor,
@@ -293,12 +296,13 @@ impl Engine {
         self.capacity
     }
 
-    /// Render the whole of `output` — an interleaved device buffer that carries
-    /// its own width — with no transport motion and no declick: the pure
-    /// render.
+    /// Renders the whole of `output` with no transport motion and no declick.
     ///
-    /// One executor block per device block (up to its prepared maximum, or
-    /// [`LEGACY_CHUNK`] while a `Legacy` unit is present), under the
+    /// `output` is an interleaved device buffer that carries its own width.
+    /// This is the pure render.
+    ///
+    /// One executor block per device block (up to its prepared maximum),
+    /// under the
     /// transport as it stands. The graph root has no inputs. The root is
     /// rendered at its **own** output width (at most [`MAX_ROOT_CHANNELS`],
     /// which the editor's limits enforce) into scratch, then each frame is
@@ -344,7 +348,7 @@ impl Engine {
         }
     }
 
-    /// Render one block into `output`, an interleaved device buffer.
+    /// Renders one block into `output`, an interleaved device buffer.
     ///
     /// How many frames is `output`'s own business — it is `output.len()`,
     /// which cannot disagree with the slice the way a separate `frames`
@@ -384,7 +388,7 @@ impl Engine {
         }
     }
 
-    /// Walk one block's scheduled transport commands in time order, running
+    /// Walks one block's scheduled transport commands in time order, running
     /// each piece between them through `pieces` and planning the declick
     /// gain over the block. See the module docs for the rules.
     ///
@@ -507,16 +511,18 @@ impl Engine {
         false
     }
 
-    /// Install every commit the engine's editor has sent, and follow a
-    /// re-prepare's rate change with the engine's clock and the transport's
-    /// frame-timed commands — what the first block after it would do, done
-    /// now. Returns whether the graph is running a plan with no re-prepare
-    /// between its halves.
+    /// Installs every commit the engine's editor has sent, outside the audio
+    /// callback.
+    ///
+    /// It also follows a re-prepare's rate change with the engine's clock and
+    /// the transport's frame-timed commands — what the first block after it
+    /// would do, done now. Returns whether the graph is running a plan with no
+    /// re-prepare between its halves.
     ///
     /// A device restart calls it between the two halves of
     /// `Editor::reprepare` so the re-prepare finishes before the first block
     /// at the new rate, which then renders the re-prepared graph rather than
-    /// the executor's silent checked-out block (doc 013, Phase 3 PR 13).
+    /// the executor's silent checked-out block.
     /// Hosts reach it through `tutti_cpal::Stopped::settle_graph`, which only
     /// a restart hook is handed.
     ///
@@ -541,12 +547,11 @@ impl Engine {
         graph.exec.pending_prepare().is_none() && graph.exec.plan().is_some()
     }
 
-    /// Reset the audio-thread ownership assertions on both cells.
+    /// Does nothing.
     ///
-    /// Call when the device switches and a different thread takes over the
-    /// callback: `AudioThreadCell` pins the first thread that borrows it and
-    /// panics in debug builds on any other, so a new callback thread must be
-    /// announced rather than discovered.
+    /// The engine's [`AudioThreadCell`](tutti_types::AudioThreadCell)s pin no
+    /// owner thread, so a device switch that moves the callback to another
+    /// thread needs no reset. A call to this can be removed.
     pub fn reset_owners(&self) {
         self.graph.reset_owner();
         self.motion.reset_owner();
@@ -826,20 +831,13 @@ impl GraphRender {
             // A re-prepare changed the rate: the executor has rescaled its
             // frame clock; the beat increment and the transport's own
             // frame-timed commands follow.
-            AudioUnit::set_sample_rate(&mut self.clock, rate);
+            self.clock.set_sample_rate(rate);
             schedule.rescale(rate.get() / was.get());
         }
         let bound = self.exec.prepare().max_block().get();
         // The editor's limits keep every `MaxBlock` within the scratch.
         debug_assert!(bound <= self.stride, "MaxBlock {bound} past the scratch");
-        let bound = bound.min(self.stride);
-        // Chunk-major while a `Legacy` unit may poll the transport (the
-        // module docs): after `apply_pending`, so a commit that adds or
-        // removes the last one switches at this block.
-        if self.exec.plan().is_some_and(|p| p.has_legacy()) {
-            return (bound.min(LEGACY_CHUNK), rate);
-        }
-        (bound, rate)
+        (bound.min(self.stride), rate)
     }
 
     /// Render one graph block of `len` frames into frames
@@ -872,8 +870,7 @@ impl GraphRender {
             .process_with_changes(len, transport, changes, &[], &mut outs[..width]);
         // Published after the block, not by the walk before it: through the
         // block the live playhead still reads its first frame (the last
-        // block's end), which is what a `Legacy` unit polling it takes for
-        // its call's first frame. And it only moves forward.
+        // block's end), and it only moves forward.
         self.clock.publish_position();
         if width == 0 {
             block.fill(0.0);
@@ -926,7 +923,7 @@ mod tests {
     /// at the next block.
     ///
     /// Mutation (run): re-read `Control::read` after a command in
-    /// `GraphPieces::begin` (the reviewed behaviour) → the change carries
+    /// `GraphPieces::begin` → the change carries
     /// 200 BPM → fails.
     #[test]
     fn an_untimed_store_during_the_walk_waits_for_the_next_block() {
@@ -980,7 +977,7 @@ mod tests {
     /// A command in sight plans its aim once, not at every walk step.
     ///
     /// Mutation (run): push an aim at every walk step regardless of change
-    /// (the reviewed behaviour) → the quiet block's plan is not empty →
+    /// → the quiet block's plan is not empty →
     /// fails.
     #[test]
     fn a_quiet_block_plans_no_gain_event() {

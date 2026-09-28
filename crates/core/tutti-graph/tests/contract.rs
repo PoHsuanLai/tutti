@@ -1,5 +1,5 @@
-//! The sample-accuracy contract suite (doc 013 §6, "Proof"), for the
-//! graph's own native nodes: an event at offset `k` produces output at frame
+//! The sample-accuracy contract suite, for the
+//! graph's own nodes: an event at offset `k` produces output at frame
 //! `k + arrival + latency`, exactly, on every path — direct, behind PDC,
 //! through an event fan-in, across a recompile (an unrelated edit, and a
 //! generation bump upstream), across ragged blocks (1, 63, 64, 65, `MaxBlock`,
@@ -8,7 +8,7 @@
 //! The harness is `tutti_graph::contract`; the mutation each path was seen
 //! to fail under is recorded on its `Path` variant. The node crates carry
 //! their own rows (`tutti-nodes`, `tutti-spatial`: the latency-bearing
-//! `Legacy` units), and `tutti-core` the engine-level ones.
+//! nodes), and `tutti-core` the engine-level ones.
 //!
 //! The last tests here are the harness's own: rows that break the contract
 //! on purpose, which it must fail — a harness that cannot fail is worse than
@@ -58,7 +58,7 @@ fn latent_pulse_row() -> Row {
 
 /// Declares `Frames(8)` (a SoundFont's resolution) and quantizes on its own
 /// 8-frame grid, offset from every block schedule: an event takes effect at
-/// the start of its next chunk, up to 7 frames late. Doc 013 §6: `Frames(n)`
+/// the start of its next chunk, up to 7 frames late. `Frames(n)`
 /// is honoured within `n - 1` frames either way, so it passes on every
 /// path, ragged schedules included.
 fn chunked_pulse_row() -> Row {
@@ -93,7 +93,7 @@ fn lookahead_row() -> Row {
     .expect_latency(Samples(45))
 }
 
-/// Compiler-owned param modulation (doc 013 item 6): a step in a modulator
+/// Compiler-owned param modulation: a step in a modulator
 /// at frame `F` reaches the node's param at `F + arrival`, exactly — on the
 /// PDC path through the compiler's delay of the early param source.
 ///
@@ -139,7 +139,7 @@ enum Timing {
 
 /// Declares `declared` frames of latency and `resolution`, and delivers
 /// one impulse `actual` frames after where `timing` puts each event: the
-/// D1–D3 shape when `actual` and `declared` differ, and a resolution lie
+/// latency-lie shape when `actual` and `declared` differ, and a resolution lie
 /// when `timing` is coarser than `resolution`.
 struct Liar {
     declared: usize,
@@ -249,6 +249,31 @@ fn a_node_off_its_declared_latency_fails() {
     }
 }
 
+/// A row's lead is held exactly: a node whose response starts one frame
+/// after its excitation passes with a lead of one and fails with none or
+/// two, on the direct path, behind PDC and under the random schedule. (What
+/// lets an instrument whose note starts from a zero sample have a row.)
+///
+/// Mutation (run): `assert_responses` ignoring the lead (`let e = e;`) →
+/// the row with a lead of one fails ("puts it at 5", the response at 6) →
+/// fails.
+#[test]
+fn a_rows_lead_is_held_exactly() {
+    for path in [Path::Direct, Path::BehindPdc, Path::BlocksRandom] {
+        // Declares 5 frames and responds at 6: one frame of lead.
+        liar_row(5, 6, Resolution::Sample, Timing::Exact)
+            .with_lead(Samples(1))
+            .check(path);
+        for lead in [0, 2] {
+            fails(
+                &liar_row(5, 6, Resolution::Sample, Timing::Exact).with_lead(Samples(lead)),
+                path,
+                &format!("a one-frame lead checked as {lead}"),
+            );
+        }
+    }
+}
+
 /// A node that declares `Sample` but applies every event at its block's
 /// first frame fails the direct path at any non-zero offset.
 ///
@@ -265,7 +290,7 @@ fn a_node_ignoring_offsets_fails() {
     );
 }
 
-/// Resolution is held as declared (doc 013 §6): within `n - 1` frames of
+/// Resolution is held as declared: within `n - 1` frames of
 /// the exact frame for `Frames(n)`, either way.
 ///
 /// - Declaring `Sample` but quantizing to 8 frames fails.
@@ -344,7 +369,7 @@ impl Node for Tags {
 }
 
 /// Fan-in at **equal** offsets: source order decides, at every offset of a
-/// block (doc 013 decision 5), three sources deep.
+/// block, three sources deep.
 ///
 /// Mutation (run): in `merge_into`, break ties toward the later source
 /// (`<` → `<=`) → the order reverses → fails.
@@ -373,4 +398,92 @@ fn a_fan_in_tie_goes_by_source_order() {
             "offset {k}: the order the sources were connected in"
         );
     }
+}
+
+/// Writes, per frame, the beat of the transport it reads from its `Env`
+/// (`Env::transport_at`): a node that follows the transport, for the
+/// harness entry points that hand it one.
+#[derive(Clone)]
+struct BeatEcho;
+
+impl Node for BeatEcho {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for o in cx.env.offsets() {
+            io.output(0)[o.index()] = cx.env.transport_at(o).beat().get() as f32;
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// A rolling transport at beat 2, 120 BPM at 48 kHz: 24 000 frames a beat.
+fn rolling_at_two() -> tutti_graph::Transport {
+    tutti_graph::Transport::new(true, tutti_types::Bpm(120.0), tutti_types::Beat(2.0), None)
+}
+
+/// `drive_in`, `Direct::block_in` and `BlockRig::block_in` hand the node
+/// the transport they are given (and `drive_in` its changes), where
+/// `Direct::block` and `BlockRig::block` hand it a stopped one at beat 0.
+///
+/// Mutation (run): `drive_in` building its `Cx` over a stopped `Env` of its
+/// own → frame 0 reads 0, not 2 → fails. Mutation (run): `Direct::block_in`
+/// ignoring its `env` → fails. Mutation (run): `BlockRig::block_in` passing
+/// `Transport::default()` to the executor → fails.
+#[test]
+fn the_transport_harnesses_hand_the_node_their_transport() {
+    use tutti_graph::contract::{drive_in, prepared, BlockRig, Direct};
+    use tutti_graph::{Env, Offset, TransportChanges};
+    use tutti_types::{Beat, Bpm, SampleRate};
+    let rate = SampleRate(48_000.0);
+    let per_frame = 1.0 / 24_000.0;
+
+    let mut node = prepared(BeatEcho, rate, 4);
+
+    // A seek to beat 10 on frame 2, inside the block.
+    let mut changes = TransportChanges::NONE;
+    changes
+        .push(
+            Offset::new(2, Samples(4)).unwrap(),
+            tutti_graph::Transport::new(true, Bpm(120.0), Beat(10.0), None),
+        )
+        .unwrap();
+    let env = Env {
+        frame: Frame(0),
+        sample_rate: rate,
+        block_len: Samples(4),
+        transport: rolling_at_two(),
+        changes,
+    };
+    let out = drive_in(&mut node, &env, &[], &[], &[]).audio;
+    let want = [2.0, 2.0 + per_frame, 10.0, 10.0 + per_frame];
+    for (got, want) in out[0].iter().zip(want) {
+        assert_eq!(*got, want as f32);
+    }
+
+    let mut direct = Direct::new(BeatEcho, rate, 4);
+    let env = Env {
+        changes: TransportChanges::NONE,
+        ..env
+    };
+    direct.block_in(&env);
+    assert_eq!(direct.output(0)[0], 2.0);
+    direct.block();
+    assert_eq!(direct.output(0)[0], 0.0);
+    // `outputs_mut` is the buffer the node writes and `output` reads, so a
+    // frame the node leaves unwritten shows what it was filled with.
+    direct.outputs_mut()[0].fill(7.0);
+    assert_eq!(direct.output(0)[3], 7.0);
+    direct.block_in(&env);
+    assert_eq!(direct.output(0)[3], (2.0 + 3.0 * per_frame) as f32);
+
+    let (mut rig, ()) = BlockRig::new(Unforkable(BeatEcho), rate, 4);
+    rig.block_in(&rolling_at_two());
+    assert_eq!(rig.output(0)[0], 2.0);
+    assert_eq!(rig.output(0)[1], (2.0 + per_frame) as f32);
+    rig.block();
+    assert_eq!(rig.output(0)[0], 0.0);
 }

@@ -23,8 +23,8 @@
 //!   refused rather than re-aligned: the running plan's PDC is compiled for
 //!   one latency, and both units must be aligned to it. Swap a unit whose
 //!   latency differs with a plain [`Editor::insert`](crate::Editor::insert).
-//! - **A replace while a fade runs at that key is queued**, as fundsp's
-//!   `Net::crossfade` queues it: the running fade finishes, and a fade from
+//! - **A replace while a fade runs at that key is queued**: the running fade
+//!   finishes, and a fade from
 //!   its incoming unit to the newest one starts at the next block. Only two
 //!   units ever run at once, and no swap is ever a step. A third replace
 //!   while one waits supersedes the waiting unit, which never ran.
@@ -69,15 +69,17 @@ impl CrossfadeCurve {
     /// exactly `len` frames and the step into and out of it is one fade step,
     /// not a jump.
     ///
-    /// - `EqualAmplitude`: `g_in = x³(6x² − 15x + 10)` (smoothstep's fifth
-    ///   order, fundsp's `smooth5`), `g_out = 1 − g_in`.
+    /// - `EqualAmplitude`: `g_in = x³(6x² − 15x + 10)` (fifth-order
+    ///   smoothstep), `g_out = 1 − g_in`.
     /// - `EqualPower`: `g_in = sin(πx/2)`, `g_out = cos(πx/2)`.
     ///
-    /// This is the one piece of fade code the executor and the reference
-    /// interpreter share: it is the *definition* of the curve, pinned by its
-    /// own test, as the node contract is shared. Everything around it — which
-    /// frame is which `k`, when a fade starts and ends, what runs — each
-    /// derives on its own.
+    /// # Panics
+    ///
+    /// In debug builds, if `k >= len`.
+    // The one piece of fade code the executor and the reference interpreter
+    // share: it is the *definition* of the curve, pinned by its own test.
+    // Everything around it — which frame is which `k`, when a fade starts and
+    // ends, what runs — each derives on its own.
     #[inline]
     pub fn gains(self, k: usize, len: usize) -> (f32, f32) {
         debug_assert!(k < len, "frame {k} of a {len}-frame fade");
@@ -96,8 +98,8 @@ impl CrossfadeCurve {
 }
 
 /// How [`Editor::replace`](crate::Editor::replace) swaps a unit: over
-/// `duration` frames, along `curve`. See the `fade` module docs
-/// (`src/fade.rs`) for the rules.
+/// `duration` frames, along `curve`. See [`Editor::replace`](crate::Editor::replace)
+/// for the rules.
 ///
 /// A zero `duration` is a plain swap: the new unit takes over at the block
 /// the commit lands on, as with [`Editor::insert`](crate::Editor::insert).

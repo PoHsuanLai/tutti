@@ -4,9 +4,15 @@ VST2 plugin hosting — audio, MIDI, parameters, state, and the native editor.
 
 ## What this is
 
-The VST2 one of tutti's four format hosts. It loads VST2 plugins (`.vst`,
-`.dll`, `.so`), drives audio + MIDI processing, exposes parameters and state
-save/restore, and embeds the plugin's native editor into a host-supplied window.
+The VST2 host among tutti's four plugin-format hosts. It loads VST2 plugins
+(`.vst`, `.dll`, `.so`), drives audio + MIDI processing, exposes parameters and
+state save/restore, and embeds the plugin's native editor into a host-supplied
+window.
+
+Most applications do not use this crate directly: `tutti-plugin` (with its
+`vst2` feature) and `tutti-plugin-server` build on it and give every format one
+interface. Use it directly when you want a VST2 host without the rest of the
+engine.
 
 Built on the vendored `vst-tutti` fork of the [`vst`](https://docs.rs/vst) crate,
 which handles the AEffect-level FFI and adds back the host-side `audioMaster`
@@ -15,7 +21,19 @@ pre-allocated render scratch buffers, the MIDI codec, callback wiring,
 transport-info bookkeeping, state save/restore, and editor lifecycle.
 
 One type carries the whole lifecycle: [`Vst2Instance`]. That is the format's own
-contract showing through, not a shortcut — see the constraint section below.
+contract showing through, not a shortcut — see
+[Why one type carries the whole lifecycle](#why-one-type-carries-the-whole-lifecycle).
+
+The main types:
+
+- [`Vst2Instance`]: a loaded plugin; process, parameters, programs, state,
+  editor.
+- [`RenderScratch`]: the pre-allocated buffers each process call renders
+  through.
+- [`Vst2ProcessContext`]: per-block MIDI input, transport and sample rate.
+- [`PluginInfo`]: metadata read at load (name, vendor, channel counts, latency,
+  tail, category).
+- [`Vst2Error`]: the error type, with [`LoadStage`] for load failures.
 
 ## What it does not own
 
@@ -163,22 +181,27 @@ CC→parameter mapping query at all; the module docs carry the opcode evidence.
 
 None. The crate is the VST2 loader.
 
-## Testing
+## Threading and real-time safety
 
-`tutti-vst2-test-plugin` is a dev-dependency, so `cargo test` builds a real
-reference plugin's cdylib in the same invocation and the conformance harness
-loads it. The harness re-opens that cdylib with `libloading` rather than reading
-the linked rlib's statics: the two are separate images with separate globals, and
-only the cdylib's are the ones the host actually touched.
-
-RT-safety regressions run under a disabled global allocator, matching the wiring
-the CLAP and VST3 hosts use.
+[`Vst2Instance::process_f32`] and [`Vst2Instance::process_f64`] do not
+allocate or lock, and are meant for the audio thread. Loading, the editor, and
+anything that suspends the plugin ([`Vst2Instance::set_sample_rate`],
+[`Vst2Instance::reset_processing_state`]) belong on the main thread; debug
+builds assert it once `tutti_plugin_types::mark_main_thread` has been called.
+The plugin is not thread-safe, so callers serialize access to an instance.
 
 ## License
 
 MIT OR Apache-2.0
 
 [`Vst2Instance`]: crate::Vst2Instance
+[`Vst2Instance::process_f32`]: crate::Vst2Instance::process_f32
+[`Vst2Instance::process_f64`]: crate::Vst2Instance::process_f64
+[`RenderScratch`]: crate::RenderScratch
+[`Vst2ProcessContext`]: crate::Vst2ProcessContext
+[`PluginInfo`]: crate::PluginInfo
+[`Vst2Error`]: crate::Vst2Error
+[`LoadStage`]: crate::LoadStage
 [`Vst2Instance::load`]: crate::Vst2Instance::load
 [`Vst2Instance::suspend`]: crate::Vst2Instance::suspend
 [`Vst2Instance::resume`]: crate::Vst2Instance::resume

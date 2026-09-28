@@ -102,11 +102,9 @@
 //! One mutation was **not** caught, and the test that should have caught it says
 //! so: see [`the_at_string_conversions_report_absence_rather_than_fabricating_zero`].
 //!
-//! Every row was re-checked after the coalescing fix described in
-//! [`EventLog::settle_then_clear`] loosened three exact-sequence assertions into
-//! set membership, because loosening an assertion is exactly how a test stops
-//! being load-bearing. All five `watch_property` tests still fail under the tag
-//! mutation.
+//! Three assertions check set membership rather than an exact sequence, because
+//! delivery coalesces (see [`EventLog::settle_then_clear`]). All five
+//! `watch_property` tests still fail under the tag mutation.
 //!
 //! ## Judged internal rather than tested
 //!

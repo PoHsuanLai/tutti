@@ -13,7 +13,7 @@
 //!
 //! # Back-pressure
 //!
-//! Doc 013 §4: the audio thread sends every box back after applying it, and
+//! The audio thread sends every box back after applying it, and
 //! that push must never fail — a failed push on the audio thread means either
 //! freeing there or blocking. At most [`QUEUE_CAPACITY`] commits may be out
 //! (sent, and not yet drained back by [`collect`](Editor::collect)); with that
@@ -51,7 +51,7 @@
 //! sending anything.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::Arc;
 
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
@@ -68,7 +68,6 @@ use crate::exec::{
 };
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
-use crate::legacy::Outbox;
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamFrom, ParamIn, ParamState, ParamTap, Ramp};
 use crate::plan::{Delta, Placement, Plan};
@@ -246,8 +245,72 @@ impl std::fmt::Display for CommitError {
 
 impl std::error::Error for CommitError {}
 
-/// The control-side half: the graph value, the units not yet shipped, and the
-/// plans sent. See the `editor` module's docs (`src/editor.rs`).
+/// The control-thread half of a graph: holds the [`GraphSpec`], prepares
+/// units, compiles, and sends each result to its paired [`Executor`].
+///
+/// [`Editor::new`] builds the editor and its executor together, from one
+/// [`Prepare`]. Nodes are added with [`insert`](Self::insert) (which
+/// prepares the unit and returns its typed controls), wired through
+/// [`spec_mut`](Self::spec_mut), and shipped with [`commit`](Self::commit),
+/// which validates and compiles the spec against the plan sent last and
+/// sends a commit — the new [`Plan`] and only the units that changed — over a
+/// preallocated queue. The executor installs it at the start of its next
+/// block and sends back everything it replaced, which the editor frees on
+/// the control thread in [`collect`](Self::collect) (`commit` collects
+/// first, so a caller that only commits never needs to).
+///
+/// The caller never holds a commit, so one cannot be dropped unapplied,
+/// applied twice or reordered. At most [`QUEUE_CAPACITY`] commits may be in
+/// flight; past that `commit` returns [`CommitError::Backpressure`] before
+/// compiling anything.
+///
+/// Every method runs on the control thread and may allocate. Other edits:
+/// [`replace`](Self::replace) swaps a unit with a crossfade,
+/// [`set_latency`](Self::set_latency) changes a node's declared latency,
+/// [`reprepare`](Self::reprepare) changes the sample rate or maximum block,
+/// [`schedule`](Self::schedule) delivers an event on an exact frame or beat,
+/// and [`fork`](Self::fork) copies the graph for an offline render.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status, Transport};
+/// use tutti_types::graph::{Edge, InPort, OutPort, Source};
+/// use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
+///
+/// #[derive(Clone)]
+/// struct Half;
+/// impl Node for Half {
+///     fn shape(&self) -> Shape {
+///         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+///     }
+///     fn prepare(&mut self, _: &Prepare) {}
+///     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+///         let (ins, mut outs) = io.split();
+///         for (o, i) in outs.get(0).iter_mut().zip(ins.get(0)) {
+///             *o = 0.5 * i;
+///         }
+///         Status::Modified
+///     }
+///     fn reset(&mut self) {}
+/// }
+///
+/// let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// let half = NodeKey(1);
+/// editor.insert(half, "half", ForkByClone(Half));
+/// let topology = &mut editor.spec_mut().topology;
+/// topology.inputs = ChannelLayout::MONO;
+/// topology.edges.insert(InPort { node: half, port: 0 }, Edge::Direct(Source::Global(0)));
+/// topology.outputs = vec![Source::Node(OutPort { node: half, port: 0 })];
+/// editor.commit().expect("compiles");
+///
+/// // On the audio thread:
+/// let input = [1.0_f32; 64];
+/// let mut output = [0.0_f32; 64];
+/// let transport = Transport::new(false, Bpm(120.0), Beat(0.0), None);
+/// executor.process(64, &transport, &[&input], &mut [&mut output]);
+/// assert_eq!(output[0], 0.5);
+/// ```
 pub struct Editor {
     channels: Channels,
     commands: CommandTx,
@@ -272,16 +335,18 @@ pub struct Editor {
     /// The plan sent last: what the executor will be running once the queue
     /// drains, and what the next commit is compiled against.
     plan: Option<Arc<Plan>>,
+    /// The spec and shapes that plan was compiled from, when
+    /// [`commit`](Self::commit) sent it; `None` after a send by any other
+    /// path (a re-prepare, [`package`](Self::package)). A commit that finds
+    /// both unchanged, with nothing pending, sends nothing: it would compile
+    /// the same plan with an empty delta.
+    committed: Option<(GraphSpec, Shapes)>,
     /// A re-prepare between its two commits.
     repreparing: Option<Reprepare>,
     /// Why a re-prepare failed with the units out, if one did.
     poisoned: Option<String>,
     /// What the executor's host can take.
     limits: Limits,
-    /// The settings queues of `Legacy::controlled` nodes built for this
-    /// editor, flushed on every `collect`. Weak: dropping a node's controls
-    /// unregisters it, pruned on the next `collect`.
-    outboxes: Vec<Weak<Mutex<Outbox>>>,
     /// Where each forkable node's forks come from, handed over at insert
     /// (see `src/fork.rs`), with the generation of the unit that handed it
     /// over. A key without one is not forkable, and neither is one whose
@@ -359,10 +424,10 @@ impl Editor {
             latency_cuts: BTreeSet::new(),
             next_gen: BTreeMap::new(),
             plan: None,
+            committed: None,
             repreparing: None,
             poisoned: None,
             limits: Limits::NONE,
-            outboxes: Vec::new(),
             forks: BTreeMap::new(),
             event_capacity: cap,
             fork_health: Vec::new(),
@@ -378,7 +443,7 @@ impl Editor {
         &self.prepare
     }
 
-    /// Bound what this editor may send from now on, **tightening only**:
+    /// Bounds what this editor may send from now on, **tightening only**:
     /// each field becomes the smaller of the one in force and `limits`', so
     /// `Limits::NONE` changes nothing. Every later
     /// [`commit`](Self::commit), [`package`](Self::package) and
@@ -391,6 +456,12 @@ impl Editor {
     /// Everything reaches the executor through this editor, so a host that
     /// holds the editor while it sets these knows no commit already sent,
     /// and none sent later, can exceed them.
+    ///
+    /// # Errors
+    ///
+    /// [`CommitError::TooManyOutputs`] or [`CommitError::BlockTooLong`] when
+    /// the plan sent last or the `Prepare` in force already exceeds the
+    /// tightened limits; nothing changes.
     pub fn set_limits(&mut self, limits: Limits) -> Result<(), CommitError> {
         // Limits only tighten: each field is the smaller of the one in force
         // and the one asked for, so no caller can undo a host's bound (a
@@ -469,7 +540,7 @@ impl Editor {
         self.plan.as_ref()
     }
 
-    /// Add `node` at `key`, or replace the unit there (a new generation).
+    /// Adds `node` at `key`, or replaces the unit there (a new generation).
     /// Returns the node's typed controls.
     ///
     /// The node is prepared now, and its [`NodeSpec`] is written from its
@@ -493,11 +564,11 @@ impl Editor {
         controls
     }
 
-    /// Replace the unit running at `key` with `node`, crossfading from one
+    /// Replaces the unit running at `key` with `node`, crossfading from one
     /// to the other over `fade` once the next [`commit`](Self::commit) lands
     /// — a new generation, like [`insert`](Self::insert), but heard as a
-    /// fade rather than a swap. Returns the new unit's typed controls. See
-    /// the `fade` module docs (`src/fade.rs`) for the rules; in short:
+    /// fade rather than a swap. Returns the new unit's typed controls. The
+    /// rules:
     ///
     /// - Both units run on the node's inputs for `fade.duration` frames and
     ///   their outputs are blended along `fade.curve`; then the old unit
@@ -524,6 +595,16 @@ impl Editor {
     /// its [`ForkSource`] replaces the key's, and a unit that hands none
     /// over makes the key unforkable. (A fork mid-fade forks the incoming
     /// unit alone; a fork has no fades.)
+    ///
+    /// # Errors
+    ///
+    /// Nothing changes, and `node` is dropped, on [`CommitError::FadeShape`]
+    /// or [`CommitError::NotRunning`] (above), [`CommitError::Repreparing`]
+    /// between a re-prepare's two commits, or [`CommitError::Poisoned`].
+    ///
+    /// # Panics
+    ///
+    /// If `key` is not in the spec.
     pub fn replace<N: IntoNode>(
         &mut self,
         key: NodeKey,
@@ -567,9 +648,6 @@ impl Editor {
             // a replace waiting behind a running fade runs the old unit under
             // the new plan: both must fit the same buffers.
             && shape.event_capacity == running.event_capacity
-            // A renderer chunks while the plan holds a `Legacy`: both halves
-            // of a fade must agree, or the outgoing one would run unchunked.
-            && shape.legacy == running.legacy
             // The key's param state (per declared param) runs on across a
             // fade, so both units must declare the same params.
             && shape.params == running.params;
@@ -582,6 +660,75 @@ impl Editor {
         // so a refused replace changes nothing.
         self.place(key, &kind, unit, shape, fork);
         self.fades.insert(key, fade);
+        Ok(controls)
+    }
+
+    /// [`replace`](Self::replace) where it can fade, and a plain placement at
+    /// `key` where it cannot — the node not running yet, or a shape the
+    /// running unit's plan does not fit (a latency change): then the new unit
+    /// lands as a swap on the next commit, as [`insert`](Self::insert) at an
+    /// existing key does, keeping the key's kind. What a host that swaps a
+    /// unit under a node wants: the fade when there is one to have, never a
+    /// refusal for want of it.
+    ///
+    /// Refused, changing nothing, only when the editor is poisoned or
+    /// re-preparing (check [`is_repreparing`](Self::is_repreparing) first to
+    /// keep the node: a refusal consumes it). `key` must be in the spec.
+    ///
+    /// # Errors
+    ///
+    /// [`CommitError::Poisoned`] or [`CommitError::Repreparing`]; nothing
+    /// changes and `node` is dropped.
+    ///
+    /// # Panics
+    ///
+    /// If `key` is not in the spec: a replace names a node that exists.
+    pub fn replace_or_swap<N: IntoNode>(
+        &mut self,
+        key: NodeKey,
+        node: N,
+        fade: Fade,
+    ) -> Result<N::Controls, CommitError> {
+        self.check_poisoned()?;
+        if self.repreparing.is_some() {
+            return Err(CommitError::Repreparing);
+        }
+        let kind = self
+            .spec
+            .topology
+            .nodes
+            .get(&key)
+            .map(|n| n.kind.clone())
+            .expect("replace_or_swap names a node in the spec");
+        let running = self
+            .plan
+            .as_ref()
+            .and_then(|p| p.unit(key))
+            .map(|u| u.shape);
+        let NodeParts {
+            node: mut unit,
+            controls,
+            fork,
+        } = node.into_parts();
+        unit.prepare(&self.prepare);
+        let shape = unit.shape();
+        let fits = running.is_some_and(|r| {
+            (
+                shape.audio_in,
+                shape.audio_out,
+                shape.event_in,
+                shape.event_out,
+            ) == (r.audio_in, r.audio_out, r.event_in, r.event_out)
+                && shape.latency == r.latency
+                && shape.in_place == r.in_place
+                && shape.event_resolution == r.event_resolution
+                && shape.event_capacity == r.event_capacity
+                && shape.params == r.params
+        });
+        self.place(key, &kind, unit, shape, fork);
+        if fits {
+            self.fades.insert(key, fade);
+        }
         Ok(controls)
     }
 
@@ -628,7 +775,7 @@ impl Editor {
         };
     }
 
-    /// Change `key`'s declared processing latency at runtime — a plugin whose
+    /// Changes `key`'s declared processing latency at runtime — a plugin whose
     /// latency atomic moved. Takes effect on the next
     /// [`commit`](Self::commit), like any edit to the spec: it recompiles,
     /// and PDC delays move to the new figure. **The running unit is not
@@ -644,8 +791,8 @@ impl Editor {
     /// and at every re-prepare. Between those, this call is the authority:
     /// it writes the spec's [`NodeSpec`] latency and the editor's shape
     /// entry, which is all the compiler reads, and a running unit's own
-    /// `shape()` may lag (a `Legacy` caches the latency it probed; nothing
-    /// asks it again until it is prepared). A re-prepare asks the unit again
+    /// `shape()` may lag (a node that caches a latency it measured is not
+    /// asked again until it is prepared). A re-prepare asks the unit again
     /// and its answer replaces this one — a frame count set at the old rate
     /// is wrong at a new one, and the unit is the one that can convert it.
     /// A unit that cannot report its own latency must be told again after a
@@ -666,6 +813,12 @@ impl Editor {
     /// clamped there, a figure set by hand is refused), and
     /// [`CommitError::Repreparing`] between a re-prepare's two commits (its
     /// second half re-probes every unit and would overwrite this).
+    ///
+    /// # Errors
+    ///
+    /// [`CommitError::NoSuchNode`], [`CommitError::LatencyTooLong`],
+    /// [`CommitError::Repreparing`] (above) or [`CommitError::Poisoned`];
+    /// nothing changes.
     pub fn set_latency(&mut self, key: NodeKey, latency: Latency) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;
@@ -696,7 +849,7 @@ impl Editor {
         Ok(())
     }
 
-    /// Remove `key` and every edge that touches it. Output channels it fed
+    /// Removes `key` and every edge that touches it. Output channels it fed
     /// become [`Source::Zero`].
     pub fn remove(&mut self, key: NodeKey) {
         let t = &mut self.spec.topology;
@@ -744,7 +897,7 @@ impl Editor {
         }
     }
 
-    /// Drain the boxes the executor sent back and free what they retired,
+    /// Drains the boxes the executor sent back and frees what they retired,
     /// here on the control thread. Returns the retired units' keys, one per
     /// unit: those a commit retired, and those a crossfade retired — an
     /// outgoing unit whose fade ended or was cut (a re-prepare cuts every
@@ -752,11 +905,6 @@ impl Editor {
     ///
     /// When the box coming back is a [`reprepare`](Self::reprepare)'s first
     /// half, this re-prepares the units it carries and sends the second.
-    ///
-    /// It also flushes every `Legacy::controlled` node's held settings into
-    /// its ring, as far as there is room (see `src/legacy.rs`): a host that
-    /// calls this every frame never leaves a setting stuck behind a full
-    /// ring.
     pub fn collect(&mut self) -> Vec<NodeKey> {
         let mut keys = Vec::new();
         while let Some(done) = self.channels.returned.try_pop() {
@@ -773,16 +921,6 @@ impl Editor {
             keys.extend(std::iter::repeat_n(x.key(), x.units()));
             drop(x);
         }
-        self.outboxes.retain(|w| match w.upgrade() {
-            Some(outbox) => {
-                let _ = outbox
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .flush();
-                true
-            }
-            None => false,
-        });
         keys
     }
 
@@ -816,12 +954,7 @@ impl Editor {
         self.event_capacity
     }
 
-    /// Flush `outbox` on every [`collect`](Self::collect) from now on.
-    pub(crate) fn register_outbox(&mut self, outbox: Weak<Mutex<Outbox>>) {
-        self.outboxes.push(outbox);
-    }
-
-    /// Change the sample rate or the maximum block of a running graph.
+    /// Changes the sample rate or the maximum block of a running graph.
     ///
     /// A [`Prepare`] change is a **full recompile with every unit
     /// re-prepared** — latency can depend on the rate (a lookahead is a
@@ -880,6 +1013,16 @@ impl Editor {
     /// [`CommitError::Poisoned`]. Build a new pair to recover. A node that
     /// panics in the first half (an uncommitted unit) poisons it the same
     /// way, with nothing sent.
+    ///
+    /// # Errors
+    ///
+    /// Before anything is sent: [`CommitError::Poisoned`],
+    /// [`CommitError::Repreparing`], [`CommitError::Backpressure`], a
+    /// [`Limits`] refusal, [`CommitError::Invalid`] or
+    /// [`CommitError::Compile`] when the graph does not compile for
+    /// `prepare` (a feedback delay shorter than the new maximum block, say),
+    /// and [`CommitError::MissingUnit`]. A panic in an uncommitted unit's
+    /// `prepare` returns [`CommitError::Poisoned`].
     pub fn reprepare(&mut self, prepare: Prepare) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;
@@ -961,7 +1104,10 @@ impl Editor {
             self.finish_reprepare(returned, rep)
         }));
         match outcome {
-            Ok(Ok((plan, resume, units))) => self.send(plan, resume, units),
+            Ok(Ok((plan, resume, units))) => {
+                self.committed = None;
+                self.send(plan, resume, units)
+            }
             Ok(Err(e)) => {
                 self.poisoned = Some(format!(
                     "the re-prepared units' shapes no longer compile against the graph: {e}"
@@ -1038,12 +1184,27 @@ impl Editor {
         Ok((plan, resume, units))
     }
 
-    /// Validate, compile against the plan sent last, and send the result with
-    /// the units it places. Returns `Backpressure` — having compiled and sent
+    /// Validates, compiles against the plan sent last, and sends the result
+    /// with the units it places. Returns `Backpressure` — having compiled and sent
     /// nothing — when [`QUEUE_CAPACITY`] commits are out, or when the fades
     /// it starts would put more than [`FADE_CAPACITY`] in flight. A running
     /// fade holds neither: its commit comes back when applied, and its slot
     /// on the fade-return ring is its own.
+    ///
+    /// A commit that changes nothing — the spec and shapes those of the last
+    /// commit, no unit pending, no crossfade or latency cut waiting — sends
+    /// nothing and returns `Ok`: it would compile the plan the executor
+    /// already has, with an empty delta. So it costs a comparison, not a
+    /// compile, and a host may commit every frame.
+    ///
+    /// # Errors
+    ///
+    /// Nothing is sent, and the plan sent last stays the base, on
+    /// [`CommitError::Invalid`] (the spec is malformed),
+    /// [`CommitError::Compile`], [`CommitError::MissingUnit`] (a node with no
+    /// unit to place), [`CommitError::Backpressure`],
+    /// [`CommitError::Repreparing`], [`CommitError::Poisoned`] or a
+    /// [`Limits`] refusal ([`CommitError::TooManyOutputs`]).
     pub fn commit(&mut self) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;
@@ -1054,6 +1215,16 @@ impl Editor {
             return Err(CommitError::Backpressure);
         }
         self.limits.outputs(self.spec.topology.outputs.len())?;
+        if self.pending.is_empty()
+            && self.fades.is_empty()
+            && self.latency_cuts.is_empty()
+            && self
+                .committed
+                .as_ref()
+                .is_some_and(|(spec, shapes)| *spec == self.spec && *shapes == self.shapes)
+        {
+            return Ok(());
+        }
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
         let (plan, mut delta) = compile(
             &valid,
@@ -1109,13 +1280,21 @@ impl Editor {
             .collect();
         self.fades.clear();
         self.send(plan, delta, units);
+        self.committed = Some((self.spec.clone(), self.shapes.clone()));
         Ok(())
     }
 
-    /// Send a plan compiled elsewhere — against [`base`](Self::base) — with
+    /// Sends a plan compiled elsewhere — against [`base`](Self::base) — with
     /// the units its delta places, as this editor's next commit. For a caller
     /// that compiles itself (a test harness driving two interpreters from one
     /// spec); [`commit`](Self::commit) is the usual path.
+    ///
+    /// # Errors
+    ///
+    /// Nothing is sent on [`CommitError::Poisoned`],
+    /// [`CommitError::Repreparing`], [`CommitError::Backpressure`],
+    /// [`CommitError::TooManyOutputs`], or [`CommitError::Fade`] when the
+    /// delta's crossfades fail [`verify_fades`](crate::verify_fades).
     pub fn package(
         &mut self,
         plan: Plan,
@@ -1134,14 +1313,16 @@ impl Editor {
         self.fade_room(&delta)?;
         crate::compile::verify::verify_fades(self.base().map(|p| &**p), &plan, &delta)
             .map_err(CommitError::Fade)?;
+        self.committed = None;
         self.send(plan, delta, units);
         Ok(())
     }
 
-    /// Deliver `kind` into event input `to` at time `at` — a note, or a
+    /// Delivers `kind` into event input `to` at time `at` — a note, or a
     /// [`ParamRamp`](crate::ParamRamp) as `EventKind::Ramp` — on its exact
-    /// frame. See the `command` module docs (`src/command.rs`) for the whole
-    /// path; in short:
+    /// frame. Control thread; the command crosses to the executor over a
+    /// preallocated ring of plain values, so nothing is freed on the audio
+    /// thread. The rules:
     ///
     /// - **`at` is required.** [`At::NextBlock`] is the untimed case, and it
     ///   has to be spelled.
@@ -1162,7 +1343,7 @@ impl Editor {
     ///   offsets sample-accurately is refused
     ///   ([`ScheduleError::ResolutionTooCoarse`]), as a marked edge would be.
     ///
-    /// **Frames and beats fall due differently** (doc 013 §6). A frame is
+    /// **Frames and beats fall due differently.** A frame is
     /// never dropped: already past, it lands at offset 0 of the next block
     /// and is counted late. A beat fires when the playhead reaches or crosses
     /// it by continuous playback — a loop wrap landing at or after it counts
@@ -1171,6 +1352,13 @@ impl Editor {
     /// pending until reached or cancelled. Pairing (a note-off for every
     /// note-on) is the caller's job: a note-on that fires and a note-off that
     /// waits is a stuck note, and `cancel` is how to take the other back.
+    ///
+    /// # Errors
+    ///
+    /// Nothing is sent on [`ScheduleError::NoPlan`] (nothing committed yet),
+    /// [`ScheduleError::NoSuchPort`] (`to` is not an event input of the plan
+    /// sent last), [`ScheduleError::ResolutionTooCoarse`],
+    /// [`ScheduleError::Backpressure`] or [`ScheduleError::Poisoned`].
     pub fn schedule(
         &mut self,
         at: At,
@@ -1192,11 +1380,17 @@ impl Editor {
         self.commands.send(self.sent, at, to, kind)
     }
 
-    /// Take back scheduled command `id`, if it has not landed — freeing its
+    /// Takes back scheduled command `id`, if it has not landed — freeing its
     /// credit. A no-op for one that has. Travels on its own ring, so it works
     /// even with every credit held; refused with `Backpressure` only when
     /// [`CANCEL_CAPACITY`](crate::CANCEL_CAPACITY) cancels are waiting for
     /// the executor's next block.
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleError::Backpressure`] (above),
+    /// [`ScheduleError::UnknownCommand`] for an id this editor never issued,
+    /// or [`ScheduleError::Poisoned`].
     pub fn cancel(&mut self, id: CommandId) -> Result<(), ScheduleError> {
         if self.poisoned.is_some() {
             return Err(ScheduleError::Poisoned);
@@ -1204,7 +1398,12 @@ impl Editor {
         self.commands.cancel(id)
     }
 
-    /// Take back every command scheduled so far that has not landed.
+    /// Takes back every command scheduled so far that has not landed.
+    ///
+    /// # Errors
+    ///
+    /// [`ScheduleError::Backpressure`] when the cancel ring is full, or
+    /// [`ScheduleError::Poisoned`].
     pub fn cancel_all(&mut self) -> Result<(), ScheduleError> {
         if self.poisoned.is_some() {
             return Err(ScheduleError::Poisoned);

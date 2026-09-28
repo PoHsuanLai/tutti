@@ -2,8 +2,8 @@
 //!
 //! Normalization needs the whole signal measured before a gain can be chosen,
 //! which is two passes. [`render_to_file`](crate::render_to_file) will not do
-//! that — it streams, and holding the signal to pick a gain is exactly what
-//! forced the old exporter to buffer everything. So the two-pass path is a
+//! that — it streams, and choosing a gain would force it to hold the whole
+//! signal. So the two-pass path is a
 //! *separately named* function: the cost is in the name, not hidden behind a
 //! config field a caller sets without noticing.
 //!
@@ -148,7 +148,7 @@ impl Normalize {
 ///
 /// The trailing [`write_buffers`] is then given a config with `resample`
 /// cleared: the conversion already happened, and running it twice would resample
-/// from a rate the samples are no longer at.
+/// from a rate the samples are not at.
 ///
 /// # Width
 ///

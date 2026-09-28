@@ -14,7 +14,7 @@ pub(crate) struct PluginPtr {
 }
 
 impl PluginPtr {
-    /// Wrap a raw plugin pointer. Takes ownership — the handle will call
+    /// Wraps a raw plugin pointer. Takes ownership — the handle will call
     /// `plugin.destroy()` on drop.
     pub fn new(ptr: *const clap_plugin) -> Self {
         Self { ptr }
@@ -25,7 +25,7 @@ impl PluginPtr {
         self.ptr
     }
 
-    /// Borrow the underlying `clap_plugin` struct.
+    /// Borrows the underlying `clap_plugin` struct.
     ///
     /// # Safety
     /// Caller must ensure the plugin has not been destroyed yet and is

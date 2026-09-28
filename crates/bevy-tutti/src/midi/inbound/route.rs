@@ -1,9 +1,9 @@
 //! Declaring where inbound MIDI goes.
 //!
-//! The routing table decides which unit an event arriving from *outside* the
-//! app reaches — hardware in, or a plugin's MIDI-out re-entering as if it were a
-//! device. Anything already bound to a unit (clip playback, a preview, musical
-//! typing) writes to that unit's port directly and never consults a route.
+//! A route decides which node an event arriving from the hardware MIDI input
+//! reaches. Anything already bound to a node (clip playback, a keyboard's
+//! `LiveMidiInput`, a plugin's MIDI out declared with `EventSources`) is wired
+//! to it directly and never consults a route.
 //!
 //! A rule is an entity:
 //!
@@ -36,44 +36,38 @@
 //! app.add_systems(Startup, declare_routes);
 //! app.update();
 //!
-//! // A rule is an entity, and it names entities rather than engine ids — which
-//! // is what keeps a `crossfade` from stranding it.
+//! // A rule is an entity, and it names entities rather than nodes — which is
+//! // what keeps a `crossfade` from stranding it.
 //! let rule = app.world_mut().query::<&MidiRouteRule>().single(app.world()).unwrap();
 //! assert_eq!(rule.channel, Some(MidiChannel::FIRST));
 //! assert_eq!(rule.targets, vec![synths.lead, synths.pad]);
 //! assert_eq!(app.world().resource::<MidiRouteFallback>().0, Some(synths.sampler));
 //! ```
 //!
-//! # Entities, not unit ids
+//! # Routing is wiring
 //!
-//! A rule names the *entity* it feeds and [`rebuild`] resolves that to a
-//! [`MidiUnitId`] each time it runs, for the reason
-//! [`target`](crate::midi::endpoint::target) documents at length: a `crossfade` replaces a
-//! node's unit while keeping its `NodeId`, so any id stored on an entity is
-//! silently stale from that moment on. Re-deriving is immune, and it means an
-//! app never handles an engine id.
+//! The hardware input is a graph node ([`MidiEngineNodes::input`]) with one
+//! event output per channel and one for channelless messages (system, SysEx,
+//! Flex). [`rebuild`] turns the rules into which of those ports each target's
+//! event input takes (through [`EventFeeds`]): a channel rule gives its
+//! targets that channel's port and the channelless one, an any-channel rule
+//! all seventeen, several rules the union. The fallback takes every port no
+//! rule covers — a channel no rule names, and the channelless port while no
+//! rule is armed. A target is an entity, resolved to its node by the event
+//! wiring every frame, so a `crossfade` strands nothing.
 //!
-//! # Why the whole table, every time
-//!
-//! [`set_routes`](tutti_midi_types::MidiRoutingTable::set_routes) takes the rule
-//! set wholesale — the engine offers no incremental edit, deliberately, since a
-//! partially-applied routing change is a state the audio thread must never
-//! observe. So [`rebuild`] collects every rule and replaces the table, the same
-//! collect-and-replace the modulation driver does with its matrix.
-//!
-//! That also means a rule whose target has not resolved *yet* is skipped rather
-//! than dropped: the rebuild runs again next frame and picks it up once the node
-//! exists.
+//! [`MidiEngineNodes::input`]: crate::midi::MidiEngineNodes
+
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_types::MAX_TARGETS_PER_ROUTE;
-use tutti_midi_types::{MidiChannel, MidiRoute, MidiUnitId};
+use tutti_midi_runtime::{input_ports, MIDI_INPUT_PORTS};
+use tutti_midi_types::MidiChannel;
 
-use super::routing_table::MidiRoutingRes;
-use crate::graph::{engine_ready, GraphReconcileSystems};
-use crate::midi::endpoint::target::MidiTargetResolver;
+use crate::graph::{engine_ready, EventFeeds, EventSource, EventWiring, GraphReconcileSystems};
+use crate::midi::MidiEngineNodes;
 
 /// One inbound routing rule: which channel reaches which entities.
 ///
@@ -85,10 +79,6 @@ pub struct MidiRouteRule {
     /// (0-15).
     pub channel: Option<MidiChannel>,
     /// The entities this rule feeds.
-    ///
-    /// The engine caps a single rule at
-    /// [`MAX_TARGETS_PER_ROUTE`] (8); targets past that are dropped when the
-    /// rule is compiled, with a warning naming the rule.
     pub targets: Vec<Entity>,
     /// A disabled rule stays declared but routes nothing — for a mute that does
     /// not lose the rule.
@@ -96,7 +86,7 @@ pub struct MidiRouteRule {
 }
 
 impl MidiRouteRule {
-    /// A rule matching every channel. Add targets with [`to`](Self::to).
+    /// Creates a rule matching every channel. Add targets with [`to`](Self::to).
     pub fn any_channel() -> Self {
         Self {
             channel: None,
@@ -105,7 +95,7 @@ impl MidiRouteRule {
         }
     }
 
-    /// A rule matching one channel.
+    /// Creates a rule matching one channel.
     pub fn for_channel(channel: MidiChannel) -> Self {
         Self {
             channel: Some(channel),
@@ -114,13 +104,13 @@ impl MidiRouteRule {
         }
     }
 
-    /// Add a destination.
+    /// Adds a destination.
     pub fn to(mut self, target: Entity) -> Self {
         self.targets.push(target);
         self
     }
 
-    /// Declare the rule without arming it.
+    /// Declares the rule without arming it.
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
         self
@@ -135,123 +125,106 @@ impl MidiRouteRule {
 #[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
 pub struct MidiRouteFallback(pub Option<Entity>);
 
-/// Compile every declared rule into the routing table and publish it.
+/// Who feeds a target through the route rules, in [`EventFeeds`].
+const ROUTES: &str = "midi routes";
+
+/// The targets [`rebuild`] fed last, so one no rule names any more is
+/// unwired.
+#[derive(Resource, Default)]
+pub struct RoutedTargets(HashSet<Entity>);
+
+/// Compiles every declared rule into which of the hardware input's ports each
+/// target takes, and writes it into [`EventFeeds`] (see the module docs).
 ///
 /// Runs when a rule changes, is added, or is removed, and when the fallback
-/// changes. It is a whole-table replace, so it must see every rule each time,
-/// not only the changed ones — the `Query` is unfiltered and the change
-/// detection only decides *whether* to run.
-///
-/// Unresolvable targets are skipped silently, as everywhere else in this
-/// subsystem: an entity's node routinely materialises a frame after the entity
-/// does, and a log line here would fire on every such frame. A rule whose
-/// targets all fail to resolve contributes nothing this frame and is retried on
-/// the next.
-///
-/// # What counts as a change
-///
-/// A rule edit, a rule removal, or a fallback edit — and also a *new
-/// `AudioNode`*, which is the non-obvious one. A rule may name an entity whose
-/// node does not exist yet; nothing about the rule changes when it finally
-/// arrives, so without watching for that the rule would stay unresolved until
-/// something unrelated happened to touch it. `Added<AudioNode>` is the signal
-/// that a previously-skipped target may now resolve, and a changed
-/// [`MidiTarget`](crate::midi::MidiTarget) is its crossfade twin: the node
-/// stays and its port's id does not.
+/// changes: a whole recompile, since a target's ports are the union of every
+/// rule naming it. A target with no node yet is wired as soon as it has one
+/// (the event wiring resolves entities every frame).
 pub fn rebuild(
-    // `Option`: the routing table is inserted by `engine::build_into`, but the
-    // `engine_ready` gate only reads `AudioEngineState`. A host that declares the
-    // engine up without running the build has no table, and a hard `ResMut`
-    // panics the schedule rather than skipping the rebuild.
-    table: Option<ResMut<MidiRoutingRes>>,
-    resolver: MidiTargetResolver,
-    rules: Query<(Entity, &MidiRouteRule)>,
+    nodes: Option<Res<MidiEngineNodes>>,
+    rules: Query<&MidiRouteRule>,
     fallback: Res<MidiRouteFallback>,
     changed: Query<(), Changed<MidiRouteRule>>,
-    arrived: Query<(), Added<tutti_core::AudioNode>>,
-    // A crossfade replaces a target's port (and its id) under a surviving
-    // `AudioNode`, so a changed capture is an arrival too.
-    recaptured: Query<(), Changed<crate::midi::MidiTarget>>,
     mut removed: RemovedComponents<MidiRouteRule>,
+    mut feeds: ResMut<EventFeeds>,
+    mut routed: ResMut<RoutedTargets>,
 ) {
     let dirty = !changed.is_empty()
         || !removed.is_empty()
-        || !arrived.is_empty()
-        || !recaptured.is_empty()
-        || fallback.is_changed();
+        || fallback.is_changed()
+        || nodes_changed(&nodes);
     // An event reader: draining is what marks this frame's removals as seen, so
     // it happens whether or not a rebuild follows.
     removed.clear();
     if !dirty {
         return;
     }
-    let Some(mut table) = table else {
+    let Some(nodes) = nodes else {
         return;
     };
 
-    let mut compiled: Vec<MidiRoute> = Vec::new();
-    for (rule_entity, rule) in rules.iter() {
-        if !rule.enabled {
-            continue;
-        }
-        let mut route = match rule.channel {
-            Some(channel) => MidiRoute::for_channel(channel),
-            None => MidiRoute::new(),
-        };
-        let mut resolved = 0;
+    let mut ports: HashMap<Entity, BTreeSet<usize>> = HashMap::new();
+    let mut covered: BTreeSet<usize> = BTreeSet::new();
+    for rule in rules.iter().filter(|r| r.enabled && !r.targets.is_empty()) {
+        let theirs: Vec<usize> = input_ports(rule.channel).collect();
+        covered.extend(theirs.iter().copied());
         for &target in &rule.targets {
-            if resolved == MAX_TARGETS_PER_ROUTE {
-                bevy_log::warn!(
-                    "MIDI route {rule_entity:?} declares more than {MAX_TARGETS_PER_ROUTE} \
-                     targets; the rest are dropped"
-                );
-                break;
-            }
-            let Some(port) = resolver.port(target) else {
-                continue;
-            };
-            route = route.with_target(port.unit_id());
-            resolved += 1;
+            ports
+                .entry(target)
+                .or_default()
+                .extend(theirs.iter().copied());
         }
-        if resolved == 0 {
-            // Every target unresolved: an empty rule would match events and
-            // deliver them nowhere, which is indistinguishable from a drop but
-            // shadows a later rule. Leave it out and retry next frame.
-            continue;
-        }
-        compiled.push(route);
+    }
+    if let Some(target) = fallback.0 {
+        let uncovered = (0..MIDI_INPUT_PORTS).filter(|p| !covered.contains(p));
+        ports.entry(target).or_default().extend(uncovered);
     }
 
-    let fallback_id: Option<MidiUnitId> = fallback
-        .0
-        .and_then(|entity| resolver.port(entity))
-        .map(|port| port.unit_id());
+    let wanted: HashSet<Entity> = ports
+        .iter()
+        .filter(|(_, p)| !p.is_empty())
+        .map(|(e, _)| *e)
+        .collect();
+    for gone in routed.0.difference(&wanted) {
+        feeds.remove(*gone, ROUTES);
+    }
+    for (target, ports) in ports {
+        if ports.is_empty() {
+            continue;
+        }
+        let sources = ports
+            .into_iter()
+            .filter_map(|p| u16::try_from(p).ok())
+            .map(|p| EventSource::new(nodes.input_node, p))
+            .collect();
+        feeds.set(target, ROUTES, sources);
+    }
+    routed.0 = wanted;
+}
 
-    table.publish(compiled, fallback_id);
+/// Whether the engine's MIDI nodes arrived (or changed) this frame: rules
+/// declared before the engine built are compiled then.
+fn nodes_changed(nodes: &Option<Res<MidiEngineNodes>>) -> bool {
+    nodes.as_ref().is_some_and(|n| n.is_changed())
 }
 
 /// Declared MIDI routing: the rules, the fallback, and the rebuild that
 /// publishes them.
 ///
-/// [`rebuild`] runs before `Commit` so a routing change and the graph edit that
-/// motivated it reach the audio thread together — the engine's `set_routes`
-/// documents that coalescing as the point of deferring the publish. It runs
-/// after `Spawn` for the same reason
-/// [`register_midi_senders`](crate::midi::endpoint::registration::register_midi_senders) does: a node must be
-/// in the graph before it can be asked for its port.
+/// [`rebuild`] runs before the event wiring, so a routing change reaches the
+/// graph in the frame's commit, with any graph edit that motivated it.
 pub struct MidiRoutePlugin;
 
 impl Plugin for MidiRoutePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MidiRouteFallback>();
+        app.init_resource::<RoutedTargets>();
+        app.init_resource::<EventFeeds>();
         app.add_systems(
             Update,
             rebuild
                 .after(GraphReconcileSystems::Spawn)
-                .before(GraphReconcileSystems::Commit)
-                // Resolution reads the audio graph, and the table it publishes
-                // into is the RT pre-block's — neither means anything without a
-                // running engine.
+                .before(EventWiring)
                 .run_if(engine_ready),
         );
     }

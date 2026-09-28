@@ -29,8 +29,7 @@ pub enum Error {
     ///
     /// Transparent, so [`TapBusy`](crate::TapBusy) stays the precise type for a
     /// caller that wants to match on it while `?` still composes into this
-    /// crate's `Result`. Without this variant, opening a tap inside a function
-    /// that already returns `tutti_core::Result` needed a manual `map_err`.
+    /// crate's `Result`.
     #[error(transparent)]
     TapBusy(#[from] crate::TapBusy),
 }

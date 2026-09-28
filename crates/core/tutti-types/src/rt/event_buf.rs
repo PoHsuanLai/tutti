@@ -3,7 +3,10 @@
 use super::capped::Capped;
 use super::cell::AudioThreadCell;
 
-/// An RT-safe event collector: a `SmallVec` with `N` inline slots behind an
+/// A fixed-capacity event collector filled and read through `&self` on the
+/// audio thread.
+///
+/// A `SmallVec` with `N` inline slots behind an
 /// [`AudioThreadCell`], so it can be filled and read through `&self` on the
 /// audio thread without a lock and without reallocating.
 ///
@@ -31,43 +34,51 @@ impl<T, const N: usize> core::fmt::Debug for RtEventBuf<T, N> {
 }
 
 impl<T, const N: usize> RtEventBuf<T, N> {
-    /// An empty collector with `N` inline slots.
+    /// Creates an empty collector with `N` inline slots.
     pub fn new() -> Self {
         Self {
             cell: AudioThreadCell::new(Capped::new()),
         }
     }
 
-    /// Drop all events.
+    /// Drops all events and resets the overflow flag, keeping the storage.
     #[inline]
     pub fn clear(&self) {
         self.cell.borrow_mut().clear();
     }
 
-    /// Replace the contents with `it`, capped at `N`. Items past the inline
-    /// capacity are dropped (never spilled to the heap).
+    /// Replaces the contents with `it`, capped at `N`.
+    ///
+    /// Items past the inline capacity are dropped (never spilled to the heap)
+    /// and latch [`overflowed`](Self::overflowed).
     #[inline]
     pub fn refill(&self, it: impl IntoIterator<Item = T>) {
         self.cell.borrow_mut().refill(it);
     }
 
-    /// Append one event if there is room. Returns `false` (dropping `v`) when
-    /// the collector is already at capacity `N` — this is what keeps the push
-    /// allocation-free on the audio thread.
+    /// Appends one event if there is room.
+    ///
+    /// Returns `false` (dropping `v`) when the collector is already at
+    /// capacity `N`; this is what keeps the push allocation-free on the audio
+    /// thread.
     #[inline]
     pub fn push(&self, v: T) -> bool {
         self.cell.borrow_mut().push(v)
     }
 
-    /// Whether anything has been dropped since the last
+    /// Returns whether anything has been dropped since the last
     /// [`clear`](Self::clear) or [`refill`](Self::refill).
     #[inline]
     pub fn overflowed(&self) -> bool {
         self.cell.borrow().overflowed()
     }
 
-    /// Visit each event in order. RT-safe; no early-stop — callers that want
-    /// to skip a range do so per-element.
+    /// Visits each event in push order.
+    ///
+    /// RT-safe. There is no early stop; a caller that wants to skip a range
+    /// does so per element. The cell stays borrowed for the whole traversal,
+    /// so `f` must not touch this collector (see
+    /// [`drain_each`](Self::drain_each)).
     #[inline]
     pub fn for_each(&self, mut f: impl FnMut(&T)) {
         for v in self.cell.borrow().iter() {
@@ -75,7 +86,7 @@ impl<T, const N: usize> RtEventBuf<T, N> {
         }
     }
 
-    /// Take each event in order, leaving the collector empty, **without
+    /// Takes each event in order, leaving the collector empty, **without
     /// freeing the backing buffer**.
     ///
     /// This is the shape [`for_each`](Self::for_each) cannot serve: `for_each`
@@ -121,27 +132,27 @@ impl<T, const N: usize> RtEventBuf<T, N> {
         self.cell.borrow_mut().clear();
     }
 
-    /// Sort the active events in place by a derived key. Stable across calls;
-    /// does not expose the backing storage.
+    /// Sorts the active events in place by a derived key.
+    ///
+    /// The sort is stable. Does not allocate or expose the backing storage.
     #[inline]
     pub fn sort_by_key<K: Ord>(&self, f: impl FnMut(&T) -> K) {
         self.cell.borrow_mut().sort_by_key(f);
     }
 
-    /// Number of live events.
+    /// Returns the number of live events.
     #[inline]
     pub fn len(&self) -> usize {
         self.cell.borrow().len()
     }
 
-    /// Whether there are no live events.
+    /// Returns whether there are no live events.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.cell.borrow().is_empty()
     }
 
-    /// Reset the audio-thread owner (delegates to the inner cell — currently a
-    /// no-op, kept for source compatibility).
+    /// Does nothing; see [`AudioThreadCell::reset_owner`].
     #[inline]
     pub fn reset_owner(&self) {
         self.cell.reset_owner();

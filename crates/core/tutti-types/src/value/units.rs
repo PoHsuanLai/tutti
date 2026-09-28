@@ -6,8 +6,8 @@
 //! swapped by accident. The [`Unit`] marker trait carries the raw type as an
 //! associated type so [`Param`](super::Param) can be generic over the unit.
 //!
-//! [`SampleRate`] is defined here too, and re-exported by `fundsp-tutti` for
-//! the `AudioNode` / `AudioUnit` trait surfaces that take one.
+//! [`SampleRate`] is defined here too, the one type every engine crate names
+//! for a rate (`tutti_graph::Prepare` carries it).
 //!
 //! # Operators are opt-in, and every omission is deliberate
 //!
@@ -515,9 +515,7 @@ impl Mix {
         Mix(v).clamp(Self::DRY, Self::WET)
     }
 
-    /// Crossfade `dry` and `wet` at this position.
-    ///
-    /// The operation every consumer hand-wrote as
+    /// Crossfades `dry` and `wet` at this position:
     /// `dry * (1.0 - mix) + wet * mix`.
     #[inline]
     pub fn blend(self, dry: f32, wet: f32) -> f32 {
@@ -984,13 +982,10 @@ impl Velocity {
 // those two call sites are textually identical, and here the wrong one does
 // not compile.
 //
-// This is where "an omission must ship with its replacement" was paid for. A
-// single `Degrees` omitted `Ord` and `Add` for the right reason and named
-// `shortest_arc_to` / `wrap_signed` as the substitutes, but never wrote them.
-// With the operators gone and no replacement, every call site escaped to raw
-// `f32` and two angular bugs shipped in the escape: a saturating clamp on a
-// wrapping coordinate, and a smoother that sweeps 340 degrees to travel 20.
-// Every omission below therefore has its replacement written.
+// "An omission must ship with its replacement" matters most here: with `Ord`
+// and `Add` gone and no substitute, call sites escape to raw `f32` and write a
+// saturating clamp on a wrapping coordinate, or a smoother that sweeps 340
+// degrees to travel 20. Every omission below has its replacement written.
 
 unit_newtype!(
     /// A bearing on the horizontal circle, in degrees. 0 = front, positive =
@@ -1160,7 +1155,7 @@ impl Phase {
     /// The start of a cycle.
     pub const START: Phase = Phase(0.0);
 
-    /// Wrap any value into `[0, 1)`.
+    /// Wraps any value into `[0, 1)`.
     ///
     /// `rem_euclid`, not `%` and not `.fract()`: both of those keep the sign of
     /// the input, so `-0.25` stays `-0.25` instead of becoming `0.75`. That is
@@ -1183,7 +1178,7 @@ impl Phase {
         }
     }
 
-    /// Advance by one step, wrapping. The replacement for `+`.
+    /// Advances by one step, wrapping. The replacement for `+`.
     ///
     /// Correct for negative increments too, which is what a reverse-rate
     /// modulator produces.
@@ -1579,10 +1574,8 @@ unit_newtype!(
     /// carries ~6e-8 of relative error, and a phase accumulator integrating
     /// that over a long render drifts audibly).
     ///
-    /// Also used at the `AudioNode` / `AudioUnit` trait surfaces in
-    /// `fundsp-tutti`, which re-exports it rather than defining its own: a
-    /// second `SampleRate` in the crate the traits live in would not unify with
-    /// this one, and every engine crate would have to pick a side.
+    /// Defined once, here, so every engine crate names the same type (a
+    /// node gets it in `tutti_graph::Prepare`).
     ///
     /// Builds from `f64` and from `u32` (file headers, device configs) — both
     /// widen exactly. Deliberately **not** from `f32`: that widening is
@@ -1608,9 +1601,8 @@ unit_bounded!(SampleRate, f64);
 //
 // `Mul<f64>`'s replacement is `nyquist` / `nyquist_scaled` below, per the rule
 // that an omission ships with the method that supersedes it. Without them the
-// scaling escaped to raw floats and was written four different ways —
-// `sample_rate * 0.499`, `sample_rate as f32 * 0.45`, `sample_rate.get() / 2.0`
-// — each an unlabelled anti-aliasing margin.
+// scaling escapes to raw floats (`sample_rate * 0.499`,
+// `sample_rate.get() / 2.0`), each an unlabelled anti-aliasing margin.
 
 impl SampleRate {
     /// 44.1 kHz — the historic CD-audio rate.
@@ -1619,20 +1611,17 @@ impl SampleRate {
     /// 48 kHz — the typical pro-audio default.
     pub const SR_48K: Self = Self(48_000.0);
 
-    /// The placeholder rate a node is born at, before a host hands it the
-    /// device's through `AudioUnit::set_sample_rate`.
+    /// The placeholder rate a node is born at, before its `prepare` hands it
+    /// the device's.
     ///
-    /// The engine's **one** such constant. There used to be two — the fork's
-    /// typed `DEFAULT_SAMPLE_RATE` and `tutti-node`'s raw `DEFAULT_SR: f64` —
-    /// that agreed only because both happened to say 44.1 kHz. Every node that
-    /// has not been given a rate must start from the *same* one, or a graph
-    /// built before the device opens is inconsistent with itself, so the value
-    /// has one owner and it is the unit's.
+    /// The engine's **one** such constant. Every node that has not been given
+    /// a rate must start from the *same* one, or a graph built before the
+    /// device opens is inconsistent with itself, so the value has one owner
+    /// and it is the unit's.
     ///
-    /// 44.1 kHz rather than 48 kHz: it is what every node and the fork have
-    /// always seeded, and moving it would shift every rate-dependent default
-    /// (a filter's coefficients before `set_sample_rate`) for no gain — the
-    /// placeholder is corrected before the first real block either way.
+    /// 44.1 kHz. The placeholder is replaced before the first real block, so
+    /// its value only affects rate-dependent defaults computed before
+    /// `prepare` (a filter's initial coefficients).
     pub const DEFAULT: Self = Self::SR_44K1;
 
     /// The Nyquist frequency: the highest representable at this rate.
@@ -1763,7 +1752,7 @@ impl PlaybackRate {
     /// Fastest supported varispeed (4× speed).
     pub const MAX: Self = Self(4.0);
 
-    /// Build a rate, clamping into [`MIN`](Self::MIN)..=[`MAX`](Self::MAX).
+    /// Creates a rate, clamping into [`MIN`](Self::MIN)..=[`MAX`](Self::MAX).
     ///
     /// Non-finite input yields [`UNITY`](Self::UNITY): a NaN rate would make the
     /// read position NaN and silence the clip permanently, which is far worse
@@ -1780,9 +1769,7 @@ impl PlaybackRate {
     /// Source samples consumed per output sample: varispeed × conversion.
     ///
     /// The single composition point for the two rates. Both operands are named,
-    /// so the pair cannot be swapped or one of them silently dropped — which is
-    /// what happened when both were a bare `Ratio` multiplied at four separate
-    /// call sites.
+    /// so the pair cannot be swapped or one of them silently dropped.
     #[inline]
     pub fn read_rate(self, src: SrcRatio) -> ReadRate {
         ReadRate(self.0 as f64 * src.0 as f64)
@@ -1807,16 +1794,8 @@ unit_newtype!(
     ///
     /// `f64`-backed, matching [`SamplePosition`]: a read position advanced a
     /// million times must not drift, and widening here is what keeps the
-    /// accumulation exact.
-    ///
-    /// Returning it from `read_rate` closed a real hole. The gate kernel took
-    /// this rate and a file sample rate as two bare `f64`s, and the two tiers
-    /// split the `src_ratio` factor between those parameters *differently* —
-    /// memory passed `(file_rate, speed × src_ratio)`, disk passed
-    /// `(session_rate × src_ratio, speed)`. Algebraically equal, so it worked;
-    /// but nothing stopped a third caller from combining them wrongly, and one
-    /// already had — applying `src_ratio` twice, which the disk tier's own
-    /// comment records as costing real debugging time.
+    /// accumulation exact. As a type of its own, it cannot be mixed up with a
+    /// file sample rate, nor have `src_ratio` applied to it a second time.
     ReadRate,
     f64
 );
@@ -1838,7 +1817,7 @@ impl ReadRate {
         SamplePosition(self.0 * out.get() as f64)
     }
 
-    /// Compose two read rates applied in series.
+    /// Composes two read rates applied in series.
     ///
     /// The named replacement for the omitted `Mul<Self>`, and deliberately
     /// narrower: it composes `ReadRate` with `ReadRate` only, so the three
@@ -1847,11 +1826,9 @@ impl ReadRate {
     /// what remains is genuine composition — two resamplings in the same signal
     /// path — rather than the ratio-mixing the omission exists to block.
     ///
-    /// The motivating case: a stretched placed voice reads its source at
-    /// varispeed *and* at the stretcher's rate, and the two are computed by
-    /// different owners (the source knows `speed`, the filter knows the stretch
-    /// factor). Hand-multiplying `.get()`s at that call site is precisely how
-    /// `src_ratio` came to be applied twice once before.
+    /// For example, a stretched voice reads its source at varispeed *and* at
+    /// the stretcher's rate, and the two are computed by different owners (the
+    /// source knows `speed`, the filter knows the stretch factor).
     #[inline]
     pub fn then(self, other: Self) -> Self {
         Self(self.0 * other.0)
@@ -1881,7 +1858,7 @@ impl StretchFactor {
     /// Longest supported stretch (4× length).
     pub const MAX: Self = Self(4.0);
 
-    /// Build a factor, clamping into [`MIN`](Self::MIN)..=[`MAX`](Self::MAX).
+    /// Creates a factor, clamping into [`MIN`](Self::MIN)..=[`MAX`](Self::MAX).
     ///
     /// Non-finite input yields [`UNITY`](Self::UNITY), for the same reason as
     /// [`PlaybackRate::new_clamped`]. As there, the raw `new` is unchecked —
@@ -1945,10 +1922,9 @@ impl SamplePosition {
     /// converts back, with [`to_samples_floor`](Self::to_samples_floor) or
     /// [`to_samples_ceil`](Self::to_samples_ceil).
     ///
-    /// The motivating case is a sampler preload window: "keep `window` frames
-    /// resident starting from `entry`" is `entry.advanced_by(window)`, and
-    /// hand-rolling it as `entry.0 + window.0 as f64` is how a call site loses
-    /// the fraction and under-loads by a frame.
+    /// For example, a sampler preload window: "keep `window` frames resident
+    /// starting from `entry`" is `entry.advanced_by(window)`, keeping the
+    /// fraction that rounding each side first would lose.
     #[inline]
     pub fn advanced_by(self, frames: Samples) -> SamplePosition {
         SamplePosition(self.0 + frames.0 as f64)
@@ -2007,18 +1983,13 @@ impl BeatDuration {
     ///
     /// For *duration* readouts — a clip length, a UI-facing time display. It is
     /// deliberately **not** the conversion the per-sample transport path uses:
-    /// `tutti_core::transport::state::beats_per_sample` computes
+    /// `tutti_core::transport::beats_per_sample` computes
     /// `(tempo / 60) / sample_rate`, the one spelling every reader placing a
     /// beat in a block divides by (the two groupings round differently, and
     /// readers must agree). Routing those sites through this method would
     /// silently re-associate the arithmetic. Two conversions, two call sites,
     /// on purpose. (No clock steps by either: a playhead is a frame count,
-    /// `TimelineSegment`.)
-    ///
-    /// Keeping them apart is now a choice rather than a constraint: that
-    /// function takes a [`SampleRate`], which this crate defines, so it *could*
-    /// move here. It should not — the reason above is about the arithmetic
-    /// association, not about where the types live.
+    /// [`TimelineSegment`](super::TimelineSegment).)
     #[inline]
     pub fn to_seconds(self, tempo: Bpm) -> Seconds {
         if tempo.0 <= 0.0 {
@@ -2538,9 +2509,8 @@ mod tests {
     }
 
     /// The `From`/named-method split, as a ledger — the same discipline the
-    /// operator omissions above get, and for the same reason. The previous
-    /// split was accidental (two angular types had `From`, nothing else did),
-    /// which is how it stayed unexamined.
+    /// operator omissions above get, and for the same reason: a split nobody
+    /// wrote down drifts unexamined.
     #[test]
     fn conversions_that_stay_named_and_why() {
         // Needs a second input, so it is not a two-type conversion at all.

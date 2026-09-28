@@ -1,8 +1,7 @@
-//! Public types exposed by the VST2 host.
+//! Value types used by the VST2 host.
 //!
-//! Shared value types come from `tutti_plugin_types`; this module owns the
-//! VST2-specific shapes (`PluginInfo` with `unique_id`-derived id,
-//! `Vst2ProcessContext`).
+//! Format-neutral types are re-exported from `tutti_plugin_types`; this module
+//! adds the VST2-specific ones, [`PluginInfo`] and [`Vst2ProcessContext`].
 
 pub use tutti_plugin_types::Samples;
 
@@ -11,7 +10,7 @@ pub use tutti_plugin_types::{
     TransportInfo, WindowHandle,
 };
 
-/// Plugin metadata gathered at load time.
+/// Plugin metadata read at load time; see [`Vst2Instance::metadata`](crate::Vst2Instance::metadata).
 #[derive(Debug, Clone)]
 pub struct PluginInfo {
     /// Stable identifier built from the plugin's `unique_id`.
@@ -61,18 +60,21 @@ pub struct PluginInfo {
     pub tail: PluginTail,
 }
 
-/// The plugin's declared VST2 category. Canonical definition lives in
-/// `tutti-plugin-types` (shared with the catalog/wire layer); this crate maps
-/// the native `vst::Category` into it via `From` (see `instance.rs`).
+/// The plugin's declared VST2 category, as carried in
+/// [`PluginInfo::category`].
 pub use tutti_plugin_types::Vst2Category;
 
-/// Stack-allocated event collection. Inline storage matches
-/// `tutti-plugin`'s `MidiEventVec` so shim layers can pass the value
-/// straight through without re-allocating.
+/// The MIDI events a process call returns, stored inline for up to 256 events.
+///
+/// The inline capacity matches `tutti-plugin`'s `MidiEventVec`, so the value
+/// passes between the two without re-allocating.
 pub type MidiEventVec = smallvec::SmallVec<[MidiEvent; 256]>;
 
-/// Per-block inputs to `Vst2Instance::process_f32`/`process_f64` beyond
-/// the audio buffer.
+/// Per-block inputs to [`Vst2Instance::process_f32`] and
+/// [`Vst2Instance::process_f64`] beyond the audio buffers.
+///
+/// [`Vst2Instance::process_f32`]: crate::Vst2Instance::process_f32
+/// [`Vst2Instance::process_f64`]: crate::Vst2Instance::process_f64
 #[derive(Default)]
 pub struct Vst2ProcessContext<'a> {
     /// Events to deliver before the block renders, each carrying its own frame
@@ -82,17 +84,17 @@ pub struct Vst2ProcessContext<'a> {
     /// reporting a stopped transport, which is what a plugin syncing to host
     /// tempo will see.
     pub transport: Option<&'a TransportInfo>,
-    /// Sample rate in Hz.
-    ///
-    /// A bare `f64`, not the engine's `SampleRate`: this value reaches
-    /// `effSetSampleRate`, a C ABI taking a float. The unit types stop at that
-    /// boundary by design.
+    /// Sample rate in Hz, reported to the plugin in its `VstTimeInfo` when
+    /// [`transport`](Self::transport) is set. It does not reconfigure the
+    /// plugin; use [`Vst2Instance::set_sample_rate`](crate::Vst2Instance::set_sample_rate)
+    /// for that.
     pub sample_rate: f64,
 }
 
 impl<'a> Vst2ProcessContext<'a> {
-    /// A context with no MIDI and no transport, carrying only `sample_rate` in
-    /// Hz. Layer the rest on with [`Self::midi`] and [`Self::transport`].
+    /// Creates a context with no MIDI and no transport, carrying only
+    /// `sample_rate` in Hz. Layer the rest on with [`Self::midi`] and
+    /// [`Self::transport`].
     pub fn new(sample_rate: f64) -> Self {
         Self {
             midi: &[],

@@ -45,7 +45,7 @@ pub struct SpscRing<T> {
 unsafe impl<T: Send> Sync for SpscRing<T> {}
 
 impl<T> SpscRing<T> {
-    /// Allocate a ring of `capacity` slots.
+    /// Allocates a ring of `capacity` slots.
     pub fn new(capacity: usize) -> Self {
         let (producer, consumer) = HeapRb::<T>::new(capacity).split();
         Self {
@@ -108,7 +108,7 @@ unsafe impl<T: Send> Send for SpscProducer<T> {}
 unsafe impl<T: Send> Sync for SpscProducer<T> {}
 
 impl<T> SpscProducer<T> {
-    /// Push one item. Returns `false` if the ring is full (item dropped).
+    /// Pushes one item. Returns `false` if the ring is full (item dropped).
     #[inline]
     pub fn push(&self, item: T) -> bool {
         // SAFETY: single producer — exclusive access to the producer half per

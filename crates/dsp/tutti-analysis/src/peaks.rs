@@ -1,10 +1,7 @@
 //! Waveform peak summaries — the min/max/RMS blocks a timeline draws.
 //!
-//! The carry is the partial block. Making it explicit is what fixes the
-//! streaming path: the old version tracked a running total and indexed the
-//! current chunk by *global* offset, but those offsets point into chunks that
-//! have already been dropped, so any block spanning a chunk boundary was built
-//! from a remnant or skipped outright.
+//! The carry is the partial block, held explicitly, so a block spanning a
+//! chunk boundary is built from both chunks rather than from a remnant.
 //!
 //! # Per channel, not folded
 //!
@@ -12,21 +9,18 @@
 //! [`PeakBlocks::channel`] hands back one of them. Folding is a caller's
 //! choice ([`PeakBlocks::to_mono`]), not this module's default.
 //!
-//! It was the default, and that was wrong for the consumer this module names in
-//! its first line. Folding to mono before blocking destroys the per-channel
-//! excursions at the earliest possible moment, and a waveform drawn from the
-//! result misreports the audio:
+//! Folding to mono before blocking would destroy the per-channel excursions
+//! at the earliest possible moment, and a waveform drawn from the result
+//! would misreport the audio:
 //!
 //! - a hard-panned double-track folds to something visibly narrower than either
 //!   channel;
 //! - a **phase-inverted** pair folds to a flat line — the clip looks like
 //!   silence and is not.
 //!
-//! The rest of the module's channel-awareness was always right: [`PeakConfig`]
-//! carries a [`ChannelLayout`], [`PeakConfig::chunk_matches`] rejects a
-//! mis-strided chunk, and [`PeakState`] carries a ragged *frame* tail so a
-//! caller feeding odd-length chunks loses nothing. The fold was the one step
-//! that threw that care away before it could pay off.
+//! [`PeakConfig`] carries a [`ChannelLayout`], [`PeakConfig::chunk_matches`]
+//! rejects a mis-strided chunk, and [`PeakState`] carries a ragged *frame*
+//! tail so a caller feeding odd-length chunks loses nothing.
 //!
 //! A meter or a loudness reading genuinely wants one number per block. Those
 //! call [`PeakBlocks::to_mono`], where the reduction is visible at the call
@@ -100,9 +94,7 @@ pub struct PeakBlocks {
 
 /// The empty summary: no blocks, and **no channels**.
 ///
-/// Hand-written because `ChannelLayout` deliberately has no `Default` — a
-/// derived one used to say `STEREO` here, describing two channels of a summary
-/// that holds none. `EMPTY` is the width that agrees with an empty `blocks`.
+/// `EMPTY` is the width that agrees with an empty `blocks`.
 impl Default for PeakBlocks {
     fn default() -> Self {
         Self {
@@ -114,7 +106,7 @@ impl Default for PeakBlocks {
 }
 
 impl PeakBlocks {
-    /// Wrap blocks that are already channel-major.
+    /// Wraps blocks that are already channel-major.
     ///
     /// For consumers that *derive* one summary from another rather than
     /// blocking samples — building a coarser mipmap tier by merging pairs, most
@@ -187,7 +179,7 @@ impl PeakBlocks {
         &self.blocks
     }
 
-    /// Reduce to one series, merging the channels block by block.
+    /// Reduces to one series, merging the channels block by block.
     ///
     /// **This is not the same as folding the samples first, and the difference
     /// is why this module never folds.** Folding samples then blocking gives
@@ -249,7 +241,7 @@ impl PeakConfig {
     }
 }
 
-/// Summarize one block. Stateless.
+/// Summarizes one block. Stateless.
 pub fn summarize_block(samples: &[f32]) -> PeakBlock {
     if samples.is_empty() {
         return PeakBlock::default();
@@ -314,7 +306,7 @@ impl PeakState {
         self.consumed
     }
 
-    /// Drop every carry and the consumed count, so the next chunk starts a
+    /// Drops every carry and the consumed count, so the next chunk starts a
     /// fresh stream. Scratch capacity is kept.
     pub fn reset(&mut self) {
         self.partial_frame.clear();
@@ -329,7 +321,7 @@ impl PeakState {
     }
 }
 
-/// Block a chunk, appending whatever whole blocks it completes.
+/// Blocks a chunk, appending whatever whole blocks it completes.
 ///
 /// Chunks need not align to block or frame boundaries; both remainders are
 /// carried. Output is **channel-major**, so a chunk that completes `n` blocks
@@ -418,8 +410,8 @@ fn cut_blocks(pending: &mut Vec<f32>, block: usize, samples: &[f32], out: &mut V
     pending.extend_from_slice(chunks.remainder());
 }
 
-/// Emit the trailing partial block of every channel, if any, and hand back the
-/// finished summary.
+/// Emits the trailing partial block of every channel, if any, and hands back
+/// the finished summary.
 ///
 /// [`summarize`] keeps a short final block, so the streaming path must too or
 /// the two disagree on any input that is not a whole number of blocks.
@@ -458,8 +450,7 @@ impl PeakAccum {
     /// chunk appended, so this needs no width up front.
     ///
     /// Until then it is [`ChannelLayout::EMPTY`], matching the zero channel
-    /// runs it holds. (A derived `Default` used to make it `STEREO` over zero
-    /// runs — a width that disagreed with the accumulator's own contents.)
+    /// runs it holds.
     pub fn new() -> Self {
         Self {
             channels: Vec::new(),
@@ -498,7 +489,7 @@ impl PeakAccum {
     }
 }
 
-/// Summarize a whole buffer, per channel.
+/// Summarizes a whole buffer, per channel.
 ///
 /// Folds [`step_peaks`] — the same implementation the streaming path uses.
 pub fn summarize(cfg: &PeakConfig, buffer: Interleaved<'_>) -> PeakBlocks {
@@ -553,10 +544,9 @@ mod tests {
 
     /// The law: streaming in arbitrary chunks equals one batch call.
     ///
-    /// Swept across **every layout**, not just mono. The first version of this
-    /// test only ran at `ChannelLayout::MONO`, where folding short-circuits to
-    /// a copy — so it proved nothing about the fold, and missed a bug that
-    /// silently discarded audio on every non-frame-aligned stereo chunk.
+    /// Swept across **every layout**, not just mono: at `ChannelLayout::MONO`
+    /// a frame is one sample, so a bug that discards audio on non-frame-aligned
+    /// multichannel chunks would go unseen.
     ///
     /// Chunk sizes are mostly coprime with both the block size and the channel
     /// counts, so nearly every chunk ends mid-frame *and* mid-block.
@@ -623,9 +613,8 @@ mod tests {
     /// The carried half-frame is `cfg.layout`-wide. Splicing a chunk of a
     /// different width onto it realigns at the wrong stride, so the frame
     /// straddling the join is built from two channels that were never adjacent.
-    /// Before the width travelled with the buffer this was not a case anyone
-    /// could write down — the config's layout was simply assumed to describe
-    /// whatever slice arrived.
+    /// The buffer carries its own width, which is what makes the mismatch
+    /// detectable.
     #[test]
     fn a_chunk_of_the_wrong_width_is_skipped() {
         let cfg = PeakConfig::new(Samples(1), ChannelLayout::STEREO);
@@ -673,15 +662,15 @@ mod tests {
         assert_eq!(ch(&blocks, 1)[2].min, -249.0);
     }
 
-    /// **The bug this module was changed to fix.**
+    /// **Why blocking is per channel.**
     ///
     /// A phase-inverted pair is the worst case: folding the samples before
     /// blocking cancels it to a flat line, so the clip renders as silence and
     /// is not. Per channel, both channels are a full-scale ramp.
     ///
-    /// Mutation check: under the previous implementation every assertion below
-    /// except the block count fails — `summarize` returned one series whose
-    /// `min` and `max` were both 0.0. If this test ever passes against a
+    /// Mutation check: folding before blocking fails every assertion below
+    /// except the block count — `summarize` returns one series whose `min` and
+    /// `max` are both 0.0. If this test ever passes against a
     /// folding implementation it has stopped testing what it names.
     #[test]
     fn a_phase_inverted_pair_does_not_cancel() {
@@ -758,7 +747,7 @@ mod tests {
     }
 
     /// On mono input the two semantics must coincide — the one case where
-    /// `to_mono` reproduces the old output exactly.
+    /// `to_mono` reproduces the per-channel output exactly.
     #[test]
     fn to_mono_on_mono_input_is_the_channel_itself() {
         let samples: Vec<f32> = (0..500).map(|i| i as f32).collect();
@@ -870,7 +859,7 @@ mod tests {
     }
 
     /// `reset` must clear every channel's carry, not just the first — a stereo
-    /// stream reset mid-block would otherwise splice the old right channel onto
+    /// stream reset mid-block would otherwise splice the stale right channel onto
     /// the new one.
     #[test]
     fn reset_clears_every_channel_carry() {
@@ -889,7 +878,7 @@ mod tests {
         state.reset();
 
         // A full block of a different value. If either carry survived, its
-        // channel would report the old value's excursion too.
+        // channel would report the earlier value's excursion too.
         let full: Vec<f32> = (0..100).flat_map(|_| [2.0f32, -2.0]).collect();
         let mut out = PeakAccum::new();
         step_peaks(

@@ -1,11 +1,12 @@
 # tutti-analysis
 
-Audio analysis over `&[f32]`: waveform blocks, onsets, pitch, loudness and
-stereo correlation.
+Audio analysis over `&[f32]` for the Tutti audio engine: waveform blocks,
+onsets, pitch, loudness and stereo correlation.
 
-## What this is
-
-Algorithms, and no opinion about where the results go:
+Use it for offline or background analysis of audio you already hold as
+samples: drawing a waveform, finding transients, tracking pitch, measuring
+loudness or checking a stereo image. The algorithms have no opinion about
+where the results go:
 
 - `summarize` — min/max/RMS waveform blocks for a timeline, **per channel**.
   Folding to one series is `PeakBlocks::to_mono`, a caller's choice rather than
@@ -13,7 +14,8 @@ Algorithms, and no opinion about where the results go:
 - `detect_onsets` — onset detection over four selectable detection functions.
 - `yin` — monophonic pitch estimation (de Cheveigné & Kawahara, 2002).
 - `correlate` — inter-channel phase correlation and stereo image.
-- `measure_loudness` — integrated loudness.
+- `measure_loudness` — EBU R128 integrated loudness, loudness range and true
+  peak.
 - `stft` / `istft_transform` — the short-time Fourier transform, in three result
   types so invertibility is a compile-time question.
 
@@ -25,11 +27,10 @@ and SIMD are the right trade, where microfft's allocation-free fixed sizes are
 what the realtime graph needs and this crate does not. Both are
 `num_complex::Complex<f32>` underneath, so values cross freely.
 
-## What it does not own
+## Scope
 
-- **No graph, no framework, no ECS.** Nothing here knows about `Net`, and there
-  is no Bevy feature. The live-analysis ECS surface this crate once carried
-  computed four analyses nobody read, and was removed rather than gated.
+- **No graph, no framework, no ECS.** Nothing here is a graph node or knows
+  about one, and there is no Bevy feature.
 - **No threading and no scheduling.** "Live" is a property of a call site, never
   of an algorithm, so nothing here is named for it. A host that wants these
   results on a background thread owns that plumbing itself.
@@ -137,20 +138,25 @@ The measurement entry points are correspondingly thin on failure. `correlate` an
 because too little audio to gate is an absence rather than a fault. Only `yin`
 and `detect_onsets` return `Result`, and both do so before touching a sample.
 
-`Result`, not `assert!`, throughout: a caller feeding a short buffer deserves
-better than a panic on the audio path.
+`Result`, not `assert!`, throughout: a caller feeding a short buffer gets an
+error rather than a panic.
+
+## Allocation
+
+The batch entry points allocate their results, so call them off the audio
+thread. The `step_*` functions and `FftScratch` let a caller reuse buffers
+across calls.
 
 ## Features
 
 `default = []`.
 
-- `serde` — pulls the `serde` dependency. Note it currently derives on exactly
-  one type, `pitch::PitchResult`, which is `pub(crate)`: the flag has **no
-  observable effect on the public API today**. Turning it on for a public result
-  type is a live gap, not a documented capability.
+- `serde` — pulls the `serde` dependency. It currently derives only on an
+  internal type, so it adds nothing to the public API yet.
 
-There is no `bevy` feature, and none for caching: a thumbnail cache is a host's
-storage policy, not an algorithm.
+The `tutti` crate re-exports this one as `tutti::analysis` behind its
+`analysis` feature. `tutti-export` uses it for loudness measurement and
+`tutti-sampler` for its analysis needs.
 
 ## License
 

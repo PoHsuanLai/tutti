@@ -1,16 +1,10 @@
-# bevy-tutti is the Bevy adapter for the tutti audio engine: an ordinary member
-# of this repo's workspace, sitting one tier above the engine crates it wraps.
-#
-# It used to live outside the engine's directory tree and join via an explicit
-# `package.workspace = "../tutti"` pointer, because the engine was a subtree of
-# the dawai app repo and the adapter was a sibling of it. Both halves are gone —
-# the workspace root is now the repo root, so Cargo discovers this member by
-# walking up, and every dependency below is a plain relative path.
+# bevy-tutti is the Bevy adapter for the tutti audio engine: a member of this
+# repo's workspace, one tier above the engine crates it wraps.
 [package]
 name = "bevy-tutti"
 version = "0.1.0"
 edition = "2021"
-description = "Bevy plugin for Tutti - Minimal Bevy integration for real-time audio"
+description = "Bevy plugin for the Tutti real-time audio engine: the audio graph, transport, MIDI, plugin hosting and export as ECS entities and resources"
 license = "MIT OR Apache-2.0"
 
 [lints]
@@ -27,25 +21,22 @@ bevy_reflect.workspace = true
 # render, plugin scan, wave import, soundfont decode). See src/task.rs.
 bevy_tasks.workspace = true
 
-# Tutti audio engine — bevy-tutti is the umbrella, so it depends on the
-# subsystem crates directly. `tutti-core/bevy_ecs` enables the `Component`
+# Tutti audio engine — bevy-tutti depends on the subsystem crates directly.
+# `tutti-core/bevy_ecs` enables the `Component`
 # derives on the entity-as-node primitives. (The Asset derive on `WaveAsset`
 # is `tutti-io/bevy`, enabled by `sampler` below.) bevy-tutti supplies the
 # reconcile systems and the CPAL audio callback (src/engine/).
 tutti-core = { path = "../core/tutti-core", default-features = false, features = ["bevy_ecs"] }
 # `bevy` here is the `Reflect` derives only (no ECS surface). Needed
 # unconditionally, not just under `modulation`: `AudioConfig` reflects its
-# `ChannelLayout` field, and a `#[reflect(ignore)]` there silently reset a
-# surround device config to Stereo on scene load.
+# `ChannelLayout` field; ignoring it in reflection would reset a surround
+# device config to Stereo on scene load.
 tutti-types = { path = "../core/tutti-types", default-features = false, features = ["bevy"] }
 tutti-midi-types = { path = "../midi/tutti-midi-types", default-features = false }
-# The native graph (design doc 013): the second backend behind `AudioGraphRes`,
-# selected by `TuttiPlugin::graph_backend`. `tutti-node` for the forwarding
-# `AudioUnit` wrapper that lets a boxed unit ride `Legacy::controlled`.
+# The graph: the runtime behind `AudioGraphRes`.
 tutti-graph = { path = "../core/tutti-graph" }
-tutti-node = { path = "../core/tutti-node" }
-# tutti-nodes is pure DSP now — its ECS binding moved host-side.
-# The optional features below add convolution / automation DSP on top.
+# tutti-nodes is pure DSP; its ECS binding is this crate.
+# The optional `convolution` feature below adds the convolver on top.
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
 
 # Spatial audio (VBAP + binaural panners), gated by our `spatial` feature.
@@ -74,8 +65,7 @@ tutti-midi-runtime = { path = "../midi/tutti-midi-runtime", optional = true, def
 # `json` is explicit: this crate's `PluginsRes`/`PluginScanConfig` default path
 # builds a `Plugins` over the file-backed catalog (`with_json_catalog` / `empty`),
 # so it needs the ready-made impl rather than an app-supplied one. tutti-plugin
-# itself ships no default features. (Inherited from `tutti-plugin-host`, whose
-# code this crate absorbed.)
+# itself ships no default features.
 tutti-plugin = { path = "../plugin/tutti-plugin", optional = true, features = [
     "json",
 ] }
@@ -107,7 +97,7 @@ objc2-foundation = { version = "0.3", features = ["NSNotification", "NSString", 
 [features]
 default = []
 
-# Full feature set (mirrors the old tutti `full` minus opt-in plugin formats).
+# Full feature set, minus the opt-in plugin formats and convolution.
 full = [
     "wav", "flac", "mp3", "ogg",
     "midi", "midi-hardware",
@@ -116,12 +106,16 @@ full = [
     "audio-io",
     "export",
     "spatial",
+    "hrtf",
     "modulation",
 ]
 
 # Spatial audio: the VBAP / binaural panner units, in their own crate.
 # Names exactly one thing — the dependency on `tutti-spatial`.
 spatial = ["dep:tutti-spatial"]
+# The binaural panner (`tutti-spatial/hrtf`, which pulls the `hrtf` crate), so
+# `HrtfBinauralNode` can be spawned as a graph node.
+hrtf = ["spatial", "tutti-spatial/hrtf"]
 
 # FFT convolution reverb (partitioned IR) in tutti-nodes.
 convolution = ["tutti-nodes/convolution"]
@@ -146,7 +140,7 @@ ogg = ["tutti-io?/ogg", "tutti-sampler?/ogg"]
 # `tutti-polysynth` is absent from this list on purpose: it has no `midi`
 # feature to enable. MIDI is unconditional there — a synth you cannot send a
 # note to is not a smaller synth — so pulling the crate in at all brings it.
-midi = ["dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-cpal/midi"]
+midi = ["dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi"]
 # The OS MIDI layer. Note the feature and the crate share the name `midi-hardware`
 # — deliberately, since the feature does nothing but pull the crate in.
 # `tutti-midi-hardware` ships one feature, `test-support`, and it adds no
@@ -202,6 +196,9 @@ au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au"]
 export = ["dep:tutti-export"]
 
 [dev-dependencies]
+# `contract::Direct`: a node driven by hand as a graph drives it, for the
+# reference renders the export tests compare against.
+tutti-graph = { path = "../core/tutti-graph", features = ["contract"] }
 # `tutti_nodes::testing` stimulus nodes for tests, examples and doctests. The
 # feature is dev-only, so the production dependency above stays without it.
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false, features = ["testing"] }
@@ -219,7 +216,7 @@ tutti-sampler = { path = "../dsp/tutti-sampler", default-features = false, featu
 tutti-midi-hardware = { path = "../midi/tutti-midi-hardware", features = [
     "test-support",
 ] }
-# RT-safety regression tests (relocated engine audio_io/graph tests) use the
+# RT-safety regression tests use the
 # allocation-disabling global allocator via the harness in lib.rs.
 assert_no_alloc = { version = "1", default-features = false }
 # The `Recorder` round-trip test writes a real `WavOut` to a temp dir and reads
@@ -238,12 +235,8 @@ ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 tutti-clap-test-plugin = { path = "../vendor/tutti-clap-test-plugin" }
 tutti-fixture-resolve = { path = "../plugin/vendor/tutti-fixture-resolve" }
 
-# NOTE: examples 29_node_entities / 30_full_pipeline were removed — they
-# demonstrated engine-side ECS param reconcile (Volume/SamplerSpeed/…), which
-# moved host-side ("engine Bevy = Net pump only").
-# `AudioParam` brought the generic half of that reconcile back engine-side, so a
-# param example belongs here again — but only the modulation-aware read path,
-# which is the part an app cannot reconstruct on its own.
+# `modulated_fader`: an `AudioParam` driven by modulation, showing the
+# modulation-aware read path an app cannot reconstruct on its own.
 [[example]]
 name = "modulated_fader"
 required-features = ["modulation"]

@@ -1,9 +1,10 @@
 # tutti-mod
 
 Modulation for the Tutti engine — pure `phase -> value` sources, a keyed
-accumulator target, and a mod-matrix router.
+accumulator target, and a mod-matrix router. The `tutti` facade re-exports it
+as `tutti::modulation` (feature `modulation`).
 
-## What this is
+## What is here
 
 Three roles, layered: **rules** (a routing table of `ModEdge`s), **dispatch** (an
 id→target router), and **receive** (a keyed accumulator that clamps
@@ -13,8 +14,7 @@ hold, and the shared `shape` / `fold` / `curve_apply` math.
 
 `ModMatrix` is the fluent front door; the primitives are rarely touched
 directly. (Most type names below sit behind the `routing` feature, which is off
-under `default = []`, so they are written as code spans rather than links;
-docs.rs renders with `all-features = true`.)
+by default, so they are written as code spans rather than links.)
 
 ## What this crate does not own
 
@@ -119,7 +119,7 @@ summation rule, the rate chosen by whoever reads it.
 |---|---|---|
 | per **frame** | `AtomicTarget` | the driver is handed the beat; it collapses to a scalar and mirrors it into an `AtomicF32` |
 | per **block** | a plugin's param producer | holds the `LayeredCurve` and samples it at each block's real beats |
-| per **sample** | `AutomationLaneNode`, `ModulatorNode` (`tutti-nodes`) | the beat arrives as a *signal* on the node's `BEAT_PORTS` inputs |
+| per **sample** | `AutomationLaneNode`, `ModulatorNode` (`tutti-nodes`) | the node reads the beat of each frame from its block's `Env` |
 
 **Which rate to reach for.** The frame rate is the default and is always
 correct — ask for more only when the sink reads faster than the frame rate,
@@ -139,9 +139,10 @@ A `Modulator` is itself rate-agnostic — the *adapter* around it picks the tier
 `tutti_nodes::ModulatorNode` (aliased `LfoNode`) is per-sample. One modulator,
 two adapters — not two LFOs.
 
-One gap is known and deliberate: the routing subsystem cannot deliver a curve to
-a **per-sample** sink for a native param, because `AtomicTarget` is the only sink
-native nodes use. Its module doc tracks the audio-rate sink as later work.
+One limitation: the routing subsystem cannot deliver a curve to a
+**per-sample** sink for a native param, because `AtomicTarget` is the only sink
+native nodes use. For per-sample modulation of a native param, wire a
+`ModulatorNode` in the graph instead.
 
 ## The target + routing (the `routing`/`bevy` features)
 

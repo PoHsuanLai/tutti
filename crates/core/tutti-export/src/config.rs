@@ -99,10 +99,9 @@ pub struct EncodeConfig {
 
 /// The format's and depth's own defaults, written to a **stereo** file.
 ///
-/// Hand-written because [`ChannelLayout`] has no `Default` — a width silently
-/// chosen by a derive is how a graph once grew two global inputs nobody
-/// declared. Stereo is still the right answer for a bounce left unspecified,
-/// but here it is a stated choice: a wider graph folds down to it through the
+/// Hand-written because [`ChannelLayout`] has no `Default`, so the width is a
+/// stated choice rather than one a derive picks. Stereo is the answer for a
+/// bounce left unspecified: a wider graph folds down to it through the
 /// ITU/Dolby matrix, and a caller wanting the graph's own width sets
 /// `channels`.
 impl Default for EncodeConfig {
@@ -137,13 +136,19 @@ impl Resample {
     }
 }
 
-/// One export.
+/// Everything one export needs: what to render, how to encode it, and the
+/// optional resample and dither on the way out.
 ///
-/// No `normalize` field. Normalization needs the whole signal measured before a
-/// gain can be chosen, which is two passes — and a *caller's* composition, not a
-/// stage this crate hides. Measure with
-/// [`tutti_analysis::measure_loudness`](https://docs.rs), take
-/// `Loudness::gain_to`, apply it. That is why this crate can stream.
+/// Plain data, built by struct literal with `..Default::default()` for the rest
+/// (see the [crate-level example](crate)). The default is a zero-length
+/// render at 44.1 kHz to a stereo WAV with triangular dither and no resample,
+/// so set at least [`RenderConfig::duration_seconds`].
+///
+/// There is no `normalize` field: normalization needs the whole signal
+/// measured before a gain can be chosen, which is two passes. Use
+/// [`render_normalized_to_file`](crate::render_normalized_to_file), or measure
+/// with [`tutti_analysis::measure_loudness`], take `Loudness::gain_to` and
+/// apply it with [`Rendered::apply_gain`](crate::Rendered::apply_gain).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ExportConfig {
     /// What to produce, and for how long.

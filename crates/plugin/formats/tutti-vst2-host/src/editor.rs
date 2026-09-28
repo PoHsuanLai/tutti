@@ -9,27 +9,34 @@ use crate::instance::Vst2Instance;
 use crate::types::{EditorSize, WindowHandle};
 
 impl Vst2Instance {
-    /// Whether the plugin publishes an editor.
+    /// Returns `true` if the plugin has a native editor.
     ///
-    /// Probed once at load — `get_editor()` may only be called once per
-    /// `PluginInstance`, so asking again would re-enter the plugin and get
-    /// `None` whatever the truth is. `false` here means
-    /// [`open_editor`](Self::open_editor) has nothing to open.
-    ///
-    /// The same answer [`PluginInfo::has_editor`](crate::PluginInfo) carries;
-    /// this is the method form, so the three editor calls read alike across the
-    /// host crates.
+    /// Probed once at load, so this does not call into the plugin. `false`
+    /// means [`open_editor`](Self::open_editor) has nothing to open. The same
+    /// answer as [`PluginInfo::has_editor`](crate::PluginInfo::has_editor).
     pub fn has_editor(&self) -> bool {
         self.handle.has_editor()
     }
 
-    /// Embed the plugin's editor into `parent`.
+    /// Opens the plugin's editor embedded in `parent` and returns its size in
+    /// pixels.
     ///
-    /// Returns the editor's reported size on success.
+    /// `parent` is the native view or window to embed into (`NSView*` on
+    /// macOS, `HWND` on Windows, an X11 window id on Linux). While the editor is
+    /// open, call [`editor_idle`](Self::editor_idle) regularly, and
+    /// [`close_editor`](Self::close_editor) before destroying `parent`.
     ///
-    /// On macOS this MUST be called from the AppKit main thread —
-    /// platform GUI toolkits (Cocoa, AppKit) require it. Calling from a
-    /// worker thread will crash deep inside the plugin's UI code.
+    /// # Errors
+    ///
+    /// Returns [`Vst2Error::EditorError`] if the plugin has no editor or
+    /// refuses to open it.
+    ///
+    /// # Panics
+    ///
+    /// Main thread only; platform GUI toolkits require it, and on macOS a call
+    /// from another thread crashes inside the plugin's UI code. In debug builds,
+    /// panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         tutti_plugin_types::assert_main_thread();
 
@@ -72,7 +79,12 @@ impl Vst2Instance {
         })
     }
 
-    /// Tear down the editor view. Safe to call when no editor is open.
+    /// Closes the editor view. Does nothing when no editor is open.
+    ///
+    /// # Panics
+    ///
+    /// Main thread only; in debug builds, panics if called off the thread
+    /// registered with [`tutti_plugin_types::mark_main_thread`].
     pub fn close_editor(&mut self) {
         tutti_plugin_types::assert_main_thread();
 
@@ -81,9 +93,15 @@ impl Vst2Instance {
         }
     }
 
-    /// Drive the editor's idle hook. Should be called periodically (~30Hz)
-    /// from the host's main thread while the editor is open. JUCE-based
-    /// editors rely on this to repaint and process input events.
+    /// Drives the editor's idle hook.
+    ///
+    /// Call periodically (around 30 Hz) from the main thread while the editor
+    /// is open; JUCE-based editors rely on it to repaint and process input.
+    ///
+    /// # Panics
+    ///
+    /// Main thread only; in debug builds, panics if called off the thread
+    /// registered with [`tutti_plugin_types::mark_main_thread`].
     pub fn editor_idle(&mut self) {
         tutti_plugin_types::assert_main_thread();
 

@@ -1,21 +1,27 @@
-//! Getting a node into the graph, and swapping the unit behind one.
+//! Getting a node into the graph, and swapping the node behind one.
 //!
 //! Both operations queue a deferred world command, for the same reason:
 //! [`AudioGraphRes::insert`] returns the node's handle *inside* the
 //! command, so binding it to an entity cannot be done from outside. That is what
 //! makes [`SpawnAudioNode`] irreducible rather than a convenience — it is the
 //! only place the entity↔node binding can be formed.
+//!
+//! Every path takes a [`GraphNode`]: a node the engine ships, a host's own
+//! `ParamNode` registered with [`param_graph_node!`](crate::param_graph_node),
+//! or any node wrapped as [`ForkByClone`](tutti_graph::ForkByClone) or
+//! [`Unforkable`](tutti_graph::Unforkable).
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::EntityCommands;
 
 use tutti_core::AudioNode;
-use tutti_core::AudioUnit;
 
-use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty, ReplaceRefused};
+use crate::graph::{
+    AudioGraphRes, CapturedControls, GraphDirty, GraphNode, NodeControls, ReplaceRefused,
+};
 
-/// `Commands` extension that adds a unit to the graph and spawns an entity
-/// with `AudioNode(id)` attached.
+/// `Commands` extension that adds a node to the graph and spawns an entity
+/// with `AudioNode(id)` attached, its controls as [`NodeControls`].
 ///
 /// The graph mutation is queued as a deferred command and applies at the
 /// next command-buffer flush — the returned `EntityCommands` lets the
@@ -32,6 +38,7 @@ use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty, ReplaceRefused};
 /// use bevy_ecs::prelude::*;
 /// use bevy_tutti::prelude::*;
 /// use tutti_core::{Hz, Q};
+/// use tutti_graph::ForkByClone;
 /// use tutti_nodes::testing::Osc;
 /// use tutti_nodes::{SvfFilterNode, SvfType};
 ///
@@ -40,7 +47,7 @@ use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty, ReplaceRefused};
 /// struct Filter;
 ///
 /// fn build(mut commands: Commands) {
-///     let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
+///     let osc = commands.spawn_audio_node(ForkByClone(Osc::sine(Hz(440.0)))).id();
 ///     let filt = commands
 ///         .spawn_audio_node(SvfFilterNode::<f64>::new(
 ///             SvfType::LowPass,
@@ -75,117 +82,138 @@ use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty, ReplaceRefused};
 /// distinguish node types (for a type-specific reconciler) attaches its own
 /// marker component alongside.
 pub trait SpawnAudioNode {
-    /// Add `unit` to the graph and spawn an entity bound to it via [`AudioNode`].
-    fn spawn_audio_node<U>(&mut self, unit: U) -> EntityCommands<'_>
+    /// Adds `node` to the graph and spawns an entity bound to it via
+    /// [`AudioNode`], its controls as [`NodeControls`].
+    fn spawn_audio_node<N>(&mut self, node: N) -> EntityCommands<'_>
     where
-        U: AudioUnit + 'static;
+        N: GraphNode,
+        N::Controls: Send + Sync + 'static;
 }
 
-/// The same binding, onto an entity that already exists.
+/// `EntityCommands` extension that adds a node to the graph and binds an
+/// existing entity to it.
 ///
-/// Separate from [`SpawnAudioNode`] because the lifecycle differs: that one owns
-/// the entity it creates, this one adopts one somebody else made. A host whose
-/// entities come from a projection needs this — the entity is compiled from the
-/// document first, and its DSP unit may only be constructible frames later (an
-/// audio file has to be read before there is a unit to add).
+/// The same binding as [`SpawnAudioNode`], for an entity that already exists:
+/// one spawned earlier whose node can only be built frames later (an audio file
+/// has to be read before there is a node to add). The graph mutation is
+/// deferred to the next command flush, as with `spawn_audio_node`.
 ///
-/// Adding a second unit to an entity that already carries [`AudioNode`] replaces
-/// the component, orphaning the first node in the graph. Callers that re-arity
-/// should despawn and respawn, which is what the bus reconciler does.
+/// Adding a second node to an entity that already carries [`AudioNode`]
+/// replaces the component, orphaning the first node in the graph. To change
+/// the node behind an entity, use [`crossfade_audio_node`], or despawn and
+/// respawn.
 pub trait InsertAudioNode {
-    /// Add `unit` to the graph and bind **this** entity to it via [`AudioNode`].
-    fn insert_audio_node<U>(&mut self, unit: U) -> &mut Self
+    /// Adds `node` to the graph and binds **this** entity to it via
+    /// [`AudioNode`], its controls as [`NodeControls`].
+    fn insert_audio_node<N>(&mut self, node: N) -> &mut Self
     where
-        U: AudioUnit + 'static;
+        N: GraphNode,
+        N::Controls: Send + Sync + 'static;
 }
 
 impl InsertAudioNode for EntityCommands<'_> {
-    fn insert_audio_node<U>(&mut self, unit: U) -> &mut Self
+    fn insert_audio_node<N>(&mut self, node: N) -> &mut Self
     where
-        U: AudioUnit + 'static,
+        N: GraphNode,
+        N::Controls: Send + Sync + 'static,
     {
         let entity = self.id();
         // Same deferred shape as `spawn_audio_node`: `AudioGraphRes::insert`
         // returns the handle inside the command, so the binding cannot be observed from outside.
         self.commands()
-            .queue(move |world: &mut World| add_and_bind(world, entity, unit, "insert_audio_node"));
+            .queue(move |world: &mut World| insert_and_bind(world, entity, node));
         self
     }
 }
 
 impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
-    fn spawn_audio_node<U>(&mut self, unit: U) -> EntityCommands<'_>
+    fn spawn_audio_node<N>(&mut self, node: N) -> EntityCommands<'_>
     where
-        U: AudioUnit + 'static,
+        N: GraphNode,
+        N::Controls: Send + Sync + 'static,
     {
         let entity = self.spawn_empty().id();
-        self.queue(move |world: &mut World| add_and_bind(world, entity, unit, "spawn_audio_node"));
+        self.queue(move |world: &mut World| insert_and_bind(world, entity, node));
         self.entity(entity)
     }
 }
 
-/// The body both insertion commands share: capture the unit's controls, add it
-/// to the graph, mark the graph dirty, and bind the entity.
+/// Inserts `node` and binds `entity` to it: capture its controls
+/// ([`GraphNode::captured`]), add it, address its params
+/// ([`GraphNode::params`]), mark the graph dirty, and bind the entity — its
+/// [`AudioNode`], its captured controls, and its own controls as
+/// [`NodeControls`]. The body both insertion commands run, for a caller with
+/// direct world access (an exclusive system or a custom command).
 ///
-/// The capture comes first because it is the last moment the concrete unit is
+/// Logs a warning and does nothing when [`AudioGraphRes`] is missing.
+///
+/// The capture comes first because it is the last moment the concrete node is
 /// in hand — see [`capture`](crate::graph::capture).
-fn add_and_bind<U: AudioUnit + 'static>(world: &mut World, entity: Entity, unit: U, caller: &str) {
-    let mut controls = CapturedControls::capture(world, &unit);
-    let id = match world.get_resource_mut::<AudioGraphRes>() {
-        Some(mut graph) => graph.insert_with(Box::new(unit), &mut controls),
-        None => {
-            bevy_log::warn!(
-                "{caller}: AudioGraphRes missing; entity {:?} left without AudioNode",
-                entity
-            );
-            return;
-        }
+pub fn insert_and_bind<N>(world: &mut World, entity: Entity, node: N)
+where
+    N: GraphNode,
+    N::Controls: Send + Sync + 'static,
+{
+    let captured = node.captured();
+    let Some(mut graph) = world.get_resource_mut::<AudioGraphRes>() else {
+        bevy_log::warn!(
+            "spawn_audio_node: AudioGraphRes missing; entity {entity:?} left without AudioNode"
+        );
+        return;
     };
+    let (id, controls) = graph.insert(node);
+    graph.set_node_params(id, N::params(&controls));
     // Mark the graph dirty so the per-frame commit system flushes this
     // addition along with whatever else mutated this frame.
     if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
         dirty.0 = true;
     }
     if let Ok(mut e) = world.get_entity_mut(entity) {
-        controls.bind(&mut e, id);
+        e.insert(NodeControls(controls));
+        captured.bind(&mut e, id);
     }
 }
 
-/// Crossfade-replace an entity's underlying graph node with `new_unit`.
+/// Replaces an entity's graph node with `node` under a short crossfade.
 ///
 /// Queues a deferred world command that:
 ///
 /// 1. Looks up the entity's [`AudioNode`].
-/// 2. Captures `new_unit`'s controls, as every insertion does (see
-///    [`capture`](crate::graph::capture)), replacing the old unit's: a synth's
-///    new MIDI port, a filter's new param cells.
-/// 3. Calls [`AudioGraphRes::replace`] with a 5 ms equal-amplitude fade.
-/// 4. If the graph took it: binds the captured controls and marks
-///    [`GraphDirty`] so the per-frame
-///    [`commit_graph`](crate::graph::commit_graph) flushes. If the graph is
-///    re-preparing (a rate change between its two commits),
-///    parks unit and controls in [`PendingCrossfades`] and applies them on the
+/// 2. Captures `node`'s controls, as every insertion does (see
+///    [`capture`](crate::graph::capture)), replacing the old node's: a
+///    filter's new param cells.
+/// 3. Calls [`AudioGraphRes::replace`] with a 5 ms equal-amplitude fade when
+///    `node`'s shape fits the running one's, else a plain swap on the next
+///    commit.
+/// 4. If the graph took it: binds what `node` brings — its captured
+///    controls, its params by address ([`GraphNode::params`]) and its
+///    controls as [`NodeControls`] — and marks [`GraphDirty`] so the
+///    per-frame [`commit_graph`](crate::graph::commit_graph) flushes. If the
+///    graph is re-preparing (a rate change between its two commits), parks
+///    node and controls in [`PendingCrossfades`] and applies them on the
 ///    first frame the graph takes them; until then the entity keeps driving
-///    the unit that is still playing. On a poisoned graph, logs and drops.
+///    the node that is still playing. On a poisoned graph, logs and drops.
 ///
 /// The same [`AudioNode`] survives the crossfade — connections to/from this node
 /// stay valid, and any [`PortSources`](crate::graph::PortSources) naming this
 /// entity keeps resolving. Callers don't need to update any other components;
-/// the captured controls are replaced here.
+/// the captured controls are replaced here. The outgoing node's
+/// `NodeControls` component is left in place when the incoming node's
+/// controls are of another type; they no longer reach anything.
 ///
 /// Use this for parameter changes that aren't safe to mutate live (e.g. a
-/// filter cutoff baked into the unit at construction, a sampler loop range
+/// filter cutoff baked into the node at construction, a sampler loop range
 /// that requires re-priming the streamer). For RT-safe atomic changes, edit the
 /// [`AudioParam`](crate::graph::AudioParam) component instead and let the
 /// reconcile pipeline handle it.
 ///
 /// If the entity has no `AudioNode` (e.g. it was despawned), or the
 /// graph resource is missing, this is a no-op and logs a warning.
-pub fn crossfade_audio_node(
-    commands: &mut Commands<'_, '_>,
-    entity: Entity,
-    new_unit: Box<dyn AudioUnit>,
-) {
+pub fn crossfade_audio_node<N>(commands: &mut Commands<'_, '_>, entity: Entity, node: N)
+where
+    N: GraphNode,
+    N::Controls: Send + Sync + 'static,
+{
     commands.queue(move |world: &mut World| {
         if world.get::<AudioNode>(entity).is_none() {
             bevy_log::warn!(
@@ -194,17 +222,24 @@ pub fn crossfade_audio_node(
             );
             return;
         }
-        let controls = CapturedControls::capture(world, new_unit.as_ref());
-        apply_crossfade(world, entity, Incoming::Unit(new_unit), controls);
+        let controls = node.captured();
+        let swap: Box<dyn ErasedSwap> = Box::new(Swap(node));
+        apply_crossfade(
+            world,
+            entity,
+            Incoming::Node(std::sync::Mutex::new(swap)),
+            controls,
+        );
     });
 }
 
-/// [`crossfade_audio_node`] for a hosted plugin: swap `entity`'s node for the
-/// loaded `client`, fading when the running node is a plugin of the same
-/// ports and latency (a plain swap otherwise), and replace the entity's
-/// captured controls with the incoming plugin's
-/// ([`CapturedControls::for_plugin`]). A plugin is a native graph node, not an
-/// `AudioUnit`, so it has a path of its own; it is bound on the way in.
+/// Replaces `entity`'s node with a loaded plugin: [`crossfade_audio_node`] for
+/// a hosted plugin.
+///
+/// Fades when the running node is a plugin of the same ports and latency, and
+/// is a plain swap otherwise. The entity's captured controls become the
+/// incoming plugin's ([`CapturedControls::for_plugin`]). Deferred to the next
+/// command flush; waits in [`PendingCrossfades`] while the graph re-prepares.
 #[cfg(feature = "plugin")]
 pub fn crossfade_plugin_node(
     commands: &mut Commands<'_, '_>,
@@ -226,48 +261,94 @@ pub fn crossfade_plugin_node(
 
 /// What a crossfade swaps in.
 enum Incoming {
-    /// An `AudioUnit`, through `Legacy`.
-    Unit(Box<dyn AudioUnit>),
-    /// A hosted plugin, a native node.
+    /// A [`GraphNode`], its type erased. In a `Mutex` only to be
+    /// `Sync` (a node is `Send`, not `Sync`), which a parked request in
+    /// [`PendingCrossfades`] must be; it is only ever taken whole.
+    Node(std::sync::Mutex<Box<dyn ErasedSwap>>),
+    /// A hosted plugin, bound on the way in.
     #[cfg(feature = "plugin")]
     Plugin(Box<tutti_plugin::handles::PluginClient>),
 }
 
-/// Crossfades [`crossfade_audio_node`] could not apply yet, because the graph
+/// What binds an incoming node's controls to its entity once it landed.
+type Bind = Box<dyn FnOnce(&mut EntityWorldMut) + Send>;
+
+/// A node waiting to be swapped in, its type erased: what
+/// [`crossfade_audio_node`] hands [`apply_crossfade`], and parks while the
+/// graph re-prepares.
+trait ErasedSwap: Send {
+    /// Swap it in under `node`; on success, what binds its controls.
+    fn swap(
+        self: Box<Self>,
+        graph: &mut AudioGraphRes,
+        node: AudioNode,
+        fade: tutti_core::Seconds,
+        curve: tutti_core::CrossfadeCurve,
+    ) -> Result<Bind, ReplaceRefused<Box<dyn ErasedSwap>>>;
+}
+
+struct Swap<N>(N);
+
+impl<N> ErasedSwap for Swap<N>
+where
+    N: GraphNode,
+    N::Controls: Send + Sync + 'static,
+{
+    fn swap(
+        self: Box<Self>,
+        graph: &mut AudioGraphRes,
+        node: AudioNode,
+        fade: tutti_core::Seconds,
+        curve: tutti_core::CrossfadeCurve,
+    ) -> Result<Bind, ReplaceRefused<Box<dyn ErasedSwap>>> {
+        match graph.replace(node, self.0, fade, curve) {
+            Ok(controls) => {
+                graph.set_node_params(node, N::params(&controls));
+                Ok(Box::new(move |e: &mut EntityWorldMut| {
+                    e.insert(crate::graph::NodeControls(controls));
+                }))
+            }
+            Err(ReplaceRefused::Busy(n)) => Err(ReplaceRefused::Busy(Box::new(Swap(n)))),
+            Err(ReplaceRefused::Failed(why)) => Err(ReplaceRefused::Failed(why)),
+        }
+    }
+}
+
+/// Crossfades that [`crossfade_audio_node`] could not apply yet, because the graph
 /// was re-preparing (a sample-rate or block-size change between its two
-/// commits). Each keeps its unit and the controls captured from it, and
+/// commits). Each keeps its node and the controls captured from it, and
 /// [`retry_pending_crossfades`] applies it on the first frame the graph takes
 /// it — in request order, so a later crossfade of the same entity still wins.
 ///
 /// A resource rather than a component: the entity may be despawned while the
-/// crossfade waits, and the unit then goes with the request, not with an
+/// crossfade waits, and the node then goes with the request, not with an
 /// entity that is gone.
 #[derive(Resource, Default)]
 pub struct PendingCrossfades(Vec<(Entity, Incoming, CapturedControls)>);
 
 impl PendingCrossfades {
-    /// How many crossfades are waiting.
+    /// Returns how many crossfades are waiting.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    /// Whether none are.
+    /// Returns whether no crossfade is waiting.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }
 
-/// Swap `entity`'s unit for `unit` under a 5 ms fade and, **only if the graph
-/// took it**, bind the controls captured from it. On
+/// Swap `entity`'s node for `incoming` under a 5 ms fade and, **only if the
+/// graph took it**, bind the controls captured from it. On
 /// [`ReplaceRefused::Busy`](crate::graph::ReplaceRefused::Busy) the request is
-/// parked in [`PendingCrossfades`] with the unit handed back; on `Failed` it is
-/// logged and dropped, and the entity keeps the outgoing unit's controls,
-/// which still drive the unit that is still playing.
+/// parked in [`PendingCrossfades`] with the node handed back; on `Failed` it
+/// is logged and dropped, and the entity keeps the outgoing node's controls,
+/// which still drive the node that is still playing.
 fn apply_crossfade(
     world: &mut World,
     entity: Entity,
-    unit: Incoming,
-    mut controls: CapturedControls,
+    incoming: Incoming,
+    controls: CapturedControls,
 ) {
     let Some(node) = world.get::<AudioNode>(entity).copied() else {
         bevy_log::warn!(
@@ -285,37 +366,44 @@ fn apply_crossfade(
     };
     let fade = tutti_core::Seconds(0.005);
     let curve = tutti_core::CrossfadeCurve::EqualAmplitude;
-    let landed = match unit {
-        Incoming::Unit(unit) => graph
-            .replace_with(node, unit, fade, curve, &mut controls)
+    let landed = match incoming {
+        Incoming::Node(swap) => swap
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .swap(&mut graph, node, fade, curve)
+            .map(Some)
             .map_err(|refused| match refused {
-                ReplaceRefused::Busy(unit) => ReplaceRefused::Busy(Incoming::Unit(unit)),
+                ReplaceRefused::Busy(swap) => {
+                    ReplaceRefused::Busy(Incoming::Node(std::sync::Mutex::new(swap)))
+                }
                 ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
             }),
         #[cfg(feature = "plugin")]
-        Incoming::Plugin(client) => {
-            graph
-                .replace_plugin(node, client, fade, curve)
-                .map_err(|refused| match refused {
-                    ReplaceRefused::Busy(client) => ReplaceRefused::Busy(Incoming::Plugin(client)),
-                    ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
-                })
-        }
+        Incoming::Plugin(client) => graph
+            .replace_plugin(node, client, fade, curve)
+            .map(|()| None)
+            .map_err(|refused| match refused {
+                ReplaceRefused::Busy(client) => ReplaceRefused::Busy(Incoming::Plugin(client)),
+                ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
+            }),
     };
     match landed {
-        Ok(()) => {
+        Ok(bind) => {
             if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
                 dirty.0 = true;
             }
             if let Ok(mut e) = world.get_entity_mut(entity) {
                 controls.replace(&mut e, node);
+                if let Some(bind) = bind {
+                    bind(&mut e);
+                }
             }
         }
-        Err(ReplaceRefused::Busy(unit)) => {
+        Err(ReplaceRefused::Busy(incoming)) => {
             world
                 .get_resource_or_init::<PendingCrossfades>()
                 .0
-                .push((entity, unit, controls));
+                .push((entity, incoming, controls));
         }
         Err(ReplaceRefused::Failed(why)) => {
             bevy_log::error!(
@@ -326,7 +414,7 @@ fn apply_crossfade(
     }
 }
 
-/// Apply every crossfade that was waiting for a re-prepare, now that the graph
+/// Applies every crossfade that was waiting for a re-prepare, now that the graph
 /// may take it. One still refused as busy goes back on the queue, in order.
 pub fn retry_pending_crossfades(world: &mut World) {
     let Some(mut pending) = world.get_resource_mut::<PendingCrossfades>() else {
@@ -335,7 +423,7 @@ pub fn retry_pending_crossfades(world: &mut World) {
     if pending.0.is_empty() {
         return;
     }
-    for (entity, unit, controls) in std::mem::take(&mut pending.0) {
-        apply_crossfade(world, entity, unit, controls);
+    for (entity, incoming, controls) in std::mem::take(&mut pending.0) {
+        apply_crossfade(world, entity, incoming, controls);
     }
 }

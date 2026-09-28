@@ -445,7 +445,7 @@ impl MidiMessage {
 }
 
 impl MidiEvent {
-    /// Decode into the app-facing [`MidiMessage`] view. Runs [`normalize`](crate::normalize())
+    /// Decodes into the app-facing [`MidiMessage`] view. Runs [`normalize`](crate::normalize())
     /// first, so a MIDI 1.0 channel-voice event arrives already promoted to its
     /// MIDI 2.0 form. Anything this view doesn't model yields
     /// [`MidiMessage::Other`] — use [`data_words`](Self::data_words) + `midi2`

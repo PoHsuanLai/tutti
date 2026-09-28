@@ -104,7 +104,7 @@ impl Sysex8PacketReassembler {
         }
     }
 
-    /// Feed one inbound event.
+    /// Feeds one inbound event.
     ///
     /// Returns [`Sysex8Event::Message`] when a message completes, or
     /// [`Sysex8Event::Aborted`] when one ends without a usable payload, and

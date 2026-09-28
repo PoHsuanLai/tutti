@@ -159,7 +159,7 @@ pub enum AuLayoutTag {
 }
 
 impl AuLayoutTag {
-    /// Decode a raw `AudioChannelLayoutTag`.
+    /// Decodes a raw `AudioChannelLayoutTag`.
     ///
     /// A `match` on `const` patterns rather than an `if` chain, so the compiler
     /// enforces the no-duplicate-value rule from the type docs: an aliased
@@ -407,7 +407,7 @@ pub(crate) unsafe fn layout_tag(
     ])))
 }
 
-/// Ask the AU to run bus `bus` of `direction` in the `tag` channel order.
+/// Asks the AU to run bus `bus` of `direction` in the `tag` channel order.
 ///
 /// # The width gate — the measurement that shapes this API
 ///

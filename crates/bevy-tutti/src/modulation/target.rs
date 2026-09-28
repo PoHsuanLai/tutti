@@ -1,43 +1,16 @@
 //! Turning an entity + a param address into a live accumulator.
 //!
-//! This is the one step the adapter cannot do generically, and the reason is
-//! worth stating: [`ModParams`] is implemented on concrete node types
-//! (`Compressor`, `ModDelayNode`, `PolySynth`, …). There is no `&dyn ModParams`
-//! to recover from a `&dyn AudioUnit`, so no amount of Bevy plumbing can
-//! dispatch it.
+//! Resolution asks what was captured when the entity's node went in, never
+//! the graph (see [`CapturedControls`](crate::graph::CapturedControls)):
 //!
-//! So the host supplies the dispatch. [`ModTargetRegistry`] holds a list of
-//! captures; each knows how to try one node type. Registering the node types an
-//! app actually uses is a few lines, and the alternative — a match over every
-//! node type in the engine — is the DAW vocabulary this crate exists to stay out
-//! of.
-//!
-//! # Captured at insert, not resolved from the graph
-//!
-//! The registry runs **once per unit, before the unit goes into the graph** (see
-//! [`CapturedControls`](crate::graph::CapturedControls)). A registered type's
-//! capture keeps a clone of the unit as its [`ModParams`], stored on the entity
-//! as a [`ModParamsHandle`]; resolution asks that, and never the graph.
-//!
-//! The clone is sound for the same reason a graph that clones its nodes on
-//! commit is: every [`ModParams`] impl answers with an accumulator over the
-//! node's *shared* param atomic, so the clone's accumulator writes the cell the
-//! running node reads. Register types before spawning them — a node inserted
-//! while its type was unregistered has no handle and is not modulatable.
-//!
-//! ```rust
-//! use bevy_app::prelude::*;
-//! use bevy_tutti::modulation::{ModTargetRegistry, TuttiModulationPlugin};
-//!
-//! let mut app = App::new();
-//! app.add_plugins(TuttiModulationPlugin);
-//! // One line per node type this app modulates. Forgetting one is silent: the
-//! // route stays well-formed, the inspector shows the knob, nothing moves.
-//! app.world_mut()
-//!     .resource_mut::<ModTargetRegistry>()
-//!     .register::<tutti_nodes::CompressorNode>()
-//!     .register::<tutti_nodes::ModDelayNode>();
-//! ```
+//! - a node whose controls are a `tutti_graph::ParamSet` (every param-bearing
+//!   node in the engine: the SVF, the delay, the chorus, the synth, …) is
+//!   captured by address ([`CapturedControls::for_params`](crate::graph::CapturedControls::for_params)):
+//!   its [`ModParamsHandle`] answers on each param the set holds, with an
+//!   accumulator over the node's own cell;
+//! - a sink no node owns — a hosted plugin's per-block param target, or any
+//!   accumulator a host evaluates at its own rate — is supplied by the host
+//!   through [`ModTargetRegistry::insert_target`].
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
@@ -53,59 +26,25 @@ use crate::modulation::components::ParamRange;
 /// A unit's control-rate params, held apart from the graph.
 type SharedModParams = Arc<dyn ModParams + Send + Sync>;
 
-/// One node type's capture: given an owned unit, keep it as [`ModParams`] if it
-/// is a `T`.
-type CaptureFn = fn(&dyn tutti_core::AudioUnit) -> Option<SharedModParams>;
-
-/// The node types this app can modulate, plus any sinks it supplies directly.
-///
-/// Empty by default — an engine that knows every node type would be an engine
-/// that owns a DAW's vocabulary. [`register`](Self::register) adds a node type;
-/// [`insert_target`](Self::insert_target) adds one already-built sink.
+/// The sinks a host supplies directly, for params no node's `ParamSet`
+/// holds. Empty by default; [`insert_target`](Self::insert_target) adds one
+/// already-built sink.
 #[derive(Resource, Default)]
 pub struct ModTargetRegistry {
-    captures: Vec<CaptureFn>,
     /// Sinks the host built itself, keyed by the param they serve. Consulted
     /// before the node resolvers — see [`insert_target`](Self::insert_target).
     supplied: HashMap<(Entity, ParamAddr), Arc<dyn ModTarget>>,
 }
 
 impl ModTargetRegistry {
-    /// Teach the registry to resolve params on node type `T`.
-    ///
-    /// Captures are tried in registration order and the first match wins;
-    /// since each matches one distinct concrete type, order only decides which
-    /// of two *equally valid* answers is taken, and there are none.
-    ///
-    /// `Clone` because the capture keeps a clone of the unit — see the module
-    /// docs. Takes effect for units inserted after this call.
-    pub fn register<T: ModParams + tutti_core::AudioUnit + Clone + 'static>(
-        &mut self,
-    ) -> &mut Self {
-        self.captures.push(|unit| {
-            let node = unit.as_any().downcast_ref::<T>()?;
-            Some(Arc::new(node.clone()) as SharedModParams)
-        });
-        self
-    }
-
-    /// `unit`'s control-rate params, if its type was registered.
-    ///
-    /// Run on the owned unit **before** it enters the graph; the answer goes on
-    /// the entity as a [`ModParamsHandle`].
-    pub fn capture(&self, unit: &dyn tutti_core::AudioUnit) -> Option<SharedModParams> {
-        self.captures.iter().find_map(|c| c(unit))
-    }
-
-    /// Supply an already-built sink for `(entity, param)`, replacing any
+    /// Supplies an already-built sink for `(entity, param)`, replacing any
     /// previous one.
     ///
-    /// [`register`](Self::register) asks a *node type* for its accumulator,
-    /// which is how a native param resolves — and every native node answers with
-    /// an [`AtomicTarget`](tutti_mod::AtomicTarget). A sink that no `AudioUnit`
-    /// owns has no node to capture it from and is otherwise unreachable: a
-    /// plugin's per-block param target, or any accumulator a host evaluates at
-    /// its own rate.
+    /// A node's params resolve through its `ParamSet`, each with an
+    /// [`AtomicTarget`](tutti_mod::AtomicTarget) over its cell. A sink that no
+    /// node owns has no set to capture it from and is otherwise unreachable:
+    /// a plugin's per-block param target, or any accumulator a host evaluates
+    /// at its own rate.
     ///
     /// This is also the only way to reach a sink that accepts **curve** layers,
     /// since `AtomicTarget` declines them (it collapses at a fixed beat, so a
@@ -126,7 +65,7 @@ impl ModTargetRegistry {
         self
     }
 
-    /// Drop a supplied sink. No-op if none was registered.
+    /// Drops a supplied sink. No-op if none was registered.
     ///
     /// Resolution falls back to the node path afterwards, so removing a
     /// supplied sink for a param a node also exposes silently reverts to the
@@ -147,43 +86,45 @@ impl ModTargetRegistry {
 
 /// An entity's node, as [`ModParams`] — captured when the node was inserted.
 ///
-/// Written by the node-insertion paths from [`ModTargetRegistry::capture`], and
-/// read by [`ModTargetResolver`]. A host that binds [`AudioNode`] itself after
-/// pushing a unit by hand attaches one with
-/// [`CapturedControls`](crate::graph::CapturedControls) or [`of`](Self::of).
+/// Written by the node-insertion paths (a node's `ParamSet`, through
+/// [`CapturedControls::for_params`](crate::graph::CapturedControls::for_params)),
+/// and read by [`ModTargetResolver`]. A host that binds [`AudioNode`] itself
+/// attaches one with [`CapturedControls`](crate::graph::CapturedControls) or
+/// [`of`](Self::of).
 ///
-/// Holds a clone of the unit. It never processes audio; it exists to mint
-/// accumulators over the cells it shares with the running node.
+/// It never processes audio; it exists to mint accumulators over the cells
+/// it shares with the running node.
 #[derive(Component, Clone)]
 pub struct ModParamsHandle {
-    node: tutti_core::dsp::NodeId,
+    node: tutti_core::NodeKey,
     params: SharedModParams,
 }
 
 impl ModParamsHandle {
-    /// Captured params for the unit that became `node`.
+    /// Creates a handle over the params captured from the node that became
+    /// `node`.
     ///
     /// `node` is what makes a leftover handle inert: resolution skips one whose
     /// node is not the entity's current [`AudioNode`].
-    pub fn new(node: tutti_core::dsp::NodeId, params: Arc<dyn ModParams + Send + Sync>) -> Self {
+    pub fn new(node: tutti_core::NodeKey, params: Arc<dyn ModParams + Send + Sync>) -> Self {
         Self { node, params }
     }
 
-    /// Capture a typed `unit` directly, for a caller that has the concrete type
-    /// in hand and no registry to consult.
+    /// Captures a typed `unit` directly, for a caller that has the concrete type
+    /// in hand (a host's own `ModParams` type).
     pub fn of<T: ModParams + Clone + Send + Sync + 'static>(
-        node: tutti_core::dsp::NodeId,
+        node: tutti_core::NodeKey,
         unit: &T,
     ) -> Self {
         Self::new(node, Arc::new(unit.clone()))
     }
 
-    /// The graph node these params were captured from.
-    pub fn node(&self) -> tutti_core::dsp::NodeId {
+    /// Returns the graph node these params were captured from.
+    pub fn node(&self) -> tutti_core::NodeKey {
         self.node
     }
 
-    /// The captured params.
+    /// Returns the captured params.
     pub fn params(&self) -> &(dyn ModParams + Send + Sync) {
         &*self.params
     }
@@ -194,6 +135,31 @@ impl std::fmt::Debug for ModParamsHandle {
         f.debug_struct("ModParamsHandle")
             .field("node", &self.node)
             .finish_non_exhaustive()
+    }
+}
+
+/// A node's [`ParamSet`](tutti_graph::ParamSet) as its control-rate
+/// modulation targets: an [`AtomicTarget`](tutti_mod::AtomicTarget)
+/// mirroring into the cell the node reads, for any [`ParamAddr::Unit`] the
+/// set addresses. What [`CapturedControls::for_params`](crate::graph::CapturedControls::for_params)
+/// captures.
+pub(crate) struct ParamSetTargets(pub(crate) tutti_graph::ParamSet);
+
+impl ModParams for ParamSetTargets {
+    fn mod_target(
+        &self,
+        param: ParamAddr,
+        base: f32,
+        min: f32,
+        max: f32,
+    ) -> Option<Arc<dyn ModTarget>> {
+        let ParamAddr::Unit(unit) = param else {
+            return None;
+        };
+        let cell = self.0.cell(unit)?;
+        Some(Arc::new(tutti_mod::AtomicTarget::with_mirror(
+            base, min, max, cell,
+        )))
     }
 }
 
@@ -222,8 +188,8 @@ pub struct ModTargetResolver<'w, 's> {
 }
 
 impl ModTargetResolver<'_, '_> {
-    /// The accumulator for `param` on `entity`, or `None` if nothing on this
-    /// entity exposes it.
+    /// Returns the accumulator for `param` on `entity`, or `None` if nothing
+    /// on this entity exposes it.
     ///
     /// Three kinds of target, tried in order:
     ///
@@ -240,9 +206,8 @@ impl ModTargetResolver<'_, '_> {
     ///    [`ModParamsHandle`] captured when the node was inserted.
     ///
     /// `None` covers several ordinary situations — the entity has no graph node
-    /// yet (a node materialises a frame after its entity), its node type was not
-    /// registered when the node was inserted, or that type does not expose this
-    /// param. A route that
+    /// yet (a node materialises a frame after its entity), its node has no
+    /// params, or its `ParamSet` does not hold this one. A route that
     /// cannot resolve is skipped and retried on the next rebuild rather than
     /// logged.
     pub fn resolve(
@@ -293,7 +258,7 @@ impl ModTargetResolver<'_, '_> {
         )))
     }
 
-    /// The shared [`ModBus`] a resolved target is registered on.
+    /// Returns the shared [`ModBus`] a resolved target is registered on.
     ///
     /// The one bus [`ModBusRes`] holds — see it for why a second would leave the
     /// driver dispatching into accumulators nothing reads.

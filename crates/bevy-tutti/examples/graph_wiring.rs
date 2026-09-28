@@ -17,7 +17,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::prelude::*;
-// `AudioUnit` is not imported here: the prelude carries it, because
+// `GraphNode` is not imported here: the prelude carries it, because
 // `spawn_audio_node` is generic over it and a host needs to name it.
 use tutti_core::transport::Transport;
 use tutti_core::{Hz, Q};
@@ -76,7 +76,7 @@ fn build_chain(mut commands: Commands) {
     // `spawn_audio_node` adds the unit and binds an entity to it. The node is
     // unwired: it renders nothing until something declares it as a source.
     let osc = commands
-        .spawn_audio_node(Osc::saw(Hz(110.0)))
+        .spawn_audio_node(ForkByClone(Osc::saw(Hz(110.0))))
         .insert(Label("osc"))
         .id();
 
@@ -94,7 +94,7 @@ fn build_chain(mut commands: Commands) {
     // A stereo pair fed from the same mono filter — `with` sets one port at a
     // time, so an asymmetric chain is just two different declarations.
     let out = commands
-        .spawn_audio_node(Through::new(ChannelLayout::STEREO))
+        .spawn_audio_node(ForkByClone(Through::new(ChannelLayout::STEREO)))
         .insert((
             Label("out"),
             PortSources::silent()

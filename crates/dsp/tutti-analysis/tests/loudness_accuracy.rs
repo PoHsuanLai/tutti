@@ -11,7 +11,7 @@
 //! implementation) lives in `examples/verify_analysis.py`.
 //!
 //! Confirmed to fail against a meter with the sample rate hardcoded to 48 kHz —
-//! the defect `LoudnessConfig` was introduced to make unrepresentable.
+//! the defect `LoudnessConfig` makes unrepresentable.
 
 use tutti_analysis::{measure_loudness, ChannelLayout, LoudnessConfig};
 use tutti_core::SampleRate;

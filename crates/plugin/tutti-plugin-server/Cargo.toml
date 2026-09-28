@@ -2,7 +2,7 @@
 name = "tutti-plugin-server"
 version = "0.0.1"
 edition = "2021"
-description = "Plugin server process for tutti-plugin - hosts VST2, VST3, CLAP plugins in isolation"
+description = "The plugin-server subprocess for tutti-plugin: hosts one VST2, VST3, CLAP or AU plugin in isolation"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
@@ -16,7 +16,7 @@ path = "src/main.rs"
 [features]
 default = ["vst2", "vst3", "clap", "au"]
 
-# VST2 support (requires VST SDK; loader lives in `tutti-vst2-host` sibling crate)
+# VST2 support (loader lives in the `tutti-vst2-host` sibling crate)
 vst2 = ["dep:tutti-vst2-host"]
 
 # VST3 support

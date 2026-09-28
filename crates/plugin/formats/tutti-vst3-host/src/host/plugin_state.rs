@@ -57,10 +57,10 @@ pub(super) struct PluginInterfaces {
     /// host never auto-applies it (matches JUCE — the caller drives any migration
     /// flow).
     pub remap_param_id: Option<ComPtr<IRemapParamID>>,
-    /// Resolve a well-known parameter "function name" (Wet/Dry mix, master
+    /// Resolves a well-known parameter "function name" (Wet/Dry mix, master
     /// volume, …) to its `ParamID`. Controller extension; read accessor.
     pub parameter_function_name: Option<ComPtr<IParameterFunctionName>>,
-    /// Map the plugin's physical UI controls (X/Y movement, pressure) to the
+    /// Maps the plugin's physical UI controls (X/Y movement, pressure) to the
     /// note-expression dimensions they drive. Controller extension; read
     /// accessor.
     pub physical_ui_mapping: Option<ComPtr<INoteExpressionPhysicalUIMapping>>,
@@ -70,7 +70,7 @@ pub(super) struct PluginInterfaces {
     /// Whether the plugin supports offline/prefetch processing. Processor
     /// extension; read accessor.
     pub prefetchable_support: Option<ComPtr<IPrefetchableSupport>>,
-    /// Report downstream presentation latency to the plugin. Processor
+    /// Reports downstream presentation latency to the plugin. Processor
     /// extension; host→plugin setter.
     pub audio_presentation_latency: Option<ComPtr<IAudioPresentationLatency>>,
 }
@@ -91,8 +91,7 @@ pub(super) struct PluginInterfaces {
 // inside the plugin, which no signature on this side would catch. The
 // `tutti_plugin_types::assert_main_thread()` guard at the top of each such
 // method is what enforces the single-threaded discipline the spec requires;
-// `Sync` only exists so `Vst3Loaded` can satisfy the `Send + Sync` bound that
-// fundsp's `dyn AudioUnit` imposes on the audio path.
+// `Sync` rests on that discipline, not on the interfaces being thread-safe.
 unsafe impl Send for PluginInterfaces {}
 unsafe impl Sync for PluginInterfaces {}
 
@@ -152,8 +151,9 @@ pub(super) enum EditorState {
 //
 // `Open` is reachable only through `open_editor`, which asserts the main
 // thread, so the view is *created* there and every subsequent use is gated the
-// same way. The one deliberate exception is `Drop`: the fundsp graph can
-// release the instance on the audio thread, so `close_editor_unchecked` runs
+// same way. The one deliberate exception is `Drop`: it has no main-thread
+// guarantee (an owner may drop the instance on any thread), so
+// `close_editor_unchecked` runs
 // `detach_view` without the assert rather than panicking off it. That is a
 // known, accepted deviation from the spec's UI-thread rule and is documented
 // at both `close_editor_unchecked` and `Vst3Loaded::drop` — it is not

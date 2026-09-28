@@ -17,9 +17,9 @@
 //!
 //! **It does not own units.** A node is added by
 //! [`spawn_audio_node`](super::SpawnAudioNode) / `insert_audio_node` and removed
-//! by the `On<Remove, AudioNode>` observer, exactly as before. The value names
+//! by the `On<Remove, AudioNode>` observer. The value names
 //! nodes by [`NodeKey`] and carries a spec describing each one's *shape*
-//! (widths, latency, tail) — never a `Box<dyn AudioUnit>`, and never a catalog
+//! (widths, latency, tail) — never a boxed node, and never a catalog
 //! id it could be rebuilt from.
 //!
 //! That split is forced by what a unit is: live state a host built, not a
@@ -31,20 +31,18 @@
 //! # Nothing derived is in the graph
 //!
 //! PDC is the compiler's: each commit's plan delays the early paths, and no
-//! node is spliced in to do it (before design doc 013's PR 13, `Net` had
-//! compensation delay nodes with no entity, which the value had to be kept
-//! apart from). So every node in the graph is one a host inserted, and every
-//! edge one the value or a host wrote.
+//! node is spliced in to do it. So every node in the graph is one a host
+//! inserted, and every edge one the value or a host wrote.
 //!
 //! # Where the shape comes from
 //!
 //! Widths, latency and tail are read off the editor's shapes — probed from
 //! the **live unit** when it was inserted — because that is the only place
 //! they exist. A node's arity is not authored
-//! anywhere in the ECS: `spawn_audio_node` takes a `U: AudioUnit`, and the four
-//! sites that push a unit directly (soundfont promotion, plugin load, the
-//! audio-rate chain, the mod-source LFO) take one already built. The unit is the
-//! sole author of its own shape.
+//! anywhere in the ECS: `spawn_audio_node` takes an `N: GraphNode`, and the
+//! sites that insert a node directly (soundfont promotion, plugin load, the
+//! modulation sources) take one already built. The node is the sole author of
+//! its own shape.
 //!
 //! Every one of those routes ends in an `AudioNode` insert — that component's
 //! presence is what despawn, MIDI unregistration and engine binding key on — so
@@ -64,9 +62,8 @@ use super::{AudioGraphRes, GraphSource};
 
 /// The catalog id every entity-bound node carries.
 ///
-/// The value's `kind` is what a [`Catalog`](tutti_core::topology::Catalog)
-/// dispatches on when *building* a unit. Nothing in this adapter builds units
-/// from a value — a unit arrives already boxed, from a host that owns it — so
+/// A value's `kind` is what a catalog would dispatch on when *building* a
+/// unit from it. Nothing in this adapter builds units from a value — a unit arrives already boxed, from a host that owns it — so
 /// there is no kind to dispatch on, and inventing one per node type here would
 /// be a second, disagreeing name for something the host already knows.
 ///
@@ -82,12 +79,14 @@ pub const ENTITY_NODE_KIND: &str = "bevy-tutti:entity";
 /// schedules between `Spawn` and `Compensate` — after [`apply`] has brought the
 /// engine into line with it, and by nothing else. Read by tests, and by
 /// anything wanting to ask a question about the graph without a runtime in
-/// hand:
-/// [`tutti_types::latency::plan`] over it is the fold the graph's plans
-/// compensate by, for a graph whose every port the ECS declares (a port a host
-/// wired by hand is not in it; see [`disagreements`]), and
-/// [`Topology::validate`](tutti_types::graph::Topology::validate) reports every
-/// structural fault at once.
+/// hand: [`Topology::validate`](tutti_types::graph::Topology::validate)
+/// reports every structural fault at once.
+///
+/// It holds only the audio edges and outputs the ECS declares: no port a host
+/// wired by hand, and no event or param-modulation sources. So
+/// [`tutti_types::latency::plan`] over it is only an approximation of the
+/// graph's compensation; for the figure the graph's plans compensate by, use
+/// [`AudioGraphRes::latency_plan`], which folds over the whole graph spec.
 ///
 /// It is **not** what writes the graph, and not a cache the engine is derived
 /// from. Each rebuild builds a fresh value from the declarations, and
@@ -99,12 +98,12 @@ pub const ENTITY_NODE_KIND: &str = "bevy-tutti:entity";
 pub struct LiveGraph(Topology);
 
 impl LiveGraph {
-    /// The graph as of the last wire pass.
+    /// Returns the topology as of the last wire pass.
     pub fn topology(&self) -> &Topology {
         &self.0
     }
 
-    /// Replace it. [`rebuild`](super::wire::rebuild)'s to call; exposed for a
+    /// Replaces it. [`rebuild`](super::wire::rebuild)'s to call; exposed for a
     /// host driving the rebuild itself.
     pub fn set(&mut self, topology: Topology) {
         self.0 = topology;
@@ -117,7 +116,7 @@ impl LiveGraph {
 /// `NodeKey` is a stable identity chosen by the topology's author. Reusing the
 /// bits rather than allocating a parallel numbering means there is no second
 /// map to keep honest — the same reason [`PortSource::Node`] names an entity
-/// rather than a `NodeId`.
+/// rather than a `NodeKey`.
 pub fn key_of(entity: Entity) -> NodeKey {
     NodeKey(entity.to_bits())
 }
@@ -127,11 +126,11 @@ pub fn entity_of(key: NodeKey) -> Entity {
     Entity::from_bits(key.0)
 }
 
-/// Build the topology the ECS currently declares.
+/// Builds the topology the ECS currently declares.
 ///
 /// Widths, latency and tail come from the **live unit**, as the editor probed
 /// it at insert — the only place they exist today. A node's arity is not authored
-/// anywhere in the ECS: `spawn_audio_node` takes a `U: AudioUnit` and the four
+/// anywhere in the ECS: `spawn_audio_node` takes an `N: GraphNode` and the four
 /// direct-`add` sites take an already-built unit, so the unit is the sole
 /// author of its own shape.
 ///
@@ -188,15 +187,10 @@ pub fn build(
     // its `Vec` reaches: a channel past its length is declared silent. Empty
     // declares nothing, and the value then carries no outputs at all.
     //
-    // It used to stop at the declaration's length, reading a shorter `Vec` as
-    // "undeclared". That made a shrink impossible to express: the channel the
-    // host dropped kept its last source, since nothing declared it any more
-    // and so nothing wrote it, and the value — one channel short of the root —
-    // folded to a different latency plan from the engine it had just been
-    // applied to, which is what tripped `rebuild`'s consistency check. A value
-    // as wide as the root is also what makes `LiveGraph` answer the questions
-    // its docs promise: `latency::plan` over it is the graph's fold only when
-    // every output the graph has is in it.
+    // Stopping at the declaration's length (a shorter `Vec` read as
+    // "undeclared") would make a shrink impossible to express: the channel the
+    // host dropped would keep its last source, since nothing would declare it
+    // any more and so nothing would write it.
     //
     // As wide as the root, not as the declaration: a longer declaration has
     // already widened the root by the time this runs (`rebuild`), and a
@@ -222,7 +216,7 @@ pub fn build(
     topology
 }
 
-/// Bring the engine into line with the value, and say whether anything moved.
+/// Brings the engine into line with the value, and says whether anything moved.
 ///
 /// **The value is the truth for edges and outputs; this is the only place it
 /// reaches the runtime.** Two calls — `AudioGraphRes::set_source`, `set_output_source`
@@ -239,11 +233,10 @@ pub fn build(
 /// that moves nothing leaves the graph clean (no `GraphDirty`, no commit, no
 /// compile).
 ///
-/// It is also what closes the hazard. An imperative engine-side write leaves the
-/// declaration — and therefore the value — untouched, so `want == live` and the
-/// old loop never ran. Now the value is compared against the *engine*, so the
-/// port is found and rewritten. See
-/// [`repair`](super::wire::rebuild)'s caller for the frame this takes.
+/// It is also what repairs an imperative engine-side write. Such a write leaves
+/// the declaration, and therefore the value, untouched, so `want == live`;
+/// comparing the value against the *engine* finds the port and rewrites it.
+/// See [`rebuild`](super::wire::rebuild) for the frame this takes.
 ///
 /// # What it does not touch
 ///
@@ -352,18 +345,12 @@ fn lower(source: Source, ids: &BTreeMap<NodeKey, AudioNode>) -> Option<GraphSour
 /// the engine holds `Zero` there would be asserting the opposite of what
 /// `wire`'s docs promise.
 ///
-/// **Not compared: the latency plan.** It used to be, over the whole graph,
-/// and that was wrong for exactly the graphs the contract above allows: a
-/// host that wires the master itself (an empty `MasterSources`), or a port a
-/// short `PortSources` leaves to it, from a latent node, gives a graph whose
-/// plan the value — which holds only the declared ports — cannot fold to, and
-/// the check panicked a debug build over a graph that was right. Restricted to
-/// the declared ports, the fold is a function of the value's node specs (read
-/// off the same shapes the graph holds) and of the declared edges and
-/// outputs, so it agrees exactly when the two comparisons above find
-/// nothing: it could not fail on its own. What the plan compensates is pinned
-/// against the plan the commit sends (`latency`'s
-/// `publishes_the_compensation_its_commit_sends`).
+/// **Not compared: the latency plan.** The value holds only the declared
+/// ports, so a graph a host partly wired itself (an empty `MasterSources`, or
+/// ports a short `PortSources` leaves to it) has a plan the value cannot fold
+/// to, although the graph is right. Restricted to the declared ports, the
+/// fold agrees exactly when the two comparisons above find nothing, so it
+/// would add no check of its own.
 pub fn disagreements(
     want: &Topology,
     graph: &AudioGraphRes,

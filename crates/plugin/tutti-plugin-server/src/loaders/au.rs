@@ -1069,8 +1069,8 @@ mod tests {
     ///
     /// AUDistortion is the fixture because it is measurably grouped: macOS 15.6
     /// reports its 22 parameters across 7 named clumps ("Delay", "Ring
-    /// Modulation", "Decimation", …). Before this mapping every one of them
-    /// arrived ungrouped, so the whole unit rendered as one flat list.
+    /// Modulation", "Decimation", …); without the mapping the whole unit would
+    /// render as one flat list.
     ///
     /// Two halves, and the second is the one worth having: parameters that
     /// declare a clump get its **name**, and the group is never the clump
@@ -1531,7 +1531,7 @@ mod tests {
         assert_eq!(cutoff.to_plain(0.0), 10.0);
         assert_eq!(cutoff.to_plain(1.0), 22_050.0);
         assert_eq!(cutoff.to_plain(0.5), 11_030.0);
-        // The old code sent 1.0 here — 1 Hz, an inaudible filter.
+        // Not 1.0 — 1 Hz, an inaudible filter.
         assert_ne!(cutoff.to_plain(1.0), 1.0);
 
         // Negative minima (AUDelay Feedback is [-99.9, 99.9]) must map too; the

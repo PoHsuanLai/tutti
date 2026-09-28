@@ -6,8 +6,9 @@
 //!
 //! CLAP enumerates audio ports and parameters as a `count()` / `get(index)`
 //! pair, and describes no sparse index space — so `get(i)` answering `false` for
-//! some `i < count()` is a plugin bug the host still has to survive. Both sites
-//! used `filter_map`, which **closes the gap**, and the two consequences differ:
+//! some `i < count()` is a plugin bug the host still has to survive. A
+//! `filter_map` at either site **closes the gap**, and the two consequences
+//! differ:
 //!
 //! - **Ports.** The derived port list is positional: `refill_port_buffers`
 //!   walks it in order, advancing a flat pointer offset by each entry's channel
@@ -18,11 +19,11 @@
 //! - **Parameters.** Worse. A dropped entry renumbers nothing and the list
 //!   merely looks short, but `activate` caches each parameter's plain
 //!   `min`/`max` to denormalize incoming automation. A parameter the hole
-//!   dropped is absent from that cache, so its automation takes the
-//!   pass-through arm and arrives **un-denormalized**: a raw `0.25` handed to a
+//!   dropped is absent from that cache, so its automation would take the
+//!   pass-through arm and arrive **un-denormalized**: a raw `0.25` handed to a
 //!   parameter whose range is `100..1100`, where the plugin expected `350`.
 //!
-//! Both sites now stop at the hole, keeping each list a true **prefix** of the
+//! Both sites stop at the hole, keeping each list a true **prefix** of the
 //! plugin's — every entry was read at its own index, so nothing is
 //! misattributed, and a parameter the host omits is one it never claims a range
 //! for. These tests pin the observable half (index fidelity and correct
@@ -269,19 +270,19 @@ fn hole_in_params_still_denormalizes_surviving_params() {
 /// Automation for the parameter the hole *itself* dropped must not reach the
 /// plugin un-denormalized.
 ///
-/// This is the residual half of Bug 2, and it could not be fixed from the
-/// enumeration side. `get_info(param_index)` is the only
-/// route CLAP gives a host from an index to a `param_id` (`get_value`,
-/// `value_to_text` and the event structs all take an id the host must already
-/// know). A parameter the plugin refuses to describe is therefore
+/// This is the residual half of the parameter hole, and it cannot be handled
+/// from the enumeration side. `get_info(param_index)` is the only route CLAP
+/// gives a host from an index to a `param_id` (`get_value`, `value_to_text` and
+/// the event structs all take an id the host must already know). A parameter the plugin refuses to describe is therefore
 /// *unidentifiable*: the host cannot learn its id, so it cannot learn its
 /// range, and no amount of re-querying or restructuring the enumeration
 /// recovers it.
 ///
-/// So the delivery path is where it was fixed. `add_param_changes` iterates the
-/// **caller's** automation, not the host's parameter list, so a param absent
-/// from `param_ranges` was not skipped — it took the `None` pass-through arm
-/// and the raw normalized `0..1` reached a plugin expecting `100..1100`.
+/// So the delivery path is where it is handled. `add_param_changes` iterates
+/// the **caller's** automation, not the host's parameter list, so a param absent
+/// from `param_ranges` is not skipped by the enumeration — without a check it
+/// would take the `None` pass-through arm and the raw normalized `0..1` would
+/// reach a plugin expecting `100..1100`.
 /// Truncating the enumeration removes the parameter from the host's list but
 /// does nothing about that delivery.
 ///
@@ -371,8 +372,8 @@ fn hole_in_params_never_misattributes_a_range() {
 /// With a hole at index 0, the host must not report the parameters that follow
 /// it as though the enumeration were intact.
 ///
-/// This pins the truncation directly. Under the old `filter_map` the host
-/// returned ids `[4242, 9]` — a list with no hole in it, indistinguishable from
+/// This pins the truncation directly. A `filter_map` would return ids
+/// `[4242, 9]` — a list with no hole in it, indistinguishable from
 /// a plugin that genuinely has two parameters, and with `Cutoff`'s range gone
 /// from the cache without a trace.
 #[test]
@@ -416,17 +417,16 @@ fn hole_in_params_does_not_promote_later_params() {
 }
 
 // ===========================================================================
-// Bug 1 — the audio-port hole.
+// The audio-port hole.
 // ===========================================================================
 
 /// With a hole at port index 0 and a `[2, 1]` layout, the host must not present
 /// the aux port's geometry as though it were the main port's.
 ///
-/// This is the misrouting failure in its clearest form. Under the old
-/// `filter_map` the host derived `inputs = [1]`: one port, one channel — the
-/// *aux* port's width, sitting at the main port's index. Every buffer the host
-/// then builds for "port 0" is a mono buffer where the plugin's port 0 is
-/// stereo.
+/// This is the misrouting failure in its clearest form. A `filter_map` would
+/// derive `inputs = [1]`: one port, one channel — the *aux* port's width,
+/// sitting at the main port's index. Every buffer the host then built for
+/// "port 0" would be mono where the plugin's port 0 is stereo.
 #[test]
 fn hole_in_audio_ports_does_not_shift_later_ports() {
     let probe = Probe::acquire();

@@ -8,11 +8,10 @@
 //! types wrapping one stereo core; they are now one [`ModDelayNode`] and a
 //! [`ModDelayConfig`], at any width.
 
-use tutti_core::{Arc, AtomicF32, MAX_BUFFER_SIZE};
-use tutti_core::{
-    AudioUnit, BufferMut, BufferRef, ChannelLayout, Feedback, Hz, Mix, Phase, PhaseIncrement,
-    SampleRate, Seconds, SignalFrame,
-};
+use tutti_core::{Arc, AtomicF32};
+use tutti_core::{ChannelLayout, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate, Seconds};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, TimeModMix};
 use crate::delay::{DelayLine, InterpolationMode};
@@ -34,7 +33,7 @@ pub struct ModDelayConfig {
     pub max_delay: Seconds,
     /// How far each channel's sweep is staggered from the previous channel's,
     /// in LFO cycles: channel `c` runs `c × channel_phase_offset` ahead of
-    /// channel 0, wrapped. At width 2 this is the old L/R offset exactly.
+    /// channel 0, wrapped. At width 2 this is the L/R offset.
     /// Replace the whole set with [`ModDelayNode::with_phase_offsets`].
     pub channel_phase_offset: PhaseIncrement,
     /// The range [`ModDelayNode::set_depth`] clamps the sweep depth into.
@@ -102,22 +101,33 @@ struct ModDelayControls {
 /// channel by a phase offset (see [`ModDelayConfig::channel_phase_offset`] and
 /// [`with_phase_offsets`](Self::with_phase_offsets)). At width 2 with the
 /// [`CHORUS`](ModDelayConfig::CHORUS) or [`FLANGER`](ModDelayConfig::FLANGER)
-/// preset it renders exactly what the old stereo `ChorusNode` / `FlangerNode`
-/// did.
+/// preset it is a stereo chorus or flanger.
 ///
 /// Rate ([`Hz`]), depth ([`Seconds`] of delay sweep), [`Feedback`] and [`Mix`]
 /// are live [`Param`](tutti_core::Param)s shared across clones, all read **once
 /// per block**. The LFO's phases for the block are computed once, into a block
 /// buffer every channel reads; depth, feedback and mix ramp across the block
-/// when they moved (a depth step would jump the delay time — a click). `tick`
-/// is a block of one.
+/// when they moved (a depth step would jump the delay time — a click). A
+/// block of one takes a change whole.
 ///
 /// **Depth is denominated in seconds of delay, not a fraction**: it is a
 /// duration added to the base delay, unlike the phaser's unitless depth.
+///
+/// # In a graph
+///
+/// A graph node ([`IntoNode`]), `N` in and `N` out, with zero latency: the
+/// modulated delay is the effect's sound, not processing latency, and PDC would
+/// otherwise delay every other path by the base delay. Inserted, its controls
+/// are a [`ParamSet`] over rate ([`UnitParam::Rate`]), depth
+/// ([`UnitParam::Depth`]), feedback ([`UnitParam::Feedback`]) and mix
+/// ([`UnitParam::Wet`]); a fork starts from the values last set through it. The
+/// graph prepares it at the device rate, which sizes the lines, before its
+/// first block. Its tail is [`Tail::Unknown`] (a recirculating line), so it is
+/// never skipped.
 pub struct ModDelayNode {
     config: ModDelayConfig,
     /// One line per channel; `len()` is the audio width. Built at construction
-    /// and on `set_sample_rate` — never in `tick`/`process`.
+    /// and on `prepare` — never in `process`.
     delays: Vec<DelayLine>,
     /// Per-channel LFO phase offset; same length as `delays`.
     phase_offsets: Vec<PhaseIncrement>,
@@ -127,6 +137,9 @@ pub struct ModDelayNode {
     /// `None` until the first block (and after `reset`): the first block starts
     /// on its targets instead of ramping in from nothing.
     last: Option<ModDelayControls>,
+    /// The block's LFO phases: scratch, sized at `prepare` for the graph's
+    /// maximum block.
+    phases: Vec<Phase>,
 }
 
 impl ModDelayNode {
@@ -134,21 +147,10 @@ impl ModDelayNode {
     /// `config` and starting at its defaults. Channel `c` sweeps
     /// `c × config.channel_phase_offset` ahead of channel 0.
     ///
-    /// Allocates its delay lines, so build before the node goes live.
-    ///
-    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**, and both
-    /// rate-dependent quantities skew together if
-    /// [`AudioUnit::set_sample_rate`] is not called before the first `process`:
-    /// the lines are *allocated* in samples from `max_delay`, and the LFO's
-    /// phase increment is its rate divided by the sample rate. At 48 kHz an
-    /// uncorrected node sweeps 8.8% too little delay 8.8% too slowly — a chorus
-    /// that is simply shallower and lazier than configured, a flanger whose
-    /// notches all sit higher. Nothing reports it. `set_sample_rate` rebuilds
-    /// the lines and so reallocates. See the crate-level "born at a placeholder
-    /// rate" section.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
+    /// Allocates its delay lines, so build before the node goes live. Both
+    /// rate-dependent quantities — the lines, *allocated* in samples from
+    /// `max_delay`, and the LFO's phase increment — take the rate
+    /// [`Node::prepare`] hands it, which rebuilds the lines.
     pub fn new(channels: impl Into<ChannelLayout>, config: ModDelayConfig) -> Self {
         let n = usize::from(channels.into().count()).max(1);
         Self {
@@ -168,6 +170,7 @@ impl ModDelayNode {
             controls: TimeModMix::new(config.depth, config.feedback, config.mix),
             sample_rate: SampleRate::DEFAULT,
             last: None,
+            phases: Vec::new(),
             config,
         }
     }
@@ -263,15 +266,15 @@ impl ModDelayNode {
         self.controls.mix.store(Mix::new_clamped(mix.into().get()));
     }
 
-    /// The one render kernel behind `tick` and `process`. `size` is at most
-    /// [`MAX_BUFFER_SIZE`], which `AudioUnit::process` guarantees.
+    /// The render kernel behind `process`, over `size` frames. `size` is at
+    /// most the phase scratch's length.
     fn render(
         &mut self,
         size: usize,
         x: impl Fn(usize, usize) -> f32,
         y: impl FnMut(usize, usize, f32),
     ) {
-        debug_assert!(size <= MAX_BUFFER_SIZE);
+        debug_assert!(size <= self.phases.len());
         // Every control is read here, once, for the whole block.
         let (depth, fb, mix) = self.controls.load();
         let target = ModDelayControls {
@@ -286,13 +289,13 @@ impl ModDelayNode {
 
         // The LFO as a block buffer: the rate is read once and every channel
         // reads the same phases.
-        let mut phases = [Phase::START; MAX_BUFFER_SIZE];
-        self.lfo.fill_block(self.sample_rate, &mut phases[..size]);
+        self.lfo
+            .fill_block(self.sample_rate, &mut self.phases[..size]);
 
         let lines = SweptLines {
             delays: &mut self.delays,
             offsets: &self.phase_offsets,
-            phases: &phases[..size],
+            phases: &self.phases[..size],
             // Narrowed once: the delay positions feed an interpolated read, so
             // they keep their fraction rather than going through
             // `Seconds::to_samples`.
@@ -336,8 +339,8 @@ impl SweptLines<'_> {
         let base_delay = self.base_delay * sr;
         for (c, (line, &offset)) in self.delays.iter_mut().zip(self.offsets).enumerate() {
             for (i, &phase) in self.phases.iter().enumerate() {
-                // Channel 0's offset is zero, and the old left channel read the
-                // phase directly; `offset_by(0)` is the same value.
+                // Channel 0's offset is zero; `offset_by(0)` returns the phase
+                // unchanged.
                 let lfo = phase.offset_by(offset).to_radians().get().sin();
                 let delay = (base_delay + lfo * depth_at(i) * sr).max(1.0);
                 let input = x(c, i);
@@ -350,21 +353,38 @@ impl SweptLines<'_> {
     }
 }
 
-impl AudioUnit for ModDelayNode {
-    fn inputs(&self) -> usize {
-        self.delays.len()
+impl Node for ModDelayNode {
+    fn shape(&self) -> Shape {
+        let width = ChannelLayout::from_count(self.delays.len() as u16);
+        Shape::audio(width, width).with_tail(Tail::Unknown)
     }
 
-    fn outputs(&self) -> usize {
-        self.delays.len()
+    fn prepare(&mut self, p: &Prepare) {
+        self.sample_rate = p.sample_rate();
+        for d in &mut self.delays {
+            *d = DelayLine::from_seconds(self.config.max_delay, self.sample_rate);
+        }
+        self.phases = vec![Phase::START; p.max_block().get()];
     }
 
-    /// Detach every control cell this node reads (see `Param::detach`), so
-    /// a fork renders the controls as they were when it was taken, not the
-    /// live knob moves made while it runs. Values are kept.
-    fn isolate(&mut self) {
-        self.lfo.detach();
-        self.controls.detach();
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let size = io.frames();
+        let (inputs, mut outputs) = io.split();
+        // A graph never hands a block past its `MaxBlock`, which the scratch
+        // is sized for, so this is one call; a node driven by hand with a
+        // longer block renders it in scratch-sized pieces.
+        let step = self.phases.len().max(1);
+        let mut at = 0;
+        while at < size {
+            let n = step.min(size - at);
+            self.render(
+                n,
+                |c, i| inputs.get(c)[at + i],
+                |c, i, v| outputs.get(c)[at + i] = v,
+            );
+            at += n;
+        }
+        Status::Modified
     }
 
     fn reset(&mut self) {
@@ -374,80 +394,36 @@ impl AudioUnit for ModDelayNode {
         self.lfo.reset_phase();
         self.last = None;
     }
+}
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate;
-        for d in &mut self.delays {
-            *d = DelayLine::from_seconds(self.config.max_delay, sample_rate);
-        }
+impl ParamNode for ModDelayNode {
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Rate, self.lfo.rate.as_atomic())
+            .param(UnitParam::Depth, self.controls.depth.as_atomic())
+            .param(UnitParam::Feedback, self.controls.feedback.as_atomic())
+            .param(UnitParam::Wet, self.controls.mix.as_atomic())
+            .build()
     }
 
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.render(1, |c, _| input[c], |c, _, v| output[c] = v);
+    /// A clone with every control cell detached (at its value now), its
+    /// lines cleared and its LFO back at the start.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.lfo.detach();
+        fork.controls.detach();
+        Node::reset(&mut fork);
+        fork
     }
+}
 
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        if size == 0 {
-            return;
-        }
-        self.render(
-            size,
-            |c, i| input.at_f32(c, i),
-            |c, i, v| output.set_f32(c, i, v),
-        );
-    }
+/// Inserted with its [`ParamSet`] as its controls and a fork that starts
+/// from the values last set through it ([`tutti_graph::param_parts`]).
+impl IntoNode for ModDelayNode {
+    type Controls = ParamSet;
 
-    fn set(&mut self, setting: tutti_core::Setting) {
-        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
-            match param {
-                tutti_core::UnitParam::Rate => self.set_rate(value),
-                tutti_core::UnitParam::Depth => self.set_depth(value),
-                tutti_core::UnitParam::Feedback => self.set_feedback(value),
-                tutti_core::UnitParam::Wet => self.set_mix(value),
-                _ => {}
-            }
-        }
-    }
-
-    fn get_id(&self) -> u64 {
-        // The flanger preset keeps the flanger's id; everything else the
-        // chorus's. Only the render hash reads it.
-        if self.config == ModDelayConfig::FLANGER {
-            crate::node_id::FLANGER_ID
-        } else {
-            crate::node_id::CHORUS_ID
-        }
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    /// Zero latency: the modulated delay is the effect's sound, not processing
-    /// latency, and PDC would otherwise delay every other path by the base
-    /// delay (design doc 013, D1; the full argument is on
-    /// [`DelayLineNode`](crate::DelayLineNode)'s `route`). `distort`, because a
-    /// swept delay has no fixed frequency response.
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(self.delays.len());
-        for c in 0..self.delays.len() {
-            out.set(c, input.at(c).distort(0.0));
-        }
-        out
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
-            + self
-                .delays
-                .iter()
-                .map(|d| d.buffer.len() * core::mem::size_of::<f32>())
-                .sum::<usize>()
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
 
@@ -461,6 +437,7 @@ impl Clone for ModDelayNode {
             controls: self.controls.clone(),
             sample_rate: self.sample_rate,
             last: self.last,
+            phases: self.phases.clone(),
         }
     }
 }
@@ -468,37 +445,81 @@ impl Clone for ModDelayNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{change_between_blocks, noise, tick_block};
+    use crate::test_support::{
+        change_between_node_blocks, drive_frames, noise, prepared as at_48k,
+    };
+    use tutti_graph::contract::assert_param_fork;
 
-    const SR: SampleRate = SampleRate(48_000.0);
+    /// A fork starts from the values last set through the node's
+    /// `ParamSet` and shares no cell with it (see
+    /// `tutti_graph::contract::assert_param_fork`).
+    ///
+    /// Mutation (run): drop `fork.lfo.detach()` in `fork_fresh` → "a live
+    /// write reached the fork" for `Rate`. Leave `Depth` out of `param_set`
+    /// → the address list below fails.
+    #[test]
+    fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
+        let node = ModDelayNode::flanger(ChannelLayout::STEREO);
+        assert_eq!(
+            node.param_set().params().collect::<Vec<_>>(),
+            [
+                UnitParam::Rate,
+                UnitParam::Depth,
+                UnitParam::Feedback,
+                UnitParam::Wet
+            ]
+        );
+        assert_param_fork(node);
+    }
 
-    fn at_48k(mut n: ModDelayNode) -> ModDelayNode {
-        n.set_sample_rate(SR);
-        n
+    /// A block longer than the prepared maximum (only a node driven by hand
+    /// gets one) renders as that block cut at the maximum: the phase scratch
+    /// is never overrun.
+    ///
+    /// Mutation (run): render the whole block in one `render` call → the
+    /// scratch slice `phases[..size]` panics out of range.
+    #[test]
+    fn a_block_past_the_prepared_maximum_renders_in_pieces() {
+        let x = noise(3, 300);
+        let mut long = tutti_graph::contract::prepared(
+            ModDelayNode::chorus(ChannelLayout::STEREO),
+            SampleRate(48_000.0),
+            128,
+        );
+        let got = tutti_graph::contract::drive(&mut long, SampleRate(48_000.0), &[&x, &x], &[]);
+        let mut cut = tutti_graph::contract::prepared(
+            ModDelayNode::chorus(ChannelLayout::STEREO),
+            SampleRate(48_000.0),
+            128,
+        );
+        let mut want = vec![Vec::new(), Vec::new()];
+        for piece in [0..128, 128..256, 256..300] {
+            let x = &x[piece];
+            let o = tutti_graph::contract::drive(&mut cut, SampleRate(48_000.0), &[x, x], &[]);
+            for (w, o) in want.iter_mut().zip(o) {
+                w.extend(o);
+            }
+        }
+        assert_eq!(got, want);
     }
 
     #[test]
     fn test_chorus_passthrough_dry() {
-        let chorus = at_48k(ModDelayNode::chorus(ChannelLayout::STEREO));
+        let mut chorus = at_48k(ModDelayNode::chorus(ChannelLayout::STEREO));
         chorus.set_mix(0.0);
-        let mut chorus = chorus;
-        let mut out = [0.0f32; 2];
-        chorus.tick(&[0.5, -0.3], &mut out);
-        assert!((out[0] - 0.5).abs() < 0.001);
-        assert!((out[1] - (-0.3)).abs() < 0.001);
+        let out = drive_frames(&mut chorus, &[&[0.5], &[-0.3]]);
+        assert!((out[0][0] - 0.5).abs() < 0.001);
+        assert!((out[1][0] - (-0.3)).abs() < 0.001);
     }
 
     #[test]
     fn test_chorus_stereo_difference() {
         let mut chorus = at_48k(ModDelayNode::chorus(ChannelLayout::STEREO));
         chorus.set_mix(1.0);
-        let mut out = [0.0f32; 2];
-        let (mut l_sum, mut r_sum) = (0.0f64, 0.0f64);
-        for _ in 0..4410 {
-            chorus.tick(&[1.0, 1.0], &mut out);
-            l_sum += out[0] as f64;
-            r_sum += out[1] as f64;
-        }
+        let ones = [1.0f32; 4410];
+        let out = drive_frames(&mut chorus, &[&ones, &ones]);
+        let l_sum: f64 = out[0].iter().map(|&s| s as f64).sum();
+        let r_sum: f64 = out[1].iter().map(|&s| s as f64).sum();
         assert!(
             (l_sum - r_sum).abs() > 0.01,
             "Stereo channels should differ"
@@ -510,13 +531,10 @@ mod tests {
         let mut flanger = at_48k(ModDelayNode::flanger(ChannelLayout::STEREO));
         flanger.set_feedback(0.9);
         flanger.set_mix(1.0);
-        let mut out = [0.0f32; 2];
-        flanger.tick(&[1.0, 1.0], &mut out);
-        let mut max_output = 0.0f32;
-        for _ in 0..500 {
-            flanger.tick(&[0.0, 0.0], &mut out);
-            max_output = max_output.max(out[0].abs());
-        }
+        let mut x = [0.0f32; 501];
+        x[0] = 1.0;
+        let out = drive_frames(&mut flanger, &[&x, &x]);
+        let max_output = out[0][1..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(
             max_output > 0.01,
             "High feedback should sustain signal: {max_output}"
@@ -529,14 +547,12 @@ mod tests {
             at_48k(ModDelayNode::chorus(ChannelLayout::STEREO)),
             at_48k(ModDelayNode::flanger(ChannelLayout::STEREO)),
         ] {
-            let mut out = [0.0f32; 2];
-            for _ in 0..100 {
-                node.tick(&[1.0, 1.0], &mut out);
-            }
-            node.reset();
-            node.tick(&[0.0, 0.0], &mut out);
+            let ones = [1.0f32; 100];
+            drive_frames(&mut node, &[&ones, &ones]);
+            Node::reset(&mut node);
+            let out = drive_frames(&mut node, &[&[0.0], &[0.0]]);
             assert!(
-                out[0].abs() < 0.01,
+                out[0][0].abs() < 0.01,
                 "After reset, output should be near zero"
             );
         }
@@ -559,8 +575,8 @@ mod tests {
     #[test]
     fn a_mix_change_fades_across_the_next_block() {
         let x = noise(8, 128);
-        let run = change_between_blocks(
-            || at_48k(ModDelayNode::chorus(ChannelLayout::STEREO)),
+        let run = change_between_node_blocks(
+            || ModDelayNode::chorus(ChannelLayout::STEREO),
             |n| n.set_mix(0.0),
             &[&x[..64], &x[..64]],
             &[&x[64..], &x[64..]],
@@ -582,9 +598,9 @@ mod tests {
         let silent = [0.0f32; 2_048];
         let mut wide = at_48k(ModDelayNode::chorus(6usize));
         let ins: [&[f32]; 6] = [&x, &x, &x, &silent, &x, &x];
-        let wide_out = tick_block(&mut wide, &ins);
+        let wide_out = drive_frames(&mut wide, &ins);
         let mut stereo = at_48k(ModDelayNode::chorus(ChannelLayout::STEREO));
-        let stereo_out = tick_block(&mut stereo, &[&x, &x]);
+        let stereo_out = drive_frames(&mut stereo, &[&x, &x]);
         assert_eq!(wide_out[0], stereo_out[0], "channel 0 is the stereo left");
         assert_eq!(wide_out[1], stereo_out[1], "channel 1 is the stereo right");
         assert_eq!(
@@ -611,7 +627,7 @@ mod tests {
             ModDelayNode::chorus(ChannelLayout::STEREO)
                 .with_phase_offsets(&[PhaseIncrement(0.0), PhaseIncrement(0.0)]),
         );
-        let out = tick_block(&mut node, &[&x, &x]);
+        let out = drive_frames(&mut node, &[&x, &x]);
         assert_eq!(out[0], out[1]);
     }
 }

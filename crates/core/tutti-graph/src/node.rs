@@ -1,25 +1,21 @@
 //! The node contract: [`Node`], and everything its four methods name.
 //!
-//! Doc 013 §2. This is deliberately *smaller* than `tutti_node::AudioUnit`,
-//! and it sits beside it rather than replacing it — the [`Legacy`](crate::Legacy)
-//! adapter runs every existing `AudioUnit` through this trait unmodified.
+//! The contract is deliberately small:
 //!
-//! What it drops, and why each drop is safe:
-//!
-//! - **`tick`, `route`, `Signal`.** Latency is *declared* in [`Shape`], as a
-//!   [`Latency`] — a type a delay time cannot be passed as. `route` used one
-//!   `Signal::delay` for both musical delay and processing latency, which is
-//!   the D1–D3 defect class in doc 013.
-//! - **`as_any` / downcasts.** A node's control surface comes back *typed* from
-//!   [`IntoNode::into_node`], at insertion. Nothing needs to find a node again.
-//! - **`DynClone`.** Nothing clones a unit: the executor owns it, and a
-//!   recompile keeps it by key.
-//! - **The `S: Sample` generic.** Owner decision 2: `f32` only inside the
-//!   graph (see the crate docs on precision).
-//! - **The 64-frame block.** A node gets whatever block the executor was
-//!   prepared for, up to [`Prepare::max_block`], whole — sub-chunking at event
-//!   offsets is the node's job (doc 013 §4: an out-of-process plugin's declared
-//!   pipeline latency is only constant if it sees whole blocks).
+//! - **Latency is declared**, in [`Shape`], as a [`Latency`] — a type a
+//!   musical delay time cannot be passed as, so a delay is never mistaken for
+//!   processing latency by delay compensation.
+//! - **Controls are typed at insertion.** A node's control surface comes back
+//!   from [`IntoNode::into_node`] when it is inserted; nothing downcasts to
+//!   find a node again.
+//! - **Nothing clones a running unit**: the executor owns it, and a recompile
+//!   keeps it by key.
+//! - **`f32` only.** Every buffer is planar `f32` (see the crate docs on
+//!   precision).
+//! - **Whole blocks.** A node gets whatever block the executor was prepared
+//!   for, up to [`Prepare::max_block`], whole — sub-chunking at event offsets
+//!   is the node's job, which keeps an out-of-process plugin's declared
+//!   pipeline latency constant.
 
 use std::num::NonZeroU32;
 
@@ -44,8 +40,7 @@ pub const MAX_PORTS: usize = 64;
 /// What a node looks like from the outside: its ports, and the two figures the
 /// compiler folds over the graph.
 ///
-/// Returned by `&self` so asking costs nothing — fundsp's latency probe cloned
-/// the whole node to ask.
+/// Returned by [`Node::shape`], which takes `&self`, so asking costs nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shape {
     /// Audio input channels. In a [`Topology`](tutti_types::Topology) each
@@ -58,7 +53,7 @@ pub struct Shape {
     /// Event output ports.
     pub event_out: u16,
     /// The most events this node writes to **each** of its event output
-    /// ports in one block (doc 013 §4, "Events as ports"): the declared
+    /// ports in one block: the declared
     /// capacity every buffer downstream of the port is sized from, at
     /// compile and prepare time, so nothing on the audio thread allocates.
     /// `None` takes the executor's default
@@ -68,8 +63,8 @@ pub struct Shape {
     ///
     /// It is also the port's declared **rate** — at most this many events
     /// per [`MaxBlock`] frames — which is what a PDC delay or a feedback
-    /// FIFO on an edge from the port is sized from (`EventFifo`,
-    /// `src/kernels.rs`): events in flight in a delay of `len` frames are
+    /// FIFO on an edge from the port is sized from: events in flight in a
+    /// delay of `len` frames are
     /// at most `capacity × (⌈len / MaxBlock⌉ + 2)`.
     ///
     /// # Overflow: drop the newest, and count it
@@ -93,7 +88,7 @@ pub struct Shape {
     /// **Processing latency only** — frames the node buffers as a side effect
     /// (lookahead, FFT block, plugin pipeline). Never a musical delay: a
     /// 500 ms echo has latency zero, or PDC drags every parallel path 500 ms
-    /// late (defect D1 in doc 013). The type makes the mistake a compile
+    /// late. The type makes the mistake a compile
     /// error: a delay time is a `Samples` or a `Seconds`, not a [`Latency`].
     pub latency: Latency,
     /// Ring-out after the input stops. Also what the executor's silence skip
@@ -106,23 +101,14 @@ pub struct Shape {
     /// channel the input arrives *already in the output buffer*.
     pub in_place: bool,
     /// How finely the node honours the offsets of the events it is handed
-    /// (doc 013 §6 item 5). A declaration, not a request: the executor still
+    /// A declaration, not a request: the executor still
     /// hands every node its sorted events and whole block, and the compiler
     /// refuses an event edge that requires a finer resolution than its sink
     /// declares (see [`GraphSpec::require_resolution`](crate::GraphSpec::require_resolution)).
     pub event_resolution: Resolution,
-    /// Whether this node is a [`Legacy`](crate::Legacy) `AudioUnit`, which
-    /// may read time **out of band**: a shared timeline polled on every
-    /// 64-frame call rather than [`Env`]. A plan holding one
-    /// ([`Plan::has_legacy`](crate::Plan::has_legacy)) must be rendered in
-    /// blocks of at most [`LEGACY_CHUNK`](crate::LEGACY_CHUNK) with the
-    /// timeline moved between them, as `Net` rendered every node (see the
-    /// `legacy` module docs, `src/legacy.rs`). Set only by `Legacy`; a
-    /// native node reads [`Env`] and leaves it `false`.
-    pub legacy: bool,
     /// The params this node lets the graph modulate, in **port order** —
     /// the index [`Io::param`](crate::Io::param) and
-    /// [`Node::param_base`] take (design doc 013 item 6; see
+    /// [`Node::param_base`] take (see
     /// [`GraphSpec::connect_param`](crate::GraphSpec::connect_param)). A
     /// param declared here reads [`ParamInput::Base`](crate::ParamInput::Base)
     /// until something is connected to it, and the node must then answer
@@ -143,7 +129,7 @@ pub enum Resolution {
     /// Every event takes effect on its exact frame.
     Sample,
     /// Every event takes effect within `n - 1` frames of its exact frame,
-    /// in either direction (doc 013 §6). No chunk grid is assumed, so a node
+    /// in either direction. No chunk grid is assumed, so a node
     /// that renders in `n`-frame chunks on its own cursor, whatever its
     /// phase against the blocks, honours it. `n` is at least 1; `Frames(1)`
     /// promises what `Sample` does.
@@ -185,7 +171,6 @@ impl Shape {
             tail: Tail::None,
             in_place: false,
             event_resolution: Resolution::Sample,
-            legacy: false,
             params: ParamPorts::NONE,
         }
     }
@@ -291,22 +276,13 @@ impl Shape {
         self.params = ParamPorts::new(params);
         self
     }
-
-    /// This shape, marked [`legacy`](Self::legacy). `Legacy`'s; a native
-    /// node has no reason to call it.
-    #[must_use]
-    pub const fn with_legacy(mut self) -> Self {
-        self.legacy = true;
-        self
-    }
 }
 
 /// The longest block a node will ever be handed.
 ///
 /// Obtainable **only** from [`Prepare`], so a node's scratch is always sized
 /// from the same number the executor enforces on every [`Io`] — a node never
-/// needs a truncating clamp, and never has one to get wrong (doc 013 defect
-/// D4 is a release build silently truncating past a hard-coded 64).
+/// needs a truncating clamp, and never has one to get wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MaxBlock(usize);
 
@@ -332,7 +308,7 @@ pub struct Prepare {
 }
 
 impl Prepare {
-    /// Prepare for `sample_rate`, with blocks of up to `max_block` frames.
+    /// Prepares for `sample_rate`, with blocks of up to `max_block` frames.
     ///
     /// # Panics
     ///
@@ -490,7 +466,7 @@ mask!(
 
 /// What a node's [`process`](Node::process) did to its outputs.
 ///
-/// Firewheel's set (doc 013 §2), plus [`Masked`](Self::Masked) so a
+/// Firewheel's set, plus [`Masked`](Self::Masked) so a
 /// multichannel node can flag individual channels. The executor acts on it:
 /// masks are what downstream silence-skipping reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -535,8 +511,8 @@ pub struct LoopRange {
 
 /// The transport as the executor saw it at the start of a block.
 ///
-/// Minimal on purpose (doc 013 §4, "Env and PDC"): the fields `TransportClock`
-/// sends down its two f32 ports today, plus play state. A node reads it at its
+/// Minimal on purpose: play state, tempo, loop points, recording and
+/// position. A node reads it at its
 /// own **compensated** time through [`Cx::arrival`]. Position is a [`Beat`],
 /// which is `f64`: time is one of the places the graph stays wide.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -571,8 +547,8 @@ enum Position {
     /// A beat, with the block's first frame its own origin: a transport
     /// built by hand, or read back from a published beat.
     At(Beat),
-    /// A frame count on the host's segment (doc 013 §6, "the frame is the
-    /// source of truth"): the beat is derived from it, at the transport's
+    /// A frame count on the host's segment (the frame is the source of
+    /// truth): the beat is derived from it, at the transport's
     /// tempo.
     Counted(SegmentOrigin),
 }
@@ -594,8 +570,8 @@ impl Transport {
     /// rate), moving at `tempo`. A host that counts frames derives its beat
     /// in closed form from the same origin, never by accumulating a
     /// per-frame step, so frame 96 000 at 90 BPM / 48 kHz is beat 3 to the
-    /// bit; a node that walks the block frame by frame (tutti-core's
-    /// `EnvClock`, [`Env::transport_at`]) continues the host's
+    /// bit; a node that walks the block frame by frame
+    /// ([`Env::for_each_beat`], [`Env::transport_at`]) continues the host's
     /// [`FrameClock`] from here and lands on the host's bits.
     pub const fn counted(
         playing: bool,
@@ -694,7 +670,7 @@ pub const MAX_TRANSPORT_CHANGES: usize = 8;
 /// A change of the transport inside a block: from frame [`at`](Self::at) on,
 /// the transport is [`to`](Self::to).
 ///
-/// Doc 013 §6: a transport command lands on its exact frame, and the
+/// A transport command lands on its exact frame, and the
 /// executor never splits a block for it, not even for a start or a seek. The
 /// block's [`Env`] carries the change instead, the way it carries a loop
 /// wrap, and a node that cares reads the transport at a frame with
@@ -758,10 +734,16 @@ impl TransportChanges {
         }; MAX_TRANSPORT_CHANGES],
     };
 
-    /// Add a change after the ones already held. A change at the same offset
+    /// Adds a change after the ones already held. A change at the same offset
     /// as the last one **replaces** it: two commands landing on one frame
     /// leave the transport where the later one put it, and a frame has one
     /// transport.
+    ///
+    /// # Errors
+    ///
+    /// A [`TransportChangeRejected`]: a change at [`Offset::ZERO`], one
+    /// before the last change pushed, or one past
+    /// [`MAX_TRANSPORT_CHANGES`]. Nothing is added.
     pub fn push(&mut self, at: Offset, to: Transport) -> Result<(), TransportChangeRejected> {
         if at == Offset::ZERO {
             return Err(TransportChangeRejected::AtBlockStart);
@@ -813,8 +795,7 @@ impl Default for TransportChanges {
 }
 
 /// The per-block environment — read once per block by the executor and passed
-/// by reference to every node (doc 013 §2, the `Env` of
-/// `tutti-core/src/lib.rs:175-181` given a seam).
+/// by reference to every node, through [`Cx::env`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Env {
     /// The block's first frame on the executor's clock: frames rendered
@@ -832,7 +813,7 @@ pub struct Env {
     /// The transport at the block's first frame.
     pub transport: Transport,
     /// Where the transport changes inside the block: a start, a stop, a
-    /// seek, a tempo or loop edit landing on its frame (doc 013 §6). Empty
+    /// seek, a tempo or loop edit landing on its frame. Empty
     /// for most blocks. The executor does not split the block at them; read
     /// the transport at a frame with [`transport_at`](Self::transport_at), or
     /// walk [`segments`](Self::segments).
@@ -855,22 +836,58 @@ pub struct Cx<'a> {
 ///
 /// Object-safe: the executor stores `Box<dyn Node>`. `Send + 'static` so a
 /// unit can be built on the control thread and moved to the audio thread in a
-/// commit (phase 2); not `Sync`, because only the thread that runs a node
-/// ever touches it.
+/// commit; not `Sync`, because only the thread that runs a node ever
+/// touches it.
+///
+/// # Implementing a node
+///
+/// [`shape`](Self::shape) says what the node looks like (ports, latency,
+/// tail, event and param declarations); [`prepare`](Self::prepare) sizes its
+/// buffers on the control thread; [`process`](Self::process) renders one
+/// block on the audio thread and reports what it did to its outputs as a
+/// [`Status`]; [`reset`](Self::reset) clears its state. Insert it through
+/// [`IntoNode`] — for a node without controls, wrap it in
+/// [`ForkByClone`](crate::ForkByClone) or [`Unforkable`](crate::Unforkable).
+///
+/// ```
+/// use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
+/// use tutti_types::ChannelLayout;
+///
+/// /// Multiplies its input by a fixed gain.
+/// #[derive(Clone)]
+/// struct Gain(f32);
+///
+/// impl Node for Gain {
+///     fn shape(&self) -> Shape {
+///         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+///     }
+///     fn prepare(&mut self, _: &Prepare) {}
+///     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+///         let (ins, mut outs) = io.split();
+///         for (o, i) in outs.get(0).iter_mut().zip(ins.get(0)) {
+///             *o = i * self.0;
+///         }
+///         Status::Modified
+///     }
+///     fn reset(&mut self) {}
+/// }
+/// ```
 pub trait Node: Send + 'static {
-    /// Ports, latency, tail. Must not change after [`prepare`](Self::prepare)
+    /// Returns the node's ports, latency and tail, and its event and param
+    /// declarations. Must not change after [`prepare`](Self::prepare)
     /// without the node being re-inserted — a shape change is a recompile.
     fn shape(&self) -> Shape;
 
-    /// Size buffers for `p`. Control thread; may allocate. Called before the
+    /// Sizes the node's buffers for `p`. Control thread; may allocate. Called before the
     /// first [`process`](Self::process), and again whenever the rate or the
     /// maximum block changes.
     fn prepare(&mut self, p: &Prepare);
 
-    /// Render one block. Audio thread: must not allocate, lock or block.
+    /// Renders one block and reports what it did to the outputs. Audio
+    /// thread: must not allocate, lock or block.
     fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status;
 
-    /// Return to the state of a freshly prepared node.
+    /// Returns the node to the state of a freshly prepared one.
     fn reset(&mut self);
 
     /// The **base** of declared param `port` ([`Shape::params`]): the current
@@ -883,7 +900,7 @@ pub trait Node: Send + 'static {
     /// `None`, the default, is a node that cannot say: its param is then
     /// never modulated — it keeps reading [`ParamInput::Base`](crate::ParamInput::Base)
     /// whatever the graph connects — rather than riding on a base of 0,
-    /// which is what an unconnected port read under `Net`. Audio thread:
+    /// which would silence it. Audio thread:
     /// must not allocate, lock or block.
     fn param_base(&self, port: usize) -> Option<f32> {
         let _ = port;
@@ -893,7 +910,7 @@ pub trait Node: Send + 'static {
 
 /// How a value becomes a node, and what the caller gets back to control it.
 ///
-/// The replacement for `node_as::<T>` (doc 013 §2): the *type* of the control
+/// The *type* of the control
 /// surface is fixed at insertion, so nothing downcasts to find a node's
 /// parameters later. A node with live parameters implements this on a
 /// builder type and returns its `Param<U>` handles.
@@ -909,19 +926,13 @@ pub trait Node: Send + 'static {
 ///
 /// So `into_parts` is **required**, and there is no blanket impl for a bare
 /// [`Node`]: every insert states its fork-ability, and a node inserted
-/// without saying cannot be written. There was one (`impl<N: Node> IntoNode
-/// for N`, no controls and no fork source), and it let an unforkable
-/// beat clock into every graph silently, until the first export refused it
-/// (#38's B1); it also took the impl slot a node type needs to hand over its
-/// own fork source, which is why a hosted plugin needed a wrapper type (#51).
-/// A bare node is inserted as one of:
+/// without saying cannot be written. This also leaves the impl slot free for
+/// a node type that hands over its own fork source. A bare node is inserted as one of:
 ///
 /// - [`ForkByClone`](crate::ForkByClone)`(node)` — forkable, by a clone
 ///   taken at insert (the node's `Clone` shares nothing with the original);
 /// - [`Unforkable`](crate::Unforkable)`(node)` — refuses every fork that
 ///   needs it, by name ([`ForkError::NotForkable`](crate::ForkError::NotForkable));
-/// - [`Legacy`](crate::Legacy) for an `AudioUnit`, forkable when its
-///   `forkable()` is true;
 /// - its own `IntoNode`, for a node with controls or a fork of its own.
 ///
 /// ```compile_fail,E0277
@@ -942,7 +953,7 @@ pub trait IntoNode {
     /// What the caller keeps: `Param<U>` handles, `RtPublish` cells, or `()`.
     type Controls;
 
-    /// Split into the unit the executor will own, the handles the caller
+    /// Splits the value into the unit the executor will own, the handles the caller
     /// keeps, and where a fork of the unit comes from
     /// ([`NodeParts::fork`]: `None` for a node that cannot be forked). What
     /// [`Editor::insert`](crate::Editor::insert) calls.

@@ -40,7 +40,7 @@ pub(super) struct DirectionScratch<T: Vst3Sample> {
 }
 
 impl<T: Vst3Sample> DirectionScratch<T> {
-    /// Resolve one direction from its per-bus channel layout.
+    /// Resolves one direction from its per-bus channel layout.
     ///
     /// `bus_channels` is the live per-bus channel count vec (empty == a single
     /// bus of `main_channels`); `main_channels` is bus 0's channel layout, used
@@ -67,7 +67,7 @@ impl<T: Vst3Sample> DirectionScratch<T> {
     }
 }
 
-/// Build an `AudioBusBuffers` from a channel count, leaving the channel-pointer
+/// Builds an `AudioBusBuffers` from a channel count, leaving the channel-pointer
 /// union member null (zeroed) — refreshed every `prepare` via
 /// [`Vst3Sample::set_channel_buffers`].
 fn make_audio_bus(num_channels: ChannelLayout) -> vst3::Steinberg::Vst::AudioBusBuffers {
@@ -156,7 +156,7 @@ impl<T: Vst3Sample> BusBuffers<T> {
         self.bus_channels.len()
     }
 
-    /// Refresh every bus's channel pointers ahead of a `process` call and
+    /// Refreshes every bus's channel pointers ahead of a `process` call and
     /// return the `*mut AudioBusBuffers` for `ProcessData`.
     ///
     /// `live`/`live_len` are the real channel pointers from

@@ -34,7 +34,9 @@
 //! cancels the ½-fold).
 
 use approx::assert_abs_diff_eq;
-use tutti_core::{AudioUnit, Azimuth, Elevation, Radians, SampleRate, Samples};
+use tutti_core::{Azimuth, Elevation, Radians, SampleRate, Samples};
+use tutti_graph::contract::{drive, prepared};
+use tutti_graph::Node;
 use tutti_spatial::HrtfBinauralNode;
 
 const SAMPLE_RATE: u32 = 44_100;
@@ -150,10 +152,18 @@ fn synthetic_itd_ild_sphere() -> Vec<u8> {
     b
 }
 
+const RATE: SampleRate = SampleRate(SAMPLE_RATE as f64);
+
 fn make_node() -> HrtfBinauralNode {
     let bytes = synthetic_itd_ild_sphere();
-    HrtfBinauralNode::new(&bytes, SampleRate(f64::from(SAMPLE_RATE)))
-        .expect("synthetic sphere parses")
+    let node = HrtfBinauralNode::new(&bytes, RATE).expect("synthetic sphere parses");
+    prepared(node, RATE, 64)
+}
+
+/// One block of one frame, written to `out`.
+fn tick(node: &mut HrtfBinauralNode, input: [f32; 2], out: &mut [f32; 2]) {
+    let rendered = drive(node, RATE, &[&input[..1], &input[1..]], &[]);
+    *out = [rendered[0][0], rendered[1][0]];
 }
 
 /// Recover the stereo IR at a settled bearing. Reuses `node` so a sweep does
@@ -164,16 +174,16 @@ fn ir_at(
     elevation: Elevation,
 ) -> (Vec<f32>, Vec<f32>) {
     node.set_position(azimuth, elevation);
-    node.reset();
+    Node::reset(node);
     let mut out = [0.0f32; 2];
     // Two silent frames: the first still cross-fades from front (`prev_dir`
     // resets to forward); the second is the settled direction.
     for _ in 0..(FRAME_LEN * 2) {
-        node.tick(&[0.0, 0.0], &mut out);
+        tick(node, [0.0, 0.0], &mut out);
     }
-    node.tick(&[1.0, 1.0], &mut out);
+    tick(node, [1.0, 1.0], &mut out);
     for _ in 1..FRAME_LEN {
-        node.tick(&[0.0, 0.0], &mut out);
+        tick(node, [0.0, 0.0], &mut out);
     }
     // Last tick rendered the impulse frame and returned IR[0].
     let mut left = Vec::with_capacity(IR_LEN);
@@ -181,7 +191,7 @@ fn ir_at(
     left.push(out[0]);
     right.push(out[1]);
     for _ in 1..IR_LEN {
-        node.tick(&[0.0, 0.0], &mut out);
+        tick(node, [0.0, 0.0], &mut out);
         left.push(out[0]);
         right.push(out[1]);
     }

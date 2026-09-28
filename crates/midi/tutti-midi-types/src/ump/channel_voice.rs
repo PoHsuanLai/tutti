@@ -52,9 +52,10 @@ impl MidiEvent {
     /// [`convert::midi1_velocity_to_midi2`](crate::convert::midi1_velocity_to_midi2))
     /// so `100` doesn't become a near-silent `100/65535`.
     ///
-    /// This builds the *event*. To **deliver** a note to a running unit without
-    /// hand-building one, use `tutti_midi_runtime::MidiSender::note_on` /
-    /// `MidiBus::note_on`, which take a 7-bit velocity and push for you.
+    /// This builds the *event*. To **deliver** a note to a running node without
+    /// hand-building one, use `tutti_midi_runtime::MidiSender::note_on` (a
+    /// `MidiQueueNode`'s controls), which takes a 7-bit velocity and pushes for
+    /// you.
     #[inline]
     pub fn note_on(group: MidiGroup, channel: MidiChannel, note: u8, velocity: u16) -> Self {
         use midi2::channel_voice2::NoteOn;
@@ -329,11 +330,10 @@ mod tests {
         assert_eq!(m.control_change_data(), 0xDEAD_BEEF);
     }
 
-    /// Every CC number survives the trip out to the wire and back. This is what
-    /// the type buys over the old `debug_assert!(cc < 128)` + `& 0x7F`: the
-    /// assert only fired in debug, so a release build silently emitted a
-    /// *different* controller. Now the mask happens once, at `CCNumber::new`,
-    /// and nothing downstream can change the number.
+    /// Every CC number survives the trip out to the wire and back. The mask
+    /// happens once, at `CCNumber::new`, and nothing downstream can change the
+    /// number (a debug-only assert plus a mask at the wire would let a release
+    /// build silently emit a *different* controller).
     #[test]
     fn every_cc_number_round_trips_through_the_wire() {
         for raw in 0u8..128 {

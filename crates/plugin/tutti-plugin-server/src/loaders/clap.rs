@@ -692,8 +692,8 @@ fn convert_transport(
     // CLAP's `song_pos_seconds`. Prefer the wire's own seconds field (the
     // producer derives it from beats + tempo); only fall back to a sample-count
     // division when the host actually reports a project-time sample clock,
-    // which none currently does — dividing the old unconditional `samples` by
-    // the rate just yielded a constant 0.
+    // which none currently does — dividing an unconditional `samples` by the
+    // rate would yield a constant 0.
     let seconds = if transport.position.seconds != 0.0 {
         transport.position.seconds
     } else {
@@ -767,8 +767,7 @@ mod tests {
 
     /// The reference CLAP plugin, built as a dev-dependency by this same
     /// `cargo test` run. Resolved rather than hard-coded so the suite runs on
-    /// any machine — it used to name an absolute macOS path to a third-party
-    /// plugin, which failed everywhere else.
+    /// any machine.
     fn clap_plugin() -> &'static str {
         crate::test_utils::clap_probe_path()
     }

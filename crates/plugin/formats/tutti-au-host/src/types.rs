@@ -456,7 +456,7 @@ const FLOAT32_FORMAT_FLAGS: u32 = K_AUDIO_FORMAT_FLAG_IS_FLOAT
 /// These own the exact field math for the crate's canonical audio format so it
 /// lives in one audited place rather than being open-coded at each call site.
 pub trait AsbdExt {
-    /// Build an ASBD for 32-bit float, non-interleaved, packed linear PCM.
+    /// Builds an ASBD for 32-bit float, non-interleaved, packed linear PCM.
     ///
     /// This is the format the rest of the crate uses for AU I/O. For
     /// non-interleaved audio `mBytesPerFrame` / `mBytesPerPacket` are `4`
@@ -492,7 +492,7 @@ impl AsbdExt for AudioStreamBasicDescription {
 
 /// Extension helpers on the bindgen `AudioTimeStamp`.
 pub trait AudioTimeStampExt {
-    /// Build a timestamp with only `mSampleTime` marked valid.
+    /// Builds a timestamp with only `mSampleTime` marked valid.
     fn with_sample_time(sample_time: f64) -> Self;
 }
 
@@ -509,7 +509,7 @@ impl AudioTimeStampExt for AudioTimeStamp {
     }
 }
 
-/// Convert a big-endian four-character code (e.g. `b"aufx"`) to its string form.
+/// Converts a big-endian four-character code (e.g. `b"aufx"`) to its string form.
 ///
 /// Invalid UTF-8 bytes are replaced with the Unicode replacement character.
 pub fn fourcc_to_string(code: u32) -> String {
@@ -517,7 +517,7 @@ pub fn fourcc_to_string(code: u32) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-/// Copy a `CFStringRef` into an owned Rust `String`.
+/// Copies a `CFStringRef` into an owned Rust `String`.
 ///
 /// Returns an empty string when `cf_str` is null.
 ///
@@ -538,7 +538,7 @@ pub unsafe fn cfstring_to_string(cf_str: sys::CFStringRef) -> String {
     s.to_string()
 }
 
-/// Copy a `CFStringRef` into an owned `String`, but only after confirming it
+/// Copies a `CFStringRef` into an owned `String`, but only after confirming it
 /// really is a `CFString`.
 ///
 /// Returns `None` for null, for a misaligned pointer, and for a live CF object

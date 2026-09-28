@@ -6,27 +6,22 @@
 //! oscillator → bell EQ → mixer strip → lookahead limiter chain into the graph
 //! so the gate covers the per-buffer hot path through the nodes the engine
 //! actually ships: `EqBandNode` (over `SvfFilterNode`), `BusStripNode` and
-//! `LimiterNode`. A regression in any of those — or in the executor's walk,
-//! or `Legacy`'s adapter around each — shows up here as an allocation panic.
+//! `LimiterNode`, each a graph node. A regression in any of those — or
+//! in the executor's walk — shows up here as an allocation panic.
 //!
-//! It lived in `tutti-core` while that chain was fundsp's (`sine_hz`, `pan`,
-//! `bell_hz`, `limiter_stereo`), which gated fundsp's filters rather than ours.
-//! Using ours means depending on this crate, and `tutti-nodes → tutti-core`
-//! makes that a cycle from `tutti-core`'s side — so the test moved to the crate
-//! whose nodes it exercises (design doc 013, Phase 0b).
+//! It lives here rather than in `tutti-core` because `tutti-nodes →
+//! tutti-core` would make depending on this crate a cycle from `tutti-core`'s
+//! side.
 //!
 //! The `rt_no_alloc*` files beside this one gate each node in isolation; this
 //! one gates them *inside the engine*, where the executor drives them through
 //! its own buffers and the transport advances on the same `process` call.
-//! (Until doc 013 Phase 3 PR 15 the chain was a `Net` with a transport clock
-//! node; the engine renders only the native graph now, and drives its clock
-//! itself.)
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::graph::{Edge, InPort, OutPort, Source};
 use tutti_core::{ChannelLayout, Db, Engine, Hz, InterleavedMut, NodeKey, SampleRate, Samples, Q};
 use tutti_core::{MotionEvent, Transport};
-use tutti_graph::{Editor, Legacy, Prepare};
+use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, LimiterNode, SvfType};
 
@@ -41,29 +36,20 @@ fn build_engine_with_chain() -> Engine {
     let transport = Transport::new(sample_rate);
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(sample_rate), Samples(512)));
     let [osc, eq, strip, limiter] = [1, 2, 3, 4].map(NodeKey);
-    ed.insert(osc, "osc", Legacy::new(Osc::sine(Hz(440.0))));
+    ed.insert(osc, "osc", Osc::sine(Hz(440.0)));
     ed.insert(
         eq,
         "eq",
-        Legacy::new(EqBandNode::<f64>::new(
-            SvfType::Bell,
-            Hz(1_000.0),
-            Q(1.0),
-            Db(6.0),
-        )),
+        EqBandNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(1.0), Db(6.0)),
     );
     ed.insert(
         strip,
         "strip",
-        Legacy::new(BusStripNode::with_channels(ChannelLayout::STEREO)),
+        BusStripNode::with_channels(ChannelLayout::STEREO),
     );
     // The limiter's lookahead ring is sized at the prepared rate, on the
     // control thread, when the commit prepares it: outside the gate.
-    ed.insert(
-        limiter,
-        "limiter",
-        Legacy::new(LimiterNode::new(Db(-1.0), Db(-0.3))),
-    );
+    ed.insert(limiter, "limiter", LimiterNode::new(Db(-1.0), Db(-0.3)));
     let topology = &mut ed.spec_mut().topology;
     let mut wire = |node: NodeKey, port: u16, from: NodeKey, out: u16| {
         topology.edges.insert(
@@ -75,8 +61,8 @@ fn build_engine_with_chain() -> Engine {
         );
     };
     wire(eq, 0, osc, 0);
-    // The mono EQ's one output on both of the strip's inputs, the width
-    // change fundsp's `pan` made in the old chain.
+    // The mono EQ's one output on both of the strip's inputs: mono to
+    // stereo.
     wire(strip, 0, eq, 0);
     wire(strip, 1, eq, 0);
     wire(limiter, 0, strip, 0);

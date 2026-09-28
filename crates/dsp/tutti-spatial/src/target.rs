@@ -6,10 +6,15 @@ use tutti_core::{Azimuth, Elevation, Param, SampleRate};
 
 use crate::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
 
-/// Azimuth/elevation pair as lock-free params.
+/// A source's bearing and height as a pair of lock-free [`Param`] cells.
 ///
-/// The two fields are different types on purpose: a bearing wraps (190° is 170°
-/// to the right), a height saturates (past straight up, you stop).
+/// Both panners hold one and read it once per block on the audio thread; the
+/// control thread writes it through [`store`](Self::store) (usually via a
+/// panner's controls). Clones share the same cells, so a write through any
+/// clone reaches the node.
+///
+/// The two fields are different types on purpose: a bearing wraps (190° is
+/// 170° to the right), a height saturates (past straight up, you stop).
 #[derive(Clone)]
 pub struct SpatialTarget {
     /// Bearing in [`Azimuth`] degrees, wrapped onto the circle: 0 is front,
@@ -22,7 +27,7 @@ pub struct SpatialTarget {
 }
 
 impl SpatialTarget {
-    /// A target aimed straight ahead at ear level
+    /// Creates a target aimed straight ahead at ear level
     /// ([`Azimuth::FRONT`] / [`Elevation::LEVEL`]).
     pub fn new() -> Self {
         Self {
@@ -31,24 +36,26 @@ impl SpatialTarget {
         }
     }
 
-    /// The typed pair. Typed rather than raw floats: both panners rebuild the
-    /// newtypes immediately, and that round trip is where two bugs lived.
+    /// Returns the current bearing and height. Lock-free; safe on the audio
+    /// thread.
     #[inline]
     pub fn load(&self) -> (Azimuth, Elevation) {
         (self.azimuth.load(), self.elevation.load())
     }
 
-    /// Store a pair, normalized on the way in: the bearing wraps, the height
-    /// clamps. Taking newtypes is what makes the two unswappable.
+    /// Stores a bearing and height, normalized on the way in: the bearing
+    /// wraps onto -180..180, the height clamps to -90..90. Lock-free.
     pub fn store(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
         self.azimuth.store(azimuth.into().wrap());
         self.elevation
             .store(Elevation::new_clamped(elevation.into().get()));
     }
 
-    /// Stop sharing both cells with the live node and its UI handles,
-    /// keeping the current bearing (see [`Param::detach`]): what a panner's
-    /// `isolate` calls, so a fork renders the position it was taken at.
+    /// Stops sharing both cells with other clones, keeping the current values
+    /// (see [`Param::detach`]).
+    ///
+    /// A panner's fork calls this so it renders the position it was taken at,
+    /// unaffected by later moves of the live node.
     pub fn detach(&mut self) {
         self.azimuth.detach();
         self.elevation.detach();
@@ -91,13 +98,13 @@ impl AngleSmoother {
     /// Discard the in-flight ramp, seating both coordinates *on* the commanded
     /// position.
     ///
-    /// This is what an [`AudioUnit::reset`] clears here: the interpolation
+    /// This is what a panner's [`Node::reset`] clears here: the interpolation
     /// position is the smoother's only runtime state, and the commanded bearing
     /// and height are caller-set configuration a reset must leave alone. Seating
     /// on the target rather than at zero is the difference between resuming
     /// silently and sweeping the source in from front-centre over the ramp.
     ///
-    /// [`AudioUnit::reset`]: tutti_core::AudioUnit::reset
+    /// [`Node::reset`]: tutti_graph::Node::reset
     pub(crate) fn reset_to_target(&mut self, azimuth: Azimuth, elevation: Elevation) {
         self.azimuth.seed_at(azimuth.wrap().get());
         self.elevation

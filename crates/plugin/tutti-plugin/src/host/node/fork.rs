@@ -1,7 +1,7 @@
 //! Forking a hosted plugin **by state transfer**: a fresh instance of the same
-//! plugin, handed the live instance's saved state. Doc 013 Phase 3 PR 16
-//! (gap 7), which the graph's export (`tutti_graph::Editor::fork`, PR 12)
-//! needs before a graph holding a plugin can be rendered offline.
+//! plugin, handed the live instance's saved state. The graph's export
+//! (`tutti_graph::Editor::fork`) needs this to render a graph holding a
+//! plugin offline.
 //!
 //! # Why not a copy of the node
 //!
@@ -9,8 +9,7 @@
 //! bridge: a copy of the node would drive the live plugin from the render
 //! thread — two callers interleaving blocks into one instance's state. So the
 //! node is not `Clone`, and a bound client hands the editor its **own**
-//! [`ForkSource`] through [`IntoNode`] instead: the fork source on the bound
-//! type (doc 013 §2's `Fork`).
+//! [`ForkSource`] through [`IntoNode`] instead.
 //!
 //! # What a fork is
 //!
@@ -55,22 +54,11 @@
 //!    it**. Parameters come with it: the state is the format's own
 //!    save/load (CLAP `clap.state`, VST3 `getState`/`setState`, AU class
 //!    info), which is what a project save restores parameters from.
-//! 4. **Rebind its per-block sources** (parameter automation, harmony, note
-//!    expression): each installed live source is copied onto the fork reading
-//!    the offline timeline ([`ForkMode::Offline`] with an `OfflineTransport`),
-//!    or the live transport ([`ForkMode::Live`]). An offline context of any
-//!    other type binds nothing: the fork's slots stay empty rather than read
-//!    the live playhead. **The transport is not one of them**: the fork reads
-//!    it from its own graph's `Env`, which for an offline fork is the
-//!    render's, so there is nothing to rebind; it gets the live node's meter. **Offline only, the MIDI clip
-//!    too:** the source installed on the live node's MIDI port (a
-//!    `MidiClipSource`) is copied onto the fork's own port with a fresh
-//!    cursor on the render's timeline (`MidiUnitIn::rebind_offline`), so an
-//!    exported instrument plays its notes (doc 013, PR 12). It is polled at
-//!    the fork's own rate each block, so it follows the fork's `Prepare`. A
-//!    source that cannot be rebound (`rebind_offline` answers `None`) fails
-//!    the fork ([`PluginForkError::MidiSource`]) rather than render the
-//!    notes it feeds as silence.
+//! 4. **Give it the live node's meter.** Nothing else it reads needs
+//!    rebinding: the transport comes from its own graph's `Env` (for an
+//!    offline fork, the render's), and parameter automation, chords and
+//!    scales and MIDI from the graph's event edges, whose nodes fork
+//!    themselves: an exported instrument plays the clip node that feeds it.
 //! 5. **Bind it**, and **offline only:** tell it
 //!    [`RenderMode::Offline`](crate::RenderMode), and make its batcher wait for
 //!    each chunk (see `Batcher::set_offline_wait`) — the live pipeline never
@@ -97,26 +85,23 @@
 //!
 //! # What a fork does not have
 //!
-//! - **Live MIDI.** A fresh instance has a fresh MIDI port: no live inbox and
-//!   no MIDI-out routing — the `PolySynth::isolate` rule. Its clip source is
-//!   the live one's rebound offline (step 4) when the fork is offline; a
-//!   [`ForkMode::Live`] fork has none.
+//! - **Live MIDI.** What a keyboard sends reaches the live graph's queue
+//!   node, whose fork is silent.
 //! - **Running state.** Voices, delay lines, a reverb's tail: the state blob
 //!   is what a plugin saves for a project, not a snapshot of its DSP. A fork
 //!   starts silent, as every fork does.
 //! - **A fork of its own.** The node the fork source builds is inserted
 //!   without one, like every forked node.
 //!
-//! In-process VST2 (`InProcessVst2Client`) has no fork source yet and stays
-//! not forkable; see its `forkable`.
+//! In-process VST2 (`InProcessVst2Client`) has no fork source and is not
+//! forkable.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
-use tutti_core::transport::{LoopRange, OfflineTransport, Timeline, TransportState};
-use tutti_core::{Beat, Bpm, Samples};
+use tutti_core::Samples;
 use tutti_graph::{
     ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node, NodeParts,
 };
@@ -132,84 +117,6 @@ use crate::util::config::{unique_socket_path, BridgeConfig};
 pub(super) struct Origin {
     pub(super) config: BridgeConfig,
     pub(super) plugin_path: PathBuf,
-}
-
-/// Which transport a fork's per-block sources read.
-pub(super) enum Rebind {
-    /// The live transport each source already reads ([`ForkMode::Live`]).
-    Live,
-    /// The render's timeline ([`ForkMode::Offline`]).
-    Offline(OfflineTransport),
-}
-
-impl Rebind {
-    fn of(mode: ForkMode<'_>) -> Self {
-        match mode {
-            ForkMode::Live => Self::Live,
-            // Typed: no downcast, so no context that rebinds nothing (the
-            // `Sever` case this had while `ForkMode::Offline` carried a
-            // `&dyn Any`).
-            ForkMode::Offline(timeline) => Self::Offline(timeline.clone()),
-        }
-    }
-
-    /// The transport state a copy of a source reading `live` reads.
-    pub(super) fn state(&self, live: &Arc<dyn TransportState>) -> Arc<dyn TransportState> {
-        match self {
-            Self::Live => Arc::clone(live),
-            Self::Offline(timeline) => Arc::new(OfflineState(timeline.clone())),
-        }
-    }
-
-    /// The timeline a copy of a source reading `live` reads.
-    pub(super) fn timeline(&self, live: &Arc<dyn Timeline>) -> Arc<dyn Timeline> {
-        match self {
-            Self::Live => Arc::clone(live),
-            Self::Offline(timeline) => timeline.timeline(),
-        }
-    }
-}
-
-/// An offline timeline as the [`TransportState`] the parameter-automation
-/// source reads.
-///
-/// The answers are the ones `TransportState` documents for an offline render:
-/// not recording, no loop region (an `OfflineTimeline` folds its loop into its
-/// own `advance`, so the beat it reports is already wrapped), and no
-/// free-running sample counter (`0`, which the plugin ABIs read as exactly
-/// that).
-struct OfflineState(OfflineTransport);
-
-impl Timeline for OfflineState {
-    fn beat(&self) -> Beat {
-        self.0.beat()
-    }
-
-    fn tempo(&self) -> Bpm {
-        self.0.tempo()
-    }
-
-    fn is_rolling(&self) -> bool {
-        self.0.is_rolling()
-    }
-
-    fn segment_generation(&self) -> u64 {
-        self.0.segment_generation()
-    }
-}
-
-impl TransportState for OfflineState {
-    fn is_recording(&self) -> bool {
-        false
-    }
-
-    fn loop_range(&self) -> Option<LoopRange> {
-        None
-    }
-
-    fn steady_time(&self) -> i64 {
-        0
-    }
 }
 
 /// Whether a forked instance has failed while rendering: its
@@ -346,9 +253,6 @@ struct PluginFork {
     id: String,
     /// The live node's controls: its installed sources and its rate.
     controls: PluginControls,
-    /// The live node's MIDI port — a clone sharing its source cell, read at
-    /// fork time for the clip source to rebind; its mailbox is never polled.
-    midi: tutti_midi_runtime::MidiInPort,
 }
 
 impl PluginFork {
@@ -358,7 +262,6 @@ impl PluginFork {
             origin: Arc::clone(&client.origin),
             id: client.descriptor.id.clone(),
             controls: client.controls.clone(),
-            midi: client.midi.port().clone(),
         }
     }
 
@@ -395,21 +298,7 @@ impl PluginFork {
             .load_state(&state)
             .map_err(PluginForkError::LoadState)?;
 
-        let bind = Rebind::of(mode);
-        self.controls.rebind_sources_into(&fork.controls, &bind);
-        // The clip the live instance plays, onto the fork's own port and the
-        // render's timeline (step 4). Offline only: a live duplicate reading
-        // the live clip would need its own cursor on the live transport, which
-        // no caller has asked for.
-        // A source the live instance plays that cannot be carried is a
-        // failure, not a silent fork: the render would drop its notes.
-        if let ForkMode::Offline(ctx) = mode {
-            if self.midi.rebind_offline_into(fork.midi.port(), ctx)
-                == tutti_midi_runtime::OfflineRebind::NotRebindable
-            {
-                return Err(PluginForkError::MidiSource);
-            }
-        }
+        self.controls.rebind_sources_into(&fork.controls);
         let watch = Arc::new(ForkWatch {
             controls: fork.controls.clone(),
             planned: AtomicUsize::new(usize::MAX),
@@ -435,7 +324,7 @@ impl ForkSource for PluginFork {
     fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         let fork = self.instance(mode).map_err(ForkCause::new)?;
         let health = fork.fork_health();
-        // The fork runs as the live node does, natively; boxed bare, so it
+        // The fork runs as the live node does; boxed bare, so it
         // carries no fork source of its own.
         let forked = Forked::new(Box::new(fork));
         Ok(match health {
@@ -446,8 +335,10 @@ impl ForkSource for PluginFork {
 }
 
 impl<S> PluginClient<S> {
-    /// A fresh instance of this plugin carrying this one's saved state, bound
-    /// and ready to insert: a fork by state transfer. Control thread; blocks
+    /// Creates a fresh instance of this plugin carrying this one's saved state,
+    /// bound and ready to insert.
+    ///
+    /// This is a fork by state transfer. Call on a control thread; it blocks
     /// on a subprocess launch and two state transfers (half a second or
     /// more).
     ///
@@ -456,8 +347,9 @@ impl<S> PluginClient<S> {
     /// timeline, tells the plugin it is rendering offline, and makes it wait
     /// for each chunk; [`ForkMode::Live`] keeps its sources on the live
     /// transport. Either way the fork reads the transport from the `Env` of
-    /// the graph it is rendered in. See the `fork` module docs (`src/host/node/fork.rs`) for
-    /// the steps and what a fork does not carry (MIDI, running DSP state).
+    /// the graph it is rendered in. A fork does not carry live MIDI or running
+    /// DSP state (voices, delay lines, a reverb's tail): the state is what the
+    /// plugin saves for a project, so a fork starts silent.
     ///
     /// This instance is only asked for its state. What the fork renders, and
     /// any parameter changed on either afterwards, does not reach the other.
@@ -465,6 +357,13 @@ impl<S> PluginClient<S> {
     /// Inserting a bound `PluginClient` into a graph ([`IntoNode`]) hands the
     /// editor a fork source that calls this, so `Editor::fork` forks a graph
     /// holding a plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PluginForkError`] naming the step that failed: the live
+    /// instance is gone or would not save its state, the new instance failed
+    /// to load, it turned out to be a different plugin, or it refused the
+    /// state. A partly started fork is shut down before this returns.
     pub fn fork_instance(
         &self,
         mode: ForkMode<'_>,
@@ -497,12 +396,11 @@ impl<S> PluginClient<S> {
 }
 
 /// A bound plugin as a graph node: the node itself, the [`PluginControls`] a
-/// host drives it through from then on (the typed control surface doc 013 §2
-/// hands back at insert), and a [`ForkSource`] that forks it by state
-/// transfer.
+/// host drives it through from then on, and a [`ForkSource`] that forks it by
+/// state transfer (a fresh instance in its own subprocess, loaded with the
+/// live instance's saved state).
 ///
-/// Only [`Bound`]: an unbound plugin is not a node (see the `host::node`
-/// module docs for the `compile_fail` pin).
+/// Only [`Bound`] implements this: an unbound plugin is not a node.
 impl IntoNode for PluginClient<Bound> {
     type Controls = PluginControls;
 
@@ -537,8 +435,12 @@ mod tests {
     /// the pipeline chunk) → the unmoved plan reads as moved → fails.
     #[test]
     fn a_latency_moved_after_the_plan_is_a_fault() {
-        let controls =
-            PluginControls::new(Samples(137), PluginTail::default(), SampleRate(48_000.0));
+        let controls = PluginControls::new(
+            Samples(137),
+            PluginTail::default(),
+            SampleRate(48_000.0),
+            false,
+        );
         let watch = ForkWatch {
             controls: controls.clone(),
             planned: AtomicUsize::new(usize::MAX),

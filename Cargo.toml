@@ -23,7 +23,6 @@ members = [
     "crates/core/tutti-core",
     "crates/core/tutti-cpal",
     "crates/core/tutti-types",
-    "crates/core/tutti-node",
     "crates/core/tutti-graph",
     "crates/core/tutti-mod",
     "crates/core/tutti-export",
@@ -52,7 +51,6 @@ members = [
     "crates/plugin/vendor/vst-tutti",
     "crates/plugin/vendor/tutti-vst2-test-plugin",
     "crates/plugin/vendor/tutti-fixture-resolve",
-    "crates/vendor/fundsp-tutti",
     "crates/vendor/rustysynth-tutti/rustysynth",
     "crates/vendor/tutti-clap-test-plugin",
     # The Bevy adapter — the one member that mandates Bevy, and the umbrella the
@@ -111,7 +109,8 @@ thiserror = "2"
 # No `html_reports`: in criterion 0.8 the HTML report is compiled
 # unconditionally and the feature is referenced only by criterion's own tests.
 # It is a leftover from 0.3, and the CI comment that blamed it for pulling
-# fontconfig was wrong — see the note in `.github/workflows/ci.yml`.
+# fontconfig was wrong: that edge was the vendored fundsp fork's own bare
+# `plotters` dev-dependency, and went with the fork (doc 013 Phase 5).
 criterion = "0.8"
 
 # Automation curves. We track an unreleased commit (0.4.1, which adds the
@@ -161,8 +160,8 @@ core-foundation = "0.9"
 # *member* of this workspace, and Cargo ignores `[profile]` in non-root manifests
 # (with a warning that is easy to miss under `| tail`).
 #
-#   cargo build -p tutti-sampler --profile profiling --example profile_stretch_clone
-#   samply record target/profiling/examples/profile_stretch_clone
+#   cargo build -p tutti-nodes --profile profiling --bench engine_render
+#   samply record target/profiling/deps/engine_render-<hash> --bench
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"

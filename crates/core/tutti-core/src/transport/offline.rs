@@ -61,7 +61,7 @@ impl Default for OfflineTimelineConfig {
 ///
 /// # The frame is the source of truth
 ///
-/// The playhead is a frame count on a segment (doc 013 §6), and the beat is
+/// The playhead is a frame count on a segment, and the beat is
 /// derived from it in closed form, never accumulated: at 90 BPM and 48 kHz,
 /// 1 500 blocks of 64 frames is beat 3 to the bit, where adding
 /// `beats_per_sample × 64` per block reads `2.999999999999891` and a clip
@@ -109,7 +109,7 @@ pub struct OfflineTimeline {
 }
 
 impl OfflineTimeline {
-    /// Build a timeline seated at `config.start_beat`, precomputing the
+    /// Creates a timeline seated at `config.start_beat`, precomputing the
     /// per-sample beat increment from its tempo and sample rate.
     pub fn new(config: &OfflineTimelineConfig) -> Self {
         Self {
@@ -127,7 +127,7 @@ impl OfflineTimeline {
         }
     }
 
-    /// Advance the playhead by `samples` **frames** of render.
+    /// Advances the playhead by `samples` **frames** of render.
     ///
     /// If a loop region is set and the timeline crosses its end, the position
     /// wraps back into the region, on the frame that reaches the end.
@@ -181,7 +181,7 @@ impl OfflineTimeline {
         self.sample_rate
     }
 
-    /// Move the playhead to `beat`, for reusing one timeline across several
+    /// Moves the playhead to `beat`, for reusing one timeline across several
     /// renders.
     ///
     /// Named for the seek, not for a reset: it clears nothing, and `beat` is a
@@ -210,17 +210,18 @@ impl OfflineTimeline {
         self.loop_range
     }
 
-    /// The block about to be rendered, as a native graph executor takes it:
+    /// The block about to be rendered, as a graph executor takes it:
     /// the transport at the block's first frame, and the changes inside it.
     ///
     /// The transport is this timeline at its current playhead: rolling (an
     /// offline render always is), at its tempo, looping over its region, and
-    /// counted from its segment's origin, so an `EnvClock` in the graph
+    /// counted from its segment's origin, so a node walking its `Env`
     /// continues this timeline's arithmetic. There are never changes: the
     /// tempo and the loop are fixed for the render, and a loop wrap inside the block is not a change: the graph
     /// derives it from the snapshot, as it does live
     /// ([`Env::transport_at`](tutti_graph::Env::transport_at), and
-    /// [`EnvClock`](super::EnvClock) frame by frame). A render with a
+    /// [`Env::for_each_beat`](tutti_graph::Env::for_each_beat) frame by
+    /// frame). A render with a
     /// tempo map would put its tempo steps here.
     ///
     /// Read **before** the block is processed and advance after, as
@@ -241,15 +242,12 @@ impl OfflineTimeline {
         (transport, tutti_graph::TransportChanges::NONE)
     }
 
-    /// Render one block of `frames` through `exec` under this timeline, then
+    /// Renders one block of `frames` through `exec` under this timeline, then
     /// advance the timeline by it: [`graph_block`](Self::graph_block),
     /// [`Executor::process_with_changes`](tutti_graph::Executor::process_with_changes),
     /// then [`advance`](Self::advance), in the one order that keeps every
-    /// reader of this timeline on the frame the graph renders — once per
-    /// 64-frame chunk while the graph holds a `Legacy` unit (see
-    /// [`RenderClock::render_graph`](super::RenderClock::render_graph)), so
-    /// a clip reader polling this timeline reads the positions a `Net`
-    /// render's 64-frame `advance`s give it, to the bit.
+    /// reader of this timeline on the frame the graph renders (see
+    /// [`RenderClock::render_graph`](super::RenderClock::render_graph)).
     ///
     /// The graph's frames and this timeline's beats both start where they
     /// stand: the executor keeps its own frame clock, and the beat is this
@@ -376,15 +374,11 @@ mod tests {
     /// loop, exactly on the start when the crossings are on frames, and bit
     /// for bit where the same frames one at a time land when they are not.
     ///
-    /// Renamed from `advance_wraps_once_per_block_not_once_per_sample`, whose
-    /// premise was the accumulating clock's: a per-sample walk wrapped
-    /// repeatedly and drifted, so `advance` added a block in bulk and wrapped
-    /// once. `advance` now counts frames and starts a new segment on every
-    /// crossing's frame (`FrameClock::advance`), as the live clock does frame
-    /// by frame, so the two agree to the bit.
+    /// `advance` counts frames and starts a new segment on every crossing's
+    /// frame (`FrameClock::advance`), as the live clock does frame by frame,
+    /// so the two agree to the bit.
     ///
-    /// Mutation (run): wrap once per call, at the call's end (the old bulk
-    /// rule) → the block of 50 000 frames (five crossings of a 0.33-beat loop)
+    /// Mutation (run): wrap once per call, at the call's end → the block of 50 000 frames (five crossings of a 0.33-beat loop)
     /// lands off the frame-by-frame position → fails.
     #[test]
     fn a_block_longer_than_the_loop_lands_where_its_frames_do() {
@@ -422,10 +416,11 @@ mod tests {
         assert_eq!(block.beat().get().to_bits(), frames.beat().get().to_bits());
     }
 
-    /// A region render drives BOTH clocks over the same net: the in-net
-    /// `TransportClock` feeds beat-input nodes (LFO, AutomationLaneNode) while this
-    /// `OfflineTimeline` feeds clip readers and samplers. Started at the same
-    /// beat, they must report the same beat for the same sample.
+    /// A render drives two clocks over one timeline: a `TransportClock` (the
+    /// engine's playhead, whose transport each graph block's `Env` reads)
+    /// while this `OfflineTimeline` feeds clip readers and
+    /// samplers. Started at the same beat, they must report the same beat for
+    /// the same sample.
     ///
     /// The order is emit-then-advance. A driver that primes with `advance(1)`
     /// before the first block — "advance-then-tick semantics" — puts the two
@@ -434,7 +429,7 @@ mod tests {
     #[test]
     fn offline_timeline_agrees_with_transport_clock_sample_for_sample() {
         use crate::transport::TransportClock;
-        use crate::{AtomicBool, AtomicF64, AudioUnit};
+        use crate::{AtomicBool, AtomicF64};
         use std::sync::Arc;
 
         let sample_rate = 44100.0;
@@ -458,24 +453,23 @@ mod tests {
         });
 
         // Sample 0: both must report the start beat, before either advances.
-        let mut out = [0.0f32; 2];
-        clock.tick(&[], &mut out);
-        let clock_beat = out[0] as f64 + out[1] as f64;
+        let clock_beat = clock.step(1).get();
         assert!(
             (clock_beat - timeline.beat().get()).abs() < 1e-9,
             "first sample disagrees: clock={clock_beat} timeline={}",
             timeline.beat().get()
         );
 
-        // And they must stay in step across a block boundary. The driver ticks
-        // the net per sample, then advances the timeline by the block size.
+        // And they must stay in step across a block boundary. The driver
+        // steps the clock frame by frame, then advances the timeline by the
+        // block size.
         let block = 512;
+        let mut clock_beat = clock_beat;
         for _ in 1..block {
-            clock.tick(&[], &mut out);
+            clock_beat = clock.step(1).get();
         }
         timeline.advance(block);
 
-        let clock_beat = out[0] as f64 + out[1] as f64;
         let expected_lag = timeline.beats_per_sample();
         // After the block the timeline sits one sample ahead of the last
         // EMITTED sample, because emit-then-advance means sample N-1 carried
@@ -488,9 +482,9 @@ mod tests {
         );
     }
 
-    /// The reviewer's case: at 90 BPM / 48 kHz, 1 500 blocks of 64 frames
+    /// At 90 BPM / 48 kHz, 1 500 blocks of 64 frames
     /// is beat 3 and 500 is beat 1, to the bit. An accumulated playhead
-    /// (`beat += beats_per_sample × 64` per block) read `2.999999999999891`
+    /// (`beat += beats_per_sample × 64` per block) would read `2.999999999999891`
     /// and `1.0000000000000007`.
     ///
     /// Mutation (run): accumulate in `FrameClock::advance` → 1.0000000000000007
@@ -515,8 +509,7 @@ mod tests {
 
     /// After N blocks of arbitrary lengths, at arbitrary tempos and rates,
     /// both clocks of a render — this timeline, advanced a block at a time,
-    /// and a `TransportClock`, processed 64 frames a call as a `Net` runs it
-    /// — stand on the closed form `start + frames × tempo / (60 × rate)`, to
+    /// and a `TransportClock`, stepped 64 frames a block — stand on the closed form `start + frames × tempo / (60 × rate)`, to
     /// the bit. Correctly rounded `*`, `/` and `+` only (no libm), so the
     /// comparison is portable.
     ///
@@ -525,8 +518,7 @@ mod tests {
     #[test]
     fn a_long_render_stands_on_the_closed_form() {
         use crate::transport::TransportClock;
-        use crate::{AtomicBool, AtomicF64, AudioUnit, BufferRef};
-        use fundsp::prelude::{BufferArray, U2};
+        use crate::{AtomicBool, AtomicF64};
         use std::sync::Arc;
 
         let mut seed = 0x2545_f491_4f6c_dd1du64;
@@ -554,8 +546,6 @@ mod tests {
                 rate,
             )
             .starting_at(start);
-            let empty = BufferRef::new(&[]);
-            let mut scratch = BufferArray::<U2>::new();
             let mut frames = 0u64;
             for _ in 0..1_000 {
                 let n = 1 + (next() % 2_048) as usize;
@@ -563,9 +553,9 @@ mod tests {
                 frames += n as u64;
             }
             for _ in 0..frames / 64 {
-                clock.process(64, &empty, &mut scratch.buffer_mut());
+                clock.step(64);
             }
-            clock.process((frames % 64) as usize, &empty, &mut scratch.buffer_mut());
+            clock.step((frames % 64) as usize);
             let closed = start + (frames as f64 * tempo) / (60.0 * rate);
             assert_eq!(
                 timeline.beat().get().to_bits(),

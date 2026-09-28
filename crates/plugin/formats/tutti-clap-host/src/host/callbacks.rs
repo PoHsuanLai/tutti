@@ -126,7 +126,7 @@ pub(super) static HOST_THREAD_CHECK: clap_host_thread_check = clap_host_thread_c
     is_audio_thread: Some(host_thread_check_is_audio),
 };
 
-// C1: the two answers are mutually exclusive. `HostState::is_main_thread`
+// The two answers are mutually exclusive. `HostState::is_main_thread`
 // returns false while this thread holds the audio-thread claim, so a plugin
 // that asserts `!is_main_thread()` inside `start_processing` gets an honest
 // answer even when the host drove that call from the OS main thread (which the
@@ -328,12 +328,11 @@ pub(super) static HOST_AUDIO_PORTS: clap_host_audio_ports = clap_host_audio_port
 
 /// Which rescan kinds this host can actually carry out.
 ///
-/// Answering an unconditional `true` told the plugin the host handles every
-/// rescan kind, so it took the aggressive path instead of its conservative
-/// fallback — a promise about behaviour the host had not implemented, since the
-/// flags were being discarded a few lines below.
+/// An unconditional `true` would tell the plugin the host handles every rescan
+/// kind, so it would take the aggressive path instead of its conservative
+/// fallback — a promise about behaviour the host has not implemented.
 ///
-/// The answer is now the set the host really honours: the six flags defined in
+/// The answer is the set the host really honours: the six flags defined in
 /// `ext/audio-ports.h`, which is exactly what `AudioPortsRescan` decodes and
 /// reports. An unknown bit gets `false` rather than a blanket yes, so a flag
 /// added by a later CLAP revision is declined until it is decoded here.
@@ -552,7 +551,7 @@ unsafe extern "C" fn host_track_info_get(
     }
 
     // The one place a `TrackAudio` becomes CLAP's (count, tag) pair. Both come
-    // from the same value, so the count can no longer disagree with the tag, and
+    // from the same value, so the count cannot disagree with the tag, and
     // the tag is an enum rather than a string match with a silent null fallback.
     //
     // `audio_port_type` is written on BOTH paths: `info` is caller-allocated and
@@ -630,7 +629,7 @@ pub(super) static HOST_TRANSPORT_CONTROL: clap_host_transport_control =
         request_toggle_record: Some(host_transport_request_toggle_record),
     };
 
-/// Queue one `CLAP_EXT_TRANSPORT_CONTROL` request.
+/// Queues one `CLAP_EXT_TRANSPORT_CONTROL` request.
 ///
 /// Reachable from the audio thread: CLAP puts no thread annotation on that
 /// extension, so a plugin may call it from inside `process`. The bounded,
@@ -1048,11 +1047,9 @@ mod tests {
     /// `is_rescan_flag_supported` answers for the flags this host decodes, and
     /// declines the rest.
     ///
-    /// It used to return an unconditional `true`, which told the plugin the
-    /// host handled every rescan kind — so the plugin took its aggressive path
-    /// instead of a conservative fallback — while `host_audio_ports_rescan`
-    /// discarded the flags a few lines below. The promise and the behaviour
-    /// disagreed.
+    /// An unconditional `true` would tell the plugin the host handles every
+    /// rescan kind — so the plugin would take its aggressive path instead of a
+    /// conservative fallback — while the host acts on only the decoded flags.
     ///
     /// A null host pointer is fine here: this callback answers from a constant
     /// and never dereferences it.

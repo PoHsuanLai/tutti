@@ -19,9 +19,9 @@
 //! `encode` minus `render` at matching settings says which half to look at.
 //!
 //! Durations are kept short on purpose. Once the rendered planes get large
-//! the working set leaves criterion's domain — the same boundary
-//! `tutti-sampler`'s `profile_stretch_clone` documents at 81× wall-clock
-//! spread — and the honest instrument becomes `--profile-time` plus samply.
+//! the working set leaves criterion's domain (wall-clock spread of 81× has
+//! been measured at that boundary), and the honest instrument becomes
+//! `--profile-time` plus samply.
 
 use std::hint::black_box;
 
@@ -39,8 +39,7 @@ const SR: f64 = 48_000.0;
 /// `g`, built for an export at `rate` — the config's render rate, which the
 /// graph must be prepared at.
 ///
-/// Built per iteration, like the `Net` it replaces was: an export consumes its
-/// graph, so the build (preparing every unit, compiling the plan) is part of
+/// Built per iteration: an export consumes its graph, so the build (preparing every unit, compiling the plan) is part of
 /// what a bounce costs.
 fn built(g: GraphBuilder, rate: f64) -> RenderGraph {
     let (editor, executor) = g
@@ -51,18 +50,18 @@ fn built(g: GraphBuilder, rate: f64) -> RenderGraph {
 
 fn tone_graph(rate: f64) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(
+    let id = g.add(
         Osc::sine(Hz(440.0))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
-    ));
+    );
     g.pipe_output(id);
     built(g, rate)
 }
 
 fn dc_graph(rate: f64) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(Const::frame(&[0.25, 0.25])));
+    let id = g.add(Const::frame(&[0.25, 0.25]));
     g.pipe_output(id);
     built(g, rate)
 }

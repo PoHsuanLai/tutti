@@ -13,16 +13,14 @@
 use thiserror::Error;
 use tutti_core::ChannelLayout;
 
-/// Anything recording can fail with.
+/// An error from starting or finishing a recording.
 #[derive(Debug, Error)]
 pub enum Error {
     /// The source and sink disagree on channel width.
     ///
-    /// The runtime replacement for the compile error the const-width I/O traits
-    /// gave up — the `recorder` module header explains the trade. The message
-    /// `Debug`-formats both layouts because `ChannelLayout` names the common
-    /// widths ("Stereo", not "ChannelLayout(2)"), and this line is the one an
-    /// author has to act on.
+    /// Returned by [`Recorder::start`](crate::Recorder::start) before any frame
+    /// moves: recording a mismatched pair would rotate the file's channels
+    /// every frame.
     #[error(
         "recorder source is {src:?} but the sink is {sink:?}; \
          recording a mismatched pair rotates the file's channels every frame"

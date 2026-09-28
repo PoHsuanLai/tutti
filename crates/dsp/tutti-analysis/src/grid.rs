@@ -112,7 +112,7 @@ pub struct Grid<T> {
 }
 
 impl<T> Grid<T> {
-    /// Wrap `data` as a `frames × bins` grid.
+    /// Wraps `data` as a `frames × bins` grid.
     ///
     /// # Errors
     /// Returns [`Error::GridShapeMismatch`] unless
@@ -242,7 +242,7 @@ impl<T> Grid<T> {
         &mut self.data
     }
 
-    /// Move the row-major buffer out, dropping the shape with it.
+    /// Moves the row-major buffer out, dropping the shape with it.
     #[inline]
     pub fn into_vec(self) -> Vec<T> {
         self.data
@@ -304,7 +304,7 @@ mod tests {
         Grid::new(data, FrameCount(3), BinCount(4)).unwrap()
     }
 
-    /// The invariant the old `pub`-field structs could not hold.
+    /// The invariant private fields exist to hold.
     #[test]
     fn a_length_that_disagrees_with_the_shape_is_rejected() {
         assert_eq!(

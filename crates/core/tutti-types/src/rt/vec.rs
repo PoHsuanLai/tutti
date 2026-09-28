@@ -2,7 +2,7 @@
 
 use super::capped::Capped;
 
-/// A capped per-block collection that **owns** its storage and lends it out as
+/// A capped per-block collection that owns its storage and lends it out as
 /// `&[T]`.
 ///
 /// This is the "collect during the block, then hand the filled run to a
@@ -18,19 +18,9 @@ use super::capped::Capped;
 ///
 /// `push` **refuses** at `N` and returns `false`; it never grows. A bare
 /// `Vec`/`SmallVec` in this position grows instead, which means a `malloc`
-/// inside the audio callback. That is not hypothetical — it is the failure
-/// this type exists to make unrepresentable, and the engine has hit it more
-/// than once:
-///
-/// - a `SmallVec<[*mut T; 16]>` staging array in CLAP's `process` spilled
-///   every block past 16 channels a side, reachable through supported port
-///   layouts;
-/// - `PolySynth`'s finished-voice list spilled and was then *freed* on the
-///   audio thread every block by a `mem::take` drain.
-///
-/// Each of those was found separately and fixed differently. A hand-rolled
-/// `.take(N)` guard, a pooled `Vec`, or a `reserve` performed off-RT and then
-/// trusted all express the same intent; this type states it once.
+/// inside the audio callback (and, if drained with `mem::take`, a `free` there
+/// too). The storage is inline, so the collection itself never touches the
+/// heap.
 ///
 /// # Overflow is visible, not silent
 ///
@@ -44,89 +34,110 @@ use super::capped::Capped;
 ///
 /// `clear` resets both the contents and the flag, so the flag always
 /// describes the current block.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::RtVec;
+///
+/// let mut due: RtVec<u32, 2> = RtVec::new();
+/// assert!(due.push(10));
+/// assert!(due.push(20));
+/// assert!(!due.push(30)); // refused, never grown
+/// assert_eq!(due.as_slice(), &[10, 20]);
+/// assert!(due.overflowed());
+///
+/// due.clear();
+/// assert!(due.is_empty() && !due.overflowed());
+/// ```
 pub struct RtVec<T, const N: usize> {
     inner: Capped<T, N>,
 }
 
 impl<T, const N: usize> RtVec<T, N> {
-    /// An empty collection with `N` inline slots.
+    /// Creates an empty collection with `N` inline slots.
     pub fn new() -> Self {
         Self {
             inner: Capped::new(),
         }
     }
 
-    /// Drop all items and reset the overflow flag, keeping the storage.
+    /// Drops all items and resets the overflow flag, keeping the storage.
     #[inline]
     pub fn clear(&mut self) {
         self.inner.clear();
     }
 
-    /// Append one item if there is room. Returns `false` (dropping `v`, and
-    /// latching [`overflowed`](Self::overflowed)) when already at `N`.
+    /// Appends one item if there is room.
+    ///
+    /// Returns `false` (dropping `v`, and latching
+    /// [`overflowed`](Self::overflowed)) when already at `N`.
     #[inline]
     pub fn push(&mut self, v: T) -> bool {
         self.inner.push(v)
     }
 
-    /// Append from an iterator, stopping at the cap. Returns how many items
-    /// were written; a short return means the rest were dropped.
+    /// Appends from an iterator, stopping at the cap.
+    ///
+    /// Returns how many items were written; a short return means the rest were
+    /// dropped.
     #[inline]
     pub fn extend(&mut self, it: impl IntoIterator<Item = T>) -> usize {
         self.inner.extend(it)
     }
 
-    /// The filled run. This is what makes the type usable for `&[T]`-returning
-    /// APIs.
+    /// Returns the filled run.
     #[inline]
     pub fn as_slice(&self) -> &[T] {
         self.inner.as_slice()
     }
 
-    /// The filled run, mutably — for in-place fixups (sorting by frame offset,
-    /// clamping) that do not change the length.
+    /// Returns the filled run mutably, for in-place fixups (sorting by frame
+    /// offset, clamping) that do not change the length.
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         self.inner.as_mut_slice()
     }
 
-    /// Whether anything has been dropped since the last [`clear`](Self::clear).
+    /// Returns whether anything has been dropped since the last
+    /// [`clear`](Self::clear).
     #[inline]
     pub fn overflowed(&self) -> bool {
         self.inner.overflowed()
     }
 
-    /// How many items are in the filled run. Never exceeds the capacity `N`.
+    /// Returns how many items are in the filled run; never more than `N`.
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
-    /// Whether nothing has been pushed since the last [`clear`](Self::clear).
+    /// Returns whether nothing has been pushed since the last
+    /// [`clear`](Self::clear).
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
 
-    /// Whether the next `push` will be refused.
+    /// Returns whether the next `push` will be refused.
     #[inline]
     pub fn is_full(&self) -> bool {
         self.inner.is_full()
     }
 
-    /// Room left before the cap.
+    /// Returns the room left before the cap.
     #[inline]
     pub fn remaining(&self) -> usize {
         self.inner.remaining()
     }
 
-    /// The cap. Constant, but available where `N` is not in scope.
+    /// Returns the cap, `N`, for code where `N` is not in scope.
     #[inline]
     pub const fn capacity(&self) -> usize {
         N
     }
 
-    /// Iterate the filled run.
+    /// Iterates over the filled run.
     #[inline]
     pub fn iter(&self) -> core::slice::Iter<'_, T> {
         self.inner.iter()

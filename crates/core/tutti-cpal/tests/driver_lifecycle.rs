@@ -96,12 +96,10 @@ fn start_is_idempotent_and_stop_is_repeatable() {
 
 /// **A started engine reports the spec it actually opened.**
 ///
-/// `AudioEngine::start`'s long comment defends re-reading the device config:
-/// leaving the fields at their construction values makes `channels()` describe
-/// a device that is no longer playing while the audio itself is correct, so a
-/// reader sizing a buffer from it gets the old width with nothing to warn it.
-/// Nothing checked that, and a bare-spec engine is the case where it is
-/// checkable without two sound cards.
+/// `AudioEngine::start` re-reads the device config so `channels()` describes
+/// the device that is playing; a reader sizing a buffer from a stale value
+/// would get the wrong width with nothing to warn it. A bare-spec engine
+/// makes that checkable without two sound cards.
 #[test]
 fn the_engine_reports_the_spec_it_was_opened_at() {
     let mut engine = AudioEngine::from_spec(spec(6, cpal::SampleFormat::I16));
@@ -123,17 +121,10 @@ fn the_engine_reports_the_spec_it_was_opened_at() {
 /// This is the property a host actually depends on: CPAL gives a restarted
 /// stream a *different* backend thread, and the RT cells must tolerate that.
 ///
-/// **What this test does NOT prove, and why the difference matters.** An
-/// earlier draft claimed to pin `TuttiDriver`'s `reset_owners` call, on the
-/// strength of the comment that used to sit on it ("the owner checks would
-/// otherwise flag the new thread as an intruder"). Mutation-testing says
-/// otherwise: deleting that call changes nothing, because every
-/// `reset_owner` in the chain bottoms out in `AudioThreadCell::reset_owner`,
-/// which is a no-op — the cell's debug check detects a *concurrent borrow*,
-/// not a foreign thread. The comment was stale, and is now corrected at the
-/// source. A test cannot cover a guarantee that is not implemented, so this
-/// one covers the guarantee that is, and says so rather than claiming the
-/// other.
+/// It does not pin `TuttiDriver`'s `reset_owners` call: every `reset_owner`
+/// in the chain bottoms out in `AudioThreadCell::reset_owner`, which is a
+/// no-op — the cell's debug check detects a *concurrent borrow*, not a
+/// foreign thread — so deleting that call changes nothing.
 #[test]
 fn a_restarted_stream_renders_from_a_different_thread() {
     let (_t, state) = rolling_state(2);
@@ -202,10 +193,8 @@ fn a_backend_fault_reaches_the_handle_taken_before_it() {
 
 /// **A disconnect stops the engine reporting healthy.**
 ///
-/// The defect this whole path exists to fix: `is_running()` used to stay
-/// `true` for a stream whose device had been unplugged, because nothing read
-/// the error callback. A host polling it went on telling the user everything
-/// was fine.
+/// `is_running()` must turn `false` for a stream whose device was unplugged,
+/// or a host polling it goes on telling the user everything is fine.
 #[test]
 fn a_disconnect_stops_the_engine_reporting_healthy() {
     let (mut engine, state) = engine_and_state();

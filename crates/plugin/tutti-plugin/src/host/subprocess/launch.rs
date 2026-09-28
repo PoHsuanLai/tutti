@@ -240,10 +240,9 @@ fn slab_layout_for(
     // Carry the plugin's per-bus layout so both processes agree how each
     // direction's channels partition into buses. Loaders normally populate at
     // least the main bus; an empty list means the plugin's shape was never
-    // determined (filename-fallback discovery), and it used to be reinterpreted
-    // as "one flat range shared in place by both directions" — the aliasing that
-    // made the out-of-process bypass silent. Empty is now invalid, so an unknown
-    // shape gets an explicit stereo default instead.
+    // determined. Reading it as "one flat range shared in place by both
+    // directions" would alias input and output and silently bypass the plugin,
+    // so an unknown shape gets an explicit stereo default instead.
     let inputs = default_if_empty(&loaded.inputs);
     let outputs = default_if_empty(&loaded.outputs);
 
@@ -266,10 +265,9 @@ fn slab_layout_for(
 
 /// A plugin whose bus layout is unknown gets one stereo bus rather than nothing.
 ///
-/// Stereo because it is what the overwhelming majority of plugins present and
-/// what the previous code's `.max(2)` floor already assumed; the difference is
-/// that the assumption is now stated as a bus, so no later code has to guess
-/// what an empty list meant.
+/// Stereo because it is what the overwhelming majority of plugins present; the
+/// assumption is stated as a bus, so no later code has to guess what an empty
+/// list meant.
 fn default_if_empty(buses: &BusChannels) -> BusChannels {
     if buses.is_empty() {
         BusChannels::from_slice(&[ChannelLayout::STEREO])
@@ -339,38 +337,29 @@ mod tests {
     /// So the stand-in is a tiny shell script that ignores its arguments and
     /// sleeps. It survives, it never speaks, and it never touches the socket.
     ///
-    /// # Why this test used to flake, and what replaced each cause
+    /// # Keeping it deterministic under parallel load
     ///
-    /// It failed roughly one run in five under full-workspace parallel load,
-    /// and both causes were in the harness rather than in `launch`.
+    /// **The stand-in is chosen with a [`ServerLocator`]** passed to
+    /// [`launch_with`], not through `TUTTI_PLUGIN_SERVER`: an env var is
+    /// process-global, so every other thread in this binary would see it.
     ///
-    /// **The stand-in was selected through `TUTTI_PLUGIN_SERVER`**, a
-    /// process-global. Every other thread in this binary saw it for the
-    /// duration, and the save/restore guard did not close that window — it *was*
-    /// the window. The server binary is now chosen with a [`ServerLocator`]
-    /// passed to [`launch_with`], so the substitution is local to this call.
+    /// **Liveness is not checked with a process-table scan** (`pgrep`): the
+    /// stand-in's command line is identical in every test process, so a sibling
+    /// test binary's healthy stand-in would count as this test's leak.
     ///
-    /// **Liveness was checked with `pgrep -f '^sleep 120$'`**, which scans the
-    /// whole process table. The stand-in's command line is identical in every
-    /// test process, so a *sibling* test binary's perfectly healthy stand-in —
-    /// spawned between this test's before- and after-snapshots — was counted as
-    /// this test's leak. The before/after diff could not filter it out, because
-    /// the sibling's pid is genuinely new. That is a global-state read every bit
-    /// as much as the env var was.
-    ///
-    /// The replacement is a direct handle: the stand-in writes **its own pid**
-    /// to a path unique to this test, so the process observed is provably the
-    /// one `launch` spawned and no scan is involved. `kill(pid, 0)` then asks
+    /// Instead the stand-in writes **its own pid** to a path unique to this
+    /// test, so the process observed is provably the one `launch` spawned and
+    /// no scan is involved. `kill(pid, 0)` then asks
     /// about that process without signalling it, which distinguishes the two
     /// outcomes that matter: a still-running orphan answers `Ok`, while a
     /// killed-and-reaped child answers `ESRCH`. A zombie also answers `Ok`, so
     /// this catches a missing `wait` as well as a missing `kill`.
     ///
-    /// **The wall-clock budget is gone too.** `launch` kills and waits
-    /// *synchronously* before returning, so by the time it has returned the
-    /// child is already reaped — there is nothing to wait for, and the old
-    /// 500 ms retry loop was hiding that certainty behind a deadline a loaded
-    /// machine could exhaust. The pid is read once, and asserted once.
+    /// **No wall-clock budget.** `launch` kills and waits *synchronously*
+    /// before returning, so by the time it has returned the child is already
+    /// reaped — there is nothing to wait for, and a retry loop would hide that
+    /// certainty behind a deadline a loaded machine could exhaust. The pid is
+    /// read once, and asserted once.
     #[test]
     #[cfg(unix)]
     fn a_failed_launch_does_not_strand_the_subprocess() {
@@ -532,9 +521,8 @@ mod tests {
         assert_eq!(layout.input_channels(), 2);
         assert_eq!(layout.output_channels(), 2);
         assert_eq!(layout.input_ring_bytes(), layout.output_ring_bytes());
-        // Both directions are counted. Under the old `max`-for-single-bus rule
-        // this total would have been half as large — that halving *was* the
-        // aliasing.
+        // Both directions are counted. Half this total would mean the two
+        // directions share one region, which is the aliasing.
         assert_eq!(
             layout.byte_size_with_header(0),
             layout.input_ring_bytes() * 2
@@ -597,10 +585,8 @@ mod tests {
 
     /// The slab is sized to the largest chunk the node ships — one device
     /// callback, at most `MAX_CHUNK` — not to `max_buffer_size`, which is the
-    /// plugin's own buffer bound. (Until doc 013 reversed its decision 8 the
-    /// chunk was 64 frames and the slab 128× smaller than the default
-    /// `max_buffer_size`; a live plugin now gets a whole device callback per
-    /// chunk, and the slab holds the largest one.)
+    /// plugin's own buffer bound. A live plugin gets a whole device callback
+    /// per chunk, and the slab holds the largest one.
     ///
     /// Mutation: size the slab to `max_buffer_size` → 8192 ≠ 4096 → fails.
     #[test]

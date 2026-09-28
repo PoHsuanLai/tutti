@@ -5,11 +5,11 @@ call site.
 
 ## What this is
 
-The VST3 one of tutti's four format hosts. It loads a `.vst3` bundle, walks the
-class factory, drives audio + MIDI processing, exposes the parameter tree, unit
-and program lists, note expression, state save/restore and the plugin's own
-editor, and implements the host-side COM interfaces a plugin discovers through
-`IComponentHandler::queryInterface`.
+The VST3 host among tutti's four plugin-format hosts. It loads a `.vst3`
+bundle, walks the class factory, drives audio + MIDI processing, exposes the
+parameter tree, unit and program lists, note expression, state save/restore and
+the plugin's own editor, and implements the host-side COM interfaces a plugin
+discovers through `IComponentHandler::queryInterface`.
 
 The public surface is a three-stage lifecycle encoded in the type system:
 [`Vst3Library`] holds the loaded DSO and its factory, [`Vst3Loaded`] is an
@@ -17,6 +17,14 @@ The public surface is a three-stage lifecycle encoded in the type system:
 [`Vst3Active<T>`][`Vst3Active`] adds the activation state
 [`Vst3Active::process`] requires. Transitions move ownership, so the compiler
 rejects a call that is illegal in the current state.
+
+Most applications reach it through `tutti-plugin` (feature `vst3`) or
+`tutti-plugin-server`, which give every format one interface. Use it directly
+when you want a VST3 host without the rest of the engine.
+
+The other types you will meet first: [`AudioBuffer`] (the per-block audio),
+[`Vst3InputEvents`] (per-block MIDI and other events), [`PluginInfo`] (the class
+metadata read at load) and [`Vst3Error`] (with [`LoadStage`] for load failures).
 
 ## What it does not own
 
@@ -215,19 +223,15 @@ Everything a plugin sends through these arrives at the one
 - `conformance` — exposes `host::conformance`, a test-only observation seam that
   hands the fully-built `ProcessData` to an installed observer just before
   `IAudioProcessor::process`. The host-conformance tests use it to check what
-  this host assembles against the VST3 spec.
+  this host assembles against the VST3 spec. Enabling it makes the build script
+  compile Steinberg's HostChecker and a reference plugin against the VST3 SDK
+  (the in-repo submodules, or `VST3_SDK_DIR`).
 
-## Testing
+## Threading and real-time safety
 
-`build.rs` compiles `audio-probe`, a reference VST3 plugin, against the SDK
-submodules vendored under `crates/plugin/vendor/vst3-sdk/`. That is
-what lets the suite run on a bare checkout instead of needing `VST3_SDK_DIR` to
-name an external SDK — but **a `git clone` without `--recursive` leaves those
-submodules empty**, and the build script says so. Fix with
-`git submodule update --init --recursive`.
-
-RT-safety regressions run under a disabled global allocator, the same wiring the
-CLAP and VST2 hosts use.
+[`Vst3Active::process`] belongs on the audio thread and does not allocate:
+buffers and event lists are sized at activation. Loading, activation, state and
+the editor belong on the main thread.
 
 ## License
 
@@ -242,6 +246,11 @@ MIT OR Apache-2.0
 [`Vst3Active::set_prefetch`]: crate::Vst3Active::set_prefetch
 [`Vst3Active::set_sample_rate`]: crate::Vst3Active::set_sample_rate
 [`ProcessMode`]: crate::ProcessMode
+[`AudioBuffer`]: crate::AudioBuffer
+[`Vst3InputEvents`]: crate::Vst3InputEvents
+[`PluginInfo`]: crate::PluginInfo
+[`Vst3Error`]: crate::Vst3Error
+[`LoadStage`]: crate::LoadStage
 [`ParameterChanges`]: crate::ParameterChanges
 [`TransportInfo`]: crate::TransportInfo
 [`ProcessOutput`]: crate::ProcessOutput

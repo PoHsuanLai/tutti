@@ -6,39 +6,9 @@
 //! test here builds one with `tempfile`; faking the filesystem would test the
 //! fake, and the layout is the thing under test.
 //!
-//! # What the in-crate unit tests already cover, and what is left
+//! # What these tests pin, beyond the unit tests in `src/bundle.rs`
 //!
-//! `src/bundle.rs`'s eleven `#[test]`s were read first. They cover, and are
-//! deliberately **not** repeated here:
-//!
-//! - `every_native_subdir_is_one_the_all_list_knows` and
-//!   `aarch64_linux_and_the_arm64_windows_spellings_are_all_covered` — both are
-//!   assertions about the *contents of the two constants*. Neither resolves a
-//!   module, so neither notices if a directory is listed but unreachable.
-//! - `a_plain_file_is_not_a_bundle` / `a_missing_path_is_not_a_bundle` — a file
-//!   and a non-existent path. Neither is a *directory*, which is the input the
-//!   `is_file() || !is_dir()` guard lets through to the walk.
-//! - `a_foreign_arch_bundle_is_found_by_any_and_not_by_native` — one foreign
-//!   directory, chosen by `cfg!`. It shows the two entry points differ; it
-//!   does not show that the native one finds anything, nor that every other
-//!   directory in the list is refused.
-//! - `the_import_library_is_never_taken_for_the_module` and
-//!   `a_bundle_of_only_link_byproducts_yields_nothing` — `.lib`/`.exp`/`.pdb`/
-//!   `.ilk` beside a module and alone. Fully covered; nothing is added here.
-//! - `vst2_and_vst3_disagree_about_the_windows_extension` — one `.dll` bundle
-//!   and one `.vst3` bundle, each holding a single file. With one candidate
-//!   present, the enumeration fallback reaches the same answer as the extension
-//!   table, so the table itself is not what the test pins.
-//! - `an_extensionless_binary_resolves_outside_macos_too` (two directories),
-//!   `the_outer_extension_on_the_inner_binary_is_accepted` (the `MacOS` bundle
-//!   -named spelling) and
-//!   `a_named_module_beats_an_enumerated_one_in_an_earlier_directory` (named
-//!   lookup precedes enumeration) — the three name spellings `probe_named`
-//!   tries, on a sample of directories.
-//!
-//! The gaps those leave, and the test that fills each:
-//!
-//! | gap | test |
+//! | property | test |
 //! | --- | --- |
 //! | a module in each of the fourteen listed directories is actually *resolved*, not merely listed | `every_arch_directory_in_the_list_resolves_its_own_module` |
 //! | `native_module_in_bundle` returns `Some` at all, and only for this target's directories | `the_native_walk_finds_this_target_and_refuses_every_other_architecture` |
@@ -46,9 +16,8 @@
 //! | a *subdirectory* is not a loadable module, however it is named | `a_directory_inside_an_arch_dir_is_never_offered_as_the_module` |
 //! | when both extensions are present, the format decides which is the module | `the_format_not_the_directory_listing_picks_between_vst3_and_dll` |
 //!
-//! Each test's doc comment records the mutation to `src/bundle.rs` that was run
-//! to prove the test can fail, per the repo's testing policy. The mutations were
-//! applied one at a time and reverted; `bundle.rs` is unmodified.
+//! Each test's doc comment records a mutation to `src/bundle.rs` that makes it
+//! fail.
 
 use std::fs;
 use std::path::{Path, PathBuf};

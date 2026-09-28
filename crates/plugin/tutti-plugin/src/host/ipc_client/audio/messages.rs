@@ -143,9 +143,9 @@ pub(super) enum Command {
 #[derive(Debug, Clone)]
 pub(super) enum AudioResponse {
     AudioProcessed {
-        /// The block this answers, as echoed by the server. Kept for diagnostics
-        /// and ordering; the slab is what establishes validity.
-        #[allow(dead_code)]
+        /// The block this answers, as echoed by the server: its MIDI-out
+        /// belongs with that block's audio (`take_replies`). The slab is what
+        /// establishes the audio's validity.
         seq: u64,
         midi_out: MidiEventVec,
     },
@@ -154,10 +154,7 @@ pub(super) enum AudioResponse {
     /// connection-level failure that ends every in-flight block. Either way the
     /// host needs no action: the server never published, so the sequence check
     /// fails and silence follows.
-    Error {
-        #[allow(dead_code)]
-        seq: Option<u64>,
-    },
+    Error { seq: Option<u64> },
 }
 
 /// Plugin-originated, unsolicited events observed on the control stream.
@@ -205,11 +202,12 @@ pub enum BridgeEvent {
     },
 }
 
-/// Which aspect of plugin state a `BridgeEvent::Resync` asks the host to
-/// re-read. Distinct from `LatencyChanged`/`ParameterChanged`, which carry the
-/// new value inline; these say only "your cached view of X is stale."
+/// Which aspect of plugin state the plugin asked the host to re-read.
 ///
-/// This is the internal wire vocabulary. The public [`PluginHandle`] callbacks
+/// Unlike a latency or parameter change, these carry no new value; they say
+/// only "your cached view of X is stale."
+///
+/// This is the wire vocabulary. The [`PluginHandle`] callbacks
 /// split it *by consequence* into [`PluginRefresh`] (cosmetic, re-read a cached
 /// view) and [`PluginInvalidation`] (structural, re-plan the graph) — see
 /// [`ResyncKind::classify`].
@@ -228,9 +226,9 @@ pub enum ResyncKind {
 }
 
 impl ResyncKind {
-    /// Split this wire signal into its host-facing consequence: a cosmetic
+    /// Maps this signal to its host-facing consequence: a cosmetic
     /// [`PluginRefresh`] (re-read a cached view, no graph edit) or a structural
-    /// [`PluginInvalidation`] (rewire + PDC re-plan).
+    /// [`PluginInvalidation`] (rewire and re-plan latency compensation).
     pub fn classify(self) -> ResyncClass {
         match self {
             ResyncKind::ParamValues => ResyncClass::Refresh(PluginRefresh::ParamValues),
@@ -251,9 +249,10 @@ pub enum ResyncClass {
     Invalidate(PluginInvalidation),
 }
 
-/// A **cosmetic** plugin→host notification: the host's cached *view* of some
-/// plugin state is stale and should be re-read, but the audio graph is
-/// unaffected. Delivered via
+/// A cosmetic notification that the host's cached view of some plugin state is
+/// stale.
+///
+/// Re-read the state; the audio graph is unaffected. Delivered via
 /// [`PluginHandle::on_refresh`](crate::host::handles::PluginHandle::on_refresh).
 /// Mirrors CLAP `params.rescan(flags)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,9 +263,10 @@ pub enum PluginRefresh {
     ParamTitles,
 }
 
-/// A **structural** plugin→host notification: the plugin changed in a way that
-/// invalidates the audio graph's plan, so the host must rewire and re-run
-/// latency compensation (PDC). Delivered via
+/// A structural notification that the plugin changed in a way that invalidates
+/// the audio graph's plan.
+///
+/// The host must rewire and re-run latency compensation (PDC). Delivered via
 /// [`PluginHandle::on_invalidate`](crate::host::handles::PluginHandle::on_invalidate).
 /// Mirrors CLAP `request_restart()` + `audio_ports.rescan()` + `latency.changed()`.
 ///

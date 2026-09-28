@@ -10,10 +10,8 @@
 //! [`push`](AudioTap::push) is a single atomic load and a return.
 //!
 //! This is the only way to observe master output. The RT callback takes no
-//! host-supplied hook, so the alternative is an `AudioUnit` spliced into
-//! `MasterSources` — which must leave its ring untouched in `reset` (fundsp
-//! clones every vertex on `commit`, so a frontend clone shares the ring and
-//! popping there races the backend's `tick`) and mint a unique `get_id`.
+//! host-supplied hook, so the alternative is a graph node spliced into
+//! `MasterSources`.
 
 use crate::{AtomicBool, Ordering};
 use parking_lot::Mutex;
@@ -34,26 +32,21 @@ type TapProducer = Arc<Mutex<Option<HeapProd<(f32, f32)>>>>;
 /// The consumer end of an opened [`AudioTap`] — stereo frames, in the order the
 /// audio thread pushed them.
 ///
-/// A newtype rather than a bare `ringbuf::HeapCons` so that `ringbuf` stays an
-/// implementation detail of this crate. Returning the raw type would put a
-/// dependency this crate does not re-export into the signature of a public
-/// method: a caller who wants to *name* what [`AudioTap::open`] returned — to
-/// store it in a struct, or write a function over it — would have to add
-/// `ringbuf` to their own manifest and keep the version in lockstep with ours
-/// forever. `tutti-core` and `tutti-io` do not even pin the same feature set
-/// (`default-features = false` here, defaults there), so "just add ringbuf"
-/// is not reliably the same crate instantiation.
-///
-/// [`MicRing`](../../tutti_io/struct.MicRing.html) is the same decision for the
-/// mic capture ring; this is the sibling that was missed.
+/// Drain it from your own thread with [`try_pop`](Self::try_pop). An empty
+/// ring means the callback has not pushed since the last poll, not that the
+/// stream ended.
+// A newtype rather than a bare `ringbuf::HeapCons`, so `ringbuf` stays an
+// implementation detail: a caller can name this type without adding `ringbuf`
+// to their manifest at a matching version. `tutti-io`'s `MicRing` is the same
+// decision for the mic capture ring.
 pub struct TapCons(HeapCons<(f32, f32)>);
 
 impl TapCons {
-    /// Pop one stereo frame, or `None` when the ring is empty.
+    /// Pops one stereo frame, or `None` when the ring is empty.
     ///
     /// Empty means "the callback has not pushed since the last poll", never
-    /// "finished" — see `TapIn`'s `ON_EMPTY` for why that distinction is the
-    /// whole reason the tap is not treated as a finite source.
+    /// "finished" — which is why `tutti-io`'s `TapIn` treats the tap as a live
+    /// source, not a finite one.
     #[inline]
     pub fn try_pop(&mut self) -> Option<(f32, f32)> {
         use ringbuf::traits::Consumer;
@@ -91,8 +84,37 @@ impl std::fmt::Debug for TapCons {
 #[error("the analysis tap already has a consumer; close it before opening again")]
 pub struct TapBusy;
 
-/// Producer half of the analysis tap. Cheap to clone; the audio callback keeps
-/// one and pushes every buffer through it.
+/// The analysis tap: a lock-free copy of the master output for off-thread
+/// consumers.
+///
+/// The producer half. Cheap to clone; the audio callback keeps one and pushes
+/// every buffer through it (see [`meter_output`](crate::meter_output)).
+/// Two kinds of consumer read it, both off the audio thread: **analysis**
+/// (spectrum, pitch, transients) drains the ring directly, and **recording**
+/// goes through `tutti-io`'s `TapIn`, which adapts the consumer end into an
+/// `AudioIn` so a pump can write what the graph is playing to a file.
+///
+/// Opt-in: until someone calls [`open`](Self::open), the audio thread's
+/// [`push`](Self::push) is a single atomic load and a return. The ring holds
+/// 131 072 stereo frames (about 3 seconds at 44.1 kHz); a full ring drops
+/// frames rather than blocking.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_core::AudioTap;
+///
+/// let tap = AudioTap::new();
+/// let mut cons = tap.open().expect("the tap was closed");
+/// assert!(tap.open().is_err(), "one consumer at a time");
+///
+/// // The audio callback pushes interleaved stereo frames.
+/// tap.push(&[0.25, -0.25, 0.5, -0.5], 2);
+/// assert_eq!(cons.try_pop(), Some((0.25, -0.25)));
+/// assert_eq!(cons.occupied_len(), 1);
+///
+/// tap.close();
+/// ```
 #[derive(Clone, Default)]
 pub struct AudioTap {
     on: Arc<AtomicBool>,
@@ -112,13 +134,13 @@ impl std::fmt::Debug for AudioTap {
 }
 
 impl AudioTap {
-    /// A **closed** tap. No ring is allocated until [`open`](Self::open), and
+    /// Creates a **closed** tap. No ring is allocated until [`open`](Self::open), and
     /// [`push`](Self::push) is one atomic load until then.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Open the tap, returning the consumer end. The caller owns it and drains
+    /// Opens the tap, returning the consumer end. The caller owns it and drains
     /// it from its own thread.
     ///
     /// A ring has exactly one reader, so a tap has exactly one consumer:
@@ -128,6 +150,11 @@ impl AudioTap {
     /// like one that is merely idle, so both look like silence.
     ///
     /// Call [`close`](Self::close) first to hand the tap over deliberately.
+    /// Control thread: allocates the ring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TapBusy`] when the tap is already open.
     #[must_use = "the returned consumer is the only handle to the tap ring; drop it and the audio thread pushes into a ring nobody reads"]
     pub fn open(&self) -> Result<TapCons, TapBusy> {
         // Decide under the lock, not against `is_open`: `on` and `producer` are
@@ -148,7 +175,7 @@ impl AudioTap {
         Ok(TapCons(cons))
     }
 
-    /// Close the tap and drop the producer. The consumer sees an empty ring.
+    /// Closes the tap and drops the producer. The consumer sees an empty ring.
     ///
     /// Also the way to hand the tap to a *different* consumer: [`open`](Self::open)
     /// refuses while one is live, so releasing it is an explicit step rather
@@ -173,7 +200,7 @@ impl AudioTap {
         self.on.load(Ordering::Acquire)
     }
 
-    /// Push interleaved stereo samples into the ring.
+    /// Pushes interleaved stereo samples into the ring.
     ///
     /// `frames` is a **frame** count, so `output` must hold at least
     /// `frames * 2` samples.

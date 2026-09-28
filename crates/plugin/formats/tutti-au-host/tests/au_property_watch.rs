@@ -8,9 +8,8 @@
 //! third: a unit that grows or renames parameters leaves a cached range table
 //! denormalizing automation against bounds that are no longer declared.
 //!
-//! `listener.rs` has carried the mechanism for all three the whole time —
-//! `watch_property` on any `kAudioUnitProperty_*` id — and until now nothing
-//! outside a test constructed an `AuParameterListener`. `au_api_surface.rs`
+//! `listener.rs` provides the mechanism for all three — `watch_property` on
+//! any `kAudioUnitProperty_*` id. `au_api_surface.rs`
 //! proves *delivery* works, against `BypassEffect` and `Latency`. What it cannot
 //! prove is that a change to one of these three specific properties arrives,
 //! because no installed AU changes any of them on request:

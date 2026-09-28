@@ -7,14 +7,18 @@ use super::fft::{inverse_fft, real_fft, Complex32};
 use super::unit::*;
 use super::vocoder::*;
 use super::*;
-use tutti_core::{
-    AudioUnit, Cents, ChannelLayout, Radians, ReadRate, Samples, SignalFrame, StretchFactor,
-};
+use tutti_core::{Cents, ChannelLayout, Radians, ReadRate, Samples, StretchFactor};
 
 use std::f32::consts::PI;
 use std::sync::Arc;
 use tutti_analysis::CosineWindow;
-use tutti_core::BufferVec;
+
+/// `size` frames of planar `input` through `Unit::process` into `output`.
+fn planar(u: &mut Unit, size: usize, input: &[Vec<f32>], output: &mut [Vec<f32>]) {
+    let ins: Vec<&[f32]> = input.iter().map(|c| &c[..]).collect();
+    let mut outs: Vec<&mut [f32]> = output.iter_mut().map(|c| &mut c[..]).collect();
+    u.process(size, &ins, &mut outs);
+}
 
 fn sine(freq: f32, sample_rate: f32, len: usize) -> Vec<f32> {
     (0..len)
@@ -54,8 +58,8 @@ fn non_positive_sample_rate_does_not_panic() {
 /// Every input lands in a single turn, and differs from the input by a whole
 /// number of turns -- the two halves of what wrapping means.
 ///
-/// The 1e6 row is the one that is about time rather than range: the `while`
-/// loop this replaced iterated once per 2π, so a large accumulated phase cost
+/// The 1e6 row is the one that is about time rather than range: a `while`
+/// loop that subtracts once per 2π would cost a large accumulated phase
 /// unbounded time on the audio thread. Arithmetic wrapping is O(1), and a
 /// regression to the loop shows up as a hang here rather than as a failure.
 #[test]
@@ -68,7 +72,8 @@ fn wrap_phase_maps_into_a_single_turn() {
         (3.0 * PI, 1e-4),
         (-3.0 * PI, 1e-4),
         (100.0 * tau + 1.0, 1e-4),
-        // A phase large enough that the old per-turn loop would not return.
+        // A phase large enough that a per-turn subtraction loop would not
+        // return.
         (1.0e6, 1e-2),
     ] {
         let w = wrap_phase(Radians(p)).get();
@@ -198,7 +203,8 @@ fn overlap_add_clear_at_zeroes_a_future_slot() {
 
 /// **The window-sum normalization, asserted directly.**
 ///
-/// This is what replaced the hardcoded `COLA_GAIN = 1/1.5`. Two frames landing
+/// The vocoder divides by the accumulated window sum rather than a hardcoded
+/// COLA gain. Two frames landing
 /// on one slot contribute both signal and window energy, and the read divides
 /// one by the other — so a slot covered by twice as much window energy is not
 /// twice as loud.
@@ -298,17 +304,16 @@ fn ring_available_saturates_at_capacity_and_reports_the_overrun() {
 ///
 /// It holds because the unit paces its own source intake at
 /// [`input_rate`](Unit::input_rate) internally. A stretcher emits `stretch`
-/// samples per source sample, but `AudioUnit::tick` hands over exactly one and
+/// samples per source sample, but [`Unit::tick`] hands over exactly one and
 /// takes one back — so the rate change has to happen on the source side, where
 /// the unit can drop or repeat, rather than on the output side, where it
 /// cannot.
 ///
-/// The old formulation consumed one source sample per tick and published
-/// `hop * stretch` per `hop` consumed, leaving a surplus of
-/// `hop * (stretch - 1)` output samples per frame with nowhere to go: measured
-/// 79,231 pending in a 4,096-sample ring at `stretch = 2.0` — nineteen laps —
-/// which made `drain` serve overwritten audio and dropped ~32 of every 256
-/// blocks to silence.
+/// Consuming one source sample per tick while publishing `hop * stretch` per
+/// `hop` consumed would leave a surplus of `hop * (stretch - 1)` output
+/// samples per frame with nowhere to go: 79,231 pending in a 4,096-sample
+/// ring at `stretch = 2.0` (nineteen laps), so `drain` would serve
+/// overwritten audio and drop ~32 of every 256 blocks to silence.
 #[test]
 fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
     // 0.25x — `StretchFactor::MIN` — is deliberately absent, and
@@ -430,13 +435,8 @@ fn the_callers_read_rate_is_bounded_by_the_stretch_clamp() {
 /// none of the original's running state, the same width and parameters, and
 /// the immutable window and phase tables shared by `Arc`.
 ///
-/// Rewritten with the ownership change (doc 013 item 7). This test used to
-/// pin the opposite — a clone sharing the original's `Arc<Bank>`, and
-/// `isolate` severing it — because `Net::commit` cloned every node per graph
-/// edit and a deep copy was 201.8 MB per commit over 640 stereo nodes. The
-/// native graph clones a unit only for `Legacy::controlled`'s shadow and for a
-/// fork, both of which reset what they clone, so the clone is what those need:
-/// fresh.
+/// The graph clones a unit only for a fork, which resets what it clones, so
+/// the clone is what that needs: fresh.
 ///
 /// Mutation (run): `Unit::clone` cloning the vocoders' running state instead
 /// of `clone_fresh` (a `Vocoder` copy of the rings) → the clone's input ring
@@ -486,16 +486,12 @@ fn a_clone_is_a_fresh_filter_on_the_shared_tables() {
 /// owned filter means, and why the `ticker` claim that caught two handles
 /// ticking one shared bank could go.
 ///
-/// Replaces `two_live_handles_ticking_one_bank_is_caught` and
-/// `succession_and_isolation_do_not_trip_the_claim` (the claim and its
-/// succession rules are gone) and `a_successor_generation_continues_the_stream`
-/// (a clone no longer continues its original's stream: nothing commits by
-/// clone any more).
+/// A clone does not continue its original's stream: nothing commits by clone.
 ///
 /// Mutation (run): `Unit::clone` copying the running input ring into the
 /// clone → the clone plays the original's history → fails. The sharing this
 /// guards against (one vocoder bank ticked by two handles) is not a one-line
-/// mutation any more: the unit owns its vocoders by value, so the types rule
+/// mutation: the unit owns its vocoders by value, so the types rule
 /// it out, and this pins what reintroducing a shared bank would break.
 #[test]
 fn a_clone_and_its_original_tick_independently() {
@@ -574,17 +570,11 @@ fn a_clone_renders_identically() {
 
     let mut clone = original.clone();
 
-    // fundsp's `Buffer` is fixed at 64 samples per channel; a larger `size`
-    // reads past it rather than being clamped.
     let size = 64;
-    let mut input_vec = BufferVec::new(2);
-    for i in 0..size {
-        let s = (i as f32 * 0.05).sin() * 0.5;
-        input_vec.buffer_mut().set_f32(0, i, s);
-        input_vec.buffer_mut().set_f32(1, i, s);
-    }
-    let mut out_a = BufferVec::new(2);
-    let mut out_b = BufferVec::new(2);
+    let lane: Vec<f32> = (0..size).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+    let input_vec = vec![lane.clone(), lane];
+    let mut out_a = vec![vec![0.0f32; size]; 2];
+    let mut out_b = vec![vec![0.0f32; size]; 2];
 
     // Enough blocks to clear the fill-up latency: at 2x stretch the vocoder
     // emits nothing until its FIFO holds a whole 2048-sample window, which
@@ -592,15 +582,12 @@ fn a_clone_renders_identically() {
     // silence to silence and prove nothing.
     let mut heard_signal = false;
     for block in 0..128 {
-        original.process(size, &input_vec.buffer_ref(), &mut out_a.buffer_mut());
-        clone.process(size, &input_vec.buffer_ref(), &mut out_b.buffer_mut());
+        planar(&mut original, size, &input_vec, &mut out_a);
+        planar(&mut clone, size, &input_vec, &mut out_b);
 
         for ch in 0..2 {
             for i in 0..size {
-                let (x, y) = (
-                    out_a.buffer_ref().at_f32(ch, i),
-                    out_b.buffer_ref().at_f32(ch, i),
-                );
+                let (x, y) = (out_a[ch][i], out_b[ch][i]);
                 assert_eq!(
                     x, y,
                     "block {block}, channel {ch}, sample {i}: the clone \
@@ -618,7 +605,7 @@ fn a_clone_renders_identically() {
 }
 
 /// **`filter_lanes` is `tick` per frame, bit for bit**: the slot's block read
-/// through the filter against the frame-at-a-time read it replaced, at every
+/// through the filter against the frame-at-a-time read (`tick`), at every
 /// width relation the slot can hand it (narrower, equal, wider than the
 /// unit), stretched, pitched, stretched and pitched, and bypassing; the block
 /// split into runs, as a placed voice leaving its window splits it.
@@ -738,11 +725,9 @@ fn rms(x: &[f32]) -> f32 {
 ///
 /// That contract is what every voice path does and what
 /// `stretch_factor_changes_the_source_consumption_rate` pins, so a pitch test
-/// that fed differently would be measuring a call shape no caller uses. An
-/// earlier draft of this helper advanced a source cursor by
-/// [`Unit::input_rate`] instead; it made all four pitch tests pass while
-/// breaking nine existing ones, because scaling the read *and* the intake
-/// resamples twice and the halves cancel.
+/// that fed differently would be measuring a call shape no caller uses.
+/// Advancing a source cursor by [`Unit::input_rate`] here instead would
+/// scale the read *and* the intake, resampling twice so the halves cancel.
 #[cfg(test)]
 fn render_440(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
     let mut au = u.clone();
@@ -833,8 +818,8 @@ fn pitch_shift_transposes_by_the_requested_interval() {
 /// by advancing its source cursor at [`Unit::input_rate`], which is what a
 /// placed voice does — see
 /// `stretching_a_placed_read_changes_duration_not_pitch`. The two call shapes
-/// give different, individually correct answers, and conflating them is what
-/// made an earlier draft of this fix break nine tests.
+/// give different, individually correct answers; a test must not conflate
+/// them.
 #[test]
 fn a_one_per_tick_feed_makes_stretch_behave_as_varispeed() {
     let sr = 48_000.0f32;
@@ -1025,8 +1010,8 @@ fn stretching_preserves_the_signals_level() {
         u.set_stretch_factor(StretchFactor::new(factor));
 
         let size = 64;
-        let mut input = BufferVec::new(1);
-        let mut out = BufferVec::new(1);
+        let mut input = vec![vec![0.0f32; size]];
+        let mut out = vec![vec![0.0f32; size]];
         let mut phase = 0.0f32;
         let inc = 2.0 * PI * 440.0 / 44_100.0;
         let (mut in_sq, mut in_n) = (0.0f64, 0usize);
@@ -1036,19 +1021,19 @@ fn stretching_preserves_the_signals_level() {
         // the FIFO reaches a whole window.
         const WARM: usize = 500;
         for blk in 0..2000 {
-            for i in 0..size {
+            for slot in input[0].iter_mut() {
                 let s = phase.sin() * 0.5;
                 phase += inc;
-                input.buffer_mut().set_f32(0, i, s);
+                *slot = s;
                 if blk >= WARM {
                     in_sq += (s as f64).powi(2);
                     in_n += 1;
                 }
             }
-            u.process(size, &input.buffer_ref(), &mut out.buffer_mut());
+            planar(&mut u, size, &input, &mut out);
             if blk >= WARM {
-                for i in 0..size {
-                    let v = out.buffer_ref().at_f32(0, i) as f64;
+                for &x in &out[0] {
+                    let v = x as f64;
                     out_sq += v * v;
                     out_n += 1;
                 }
@@ -1080,27 +1065,27 @@ fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
         u.set_stretch_factor(StretchFactor::new(factor));
 
         let size = 64;
-        let mut input = BufferVec::new(1);
-        let mut out = BufferVec::new(1);
+        let mut input = vec![vec![0.0f32; size]];
+        let mut out = vec![vec![0.0f32; size]];
         let mut phase = 0.0f32;
         let inc = 2.0 * PI * 440.0 / 44_100.0;
         let (mut in_sq, mut in_n) = (0.0f64, 0usize);
         let (mut out_sq, mut out_n) = (0.0f64, 0usize);
 
         for blk in 0..2000 {
-            for i in 0..size {
+            for slot in input[0].iter_mut() {
                 let s = phase.sin() * 0.5;
                 phase += inc;
-                input.buffer_mut().set_f32(0, i, s);
+                *slot = s;
                 if blk >= 500 {
                     in_sq += (s as f64).powi(2);
                     in_n += 1;
                 }
             }
-            u.process(size, &input.buffer_ref(), &mut out.buffer_mut());
+            planar(&mut u, size, &input, &mut out);
             if blk >= 500 {
-                for i in 0..size {
-                    let v = out.buffer_ref().at_f32(0, i) as f64;
+                for &x in &out[0] {
+                    let v = x as f64;
                     out_sq += v * v;
                     out_n += 1;
                 }
@@ -1117,9 +1102,9 @@ fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
 
 /// PDC must not compensate for a delay that is not happening.
 ///
-/// `route` reports `latency_samples` to fundsp, which delays every parallel
-/// branch to match. A bypassing unit copies input to output, so reporting a
-/// window there desynchronises the whole graph by 46 ms at the default 2048.
+/// Delay compensation delays every parallel branch to match a reported
+/// latency. A bypassing unit copies input to output, so reporting a window
+/// there would desynchronise the whole graph by 46 ms at the default 2048.
 #[test]
 fn latency_is_zero_while_bypassing_and_a_window_while_processing() {
     let mut u = Unit::with_channels(44_100.0, 2usize);
@@ -1181,8 +1166,8 @@ fn overlap_add_flushes_subnormals() {
 fn creation_and_width() {
     let unit = Unit::new(44100.0);
     assert_eq!(unit.channels(), ChannelLayout::STEREO);
-    assert_eq!(unit.inputs(), 2);
-    assert_eq!(unit.outputs(), 2);
+    // Its in/out arity is its width: one vocoder per channel.
+    assert_eq!(unit.channels().count(), 2);
 
     assert_eq!(
         Unit::with_channels(44_100.0, 6usize).channels(),
@@ -1190,7 +1175,7 @@ fn creation_and_width() {
     );
 }
 
-/// A zero-wide filter would make `inputs()`/`outputs()` lie to the graph.
+/// A zero-wide filter would have no vocoder to carry a channel.
 #[test]
 fn zero_width_is_clamped_to_one() {
     assert_eq!(
@@ -1272,18 +1257,6 @@ fn clone_carries_parameters_and_width() {
     // The atomics are independent after the clone.
     u.set_stretch_factor(StretchFactor::new(2.0));
     assert!((c.stretch_factor().get() - 1.5).abs() < 0.001);
-}
-
-/// `route` must agree with `outputs()`. If it does not, fundsp mis-plans
-/// this node's latency — which corrupts PDC without crashing or obviously
-/// mis-routing audio, so nothing else in the suite would notice.
-#[test]
-fn route_width_tracks_outputs_at_every_width() {
-    for w in [1usize, 2, 6, 8] {
-        let mut u = Unit::with_channels(44_100.0, w);
-        let out = u.route(&SignalFrame::new(w), 44_100.0);
-        assert_eq!(out.len(), u.outputs(), "at channels={w}");
-    }
 }
 
 #[test]
@@ -1443,10 +1416,10 @@ fn vocoder_reconstructs_its_input_at_unity() {
 /// This is what the accumulated window-sum denominator bought, and it is the
 /// test that makes the change load-bearing rather than merely equivalent.
 ///
-/// The old code multiplied by `COLA_GAIN = 1/1.5`, which is
-/// `1 / (4 · mean(hann²))` — a Hann fact at a 75% fact. Under Hamming the same
-/// grid sums to `4 · mean(hamming²) = 1.5896`, so the constant leaves the
-/// output **0.8 dB hot** with nothing erroring; the numbers are all finite and
+/// A constant gain of `1/1.5`, which is `1 / (4 · mean(hann²))`, is a Hann
+/// fact at a 75% fact. Under Hamming the same grid sums to
+/// `4 · mean(hamming²) = 1.5896`, so that constant would leave the output
+/// **0.8 dB hot** with nothing erroring; the numbers are all finite and
 /// the audio merely sounds wrong.
 ///
 /// Blackman is deliberately *not* tested here: it needs 8x overlap
@@ -1544,17 +1517,14 @@ fn six_channel_stretch_reaches_every_channel() {
 /// samples it emits.
 ///
 /// The distinction is the whole shape of this unit. It emits exactly one
-/// sample per `tick`, because that is `AudioUnit`'s contract; the time-scaling
-/// shows up as the source being consumed at `1 / stretch`. So over a fixed
-/// number of ticks a 2x stretch consumes half the source a 1x pass does, and a
-/// 0.5x stretch consumes twice as much.
+/// sample per `tick`, because that is `tick`'s contract;
+/// the time-scaling shows up as the source being consumed at `1 / stretch`.
+/// So over a fixed number of ticks a 2x stretch consumes half the source a 1x
+/// pass does, and a 0.5x stretch consumes twice as much.
 ///
-/// This replaces a test that asserted "2x queues up MORE output than 0.5x".
-/// That was true, but only because the surplus was piling into the output ring
-/// with nowhere to go — it measured the overrun bug rather than the feature.
 /// With the intake paced, both factors emit one sample per tick and the ring
-/// stays bounded, so that assertion is now false and the property it meant to
-/// check lives on the input side.
+/// stays bounded, so the property lives on the input side: "2x queues up more
+/// output than 0.5x" would measure an overrun, not the feature.
 #[test]
 fn stretch_factor_changes_the_source_consumption_rate() {
     const TICKS: usize = 16_384;
@@ -1592,21 +1562,58 @@ fn stretch_factor_changes_the_source_consumption_rate() {
 }
 
 /// A fork of the stretch unit renders the stretch and pitch it was taken
-/// at: `Clone` already gives every copy fresh control cells (and `isolate`
-/// a fresh bank), so no live move reaches it — pinned through the fork
-/// contract's harness like every forkable unit.
+/// at: `Clone` already gives every copy fresh control cells, so no live move
+/// reaches it. The four steps the graph contract's isolate row runs, written
+/// out because the unit is a slot's internal filter, not a graph node: clone and render (*before*);
+/// move the control on the original through `&Unit`; render the clone again
+/// (must be bit-identical); clone again and render (must differ, so the move
+/// is audible and the check can fail).
 ///
 /// Mutation: in `Unit::clone`, share the cells
 /// (`stretch_factor: Arc::clone(&self.stretch_factor)`, likewise pitch) →
 /// "a live move reached the fork" on the matching control.
 #[test]
 fn isolate_snapshots_stretch_and_pitch() {
-    tutti_graph::contract::IsolateRow::new("stretch::Unit (stereo)", || {
+    const FRAMES: usize = 16_384;
+    let make = || {
         let unit = Unit::with_channels(48_000.0, 2usize);
         unit.set_stretch_factor(StretchFactor::new(1.5));
         unit
-    })
-    .control("stretch", |u| u.set_stretch_factor(StretchFactor::new(2.0)))
-    .control("pitch", |u| u.set_pitch_cents(Cents::new(300.0)))
-    .check();
+    };
+    // A copy of `unit`, reset, rendered over a tone under a loud/quiet
+    // envelope.
+    let render = |unit: &Unit| -> Vec<f32> {
+        let mut u = unit.clone();
+        u.reset();
+        let mut out = [0.0f32; 2];
+        let mut rendered = Vec::with_capacity(FRAMES * 2);
+        for i in 0..FRAMES {
+            let env = if (i / 1024) % 2 == 0 { 0.9 } else { 0.05 };
+            let x = env * (core::f32::consts::TAU * 220.0 * i as f32 / 48_000.0).sin();
+            u.tick(&[x, x], &mut out);
+            rendered.extend_from_slice(&out);
+        }
+        rendered
+    };
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let controls: [(&str, fn(&Unit)); 2] = [
+        ("stretch", |u| u.set_stretch_factor(StretchFactor::new(2.0))),
+        ("pitch", |u| u.set_pitch_cents(Cents::new(300.0))),
+    ];
+    for (name, write) in controls {
+        let live = make();
+        let forked = live.clone();
+        let before = render(&forked);
+        write(&live);
+        assert_eq!(
+            bits(&render(&forked)),
+            bits(&before),
+            "{name}: a live move reached the fork"
+        );
+        assert_ne!(
+            bits(&render(&live.clone())),
+            bits(&before),
+            "{name}: moving it did not change a fresh fork's output"
+        );
+    }
 }

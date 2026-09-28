@@ -253,13 +253,18 @@ pub struct SmfTrack {
     pub notes: Vec<SmfNote>,
 }
 
-/// Parse an SMF into per-track paired notes (one [`SmfTrack`] per SMF track,
+/// Parses an SMF into per-track paired notes (one [`SmfTrack`] per SMF track,
 /// note-on/off paired into [`SmfNote`]s, time in beats from the file division).
 ///
 /// Tracks with no notes are still returned (callers skip empties as they see
-/// fit). Only metrical (ticks-per-beat) timing is supported — SMPTE-timed files
-/// return [`Error::MidiUnsupportedTiming`]. The tempo map is not applied; beats
-/// come from the division, matching [`ParsedMidiFile`].
+/// fit). The tempo map is not applied; beats come from the division, matching
+/// [`ParsedMidiFile`].
+///
+/// # Errors
+///
+/// - [`Error::MidiUnsupportedTiming`] if the file uses SMPTE/timecode division.
+/// - [`Error::MidiFileParse`] if the division is zero, or `midly` rejects the
+///   bytes.
 pub fn tracks(data: &[u8]) -> Result<Vec<SmfTrack>> {
     let smf = Smf::parse(data)?;
     let ticks_per_beat = match smf.header.timing {
@@ -280,7 +285,11 @@ pub fn tracks(data: &[u8]) -> Result<Vec<SmfTrack>> {
         .collect())
 }
 
-/// Parse an SMF file at `path` into per-track paired notes. See [`tracks`].
+/// Parses an SMF file at `path` into per-track paired notes. See [`tracks`].
+///
+/// # Errors
+///
+/// [`Error::Io`] if the file cannot be read, otherwise as [`tracks`].
 pub fn tracks_from_path(path: impl AsRef<Path>) -> Result<Vec<SmfTrack>> {
     tracks(&std::fs::read(path.as_ref())?)
 }

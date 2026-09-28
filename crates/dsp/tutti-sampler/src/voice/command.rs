@@ -6,6 +6,7 @@
 //! the stretch filter gets constructed for a voice that needs one, precisely so
 //! the callback never has to.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::stretch;
@@ -15,10 +16,31 @@ use super::slot::{stretch_values_want_filter, stretch_wanted};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tutti_core::{
-    Amplitude, Beat, BeatDuration, Cents, ChannelLayout, PlaybackRate, SamplePosition, SampleRate,
-    StretchFactor,
+    Amplitude, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate, SamplePosition,
+    SampleRate, StretchFactor,
 };
+use tutti_graph::ParamSet;
 use tutti_io::Wave;
+
+/// A node's sample rate, shared with its handle: the node stores it when it
+/// is prepared (control thread), the handle reads it to build a stretch
+/// filter at that rate (control thread). A scalar: no audio-thread read.
+#[derive(Clone, Debug)]
+pub(crate) struct SharedRate(Arc<AtomicU64>);
+
+impl SharedRate {
+    pub(crate) fn new(rate: SampleRate) -> Self {
+        Self(Arc::new(AtomicU64::new(rate.get().to_bits())))
+    }
+
+    pub(crate) fn store(&self, rate: SampleRate) {
+        self.0.store(rate.get().to_bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn load(&self) -> SampleRate {
+        SampleRate(f64::from_bits(self.0.load(Ordering::Relaxed)))
+    }
+}
 
 /// Voice slots a reader holds before its slot vector has to grow.
 ///
@@ -76,7 +98,7 @@ pub enum VoiceCommand {
         /// A stretch filter built by the SENDER, on the control thread, when
         /// `voice.play` asks for stretching.
         ///
-        /// The drain runs inside `tick`/`process`, so building this there would
+        /// The drain runs inside `process`, so building this there would
         /// allocate in the audio callback (an FFT setup plus two `RtScratch`
         /// buffers per channel). [`VoicePoolHandle::send`] fills it in
         /// before the command is queued; the drain only moves it into the slot.
@@ -108,9 +130,8 @@ pub enum VoiceCommand {
         /// The new wave. Shared rather than copied — several voices may read one.
         wave: Arc<Wave>,
     },
-    /// Move the voice's timeline window. The one control that cannot ride
-    /// `AudioUnit::set`, whose `Setting` is a single `f32`; see
-    /// [`VoiceNodeHandle::set_placement`].
+    /// Move the voice's timeline window: a [`Beat`] (`f64`) and an optional
+    /// duration, so not a scalar param; see [`VoiceNodeHandle::set_placement`].
     UpdatePlacement {
         /// The slot to move. `SlotId(0)` for a [`VoiceNode`](super::node::VoiceNode),
         /// whose drain ignores the field.
@@ -348,8 +369,10 @@ impl core::fmt::Display for SendError {
 
 impl std::error::Error for SendError {}
 
-/// The control-thread end of a standalone [`VoiceNode`](super::node::VoiceNode)'s
-/// command channel.
+/// The controls of a standalone [`VoiceNode`](super::node::VoiceNode): what
+/// its `IntoNode` hands back. Its gain, a scalar cell the node reads once per
+/// block, and its placement, sent over the node's command queue (a bounded
+/// lock-free queue the node drains at the top of each block).
 ///
 /// # Why a separate handle rather than reusing [`VoicePoolHandle`]
 ///
@@ -360,57 +383,55 @@ impl std::error::Error for SendError {}
 /// meaningless value for. The commands it accepts are also a strict subset —
 /// `AddVoice` / `Remove` have no meaning for a node that *is* its voice.
 ///
-/// So this carries the sender and nothing else, and its methods name the voice
-/// implicitly. The wire format is shared: [`VoiceCommand`] is the same enum, and
-/// the node's drain is the same `try_recv` loop, so a command gains a consumer
-/// here without gaining a second definition.
+/// So this carries the sender, the gain and the record a fork reads, and its
+/// methods name the voice implicitly. The wire format is shared:
+/// [`VoiceCommand`] is the same enum, and the node's drain is the same
+/// `try_recv` loop, so a command gains a consumer here without gaining a
+/// second definition.
 #[derive(Clone, Debug)]
 pub struct VoiceNodeHandle {
     /// Sends into the node's bounded command queue. No retirement receiver
     /// beside it: a node's single voice lives as long as the node does, so
     /// nothing is ever handed back to be freed.
     pub(crate) tx: Sender<VoiceCommand>,
-    /// The last placement this handle queued, shared with the node and every
-    /// clone of it — see [`PlacementRecord`].
+    /// The last placement this handle queued, shared with the node's fork
+    /// source — see [`PlacementRecord`].
     pub(crate) placement: PlacementRecord,
+    /// The voice's gain: the cell the node reads once per block.
+    pub(crate) gain: Param<Amplitude>,
+    /// The gain by address ([`UnitParam::Volume`](tutti_core::UnitParam)),
+    /// for a host that sets params by address.
+    pub(crate) params: ParamSet,
 }
 
 /// The last placement a [`VoiceNodeHandle`] queued, for a **fork** of the node
 /// to start from.
 ///
-/// A placement rides the command queue, which only the live node drains, and
-/// `VoiceNode::isolate` severs that queue from a copy (a render must not steal
-/// the live node's edits). So a copy taken before a move — the never-processed
-/// snapshot a native graph forks from, taken when the node is inserted — would
-/// otherwise export the clip at the position it had then. The handle records
-/// each move it queues here, and `isolate` applies the latest to the copy.
+/// A placement rides the command queue, which only the live node drains. So
+/// a fork — built by the node's fork source from a copy of the voice taken
+/// when the node was inserted — would otherwise export the clip at the
+/// position it had then. The handle records each move it queues here, and
+/// the fork applies the latest to its copy.
 ///
-/// **Control thread only**: written by the handle, read by `isolate` (which a
-/// fork runs on the control thread); the audio thread never touches it, so it
-/// is a plain lock (the engine's rule for control-thread-only cells). Shared by
-/// every clone, deliberately: it is the record of what the host asked for, and
-/// a fork reads it at fork time.
+/// **Control thread only**: written by the handle, read by the fork source;
+/// the audio thread never touches it, so it is a plain lock (the engine's
+/// rule for control-thread-only cells).
 pub(crate) type PlacementRecord = Arc<std::sync::Mutex<Option<(Beat, Option<BeatDuration>)>>>;
 
 impl VoiceNodeHandle {
-    /// Move the voice's timeline window.
+    /// Moves the voice's timeline window.
     ///
-    /// **The one control that cannot ride `AudioUnit::set`**, which is the whole
-    /// reason this channel exists. `Setting` carries a single `f32`, and a
-    /// placement is a [`Beat`] (`f64`) plus an optional [`BeatDuration`] — two
-    /// values, and a precision the transport cannot afford to lose. Truncating a
-    /// beat position to `f32` re-introduces the ~2²⁴ cliff that
-    /// `Sample.loop_start` was moved to `SamplePosition` (f64) to escape.
+    /// A placement is a [`Beat`] (`f64`) plus an optional [`BeatDuration`] —
+    /// two values, and a precision the transport cannot afford to lose, so it
+    /// is no scalar param (an `f32` beat position loses whole frames past
+    /// ~2²⁴). It rides the node's command queue, and lands on the node's next
+    /// block. Lock-free and allocation-free; the placement is also recorded for
+    /// a fork of the node (see [`send`](Self::send)).
     ///
-    /// Flattened into scalar fields rather than sent as a `VoiceWindow`, which is
-    /// the crate's existing answer for a multi-field control — see
-    /// [`VoiceCommand::UpdatePlacement`], which a pool has drained since before
-    /// this handle existed.
+    /// # Errors
     ///
-    /// The `SlotId` is `SlotId(0)`: a node's single voice is built with that id
-    /// (`VoiceNode::with_channels`), and the drain ignores it. It is in the wire
-    /// format because the format is shared with the pool, not because a node has
-    /// slots.
+    /// As for [`send`](Self::send): [`SendError::Full`] when the queue is full,
+    /// [`SendError::Disconnected`] once the node has been dropped.
     pub fn set_placement(
         &self,
         start_beat: Beat,
@@ -423,7 +444,24 @@ impl VoiceNodeHandle {
         })
     }
 
-    /// Queue a command for the node's next block.
+    /// Sets the voice's gain, from the node's next block on. A write to a
+    /// shared cell: never lost, never queued.
+    pub fn set_gain(&self, gain: Amplitude) {
+        self.params.set(tutti_core::UnitParam::Volume, gain.get());
+    }
+
+    /// The voice's gain, as last set.
+    pub fn gain(&self) -> Amplitude {
+        self.gain.load()
+    }
+
+    /// The node's params by address: its gain, as
+    /// [`UnitParam::Volume`](tutti_core::UnitParam::Volume).
+    pub fn params(&self) -> &ParamSet {
+        &self.params
+    }
+
+    /// Queues a command for the node's next block.
     ///
     /// Public so a host can send anything the node's drain understands, and
     /// fallible for the reason [`VoicePoolHandle::send`] gives: a full queue is
@@ -438,14 +476,21 @@ impl VoiceNodeHandle {
     ///
     /// That silence is deliberate (the wire format is shared with the pool, and
     /// panicking in an audio callback is worse), but it makes this the wrong door
-    /// for anything but placement. A single-voice node's gain rides
-    /// `AudioUnit::set`; its speed and pitch are fixed at construction, so a host
-    /// changing either respawns the voice. Only [`VoicePool`](crate::VoicePool)
-    /// has the live-update path.
+    /// for anything but placement. A single-voice node's gain is
+    /// [`set_gain`](Self::set_gain); its speed and pitch are fixed at
+    /// construction, so a host changing either respawns the voice. Only
+    /// [`VoicePool`](crate::VoicePool) has the live-update path.
     ///
-    /// A placement that is queued is also recorded for a fork of the node
-    /// (`PlacementRecord`); one that is refused is not, so a fork never
-    /// plays a move the live voice did not get.
+    /// A placement that is queued is also recorded for a fork of the node;
+    /// one that is refused is not, so a fork never plays a move the live
+    /// voice did not get.
+    ///
+    /// # Errors
+    ///
+    /// [`SendError::Full`] when the node's 64-command queue is full (transient:
+    /// the node drains it every block); [`SendError::Disconnected`] once the
+    /// node has been dropped (permanent). Either way the command is handed
+    /// back inside the error.
     pub fn send(&self, command: VoiceCommand) -> Result<(), SendError> {
         let placed = match command {
             VoiceCommand::UpdatePlacement {
@@ -477,10 +522,9 @@ impl VoiceNodeHandle {
 /// channel, and the collection point for what the audio thread retires.
 ///
 /// Held by the host (an ECS system, typically) and cloned freely — the sender is
-/// multi-producer. It mirrors the reader's width and sample rate so
-/// [`send`](Self::send) can build a stretch filter that matches, on **this**
-/// thread; both are fixed for the reader's lifetime, so the copies cannot go
-/// stale.
+/// multi-producer. It mirrors the reader's width, and shares the rate the
+/// reader was last prepared at, so [`send`](Self::send) can build a stretch
+/// filter that matches, on **this** thread.
 #[derive(Clone, Debug)]
 pub struct VoicePoolHandle {
     /// Sends into the reader's bounded command queue.
@@ -496,12 +540,13 @@ pub struct VoicePoolHandle {
     /// the right width on the CONTROL thread — see
     /// [`VoiceCommand::AddVoice::stretch`].
     pub(crate) channels: ChannelLayout,
-    /// The reader's sample rate at construction, for the same reason.
-    pub(crate) sample_rate: SampleRate,
+    /// The reader's sample rate, as its `prepare` last stored it, for the
+    /// same reason.
+    pub(crate) rate: SharedRate,
 }
 
 impl VoicePoolHandle {
-    /// Free everything the audio thread has retired since the last call — removed
+    /// Frees everything the audio thread has retired since the last call — removed
     /// slots and surplus stretch filters alike.
     ///
     /// Call this periodically from the control thread — once a frame is ample.
@@ -517,12 +562,12 @@ impl VoicePoolHandle {
         n
     }
 
-    /// Queue a command, doing any allocation it implies **here**, on the calling
+    /// Queues a command, doing any allocation it implies **here**, on the calling
     /// (control) thread.
     ///
     /// This is the one chokepoint every command passes through, which makes it the
     /// right place to keep the audio thread clean: `drain_commands` runs from
-    /// `tick`/`process`, so anything expensive left for the drain is an allocation
+    /// `process`, so anything expensive left for the drain is an allocation
     /// in the callback. That means materialising the stretch filter for an
     /// `AddVoice` **or an `UpdateStretch`** that needs one.
     ///
@@ -553,7 +598,7 @@ impl VoicePoolHandle {
                 voice,
                 stretch: None,
             } if stretch_wanted(&voice.play) => {
-                let unit = stretch::Unit::with_channels(self.sample_rate, self.channels);
+                let unit = stretch::Unit::with_channels(self.rate.load(), self.channels);
                 unit.set_stretch_factor(voice.play.stretch);
                 unit.set_pitch_cents(voice.play.pitch);
                 VoiceCommand::AddVoice {
@@ -575,7 +620,7 @@ impl VoicePoolHandle {
                 pitch_cents,
                 stretch: None,
             } if stretch_values_want_filter(stretch_factor, pitch_cents) => {
-                let unit = stretch::Unit::with_channels(self.sample_rate, self.channels);
+                let unit = stretch::Unit::with_channels(self.rate.load(), self.channels);
                 unit.set_stretch_factor(stretch_factor);
                 unit.set_pitch_cents(pitch_cents);
                 VoiceCommand::UpdateStretch {
@@ -603,7 +648,7 @@ mod tests {
     #[test]
     fn a_full_queue_is_reported_to_the_caller() {
         // Build the pool but never drain it, so the queue fills.
-        let (_pool, handle) = VoicePool::new();
+        let (_pool, handle) = VoicePool::new().with_handle();
 
         for _ in 0..COMMAND_CAPACITY {
             handle
@@ -625,7 +670,7 @@ mod tests {
     /// no-op with nothing to notice it by.
     #[test]
     fn a_dropped_pool_is_reported_as_disconnected() {
-        let (pool, handle) = VoicePool::new();
+        let (pool, handle) = VoicePool::new().with_handle();
         drop(pool);
 
         let err = handle
@@ -642,7 +687,7 @@ mod tests {
     /// rather than an anonymous failure.
     #[test]
     fn the_dropped_command_is_returned() {
-        let (pool, handle) = VoicePool::new();
+        let (pool, handle) = VoicePool::new().with_handle();
         drop(pool);
 
         let err = handle.send(VoiceCommand::Remove(SlotId(7))).unwrap_err();

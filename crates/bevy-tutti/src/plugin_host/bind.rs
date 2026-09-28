@@ -1,23 +1,21 @@
 //! Binding a loaded plugin to the rest of the engine: the meter, and
 //! parameter automation / modulation.
 //!
-//! # What binding no longer has to do
+//! # What binding does not have to do
 //!
 //! **The transport.** The plugin node reads it from each block's `Env` — the
 //! engine's own playhead, with every start, seek, tempo and loop edit on its
 //! frame — so a freshly promoted plugin has the right transport from its
-//! first block, and there is nothing to install (doc 013, Verdicts:
-//! `TransportSource`). It used to receive a stopped default until a system
-//! here installed a transport reader.
+//! first block, and there is nothing to install.
 //!
 //! **Reaching the node.** Binding into the graph is a typestate transition at
 //! insert (`PluginClient::bind`, in `AudioGraphRes::insert_plugin`); the host
 //! keeps the node's [`PluginControls`], captured before it went in, and never
 //! needs the node again.
 //!
-//! **MIDI.** The plugin load captures the plugin's MIDI port as its
-//! `MidiTarget` (`CapturedControls::for_plugin`), so the shared MIDI resolver
-//! finds it like any other target.
+//! **MIDI.** A plugin takes MIDI on its node's event input and sends it on
+//! its event output: route rules, clips, keyboards and `EventSources` wire it
+//! like any other node.
 //!
 //! # Steady-state, not `Added`
 //!
@@ -26,8 +24,7 @@
 //! metronome exists — on project load, plugins instantiate while the engine is
 //! still coming up — and `Added` fires exactly once. A pass over the not-yet-
 //! bound converges whenever the missing half turns up; a one-shot leaves that
-//! plugin at 4/4 forever. This is the rule `midi/registration.rs` states at
-//! length.
+//! plugin at 4/4 forever.
 //!
 //! Binding is idempotent anyway (installing a meter replaces the previous
 //! one), so the marker is an optimisation, not a correctness device.
@@ -44,13 +41,10 @@ use bevy_ecs::prelude::*;
 #[cfg(feature = "modulation")]
 use bevy_log::warn;
 
-use tutti_core::dsp::NodeId;
-use tutti_core::AudioNode;
+use tutti_core::{AudioNode, NodeKey};
 use tutti_plugin::handles::PluginControls;
 
 use crate::graph::MetronomeRes;
-#[cfg(feature = "modulation")]
-use crate::graph::TransportRes;
 use crate::plugin_host::editor::PluginEmitter;
 
 /// A loaded plugin's [`PluginControls`], captured from its node before the node
@@ -66,18 +60,18 @@ use crate::plugin_host::editor::PluginEmitter;
 /// left behind by a node replaced by hand drives nothing.
 #[derive(Component, Debug, Clone)]
 pub struct PluginShadow {
-    node: NodeId,
+    node: NodeKey,
     controls: PluginControls,
 }
 
 impl PluginShadow {
     /// The controls captured from the plugin node that became `node`.
-    pub fn new(node: NodeId, controls: PluginControls) -> Self {
+    pub fn new(node: NodeKey, controls: PluginControls) -> Self {
         Self { node, controls }
     }
 
     /// The graph node these controls were captured from.
-    pub fn node(&self) -> NodeId {
+    pub fn node(&self) -> NodeKey {
         self.node
     }
 
@@ -100,7 +94,7 @@ pub struct PluginMeterBound;
 /// not been bound yet.
 type MeterUnbound = (With<PluginEmitter>, Without<PluginMeterBound>);
 
-/// Give every plugin that lacks it the project meter.
+/// Gives every plugin that lacks it the project meter.
 ///
 /// The plugin's per-block transport — tempo, playhead, loop, recording — comes
 /// from the graph's `Env` and needs nothing installed; the time signature and
@@ -152,6 +146,50 @@ pub fn plugin_bind_meter(
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PluginParamsBound;
 
+/// The automation node feeding a plugin entity's event input
+/// (`PluginControls::automation`), made by [`plugin_bind_params`]. Removing
+/// it (or despawning the entity) removes the node
+/// ([`remove_plugin_automation`]).
+#[cfg(feature = "modulation")]
+#[derive(Component)]
+pub struct PluginAutomationNode {
+    /// The automation node.
+    pub node: AudioNode,
+    /// Its curves.
+    pub controls: tutti_plugin::handles::AutomationControls,
+}
+
+/// The automation feeder's name among a plugin entity's
+/// [`EventFeeds`](crate::graph::EventFeeds).
+#[cfg(feature = "modulation")]
+const AUTOMATION: &str = "plugin automation";
+
+/// Takes a plugin entity's automation node out of the graph when its
+/// [`PluginAutomationNode`] goes (the entity despawned, or the component
+/// removed), and stop feeding it.
+#[cfg(feature = "modulation")]
+pub fn remove_plugin_automation(
+    remove: On<Remove, PluginAutomationNode>,
+    automation: Query<&PluginAutomationNode>,
+    graph: Option<ResMut<crate::graph::AudioGraphRes>>,
+    feeds: Option<ResMut<crate::graph::EventFeeds>>,
+    dirty: Option<ResMut<crate::graph::GraphDirty>>,
+) {
+    let entity = remove.event_target();
+    let Ok(automation) = automation.get(entity) else {
+        return;
+    };
+    if let Some(mut graph) = graph {
+        graph.remove(automation.node);
+    }
+    if let Some(mut feeds) = feeds {
+        feeds.remove(entity, AUTOMATION);
+    }
+    if let Some(mut dirty) = dirty {
+        dirty.0 = true;
+    }
+}
+
 /// What param binding reads off each entity.
 #[cfg(feature = "modulation")]
 type ParamBindItem = (
@@ -176,8 +214,8 @@ type ParamsNeedRebind = (
     )>,
 );
 
-/// Give every param a plugin declares modulatable a per-block accumulator, and
-/// feed those accumulators to the plugin as its automation source.
+/// Gives every param a plugin declares modulatable a per-block accumulator, and
+/// feeds those accumulators to the plugin as its automation source.
 ///
 /// A host declares which params are modulatable with [`ModParamRange`](crate::modulation::ModParamRange), the same
 /// component a native node uses — the difference is only that a plugin's entries
@@ -186,22 +224,21 @@ type ParamsNeedRebind = (
 /// plugin means `PluginHandle::parameters()`, a blocking IPC call with a
 /// five-second timeout that has no business on the frame thread.
 ///
-/// # Why `insert_target` and not `ModTargetRegistry::register::<PluginClient>`
+/// # Why `insert_target` and not a captured `ModParams` handle
 ///
-/// `register` looks like it would work — `PluginClient` implements `ModParams`,
-/// answering on `ParamAddr::Id` (it no longer compiles only because a plugin is
-/// a native node now, not an `AudioUnit`, and `register` asks for the latter).
-/// It would be wrong anyway.
+/// Capturing the client as the entity's `ModParamsHandle` looks like it would
+/// work — `PluginClient` implements `ModParams`, answering on `ParamAddr::Id`.
+/// It would be wrong.
 ///
-/// `register`'s handle is asked again on **every** modulation rebuild, and
+/// A captured handle is asked again on **every** modulation rebuild, and
 /// `PluginControls::param_target` is a *constructor*: it returns a fresh
 /// accumulator each call and stores nothing. So each rebuild would mint a new
 /// `Arc`, hand it to the router, and leave the plugin reading the previous one —
 /// the param would sit silently at its base while the modulation appeared to be
 /// connected.
 ///
-/// A native node survives this **not** because it returns an existing
-/// accumulator — `atomic_target` also constructs a fresh `AtomicTarget` every
+/// A node with a `ParamSet` survives this **not** because it returns an
+/// existing accumulator — `ParamSetTargets` also constructs a fresh `AtomicTarget` every
 /// call — but because the accumulator it builds *mirrors into the node's own
 /// `AtomicF32`*, which the node keeps reading. The `Arc` is new; the cell it
 /// writes through is the same one. That is a narrower guarantee than it looks,
@@ -231,17 +268,19 @@ type ParamsNeedRebind = (
 pub fn plugin_bind_params(
     mut commands: Commands,
     registry: Option<ResMut<crate::modulation::ModTargetRegistry>>,
-    transport: Option<Res<TransportRes>>,
-    changed: Query<ParamBindItem, ParamsNeedRebind>,
+    graph: Option<ResMut<crate::graph::AudioGraphRes>>,
+    mut feeds: ResMut<crate::graph::EventFeeds>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
+    changed: Query<(ParamBindItem, Option<&PluginAutomationNode>), ParamsNeedRebind>,
 ) {
     if changed.is_empty() {
         return;
     }
-    let (Some(mut registry), Some(transport)) = (registry, transport) else {
+    let (Some(mut registry), Some(mut graph)) = (registry, graph) else {
         return;
     };
 
-    for (entity, node, shadow, ranges) in changed.iter() {
+    for ((entity, node, shadow, ranges), existing) in changed.iter() {
         let Some(client) = shadow.controls_for(node) else {
             continue; // captured for another node — retried next frame
         };
@@ -274,13 +313,20 @@ pub fn plugin_bind_params(
             });
         }
 
-        if timed.is_empty() {
-            client.clear_param_automation_source();
-        } else {
-            // The rate is the node's own — `set_param_automation_source`
-            // supplies it and re-stamps the source on a device change, so
-            // passing `config.sample_rate` here could only agree or be wrong.
-            client.set_param_automation_source(timed, (**transport).clone());
+        // The automation is a node of its own, fed into this entity's event
+        // input: kept across rebinds (and across a crossfade to another
+        // plugin, whose node the feed follows), its curves replaced in place.
+        match existing {
+            Some(automation) => automation.controls.set_params(timed),
+            None if !timed.is_empty() => {
+                let (node, controls) = graph.insert(client.automation(timed));
+                feeds.set(entity, AUTOMATION, vec![node.into()]);
+                dirty.0 = true;
+                commands
+                    .entity(entity)
+                    .insert(PluginAutomationNode { node, controls });
+            }
+            None => {}
         }
 
         commands.entity(entity).insert(PluginParamsBound);

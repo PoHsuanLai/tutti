@@ -17,8 +17,9 @@
 
 use std::path::Path;
 
-use tutti_core::BufferVec;
-use tutti_core::{Amplitude, AudioUnit, Hz, Seconds, Spread, Q};
+use tutti_core::{Amplitude, Hz, Samples, Seconds, Spread, Q};
+use tutti_graph::contract::Direct;
+use tutti_graph::{Event, Offset};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -43,8 +44,12 @@ fn flat_envelope() -> EnvelopeConfig {
 }
 
 fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
-    let mut synth = PolySynth::new(cfg).expect("synth builds");
-    let events: Vec<MidiEvent> = notes
+    let rate = cfg.sample_rate;
+    // Driven as a graph drives it: `Node::process`, the notes on its event
+    // input in the first block.
+    let mut synth = Direct::new(PolySynth::new(cfg).expect("synth builds"), rate, BLOCK);
+    let at = Offset::new(0, Samples(BLOCK)).expect("inside");
+    let events: Vec<Event> = notes
         .iter()
         .map(|&n| {
             MidiEvent::note_on(
@@ -54,18 +59,15 @@ fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
                 midi1_velocity_to_midi2(100),
             )
         })
+        .map(|e: MidiEvent| Event::midi(at, e.data))
         .collect();
-    synth.midi_sender().queue(&events);
+    synth.events(0, &events);
 
-    let input = BufferVec::new(2);
-    let mut buf = BufferVec::new(2);
     let (mut l, mut r) = (Vec::new(), Vec::new());
     for _ in 0..BLOCKS {
-        synth.process(BLOCK, &input.buffer_ref(), &mut buf.buffer_mut());
-        for i in 0..BLOCK {
-            l.push(buf.buffer_ref().at_f32(0, i));
-            r.push(buf.buffer_ref().at_f32(1, i));
-        }
+        synth.block();
+        l.extend_from_slice(synth.output(0));
+        r.extend_from_slice(synth.output(1));
     }
     (l, r)
 }

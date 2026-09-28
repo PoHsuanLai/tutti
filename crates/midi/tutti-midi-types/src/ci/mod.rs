@@ -100,7 +100,7 @@ impl Muid {
         ]
     }
 
-    /// Reassemble from four little-endian 7-bit wire bytes.
+    /// Reassembles from four little-endian 7-bit wire bytes.
     #[inline]
     pub fn from_bytes(b: [u8; 4]) -> Self {
         Muid(
@@ -237,7 +237,7 @@ impl CiMessage {
         }
     }
 
-    /// Encode the full CI byte payload (the bytes carried *inside* a SysEx,
+    /// Encodes the full CI byte payload (the bytes carried *inside* a SysEx,
     /// starting at `0x7E`, without the 0xF0/0xF7 delimiters).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -288,7 +288,7 @@ impl CiMessage {
         out
     }
 
-    /// Decode a CI byte payload (as produced by [`encode`](Self::encode) or
+    /// Decodes a CI byte payload (as produced by [`encode`](Self::encode) or
     /// reassembled by [`sysex7_to_ci`]) into a typed message, or `None` if the
     /// bytes aren't a CI message this layer models.
     pub fn decode(bytes: &[u8]) -> Option<CiMessage> {
@@ -339,14 +339,14 @@ impl CiMessage {
     }
 }
 
-/// Encode `message` and fragment it onto `out` as SysEx7 packets on `group`
+/// Encodes `message` and fragments it onto `out` as SysEx7 packets on `group`
 /// (the CI transport). Thin wrapper over [`MidiEvent::sysex7_fragments`].
 pub fn ci_to_sysex7(group: MidiGroup, message: &CiMessage, out: &mut Vec<MidiEvent>) {
     let body = message.encode();
     MidiEvent::sysex7_fragments(group, &body, out);
 }
 
-/// Reassemble a run of SysEx7 packets (as emitted by [`ci_to_sysex7`]) back into
+/// Reassembles a run of SysEx7 packets (as emitted by [`ci_to_sysex7`]) back into
 /// a [`CiMessage`], or `None` if they don't form one. Concatenates each packet's
 /// payload via [`MidiEvent::sysex7_payload`] then decodes.
 pub fn sysex7_to_ci(events: &[MidiEvent]) -> Option<CiMessage> {

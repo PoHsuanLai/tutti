@@ -11,17 +11,16 @@
 //! results back — is likewise only linked under `wav`.
 //!
 //! Every graph here is built with `tutti_graph::GraphBuilder` and rendered
-//! as a `RenderGraph` (doc 013 Phase 3 PR 8); how the graph's renders
-//! compare with what fundsp's `Net` rendered is `graph_source.rs`'s.
+//! as a `RenderGraph`; the golden-digest pins live in `graph_source.rs`.
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
-use tutti_core::{Amplitude, AudioUnit, Hz, SampleRate};
+use tutti_core::{Amplitude, Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
     ExportConfig, FrozenClock, RenderClock, RenderConfig, RenderGraph, Resample,
 };
-use tutti_graph::GraphBuilder;
+use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::{Const, Osc};
 
 /// The rate [`config`] renders at.
@@ -37,7 +36,7 @@ fn built(g: GraphBuilder, rate: SampleRate) -> RenderGraph {
 /// A stereo DC at 0.5, built for an export at `rate`.
 fn dc(rate: SampleRate) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(Const::frame(&[0.5, 0.5])));
+    let id = g.add(Const::frame(&[0.5, 0.5]));
     g.pipe_output(id);
     built(g, rate)
 }
@@ -99,7 +98,7 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("q.wav");
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let id = g.add_unit(Box::new(Const::mono(0.5)));
+    let id = g.add(Const::mono(0.5));
     g.pipe_output(id);
     render_to_file(
         built(g, RATE),
@@ -126,10 +125,8 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
 
 /// The clock is advanced once per block, by exactly the frames produced.
 ///
-/// This is the test the old `transport()` setter never had: sabotaging that
-/// setter to discard its argument passed all 45 tests, even though its own doc
-/// warned the failure mode was total silence. A clock that is never advanced
-/// leaves every placed voice at beat 0.
+/// A clock that is never advanced leaves every placed voice at beat 0, and
+/// the failure mode is total silence.
 #[test]
 fn the_clock_advances_by_exactly_the_frames_rendered() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -218,8 +215,10 @@ fn a_tail_lengthens_the_output_by_exactly_the_tail() {
 fn a_convolver_reports_its_ir_ring_out() {
     let ir = vec![0.5f32; 4096];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(Const::mono(0.5)));
-    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
+    let src = g.add(Const::mono(0.5));
+    let conv = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir))
+        .0;
     g.connect(src, 0, conv, 0).pipe_output(conv);
 
     assert_eq!(
@@ -236,9 +235,13 @@ fn cascaded_convolvers_sum_their_tails() {
     let a = vec![0.5f32; 1024];
     let b = vec![0.5f32; 2048];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(Const::mono(0.5)));
-    let first = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&a)));
-    let second = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&b)));
+    let src = g.add(Const::mono(0.5));
+    let first = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&a))
+        .0;
+    let second = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&b))
+        .0;
     g.connect(src, 0, first, 0)
         .connect(first, 0, second, 0)
         .pipe_output(second);
@@ -254,58 +257,35 @@ fn cascaded_convolvers_sum_their_tails() {
 ///
 /// `known()` still gives the sum over what spoke, so the two accessors disagree
 /// — which is the whole reason there are two. The unreporting node has to be
-/// constructed deliberately now that the stock fundsp nodes all answer.
+/// constructed deliberately now that the engine's stock nodes all answer.
 #[test]
 fn one_silent_node_makes_the_figure_partial_without_losing_it() {
-    /// A node that has never been taught to report a tail: the `AudioUnit`
-    /// default, which is what any newly-written node starts as.
+    /// A node that does not know its tail (`Tail::Unknown`): what a node that
+    /// has not measured its own ring-out declares.
     #[derive(Clone, Default)]
     struct Unreporting;
 
-    impl AudioUnit for Unreporting {
+    impl Node for Unreporting {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+                .with_tail(tutti_types::Tail::Unknown)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            let (ins, mut outs) = io.split();
+            outs.get(0).copy_from_slice(ins.get(0));
+            Status::Modified
+        }
         fn reset(&mut self) {}
-        fn set_sample_rate(&mut self, _: tutti_core::SampleRate) {}
-        fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-            output[0] = input[0];
-        }
-        fn process(
-            &mut self,
-            size: usize,
-            input: &tutti_core::BufferRef,
-            output: &mut tutti_core::BufferMut,
-        ) {
-            for i in 0..size {
-                output.set_f32(0, i, input.at_f32(0, i));
-            }
-        }
-        fn inputs(&self) -> usize {
-            1
-        }
-        fn outputs(&self) -> usize {
-            1
-        }
-        fn route(&mut self, input: &tutti_core::SignalFrame, _: f64) -> tutti_core::SignalFrame {
-            input.clone()
-        }
-        fn get_id(&self) -> u64 {
-            0xDEAD_BEEF
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
-        }
-        fn footprint(&self) -> usize {
-            std::mem::size_of::<Self>()
-        }
     }
 
     let ir = vec![0.5f32; 4096];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(Const::mono(0.5)));
-    let quiet = g.add_unit(Box::new(Unreporting));
-    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
+    let src = g.add(Const::mono(0.5));
+    let quiet = g.add(ForkByClone(Unreporting));
+    let conv = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir))
+        .0;
     g.connect(src, 0, quiet, 0)
         .connect(quiet, 0, conv, 0)
         .pipe_output(conv);
@@ -339,8 +319,8 @@ fn a_graph_of_stock_nodes_reports_a_spendable_tail() {
 /// A stereo integrator: `y[n] = y[n-1] + x[n]`, per channel.
 ///
 /// The smallest node that genuinely never decays — a feedback loop with a gain
-/// of exactly one, the limit of the FDN reverb (fundsp's `reverb_stereo`) this
-/// test used to reach for. The engine ships no node that reports
+/// of exactly one, the limit of an FDN reverb. The engine ships no node that
+/// reports
 /// [`Tail::Unbounded`]: `ConvolverNode`, its reverb, is an FIR and reports a
 /// finite ring-out (the cases above). So the property under test — that
 /// `resolve` spends exactly the caller's cap on a graph that never decays —
@@ -350,48 +330,24 @@ fn a_graph_of_stock_nodes_reports_a_spendable_tail() {
 #[derive(Clone, Default)]
 struct Integrator([f32; 2]);
 
-impl AudioUnit for Integrator {
-    fn inputs(&self) -> usize {
-        2
+impl Node for Integrator {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
+            .with_tail(tutti_types::Tail::Unbounded)
     }
-    fn outputs(&self) -> usize {
-        2
-    }
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.0[0] += input[0];
-        self.0[1] += input[1];
-        output[..2].copy_from_slice(&self.0);
-    }
-    fn process(
-        &mut self,
-        size: usize,
-        input: &tutti_core::BufferRef,
-        output: &mut tutti_core::BufferMut,
-    ) {
-        for i in 0..size {
-            for c in 0..2 {
-                self.0[c] += input.at_f32(c, i);
-                output.set_f32(c, i, self.0[c]);
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let (ins, mut outs) = io.split();
+        for c in 0..2 {
+            for (y, &x) in outs.get(c).iter_mut().zip(ins.get(c)) {
+                self.0[c] += x;
+                *y = self.0[c];
             }
         }
+        Status::Modified
     }
-    fn route(&mut self, input: &tutti_core::SignalFrame, _: f64) -> tutti_core::SignalFrame {
-        input.clone()
-    }
-    fn get_id(&self) -> u64 {
-        tutti_core::mnemonic(b"TSTINTEG")
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn tail(&mut self) -> tutti_types::Tail {
-        tutti_types::Tail::Unbounded
-    }
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
+    fn reset(&mut self) {
+        self.0 = [0.0; 2];
     }
 }
 
@@ -406,8 +362,8 @@ impl AudioUnit for Integrator {
 #[test]
 fn resolving_an_unbounded_graph_spends_the_cap() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let src = g.add_unit(Box::new(Const::frame(&[0.5, 0.5])));
-    let rev = g.add_unit(Box::new(Integrator::default()));
+    let src = g.add(Const::frame(&[0.5, 0.5]));
+    let rev = g.add(ForkByClone(Integrator::default()));
     g.connect(src, 0, rev, 0)
         .connect(src, 1, rev, 1)
         .pipe_output(rev);
@@ -431,8 +387,10 @@ fn resolving_an_unbounded_graph_spends_the_cap() {
 fn resolving_a_reported_graph_keeps_its_own_figure() {
     let ir = vec![0.5f32; 4096];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(Const::mono(0.5)));
-    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
+    let src = g.add(Const::mono(0.5));
+    let conv = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir))
+        .0;
     g.connect(src, 0, conv, 0).pipe_output(conv);
 
     let reported = built(g, RATE).reported_tail();
@@ -449,12 +407,16 @@ fn resolving_a_reported_graph_keeps_its_own_figure() {
 /// This is what makes the mechanism usable: one unreporting node on the output
 /// path makes the whole graph's tail unspendable, so declaring `None` on the
 /// nodes that genuinely have none is load-bearing, not cosmetic.
+///
+/// Mutation (run): `.with_tail(Tail::Unknown)` in `DistortionNode::shape` →
+/// fails. (`Shape::audio` starts at `Tail::None`, so a node that forgot to
+/// declare would pass here; the declaration is kept explicit on the node.)
 #[test]
 fn a_stateless_node_reports_no_tail_rather_than_an_unknown_one() {
-    use tutti_core::AudioUnit;
+    use tutti_graph::Node;
 
-    let mut dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0);
-    assert_eq!(dist.tail(), tutti_types::Tail::None);
+    let dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0);
+    assert_eq!(dist.shape().tail, tutti_types::Tail::None);
 }
 
 /// `render_to_buffers` reports the rate its samples are actually at, and gives
@@ -523,9 +485,7 @@ fn a_caller_can_compose_normalization() {
 /// A requested resample reaches the file: the header carries the target rate,
 /// and the frame count matches the converted duration.
 ///
-/// `render_to_file` used to accept `sample_rate` and silently ignore it on the
-/// in-memory path while honouring it on the file path — two terminals with the
-/// same settings and different behaviour.
+/// The file path must honour the resample the config asks for.
 #[test]
 fn a_resample_request_reaches_the_file() {
     let d = tempfile::tempdir().unwrap();
@@ -592,10 +552,10 @@ fn normalized_audio_can_be_written_to_every_format() {
 /// A resample must reach **every** format, not just the ones that happened to
 /// route through the shared pump.
 ///
-/// FLAC and Ogg used to pull from `drive` directly while still taking their
-/// header rate from `encoder_rate`, so each wrote un-resampled audio under a
-/// header claiming the target: a 1 s render played back 8.8% fast. WAV and AIFF
-/// were correct, which is exactly why a WAV-only test could not see it.
+/// An encoder that pulled from `drive` directly while taking its header rate
+/// from `encoder_rate` would write un-resampled audio under a header claiming
+/// the target (a 1 s render playing back 8.8% fast), which a WAV-only test
+/// cannot see.
 #[test]
 fn a_resample_reaches_every_format_not_just_wav() {
     let d = tempfile::tempdir().unwrap();
@@ -817,8 +777,8 @@ fn a_sub_gating_block_render_normalizes_without_poisoning_the_signal() {
 }
 
 /// R128 meters any channel count, so a surround export normalizes against its
-/// own loudness. Pins the removal of the old stereo-only restriction: it must
-/// not error, and must not silently switch to a different metric.
+/// own loudness: it must not error, and must not silently switch to a
+/// different metric.
 #[test]
 fn surround_normalizes_rather_than_falling_back_to_peak() {
     use tutti_export::{render_normalized_to_file, Normalize};
@@ -826,7 +786,7 @@ fn surround_normalizes_rather_than_falling_back_to_peak() {
 
     let d = tempfile::tempdir().unwrap();
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
-    let id = g.add_unit(Box::new(Const::frame(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6])));
+    let id = g.add(Const::frame(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]));
     g.pipe_output(id);
 
     let mut cfg = config(
@@ -919,11 +879,11 @@ fn int_file_peak(path: &std::path::Path) -> f32 {
 
 /// **Normalizing silence must write silence.**
 ///
-/// `render_to_buffers` used to dither, so at an integer depth the planes handed
-/// to the meter were not silent — they carried ±1 LSB of noise. The meter read
-/// that as the signal (~-86 dBTP), the gain came back at ~+86 dB, and
-/// `apply_gain` amplified the noise: a "normalized" export of silence landed
-/// near full scale.
+/// If `render_to_buffers` dithered, at an integer depth the planes handed to
+/// the meter would not be silent — they would carry ±1 LSB of noise. The meter
+/// would read that as the signal (~-86 dBTP), the gain would come back at
+/// ~+86 dB, and `apply_gain` would amplify the noise: a "normalized" export of
+/// silence would land near full scale.
 ///
 /// Dither belongs at the encode boundary, where the LSB is known; buffers are
 /// `f32` and quantize to nothing.
@@ -934,7 +894,7 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
 
     let silence = || {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-        let id = g.add_unit(Box::new(Const::frame(&[0.0, 0.0])));
+        let id = g.add(Const::frame(&[0.0, 0.0]));
         g.pipe_output(id);
         built(g, RATE)
     };
@@ -982,11 +942,9 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     // Energy near Nyquist, with its true peak *between* samples, is what SRC
     // overshoots on; a DC constant barely moves and would hide the bug entirely.
     //
-    // A sine at a quarter of the 44.1 kHz render rate, started at 0.546 turns.
-    // That is what the fundsp `square_hz(11025.0)` this test used to build
-    // rendered: a band-limited square at fs/4 keeps no harmonic below Nyquist
-    // but its fundamental, and its phase came from the graph's hash — measured,
-    // not assumed. At that phase the samples are ±0.285 and ±0.958 of the peak
+    // A sine at a quarter of the 44.1 kHz render rate, started at 0.546 turns
+    // (a band-limited square at fs/4 keeps no harmonic below Nyquist but its
+    // fundamental, so it renders the same). At that phase the samples are ±0.285 and ±0.958 of the peak
     // (±0.279 / ±0.939 at this amplitude of 0.98).
     //
     // The property that matters is where the meter looks. It estimates true
@@ -1004,7 +962,7 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
             .with_phase(tutti_core::Phase(0.546))
             .with_amplitude(Amplitude(0.98))
             .with_layout(ChannelLayout::STEREO);
-        let id = g.add_unit(Box::new(tone));
+        let id = g.add(tone);
         g.pipe_output(id);
         built(g, RATE)
     };
@@ -1099,11 +1057,11 @@ fn a_width_the_old_dispatch_rejected_now_exports() {
             "width {width} should be an unnamed layout"
         );
 
-        // A net as wide as the file, carrying a distinct constant per channel so
+        // A graph as wide as the file, carrying a distinct constant per channel so
         // a dropped or duplicated channel is visible.
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
         for c in 0..width as usize {
-            let id = g.add_unit(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
+            let id = g.add(Const::mono(0.1 + 0.05 * c as f32));
             g.connect_output(id, 0, c);
         }
 
@@ -1158,7 +1116,7 @@ fn an_odd_width_round_trips_through_buffers() {
         let layout = ChannelLayout::from(width);
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
         for c in 0..width as usize {
-            let id = g.add_unit(Box::new(Const::mono(0.25)));
+            let id = g.add(Const::mono(0.25));
             g.connect_output(id, 0, c);
         }
 
@@ -1177,14 +1135,14 @@ fn an_odd_width_round_trips_through_buffers() {
 
 /// An odd width must survive a resample too — that path deinterleaves into
 /// planes and re-interleaves them, so it is where a stride mistake at a width
-/// the old code never saw would surface.
+/// that is rarely exercised would surface.
 #[test]
 fn an_odd_width_survives_a_resample() {
     let d = tempfile::tempdir().unwrap();
     let width = 5u16;
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(width));
     for c in 0..width as usize {
-        let id = g.add_unit(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
+        let id = g.add(Const::mono(0.1 + 0.05 * c as f32));
         g.connect_output(id, 0, c);
     }
 

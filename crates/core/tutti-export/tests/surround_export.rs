@@ -7,11 +7,10 @@
 //! placed energy — i.e. the surround producer and the multi-channel export path
 //! work together without any DAW/ECS layer.
 //!
-//! The graphs are native (`tutti_graph::GraphBuilder`, rendered as a
-//! `RenderGraph`; doc 013 Phase 3 PR 8), and the mix is
-//! `tutti_spatial::vbap_mix_parts` wired on the builder — the same units and
-//! edges `build_vbap_mix` puts in a `Net` (`tutti-spatial`'s
-//! `tests/vbap_mix_parts.rs` pins the two bit-identical).
+//! The graphs are `tutti_graph`'s (`GraphBuilder`, rendered as a
+//! `RenderGraph`), and the mix is
+//! `tutti_spatial::build_vbap_mix` on the builder (`tutti-spatial`'s
+//! `tests/vbap_mix_parts.rs` pins it against the parts wired by hand).
 
 #![cfg(feature = "wav")]
 
@@ -49,41 +48,16 @@ fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::P
     .expect("export");
 }
 use tutti_nodes::testing::Const;
-use tutti_spatial::{vbap_mix_parts, VbapMixNode, VbapSource};
+use tutti_spatial::VbapSource;
 
-/// Assemble a VBAP mix of `sources` into `g` and return the summed mix node —
-/// `build_vbap_mix` for the builder: `vbap_mix_parts`' units added, and every
-/// one of its edges wired, the sources resolved by position in `sources`.
+/// Assemble a VBAP mix of `sources` into `g` and return the summed mix node
+/// (`build_vbap_mix`, which builds into a `GraphBuilder`).
 fn vbap_mix(
     g: &mut GraphBuilder,
     layout: ChannelLayout,
     sources: &[VbapSource<NodeKey>],
 ) -> Result<NodeKey, tutti_spatial::VbapError> {
-    let parts = vbap_mix_parts(layout, sources)?;
-    let edges = parts.edges().to_vec();
-    let panners: Vec<NodeKey> = parts
-        .panners
-        .into_iter()
-        .map(|p| g.add_unit(Box::new(p)))
-        .collect();
-    let lfe = parts.lfe.map(|send| {
-        (
-            g.add_unit(Box::new(send.sum)),
-            g.add_unit(Box::new(send.lowpass)),
-        )
-    });
-    let sum = g.add_unit(Box::new(parts.sum));
-    let key = |n: VbapMixNode| match n {
-        VbapMixNode::Source(i) => sources[i].node,
-        VbapMixNode::Panner(i) => panners[i],
-        VbapMixNode::LfeSum => lfe.expect("an LFE edge implies the send").0,
-        VbapMixNode::LfeLowpass => lfe.expect("an LFE edge implies the send").1,
-        VbapMixNode::Sum => sum,
-    };
-    for e in edges {
-        g.connect(key(e.from), e.from_port, key(e.to), e.to_port);
-    }
-    Ok(sum)
+    tutti_spatial::build_vbap_mix(g, layout, sources)
 }
 
 /// Build a quad surround graph via the engine's VBAP mix: one source at the
@@ -92,8 +66,8 @@ fn vbap_mix(
 fn quad_surround_graph() -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
 
-    let src_front = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
-    let src_rear = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src_front = g.add(Const::frame(&[1.0, 1.0]));
+    let src_rear = g.add(Const::frame(&[1.0, 1.0]));
 
     let mix = vbap_mix(
         &mut g,
@@ -149,12 +123,12 @@ fn quad_surround_graph_exports_a_four_channel_wav_with_rear_energy() {
     );
 }
 
-/// The Stage-4 export path: a graph that starts at the **device (stereo)
+/// The widened export path: a graph that starts at the **device (stereo)
 /// output** width — exactly what the live engine produces — is widened offline
 /// and re-piped to a surround master before export. This mirrors what a host
-/// does to the graph it exports (a `Net`'s `set_output_arity`; on the native
-/// graph, the topology's global outputs grown), and proves widening a stereo
-/// graph does NOT lose the surround channels.
+/// does to the graph it exports (on `tutti_graph`, the topology's global
+/// outputs grown), and proves widening a stereo graph does NOT lose the
+/// surround channels.
 ///
 /// Mutation (run): widen *after* `pipe_output` → only the first two global
 /// outputs are wired, the file is 4-wide with silent rears, and the rear-left
@@ -164,8 +138,8 @@ fn stereo_net_widened_then_exports_four_channels() {
     // Build the surround producer inside a STEREO-output graph (like the live one).
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     assert_eq!(g.outputs(), 2, "starts at device stereo width");
-    let src_front = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
-    let src_rear = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src_front = g.add(Const::frame(&[1.0, 1.0]));
+    let src_rear = g.add(Const::frame(&[1.0, 1.0]));
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::QUAD,
@@ -229,7 +203,7 @@ fn stereo_net_widened_then_exports_four_channels() {
 #[test]
 fn surround_5_1_export_places_center_and_feeds_lfe() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
-    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src = g.add(Const::frame(&[1.0, 1.0]));
     // A single dead-center source.
     let mix = vbap_mix(
         &mut g,
@@ -300,7 +274,7 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
 #[test]
 fn surround_5_1_downmixes_center_to_both_stereo_channels() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
-    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src = g.add(Const::frame(&[1.0, 1.0]));
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(6u16),
@@ -339,10 +313,10 @@ fn surround_5_1_downmixes_center_to_both_stereo_channels() {
     );
     // The dominant C channel (not just the front L/R spill) must be folded in.
     // With the fold `Lo = FL + 0.707·C` peaks at ≈1.71 (front spill ≈1.0 plus
-    // 0.707·C, C≈1.0). If C were dropped — the old truncating channel-pick — `Lo`
+    // 0.707·C, C≈1.0). If C were dropped — a truncating channel-pick — `Lo`
     // would peak at only the front spill (≈0.71). The `> 1.2` threshold sits
-    // firmly between the two, so this fails the instant C stops being folded.
-    // This is the assertion the old test lacked: it passed on the spill alone.
+    // firmly between the two, so this fails the instant C stops being folded;
+    // a test on the spill alone would pass either way.
     assert!(
         peak_l > 1.2,
         "C channel was dropped, not folded — |Lo| peaked at {peak_l} (expect ≈1.71 with the C fold)"
@@ -350,14 +324,14 @@ fn surround_5_1_downmixes_center_to_both_stereo_channels() {
 }
 
 /// A STEREO graph exported to a MONO file must AVERAGE L+R, not keep only the
-/// left channel. Regression guard: the render→frame fold previously picked a
-/// single source channel per destination, so `n_out=2 → CH=1` silently dropped
-/// the right channel. Distinct constant L/R make the drop visible.
+/// left channel. A fold that picked a single source channel per destination
+/// would silently drop the right channel at `n_out=2 → CH=1`. Distinct
+/// constant L/R make the drop visible.
 #[test]
 fn stereo_graph_exports_folded_mono_not_left_only() {
     // Const::frame(&[0.8, 0.2]): left=0.8, right=0.2 → mono average = 0.5, NOT 0.8.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let src = g.add_unit(Box::new(Const::frame(&[0.8, 0.2])));
+    let src = g.add(Const::frame(&[0.8, 0.2]));
     g.connect_output(src, 0, 0).connect_output(src, 1, 1);
 
     let dir = tempfile::tempdir().unwrap();
@@ -382,7 +356,7 @@ fn stereo_graph_exports_folded_mono_not_left_only() {
 #[test]
 fn surround_5_1_exports_folded_mono_keeps_center() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
-    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src = g.add(Const::frame(&[1.0, 1.0]));
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(6u16),
@@ -404,7 +378,7 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
         .iter()
         .fold(0.0f32, |m, s| m.max(s.abs()));
     // The C channel folds into mono at (Lo+Ro)·0.707, with Lo,Ro ≈ FL + 0.707·C,
-    // so a dead-center unit source peaks at ≈2.41. A channel-0-only pick (the old
+    // so a dead-center unit source peaks at ≈2.41. A channel-0-only pick (a
     // truncating driver) would peak at only the front spill (≈0.71). The `> 1.5`
     // threshold sits between the two, failing the instant C stops being folded.
     assert!(
@@ -422,7 +396,7 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
 #[test]
 fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(12u16));
-    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src = g.add(Const::frame(&[1.0, 1.0]));
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(12u16),
@@ -465,7 +439,7 @@ fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
 #[test]
 fn atmos_7_1_4_downmixes_surround_into_front() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(12u16));
-    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src = g.add(Const::frame(&[1.0, 1.0]));
     let mix = vbap_mix(
         &mut g,
         ChannelLayout::from(12u16),

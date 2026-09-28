@@ -4,27 +4,13 @@
 //! [`EndpointId`] to open it by, and a [`UmpCapability`] describing what the OS
 //! says it can do.
 //!
-//! # Why capability is a value, not a type parameter or a `cfg`
+//! Capability is a property of the **endpoint**, not of the platform: two
+//! devices on the same machine, through the same backend, can differ. So it is
+//! a plain value that travels with the endpoint, read from the OS rather than
+//! assumed, and code that depends on it is an ordinary `match`.
 //!
-//! The thing this crate exists to fix is a `#[cfg]` ladder that chose a
-//! *transport* by platform, so that MIDI-2-only messages survived on macOS and
-//! were silently dropped everywhere else. Capability is a property of the
-//! **endpoint**, not of the code: two devices on the same machine, through the
-//! same backend, can differ. Encoding it in the type or behind a `cfg` is what
-//! made the old split unrepresentable-in-the-right-place and invisible in the
-//! wrong one.
-//!
-//! So it is a plain value that travels with the endpoint, and the dispatch that
-//! reads it is an ordinary `match`.
-//!
-//! # It reuses the engine's vocabulary rather than restating it
-//!
-//! [`Protocol`] and [`FunctionBlock`] are already the MIDI 2.0 spec's own nouns
-//! in `tutti-midi-types` / `tutti-midi-runtime`, and they are exactly the shape
-//! the OS hands back — ALSA's `snd_ump_block_info_get_{direction,first_group,
-//! num_groups,name}` populates a `FunctionBlock` field for field. Re-declaring
-//! them here would be two names for one behaviour, which the units rule already
-//! rejects.
+//! [`Protocol`] and [`FunctionBlock`] are the MIDI 2.0 spec's own nouns from
+//! `tutti-midi-types` / `tutti-midi-runtime`, reused here rather than restated.
 
 use tutti_midi_runtime::FunctionBlock;
 use tutti_midi_types::Protocol;

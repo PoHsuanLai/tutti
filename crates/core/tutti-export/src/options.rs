@@ -53,8 +53,8 @@ impl AudioFormat {
 }
 
 // The depth vocabulary lives in `tutti-types`, beside the quantizers that give
-// it meaning (`pcm::f32_to_i16` / `f32_to_i24`). Re-exported here so this
-// crate's public surface is unchanged.
+// it meaning (`pcm::f32_to_i16` / `f32_to_i24`). Re-exported here so a caller
+// configuring an export can name it from this crate.
 pub use tutti_types::pcm::BitDepth;
 
 /// Noise added before quantizing, to decorrelate quantization error from the

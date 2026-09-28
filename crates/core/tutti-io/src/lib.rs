@@ -1,7 +1,5 @@
 #![doc = include_str!("../README.md")]
 
-mod node_id;
-
 mod codec;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 mod decode;
@@ -25,8 +23,7 @@ pub use tap_in::TapIn;
 // sizing a buffer for it has to name the same ceiling.
 pub use wav_out::{WavOut, MAX_WAV_FOLD_CHANNELS};
 
-// The file-reading half of the edge, moved out of the fundsp fork (design doc
-// 013, Phase 0). `Wave` is the resident buffer and needs no codec; decoding
+// The file-reading half of the edge. `Wave` is the resident buffer and needs no codec; decoding
 // into it, probing a header and streaming (`FileIn`) exist only when a codec
 // feature compiled symphonia in. `decodable_extensions` answers for whichever
 // features did, and is empty when none did.

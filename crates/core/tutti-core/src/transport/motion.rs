@@ -98,23 +98,23 @@ pub enum MotionEvent {
 }
 
 impl MotionEvent {
-    /// Stop with a fade-out. The default stop.
+    /// Returns a stop with a fade-out, the default stop.
     pub const fn stop() -> Self {
         Self::Stop {
             fade: FadeOut::Declick,
         }
     }
 
-    /// Stop on the next buffer. For teardown, and for tests that assert the
-    /// unfaded path.
+    /// Returns a stop that takes effect on the next buffer, unfaded. For
+    /// teardown, and for tests that assert the unfaded path.
     pub const fn stop_now() -> Self {
         Self::Stop {
             fade: FadeOut::Immediate,
         }
     }
 
-    /// Jump to `beat` without disturbing the current motion — the scrub-bar
-    /// seek.
+    /// Returns a jump to `beat` that keeps the current motion — the
+    /// scrub-bar seek.
     pub const fn locate(beat: Beat) -> Self {
         Self::Locate {
             beat,
@@ -123,7 +123,7 @@ impl MotionEvent {
         }
     }
 
-    /// Jump to `beat` and roll from there.
+    /// Returns a jump to `beat` that then rolls from there.
     pub const fn locate_and_play(beat: Beat) -> Self {
         Self::Locate {
             beat,
@@ -132,7 +132,8 @@ impl MotionEvent {
         }
     }
 
-    /// Fade out, then return to `beat` when the fade completes.
+    /// Returns a stop that fades out, then returns to `beat` when the fade
+    /// completes.
     ///
     /// The Stop button. Sending a stop and a locate as two events drains both
     /// in one callback, so the seek lands immediately and the fade ramps down
@@ -209,7 +210,7 @@ impl core::fmt::Debug for MotionFsm {
 }
 
 impl MotionFsm {
-    /// A stopped machine publishing into `settings`, with an empty queue.
+    /// Creates a stopped machine publishing into `settings`, with an empty queue.
     pub fn new(settings: TransportSettings) -> Self {
         Self {
             queue: Arc::new(ArrayQueue::new(COMMAND_QUEUE_CAPACITY)),
@@ -222,7 +223,7 @@ impl MotionFsm {
         }
     }
 
-    /// Request a transport change **at a time**: a play, stop or seek
+    /// Requests a transport change **at a time**: a play, stop or seek
     /// ([`MotionEvent`]), a tempo or a loop edit ([`TransportCommand`]).
     /// Lock-free, callable from any thread, never allocates.
     ///
@@ -257,12 +258,32 @@ impl MotionFsm {
     /// playback reaches it, holding its credit;
     /// [`cancel_scheduled`](Self::cancel_scheduled) takes it back.
     ///
-    /// `Err` when [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) commands
-    /// are in flight: nothing was sent, and the command is handed back.
+    /// The untimed [`try_send`](Self::try_send) and settings stores mean
+    /// `At::NextBlock`; this method has no untimed form of its own, so
+    /// "whenever" is spelled out as `At::NextBlock`.
     ///
-    /// The untimed [`try_send`](Self::try_send) and settings stores still
-    /// work and mean `At::NextBlock`; this method has no untimed form of its
-    /// own, so "whenever" is spelled out as `At::NextBlock`.
+    /// # Errors
+    ///
+    /// Returns [`ScheduleFull`](super::ScheduleFull) when
+    /// [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) commands are in flight:
+    /// nothing was sent, and the command is handed back inside it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tutti_core::{At, Beat, Frame, MotionEvent, Transport, TransportCommand};
+    ///
+    /// let transport = Transport::new(48_000.0);
+    /// // Start rolling one second into the stream, stop at beat 16.
+    /// transport.motion.schedule(At::Frame(Frame(48_000)), MotionEvent::Play)?;
+    /// transport.motion.schedule(At::Beat(Beat(16.0)), MotionEvent::stop())?;
+    /// // A tempo edit on the next block.
+    /// transport
+    ///     .motion
+    ///     .schedule(At::NextBlock, TransportCommand::Tempo(tutti_core::Bpm(90.0)))?;
+    /// assert_eq!(transport.motion.scheduled_outstanding(), 3);
+    /// # Ok::<_, tutti_core::ScheduleFull>(())
+    /// ```
     pub fn schedule(
         &self,
         at: At,
@@ -271,7 +292,7 @@ impl MotionFsm {
         self.timed.send(at, command.into())
     }
 
-    /// Take back every scheduled command not yet applied, and free their
+    /// Takes back every scheduled command not yet applied, and frees their
     /// credit. Takes effect at the engine's next block.
     pub fn cancel_scheduled(&self) {
         self.timed.cancel_all();
@@ -321,26 +342,30 @@ impl MotionFsm {
         }
     }
 
-    /// Request a transition. Lock-free, callable from any thread.
+    /// Requests a transition. Lock-free, callable from any thread.
     ///
     /// `Ok` means only that the event was *queued* — the FSM decides on the
     /// audio thread whether it actually applies, and that decision is not
     /// available synchronously. Observe the outcome by reading
     /// [`MotionFsm::motion`] on a later frame.
     ///
-    /// `Err` means the queue was full and the event is gone — the one failure
-    /// a caller can act on, and the event is handed back inside [`QueueFull`]
-    /// so it can be retried.
-    ///
     /// RT-safe: lock-free, no allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] when the command queue is full. The event was
+    /// not queued, and is handed back inside the error so it can be retried.
     pub fn try_send(&self, event: MotionEvent) -> Result<(), QueueFull> {
         self.queue.push(event).map_err(|event| QueueFull { event })
     }
 
-    /// Request several transitions, in order.
+    /// Requests several transitions, in order.
     ///
-    /// Stops at the first drop and reports it; events queued before that point
-    /// still stand, so the transport may be left partway through the batch.
+    /// # Errors
+    ///
+    /// Returns [`QueueFull`] for the first event the full queue refused, and
+    /// sends none after it. Events queued before that point still stand, so
+    /// the transport may be left partway through the batch.
     pub fn try_send_all(
         &self,
         events: impl IntoIterator<Item = MotionEvent>,
@@ -365,7 +390,7 @@ impl MotionFsm {
         self.motion() == MotionState::Stopped
     }
 
-    /// Drain the queue into the FSM and publish the results.
+    /// Drains the queue into the FSM and publishes the results.
     ///
     /// **Audio thread only.** RT-safe: no allocation, no locks, bounded by the
     /// queue's 64-command capacity.
@@ -388,12 +413,12 @@ impl MotionFsm {
         }
     }
 
-    /// Reset the audio-thread ownership assertion, ahead of a device switch.
+    /// Does nothing.
     ///
-    /// Currently a no-op: it delegates to `AudioThreadCell::reset_owner`,
-    /// which pins no owner thread (the cell's debug check detects a
-    /// *concurrent borrow*, not a foreign thread). Kept for source
-    /// compatibility — see `tutti_cpal::AudioCallbackState::reset_owners`.
+    /// The state machine's [`AudioThreadCell`](tutti_types::AudioThreadCell)
+    /// pins no owner thread (its debug check detects a *concurrent borrow*,
+    /// not a foreign thread), so a device switch needs no reset. A call to
+    /// this can be removed.
     pub fn reset_owner(&self) {
         self.fsm.reset_owner();
     }
@@ -434,7 +459,7 @@ impl MotionFsm {
                 on_complete,
             } => {
                 // The transport stops or jumps **now**, on the command's
-                // frame; the fade is an audio-only concern (doc 013 §6). The
+                // frame; the fade is an audio-only concern. The
                 // output ramps to zero over `frames` from here, and the motion
                 // mirror reads the declick state until the fade completes.
                 self.set_mirror(motion);
@@ -599,13 +624,10 @@ mod tests {
 
     /// The Stop button's fade and its return-to-zero are ONE event, and the
     /// transport acts on it at once: the playhead jumps (and stops) on the
-    /// command's frame, and the fade only shapes the audio from there (doc
-    /// 013 §6, the declick decision: a fade is an audio-only concern and
-    /// never delays the transport state a graph sees). Completing the fade
+    /// command's frame, and the fade only shapes the audio from there (a
+    /// fade is an audio-only concern and never delays the transport state a
+    /// graph sees; the seek does not wait for the fade). Completing the fade
     /// settles the motion mirror and does **not** jump again.
-    ///
-    /// This replaced a test pinning the opposite rule (the seek waited for
-    /// the fade), which the doc 013 decision reversed.
     ///
     /// Mutation: leave `apply_outcome` out of the `DeclickStarted` arm → no
     /// seek, playhead still 12 → fails. Call `locate_to` again in

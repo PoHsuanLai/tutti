@@ -1,10 +1,10 @@
-//! A live disk voice against the memory tier, through loops and repositions
-//! (doc 013, "The live disk loop" and "The live disk reposition").
+//! A live disk voice against the memory tier, through loops and repositions.
 //!
 //! The butler writes a stream into a ring indexed by straight position — the
 //! loop's sequence, the file mirrored in reverse — and the voice seats on the
 //! clock as the memory tier does and reads its taps there by position
-//! (`live_read`). These tests drive a live `DiskVoice` from a hand-stepped
+//! (`live_read`), each block's transport from its `Env`. These tests drive a
+//! live `DiskVoice` from a hand-stepped
 //! butler (`DiskStreamer::manual`, one cycle per block, as the butler thread
 //! stands to the audio callback) and compare it with a placed `MemorySource`
 //! on its own copy of the clock, given the same edits at the same blocks.
@@ -22,12 +22,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_core::{
-    AudioUnit, Beat, Bpm, BufferVec, PlaybackRate, SamplePosition, SampleRate, Timeline,
-};
+use tutti_core::{Beat, Bpm, PlaybackRate, SamplePosition, SampleRate, Samples};
+use tutti_graph::{Node, Offset, Prepare, TransportChanges};
 
 use super::DiskVoice;
-use crate::test_transport::MockTransport;
+use crate::testing::{block, MockTransport};
 use crate::{Command, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource};
 
 const SR: f64 = 48_000.0;
@@ -131,7 +130,6 @@ struct Live {
     streamer: DiskStreamer,
     voice: DiskVoice,
     clock: Arc<MockTransport>,
-    output: BufferVec,
 }
 
 impl Live {
@@ -180,27 +178,31 @@ impl Live {
         let clock = MockTransport::rolling(Beat::new(setup.beat), Bpm::new(120.0));
         let mut voice = streamer
             .status()
-            .take_disk_voice(0, clock.clone(), Beat(0.0), None)
+            .take_disk_voice(0, Beat(0.0), None)
             .expect("the link is installed");
-        voice.set_sample_rate(SampleRate(SR));
+        voice.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
         voice.set_speed(PlaybackRate::new(setup.speed));
         Self {
             streamer,
             voice,
             clock,
-            output: BufferVec::new(2),
         }
     }
 
     /// One block of the voice, channel 0; then the clock moves and the
     /// butler runs a cycle, as the thread would before the next callback.
     fn block(&mut self) -> Vec<f32> {
-        let input = BufferVec::new(0);
-        self.voice
-            .process(BLOCK, &input.buffer_ref(), &mut self.output.buffer_mut());
-        let out = self.output.buffer_ref();
-        let left = (0..BLOCK).map(|i| out.at_f32(0, i)).collect();
+        let left = block(&mut self.voice, &self.clock, SR, BLOCK).swap_remove(0);
         self.clock.advance(BLOCK as i64, SR);
+        let _ = self.streamer.step_once();
+        left
+    }
+
+    /// [`block`](Self::block), the transport sought to `beat` on frame
+    /// `at` of it (a change in the block's `Env`); the clock then stands
+    /// where the seek leaves it at the block's end.
+    fn block_seeking(&mut self, at: usize, beat: f64) -> Vec<f32> {
+        let left = seeking(&mut self.voice, &self.clock, at, beat);
         let _ = self.streamer.step_once();
         left
     }
@@ -230,36 +232,52 @@ impl Live {
     }
 }
 
+/// One block of `node` under `clock`, sought to `beat` on frame `at` (a
+/// transport change in the block's `Env`), channel 0; the clock then stands
+/// where the seek leaves it at the block's end.
+fn seeking(node: &mut dyn Node, clock: &MockTransport, at: usize, beat: f64) -> Vec<f32> {
+    let mut env = clock.env(BLOCK, SR);
+    let mut changes = TransportChanges::NONE;
+    changes
+        .push(
+            Offset::new(at, Samples(BLOCK)).expect("inside the block"),
+            MockTransport::rolling(Beat::new(beat), clock.tempo()).transport(),
+        )
+        .expect("one change");
+    env.changes = changes;
+    let left = tutti_graph::contract::drive_in(node, &env, &[], &[], &[])
+        .audio
+        .swap_remove(0);
+    clock.set_beat(Beat::new(beat));
+    clock.advance((BLOCK - at) as i64, SR);
+    left
+}
+
 /// A placed memory voice at `speed` from beat `from`, looped by `loop_`,
 /// on its own clock, rendered block by block like a [`Live`] one.
 struct Memory {
     source: MemorySource,
     clock: Arc<MockTransport>,
-    output: BufferVec,
 }
 
 impl Memory {
     fn new(wave: Arc<tutti_io::Wave>, loop_: LoopSetting, speed: f32, from: f64) -> Self {
         let clock = MockTransport::rolling(Beat::new(from), Bpm::new(120.0));
-        let mut source = MemorySource::with_transport(wave, clock.clone(), Beat(0.0), None);
+        let mut source = MemorySource::placed(wave, Beat(0.0), None);
         source.set_speed(PlaybackRate::new(speed));
         source.set_loop_setting(loop_);
-        source.set_sample_rate(SampleRate(SR));
-        Self {
-            source,
-            clock,
-            output: BufferVec::new(2),
-        }
+        source.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+        Self { source, clock }
     }
 
     fn block(&mut self) -> Vec<f32> {
-        let input = BufferVec::new(0);
-        self.source
-            .process(BLOCK, &input.buffer_ref(), &mut self.output.buffer_mut());
-        let out = self.output.buffer_ref();
-        let left = (0..BLOCK).map(|i| out.at_f32(0, i)).collect();
+        let left = block(&mut self.source, &self.clock, SR, BLOCK).swap_remove(0);
         self.clock.advance(BLOCK as i64, SR);
         left
+    }
+
+    fn block_seeking(&mut self, at: usize, beat: f64) -> Vec<f32> {
+        seeking(&mut self.source, &self.clock, at, beat)
     }
 
     fn render(&mut self, blocks: usize) -> Vec<f32> {
@@ -286,8 +304,8 @@ fn assert_same_outside(what: &str, live: &[f32], memory: &[f32], allowed: &[(usi
 /// **A live looped voice plays the memory tier's loop bit for bit, from its
 /// first frame**, across many wraps: crossfaded, hard, from frame 0 (the fade
 /// into the loop's head, `LoopSpan`'s fallback), a loop whose end is past the
-/// file (clamped to it, on both tiers), at unity, 1.5×, 0.75× and — the rate
-/// the old reader could only approximate — a 44.1 kHz file at 48 kHz. The
+/// file (clamped to it, on both tiers), at unity, 1.5×, 0.75× and a 44.1 kHz
+/// file at 48 kHz. The
 /// ring never moves and nothing underruns while it loops.
 ///
 /// Mutation (run): the blend dropped from `Mapping::fill` → the crossfaded rows part in
@@ -296,8 +314,8 @@ fn assert_same_outside(what: &str, live: &[f32], memory: &[f32], allowed: &[(usi
 /// fails. Mutation (run): the loop's end not clamped to the file on the ring
 /// (the file's length → `usize::MAX` in `handle_set_stream_loop`) → the
 /// past-the-file row parts at the file's end → fails. Mutation (run): a
-/// refill that moves a looped ring's window every cycle (the old `AtEnd`
-/// flush, in the new ring) → the ring moves → fails.
+/// refill that moves a looped ring's window every cycle (a flush at the
+/// loop's end) → the ring moves → fails.
 #[test]
 fn a_live_looped_voice_plays_the_memory_tiers_loop_bit_for_bit() {
     struct Case {
@@ -378,8 +396,7 @@ fn a_live_looped_voice_plays_the_memory_tiers_loop_bit_for_bit() {
     }
 }
 
-/// **A live crossfaded loop is continuous at its wrap** (doc 013's S3, the
-/// live tier): on a sine whose loop points click when cut hard — the loop
+/// **A live crossfaded loop is continuous at its wrap** (the live tier): on a sine whose loop points click when cut hard — the loop
 /// starts on a rising zero crossing and ends a quarter period later in the
 /// cycle — no step in the output is larger than the sine's own (`2 sin(π /
 /// PERIOD)`), round the loop three times; and a loop from frame 0 `[0,
@@ -388,7 +405,7 @@ fn a_live_looped_voice_plays_the_memory_tiers_loop_bit_for_bit() {
 ///
 /// Mutation (run): the blend dropped from `Mapping::fill` → the crossfaded
 /// loops click → fails. Mutation (run): the fade's lead-in read from `resume`
-/// rather than before it (the old head replay) → a step far above the sine's
+/// rather than before it (the head replayed) → a step far above the sine's
 /// own at the wrap → fails.
 #[test]
 fn a_live_crossfaded_loop_is_continuous_at_its_wrap() {
@@ -561,7 +578,7 @@ fn a_loop_change_takes_effect_on_the_clock_with_no_frame_lost() {
 }
 
 /// **N loop edits and transport jumps leave the live voice exactly on the
-/// clock** (the review of #48's blocker 2): with the default crossfade, a
+/// clock**: with the default crossfade, a
 /// sequence of loop edits, jumps inside and outside the ring's window, and a
 /// varispeed change, each applied at the same block to a live voice and a
 /// memory voice. Outside a bounded span after each event the two are
@@ -626,9 +643,9 @@ fn edits_and_jumps_leave_the_live_voice_on_the_clock() {
 }
 
 /// **Two loop changes in one butler cycle, and a jump with a loop change in
-/// one cycle, settle to the last loop at the clock** (the review of #48's
-/// blocker 1: a second reposition read the ring's head off a pending flush
-/// and resumed at frame 0). The second change supersedes the first before the
+/// one cycle, settle to the last loop at the clock**, rather than a second
+/// reposition reading the ring's head off a pending flush and resuming at
+/// frame 0. The second change supersedes the first before the
 /// reader reaches it; the jump is the reader's own, the loop the butler's.
 ///
 /// Mutation (run): the second of two changes ignored while the first's switch
@@ -723,8 +740,8 @@ fn an_edit_that_changes_nothing_near_the_playhead_is_not_heard() {
 ///
 /// The loop lives on the ring's writer (`loops::Content`), which the
 /// parallel pass hands each worker whole, so neither path can drop it on its
-/// own (the old parallel work item carried a copy of the loop range, and
-/// dropping it there was a live bug class). Mutation (run): the parallel pass
+/// own (a work item carrying its own copy of the loop range could).
+/// Mutation (run): the parallel pass
 /// skipping its work items → nothing refills → underruns → fails.
 #[test]
 fn a_looped_stream_refilled_in_parallel_plays_the_memory_tiers_loop() {
@@ -747,10 +764,10 @@ fn a_looped_stream_refilled_in_parallel_plays_the_memory_tiers_loop() {
 
 /// **An export fork taken after a loop edit renders the loop the edit ends
 /// on, and agrees with the live voice past its switch**: a fork of the live
-/// voice (isolated, rebound onto a render clock from beat 0, as a graph fork
-/// does) plays the edited loop from the start of its render — the stream's
-/// record holds the loop the butler runs — and, frame for frame, what the
-/// live voice plays once its switch has landed and faded.
+/// voice (`fork_copy`, as a graph fork takes it, rendered on its own
+/// transport from beat 0) plays the edited loop from the start of its render
+/// — the stream's record holds the loop the butler runs — and, frame for
+/// frame, what the live voice plays once its switch has landed and faded.
 ///
 /// Mutation (run): the stream's record not told the new loop (`set_loop`
 /// dropped from `handle_set_stream_loop`) → the fork plays the old loop →
@@ -768,18 +785,11 @@ fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
     got.extend(live.render(150));
 
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-    let render = tutti_core::transport::OfflineTransport::new(clock.clone());
-    let mut fork = live.voice.clone();
-    fork.isolate();
-    fork.rebind_offline(&render);
-    fork.reset();
-    fork.set_sample_rate(SampleRate(SR));
-    let input = BufferVec::new(0);
-    let mut output = BufferVec::new(2);
+    let mut fork = live.voice.fork_copy();
+    fork.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     let mut forked = Vec::new();
     for _ in 0..81 + 150 {
-        fork.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        forked.extend((0..BLOCK).map(|i| output.buffer_ref().at_f32(0, i)));
+        forked.extend(block(&mut fork, &clock, SR, BLOCK).swap_remove(0));
         clock.advance(BLOCK as i64, SR);
     }
     let want = Memory::new(ramp_wave(SR as u32, LEN), b, 1.0, 0.0).render(81 + 150);
@@ -802,7 +812,7 @@ fn max_step(v: &[f32]) -> (f32, usize) {
 }
 
 /// **A jump back behind a loop edit's switch plays the new loop, not the old**
-/// (the second review of #48, B1 — a DAW's cycle mode): after `[1000, 3000)`
+/// (a DAW's cycle mode): after `[1000, 3000)`
 /// is edited to `[200, 1400)`, the clock set back to beat 0 lands inside the
 /// window, below the switch, where the ring still held the old loop. The
 /// butler drops what differs below the reader when it edits, so the jump
@@ -843,7 +853,7 @@ fn sine_bound() -> f32 {
     (2.0 * (std::f64::consts::PI / PERIOD as f64).sin()) as f32 + 2.0 / (FADE + 1) as f32 + 1e-4
 }
 
-/// **Fades chain without a step** (the second review of #48, B2): a loop
+/// **Fades chain without a step**: a loop
 /// edit during another edit's fade, a transport jump during an edit's fade,
 /// and an edit during a jump's fade. Each discontinuity fades from the
 /// continuation of what was playing — the fade in progress included — so on
@@ -905,9 +915,8 @@ fn fades_chain_without_a_step() {
     }
 }
 
-/// **A starved reader ramps out and back in** (the second review of #48,
-/// S1): a jump outside the window with the butler stalled plays the old
-/// continuation, which runs out after `OLD_FRAMES`; it ramps to silence over
+/// **A starved reader ramps out and back in**: a jump outside the window
+/// with the butler stalled plays the old continuation, which runs out after `OLD_FRAMES`; it ramps to silence over
 /// its last frames instead of cutting, and when the butler resumes the ring
 /// ramps back in. On a sine, no step exceeds the sine's own plus a ramp's
 /// `1 / 64` per frame — where cut hard it steps by up to the sine's full
@@ -927,12 +936,8 @@ fn a_starved_reader_ramps_out_and_back_in() {
     let mut got = live.render(20);
     // Far outside the window, and the butler stalls for 50 blocks.
     live.clock.set_beat(Beat::new(beats(1_450_000.0)));
-    let input = BufferVec::new(0);
     for _ in 0..50 {
-        live.voice
-            .process(BLOCK, &input.buffer_ref(), &mut live.output.buffer_mut());
-        let out = live.output.buffer_ref();
-        got.extend((0..BLOCK).map(|i| out.at_f32(0, i)));
+        got.extend(block(&mut live.voice, &live.clock, SR, BLOCK).swap_remove(0));
         live.clock.advance(BLOCK as i64, SR);
     }
     assert!(
@@ -953,8 +958,8 @@ fn a_starved_reader_ramps_out_and_back_in() {
     );
 }
 
-/// **A `Command::Seek` on a stream a placed voice reads moves nothing**
-/// (the second review of #48, S3): the voice follows its clock and is the one
+/// **A `Command::Seek` on a stream a placed voice reads moves nothing**:
+/// the voice follows its clock and is the one
 /// that says where the butler fills; the seek, meant for a free-running
 /// reader, must not drag the window away. The voice plays on, bit for bit
 /// the memory tier, nothing unread.
@@ -986,52 +991,59 @@ fn a_seek_does_not_move_a_placed_voices_window() {
     assert_same_outside("across a relayed seek", &got, &want, &[]);
 }
 
-/// **A seek to the beat the clock stands on is a jump** (doc 013's follow-up
-/// for #48, after smart types 2): the seat re-seats on the clock's new
-/// `segment_generation`, and the live read keys its jump on it too, not only
-/// on a position off the continuation — here the position is exactly the
-/// continuation, so only the generation tells. The reader crossfades, and
-/// since both sides are the same frames the output is the memory tier's:
-/// bit for bit outside the fade, within an ulp's rounding of the blend inside
-/// it, nothing unread.
+/// **A seek inside a block is a jump on its frame**: the
+/// block's `Env` carries it as a transport change on frame 32, the voice's
+/// clock reports a jump there (a new generation), and the live read
+/// crossfades from its continuation on that frame — not at the block's
+/// start, and not at the next block. Outside the fade the output is the
+/// memory tier's (which cuts on the same frame), bit for bit, nothing
+/// unread.
 ///
-/// Mutation (run): the live read ignoring the segment (`moved` always
-/// false) → no fade starts at the seek → fails.
+/// (A block's `Env` says where the playhead is, not how it got there, so a seek to
+/// exactly the frame the playhead would have reached anyway is the same
+/// block as no seek: nothing buffered is stale after it, and the clock
+/// reads it as no jump. What stays a jump — a seek anywhere else, inside a
+/// block — is what this pins.)
+///
+/// Mutation (run): `DiskVoice::live_render` reading each piece as one run
+/// (the piece's first run's generation, one `LiveRead::render` call for the
+/// whole piece) → the read sees the seek only as positions that change mid
+/// call, with no jump → no fade at the seek → fails. Mutation (run): the
+/// live read never finding a jump (`LiveRead::render`'s jump filter always
+/// false) → fails the same way.
 #[test]
-fn a_seek_to_where_the_clock_stands_is_a_jump() {
+fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
     let mut live = Live::new(&path, LoopSetting::Off, 1.0);
     let mut memory = Memory::new(ramp_wave(SR as u32, LEN), LoopSetting::Off, 1.0, 0.0);
-    let mut got = live.render(10);
-    let mut want = memory.render(10);
+    let mut got = live.render(100);
+    let mut want = memory.render(100);
     assert!(!live.voice.inner.read.fading(), "a fade before any seek");
-    let at = got.len();
-    live.clock.seek(Timeline::beat(&*live.clock));
-    memory.clock.seek(Timeline::beat(&*memory.clock));
-    got.extend(live.block());
-    want.extend(memory.block());
+    // Back 1 000 frames, inside what the ring keeps behind the reader.
+    let target = beats((got.len() + 32) as f64 - 1_000.0);
+    let at = got.len() + 32;
+    got.extend(live.block_seeking(32, target));
+    want.extend(memory.block_seeking(32, target));
     assert!(
         live.voice.inner.read.fading(),
-        "read on through a seek to where it stood"
+        "read on through a seek inside the block"
     );
+    assert_eq!(
+        got[at - 1].to_bits(),
+        want[at - 1].to_bits(),
+        "the frame before the seek is the memory tier's"
+    );
+    assert_ne!(got[at], want[at], "the seek's frame is the fade's first");
     got.extend(live.render(30));
     want.extend(memory.render(30));
     assert_eq!(live.underruns(), 0, "a frame went unread");
     let fade = (at, at + FADE + BLOCK);
-    assert_same_outside("across a seek in place", &got, &want, &[fade]);
-    for k in fade.0..fade.1 {
-        assert!(
-            (got[k] - want[k]).abs() <= 1e-6,
-            "frame {k}: live {} memory {}",
-            got[k],
-            want[k]
-        );
-    }
+    assert_same_outside("across a seek inside a block", &got, &want, &[fade]);
 }
 
-/// **A paused source holds no refill back** (the review of `PosRing`, S2).
+/// **A paused source holds no refill back.**
 /// A free-running source plays four blocks, stops, and is sought to where
 /// the slots its last block claimed come round again; the butler moves the
 /// window there while it is stopped. Resumed, it plays the target at once,
@@ -1045,7 +1057,8 @@ fn a_seek_to_where_the_clock_stands_is_a_jump() {
 /// on a stopped clock in `LiveRead::render`, has no such test: nothing moves
 /// a placed voice's window while its clock is stopped — a seek of the clock
 /// reaches the butler only through the voice's next claim, and a relayed
-/// `Command::Seek` is ignored for it (S3). `PosRing`'s
+/// `Command::Seek` is ignored for it (see
+/// `a_seek_does_not_move_a_placed_voices_window`). `PosRing`'s
 /// `an_idle_reader_holds_nothing_back` covers `idle` itself.)
 #[test]
 fn a_seek_while_paused_resumes_without_an_underrun() {
@@ -1071,19 +1084,18 @@ fn a_seek_while_paused_resumes_without_an_underrun() {
         .status()
         .take_free_running(0)
         .expect("the link is installed");
-    source.set_sample_rate(SampleRate(SR));
+    source.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     let ring_frames = source.read.ring().frames() as u64;
-    let input = BufferVec::new(0);
-    let mut output = BufferVec::new(2);
+    let stopped = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
     for _ in 0..4 {
-        source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+        block(&mut source, &stopped, SR, BLOCK);
         let _ = streamer.step_once();
     }
     assert_eq!(state.take_underruns(), 0, "the source plays");
     // Its last block read 192..256: it claimed from 189.
     let claimed_from = 3 * BLOCK as u64 - 3;
     source.stop();
-    source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+    block(&mut source, &stopped, SR, BLOCK);
     // The window's new start (the target, less the history the ring keeps)
     // takes the slot of the first position the last block claimed.
     let target = claimed_from + ring_frames + 4;
@@ -1095,20 +1107,20 @@ fn a_seek_while_paused_resumes_without_an_underrun() {
         })
         .expect("the butler is alive");
     for _ in 0..50 {
-        source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+        block(&mut source, &stopped, SR, BLOCK);
         let _ = streamer.step_once();
     }
     source.play();
-    source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+    let output = block(&mut source, &stopped, SR, BLOCK);
     assert_eq!(state.take_underruns(), 0, "the resumed block was not there");
     assert_eq!(
-        output.buffer_ref().at_f32(0, 0),
+        output[0][0],
         value(target as usize),
         "resumed at the target"
     );
 }
 
-/// **A stream serves one live voice** (the second review of #48, S2): a
+/// **A stream serves one live voice**: a
 /// second `take_disk_voice` on the same channel is refused, naming why.
 ///
 /// Mutation (run): the ring's reader put back after a take (the slot
@@ -1119,11 +1131,7 @@ fn a_stream_serves_one_live_voice() {
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, 10_000);
     let live = Live::new(&path, LoopSetting::Off, 1.0);
-    let clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-    let second = live
-        .streamer
-        .status()
-        .take_disk_voice(0, clock, Beat(0.0), None);
+    let second = live.streamer.status().take_disk_voice(0, Beat(0.0), None);
     assert_eq!(
         second.err(),
         Some(crate::TakeVoiceError::ReaderTaken),

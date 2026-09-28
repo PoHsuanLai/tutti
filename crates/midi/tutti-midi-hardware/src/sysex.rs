@@ -77,7 +77,7 @@ impl Sysex7ByteAssembler {
         !self.buf.is_empty() || self.overflowed
     }
 
-    /// Feed one transport buffer; append every completed run's UMP SysEx7
+    /// Feeds one transport buffer and appends every completed run's UMP SysEx7
     /// packets to `out`.
     ///
     /// Returns the number of *runs* completed by this call — normally 0 (still
@@ -205,12 +205,11 @@ mod tests {
         assert!(!asm.in_flight(), "assembler resets after a complete run");
     }
 
-    /// BUG 1 (fixed): bytes after the terminating `0xF7` were discarded.
+    /// Bytes after a terminating `0xF7` start the next run.
     ///
-    /// The old code found the first `0xF7`, took the payload before it, then
-    /// `buf.clear()`ed — silently dropping everything after it in the same
-    /// buffer. A device that packs two short dumps into one transport write lost
-    /// the second one entirely, with no error anywhere.
+    /// A device that packs two short dumps into one transport write must get
+    /// both; clearing the buffer at the first `0xF7` would lose the second with
+    /// no error anywhere.
     #[test]
     fn two_runs_in_one_buffer_both_survive() {
         let mut asm = Sysex7ByteAssembler::new();
@@ -224,7 +223,7 @@ mod tests {
         );
     }
 
-    /// BUG 1, the asymmetric case: a trailing partial run must be retained.
+    /// The asymmetric case: a trailing partial run must be retained.
     #[test]
     fn run_after_a_terminator_keeps_buffering() {
         let mut asm = Sysex7ByteAssembler::new();
@@ -238,10 +237,10 @@ mod tests {
         assert_eq!(payload_of(&out), vec![0x01, 0x02, 0x03]);
     }
 
-    /// BUG 2 (fixed): the buffer had no ceiling.
+    /// The buffer has a ceiling.
     ///
-    /// A lost `0xF7` — device unplugged mid-dump — left the old `Vec` growing for
-    /// the lifetime of the connection. Now the run is abandoned, and the *next*
+    /// A lost `0xF7` (device unplugged mid-dump) must not grow a buffer for the
+    /// lifetime of the connection. The run is abandoned, and the *next*
     /// terminator resyncs rather than splicing the garbage onto a good message.
     #[test]
     fn an_unterminated_run_is_capped_and_resyncs() {
@@ -266,14 +265,11 @@ mod tests {
         assert_eq!(payload_of(&out), vec![0x0A, 0x0B]);
     }
 
-    // BUG 3 (two `Vec` allocations per completed SysEx on the driver callback
-    // thread) is covered by `tests/rt_no_alloc_sysex.rs`, not here.
-    //
-    // It cannot be tested from inside `src/`: `assert_no_alloc` only observes
-    // anything when a `#[global_allocator] = AllocDisabler` is installed, and
-    // that must be declared at the test-binary root. A unit-test version of this
-    // gate is silently inert — it passes whether or not the bug is present,
-    // which mutation-testing confirmed.
+    // That a completed SysEx allocates nothing on the driver callback thread is
+    // covered by `tests/rt_no_alloc_sysex.rs`, not here: `assert_no_alloc` only
+    // observes anything when a `#[global_allocator] = AllocDisabler` is
+    // installed at the test-binary root, so a unit-test version would be
+    // silently inert.
 
     /// A `0xF0` arriving mid-run restarts it — it cannot be payload.
     ///

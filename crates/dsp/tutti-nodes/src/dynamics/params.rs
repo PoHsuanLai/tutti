@@ -22,7 +22,7 @@ impl AttackRelease {
         }
     }
 
-    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// Detaches every cell (see [`Param::detach`]): the `fork_fresh` half of this
     /// group, keeping the current values.
     pub fn detach(&mut self) {
         self.attack.detach();
@@ -46,7 +46,7 @@ impl ThresholdParams {
         }
     }
 
-    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// Detaches every cell (see [`Param::detach`]): the `fork_fresh` half of this
     /// group, keeping the current values.
     pub fn detach(&mut self) {
         self.threshold.detach();

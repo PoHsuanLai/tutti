@@ -103,7 +103,7 @@ impl MtcDecoder {
         }
     }
 
-    /// Feed a quarter-frame data byte (the data byte from 0xF1 messages).
+    /// Feeds a quarter-frame data byte (the data byte from 0xF1 messages).
     ///
     /// The upper nibble (bits 4-6) identifies the piece (0-7).
     /// The lower nibble (bits 0-3) carries 4 bits of timecode data.

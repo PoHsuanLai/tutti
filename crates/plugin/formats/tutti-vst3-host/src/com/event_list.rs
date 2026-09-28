@@ -53,7 +53,7 @@ impl Default for Inner {
 }
 
 impl Inner {
-    /// Clear all per-block storage in lockstep (events + the text arena),
+    /// Clears all per-block storage in lockstep (events + the text arena),
     /// keeping heap capacity for reuse.
     fn clear(&mut self) {
         self.events.clear();
@@ -130,7 +130,7 @@ impl EventList {
         self.inner.borrow().events.len()
     }
 
-    /// Drain the plugin's emitted MIDI events into a caller-supplied pool.
+    /// Drains the plugin's emitted MIDI events into a caller-supplied pool.
     /// Clears `out` first and never grows it: the plugin decides how many
     /// events it emits, so events past the pool's cap are dropped rather than
     /// heap-allocated on the audio thread. `out.overflowed()` reports it.
@@ -158,7 +158,7 @@ impl IEventListTrait for EventList {
         // A shared borrow: `getEvent` must not mutate the storage, because the
         // `DataEvent.bytes` / `text` pointers it hands out point *into* it and
         // stay live for the rest of the plugin's `process` call. Copying the
-        // event out and pointing at the copy is exactly the bug this replaced.
+        // event out and pointing at the copy would leave them dangling.
         let inner = self.inner.borrow();
         let Ok(index) = usize::try_from(index) else {
             return kInvalidArgument;
@@ -304,7 +304,7 @@ mod tests {
         let count = unsafe { ptr.getEventCount() };
         assert_eq!(count as usize, N, "every CC should stage as a Data event");
 
-        // Phase 1: fetch them all, holding every Event (and its `bytes`
+        // First fetch them all, holding every Event (and its `bytes`
         // pointer) live — as a plugin does.
         let mut fetched: Vec<Event> = Vec::with_capacity(N);
         for i in 0..count {
@@ -313,7 +313,7 @@ mod tests {
             fetched.push(out);
         }
 
-        // Phase 2: only now dereference. Each event must still see its own
+        // Then dereference. Each event must still see its own
         // 3-byte MIDI-1 CC frame, not another event's bytes or freed memory.
         for (i, ev) in fetched.iter().enumerate() {
             let data = unsafe { ev.__field0.data };

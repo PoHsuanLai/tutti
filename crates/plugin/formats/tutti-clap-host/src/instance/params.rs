@@ -20,15 +20,14 @@ use clap_sys::ext::param_indication::{
 use std::ptr;
 
 /// How a host surface control (e.g. a hardware knob) is bound to a plugin
-/// parameter, per `CLAP_EXT_PARAM_INDICATION`. Speculative — gated behind
-/// `clap-extras`.
+/// parameter, per `CLAP_EXT_PARAM_INDICATION`. Requires the `clap-extras` feature.
 #[cfg(feature = "clap-extras")]
 #[derive(Debug, Clone)]
 pub struct ParamMapping {
     /// The parameter being bound, by its stable id.
     pub param_id: u32,
     /// Whether a control is bound at all. `false` tells the plugin the
-    /// parameter is no longer mapped to any physical control.
+    /// parameter is not mapped to any physical control.
     pub has_mapping: bool,
     /// Colour hint for the control's LED or ring; `None` sends no hint.
     pub color: Option<Color>,
@@ -40,7 +39,7 @@ pub struct ParamMapping {
 
 #[cfg(feature = "clap-extras")]
 impl ParamMapping {
-    /// Create a mapping entry for the given parameter.
+    /// Creates a mapping entry for the given parameter.
     /// Set `has_mapping = false` to tell the plugin the parameter is no
     /// longer mapped to any physical control.
     pub fn new(param_id: u32, has_mapping: bool) -> Self {
@@ -130,7 +129,7 @@ impl ClapLoaded {
         })
     }
 
-    /// Collect CLAP-native metadata for every parameter. Crate-private (see
+    /// Collects CLAP-native metadata for every parameter. Crate-private (see
     /// [`parameter_info`](Self::parameter_info)).
     ///
     /// A failing `get_info(i)` at `i < count` **truncates**, matching
@@ -209,7 +208,7 @@ impl ClapLoaded {
         unsafe { value_to_text_ffi(ext, self.plugin.as_ptr(), param_id, value) }
     }
 
-    /// Parse a display `text` back to a parameter value via the plugin's
+    /// Parses a display `text` back to a parameter value via the plugin's
     /// `clap_plugin_params.text_to_value`. Returns `None` if the plugin does
     /// not implement params / text_to_value, the string has an interior NUL,
     /// or the plugin cannot parse it.
@@ -226,15 +225,13 @@ impl ClapLoaded {
     /// delivered through `process()` (in event order) rather than a `flush()`.
     /// Returns `false` if the id is unknown or the plugin has no params.
     ///
-    /// # Limitation (H1)
-    /// This host cannot yet enqueue a REQUIRES_PROCESS change into the next
-    /// `process` block from the main thread (see [`flush_params`](Self::flush_params)):
-    /// the main-thread [`flush_params`] path has no access to the active
-    /// instance's scratch. So [`set_parameter`](Self::set_parameter) uses this
-    /// to *skip* flushing REQUIRES_PROCESS params on an active instance —
-    /// dropping the change rather than delivering it out-of-band and risking a
-    /// glitch — and leaves the full enqueue path as follow-up. On an inactive
-    /// instance a flush is spec-legal, so it is allowed.
+    /// The main-thread [`flush_params`](Self::flush_params) path has no access
+    /// to the active instance's scratch, so it cannot enqueue a
+    /// REQUIRES_PROCESS change into the next `process` block.
+    /// [`set_parameter`](Self::set_parameter) uses this to *skip* flushing
+    /// REQUIRES_PROCESS params on a processing instance — dropping the change
+    /// rather than delivering it out-of-band and risking a glitch. On an
+    /// inactive instance a flush is spec-legal, so it is allowed.
     ///
     /// Goes through [`parameters`](Self::parameters) rather than re-walking the
     /// enumeration, so the two cannot drift about which parameters exist:
@@ -247,12 +244,14 @@ impl ClapLoaded {
             .is_some_and(|info| info.flags.contains(ClapParamFlags::REQUIRES_PROCESS))
     }
 
-    /// Deliver parameter changes outside of `process()` via
-    /// `clap_plugin_params.flush()`. Returns events produced by the plugin
-    /// in response. Returns empty if the plugin does not implement params
-    /// or lacks a flush function.
+    /// Delivers parameter changes outside of `process()` via
+    /// `clap_plugin_params.flush()`, returning the events the plugin produced in
+    /// response.
     ///
-    /// # Thread interlock (C2)
+    /// Returns an empty `Vec` if the plugin does not implement params or lacks
+    /// a flush function.
+    ///
+    /// # Threading
     /// CLAP declares `params.flush` as `[active ? audio-thread : main-thread]`
     /// and states it "must not be called concurrently to
     /// `clap_plugin->process()`". This gates by state, and on the active path
@@ -265,24 +264,22 @@ impl ClapLoaded {
     ///   [`AudioThreadClaim`](crate::host::AudioThreadClaim), so the calling
     ///   thread *becomes* the audio thread for the duration (which the spec
     ///   explicitly permits for any OS thread) and **blocks** until any
-    ///   in-flight `process` on the real audio thread has returned. The
-    ///   previous `debug_assert!` provided neither: it compiled out in release,
-    ///   and in debug it compared against an `audio_thread_id` the host itself
-    ///   had set to the calling thread, so it was tautologically true.
+    ///   in-flight `process` on the real audio thread has returned.
     ///
     /// The condition is `active`, **not** `processing`. Those differ for the
     /// whole window between `activate()` and the first `process()` — which is
-    /// exactly when a host sets up initial parameter values. Gating on
-    /// `processing` took the main-thread branch there while the plugin considered
-    /// itself active, and TAL-Reverb-4's validation layer duly reported
-    /// `clap_plugin_params.flush() was called on the wrong thread`. The values
-    /// were dropped, silently, on the one path a host uses to configure a plugin
-    /// before playing it.
+    /// exactly when a host sets up initial parameter values, and when a plugin
+    /// that considers itself active expects the audio-thread role.
     ///
     /// Callers driving an active instance should still prefer routing param
     /// changes through the next `process` block (via `ClapProcessContext::params`)
     /// — that is in-order delivery rather than an out-of-band poke — but doing
-    /// it here is now safe rather than merely unasserted.
+    /// it here is safe.
+    ///
+    /// # Panics
+    ///
+    /// On an inactive instance, main thread only: in debug builds, panics if
+    /// called from a thread other than the one that loaded the plugin.
     pub fn flush_params(&mut self, input_events: Vec<ClapEvent>) -> Vec<ClapEvent> {
         // Bind the claim to a local so it lives across the whole flush call and
         // releases only after the plugin has returned.
@@ -315,27 +312,29 @@ impl ClapLoaded {
         output_list.take_events()
     }
 
-    /// Convenience wrapper that flushes a single `PARAM_VALUE` event.
+    /// Sets one parameter by flushing a single `PARAM_VALUE` event.
     ///
     /// Returns whether the value was flushed. `false` means the write was
     /// **skipped**, not that the plugin refused it — see the gate below.
     ///
-    /// # REQUIRES_PROCESS gating (H1)
+    /// `value` is plain, in the parameter's declared range.
+    ///
+    /// # REQUIRES_PROCESS gating
     /// If the instance is *processing* and `id` is flagged
     /// `CLAP_PARAM_REQUIRES_PROCESS`, the change is **not** flushed: the CLAP
-    /// spec requires such params be delivered in-order through `process()`, and
-    /// this host cannot yet enqueue into the next block from here (see
-    /// the internal `param_requires_process` check /
-    /// [`flush_params`](Self::flush_params)). Delivering it out-of-band via
-    /// flush would violate the plugin's ordering contract, so it is skipped;
-    /// routing REQUIRES_PROCESS params through `ClapProcessContext::params` is
-    /// deferred follow-up.
+    /// spec requires such params be delivered in order through `process()`, and
+    /// this method cannot enqueue into the next block. Send such changes through
+    /// `ClapProcessContext::params` instead.
     ///
     /// `processing` is the right condition here, unlike in
-    /// [`flush_params`](Self::flush_params) where it was a bug: in-order delivery
-    /// is only meaningful once blocks are actually flowing. Before the first
+    /// [`flush_params`](Self::flush_params): in-order delivery is only
+    /// meaningful once blocks are actually flowing. Before the first
     /// `process()` there is no order to preserve, so the flush is legal even for a
     /// REQUIRES_PROCESS param.
+    ///
+    /// # Panics
+    ///
+    /// As for [`flush_params`](Self::flush_params).
     pub fn set_parameter(&mut self, id: u32, value: f64) -> bool {
         if self.flags.processing && self.param_requires_process(id) {
             return false;
@@ -344,9 +343,8 @@ impl ClapLoaded {
         true
     }
 
-    /// Inform the plugin about a host-surface → parameter mapping. No-op if
-    /// the plugin does not implement `CLAP_EXT_PARAM_INDICATION`. Speculative —
-    /// gated behind `clap-extras`.
+    /// Informs the plugin about a host-surface → parameter mapping. No-op if
+    /// the plugin does not implement `CLAP_EXT_PARAM_INDICATION`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn set_param_mapping(&self, mapping: &ParamMapping) {
         let Some(ext) = (unsafe { ext::opt(self.extensions.params.indication) }) else {
@@ -383,9 +381,9 @@ impl ClapLoaded {
         }
     }
 
-    /// Inform the plugin of a parameter's automation state so it can update
+    /// Informs the plugin of a parameter's automation state so it can update
     /// UI feedback (e.g. knob rings). No-op if the plugin does not implement
-    /// `CLAP_EXT_PARAM_INDICATION`. Speculative — gated behind `clap-extras`.
+    /// `CLAP_EXT_PARAM_INDICATION`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn set_param_automation(
         &self,
@@ -553,7 +551,7 @@ mod grouping_tests {
     /// Kept verbatim rather than split on `/`: CLAP documents the path as a
     /// display hint, and splitting here would build a hierarchy the shared
     /// vocabulary does not model and three of the four hosted formats could
-    /// not fill. See `docs/design/010-parameter-grouping.md`.
+    /// not fill.
     #[test]
     fn a_clap_module_becomes_the_group_verbatim() {
         let mut info = ClapParamInfo::new(1, "Cutoff");

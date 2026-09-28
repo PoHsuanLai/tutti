@@ -18,25 +18,30 @@
 //!
 //! # Codec-free on purpose
 //!
-//! `quantize` returns a [`Sample`] rather than writing anything. This crate is
-//! the root leaf — every engine crate depends on it, and each of its own
-//! dependencies is `default-features = false` — so a file-format codec must not
-//! reach it. Each sink spells its own writer call per variant: three lines it
-//! cannot get wrong, over an arithmetic it does not own.
+//! `quantize` returns a [`Sample`] rather than writing anything, so this crate
+//! needs no file-format codec. Each sink spells its own writer call per
+//! variant, over an arithmetic it does not own.
+//!
+//! ```
+//! use tutti_types::pcm::{BitDepth, Sample};
+//!
+//! assert_eq!(BitDepth::Int16.quantize(1.0), Sample::I16(32_767));
+//! assert_eq!(BitDepth::Int24.quantize(-2.0), Sample::I24(-8_388_607)); // clamped
+//! assert_eq!(BitDepth::Float32.quantize(0.25), Sample::F32(0.25));
+//! assert_eq!(BitDepth::default().bits(), 24);
+//! ```
 
-/// Sample width a PCM sink writes.
+/// The sample width a PCM sink writes.
 ///
 /// `Int24` is the default because that is what a file export wants; a live
 /// capture path typically picks `Float32` explicitly (no quantization, no
 /// clipping to worry about mid-take).
 ///
-/// **Deliberately not `#[non_exhaustive]`**, unlike most vocabulary in this
-/// crate. Encoders match it across a crate boundary, so that attribute would
-/// force a `_` arm into each of them — and a `_` arm is exactly what must not
-/// exist here: a new depth an encoder silently ignores writes a file whose
-/// header and data disagree. This is a closed structural set (the widths a PCM
-/// file can hold), so adding one *should* fail to compile everywhere it is
-/// handled.
+/// **Deliberately not `#[non_exhaustive]`.** Encoders match it across a crate
+/// boundary, and a `_` arm is exactly what must not exist there: a new depth an
+/// encoder silently ignores writes a file whose header and data disagree. This
+/// is a closed structural set (the widths a PCM file can hold), so adding one
+/// fails to compile everywhere it is handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BitDepth {
     /// 16-bit signed integer — CD depth.
@@ -64,7 +69,7 @@ pub enum Sample {
 }
 
 impl BitDepth {
-    /// Bits per sample as written to a file header.
+    /// Returns the bits per sample, as written to a file header.
     pub fn bits(&self) -> u16 {
         match self {
             Self::Int16 => 16,
@@ -73,13 +78,15 @@ impl BitDepth {
         }
     }
 
-    /// Whether this depth quantizes at all. `Float32` passes samples through, so
-    /// dithering it is a no-op and clipping is the caller's concern.
+    /// Returns whether this depth quantizes at all.
+    ///
+    /// `Float32` passes samples through, so dithering it is a no-op and
+    /// clipping is the caller's concern.
     pub fn is_integer(&self) -> bool {
         !matches!(self, Self::Float32)
     }
 
-    /// Quantize one normalized `f32` to this depth.
+    /// Quantizes one normalized `f32` to this depth.
     ///
     /// The single dispatch every PCM sink shares. Out-of-range input is clamped
     /// by the underlying converters rather than wrapping.
@@ -93,16 +100,19 @@ impl BitDepth {
     }
 }
 
-/// Quantize a normalized `f32` (`[-1.0, 1.0]`) to signed 16-bit PCM, clamping
+/// Quantizes a normalized `f32` (`[-1.0, 1.0]`) to signed 16-bit PCM, clamping
 /// out-of-range input.
+///
+/// Rounds to nearest: `1.0` is `32_767` and `-1.0` is `-32_767`.
 #[inline]
 pub fn f32_to_i16(sample: f32) -> i16 {
     (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16
 }
 
-/// Quantize a normalized `f32` (`[-1.0, 1.0]`) to signed 24-bit PCM (stored in
-/// an `i32`), clamping out-of-range input. 24-bit signed range is
-/// `[-8_388_608, 8_388_607]`.
+/// Quantizes a normalized `f32` (`[-1.0, 1.0]`) to signed 24-bit PCM (stored
+/// in an `i32`), clamping out-of-range input.
+///
+/// Rounds to nearest: `1.0` is `8_388_607` and `-1.0` is `-8_388_607`.
 #[inline]
 pub fn f32_to_i24(sample: f32) -> i32 {
     (sample.clamp(-1.0, 1.0) * 8_388_607.0).round() as i32

@@ -26,10 +26,8 @@
 //! edit, so the reader crossfades there from a record of what the old mapping
 //! would have played ([`FadeRecord`]), at the read rate, consuming the ring.
 //! The record also covers the frames the butler has not rewritten yet, so a
-//! reader that arrives early plays the old sequence rather than a gap.
-//!
-//! This replaced a FIFO ring the butler flushed and refilled: see doc 013,
-//! "The live disk reposition (after #48)".
+//! reader that arrives early plays the old sequence rather than a gap. No
+//! change of mapping flushes the ring.
 
 use std::sync::Arc;
 
@@ -693,7 +691,7 @@ mod tests {
     /// every tier reads by. A lead-in that cannot be read leaves the loop
     /// hard and says so, rather than fading toward silence.
     ///
-    /// Mutation (run): the lead-in read from `resume` (the old head replay) →
+    /// Mutation (run): the lead-in read from `resume` (the head replayed) →
     /// `[5.0, 6.0]` → fails. Mutation (run): the head mode removed from
     /// `LoopSpan::new` → a 2-frame fade before frame 2 → fails. Mutation
     /// (run): `capture` keeping the fade when the read fails → fails.

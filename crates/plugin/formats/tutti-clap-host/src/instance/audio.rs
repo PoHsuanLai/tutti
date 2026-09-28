@@ -52,7 +52,7 @@ pub struct ProcessOutputRef<'a> {
 }
 
 impl<'a> ProcessOutputRef<'a> {
-    /// Snapshot into an owned [`ProcessOutput`]. Allocates; off-RT only.
+    /// Snapshots into an owned [`ProcessOutput`]. Allocates; off-RT only.
     pub fn to_owned(self) -> ProcessOutput {
         ProcessOutput {
             midi_events: self.midi_events.to_vec(),
@@ -84,9 +84,10 @@ pub struct ClapProcessContext<'a> {
     /// MIDI to deliver during this block. Sorted by time before being handed
     /// to the plugin, so the caller need not pre-sort.
     pub midi: &'a [MidiEvent],
-    /// Parameter changes to apply during this block. Values are denormalized
-    /// against the plugin's declared ranges on the way in; a parameter with no
-    /// cached range passes through untouched.
+    /// Parameter changes to apply during this block, as normalized `0..=1`
+    /// values. They are denormalized against the plugin's declared ranges on
+    /// the way in; changes for an id the plugin never described are dropped
+    /// when the plugin reports parameters at all.
     pub params: Option<&'a ParameterChanges>,
     /// Per-voice note expressions to deliver during this block.
     pub expressions: &'a [ClapNoteExpression],
@@ -104,7 +105,7 @@ pub trait ClapSample: tutti_plugin_types::Sample {
     /// `activate` refuses when it does and the plugin does not.
     fn requires_f64() -> bool;
 
-    /// Construct a `clap_audio_buffer` from a base pointer into a channel-
+    /// Constructs a `clap_audio_buffer` from a base pointer into a channel-
     /// pointer array (`data32` / `data64` selected per sample type).
     fn make_port_buffer(ptrs_base: *mut *mut Self, channel_count: u32) -> clap_audio_buffer;
 
@@ -153,12 +154,12 @@ impl ClapSample for f64 {
     }
 }
 
-/// Zero the first `num_samples` of every channel of a CLAP output buffer.
+/// Zeros the first `num_samples` of every channel of a CLAP output buffer.
 /// Used on `CLAP_PROCESS_ERROR` so undefined plugin output never leaks out.
 ///
 /// SAFETY: the channel pointers were populated in `refill_port_buffers` from
 /// the caller's output slices (or scratch pads), each valid for at least
-/// `num_samples` frames (the C1 guard rejects oversized blocks).
+/// `num_samples` frames (the block-size guard rejects oversized blocks).
 fn zero_clap_output<T: ClapSample>(buf: &clap_audio_buffer, num_samples: u32) {
     let ptrs_base = T::channel_ptrs(buf);
     if ptrs_base.is_null() {
@@ -252,11 +253,30 @@ fn refill_port_buffers<T: ClapSample>(
 }
 
 impl<T: ClapSample> ClapActive<T> {
-    /// Process one block of audio through the plugin.
+    /// Processes one block of audio through the plugin.
     ///
     /// The sample format is fixed at activation: `ClapActive<f32>` takes an
     /// `AudioBuffer32`, `ClapActive<f64>` an `AudioBuffer64`. (The 64-bit
     /// support check happened once in [`ClapLoaded::activate`](super::ClapLoaded::activate).)
+    ///
+    /// Call from the audio thread. The first call after activation (or after
+    /// a reconfiguration) also runs the plugin's `start_processing`. The call
+    /// does not allocate: event lists and channel pointers live in scratch
+    /// sized at activation. The returned [`ProcessOutputRef`] borrows the MIDI,
+    /// parameter changes and note expressions the plugin emitted; it is valid
+    /// until the next call.
+    ///
+    /// # Errors
+    ///
+    /// - [`ClapError::BlockTooLarge`] if the buffer holds more frames than the
+    ///   instance was activated for; grow it with
+    ///   [`set_max_block_size`](Self::set_max_block_size) off the audio thread.
+    /// - [`ClapError::StartProcessingFailed`] if the plugin refuses
+    ///   `start_processing`.
+    /// - [`ClapError::PluginReturnedError`] if the plugin returns
+    ///   `CLAP_PROCESS_ERROR`; the output channels are zeroed.
+    ///
+    /// # Examples
     ///
     /// ```no_run
     /// # use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -322,7 +342,7 @@ impl<T: ClapSample> ClapActive<T> {
     ) -> Result<ProcessOutputRef<'_>> {
         let num_samples = buffer.num_samples as u32;
 
-        // C1: the scratch channel buffers were sized to `max_frames` in
+        // The scratch channel buffers were sized to `max_frames` in
         // `activate()`; `do_process` passes `num_samples` as `frames_count`.
         // A block larger than `max_frames` would make the plugin read/write
         // past the scratch → out-of-bounds. Reject it here (RT-safe: no alloc,
@@ -363,7 +383,7 @@ impl<T: ClapSample> ClapActive<T> {
                 .input_events
                 .add_note_expressions(note_expressions);
         }
-        // H3: bound every event time to this block before handing the list to
+        // Bound every event time to this block before handing the list to
         // the plugin — `time` is a sample index the plugin will use to split
         // the buffer, so an out-of-range value is an OOB access inside the
         // plugin. Clamp before sorting so the ordering reflects the times the
@@ -442,7 +462,7 @@ impl<T: ClapSample> ClapActive<T> {
         num_samples: u32,
         transport: Option<&TransportInfo>,
     ) -> Result<ProcessOutputRef<'_>> {
-        // C1/C2: take the `[audio-thread]` role for this whole block. The claim
+        // Take the `[audio-thread]` role for this whole block. The claim
         // (a) publishes THIS OS thread as the audio thread — correct even when
         // a host thread pool runs successive blocks on different threads —
         // (b) makes `is_main_thread()` answer false here, so the two symbolic
@@ -467,7 +487,7 @@ impl<T: ClapSample> ClapActive<T> {
             .map(|t| t as *const _)
             .unwrap_or(ptr::null());
 
-        // H2: `steady_time` is a monotonic sample counter, not derived from
+        // `steady_time` is a monotonic sample counter, not derived from
         // transport seconds. Pass the current value, then advance by the block
         // size. It resets to 0 on stop_processing/reactivate.
         let steady_time = self.scratch.steady_time;
@@ -498,17 +518,17 @@ impl<T: ClapSample> ClapActive<T> {
             CLAP_PROCESS_CONTINUE
         };
 
-        // H2: advance the monotonic counter now that this block was processed.
+        // Advance the monotonic counter now that this block was processed.
         // `saturating_add` keeps it monotone even across a very long session.
         self.scratch.steady_time = self.scratch.steady_time.saturating_add(num_samples as i64);
 
         // Record the full status (not just ERROR) for
-        // `ClapActive::last_process_status`. This used to `eprintln!` each
-        // TAIL/SLEEP/unknown transition — a stderr lock, plus a heap format in
-        // the unknown arm, on the audio thread. The `status != prev` guard did
-        // not make that rare: a plugin alternating between two statuses
-        // transitions every block, which is what a reverb tail decaying below
-        // the noise floor and being re-excited does. `Relaxed` suffices —
+        // `ClapActive::last_process_status` instead of printing it: printing
+        // takes a stderr lock (and formats on the heap) on the audio thread,
+        // and a transition-only guard would not make that rare — a plugin
+        // alternating between two statuses transitions every block, which is
+        // what a reverb tail decaying below the noise floor and being
+        // re-excited does. `Relaxed` suffices —
         // nothing is ordered against it and the reader wants only the latest
         // value.
         self.scratch
@@ -551,22 +571,18 @@ impl<T: ClapSample> ClapActive<T> {
 }
 
 pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_transport {
-    // `HAS_TIME_SIGNATURE` was already asserted here while the host only ever
-    // sent the 4/4 default — now that the meter reaches this point, the claim is
-    // finally true.
-    //
     // `bar_start` / `bar_number` get no flag of their own because CLAP defines
     // none: the spec's transport flags are exactly the eight in `clap_sys`
     // (tempo, beats/seconds timeline, time signature, playing, recording, loop
     // active, pre-roll). `bar_start` is a `clap_beattime`, the same type as
     // `song_pos_beats`, so it rides the beats timeline that is already
-    // advertised. Both were previously sent as zeros regardless.
+    // advertised.
     // `HAS_TIME_SIGNATURE` is unconditional, and it is the only one of the four
     // that is: `TimeSignature` is a validated newtype with no representable
     // invalid value, so the claim is always true. The rest assert that a
     // specific field is usable, and asserting it for a field we did not fill is
-    // how VST2 shipped `tempo = 0, kVstTempoValid` — the same bug, one format
-    // over. Tempo additionally has to be positive, because plugins divide by it.
+    // how a host ends up sending `tempo = 0` flagged as valid. Tempo
+    // additionally has to be positive, because plugins divide by it.
     let mut flags: u32 = CLAP_TRANSPORT_HAS_TIME_SIGNATURE;
 
     if is_usable(transport.timing.tempo) && transport.timing.tempo > 0.0 {
@@ -608,9 +624,9 @@ pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_tran
         loop_end_seconds: 0,
         bar_start: (transport.bar.start_beats * CLAP_BEATTIME_FACTOR as f64) as i64,
         bar_number: transport.bar.number.into(),
-        // `.into()` rather than `as u16`: the old cast wrapped, so a negative
-        // numerator arrived as 65535. `BeatsPerBar`/`NoteValue` are validated on
-        // construction, so the conversion is now total and lossless.
+        // `.into()` rather than `as u16`: a cast would wrap a negative
+        // numerator to 65535. `BeatsPerBar`/`NoteValue` are validated on
+        // construction, so the conversion is total and lossless.
         tsig_num: transport.timing.signature.beats_per_bar().into(),
         tsig_denom: transport.timing.signature.note_value().into(),
     }

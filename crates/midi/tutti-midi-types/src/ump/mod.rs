@@ -42,7 +42,7 @@ pub struct MidiEvent {
 }
 
 impl MidiEvent {
-    /// Construct with pre-built UMP words and a frame offset.
+    /// Constructs with pre-built UMP words and a frame offset.
     ///
     /// `words` must be 1, 2, or 4 entries long matching the UMP message type
     /// in the first word's top nibble. Extra slots in `data` are zero-padded.
@@ -63,7 +63,7 @@ impl MidiEvent {
         self
     }
 
-    /// Return the meaningful prefix of [`Self::data`] (1, 2, or 4 words)
+    /// Returns the meaningful prefix of [`Self::data`] (1, 2, or 4 words)
     /// per the UMP spec. Hand directly to `midi2::UmpMessage::try_from`.
     #[inline]
     pub fn data_words(&self) -> &[u32] {
@@ -268,7 +268,7 @@ pub(crate) const fn ump_word_count(type_nibble: u8) -> usize {
     }
 }
 
-/// Split a packed UMP word stream into its individual messages.
+/// Splits a packed UMP word stream into its individual messages.
 ///
 /// A native-UMP transport (CoreMIDI's `MIDIEventPacket`, a MIDI-2.0 USB packet)
 /// delivers *several* concatenated messages in one buffer, with no separators —

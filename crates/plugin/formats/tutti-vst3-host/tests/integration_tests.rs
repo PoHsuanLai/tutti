@@ -67,9 +67,8 @@ const SDK_SAMPLES: &[&str] = &["adelay.vst3", "mda-vst3.vst3", "note-expression-
 /// this machine happens to have installed.
 ///
 /// The absolute paths below are macOS-only and name third-party installs, so on
-/// any other machine this used to come back empty, and the corpus tests that
-/// assert `loaded > 0` failed rather than skipped. The in-repo `audio-probe` is
-/// what makes it non-empty everywhere; the rest only widen coverage:
+/// any other machine they contribute nothing. The in-repo `audio-probe` is
+/// what makes the corpus non-empty everywhere; the rest only widen coverage:
 ///
 /// - `built_binaries()` — `audio-probe`, compiled by this crate's build script
 ///   from the SDK submodules. Always present.
@@ -93,10 +92,8 @@ fn corpus() -> Vec<PathBuf> {
 ///
 /// `audio-probe` is built by this crate's own build script — `conformance` is
 /// on for tests via a dev-dependency on itself — so there is always at least one
-/// plugin to load. This used to be a `corpus_or_skip!` macro that returned early
-/// on an empty corpus, because the probe needed an external SDK checkout most
-/// machines lacked; the SDK is a submodule now, so an empty corpus means the
-/// build is broken rather than the machine being bare.
+/// plugin to load. The SDK is a submodule, so an empty corpus means the build
+/// is broken rather than the machine being bare — hence a failure, not a skip.
 ///
 /// # Panics
 ///
@@ -268,17 +265,15 @@ fn a_plugins_flat_channel_counts_match_its_bus_zero() {
 
 /// A plugin's reported version comes from the plugin, not from a literal.
 ///
-/// `PluginInfo::version` was hardcoded `"1.0.0"` for every VST3 ever loaded.
 /// The real string is on `PClassInfoW::version` (e.g. `"1.0.0.512"`,
-/// Major.Minor.Subversion.Build), which `class_info_unicode` read past.
-/// `vendor` sat beside it, and the header calls that field an *overwrite* of
-/// the factory's (`ipluginbase.h:357`) — so a distributor-published bundle
-/// credited the distributor rather than the maker.
+/// Major.Minor.Subversion.Build). `vendor` sits beside it, and the header calls
+/// that field an *overwrite* of the factory's (`ipluginbase.h:357`) — reading
+/// only the factory's would credit a distributor rather than the maker.
 ///
-/// Asserted as "at least one plugin disagrees with the old literal" rather than
-/// per-plugin: a plugin that genuinely is version 1.0.0, or that declares none
-/// and falls back, is not a bug. What would be a bug is *every* plugin agreeing
-/// with the literal again, which is what the old code guaranteed.
+/// Asserted as "at least one plugin disagrees with a `"1.0.0"` placeholder"
+/// rather than per-plugin: a plugin that genuinely is version 1.0.0, or that
+/// declares none and falls back, is not a bug. What would be a bug is *every*
+/// plugin agreeing with the placeholder, which a hardcoded version guarantees.
 #[test]
 fn a_plugins_version_is_read_from_it_rather_than_assumed() {
     let _plugins = plugin_guard();
@@ -318,11 +313,9 @@ fn a_plugins_version_is_read_from_it_rather_than_assumed() {
 /// A plugin's subcategories are read from it rather than left blank.
 ///
 /// `PClassInfoW::subCategories` (`ipluginbase.h:355`) carries the musical
-/// taxonomy — `"Fx|Reverb"`, `"Instrument|Synth"` — and `class_info_unicode`
-/// read past it, so `PluginInfo` had no way to report one. The server loader
-/// then built `PluginClass::Vst3 { category: String::new() }` unconditionally,
-/// which made the browser's `is_instrument` test — `category.contains
-/// ("Instrument")` — unable to return true for any VST3 plugin ever scanned.
+/// taxonomy — `"Fx|Reverb"`, `"Instrument|Synth"`. Without it a browser's
+/// `is_instrument` test — `category.contains("Instrument")` — could never
+/// return true for a VST3 plugin.
 ///
 /// Note this is a different field from `ClassInfo::category`, which names the
 /// COM class kind (`"Audio Module Class"`) and is the same for every audio
@@ -330,7 +323,7 @@ fn a_plugins_version_is_read_from_it_rather_than_assumed() {
 ///
 /// Asserted across the corpus rather than per-plugin: a plugin declaring no
 /// subcategory is legal. What would be a bug is every plugin reporting nothing,
-/// which is what the old code guaranteed.
+/// which is what never reading the field guarantees.
 #[test]
 fn a_plugins_subcategories_are_read_from_it_rather_than_left_blank() {
     let _plugins = plugin_guard();
@@ -745,9 +738,9 @@ fn test_rapid_process_calls() {
 ///   plain range really is `0..1`.
 /// - **Across the corpus**: at least one range is *not* `0..1`. Without this the
 ///   whole test would pass against a probe hardwired to return `Some((0.0,
-///   1.0))`, which is the bug it exists to catch. TAL-NoiseMaker alone returns
-///   identity for all 64 of its parameters, so a single-plugin version of this
-///   test asserted nothing.
+///   1.0))`, which is the failure it exists to catch. TAL-NoiseMaker alone
+///   returns identity for all 64 of its parameters, so a single plugin cannot
+///   tell the two apart.
 ///
 /// Not `#[ignore]`d, unlike its neighbours: it skips only when the corpus is
 /// empty. An ignored test exercising new FFI is indistinguishable from no test.

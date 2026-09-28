@@ -1,17 +1,11 @@
-//! Hand-written FFI for ALSA's **UMP sequencer** API (alsa-lib ≥ 1.2.10).
+//! Hand-written FFI for the part of ALSA's **UMP sequencer** API (alsa-lib ≥
+//! 1.2.10) that the ALSA backend uses.
 //!
-//! # Why hand-written
-//!
-//! `alsa-sys` 0.3.1 and the `alsa` crate at **every** published version have
-//! zero `snd_ump_*` / `snd_seq_ump_*` bindings — their generated headers predate
-//! the API. Bumping does not help; there is nothing to bump to.
-//!
-//! So this declares the ~15 functions the backend needs, `pub(crate)`, in one
-//! file. Deliberately **not** a `-sys` crate: publishing something named "ALSA
-//! UMP bindings" that covers a hand-picked fraction of the API is worse than
-//! publishing nothing, and a second `libasound` linkage would be a real hazard.
-//! Keeping it crate-private also means all the `unsafe` is auditable in one
-//! place — the same containment `virtual_source.rs` uses for CoreMIDI.
+//! This is not a general ALSA binding: it declares only the functions, types
+//! and constants the backend calls, with alsa-lib's C names so they can be
+//! looked up in its headers. Applications use [`MidiSession`](crate::MidiSession)
+//! instead. The published `alsa-sys` / `alsa` crates have no `snd_ump_*` /
+//! `snd_seq_ump_*` bindings, which is why these are written by hand.
 //!
 //! # The struct is measured, not guessed
 //!
@@ -19,15 +13,15 @@
 //! is the highest-risk thing in this backend: a wrong layout is not a compile
 //! error, it is silent memory corruption on the MIDI thread. Every offset below
 //! was read off the real header with `offsetof` on the target
-//! (alsa-lib 1.2.14, x86_64), and the `layout` tests re-assert them at compile
-//! time so a drift breaks the build instead of the audio.
+//! (alsa-lib 1.2.14, x86_64), and compile-time assertions re-check them so a
+//! drift breaks the build instead of the audio.
 //!
 //! # Version floors
 //!
-//! Two, and they differ — see `build.rs`:
-//! - **1.2.10** — everything here except the two below (`alsa_ump` cfg).
-//! - **1.2.13** — `snd_seq_create_ump_endpoint` and
-//!   `snd_seq_create_ump_block` (`alsa_ump_create` cfg).
+//! Everything declared here needs alsa-lib 1.2.10 (the `alsa_ump` cfg that
+//! `build.rs` sets). `build.rs` also detects 1.2.13, which adds
+//! `snd_seq_create_ump_endpoint` / `snd_seq_create_ump_block` (the
+//! `alsa_ump_create` cfg); those are not declared here.
 
 #![allow(
     non_camel_case_types,

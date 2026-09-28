@@ -59,8 +59,8 @@ pub(crate) fn acquire() -> Guard {
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
-            // An unusable temp dir must not fail the suites; running
-            // unserialized is what they did before this existed.
+            // An unusable temp dir must not fail the suites; fall back to
+            // running unserialized.
             Err(_) => return Guard,
         }
     }

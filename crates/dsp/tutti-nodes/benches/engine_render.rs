@@ -2,9 +2,9 @@
 //!
 //! `Engine::process` is `tutti-core`'s, but the graph it renders here is built
 //! from this crate's nodes (`Osc`, `EqBandNode`, `BusStripNode`,
-//! `SvfFilterNode`), so the numbers are for the filters the engine ships rather
-//! than fundsp's. That is why the bench lives here: `tutti-core` cannot depend
-//! on this crate without a cycle.
+//! `SvfFilterNode`), so the numbers are for the filters the engine ships. That
+//! is why the bench lives here: `tutti-core` cannot depend on this crate
+//! without a cycle.
 //!
 //! # Reading these numbers
 //!
@@ -26,14 +26,12 @@
 //!
 //! Criterion suits steady-state, allocation-free, fixed-working-set code, and
 //! this path is exactly that — `tests/rt_no_alloc_engine.rs` (beside this
-//! bench, in `tutti-nodes`) *proves* the
-//! precondition. It is the wrong tool where cost is dominated by allocation
-//! churn or by the scheduler: `tutti-sampler`'s
-//! `examples/profile_stretch_clone.rs` measured an **81× wall-clock spread**
-//! on identical work and deliberately reports a median with a sampling
-//! profiler instead, because criterion's outlier *rejection* would discard
-//! precisely the samples that decide whether audio drops out. Anything with
-//! that shape belongs in a harness of that kind, not here.
+//! bench, in `tutti-nodes`) *proves* the precondition. It is the wrong tool
+//! where cost is dominated by allocation churn or by the scheduler: such work
+//! can show a wall-clock spread of tens of times on identical input, and
+//! criterion's outlier *rejection* would discard precisely the samples that
+//! decide whether audio drops out. Anything with that shape belongs in a
+//! harness that reports a median under a sampling profiler, not here.
 //!
 //! # Running
 //!
@@ -53,7 +51,7 @@ use tutti_core::graph::{Edge, InPort, OutPort, Source};
 use tutti_core::{ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate};
 use tutti_core::{Db, Hz, Q};
 use tutti_core::{Samples, Transport};
-use tutti_graph::{Editor, Legacy, Prepare, Unforkable};
+use tutti_graph::{Editor, Prepare, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
 
@@ -70,29 +68,24 @@ fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey, out: u16) {
     );
 }
 
-/// A rolling transport driving a three-node chain (this crate's units,
-/// through `Legacy`), the shape `tests/rt_no_alloc_engine.rs` already pins
+/// A rolling transport driving a three-node chain (this crate's nodes: the
+/// oscillator, the EQ and the strip), the shape `tests/rt_no_alloc_engine.rs` already pins
 /// as allocation-free, on `outputs` global outputs (the strip's pair,
 /// repeated).
 fn chain_engine(outputs: usize) -> Engine {
     let transport = Transport::new(SR);
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
     let [osc, eq, strip] = [1, 2, 3].map(NodeKey);
-    ed.insert(osc, "osc", Legacy::new(Osc::sine(Hz(440.0))));
+    ed.insert(osc, "osc", Osc::sine(Hz(440.0)));
     ed.insert(
         eq,
         "eq",
-        Legacy::new(EqBandNode::<f64>::new(
-            SvfType::Bell,
-            Hz(1_000.0),
-            Q(1.0),
-            Db(6.0),
-        )),
+        EqBandNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(1.0), Db(6.0)),
     );
     ed.insert(
         strip,
         "strip",
-        Legacy::new(BusStripNode::with_channels(ChannelLayout::STEREO)),
+        BusStripNode::with_channels(ChannelLayout::STEREO),
     );
     wire(&mut ed, eq, 0, osc, 0);
     wire(&mut ed, strip, 0, eq, 0);
@@ -115,7 +108,7 @@ fn chain_engine(outputs: usize) -> Engine {
 }
 
 /// `depth` filters in series off one source — the "how many nodes" axis:
-/// this crate's `Osc` and `SvfFilterNode`, through `Legacy`.
+/// this crate's `Osc` and `SvfFilterNode`.
 fn depth_engine(depth: usize) -> Engine {
     depth_graph_engine(depth, true)
 }
@@ -128,8 +121,6 @@ fn render(engine: &Engine, buf: &mut [f32], layout: ChannelLayout) {
 /// elem/s at 64 frames is materially below elem/s at 1024, the difference is
 /// what the engine pays *per callback* rather than per sample — the prologue
 /// (installing commits, the transport walk, the fold) rather than the DSP.
-/// The chain's units are `Legacy`, so every block renders chunk-major, in
-/// 64-frame graph blocks.
 fn bench_block_size(c: &mut Criterion) {
     let mut group = c.benchmark_group("block_size");
     let engine = chain_engine(2);
@@ -202,34 +193,29 @@ fn bench_transport_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-// ---- node contract: `Legacy` against native (doc 013) -----------------------
+// ---- this crate's nodes against a reference pair ------------------------------
 //
 // `backend/<runtime>/<depth>/<frames>`: the `nodes` shape — a source into
 // `depth` filters in series, stereo device — through the whole `Engine`
 // (motion drain, transport walk, render, fold, declick) on each node kind.
-// (A `net` row ran fundsp's `Net` through the engine until doc 013 Phase 3
-// PR 15 removed that backend.)
 //
-// - `graph-legacy`: this crate's `Osc` and `SvfFilterNode` through
-//   `tutti_graph::Legacy`, which copies in and out of fundsp buffers (the
-//   `nodes` group's engine);
-// - `graph-native`: the native executor running nodes written against `Io`
-//   (a phase-accumulator sine and an SVF lowpass with fundsp's `FixedSvf`
-//   arithmetic, the `graph_render` bench's native pair). Not
-//   `SvfFilterNode`'s code — no native port of it exists yet — so this row
-//   prices the runtime with a filter of the same order of work.
+// - `graph-crate`: this crate's own nodes, `Osc` and `SvfFilterNode`.
+// - `graph-reference`: nodes written for this bench against `Io` (a
+//   phase-accumulator sine and a fixed-coefficient trapezoidal SVF lowpass,
+//   the `tutti-graph` `graph_render` bench's pair): a reference filter of the
+//   same order of work as `SvfFilterNode`, for the runtime's cost.
 //
 // The graph engines are prepared for 512-frame blocks, so every row here is
 // one executor block per device block.
 
 /// `sine_hz`, against `Io`.
-struct NativeSine {
+struct Sine {
     hz: f32,
     phase: f32,
     dt: f32,
 }
 
-impl tutti_graph::Node for NativeSine {
+impl tutti_graph::Node for Sine {
     fn shape(&self) -> tutti_graph::Shape {
         tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
             .with_tail(tutti_core::Tail::Unbounded)
@@ -256,16 +242,16 @@ impl tutti_graph::Node for NativeSine {
     }
 }
 
-/// An SVF lowpass with fundsp's `FixedSvf<f32, LowpassMode>` arithmetic,
-/// against `Io`, in place.
-struct NativeLowpass {
+/// A fixed-coefficient trapezoidal SVF lowpass (Simper's form), against `Io`,
+/// in place.
+struct Lowpass {
     cutoff: f32,
     q: f32,
     a: [f32; 3],
     ic: [f32; 2],
 }
 
-impl NativeLowpass {
+impl Lowpass {
     fn new(cutoff: f32, q: f32) -> Self {
         Self {
             cutoff,
@@ -276,7 +262,7 @@ impl NativeLowpass {
     }
 }
 
-impl tutti_graph::Node for NativeLowpass {
+impl tutti_graph::Node for Lowpass {
     fn shape(&self) -> tutti_graph::Shape {
         tutti_graph::Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
             .with_tail(tutti_core::Tail::Unknown)
@@ -312,19 +298,19 @@ impl tutti_graph::Node for NativeLowpass {
     }
 }
 
-/// The `nodes` shape on the native graph: `legacy` runs this crate's own
-/// units through `Legacy`, otherwise the native pair.
-fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
+/// The `nodes` shape on the graph: `ours` runs this crate's own nodes,
+/// otherwise the reference pair.
+fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
     use tutti_core::graph::{Edge, InPort, OutPort, Source};
     use tutti_core::NodeKey;
     let (mut ed, exec) = tutti_graph::Editor::new(tutti_graph::Prepare::new(
         SampleRate(SR),
         tutti_core::Samples(512),
     ));
-    let src: Box<dyn tutti_graph::Node> = if legacy {
-        tutti_graph::IntoNode::into_node(tutti_graph::Legacy::new(Osc::sine(Hz(440.0)))).0
+    let src: Box<dyn tutti_graph::Node> = if ours {
+        tutti_graph::IntoNode::into_node(Osc::sine(Hz(440.0))).0
     } else {
-        Box::new(NativeSine {
+        Box::new(Sine {
             hz: 440.0,
             phase: 0.0,
             dt: 0.0,
@@ -334,15 +320,16 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
     let mut last = NodeKey(0);
     for i in 0..depth {
         let cutoff = 500.0 + (i as f32) * 7.0;
-        let f: Box<dyn tutti_graph::Node> =
-            if legacy {
-                tutti_graph::IntoNode::into_node(tutti_graph::Legacy::pure(
-                    SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(cutoff), Q(0.7)),
-                ))
-                .0
-            } else {
-                Box::new(NativeLowpass::new(cutoff, 0.7))
-            };
+        let f: Box<dyn tutti_graph::Node> = if ours {
+            tutti_graph::IntoNode::into_node(SvfFilterNode::<f64>::new(
+                SvfType::LowPass,
+                Hz(cutoff),
+                Q(0.7),
+            ))
+            .0
+        } else {
+            Box::new(Lowpass::new(cutoff, 0.7))
+        };
         let k = NodeKey(1 + i as u64);
         ed.insert(k, "lowpass", Unforkable(f));
         ed.spec_mut().topology.edges.insert(
@@ -366,14 +353,14 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
     engine
 }
 
-/// `Legacy` units against native nodes, through the whole engine, on the
+/// This crate's nodes against the reference pair, through the whole engine, on the
 /// `nodes` shape. See the section comment above for what each row runs.
 fn bench_backend(c: &mut Criterion) {
     let mut group = c.benchmark_group("backend");
     for depth in [1usize, 8, 128] {
         let engines = [
-            ("graph-legacy", depth_graph_engine(depth, true)),
-            ("graph-native", depth_graph_engine(depth, false)),
+            ("graph-crate", depth_graph_engine(depth, true)),
+            ("graph-reference", depth_graph_engine(depth, false)),
         ];
         for (name, engine) in &engines {
             for frames in [64usize, 512] {

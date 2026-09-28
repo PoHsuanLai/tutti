@@ -5,13 +5,15 @@
 //! summing unit: adding or removing a voice then costs a queued command instead
 //! of a graph edit, which is what keeps voice churn off the commit path.
 
-use std::sync::Arc;
-
+use crate::lanes::LANE_FRAMES;
 use crate::ports::{Command, Commands};
 use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
-use super::command::{VoiceCommand, VoicePoolHandle, COMMAND_CAPACITY, MAX_RESIDENT_VOICES};
+use super::clock::Clock;
+use super::command::{
+    SharedRate, VoiceCommand, VoicePoolHandle, COMMAND_CAPACITY, MAX_RESIDENT_VOICES,
+};
 use super::memory_source::LoopSetting;
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice, VoiceSource};
@@ -22,12 +24,11 @@ use super::types::Playback;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use tutti_core::transport::BeatCursor;
-use tutti_core::{
-    AudioUnit, BufferMut, BufferRef, ChannelLayout, SampleRate, SignalFrame, Timeline,
+use tutti_core::{ChannelLayout, SampleRate, Tail};
+use tutti_graph::{
+    Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare, Shape,
+    Status,
 };
-
-const VOICE_POOL_ID: u64 = 0x_0000_0000_0000_DA03;
 
 // ---------------------------------------------------------------------------
 // ECS components — live on the track entity.
@@ -43,14 +44,14 @@ const VOICE_POOL_ID: u64 = 0x_0000_0000_0000_DA03;
 #[derive(Component, Debug)]
 pub struct VoicePoolRef(pub VoicePoolHandle);
 
-/// The graph vertex the track's pool occupies, so a wiring system can name it as
-/// a source without searching the `Net`.
+/// The graph key the track's pool occupies, so a wiring system can name it as
+/// a source without searching the graph.
 ///
-/// The id, not the unit: the unit belongs to the audio thread, and holding one
+/// The key, not the unit: the unit belongs to the audio thread, and holding one
 /// here would be a second owner of state the graph already owns.
 #[cfg(feature = "bevy")]
 #[derive(Component, Debug, Clone, Copy)]
-pub struct VoicePoolNode(pub tutti_core::dsp::NodeId);
+pub struct VoicePoolNode(pub tutti_core::NodeKey);
 
 // ---------------------------------------------------------------------------
 // Retirement — values the audio thread must not drop.
@@ -116,17 +117,31 @@ pub struct PoolTooWide {
 }
 
 // ---------------------------------------------------------------------------
-// VoicePool — the AudioUnit.
+// VoicePool — the graph node.
 // ---------------------------------------------------------------------------
 
 /// Every voice on one track, played and summed by a single graph node.
 ///
 /// Zero inputs, [`channels`](Self::channels) outputs. Each block it drains the
-/// command queue, checks the transport for a discontinuity, then reads and sums
-/// its slots — all of it on the audio thread, and all of it allocation-free
-/// provided the control side did its share: [`VoicePoolHandle::send`] builds any
-/// stretch filter a command implies, and [`VoicePoolHandle::collect_retired`]
-/// frees what the drain hands back.
+/// command queue, reads the transport from the block's `Env`, then reads and
+/// sums its slots — all of it on the audio thread, and all of it
+/// allocation-free provided the control side did its share:
+/// [`VoicePoolHandle::send`] builds any stretch filter a command implies, and
+/// [`VoicePoolHandle::collect_retired`] frees what the drain hands back.
+///
+/// # As a graph node
+///
+/// A `tutti_graph::Node`. Its controls ([`IntoNode`]) are its
+/// [`VoicePoolHandle`]: the command queue it drains at the top of each block
+/// (a bounded lock-free queue the node owns the receiving end of), and the
+/// retirement channel back. Voices placed on the timeline read the transport
+/// from each block's `Env`, frame-exact at their windows' edges.
+///
+/// **A fork of a pool is an empty pool** at its width, with no command
+/// queue and no butler: the voices a pool holds arrived through its queue on
+/// the audio thread, where no control-side copy of them exists to fork. A
+/// host that renders a track's clips offline rebuilds them in a pool of its
+/// own ([`insert_voice`](Self::insert_voice)) before inserting it.
 ///
 /// Both source tiers live here side by side, as the `Memory` / `Disk` arms of
 /// [`VoiceSource`]; the slot's read forks on that enum rather than on a trait,
@@ -137,7 +152,9 @@ pub struct VoicePool {
     /// drain does not reallocate.
     pub(crate) voices: Vec<PlaybackSlot>,
     /// Commands from the control thread, drained at the top of every block.
-    /// This pool's own: a clone gets a dead one — see this type's `Clone`.
+    /// This pool's own: a dead one until [`into_parts`](IntoNode::into_parts)
+    /// (or [`with_handle`](Self::with_handle)) hands out the sending end; a
+    /// clone gets a dead one — see this type's `Clone`.
     pub(crate) rx: Receiver<VoiceCommand>,
 
     /// Where removed slots go to be freed, off the audio thread.
@@ -153,12 +170,12 @@ pub struct VoicePool {
     /// callback — a degraded free, never a leak.
     pub(crate) retired: Sender<Retired>,
     /// The engine rate every slot and its stretch filter is tuned to. Written by
-    /// `set_sample_rate` and forwarded to each of them, so a device-rate change
+    /// `prepare` and forwarded to each of them, so a device-rate change
     /// cannot leave a filter tuned to the old one.
     pub(crate) sample_rate: SampleRate,
-    /// The clock a placed voice derives its window position from. `None` for a
-    /// free-running pool, where every voice plays from its own head.
-    pub(crate) transport: Option<Arc<dyn Timeline>>,
+    /// The rate, shared with the handle, so a filter the handle builds for a
+    /// command is built at the rate the pool runs at.
+    pub(crate) rate: SharedRate,
     /// Typed butler write handle. `Some` on the live path (threaded in from the
     /// [`DiskStreamer`](crate::DiskStreamer)); `None` for tests / detached / offline
     /// readers with no live butler. Used by the drain to forward *streaming*
@@ -166,30 +183,23 @@ pub struct VoicePool {
     /// the reader itself. Cloning it is cheap (a `Sender` + an `Arc` map).
     pub(crate) butler: Option<Commands>,
 
-    /// Output width — this node's `outputs()`, fixed at construction.
+    /// Output width — the node's audio outputs, fixed at construction.
     ///
     /// Declared rather than inferred from the voices it holds: this unit is built
-    /// on track creation, *before* any voice exists, and `Net` edges are wired
-    /// against `outputs()`. A width that followed its contents would re-arity a
-    /// live graph node the moment a voice landed.
+    /// on track creation, *before* any voice exists, and edges are wired against
+    /// its shape. A width that followed its contents would re-arity a live graph
+    /// node the moment a voice landed.
     pub(crate) channels: ChannelLayout,
 
-    /// Detects transport discontinuities, so buffered audio can be flushed on a
-    /// seek. `None` when there is no transport to watch (free-running / detached).
+    /// The transport as the pool's voices read it, kept across blocks so a
+    /// jump (a seek, a loop wrap) is seen where it happens and every slot's
+    /// buffered audio is flushed there.
     ///
-    /// **One cursor for the whole reader, not one per slot.** Every slot reads the
-    /// same transport, so N cursors would be N redundant atomic loads per block
-    /// and N chances to disagree about whether the playhead moved — and a
-    /// disagreement would flush some slots and not others, which is worse than
-    /// flushing none.
-    ///
-    /// Held here rather than derived per block because the detection *is* the
-    /// state: a jump is a fact about two consecutive readings, so something has to
-    /// remember the previous one. [`BeatCursor`] is that memory, and it already
-    /// handles the paused case (a seek made while stopped is reconciled rather
-    /// than reported) and clones by sharing, so fundsp's clone-on-commit does not
-    /// restart playback.
-    pub(crate) cursor: Option<BeatCursor>,
+    /// **One clock for the whole reader, not one per slot.** Every slot reads
+    /// the same transport, so N clocks would be N chances to disagree about
+    /// whether the playhead moved — and a disagreement would flush some slots
+    /// and not others, which is worse than flushing none.
+    pub(crate) clock: Clock,
 
     /// The lanes every slot's block read renders through, one voice at a
     /// time (`PlaybackSlot::process_into`). Built with the pool, on the
@@ -198,113 +208,72 @@ pub struct VoicePool {
 }
 
 // Hand-rolled: `voices` holds non-`Debug` `PlaybackSlot`s (each wraps a sampler +
-// stretch DSP) and `transport` is an `Arc<dyn Timeline>`. Print the slot
-// count + scalars rather than the slot internals.
+// stretch DSP). Print the slot count + scalars rather than the slot internals.
 impl std::fmt::Debug for VoicePool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VoicePool")
             .field("voices", &self.voices.len())
             .field("sample_rate", &self.sample_rate)
-            .field("has_transport", &self.transport.is_some())
             .field("has_butler", &self.butler.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl VoicePool {
-    /// Build a unit from an already-created command receiver + optional
-    /// transport. Shared field-literal source for `new` / `with_transport` /
-    /// `detached`.
-    fn from_parts(
-        rx: Receiver<VoiceCommand>,
-        transport: Option<Arc<dyn Timeline>>,
-        butler: Option<Commands>,
-    ) -> Self {
-        Self::from_parts_with_channels(rx, transport, butler, ChannelLayout::STEREO)
-    }
-
-    fn from_parts_with_channels(
-        rx: Receiver<VoiceCommand>,
-        transport: Option<Arc<dyn Timeline>>,
-        butler: Option<Commands>,
-        channels: impl Into<ChannelLayout>,
-    ) -> Self {
-        // Detached pools and clones get a dead retirement channel: a full
-        // `bounded(0)` never accepts, so `Remove` falls back to dropping in
-        // place. That is correct for an offline render, which owns its voices
-        // outright and has no control thread waiting to collect.
+    /// A pool with no command queue and no retirement channel yet (both
+    /// dead): [`with_handle`](Self::with_handle) or
+    /// [`into_parts`](IntoNode::into_parts) makes them.
+    fn from_parts(butler: Option<Commands>, channels: impl Into<ChannelLayout>) -> Self {
+        // A full `bounded(0)` never accepts, so until a handle exists `Remove`
+        // falls back to dropping in place — correct for a pool nothing
+        // controls (a fork, which owns its voices outright and has no control
+        // thread waiting to collect).
         let (retired, _) = bounded(0);
+        let sample_rate = SampleRate::SR_44K1;
         Self {
             retired,
-            // Reserved, not empty: `AddVoice` is drained inside `tick`/`process`,
-            // so a `push` that grows this vector is a reallocation in the audio
+            // Reserved, not empty: `AddVoice` is drained inside `process`, so
+            // a `push` that grows this vector is a reallocation in the audio
             // callback. `MAX_RESIDENT_VOICES` is the point past which a track
             // stops being allocation-free; beyond it the push still works, it
             // just costs one grow.
             voices: Vec::with_capacity(MAX_RESIDENT_VOICES),
-            rx,
-            sample_rate: SampleRate::from(44100.0),
-            cursor: transport
-                .as_ref()
-                .map(|t| BeatCursor::new(Arc::clone(t), 44100.0)),
-            transport,
+            rx: bounded(0).1,
+            sample_rate,
+            rate: SharedRate::new(sample_rate),
             butler,
             channels: nonempty(channels.into()),
+            clock: Clock::new(),
             scratch: BlockScratch::new(),
         }
     }
 
-    /// Output width — this node's `outputs()`, as a [`ChannelLayout`] rather
-    /// than a bare count. Fixed for the pool's lifetime.
+    /// Output width — the node's audio outputs, as a [`ChannelLayout`]
+    /// rather than a bare count. Fixed for the pool's lifetime.
     pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
 
-    /// Build a free-running stereo pool and its control handle.
-    ///
-    /// No transport and no butler: voices play from their own heads, and a
-    /// streaming voice's loop command is dropped with a warning because loop is
-    /// butler-owned. For a pool on the timeline use
-    /// [`with_transport`](Self::with_transport); for one at a non-stereo width,
-    /// [`with_channels`](Self::with_channels).
-    pub fn new() -> (Self, VoicePoolHandle) {
-        let (tx, rx) = bounded(COMMAND_CAPACITY);
-        let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
-        let handle = VoicePoolHandle {
-            tx,
-            retired,
-            channels: ChannelLayout::STEREO,
-            sample_rate: SampleRate::SR_44K1,
-        };
-        let mut unit = Self::from_parts(rx, None, None);
-        unit.retired = retired_tx;
-        (unit, handle)
+    /// A stereo pool with no butler: a streaming voice's loop command is
+    /// dropped with a warning, because loop is butler-owned. Placed voices
+    /// play their windows of the transport; for a pool that forwards loops,
+    /// [`with_butler`](Self::with_butler); for one at a non-stereo width,
+    /// [`with_channels`](Self::with_channels). Its controls come with it into
+    /// the graph ([`IntoNode`]).
+    pub fn new() -> Self {
+        Self::from_parts(None, ChannelLayout::STEREO)
     }
 
-    /// Build a stereo pool on `transport` and its control handle.
-    ///
-    /// `butler` is the typed write handle streaming voices need: without it a
-    /// disk-backed voice still plays, but its loop commands are dropped with a
-    /// warning, because the loop-start fadein head lives on the butler side and
-    /// the reader cannot reach it.
-    pub fn with_transport(
-        transport: Arc<dyn Timeline>,
-        butler: Option<Commands>,
-    ) -> (Self, VoicePoolHandle) {
-        let (tx, rx) = bounded(COMMAND_CAPACITY);
-        let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
-        let handle = VoicePoolHandle {
-            tx,
-            retired,
-            channels: ChannelLayout::STEREO,
-            sample_rate: SampleRate::SR_44K1,
-        };
-        let mut unit = Self::from_parts(rx, Some(transport), butler);
-        unit.retired = retired_tx;
-        (unit, handle)
+    /// A stereo pool forwarding streaming voices' loop commands to `butler`
+    /// — the typed write handle streaming voices need: without it a
+    /// disk-backed voice still plays, but its loop commands are dropped with
+    /// a warning, because the loop-start fadein head lives on the butler side
+    /// and the reader cannot reach it.
+    pub fn with_butler(butler: Commands) -> Self {
+        Self::from_parts(Some(butler), ChannelLayout::STEREO)
     }
 
-    /// As [`with_transport`](Self::with_transport), at an explicit output width.
+    /// A pool at an explicit output width, with an optional butler.
     ///
     /// Each slot's stretch unit is built at this width too, so a wide voice is
     /// not truncated on the stretch path.
@@ -315,60 +284,35 @@ impl VoicePool {
     /// and lanes are that wide, so a wider pool would declare outputs it never
     /// writes (a caller reading them sees whatever the buffer held).
     pub fn with_channels(
-        transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
         channels: impl Into<ChannelLayout>,
-    ) -> Result<(Self, VoicePoolHandle), PoolTooWide> {
+    ) -> Result<Self, PoolTooWide> {
         let channels = channels.into();
         if channels.count() as usize > MAX_SAMPLER_CHANNELS {
             return Err(PoolTooWide { channels });
         }
+        Ok(Self::from_parts(butler, channels))
+    }
+
+    /// This pool with a fresh command queue and retirement channel, and the
+    /// handle that drives them: what [`into_parts`](IntoNode::into_parts)
+    /// hands the graph and the caller. For a host (or a test) that calls
+    /// the node by hand. A handle taken before goes dead
+    /// ([`SendError::Disconnected`](super::command::SendError::Disconnected)).
+    pub fn with_handle(mut self) -> (Self, VoicePoolHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
-        let mut unit = Self::from_parts_with_channels(rx, transport, butler, channels);
-        unit.retired = retired_tx;
-        // The handle mirrors the reader's width/rate so `send` can build a
-        // stretch filter that matches it, on the control thread.
+        self.rx = rx;
+        self.retired = retired_tx;
+        // The handle mirrors the reader's width and shares its rate so `send`
+        // can build a stretch filter that matches it, on the control thread.
         let handle = VoicePoolHandle {
             tx,
             retired,
-            channels: unit.channels,
-            sample_rate: unit.sample_rate,
+            channels: self.channels,
+            rate: self.rate.clone(),
         };
-        Ok((unit, handle))
-    }
-
-    /// Flush every slot's buffered audio if the playhead moved discontinuously.
-    ///
-    /// Called once per block from both `tick` and `process`, right after the
-    /// command drain. The check is one [`BeatCursor::advance`] — two atomic loads
-    /// and a comparison — and on the overwhelmingly common continuous block it
-    /// does nothing else.
-    ///
-    /// **Why anything is needed at all:** [`Timeline`] is poll-only. It reports
-    /// where the playhead *is*, never that it moved discontinuously, and it
-    /// cannot — "since when" differs per observer, so a shared `last_beat` on the
-    /// transport would be overwritten by whichever reader polled last. Each
-    /// observer keeps its own cursor; this is the sampler's.
-    ///
-    /// **Either direction, not just backward.** A backward jump is the obvious
-    /// case, but a forward scrub is equally destructive to a FIFO: the buffer
-    /// keeps draining the old region's material over the new one. Hence
-    /// [`BeatWindowSync::is_discontinuous`] rather than a `Rewound` match — the
-    /// distinction the MIDI consumers need (their sorted-list cursors
-    /// self-correct forward) is not one buffered audio can afford.
-    #[inline]
-    pub(crate) fn flush_on_seek(&mut self, block_size: usize) {
-        let Some(cursor) = &self.cursor else { return };
-        let Some((_, sync)) = cursor.advance(block_size) else {
-            return;
-        };
-        if !sync.is_discontinuous() {
-            return;
-        }
-        for slot in &mut self.voices {
-            slot.flush_playhead_state();
-        }
+        (self, handle)
     }
 
     /// Number of voice slots currently materialised (drained from the command
@@ -387,42 +331,7 @@ impl VoicePool {
             .map(|s| &s.voice.play)
     }
 
-    /// Build a render-only reader: empty, bound to `transport`, with no live
-    /// command channel — its `rx` is a `bounded(0)` receiver that has no sender
-    /// and can never deliver anything.
-    ///
-    /// For a render that rebuilds its voices itself rather than fork the live
-    /// pool: born empty, born channel-less, so it shares no mutable state
-    /// with the live graph at any instant. Voices are then built from the
-    /// host's own record via [`Self::insert_voice`]. (A clone is channel-less
-    /// too — see `Clone` — but carries the live pool's voices until
-    /// [`isolate`](AudioUnit::isolate) clears them.)
-    pub fn detached(transport: Arc<dyn Timeline>) -> Self {
-        let (_tx, rx) = bounded(0);
-        // No butler: the offline render never forwards streaming loop ops (it
-        // rebuilds in-memory voices from ECS), so a `None` handle is correct here.
-        Self::from_parts(rx, Some(transport), None)
-    }
-
-    /// Re-point the reader at a new transport. The offline region render calls
-    /// this after [`isolate`](AudioUnit::isolate) has emptied the reader, so it
-    /// only needs to seat the render's transport; any voices inserted afterward
-    /// (via [`insert_voice`](Self::insert_voice)) are built against it. Mirrors
-    /// [`VoiceNode::replace_transport`](super::node::VoiceNode::replace_transport)
-    /// so both transport-aware nodes rebind the same way in the render's
-    /// isolation pass.
-    pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
-        for slot in &mut self.voices {
-            slot.voice.replace_transport(transport.clone());
-        }
-        self.transport = Some(transport);
-    }
-
-    /// Drop every voice slot.
-    ///
-    /// The offline render clones the staged net and then rebuilds each voice
-    /// fresh from ECS + the wave cache; clearing the inherited slots first
-    /// keeps the cloned reader from carrying any state tied to the live graph.
+    /// Drops every voice slot. Control thread (it frees them).
     pub fn clear_voices(&mut self) {
         self.voices.clear();
     }
@@ -443,9 +352,9 @@ impl VoicePool {
     ///   is what lets a host speak one `VoiceCommand` for both tiers instead of
     ///   forking on the tier itself.
     ///
-    /// RT-safe: this runs on the COLD command drain (top of `tick`/`process`,
-    /// before the per-sample loop), so the channel send is fine — it never
-    /// touches the per-sample hot path.
+    /// RT-safe: this runs on the COLD command drain (top of `process`, before
+    /// the read), so the channel send is fine — it never touches the
+    /// per-sample hot path.
     fn apply_loop(&mut self, id: SlotId, setting: LoopSetting) {
         let Some(slot) = self.voices.iter_mut().find(|s| s.id == id) else {
             return;
@@ -458,8 +367,7 @@ impl VoicePool {
             VoiceSource::Disk(_) => {
                 // Streaming loop is butler-owned, so this needs both a butler
                 // handle and a registered channel. A reader built without one
-                // (`new()`, `detached()`, `isolate()` — the offline/render
-                // paths) has neither.
+                // (`new()`, a fork) has neither.
                 let Some((butler, channel_index)) =
                     self.butler.as_ref().zip(slot.voice.channel_index)
                 else {
@@ -506,7 +414,7 @@ impl VoicePool {
         self.insert_voice_inner(id, Box::new(voice), stretch);
     }
 
-    /// Insert a fully-built [`Voice`] as a new slot and REALISE its full
+    /// Inserts a fully-built [`Voice`] as a new slot and realises its full
     /// `Playback` intent per-tier, building the stretch filter here if the voice
     /// needs one.
     ///
@@ -573,6 +481,10 @@ impl VoicePool {
         // can observe.
         let mut slot = PlaybackSlot::with_channels(id, voice, self.sample_rate, self.channels);
         slot.stretch = stretch;
+        // The source runs at the pool's rate (the memory tier's conversion,
+        // the disk tier's step), as `prepare` sets every resident slot's.
+        // Allocation-free: a rate and a ratio.
+        slot.voice.source.prepare_rate(self.sample_rate);
         self.voices.push(slot);
 
         // Realise the remaining intent through the same appliers the update
@@ -726,22 +638,14 @@ impl VoicePool {
 
 impl Clone for VoicePool {
     /// A copy of the voices and settings, with **no command channel** and no
-    /// retirement channel of its own.
-    ///
-    /// The graph renders the pool it was given; nothing commits by clone any
-    /// more (doc 013 item 7). The clones it does take are
-    /// `Legacy::controlled`'s shadow and a fork cloned from it, and neither
-    /// may drain the live handle's commands (crossbeam hands each message to
-    /// exactly one receiver, so a copy draining would steal edits from the
-    /// audio thread). So the `Receiver` stays with the pool that owns it.
-    /// Under `Net`, whose commit rendered from a clone, the clone had to share
-    /// it; the sharing, and `isolate`'s severing of it, went with `Net`.
+    /// retirement channel of its own: a copy draining the live handle's
+    /// commands would steal edits from the audio thread (crossbeam hands each
+    /// message to exactly one receiver), so the `Receiver` stays with the
+    /// pool that owns it.
     fn clone(&self) -> Self {
         Self {
             // Dead, like the command `Receiver` beside it: a clone must not hand
-            // slots back to the live pool's control thread. A full `bounded(0)`
-            // never accepts, so its `Remove`s free in place — correct for a
-            // render clone, which owns its voices outright.
+            // slots back to the live pool's control thread.
             retired: bounded(0).0,
             voices: self
                 .voices
@@ -752,14 +656,12 @@ impl Clone for VoicePool {
                     stretch: s.stretch.clone(),
                     channels: s.channels,
                     sample_rate: s.sample_rate,
-                }) // Voice (VoiceSource) + resident stretch::Unit clone by value; atomics preserved
+                })
                 .collect(),
             rx: bounded(0).1,
             sample_rate: self.sample_rate,
-            // Shares the underlying cursor cell, so a clone-on-commit does not
-            // read as a discontinuity and restart playback.
-            cursor: self.cursor.clone(),
-            transport: self.transport.clone(),
+            rate: SharedRate::new(self.sample_rate),
+            clock: Clock::new(),
             butler: self.butler.clone(),
             channels: self.channels,
             scratch: BlockScratch::new(),
@@ -767,63 +669,27 @@ impl Clone for VoicePool {
     }
 }
 
-impl AudioUnit for VoicePool {
-    fn inputs(&self) -> usize {
-        0
+impl Default for VoicePool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Node for VoicePool {
+    /// No inputs, [`channels`](Self::channels) outputs; a generator (fed
+    /// out of band, through its queue), never skipped.
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, self.channels).with_tail(Tail::Unbounded)
     }
 
-    fn outputs(&self) -> usize {
-        // Boundary: `AudioUnit::outputs` is a fixed fundsp trait signature.
-        self.channels.count() as usize
-    }
-
-    fn reset(&mut self) {
-        for slot in &mut self.voices {
-            slot.flush_playhead_state();
-        }
-    }
-
-    /// Clear live voice state so an offline copy can be ticked on a worker
-    /// thread without sharing voices with the live reader. Leaves the unit
-    /// *born empty and channel-less* (the [`detached`](Self::detached) state;
-    /// a clone has no command channel already), minus the transport:
-    /// re-pointing at the render's offline transport is the caller's separate
-    /// data-carrying step (via [`replace_transport`](Self::replace_transport)),
-    /// per the `isolate` contract.
-    fn isolate(&mut self) {
-        self.voices.clear();
-        // The offline render rebuilds voices from ECS and never forwards
-        // streaming loop ops, so it needs no butler handle.
-        self.butler = None;
-        // The cursor clones by sharing its cells (so a clone-on-commit does
-        // not restart playback): left in place, the clone's `process` would
-        // store `last_beat` and its `set_sample_rate` the rate into the live
-        // pool's cursor. `rebind_offline` seats a fresh one on the render's
-        // transport, as `VoiceNode::isolate` drops its own.
-        self.cursor = None;
-    }
-
-    /// Seat the render's transport, so voices inserted afterwards are built
-    /// against it. The data-carrying half `isolate` defers to; see
-    /// [`replace_transport`](Self::replace_transport).
-    fn rebind_offline(&mut self, transport: &tutti_core::transport::OfflineTransport) {
-        self.replace_transport(transport.timeline());
-        // A cursor of its own, on the render's transport: `isolate` dropped
-        // the shared one, and seek detection must watch the timeline the
-        // render advances.
-        self.cursor = Some(BeatCursor::new(transport.timeline(), self.sample_rate));
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
+    /// The rate every slot, its source and its stretch filter run at, and
+    /// the handle builds filters at.
+    fn prepare(&mut self, p: &Prepare) {
+        let sample_rate = p.sample_rate();
         self.sample_rate = sample_rate;
-        if let Some(cursor) = &mut self.cursor {
-            cursor.set_sample_rate(sample_rate.get());
-        }
+        self.rate.store(sample_rate);
         for slot in &mut self.voices {
-            slot.voice
-                .source
-                .as_audio_unit_mut()
-                .set_sample_rate(sample_rate);
+            slot.voice.source.prepare_rate(sample_rate);
             slot.sample_rate = sample_rate;
             if let Some(unit) = &mut slot.stretch {
                 unit.set_sample_rate(sample_rate);
@@ -831,64 +697,73 @@ impl AudioUnit for VoicePool {
         }
     }
 
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         self.drain_commands();
-        // One frame is one "block" here: `tick` is the per-sample entry point, so
-        // the forward-jump slack is measured in single samples rather than 64.
-        self.flush_on_seek(1);
-
-        // Stride derived once, above the per-slot loop.
-        let n = (self.channels.count() as usize)
-            .min(output.len())
-            .min(MAX_SAMPLER_CHANNELS);
-        if n == 0 {
-            return;
+        let clock = self.clock.observe(cx.env);
+        let frames = io.frames();
+        let (_, mut outs) = io.split();
+        for ch in outs.iter_mut() {
+            ch.fill(0.0);
         }
-        output[..n].fill(0.0);
-
-        // Each slot reads its ONE voice via the shared
-        // `PlaybackSlot::tick_frame_into` (the same per-variant `VoiceSource` match
-        // a standalone `VoiceNode` uses — factored, not duplicated, and no
-        // per-sample dyn), summed channel-wise into the caller's frame.
-        let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
-        for slot in &mut self.voices {
-            slot.tick_frame_into(&mut frame[..n]);
-            for (c, &s) in frame.iter().enumerate().take(n) {
-                output[c] += s;
-            }
-        }
-    }
-
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        self.drain_commands();
-        self.flush_on_seek(size.max(1));
-
         // Stride derived once per block, above the loops.
         let n = (self.channels.count() as usize)
-            .min(output.channels())
+            .min(outs.len())
             .min(MAX_SAMPLER_CHANNELS);
-        for c in 0..n {
-            output.channel_f32_mut(c)[..size].fill(0.0);
+        let mut refs: [&mut [f32]; MAX_SAMPLER_CHANNELS] =
+            std::array::from_fn(|_| Default::default());
+        for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
+            *slot = ch;
         }
-
         // Each slot renders its ONE voice into the pool's lanes and adds them
-        // in, a block at a time, via the shared `PlaybackSlot::process_into`
+        // in, a lane at a time, via the shared `PlaybackSlot::render_into`
         // (the same per-variant `VoiceSource` match a standalone `VoiceNode`
         // uses).
-        for slot in &mut self.voices {
-            slot.process_into(size, n, &mut self.scratch, output);
+        let mut from = 0;
+        while from < frames {
+            let to = (from + LANE_FRAMES).min(frames);
+            for slot in &mut self.voices {
+                slot.render_into(&clock, from..to, n, &mut self.scratch, &mut refs[..n]);
+            }
+            from = to;
         }
+        Status::Modified
     }
 
-    audio_unit_boilerplate!(id = VOICE_POOL_ID);
-
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        // Width must track `outputs()` or fundsp mis-plans this node's latency.
-        // Boundary: `SignalFrame::new` is a fundsp signature.
-        SignalFrame::new(self.channels.count() as usize)
+    /// Every slot's buffered audio flushed, the transport forgotten.
+    fn reset(&mut self) {
+        for slot in &mut self.voices {
+            slot.flush_playhead_state();
+        }
+        self.clock.reset();
     }
+}
 
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>() + self.voices.len() * std::mem::size_of::<PlaybackSlot>()
+/// A pool's fork: an empty pool at its width (see "As a graph node").
+struct PoolFork {
+    channels: ChannelLayout,
+}
+
+impl ForkSource for PoolFork {
+    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        Ok(Forked::new(Box::new(VoicePool::from_parts(
+            None,
+            self.channels,
+        ))))
+    }
+}
+
+impl IntoNode for VoicePool {
+    type Controls = VoicePoolHandle;
+
+    fn into_parts(self) -> NodeParts<VoicePoolHandle> {
+        let fork = PoolFork {
+            channels: self.channels,
+        };
+        let (pool, handle) = self.with_handle();
+        NodeParts {
+            node: Box::new(pool),
+            controls: handle,
+            fork: Some(Box::new(fork)),
+        }
     }
 }

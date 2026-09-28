@@ -20,7 +20,6 @@
 ///
 /// These cover the two halves of the fix — that a drop is now counted rather
 /// than swallowed, and that an output can be selected at all.
-/// (Was `tests/midi_out_device.rs`.)
 mod midi_out_device {
     use bevy_tutti::midi::{MidiOutDrops, MidiOutRouter};
     use tutti_midi_types::ump::MidiEvent;
@@ -157,7 +156,6 @@ mod midi_out_device {
 /// They prove `set_sample_rate` *works*. They do **not** prove `build_into`
 /// calls it: that function opens a real CPAL device, so it cannot run headless.
 /// The call site is covered by inspection.
-/// (Was `tests/midi_hardware_frame_offset.rs`.)
 mod midi_hardware_frame_offset {
     use std::time::{Duration, Instant};
 

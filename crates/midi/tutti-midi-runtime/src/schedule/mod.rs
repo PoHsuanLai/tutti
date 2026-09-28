@@ -1,28 +1,15 @@
-//! MIDI that arrives from a position on a timeline, rather than off a wire.
+//! MIDI that arrives from a position on a timeline, rather than off a wire:
+//! event source nodes walking each block's transport (the shared walk,
+//! `walk.rs`).
 //!
-//! Both types here implement [`MidiUnitIn`](tutti_midi_types::MidiUnitIn) and
-//! answer the same question — *what does this unit hear during the beat range
-//! this block covers?* — for the live and offline cases:
-//!
-//! - [`MidiClipSource`] reads a sorted event list against a live [`Timeline`],
-//!   stamping each event's `frame_offset` from its beat. Installed onto a
-//!   [`MidiInPort`](crate::MidiInPort), where it *layers* over the live mailbox
-//!   so a clip plays without silencing the keyboard.
-//! - [`MidiSnapshotReader`] reads a [`MidiSnapshot`] against an offline
-//!   timeline, for export. One snapshot holds every unit's stream behind a
-//!   per-unit cursor, which is what makes it a `MidiUnitIn` rather than a
-//!   `MidiIn` — it has no "everything pending" to answer.
-//!
-//! [`MidiSnapshot`] is the storage both share a vocabulary with: its
-//! [`TimedMidiEvent`] is the same type a clip's event list holds, so events move
-//! between the two without repacking.
-//!
-//! [`Timeline`]: tutti_core::transport::Timeline
+//! - [`MidiClipNode`] plays a clip's [`TimedMidiEvent`]s out of an event port.
+//! - [`HarmonyNode`] sends a sequencer's chord and scale lanes.
 
-pub mod clip_player;
-pub mod snapshot;
-pub mod snapshot_reader;
+pub mod clip_node;
+pub mod harmony_node;
+pub mod timed;
+mod walk;
 
-pub use clip_player::{MidiClipSource, TimedClipEvent};
-pub use snapshot::{MidiSnapshot, TimedMidiEvent};
-pub use snapshot_reader::MidiSnapshotReader;
+pub use clip_node::{MidiClipControls, MidiClipNode, CLIP_EVENT_CAPACITY};
+pub use harmony_node::{HarmonyControls, HarmonyNode, TimedHarmony, HARMONY_EVENT_CAPACITY};
+pub use timed::TimedMidiEvent;

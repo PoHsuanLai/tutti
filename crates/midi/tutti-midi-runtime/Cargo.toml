@@ -2,7 +2,7 @@
 name = "tutti-midi-runtime"
 version = "0.0.1"
 edition = "2021"
-description = "MIDI runtime state machines for the Tutti audio engine: registry, snapshot, routing table, MPE processor, CC mapping, output collection"
+description = "MIDI runtime for the Tutti audio engine: MIDI graph nodes (input, queue, clip, clock, out), MPE ingest, MIDI-CI, SysEx"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "midi", "real-time", "daw"]
@@ -17,6 +17,9 @@ default = []
 [dependencies]
 tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types" }
 tutti-core = { version = "0.0.1", path = "../../core/tutti-core", default-features = false, features = ["midi"] }
+# The graph's node contract and event ports: `MidiClipNode` is an event
+# source node. No cycle: tutti-graph names no MIDI crate.
+tutti-graph = { version = "0.0.1", path = "../../core/tutti-graph" }
 
 # Lock-free / concurrent
 arc-swap = "1.7"
@@ -27,7 +30,3 @@ parking_lot = "0.12"
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
-# The native graph, to drive a clip source as a `Legacy` node through the
-# graph engine and an offline `render_graph` (`tests/frame_exact_clip.rs`).
-# No cycle: `tutti-graph` names only `tutti-types` and `tutti-node`.
-tutti-graph = { path = "../../core/tutti-graph" }

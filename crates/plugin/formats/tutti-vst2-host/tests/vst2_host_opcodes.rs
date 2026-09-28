@@ -21,7 +21,7 @@
 //!
 //! # What is covered here, and what is not
 //!
-//! Only `audioMasterUpdateDisplay`. The other two arms are landed but not
+//! Only `audioMasterUpdateDisplay`. The other two arms are implemented but not
 //! witnessed, and cannot be by this fixture:
 //!
 //! - `audioMasterCurrentId` is asked from inside `VSTPluginMain`, before the
@@ -73,10 +73,8 @@ fn set_fire_update_display(enable: bool) {
     // written and then discarded with the unload, and the next load maps a
     // fresh image reading the default.
     //
-    // Measured on the same bug in `vst2_latency.rs`: 2 of 6 runs failed without
-    // this, 0 of 6 with it. It reads as flakiness because it passes whenever
-    // another test's instance happens to keep the image resident — which is why
-    // `update_display_reaches_the_host` here had also been written off as flaky.
+    // Without this the loss reads as flakiness, because it passes whenever
+    // another test's instance happens to keep the image resident.
     std::mem::forget(lib);
 }
 

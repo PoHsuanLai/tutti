@@ -233,7 +233,7 @@ pub(crate) unsafe fn midi_output_info(unit: AudioUnit) -> Option<MidiOutputInfo>
     Some(MidiOutputInfo { names })
 }
 
-/// Install `sink` as this AU's MIDI-output destination.
+/// Installs `sink` as this AU's MIDI-output destination.
 ///
 /// # Deliberately not gated on [`midi_output_info`]
 ///
@@ -311,8 +311,8 @@ impl AuMidiOutput {
     /// The obvious withdrawal — a zeroed struct — **does not work**, and this was
     /// measured rather than reasoned about. Apple declares `midiOutputCallback`
     /// nullable, and `Drop for AuLoaded` withdraws
-    /// `kAudioUnitProperty_HostCallbacks` with exactly that all-null trick. So the
-    /// first version of this code did the same, and every teardown failed.
+    /// `kAudioUnitProperty_HostCallbacks` with exactly that all-null trick, yet
+    /// the same trick here makes every teardown fail.
     ///
     /// Measured on macOS 15.6 against AUDelay, AULowpass, AUSampler,
     /// DLSMusicDevice and AUMatrixReverb — identical on all five:
@@ -510,7 +510,7 @@ unsafe fn decode_and_dispatch(
     NO_ERR
 }
 
-/// Walk a `MIDIPacketList`, calling `f(frame_offset, message_bytes)` once per
+/// Walks a `MIDIPacketList`, calling `f(frame_offset, message_bytes)` once per
 /// **MIDI message** — not once per packet.
 ///
 /// # Why the walk is by byte offset rather than by struct read
@@ -622,7 +622,7 @@ const PACKET_HEADER_SIZE: usize = std::mem::offset_of!(MIDIPacket, data);
 /// future SDK changes the array.
 const MAX_PACKET_PAYLOAD: u16 = 256;
 
-/// Advance a raw end-of-packet pointer to where the next packet starts,
+/// Advances a raw end-of-packet pointer to where the next packet starts,
 /// reproducing Apple's `MIDIPacketNext` macro.
 ///
 /// The architecture split is Apple's, and it is load-bearing in both directions:
@@ -645,7 +645,7 @@ fn next_packet(raw_next: *const u8) -> *const u8 {
     }
 }
 
-/// Split one packet's byte stream into individual MIDI messages, expanding
+/// Splits one packet's byte stream into individual MIDI messages, expanding
 /// running status, and call `f` once per complete message.
 ///
 /// # What this defends against
@@ -919,7 +919,7 @@ mod tests {
         );
     }
 
-    /// Build a list with Apple's OWN `MIDIPacketListInit`/`MIDIPacketListAdd` and
+    /// Builds a list with Apple's OWN `MIDIPacketListInit`/`MIDIPacketListAdd` and
     /// check this walk finds every message at the offsets Apple wrote them to.
     ///
     /// This is the test that makes the hand-rolled `next_packet` trustworthy:

@@ -37,7 +37,7 @@ pub struct AuEditor {
 unsafe impl Send for AuEditor {}
 
 impl AuEditor {
-    /// Instantiate the AU's Cocoa editor view and attach it as a subview of
+    /// Instantiates the AU's Cocoa editor view and attach it as a subview of
     /// the caller's parent `NSView`. Pass `None` to instantiate the view
     /// without attaching it to a parent hierarchy.
     ///
@@ -56,6 +56,11 @@ impl AuEditor {
     /// # Errors
     /// Returns [`crate::error::AuError::InvalidBuffer`] if the AU does not
     /// advertise a Cocoa view bundle or the view factory fails to load.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub unsafe fn open(
         unit: AudioUnit,
         parent: Option<WindowHandle>,
@@ -90,11 +95,16 @@ impl AuEditor {
         matches!(size, Ok(n) if n > 0)
     }
 
-    /// Remove the view from its superview (if any) and release it. Safe to
+    /// Removes the view from its superview (if any) and release it. Safe to
     /// call multiple times; subsequent calls are no-ops. Must be called on the
     /// macOS main thread — `removeFromSuperview`/`release` are AppKit calls and
     /// touching AppKit off the main thread is undefined behavior. This is the
     /// single teardown path; [`Drop`](Self::drop) routes through it too.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn close(&mut self) {
         tutti_plugin_types::assert_main_thread();
         if !self.view.is_null() {

@@ -1,12 +1,10 @@
-//! Clip playback and sample assets: the `.wav` loader, the disk-streaming
-//! engine handle and voice spawning.
+//! Clip playback and sample assets (feature `sampler`): the `.wav` loader, the
+//! disk-streaming engine handle and voice spawning.
 //!
-//! Named for `tutti-sampler`, the engine crate it adapts — one adapter module
-//! per engine crate is this crate's shape. The *resources* keep the engine's
-//! own nouns, though: there is no `Sampler` type in `tutti-sampler` — the
-//! crate's noun is [`DiskStreamer`], the handle that owns the butler thread —
-//! so the handle here is [`DiskStreamerRes`], not a `SamplerRes` naming a type
-//! that does not exist.
+//! The adapter for `tutti-sampler`. [`DiskStreamerRes`] holds the engine's
+//! [`DiskStreamer`], which owns the butler thread that streams clips from disk;
+//! [`TuttiPlaybackPlugin`] registers the [`WaveAsset`] loader; and [`voice`]
+//! spawns clip voices as graph nodes.
 
 use bevy_app::{App, Plugin};
 use bevy_asset::AssetApp;
@@ -50,6 +48,9 @@ impl std::ops::Deref for DiskStreamerRes {
 
 /// Registers the [`WaveAsset`] loader, so a host can `asset_server.load()` a
 /// `.wav` and hand the result to a voice.
+///
+/// Added by [`TuttiPlugin`](crate::TuttiPlugin) with the `sampler` feature.
+/// Needs an `AssetServer` (`bevy_asset::AssetPlugin`) already in the app.
 #[derive(Debug)]
 pub struct TuttiPlaybackPlugin;
 

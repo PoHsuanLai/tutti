@@ -2,16 +2,14 @@
 //! graph: timed transport commands, and the metronome, whose meter read is
 //! the one non-scalar read on the audio thread.
 //!
-//! The metronome gate ran on a `Net` (a `TransportClock` feeding the click)
-//! until doc 013 Phase 3 PR 15 removed the engine's `Net` backend; its graph
-//! form, an `EnvClock` feeding the click with timed seeks, tempo and loop
-//! changes on top, is `graph_engine_with_env_clock_and_metronome_is_allocation_free`.
+//! The metronome gate — the click beside a node walking its `Env`'s beat,
+//! with timed seeks, tempo and loop changes on top — is
+//! `graph_engine_with_env_clock_and_metronome_is_allocation_free`.
 //!
 //! The gate over a chain of real DSP nodes (EQ, strip, limiter) is
-//! `tutti-nodes`' `tests/rt_no_alloc_engine.rs`. It used to live here, built
-//! from fundsp's filters; running it on the nodes the engine ships means
-//! depending on `tutti-nodes`, which depends on this crate, so it moved there
-//! rather than create a cycle.
+//! `tutti-nodes`' `tests/rt_no_alloc_engine.rs`: running it on the nodes the
+//! engine ships means depending on `tutti-nodes`, which depends on this crate,
+//! so it lives there rather than create a cycle.
 //!
 //! What this file deliberately does *not* test: that the audio thread never
 //! *frees* a retired non-scalar value (a `MeterMap`, a routing table). That
@@ -20,14 +18,11 @@
 //! the callback to be left holding — and by `RtPublish`'s reclamation protocol,
 //! whose reader side has no path to a destructor. It cannot be pinned by a
 //! no-alloc gate here: the hazard is a race, and a sampling schedule cannot
-//! exhaust one. A test that tried anyway lived here until it was removed — it
-//! passed while asserting a property it structurally could not observe, which
-//! reads as coverage and is worse than nothing. The race is covered where it
-//! can be: the loom model `tutti-types/tests/rt_publish_loom.rs` (against the
-//! shipped code; bounded in CI, exhaustive under `just loom-full`) and miri
-//! over `rt::publish`'s stress test. (#34's
-//! residual case — the old `ArcSwap` guard degrading into an owning reference —
-//! is gone with the `ArcSwap`.)
+//! exhaust one; a test that tried would pass while asserting a property it
+//! structurally could not observe. The race is covered where it can be: the
+//! loom model `tutti-types/tests/rt_publish_loom.rs` (against the shipped
+//! code; bounded in CI, exhaustive under `just loom-full`) and miri over
+//! `rt::publish`'s stress test.
 
 use assert_no_alloc::AllocDisabler;
 use std::sync::Arc;
@@ -73,7 +68,7 @@ impl tutti_graph::Node for TransportTone {
     fn reset(&mut self) {}
 }
 
-/// `Engine::process` over the native graph, with timestamped transport
+/// `Engine::process` over the graph, with timestamped transport
 /// commands (play, seek, tempo, loop, a declick stop) scheduled and landing
 /// inside the gate, and graph notes at beats landing in blocks with transport
 /// changes: the walk, the change list, the executor and the fold never
@@ -157,10 +152,11 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     assert_eq!(transport.settings.steady_time(), 1024 * (1 + 20 * 8));
 }
 
-/// The metronome on the native graph: an `EnvClock` feeding `ClickNode`
-/// (through `Legacy`), with timestamped seeks, tempo and loop changes
-/// landing inside blocks, so `EnvClock` walks several segments per block.
-/// Neither the clock's segment walk nor the click's meter read allocates.
+/// The metronome on the graph: `ClickNode` and a node walking its
+/// block's beat (`Env::for_each_beat`, what `EnvClock` did: whole beats and
+/// fraction to outputs 2 and 3) side by side, with timestamped seeks, tempo and loop changes landing
+/// inside blocks, so both walk several segments per block. Neither segment
+/// walk nor the click's meter read allocates.
 ///
 /// The meter read goes through an [`RtPublish`]: a slot CAS, a fence and a
 /// load, not an allocation — but that is a claim about another crate's
@@ -170,45 +166,59 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
 ///
 /// [`RtPublish`]: tutti_types::RtPublish
 ///
-/// Mutation (run): collect `env.segments()` into a `Vec` in
-/// `EnvClock::process` → the gate panics → fails.
+/// Mutations (run): collect `env.segments()` into a `Vec` in
+/// `EnvClock::process` (the walk now in `Env::for_each_beat`), or in
+/// `ClickNode::render` → the gate panics → fails.
 #[test]
 fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
-    use tutti_core::{At, Beat, Bpm, EnvClock, Frame, MotionEvent, TransportCommand};
-    use tutti_graph::{Editor, Legacy, Prepare, Unforkable};
-    use tutti_types::graph::{Edge, InPort, OutPort, Source};
-    use tutti_types::NodeKey;
+    use tutti_core::{At, Beat, Bpm, Frame, MotionEvent, TransportCommand};
+    use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
+    use tutti_types::graph::{OutPort, Source};
+    use tutti_types::{NodeKey, Tail};
+
+    /// The beat of every frame, whole beats then the fraction.
+    struct BeatWalk;
+    impl Node for BeatWalk {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO).with_tail(Tail::Unbounded)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+            cx.env.for_each_beat(|i, beat| {
+                io.output(0)[i] = beat.floor().get() as f32;
+                io.output(1)[i] = beat.fract().get() as f32;
+            });
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
 
     let sample_rate = 48_000.0;
     let transport = Transport::new(sample_rate);
     let settings = Arc::new(ClickSettings::new());
     settings.set_mode(MetronomeMode::Always);
     settings.set_volume(1.0);
-    let click = ClickNode::with_transport(transport.clone(), Arc::clone(&settings), sample_rate);
+    let click = ClickNode::new(&transport, Arc::clone(&settings));
 
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(sample_rate),
         tutti_core::Samples(512),
     ));
     let (clock, sink) = (NodeKey(1), NodeKey(2));
-    ed.insert(clock, "clock", Unforkable(EnvClock::new()));
-    ed.insert(sink, "click", Legacy::new(click));
+    ed.insert(clock, "clock", Unforkable(BeatWalk));
+    let _ = ed.insert(sink, "click", click);
     let topology = &mut ed.spec_mut().topology;
-    for port in 0..2 {
-        topology.edges.insert(
-            InPort { node: sink, port },
-            Edge::Direct(Source::Node(OutPort { node: clock, port })),
-        );
-    }
-    topology.outputs = (0..2)
-        .map(|port| Source::Node(OutPort { node: sink, port }))
+    topology.outputs = [(sink, 0), (sink, 1), (clock, 0), (clock, 1)]
+        .into_iter()
+        .map(|(node, port)| Source::Node(OutPort { node, port }))
         .collect();
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
-    let mut output = vec![0.0f32; 1024 * 2];
+    let four = ChannelLayout::from_count(4);
+    let mut output = vec![0.0f32; 1024 * 4];
     // Applying the commit allocates; that is the control side's price.
-    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    engine.process(&mut InterleavedMut::new(&mut output, four));
     ed.collect();
     let _ = transport.motion.try_send(MotionEvent::Play);
 
@@ -232,8 +242,9 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
             m.schedule(At::Frame(Frame(base + 7000)), TransportCommand::Loop(None))
                 .expect("room");
             for _ in 0..8 {
-                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
-                clicked |= output.iter().any(|&s| s != 0.0);
+                engine.process(&mut InterleavedMut::new(&mut output, four));
+                // Channel 0 of each frame: the click's left.
+                clicked |= output.iter().step_by(4).any(|&s| s != 0.0);
             }
             m.cancel_scheduled();
         }

@@ -87,7 +87,7 @@ impl RenderBufferList {
     }
 }
 
-/// Iterate the `AudioBuffer`s inside a raw `AudioBufferList`.
+/// Iterates the `AudioBuffer`s inside a raw `AudioBufferList`.
 ///
 /// # Safety
 /// `abl` must be a valid, well-formed `AudioBufferList` with at least
@@ -195,7 +195,7 @@ impl RenderScratch {
         }
     }
 
-    /// Return the pre-advance sample position and move the cursor forward by
+    /// Returns the pre-advance sample position and move the cursor forward by
     /// `frames`. The pre-advance value is what AudioToolbox expects for the
     /// current block's timestamp.
     pub fn advance(&mut self, frames: u32) -> f64 {
@@ -204,7 +204,7 @@ impl RenderScratch {
         prev
     }
 
-    /// Send the render cursor back to zero, so the next block's `mSampleTime`
+    /// Sends the render cursor back to zero, so the next block's `mSampleTime`
     /// starts a fresh run rather than continuing the previous one.
     ///
     /// Paired with [`AuInstance::reset`](crate::instance::AuInstance::reset):
@@ -273,7 +273,7 @@ mod tests {
                     + n * std::mem::size_of::<AudioBuffer>(),
             );
         }
-        // The concrete numbers the audit computed: 40 for stereo, not 36.
+        // The concrete numbers: 40 for stereo, not 36.
         assert_eq!(buffer_list_bytes(2), 40);
         assert_eq!(buffer_list_bytes(1), 24);
     }

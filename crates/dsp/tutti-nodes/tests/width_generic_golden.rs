@@ -1,15 +1,11 @@
 //! The width-generic SVF, ladder, delay, modulated delay and phaser: pinned
 //! renders.
 //!
-//! These values were captured from the merged nodes at the commit (`ee9e4d10`)
-//! where `src/legacy/equivalence.rs` rendered them side by side with the mono/stereo
-//! twins they replaced (design doc 013, rewrite-order item 3) and found them
-//! bit-identical on every held configuration the twins supported — so for the
-//! held cases here the pins are the old nodes' output. The `*_swept`,
-//! `*_automated`, ring-routed and phaser cases pin the new behaviour where it
-//! deliberately differs or is new (coefficient interpolation every 16 samples;
-//! control changes ramped across a block; the cross-feedback matrix). That
-//! commit's tests documented the old-vs-new tolerance for those.
+//! The held cases pin renders checked bit-identical against separate
+//! mono and stereo reference implementations. The `*_swept`, `*_automated`,
+//! ring-routed and phaser cases pin behaviour those references did not have
+//! (coefficient interpolation every 16 samples; control changes ramped across
+//! a block; the cross-feedback matrix).
 //!
 //! Captured with `cargo nextest run -p tutti-nodes -E 'test(print_goldens)'
 //! --run-ignored only --no-capture`.
@@ -23,7 +19,9 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tutti_core::{AtomicF32, AudioUnit, BufferVec, ChannelLayout, PhaseIncrement, SampleRate};
+use tutti_core::{AtomicF32, ChannelLayout, PhaseIncrement, SampleRate, Samples};
+use tutti_graph::contract::drive;
+use tutti_graph::{Node, Prepare};
 use tutti_nodes::{
     DelayLineNode, InterpolationMode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode,
     SvfFilterNode, SvfType,
@@ -65,10 +63,13 @@ type Automation = Box<dyn Fn(usize)>;
 
 struct Case {
     name: &'static str,
-    node: Box<dyn AudioUnit>,
+    /// The node, driven as a graph drives it (`tutti_graph::contract::drive`),
+    /// its params on its param ports.
+    node: Box<dyn Node>,
     inputs: Vec<Vec<f32>>,
     /// Per param of the node's feed, its values over the render when fed —
-    /// what the graph's modulation hands a `Legacy` unit. Empty: nothing fed.
+    /// what the graph's modulation hands the node's param ports. Empty:
+    /// nothing fed.
     /// (These were extra input channels, `with_param_inputs`' ports, when the
     /// goldens were captured; the values and the DSP that reads them are
     /// unchanged, so the pins are too.)
@@ -76,7 +77,7 @@ struct Case {
     automation: Option<Automation>,
 }
 
-fn case(name: &'static str, node: impl AudioUnit + 'static, inputs: Vec<Vec<f32>>) -> Case {
+fn node_case(name: &'static str, node: impl Node, inputs: Vec<Vec<f32>>) -> Case {
     Case {
         name,
         node: Box::new(node),
@@ -91,6 +92,37 @@ fn automate(cell: Arc<AtomicF32>, f: impl Fn(usize) -> f32 + 'static) -> Option<
     Some(Box::new(move |k| cell.store(f(k), Ordering::Release)))
 }
 
+/// [`render`] for a graph node: the same blocks, through `drive`.
+fn render_node(
+    node: &mut dyn Node,
+    inputs: &[Vec<f32>],
+    params: &[Option<Vec<f32>>],
+    automation: Option<&Automation>,
+) -> Vec<Vec<f32>> {
+    node.prepare(&Prepare::new(SR, Samples(64)));
+    let mut out: Vec<Vec<f32>> = Vec::new();
+    let (mut pos, mut k) = (0, 0);
+    while pos < LEN {
+        let n = PATTERN[k % PATTERN.len()].min(LEN - pos);
+        if let Some(a) = automation {
+            a(k);
+        }
+        k += 1;
+        let ins: Vec<&[f32]> = inputs.iter().map(|c| &c[pos..pos + n]).collect();
+        let params: Vec<Option<&[f32]>> = params
+            .iter()
+            .map(|p| p.as_ref().map(|v| &v[pos..pos + n]))
+            .collect();
+        let block = drive(node, SR, &ins, &params);
+        out.resize(block.len(), Vec::with_capacity(LEN));
+        for (o, b) in out.iter_mut().zip(block) {
+            o.extend(b);
+        }
+        pos += n;
+    }
+    out
+}
+
 // One push per case, each beside the setup it needs, reads as the table it is;
 // a `vec![]` literal would force the setup out of line.
 #[allow(clippy::vec_init_then_push)]
@@ -98,22 +130,22 @@ fn cases() -> Vec<Case> {
     let mut v = Vec::new();
 
     // ── SVF ──
-    v.push(case(
+    v.push(node_case(
         "svf_mono_lowpass",
         SvfFilterNode::<f64>::new(SvfType::LowPass, 1_200.0, 0.9),
         noise_channels(1),
     ));
-    v.push(case(
+    v.push(node_case(
         "svf_mono_bell",
         SvfFilterNode::<f64>::new(SvfType::Bell, 900.0, 1.4).with_gain_db(6.0),
         noise_channels(1),
     ));
-    v.push(case(
+    v.push(node_case(
         "svf_stereo_f32_bandpass",
         SvfFilterNode::<f32>::with_channels(ChannelLayout::STEREO, SvfType::BandPass, 300.0, 2.0),
         noise_channels(2),
     ));
-    v.push(case(
+    v.push(node_case(
         "svf_wide6_highshelf",
         SvfFilterNode::<f64>::with_channels(6usize, SvfType::HighShelf, 2_000.0, 0.7)
             .with_gain_db(-4.0),
@@ -121,7 +153,7 @@ fn cases() -> Vec<Case> {
     ));
     v.push(Case {
         params: vec![Some(sweep(200.0, 8_000.0)), None],
-        ..case(
+        ..node_case(
             "svf_stereo_swept",
             SvfFilterNode::<f64>::with_channels(
                 ChannelLayout::STEREO,
@@ -137,26 +169,30 @@ fn cases() -> Vec<Case> {
     let automation = automate(node.frequency(), |k| 300.0 + 700.0 * (k % 5) as f32);
     v.push(Case {
         automation,
-        ..case("svf_stereo_automated", node, noise_channels(2))
+        ..node_case("svf_stereo_automated", node, noise_channels(2))
     });
 
     // ── Ladder ──
     let node = LadderFilterNode::<f64>::new(LadderType::LP24, 1_100.0, 0.7);
     node.set_drive(2.5);
-    v.push(case("ladder_mono_lp24_driven", node, noise_channels(1)));
-    v.push(case(
+    v.push(node_case(
+        "ladder_mono_lp24_driven",
+        node,
+        noise_channels(1),
+    ));
+    v.push(node_case(
         "ladder_stereo_f32_hp12",
         LadderFilterNode::<f32>::with_channels(ChannelLayout::STEREO, LadderType::HP12, 700.0, 0.5),
         noise_channels(2),
     ));
-    v.push(case(
+    v.push(node_case(
         "ladder_wide6_lp12",
         LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP12, 1_500.0, 0.3),
         noise_channels(6),
     ));
     v.push(Case {
         params: vec![Some(sweep(200.0, 8_000.0)), None, None],
-        ..case(
+        ..node_case(
             "ladder_stereo_swept",
             LadderFilterNode::<f64>::with_channels(
                 ChannelLayout::STEREO,
@@ -172,21 +208,21 @@ fn cases() -> Vec<Case> {
     let automation = automate(node.drive(), |k| 1.0 + (k % 4) as f32);
     v.push(Case {
         automation,
-        ..case("ladder_stereo_drive_automated", node, noise_channels(2))
+        ..node_case("ladder_stereo_drive_automated", node, noise_channels(2))
     });
 
     // ── Delay ──
     let node =
         DelayLineNode::new(0.5, 0.012_34, 0.6).with_interpolation(InterpolationMode::CubicHermite);
     node.set_mix(0.4);
-    v.push(case("delay_mono_cubic", node, noise_channels(1)));
+    v.push(node_case("delay_mono_cubic", node, noise_channels(1)));
     let node = DelayLineNode::stereo(0.5, 0.010, 0.017, 0.5);
     node.set_cross_feedback(0.3);
     node.set_mix(0.7);
-    v.push(case("delay_stereo_cross_fed", node, noise_channels(2)));
+    v.push(node_case("delay_stereo_cross_fed", node, noise_channels(2)));
     let node = DelayLineNode::with_channels(6usize, 0.5, 0.011, 0.45);
     node.set_mix(0.6);
-    v.push(case("delay_wide6", node, noise_channels(6)));
+    v.push(node_case("delay_wide6", node, noise_channels(6)));
     let feedback = (0..LEN).map(|i| 0.9 * (i as f32 / LEN as f32)).collect();
     let time = (0..LEN)
         .map(|i| 0.002 + 0.01 * (i as f32 / LEN as f32))
@@ -195,7 +231,7 @@ fn cases() -> Vec<Case> {
     node.set_cross_feedback(0.2);
     v.push(Case {
         params: vec![Some(feedback), Some(time)],
-        ..case("delay_stereo_ports", node, noise_channels(2))
+        ..node_case("delay_stereo_ports", node, noise_channels(2))
     });
     let n = 6usize;
     let mut ring = vec![0.0f32; n * n];
@@ -204,7 +240,7 @@ fn cases() -> Vec<Case> {
     }
     let node = DelayLineNode::with_channels(n, 0.1, 0.004, 0.3).with_cross_feedback_matrix(&ring);
     node.set_cross_feedback(0.5);
-    v.push(case("delay_wide6_ring", node, noise_channels(6)));
+    v.push(node_case("delay_wide6_ring", node, noise_channels(6)));
     let node = DelayLineNode::stereo(0.5, 0.01, 0.013, 0.3);
     let automation = automate(node.feedback(), |k| 0.1 * (k % 8) as f32);
     let times = node.delay_time();
@@ -217,7 +253,7 @@ fn cases() -> Vec<Case> {
     };
     v.push(Case {
         automation,
-        ..case("delay_stereo_automated", node, noise_channels(2))
+        ..node_case("delay_stereo_automated", node, noise_channels(2))
     });
 
     // ── Chorus / flanger ──
@@ -226,8 +262,8 @@ fn cases() -> Vec<Case> {
     node.set_depth(0.007);
     node.set_feedback(0.45);
     node.set_mix(0.6);
-    v.push(case("chorus_stereo", node, noise_channels(2)));
-    v.push(case(
+    v.push(node_case("chorus_stereo", node, noise_channels(2)));
+    v.push(node_case(
         "flanger_stereo",
         ModDelayNode::flanger(ChannelLayout::STEREO),
         noise_channels(2),
@@ -236,7 +272,7 @@ fn cases() -> Vec<Case> {
     let automation = automate(node.mix(), |k| (k % 3) as f32 * 0.5);
     v.push(Case {
         automation,
-        ..case("chorus_wide6_mix_automated", node, noise_channels(6))
+        ..node_case("chorus_wide6_mix_automated", node, noise_channels(6))
     });
 
     // ── Phaser ──
@@ -244,10 +280,10 @@ fn cases() -> Vec<Case> {
     node.set_rate(0.3);
     node.set_depth(0.8);
     node.set_feedback(0.6);
-    v.push(case("phaser_mono", node, noise_channels(1)));
+    v.push(node_case("phaser_mono", node, noise_channels(1)));
     let node = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
     node.set_rate(2.0);
-    v.push(case("phaser_stereo", node, noise_channels(2)));
+    v.push(node_case("phaser_stereo", node, noise_channels(2)));
     let node = PhaserNode::with_channels(6usize, 8).with_phase_offsets(&[
         PhaseIncrement(0.0),
         PhaseIncrement(0.1),
@@ -257,54 +293,18 @@ fn cases() -> Vec<Case> {
         PhaseIncrement(0.5),
     ]);
     node.set_rate(3.0);
-    v.push(case("phaser_wide6_staggered", node, noise_channels(6)));
+    v.push(node_case("phaser_wide6_staggered", node, noise_channels(6)));
 
     v
 }
 
 fn render(case: &mut Case) -> Vec<Vec<f32>> {
-    let node = case.node.as_mut();
-    node.set_sample_rate(SR);
-    let (nin, nout) = (node.inputs(), node.outputs());
-    assert_eq!(
-        case.inputs.len(),
-        nin,
-        "{}: one input signal per port",
-        case.name
-    );
-    let mut out = vec![vec![0.0f32; LEN]; nout];
-    let mut ib = BufferVec::new(nin);
-    let mut ob = BufferVec::new(nout);
-    let (mut pos, mut k) = (0, 0);
-    while pos < LEN {
-        let n = PATTERN[k % PATTERN.len()].min(LEN - pos);
-        if let Some(a) = &case.automation {
-            a(k);
-        }
-        k += 1;
-        for (c, sig) in case.inputs.iter().enumerate() {
-            for i in 0..n {
-                ib.set_f32(c, i, sig[pos + i]);
-            }
-        }
-        if !case.params.is_empty() {
-            let feed = node.param_feed().expect("a fed case has a feed");
-            for (k, p) in case.params.iter().enumerate() {
-                match p {
-                    Some(v) => feed.feed(k, &v[pos..pos + n]),
-                    None => feed.clear(k),
-                }
-            }
-        }
-        node.process(n, &ib.buffer_ref(), &mut ob.buffer_mut());
-        for (c, o) in out.iter_mut().enumerate() {
-            for i in 0..n {
-                o[pos + i] = ob.at_f32(c, i);
-            }
-        }
-        pos += n;
-    }
-    out
+    render_node(
+        case.node.as_mut(),
+        &case.inputs,
+        &case.params,
+        case.automation.as_ref(),
+    )
 }
 
 /// The pinned frames of the first and last channel, in that order.

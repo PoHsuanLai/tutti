@@ -2,7 +2,7 @@
 name = "tutti-sampler"
 version = "0.0.1"
 edition = "2021"
-description = "Sampler, Butler disk-streaming thread, time stretch"
+description = "Sample playback for Tutti: in-memory and disk-streamed voices, a voice pool, and a phase-vocoder time stretch"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
@@ -13,10 +13,9 @@ workspace = true
 default = ["wav"]
 
 # Bevy ECS integration: the entity-as-node marker derives on the voice-pool
-# handles, and nothing else. The Plugins and asset loaders moved to bevy-tutti
-# (house rule R1), so this feature adds only `derive(Component)` — the DSP
-# leaves (MemorySource, DiskVoice, VoicePool, the butler streaming engine, the
-# stretch::Unit) compile Bevy-free for direct FunDSP-graph use either way.
+# handles, and nothing else. Plugins and asset loaders are bevy-tutti's, so
+# this feature adds only `derive(Component)` — the DSP leaves (MemorySource, DiskVoice, VoicePool, the butler streaming engine, the
+# stretch::Unit) compile Bevy-free for direct `tutti_graph` use either way.
 bevy = ["dep:bevy_ecs"]
 
 # Drive the butler's cycle by hand instead of by its thread.
@@ -28,7 +27,11 @@ bevy = ["dep:bevy_ecs"]
 # 3 ms healthy, so such a test is racing a producer it cannot see. Off by
 # default: a host has no use for it, and the assertions it adds are about a
 # constraint only a hand driver can violate.
-test-support = []
+#
+# Also exposes `testing`: a transport a test moves between blocks, and the
+# block driver that hands a node its `Env` (which needs `tutti-graph`'s
+# `contract` harness).
+test-support = ["tutti-graph/contract"]
 
 # Audio format support - cascade to tutti-io, which owns the decoder.
 wav = ["tutti-io/wav"]
@@ -50,6 +53,12 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 # `tutti-core`.
 tutti-io = { path = "../../core/tutti-io" }
 
+# The graph: every node here is a `tutti_graph::Node`, reads
+# the transport from its block's `Env`, and hands its controls and its fork
+# source over through `IntoNode`. No cycle: `tutti-graph` names only
+# `tutti-types`.
+tutti-graph = { path = "../../core/tutti-graph" }
+
 # The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an
 # STFT, so it shares `StftGeometry` (window/hop/rate validated together, COLA
 # checked) and `window::hann` rather than keeping a ninth copy of each.
@@ -59,9 +68,7 @@ tutti-analysis = { path = "../tutti-analysis", default-features = false }
 # gated by the `bevy` feature.
 bevy_ecs = { version = "0.19", default-features = false, optional = true }
 
-# The vocoder's fixed-size, allocation-free FFT (`stretch::fft`). Same versions
-# and features `fundsp-tutti` carries, so the tree still resolves one copy of
-# each and the transform is the one it always was.
+# The vocoder's fixed-size, allocation-free FFT (`stretch::fft`).
 microfft = { version = "0.6.0", features = ["size-32768"] }
 num-complex = { version = "0.4.6", default-features = false, features = ["libm"] }
 
@@ -102,10 +109,7 @@ tutti-sampler = { path = ".", features = ["test-support"] }
 # Stimulus nodes (`tutti_nodes::testing`). No cycle: `tutti-nodes` names
 # nothing above `tutti-core`.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
-# The native graph, to run a voice through `Legacy::controlled`'s settings
-# ring (doc 013 Phase 3). No cycle: `tutti-graph` names only `tutti-types`
-# and `tutti-node`.
-# `contract` for `IsolateRow`, the fork-snapshot harness.
+# `contract` for the node harnesses (`drive_in`, `Direct`, `BlockRig`).
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
 
 tracing-subscriber = "0.3"
@@ -117,10 +121,9 @@ serde_json = "1"
 assert_no_alloc = { version = "1", default-features = false }
 
 # Tests only: several fixtures write a real WAV to disk and stream it back, so
-# they need a writer. The library itself no longer touches `hound` — the live
-# WAV sink moved to `tutti-io` — which is why this is a dev-dependency and not
-# a dependency. Moving it back up would re-add a codec to a DSP crate that
-# decodes through `symphonia`.
+# they need a writer. The library itself does not touch `hound` (the live WAV
+# sink is `tutti-io`'s), so this is a dev-dependency only: a DSP crate that
+# decodes through `symphonia` has no business carrying a second codec.
 hound = "3.5"
 
 [[bench]]

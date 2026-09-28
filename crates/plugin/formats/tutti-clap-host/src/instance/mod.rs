@@ -1,36 +1,26 @@
-//! CLAP plugin instance.
+//! The CLAP plugin lifecycle types, [`ClapLoaded`] and [`ClapActive`], and the
+//! per-block process types ([`ClapProcessContext`], [`ClapSample`],
+//! [`ProcessOutput`], [`ProcessOutputRef`]).
 //!
-//! The two lifecycle types live here as the shared anchor; their behaviour is
-//! split across private sibling modules by duty (the module names below are
-//! internal, so they are not linked):
-//! - `entry` — once-per-library `clap_entry` init registry + guard.
-//! - `load` — `ClapLoaded` construction (probe / load / editor-only).
-//! - `lifecycle` — metadata queries, `activate`/`deactivate` transitions,
-//!   the `Deref` bridge, and `Drop` teardown.
-//! - `audio` — the active-only `ClapActive::process` path.
-//! - per-extension method blocks: `params`, `ports`, `state`,
-//!   `polling`, `undo`, `resources` (all `impl ClapLoaded`, inherited by
-//!   `ClapActive` via `Deref`).
-//!
-//! # Where the split falls
-//!
-//! That last line is the load-bearing one, and it is why the two types are not
-//! two parallel APIs. Only `audio` is `impl ClapActive`; every extension block
-//! is `impl ClapLoaded` and is reached from an active instance through `Deref`.
-//! Activation *adds* `process` and the reconfiguration methods rather than
-//! trading one surface for another, so a host keeps its parameter, editor,
-//! state and polling calls while audio runs.
-//!
-//! A method therefore belongs on `ClapActive` only when it needs something a
-//! `ClapLoaded` does not have — the per-block RT `AudioScratch`, or CLAP's
-//! `active` precondition in a form no runtime check could recover.
-//! `process` needs the scratch; [`reset`](ClapActive::reset) is tagged
-//! `[audio-thread & active]` and the spec gives it no inactive contract.
-//! Everything else stays on `ClapLoaded`, including operations whose *threading*
-//! contract changes with activation: those read the internal
-//! `LifecycleFlags::active` at the call, which is sound only because the flag
-//! lives on the inner `ClapLoaded` that `Deref` hands out. The rationale for the whole shape — consuming transitions, the
-//! ownership-returning `Err`, and why `Deref` is sound — is in the crate root.
+//! [`ClapLoaded`] is a mapped, instantiated plugin: parameters, ports, state,
+//! editor and host-callback polling all live on it.
+//! [`ClapLoaded::activate`] consumes it and returns a [`ClapActive`], which adds
+//! [`process`](ClapActive::process), [`reset`](ClapActive::reset) and the
+//! reconfiguration methods. `ClapActive` derefs to `ClapLoaded`, so every
+//! parameter, editor, state and polling call stays reachable while audio runs.
+//! Operations whose threading contract changes with activation check the
+//! live state at the call. The reasoning behind this shape is in the crate
+//! root documentation.
+
+// Internal layout: `entry` (once-per-library `clap_entry` init registry),
+// `load` (construction), `lifecycle` (metadata, activate/deactivate, `Deref`,
+// `Drop`), `audio` (the active-only process path), and per-extension
+// `impl ClapLoaded` blocks (`params`, `ports`, `state`, `polling`, `undo`,
+// `resources`). Only `audio` is `impl ClapActive`: a method belongs there only
+// when it needs the per-block `AudioScratch` or CLAP's `active` precondition.
+// Everything else stays on `ClapLoaded` and reads `LifecycleFlags::active` at
+// the call, which is sound because the flag lives on the inner `ClapLoaded`
+// that `Deref` hands out.
 
 mod audio;
 mod config;

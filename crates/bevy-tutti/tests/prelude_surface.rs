@@ -59,28 +59,31 @@ fn _surface_compiles() {
     let _: MotionState = MotionState::Stopped;
     let _: MotionState = MotionState::Rolling;
 
-    // The beat-port convention a host needs to wire anything to the transport
-    // clock: the clock emits whole beats on port 0 and the fraction on port 1,
-    // and `beat_from_ports` is the inverse. (The *arithmetic* of that inverse is
-    // asserted for real in `the_clock_beat_port_inverse_recombines_the_halves`.)
-    let _: usize = BEAT_PORTS;
-
     // --- The types the prelude's own signatures are spelled in. ---
     //
     // The incomplete-forward rule applied to itself. A previous pass added
     // `TransportRes::timeline()` returning `Arc<dyn Timeline>` without
     // re-exporting `Timeline`, so a host could call the method but not write a
-    // function whose signature mentions it. `AudioUnit` was worse: without it a
-    // host cannot write a generic spawn helper at all.
+    // function whose signature mentions it. `GraphNode` is the same: without
+    // it a host cannot write a generic spawn helper at all.
     fn _timeline(t: &TransportRes) -> Arc<dyn Timeline> {
         t.timeline()
     }
-    // Bound on `spawn_audio_node`, and the boxed param of `crossfade_audio_node`.
-    fn _spawn<U: AudioUnit + 'static>(commands: &mut Commands, unit: U) {
-        commands.spawn_audio_node(unit);
+    // The bound on `spawn_audio_node` and `crossfade_audio_node`, and the
+    // wrapper a plain node goes in.
+    fn _spawn<N>(commands: &mut Commands, node: N)
+    where
+        N: GraphNode,
+        N::Controls: Send + Sync + 'static,
+    {
+        commands.spawn_audio_node(node);
     }
-    fn _crossfade(commands: &mut Commands, e: bevy_ecs::entity::Entity, u: Box<dyn AudioUnit>) {
-        crossfade_audio_node(commands, e, u);
+    fn _crossfade<N: tutti_graph::Node + Clone + Send + 'static>(
+        commands: &mut Commands,
+        e: bevy_ecs::entity::Entity,
+        node: N,
+    ) {
+        crossfade_audio_node(commands, e, ForkByClone(node));
     }
     // Deref targets: nameable in a signature, which is what a host needs to
     // write a helper taking one.
@@ -95,10 +98,10 @@ fn _surface_compiles() {
 
     // --- The disk-streaming handle. ---
     //
-    // It used to be `SamplerRes` — a name with no referent, since `tutti-sampler`
-    // has no `Sampler` type. Every sibling resource (`AudioGraphRes`, over the graph,
-    // `MeteringRes(MasterMeter)`, `TransportRes(Transport)`) is named for what it
-    // holds, and a host that cannot guess the name cannot ask for the resource.
+    // `DiskStreamerRes` is named for what it holds, like every sibling resource
+    // (`AudioGraphRes`, over the graph, `MeteringRes(MasterMeter)`,
+    // `TransportRes(Transport)`): a host that cannot guess the name cannot ask
+    // for the resource.
     // A `DiskStreamer` needs a butler thread, so constructing one here would be
     // an engine test; naming it in a signature is the whole point.
     #[cfg(feature = "sampler")]
@@ -148,7 +151,7 @@ fn _surface_compiles() {
     #[cfg(feature = "audio-io")]
     fn _wire_monitor(graph: &mut AudioGraphRes, rate: SampleRate) -> Option<()> {
         let (_mic, monitor) = MicIn::open_with_monitor(None, rate).ok()?;
-        let _id = graph.insert(monitor);
+        let (_id, ()) = graph.insert(monitor);
         Some(())
     }
 
@@ -194,17 +197,6 @@ fn _surface_compiles() {
 
     // Param addressing — how a modulation target names the scalar it moves.
     let _: ParamAddr = ParamAddr::Unit(UnitParam::GainDb);
-}
-
-/// `beat_from_ports` recombines the clock's two output ports into one `Beat`.
-///
-/// A real assertion rather than a nameability check: the clock emits whole beats
-/// on port 0 and the fraction on port 1, and this is the inverse a host writes
-/// when reading them. Getting the addition backwards compiles fine.
-#[test]
-fn the_clock_beat_port_inverse_recombines_the_halves() {
-    assert_eq!(BEAT_PORTS, 2, "whole beats and fraction, one port each");
-    assert_eq!(beat_from_ports(4.0, 0.25), Beat(4.25));
 }
 
 /// `TransportRes::timeline()` hands over a live handle, not a snapshot.

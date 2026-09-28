@@ -25,7 +25,7 @@ use crate::export::request::{
 use crate::graph::resources::ExportRefused;
 use crate::graph::{AudioConfig, AudioGraphRes};
 
-/// Start the oldest pending [`ExportRequest`], if nothing is already running.
+/// Starts the oldest pending [`ExportRequest`], if nothing is already running.
 ///
 /// The expensive part — copying the graph (a fork) —
 /// happens here, on the main thread, because the copy reads the graph
@@ -209,7 +209,7 @@ fn prepare_graph(
 
     // Every node of the fork is isolated, rebound onto `ctx` and reset — see
     // `AudioGraphRes::export`.
-    match graph.export(node, &ctx, request.config.render.sample_rate, &nodes.midi) {
+    match graph.export(node, &ctx, request.config.render.sample_rate) {
         Ok(graph) => Ok((graph, ctx)),
         Err(ExportRefused::NoOutputs) => Err(invalid(NO_OUTPUTS)),
         Err(ExportRefused::GraphHasNoOutputs) => Err(invalid(GRAPH_HAS_NO_OUTPUTS)),
@@ -239,9 +239,6 @@ fn invalid(reason: impl Into<String>) -> tutti_export::Error {
 struct NodeNames {
     nodes: HashMap<Entity, tutti_core::AudioNode>,
     by_key: HashMap<NodeKey, (Entity, Option<String>)>,
-    /// Every node with a captured MIDI port (its entity's current
-    /// `MidiTarget`): a fork must carry the clip on it, or refuse.
-    midi: std::collections::BTreeSet<NodeKey>,
 }
 
 impl NodeNames {
@@ -254,28 +251,11 @@ impl NodeNames {
         {
             nodes.insert(entity, *node);
             by_key.insert(
-                crate::graph::native::key(*node),
+                crate::graph::runtime::key(*node),
                 (entity, name.map(|n| n.as_str().to_owned())),
             );
         }
-        #[allow(unused_mut)]
-        let mut midi = std::collections::BTreeSet::new();
-        #[cfg(feature = "midi")]
-        for (node, target) in world
-            .query::<(&tutti_core::AudioNode, &crate::midi::MidiTarget)>()
-            .iter(world)
-        {
-            // A target left over from a node replaced by hand is inert, as
-            // it is to every other reader (`MidiTargetResolver::port`).
-            if target.node() == node.0 {
-                midi.insert(crate::graph::native::key(*node));
-            }
-        }
-        Self {
-            nodes,
-            by_key,
-            midi,
-        }
+        Self { nodes, by_key }
     }
 
     fn node(&self, entity: Entity) -> Option<tutti_core::AudioNode> {
@@ -312,7 +292,7 @@ impl NodeNames {
     }
 }
 
-/// Drive in-flight renders; trigger [`ExportDone`] on the ones that finished.
+/// Drives in-flight renders; triggers [`ExportDone`] on the ones that finished.
 pub fn poll_exports(mut commands: Commands, mut in_flight: Query<(Entity, &mut ExportInFlight)>) {
     for (entity, mut export) in in_flight.iter_mut() {
         let Some(result) = export.poll() else {
@@ -326,18 +306,20 @@ pub fn poll_exports(mut commands: Commands, mut in_flight: Query<(Entity, &mut E
 }
 
 /// Exports from an engine as a host builds one (`build_on`, the device-free
-/// `build_into`), over a manual stream: the beat clock and the metronome in
-/// the graph, the click wired to the clock and to the master. Every other
+/// `build_into`), over a manual stream: the metronome in the graph, wired to
+/// the master, and a host node that walks each block's beat. Every other
 /// export test builds a bare `headless` graph, which has neither — and on
-/// the native graph the clock was once inserted with no fork source, so every
-/// engine-built graph refused a master export as not forkable.
+/// the graph an engine-built node (the beat clock, since deleted) was once
+/// inserted with no fork source, so every engine-built graph refused a
+/// master export as not forkable.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::build::build_on;
     use crate::export::{ExportClock, ExportPlugin};
     use crate::graph::{
-        EngineNodes, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
+        EngineNodes, GraphReconcilePlugin, MasterSources, MetronomeRes, SpawnAudioNode,
+        TransportRes,
     };
     use crate::{AudioEngineState, TuttiPlugin};
     use bevy_app::App;
@@ -349,9 +331,36 @@ mod tests {
 
     const RATE: f64 = 48_000.0;
 
+    /// Each frame's beat from its block's `Env` (`Env::for_each_beat`): whole
+    /// beats on output 0, the fraction on output 1. A host's node, forked by
+    /// clone.
+    #[derive(Clone)]
+    struct BeatWalk;
+
+    impl tutti_graph::Node for BeatWalk {
+        fn shape(&self) -> tutti_graph::Shape {
+            tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+                .with_tail(tutti_core::Tail::Unbounded)
+        }
+        fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+        fn process(
+            &mut self,
+            cx: &tutti_graph::Cx<'_>,
+            mut io: tutti_graph::Io<'_>,
+        ) -> tutti_graph::Status {
+            cx.env.for_each_beat(|i, beat| {
+                io.output(0)[i] = beat.floor().get() as f32;
+                io.output(1)[i] = beat.fract().get() as f32;
+            });
+            tutti_graph::Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+
     /// An engine at 48 kHz, the metronome always on and wired to the master,
-    /// the live transport rolling. Returns the app and the click's entity.
-    fn engine_app() -> (App, Entity, tutti_cpal::ManualStream) {
+    /// a [`BeatWalk`] beside it, the live transport rolling. Returns the app
+    /// and the click's and the walker's entities.
+    fn engine_app() -> (App, Entity, Entity, tutti_cpal::ManualStream) {
         let mut app = App::new();
         let plugin = TuttiPlugin::default();
         let (driver, stream) = ManualStreamDriver::new();
@@ -373,6 +382,12 @@ mod tests {
             ExportPlugin,
         ));
         let click = app.world().resource::<EngineNodes>().click;
+        let walker = app
+            .world_mut()
+            .commands()
+            .spawn_audio_node(tutti_graph::ForkByClone(BeatWalk))
+            .id();
+        app.world_mut().flush();
         app.insert_resource(MasterSources::from(click));
         app.world()
             .resource::<MetronomeRes>()
@@ -387,7 +402,7 @@ mod tests {
             app.update();
             stream.render_block(256).expect("the stream is open");
         }
-        (app, click, stream)
+        (app, click, walker, stream)
     }
 
     /// Spawn `request`, tick until it reports, return the left channel.
@@ -413,38 +428,34 @@ mod tests {
         panic!("the export never reported");
     }
 
-    /// **An engine-built graph exports — the master, the click, and the beat
-    /// clock — and the clock's beat is the render's.**
+    /// **An engine-built graph exports — the master, the click, and a node
+    /// beside them — and a forked node's beat is the render's.**
     /// The render's timeline is 120 BPM from beat 0.25 at 48 kHz, so the
-    /// clock's whole-beat port (the export's left channel; a node export
+    /// walker's whole-beat port (the export's left channel; a node export
     /// clamps the right channel onto its last port, the fraction) reads 0
-    /// until frame 18 000, 1 until 42 000, then 2 — to a frame: the clock
+    /// until frame 18 000, 1 until 42 000, then 2 — to a frame: the walk
     /// accumulates `beats_per_sample` (1/24 000 of a beat, which binary does
-    /// not hold) frame by frame, and lands on beat 2 one frame late (the
-    /// offline-timeline rounding doc 013 records as a follow-up). The live
+    /// not hold) frame by frame, and lands on beat 2 one frame late (a
+    /// known offline-timeline rounding). The live
     /// transport, rolling since the build, is at another beat: a forked
-    /// clock that read it would not step there: the forked `EnvClock` reads
-    /// the render's `Env`. (Until PR 13 this ran on `Net` too, where only the
-    /// lengths were asserted: a `Net` node export of the `TransportClock`
-    /// started from beat 0, not from the timeline's 0.25, and a master export
-    /// was a plain clone clicking on the live transport's beats.)
+    /// node that read it would not step there: the fork reads the render's
+    /// `Env`.
     ///
     /// What the click itself renders is not asserted. The fork is cloned from
     /// the click's shadow, taken at insert, whose metronome mode is the one it
     /// had then (`Off` here):
     /// `MetronomeRes` writes the live node's settings cell, which the shadow
-    /// detached from (doc 013, "Metronome volume and mode ... live-only; a
-    /// click is not part of an export"). Its session flags are frozen at the
+    /// detached from: metronome volume and mode are live-only, and a click is
+    /// not part of an export. Its session flags are frozen at the
     /// fork from the live transport, and tutti-core's
     /// `isolate_snapshots_settings_and_session_flags` row pins that.
     ///
-    /// Mutation (run): `insert_env_clock` inserting `EnvClock` plainly (no
-    /// fork source, as before) → fails on its first export, refused as not
-    /// forkable.
+    /// Mutation (run): the export rendering its fork under a stopped
+    /// transport (`GraphSource::fill` through `FrozenClock`) → the walker
+    /// reads beat 0 throughout → fails.
     #[test]
-    fn an_engine_built_graph_exports_and_its_clock_is_the_renders() {
-        let (mut app, click, _stream) = engine_app();
-        let clock = app.world().resource::<EngineNodes>().clock;
+    fn an_engine_built_graph_exports_and_its_beat_is_the_renders() {
+        let (mut app, click, walker, _stream) = engine_app();
         let timeline = || {
             ExportClock::timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
                 start_beat: Beat(0.25),
@@ -471,7 +482,7 @@ mod tests {
         let beats = export(
             &mut app,
             ExportRequest::new(
-                ExportSource::Node(clock),
+                ExportSource::Node(walker),
                 ExportTarget::Buffers,
                 config,
                 timeline(),
@@ -495,7 +506,7 @@ mod tests {
                     .all(|(&(at, beat), (want_at, want_beat))| {
                         beat == want_beat && at.abs_diff(want_at) <= 1
                     }),
-            "the clock's whole beats on the render's timeline: {steps:?}, want {want:?}"
+            "the walker's whole beats on the render's timeline: {steps:?}, want {want:?}"
         );
     }
 }

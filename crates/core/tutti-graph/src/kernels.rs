@@ -1,6 +1,6 @@
 //! The graph's own DSP: PDC rings for audio and for events.
 //!
-//! Doc 013 §"SIMD and DOD": the graph's own work is a handful of kernels on
+//! The graph's own work is a handful of kernels on
 //! planar slices. These are written as straight loops over `&[f32]` so they
 //! auto-vectorize where the shape allows; nothing here is on a hot enough path
 //! yet to earn explicit SIMD.
@@ -8,9 +8,9 @@
 //! # No summing kernel, yet
 //!
 //! There is no audio fan-in kernel here because audio fan-in is
-//! unrepresentable (one source per port; summing is a node). When doc 013's
-//! compiler-owned `Sum` op lands (the `ChannelSumNode` verdict), it should
-//! accumulate in `f64` and store `f32`: a many-input bus is where `f32`
+//! unrepresentable (one source per port; summing is a node). A
+//! compiler-owned summing op, if one is added, should accumulate in `f64`
+//! and store `f32`: a many-input bus is where `f32`
 //! accumulation error compounds, and the widening is cheap next to the loads.
 //! The event merge is not arithmetic and has no such question.
 //!
@@ -60,7 +60,7 @@ impl AudioRing {
 
     /// A ring of `len` already full of `value`, as if it had been fed
     /// `value` forever: a param source's delay that appears under a running
-    /// port (see the `param` module docs).
+    /// port (see `GraphSpec::connect_param`).
     pub(crate) fn filled(len: Samples, value: f32) -> Self {
         Self {
             buf: vec![value; len.get().max(1)],
@@ -430,7 +430,7 @@ mod tests {
     /// refusing one, and delivers all of them in order.
     ///
     /// Mutation (run): queue the input before emitting the backlog in `run`
-    /// (the old order) → the input past the limit is refused → fails. Found
+    /// → the input past the limit is refused → fails. Found
     /// as `recompiles_preserve_state_identically`'s seed
     /// 3280887136571273968 (the executor dropped an event the reference
     /// delivered).
@@ -572,7 +572,7 @@ mod tests {
             .iter()
             .map(|e| match e.kind {
                 crate::event::EventKind::Midi(crate::event::Ump(w)) => w[0],
-                crate::event::EventKind::Ramp(_) => unreachable!(),
+                _ => unreachable!(),
             })
             .collect();
         assert_eq!(tags, vec![0, 1, 2, 3, 4], "all five, in order");

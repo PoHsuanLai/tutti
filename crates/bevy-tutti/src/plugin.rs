@@ -55,12 +55,25 @@ use crate::soundfont::TuttiSoundFontPlugin;
 ///
 /// Whether the engine actually came up is reported by
 /// [`AudioEngineState`] — a failed device does not panic or stop the app, it
-/// gates the audio systems off and records why.
+/// gates the audio systems off and records why. The build itself is
+/// [`build_into`](crate::engine::build_into), which lists the resources it
+/// inserts.
 ///
-/// Which subsystems run is governed by this crate's Cargo features (sampler,
-/// dsp, synth, midi, plugin, …). Software MIDI fan-out is on whenever `midi` is
-/// compiled; OS MIDI ports are opened whenever `midi-hardware` is. MPE is
-/// configured at runtime through the `MpeModeConfig` resource, not a field here.
+/// Besides the engine, it always adds
+/// [`GraphReconcilePlugin`] and keeps [`AudioDeviceState`] in sync. Which
+/// subsystem plugins it adds is governed by this crate's Cargo features:
+/// `soundfont`, `midi`, `plugin`, `sampler` and `export` each add their own.
+/// `TuttiModulationPlugin` (`modulation`), the audio pumps of `audio-io` and
+/// [`LatencyCompensationPlugin`](crate::LatencyCompensationPlugin) are added
+/// by the host. Software MIDI is on whenever `midi` is compiled; OS MIDI ports
+/// are opened whenever `midi-hardware` is. MPE is configured through the
+/// `MpeModeConfig` resource, inserted before this plugin, not a field here.
+///
+/// # Panics
+///
+/// With the `soundfont`, `midi` or `sampler` feature, when the app has no
+/// `AssetServer` (add `bevy_asset::AssetPlugin`, part of `DefaultPlugins`,
+/// first): those subsystems register asset loaders.
 pub struct TuttiPlugin {
     /// Index into the host's output-device list, or `None` for the system
     /// default.

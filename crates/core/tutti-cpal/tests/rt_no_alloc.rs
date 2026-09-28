@@ -10,26 +10,17 @@
 //! AllocDisabler` is installed, and that can only be declared at the root of a
 //! *binary*. The crate's unit-test binary declares none, so an
 //! `assert_no_alloc` gate written in `src/` passes whether or not the callback
-//! allocated — the exact failure
-//! `tutti-midi-hardware/tests/rt_no_alloc_sysex.rs` documents having been
-//! caught by mutation-testing.
-//!
-//! `src/output.rs` did carry three such gates plus a fixture assertion, and
-//! all four were inert for that reason. They have since been deleted, so this
-//! file is now the *only* allocation gate on `process_audio` — a test that
-//! cannot fail is worse than no test, and keeping an inert copy beside a live
-//! one invites reading a green `src/` run as coverage. **Add new allocation
-//! gates here, never in `src/`.**
+//! allocated. This file is therefore the only allocation gate on
+//! `process_audio`. **Add new allocation gates here, never in `src/`.**
 //!
 //! # The fixture has to render
 //!
 //! A graph with nothing wired renders silence without running a node — an
-//! allocation gate around that proves nothing. The graph below (the native
-//! graph, the only one `Engine` renders since doc 013 Phase 3 PR 15) is a
-//! sine through a filter into both device channels, so the render path runs
-//! real nodes, hands buffers between them, and folds to the device width.
-//! `renders_something_to_gate` asserts that, so the gates cannot pass by
-//! rendering nothing.
+//! allocation gate around that proves nothing. The graph below is a sine
+//! through a filter into both device channels, so the render
+//! path runs real nodes, hands buffers between them, and folds to the device
+//! width. `renders_something_to_gate` asserts that, so the gates cannot pass
+//! by rendering nothing.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::graph::{Edge, InPort, OutPort, Source};
@@ -37,7 +28,7 @@ use tutti_core::{AudioTap, Engine, Hz, MasterMeter, NodeKey, SampleRate, Samples
 use tutti_core::{ChannelLayout, InterleavedMut};
 use tutti_core::{MotionEvent, Transport};
 use tutti_cpal::{process_audio, AudioCallbackState, MAX_FRAMES};
-use tutti_graph::{Editor, Legacy, Prepare};
+use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 
@@ -58,15 +49,11 @@ fn rolling_state() -> (Transport, AudioCallbackState) {
 
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(512)));
     let (source, filter) = (NodeKey(1), NodeKey(2));
-    ed.insert(source, "sine", Legacy::new(Osc::sine(Hz(220.0))));
+    ed.insert(source, "sine", Osc::sine(Hz(220.0)));
     ed.insert(
         filter,
         "filter",
-        Legacy::new(SvfFilterNode::<f64>::new(
-            SvfType::LowPass,
-            Hz(2_000.0),
-            Q(0.7),
-        )),
+        SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(2_000.0), Q(0.7)),
     );
     ed.spec_mut().topology.edges.insert(
         InPort {

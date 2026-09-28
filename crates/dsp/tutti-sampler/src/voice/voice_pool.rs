@@ -28,9 +28,9 @@ use std::sync::Arc;
 #[cfg(test)]
 use tutti_core::SampleRate;
 #[cfg(test)]
-use tutti_core::{
-    Amplitude, AudioUnit, Beat, Cents, ChannelLayout, SamplePosition, SignalFrame, StretchFactor,
-};
+use tutti_core::{Amplitude, Beat, Cents, ChannelLayout, SamplePosition, StretchFactor};
+#[cfg(test)]
+use tutti_graph::{IntoNode, Node, NodeParts, Prepare};
 #[cfg(test)]
 use tutti_io::Wave;
 
@@ -38,10 +38,45 @@ use tutti_io::Wave;
 mod tests {
     use super::*;
     use crate::voice::memory_source::MemorySourceConfig;
-    use tutti_core::Bpm;
-    use tutti_core::BufferVec;
+    use tutti_core::{Bpm, Samples};
 
-    use crate::test_transport::MockTransport;
+    use crate::testing::MockTransport;
+
+    /// The rate the tests' blocks run at, unless a test says otherwise.
+    const SR: f64 = 44_100.0;
+
+    /// One one-frame block of `node` under `t` at `rate`, into `out` (as many
+    /// channels as it holds); the transport is not moved.
+    fn tick(node: &mut dyn Node, t: &MockTransport, rate: f64, out: &mut [f32]) {
+        let got = crate::testing::block(node, t, rate, 1);
+        for (o, c) in out.iter_mut().zip(got) {
+            *o = c[0];
+        }
+    }
+
+    /// One block of `n` frames of `node` under `t` at `rate`, planar; the
+    /// transport is not moved.
+    fn run(node: &mut dyn Node, t: &MockTransport, rate: f64, n: usize) -> Vec<Vec<f32>> {
+        crate::testing::block(node, t, rate, n)
+    }
+
+    /// `node` as the graph takes it: the unit it renders, and the source a
+    /// fork of it comes from.
+    fn live_and_fork(node: impl IntoNode) -> (Box<dyn Node>, Box<dyn tutti_graph::ForkSource>) {
+        let NodeParts { node, fork, .. } = node.into_parts();
+        (node, fork.expect("a forkable node"))
+    }
+
+    /// A fork of the node `source` is the fork source of, as a live
+    /// duplicate takes it, prepared at `rate`.
+    fn fork_of(source: &dyn tutti_graph::ForkSource, rate: f64) -> Box<dyn Node> {
+        let mut node = source
+            .fork(tutti_graph::ForkMode::Live)
+            .expect("a memory voice forks")
+            .node;
+        node.prepare(&Prepare::new(SampleRate(rate), Samples(64)));
+        node
+    }
 
     fn make_wave(samples: usize) -> Arc<Wave> {
         let data: Vec<f32> = (0..samples)
@@ -66,16 +101,21 @@ mod tests {
             .expect("the command queue has room in a test");
     }
 
-    /// Resetting a still-shared clone must not reach the live voice.
+    /// Resetting a fork must not reach the live voice.
     ///
-    /// The export path is `clone_isolated` -> `isolate` -> `reset`. In the
-    /// opposite order `reset` clears the FIFOs and phase accumulators of the
-    /// *live* unit through the shared bank — measurable as live output dropping
-    /// to exactly 0.0 for one window. This pins the order-independent property:
-    /// whatever the render does to its own clone after isolating, the live voice
-    /// keeps its state.
+    /// A fork is taken while the live voice plays and is reset and rendered
+    /// on another thread. Had it shared the live filter's state, its reset
+    /// would clear the FIFOs and phase accumulators of the *live* unit —
+    /// measurable as live output dropping to exactly 0.0 for one window. This
+    /// pins that whatever the render does to its fork, the live voice keeps
+    /// its state.
+    ///
+    /// Mutation: none expressible as a one-line edit — a fork's node builds
+    /// its own filter (`VoiceNode::with_channels`), and a filter owns its
+    /// vocoders by value, so the types rule a shared one out (see the test
+    /// below). This pins, at the node, what a shared filter would break.
     #[test]
-    fn resetting_an_isolated_clone_leaves_the_live_voice_playing() {
+    fn resetting_a_fork_leaves_the_live_voice_playing() {
         // Matches `make_wave`, so the source needs no rate conversion.
         const SR: f64 = 44_100.0;
         // Long enough to outlast the vocoder's fill-up: at 2x stretch the unit
@@ -83,8 +123,8 @@ mod tests {
         // and the 2048-sample window needs 4096 ticks before anything is emitted.
         let wave = make_wave(48_000);
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
-        let mut live = VoiceNode::with_channels(
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
+        let node = VoiceNode::with_channels(
             Voice {
                 source: VoiceSource::Memory(sampler),
                 play: Playback {
@@ -95,7 +135,9 @@ mod tests {
             },
             1usize,
         );
-        assert!(live.slot.stretch.is_some(), "vacuous without a filter");
+        assert!(node.slot.stretch.is_some(), "vacuous without a filter");
+        let (mut live, source) = live_and_fork(node);
+        live.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
 
         // Build real vocoder history. The playhead must ADVANCE: a placed
         // source derives its position from the transport every tick, so a frozen
@@ -103,7 +145,7 @@ mod tests {
         let mut out = [0.0f32; 1];
         let mut peak_before = 0.0f32;
         for _ in 0..8192 {
-            live.tick(&[], &mut out);
+            tick(&mut *live, &transport, SR, &mut out);
             transport.advance(1, SR);
             peak_before = peak_before.max(out[0].abs());
         }
@@ -112,16 +154,16 @@ mod tests {
             "the live voice must be audible before the render starts"
         );
 
-        // What the export path does: clone, isolate, then reset the clone.
-        let mut render = live.clone();
-        render.isolate();
+        // What a fork's renderer does: fork, then reset (and render) it.
+        let mut render = fork_of(&*source, SR);
         render.reset();
+        run(&mut *render, &transport, SR, 64);
 
         // The live voice must be unaffected — it keeps emitting immediately,
         // with no re-fill gap.
         let mut peak_after = 0.0f32;
         for _ in 0..512 {
-            live.tick(&[], &mut out);
+            tick(&mut *live, &transport, SR, &mut out);
             transport.advance(1, SR);
             peak_after = peak_after.max(out[0].abs());
         }
@@ -136,36 +178,26 @@ mod tests {
     /// state with the live node.
     ///
     /// A fork renders on another thread while the audio thread plays the
-    /// original. `VoicePool` severs by clearing its voices; `VoiceNode` keeps
-    /// its slot, so its stretch filter must be the fork's own.
+    /// original. `VoicePool`'s fork is an empty pool; `VoiceNode`'s holds a
+    /// copy of its voice, so its stretch filter must be the fork's own.
     ///
-    /// Re-pinned with the ownership change (doc 013 item 7): this asserted
-    /// that a clone *shared* the live filter's vocoder bank until `isolate`
-    /// severed it (`shares_bank_with`), because `Net` cloned every node per
-    /// commit and the bank rode by `Arc`. A clone now builds its own filter,
-    /// so the property is asserted on audio: a live voice whose clone was
-    /// isolated, reset and rendered for 4096 frames plays, sample for sample,
-    /// what an identical voice that was never cloned plays.
+    /// Asserted on audio: a live voice whose fork was taken mid-play, reset
+    /// and rendered for 4096 frames plays, sample for sample, what an
+    /// identical voice that was never forked plays.
     ///
-    /// Mutation: none expressible as a one-line edit any more. The sharing
-    /// this guards against needs a shared bank type, which the ownership
-    /// change deleted (the filter owns its vocoders by value, so the types
-    /// rule it out); the unit-level twin,
+    /// Mutation: none expressible as a one-line edit. The sharing this guards
+    /// against needs a shared bank type, and the filter owns its vocoders by
+    /// value, so the types rule it out; the unit-level twin,
     /// `stretch::tests::a_clone_and_its_original_tick_independently`, runs
     /// its mutation. This pins, at the voice, what a reintroduced shared bank
     /// would break.
     #[test]
-    fn a_standalone_voices_clone_shares_no_stretch_state() {
+    fn a_standalone_voices_fork_shares_no_stretch_state() {
         const SR: f64 = 44_100.0;
         let wave = make_wave(48_000);
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let node = || {
-            let sampler = MemorySource::with_transport(
-                Arc::clone(&wave),
-                transport.clone(),
-                Beat::new(0.0),
-                None,
-            );
+            let sampler = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
             VoiceNode::with_channels(
                 Voice {
                     source: VoiceSource::Memory(sampler),
@@ -178,31 +210,33 @@ mod tests {
                 1usize,
             )
         };
-        let (mut live, mut twin) = (node(), node());
+        let (live, mut twin) = (node(), node());
         assert!(
             live.slot.stretch.is_some(),
             "test is vacuous unless a filter is resident"
         );
+        let (mut live, source) = live_and_fork(live);
+        live.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
+        twin.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
         let mut out = [0.0f32; 1];
         let mut out_twin = [0.0f32; 1];
         for _ in 0..4096 {
-            live.tick(&[], &mut out);
-            twin.tick(&[], &mut out_twin);
+            tick(&mut *live, &transport, SR, &mut out);
+            tick(&mut twin, &transport, SR, &mut out_twin);
             transport.advance(1, SR);
         }
 
-        let mut render = live.clone();
-        render.isolate();
+        let mut render = fork_of(&*source, SR);
         render.reset();
         let mut scratch = [0.0f32; 1];
         for _ in 0..4096 {
-            render.tick(&[], &mut scratch);
+            tick(&mut *render, &transport, SR, &mut scratch);
         }
 
         let mut heard = false;
         for i in 0..8192 {
-            live.tick(&[], &mut out);
-            twin.tick(&[], &mut out_twin);
+            tick(&mut *live, &transport, SR, &mut out);
+            tick(&mut twin, &transport, SR, &mut out_twin);
             transport.advance(1, SR);
             assert_eq!(
                 out[0].to_bits(),
@@ -214,49 +248,79 @@ mod tests {
         assert!(heard, "silence proves nothing");
     }
 
-    /// **An isolated pool does not write the live pool's beat cursor.** The
-    /// cursor clones by sharing its cells, so before `isolate` dropped it a
-    /// fork's `set_sample_rate` rewrote the live cursor's rate (and its
-    /// `process` stored `last_beat` there). An offline rebind seats a cursor
-    /// of the fork's own, on the render's transport.
+    /// **A pool's fork shares nothing with the live pool.** It is an empty
+    /// pool at the live one's width: it holds none of the live voices, drains
+    /// none of the live handle's commands, and preparing it at another rate
+    /// does not move the rate the live handle builds its stretch filters at.
     ///
-    /// Mutation: drop `self.cursor = None` from `VoicePool::isolate` → the
-    /// live cursor reads 96 kHz → fails. Mutation: drop the cursor rebuild in
-    /// `rebind_offline` → the fork has no cursor → fails.
+    /// Mutation (run): `PoolFork` sharing the live pool's `SharedRate` (a
+    /// `rate` field cloned into it and the fork built with it) → the live
+    /// handle's rate reads 96 kHz → fails. Mutation (run): the fork built
+    /// with the live pool's voices (a clone of the pool as inserted, voices
+    /// and all) → the fork sounds → fails.
     #[test]
-    fn isolate_severs_the_pools_beat_cursor() {
-        let live_t: Arc<dyn tutti_core::Timeline> =
-            MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let (live, _handle) = VoicePool::with_transport(Arc::clone(&live_t), None);
-        let mut fork = live.clone();
-        fork.isolate();
-        fork.set_sample_rate(SampleRate(96_000.0));
-        assert_eq!(
-            live.cursor.as_ref().expect("a transport").sample_rate(),
-            SampleRate(44_100.0),
-            "the fork moved the live cursor"
+    fn a_pools_fork_shares_nothing_with_the_live_pool() {
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let mut pool = VoicePool::new();
+        pool.insert_voice(
+            SlotId(1),
+            Voice {
+                source: VoiceSource::Memory(MemorySource::placed(
+                    make_wave(4096),
+                    Beat::new(0.0),
+                    None,
+                )),
+                play: Playback::default(),
+                channel_index: None,
+            },
         );
-
-        let offline: tutti_core::transport::OfflineTransport =
-            tutti_core::transport::OfflineTransport::new(MockTransport::rolling(
-                Beat::new(8.0),
-                Bpm::new(90.0),
-            ));
-        fork.rebind_offline(&offline);
-        let cursor = fork.cursor.as_ref().expect("rebound to the render");
-        assert!(Arc::ptr_eq(cursor.timeline(), &offline.timeline()));
-        assert_eq!(cursor.sample_rate(), SampleRate(96_000.0));
+        let NodeParts {
+            node: mut live,
+            controls: handle,
+            fork,
+        } = pool.into_parts();
+        let source = fork.expect("a pool forks");
+        live.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
+        let mut fork = source
+            .fork(tutti_graph::ForkMode::Live)
+            .expect("a pool forks")
+            .node;
+        fork.prepare(&Prepare::new(SampleRate(96_000.0), Samples(64)));
+        assert_eq!(
+            handle.rate.load(),
+            SampleRate(SR),
+            "the fork moved the live pool's rate"
+        );
+        add_ram_clip(
+            &handle,
+            SlotId(2),
+            MemorySource::placed(make_wave(4096), Beat::new(0.0), None),
+        );
+        assert!(
+            run(&mut *live, &transport, SR, 64)[0]
+                .iter()
+                .any(|&s| s != 0.0),
+            "the live pool plays"
+        );
+        assert!(
+            run(&mut *fork, &transport, 96_000.0, 64)
+                .iter()
+                .flatten()
+                .all(|&s| s == 0.0),
+            "the fork holds a live voice, or drained a live command"
+        );
     }
 
     /// A transport seek must flush the stretch filter's buffered audio.
     ///
-    /// `Timeline` is poll-only — `beat()` / `tempo()` / `is_rolling()`, no seek
-    /// event — and nothing on any transport-driven path calls
-    /// `AudioUnit::reset()`. So when the playhead jumps, the placement gate
-    /// re-derives the new position correctly and immediately, while
-    /// `stretch::Unit` keeps draining a FIFO primed from *before* the jump: up
-    /// to `window * 4` FRAMES per channel, plus per-bin phase accumulators
-    /// still tracking the old material.
+    /// A seek reaches a node only as its block's `Env` (a transport change,
+    /// or a block that does not continue the last), and nothing on any
+    /// transport-driven path calls `Node::reset`. So when the playhead
+    /// jumps, the placement gate re-derives the new position correctly and
+    /// immediately, while `stretch::Unit` would keep draining a FIFO primed
+    /// from *before* the jump — up to `window * 4` FRAMES per channel, plus
+    /// per-bin phase accumulators still tracking the old material — unless
+    /// the node flushes it on the jump's frame.
     ///
     /// The wave is loud in its first half and **exactly silent** in its second,
     /// which is what makes the assertion about the leak rather than about
@@ -266,16 +330,25 @@ mod tests {
     /// a 60 dB gain error live in the vocoder. Here, parking the playhead in the
     /// silent half means any output above the floor is provably material the
     /// filter should not still be holding.
+    ///
+    /// Mutation (run): `PlaybackSlot::render_into` skipping
+    /// `flush_playhead_state` on a jump (priming kept) → peak 0.20 after the
+    /// seek, fails.
     #[test]
     fn a_transport_seek_flushes_stretch_state() {
         const SR: f64 = 44_100.0;
         // Ten seconds, so the playhead has room to run for thousands of blocks
         // inside one half without leaving it.
         const LEN: usize = 441_000;
-        // 120 BPM = 2 beats/s, so the wave spans 20 beats and the halves split at
-        // beat 10.
+        // 120 BPM = 2 beats/s, and a placed read stretched 2x takes half a
+        // source frame per output frame, so the wave spans 40 beats and the
+        // halves split at beat 20. (This said 20 and 10, forgetting the
+        // stretch: beat 12 is source frame 132 300, loud, and the assertion
+        // held only because a flushed filter was silent for its 4 096-frame
+        // refill, longer than the 2 048 measured. Priming the filter on the
+        // jump removed that gap and exposed it.)
         const LOUD_BEAT: f64 = 2.0;
-        const SILENT_BEAT: f64 = 12.0;
+        const SILENT_BEAT: f64 = 30.0;
 
         // Loud first half at 3 kHz (a real signal — the vocoder needs a changing
         // input to synthesise from), exactly silent second half.
@@ -291,10 +364,11 @@ mod tests {
         let wave = Arc::new(Wave::from_samples(SR, &data));
 
         let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::new(120.0));
-        let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 1usize)
-            .expect("a width the sampler reads");
+        let (mut unit, handle) = VoicePool::with_channels(None, 1usize)
+            .expect("a width the sampler reads")
+            .with_handle();
 
-        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
         handle
             .send(VoiceCommand::AddVoice {
                 id: SlotId(1),
@@ -314,7 +388,7 @@ mod tests {
             .expect("the command queue has room in a test");
 
         let mut out = [0.0f32; 1];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert!(
             unit.voices[0].needs_stretch(),
             "test is vacuous unless the stretch path is live"
@@ -328,7 +402,7 @@ mod tests {
             let mut peak = 0.0f32;
             let mut out = [0.0f32; 1];
             for _ in 0..n {
-                unit.tick(&[], &mut out);
+                tick(unit, &transport, SR, &mut out);
                 transport.advance(1, SR);
                 peak = peak.max(out[0].abs());
             }
@@ -363,15 +437,20 @@ mod tests {
     /// pool-level fix covered one of the two paths and left this one smearing.
     ///
     /// Not hypothetical: a spectral resynth adds bare `VoiceNode`s as correction
-    /// nodes, and `tutti-export`'s offline rebind has a dedicated arm for them. A scrub across a stretched correction would drag pre-seek audio
+    /// nodes, and a timeline clip is one. A scrub across a stretched correction would drag pre-seek audio
     /// over the new region with nothing in the suite to notice, because every
     /// other assertion on this path checks only that output is non-zero.
+    ///
+    /// Mutation (run): the jump's `flush_playhead_state` skipped (priming
+    /// kept) → peak 0.22 after the seek, fails.
     #[test]
     fn a_transport_seek_flushes_a_standalone_voice_node() {
         const SR: f64 = 44_100.0;
         const LEN: usize = 441_000;
+        // Beat 30 is source frame 330 750 at 2x, in the silent half: see the
+        // pool's test above.
         const LOUD_BEAT: f64 = 2.0;
-        const SILENT_BEAT: f64 = 12.0;
+        const SILENT_BEAT: f64 = 30.0;
 
         let data: Vec<f32> = (0..LEN)
             .map(|i| {
@@ -385,7 +464,7 @@ mod tests {
         let wave = Arc::new(Wave::from_samples(SR, &data));
 
         let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::new(120.0));
-        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
         let mut node = VoiceNode::with_channels(
             Voice {
                 source: VoiceSource::Memory(sampler),
@@ -406,7 +485,7 @@ mod tests {
             let mut peak = 0.0f32;
             let mut out = [0.0f32; 1];
             for _ in 0..n {
-                node.tick(&[], &mut out);
+                tick(node, &transport, SR, &mut out);
                 transport.advance(1, SR);
                 peak = peak.max(out[0].abs());
             }
@@ -450,7 +529,7 @@ mod tests {
         let wave = Arc::new(Wave::from_samples(SR, &data));
 
         let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
-        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
         let mut node = VoiceNode::with_channels(
             Voice {
                 source: VoiceSource::Memory(sampler),
@@ -465,7 +544,7 @@ mod tests {
 
         let mut out = [0.0f32; 1];
         for _ in 0..16_384 {
-            node.tick(&[], &mut out);
+            tick(&mut node, &transport, SR, &mut out);
             transport.advance(1, SR);
         }
 
@@ -473,7 +552,7 @@ mod tests {
         for _ in 0..256 {
             let mut peak = 0.0f32;
             for _ in 0..64 {
-                node.tick(&[], &mut out);
+                tick(&mut node, &transport, SR, &mut out);
                 transport.advance(1, SR);
                 peak = peak.max(out[0].abs());
             }
@@ -489,21 +568,20 @@ mod tests {
 
     /// **A stretched placed voice must not transpose**, across block boundaries.
     ///
-    /// The bug this pins was in the *assembly*, not the DSP.
-    /// [`stretch::Unit`] was correct and unit-tested, but `VoicePool` never
-    /// applied [`stretch::Unit::input_rate`] — the method had zero call sites in
-    /// the whole crate — so the vocoder was fed one source sample per output
-    /// sample and the factor acted as plain varispeed: 2.0x turned 440 Hz into
-    /// 880 Hz with the duration unchanged.
+    /// What this pins is the *assembly*, not the DSP: if `VoicePool` did not
+    /// apply [`stretch::Unit::input_rate`], the vocoder would be fed one source
+    /// sample per output sample and the factor would act as plain varispeed
+    /// (2.0x turning 440 Hz into 880 Hz with the duration unchanged), while
+    /// every unit test of [`stretch::Unit`] still passed.
     ///
     /// **Why this renders many blocks.** The failure lives at block boundaries.
     /// A placed voice re-derives its origin from the playhead each block, and the
     /// playhead runs at wall clock, so a stretched read that covers
     /// `block / stretch` source samples gets re-seated a full `block` further on
     /// at the next boundary — discarding the stretch, forever. A single-block
-    /// test cannot see it, and a fix applied to the within-block step alone made
-    /// it *worse* (pitch +35% off, spectral purity 0.95 -> 0.54) rather than
-    /// failing outright.
+    /// test cannot see it, and applying the stretch to the within-block step
+    /// alone makes it *worse* (pitch +35% off, spectral purity 0.95 -> 0.54)
+    /// rather than failing outright.
     ///
     /// Asserted by measuring the dominant frequency, because every other stretch
     /// assertion on this path is `!= 0.0` — and an octave-transposed voice is
@@ -517,7 +595,7 @@ mod tests {
         const BLOCKS: usize = 750;
 
         for factor in [0.5f32, 1.5, 2.0] {
-            let (mut pool, handle) = VoicePool::new();
+            let (mut pool, handle) = VoicePool::new().with_handle();
             let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
 
             // 440 Hz, long enough that even the fastest consumption stays inside
@@ -527,8 +605,7 @@ mod tests {
                 .collect();
             let wave = Arc::new(Wave::from_samples(SR, &data));
 
-            let source =
-                MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+            let source = MemorySource::placed(wave, Beat::new(0.0), None);
             let play = Playback {
                 stretch: StretchFactor::new(factor),
                 ..Default::default()
@@ -545,14 +622,10 @@ mod tests {
                 })
                 .expect("the command queue has room in a test");
 
-            let ib = BufferVec::new(2);
-            let mut ob = BufferVec::new(2);
+            pool.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
             let mut out = Vec::with_capacity(BLOCK * BLOCKS);
             for _ in 0..BLOCKS {
-                pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
-                for i in 0..BLOCK {
-                    out.push(ob.buffer_ref().at_f32(0, i));
-                }
+                out.extend(run(&mut pool, &transport, SR, BLOCK).swap_remove(0));
                 transport.advance(BLOCK as i64, SR);
             }
 
@@ -568,31 +641,23 @@ mod tests {
         }
     }
 
-    /// **A voice node reads a placed wave at another rate the same through
-    /// `tick` as through `process`**, with the clock moving once per block: a
-    /// 24 kHz ramp on a 48 kHz clock reads file frame `n / 2` on output frame
-    /// `n`, forward and reversed, across every block boundary. `tick` is how a
-    /// `Net` reads a node frame by frame; the slot's read seats on the clock
-    /// and steps from there, as `process` does.
+    /// **A voice node reads a placed wave at another rate the same in
+    /// one-frame blocks as in 64-frame ones**, the clock moving by each
+    /// block: a 24 kHz ramp on a 48 kHz clock reads file frame `n / 2` on
+    /// output frame `n`, forward and reversed, across every block boundary.
     ///
-    /// Mutation (run): the slot's `tick` reading `window_position()` per frame
-    /// (the old read, no step) → one file frame per block → fails. Mutation
-    /// (run): the slot's `process` stepping by `window_rate` → a file frame per
-    /// output frame → fails.
+    /// Mutation (run): the slot's memory arm placing by `window_rate` instead
+    /// of `read_rate` (`placed_positions`' step) → a file frame per output
+    /// frame in the 64-frame blocks → fails.
     #[test]
-    fn a_voice_node_reads_a_wave_at_another_rate_by_tick_and_by_process() {
+    fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
         const LEN: usize = 4_096;
         let data: Vec<f32> = (0..LEN).map(|i| (i + 1) as f32).collect();
         let wave = Arc::new(Wave::from_samples(24_000.0, &data));
         for direction in [Direction::Forward, Direction::Reverse] {
             for via_tick in [false, true] {
                 let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-                let sampler = MemorySource::with_transport(
-                    Arc::clone(&wave),
-                    transport.clone(),
-                    Beat::new(0.0),
-                    None,
-                );
+                let sampler = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
                 let mut node = VoiceNode::with_channels(
                     Voice {
                         source: VoiceSource::Memory(sampler),
@@ -604,23 +669,10 @@ mod tests {
                     },
                     1usize,
                 );
-                node.set_sample_rate(SampleRate(48_000.0));
-                let ib = BufferVec::new(1);
-                let mut ob = BufferVec::new(1);
-                let mut out = Vec::new();
-                for _ in 0..8 {
-                    if via_tick {
-                        for _ in 0..64 {
-                            let mut frame = [0.0f32];
-                            node.tick(&[], &mut frame);
-                            out.push(frame[0]);
-                        }
-                    } else {
-                        node.process(64, &ib.buffer_ref(), &mut ob.buffer_mut());
-                        out.extend((0..64).map(|i| ob.buffer_ref().at_f32(0, i)));
-                    }
-                    transport.advance(64, 48_000.0);
-                }
+                node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(64)));
+                let len = if via_tick { 1 } else { 64 };
+                let out =
+                    crate::testing::play(&mut node, &transport, 48_000.0, 512, len).swap_remove(0);
                 for (n, &got) in out.iter().enumerate().skip(4) {
                     let at = n as f32 / 2.0;
                     let want = match direction {
@@ -629,7 +681,7 @@ mod tests {
                     };
                     assert!(
                         (got - want).abs() < 1e-2,
-                        "{direction:?}, tick {via_tick}: output frame {n} read {got}, want {want}"
+                        "{direction:?}, one-frame blocks {via_tick}: output frame {n} read {got}, want {want}"
                     );
                 }
             }
@@ -669,7 +721,7 @@ mod tests {
         // where the reader actually read rather than what anything claims it
         // should have.
         let consumed = |factor: f32| -> u64 {
-            let (mut pool, handle) = VoicePool::new();
+            let (mut pool, handle) = VoicePool::new().with_handle();
             let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
 
             // Enough ring that the unstretched (fastest) case cannot underrun,
@@ -694,7 +746,6 @@ mod tests {
                 inner,
                 Arc::clone(&state),
                 DiskVoiceConfig {
-                    timeline: transport.clone(),
                     window: VoiceWindow {
                         start: Beat::new(0.0),
                         duration: None,
@@ -719,10 +770,8 @@ mod tests {
                 })
                 .expect("the command queue has room in a test");
 
-            let ib = BufferVec::new(2);
-            let mut ob = BufferVec::new(2);
             for _ in 0..BLOCKS {
-                pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
+                run(&mut pool, &transport, 44_100.0, BLOCK);
                 transport.advance(BLOCK as i64, 44_100.0);
             }
             ring.play()
@@ -799,10 +848,11 @@ mod tests {
         let wave = Arc::new(Wave::from_samples(SR, &data));
 
         let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
-        let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 1usize)
-            .expect("a width the sampler reads");
+        let (mut unit, handle) = VoicePool::with_channels(None, 1usize)
+            .expect("a width the sampler reads")
+            .with_handle();
 
-        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
         handle
             .send(VoiceCommand::AddVoice {
                 id: SlotId(1),
@@ -822,7 +872,7 @@ mod tests {
         // Fill the vocoder pipeline first: the opening blocks are legitimately
         // quiet while the FIFOs and overlap-add tail prime.
         for _ in 0..16_384 {
-            unit.tick(&[], &mut out);
+            tick(&mut unit, &transport, SR, &mut out);
             transport.advance(1, SR);
         }
         assert!(unit.voices[0].needs_stretch(), "stretch path must be live");
@@ -834,7 +884,7 @@ mod tests {
         for _ in 0..256 {
             let mut peak = 0.0f32;
             for _ in 0..64 {
-                unit.tick(&[], &mut out);
+                tick(&mut unit, &transport, SR, &mut out);
                 transport.advance(1, SR);
                 peak = peak.max(out[0].abs());
             }
@@ -850,62 +900,59 @@ mod tests {
 
     #[test]
     fn add_and_remove_clips() {
-        let (mut unit, handle) = VoicePool::new();
+        let (mut unit, handle) = VoicePool::new().with_handle();
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
-        let sampler =
-            MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert!(out[0] != 0.0 || out[1] != 0.0, "voice should produce audio");
 
         handle
             .send(VoiceCommand::Remove(SlotId(1)))
             .expect("the command queue has room in a test");
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert_eq!(out[0], 0.0);
         assert_eq!(out[1], 0.0);
     }
 
     #[test]
     fn silence_when_transport_stopped() {
-        let (mut unit, handle) = VoicePool::new();
+        let (mut unit, handle) = VoicePool::new().with_handle();
         let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
-        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert_eq!(out[0], 0.0);
         assert_eq!(out[1], 0.0);
     }
 
     #[test]
     fn clips_sum_together() {
-        let (mut unit, handle) = VoicePool::new();
+        let (mut unit, handle) = VoicePool::new().with_handle();
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
         for i in 0..3 {
-            let sampler =
-                MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+            let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
             add_ram_clip(&handle, SlotId(i), sampler);
         }
 
         let mut out_3 = [0.0f32; 2];
-        unit.tick(&[], &mut out_3);
+        tick(&mut unit, &transport, SR, &mut out_3);
 
-        let (mut unit2, handle2) = VoicePool::new();
-        let sampler =
-            MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+        let (mut unit2, handle2) = VoicePool::new().with_handle();
+        let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
         add_ram_clip(&handle2, SlotId(0), sampler);
         let mut out_1 = [0.0f32; 2];
-        unit2.tick(&[], &mut out_1);
+        tick(&mut unit2, &transport, SR, &mut out_1);
 
         let tolerance = 0.001;
         assert!((out_3[0] - out_1[0] * 3.0).abs() < tolerance);
@@ -914,30 +961,30 @@ mod tests {
 
     #[test]
     fn clone_snapshots_clips() {
-        let (mut unit, handle) = VoicePool::new();
+        let (mut unit, handle) = VoicePool::new().with_handle();
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
-        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
 
         let mut cloned = unit.clone();
         let mut out_clone = [0.0f32; 2];
-        cloned.tick(&[], &mut out_clone);
+        tick(&mut cloned, &transport, SR, &mut out_clone);
 
         assert!(out_clone[0] != 0.0, "cloned unit should have the voice");
     }
 
     #[test]
     fn insert_voice_is_audible_without_channel() {
-        let (mut unit, _handle) = VoicePool::new();
+        let (mut unit, _handle) = VoicePool::new().with_handle();
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
-        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
         unit.insert_voice(
             SlotId(1),
             Voice {
@@ -958,35 +1005,43 @@ mod tests {
         assert_eq!(unit.voice_count(), 1);
 
         let mut out = [0.0f32; 2];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert!(
             out[0] != 0.0 || out[1] != 0.0,
             "inserted voice should produce audio"
         );
     }
 
+    /// A pool no handle was taken for (what a fork builds) is empty and
+    /// silent, and a voice inserted directly still plays.
+    ///
+    /// Mutation (run): `insert_voice` dropping its voice → the inserted
+    /// voice is silent → fails. (The first half is structural: no sender
+    /// exists for a handle-less pool's receiver, so no one-line edit can
+    /// deliver it a command.)
     #[test]
-    fn detached_reader_has_no_channel_and_is_empty() {
+    fn a_pool_with_no_handle_has_no_channel_and_is_empty() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
-        // A render-only reader is born empty and channel-less: there is no
-        // sender for its `rx`, so no command can ever reach it.
-        let mut unit = VoicePool::detached(transport.clone());
-        assert_eq!(unit.voice_count(), 0, "detached reader starts empty");
+        // A pool nothing has taken the handle of (what a fork builds) is born
+        // empty and channel-less: there is no sender for its `rx`, so no
+        // command can ever reach it.
+        let mut unit = VoicePool::new();
+        assert_eq!(unit.voice_count(), 0, "a new pool starts empty");
 
         let mut out = [0.0f32; 2];
-        unit.tick(&[], &mut out); // drains its (permanently empty) queue
+        tick(&mut unit, &transport, SR, &mut out); // drains its (permanently empty) queue
         assert_eq!(
             unit.voice_count(),
             0,
-            "detached reader receives no commands"
+            "a pool with no handle receives no commands"
         );
         assert_eq!(out[0], 0.0);
         assert_eq!(out[1], 0.0);
 
         // But voices inserted directly (the Populate path) are audible.
-        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
         unit.insert_voice(
             SlotId(1),
             Voice {
@@ -1002,21 +1057,21 @@ mod tests {
                 channel_index: None,
             },
         );
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert!(out[0] != 0.0 || out[1] != 0.0, "inserted voice is audible");
     }
 
     #[test]
     fn update_gain() {
-        let (mut unit, handle) = VoicePool::new();
+        let (mut unit, handle) = VoicePool::new().with_handle();
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
-        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out_before = [0.0f32; 2];
-        unit.tick(&[], &mut out_before);
+        tick(&mut unit, &transport, SR, &mut out_before);
 
         handle
             .send(VoiceCommand::UpdateGain {
@@ -1026,22 +1081,22 @@ mod tests {
             .expect("the command queue has room in a test");
 
         let mut out_after = [0.0f32; 2];
-        unit.tick(&[], &mut out_after);
+        tick(&mut unit, &transport, SR, &mut out_after);
 
         assert!((out_after[0] - out_before[0] * 0.5).abs() < 0.01);
     }
 
     #[test]
     fn update_stretch_enables_processor() {
-        let (mut unit, handle) = VoicePool::new();
+        let (mut unit, handle) = VoicePool::new().with_handle();
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(4096);
 
-        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave, Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert!(!unit.voices[0].needs_stretch(), "no stretch by default");
 
         handle
@@ -1052,7 +1107,7 @@ mod tests {
                 stretch: None,
             })
             .expect("the command queue has room in a test");
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert!(unit.voices[0].needs_stretch(), "stretch should be active");
         // The gate above is only the *intent*. Assert the filter actually arrived:
         // this voice spawned at unity, so `AddVoice` correctly gave it none, and
@@ -1071,7 +1126,7 @@ mod tests {
                 stretch: None,
             })
             .expect("the command queue has room in a test");
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert!(
             !unit.voices[0].needs_stretch(),
             "identity stretch disables processor"
@@ -1092,18 +1147,17 @@ mod tests {
     /// through it should still fail here.
     #[test]
     fn enabling_stretch_mid_flight_changes_the_output() {
-        let (mut unit, handle) = VoicePool::new();
+        let (mut unit, handle) = VoicePool::new().with_handle();
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let sampler =
-            MemorySource::with_transport(make_wave(48_000), transport, Beat::new(0.0), None);
+        let sampler = MemorySource::placed(make_wave(48_000), Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         // Settle the add, then collect a dry reference block.
         let mut out = [0.0f32; 2];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         let mut dry = Vec::new();
         for _ in 0..512 {
-            unit.tick(&[], &mut out);
+            tick(&mut unit, &transport, SR, &mut out);
             dry.push(out[0]);
         }
 
@@ -1120,7 +1174,7 @@ mod tests {
 
         let mut shifted = Vec::new();
         for _ in 0..512 {
-            unit.tick(&[], &mut out);
+            tick(&mut unit, &transport, SR, &mut out);
             shifted.push(out[0]);
         }
 
@@ -1154,14 +1208,13 @@ mod tests {
     /// instead.
     #[test]
     fn a_redundant_stretch_filter_is_retired_not_freed_on_the_audio_thread() {
-        let (mut unit, handle) = VoicePool::new();
+        let (mut unit, handle) = VoicePool::new().with_handle();
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let sampler =
-            MemorySource::with_transport(make_wave(4096), transport, Beat::new(0.0), None);
+        let sampler = MemorySource::placed(make_wave(4096), Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
 
         // First update: adopted, nothing surplus.
         handle
@@ -1172,7 +1225,7 @@ mod tests {
                 stretch: None,
             })
             .expect("the command queue has room in a test");
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert_eq!(
             handle.collect_retired(),
             0,
@@ -1188,7 +1241,7 @@ mod tests {
                 stretch: None,
             })
             .expect("the command queue has room in a test");
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         assert_eq!(
             handle.collect_retired(),
             1,
@@ -1200,42 +1253,38 @@ mod tests {
         );
     }
 
-    /// `VoiceNode` MUST be an `AudioUnit` in its own right: a spectral resynth
-    /// adds a standalone voice node to its net, and `tutti-export`'s region
-    /// render downcasts these nodes to rebind them offline. If a `Voice`
-    /// stopped being an `AudioUnit`, both paths would break — resynth couldn't
-    /// add it, and the offline downcast would silently stop matching (wrong
-    /// transport offline, no compile error). This guards that contract: a
+    /// `VoiceNode` MUST be a graph node in its own right: a spectral resynth
+    /// adds a standalone voice node to its graph, and a single timeline clip
+    /// is one (`bevy-tutti`'s `SpawnVoice`). This guards that contract: a
     /// standalone `VoiceNode` produces the same audio one mixer slot does.
     #[test]
-    fn voice_node_is_a_standalone_audio_unit() {
+    fn voice_node_is_a_standalone_graph_node() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
         // Same voice the mixer would hold for one voice.
-        let sampler =
-            MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
         let voice = Voice {
             source: VoiceSource::Memory(sampler),
             play: Playback::default(),
             channel_index: None,
         };
 
-        // As a standalone AudioUnit: 0 in, 2 out, produces audio.
+        // As a standalone node: 0 in, 2 out, produces audio.
         let mut node = VoiceNode::new(voice);
-        assert_eq!(node.inputs(), 0);
-        assert_eq!(node.outputs(), 2);
+        assert_eq!(node.shape().audio_in.count(), 0);
+        assert_eq!(node.shape().audio_out.count(), 2);
 
         let mut out = [0.0f32; 2];
-        node.tick(&[], &mut out);
+        tick(&mut node, &transport, SR, &mut out);
         assert!(
             out[0] != 0.0 || out[1] != 0.0,
             "standalone VoiceNode should produce audio"
         );
 
         // It reads the SAME single-voice frame the mixer does for one slot.
-        let sampler2 = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
-        let (mut mixer, _handle) = VoicePool::new();
+        let sampler2 = MemorySource::placed(wave, Beat::new(0.0), None);
+        let (mut mixer, _handle) = VoicePool::new().with_handle();
         mixer.insert_voice(
             SlotId(1),
             Voice {
@@ -1252,73 +1301,63 @@ mod tests {
             },
         );
         let mut node2 = VoiceNode::new(Voice {
-            source: VoiceSource::Memory(MemorySource::with_transport(
-                make_wave(100),
-                MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
-                Beat::new(0.0),
-                None,
-            )),
+            source: VoiceSource::Memory(MemorySource::placed(make_wave(100), Beat::new(0.0), None)),
             play: Playback::default(),
             channel_index: None,
         });
         let mut mixer_out = [0.0f32; 2];
         let mut node_out = [0.0f32; 2];
-        mixer.tick(&[], &mut mixer_out);
-        node2.tick(&[], &mut node_out);
+        tick(&mut mixer, &transport, SR, &mut mixer_out);
+        tick(&mut node2, &transport, SR, &mut node_out);
         assert!(
             (mixer_out[0] - node_out[0]).abs() < 1e-6,
             "VoiceNode frame must match the mixer's single-slot read"
         );
     }
 
-    /// `Voice::replace_transport` rebinds the clock the source actually READS,
-    /// preserving start/duration — the offline render's rebind path.
+    /// **A voice's fork keeps its window and reads its render's transport**
+    /// — the offline render's path: the fork is `Voice::fork_copy`, and there is no clock to swap, because a
+    /// voice reads the transport from each block's `Env`.
     ///
-    /// Asserted **behaviourally**, on the clock the source reads, not on a
-    /// mirrored placement record: an assertion against a rebound-but-unread copy
-    /// passes whether or not the real read clock moved, which is the precise
-    /// failure this is written to catch. The swapped-in transport is STOPPED, so
-    /// the source must report no position and render silence.
+    /// Asserted **behaviourally**, on what the fork plays under the render's
+    /// transport: silent before its window (beat 1), sounding inside it (beat
+    /// 3), silent on a stopped render.
+    ///
+    /// Mutation (run): `Voice::fork_copy` not keeping the memory source's
+    /// window (`set_window(VoiceWindow::default())` on the copy) → the fork
+    /// sounds at beat 1 → fails.
     #[test]
-    fn voice_replace_transport_rebinds_the_clock_the_source_reads() {
-        let wave = make_wave(100);
-        let live = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let sampler = MemorySource::with_transport(wave, live, Beat::new(2.0), None);
-        let mut voice = Voice {
+    fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
+        let wave = make_wave(44_100);
+        let sampler = MemorySource::placed(wave, Beat::new(2.0), None);
+        let voice = Voice {
             source: VoiceSource::Memory(sampler),
             play: Playback::default(),
             channel_index: None,
         };
-
-        // Rolling at beat 0 but the window starts at beat 2 — outside, so move the
-        // playhead in first and confirm the source is reading.
-        match &voice.source {
-            VoiceSource::Memory(s) => {
-                assert!(
-                    s.window_position().is_none(),
-                    "setup: beat 0 is before the beat-2 window"
-                );
-            }
+        let fork = voice
+            .fork_copy(tutti_graph::ForkMode::Live)
+            .expect("a memory voice forks");
+        match &fork.source {
+            VoiceSource::Memory(s) => assert_eq!(s.start_beat(), Beat::new(2.0)),
             other => panic!("expected a Memory source, got {other:?}"),
         }
-
-        let stopped = MockTransport::stopped(Beat::new(4.0), Bpm::new(140.0));
-        voice.replace_transport(stopped);
-
-        match &voice.source {
-            VoiceSource::Memory(s) => {
-                // The window survived the rebind...
-                assert_eq!(s.start_beat(), Beat::new(2.0));
-                // ...and the source now reads the STOPPED clock. Beat 4 is inside
-                // the window, so a source still on the live clock would have
-                // reported a position here.
-                assert!(
-                    s.window_position().is_none(),
-                    "the source must read the stopped offline clock, not the live one"
-                );
-            }
-            other => panic!("expected a Memory source, got {other:?}"),
-        }
+        let mut node = VoiceNode::with_channels(fork, 1usize);
+        node.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
+        let at = |beat: f64| MockTransport::rolling(Beat::new(beat), Bpm::new(120.0));
+        assert!(
+            run(&mut node, &at(1.0), SR, 8)[0].iter().all(|&s| s == 0.0),
+            "before the window"
+        );
+        assert!(
+            run(&mut node, &at(3.0), SR, 8)[0].iter().all(|&s| s != 0.0),
+            "inside the window"
+        );
+        let stopped = MockTransport::stopped(Beat::new(3.0), Bpm::new(120.0));
+        assert!(
+            run(&mut node, &stopped, SR, 8)[0].iter().all(|&s| s == 0.0),
+            "a stopped render"
+        );
     }
 
     // --- 0e: dropped commands must not be recorded as applied ---
@@ -1327,8 +1366,8 @@ mod tests {
     /// the butler owns streaming loop state — so the drain must not record the
     /// intent either. Writing `play.loop_` with nothing sent leaves the record
     /// claiming a loop that was never set, and `insert_voice` replays that lie
-    /// as if it were real. Reachable on every offline path: `new()`,
-    /// `detached()` and `isolate()` all have no butler.
+    /// as if it were real. Reachable wherever a pool has no butler: `new()`
+    /// and a fork.
     #[test]
     fn loop_on_a_butlerless_streaming_voice_is_not_recorded() {
         use crate::butler::{RegionBuffer, RegionId, RtState};
@@ -1336,7 +1375,7 @@ mod tests {
         use crate::voice::disk_voice::{DiskVoice, DiskVoiceConfig};
 
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let (mut unit, handle) = VoicePool::new();
+        let (mut unit, handle) = VoicePool::new().with_handle();
 
         // Build a Disk voice with no butler channel.
         let (writer, reader) =
@@ -1348,7 +1387,6 @@ mod tests {
             inner,
             state,
             DiskVoiceConfig {
-                timeline: transport.clone(),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
@@ -1381,7 +1419,7 @@ mod tests {
             .expect("the command queue has room in a test");
 
         let mut out = [0.0f32; 2];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
 
         let play = unit.playback_of(id).expect("slot exists");
         assert_eq!(
@@ -1404,9 +1442,9 @@ mod tests {
 
     #[test]
     fn reader_and_voice_node_default_to_stereo() {
-        let (unit, _h) = VoicePool::new();
+        let (unit, _h) = VoicePool::new().with_handle();
         assert_eq!(unit.channels(), ChannelLayout::STEREO);
-        assert_eq!(unit.outputs(), 2);
+        assert_eq!(unit.shape().audio_out, ChannelLayout::STEREO);
     }
 
     /// **A pool wider than the sampler reads is refused**, by name, where one
@@ -1418,8 +1456,8 @@ mod tests {
     #[test]
     fn a_pool_wider_than_the_sampler_reads_is_refused() {
         let ceiling = crate::MAX_SAMPLER_CHANNELS;
-        assert!(VoicePool::with_channels(None, None, ceiling).is_ok());
-        let err = VoicePool::with_channels(None, None, ceiling + 1)
+        assert!(VoicePool::with_channels(None, ceiling).is_ok());
+        let err = VoicePool::with_channels(None, ceiling + 1)
             .expect_err("a pool past the ceiling must be refused");
         assert_eq!(err.channels, ChannelLayout::from(ceiling + 1));
     }
@@ -1434,10 +1472,9 @@ mod tests {
     #[test]
     fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let sampler =
-            MemorySource::with_transport(make_wave(4096), transport, Beat::new(0.0), None);
+        let sampler = MemorySource::placed(make_wave(4096), Beat::new(0.0), None);
         let wide = crate::MAX_SAMPLER_CHANNELS + 2;
-        let mut node = VoiceNode::with_channels(
+        let node = VoiceNode::with_channels(
             Voice {
                 source: VoiceSource::Memory(sampler),
                 play: Playback::default(),
@@ -1445,53 +1482,40 @@ mod tests {
             },
             wide,
         );
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(wide);
-        for c in 0..wide {
-            for i in 0..64 {
-                output.buffer_mut().set_f32(c, i, 7.0);
-            }
+        let mut direct = tutti_graph::contract::Direct::new(node, SampleRate(SR), 64);
+        for ch in direct.outputs_mut() {
+            ch.fill(7.0);
         }
-        node.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        direct.block_in(&transport.env(64, SR));
         for c in crate::MAX_SAMPLER_CHANNELS..wide {
             for i in 0..64 {
                 assert_eq!(
-                    output.buffer_ref().at_f32(c, i),
+                    direct.output(c)[i],
                     0.0,
                     "channel {c} frame {i} kept what the buffer held"
                 );
             }
         }
         assert!(
-            (0..64).any(|i| output.buffer_ref().at_f32(0, i) != 0.0),
+            direct.output(0).iter().any(|&s| s != 0.0),
             "the voice must sound on the channels it reads"
         );
     }
 
-    /// `route`'s width must track `outputs()` on both nodes, or fundsp mis-plans
-    /// their latency — silent except as PDC drift.
+    /// Both nodes declare the width they were built at, as generators: no
+    /// inputs, no latency, never skipped.
+    ///
+    /// Mutation (run): `VoiceNode::shape` declaring stereo whatever it was
+    /// built at → fails at width 1.
     #[test]
-    fn route_width_tracks_outputs_on_both_nodes() {
+    fn both_nodes_declare_their_width() {
         for w in [1usize, 2, 6, 8] {
-            let (mut unit, _h) =
-                VoicePool::with_channels(None, None, w).expect("a width the sampler reads");
-            let out = unit.route(&SignalFrame::new(0), 44_100.0);
-            assert_eq!(
-                out.len(),
-                unit.outputs(),
-                "reader route/outputs at width {w}"
-            );
-
-            let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+            let unit = VoicePool::with_channels(None, w).expect("a width the sampler reads");
             let sampler = MemorySource::with_config(
                 indexed_wave(6, 64),
                 MemorySourceConfig {
                     channels: ChannelLayout::from(w),
-                    timeline: Some(transport),
-                    window: VoiceWindow {
-                        start: Beat::new(0.0),
-                        duration: None,
-                    },
+                    placed: true,
                     ..Default::default()
                 },
             );
@@ -1500,29 +1524,33 @@ mod tests {
                 play: Playback::default(),
                 channel_index: None,
             };
-            let mut vn = VoiceNode::with_channels(voice, w);
-            let out = vn.route(&SignalFrame::new(0), 44_100.0);
-            assert_eq!(
-                out.len(),
-                vn.outputs(),
-                "voice node route/outputs at width {w}"
-            );
+            let vn = VoiceNode::with_channels(voice, w);
+            for (what, shape) in [("pool", unit.shape()), ("voice node", vn.shape())] {
+                assert_eq!(shape.audio_out.count() as usize, w, "{what} at width {w}");
+                assert_eq!(shape.audio_in.count(), 0, "{what}: no inputs");
+                assert_eq!(shape.latency.samples(), Samples(0), "{what}: no latency");
+                assert_eq!(
+                    shape.tail,
+                    tutti_core::Tail::Unbounded,
+                    "{what}: a generator"
+                );
+            }
         }
     }
 
-    /// A 6-channel voice in a 6-wide reader must reach all six outputs, through
-    /// both entry points (`tick` sums into the caller's slice; `process`
-    /// accumulates into a planar buffer — different code).
+    /// A 6-channel voice in a 6-wide reader must reach all six outputs, in a
+    /// one-frame block and a longer one.
     #[test]
     fn six_channel_clip_reaches_all_six_reader_outputs() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let (mut unit, _h) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
-            .expect("a width the sampler reads");
+        let (mut unit, _h) = VoicePool::with_channels(None, 6usize)
+            .expect("a width the sampler reads")
+            .with_handle();
         let sampler = MemorySource::with_config(
             indexed_wave(6, 512),
             MemorySourceConfig {
                 channels: ChannelLayout::from(6u16),
-                timeline: Some(transport),
+                placed: true,
                 window: VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
@@ -1540,7 +1568,7 @@ mod tests {
         );
 
         let mut out = [0.0f32; 6];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         for (c, &got) in out.iter().enumerate() {
             assert!(
                 (got - (c + 1) as f32).abs() < 1e-3,
@@ -1561,13 +1589,14 @@ mod tests {
     #[test]
     fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let (mut unit, _h) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
-            .expect("a width the sampler reads");
+        let (mut unit, _h) = VoicePool::with_channels(None, 6usize)
+            .expect("a width the sampler reads")
+            .with_handle();
         let sampler = MemorySource::with_config(
             indexed_wave(6, 4096),
             MemorySourceConfig {
                 channels: ChannelLayout::from(6u16),
-                timeline: Some(transport.clone()),
+                placed: true,
                 window: VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
@@ -1589,11 +1618,14 @@ mod tests {
         );
 
         // The phase vocoder has FFT latency, so early frames are legitimately
-        // silent; drive until every channel has produced something.
+        // silent; drive until every channel has produced something. The
+        // playhead moves a frame per one-frame block, as a host moves it: a
+        // frozen one re-seats every block at one position.
         let mut seen = [false; 6];
         let mut out = [0.0f32; 6];
         for n in 0..16_384 {
-            unit.tick(&[], &mut out);
+            tick(&mut unit, &transport, SR, &mut out);
+            transport.advance(1, SR);
             for (c, &s) in out.iter().enumerate() {
                 if s.abs() > 1e-6 {
                     seen[c] = true;
@@ -1626,15 +1658,16 @@ mod tests {
     #[test]
     fn send_builds_the_stretch_filter_not_the_drain() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
-            .expect("a width the sampler reads");
+        let (mut unit, handle) = VoicePool::with_channels(None, 6usize)
+            .expect("a width the sampler reads")
+            .with_handle();
 
         let mk = |stretch: StretchFactor| {
             let sampler = MemorySource::with_config(
                 indexed_wave(6, 128),
                 MemorySourceConfig {
                     channels: ChannelLayout::from(6u16),
-                    timeline: Some(transport.clone()),
+                    placed: true,
                     window: VoiceWindow {
                         start: Beat::new(0.0),
                         duration: None,
@@ -1663,7 +1696,7 @@ mod tests {
                 tx: probe_tx,
                 retired: bounded(0).1,
                 channels: ChannelLayout::from(6u16),
-                sample_rate: SampleRate::SR_44K1,
+                rate: SharedRate::new(SampleRate::SR_44K1),
             };
             probe
                 .send(VoiceCommand::AddVoice {
@@ -1704,7 +1737,7 @@ mod tests {
             .expect("the command queue has room in a test");
 
         let mut out = [0.0f32; 6];
-        unit.tick(&[], &mut out); // drains
+        tick(&mut unit, &transport, SR, &mut out); // drains
 
         let stretching = unit.voices.iter().find(|s| s.id == SlotId(1)).unwrap();
         let plain = unit.voices.iter().find(|s| s.id == SlotId(2)).unwrap();
@@ -1734,14 +1767,15 @@ mod tests {
     #[test]
     fn a_missing_stretch_filter_reads_dry_not_silent() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let (mut unit, _h) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
-            .expect("a width the sampler reads");
+        let (mut unit, _h) = VoicePool::with_channels(None, 6usize)
+            .expect("a width the sampler reads")
+            .with_handle();
 
         let sampler = MemorySource::with_config(
             indexed_wave(6, 512),
             MemorySourceConfig {
                 channels: ChannelLayout::from(6u16),
-                timeline: Some(transport),
+                placed: true,
                 window: VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
@@ -1764,7 +1798,7 @@ mod tests {
         );
 
         let mut out = [0.0f32; 6];
-        unit.tick(&[], &mut out);
+        tick(&mut unit, &transport, SR, &mut out);
         for (c, &s) in out.iter().enumerate() {
             assert!(
                 (s - (c + 1) as f32).abs() < 1e-3,

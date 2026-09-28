@@ -2,9 +2,7 @@
 
 The specification PDFs this crate is written against **are not vendored here.**
 They are copyrighted MIDI Association documents: free to download, but not ours
-to redistribute. They were in this directory while the engine lived inside a
-private repo, and were removed from the tree and from history when it was
-published.
+to redistribute.
 
 Download them from <https://midi.org/specifications>:
 

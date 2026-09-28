@@ -18,30 +18,6 @@ use crate::Samples;
 use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU32, AtomicU64};
 use crate::{Beat, BeatDuration};
 
-/// Number of ports a beat signal occupies: whole beats, then fraction.
-///
-/// `TransportClock` emits the beat split across two channels because a single
-/// `f32` cannot carry a musical position accurately — past beat 16384 its ULP
-/// exceeds 0.002 beats, which is audible as automation stair-stepping. Port 0
-/// carries the integer part and port 1 the fraction in `[0, 1)`, so precision
-/// stays constant no matter how far into a session the playhead is.
-///
-/// Every beat-driven node uses this convention. Reconstruct with [`beat_from_ports`].
-pub const BEAT_PORTS: usize = 2;
-
-/// Rebuild a beat from the two port values written by `TransportClock`.
-///
-/// The inverse of the clock's split: `whole` is the integer part, `frac` the
-/// remainder in `[0, 1)`.
-/// Returns a [`Beat`], not a bare `f64`: the whole point of the two-port split
-/// is that a beat position does not survive a single `f32`, and a scalar return
-/// invites putting it back into one. The `f32` *parameters* are the audio ports
-/// themselves and stay raw.
-#[inline]
-pub fn beat_from_ports(whole: f32, frac: f32) -> Beat {
-    Beat(whole as f64 + frac as f64)
-}
-
 /// Musical time covered by one audio sample at `tempo` and `sample_rate`.
 ///
 /// The per-frame rate a reader needs to place a beat inside a block
@@ -53,8 +29,7 @@ pub fn beat_from_ports(whole: f32, frac: f32) -> Beat {
 /// **No clock steps by it.** A playhead that adds this per frame or per block
 /// drifts off the frames (at 90 BPM / 48 kHz it reads `2.999999999999891` on
 /// frame 96 000, which is beat 3): the clocks count frames and derive the
-/// beat in closed form ([`TimelineSegment`](tutti_types::TimelineSegment),
-/// doc 013 §6).
+/// beat in closed form ([`TimelineSegment`](tutti_types::TimelineSegment)).
 ///
 /// One spelling, `(tempo / 60) / sample_rate`, so every reader that divides
 /// by it divides by the same `f64`.
@@ -94,7 +69,7 @@ impl SeekSlot {
         self.pending.store(true, Ordering::Release);
     }
 
-    /// Take a pending target, clearing the flag. `None` if no seek is due.
+    /// Takes a pending target, clearing the flag. `None` if no seek is due.
     pub fn take(&self) -> Option<Beat> {
         self.pending
             .swap(false, Ordering::AcqRel)
@@ -150,7 +125,7 @@ impl LoopSpan {
         self.enabled.load(Ordering::Acquire)
     }
 
-    /// Arm or disarm looping, leaving the bounds intact.
+    /// Arms or disarm looping, leaving the bounds intact.
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
     }
@@ -180,7 +155,7 @@ impl LoopSpan {
         )
     }
 
-    /// Store new bounds. Not validated and not ordered — an inverted pair is
+    /// Stores new bounds. Not validated and not ordered — an inverted pair is
     /// accepted, and simply yields no [`range`](Self::range).
     pub fn set_range(&self, start: impl Into<Beat>, end: impl Into<Beat>) {
         self.start.store(start.into().get(), Ordering::Release);
@@ -224,7 +199,7 @@ impl Declick {
         }
     }
 
-    /// Arm a fade of `frames`, resetting the ramp to full gain.
+    /// Arms a fade of `frames`, resetting the ramp to full gain.
     ///
     /// Takes [`Samples`] because that is what callers hold and what the
     /// processor compares against — `Seconds::to_samples_*` returns one, and
@@ -274,9 +249,11 @@ impl Default for Declick {
 /// transport, and — when it came from [`Transport::clock_links`] — the
 /// transport's **one playhead writer**.
 ///
-/// The membership rule is exactly `AudioUnit::isolate`'s cut: every field here
-/// is `Arc`-shared, so an offline render ticking a clone must drop all of them
-/// or it stomps live playback. Fields the clock owns privately — its beat,
+/// The membership rule is exactly a derived stream's cut
+/// ([`TransportClock::starting_at`](super::TransportClock::starting_at), via
+/// [`severed`](Self::severed)): every field here is `Arc`-shared, so an
+/// offline render stepping a clone must drop all of them or it stomps live
+/// playback. Fields the clock owns privately — its beat,
 /// sample rate, cached increment — are deliberately *not* here; that is the
 /// whole distinction the type draws.
 ///
@@ -452,7 +429,7 @@ impl ClockLinks {
     /// built from this reads no live state and writes to nothing live.
     ///
     /// The destructure is exhaustive on purpose: adding another shared field
-    /// becomes a compile error here rather than a silently-forgotten `isolate`,
+    /// becomes a compile error here rather than a field silently left shared,
     /// which is the bug class this cut exists to prevent.
     pub fn severed(&self) -> Self {
         let Self {

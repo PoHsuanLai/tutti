@@ -19,23 +19,21 @@
 //!    `None` there rather than silently proposing an arrangement whose channel
 //!    order is not the caller's.
 //!
-//! That asymmetry is the whole reason the shared type is a list; see
-//! `docs/design/007-channel-topology.md`.
+//! That asymmetry is the whole reason the shared type is a list.
 //!
-//! # What this replaces
+//! # Why width alone is not enough
 //!
-//! The previous conversion built `(1u64 << n) - 1` for any width above stereo —
-//! the low `n` bits — and decoded by `count_ones()`. Both directions discarded
-//! placement, and the encode was *wrong*, not merely lossy:
+//! Building `(1u64 << n) - 1` for a width — the low `n` bits — discards
+//! placement and names the *wrong* speakers:
 //!
-//! | Width | Old mask | Speakers it names | The layout meant |
+//! | Width | Low-bits mask | Speakers it names | The layout meant |
 //! |---|---|---|---|
 //! | 4 | `0b1111` | `L R C Lfe` | `k40Music` = `L R Ls Rs` |
 //! | 6 | `0b111111` | `L R C Lfe Ls Rs` | `k51` — correct, by coincidence |
 //! | 8 | `0b1111_1111` | `L R C Lfe Ls Rs Lc Rc` | rear surrounds, not front-centre |
 //!
-//! Only 5.1 came out right, and only because bits 0–5 happen to be contiguous
-//! and in SMPTE order. A quad bus asked the plugin for a centre and an LFE.
+//! Only 5.1 comes out right, and only because bits 0–5 happen to be contiguous
+//! and in SMPTE order. A quad bus would ask the plugin for a centre and an LFE.
 
 use tutti_types::{ChannelTopology, Speaker};
 // The individual speaker bits live directly in `Vst`; only the named
@@ -109,7 +107,7 @@ const SPEAKER_BITS: &[(SpeakerArrangement, Speaker)] = &[
 /// mono-only plugin is entitled to refuse outright.
 const MONO_BIT: SpeakerArrangement = kSpeakerM;
 
-/// Decode a VST3 arrangement into the channel order the plugin will use.
+/// Decodes a VST3 arrangement into the channel order the plugin will use.
 ///
 /// Total and lossless: the set bits are walked low-to-high, which *is* VST3's
 /// channel order (module docs). A bit this vocabulary does not name becomes
@@ -138,7 +136,7 @@ pub(crate) fn from_arrangement(arr: SpeakerArrangement) -> ChannelTopology {
     }))
 }
 
-/// Encode a topology as a VST3 arrangement, or `None` if VST3 cannot express
+/// Encodes a topology as a VST3 arrangement, or `None` if VST3 cannot express
 /// this channel order.
 ///
 /// Fails — rather than proposing a near-miss — in three cases, all of which
@@ -156,13 +154,13 @@ pub(crate) fn from_arrangement(arr: SpeakerArrangement) -> ChannelTopology {
 /// `None` is a real answer for a caller to act on: `setBusArrangements` is a
 /// proposal, so the honest move is to propose nothing and take what the plugin
 /// reports back.
-/// Callerless in production today, and deliberately so: `negotiate_bus_arrangements`
-/// only has channel *counts* to work from, so it uses `instance::default_arrangement_for`
-/// — the width-only fallback whose own docs name this function as its successor
-/// "once a caller has a real [`ChannelTopology`] to offer". Not deleted, because
-/// `SPEAKER_BITS` must stay a bijection and `every_named_speaker_round_trips` is
-/// the only thing that checks it — and that test exercises the decode direction
-/// production *does* use. See docs/design/007-channel-topology.md.
+///
+/// Not called outside tests: `negotiate_bus_arrangements` only has channel
+/// *counts* to work from, so it uses `instance::default_arrangement_for`, the
+/// width-only fallback. It is kept because `SPEAKER_BITS` must stay a
+/// bijection and `every_named_speaker_round_trips` is the only thing that
+/// checks it — and that test exercises the decode direction production *does*
+/// use.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn to_arrangement(topology: &ChannelTopology) -> Option<SpeakerArrangement> {
     // The inverse of the mono case in `from_arrangement`: a single-channel bus
@@ -290,11 +288,10 @@ mod tests {
 
     /// A four-channel bus is a surround pair — *not* the four low bits.
     ///
-    /// The defect this module fixes. `(1<<4)-1` is `L R C Lfe`: it asked the
-    /// plugin for a centre and an LFE where the caller wanted a rear/side pair,
-    /// so a quad bus was negotiated as a broken 3.1. Pinned by absolute
-    /// speakers, not by width — the old code got the width right, which is
-    /// exactly why nothing caught it.
+    /// `(1<<4)-1` is `L R C Lfe`: it would ask the plugin for a centre and an
+    /// LFE where the caller wanted a rear/side pair, negotiating a quad bus as
+    /// a broken 3.1. Pinned by absolute speakers, not by width — a low-bits mask
+    /// gets the width right, which is exactly why a width check cannot catch it.
     #[test]
     fn a_four_channel_bus_is_a_surround_pair_not_the_low_four_bits() {
         let decoded = from_arrangement(SpeakerArr::k40Music);
@@ -310,7 +307,7 @@ mod tests {
         );
         assert_eq!(to_arrangement(&decoded), Some(SpeakerArr::k40Music));
 
-        // What the old conversion produced, named so the difference is explicit.
+        // What a low-bits conversion produces, named so the difference is explicit.
         let old_mask: SpeakerArrangement = (1u64 << 4) - 1;
         assert_ne!(
             old_mask,
@@ -370,7 +367,7 @@ mod tests {
     /// Pinned against `smpte` rather than a literal so the two orders are
     /// asserted to *agree*, which is what makes 7.1 need no channel remapping.
     ///
-    /// The other width the old mask got wrong: `(1<<8)-1` added the front
+    /// The other width a low-bits mask gets wrong: `(1<<8)-1` adds the front
     /// left/right-of-centre pair instead.
     #[test]
     fn the_71_music_arrangement_decodes_to_the_engines_own_order() {

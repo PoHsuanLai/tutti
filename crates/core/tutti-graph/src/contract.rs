@@ -1,11 +1,11 @@
-//! The sample-accuracy contract suite's harness (doc 013 §6, "Proof"): for
+//! The sample-accuracy contract suite's harness: for
 //! a node and a way to excite it, run it through every path the graph can
 //! put it on and assert that an excitation at frame `F` produces its
 //! response at exactly frame `F + arrival + latency`.
 //!
 //! Behind the `contract` feature (off by default): it is test support, for
-//! this crate's suite and for node crates adding rows (Phase 4 ports each
-//! node natively and adds its row here). Enable it from a dev-dependency.
+//! this crate's suite and for node crates that add rows for their own nodes.
+//! Enable it from a dev-dependency.
 //!
 //! # A row
 //!
@@ -38,9 +38,8 @@
 //! arrival latency (asserted against what the path built, so a harness bug
 //! cannot quietly turn a PDC path into a direct one), and `latency` is the
 //! node's **declared** [`Shape::latency`]. A node whose DSP delays by more or
-//! less than it declares fails every path — which is the D1–D3 class in doc
-//! 013. An event excitation is held to the node's declared
-//! [`Shape::event_resolution`] (doc 013 §6): `Sample` is the exact frame,
+//! less than it declares fails every path. An event excitation is held to
+//! the node's declared [`Shape::event_resolution`]: `Sample` is the exact frame,
 //! `Frames(n)` any frame within `n - 1` of it **in either direction** (no
 //! grid origin is assumed, so a node chunking on its own cursor honours it),
 //! `Block` any frame within the block the event arrives in. A node finer
@@ -51,48 +50,49 @@
 //! fails as surely as a mistimed one.
 //!
 //! Every excitation is swept over [`OFFSETS`], so the offset inside its block
-//! is 0, 1, either side of a 64-frame `Legacy` chunk boundary, the middle
+//! is 0, 1, either side of a 64-frame boundary (where a node that renders in
+//! 64-frame pieces, the sampler's clip readers, seams), the middle
 //! and the last frame — and, behind PDC, both where the excitation starts
 //! and where the node sees it.
 //!
 //! # What is not here
 //!
-//! A node fed out of band — through a MIDI mailbox (the polysynth, the
-//! SoundFont player, plugin instruments under `Legacy`) — has no row: the
-//! harness can only time what the graph delivers. Such a node's events are
-//! neither PDC-compensated nor stamped against the graph's blocks (`Legacy`
-//! calls the unit in 64-frame chunks, and a mailbox offset is relative to
-//! whichever chunk polls it), so it cannot honour this contract until events
-//! are its ports (doc 013 Phase 4).
+//! A node fed out of band — through a MIDI mailbox (a keyboard's queue on a
+//! synth's own port) — has no row for that path: the harness can only time
+//! what the graph delivers, and a mailbox's events are neither
+//! PDC-compensated nor stamped against the graph's blocks. The instruments
+//! take MIDI on an event port too, and carry rows for it in their crates
+//! (`tutti-polysynth`, `tutti-soundfont`), each with the constant lead its
+//! note's DSP starts with ([`Row::with_lead`]).
 //!
 //! # The fork's snapshot
 //!
-//! [`IsolateRow`] (and its one-control form [`assert_isolate_snapshots`])
-//! checks the other promise a node crate makes here: that a forkable unit's
-//! `isolate` severs every live control it reads, so a fork renders the
-//! controls as they were at fork time. See `src/contract/snapshot.rs`.
+//! [`IsolateRow`] checks the other promise a node crate makes here:
+//! that a [`ParamNode`]'s fork, `fork_fresh`, severs every live control it
+//! reads (every cell a control writes, addressed by its `ParamSet` or not),
+//! so a fork renders the controls as they were at fork time. See
+//! `src/contract/snapshot.rs`.
 
-use tutti_node::AudioUnit;
 use tutti_types::graph::OutPort;
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, UnitParam,
 };
 
 use crate::builder::GraphBuilder;
+use crate::controls::{ParamFork, ParamNode};
 use crate::editor::Editor;
-use crate::event::{Event, EventKind};
+use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::exec::Executor;
 use crate::fork::Unforkable;
 use crate::io::Io;
-use crate::legacy::Legacy;
 use crate::node::{
-    Cx, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
+    Cx, Env, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
 };
 use crate::param::{ParamFrom, ParamIn, ParamInput, ParamShaping};
 use crate::spec::EventIn;
 
 mod snapshot;
-pub use snapshot::{assert_isolate_snapshots, IsolateRow, SNAPSHOT_FRAMES};
+pub use snapshot::{IsolateRow, SNAPSHOT_FRAMES};
 
 /// The rate every contract graph runs at.
 pub const SAMPLE_RATE: SampleRate = SampleRate(48_000.0);
@@ -155,7 +155,7 @@ pub enum Excite {
     },
     /// Put one sample of `amplitude` on the audio source of the node's
     /// modulated param `param` (unshaped, unclamped): the compiler-owned
-    /// modulation's sample-accuracy case (design doc 013 item 6). A
+    /// modulation's sample-accuracy case. A
     /// modulation step at frame `F` must reach the node's param at `F +
     /// arrival`, exactly. The source is connected from the start, so its
     /// declick is over long before the excitation. Behind PDC the latent
@@ -184,7 +184,7 @@ pub enum Detect {
 
 /// One path through the graph. Each is a separate case (see
 /// [`contract_tests!`](crate::contract_tests)), and each has a mutation it
-/// was seen to fail under, recorded on its variant (and, for the `Legacy`
+/// was seen to fail under, recorded on its variant (and, for a node's own
 /// rows, in the node crates' `tests/contract.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Path {
@@ -192,10 +192,9 @@ pub enum Path {
     /// input. Whole [`MAX_BLOCK`] blocks.
     ///
     /// Mutation (run): in `SubBlocks::next`, hand the whole block over as
-    /// one chunk carrying every event → the native `Sample` rows apply their
+    /// one chunk carrying every event → the `Sample` rows apply their
     /// event at offset 0 → every path fails but `Blocks1` (where every
-    /// offset is 0). In `Legacy::probe`, declare one frame more than `route`
-    /// reports → every `Legacy` row fails every path.
+    /// offset is 0).
     Direct,
     /// Behind PDC: a latent sibling ([`Latent`], [`SIBLING_LATENCY`])
     /// merges with the excitation's path upstream of the node, so the node's
@@ -284,10 +283,7 @@ pub enum Path {
     ///   `BlocksRandom`, and pass `Blocks64`, `BlocksMax` and every other
     ///   path;
     /// - [`Lookahead`] moving its ring by a whole chunk on a partial one →
-    ///   its row fails `Blocks63`, `Blocks65` and `BlocksRandom` only;
-    /// - `Legacy::process` calling the unit for a whole chunk when fewer
-    ///   frames remain → the limiter and convolver rows fail `Blocks1`,
-    ///   `Blocks63`, `Blocks65` and `BlocksRandom` only.
+    ///   its row fails `Blocks63`, `Blocks65` and `BlocksRandom` only.
     BlocksRandom,
     /// Direct and behind PDC, the excitation delivered by
     /// [`Editor::schedule`] at `At::Frame(F)`.
@@ -363,7 +359,7 @@ enum Edit {
 }
 
 /// A node, how to excite it, and how to find its response — one row of the
-/// contract suite. See the module docs (`src/contract.rs`).
+/// contract suite. See the [module docs](self).
 pub struct Row {
     name: String,
     make: Box<dyn Fn() -> Box<dyn Node>>,
@@ -371,10 +367,16 @@ pub struct Row {
     detect: Detect,
     output: u16,
     latency: Option<Samples>,
+    lead: u64,
 }
 
 impl Row {
     /// A row for the node `make` builds (a fresh one per run).
+    ///
+    /// # Panics
+    ///
+    /// If `detect` is [`Detect::Exact`] with a response that does not start
+    /// with a non-zero sample (the response is found by its first sample).
     pub fn new(
         name: &str,
         make: impl Fn() -> Box<dyn Node> + 'static,
@@ -394,29 +396,29 @@ impl Row {
             detect,
             output: 0,
             latency: None,
+            lead: 0,
         }
-    }
-
-    /// A row for an `AudioUnit`, run through [`Legacy`] as a graph would run
-    /// it today.
-    pub fn legacy<U: AudioUnit + 'static>(
-        name: &str,
-        make: impl Fn() -> U + 'static,
-        excite: Excite,
-        detect: Detect,
-    ) -> Self {
-        Self::new(
-            name,
-            move || Legacy::new(make()).into_node().0,
-            excite,
-            detect,
-        )
     }
 
     /// Watch output channel `channel` (the first by default).
     #[must_use]
     pub fn output(mut self, channel: u16) -> Self {
         self.output = channel;
+        self
+    }
+
+    /// The node's response begins `lead` frames after the frame the contract
+    /// puts its excitation's effect on, by its own DSP rather than by its
+    /// timing: an instrument whose note starts from an exactly-zero sample
+    /// (an envelope or oscillator starting at zero), found by its first
+    /// non-zero one. Pinned as a constant, so a response that is late on
+    /// some paths and not others still fails. Zero by default.
+    ///
+    /// Not a latency: nothing downstream is compensated for it (declare one
+    /// in the node's `Shape` for that).
+    #[must_use]
+    pub fn with_lead(mut self, lead: Samples) -> Self {
+        self.lead = lead.get() as u64;
         self
     }
 
@@ -430,7 +432,7 @@ impl Row {
         self
     }
 
-    /// Run `path` over every offset in [`OFFSETS`], and panic, naming the
+    /// Runs `path` over every offset in [`OFFSETS`], and panics, naming the
     /// row, the path, the excitation frame and both frames, at the first
     /// response that is not exactly where the contract puts it.
     ///
@@ -490,7 +492,7 @@ impl Row {
                 // block, under whole blocks) and, behind PDC, also where the
                 // *node* sees it: `SIBLING_LATENCY` moves every offset, so
                 // without the second the node would never see a block's
-                // first or last frame, or the 64-frame `Legacy` seam.
+                // first or last frame, or a 64-frame seam.
                 let mut frames = vec![base + k];
                 let at_node = base + (k + max - arrival % max) % max;
                 if at_node != base + k {
@@ -595,7 +597,7 @@ impl Row {
         let blocks = schedule.blocks(total);
 
         // Where each response may start: `delivered + latency`, within what
-        // the node's resolution promises (doc 013 §6: `Frames(n)` within
+        // the node's resolution promises (`Frames(n)` within
         // `n - 1` frames either way, `Block` within the block it lands in).
         let expect: Vec<(u64, u64)> = delivered
             .iter()
@@ -689,7 +691,9 @@ impl Row {
                 format!("{e} (within {tol})")
             }
         };
+        let lead = self.lead;
         let check_start = |got: u64, (e, tol): (u64, u64)| {
+            let e = e + lead;
             assert!(
                 got.abs_diff(e) <= tol,
                 "{ctx}: the response starts at frame {got}; the contract puts it at {}",
@@ -702,7 +706,7 @@ impl Row {
                 let Some(first) = first else {
                     panic!(
                         "{ctx}: no response at all; expected one at frame {}",
-                        place(expect[0].0, expect[0].1)
+                        place(expect[0].0 + lead, expect[0].1)
                     );
                 };
                 check_start(first as u64, expect[0]);
@@ -713,7 +717,7 @@ impl Row {
                     let Some(at) = out[cursor..].iter().position(|&x| x != 0.0) else {
                         panic!(
                             "{ctx}: a response is missing; expected one at frame {}",
-                            place(e, tol)
+                            place(e + lead, tol)
                         );
                     };
                     let at = cursor + at;
@@ -1116,7 +1120,7 @@ impl Node for ParamEcho {
 ///
 /// Written against [`Io::sub_blocks`](crate::Io::sub_blocks), so at
 /// [`Resolution::Sample`] (the default) it is sample-accurate by
-/// construction: this is the native row, and the source the engine-level
+/// construction: this is the graph-level row, and the source the engine-level
 /// rows play. [`with_resolution`](Self::with_resolution) makes it as coarse
 /// as it declares:
 ///
@@ -1218,8 +1222,8 @@ impl Node for Pulse {
     }
 }
 
-/// A native audio delay that declares its delay as processing latency — a
-/// lookahead with nothing to look ahead for. The native audio-impulse row.
+/// An audio delay that declares its delay as processing latency — a
+/// lookahead with nothing to look ahead for. The graph-level audio-impulse row.
 #[derive(Clone, Debug)]
 pub struct Lookahead {
     latency: Latency,
@@ -1426,4 +1430,518 @@ macro_rules! contract_tests {
             }
         )*
     };
+}
+
+/// One block of `node`, called by hand with no graph around it: `inputs`
+/// on its audio inputs (one slice per port, all one length, which is the
+/// block's), `params[k]` on its declared param `k` (`None`, or a port past
+/// the end, reads its base), no events, transport stopped at frame 0. One
+/// `Vec` per audio output.
+///
+/// For a node's own unit tests, which inspect its state between blocks —
+/// what a [`Solo`](crate::Solo), whose node the executor owns, cannot show.
+/// `node` must already be [`prepare`](Node::prepare)d for a maximum block
+/// at least this long ([`prepared`]). [`drive_in`] is the same call under a
+/// transport, with events.
+///
+/// # Panics
+///
+/// If the block is empty (a node is never called with zero frames), or the
+/// input count is not the node's.
+pub fn drive(
+    node: &mut dyn Node,
+    rate: SampleRate,
+    inputs: &[&[f32]],
+    params: &[Option<&[f32]>],
+) -> Vec<Vec<f32>> {
+    let frames = inputs
+        .first()
+        .map(|c| c.len())
+        .or_else(|| params.iter().flatten().next().map(|p| p.len()))
+        .expect("a block needs a length: an input or a param");
+    let env = Env {
+        frame: Frame(0),
+        sample_rate: rate,
+        block_len: Samples(frames),
+        transport: Transport::default(),
+        changes: TransportChanges::NONE,
+    };
+    drive_in(node, &env, inputs, params, &[]).audio
+}
+
+/// What [`drive_in`] rendered: each audio output, and what the node wrote
+/// to each event output.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Driven {
+    /// One `Vec` per audio output, the block long.
+    pub audio: Vec<Vec<f32>>,
+    /// One `Vec` per event output port, in the order the node wrote them.
+    pub events: Vec<Vec<Event>>,
+}
+
+/// The most events [`drive_in`] and [`Direct`] accept on each event output
+/// port per block: more than any node in the tree writes in one.
+pub const HAND_EVENT_CAPACITY: usize = 1024;
+
+/// One block of `node` by hand, as a graph hands it one: under `env` (its
+/// frame, length, transport and transport changes), `inputs` and `params`
+/// as for [`drive`], and `events[p]` on event input `p` (a port past the
+/// end is empty). The block is `env.block_len` long.
+///
+/// For a node that reads its block's transport ([`Env::transport_at`], its
+/// changes) or plays events, in its own unit tests: what [`drive`], with the
+/// transport stopped and no events, cannot reach.
+///
+/// # Panics
+///
+/// If the block is empty, an input is not the block long or the input
+/// count is not the node's, or an event list is unsorted or reaches past
+/// the block ([`SortedEvents::new`](crate::SortedEvents::new)).
+pub fn drive_in(
+    node: &mut dyn Node,
+    env: &Env,
+    inputs: &[&[f32]],
+    params: &[Option<&[f32]>],
+    events: &[&[Event]],
+) -> Driven {
+    let shape = node.shape();
+    let frames = env.block_len.get();
+    assert!(frames > 0, "a node is never called with zero frames");
+    assert_eq!(
+        inputs.len(),
+        usize::from(shape.audio_in.count()),
+        "one slice per audio input"
+    );
+    assert!(
+        inputs.iter().all(|c| c.len() == frames)
+            && params.iter().flatten().all(|p| p.len() == frames),
+        "every input and param slice is the block long"
+    );
+    let mut out = vec![vec![0.0f32; frames]; usize::from(shape.audio_out.count())];
+    let mut refs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+    let params: Vec<ParamInput<'_>> = params
+        .iter()
+        .map(|p| p.map_or(ParamInput::Base, ParamInput::Frames))
+        .collect();
+    let events_in: Vec<SortedEvents<'_>> = (0..usize::from(shape.event_in))
+        .map(|p| {
+            let list = events.get(p).copied().unwrap_or(&[]);
+            SortedEvents::new(list, frames).expect("sorted events inside the block")
+        })
+        .collect();
+    let mut out_events: Vec<Vec<Event>> = (0..usize::from(shape.event_out))
+        .map(|_| Vec::with_capacity(HAND_EVENT_CAPACITY))
+        .collect();
+    let dropped = std::cell::Cell::new(0);
+    let mut writers: Vec<EventWriter<'_>> = out_events
+        .iter_mut()
+        .map(|b| EventWriter::new(b, HAND_EVENT_CAPACITY, frames as u32, &dropped))
+        .collect();
+    let cx = Cx {
+        env,
+        arrival: Latency::ZERO,
+    };
+    let max = Prepare::new(env.sample_rate, Samples(frames)).max_block();
+    let io = Io::new(
+        max,
+        frames,
+        inputs,
+        &mut refs,
+        crate::node::SilenceMask::NONE,
+        crate::node::ConstantMask::NONE,
+        crate::node::InPlaceMask::NONE,
+        &events_in,
+        &mut writers,
+    )
+    .with_params(&params);
+    node.process(&cx, io);
+    Driven {
+        audio: out,
+        events: out_events,
+    }
+}
+
+/// `node`, prepared at `rate` for blocks of up to `max_block` frames: the
+/// state a graph hands [`drive`] a node in.
+pub fn prepared<N: Node>(mut node: N, rate: SampleRate, max_block: usize) -> N {
+    node.prepare(&Prepare::new(rate, Samples(max_block)));
+    node
+}
+
+/// Checks a [`ParamNode`]'s fork, the promise [`param_parts`](crate::param_parts)
+/// relies on: a fork of `node` starts from the values last **set** through
+/// its [`ParamSet`](crate::ParamSet) (the authored values, not a live
+/// composite a modulation driver left in the cells), and shares no cell with
+/// the live node in either direction.
+///
+/// What this catches in a node: a param missing from
+/// [`ParamNode::param_set`] (a host cannot reach it by address), and a cell
+/// [`ParamNode::fork_fresh`] forgot to detach (a fork that follows the live
+/// knob, or moves it).
+///
+/// # Panics
+///
+/// On the first broken promise, naming the param. Also if the node's set is
+/// empty: a node with no params has nothing to check here.
+pub fn assert_param_fork<N: ParamNode + Clone>(node: N) {
+    let fork = ParamFork::new(&node);
+    let live = fork.params().clone();
+    let params: Vec<UnitParam> = live.params().collect();
+    assert!(!params.is_empty(), "a ParamNode with no params");
+    // A distinct value per param, away from anything a constructor picks.
+    let authored = |i: usize| 0.37 + i as f32 * 1.13;
+    for (i, &p) in params.iter().enumerate() {
+        live.set(p, authored(i));
+        // A modulation driver's composite, left in the live cell.
+        live.cell(p)
+            .expect("the set has it")
+            .store(authored(i) + 100.0, std::sync::atomic::Ordering::Release);
+    }
+    let forked = fork.fork_node();
+    let fresh = forked.param_set();
+    for (i, &p) in params.iter().enumerate() {
+        assert_eq!(
+            fresh.get(p),
+            Some(authored(i)),
+            "{p:?}: a fork starts from the authored value, not the live composite"
+        );
+    }
+    for (i, &p) in params.iter().enumerate() {
+        live.set(p, authored(i) + 7.0);
+        assert_eq!(
+            fresh.get(p),
+            Some(authored(i)),
+            "{p:?}: a live write reached the fork (a cell fork_fresh did not detach)"
+        );
+        fresh.set(p, -1.0);
+        assert_eq!(
+            live.get(p),
+            Some(authored(i) + 7.0),
+            "{p:?}: a write to the fork reached the live node"
+        );
+    }
+}
+
+/// The widest node [`BlockRig`] drives: its per-block slice lists live on
+/// the stack, so the rig allocates nothing per block.
+pub const RIG_MAX_CHANNELS: usize = 16;
+
+/// One node alone in a graph, driven block by block **without allocating**:
+/// the harness for a node's allocation gate (`assert_no_alloc` around
+/// [`block`](Self::block)). Its inputs read [`inputs_mut`](Self::inputs_mut)
+/// and its outputs land in [`output`](Self::output), channel for channel.
+///
+/// Everything is built in [`new`](Self::new); a block after that touches
+/// only the executor and buffers sized there.
+pub struct BlockRig {
+    _editor: Editor,
+    exec: Executor,
+    frames: usize,
+    inputs: Vec<Vec<f32>>,
+    outputs: Vec<Vec<f32>>,
+}
+
+impl BlockRig {
+    /// `node`, alone, prepared at `rate` for blocks of `frames`, with
+    /// silent inputs. Returns its controls.
+    ///
+    /// # Panics
+    ///
+    /// If the node is wider than [`RIG_MAX_CHANNELS`] either way, or the
+    /// one-node graph does not commit.
+    pub fn new<N: IntoNode>(node: N, rate: SampleRate, frames: usize) -> (Self, N::Controls) {
+        let (mut editor, mut exec) = Editor::new(Prepare::new(rate, Samples(frames)));
+        let key = NodeKey(1);
+        let controls = editor.insert(key, N::kind(), node);
+        let shape = editor
+            .spec()
+            .topology
+            .nodes
+            .get(&key)
+            .map(|n| (n.inputs, n.outputs))
+            .expect("inserted");
+        let (ins, outs) = (usize::from(shape.0.count()), usize::from(shape.1.count()));
+        assert!(
+            ins <= RIG_MAX_CHANNELS && outs <= RIG_MAX_CHANNELS,
+            "a rig drives at most {RIG_MAX_CHANNELS} channels a side"
+        );
+        let topology = &mut editor.spec_mut().topology;
+        topology.inputs = ChannelLayout::from_count(ins as u16);
+        for c in 0..ins {
+            topology.edges.insert(
+                tutti_types::graph::InPort {
+                    node: key,
+                    port: c as u16,
+                },
+                tutti_types::graph::Edge::Direct(tutti_types::graph::Source::Global(c as u16)),
+            );
+        }
+        topology.outputs = (0..outs)
+            .map(|c| {
+                tutti_types::graph::Source::Node(OutPort {
+                    node: key,
+                    port: c as u16,
+                })
+            })
+            .collect();
+        editor.commit().expect("a one-node graph commits");
+        exec.apply_pending();
+        editor.collect();
+        (
+            Self {
+                _editor: editor,
+                exec,
+                frames,
+                inputs: vec![vec![0.0; frames]; ins],
+                outputs: vec![vec![0.0; frames]; outs],
+            },
+            controls,
+        )
+    }
+
+    /// The input channels, to fill before a block.
+    pub fn inputs_mut(&mut self) -> &mut [Vec<f32>] {
+        &mut self.inputs
+    }
+
+    /// Output channel `c` of the last block.
+    pub fn output(&self, c: usize) -> &[f32] {
+        &self.outputs[c]
+    }
+
+    /// One block, transport stopped. Allocation-free.
+    pub fn block(&mut self) {
+        self.block_in(&Transport::default());
+    }
+
+    /// One block under `transport` (a rolling one, for a node that reads
+    /// the transport from its `Env`). Allocation-free.
+    pub fn block_in(&mut self, transport: &Transport) {
+        let mut ins: [&[f32]; RIG_MAX_CHANNELS] = [&[]; RIG_MAX_CHANNELS];
+        for (slot, c) in ins.iter_mut().zip(&self.inputs) {
+            *slot = c;
+        }
+        let (n_in, n_out) = (self.inputs.len(), self.outputs.len());
+        let mut outs = self.outputs.iter_mut();
+        let mut out_refs: [&mut [f32]; RIG_MAX_CHANNELS] =
+            core::array::from_fn(|_| outs.next().map_or(&mut [][..], |c| &mut c[..]));
+        self.exec
+            .process(self.frames, transport, &ins[..n_in], &mut out_refs[..n_out]);
+    }
+}
+
+/// One node called by hand, block after block, **without allocating** —
+/// [`drive_in`] with its buffers built once. For a node's bench, or an
+/// allocation gate that needs its param ports fed or its events played
+/// (which [`BlockRig`], with no param or event source, cannot). Inputs,
+/// params and outputs are buffers of the prepared frames; fill them between
+/// blocks. Each block starts where the last ended (its [`Env::frame`]), under
+/// the transport last [set](Self::set_transport) (stopped, by default).
+pub struct Direct<N> {
+    /// The node, prepared.
+    pub node: N,
+    rate: SampleRate,
+    frames: usize,
+    len: usize,
+    frame: Frame,
+    transport: Transport,
+    inputs: Vec<Vec<f32>>,
+    params: Vec<Option<Vec<f32>>>,
+    outputs: Vec<Vec<f32>>,
+    events_in: Vec<Vec<Event>>,
+    events_out: Vec<Vec<Event>>,
+}
+
+impl<N: Node> Direct<N> {
+    /// `node`, prepared at `rate` for blocks of `frames`, silent inputs, no
+    /// param fed, no events.
+    ///
+    /// # Panics
+    ///
+    /// If the node is wider than [`RIG_MAX_CHANNELS`] either way, or has more
+    /// than [`MAX_PORTS`](crate::MAX_PORTS) event ports a side.
+    pub fn new(node: N, rate: SampleRate, frames: usize) -> Self {
+        let node = prepared(node, rate, frames);
+        let shape = node.shape();
+        let (ins, outs) = (
+            usize::from(shape.audio_in.count()),
+            usize::from(shape.audio_out.count()),
+        );
+        assert!(
+            ins <= RIG_MAX_CHANNELS && outs <= RIG_MAX_CHANNELS,
+            "a direct driver drives at most {RIG_MAX_CHANNELS} channels a side"
+        );
+        assert!(
+            usize::from(shape.event_in) <= crate::node::MAX_PORTS
+                && usize::from(shape.event_out) <= crate::node::MAX_PORTS,
+            "a direct driver drives at most {} event ports a side",
+            crate::node::MAX_PORTS
+        );
+        let events = |n: u16| {
+            (0..usize::from(n))
+                .map(|_| Vec::with_capacity(HAND_EVENT_CAPACITY))
+                .collect()
+        };
+        Self {
+            params: vec![None; shape.params.as_slice().len()],
+            events_in: events(shape.event_in),
+            events_out: events(shape.event_out),
+            node,
+            rate,
+            frames,
+            len: frames,
+            frame: Frame(0),
+            transport: Transport::default(),
+            inputs: vec![vec![0.0; frames]; ins],
+            outputs: vec![vec![0.0; frames]; outs],
+        }
+    }
+
+    /// The input channels, to fill before a block.
+    pub fn inputs_mut(&mut self) -> &mut [Vec<f32>] {
+        &mut self.inputs
+    }
+
+    /// Feeds declared param `k` with `values` (one per frame) from the next
+    /// block on, or `None` to read its base again.
+    ///
+    /// # Panics
+    ///
+    /// If `values` is not one block long.
+    pub fn feed(&mut self, k: usize, values: Option<&[f32]>) {
+        if let Some(v) = values {
+            assert_eq!(v.len(), self.frames, "one value per frame");
+        }
+        self.params[k] = values.map(<[f32]>::to_vec);
+    }
+
+    /// Play `events` on event input `port` in the **next** block only (each
+    /// block starts with every port empty). Up to [`HAND_EVENT_CAPACITY`]
+    /// per port without allocating. Sorted and inside the next block, or
+    /// that block panics.
+    pub fn events(&mut self, port: usize, events: &[Event]) {
+        let list = &mut self.events_in[port];
+        list.clear();
+        list.extend_from_slice(events);
+    }
+
+    /// What the node wrote to event output `port` in the last block.
+    pub fn events_out(&self, port: usize) -> &[Event] {
+        &self.events_out[port]
+    }
+
+    /// The transport of every block from the next one on: its position is
+    /// the next block's first frame's (a rolling transport is **not**
+    /// advanced from block to block; set it again to move it).
+    pub fn set_transport(&mut self, transport: Transport) {
+        self.transport = transport;
+    }
+
+    /// Runs the blocks from the next one on `len` frames long, at most the
+    /// prepared frames (default: all of them). Inputs, param feeds and
+    /// outputs are read and written in their first `len` frames.
+    ///
+    /// # Panics
+    ///
+    /// If `len` is zero or past the prepared frames.
+    pub fn set_block_len(&mut self, len: usize) {
+        assert!(
+            len > 0 && len <= self.frames,
+            "a block of {len} frames against a prepared maximum of {}",
+            self.frames
+        );
+        self.len = len;
+    }
+
+    /// Output channel `c` of the last block (the block's length).
+    pub fn output(&self, c: usize) -> &[f32] {
+        &self.outputs[c][..self.len]
+    }
+
+    /// The output channels, to fill before a block: a node must write every
+    /// frame of every output it declares, and what it leaves shows.
+    pub fn outputs_mut(&mut self) -> &mut [Vec<f32>] {
+        &mut self.outputs
+    }
+
+    /// One block: at the driver's frame (advanced block to block), under
+    /// its transport ([`set_transport`](Self::set_transport)), its block
+    /// length ([`set_block_len`](Self::set_block_len)). Allocation-free.
+    pub fn block(&mut self) -> Status {
+        let env = Env {
+            frame: self.frame,
+            sample_rate: self.rate,
+            block_len: Samples(self.len),
+            transport: self.transport,
+            changes: TransportChanges::NONE,
+        };
+        let status = self.block_in(&env);
+        self.frame = Frame(self.frame.0 + self.len as u64);
+        status
+    }
+
+    /// One block under `env` exactly — its frame, rate, length, transport
+    /// and the transport's changes inside the block — for a node that reads
+    /// the transport from its `Env` (a clip reader crossing a start or a
+    /// seek). The driver's own frame is not advanced; the block's length
+    /// becomes the driver's ([`output`](Self::output) reads that many).
+    /// Allocation-free.
+    ///
+    /// # Panics
+    ///
+    /// If `env.block_len` is zero or past the frames the driver was built
+    /// for.
+    pub fn block_in(&mut self, env: &Env) -> Status {
+        self.set_block_len(env.block_len.get());
+        let len = self.len;
+        let mut ins: [&[f32]; RIG_MAX_CHANNELS] = [&[]; RIG_MAX_CHANNELS];
+        for (slot, c) in ins.iter_mut().zip(&self.inputs) {
+            *slot = &c[..len];
+        }
+        let (n_in, n_out, n_par) = (self.inputs.len(), self.outputs.len(), self.params.len());
+        let mut outs = self.outputs.iter_mut();
+        let mut out_refs: [&mut [f32]; RIG_MAX_CHANNELS] =
+            core::array::from_fn(|_| outs.next().map_or(&mut [][..], |c| &mut c[..len]));
+        let mut params = [ParamInput::Base; crate::param::MAX_PARAM_PORTS];
+        for (slot, p) in params.iter_mut().zip(&self.params) {
+            if let Some(v) = p {
+                *slot = ParamInput::Frames(&v[..len]);
+            }
+        }
+        let mut sorted = [SortedEvents::EMPTY; crate::node::MAX_PORTS];
+        for (slot, list) in sorted.iter_mut().zip(&self.events_in) {
+            *slot = SortedEvents::new(list, len).expect("sorted events inside the block");
+        }
+        let dropped = std::cell::Cell::new(0);
+        let n_ev_out = self.events_out.len();
+        let mut bufs = self.events_out.iter_mut();
+        let mut writers: [EventWriter<'_>; crate::node::MAX_PORTS] = core::array::from_fn(|_| {
+            bufs.next().map_or(EventWriter::detached(), |b| {
+                b.clear();
+                EventWriter::new(b, HAND_EVENT_CAPACITY, len as u32, &dropped)
+            })
+        });
+        let cx = Cx {
+            env,
+            arrival: Latency::ZERO,
+        };
+        let max = Prepare::new(self.rate, Samples(self.frames)).max_block();
+        let io = Io::new(
+            max,
+            len,
+            &ins[..n_in],
+            &mut out_refs[..n_out],
+            crate::node::SilenceMask::NONE,
+            crate::node::ConstantMask::NONE,
+            crate::node::InPlaceMask::NONE,
+            &sorted[..self.events_in.len()],
+            &mut writers[..n_ev_out],
+        )
+        .with_params(&params[..n_par]);
+        let status = self.node.process(&cx, io);
+        for list in &mut self.events_in {
+            list.clear();
+        }
+        status
+    }
 }

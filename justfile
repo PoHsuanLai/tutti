@@ -58,15 +58,13 @@ test-all: test test-features test-editor test-doc
 # Lint the feature-gated code that no other recipe compiles.
 #
 # `cargo tree --workspace -e features -i tutti-cpal` reports only "default":
-# nothing in this workspace turns `capture`, `midi` or `audio-io` on, so
+# nothing in this workspace turns `capture` or `audio-io` on, so
 # `just test` and `just lint` typecheck none of them. That is the same hole
 # `check-windows` exists to close, and for the same reason — a cfg block
 # nothing compiles is a cfg block nothing lints, and it rots silently.
 #
 # What was dark until this recipe existed:
 #   tutti-cpal/capture  — all of src/mic.rs (MicIn, the capture ring)
-#   tutti-cpal/midi     — the pre_block/post_block arms of process_audio,
-#                         the ordering the module header calls "the design"
 #   bevy-tutti/audio-io — tests/audio_io_pump.rs, 12 tests that had never run
 #   bevy-tutti/soundfont — tests/midi_soundfont.rs (implies `midi`); its 5 tests
 #                          looked for the .sf2 at the pre-extraction
@@ -83,8 +81,6 @@ test-all: test test-features test-editor test-doc
 # exists) JACK, which needs libjack on the box. Name the combinations.
 check-features:
     cargo clippy -p tutti-cpal --features capture --all-targets -- -D warnings
-    cargo clippy -p tutti-cpal --features midi --all-targets -- -D warnings
-    cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
@@ -96,7 +92,7 @@ check-features:
 # spawns it; CLAP only, as in CI, so no VST3 SDK is needed.
 test-features:
     cargo build -p tutti-plugin-server --no-default-features --features clap
-    cargo nextest run -p tutti-cpal --features capture,midi
+    cargo nextest run -p tutti-cpal --features capture
     cargo nextest run -p bevy-tutti --features audio-io
     cargo nextest run -p bevy-tutti --features soundfont
     cargo nextest run -p bevy-tutti --features sampler
@@ -113,10 +109,10 @@ test-features:
 # in cpal's Linux/BSD target table. Enabling it on macOS or Windows compiles
 # clean and reaches nothing, which is exactly the silent-no-op shape
 # `check-windows` exists to catch — hence this recipe.
-# Miri over the non-FFI unsafe: the pointer arithmetic in `tutti-node`'s planar
-# buffers, the aliasing in `tutti-types`' `AudioThreadCell`, and `RtPublish`'s
-# hazard-slot reclamation. See
-# `docs/design/012-unsafe-policy.md` for why these two and not the rest — miri
+# Miri over the non-FFI unsafe: the aliasing in `tutti-types`' `AudioThreadCell`
+# and `RtPublish`'s hazard-slot reclamation (and, until doc 013 Phase 5 deleted
+# it, the pointer arithmetic in `tutti-node`'s planar buffers). See
+# `docs/design/012-unsafe-policy.md` for why this crate and not the rest — miri
 # does not execute FFI at all, so the ~95% of this repo's unsafe that is a C ABI
 # is out of its reach by construction, and out-of-process hosting is the
 # structural answer there instead.
@@ -126,7 +122,6 @@ test-features:
 miri:
     cargo +nightly miri test -p tutti-types --lib
     MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test -p tutti-types --lib rt::publish
-    cargo +nightly miri test -p tutti-node
 
 # The loom models: `RtPublish`'s reclamation protocol and `PosRing`'s no-tear
 # protocol (against the shipped code) and the plugin shm header protocol (a
@@ -198,13 +193,6 @@ bench-cmp BASE="main":
 bench-smoke:
     just bench -- --test
 
-# The profiling harnesses. These deliberately do NOT use criterion — read
-# their module docs for why (81x wall-clock spread; the question is the tail,
-# not the mean).
-profile-stretch:
-    cargo build -p tutti-sampler --profile profiling --example profile_stretch_clone
-    samply record target/profiling/examples/profile_stretch_clone
-
 # Samply a criterion bench. `--profile-time` turns criterion's own analysis
 # off, so the profile is of the code rather than of the statistics.
 profile-bench BENCH="engine_render" PKG="tutti-nodes" SECS="10":
@@ -268,7 +256,7 @@ check-paths *ARGS:
 
 lint:
     cargo fmt --all --check
-    cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
+    cargo clippy --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
 
 # Typecheck and lint the Windows cfg paths, from Linux or macOS.
 #
@@ -304,7 +292,7 @@ check-windows:
     export CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar
     export CFLAGS_x86_64_pc_windows_msvc="-I$stub"
     win() { cargo clippy --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
-    win --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti \
+    win --workspace --all-targets --exclude rustysynth-tutti \
         --exclude tutti-export --exclude tutti --exclude bevy-tutti \
         --exclude tutti-vst3-host --exclude tutti-plugin-server
     win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
@@ -317,7 +305,7 @@ check-windows:
 # is where that is actually enforced.
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps \
-        --exclude fundsp-tutti --exclude rustysynth-tutti
+        --exclude rustysynth-tutti
 
 # The audio-correctness harnesses: a Rust example renders audio to a directory,
 # and a Python judge grades it.

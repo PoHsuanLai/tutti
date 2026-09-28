@@ -7,10 +7,9 @@
 //! choice with real trade-offs.
 //!
 //! The carry is explicit. Spectral flux and complex-domain deviation both need
-//! the previous frame, and hiding that in `&mut self` is what let a detector
-//! diff frame 0 of one call against the last frame of the *previous* one — 39
-//! of 165 windows corrupted on the live path. Here you cannot forget to reset
-//! something you have to pass in.
+//! the previous frame; hidden in `&mut self`, that would let a detector diff
+//! frame 0 of one call against the last frame of the *previous* one. Here you
+//! cannot forget to reset something you have to pass in.
 
 use tutti_core::SampleRate;
 use tutti_types::{Amplitude, Samples, Seconds};
@@ -211,7 +210,7 @@ impl OnsetState {
         Self::default()
     }
 
-    /// Forget everything. Equivalent to starting with a fresh state.
+    /// Forgets everything. Equivalent to starting with a fresh state.
     pub fn reset(&mut self) {
         self.config = None;
         self.previous.clear();
@@ -226,7 +225,7 @@ impl OnsetState {
     }
 }
 
-/// Feed one frame and accumulate its novelty.
+/// Feeds one frame and accumulates its novelty.
 ///
 /// Returns nothing per frame: the threshold is adaptive over the whole run, so
 /// no single frame can be judged in isolation. Call [`finish`] to pick peaks.
@@ -295,14 +294,14 @@ pub fn step_onset(
         .push((position, value * cfg.sensitivity.get()));
 }
 
-/// Pick peaks from the accumulated novelty and apply gap suppression.
+/// Picks peaks from the accumulated novelty and applies gap suppression.
 pub fn finish(cfg: &OnsetConfig, state: &OnsetState) -> Vec<Onset> {
     let mut onsets = pick_peaks(cfg, &state.novelty);
     suppress_close_onsets(&mut onsets, cfg.min_gap);
     onsets
 }
 
-/// Detect onsets across a whole buffer.
+/// Detects onsets across a whole buffer.
 ///
 /// Folds [`step_onset`] — the same implementation the streaming path uses, so
 /// the two cannot drift.
@@ -330,7 +329,7 @@ pub fn detect_onsets(
     Ok(finish(cfg, &state))
 }
 
-/// Drop onsets closer together than `min_gap`, keeping the stronger of a pair.
+/// Drops onsets closer together than `min_gap`, keeping the stronger of a pair.
 ///
 /// Order-independent: the gap is a distance, so an unsorted list is compared
 /// correctly rather than underflowing. `pick_peaks` emits ascending positions,
@@ -478,8 +477,8 @@ mod tests {
     /// of thousands for a few minutes of audio.
     ///
     /// Asserted by **writing a sentinel into the buffer and seeing it survive**
-    /// the resize check on the next frame. Two weaker observables were tried
-    /// and rejected: `capacity()` is identical either way (a fresh
+    /// the resize check on the next frame. Two weaker observables do not
+    /// work: `capacity()` is identical either way (a fresh
     /// `vec![_; bins]` allocates exactly `bins`), and this crate deliberately
     /// carries no `assert_no_alloc` dev-dependency — see its Cargo.toml, which
     /// records that everything here is cold-path batch analysis that
@@ -539,10 +538,10 @@ mod tests {
     /// Changing the config mid-run invalidates the carry.
     ///
     /// `OnsetConfig` is `Copy` and passed per call, so a caller can vary it
-    /// between frames. Before this was handled, the first frame after a switch
-    /// diffed against a reference from the previous function — measured at
-    /// ~12x overstatement for flux and ~15,000x for complex-domain — which
-    /// then dominated the adaptive threshold and strength normalization for
+    /// between frames. Unhandled, the first frame after a switch would diff
+    /// against a reference from the previous function — measured at ~12x
+    /// overstatement for flux and ~15,000x for complex-domain — which would
+    /// then dominate the adaptive threshold and strength normalization for
     /// the whole run.
     #[test]
     fn switching_config_mid_run_resets_the_carry() {
@@ -628,7 +627,7 @@ mod tests {
         }
     }
 
-    /// `Energy` misses these, as it did before the restructure. Pinned so the
+    /// `Energy` misses these. Pinned so the
     /// weakness stays a known property rather than becoming a silent change.
     #[test]
     fn energy_misses_short_decaying_spikes() {
@@ -689,10 +688,10 @@ mod tests {
 
     /// Unsorted input must not underflow.
     ///
-    /// `pick_peaks` emits ascending positions, so the in-crate path never hit
-    /// this — but the function is public and takes a plain `Vec`, and
-    /// subtracting `usize` positions panicked in debug and wrapped to a huge
-    /// value in release, where the pair would silently never be suppressed.
+    /// `pick_peaks` emits ascending positions, but the function is public and
+    /// takes a plain `Vec`. Subtracting `usize` positions would panic in debug
+    /// and wrap to a huge value in release, where the pair would silently never
+    /// be suppressed.
     #[test]
     fn suppression_handles_unsorted_input() {
         let onset = |pos: usize, strength: f32| Onset {

@@ -2,30 +2,27 @@
 //!
 //! A voice renders a block at a time into [`Lanes`] — one contiguous run of
 //! frames per channel — and the owner then adds each lane into its output
-//! with one [`accumulate`] per channel. Doc 013's "Sampler `PlaybackSlot`"
-//! verdict: the per-voice read is gather-bound (every voice reads a different
-//! wave at a different fractional position), so the vectors run *along time*,
-//! over the lanes, not across voices.
+//! with one [`accumulate`] per channel. The per-voice read is gather-bound
+//! (every voice reads a different wave at a different fractional position),
+//! so the vectors run *along time*, over the lanes, not across voices.
 //!
 //! The kernels are plain loops over equal-length slices, written so the
 //! compiler vectorises them (no bounds checks inside the loop: both slices
-//! are cut to one length first). Each is the per-element arithmetic the
-//! per-sample read did, in the same order, so a block read is bit-identical
-//! to the frames it replaced — IEEE-754 `+` and `*` on one element give one
-//! answer whether they run four at a time or one.
+//! are cut to one length first). Each is the per-element arithmetic of a
+//! frame-at-a-time read, in the same order, so a block read is bit-identical
+//! to reading its frames one by one — IEEE-754 `+` and `*` on one element
+//! give one answer whether they run four at a time or one.
 
 use crate::MAX_SAMPLER_CHANNELS;
 use tutti_core::SamplePosition;
 
-/// Frames one lane holds: the longest block a voice is rendered in.
+/// Frames one lane holds: the longest piece a voice is rendered in.
 ///
-/// `tutti_core::MAX_BUFFER_SIZE` (64): `AudioUnit::process` is never handed
-/// more (its buffers are that long, and `Legacy` calls a unit in chunks of
-/// that), so a block is one lane and nothing is split. Lanes 4x longer cost
-/// every voice a memset of scratch it could never use. When the sampler's
-/// nodes port natively (doc 013 items 4 and 9) the node sizes its scratch
-/// from `Prepare::max_block` instead, where blocks may grow past 64.
-pub(crate) const LANE_FRAMES: usize = tutti_core::MAX_BUFFER_SIZE;
+/// 64: a voice node renders its block in 64-frame pieces from the block's
+/// start, re-seated per piece, so a piece is one lane and nothing is split.
+/// Lanes 4x longer would cost every voice a memset of scratch it could never
+/// use.
+pub(crate) const LANE_FRAMES: usize = 64;
 
 /// One channel of a block, planar.
 pub(crate) type Lane = [f32; LANE_FRAMES];

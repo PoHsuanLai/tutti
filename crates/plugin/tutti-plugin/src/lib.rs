@@ -11,10 +11,7 @@ pub(crate) mod protocol;
 
 pub use util::config::BridgeConfig;
 
-/// Mark the calling thread as the host's main/UI thread, enabling the
-/// debug-only main-thread affinity assertions in the editor/state paths
-/// (see [`tutti_plugin_types::assert_main_thread`]). Call once, on the UI
-/// thread, at host startup. No-op if never called.
+// Enables the debug-only main-thread assertions in the editor and state paths.
 pub use tutti_plugin_types::mark_main_thread;
 // `PluginClient::set_automation_state` takes this, so callers must be able to
 // name it without depending on tutti-plugin-types directly.
@@ -29,7 +26,7 @@ pub use tutti_plugin_types::Features;
 // caller must be able to name them without depending on tutti-plugin-types.
 pub use tutti_plugin_types::{FeatureReport, Preset, PresetId, PresetSupport};
 
-/// Building blocks for out-of-crate in-process loaders.
+/// Traits for plugging an out-of-crate loader into [`PluginHandle`](handles::PluginHandle).
 ///
 /// **Not part of the general API.** These let an out-of-crate loader
 /// implement the granular host-side capability traits
@@ -44,27 +41,15 @@ pub mod backend {
     pub use crate::host::handles::capabilities::{
         HostAutomationState, HostEditor, HostParams, HostPresets, HostState,
     };
-    pub use crate::host::node::{Midi, ParameterChangeSink};
-    pub use crate::util::node::node_id::PLUGIN_CLIENT_ID;
-    pub use crate::util::node::route_with_latency;
+    pub use crate::host::node::ParameterChangeSink;
 }
 
-/// Load a VST2 plugin in-process (audio + native editor on the host
-/// process). See [`format::vst2_in_process::load`] for details. Available
-/// behind the `vst2` feature.
-#[cfg(feature = "vst2")]
-pub use format::vst2_in_process::load as in_process_vst2;
-
-/// [`in_process_vst2`], keeping the concrete node instead of boxing it.
-///
-/// The node implements `AudioUnit` twice — once at f32, once at f64 — and a
-/// `Box<dyn AudioUnit>` erases the second. A caller driving the f64 path, or
-/// one needing the node's own surface (its MIDI port, its render mode), takes
-/// this instead.
+// Loads a VST2 plugin in the host process; most callers use `Plugin::open`,
+// which dispatches here for `.vst` files.
 #[cfg(feature = "vst2")]
 pub use format::vst2_in_process::{load_client as in_process_vst2_client, InProcessVst2Client};
 
-/// Discovering, persisting, and loading plugins — pick your layer.
+/// Discovering, persisting, and loading plugins.
 ///
 /// **Bring your own store.** [`discover`](catalog::discover) walks directories
 /// and returns paths; [`PluginRecord::probe`](catalog::PluginRecord::probe)
@@ -103,14 +88,8 @@ pub mod catalog {
     pub use crate::util::config::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};
 }
 
-/// Per-plugin handles — [`PluginClient`](handles::PluginClient) (audio graph
-/// node) and [`PluginHandle`](handles::PluginHandle) (main-thread control).
+// Per-plugin handles: the graph node and the main-thread control surface.
 pub use host::handles;
 
-/// Wire-contract types for `tutti-plugin-server`.
-///
-/// **Not for general use.** This re-export exists so the server crate
-/// can share IPC struct definitions without depending on host internals.
-/// End users building applications should stick to [`catalog`] and
-/// [`handles`].
+// Wire-contract types shared with `tutti-plugin-server`.
 pub mod server;

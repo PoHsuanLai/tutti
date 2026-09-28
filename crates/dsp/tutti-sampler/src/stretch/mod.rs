@@ -1,18 +1,17 @@
-//! Time-stretching and pitch-shifting via phase vocoder.
+//! Time-stretching and pitch-shifting with a phase vocoder.
 //!
 //! Changes duration WITHOUT changing pitch, or pitch without duration — the
 //! operation varispeed cannot express, since resampling couples the two. See
 //! [`PlaybackRate`](tutti_core::PlaybackRate) for the coupled kind.
 //!
 //! [`Unit`] is a pure frame-in → frame-out filter: it owns no source, so the
-//! caller ticks its own source and feeds each frame in. That is why this is a
-//! peer of `playback` rather than part of it — nothing here knows what a voice
-//! is.
+//! caller ticks its own source and feeds each frame in. Nothing here knows
+//! what a voice is; the voices in [`voice`](crate::voice) own one per stretched
+//! voice.
 //!
 //! # Example
 //!
 //! ```
-//! use tutti_core::AudioUnit;
 //! use tutti_core::{Cents, StretchFactor};
 //! use tutti_sampler::stretch;
 //!
@@ -43,16 +42,17 @@
 //! clone allocates its own (see "Owned, not shared" on [`Unit`]). Neither
 //! `tick`, `process` nor the slot's block read allocates or blocks, and
 //! neither does the vocoder beneath them. Dropping a `Unit` frees its
-//! vocoders, so it is *not* RT-safe: the pool retires removed filters to the
-//! control thread (`VoicePool::retired`).
+//! vocoders, so it is *not* RT-safe: a [`VoicePool`](crate::VoicePool) hands
+//! removed filters back to the control thread, where
+//! [`VoicePoolHandle::collect_retired`](crate::VoicePoolHandle::collect_retired)
+//! frees them.
 
 /// Per-channel RT scratch capacity, in samples.
 ///
-/// **Deliberately not `tutti_core::MAX_BUFFER_SIZE`**, which is 64 (fundsp's
-/// per-block cap). This is the *scratch* the vocoder pre-reserves so `process`
-/// never reallocates, and it is sized for the FFT window rather than the block:
-/// at 8192 it covers the largest `FftSize` with headroom. Importing the core
-/// constant here instead would silently cut the reservation 128x — the tests
+/// **Deliberately not a block size.** This is the *scratch* the vocoder
+/// pre-reserves so `process` never reallocates, and it is sized for the FFT
+/// window rather than the block: at 8192 it covers the largest `FftSize` with
+/// headroom. Sizing it to a 64-frame block instead would silently cut the reservation 128x — the tests
 /// still pass, because a `Vec` that reallocates is correct, just not RT-safe.
 const MAX_BUFFER_SIZE: usize = 8192;
 

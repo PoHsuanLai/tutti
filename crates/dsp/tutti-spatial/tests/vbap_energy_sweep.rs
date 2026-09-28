@@ -1,5 +1,5 @@
-//! Differential test: the VBAP energy invariant, swept — and the rear-arc
-//! behaviour that sweep uncovered.
+//! Differential test: the VBAP energy invariant, swept, and the rear-arc
+//! behaviour of a front-only layout.
 //!
 //! # What the oracle is, and why it is independent
 //!
@@ -11,25 +11,18 @@
 //! weaker, not stronger: the panner already *is* `vbap` 0.1.1 underneath, so a
 //! second copy of it could not disagree.
 //!
-//! Nothing asserted the invariant before this file. The existing tests check
-//! where the *bearing* lands, never how much energy comes out, so a
-//! normalization that was skipped, applied twice, or clamped to zero passed all
-//! of them.
+//! Tests that only check where the *bearing* lands would pass a normalization
+//! that was skipped, applied twice, or clamped to zero; these check how much
+//! energy comes out.
 //!
-//! # This file characterized a bug; it now pins the fix
+//! # The rear arc
 //!
-//! The first version of this file measured the behaviour rather than judging
-//! it, and what it measured was a stereo pair that held unity to 30°, decayed
-//! (0.933 at 45°, 0.500 at 90°, 0.067 at 135°) and was **completely silent from
-//! 150° through 210°**. Its own doc comment named the cause — upstream `vbap`
-//! normalizes the tuple solution and then clamps negative gains to zero — and
-//! said the maintainer's call was whether that was a property or a bug.
-//!
-//! It was a bug, and `VbapPanner::solve_gains` now fixes it in this crate's
-//! layer rather than in the vendored dependency. The assertions below are
-//! therefore the flipped versions of the originals: unity is asserted at
-//! **spread 0 as well**, and the dead-arc characterization is replaced by the
-//! hard-pan table it became.
+//! Upstream `vbap` normalizes the tuple solution and then clamps negative gains
+//! to zero. Left to that, a stereo pair holds unity to 30°, decays (0.933 at
+//! 45°, 0.500 at 90°, 0.067 at 135°) and is **completely silent from 150°
+//! through 210°**. `VbapPanner::solve_gains` corrects this in this crate's
+//! layer, so unity is asserted at **spread 0 as well**, and the stereo pair's
+//! rear arc is asserted as a hard-pan table.
 //!
 //! # Tolerance rationale
 //!
@@ -44,7 +37,7 @@
 //! # How the gains are read
 //!
 //! Through the public [`VbapPannerNode`] surface, not the private panner: width
-//! is set to 0, which routes `tick` through the mono fold, and a `[1.0, 1.0]`
+//! is set to 0, which routes a one-frame block through the mono fold, and a `[1.0, 1.0]`
 //! frame folds to exactly 1.0. Each output channel then carries its speaker's
 //! gain unscaled. LFE is not fed by the panner (`build_vbap_mix` sends it a
 //! separate low-passed feed), so it reads 0 and contributes nothing to the sum
@@ -52,38 +45,48 @@
 
 use core::f32::consts::FRAC_1_SQRT_2;
 
-use tutti_core::AudioUnit;
+use tutti_core::SampleRate;
+use tutti_graph::contract::drive;
+use tutti_graph::Node;
 use tutti_spatial::VbapPannerNode;
 
-/// Steady-state per-channel gains at one bearing, read through `AudioUnit`.
+/// One block of one frame, written to `out`.
+///
+/// The nodes here are not prepared: they run at the 48 kHz they are built
+/// at, which is the rate this drives them at, and a one-frame block needs no
+/// sizing.
+fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
+    let rendered = drive(node, SampleRate(48_000.0), &[&input[..1], &input[1..]], &[]);
+    for (o, c) in out.iter_mut().zip(rendered) {
+        *o = c[0];
+    }
+}
+
+/// Steady-state per-channel gains at one bearing, read through the node.
 ///
 /// # `reset` rather than a settling loop
 ///
 /// The de-zipper is exponential: it *asymptotes* toward the commanded bearing
 /// and never arrives, so a fixed number of frames leaves a residual whose size
 /// depends on how far the previous reading was — making every measurement a
-/// function of the sweep's iteration order. `AudioUnit::reset` drops the ramp
+/// function of the sweep's iteration order. `Node::reset` drops the ramp
 /// onto the commanded position instead (and touches nothing else; position,
 /// spread and width are caller-set configuration and survive it), so each
 /// reading is the exact steady state at that bearing alone.
 ///
-/// # The leading `tick` this used to need is gone, and that is the fix
+/// # No leading `tick`, on purpose
 ///
 /// `reset` seeds the smoother from the **panner's** copy of the position, and
-/// `set_position` writes the *node's* `SpatialTarget`. The two were joined only
-/// by `sync_position`, which ran inside `tick`. So a bare
-/// `set_position` → `reset` → `tick` seeded the ramp at the panner's *stale*
-/// bearing and took one step from there: every azimuth read back as roughly
-/// `[0.707, 0.707]`, a plausible-looking unity that is actually front-centre
-/// everywhere and pans nowhere. This function used to carry an extra leading
-/// `tick` purely to work around that.
-///
-/// `VbapPannerNode::reset` now calls `sync_position` itself, so the workaround
-/// is deleted — and its absence is part of what this file asserts.
+/// `set_position` writes the *node's* `SpatialTarget`; `sync_position` joins
+/// them. If `reset` skipped that join, a bare `set_position` → `reset` →
+/// `tick` would seed the ramp at the panner's *stale* bearing: every azimuth
+/// would read back as roughly `[0.707, 0.707]`, a plausible-looking unity that
+/// is front-centre everywhere. A leading `tick` would hide that, so there is
+/// none.
 ///
 /// # Only the gain assertions catch that bug, and that is worth knowing
 ///
-/// Mutation-testing this file found that reinstating the reset bug leaves the
+/// Mutation testing shows that dropping the join from `reset` leaves the
 /// two energy tests **passing**: front-centre is `[0.707, 0.707]`, which is unit
 /// energy, so a sweep that only sums squares cannot tell "correctly panned" from
 /// "not panned at all". The tests that fail are
@@ -103,8 +106,8 @@ fn gains_at(node: &mut VbapPannerNode, azimuth_deg: f32) -> Vec<f32> {
 
     let n = node.num_channels();
     let mut out = vec![0.0f32; n];
-    node.reset(); // seed the ramp at the commanded bearing
-    node.tick(&[1.0, 1.0], &mut out); // read the steady state
+    Node::reset(node); // seed the ramp at the commanded bearing
+    tick(node, [1.0, 1.0], &mut out); // read the steady state
     out
 }
 
@@ -118,18 +121,17 @@ fn sum_of_squares(gains: &[f32]) -> f32 {
 /// small enough to enumerate, and an enumeration is a proof where a sample is
 /// only evidence. Five layouts × seven spreads (including **0**) × 24 bearings.
 ///
-/// Spread 0 is in the grid, which is the change from the version of this test
-/// that characterized the bug. It was excluded then because `apply_spread`
-/// returns early there and the invariant was upstream `vbap`'s to keep — and
-/// upstream did not keep it. `solve_gains` now establishes unit energy *before*
-/// `apply_spread` ever runs, so the law holds at every spread including none.
+/// Spread 0 is in the grid. `apply_spread` returns early there, and upstream
+/// `vbap` alone does not keep the invariant; `solve_gains` establishes unit
+/// energy *before* `apply_spread` runs, so the law holds at every spread
+/// including none.
 ///
 /// Mutation: delete the renormalization in `solve_gains` → fails at stereo,
 /// spread 0%, az 45° (0.933 against 1.0). Two mutations this test verifiably
 /// does *not* catch, both by design: deleting the elevation retreat (it sweeps
 /// the horizontal plane only —
 /// [`every_layout_holds_unit_energy_off_the_horizontal_plane`] covers it), and
-/// reinstating the reset-seeding bug (front-centre is unit energy too — see the
+/// breaking the reset seeding (front-centre is unit energy too — see the
 /// note on [`gains_at`]).
 #[test]
 fn every_layout_holds_unit_energy_across_the_sweep() {
@@ -172,7 +174,7 @@ fn every_layout_holds_unit_energy_across_the_sweep() {
 /// The law holds off the horizontal plane too, including where the array has no
 /// speaker at all.
 ///
-/// This is the half of the fix the azimuth sweep cannot reach. Two regions have
+/// This is the half of the correction the azimuth sweep cannot reach. Two regions have
 /// no geometry to solve against, and upstream returned an all-zero gain vector
 /// for both — silence, not a fade:
 ///
@@ -207,8 +209,8 @@ fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
         for el in [-90i32, -60, -30, 0, 30, 60, 90] {
             for az in (0..360).step_by(30) {
                 node.set_position(az as f32, el as f32);
-                node.reset();
-                node.tick(&[1.0, 1.0], &mut out);
+                Node::reset(&mut node);
+                tick(&mut node, [1.0, 1.0], &mut out);
 
                 let sum_sq = sum_of_squares(&out);
                 assert!(
@@ -225,11 +227,6 @@ fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
 
 /// The stereo law, stated as exact gains rather than as energy alone.
 ///
-/// This replaces the dead-arc characterization the first version of this file
-/// carried. Those numbers (unity to 30°, 0.933 at 45°, 0.500 at 90°, 0.067 at
-/// 135°, zero from 150° to 210°) were real measurements of a real bug; they are
-/// kept in the doc comment as the "before" column and asserted nowhere.
-///
 /// # The law
 ///
 /// A stereo pair sits at ±30° and has **no rear speaker**, so it has no
@@ -241,22 +238,21 @@ fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
 /// Read as a sweep, that is: pan smoothly from centre out to the ±30° speaker,
 /// hold a hard pan across the side, and come back through the mirrored front
 /// arc to centre again at 180°. Every bearing is audible and every bearing is
-/// unit energy. The alternative — VBAP's textbook fade — is what produced the
-/// silent arc, and a caller automating a pan through 180° heard the source
-/// vanish.
+/// unit energy. The alternative, VBAP's textbook fade, leaves a silent arc, so
+/// a caller automating a pan through 180° would hear the source vanish.
 ///
 /// # Why 180° is front-centre and not something else
 ///
 /// It is the mirror of 0°, and on a pair with no depth cue that is the honest
 /// answer: directly behind and directly ahead differ by exactly the information
-/// this array does not carry. The alternative of leaving 180° silent is the bug
-/// this fixes; the alternative of picking one speaker arbitrarily would make
+/// this array does not carry. Leaving 180° silent is the failure this avoids;
+/// the alternative of picking one speaker arbitrarily would make
 /// the sweep discontinuous at the seam.
 ///
 /// Mutation: normalize before clamping (i.e. drop `solve_gains` and call
 /// upstream directly) → fails at 90°, energy 0.500 against 1.0. Fold without
 /// renormalizing → also fails at 90°, same figure. Renormalize without folding
-/// → fails at 180°, energy 0.000. Reinstate the reset-seeding bug (drop
+/// → fails at 180°, energy 0.000. Break the reset seeding (drop
 /// `sync_position` from `VbapPannerNode::reset`) → fails at 30°, reading
 /// front-centre; this test and
 /// [`a_surrounding_layout_does_not_fold_its_rear_arc`] are the only two here
@@ -305,8 +301,8 @@ fn stereo_hard_pans_outside_the_pair_and_mirrors_the_rear() {
 /// the hemisphere, not the taper.
 ///
 /// Mutation: drop the `has_rear_speakers` gate so every layout folds → fails on
-/// quad at 180°, where the energy moves to the front pair. Reinstate the
-/// reset-seeding bug → also fails, at 180°, because the reading is front-centre
+/// quad at 180°, where the energy moves to the front pair. Break the
+/// reset seeding → also fails, at 180°, because the reading is front-centre
 /// rather than the commanded bearing at all.
 #[test]
 fn a_surrounding_layout_does_not_fold_its_rear_arc() {
@@ -337,10 +333,9 @@ fn a_surrounding_layout_does_not_fold_its_rear_arc() {
 
 /// Spread is applied on the stereo-width path, not silently dropped.
 ///
-/// The width>0 branch (now `frame_gains`) used to call the upstream solver
-/// directly and never reach `apply_spread`, so a spread set on a node fed any
-/// non-zero width did nothing at all — a parameter the inspector shows, the
-/// document saves and the engine ignores. Width and spread are orthogonal
+/// The width>0 branch of `frame_gains` must reach `apply_spread` too, or a
+/// spread set on a node fed any non-zero width would do nothing at all. Width
+/// and spread are orthogonal
 /// controls (width separates two virtual sources, spread smears each across the
 /// speaker field), so one must not suppress the other.
 ///
@@ -352,19 +347,19 @@ fn a_surrounding_layout_does_not_fold_its_rear_arc() {
 #[test]
 fn spread_reaches_the_stereo_width_path() {
     let mut node = VbapPannerNode::surround_5_1().unwrap();
-    node.set_width(1.0f32); // the width>0 branch, which used to skip spread
+    node.set_width(1.0f32); // the width>0 branch
     node.set_position(0.0f32, 0.0f32);
 
     let mut out = vec![0.0f32; node.num_channels()];
 
     node.set_spread(0.0f32);
-    node.reset();
-    node.tick(&[1.0, 1.0], &mut out);
+    Node::reset(&mut node);
+    tick(&mut node, [1.0, 1.0], &mut out);
     let point_lit = out.iter().filter(|g| g.abs() > 0.05).count();
 
     node.set_spread(1.0f32);
-    node.reset();
-    node.tick(&[1.0, 1.0], &mut out);
+    Node::reset(&mut node);
+    tick(&mut node, [1.0, 1.0], &mut out);
     let diffuse_lit = out.iter().filter(|g| g.abs() > 0.05).count();
 
     assert!(

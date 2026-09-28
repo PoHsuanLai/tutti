@@ -1,28 +1,38 @@
 //! Disk streaming sample playback, fed by the butler thread.
 //!
-//! Two types, one tier: [`DiskSource`] is the `AudioUnit` that reads the
+//! Two types, one tier: [`DiskSource`] is the graph node that reads the
 //! butler's ring free-running (its own position, stepping by the read rate),
-//! and [`DiskVoice`] is a timeline clip over the same stream: it seats on the
-//! transport clock exactly as the memory tier's placed read does (`Seat`, the
-//! same gate and step) and reads the ring at that position. Both read through
+//! and [`DiskVoice`] is a timeline clip over the same stream: it places its
+//! read on the transport exactly as the memory tier's placed read does
+//! (`interp::place`, the same gate and step, from the block's `Env`) and
+//! reads the ring at that position. Both read through
 //! `LiveRead`: the ring indexed by position, the memory tier's tap layout, the
 //! one kernel — so a clip plays what the same clip in memory plays at the same
 //! clock frame, and a jump is a crossfade from where it was, not a flush.
 //!
-//! Every count crossing the ring is in **frames**. Nothing on the
-//! `tick`/`process` path allocates, locks, or blocks.
+//! Every count crossing the ring is in **frames**. Nothing on the `process`
+//! path allocates, locks, or blocks — but a **fork**'s: it reads its file
+//! (`offline_read`), which is why a disk voice forks only for an offline
+//! render.
 
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::lanes::LANE_FRAMES;
 use crate::MAX_SAMPLER_CHANNELS;
-use tutti_core::SignalFrame;
 use tutti_core::{
-    Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, ChannelLayout, PlaybackRate,
-    ReadRate, SamplePosition, SampleRate, SrcRatio, Timeline,
+    Amplitude, Beat, BeatDuration, ChannelLayout, PlaybackRate, ReadRate, SampleRate, SrcRatio,
+    Tail,
+};
+use tutti_graph::{
+    Cx, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
+    NodeParts, Prepare, Shape, Status,
 };
 
-use super::interp::Seat;
+use super::clock::{BlockClock, Clock};
+use super::fault::FaultLatch;
+use super::interp::{past_window, place, Gate};
 use super::live_read::LiveRead;
 use super::memory_source::VoiceWindow;
 use super::offline_read::OfflineRead;
@@ -30,10 +40,10 @@ use super::types::Direction;
 use crate::butler::control::StreamOrigin;
 use crate::butler::{RtState, SharedReader};
 use crate::lanes::Lanes;
-use tutti_core::{FaultLatch, RenderFault};
 
-/// Frames a block's positions are computed for at a time: `process` renders a
-/// longer block in pieces this long, so the positions live in a fixed array.
+/// Frames a free-running block's positions are computed for at a time:
+/// `process` renders a longer block in pieces this long, so the positions
+/// live in a fixed array.
 const BLOCK_FRAMES: usize = 256;
 
 /// Disk streaming sampler, free-running: the streaming tier's bare reader.
@@ -48,7 +58,12 @@ const BLOCK_FRAMES: usize = 256;
 /// The audio thread holds the ring through a `SharedReader` (an `Arc`) and
 /// the ring's one `PosReader`, which this source owns and a clone does not
 /// get (`LiveRead`'s module docs): every access is an atomic.
-/// [`isolate`](AudioUnit::isolate) lets go of it.
+///
+/// As a graph node it **refuses every fork**
+/// ([`ForkError::NotForkable`](tutti_graph::ForkError::NotForkable)): a copy
+/// cannot read the live ring, and it knows neither where on the timeline it
+/// plays nor its file, so the only copy it could give is silence — which an
+/// export would write as if it were the graph's. A [`DiskVoice`] forks.
 pub struct DiskSource {
     /// Boxed: a voice in a pool should not carry the reader's jump state
     /// inline (it is built on the control thread, where the box is).
@@ -132,25 +147,24 @@ impl DiskSource {
         }
     }
 
-    /// Start reading. One relaxed atomic store, safe from the audio thread.
+    /// Starts reading. One relaxed atomic store, safe from the audio thread.
     pub fn play(&self) {
         self.playing.store(true, Ordering::Relaxed);
     }
 
-    /// Emit silence and stop reading. The butler keeps its window where the
+    /// Emits silence and stops reading. The butler keeps its window where the
     /// reader last played.
     pub fn stop(&self) {
         self.playing.store(false, Ordering::Relaxed);
     }
 
-    /// Whether frames are being read. Both `tick` and `process` check this
-    /// before touching the ring, which is what makes clearing it a complete
-    /// severing in [`isolate`](AudioUnit::isolate).
+    /// Whether frames are being read. `process` checks this before touching
+    /// the ring.
     pub fn is_playing(&self) -> bool {
         self.playing.load(Ordering::Relaxed)
     }
 
-    /// Publish a new output gain, to the shared `RtState` (see `tutti_nodes`'
+    /// Publishes a new output gain, to the shared `RtState` (see `tutti_nodes`'
     /// crate docs for why a control is never a field).
     pub fn set_gain(&self, gain: Amplitude) {
         if let Some(ref state) = self.shared_state {
@@ -170,7 +184,7 @@ impl DiskSource {
         self.channels
     }
 
-    /// Forget the position and any fade: the next block starts afresh.
+    /// Forgets the position and any fade: the next block starts afresh.
     pub fn reset_interpolation(&mut self) {
         self.read.reset();
     }
@@ -215,111 +229,97 @@ impl DiskSource {
     }
 }
 
-impl AudioUnit for DiskSource {
-    fn inputs(&self) -> usize {
-        0
-    }
-
-    fn outputs(&self) -> usize {
-        // Boundary: `AudioUnit::outputs` is a fixed fundsp trait signature.
-        self.stride
-    }
-
-    fn reset(&mut self) {
-        self.playing.store(false, Ordering::Relaxed);
-        self.reset_interpolation();
-    }
-
-    /// Stop this clone from touching the live stream.
-    ///
-    /// `Clone` shares the ring and the control state by `Arc` (a clone gets
-    /// no reader of the ring: the live source owns it). Kept, the control
-    /// state would let a copy taken to render offline write the live voice's
-    /// gain and speed; so the copy stops, drops `shared_state`, and lets go of
-    /// any reader it holds (one isolated in place, not cloned, still owns the
-    /// live reader and would claim the live ring): a complete severing.
-    ///
-    /// The honest severed state of this bare unit is *silent*: there is no
-    /// second ring to hand this clone. A [`DiskVoice`], which knows where on
-    /// the timeline it plays and which stream it came from, does not stop
-    /// there: its copy reads the file itself (see its `isolate`).
-    fn isolate(&mut self) {
+impl DiskSource {
+    /// Stop reading and let go of the live stream: the ring's reader, and
+    /// the control cell. A copy severed so never touches the live stream.
+    fn sever(&mut self) {
         self.playing.store(false, Ordering::Relaxed);
         self.shared_state = None;
         self.reset_interpolation();
         self.read.sever();
     }
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate;
+    /// Output width, as a count.
+    #[inline]
+    fn width(&self) -> usize {
+        self.stride
+    }
+}
+
+impl Node for DiskSource {
+    /// No inputs, the file's width out (at most [`MAX_SAMPLER_CHANNELS`]); a
+    /// generator, never skipped.
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, self.channels).with_tail(Tail::Unbounded)
     }
 
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        let n = self.stride.min(output.len());
-        if n == 0 {
-            return;
-        }
-        if !self.playing.load(Ordering::Relaxed) {
-            output[..n].fill(0.0);
-            self.read.idle();
-            return;
-        }
-        self.render(1, |_, f| output[..n].copy_from_slice(&f[..n]));
+    fn prepare(&mut self, p: &Prepare) {
+        self.sample_rate = p.sample_rate();
     }
 
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        let n = self.stride.min(output.channels());
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let frames = io.frames();
+        let (_, mut outs) = io.split();
         if !self.playing.load(Ordering::Relaxed) {
-            for c in 0..n {
-                for i in 0..size {
-                    output.set_f32(c, i, 0.0);
-                }
+            for ch in outs.iter_mut() {
+                ch.fill(0.0);
             }
             // A stopped source holds no refill back.
             self.read.idle();
-            return;
+            return Status::Modified;
         }
-        self.render(size, |i, f| {
+        let n = self.width().min(outs.len());
+        let mut refs: [&mut [f32]; MAX_SAMPLER_CHANNELS] =
+            std::array::from_fn(|_| Default::default());
+        for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
+            *slot = ch;
+        }
+        self.render(frames, |i, f| {
             for (c, &s) in f[..n].iter().enumerate() {
-                output.set_f32(c, i, s);
+                refs[c][i] = s;
             }
         });
+        Status::Modified
     }
 
-    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID);
-
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        // Width must track `outputs()` or fundsp mis-plans this node's latency.
-        SignalFrame::new(self.outputs())
+    /// Stopped, and the read's jump state forgotten.
+    fn reset(&mut self) {
+        self.playing.store(false, Ordering::Relaxed);
+        self.reset_interpolation();
     }
+}
 
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
+impl IntoNode for DiskSource {
+    type Controls = ();
+
+    /// No fork source: see the type's docs.
+    fn into_parts(self) -> NodeParts<()> {
+        NodeParts {
+            node: Box::new(self),
+            controls: (),
+            fork: None,
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
 // DiskVoice — a timeline clip over a stream.
 //
-// Per frame: the seat (`Seat::next`, the memory tier's) gives the position the
-// clock puts the playhead at inside the window, `None` outside it or on a
-// stopped clock; the ring is read there. The butler fills ahead of where the
-// voice reads; a jump is the reader's own crossfade (`LiveRead`).
+// Per frame: the placement (`interp::place`, the memory tier's) gives the
+// position the transport puts the playhead at inside the window, `None`
+// outside it or on a standing transport; the ring is read there. The butler
+// fills ahead of where the voice reads; a jump is the reader's own crossfade
+// (`LiveRead`).
 // ---------------------------------------------------------------------------
 
-/// Wiring for [`DiskVoice::new`]: the placement gate plus the file
-/// sample rate. Splits the clock from the [`VoiceWindow`]
-/// cluster so the streaming path and `MemorySource` speak the same value type;
-/// `shared_state` stays a separate wiring arg (it must be the same `RtState` the
-/// `inner` unit holds).
-// Hand-rolled `Debug` for the same reason as `MemorySourceConfig`: an
-// `Arc<dyn Timeline>` is not `Debug`.
-#[derive(Clone)]
+/// Wiring for [`DiskVoice::new`]: the window plus the file sample rate.
+/// `shared_state` stays a separate wiring arg (it must be the same `RtState`
+/// the `inner` unit holds). The transport is not wiring: a voice reads it
+/// from each block's `Env`.
+#[derive(Clone, Debug)]
 pub struct DiskVoiceConfig {
-    /// Transport clock — the gate reads its beat position.
-    pub timeline: Arc<dyn Timeline>,
-    /// Span of timeline this voice occupies. Separate from the clock, mirroring
-    /// `MemorySource` — see [`VoiceWindow`].
+    /// Span of timeline this voice occupies. Mirrors `MemorySource` — see
+    /// [`VoiceWindow`].
     pub window: VoiceWindow,
     /// File sample rate — converts the transport's second-offset into a file
     /// position, matching `MemorySource`'s use of `wave.sample_rate()`.
@@ -330,43 +330,33 @@ pub struct DiskVoiceConfig {
     pub file_sample_rate: SampleRate,
 }
 
-impl std::fmt::Debug for DiskVoiceConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DiskVoiceConfig")
-            .field("window", &self.window)
-            .field("file_sample_rate", &self.file_sample_rate)
-            .finish_non_exhaustive()
-    }
-}
-
 /// A [`DiskSource`]'s stream, placed on the timeline.
 ///
 /// A timeline clip must sound only while the playhead is inside its
 /// `[start, start + duration)` window, and there play the file frame the
-/// clock puts the playhead on. This does exactly what the memory tier's placed
-/// read does — the same gate ([`window_position`](super::interp::window_position))
-/// seated and stepped the same way (`Seat`) — and reads the ring at the
-/// position that gives, so live, forked and in-memory voices of one clip play
-/// the same samples at the same clock frame.
+/// transport puts the playhead on. This does exactly what the memory tier's
+/// placed read does — the same gate ([`window_position`](super::interp::window_position))
+/// placed and stepped the same way (`interp::place`), from the block's `Env`
+/// — and reads the ring at the position that gives, so live, forked and
+/// in-memory voices of one clip play the same samples at the same frame.
 ///
 /// # A fork reads the file itself
 ///
-/// A copy taken for an offline render (a graph fork for an export) cannot
-/// read the ring: its reads would move the live voice's window. So
-/// [`isolate`](AudioUnit::isolate) cuts this copy off, and
-/// [`rebind_offline`](AudioUnit::rebind_offline) hands it the stream's file,
-/// as the butler records it (path, rate, loop), to read on demand on the
-/// render's thread. It plays the same window of the file on the render's
-/// timeline, read as the memory tier reads it; see `offline_read`. That path
-/// blocks on file I/O and is never taken live.
+/// A fork for an offline render (an export) cannot read the ring: its reads
+/// would move the live voice's window. So the fork (`fork_copy`,
+/// a graph fork's source for this node and for a `VoiceNode` or pool holding
+/// it) is cut off from the stream, and handed the stream's file, as the
+/// butler records it (path, rate, loop), to read on demand on the render's
+/// thread. It plays the same window of the file on the render's transport
+/// (its `Env`: nothing to rebind), read as the memory tier reads it; see
+/// `offline_read`. That path blocks on file I/O and is never taken live: a
+/// live fork of a disk voice is refused.
 pub struct DiskVoice {
     inner: DiskSource,
     /// The playback controls: the butler's cell, shared with `inner`, while
-    /// live; a private snapshot of it once isolated.
+    /// live; a private snapshot of it in a fork.
     shared_state: Arc<RtState>,
 
-    /// Transport clock — the gate reads its beat position.
-    timeline: Arc<dyn Timeline>,
     /// Span of timeline this voice occupies.
     window: VoiceWindow,
 
@@ -374,54 +364,51 @@ pub struct DiskVoice {
     /// position, matching `MemorySource`'s use of `wave.sample_rate()`.
     file_sample_rate: SampleRate,
 
-    /// Where the clock last seated the live read. `None` outside the window.
-    seat: Option<Seat>,
-
     /// The butler stream this voice consumes, as a read-only handle onto the
     /// butler's record of it: what a fork reads its file from. `None` for a
     /// voice not built by [`Status::take_disk_voice`](crate::Status::take_disk_voice)
     /// (a test's bare ring), whose fork then plays silence.
     origin: Option<StreamOrigin>,
 
-    /// `Some` once this copy is severed from the live stream
-    /// ([`isolate`](AudioUnit::isolate)): it then never touches the ring or
-    /// the butler again, and plays what this holds instead. Boxed: a live
-    /// voice (every voice in a pool) should not carry the pages' room, and
-    /// it is built on the control thread, where a fork is taken.
+    /// `Some` in a fork ([`fork_copy`](Self::fork_copy)): it never touches
+    /// the ring or the butler, and plays what this holds instead. Boxed: a
+    /// live voice (every voice in a pool) should not carry the pages' room,
+    /// and it is built on the control thread, where a fork is taken.
     offline: Option<Box<Offline>>,
 
-    /// The rate `set_sample_rate` last gave this unit, `None` until one did:
-    /// the rate the step converts to. A severed copy never told a rate renders
-    /// nothing and says so rather than play off pitch; a live voice never told
-    /// one steps by the butler's conversion for the session rate.
+    /// The rate `prepare` last gave this voice, `None` until one did: the
+    /// rate the step converts to. A fork never told a rate renders nothing
+    /// and says so rather than play off pitch; a live voice never told one
+    /// steps by the butler's conversion for the session rate.
     sample_rate: Option<SampleRate>,
+
+    /// The transport as this voice reads it when it is a graph node of its
+    /// own (a voice in a pool or a `VoiceNode` reads its owner's).
+    clock: Clock,
 }
 
-/// A severed disk voice's own playback: the file it reads, where in the file
-/// the clock last seated it, and where its failures go.
+/// A forked disk voice's own playback: the file it reads, and where its
+/// failures go.
 #[derive(Clone, Debug, Default)]
 struct Offline {
-    /// The file, from the butler's record at
-    /// [`rebind_offline`](AudioUnit::rebind_offline). `None` before a rebind,
-    /// or when the stream was gone by then: silence.
+    /// The file, from the butler's record when the fork was taken. `None`
+    /// when the stream was gone by then: silence.
     read: Option<OfflineRead>,
-    /// Where the clock last seated the read. `None` outside the window.
-    seat: Option<Seat>,
-    /// The first failure since this copy was severed (its stream gone, its
-    /// file unreadable, no render rate), handed to the fork by
-    /// [`render_fault`](AudioUnit::render_fault). Fresh at every `isolate`,
-    /// so a copy never reports another's.
+    /// The first failure since this copy was forked (its stream gone, its
+    /// file unreadable, no render rate), what the fork's health probe
+    /// reports ([`fault`](DiskVoice::fault)). Fresh at every fork, so a copy
+    /// never reports another's.
     fault: Arc<FaultLatch>,
 }
 
-/// Why a severed disk voice renders silence where its file should be, other
+/// Why a forked disk voice renders silence where its file should be, other
 /// than the file itself (`OfflineReadError`).
 #[derive(Debug)]
 enum OfflineFault {
     /// Its stream ended (stopped, or its channel restarted on another file)
-    /// before the copy was rebound.
+    /// before the copy was forked.
     StreamGone,
-    /// It was asked to render before `set_sample_rate` gave it a rate.
+    /// It was asked to render before it was prepared with a sample rate.
     NoRenderRate,
 }
 
@@ -439,14 +426,39 @@ impl std::fmt::Display for OfflineFault {
 
 impl std::error::Error for OfflineFault {}
 
-// Hand-rolled: wraps a non-`Debug` `Arc<dyn Timeline>`.
+/// Why a disk voice refused a fork.
+#[derive(Debug)]
+pub(crate) struct LiveDiskFork;
+
+impl std::fmt::Display for LiveDiskFork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "a disk voice forks only for an offline render: a live copy cannot read the \
+             stream's ring, and reading its file would block the audio thread",
+        )
+    }
+}
+
+impl std::error::Error for LiveDiskFork {}
+
+/// A forked voice's failure latch, as the fork's health probe: a failure it
+/// latched is [`ForkFaultKind::Failed`].
+pub(crate) struct VoiceHealth(pub(crate) Arc<FaultLatch>);
+
+impl ForkHealth for VoiceHealth {
+    fn fault(&self) -> Option<(ForkFaultKind, ForkCause)> {
+        self.0
+            .fault()
+            .map(|e| (ForkFaultKind::Failed, ForkCause::from_arc(e)))
+    }
+}
+
 impl std::fmt::Debug for DiskVoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiskVoice")
             .field("inner", &self.inner)
             .field("window", &self.window)
             .field("file_sample_rate", &self.file_sample_rate)
-            .field("seat", &self.seat)
             .field("has_origin", &self.origin.is_some())
             .field("offline", &self.offline)
             .finish_non_exhaustive()
@@ -454,23 +466,25 @@ impl std::fmt::Debug for DiskVoice {
 }
 
 impl Clone for DiskVoice {
+    /// A copy sharing the stream (the ring, without its reader: see
+    /// `LiveRead`) and the control cell. Not a fork: see
+    /// `fork_copy`.
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
             shared_state: Arc::clone(&self.shared_state),
-            timeline: self.timeline.clone(),
             window: self.window,
             file_sample_rate: self.file_sample_rate,
-            seat: self.seat,
             origin: self.origin.clone(),
             offline: self.offline.clone(),
             sample_rate: self.sample_rate,
+            clock: Clock::new(),
         }
     }
 }
 
 impl DiskVoice {
-    /// Place a `DiskSource`'s stream on the timeline.
+    /// Places a `DiskSource`'s stream on the timeline.
     ///
     /// Construction (butler stream registration, ring allocation) happens on
     /// the ECS/butler side; this only binds the already-built unit to a
@@ -480,13 +494,12 @@ impl DiskVoice {
         Self {
             inner,
             shared_state,
-            timeline: config.timeline,
             window: config.window,
             file_sample_rate: config.file_sample_rate,
-            seat: None,
             origin: None,
             offline: None,
             sample_rate: None,
+            clock: Clock::new(),
         }
     }
 
@@ -497,12 +510,54 @@ impl DiskVoice {
         self
     }
 
-    /// The transport clock this voice's gate reads.
-    pub fn timeline(&self) -> Arc<dyn Timeline> {
-        Arc::clone(&self.timeline)
+    /// The voice's window on the timeline.
+    pub fn window(&self) -> VoiceWindow {
+        self.window
     }
 
-    /// Tell the stream how fast a wrapping time-stretcher wants its source.
+    /// A copy of this voice for an **offline** render, sharing nothing with
+    /// it: cut off from the stream (no ring reader, no control cell — a
+    /// private snapshot of the controls' values, `RtState::detached`), and
+    /// handed the stream's file, as the butler's record of it names it now
+    /// (with the loop set on it now), to read itself. A stream that has ended
+    /// by now is a latched failure ([`fault`](Self::fault)): the export
+    /// fails naming the voice rather than write its silence.
+    ///
+    /// Takes the stream record's lock: control thread only, as every fork
+    /// is.
+    pub(crate) fn fork_copy(&self) -> Self {
+        let mut copy = self.clone();
+        copy.inner.sever();
+        copy.shared_state = Arc::new(self.shared_state.detached());
+        copy.clock = Clock::new();
+        let fault = Arc::new(FaultLatch::default());
+        let read = match &self.origin {
+            Some(origin) => match origin.describe() {
+                Some(file) => Some(OfflineRead::new(file, Arc::clone(&fault))),
+                None => {
+                    fault.latch(OfflineFault::StreamGone);
+                    None
+                }
+            },
+            // A fork of a fork keeps the file it was handed; a voice over a
+            // bare ring has none.
+            None => self
+                .offline
+                .as_ref()
+                .and_then(|o| o.read.clone())
+                .map(|read| read.relatched(Arc::clone(&fault))),
+        };
+        copy.origin = None;
+        copy.offline = Some(Box::new(Offline { read, fault }));
+        copy
+    }
+
+    /// A fork's failure latch; `None` live.
+    pub(crate) fn fault(&self) -> Option<Arc<FaultLatch>> {
+        self.offline.as_ref().map(|o| Arc::clone(&o.fault))
+    }
+
+    /// Tells the stream how fast a wrapping time-stretcher wants its source.
     ///
     /// `1 / stretch`, or [`ReadRate::UNITY`] when nothing wraps this voice. See
     /// `RtState::read_rate` for why the factor lands there rather than at the
@@ -517,22 +572,17 @@ impl DiskVoice {
         self.shared_state.set_stretch_rate(rate);
     }
 
-    /// Move the voice's window to `[start_beat, start_beat + duration)`, or to
-    /// the whole source when `duration` is `None`. The next frame seats afresh.
+    /// Moves the voice's window to `[start_beat, start_beat + duration)`, or to
+    /// the whole source when `duration` is `None`. The next frame reads at the
+    /// new window.
     pub fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
         self.window = VoiceWindow {
             start: start_beat,
             duration,
         };
-        self.seat = None;
-        // And a severed copy re-seats from the clock (a fork applies the
-        // placement its node last queued; `VoiceNode::isolate`).
-        if let Some(offline) = self.offline.as_mut() {
-            offline.seat = None;
-        }
     }
 
-    /// Publish a new output gain. `&self`: the write lands in the shared
+    /// Publishes a new output gain. `&self`: the write lands in the shared
     /// `RtState`, so no exclusivity is needed.
     pub fn set_gain(&self, gain: Amplitude) {
         self.shared_state.set_gain(gain);
@@ -550,18 +600,24 @@ impl DiskVoice {
         self.file_sample_rate
     }
 
-    /// Set the playback speed magnitude, in the shared `RtState` (what the
+    /// Sets the playback speed magnitude, in the shared `RtState` (what the
     /// butler's `SetVarispeed` also sets). The next block reads at the
     /// position the new speed gives, crossfaded.
     pub fn set_speed(&mut self, speed: PlaybackRate) {
         self.shared_state.set_speed(speed);
     }
 
-    /// Set the playback direction, in the shared `RtState`. The butler turns
+    /// Sets the playback direction, in the shared `RtState`. The butler turns
     /// the ring's mapping on its next cycle (reverse ignores the loop and
     /// mirrors the file, as the memory tier's reverse does).
     pub fn set_direction(&mut self, direction: Direction) {
         self.shared_state.set_direction(direction);
+    }
+
+    /// Output width, as a count.
+    #[inline]
+    pub(crate) fn width(&self) -> usize {
+        self.inner.width()
     }
 
     /// The rate the gate converts the clock at, relative to the file's frames:
@@ -594,291 +650,265 @@ impl DiskVoice {
         }
     }
 
-    /// The seat for the next frame: the last one stepped while the clock reads
-    /// its beat, else a fresh one where the gate puts the playhead; `None`
-    /// outside the window or on a stopped clock.
+    /// The gate: this voice's window, in the file's frames, at the window
+    /// rate.
     #[inline]
-    fn next_seat(&self, last: Option<Seat>, rate: ReadRate) -> Option<Seat> {
-        Seat::next(last, self.timeline.as_ref(), rate, || {
-            super::interp::window_position(
-                self.timeline.as_ref(),
-                self.window.start,
-                self.window.duration,
-                self.file_sample_rate,
-                self.window_rate(),
-            )
-        })
+    fn gate(&self) -> Gate {
+        Gate {
+            window: self.window,
+            source_rate: self.file_sample_rate,
+            rate: self.window_rate(),
+        }
     }
 
-    /// [`next_seat`](Self::next_seat) for the next `out.len()` frames, the
-    /// clock read once (`Seat::run`); the last frame's seat.
-    #[inline]
-    fn run_seat(
-        &self,
-        last: Option<Seat>,
-        rate: ReadRate,
-        out: &mut [Option<SamplePosition>],
-    ) -> Option<Seat> {
-        Seat::run(
-            last,
-            self.timeline.as_ref(),
-            rate,
-            || {
-                super::interp::window_position(
-                    self.timeline.as_ref(),
-                    self.window.start,
-                    self.window.duration,
-                    self.file_sample_rate,
-                    self.window_rate(),
-                )
-            },
-            out,
-        )
-    }
-
-    /// Render the next `frames` frames (at most one lane) into frame
-    /// `i` of the first `n` lanes, every frame written: the voice's own
-    /// channels, then silence on any lane past them. What `frames` calls of
-    /// `tick`, each handed a zeroed `n`-wide frame, write — the live read as
-    /// one block (one ring claim, the clock read once) rather than a claim per
-    /// frame. The block read of a slot holding this voice
-    /// (`PlaybackSlot::render_lanes`).
-    pub(crate) fn render_lanes(&mut self, frames: usize, lanes: &mut Lanes, n: usize) {
-        let w = self.outputs().min(n);
+    /// Render block frames `range` (at most one lane) into frames
+    /// `0..range.len()` of the first `n` lanes, every frame written: the
+    /// voice's own channels, then silence on any lane past them. The live
+    /// read claims the ring once per run of the block (a transport change or
+    /// a loop wrap starts a run); a fork reads its file frame by frame. The
+    /// block read of a slot holding this voice (`PlaybackSlot::render_lanes`),
+    /// and of the voice as a node.
+    pub(crate) fn render_lanes(
+        &mut self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        lanes: &mut Lanes,
+        n: usize,
+    ) {
+        let w = self.width().min(n);
+        let frames = range.len();
         lanes.clear(n, frames);
         if self.offline.is_some() {
-            let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
-            for i in 0..frames {
-                self.offline_frame(&mut frame[..w]);
-                lanes.put(i, &frame[..w]);
-            }
+            self.offline_render(clock, range, |i, f| lanes.put(i, &f[..w]));
             return;
         }
-        self.live_render(frames, |i, f| lanes.put(i, &f[..w]));
+        self.live_render(clock, range, |i, f| lanes.put(i, &f[..w]));
     }
 
-    /// Render `size` live frames, frame `i` handed to `emit`: the seat's
-    /// positions, less the channel's preroll, read from the ring.
-    fn live_render(&mut self, size: usize, mut emit: impl FnMut(usize, &[f32])) {
+    /// Render live frames `range`, frame `i - range.start` handed to `emit`:
+    /// the placed positions, less the channel's preroll, read from the ring,
+    /// one ring read per run (its generation the read's segment, so a jump
+    /// is crossfaded).
+    fn live_render(
+        &mut self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        mut emit: impl FnMut(usize, &[f32]),
+    ) {
         let rate = self.step_rate();
         let preroll = self.inner.read.ring().preroll() as f64;
         let gain = self.shared_state.gain().get();
         let state = Arc::clone(&self.shared_state);
-        let mut seated = [None; BLOCK_FRAMES];
-        let mut positions = [None; BLOCK_FRAMES];
-        let mut done = 0;
-        while done < size {
-            let n = (size - done).min(BLOCK_FRAMES);
-            // The clock read once for the piece (`Seat::run`): every frame of
-            // a block reads the beat and segment the first did.
-            self.seat = self.run_seat(self.seat, rate, &mut seated[..n]);
-            let segment = self.seat.map(|s| s.generation());
-            for (p, s) in positions[..n].iter_mut().zip(&seated[..n]) {
+        let gate = self.gate();
+        let base = range.start;
+        let mut placed = [None; LANE_FRAMES];
+        let mut positions = [None; LANE_FRAMES];
+        debug_assert!(range.len() <= LANE_FRAMES, "a piece longer than a lane");
+        for run in clock.runs_in(range) {
+            let (a, b) = (run.start, run.end);
+            let n = b - a;
+            place(clock, a..b, gate, rate, &mut placed[..n]);
+            for (p, s) in positions[..n].iter_mut().zip(&placed[..n]) {
                 *p = s.map(|s| (s.get() - preroll).max(0.0));
             }
             self.inner.read.render(
                 &positions[..n],
-                segment.unwrap_or_default(),
+                run.generation,
                 rate.get(),
                 gain,
                 &state,
-                |i, f| emit(done + i, f),
+                |i, f| emit(a - base + i, f),
             );
-            done += n;
         }
     }
 
-    /// One output frame of a severed copy, into `out` (every element).
+    /// A fork's frames `range`, frame `i - range.start` handed to `emit`.
     ///
-    /// The gate and the seat are the live ones; where the live voice reads the
-    /// ring, this reads the file at the seated position. Once the playhead is
-    /// past the window's end, the file is closed: a render holding many voices
+    /// The placement is the live one; where the live voice reads the ring,
+    /// this reads the file at the placed position. Once the playhead is past
+    /// the window's end, the file is closed: a render holding many voices
     /// keeps a file open per voice sounding.
-    fn offline_frame(&mut self, out: &mut [f32]) {
-        let last = self.offline.as_ref().and_then(|offline| offline.seat);
-        // A copy never told a rate latches below, inside its window.
+    fn offline_render(
+        &mut self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        mut emit: impl FnMut(usize, &[f32]),
+    ) {
+        let w = self.width().min(MAX_SAMPLER_CHANNELS);
+        let silent = [0.0f32; MAX_SAMPLER_CHANNELS];
+        let frames = range.len();
+        let gate = self.gate();
         let rate = self.step_rate();
-        let Some(seat) = self.next_seat(last, rate) else {
-            let beat = self.timeline.beat();
-            let past = self.window.duration.is_some_and(|duration| {
-                self.timeline.is_rolling() && beat >= self.window.start + duration
-            });
-            if let Some(offline) = self.offline.as_mut() {
-                offline.seat = None;
-                if past {
-                    if let Some(read) = offline.read.as_mut() {
-                        read.close();
-                    }
-                }
-            }
-            out.fill(0.0);
-            return;
-        };
         let direction = self.shared_state.direction();
         let gain = self.shared_state.gain().get();
         let told_rate = self.sample_rate.is_some();
+        let mut positions = [None; LANE_FRAMES];
+        place(clock, range.clone(), gate, rate, &mut positions[..frames]);
+        let past = past_window(clock, range, gate);
         let Some(offline) = self.offline.as_mut() else {
-            out.fill(0.0);
+            (0..frames).for_each(|i| emit(i, &silent[..w]));
             return;
         };
-        if !told_rate {
-            offline.fault.latch(OfflineFault::NoRenderRate);
-            out.fill(0.0);
-            return;
-        }
-        let pos = seat.position();
-        offline.seat = Some(seat);
-        match offline.read.as_mut() {
-            Some(read) => read.read_into(pos, direction, out),
-            None => out.fill(0.0),
-        }
-        for s in out.iter_mut() {
-            *s *= gain;
-        }
-    }
-}
-
-impl AudioUnit for DiskVoice {
-    fn inputs(&self) -> usize {
-        0
-    }
-
-    fn outputs(&self) -> usize {
-        // Delegate rather than store a second copy: two widths could disagree.
-        self.inner.outputs()
-    }
-
-    fn reset(&mut self) {
-        self.inner.reset_interpolation();
-        self.seat = None;
-        if let Some(offline) = self.offline.as_mut() {
-            offline.seat = None;
-        }
-    }
-
-    /// Sever this copy from the live stream, whole: it will never read the
-    /// ring or publish a position to the butler again.
-    ///
-    /// `inner` is isolated (it holds the ring), and this voice's own handle
-    /// on the stream's control cell is replaced by a private cell holding the
-    /// controls' current values (`RtState::detached`), which is also what
-    /// makes the controls a snapshot, as every forked unit's are. From here on
-    /// `tick`/`process` take the severed path (`offline_frame`), which reads
-    /// neither.
-    ///
-    /// What the copy then plays comes from
-    /// [`rebind_offline`](AudioUnit::rebind_offline); until then, silence.
-    /// A copy isolated again (a fork of an isolated shadow) keeps the file it
-    /// was handed.
-    fn isolate(&mut self) {
-        self.inner.isolate();
-        self.shared_state = Arc::new(self.shared_state.detached());
-        self.seat = None;
-        let fault = Arc::new(FaultLatch::default());
-        let read = self
-            .offline
-            .take()
-            .and_then(|offline| offline.read)
-            .map(|read| read.relatched(Arc::clone(&fault)));
-        self.offline = Some(Box::new(Offline {
-            read,
-            seat: None,
-            fault,
-        }));
-    }
-
-    /// The copy's failure latch, once it is severed; `None` live.
-    fn render_fault(&self) -> Option<Arc<dyn RenderFault>> {
-        self.offline
-            .as_ref()
-            .map(|offline| Arc::clone(&offline.fault) as Arc<dyn RenderFault>)
-    }
-
-    /// Re-point the placement gate's clock at the render's transport, and
-    /// hand this copy the stream's file to read.
-    ///
-    /// The file is the one the butler's record of the stream names **now**
-    /// (see `StreamOrigin`), with the loop set on it now: the moment a graph
-    /// fork is taken, since a fork calls this right after `isolate`. A voice
-    /// rebound without having been isolated is isolated first: one on the
-    /// render's clock must never move the live stream. The handle on the
-    /// stream's record is dropped once read — the render never needs it
-    /// again. A stream that has ended by now is a latched failure
-    /// ([`render_fault`](AudioUnit::render_fault)): the export fails naming
-    /// the voice rather than write its silence.
-    ///
-    /// Takes the stream record's lock, so control thread only, as every
-    /// rebind is.
-    fn rebind_offline(&mut self, transport: &tutti_core::transport::OfflineTransport) {
-        if self.offline.is_none() {
-            self.isolate();
-        }
-        self.timeline = transport.timeline();
-        self.seat = None;
-        let file = self.origin.take().map(|origin| origin.describe());
-        let offline = self.offline.get_or_insert_with(Box::default);
-        offline.seat = None;
-        match file {
-            Some(Some(file)) => {
-                offline.read = Some(OfflineRead::new(file, Arc::clone(&offline.fault)));
+        let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
+        for (i, pos) in positions[..frames].iter().enumerate() {
+            let Some(pos) = pos else {
+                emit(i, &silent[..w]);
+                continue;
+            };
+            // A copy never told a rate latches, inside its window.
+            if !told_rate {
+                offline.fault.latch(OfflineFault::NoRenderRate);
+                emit(i, &silent[..w]);
+                continue;
             }
-            Some(None) => {
-                offline.fault.latch(OfflineFault::StreamGone);
-                offline.read = None;
+            match offline.read.as_mut() {
+                Some(read) => read.read_into(*pos, direction, &mut frame[..w]),
+                None => frame[..w].fill(0.0),
             }
-            // Nothing to read from (a voice over a bare ring), or rebound
-            // before: keep what it has.
-            None => {}
+            for s in frame[..w].iter_mut() {
+                *s *= gain;
+            }
+            emit(i, &frame[..w]);
+        }
+        if past {
+            if let Some(read) = offline.read.as_mut() {
+                read.close();
+            }
         }
     }
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.inner.set_sample_rate(sample_rate);
+    /// Run at `sample_rate`: the step converts the file's rate to it. What
+    /// [`Node::prepare`] does; allocation-free.
+    pub(crate) fn set_render_rate(&mut self, sample_rate: SampleRate) {
+        self.inner.sample_rate = sample_rate;
         self.sample_rate = Some(sample_rate);
     }
 
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        let n = self.outputs().min(output.len());
-        if self.offline.is_some() {
-            self.offline_frame(&mut output[..n]);
-            return;
-        }
-        self.live_render(1, |_, f| output[..n].copy_from_slice(&f[..n]));
+    /// Forget the read's jump state (a slot's flush at a jump, a reset).
+    pub(crate) fn flush(&mut self) {
+        self.inner.reset_interpolation();
+    }
+}
+
+impl Node for DiskVoice {
+    /// No inputs, the file's width out; a generator, never skipped.
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, self.inner.channels()).with_tail(Tail::Unbounded)
     }
 
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        let n = self
-            .outputs()
-            .min(output.channels())
-            .min(MAX_SAMPLER_CHANNELS);
-        if self.offline.is_some() {
-            // A frame at a time, as `tick` reads it: one path, so the two
-            // entry points cannot come apart.
-            let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
-            for i in 0..size {
-                self.offline_frame(&mut frame[..n]);
-                for (c, &s) in frame[..n].iter().enumerate() {
-                    output.set_f32(c, i, s);
+    fn prepare(&mut self, p: &Prepare) {
+        self.set_render_rate(p.sample_rate());
+    }
+
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let clock = self.clock.observe(cx.env);
+        let frames = io.frames();
+        let (_, mut outs) = io.split();
+        let n = self.width().min(outs.len()).min(MAX_SAMPLER_CHANNELS);
+        for c in n..outs.len() {
+            outs.get(c).fill(0.0);
+        }
+        let mut refs: [&mut [f32]; MAX_SAMPLER_CHANNELS] =
+            std::array::from_fn(|_| Default::default());
+        for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
+            *slot = ch;
+        }
+        let mut from = 0;
+        while from < frames {
+            let to = (from + LANE_FRAMES).min(frames);
+            let emit = |i: usize, f: &[f32]| {
+                for (c, &s) in f[..n].iter().enumerate() {
+                    refs[c][from + i] = s;
                 }
+            };
+            if self.offline.is_some() {
+                self.offline_render(&clock, from..to, emit);
+            } else {
+                self.live_render(&clock, from..to, emit);
             }
-            return;
+            from = to;
         }
-        self.live_render(size, |i, f| {
-            for (c, &s) in f[..n].iter().enumerate() {
-                output.set_f32(c, i, s);
-            }
-        });
+        Status::Modified
     }
 
-    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID);
+    /// The read's jump state forgotten, the transport forgotten.
+    fn reset(&mut self) {
+        self.flush();
+        self.clock.reset();
+    }
+}
 
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        // Width must track `outputs()` or fundsp mis-plans this node's latency.
-        SignalFrame::new(self.outputs())
+/// The handle a host keeps on a [`DiskVoice`] inserted as a node of its
+/// own: the stream's playback controls (the butler's control cell, which
+/// the voice reads once per block). Control thread.
+#[derive(Clone)]
+pub struct DiskVoiceControls {
+    state: Arc<RtState>,
+}
+
+impl std::fmt::Debug for DiskVoiceControls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiskVoiceControls")
+            .field("gain", &self.state.gain())
+            .finish_non_exhaustive()
+    }
+}
+
+impl DiskVoiceControls {
+    /// Publishes a new output gain.
+    pub fn set_gain(&self, gain: Amplitude) {
+        self.state.set_gain(gain);
     }
 
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
+    /// The current output gain.
+    pub fn gain(&self) -> Amplitude {
+        self.state.gain()
+    }
+
+    /// Sets the playback speed (varispeed).
+    pub fn set_speed(&self, speed: PlaybackRate) {
+        self.state.set_speed(speed);
+    }
+
+    /// Sets the playback direction.
+    pub fn set_direction(&self, direction: Direction) {
+        self.state.set_direction(direction);
+    }
+}
+
+/// A disk voice's fork: [`DiskVoice::fork_copy`] of a template that shares
+/// the stream's record and control cell with the live voice (never its ring
+/// reader), taken when the fork is.
+struct DiskVoiceFork(DiskVoice);
+
+impl ForkSource for DiskVoiceFork {
+    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        if matches!(mode, ForkMode::Live) {
+            return Err(ForkCause::new(LiveDiskFork));
+        }
+        let fork = self.0.fork_copy();
+        let health = fork.fault().map(VoiceHealth);
+        let forked = Forked::new(Box::new(fork));
+        Ok(match health {
+            Some(h) => forked.with_health(Arc::new(h)),
+            None => forked,
+        })
+    }
+}
+
+impl IntoNode for DiskVoice {
+    type Controls = DiskVoiceControls;
+
+    fn into_parts(self) -> NodeParts<DiskVoiceControls> {
+        let controls = DiskVoiceControls {
+            state: Arc::clone(&self.shared_state),
+        };
+        let fork = DiskVoiceFork(self.clone());
+        NodeParts {
+            node: Box::new(self),
+            controls,
+            fork: Some(Box::new(fork)),
+        }
     }
 }
 
@@ -889,8 +919,28 @@ mod live_loop;
 mod tests {
     use super::*;
     use crate::butler::{RegionBuffer, RegionId};
+    use crate::testing::{block, MockTransport};
     use std::path::PathBuf;
-    use tutti_core::{BufferVec, SamplePosition, Timeline};
+    use tutti_core::{Bpm, SamplePosition, Samples};
+    use tutti_graph::contract::Direct;
+
+    /// The rate the tests' blocks run at.
+    const SR: f64 = 44_100.0;
+
+    /// A stopped transport: a free-running source reads none.
+    fn stopped() -> Arc<MockTransport> {
+        MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0))
+    }
+
+    /// One block of `n` frames of a free-running `unit`.
+    fn free(unit: &mut DiskSource, n: usize) -> Vec<Vec<f32>> {
+        block(unit, &stopped(), SR, n)
+    }
+
+    /// One block of `n` frames of `voice` under `t`, at `rate`.
+    fn under(voice: &mut DiskVoice, t: &MockTransport, rate: f64, n: usize) -> Vec<Vec<f32>> {
+        block(voice, t, rate, n)
+    }
 
     /// Tests still author stereo pairs for readability; flatten them at the one
     /// boundary rather than rewriting every fixture. The frames land at
@@ -922,11 +972,11 @@ mod tests {
     /// frame**, exactly: output frame `i` is the ring's frame `i`, and after 8
     /// blocks of 64 it stands on frame 511.
     ///
-    /// The FIFO reader this replaced popped four frames of interpolation
-    /// head-room per block and dropped them, so it ran 68/64 fast — every
-    /// streamed file a quarter-tone sharp with its level and waveform intact.
-    /// Reading by position has no fetch step to get wrong, but the step is
-    /// still the one quantity that decides pitch, so it stays pinned.
+    /// A reader that popped four frames of interpolation head-room per block
+    /// and dropped them would run 68/64 fast: every streamed file a
+    /// quarter-tone sharp with its level and waveform intact. Reading by
+    /// position has no fetch step to get wrong, but the step is still the one
+    /// quantity that decides pitch, so it stays pinned.
     ///
     /// Mutation (run): the position stepped by `n + 4` frames a block → frame
     /// 64 reads 68 → fails.
@@ -940,17 +990,11 @@ mod tests {
         let (mut unit, _state) = make_unit(&samples);
         unit.play();
 
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
         for block in 0..BLOCKS {
-            unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-            for i in 0..BLOCK {
+            let out = free(&mut unit, BLOCK);
+            for (i, &got) in out[0].iter().enumerate() {
                 let frame = block * BLOCK + i;
-                assert_eq!(
-                    output.buffer_ref().at_f32(0, i),
-                    samples[frame].0,
-                    "output frame {frame}"
-                );
+                assert_eq!(got, samples[frame].0, "output frame {frame}");
             }
         }
         assert_eq!(unit.read.read_to(), (BLOCK * BLOCKS - 1) as f64);
@@ -958,25 +1002,20 @@ mod tests {
 
     // --- DiskVoice: placement gate ---
 
-    use crate::test_transport::MockTransport;
-    use tutti_core::Bpm;
-
     /// A voice at 44.1 kHz over a ring holding `samples` from straight
     /// position 0.
     fn make_clip_reader(
         samples: &[(f32, f32)],
-        transport: Arc<dyn Timeline>,
         start_beat: Beat,
         duration: Option<BeatDuration>,
     ) -> DiskVoice {
-        make_clip_reader_at(samples, 0, transport, start_beat, duration)
+        make_clip_reader_at(samples, 0, start_beat, duration)
     }
 
     /// [`make_clip_reader`] over a ring holding `samples` from `at` on.
     fn make_clip_reader_at(
         samples: &[(f32, f32)],
         at: u64,
-        transport: Arc<dyn Timeline>,
         start_beat: Beat,
         duration: Option<BeatDuration>,
     ) -> DiskVoice {
@@ -986,7 +1025,6 @@ mod tests {
             inner,
             state,
             DiskVoiceConfig {
-                timeline: transport,
                 window: VoiceWindow {
                     start: start_beat,
                     duration,
@@ -1022,7 +1060,6 @@ mod tests {
             inner,
             state,
             DiskVoiceConfig {
-                timeline: transport.clone(),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
@@ -1034,8 +1071,8 @@ mod tests {
 
         // Two seconds in at 120 BPM = beat 4.0.
         transport.set_beat(Beat::new(4.0));
-        reader.set_sample_rate(SampleRate(44_100.0));
-        reader.tick(&[], &mut [0.0f32; 2]);
+        reader.set_render_rate(SampleRate(44_100.0));
+        under(&mut reader, &transport, SR, 1);
         let offset = ring.play() as f64;
 
         // 2 s of a 48 kHz file is 96000 file samples — src_ratio applied once.
@@ -1054,10 +1091,8 @@ mod tests {
     /// A cursor watching beats is blind to it: at beat 20 of a 120 BPM
     /// timeline, 1.0x -> 2.0x relocates the file position by 441 000 frames
     /// while the transport reports the same beat, at the same tempo, still
-    /// rolling. Before the clock moves the read goes on from where it stands
-    /// at the new rate (the seat re-anchors, as the memory tier's does); once
-    /// it moves, the voice reads where the gate puts the playhead at the new
-    /// speed and tells the butler so (`Ring::play`), which fills there.
+    /// rolling. The next block reads where the gate puts the playhead at the
+    /// new speed and tells the butler so (`Ring::play`), which fills there.
     ///
     /// Mutation (run): the gate's rate ignoring varispeed → the voice reads
     /// on near 441 000 → fails.
@@ -1067,34 +1102,32 @@ mod tests {
             .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
             .collect();
         let transport = MockTransport::rolling(Beat::new(20.0), Bpm::new(120.0));
-        let mut reader = make_clip_reader(&samples, transport.clone(), Beat::new(0.0), None);
+        let mut reader = make_clip_reader(&samples, Beat::new(0.0), None);
         let ring = Arc::clone(reader.inner.read.ring());
 
-        let mut out = [0.0f32; 2];
-        reader.tick(&[], &mut out);
+        under(&mut reader, &transport, SR, 1);
         let before = ring.play();
         assert_eq!(before, 441_000, "10 s of a 44.1 kHz file");
 
         let beat_before = transport.beat();
         reader.set_speed(PlaybackRate::new(2.0));
-        reader.tick(&[], &mut out);
+        under(&mut reader, &transport, SR, 1);
         assert_eq!(
             transport.beat(),
             beat_before,
             "the playhead must not have moved; otherwise this proves nothing"
         );
-        // Re-anchored where it stood: one step at the new rate on.
-        assert_eq!(ring.play(), 441_002, "the seat re-anchors where it stands");
-        // One frame on: the gate's position at 2x.
-        transport.advance(1, 44_100.0);
-        reader.tick(&[], &mut out);
-        assert_eq!(ring.play(), 882_002, "at 2x beat 20 is 20 s in");
+        assert_eq!(ring.play(), 882_000, "at 2x beat 20 is 20 s in");
+        // One frame on: two file frames on.
+        transport.advance(1, SR);
+        under(&mut reader, &transport, SR, 1);
+        assert_eq!(ring.play(), 882_002, "a frame later, two file frames on");
     }
 
-    /// **A severed copy past its window closes its file**, and one inside it
-    /// holds it open: a render of many voices keeps a file open per voice
-    /// sounding. Mutation (run): the close removed from `offline_frame`'s
-    /// past-the-window branch → still open → fails.
+    /// **A fork past its window closes its file**, and one inside it holds it
+    /// open: a render of many voices keeps a file open per voice sounding.
+    /// Mutation (run): the close removed from `offline_render`'s past-the-window
+    /// branch → still open → fails.
     #[test]
     fn a_fork_closes_its_file_once_past_its_window() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -1122,41 +1155,26 @@ mod tests {
             })
             .expect("the butler is alive");
         let _ = streamer.step_until_settled(1_000);
-        let live: Arc<dyn Timeline> = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
         // Beats [0, 1): 24 000 frames at 120 BPM.
         let voice = streamer
             .status()
-            .take_disk_voice(0, live, Beat::new(0.0), Some(BeatDuration::new(1.0)))
+            .take_disk_voice(0, Beat::new(0.0), Some(BeatDuration::new(1.0)))
             .expect("the link is installed");
 
-        let render = Arc::new(tutti_core::transport::OfflineTimeline::new(
-            &tutti_core::transport::OfflineTimelineConfig {
-                start_beat: Beat::new(0.0),
-                tempo: Bpm::new(120.0),
-                sample_rate: SampleRate(48_000.0),
-                loop_range: None,
-            },
-        ));
-        let ctx: tutti_core::transport::OfflineTransport =
-            tutti_core::transport::OfflineTransport::new(render.clone());
-        let mut copy = voice.clone();
-        copy.isolate();
-        copy.rebind_offline(&ctx);
-        copy.reset();
-        copy.set_sample_rate(SampleRate(48_000.0));
+        let render = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let mut copy = voice.fork_copy();
+        copy.set_render_rate(SampleRate(48_000.0));
         let is_open = |copy: &DiskVoice| {
             copy.offline
                 .as_ref()
                 .and_then(|offline| offline.read.as_ref())
                 .is_some_and(OfflineRead::is_open)
         };
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
         let mut played = 0;
         while played < 30_000 {
-            copy.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+            under(&mut copy, &render, 48_000.0, 64);
             played += 64;
-            render.advance(64);
+            render.advance(64, 48_000.0);
             if played == 1_024 {
                 assert!(is_open(&copy), "the file is open while the clip plays");
             }
@@ -1164,15 +1182,14 @@ mod tests {
         assert!(!is_open(&copy), "the file is still open past the window");
     }
 
-    /// **A stopped clock silences a fork mid-clip**, through `process` and
-    /// through `tick`: the clock stops where it stands (its beat does not
-    /// move), and the read must not run on from its seat as if it still
-    /// rolled. A render's own clock always rolls, so the fork is put on a
-    /// mock one after its rebind; the seat is the memory tier's too
-    /// (`memory_source`'s `a_stopped_clock_silences_a_placed_read`).
+    /// **A stopped clock silences a fork mid-clip**, in a 64-frame block and
+    /// in one-frame ones: the clock stops where it stands (its beat does not
+    /// move), and the read must not run on as if it still rolled. The
+    /// placement is the memory tier's too (`memory_source`'s
+    /// `a_stopped_clock_silences_a_placed_read`).
     ///
-    /// Mutation (run): the `is_rolling` guard removed from `Seat::next` → the
-    /// seat runs on through the stop → fails.
+    /// Mutation (run): `place` ignoring `run.rolling()` → the read plays on
+    /// through the stop → fails.
     #[test]
     fn a_stopped_clock_silences_a_fork() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -1200,90 +1217,66 @@ mod tests {
             })
             .expect("the butler is alive");
         let _ = streamer.step_until_settled(1_000);
-        let live: Arc<dyn Timeline> = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
         let voice = streamer
             .status()
-            .take_disk_voice(0, live, Beat::new(0.0), None)
+            .take_disk_voice(0, Beat::new(0.0), None)
             .expect("the link is installed");
-        let render = Arc::new(tutti_core::transport::OfflineTimeline::new(
-            &tutti_core::transport::OfflineTimelineConfig {
-                start_beat: Beat::new(0.0),
-                tempo: Bpm::new(120.0),
-                sample_rate: SampleRate(48_000.0),
-                loop_range: None,
-            },
-        ));
-        let ctx: tutti_core::transport::OfflineTransport =
-            tutti_core::transport::OfflineTransport::new(render);
 
-        for via_tick in [false, true] {
-            let mut copy = voice.clone();
-            copy.isolate();
-            copy.rebind_offline(&ctx);
-            copy.reset();
-            copy.set_sample_rate(SampleRate(48_000.0));
+        for single in [false, true] {
+            let mut copy = voice.fork_copy();
+            copy.set_render_rate(SampleRate(48_000.0));
             let clock = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
-            copy.timeline = clock.clone();
-            let block = |copy: &mut DiskVoice| -> Vec<f32> {
-                if via_tick {
+            let blk = |copy: &mut DiskVoice| -> Vec<f32> {
+                if single {
                     (0..64)
-                        .map(|_| {
-                            let mut frame = [0.0f32; 2];
-                            copy.tick(&[], &mut frame);
-                            frame[0]
-                        })
+                        .map(|_| under(copy, &clock, 48_000.0, 1)[0][0])
                         .collect()
                 } else {
-                    let input = BufferVec::new(0);
-                    let mut output = BufferVec::new(2);
-                    copy.process(64, &input.buffer_ref(), &mut output.buffer_mut());
-                    (0..64).map(|i| output.buffer_ref().at_f32(0, i)).collect()
+                    under(copy, &clock, 48_000.0, 64).swap_remove(0)
                 }
             };
             assert!(
-                block(&mut copy).iter().all(|&s| s != 0.0),
-                "tick {via_tick}: rolling, the clip plays"
+                blk(&mut copy).iter().all(|&s| s != 0.0),
+                "single frames {single}: rolling, the clip plays"
             );
             clock.set_rolling(false);
             assert!(
-                block(&mut copy).iter().all(|&s| s == 0.0),
-                "tick {via_tick}: stopped, the fork plays on"
+                blk(&mut copy).iter().all(|&s| s == 0.0),
+                "single frames {single}: stopped, the fork plays on"
             );
         }
     }
 
     /// **A severed source lets go of the live reader.** A clone never holds
-    /// it (the reader is the live source's alone, doc 013 item 7), so the one
-    /// way an isolated copy could still speak for the live ring is a source
-    /// isolated in place. Here the live source claims a block, is isolated,
-    /// and, stopped, renders again: the ranges the live block claimed must
-    /// still stand, and a clone of it renders nothing into them either.
+    /// it (the reader is the live source's alone), so the one
+    /// way a severed copy could still speak for the live ring is a source
+    /// severed in place (what a disk voice's fork does to its copy's source).
+    /// Here the live source claims a block, is severed, and, stopped, renders
+    /// again: the ranges the live block claimed must still stand, and a clone
+    /// of it renders nothing into them either.
     ///
-    /// Re-pinned with item 7: this isolated a *clone*, which under `Net`
-    /// shared the reader. Mutation (run): `isolate` not severing
-    /// (`read.sever()` removed) → the isolated source's stopped block idles
-    /// the reader and clears its ranges → fails.
+    /// Mutation (run): `sever` not letting go of the reader (`read.sever()`
+    /// removed) → the severed source's stopped block idles the reader and
+    /// clears its ranges → fails.
     #[test]
     fn a_severed_copy_holds_no_live_reader() {
         let (mut writer, ring) =
             RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4_096, 2usize);
         writer.push_interleaved(&[0.5; 2 * 1_000]);
         let mut live = DiskSource::new(ring, Arc::new(RtState::new()));
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
-        live.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        free(&mut live, 64);
         let claimed = writer.in_flight_end();
         assert!(claimed > 0, "the live block claimed nothing");
         let mut clone = live.clone();
         clone.play();
-        clone.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        free(&mut clone, 64);
         assert_eq!(
             writer.in_flight_end(),
             claimed,
             "a clone spoke for the live reader"
         );
-        live.isolate();
-        live.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        live.sever();
+        free(&mut live, 64);
         assert_eq!(
             writer.in_flight_end(),
             claimed,
@@ -1291,46 +1284,36 @@ mod tests {
         );
     }
 
-    /// **A copy severed for an offline render never touches the live stream**:
-    /// rendered inside its window on the render's clock, it tells the live
-    /// butler no position (so the live window stays where the live voice
-    /// reads), and its controls are its own. A copy only *rebound* (no `isolate` first) is severed too.
-    /// So a disk voice, and a `VoiceNode` holding one, can be forked
-    /// (`forkable`, which a fork trusts). What such a copy plays instead is
-    /// `tests/offline_disk_voice.rs`'s.
+    /// **A fork of a disk voice never touches the live stream**: rendered
+    /// inside its window on the render's transport, it tells the live butler
+    /// no position (so the live window stays where the live voice reads), and
+    /// its controls are its own. What it plays instead is
+    /// `tests/offline_disk_voice.rs`'s. The node's fork source forks it for an
+    /// offline render and **refuses a live one**, which would read the file
+    /// on the audio thread.
     ///
-    /// Mutation (run): `isolate` keeping the live `shared_state` → the copy's
-    /// gain write lands on the live cell → fails. Mutation (run):
-    /// `rebind_offline` not isolating a live copy first → that copy reads the
-    /// live ring on the render's clock and publishes its position → fails.
+    /// Mutation (run): `fork_copy` keeping the live `shared_state` → the
+    /// copy's gain write lands on the live cell → fails. Mutation (run):
+    /// `fork_copy` returning the copy on the live path over the live cell
+    /// (before it detaches the cell and hands the copy its file) → fails.
+    /// Mutation (run): `DiskVoiceFork` not refusing `ForkMode::Live` →
+    /// fails. (Not caught: `fork_copy` not severing its source alone — a
+    /// clone of a source never holds the live reader, so severing it again
+    /// changes nothing; `a_severed_copy_holds_no_live_reader` pins `sever`.)
     #[test]
-    fn a_severed_copy_never_touches_the_live_stream() {
+    fn a_fork_never_touches_the_live_stream() {
         let samples: Vec<_> = (1..4096).map(|i| (i as f32, i as f32)).collect();
-        let live_clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let live = make_clip_reader(&samples, live_clock, Beat::new(0.0), None);
+        let live = make_clip_reader(&samples, Beat::new(0.0), None);
         let ring = Arc::clone(live.inner.read.ring());
         let (play_before, window_before) = (ring.play(), ring.window());
 
-        let render: tutti_core::transport::OfflineTransport =
-            tutti_core::transport::OfflineTransport::new(MockTransport::rolling(
-                Beat::new(1.0),
-                Bpm::new(120.0),
-            ));
-        let mut isolated = live.clone();
-        isolated.isolate();
-        isolated.rebind_offline(&render);
-        let mut rebound_only = live.clone();
-        rebound_only.rebind_offline(&render);
-
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
-        for copy in [&mut isolated, &mut rebound_only] {
-            copy.reset();
-            for _ in 0..16 {
-                copy.process(64, &input.buffer_ref(), &mut output.buffer_mut());
-            }
-            copy.set_gain(Amplitude::new(0.25));
+        let render = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let mut copy = live.fork_copy();
+        for _ in 0..16 {
+            under(&mut copy, &render, SR, 64);
+            render.advance(64, SR);
         }
+        copy.set_gain(Amplitude::new(0.25));
 
         assert_eq!(ring.play(), play_before, "a copy moved the live read");
         assert_eq!(ring.window(), window_before, "a copy touched the live ring");
@@ -1339,16 +1322,23 @@ mod tests {
             Amplitude::new(1.0),
             "a copy moved the live gain"
         );
-        assert!(live.forkable());
-        let node = crate::voice::node::VoiceNode::with_channels(
-            crate::voice::types::Voice {
-                source: crate::voice::types::VoiceSource::Disk(live),
-                play: crate::voice::types::Playback::default(),
-                channel_index: None,
+
+        let clock = Arc::new(tutti_core::transport::OfflineTimeline::new(
+            &tutti_core::transport::OfflineTimelineConfig {
+                start_beat: Beat::new(0.0),
+                tempo: Bpm::new(120.0),
+                sample_rate: SampleRate(48_000.0),
+                loop_range: None,
             },
-            2usize,
-        );
-        assert!(node.forkable());
+        ));
+        let ctx = tutti_core::transport::OfflineTransport::new(clock);
+        let source = DiskVoiceFork(live.clone());
+        assert!(source.fork(ForkMode::Offline(&ctx)).is_ok());
+        let refused = source
+            .fork(ForkMode::Live)
+            .err()
+            .expect("a live fork is refused");
+        assert!(refused.downcast_ref::<LiveDiskFork>().is_some());
     }
 
     #[test]
@@ -1360,49 +1350,43 @@ mod tests {
         let mut reader = make_clip_reader_at(
             &samples,
             22_046,
-            transport.clone(),
             Beat::new(4.0),
             Some(BeatDuration::new(4.0)),
         );
 
         // Before the window (beat 0): silence, ring untouched.
-        let mut out = [0.0f32; 2];
-        for _ in 0..8 {
-            reader.tick(&[], &mut out);
-        }
-        assert_eq!(out, [0.0, 0.0], "before window → silence");
+        let out = under(&mut reader, &transport, SR, 8);
+        assert!(
+            out.iter().flatten().all(|&s| s == 0.0),
+            "before window → silence"
+        );
 
         // Inside the window (beat 5): reads the ring, produces audio.
         transport.set_beat(Beat::new(5.0));
-        let mut got_audio = false;
-        for _ in 0..8 {
-            reader.tick(&[], &mut out);
-            if out[0] != 0.0 || out[1] != 0.0 {
-                got_audio = true;
-            }
-        }
-        assert!(got_audio, "inside window → audible");
+        let out = under(&mut reader, &transport, SR, 8);
+        assert!(
+            out.iter().flatten().any(|&s| s != 0.0),
+            "inside window → audible"
+        );
 
         // Past the window (beat 9): silent again.
         transport.set_beat(Beat::new(9.0));
-        reader.tick(&[], &mut out);
-        assert_eq!(out, [0.0, 0.0], "after window → silence");
+        let out = under(&mut reader, &transport, SR, 1);
+        assert_eq!([out[0][0], out[1][0]], [0.0, 0.0], "after window → silence");
     }
 
     #[test]
     fn clip_reader_stopped_transport_is_silent() {
         let samples: Vec<_> = (1..32).map(|i| (i as f32, i as f32)).collect();
         let transport = MockTransport::stopped(Beat::new(5.0), Bpm::new(120.0)); // inside window but stopped
-        let mut reader = make_clip_reader(
-            &samples,
-            transport,
-            Beat::new(4.0),
-            Some(BeatDuration::new(4.0)),
-        );
+        let mut reader = make_clip_reader(&samples, Beat::new(4.0), Some(BeatDuration::new(4.0)));
 
-        let mut out = [1.0f32; 2];
-        reader.tick(&[], &mut out);
-        assert_eq!(out, [0.0, 0.0], "stopped transport → silence");
+        let out = under(&mut reader, &transport, SR, 1);
+        assert_eq!(
+            [out[0][0], out[1][0]],
+            [0.0, 0.0],
+            "stopped transport → silence"
+        );
     }
 
     // --- DiskVoice: RT no-alloc (steady-state process inside window) ---
@@ -1415,38 +1399,33 @@ mod tests {
     #[global_allocator]
     static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-    #[test]
-    fn clip_reader_process_steady_state_is_allocation_free() {
+    /// A clip reader inside its window, driven by hand (`Direct`) at 48 kHz
+    /// in `frames`-frame blocks, warmed up: the enter-window edge settled and
+    /// the interpolation history primed.
+    fn warm_clip_reader(transport: &MockTransport, frames: usize) -> Direct<DiskVoice> {
         let samples: Vec<_> = (1..2048)
             .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
             .collect();
-        let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0)); // inside window
-        let mut reader = make_clip_reader_at(
+        let reader = make_clip_reader_at(
             &samples,
             22_046,
-            transport,
             Beat::new(4.0),
             Some(BeatDuration::new(4.0)),
         );
-        reader.set_sample_rate(tutti_core::SampleRate::new(48_000.0));
-
-        let input_vec = BufferVec::new(0);
-        let mut output_vec = BufferVec::new(2);
-
-        // Warm-up: settles the enter-window seek edge + primes the interpolation
-        // history so the guarded loop is on the steady-state path. (The seek edge
-        // itself is alloc-free — see `clip_reader_seek_edge_is_allocation_free`.)
+        let mut direct = Direct::new(reader, SampleRate::new(48_000.0), frames);
         for _ in 0..16 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            reader.process(64, &input, &mut output);
+            direct.block_in(&transport.env(frames, 48_000.0));
         }
+        direct
+    }
 
+    #[test]
+    fn clip_reader_process_steady_state_is_allocation_free() {
+        let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0)); // inside window
+        let mut direct = warm_clip_reader(&transport, 64);
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..2_000 {
-                let input = input_vec.buffer_ref();
-                let mut output = output_vec.buffer_mut();
-                reader.process(64, &input, &mut output);
+                direct.block_in(&transport.env(64, 48_000.0));
             }
         });
     }
@@ -1458,65 +1437,31 @@ mod tests {
     /// allocates on the jump path is caught.
     #[test]
     fn clip_reader_jump_edge_is_allocation_free() {
-        let samples: Vec<_> = (1..2048)
-            .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
-            .collect();
         let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0)); // inside [4, 8)
-        let mut reader = make_clip_reader_at(
-            &samples,
-            22_046,
-            Arc::clone(&transport) as Arc<dyn Timeline>,
-            Beat::new(4.0),
-            Some(BeatDuration::new(4.0)),
-        );
-        reader.set_sample_rate(tutti_core::SampleRate::new(48_000.0));
-
-        let input_vec = BufferVec::new(0);
-        let mut output_vec = BufferVec::new(2);
-
-        // Prime interpolation history / settle the initial enter-window seek.
-        for _ in 0..16 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            reader.process(64, &input, &mut output);
-        }
-
+        let mut direct = warm_clip_reader(&transport, 64);
         assert_no_alloc::assert_no_alloc(|| {
             for i in 0..2_000 {
                 // Jump the playhead back and forth inside the window so the
                 // reader keeps taking a scratch copy and starting a fade.
                 let beat = if i % 2 == 0 { 5.0 } else { 6.5 };
                 transport.set_beat(Beat::new(beat));
-                let input = input_vec.buffer_ref();
-                let mut output = output_vec.buffer_mut();
-                reader.process(64, &input, &mut output);
+                direct.block_in(&transport.env(64, 48_000.0));
             }
         });
     }
 
+    /// One-frame blocks, the shortest a node is handed: the per-block work
+    /// (the clock's runs, the ring's claim) allocates nothing either.
     #[test]
-    fn clip_reader_tick_steady_state_is_allocation_free() {
-        let samples: Vec<_> = (1..2048)
-            .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
-            .collect();
+    fn clip_reader_single_frame_steady_state_is_allocation_free() {
         let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0));
-        let mut reader = make_clip_reader_at(
-            &samples,
-            22_046,
-            transport,
-            Beat::new(4.0),
-            Some(BeatDuration::new(4.0)),
-        );
-        reader.set_sample_rate(tutti_core::SampleRate::new(48_000.0));
-
-        let mut out = [0.0f32; 2];
+        let mut direct = warm_clip_reader(&transport, 1);
         for _ in 0..256 {
-            reader.tick(&[], &mut out);
+            direct.block_in(&transport.env(1, 48_000.0));
         }
-
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..100_000 {
-                reader.tick(&[], &mut out);
+                direct.block_in(&transport.env(1, 48_000.0));
             }
         });
     }
@@ -1532,48 +1477,41 @@ mod tests {
 
         assert!(unit.is_playing());
 
-        // Tick while playing — should produce non-zero after history primes.
-        let mut out = [0.0f32; 2];
-        for _ in 0..5 {
-            unit.tick(&[], &mut out);
-        }
-        let playing_sample = out[0];
+        // Play while playing — should produce non-zero after history primes.
+        free(&mut unit, 5);
 
         unit.stop();
         assert!(!unit.is_playing());
-        unit.tick(&[], &mut out);
-        assert_eq!(out[0], 0.0, "stopped unit must output silence");
-        assert_eq!(out[1], 0.0);
+        let out = free(&mut unit, 1);
+        assert_eq!(out[0][0], 0.0, "stopped unit must output silence");
+        assert_eq!(out[1][0], 0.0);
 
         unit.play();
         assert!(unit.is_playing());
-        unit.tick(&[], &mut out);
-        assert_ne!(out[0], 0.0, "resumed unit should produce audio");
-        let _ = playing_sample;
+        let out = free(&mut unit, 1);
+        assert_ne!(out[0][0], 0.0, "resumed unit should produce audio");
     }
 
-    // --- New: tick produces interpolated output from ring buffer ---
+    // --- New: one-frame blocks read interpolated output from the ring ---
 
     #[test]
-    fn tick_reads_from_ring_buffer_and_interpolates() {
+    fn single_frames_read_from_ring_buffer_and_interpolate() {
         // Feed a ramp 0,1,2,...,19 into the ring buffer. After enough
-        // ticks to prime the 4-sample history, output should be
+        // frames to prime the 4-sample history, output should be
         // non-zero and monotonically increasing (speed=1, src_ratio=1).
         let samples: Vec<_> = (0..20).map(|i| (i as f32, i as f32)).collect();
         let (mut unit, _state) = make_unit(&samples);
 
         let mut prev = f32::NEG_INFINITY;
-        let mut out = [0.0f32; 2];
         for i in 0..16 {
-            unit.tick(&[], &mut out);
+            let out = free(&mut unit, 1)[0][0];
             if i >= 4 {
                 assert!(
-                    out[0] >= prev,
-                    "ramp should be monotonic at tick {i}: prev={prev}, got={}",
-                    out[0]
+                    out >= prev,
+                    "ramp should be monotonic at frame {i}: prev={prev}, got={out}"
                 );
             }
-            prev = out[0];
+            prev = out;
         }
         assert!(prev > 0.0, "should have produced non-zero audio");
     }
@@ -1587,16 +1525,11 @@ mod tests {
             .collect();
         let (mut unit, _state) = make_unit(&samples);
 
-        let input_vec = BufferVec::new(0);
-        let mut output_vec = BufferVec::new(2);
-
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        unit.process(64, &input, &mut output);
+        let output = free(&mut unit, 64);
 
         // After 64 frames at speed=1, output should contain interpolated
         // samples from the ramp. Check last few are non-zero.
-        let last = output.at_f32(0, 63);
+        let last = output[0][63];
         assert!(last > 0.0, "process() should produce audio, got {last}");
     }
 
@@ -1606,23 +1539,18 @@ mod tests {
         let (mut unit, _state) = make_unit(&samples);
         unit.stop();
 
-        let input_vec = BufferVec::new(0);
-        let mut output_vec = BufferVec::new(2);
+        let output = free(&mut unit, 16);
 
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        unit.process(16, &input, &mut output);
-
-        for i in 0..16 {
-            assert_eq!(output.at_f32(0, i), 0.0);
-            assert_eq!(output.at_f32(1, i), 0.0);
+        for ch in &output[..2] {
+            assert_eq!(ch.len(), 16);
+            assert!(ch.iter().all(|&s| s == 0.0));
         }
     }
 
     // --- New: gain application ---
 
     #[test]
-    fn gain_scales_tick_output() {
+    fn gain_scales_the_output() {
         let samples: Vec<_> = (0..20).map(|_| (1.0f32, -1.0f32)).collect();
 
         let reader1 = make_reader_with_samples(&samples);
@@ -1634,24 +1562,16 @@ mod tests {
         let mut half = DiskSource::new(reader2, state2);
         half.set_gain(Amplitude::new(0.5));
 
-        let mut out_full = [0.0f32; 2];
-        let mut out_half = [0.0f32; 2];
-
         // Prime history then compare
-        for _ in 0..6 {
-            full.tick(&[], &mut out_full);
-            half.tick(&[], &mut out_half);
-        }
+        let out_full = free(&mut full, 6)[0][5];
+        let out_half = free(&mut half, 6)[0][5];
 
-        if out_full[0].abs() > 1e-6 {
-            let ratio = out_half[0] / out_full[0];
-            assert!(
-                (ratio - 0.5).abs() < 0.05,
-                "gain=0.5 should halve output: full={}, half={}, ratio={ratio}",
-                out_full[0],
-                out_half[0]
-            );
-        }
+        assert!(out_full.abs() > 1e-6, "the full-gain source sounds");
+        let ratio = out_half / out_full;
+        assert!(
+            (ratio - 0.5).abs() < 0.05,
+            "gain=0.5 should halve output: full={out_full}, half={out_half}, ratio={ratio}"
+        );
     }
 
     // --- New: reset clears interpolation state ---
@@ -1661,10 +1581,7 @@ mod tests {
         let samples: Vec<_> = (0..100).map(|i| (i as f32, 0.0)).collect();
         let (mut unit, _state) = make_unit(&samples);
 
-        let mut out = [0.0f32; 2];
-        for _ in 0..10 {
-            unit.tick(&[], &mut out);
-        }
+        free(&mut unit, 10);
 
         unit.reset();
         assert!(!unit.is_playing());
@@ -1687,15 +1604,12 @@ mod tests {
         let samples: Vec<_> = (0..512).map(|i| (i as f32, 0.0)).collect();
         let (mut unit, _state) = make_unit(&samples);
         let ring = Arc::clone(unit.read.ring());
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
-        unit.process(8, &input.buffer_ref(), &mut output.buffer_mut());
+        free(&mut unit, 8);
         ring.request_seek(100);
         // No fade on this bare ring (its fade length is 0): the next block
         // reads the target at once, and the one after reads on from it.
         for want in [100.0, 108.0] {
-            unit.process(8, &input.buffer_ref(), &mut output.buffer_mut());
-            assert_eq!(output.buffer_ref().at_f32(0, 0), want);
+            assert_eq!(free(&mut unit, 8)[0][0], want);
         }
         // A source taken after a seek: on a stream of its own, since a ring
         // serves one live reader (this test took a second off the same ring
@@ -1703,12 +1617,7 @@ mod tests {
         let seeked = make_reader_with_samples(&samples);
         seeked.request_seek(100);
         let mut late = DiskSource::new(seeked, Arc::new(RtState::new()));
-        late.process(1, &input.buffer_ref(), &mut output.buffer_mut());
-        assert_eq!(
-            output.buffer_ref().at_f32(0, 0),
-            100.0,
-            "starts at the seek"
-        );
+        assert_eq!(free(&mut late, 1)[0][0], 100.0, "starts at the seek");
     }
 
     /// Build a `channels`-wide ring pre-filled with `frames` interleaved frames.
@@ -1746,11 +1655,10 @@ mod tests {
             // Transport parked BEFORE the voice's start beat, so the placement
             // gate reports "outside".
             let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-            let mut voice = DiskVoice::new(
+            let voice = DiskVoice::new(
                 inner,
                 state,
                 DiskVoiceConfig {
-                    timeline: transport,
                     window: VoiceWindow {
                         start: Beat::new(64.0),
                         duration: None,
@@ -1759,36 +1667,42 @@ mod tests {
                 },
             );
 
-            // `tick`: pre-dirty the caller's frame so a missing write shows.
-            let mut out = vec![9.0f32; width];
-            voice.tick(&[], &mut out);
-            for (c, &s) in out.iter().enumerate() {
-                assert_eq!(
-                    s, 0.0,
-                    "width {width} tick: channel {c} not silenced outside the window"
-                );
-            }
-
-            // `process`: same, through the planar path.
-            let input = BufferVec::new(0);
-            let mut output = BufferVec::new(width);
-            {
-                let mut buf = output.buffer_mut();
-                for c in 0..width {
-                    for i in 0..8 {
-                        buf.set_f32(c, i, 9.0);
-                    }
+            // Pre-dirty the node's outputs so a missing write shows, in a
+            // one-frame block and an eight-frame one.
+            let mut direct = Direct::new(voice, SampleRate(SR), 8);
+            for frames in [1usize, 8] {
+                for ch in direct.outputs_mut() {
+                    ch.fill(9.0);
                 }
-            }
-            voice.process(8, &input.buffer_ref(), &mut output.buffer_mut());
-            let buf = output.buffer_ref();
-            for c in 0..width {
-                for i in 0..8 {
-                    assert_eq!(
-                        buf.at_f32(c, i),
-                        0.0,
-                        "width {width} process: channel {c} sample {i} not silenced"
-                    );
+                let mut env = transport.env(8, SR);
+                env.block_len = Samples(frames);
+                if frames == 8 {
+                    direct.block_in(&env);
+                } else {
+                    // `Direct` runs its own block length; a one-frame block
+                    // is a node of its own.
+                    let mut one = Direct::new(direct.node.clone(), SampleRate(SR), 1);
+                    for ch in one.outputs_mut() {
+                        ch.fill(9.0);
+                    }
+                    one.block_in(&env);
+                    for c in 0..width {
+                        assert_eq!(
+                            one.output(c)[0],
+                            0.0,
+                            "width {width}, one frame: channel {c} not silenced"
+                        );
+                    }
+                    continue;
+                }
+                for c in 0..width {
+                    for i in 0..frames {
+                        assert_eq!(
+                            direct.output(c)[i],
+                            0.0,
+                            "width {width}: channel {c} sample {i} not silenced"
+                        );
+                    }
                 }
             }
         }
@@ -1823,21 +1737,17 @@ mod tests {
             "the ring's declared width must reach the unit as a layout"
         );
         assert_eq!(
-            unit.outputs(),
+            unit.shape().audio_out.count() as usize,
             width,
             "the cached stride must agree with the declared layout"
         );
 
         // The block reads frames 0..64, the ring's own.
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(width);
-        unit.process(64, &input.buffer_ref(), &mut output.buffer_mut());
-
-        let buf = output.buffer_ref();
+        let buf = free(&mut unit, 64);
         // The last quarter of the block is well past priming.
         for i in 48..64 {
-            for c in 0..width {
-                let got = buf.at_f32(c, i);
+            for (c, ch) in buf.iter().enumerate().take(width) {
+                let got = ch[i];
                 let want = (c + 1) as f32;
                 assert!(
                     (got - want).abs() < 1e-4,
@@ -1847,17 +1757,18 @@ mod tests {
             }
         }
 
-        // `tick` reads through the same path, so it must land on the same
-        // frame.
-        let mut frame = vec![0.0f32; width];
-        for _ in 0..8 {
-            unit.tick(&[], &mut frame);
+        // One-frame blocks read through the same path, so they must land on
+        // the same frame.
+        let mut frame = free(&mut unit, 1);
+        for _ in 0..7 {
+            frame = free(&mut unit, 1);
         }
-        for (c, &s) in frame.iter().enumerate() {
+        for (c, ch) in frame.iter().enumerate() {
             let want = (c + 1) as f32;
             assert!(
-                (s - want).abs() < 1e-4,
-                "tick channel {c}: read {s}, want {want}"
+                (ch[0] - want).abs() < 1e-4,
+                "one-frame block, channel {c}: read {}, want {want}",
+                ch[0]
             );
         }
     }
@@ -1868,19 +1779,15 @@ mod tests {
     /// The clone half of the live-value rule, at the disk tier: a gain stored
     /// **by value** in `DiskSource` would be written on one copy and never
     /// reach the one that renders. The gain lives in the stream's control
-    /// cell (`RtState`), which every copy shares until `isolate`.
+    /// cell (`RtState`), which every clone shares (a fork detaches it,
+    /// `fork_copy`).
     ///
-    /// Re-pinned with doc 013 item 7 (the follow-up #48 left). This used to
-    /// render *from* the clone and write through the original, because
-    /// `Net::commit` handed its backend a clone of every node; the clone then
-    /// shared the ring's one reader through a `try_lock`. No engine renders a
-    /// `Net` since #49: the native graph renders the unit it was given, and
-    /// the only copies it takes (`Legacy::controlled`'s shadow, a fork cloned
-    /// from it) never render the live stream. So the reader is the original's
-    /// alone. What native does, and this pins: the original renders at the
-    /// gain a copy wrote (a copy holding the cell is how a host's handle, or a
-    /// shadow before its `isolate`, reaches it), and a clone, holding no
-    /// reader, renders silence — it cannot claim the live ring.
+    /// The graph renders the node it was given, and the only copy it takes
+    /// (a fork, `fork_copy`) never renders the live stream, so the reader is
+    /// the original's alone. What the graph does, and this pins: the original renders at the
+    /// gain a copy wrote (a copy holding the cell is how a host's handle,
+    /// `DiskVoiceControls`, reaches it), and a clone, holding no reader,
+    /// renders silence — it cannot claim the live ring.
     ///
     /// Mutation (run): `LiveRead::clone` keeping the reader (a shared
     /// `Arc<Mutex<PosReader>>` again) → the clone renders the stream → fails.
@@ -1889,7 +1796,7 @@ mod tests {
     #[test]
     fn a_gain_change_reaches_a_cloned_voice() {
         let (mut unit, _state) = make_unit(&[(1.0, 1.0); 256]);
-        unit.set_sample_rate(SampleRate(48_000.0));
+        unit.prepare(&Prepare::new(SampleRate(48_000.0), Samples(64)));
         unit.play();
 
         // The clone stands in for a copy the host writes through; the
@@ -1897,26 +1804,23 @@ mod tests {
         let mut copy = unit.clone();
         copy.set_gain(Amplitude::new(0.25));
 
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
-        let peak = |u: &mut DiskSource, output: &mut BufferVec| {
+        let peak = |u: &mut DiskSource| {
             let mut peak = 0.0f32;
             for _ in 0..4 {
-                u.process(8, &input.buffer_ref(), &mut output.buffer_mut());
-                for i in 0..8 {
-                    peak = peak.max(output.buffer_ref().at_f32(0, i).abs());
+                for s in &free(u, 8)[0] {
+                    peak = peak.max(s.abs());
                 }
             }
             peak
         };
-        let rendered = peak(&mut unit, &mut output);
+        let rendered = peak(&mut unit);
         assert!(
             (rendered - 0.25).abs() < 1e-4,
             "a gain written on one copy of the voice must be seen by the copy \
              that renders; expected ~0.25, got {rendered}. A value near 1.0 \
              means `gain` is stored by value and the write went nowhere."
         );
-        let cloned = peak(&mut copy, &mut output);
+        let cloned = peak(&mut copy);
         assert_eq!(
             cloned, 0.0,
             "a clone must hold no reader of the live ring, so it renders \

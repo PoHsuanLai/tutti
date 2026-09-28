@@ -1,9 +1,7 @@
-//! Offline export, driven from the ECS.
+//! Offline export, driven from the ECS (feature `export`).
 //!
-//! `tutti-export` is synchronous and Bevy-free on purpose — it spawns no
-//! threads, because "a host that wants a render off the main thread already
-//! owns a task pool that is better at it than a raw `std::thread` would be".
-//! This module is that host: it carries the engine's own `ExportConfig` as a
+//! `tutti-export` is synchronous and spawns no threads. This module runs it
+//! off the main thread for a Bevy host: it carries the engine's own `ExportConfig` as a
 //! component, runs the synchronous call on Bevy's `AsyncComputeTaskPool`, and
 //! reports the result as an entity event.
 //!
@@ -38,7 +36,7 @@
 //! };
 //!
 //! let mut graph = AudioGraphRes::headless(0, 2);
-//! let node = graph.insert(Const::mono(0.5));
+//! let (node, _) = graph.insert(Const::mono(0.5));
 //! graph.set_outputs_from(node);
 //!
 //! let mut app = App::new();
@@ -87,17 +85,15 @@
 //!
 //! # Which graph is rendered
 //!
-//! An export renders a **fork** of the live graph (`Editor::fork`, design doc
-//! 013 PR 12):
-//! what the global outputs hear for [`ExportSource::Master`], or exactly the sub-graph
+//! An export renders a **fork** of the live graph (`Editor::fork`): what the
+//! global outputs hear for [`ExportSource::Master`], or exactly the sub-graph
 //! feeding one node for [`ExportSource::Node`], every node isolated, rebound
 //! onto the request's [`ExportClock`] and reset. The live graph is not
 //! touched and keeps playing while the render runs on the pool.
 //!
-//! - **It renders what the graph is driven to play, from silence.** A master
-//!   export on `Net`, before PR 13, was a plain clone that kept the live
-//!   transport bindings and running state (delay lines, a sounding voice); a
-//!   fork keeps neither.
+//! - **It renders what the graph is driven to play, from silence.** A fork
+//!   keeps neither the live transport bindings nor running state (delay
+//!   lines, a sounding voice).
 //! - **Controls are a snapshot** at the fork: a parameter moved while the
 //!   render runs does not reach it. A modulated parameter renders its
 //!   authored base, not the live modulation (an LFO's offset); a hosted
@@ -132,10 +128,8 @@
 //!
 //! # What is deliberately not here
 //!
-//! **No priority.** Requests start oldest-first, one per frame. There is no
-//! priority field, because a cross-crate integer convention would make two
-//! consumers that never meet argue about whose renders matter — and the caller
-//! that knows the answer can simply spawn the one it wants first.
+//! **No priority.** Requests start oldest-first, one per frame; spawn the one
+//! you want first, first.
 //!
 //! There *is* a cap, of exactly one: see [`ExportInFlight`]. It is enforced in
 //! [`start_exports`] rather than left to callers, because the per-request graph
@@ -167,6 +161,10 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
 /// Runs [`ExportRequest`]s on the compute pool.
+///
+/// Added by [`TuttiPlugin`](crate::TuttiPlugin) with the `export` feature.
+/// Needs Bevy's task pools (`bevy_app::TaskPoolPlugin`, part of
+/// `DefaultPlugins`).
 ///
 /// `start_exports` is gated on the engine being ready (it reads the graph);
 /// `poll_exports` is not, so a render still in flight when the engine tears

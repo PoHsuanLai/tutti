@@ -6,7 +6,7 @@
 //! two paths of unequal latency meet, the earlier one must be delayed to match,
 //! or they arrive misaligned: audible flam, comb filtering on parallel sends.
 //!
-//! [`plan`] computes those delays. It is pure graph math over the
+//! [`delays`] computes those delays. It is pure graph math over the
 //! [`LatencyGraph`] trait — no audio, no DSP, no dependency on any particular
 //! graph implementation — so it can be driven by a real audio graph, a router's
 //! connection model, or a three-line test fixture.
@@ -23,23 +23,92 @@
 //!   src_b ────────────────────▶ ┘
 //! ```
 //!
-//! # Deciding vs applying
+//! # A pass, not a mutation
 //!
-//! [`plan`] only measures — use it to report a graph's latency. A graph that
-//! can also *insert* delays implements [`DelayInsertion`], and [`compensate`]
-//! measures and applies in one call. Both return a [`Compensation`], whose
-//! per-channel figures tell sources *outside* the graph how far to pre-roll.
+//! [`plan`] measures: use it to report a graph's latency. [`delays`] returns
+//! the same measurement with the delays that realise it — which input port
+//! and which output channel to delay, and by how much — as a value. Nothing
+//! here inserts anything: applying them is the graph compiler's job
+//! (`tutti_graph`'s plan carries a delay per entry). Both return a
+//! [`Compensation`], whose per-channel figures tell sources *outside* the
+//! graph how far to pre-roll.
+//!
+//! # One solve, the compiler's
+//!
+//! This is the same solve `tutti_graph`'s compiler runs, so the two agree on
+//! every graph:
+//!
+//! - a node's **arrival** is the latest departure among everything that
+//!   feeds it — its audio ports, and any [`other_sources`] (event and param
+//!   sources, in `tutti_graph`'s impl);
+//! - every audio port fed by a node or from **outside the graph** (a global
+//!   input, arriving at zero) is delayed by its gap to the node's arrival;
+//! - an unconnected port, and a feedback edge, carry nothing to align.
+//!
+//! # Examples
+//!
+//! The diagram above, as a [`Topology`](crate::Topology):
+//!
+//! ```
+//! use tutti_types::graph::{Edge, InPort, NodeSpec, OutPort, Source};
+//! use tutti_types::latency::delays;
+//! use tutti_types::{ChannelLayout, NodeKey, Samples, Topology};
+//!
+//! let (a, limiter, b, mixer) = (NodeKey(1), NodeKey(2), NodeKey(3), NodeKey(4));
+//! let (mono, stereo) = (ChannelLayout::MONO, ChannelLayout::STEREO);
+//! let out = |node| Edge::Direct(Source::Node(OutPort { node, port: 0 }));
+//!
+//! let mut g = Topology::default();
+//! g.nodes.insert(a, NodeSpec::new("src", ChannelLayout::EMPTY, mono));
+//! g.nodes.insert(b, NodeSpec::new("src", ChannelLayout::EMPTY, mono));
+//! g.nodes.insert(limiter, NodeSpec::new("limiter", mono, mono).with_latency(Samples(512)));
+//! g.nodes.insert(mixer, NodeSpec::new("mixer", stereo, mono));
+//! g.edges.insert(InPort { node: limiter, port: 0 }, out(a));
+//! g.edges.insert(InPort { node: mixer, port: 0 }, out(limiter));
+//! g.edges.insert(InPort { node: mixer, port: 1 }, out(b));
+//! g.outputs = vec![Source::Node(OutPort { node: mixer, port: 0 })];
+//!
+//! let d = delays(&g);
+//! assert_eq!(d.inputs(), &[(mixer, 1, Samples(512))]);
+//! assert_eq!(d.compensation().total(), Samples(512));
+//! ```
+//!
+//! [`other_sources`]: LatencyGraph::other_sources
 
 use crate::value::Samples;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-/// Upper bound on any single node's reported latency, ~10 s at 48 kHz.
+/// The upper bound on any single node's reported latency: 10 s at 48 kHz.
 ///
 /// Reported latencies are clamped to this rather than trusted. A plugin that
 /// returns garbage would otherwise size a multi-gigabyte compensation ring.
 /// Clamping keeps a third-party bug from taking down the host.
 pub const MAX_NODE_LATENCY: Samples = Samples(48_000 * 10);
+
+/// What feeds one input port, as far as latency is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Feed<N> {
+    /// Another node's output: arrives at that node's departure.
+    Node(N),
+    /// From outside the graph (a global input): arrives at zero, and is
+    /// aligned at a merge point like any other source.
+    Outside,
+    /// Nothing to align: an unconnected port, silence, or a feedback edge
+    /// (which carries last block's value, so no latency along this block's
+    /// path).
+    None,
+}
+
+impl<N> Feed<N> {
+    /// Returns the feeding node, if a node feeds the port.
+    pub fn node(self) -> Option<N> {
+        match self {
+            Feed::Node(n) => Some(n),
+            Feed::Outside | Feed::None => None,
+        }
+    }
+}
 
 /// A directed graph whose nodes may introduce latency.
 ///
@@ -50,40 +119,33 @@ pub trait LatencyGraph {
     /// Node handle. Copyable and hashable so the algorithm can key maps by it.
     type Node: Copy + Eq + Hash;
 
-    /// Every node in the graph.
+    /// Returns every node in the graph.
     fn nodes(&self) -> impl Iterator<Item = Self::Node>;
 
-    /// The latency `node` reports, in samples.
+    /// Returns the latency `node` reports, in samples.
     fn latency(&self, node: Self::Node) -> Samples;
 
-    /// What feeds each input port of `node`, in port order.
-    ///
-    /// `None` means that port is unconnected or fed from outside the graph;
-    /// either way it contributes no internal latency.
-    fn inputs(&self, node: Self::Node) -> impl Iterator<Item = Option<Self::Node>>;
+    /// Returns what feeds each audio input port of `node`, in port order.
+    fn inputs(&self, node: Self::Node) -> impl Iterator<Item = Feed<Self::Node>>;
 
-    /// What feeds each of the graph's output channels, in channel order.
+    /// Returns the nodes that feed `node` other than through an audio port — event and
+    /// param-modulation sources — and so count toward its arrival. Their own
+    /// delays are keyed by more than a port and are the implementor's to
+    /// list; [`delays`] lists audio ports and outputs only. None by default.
+    fn other_sources(&self, node: Self::Node) -> impl Iterator<Item = Self::Node> {
+        let _ = node;
+        std::iter::empty()
+    }
+
+    /// Returns what feeds each of the graph's output channels, in channel order.
+    /// `None` for a channel fed from outside the graph or by nothing: it
+    /// arrives at zero.
     fn outputs(&self) -> impl Iterator<Item = Option<Self::Node>>;
-}
-
-/// A [`LatencyGraph`] that can also have compensation delays inserted into it.
-pub trait DelayInsertion: LatencyGraph {
-    /// Remove every compensation delay this trait has inserted.
-    ///
-    /// [`compensate`] calls this first so each run analyses the graph as
-    /// authored, never one already carrying last run's delays.
-    fn clear_delays(&mut self);
-
-    /// Delay whatever feeds `node`'s input `port` by `by` samples.
-    fn delay_input(&mut self, node: Self::Node, port: usize, by: Samples);
-
-    /// Delay whatever feeds output `channel` by `by` samples.
-    fn delay_output(&mut self, channel: usize, by: Samples);
 }
 
 /// How much compensation a graph needs, per output channel.
 ///
-/// Returned by [`plan`] and [`compensate`]. The per-channel figures are what
+/// Returned by [`plan`] and [`delays`]. The per-channel figures are what
 /// sources *outside* the graph — a sampler streaming from disk — must pre-roll
 /// to stay aligned with the graph's slowest path.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -93,7 +155,7 @@ pub struct Compensation {
 }
 
 impl Compensation {
-    /// Pre-roll for a source feeding `channel`.
+    /// Returns the pre-roll for a source feeding `channel`.
     ///
     /// Zero for a channel outside the graph's range, which is the same answer
     /// as "no compensation needed" — callers reading a channel they aren't sure
@@ -102,33 +164,34 @@ impl Compensation {
         self.channels.get(channel).copied().unwrap_or_default()
     }
 
-    /// Every channel's pre-roll, indexed by channel.
+    /// Returns every channel's pre-roll, indexed by channel.
     pub fn channels(&self) -> &[Samples] {
         &self.channels
     }
 
-    /// Worst-case latency across all outputs — the graph's total latency.
+    /// Returns the worst-case latency across all outputs: the graph's total
+    /// latency.
     pub fn total(&self) -> Samples {
         self.total
     }
 
-    /// Whether any channel needs compensation at all.
+    /// Returns whether no channel needs compensation at all.
     pub fn is_empty(&self) -> bool {
         self.total.is_zero()
     }
 }
 
-/// The delays to insert, plus the compensation they leave for external sources.
-///
-/// Private: the insertion lists are instructions for [`compensate`], not
-/// something a caller should apply piecemeal.
-struct Plan<N> {
+/// The delays that align a graph, and the compensation they leave for
+/// sources outside it. Returned by [`delays`]; a value, applied by whoever
+/// builds the runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delays<N> {
     inputs: Vec<(N, usize, Samples)>,
     outputs: Vec<(usize, Samples)>,
     compensation: Compensation,
 }
 
-impl<N> Default for Plan<N> {
+impl<N> Default for Delays<N> {
     fn default() -> Self {
         Self {
             inputs: Vec::new(),
@@ -138,39 +201,80 @@ impl<N> Default for Plan<N> {
     }
 }
 
-/// Compute the compensation `g` needs, without modifying it.
-///
-/// Use this to report a graph's latency; use [`compensate`] to actually align
-/// it. Returns an empty result when no node reports latency — the common case.
-pub fn plan<G: LatencyGraph>(g: &G) -> Compensation {
-    build_plan(g).compensation
+impl<N> Delays<N> {
+    /// Returns each audio input port to delay: `(node, port, by)`, only where `by`
+    /// is not zero. In no particular order.
+    pub fn inputs(&self) -> &[(N, usize, Samples)] {
+        &self.inputs
+    }
+
+    /// Returns each output channel to delay: `(channel, by)`, only where `by` is not
+    /// zero, in channel order.
+    pub fn outputs(&self) -> &[(usize, Samples)] {
+        &self.outputs
+    }
+
+    /// Returns what the graph needs, per output channel: [`plan`]'s answer.
+    pub fn compensation(&self) -> &Compensation {
+        &self.compensation
+    }
 }
 
-fn build_plan<G: LatencyGraph>(g: &G) -> Plan<G::Node> {
+/// Computes the compensation `g` needs.
+///
+/// Use this to report a graph's latency; [`delays`] also says where the
+/// delays go. Returns an empty result when no node reports latency — the
+/// common case. Allocates; run it on the control thread.
+pub fn plan<G: LatencyGraph>(g: &G) -> Compensation {
+    delays(g).compensation
+}
+
+/// Computes the delays that align `g`, and the compensation they leave: the
+/// compiler's solve (see the module docs), as a value.
+///
+/// Each node's reported latency is clamped to [`MAX_NODE_LATENCY`]. A cycle
+/// does not fail the walk: its nodes are compensated approximately.
+/// Allocates; run it on the control thread.
+pub fn delays<G: LatencyGraph>(g: &G) -> Delays<G::Node> {
     let latency: HashMap<G::Node, Samples> = g
         .nodes()
         .map(|node| (node, g.latency(node).min(MAX_NODE_LATENCY)))
         .collect();
 
     if latency.is_empty() || latency.values().all(|l| l.is_zero()) {
-        return Plan::default();
+        return Delays::default();
     }
 
     let order = topological_order(g, &latency);
 
-    // Forward pass: worst-case arrival time at each node's input.
+    // Forward pass: worst-case arrival time at each node, over everything
+    // that feeds it.
     let mut arrival: HashMap<G::Node, Samples> = HashMap::with_capacity(order.len());
     for &node in &order {
-        let at = g
-            .inputs(node)
-            .flatten()
+        let at = predecessors(g, node)
             .map(|src| departure(src, &arrival, &latency))
             .max()
             .unwrap_or_default();
         arrival.insert(node, at);
     }
 
-    let inputs = merge_point_delays(g, &order, &arrival, &latency);
+    // Every audio port fed from a node or from outside closes its gap to the
+    // node's arrival.
+    let mut inputs = Vec::new();
+    for &node in &order {
+        let at = arrival.get(&node).copied().unwrap_or_default();
+        for (port, feed) in g.inputs(node).enumerate() {
+            let dep = match feed {
+                Feed::Node(src) => departure(src, &arrival, &latency),
+                Feed::Outside => Samples(0),
+                Feed::None => continue,
+            };
+            let by = dep.align_to(at);
+            if !by.is_zero() {
+                inputs.push((node, port, by));
+            }
+        }
+    }
 
     // Per-channel arrival at the output taps, before any output alignment.
     let channel_arrivals: Vec<Samples> = g
@@ -194,24 +298,18 @@ fn build_plan<G: LatencyGraph>(g: &G) -> Plan<G::Node> {
         .filter_map(|(ch, &delay)| (!delay.is_zero()).then_some((ch, delay)))
         .collect();
 
-    Plan {
+    Delays {
         inputs,
         outputs,
         compensation: Compensation { channels, total },
     }
 }
 
-/// Analyse `g` and insert the delays it needs, returning what was applied.
-pub fn compensate<G: DelayInsertion>(g: &mut G) -> Compensation {
-    g.clear_delays();
-    let plan = build_plan(g);
-    for &(node, port, by) in &plan.inputs {
-        g.delay_input(node, port, by);
-    }
-    for &(channel, by) in &plan.outputs {
-        g.delay_output(channel, by);
-    }
-    plan.compensation
+/// Every node feeding `node`: through an audio port, or otherwise.
+fn predecessors<G: LatencyGraph>(g: &G, node: G::Node) -> impl Iterator<Item = G::Node> + '_ {
+    g.inputs(node)
+        .filter_map(Feed::node)
+        .chain(g.other_sources(node))
 }
 
 /// When a signal finishes leaving `node`: its input arrival plus its own latency.
@@ -222,45 +320,10 @@ fn departure<N: Copy + Eq + Hash>(
 ) -> Samples {
     let at = arrival.get(&node).copied().unwrap_or_default();
     let own = latency.get(&node).copied().unwrap_or_default();
-    // `at + own` uses `Samples`' own saturating `Add`; the unwrapped
-    // `Samples(at.get() + own.get())` was a plain `usize` add. Not reachable
-    // today — `MAX_NODE_LATENCY` clamps each node, so overflowing would take
-    // ~4e13 chained nodes — but the clamp is what makes it safe, not the
-    // arithmetic, and the type already carries the right answer.
+    // `Samples`' saturating `Add`. `MAX_NODE_LATENCY` clamps each node, so
+    // overflowing would take ~4e13 chained nodes; the clamp is what makes the
+    // sum safe, and saturation is the right answer if it ever were reached.
     at + own
-}
-
-/// Delays needed where two or more paths meet.
-///
-/// A node with fewer than two inputs has nothing to align.
-fn merge_point_delays<G: LatencyGraph>(
-    g: &G,
-    order: &[G::Node],
-    arrival: &HashMap<G::Node, Samples>,
-    latency: &HashMap<G::Node, Samples>,
-) -> Vec<(G::Node, usize, Samples)> {
-    let mut delays = Vec::new();
-
-    for &node in order {
-        let sources: Vec<Option<G::Node>> = g.inputs(node).collect();
-        if sources.len() < 2 {
-            continue;
-        }
-
-        let latest = sources
-            .iter()
-            .flatten()
-            .map(|&src| departure(src, arrival, latency))
-            .max()
-            .unwrap_or_default();
-
-        delays.extend(sources.iter().enumerate().filter_map(|(port, src)| {
-            let delay = departure((*src)?, arrival, latency).align_to(latest);
-            (!delay.is_zero()).then_some((node, port, delay))
-        }));
-    }
-
-    delays
 }
 
 /// Kahn's algorithm. Nodes in a cycle are appended in iteration order rather
@@ -274,7 +337,7 @@ fn topological_order<G: LatencyGraph>(g: &G, latency: &HashMap<G::Node, Samples>
     let mut dependents: HashMap<G::Node, Vec<G::Node>> = HashMap::with_capacity(count);
 
     for &node in &known {
-        for src in g.inputs(node).flatten() {
+        for src in predecessors(g, node) {
             if known.contains(&src) {
                 dependents.entry(src).or_default().push(node);
                 *in_degree.entry(node).or_insert(0) += 1;
@@ -312,41 +375,50 @@ fn topological_order<G: LatencyGraph>(g: &G, latency: &HashMap<G::Node, Samples>
 mod tests {
     use super::*;
 
-    /// Minimal `LatencyGraph`: nodes are indices, edges name their source node.
-    ///
-    /// Also implements `DelayInsertion` by *recording* what it was asked to
-    /// insert rather than rewiring, so tests can assert on the instructions
-    /// `compensate` issues.
+    /// Minimal `LatencyGraph`: nodes are indices, edges name their source.
     struct Toy {
-        /// Per node: its latency, and the source feeding each input port.
-        nodes: Vec<(Samples, Vec<Option<usize>>)>,
+        /// Per node: its latency, and what feeds each input port.
+        nodes: Vec<(Samples, Vec<Feed<usize>>)>,
+        /// Per node: its other (event or param) sources.
+        others: Vec<Vec<usize>>,
         /// Source feeding each output channel.
         outputs: Vec<Option<usize>>,
-        input_delays: Vec<(usize, usize, Samples)>,
-        output_delays: Vec<(usize, Samples)>,
-        clears: usize,
+    }
+
+    /// A port fed by node `n`, or unconnected.
+    fn f(n: Option<usize>) -> Feed<usize> {
+        n.map_or(Feed::None, Feed::Node)
     }
 
     impl Toy {
         fn new(nodes: Vec<(usize, Vec<Option<usize>>)>, outputs: Vec<Option<usize>>) -> Self {
+            Self::with_feeds(
+                nodes
+                    .into_iter()
+                    .map(|(lat, ins)| (lat, ins.into_iter().map(f).collect()))
+                    .collect(),
+                outputs,
+            )
+        }
+
+        fn with_feeds(nodes: Vec<(usize, Vec<Feed<usize>>)>, outputs: Vec<Option<usize>>) -> Self {
+            let others = vec![Vec::new(); nodes.len()];
             Self {
                 nodes: nodes
                     .into_iter()
                     .map(|(lat, ins)| (Samples(lat), ins))
                     .collect(),
+                others,
                 outputs,
-                input_delays: Vec::new(),
-                output_delays: Vec::new(),
-                clears: 0,
             }
         }
+    }
 
-        /// Input delays in a deterministic order (topological order is not).
-        fn sorted_input_delays(&self) -> Vec<(usize, usize, Samples)> {
-            let mut v = self.input_delays.clone();
-            v.sort_by_key(|&(node, port, _)| (node, port));
-            v
-        }
+    /// Input delays in a deterministic order (topological order is not).
+    fn sorted_inputs(d: &Delays<usize>) -> Vec<(usize, usize, Samples)> {
+        let mut v = d.inputs().to_vec();
+        v.sort_by_key(|&(node, port, _)| (node, port));
+        v
     }
 
     impl LatencyGraph for Toy {
@@ -360,28 +432,16 @@ mod tests {
             self.nodes[node].0
         }
 
-        fn inputs(&self, node: usize) -> impl Iterator<Item = Option<usize>> {
+        fn inputs(&self, node: usize) -> impl Iterator<Item = Feed<usize>> {
             self.nodes[node].1.iter().copied()
+        }
+
+        fn other_sources(&self, node: usize) -> impl Iterator<Item = usize> {
+            self.others[node].iter().copied()
         }
 
         fn outputs(&self) -> impl Iterator<Item = Option<usize>> {
             self.outputs.iter().copied()
-        }
-    }
-
-    impl DelayInsertion for Toy {
-        fn clear_delays(&mut self) {
-            self.clears += 1;
-            self.input_delays.clear();
-            self.output_delays.clear();
-        }
-
-        fn delay_input(&mut self, node: usize, port: usize, by: Samples) {
-            self.input_delays.push((node, port, by));
-        }
-
-        fn delay_output(&mut self, channel: usize, by: Samples) {
-            self.output_delays.push((channel, by));
         }
     }
 
@@ -398,9 +458,13 @@ mod tests {
         assert_eq!(plan(&g), Compensation::default());
     }
 
+    /// `plan` is `delays`' compensation, and both are functions of the graph
+    /// alone: asked twice, they answer the same (the pass keeps no state, so
+    /// nothing is stacked — the property `compensate`'s `clear_delays` used
+    /// to provide).
     #[test]
-    fn plan_does_not_modify_the_graph() {
-        let mut g = Toy::new(
+    fn plan_is_the_compensation_of_delays_and_both_are_pure() {
+        let g = Toy::new(
             vec![
                 (0, vec![]),
                 (0, vec![]),
@@ -412,33 +476,30 @@ mod tests {
 
         let reported = plan(&g);
         assert_eq!(reported.total(), Samples(512));
-        assert!(g.input_delays.is_empty(), "plan() must not insert");
-        assert_eq!(g.clears, 0, "plan() must not clear");
-
-        // compensate() over the same graph agrees, and does insert.
-        let applied = compensate(&mut g);
-        assert_eq!(applied, reported);
-        assert!(!g.input_delays.is_empty());
+        let d = delays(&g);
+        assert_eq!(d.compensation(), &reported);
+        assert!(!d.inputs().is_empty());
+        assert_eq!(delays(&g), d, "a second pass answers the same");
     }
 
     #[test]
     fn single_chain_needs_no_delay() {
         // One path has nothing to align against, however slow it is.
-        let mut g = Toy::new(vec![(0, vec![]), (512, vec![Some(0)])], vec![Some(1)]);
-        let c = compensate(&mut g);
+        let g = Toy::new(vec![(0, vec![]), (512, vec![Some(0)])], vec![Some(1)]);
+        let d = delays(&g);
 
-        assert!(g.input_delays.is_empty());
-        assert!(g.output_delays.is_empty());
-        assert_eq!(c.total(), Samples(512));
+        assert!(d.inputs().is_empty());
+        assert!(d.outputs().is_empty());
+        assert_eq!(d.compensation().total(), Samples(512));
         // Single output: it *is* the worst case, so nothing to pre-roll.
-        assert_eq!(c.channels(), &[Samples(0)]);
+        assert_eq!(d.compensation().channels(), &[Samples(0)]);
     }
 
     #[test]
     fn parallel_merge_delays_the_dry_path() {
         //   0 ──▶ 2(512) ──▶ 3 port 0
         //   1 ─────────────▶ 3 port 1     needs +512
-        let mut g = Toy::new(
+        let g = Toy::new(
             vec![
                 (0, vec![]),
                 (0, vec![]),
@@ -447,10 +508,10 @@ mod tests {
             ],
             vec![Some(3)],
         );
-        let c = compensate(&mut g);
+        let d = delays(&g);
 
-        assert_eq!(g.input_delays, vec![(3, 1, Samples(512))]);
-        assert_eq!(c.total(), Samples(512));
+        assert_eq!(d.inputs(), &[(3, 1, Samples(512))]);
+        assert_eq!(d.compensation().total(), Samples(512));
     }
 
     #[test]
@@ -458,7 +519,7 @@ mod tests {
         //        ┌─▶ 1(512) ─┐
         //   0 ───┤           ├──▶ 3
         //        └─▶ 2(0) ───┘
-        let mut g = Toy::new(
+        let g = Toy::new(
             vec![
                 (0, vec![]),
                 (512, vec![Some(0)]),
@@ -467,21 +528,21 @@ mod tests {
             ],
             vec![Some(3)],
         );
-        compensate(&mut g);
 
-        assert_eq!(g.input_delays, vec![(3, 1, Samples(512))]);
+        assert_eq!(delays(&g).inputs(), &[(3, 1, Samples(512))]);
     }
 
     #[test]
     fn unequal_output_channels_are_aligned() {
         // ch0 goes through a 512-sample node; ch1 is dry.
-        let mut g = Toy::new(
+        let g = Toy::new(
             vec![(0, vec![]), (0, vec![]), (512, vec![Some(0)])],
             vec![Some(2), Some(1)],
         );
-        let c = compensate(&mut g);
+        let d = delays(&g);
+        let c = d.compensation();
 
-        assert_eq!(g.output_delays, vec![(1, Samples(512))]);
+        assert_eq!(d.outputs(), &[(1, Samples(512))]);
         assert_eq!(c.total(), Samples(512));
         // ch0 already arrives at the worst case; ch1's source must pre-roll.
         assert_eq!(c.channels(), &[Samples(0), Samples(512)]);
@@ -490,19 +551,18 @@ mod tests {
 
     #[test]
     fn for_channel_is_zero_outside_the_table() {
-        let mut g = Toy::new(
+        let g = Toy::new(
             vec![(0, vec![]), (0, vec![]), (512, vec![Some(0)])],
             vec![Some(2), Some(1)],
         );
-        let c = compensate(&mut g);
-        assert_eq!(c.for_channel(99), Samples(0));
+        assert_eq!(plan(&g).for_channel(99), Samples(0));
     }
 
     #[test]
     fn latencies_accumulate_along_a_chain() {
         //   0 ──▶ 1(100) ──▶ 2(50) ──▶ 4 port 0     total 150
         //   3 ────────────────────────▶ 4 port 1     needs +150
-        let mut g = Toy::new(
+        let g = Toy::new(
             vec![
                 (0, vec![]),
                 (100, vec![Some(0)]),
@@ -512,10 +572,10 @@ mod tests {
             ],
             vec![Some(4)],
         );
-        let c = compensate(&mut g);
+        let d = delays(&g);
 
-        assert_eq!(g.input_delays, vec![(4, 1, Samples(150))]);
-        assert_eq!(c.total(), Samples(150));
+        assert_eq!(d.inputs(), &[(4, 1, Samples(150))]);
+        assert_eq!(d.compensation().total(), Samples(150));
     }
 
     #[test]
@@ -523,7 +583,7 @@ mod tests {
         //   0(300) ─┐
         //   1(100) ─┼──▶ 3      port 1 needs +200, port 2 needs +300
         //   2(0)  ──┘
-        let mut g = Toy::new(
+        let g = Toy::new(
             vec![
                 (300, vec![]),
                 (100, vec![]),
@@ -532,38 +592,58 @@ mod tests {
             ],
             vec![Some(3)],
         );
-        compensate(&mut g);
 
         assert_eq!(
-            g.sorted_input_delays(),
+            sorted_inputs(&delays(&g)),
             vec![(3, 1, Samples(200)), (3, 2, Samples(300))]
         );
     }
 
     #[test]
-    fn compensate_clears_before_planning() {
-        let mut g = Toy::new(
-            vec![(0, vec![]), (0, vec![]), (512, vec![Some(0)])],
-            vec![Some(2), Some(1)],
-        );
-
-        let first = compensate(&mut g);
-        let second = compensate(&mut g);
-
-        assert_eq!(g.clears, 2);
-        assert_eq!(first, second);
-        // Delays were rebuilt, not stacked.
-        assert_eq!(g.output_delays, vec![(1, Samples(512))]);
-    }
-
-    #[test]
     fn unconnected_ports_contribute_no_latency() {
         //   0(512) ─▶ 1 port 0;  port 1 unconnected -> no delay for it
-        let mut g = Toy::new(vec![(512, vec![]), (0, vec![Some(0), None])], vec![Some(1)]);
-        let c = compensate(&mut g);
+        let g = Toy::new(vec![(512, vec![]), (0, vec![Some(0), None])], vec![Some(1)]);
+        let d = delays(&g);
 
-        assert!(g.input_delays.is_empty());
-        assert_eq!(c.total(), Samples(512));
+        assert!(d.inputs().is_empty());
+        assert_eq!(d.compensation().total(), Samples(512));
+    }
+
+    /// A global input arrives at zero and is **aligned** where it meets a
+    /// latent path, as the compiler aligns it.
+    ///
+    /// Mutation (run): `Feed::Outside => continue` → no delay on port 1 →
+    /// fails.
+    #[test]
+    fn a_global_input_meeting_a_latent_path_is_delayed() {
+        //   0(48) ─▶ 1 port 0;  global input ─▶ 1 port 1   needs +48
+        let g = Toy::with_feeds(
+            vec![(48, vec![]), (0, vec![Feed::Node(0), Feed::Outside])],
+            vec![Some(1)],
+        );
+        assert_eq!(delays(&g).inputs(), &[(1, 1, Samples(48))]);
+        // Alone, a global input has nothing to align against.
+        let alone = Toy::with_feeds(vec![(48, vec![Feed::Outside])], vec![Some(0)]);
+        assert!(delays(&alone).inputs().is_empty());
+    }
+
+    /// A node's arrival counts its other (event, param) sources: a dry audio
+    /// input into a node whose events come from a latent node is delayed to
+    /// them, and the lateness carries on to the output.
+    ///
+    /// Mutation (run): leave `other_sources` out of `predecessors` → node 2
+    /// arrives at 0 → no delay, total 0 → fails.
+    #[test]
+    fn other_sources_count_toward_arrival() {
+        //   0(64) ─events─▶ 2;   1 ─audio─▶ 2 port 0   needs +64
+        let mut g = Toy::new(
+            vec![(64, vec![]), (0, vec![]), (0, vec![Some(1)])],
+            vec![Some(2)],
+        );
+        g.others[2] = vec![0];
+        let d = delays(&g);
+        assert_eq!(d.inputs(), &[(2, 0, Samples(64))]);
+        assert_eq!(d.compensation().total(), Samples(64));
     }
 
     #[test]

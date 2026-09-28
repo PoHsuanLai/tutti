@@ -5,28 +5,29 @@ and commands. The reasoning and history behind them is in
 [`docs/engineering-notes.md`](docs/engineering-notes.md): read the matching
 section there before you relax or work around a rule.
 
-## Direction: the native graph
+## Direction: the graph is `tutti-graph`
 
-**fundsp's `Net` is being replaced by a native graph**, per
-[`docs/design/013-native-graph.md`](docs/design/013-native-graph.md): a
+**fundsp is gone; the audio graph is `tutti-graph`**, per
+[`docs/design/013-native-graph.md`](docs/design/013-native-graph.md) (the
+filename keeps the design's old "native graph" name; it is just the graph): a
 `Topology` value, a pure compiler producing an immutable plan, units stored
-once, and events as ports. Phase 3 is done: `Engine` renders only the
-native graph (`Engine::new(&transport, &mut editor, executor)`, PR 15), it
-is `bevy-tutti`'s only runtime (`AudioGraphRes` holds an `Editor`, PDC is
-the compiler's, export forks the live graph with `Editor::fork`), and
-tutti-export renders only it. `Net` is left as a container, not a runtime,
-until Phase 5 deletes fundsp: `topology::compile`, the `Net` form of one
-builder (`build_vbap_mix` / `VbapMixParts::insert_into`), the
-nodes' own tests and `tutti-graph`'s A/B bench wire units in one
-(`tests/no_net_backend.rs` keeps `NetBackend` out of tutti-core). Until the
-migration lands:
+once, and events as ports. Phases 3–5 are done: `Engine` renders only the
+graph (`Engine::new(&transport, &mut editor, executor)`), it is
+`bevy-tutti`'s only runtime (`AudioGraphRes` holds an `Editor`, PDC is the
+compiler's, export forks the live graph with `Editor::fork`), and every node
+is a `tutti_graph::Node`. Phase 5 deleted fundsp's `Net`, the vendored fork,
+`tutti-node` and its `AudioUnit` trait, `Setting` and the numeric tower;
+`AudioNode` wraps a `NodeKey`, and `tutti_types::latency` is a pure pass that
+is the compiler's own solve. Phase 6 (a parallel executor) is next.
 
-- Do not add new dependencies on `Net`, `NetBackend`, `Setting` or the
-  fundsp combinators. Write nodes against the smallest surface you can
-  (`process`, `reset`, `set_sample_rate`, declared latency and tail).
-  Do not compare against a `Net` render in a new test: pin an analytic
-  figure, an invariant of the render, or (for samples that call libm) a
-  golden digest asserted only on the target it was recorded on.
+- Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
+  `reset`: declared latency and tail in the shape). A node with params is a
+  `Node` + `ParamNode`, inserted through `param_parts`; a plain one is
+  inserted `ForkByClone` or `Unforkable`. An internal filter that is never a
+  graph node (the sampler's `stretch::Unit`) has plain methods, not a trait.
+- Do not compare a render against another reference render in a new test:
+  pin an analytic figure, an invariant of the render, or (for samples that
+  call libm) a golden digest asserted only on the target it was recorded on.
 - Musical delay is not latency. Report only processing latency to PDC.
 - Transport commands meant for playback take an `At`
   (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
@@ -134,26 +135,27 @@ crates/
   bevy-tutti     Bevy umbrella + adapter; the only Bevy-mandatory member.
   core/          tutti-core (graph runtime, transport, metering, PDC)
                  tutti-types (value vocabulary, units, io edges, rt primitives, Topology)
-                 tutti-node (node contract), tutti-cpal (device), tutti-io (I/O edge: live + file decode)
+                 tutti-cpal (device),
+                 tutti-io (I/O edge: live + file decode)
                  tutti-mod (modulation), tutti-export (offline render)
-                 tutti-graph (doc 013 Phases 1–2: Node contract, Topology→Plan compiler,
+                 tutti-graph (doc 013: the `Node` contract, Topology→Plan compiler,
                  serial executor + reference interpreter; `Engine` renders it)
   dsp/           tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler,
                  tutti-polysynth, tutti-soundfont, tutti-analysis
   midi/          tutti-midi-{types,runtime,hardware,file}
   plugin/        tutti-plugin{,-types,-server}, tutti-shm-model (loom),
                  formats/{vst2,vst3,clap,au}-host, vendor/{vst-tutti,vst3-sdk}
-  vendor/        fundsp-tutti, rustysynth-tutti, tutti-clap-test-plugin
+  vendor/        rustysynth-tutti, tutti-clap-test-plugin
 ```
 
 - `tutti-types` names no other tutti crate.
-- `tutti-graph` depends on no tutti crate but `tutti-types` and `tutti-node`
-  (its outside deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
+- `tutti-graph` depends on no tutti crate but `tutti-types` (its outside
+  deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
   the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
-- The vendored forks are excluded from clippy and rustdoc.
+- The vendored fork (`rustysynth-tutti`) is excluded from clippy and rustdoc.
 - A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
   `bevy-tutti` does not depend on `tutti`.
 
@@ -211,8 +213,9 @@ Non-scalar state handed to the audio thread goes through
   boundary is in frames**, typed as `Samples` (the frame count). Cross to a
   slice length only with `Samples::interleaved_len` /
   `Samples::from_interleaved_len`.
-- **`AudioUnit::process`** is for anything that is a node in the graph
-  (including sampler voices).
+- **`tutti_graph::Node::process`** is for anything that is a node in the
+  graph (including sampler voices): planar `f32` through `Io`, any block
+  length up to `Prepare::max_block`, the transport from `Env`.
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The
   two runtime width checks that replaced it (`pump`'s `debug_assert` and
   `Recorder::start`'s error) are mandatory.
@@ -222,7 +225,7 @@ Non-scalar state handed to the audio thread goes through
 
 ## Wiring is declared, not called
 
-`bevy-tutti` runs on the native graph only (doc 013, Phase 3 PR 13).
+`bevy-tutti` runs on `tutti-graph` only (doc 013, Phase 3 PR 13).
 
 - `spawn_audio_node` adds an *unwired* node. `PortSources` on a sink and the
   `MasterSources` resource declare what feeds each port. The rebuild builds a
@@ -240,8 +243,16 @@ Non-scalar state handed to the audio thread goes through
   job.
 - `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.
   Node removal is an `On<Remove, AudioNode>` observer.
+- Every spawn path takes a `GraphNode`: `spawn_audio_node`,
+  `insert_audio_node`, `crossfade_audio_node` (and `AudioGraphRes::insert` /
+  `replace` take its `IntoNode`). A host's plain node goes in as
+  `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
+  registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
 - Params are `AudioParam<U, const P: u16>`, registered with
-  `App::add_audio_param::<U, P>()`.
+  `App::add_audio_param::<U, P>()`. They reach a node through its
+  `ParamSet` (`GraphNode::params`): a node without the param takes nothing.
+  Control-rate modulation resolves on the same set; a sink no node owns (a
+  plugin's per-block target) is supplied with `ModTargetRegistry::insert_target`.
 
 ## Testing policy
 
@@ -280,7 +291,9 @@ read the `Cargo.toml`, grep for the type, run the probe.
   to a new app-side path.
 - **Dead crate names:** `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
-  crates. A comment or doc that disagrees with the code is the bug.
+  crates, `tutti-node` and `fundsp-tutti` → deleted (the node contract is
+  `tutti_graph::Node`; the filters' `Real` is `tutti-nodes`'). A comment or
+  doc that disagrees with the code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is
   gated off MSVC, because `sin` differs in the last ulp between CRTs.
 

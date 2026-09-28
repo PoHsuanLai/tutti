@@ -255,7 +255,7 @@ static ORIGINAL_PPID: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
 #[cfg(unix)]
 const HOST_PID_ENV: &str = "TUTTI_PLUGIN_HOST_PID";
 
-/// Record the spawning host's PID. Call once, as early as possible.
+/// Records the spawning host's PID. Call once, as early as possible.
 ///
 /// **Timing is the whole point, and `getppid()` alone cannot win the race.**
 /// `parent_is_alive` compares the current parent against this recorded one, so
@@ -277,8 +277,7 @@ const HOST_PID_ENV: &str = "TUTTI_PLUGIN_HOST_PID";
 /// So the host **states** its PID in [`HOST_PID_ENV`] at spawn time, which no
 /// race can disturb: the value is fixed before this process exists.
 /// `getppid()` remains the fallback for a server started by something that does
-/// not set it (a hand-run binary, an older host), where it is no worse than the
-/// check it replaces.
+/// not set it (a hand-run binary).
 pub fn record_parent_pid() {
     #[cfg(unix)]
     {

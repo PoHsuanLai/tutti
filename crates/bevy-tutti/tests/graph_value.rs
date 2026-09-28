@@ -40,11 +40,11 @@ fn app() -> App {
     app
 }
 
-/// Add a node to the graph and bind an entity to it.
-fn spawn_node<U: tutti_core::AudioUnit + 'static>(app: &mut App, unit: U) -> Entity {
-    let id = {
+/// Add a node to the graph and bind an entity to it, its controls dropped.
+fn spawn_node<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
+    let (id, _controls) = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        graph.insert(unit)
+        graph.insert(node)
     };
     app.world_mut().spawn(id).id()
 }
@@ -121,13 +121,11 @@ fn the_master_declaration_becomes_the_values_outputs() {
     );
 }
 
-/// **The hazard `wire.rs`'s module docs used to call undetectable — now
-/// repaired.**
+/// **An imperative write to a declared port is detected and reverted.**
 ///
-/// A host writing a declared port imperatively through `AudioGraphRes::set_source` was
-/// invisible to the old per-port loop: the dirty gate watches ECS change ticks,
-/// so a write nothing in the ECS touched never re-entered the loop, and the
-/// engine kept the imperative value "silently, and at an unpredictable moment".
+/// A host can write a declared port imperatively through
+/// `AudioGraphRes::set_source`. The dirty gate watches ECS change ticks, so a
+/// write nothing in the ECS touched does not by itself trigger a rebuild.
 ///
 /// With the value owning edges, the repair falls out of [`apply`]: it compares
 /// every port the value names against the engine before writing, so a tampered
@@ -141,11 +139,8 @@ fn the_master_declaration_becomes_the_values_outputs() {
 /// The repair needs a rebuild that gets past `rebuild`'s early return, and that
 /// return fires when the derived value equals the stored one. The declaration
 /// did not change, so **an imperative write alone will not provoke its own
-/// repair** — something else must move the graph first. That is a real narrowing
-/// of the old hazard rather than its removal: the old loop could not repair the
-/// port at all without an unrelated edit *and* would then only revisit the ports
-/// of declarations it happened to walk, whereas now the first rebuild of any
-/// kind sweeps every declared port. Closing the gap completely would mean
+/// repair** — something else must move the graph first. The first rebuild of
+/// any kind then sweeps every declared port. Closing the gap completely would mean
 /// deriving and comparing the value against the runtime every frame, which is
 /// the per-frame cost the dirty gate exists to avoid.
 ///
@@ -296,11 +291,11 @@ fn removing_the_component_without_despawning_takes_the_node_out_of_the_value() {
 /// The declaration names an entity, so a replacement it does not observe cannot
 /// strand it. In the value this is visible as an edge whose `NodeKey` is
 /// **unchanged** — a crossfade is a node replacement at the same key, which is
-/// exactly the identity `NodeKey` exists to provide and `NodeId` does not.
+/// exactly the identity `NodeKey` exists to provide.
 ///
-/// **Mutation note.** Keying the value on `AudioNode.0` (the engine's own id)
-/// instead of the entity's bits fails this: `Net::crossfade` keeps the id
-/// today, but nothing in the value would then survive the *rebind* case above,
+/// **Mutation note.** Keying the value on `AudioNode.0` (the engine's own key)
+/// instead of the entity's bits fails this: a crossfade keeps that key, but
+/// nothing in the value would then survive the *rebind* case above,
 /// and the edge assertion would name whichever id happened to win. Verified by
 /// checking the key against `key_of(osc)` rather than against a captured value.
 #[test]
@@ -319,7 +314,11 @@ fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key() {
     {
         let world = app.world_mut();
         let mut commands = world.commands();
-        bevy_tutti::graph::crossfade_audio_node(&mut commands, osc, Box::new(Osc::sine(Hz(880.0))));
+        bevy_tutti::graph::crossfade_audio_node(
+            &mut commands,
+            osc,
+            tutti_graph::ForkByClone(Osc::sine(Hz(880.0))),
+        );
     }
     app.world_mut().flush();
     app.update();
@@ -327,7 +326,7 @@ fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key() {
     assert_eq!(
         node_id(&app, osc),
         osc_id,
-        "the crossfade keeps the NodeId, so the entity's binding is untouched"
+        "the crossfade keeps the NodeKey, so the entity's binding is untouched"
     );
     let after = live(&app);
     assert_eq!(
@@ -351,9 +350,9 @@ fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key() {
 /// PDC shrinks when the latency-bearing node leaves.
 ///
 /// The plan is a fold over the value, so this needs no device and no
-/// compensation pass — `latency::plan` over `LiveGraph` is the same function
-/// `compensate_graph` drives against the `Net`, and the figure it produces is
-/// the one a DAW displays.
+/// compensation pass — `latency::plan` over `LiveGraph` is the same fold
+/// `compensate_graph` checks against the compiled plan, and the figure it
+/// produces is the one a DAW displays.
 ///
 /// **Mutation note.** Reading `NodeSpec::latency` as `Samples::ZERO` for every
 /// node (the tempting simplification, since only the shape is "topology") makes
@@ -537,15 +536,15 @@ fn the_value_the_adapter_builds_validates() {
 /// The one case where `want == live` is true and a rebuild is still required.
 /// A [`NodeKey`] is an `Entity` — deliberately, since that is what lets a
 /// crossfade replace a unit without moving a wire — so inserting a different
-/// `AudioNode` on the same entity changes which `NodeId` the declaration
+/// `AudioNode` on the same entity changes which `NodeKey` the declaration
 /// resolves to while leaving the key alone. Two nodes of the same shape produce
 /// equal values, so the early return would fire and every edge naming that
 /// entity would keep pointing at the retired node, which nothing renders.
 ///
-/// The entity→`NodeId` mapping is engine state the value does not carry, so it
+/// The entity→`NodeKey` mapping is engine state the value does not carry, so it
 /// takes an engine-side signal — `Changed<AudioNode>` — to notice. This test is
 /// why that signal bypasses the value comparison rather than the value being
-/// taught to carry a `NodeId`: carrying one would reintroduce the stale-id
+/// taught to carry a `NodeKey`: carrying one would reintroduce the stale-id
 /// problem `PortSource::Node(Entity)` exists to remove, and would make a
 /// crossfade look like a topology change.
 ///
@@ -568,7 +567,7 @@ fn a_rebind_moves_the_wire_though_the_value_is_unchanged() {
     let sink_id = node_id(&app, sink);
 
     // Same entity, a different node of the same shape.
-    let second = {
+    let (second, ()) = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         graph.insert(Osc::sine(Hz(880.0)))
     };

@@ -47,7 +47,7 @@ impl ParamValueQueueImpl {
         })
     }
 
-    /// Replace this queue's contents with `queue`'s points in place.
+    /// Replaces this queue's contents with `queue`'s points in place.
     /// Allocation-free when `queue.points.len() <= capacity` (inline up to
     /// 16, or whatever the current heap capacity is after prior reuse).
     ///
@@ -64,12 +64,9 @@ impl ParamValueQueueImpl {
         for p in &queue.points {
             points.push(ParameterPoint {
                 sample_offset: p.sample_offset,
-                // Copied verbatim. The `clamp(0.0, 1.0)` that stood here was
-                // one of four copies of the unit-interval guard, and it was the
-                // unsafe spelling — `f64::clamp` returns NaN for a NaN input,
-                // so it passed through exactly the value it looked like it was
-                // stopping. `Normalized` now carries the guard at construction,
-                // making this copy redundant rather than wrong.
+                // Copied verbatim: `Normalized` carries the unit-interval guard
+                // at construction. A `clamp(0.0, 1.0)` here would be redundant,
+                // and unsafe besides — `f64::clamp` returns NaN for a NaN input.
                 value: p.value,
             });
         }
@@ -89,7 +86,7 @@ impl ParamValueQueueImpl {
         }
     }
 
-    /// Iterate over each `ParameterPoint` in this queue without exposing
+    /// Iterates over each `ParameterPoint` in this queue without exposing
     /// the underlying `AudioThreadCell`. RT-safe.
     pub fn for_each_point(&self, mut f: impl FnMut(&ParameterPoint)) {
         for point in self.points.borrow().iter() {

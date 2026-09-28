@@ -2,7 +2,7 @@
 //! chunk it is sent — through a seek, a loop wrap, a tempo change and a stop,
 //! live and in an offline fork — read back out of a real `plugin-server`.
 //!
-//! Doc 013 (Verdicts, `TransportSource`): the plugin node's transport is a
+//! The plugin node's transport is a
 //! pure function of the block's `Env` plus the meter; nothing polls a shared
 //! timeline. The reference CLAP plugin's `Transport` render mode writes the
 //! `clap_event_transport` it was handed into the first frames of its output

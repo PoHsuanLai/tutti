@@ -1,12 +1,11 @@
 //! Events: what flows on an event port.
 //!
-//! Doc 013 §1 ("Port kinds") and owner decision 4: events are **graph ports**,
-//! not a side channel, so the one compiler pass that aligns audio (PDC) aligns
-//! notes and automation too. Decision 6: an event input port may have several
-//! sources, merged deterministically by `(offset, source order)`, where source
-//! order is the source port's `(NodeKey, port)` — layering a keyboard and a
-//! clip is the normal case, not an edge case. Decision 7:
-//! automation is carried as **linear ramp** events first.
+//! Events are **graph ports**, not a side channel, so the one compiler pass
+//! that aligns audio (PDC) aligns notes and automation too. An event input
+//! port may have several sources, merged deterministically by `(offset,
+//! source order)`, where source order is the source port's `(NodeKey, port)`
+//! — layering a keyboard and a clip is the normal case, not an edge case.
+//! Automation is carried as **linear ramp** events.
 //!
 //! # Why a raw UMP payload and not `tutti-midi-types`
 //!
@@ -120,14 +119,86 @@ pub enum EventKind {
     Midi(Ump),
     /// A parameter automation ramp.
     Ramp(ParamRamp),
+    /// A chord or scale taking effect.
+    Harmony(Harmony),
+}
+
+/// Whether a [`Harmony`] is a chord or a scale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HarmonyKind {
+    /// The chord sounding from here: a root, a bass and the degrees.
+    Chord,
+    /// The scale (key) in force from here: a tonic and the degrees.
+    Scale,
+}
+
+/// A harmonic context change — a chord or a scale taking effect, as a
+/// sequencer's chord and scale lanes say — for a node that follows them (a
+/// hosted VST3 plugin's chord and scale events).
+///
+/// Not MIDI: MIDI 2.0's Flex Data names a chord by type and a key by its
+/// signature, which cannot carry an arbitrary degree set (a scale is any of
+/// the 4096). Pitches are MIDI note numbers (`0..=127`); `degrees` is a 12-bit
+/// mask relative to the root, bit `n` set when semitone `n` belongs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Harmony {
+    kind: HarmonyKind,
+    root: u8,
+    bass: u8,
+    degrees: u16,
+}
+
+impl Harmony {
+    /// A chord on `root`, `bass` in the bass (equal to `root` in root
+    /// position), sounding `degrees`. Pitches past 127 and mask bits past the
+    /// twelfth are dropped.
+    pub const fn chord(root: u8, bass: u8, degrees: u16) -> Self {
+        Self {
+            kind: HarmonyKind::Chord,
+            root: root & 0x7f,
+            bass: bass & 0x7f,
+            degrees: degrees & 0xfff,
+        }
+    }
+
+    /// A scale on the tonic `root` with `degrees`. As [`chord`](Self::chord);
+    /// its bass is its root.
+    pub const fn scale(root: u8, degrees: u16) -> Self {
+        Self {
+            kind: HarmonyKind::Scale,
+            root: root & 0x7f,
+            bass: root & 0x7f,
+            degrees: degrees & 0xfff,
+        }
+    }
+
+    /// Chord or scale.
+    pub const fn kind(&self) -> HarmonyKind {
+        self.kind
+    }
+
+    /// The root (a chord's) or tonic (a scale's), as a MIDI note number.
+    pub const fn root(&self) -> u8 {
+        self.root
+    }
+
+    /// The bass note, as a MIDI note number: a scale's is its root.
+    pub const fn bass(&self) -> u8 {
+        self.bass
+    }
+
+    /// The degrees, a 12-bit mask relative to the root.
+    pub const fn degrees(&self) -> u16 {
+        self.degrees
+    }
 }
 
 /// One event on an event port: an offset into the current block, and what
 /// happens there.
 ///
 /// `offset` is an [`Offset`] — a position inside the block the event is
-/// delivered in, never an absolute [`Frame`](tutti_types::Frame) (see the
-/// `time` module docs, `src/time.rs`). Slices of events handed to a node are
+/// delivered in, never an absolute [`Frame`](tutti_types::Frame) (see
+/// [`Offset`]). Slices of events handed to a node are
 /// sorted by it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Event {
@@ -182,6 +253,14 @@ impl Event {
             kind: EventKind::Ramp(ramp),
         }
     }
+
+    /// A chord or scale taking effect at `offset`.
+    pub const fn harmony(offset: Offset, harmony: Harmony) -> Self {
+        Self {
+            offset,
+            kind: EventKind::Harmony(harmony),
+        }
+    }
 }
 
 /// Why a slice is not a valid [`SortedEvents`].
@@ -218,6 +297,11 @@ impl<'a> SortedEvents<'a> {
 
     /// `events`, if they are sorted by offset and every offset is below
     /// `frames`.
+    ///
+    /// # Errors
+    ///
+    /// [`EventOrderError::OutOfBlock`] or [`EventOrderError::Unsorted`],
+    /// naming the first offending index.
     pub fn new(events: &'a [Event], frames: usize) -> Result<Self, EventOrderError> {
         for (i, e) in events.iter().enumerate() {
             if e.offset.index() >= frames {
@@ -230,8 +314,13 @@ impl<'a> SortedEvents<'a> {
         Ok(Self { events })
     }
 
-    /// Sort `events` in place by offset (stably), then view them. Fails only
+    /// Sorts `events` in place by offset (stably), then views them. Fails only
     /// when an offset is outside the block. Control side: may allocate.
+    ///
+    /// # Errors
+    ///
+    /// [`EventOrderError::OutOfBlock`], naming the first event at or past
+    /// `frames`; `events` is left unsorted.
     pub fn sort(events: &'a mut [Event], frames: usize) -> Result<Self, EventOrderError> {
         if let Some(at) = events.iter().position(|e| e.offset.index() >= frames) {
             return Err(EventOrderError::OutOfBlock { at });
@@ -346,7 +435,8 @@ impl std::ops::Deref for SortedEvents<'_> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventRejected {
     /// The port's preallocated buffer is full. The event is dropped; the
-    /// executor counts it (see `Executor::dropped_events`).
+    /// executor counts it (see
+    /// [`Executor::dropped_events`](crate::Executor::dropped_events)).
     Full,
     /// `offset` is at or past the end of the block.
     OutOfBlock,
@@ -408,7 +498,16 @@ impl<'a> EventWriter<'a> {
         Err(why)
     }
 
-    /// Append `event`. Offsets must be non-decreasing and inside the block.
+    /// Appends `event`. Offsets must be non-decreasing and inside the block.
+    /// Audio thread: never allocates.
+    ///
+    /// # Errors
+    ///
+    /// [`EventRejected::OutOfBlock`], [`EventRejected::OutOfOrder`], or
+    /// [`EventRejected::Full`] when the port's declared capacity is reached.
+    /// A refused event is dropped and counted in
+    /// [`Executor::dropped_events`](crate::Executor::dropped_events); the
+    /// events already written stand.
     pub fn push(&mut self, event: Event) -> Result<(), EventRejected> {
         if event.offset.get() >= self.frames {
             return self.reject(EventRejected::OutOfBlock);
@@ -491,7 +590,7 @@ mod tests {
             .iter()
             .map(|e| match e.kind {
                 EventKind::Midi(Ump(w)) => w[0],
-                EventKind::Ramp(_) => unreachable!(),
+                _ => unreachable!(),
             })
             .collect();
         assert_eq!(tags, vec![1, 2, 10, 11, 3]);
@@ -537,7 +636,7 @@ mod tests {
             .iter()
             .map(|e| match e.kind {
                 EventKind::Midi(Ump(w)) => w[0],
-                EventKind::Ramp(_) => unreachable!(),
+                _ => unreachable!(),
             })
             .collect();
         let mut want: Vec<u32> = (0..64).collect();

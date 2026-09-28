@@ -2,7 +2,7 @@
 //!
 //! # Why methods and not public fields
 //!
-//! The buffers are planar `f32` today (owner decision 2). Exposing them as
+//! The buffers are planar `f32`. Exposing them as
 //! `&[&[f32]]` fields would make that layout part of every node's source; as
 //! methods (`input`, `output`, `split`, `channel`) a later `input_f64` — or a
 //! port format the compiler converts at a mismatched edge — is an addition,
@@ -38,7 +38,22 @@ pub enum PortKind {
     Event,
 }
 
-/// One node call's buffers. See the `io` module's docs (`src/io.rs`).
+/// One node call's buffers: audio in and out, events in and out, and the
+/// block's param values, handed to [`Node::process`](crate::Node::process).
+///
+/// Only the executor (or the [`Reference`](crate::Reference) interpreter)
+/// builds one, and it guarantees every audio slice is exactly
+/// [`frames`](Self::frames) long, at most the [`MaxBlock`] the node was
+/// prepared with — so a node never needs to clamp. Buffers are planar `f32`
+/// and reached through methods rather than fields: [`split`](Self::split)
+/// borrows inputs and outputs together, [`channel`](Self::channel) gives
+/// one channel as a [`Channel`] (separate or in place), and
+/// [`sub_blocks`](Self::sub_blocks) splits the block at an event port's
+/// offsets for sample-accurate event handling.
+///
+/// The silence, constant and in-place masks say what the executor knows
+/// about the inputs; a node may use them to skip work but must render the
+/// same result without them.
 pub struct Io<'a> {
     frames: usize,
     inputs: &'a [&'a [f32]],
@@ -79,12 +94,11 @@ pub enum Channel<'s> {
 
 impl Channel<'_> {
     /// Apply `f` sample by sample, whichever form this is.
-    ///
-    /// `#[inline]` is load-bearing: without it the loop is compiled apart
-    /// from the node's closure, whose captured state (a filter's two
-    /// integrators, say) then lives behind pointers, and every sample pays a
-    /// store and a reload on the recurrence. That measured 1.5× slower than
-    /// the same arithmetic in fundsp on a chain of SVFs.
+    // `#[inline]` is load-bearing: without it the loop is compiled apart from
+    // the node's closure, whose captured state (a filter's two state
+    // variables, say) then lives behind pointers, and every sample pays a
+    // store and a reload on the recurrence — measured 1.5× slower on a chain
+    // of SVFs.
     #[inline]
     pub fn map(self, mut f: impl FnMut(f32) -> f32) {
         match self {
@@ -174,6 +188,10 @@ impl<'a> Io<'a> {
 
     /// Input channel `c`, wherever it is: its own buffer, or — when the
     /// executor aliased it in place — the output buffer that holds it.
+    ///
+    /// # Panics
+    ///
+    /// If `c` is not below [`input_count`](Self::input_count).
     pub fn input(&self, c: usize) -> &[f32] {
         if self.in_place.get(c) {
             &self.outputs[c][..]
@@ -183,11 +201,19 @@ impl<'a> Io<'a> {
     }
 
     /// Output channel `c`.
+    ///
+    /// # Panics
+    ///
+    /// If `c` is not below [`output_count`](Self::output_count).
     pub fn output(&mut self, c: usize) -> &mut [f32] {
         &mut self.outputs[c][..]
     }
 
     /// Input and output channel `c` together.
+    ///
+    /// # Panics
+    ///
+    /// If `c` is out of range for the inputs or the outputs.
     pub fn channel(&mut self, c: usize) -> Channel<'_> {
         if self.in_place.get(c) {
             Channel::InPlace(&mut self.outputs[c][..])
@@ -236,6 +262,10 @@ impl<'a> Io<'a> {
     }
 
     /// Event input port `p`, sorted by offset, every offset inside the block.
+    ///
+    /// # Panics
+    ///
+    /// If `p` is not below [`event_input_count`](Self::event_input_count).
     pub fn events(&self, p: usize) -> SortedEvents<'a> {
         self.events_in[p]
     }
@@ -246,6 +276,10 @@ impl<'a> Io<'a> {
     }
 
     /// The writer for event output port `p`.
+    ///
+    /// # Panics
+    ///
+    /// If `p` is not below [`event_output_count`](Self::event_output_count).
     pub fn event_out(&mut self, p: usize) -> &mut EventWriter<'a> {
         &mut self.events_out[p]
     }
@@ -279,9 +313,8 @@ impl<'a> Io<'a> {
     /// What declared param `k` ([`Shape::params`](crate::Shape::params))
     /// reads this block: [`ParamInput::Base`] when nothing modulates it — the
     /// node reads its own control, the fast path — or its value at every
-    /// frame, base and modulation fused and clamped by the graph (design doc
-    /// 013 item 6). A param nothing is connected to is always `Base`, never
-    /// 0.
+    /// frame, base and modulation fused and clamped by the graph. A param
+    /// nothing is connected to is always `Base`, never 0.
     #[inline]
     pub fn param(&self, k: usize) -> ParamInput<'a> {
         self.params.get(k).copied().unwrap_or(ParamInput::Base)
@@ -308,7 +341,8 @@ impl Inputs<'_> {
     ///
     /// # Panics
     ///
-    /// If `c` is aliased in place — read it through the outputs.
+    /// If `c` is aliased in place — read it through the outputs — or out of
+    /// range.
     pub fn get(&self, c: usize) -> &[f32] {
         assert!(
             !self.in_place.get(c),
@@ -330,6 +364,10 @@ impl<'s, 'a> Outputs<'s, 'a> {
     }
 
     /// Output channel `c`.
+    ///
+    /// # Panics
+    ///
+    /// If `c` is out of range.
     pub fn get(&mut self, c: usize) -> &mut [f32] {
         &mut self.slices[c][..]
     }

@@ -3,7 +3,7 @@
 //!
 //! The third delivery tier, beside the per-frame scalar and the beat-evaluated
 //! curve. Where those hand a *value* to a sink, this declares a modulation the
-//! graph renders (design doc 013 item 6):
+//! graph renders:
 //!
 //! ```text
 //! ModulatorNode ──(shaping: depth · polarity · curve)──► the node's param
@@ -13,8 +13,8 @@
 //!
 //! # What the graph does, and what is left here
 //!
-//! The graph owns the arithmetic: each declared param of a node (its
-//! `ParamFeed`, `AudioGraphRes::declares_param`) is `clamp(base + Σ shaped
+//! The graph owns the arithmetic: each declared param of a node (its shape's
+//! params, `AudioGraphRes::declares_param`) is `clamp(base + Σ shaped
 //! sources)` per frame, where the **base is the node's own control** — the
 //! cell an authored write, `AudioParam`, `write_param` and `set_param` all
 //! reach. An unconnected param reads that control, never 0, so a route can be
@@ -22,11 +22,8 @@
 //!
 //! This reconciler only declares: per `(target, param)`, the group's source
 //! nodes and shapings and the declared range, written into the graph value
-//! with `AudioGraphRes::set_param_mod` when they change. It used to build a
-//! sub-graph per param — an `AtomicSourceNode` base, a `ParamSumNode`, a
-//! `ParamShaperNode` per route — into extra input ports the node had to be
-//! born with, and to keep a base cell, a clamp cell and each shaper's shaping
-//! on entities to diff against; none of that exists any more.
+//! with `AudioGraphRes::set_param_mod` when they change. The node needs no
+//! extra input ports for it.
 //!
 //! # Why this is a reconciler and not part of `rebuild`
 //!
@@ -70,12 +67,12 @@ pub struct AudioRateParam {
 pub struct AudioRateRoutes(pub HashMap<ParamKey, AudioRateParam>);
 
 impl AudioRateRoutes {
-    /// What drives `param` on `target` at audio rate, if anything does.
+    /// Returns what drives `param` on `target` at audio rate, if anything does.
     pub fn get(&self, target: Entity, param: ParamAddr) -> Option<&AudioRateParam> {
         self.0.get(&(target, param))
     }
 
-    /// Whether this param is driven at audio rate.
+    /// Returns whether this param is driven at audio rate.
     ///
     /// The audio-rate sibling of
     /// [`ModulationMatrix::is_modulated`](super::ModulationMatrix::is_modulated).
@@ -114,8 +111,8 @@ fn group_routes<'a>(
 
 /// A group's routes as the graph's sources: one per source node, in first
 /// route order, each the sum of its routes' shapings — the graph lists a
-/// source once per param, and the old chain summed one shaper per route, so
-/// two routes from one `ModSource` sum rather than one replacing the other.
+/// source once per param, so two routes from one `ModSource` sum their
+/// shapings rather than one replacing the other.
 fn merged_sources(
     sources: &[(AudioNode, tutti_nodes::ParamModShaping)],
 ) -> Vec<(AudioNode, tutti_graph::ParamShaping)> {
@@ -144,7 +141,7 @@ fn merged_sources(
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ModSourceNode(pub Entity);
 
-/// Give every source feeding an audio-rate route a renderable node.
+/// Gives every source feeding an audio-rate route a renderable node.
 ///
 /// Runs before [`reconcile_audio_rate`], which needs the node to exist before
 /// it can name it as a source. Sources with no audio-rate route get nothing —
@@ -183,7 +180,9 @@ pub fn ensure_source_nodes(
             ModClock::Free { hz } => node.with_frequency(hz),
         };
 
-        let entity = commands.spawn(graph.insert(node)).id();
+        let (id, params) = graph.insert(node);
+        graph.set_node_params(id, Some(params));
+        let entity = commands.spawn(id).id();
         commands.entity(route.source).insert(ModSourceNode(entity));
         dirty.0 = true;
     }
@@ -226,7 +225,7 @@ type RouteChanged<'w, 's> = Query<
 ///
 /// The declared range's base is written to the node's own control when the
 /// group is first declared and whenever the range moves: that control is the
-/// base the modulation rides on, as the old chain's base cell was.
+/// base the modulation rides on.
 #[allow(
     clippy::too_many_arguments,
     reason = "Bevy systems declare their data access as parameters; every one \
@@ -405,8 +404,8 @@ mod tests {
     use bevy_ecs::world::World;
     use tutti_types::{Depth, Hz, UnitParam};
 
-    use crate::graph::{CapturedControls, GraphReconcilePlugin};
-    use crate::modulation::{ModSourceRate, ModTargetRegistry, TuttiModulationPlugin};
+    use crate::graph::GraphReconcilePlugin;
+    use crate::modulation::{ModSourceRate, TuttiModulationPlugin};
 
     /// An app with one distortion whose Drive a route can target, ranged
     /// `range`.
@@ -415,12 +414,11 @@ mod tests {
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(crate::AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-        app.world_mut()
-            .resource_mut::<ModTargetRegistry>()
-            .register::<tutti_nodes::DistortionNode>();
         let dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 5.0);
-        let controls = CapturedControls::capture(app.world(), &dist);
-        let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
+        // A `ParamNode`: its `ParamSet`'s cells are its targets, no registry
+        // entry.
+        let controls = crate::graph::GraphNode::captured(&dist);
+        let (node, _params) = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
         let mut target = app.world_mut().spawn(ModParamRange::default().with(
             ParamAddr::Unit(UnitParam::Drive),
             5.0,
@@ -460,8 +458,7 @@ mod tests {
             .is_some()
     }
 
-    /// Two routes from **one** source onto one param sum, as the old chain's
-    /// one-shaper-per-route did: the graph holds the source once, with the
+    /// Two routes from **one** source onto one param sum: the graph holds the source once, with the
     /// two shapings summed into its table.
     ///
     /// Mutation (run): in `merged_sources`, keep only the first route's
@@ -536,7 +533,7 @@ mod tests {
         assert!(
             !m.sources
                 .iter()
-                .any(|s| s.from.node() == tutti_types::graph::NodeKey(dropped_node.0.value())),
+                .any(|s| s.from.node() == dropped_node.key()),
             "the last route's source is the one left out"
         );
         assert!(commits(&app), "the graph still commits");

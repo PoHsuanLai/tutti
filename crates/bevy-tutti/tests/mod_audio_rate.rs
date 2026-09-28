@@ -11,13 +11,9 @@
 //! differently from the value path is as much a bug as one that is not made
 //! at all, and neither half catches the other's.
 //!
-//! The per-sample tier used to build a sub-graph per param (an
-//! `AtomicSourceNode` base, a `ParamSumNode`, a `ParamShaperNode` per route,
-//! into ports the node had to be born with); the graph now owns that
-//! arithmetic (design doc 013 item 6), so each test here asserts on the graph
-//! value (`AudioGraphRes::param_mod`) and on what renders, where it used to
-//! assert on chain entities. Every property the chain tests pinned is still
-//! pinned; each test says which one it carries.
+//! The graph owns the per-sample arithmetic, so each test here asserts on the
+//! graph value (`AudioGraphRes::param_mod`) and on what renders; each test
+//! says which property it carries.
 //!
 //! Every import below is behind `modulation`, so without the feature this file
 //! does not compile rather than silently finding no tests.
@@ -29,22 +25,22 @@ mod common;
 
 /// The audio-rate reconciler: a `ModRoute` marked `per_sample` becomes a
 /// param modulation in the graph, and stops being one when the route goes
-/// away. (Was `tests/mod_audio_rate_reconcile.rs`.)
+/// away.
 mod mod_audio_rate_reconcile {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
-    use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, GraphSource};
+    use bevy_tutti::graph::{AudioGraphRes, GraphNode, GraphReconcilePlugin, GraphSource};
     use bevy_tutti::modulation::audio_rate::{AudioRateRoutes, ModSourceNode};
     use bevy_tutti::modulation::{
-        ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry, TuttiModulationPlugin,
+        ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::AudioNode;
     use tutti_graph::{ParamFrom, ParamMod};
     use tutti_mod::LfoShape;
     use tutti_nodes::{DistortionNode, ShapeKind};
-    use tutti_types::graph::{NodeKey, OutPort};
+    use tutti_types::graph::OutPort;
     use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 
     /// An app with the engine's plugins and one distortion, ready to modulate.
@@ -53,17 +49,22 @@ mod mod_audio_rate_reconcile {
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-        app.world_mut()
-            .resource_mut::<ModTargetRegistry>()
-            .register::<DistortionNode>();
 
         // Any distortion: its drive is modulatable by the graph whatever it
         // was built with, so there is no port to be born with any more.
         let dist = DistortionNode::new(ShapeKind::Tanh, 5.0);
-        // Its controls, captured from the unit before it moves — the same
-        // step every insertion path in `bevy_tutti::graph` runs.
-        let controls = CapturedControls::capture(app.world(), &dist);
-        let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
+        // Its controls, captured from the node before it moves — the same
+        // step every insertion path in `bevy_tutti::graph` runs; a
+        // `ParamNode`'s are its `ParamSet`, addressed on the node so `write_param`
+        // reaches it (what `spawn_audio_node` does).
+        let controls = GraphNode::captured(&dist);
+        let drive = DriveCell(dist.drive());
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let (node, params) = graph.insert(dist);
+            graph.set_node_params(node, DistortionNode::params(&params));
+            node
+        };
 
         let mut target = app.world_mut().spawn(ModParamRange::default().with(
             ParamAddr::Unit(UnitParam::Drive),
@@ -71,11 +72,17 @@ mod mod_audio_rate_reconcile {
             0.0,
             10.0,
         ));
+        target.insert(drive);
         controls.bind(&mut target, node);
         let target = target.id();
 
         (app, target)
     }
+
+    /// The distortion's own drive cell, taken before it moved into the graph:
+    /// what its `param_base` answers, and what an authored write moves.
+    #[derive(Component)]
+    struct DriveCell(std::sync::Arc<tutti_core::AtomicF32>);
 
     fn spawn_lfo(app: &mut App) -> Entity {
         app.world_mut()
@@ -101,7 +108,7 @@ mod mod_audio_rate_reconcile {
     /// `node`'s output 0 as a param source.
     fn from(node: AudioNode) -> ParamFrom {
         ParamFrom::Audio(OutPort {
-            node: NodeKey(node.0.value()),
+            node: node.key(),
             port: 0,
         })
     }
@@ -117,24 +124,21 @@ mod mod_audio_rate_reconcile {
     }
 
     /// The base the graph's modulation of `param` rides on: the node's own
-    /// control, read through the unit's `param_base` on its shadow (which
-    /// every `set_param` reaches). No downcast.
+    /// control — the drive cell its `param_base` reads, which every
+    /// `set_param` reaches through the node's `ParamSet`. No downcast.
     fn node_base(app: &App, target: Entity) -> f32 {
-        let node = node_id(app, target);
         app.world()
-            .resource::<AudioGraphRes>()
-            .inspect(node, |u| u.param_base(0))
-            .flatten()
-            .expect("the distortion answers its base")
+            .get::<DriveCell>(target)
+            .expect("the distortion's drive cell")
+            .0
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// **A bus strip's Volume and Pan reach audio rate.**
     ///
-    /// The third victim of the old port lookup (the strip was missing from a
-    /// hand-kept downcast list, as both filters were, and the route fell back
-    /// to per-frame with nothing logged). The strip now declares its params
-    /// itself (`STRIP_PARAMS`), and the graph is asked, so there is no list
-    /// to leave a type out of.
+    /// The strip declares its params itself (`STRIP_PARAMS`), and the graph is
+    /// asked, so there is no hand-kept list to leave a type out of — a type
+    /// missing from one would fall back to per-frame with nothing logged.
     ///
     /// Asserts the whole declaration rather than a lookup, because "fell back
     /// to per-frame" is precisely what a lookup-only assertion cannot see:
@@ -150,17 +154,15 @@ mod mod_audio_rate_reconcile {
             app.insert_resource(AudioGraphRes::headless(0, 2));
             app.insert_resource(AudioEngineState::Running);
             app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-            app.world_mut()
-                .resource_mut::<ModTargetRegistry>()
-                .register::<tutti_nodes::BusStripNode>();
 
             let strip =
                 tutti_nodes::BusStripNode::with_channels(tutti_types::ChannelLayout::STEREO);
-            let controls = CapturedControls::capture(app.world(), &strip);
+            let controls = GraphNode::captured(&strip);
             let node = app
                 .world_mut()
                 .resource_mut::<AudioGraphRes>()
-                .insert(strip);
+                .insert(strip)
+                .0;
             assert!(
                 app.world()
                     .resource::<AudioGraphRes>()
@@ -415,8 +417,7 @@ mod mod_audio_rate_reconcile {
 
     /// **A route declared before its sink's node still reaches audio rate.**
     ///
-    /// The ordering a real host produces, and the one the reconciler used to fail
-    /// on. The declaration needs the sink's `AudioNode`, so a route whose sink
+    /// The ordering a real host produces. The declaration needs the sink's `AudioNode`, so a route whose sink
     /// has no node yet correctly declares nothing — but if the gate watched only
     /// `Changed<ModRoute>`/`Changed<ModParamRange>`, nothing would ask again when
     /// the node arrived and the route would stay on the per-frame fallback
@@ -430,9 +431,6 @@ mod mod_audio_rate_reconcile {
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-        app.world_mut()
-            .resource_mut::<ModTargetRegistry>()
-            .register::<DistortionNode>();
 
         // The sink exists as an entity with its declared range, but carries **no**
         // `AudioNode` yet — exactly what a projection produces before the spawner
@@ -461,8 +459,12 @@ mod mod_audio_rate_reconcile {
 
         // The node arrives a frame later, as a deferred insert would.
         let dist = DistortionNode::new(ShapeKind::Tanh, 5.0);
-        let controls = CapturedControls::capture(app.world(), &dist);
-        let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
+        let controls = GraphNode::captured(&dist);
+        let node = app
+            .world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .insert(dist)
+            .0;
         let mut sink = app.world_mut().entity_mut(target);
         controls.bind(&mut sink, node);
 
@@ -529,14 +531,13 @@ mod mod_audio_rate_reconcile {
     /// The branch-level guard. The write is made directly, against a range the
     /// "document" never moved, so only `write_param` can deliver it.
     ///
-    /// The base is the node's own control now — the graph's modulation rides
-    /// on it — so the assertion reads that control (through the node's
-    /// shadow, which every `set_param` reaches, and which is what a fork is
-    /// taken from). It used to be a base chain's cell no `Setting` reached,
-    /// which a fork could not see.
+    /// The base is the node's own control — the graph's modulation rides on
+    /// it — so the assertion reads that control (through the node's shadow,
+    /// which every `set_param` reaches, and which is what a fork is taken
+    /// from).
     ///
     /// Mutation (run): make `write_param` return early for an audio-rate param
-    /// (the old branch, with no cell to write) → the base stays at 5 → fails.
+    /// → the base stays at 5 → fails.
     #[test]
     fn write_param_reaches_an_audio_rate_params_base() {
         let (mut app, target) = app_with_target();
@@ -729,7 +730,7 @@ mod mod_audio_rate_reconcile {
         let target_node = node_id(&app, target);
         {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let dc = graph.insert(tutti_nodes::testing::Const::mono(0.5));
+            let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.5));
             graph.set_source(target_node, 0, GraphSource::Node(dc, 0));
             graph.set_source(target_node, 1, GraphSource::Node(dc, 0));
             graph.set_output_source(0, GraphSource::Node(target_node, 0));
@@ -794,7 +795,6 @@ mod mod_audio_rate_reconcile {
 /// against the `tutti_mod` function the frame-rate accumulator uses, with no
 /// `App` and no reconciler. What the *reconciler* declares is the module
 /// above's subject; this one is only about the arithmetic at each end.
-/// (Was `tests/mod_tier_parity.rs`.)
 mod mod_tier_parity {
     use bevy_ecs::prelude::*;
 
@@ -895,8 +895,8 @@ mod mod_tier_parity {
         let render = |min: f32, max: f32| -> f32 {
             let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
             let n = g.add(tutti_graph::Unforkable(Echo));
-            let a = g.add_unit(Box::new(Const::mono(1.0)));
-            let b = g.add_unit(Box::new(Const::mono(1.0)));
+            let a = g.add(Const::mono(1.0));
+            let b = g.add(Const::mono(1.0));
             let at = ParamIn {
                 node: n,
                 param: UnitParam::Drive,

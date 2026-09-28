@@ -18,12 +18,33 @@
 //! }
 //! ```
 
-/// RAII guard that flushes denormals to zero while it is alive, restoring the
-/// previous FPU mode on drop.
+/// An RAII guard that flushes denormals to zero while it is alive, restoring
+/// the previous FPU mode on drop.
 ///
-/// Hold one for the span of an audio block — construct it at the top of the
-/// callback and let it drop at the end. On an architecture with no such mode it
-/// is an empty struct and every operation compiles away.
+/// Denormals cost tens of cycles per operation on some CPUs, so a decaying
+/// reverb tail or a filter settling toward zero can blow an audio block's
+/// budget long after it stopped being audible. Hold one guard for the span of
+/// an audio block: construct it at the top of the callback and let it drop at
+/// the end.
+///
+/// On x86_64 it sets FTZ and DAZ in MXCSR; on aarch64, FZ in FPCR. The previous
+/// register state is restored on drop, so the mode never leaks into other code
+/// that later runs on the same thread. Guards nest. On any other architecture
+/// it is an empty struct and every operation compiles away.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::ScopedNoDenormals;
+///
+/// fn audio_callback(buffer: &mut [f32]) {
+///     let _guard = ScopedNoDenormals::new();
+///     for s in buffer.iter_mut() {
+///         *s *= 0.5;
+///     }
+/// }
+/// # audio_callback(&mut [1.0; 4]);
+/// ```
 pub struct ScopedNoDenormals {
     #[cfg(target_arch = "x86_64")]
     prev_mxcsr: u32,

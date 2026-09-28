@@ -237,7 +237,7 @@ impl SubscriptionCommand {
         }
     }
 
-    /// Parse a `command` value, or `None` if it names no known command.
+    /// Parses a `command` value, or `None` if it names no known command.
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "start" => Self::Start,

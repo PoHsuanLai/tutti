@@ -19,9 +19,8 @@
 //! the candidates are named here and resolved at test time.
 //!
 //! The logic is `tutti-fixture-resolve`'s, shared with the three other crates
-//! that do this. It used to be copy-pasted into each, and had drifted; that
-//! crate's docs carry the two rules that matter (absence panics, newest wins)
-//! and what each cost when it was broken.
+//! that do this; that crate's docs carry the two rules that matter (absence
+//! panics, newest wins).
 
 use std::path::PathBuf;
 

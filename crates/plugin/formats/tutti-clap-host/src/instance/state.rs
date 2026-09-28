@@ -10,11 +10,16 @@ use std::path::Path;
 use std::ptr;
 
 impl ClapLoaded {
-    /// Serialize the plugin's state to bytes via `CLAP_EXT_STATE`.
+    /// Serializes the plugin's state to bytes via `CLAP_EXT_STATE`.
     ///
     /// # Errors
     /// [`ClapError::StateError`] if the plugin does not implement state or
     /// its `save` callback returns failure.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn get_state(&self) -> Result<Vec<u8>> {
         self.assert_main_thread();
         let state_ext = unsafe { ext::opt(self.extensions.state.state) }
@@ -31,12 +36,17 @@ impl ClapLoaded {
         Ok(stream.into_data())
     }
 
-    /// Restore plugin state from bytes previously returned by [`Self::get_state`].
+    /// Restores plugin state from bytes previously returned by [`Self::get_state`].
     /// Empty slices are treated as a no-op.
     ///
     /// # Errors
     /// [`ClapError::StateError`] if the plugin does not implement state or
     /// its `load` callback rejects the data.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
         self.assert_main_thread();
         if data.is_empty() {
@@ -57,7 +67,7 @@ impl ClapLoaded {
         Ok(())
     }
 
-    /// Save state, telling the plugin whether it is being saved for a
+    /// Saves state, telling the plugin whether it is being saved for a
     /// preset, project, or duplicate.
     ///
     /// Falls back to [`Self::get_state`] **only** when the plugin does not
@@ -76,6 +86,11 @@ impl ClapLoaded {
     /// silently answer a *preset* request with a project-context blob tagged
     /// `Ok`; the two legitimately differ, so that writes the wrong bytes into
     /// a `.preset` and surfaces only when someone loads it.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn state_with_context(&self, context: StateContext) -> Result<Vec<u8>> {
         self.assert_main_thread();
         if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) } {
@@ -92,7 +107,7 @@ impl ClapLoaded {
         self.get_state()
     }
 
-    /// Load state with a specific [`StateContext`].
+    /// Loads state with a specific [`StateContext`].
     ///
     /// Falls back to [`Self::set_state`] **only** when the plugin does not
     /// implement `CLAP_EXT_STATE_CONTEXT` (or implements it without a `load`
@@ -107,6 +122,11 @@ impl ClapLoaded {
     /// [`Self::state_with_context`]): retrying a rejected blob through the
     /// context-free `load` either gets `Ok` on state the plugin said was wrong
     /// for this context, or an error naming the wrong entry point.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn set_state_with_context(&mut self, data: &[u8], context: StateContext) -> Result<()> {
         self.assert_main_thread();
         if data.is_empty() {
@@ -142,12 +162,17 @@ impl ClapLoaded {
         !self.extensions.state.preset_load.is_null()
     }
 
-    /// Ask the plugin to load a preset from the file at `path` via
+    /// Asks the plugin to load a preset from the file at `path` via
     /// `CLAP_EXT_PRESET_LOAD`.
     ///
     /// # Errors
     /// [`ClapError::StateError`] if the plugin doesn't implement preset
     /// loading, the path isn't valid UTF-8, or the plugin rejects the load.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
     pub fn load_preset(&mut self, path: &Path) -> Result<()> {
         self.assert_main_thread();
         let ext = unsafe { ext::opt(self.extensions.state.preset_load) }

@@ -66,24 +66,14 @@
 //!
 //! # Why reads are assets and writes are not
 //!
-//! The two halves look symmetric and are not, so they use different mechanisms.
+//! **A read is an asset load**, like the crate's other file formats (`.wav`,
+//! `.sf2`): a file the app reads by path gets handle-based dedup (two clips
+//! naming one file parse once), hot-reload, and the `Handle` + `Assets<T>`
+//! lifecycle.
 //!
-//! **A read is an asset load**, and this crate already says so twice:
-//! [`SoundFontAssetLoader`](crate::soundfont::SoundFontAssetLoader) and
-//! `WaveAssetLoader` both take this route. Bevy itself asset-loads *shaders* —
-//! small text files — which is the tell that size was never the criterion.
-//! Being a file the app reads by path is. Going through `AssetLoader` buys the
-//! things a hand-rolled reader has to reinvent badly: handle-based dedup so two
-//! clips naming one file parse once, hot-reload, the `Handle` + `Assets<T>`
-//! lifecycle every other loadable thing here already uses, and one convention
-//! for a reader to learn instead of two.
-//!
-//! **A write is not**, because `AssetLoader` is read-only — there is no
-//! asset-system path for "encode these bytes to that path". So the write half
-//! keeps the request-entity + [`AsyncComputeTaskPool`] shape, which is the
-//! argument [`crate::export`] already makes for `tutti-export`: a host wanting
-//! IO off the main thread owns a task pool better at it than a raw
-//! `std::thread`.
+//! **A write is not**, because `AssetLoader` is read-only. The write half is a
+//! request entity whose IO runs on the [`AsyncComputeTaskPool`], with the
+//! result triggered back on that entity as [`MidiFileWritten`].
 //!
 //! # The codecs stay pure; this is the only part that touches a path
 //!
@@ -147,10 +137,17 @@ impl MidiFileAsset {
     /// which sniffs rather than trusting any of them.
     pub const EXTENSIONS: &'static [&'static str] = &["mid", "midi", "mid2", "midi2"];
 
-    /// Decode a complete MIDI file from an in-memory byte slice.
+    /// Decodes a complete MIDI file from an in-memory byte slice.
     ///
     /// Sniffs the container from its magic — `MThd` for an SMF, `SMF2CLIP` for
     /// a Clip File — because the extension cannot discriminate the two.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiFileLoaderError::UnknownFormat`] when the magic matches neither
+    /// container, and [`Smf`](MidiFileLoaderError::Smf) or
+    /// [`Clip`](MidiFileLoaderError::Clip) when the matching decoder rejects
+    /// the bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MidiFileLoaderError> {
         let contents = match MidiFileKind::sniff(bytes) {
             Some(MidiFileKind::StandardMidiFile) => MidiFileContents::Smf(tracks(bytes)?),
@@ -214,7 +211,8 @@ impl AssetLoader for MidiFileAssetLoader {
     }
 }
 
-/// Spawn an entity with this to write bytes to a file off the main thread.
+/// A request to write bytes to a file off the main thread; spawn an entity
+/// with it.
 ///
 /// Takes **encoded bytes**, not events — see the module docs for why the choice
 /// of what to encode stays with the caller.
@@ -231,8 +229,8 @@ pub struct MidiFileWrite {
 }
 
 impl MidiFileWrite {
-    /// A request to write `bytes` to `path`. Spawn it on an entity to start the
-    /// write.
+    /// Creates a request to write `bytes` to `path`. Spawn it on an entity to
+    /// start the write.
     pub fn new(path: impl Into<PathBuf>, bytes: Vec<u8>) -> Self {
         Self {
             path: path.into(),
@@ -243,9 +241,8 @@ impl MidiFileWrite {
 
 /// A write whose IO is running on the task pool.
 ///
-/// Replaces the request component so [`start_midi_file_writes`]'s query does not
-/// see it again — the same one-shot shape `PlaySoundFont` → `PendingSoundFontUnit`
-/// uses, and for the same reason: a trigger left in place re-fires every frame.
+/// Replaces the [`MidiFileWrite`] request once the write starts, until
+/// [`MidiFileWritten`] fires.
 #[derive(Component)]
 pub struct MidiFileWriteInFlight {
     task: Task<std::io::Result<()>>,
@@ -259,11 +256,9 @@ impl MidiFileWriteInFlight {
 
 /// Triggered on the request entity when its write finishes, successfully or not.
 ///
-/// An entity event rather than a result component, mirroring
-/// [`ExportDone`](crate::export::ExportDone): a result is handled **once**, and
-/// polling a `Query<&Output>` every frame while removing the component to avoid
-/// re-handling it is a hand-rolled one-shot. Observing at the spawn site also
-/// keeps the surrounding context in scope.
+/// Observe it at the spawn site
+/// (`commands.spawn(MidiFileWrite::new(..)).observe(..)`), as the module
+/// example does.
 #[derive(EntityEvent, Debug)]
 pub struct MidiFileWritten {
     /// The request entity, still alive — the caller despawns it.
@@ -273,13 +268,10 @@ pub struct MidiFileWritten {
     pub result: std::io::Result<()>,
 }
 
-/// Move every new write request onto the task pool.
+/// Moves every new write request onto the task pool.
 ///
-/// No cap on in-flight writes, unlike [`ExportInFlight`](crate::export::ExportInFlight)
-/// which admits one render at a time because each deep-clones the live net.
-/// Nothing here touches the graph: the main-thread cost of a request is moving a
-/// `PathBuf` and a `Vec<u8>` onto the pool, so a queue would add latency and
-/// prevent nothing.
+/// No cap on in-flight writes: the main-thread cost of a request is moving a
+/// `PathBuf` and a copy of its bytes onto the pool.
 pub fn start_midi_file_writes(
     mut commands: Commands,
     requests: Query<(Entity, &MidiFileWrite), Without<MidiFileWriteInFlight>>,
@@ -300,7 +292,7 @@ pub fn start_midi_file_writes(
     }
 }
 
-/// Drive in-flight writes; trigger [`MidiFileWritten`] on the ones that finished.
+/// Drives in-flight writes; triggers [`MidiFileWritten`] on the ones that finished.
 pub fn poll_midi_file_writes(
     mut commands: Commands,
     mut in_flight: Query<(Entity, &mut MidiFileWriteInFlight)>,
@@ -317,6 +309,10 @@ pub fn poll_midi_file_writes(
 }
 
 /// Registers the [`MidiFileAsset`] loader and the write systems.
+///
+/// Part of [`TuttiMidiPlugin`](super::TuttiMidiPlugin). Needs an
+/// `AssetServer` (`bevy_asset::AssetPlugin`) and the task pools
+/// (`bevy_app::TaskPoolPlugin`) in the app.
 pub struct MidiFilePlugin;
 
 impl Plugin for MidiFilePlugin {

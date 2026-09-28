@@ -4,29 +4,70 @@
 //! failing an assertion, because an allocation inside `assert_no_alloc`'s guard
 //! is caught where it happens rather than reported afterwards.
 //!
-//! Covered: in-memory `MemorySource::process` and `tick` (the workhorse playback
-//! unit), the voice-pool command drain, and `stretch::Unit`, whose
-//! fixed-capacity `RtScratch` buffers make `process` non-allocating for any
-//! block size up to the preallocated maximum.
+//! Covered: in-memory `MemorySource` (the workhorse playback node) in full
+//! blocks and in one-frame blocks, the voice-pool command drain, and
+//! `stretch::Unit`, whose fixed-capacity `RtScratch` buffers make `process`
+//! non-allocating for any block size up to the preallocated maximum.
+//!
+//! The sampler's nodes are graph nodes: each is driven through
+//! `tutti_graph::contract::Direct`, whose buffers are built once, under a
+//! rolling transport moved after every block as a host moves it. A node has
+//! no per-sample entry point, so the sample-accurate gates drive one-frame
+//! blocks.
 //!
 //! `DiskSource` is **not** covered here: it needs a crate-private ring, so its
-//! non-allocation (steady state, a jump's scratch copy and fade, `tick`) is
-//! guarded in-crate, in `voice::disk_voice`'s tests.
+//! non-allocation (steady state, a jump's scratch copy and fade) is guarded
+//! in-crate, in `voice::disk_voice`'s tests.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{
-    AudioUnit, Beat, BeatDuration, Bpm, BufferVec, Cents, ChannelLayout, SamplePosition,
-    SampleRate, StretchFactor, Timeline,
+    Beat, BeatDuration, Bpm, Cents, ChannelLayout, SamplePosition, SampleRate, StretchFactor,
 };
+use tutti_graph::contract::Direct;
+use tutti_graph::Node;
 use tutti_io::Wave;
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
+use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
     Direction, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoiceCommand, VoicePool,
     VoiceSource, VoiceWindow,
 };
+
+const RATE: SampleRate = SampleRate(48_000.0);
+
+/// `node` driven by hand in blocks of `frames`, under a transport rolling
+/// from beat 0 at 120 BPM and moved after each block. Built outside every
+/// guard; a block allocates nothing of the rig's own.
+///
+/// Mutation (run): `MemorySource`'s `process` allocating a scratch `Vec` per
+/// block → every memory-source gate here aborts, the one-frame ones too.
+struct Rig<N> {
+    direct: Direct<N>,
+    t: Arc<MockTransport>,
+    frames: usize,
+}
+
+impl<N: Node> Rig<N> {
+    fn new(node: N, frames: usize) -> Self {
+        Self {
+            direct: Direct::new(node, RATE, frames),
+            t: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
+            frames,
+        }
+    }
+
+    fn block(&mut self) {
+        let env = self.t.env(self.frames, RATE);
+        self.direct.block_in(&env);
+        self.t.advance(self.frames as i64, RATE);
+    }
+
+    fn node(&mut self) -> &mut N {
+        &mut self.direct.node
+    }
+}
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -46,89 +87,74 @@ fn sine_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
 
 #[test]
 fn memory_source_process_is_allocation_free() {
-    let wave = sine_wave(2.0, 48_000.0);
-    let mut node = MemorySource::new(wave);
-    node.set_sample_rate(SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
+    let mut rig = Rig::new(MemorySource::new(sine_wave(2.0, 48_000.0)), 64);
 
     // Warm-up — drains the position update branch.
     for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
+        rig.block();
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
+            rig.block();
         }
     });
 }
 
+/// One-frame blocks: the sample-accurate caller's path.
 #[test]
-fn memory_source_tick_is_allocation_free() {
-    let wave = sine_wave(2.0, 48_000.0);
-    let mut node = MemorySource::new(wave);
-    node.set_sample_rate(SampleRate(48_000.0));
-
-    let mut output = [0.0f32; 2];
+fn memory_source_one_frame_blocks_are_allocation_free() {
+    let mut rig = Rig::new(MemorySource::new(sine_wave(2.0, 48_000.0)), 1);
     for _ in 0..256 {
-        node.tick(&[], &mut output);
+        rig.block();
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..100_000 {
-            node.tick(&[], &mut output);
+            rig.block();
         }
     });
+}
+
+/// One 64-frame stereo block through `Unit::process`, planar slices built on
+/// the stack (no allocation of the harness's own).
+fn process_stereo(node: &mut TimeStretchUnit, input: &[[f32; 64]; 2], output: &mut [[f32; 64]; 2]) {
+    let ins = [&input[0][..], &input[1][..]];
+    let [o0, o1] = output;
+    let mut outs = [&mut o0[..], &mut o1[..]];
+    node.process(64, &ins, &mut outs);
 }
 
 #[test]
 fn time_stretch_process_is_allocation_free() {
     // The stretcher is now a pure filter: it owns no source and reads the stereo
-    // frames the caller feeds in. Feed a 2-channel input buffer (matching its
-    // `inputs() == 2`) primed with a constant source signal.
+    // frames the caller feeds in. Feed a 2-channel input (matching its two
+    // vocoders) primed with a constant source signal.
     let mut node = TimeStretchUnit::new(48_000.0);
     node.set_sample_rate(SampleRate(48_000.0));
     node.set_stretch_factor(StretchFactor::new(1.5));
     assert!(node.is_processing());
 
-    let mut input_vec = BufferVec::new(2);
-    for i in 0..64 {
-        input_vec.buffer_mut().set_f32(0, i, 0.25);
-        input_vec.buffer_mut().set_f32(1, i, 0.25);
-    }
-    let mut output_vec = BufferVec::new(2);
+    let input = [[0.25f32; 64]; 2];
+    let mut output = [[0.0f32; 64]; 2];
 
     // Warm up past the phase-vocoder fill-up latency so `process` is on its
     // steady-state path inside the guarded loop.
     for _ in 0..64 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
+        process_stereo(&mut node, &input, &mut output);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
+            process_stereo(&mut node, &input, &mut output);
         }
     });
 }
 
-/// The same guarantee for a **cloned** unit — the shape `Legacy::controlled`'s
-/// shadow and a fork of it produce.
+/// The same guarantee for a **cloned** unit — the shape a fork produces.
 ///
-/// A clone builds its own vocoders and block scratch (doc 013 item 7), so
-/// there is no `allocate` hook between cloning and running any more: a clone
-/// is ready as built. Under `Net`, whose commit cloned every node, the clone
-/// shared the original's bank and left the scratch for `allocate` to size,
-/// which is why this test used to call it first.
+/// A clone builds its own vocoders and block scratch, so there is no step
+/// between cloning and running: a clone is ready as built.
 ///
 /// `time_stretch_process_is_allocation_free` above cannot catch a regression
 /// here: it drives a freshly constructed unit, not a clone.
@@ -147,64 +173,25 @@ fn cloned_time_stretch_process_is_allocation_free() {
     let mut node = original.clone();
     assert!(node.is_processing());
 
-    let mut input_vec = BufferVec::new(2);
-    for i in 0..64 {
-        input_vec.buffer_mut().set_f32(0, i, 0.25);
-        input_vec.buffer_mut().set_f32(1, i, 0.25);
-    }
-    let mut output_vec = BufferVec::new(2);
+    let input = [[0.25f32; 64]; 2];
+    let mut output = [[0.0f32; 64]; 2];
 
     for _ in 0..64 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
+        process_stereo(&mut node, &input, &mut output);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
+            process_stereo(&mut node, &input, &mut output);
         }
     });
 }
 
 // ---------------------------------------------------------------------------
 // VoicePool — the live-graph workhorse. One node per track, mixing
-// down every voice's `MemorySource` each buffer. Mirrors the mock transport from
-// the crate's in-file tests so voices see a running playhead.
+// down every voice's `MemorySource` each buffer, under the crate's mock
+// transport so voices see a running playhead.
 // ---------------------------------------------------------------------------
-
-struct MockTransport {
-    playing: AtomicBool,
-    beat: AtomicU64,
-    tempo: AtomicU64,
-}
-
-impl MockTransport {
-    fn new(tempo: f64, beat: f64, playing: bool) -> Arc<Self> {
-        Arc::new(Self {
-            playing: AtomicBool::new(playing),
-            beat: AtomicU64::new(beat.to_bits()),
-            tempo: AtomicU64::new(tempo.to_bits()),
-        })
-    }
-}
-
-impl Timeline for MockTransport {
-    fn is_rolling(&self) -> bool {
-        self.playing.load(Ordering::Relaxed)
-    }
-    fn beat(&self) -> Beat {
-        Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
-    }
-    fn segment_generation(&self) -> u64 {
-        0
-    }
-}
 
 /// Steady-state mixdown must be allocation-free: two voices already present in
 /// the slot list, the per-buffer `process()` sums them with no heap traffic.
@@ -214,15 +201,12 @@ impl Timeline for MockTransport {
 /// command drain, which is a separate concern below.
 #[test]
 fn voice_pool_process_steady_state_is_allocation_free() {
-    let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);
 
-    let (mut unit, _handle) = VoicePool::with_transport(transport.clone(), None);
-    unit.set_sample_rate(SampleRate(48_000.0));
+    let mut unit = VoicePool::new();
 
     for i in 0..2u128 {
-        let sampler =
-            MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
         unit.insert_voice(
             SlotId(i),
             Voice {
@@ -241,49 +225,41 @@ fn voice_pool_process_steady_state_is_allocation_free() {
     }
     assert_eq!(unit.voice_count(), 2);
 
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
+    let mut rig = Rig::new(unit, 64);
 
     // Warm-up — the empty command drain + first position reads.
     for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        unit.process(64, &input, &mut output);
+        rig.block();
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            unit.process(64, &input, &mut output);
+            rig.block();
         }
     });
 }
 
-/// A **cloned** pool with a stretching voice — the shape `Legacy::controlled`'s
-/// shadow and a fork of it produce — renders its blocks without allocating.
+/// A **cloned** pool with a stretching voice renders its blocks without
+/// allocating.
 ///
-/// Every other pool test drives a freshly constructed unit, and the two
+/// Every other pool test drives a freshly constructed node, and the two
 /// stretch tests never clone a pool, so this is the pool's RT contract across
-/// a clone. Since doc 013 item 7 the clone needs no `allocate` first: its
-/// filters build their own scratch, and the pool builds its own block lanes
-/// (the slot reads through `stretch::Unit::filter_lanes` into them). The
-/// `allocate` forwards on `VoicePool` and `VoiceNode`, which this used to say
-/// it could not pin, are gone with the scratch they sized.
+/// a clone. The clone needs no preparation first: its filters build their
+/// own scratch, and the pool builds its own block lanes
+/// (the slot reads through `stretch::Unit::filter_lanes` into them). (The
+/// graph never clones a node — a pool's fork is a fresh, empty pool —
+/// so a clone is what a host holding a template makes.)
 ///
 /// Mutation (run): the pool building its block lanes in `process` rather
 /// than at construction (`self.scratch = BlockScratch::new()` per block) →
 /// fails.
 #[test]
 fn cloned_voice_pool_with_stretch_is_allocation_free() {
-    let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);
 
-    let (mut original, _handle) = VoicePool::with_transport(transport.clone(), None);
-    original.set_sample_rate(SampleRate(48_000.0));
+    let mut original = VoicePool::new();
 
-    let sampler =
-        MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+    let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
     original.insert_voice(
         SlotId(0),
         Voice {
@@ -303,40 +279,30 @@ fn cloned_voice_pool_with_stretch_is_allocation_free() {
         },
     );
 
-    // The shadow a native graph takes at insert, or a fork of it.
-    let mut unit = original.clone();
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
+    let mut rig = Rig::new(original.clone(), 64);
 
     // Warm past the vocoder's fill-up so `process` is on its steady-state path.
     for _ in 0..64 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        unit.process(64, &input, &mut output);
+        rig.block();
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            unit.process(64, &input, &mut output);
+            rig.block();
         }
     });
 }
 
-/// Same steady-state guard for the sample-accurate `tick()` mixdown path.
+/// Same steady-state guard in one-frame blocks: the sample-accurate caller's
+/// path.
 #[test]
-fn voice_pool_tick_steady_state_is_allocation_free() {
-    let transport = MockTransport::new(120.0, 0.0, true);
+fn voice_pool_one_frame_blocks_are_allocation_free() {
     let wave = sine_wave(2.0, 48_000.0);
 
-    let (mut unit, _handle) = VoicePool::with_transport(transport.clone(), None);
-    unit.set_sample_rate(SampleRate(48_000.0));
+    let mut unit = VoicePool::new();
 
     for i in 0..2u128 {
-        let sampler =
-            MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+        let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
         unit.insert_voice(
             SlotId(i),
             Voice {
@@ -354,14 +320,14 @@ fn voice_pool_tick_steady_state_is_allocation_free() {
         );
     }
 
-    let mut output = [0.0f32; 2];
+    let mut rig = Rig::new(unit, 1);
     for _ in 0..256 {
-        unit.tick(&[], &mut output);
+        rig.block();
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..100_000 {
-            unit.tick(&[], &mut output);
+            rig.block();
         }
     });
 }
@@ -372,7 +338,7 @@ fn voice_pool_tick_steady_state_is_allocation_free() {
 /// processor's lock-free `stretch_factor` / `pitch_cents` atomics, mirrors them
 /// into the routing-gate fields, and — when the slot has no processor yet — moves
 /// in the one the sender built. Every one of those is a store or a move; nothing
-/// is constructed here. So the per-buffer `tick`/`process` command drain stays
+/// is constructed here. So the per-block command drain stays
 /// alloc-free even when a stretch update lands on it. (Earlier, the drain rebuilt
 /// the stretch unit inline and allocated; batch-1's resident-stretch moved that
 /// construction to slot creation, closing the hole this test guards.)
@@ -426,14 +392,12 @@ fn voice_pool_update_stretch_drain_is_allocation_free() {
 /// and drain it inside `assert_no_alloc`. Exits cleanly today (drain is
 /// alloc-free); a regression that allocates on the drain aborts it.
 fn run_stretch_drain_under_guard() {
-    let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);
 
-    let (mut unit, handle) = VoicePool::with_transport(transport.clone(), None);
-    unit.set_sample_rate(SampleRate(48_000.0));
+    let (unit, handle) = VoicePool::new().with_handle();
+    let mut unit = Rig::new(unit, 64);
 
-    let sampler =
-        MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+    let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
     handle
         .send(VoiceCommand::AddVoice {
             id: SlotId(1),
@@ -446,10 +410,9 @@ fn run_stretch_drain_under_guard() {
         })
         .expect("the command queue has room in a test");
 
-    let mut output = [0.0f32; 2];
     // Drain the Add first, outside the guard.
     for _ in 0..16 {
-        unit.tick(&[], &mut output);
+        unit.block();
     }
 
     // Enqueue a stretch update. The voice spawned at `Playback::default()` —
@@ -470,7 +433,7 @@ fn run_stretch_drain_under_guard() {
         .expect("the command queue has room in a test");
 
     assert_no_alloc::assert_no_alloc(|| {
-        unit.tick(&[], &mut output);
+        unit.block();
     });
 }
 
@@ -500,43 +463,33 @@ fn surround_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
 
 #[test]
 fn memory_source_process_is_allocation_free_at_six_channels() {
-    let wave = surround_wave(2.0, 48_000.0);
-    let mut node = MemorySource::with_channels(wave, 6usize);
-    node.set_sample_rate(SampleRate(48_000.0));
-    assert_eq!(node.outputs(), 6);
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(6);
+    let node = MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6usize);
+    assert_eq!(node.shape().audio_out.count(), 6);
+    let mut rig = Rig::new(node, 64);
 
     for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
+        rig.block();
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
+            rig.block();
         }
     });
 }
 
+/// One-frame blocks at width 6.
 #[test]
-fn memory_source_tick_is_allocation_free_at_six_channels() {
-    let wave = surround_wave(2.0, 48_000.0);
-    let mut node = MemorySource::with_channels(wave, 6usize);
-    node.set_sample_rate(SampleRate(48_000.0));
-
-    let mut output = [0.0f32; 6];
+fn memory_source_one_frame_blocks_are_allocation_free_at_six_channels() {
+    let node = MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6usize);
+    let mut rig = Rig::new(node, 1);
     for _ in 0..256 {
-        node.tick(&[], &mut output);
+        rig.block();
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..100_000 {
-            node.tick(&[], &mut output);
+            rig.block();
         }
     });
 }
@@ -546,25 +499,18 @@ fn memory_source_tick_is_allocation_free_at_six_channels() {
 /// Neither the stereo gates nor the matched 6-channel gates above reach it.
 #[test]
 fn memory_source_process_is_allocation_free_when_folding_six_to_two() {
-    let wave = surround_wave(2.0, 48_000.0);
-    let mut node = MemorySource::new(wave); // 6-channel wave, 2-channel node
-    node.set_sample_rate(SampleRate(48_000.0));
-    assert_eq!(node.outputs(), 2);
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
+    // 6-channel wave, 2-channel node.
+    let node = MemorySource::new(surround_wave(2.0, 48_000.0));
+    assert_eq!(node.shape().audio_out.count(), 2);
+    let mut rig = Rig::new(node, 64);
 
     for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
+        rig.block();
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
+            rig.block();
         }
     });
 }
@@ -574,22 +520,19 @@ fn memory_source_process_is_allocation_free_when_folding_six_to_two() {
 ///
 /// The per-unit tests each cover one hop; this is the only one that exercises
 /// the whole in-memory chain at width 6 — `read_frame` -> `MemorySource` ->
-/// `PlaybackSlot` -> `VoicePool` -> a planar `BufferMut` — and so the only
-/// one that would catch a width being dropped at a seam rather than inside a
-/// node.
+/// `PlaybackSlot` -> `VoicePool` -> planar outputs — and so the only one that
+/// would catch a width being dropped at a seam rather than inside a node.
 #[test]
 fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
-    let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, _handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
-        .expect("a width the sampler reads");
+    let mut reader = VoicePool::with_channels(None, 6usize).expect("a width the sampler reads");
     // `placement: None` on the Playback record, so the sampler's OWN placement
     // is what gates playback.
     let sampler = MemorySource::with_config(
         wave,
         MemorySourceConfig {
+            placed: true,
             channels: ChannelLayout::from(6u16),
-            timeline: Some(transport),
             window: VoiceWindow {
                 start: Beat::new(0.0),
                 duration: None,
@@ -612,35 +555,25 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
             channel_index: None,
         },
     );
-    reader.set_sample_rate(SampleRate(48_000.0));
-    assert_eq!(reader.outputs(), 6);
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(6);
+    assert_eq!(reader.shape().audio_out.count(), 6);
+    let mut rig = Rig::new(reader, 64);
 
     for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        reader.process(64, &input, &mut output);
+        rig.block();
     }
 
     // Every channel carries the material, not just the front pair.
-    {
-        let buf = output_vec.buffer_ref();
-        for c in 0..6 {
-            let energy: f32 = (0..64).map(|i| buf.at_f32(c, i).abs()).sum();
-            assert!(
-                energy > 0.0,
-                "channel {c} produced silence — a width was dropped at a seam"
-            );
-        }
+    for c in 0..6 {
+        let energy: f32 = rig.direct.output(c).iter().map(|s| s.abs()).sum();
+        assert!(
+            energy > 0.0,
+            "channel {c} produced silence — a width was dropped at a seam"
+        );
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            reader.process(64, &input, &mut output);
+            rig.block();
         }
     });
 }
@@ -648,7 +581,7 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
 // ---------------------------------------------------------------------------
 // Command-drain allocation gates.
 //
-// `drain_commands` runs from `tick`/`process`, so anything it builds is built
+// `drain_commands` runs from `process`, so anything it builds is built
 // in the audio callback. Two paths are the standing temptation: `AddVoice`
 // needs a stretch filter (an FFT setup plus two `RtScratch` buffers PER
 // CHANNEL), and `UpdateLoop` needs a pre-loop crossfade plus a read buffer.
@@ -682,18 +615,15 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
 /// NOT build stays absent.
 #[test]
 fn add_voice_drain_is_allocation_free_at_six_channels() {
-    let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
-        .expect("a width the sampler reads");
-    reader.set_sample_rate(SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(6);
+    let (reader, handle) = VoicePool::with_channels(None, 6usize)
+        .expect("a width the sampler reads")
+        .with_handle();
+    let mut reader = Rig::new(reader, 64);
 
     // Warm up the drain machinery before the guard.
     for _ in 0..16 {
-        reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+        reader.block();
     }
 
     // Queue the adds OUTSIDE the guard (send allocates, deliberately) and drain
@@ -702,8 +632,8 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
+                placed: true,
                 channels: ChannelLayout::from(6u16),
-                timeline: Some(transport.clone()),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
@@ -728,14 +658,14 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
             .expect("the command queue has room in a test");
     }
 
-    reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
-    assert_eq!(reader.voice_count(), 8, "all adds must have drained");
+    reader.block();
+    assert_eq!(reader.node().voice_count(), 8, "all adds must have drained");
 
     // Steady state — an empty queue — must be clean. This is what catches a
     // per-block allocation sneaking into the width-generic mix path.
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..64 {
-            reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+            reader.block();
         }
     });
 }
@@ -743,7 +673,7 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
 /// Removing a stretching voice must not FREE on the audio thread.
 ///
 /// `VoiceCommand::Remove` is handled by `voices.retain(...)` inside
-/// `drain_commands`, which runs from `tick`/`process` — the audio callback. A
+/// `drain_commands`, which runs from `process` — the audio callback. A
 /// slot dropped there takes its `stretch::Unit` with it, and the unit owns its
 /// vocoders and block scratch (~100 KB per channel), which would be freed
 /// inside the callback.
@@ -753,17 +683,14 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
 /// `UpdateStretch`, or `UpdateLoop`.
 #[test]
 fn remove_voice_drain_does_not_free_on_the_audio_thread() {
-    let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
-        .expect("a width the sampler reads");
-    reader.set_sample_rate(SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(6);
+    let (reader, handle) = VoicePool::with_channels(None, 6usize)
+        .expect("a width the sampler reads")
+        .with_handle();
+    let mut reader = Rig::new(reader, 64);
 
     for _ in 0..16 {
-        reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+        reader.block();
     }
 
     // Add stretching voices OUTSIDE the guard — building the filters allocates,
@@ -772,8 +699,8 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
+                placed: true,
                 channels: ChannelLayout::from(6u16),
-                timeline: Some(transport.clone()),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
@@ -798,8 +725,8 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
             })
             .expect("the command queue has room in a test");
     }
-    reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
-    assert_eq!(reader.voice_count(), 4, "adds must have drained");
+    reader.block();
+    assert_eq!(reader.node().voice_count(), 4, "adds must have drained");
 
     // Queue the removes outside, drain them inside.
     for i in 0..4u128 {
@@ -808,9 +735,9 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
             .expect("the command queue has room in a test");
     }
     assert_no_alloc::assert_no_alloc(|| {
-        reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+        reader.block();
     });
-    assert_eq!(reader.voice_count(), 0, "removes must have drained");
+    assert_eq!(reader.node().voice_count(), 0, "removes must have drained");
 }
 
 /// The deferred free must actually happen on the control thread.
@@ -820,21 +747,18 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
 /// `collect_retired` returns the slots and drops them here, off the callback.
 #[test]
 fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
-    let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
-        .expect("a width the sampler reads");
-    reader.set_sample_rate(SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(6);
+    let (reader, handle) = VoicePool::with_channels(None, 6usize)
+        .expect("a width the sampler reads")
+        .with_handle();
+    let mut reader = Rig::new(reader, 64);
 
     for i in 0..3u128 {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
+                placed: true,
                 channels: ChannelLayout::from(6u16),
-                timeline: Some(transport.clone()),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
@@ -857,8 +781,8 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
             })
             .expect("the command queue has room in a test");
     }
-    reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
-    assert_eq!(reader.voice_count(), 3);
+    reader.block();
+    assert_eq!(reader.node().voice_count(), 3);
 
     // Nothing retired yet.
     assert_eq!(handle.collect_retired(), 0, "no removes have been drained");
@@ -868,8 +792,8 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
             .send(VoiceCommand::Remove(SlotId(i)))
             .expect("the command queue has room in a test");
     }
-    reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
-    assert_eq!(reader.voice_count(), 0, "removes must have drained");
+    reader.block();
+    assert_eq!(reader.node().voice_count(), 0, "removes must have drained");
 
     // The slots are now parked in the channel, still allocated. Collecting
     // frees them here, on this thread.
@@ -888,17 +812,17 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
 /// tail into a buffer reserved up front, which this pinned stayed in place.)
 #[test]
 fn update_loop_drain_is_allocation_free_at_six_channels() {
-    let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
-        .expect("a width the sampler reads");
-    reader.set_sample_rate(SampleRate(48_000.0));
+    let (reader, handle) = VoicePool::with_channels(None, 6usize)
+        .expect("a width the sampler reads")
+        .with_handle();
+    let mut reader = Rig::new(reader, 64);
 
     let sampler = MemorySource::with_config(
         wave,
         MemorySourceConfig {
+            placed: true,
             channels: ChannelLayout::from(6u16),
-            timeline: Some(transport),
             window: VoiceWindow {
                 start: Beat::new(0.0),
                 duration: None,
@@ -906,7 +830,7 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
             ..Default::default()
         },
     );
-    reader.insert_voice(
+    reader.node().insert_voice(
         SlotId(1),
         Voice {
             source: VoiceSource::Memory(sampler),
@@ -915,10 +839,8 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
         },
     );
 
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(6);
     for _ in 0..16 {
-        reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+        reader.block();
     }
 
     // Several loop changes, including the on -> off -> on cycle that must
@@ -939,7 +861,7 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
     }
 
     assert_no_alloc::assert_no_alloc(|| {
-        reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+        reader.block();
     });
 }
 
@@ -949,7 +871,7 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
 
 /// **Draining a placement command allocates nothing.**
 ///
-/// `VoiceNode::drain_commands` runs at the top of every `tick`/`process`, which
+/// `VoiceNode::drain_commands` runs at the top of every `process`, which
 /// is the audio callback. The pool's drain is careful for a reason its own
 /// `AddVoice` doc spells out — a command that carries a `Voice` or a stretch
 /// filter has to be *built* on the control thread, or the callback pays for it.
@@ -964,31 +886,27 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
 /// that runs on every other block.
 #[test]
 fn voice_node_command_drain_does_not_allocate() {
-    let transport = MockTransport::new(120.0, 0.0, true);
-    let mut source = MemorySource::new(sine_wave(1.0, 48_000.0));
-    source.replace_transport(transport);
-    source.set_window(VoiceWindow {
+    let source = MemorySource::new(sine_wave(1.0, 48_000.0)).placed_at(VoiceWindow {
         start: Beat::new(0.0),
         duration: Some(BeatDuration(4.0)),
     });
     source.play();
 
-    let (mut node, handle) = tutti_sampler::VoiceNode::with_commands(
+    let (node, handle) = tutti_sampler::VoiceNode::with_channels(
         Voice {
             source: VoiceSource::Memory(source),
             play: Playback::default(),
             channel_index: None,
         },
         ChannelLayout::STEREO,
-    );
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
+    )
+    .with_handle();
+    let mut rig = Rig::new(node, 64);
 
     // Warm-up outside the gate: the first blocks touch lazily-sized state, and
     // `assert_no_alloc` would attribute that to the drain.
     for _ in 0..16 {
-        node.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+        rig.block();
     }
 
     // Queue more than one block's worth, so the drain loop runs repeatedly
@@ -1001,11 +919,11 @@ fn voice_node_command_drain_does_not_allocate() {
 
     assert_no_alloc::assert_no_alloc(|| {
         // First block drains the eight queued commands...
-        node.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+        rig.block();
         // ...and the rest take the empty path, which is what every steady-state
         // block does.
         for _ in 0..64 {
-            node.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+            rig.block();
         }
     });
 }

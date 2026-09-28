@@ -13,8 +13,8 @@ use super::vocoder::Vocoder;
 use super::{FftSize, MAX_BUFFER_SIZE};
 use crate::lanes::Lane;
 use tutti_core::{
-    AtomicF32, AudioUnit, BufferMut, BufferRef, Cents, ChannelLayout, Ordering, ReadRate,
-    RtScratch, SampleRate, Samples, SignalFrame, StretchFactor, Tail,
+    AtomicF32, Cents, ChannelLayout, Ordering, ReadRate, RtScratch, SampleRate, Samples,
+    StretchFactor, Tail,
 };
 
 /// Real-time time-stretching and pitch-shifting unit.
@@ -44,23 +44,14 @@ use tutti_core::{
 ///
 /// # Owned, not shared
 ///
-/// The vocoders and the block scratch are this unit's, by value. They used
-/// to sit in an `Arc<Bank>` that every clone shared, with a `ticker` claim
-/// token and `AudioThreadCell`s to catch two handles ticking one bank: `Net`
-/// cloned every node on every graph commit, and a deep copy was 201.8 MB per
-/// commit over 640 stereo nodes (`examples/profile_stretch_clone.rs`). The
-/// native graph does not clone a node to commit it (doc 013 item 7), so the
-/// sharing, the claim and the cells went, and so did the `allocate` hook that
-/// sized the scratch a sharing clone left empty.
+/// The vocoders and the block scratch are this unit's, by value; no two
+/// units share running state.
 ///
-/// A clone is now what the two remaining callers of `Clone` need, and no
-/// more: a **fresh** filter with the same width, window and parameters — its
-/// own vocoders built on the same grid (sharing the immutable window and phase
-/// tables, `Vocoder::clone_fresh`), none of the running state. Those callers
-/// are `tutti_graph::Legacy::controlled`'s shadow (taken once, at insert) and
-/// a fork cloned from it; both reset what they clone, so copying a running
-/// stream's rings would buy nothing. It allocates about 100 KB per channel,
-/// on the control thread, once per insert and once per fork.
+/// A clone is a **fresh** filter with the same width, window and parameters:
+/// its own vocoders built on the same grid (sharing only the immutable window
+/// and phase tables), none of the running state. That is what a voice's fork
+/// needs, since it resets what it clones anyway. A clone allocates about
+/// 100 KB per channel: clone on the control thread.
 ///
 /// # Channels
 ///
@@ -84,7 +75,7 @@ pub struct Unit {
     /// source sample the unit still owes itself before it may consume one.
     ///
     /// A time-stretcher emits `stretch` samples per source sample, but
-    /// [`AudioUnit::tick`] hands over exactly one and takes exactly one back. The
+    /// [`tick`](Self::tick) hands over exactly one and takes exactly one back. The
     /// only way to satisfy both is for the unit to consume the source at
     /// `1 / stretch` internally — dropping input above unity, repeating it below —
     /// which is what this accumulator paces. See [`Unit::hops`].
@@ -121,17 +112,19 @@ impl std::fmt::Debug for Unit {
 }
 
 impl Unit {
-    /// Stereo, at the default FFT size.
+    /// Creates a stereo unit at `sample_rate`, with the default FFT size
+    /// ([`FftSize::N2048`]), unity stretch and no transposition (bypassing).
+    /// Allocates: control thread.
     pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
         Self::with_fft_size_and_channels(sample_rate, FftSize::default(), ChannelLayout::STEREO)
     }
 
-    /// Stereo, at a custom FFT size.
+    /// Creates a stereo unit with a custom FFT size.
     pub fn with_fft_size(sample_rate: impl Into<SampleRate>, fft_size: FftSize) -> Self {
         Self::with_fft_size_and_channels(sample_rate, fft_size, ChannelLayout::STEREO)
     }
 
-    /// `channels` wide, at the default FFT size.
+    /// Creates a `channels`-wide unit at the default FFT size.
     pub fn with_channels(
         sample_rate: impl Into<SampleRate>,
         channels: impl Into<ChannelLayout>,
@@ -139,7 +132,9 @@ impl Unit {
         Self::with_fft_size_and_channels(sample_rate, FftSize::default(), channels)
     }
 
-    /// Full constructor: custom FFT size at a custom width.
+    /// Creates a `channels`-wide unit with a custom FFT size.
+    ///
+    /// A zero-wide layout is treated as mono.
     ///
     /// Width is fixed here because it sizes one vocoder and two scratch buffers
     /// per channel, all allocated on this path so the RT path never does.
@@ -153,7 +148,7 @@ impl Unit {
         let geometry = Self::geometry(sample_rate, fft_size);
         // A zero-wide filter has nothing to process and would make `inputs()` /
         // `outputs()` lie to the graph — see [`crate::nonempty`], which is where
-        // that rule lives now for every node in the crate.
+        // that rule lives for every node in the crate.
         let width = crate::nonempty(channels.into());
         // Stride derived once, here on the construction path.
         let n = width.count() as usize;
@@ -222,7 +217,7 @@ impl Unit {
         self.width.count() as usize
     }
 
-    /// Set the duration scaling, clamped into
+    /// Sets the duration scaling, clamped into
     /// [`StretchFactor::MIN`]..=[`StretchFactor::MAX`].
     ///
     /// Above unity the material gets longer, below it shorter, and pitch is
@@ -255,7 +250,7 @@ impl Unit {
         Arc::clone(&self.stretch_factor)
     }
 
-    /// Set the transposition in [`Cents`], clamped to ±2400 (two octaves each
+    /// Sets the transposition in [`Cents`], clamped to ±2400 (two octaves each
     /// way).
     ///
     /// Duration is untouched: the resample that transposes is undone by the
@@ -281,7 +276,7 @@ impl Unit {
         Arc::clone(&self.pitch_cents)
     }
 
-    /// Engage or bypass the vocoder outright.
+    /// Engages or bypasses the vocoder outright.
     ///
     /// Bypassing is not the same as setting unity stretch and zero pitch even
     /// though both take the pass-through branch: this flag survives any later
@@ -320,13 +315,11 @@ impl Unit {
     /// and `process` copy input to output directly at unity stretch and pitch, or
     /// when disabled.
     ///
-    /// The bypass case is what `route` reports to fundsp's PDC, and reporting a
-    /// window there while the audio passes straight through makes every other
-    /// branch of the graph get delayed to compensate for a delay that does not
-    /// exist — 46 ms at the default 2048 window. It is reachable through ordinary
-    /// use, not only at construction: `PlaybackSlot::set_stretch` keeps the resident
-    /// filter and writes its atomics, so returning a stretched voice to 1.0 leaves
-    /// a filter sitting at unity.
+    /// Reporting a window while the audio passes straight through would make
+    /// delay compensation hold every other branch of the graph back for a
+    /// delay that does not exist (46 ms at the default 2048 window). Bypass is
+    /// reachable through ordinary use, not only at construction: returning a
+    /// stretched voice to 1.0 keeps its filter resident, sitting at unity.
     ///
     /// Every channel reports the same value (a function of the shared FFT size),
     /// so channel 0 speaks for all.
@@ -338,6 +331,19 @@ impl Unit {
             .vocoders
             .first()
             .map_or(0, |v| v.geometry.window().get())
+    }
+
+    /// Output frames a flushed filter must be fed before its output is
+    /// steady: the [`latency`](Self::latency_samples) (one window of the
+    /// vocoder's own input) over the [`intake_rate`](Self::intake_rate) it
+    /// takes that input at, so a window of input times the effective
+    /// stretch — 4 096 frames at 2x on the default window. Zero when
+    /// bypassing.
+    ///
+    /// Not a PDC figure: it counts output frames of *feed*, the refill a
+    /// jump costs (`PlaybackSlot::prime_stretch`).
+    pub(crate) fn refill_frames(&self) -> usize {
+        (self.latency_samples() as f64 / self.intake_rate()).ceil() as usize
     }
 
     /// Time-scaling the vocoder actually performs: `stretch × pitch_ratio`.
@@ -481,12 +487,12 @@ pub(super) const MAX_PITCH_CENTS: f32 = 2400.0;
 impl Unit {
     /// Filter frames `frames` of the lanes `input` into the same frames of
     /// `output`, `n` lanes each (`n` ≥ 1: the caller's width): **exactly**
-    /// what one [`tick`](AudioUnit::tick) per frame, each handed `n` input
+    /// what one [`tick`](Self::tick) per frame, each handed `n` input
     /// samples and an `n`-wide output frame cleared to zero, would write.
     ///
     /// This is the slot's block read through the filter
-    /// (`PlaybackSlot::process_into`). Bit-identical to the ticks it
-    /// replaced, because it does the same arithmetic on the same values in
+    /// (`PlaybackSlot::process_into`). Bit-identical to calling `tick` once
+    /// per frame, because it does the same arithmetic on the same values in
     /// the same order per channel:
     ///
     /// - The parameters (stretch, pitch, enabled, and the hops and intake
@@ -572,19 +578,12 @@ impl Clone for Unit {
     }
 }
 
-impl AudioUnit for Unit {
-    fn inputs(&self) -> usize {
-        // A filter: it consumes the frame the caller feeds in (already tick'd
-        // from the real audio source), one channel per vocoder. Boundary:
-        // `AudioUnit::inputs` is a fixed fundsp trait signature.
-        self.stride()
-    }
-
-    fn outputs(&self) -> usize {
-        self.stride()
-    }
-
-    fn reset(&mut self) {
+// The filter's frame and block entry points. A slot's filter is never a graph
+// node, so these are plain methods rather than a `tutti_graph::Node` impl.
+impl Unit {
+    /// Clears the running state: every vocoder's rings and phase history, and
+    /// the intake debt. Allocation-free.
+    pub fn reset(&mut self) {
         for v in &mut self.ch.vocoders {
             v.reset();
         }
@@ -595,15 +594,11 @@ impl AudioUnit for Unit {
     /// history and the intake debt. Allocation-free, so a device
     /// change mid-stream costs a per-channel geometry rebuild and nothing else.
     ///
-    /// The fundsp contract allows either answer (`AudioUnit::set_sample_rate`:
-    /// "the unit is allowed to reset itself here... if the sample rate stays
-    /// unchanged, the goal is to maintain current state"), and tutti's two
-    /// implementors sit at opposite ends of that latitude. The other is
-    /// `tutti_spatial`'s `HrtfBinaural::set_sample_rate`, which resamples and
-    /// rebuilds its whole HRIR sphere and zeroes the streaming buffers —
-    /// allocating, and far from free. A caller that treats the two as
-    /// interchangeable is the thing that breaks.
-    fn set_sample_rate(&mut self, sample_rate: SampleRate) {
+    /// Keeping the state is a choice, and not every processor makes it
+    /// (`tutti_spatial`'s HRTF panner, preparing at a new rate, rebuilds its
+    /// HRIR sphere and zeroes its streaming buffers), so a caller should not
+    /// assume the two behave alike.
+    pub fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         // The grid's window and hop are sample counts and its phase table is
         // their ratio, so none of the vocoder state depends on the rate. Only
         // the rate the geometry reports back does — rebuild it, and leave the
@@ -613,7 +608,10 @@ impl AudioUnit for Unit {
         }
     }
 
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+    /// Processes one frame: `input` in (one sample per channel; a short frame
+    /// fans channel 0 to the rest), `output` out. Allocation-free; safe on the
+    /// audio thread.
+    pub fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         // `input` is the source frame the caller already produced (in-memory index
         // or streaming ring pop). This unit does not own or pull a source.
         //
@@ -655,7 +653,16 @@ impl AudioUnit for Unit {
         }
     }
 
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+    /// `size` frames of planar `input` (one slice per channel; fewer
+    /// channels than the unit fan channel 0 to the rest) into planar
+    /// `output`, as `size` calls of [`tick`](Self::tick) would. Each slice
+    /// holds at least `size` frames. Allocation-free.
+    ///
+    /// # Panics
+    ///
+    /// If a slice of `input` or `output` holds fewer than `size` frames, or if
+    /// `size` exceeds the unit's scratch capacity of 8192 frames.
+    pub fn process(&mut self, size: usize, input: &[&[f32]], output: &mut [&mut [f32]]) {
         // `size` past MAX_BUFFER_SIZE is clamped by `RtScratch::active`; the
         // fixed capacity makes a per-block reallocation impossible.
         //
@@ -666,7 +673,7 @@ impl AudioUnit for Unit {
         // gain.
         // Stride derived once per block, above the loops.
         let channels = self.stride();
-        let in_ch = input.channels();
+        let in_ch = input.len();
 
         for (c, s) in self.ch.scratch_in.iter_mut().enumerate() {
             let buf = s.active(size);
@@ -674,18 +681,17 @@ impl AudioUnit for Unit {
             // fan-from-channel-0 rather than emitting silence.
             let src_ch = if c < in_ch { c } else { 0 };
             for (i, b) in buf.iter_mut().enumerate().take(size) {
-                *b = input.at_f32(src_ch, i);
+                *b = input[src_ch][i];
             }
         }
 
-        let out_ch = output.channels().min(channels);
+        let out_ch = output.len().min(channels);
 
         if !self.is_processing() {
-            for c in 0..out_ch {
-                let buf = self.ch.scratch_in[c].active_ref(size);
-                for (i, &s) in buf.iter().enumerate().take(size) {
-                    output.set_f32(c, i, s);
-                }
+            for (lane, scratch) in output[..out_ch].iter_mut().zip(&self.ch.scratch_in) {
+                let buf = scratch.active_ref(size);
+                let n = buf.len().min(size);
+                lane[..n].copy_from_slice(&buf[..n]);
             }
             return;
         }
@@ -696,8 +702,7 @@ impl AudioUnit for Unit {
         // Same intake pacing as `tick`, applied per sample of the block so the
         // two entry points consume the source identically. Walking the block
         // rather than pushing it whole is what keeps `process` and `tick`
-        // producing the same audio — they drifted apart once before by writing
-        // the two paths separately.
+        // producing the same audio; two separately written paths would drift.
         for i in 0..size {
             self.intake_debt += rate;
             while self.intake_debt >= 1.0 {
@@ -714,35 +719,13 @@ impl AudioUnit for Unit {
             let out = self.ch.scratch_out[c].active(size);
             out.fill(0.0);
             let count = self.ch.vocoders[c].output.drain(out);
-            if c >= out_ch {
+            let Some(lane) = output[..out_ch].get_mut(c) else {
                 continue;
-            }
-            for (i, &s) in out.iter().enumerate().take(size) {
-                output.set_f32(c, i, if i < count { s } else { 0.0 });
-            }
-        }
-    }
-
-    audio_unit_boilerplate!(id = crate::node_id::TIME_STRETCH_ID);
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        // As a filter, the incoming `input` frame IS the source signal. Width
-        // must track `outputs()` or fundsp mis-plans this node's latency.
-        // Stride derived once, above the loop. Boundary: `SignalFrame::new`
-        // is a fundsp signature.
-        let channels = self.stride();
-        let mut out = SignalFrame::new(channels);
-        let latency = self.latency_samples() as f64;
-        let first = input.at(0).delay(latency);
-        for c in 0..channels {
-            let sig = if c < input.len() {
-                input.at(c).delay(latency)
-            } else {
-                first
             };
-            out.set(c, sig);
+            for (i, &s) in out.iter().enumerate().take(size) {
+                lane[i] = if i < count { s } else { 0.0 };
+            }
         }
-        out
     }
 
     /// The overlap-add accumulator's contents — one FFT window.
@@ -755,19 +738,10 @@ impl AudioUnit for Unit {
     /// The bypass branch is mirrored deliberately. A unit sitting at unity does
     /// no overlap-add and holds nothing, so reporting a window there would
     /// append ~46 ms of silence to every unstretched voice.
-    fn tail(&mut self) -> Tail {
+    pub fn tail(&self) -> Tail {
         match self.latency_samples() {
             0 => Tail::None,
             n => Tail::Finite(Samples(n)),
         }
     }
-
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-
-    // No `isolate` and no `allocate`: a unit shares nothing with its clones
-    // (the vocoders, scratch and atomics are each clone's own), so there is
-    // nothing to sever, and its scratch is sized wherever it is built. Both
-    // hooks existed only for the `Arc<Bank>` a `Net` commit's clone shared.
 }

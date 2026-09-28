@@ -269,7 +269,7 @@ impl LogState {
         }
     }
 
-    /// Count a line refused because it arrived on the audio thread (see
+    /// Counts a line refused because it arrived on the audio thread (see
     /// `host_log`). Shares the capacity-eviction counter — both are "a line the
     /// host did not keep", and no caller can act differently on the two.
     ///
@@ -278,7 +278,7 @@ impl LogState {
         self.dropped.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record one routed line, evicting the oldest if at capacity.
+    /// Records one routed line, evicting the oldest if at capacity.
     ///
     /// **Not audio-thread safe:** takes a `Mutex` that `drain_log` holds across
     /// a copy, so an audio-thread call risks a priority-inversion stall.
@@ -370,7 +370,7 @@ impl TransportState {
         }
     }
 
-    /// Queue one request, or drop it and count that.
+    /// Queues one request, or drops it and counts that.
     ///
     /// **Audio-thread safe.** `try_lock`, never `lock`: a contended lock means
     /// the host is mid-drain, and losing one transport request beats stalling
@@ -478,24 +478,14 @@ pub struct HostState {
     /// `[audio-thread]` call — so this is a per-block RT write, not a
     /// start/stop-of-processing one.
     ///
-    /// **A plain atomic, deliberately.** This was an `ArcSwapOption<ThreadId>`
-    /// with a one-slot `Arc` cache to avoid allocating per block. Both halves
-    /// were wrong on the audio thread:
+    /// A plain atomic, so claiming and releasing the role never allocates,
+    /// blocks, or frees on the audio thread. `ThreadId` is opaque (`as_u64` is
+    /// unstable), so the hash is the portable way to fit it in an atomic.
+    // An `ArcSwapOption<ThreadId>` would not do: `store` waits for readers and
+    // can run the retired `Arc`'s deallocation on the audio thread, and a
+    // one-slot `Arc` cache is evicted whenever a GUI thread calls `flush_params`
+    // between two blocks.
     ///
-    /// - `ArcSwapOption::store` is `drop(self.swap(val))`, and `swap` calls
-    ///   `wait_for_readers` before returning the old `Arc`. So publishing a
-    ///   claim could *block* on the audio thread, and releasing one could run
-    ///   the retired `Arc`'s deallocation there. That is the hazard
-    ///   `RtPublish` exists to prevent, arrived at through a different door.
-    /// - The cache held exactly one slot, so it only helped while the same
-    ///   thread claimed repeatedly. A GUI thread calling `flush_params` between
-    ///   two audio blocks evicts it, and the audio thread allocates again on
-    ///   its next block — precisely the interleaving a DAW produces when a user
-    ///   touches a control during playback.
-    ///
-    /// Hashing sidesteps both: a `u64` needs no allocation, no retirement, and
-    /// no reader coordination. `ThreadId` is opaque (`as_u64` is unstable), so
-    /// the hash is the portable way to fit it in an atomic.
     ///
     /// Collisions are possible in principle, and are sound here: the property
     /// CLAP requires — one OS thread inside an `[audio-thread]` call at a time
@@ -503,7 +493,7 @@ pub struct HostState {
     /// this value. A collision could mislead a plugin's own thread-check
     /// assertion, never admit a second thread.
     pub audio_thread_id: AtomicU64,
-    /// The `[audio-thread]` concurrency guard (C1/C2).
+    /// The `[audio-thread]` concurrency guard.
     ///
     /// CLAP defines the audio-thread as a *symbolic* thread: "the host may
     /// mark any OS thread, including the main-thread, as the audio-thread, as
@@ -582,7 +572,7 @@ fn thread_id_hash(id: ThreadId) -> u64 {
     }
 }
 
-/// RAII claim on the `[audio-thread]` role for one plugin instance (C1/C2).
+/// RAII claim on the `[audio-thread]` role for one plugin instance.
 ///
 /// While alive it holds [`HostState::audio_thread_lock`] and has published the
 /// claiming OS thread into [`HostState::audio_thread_id`], so:
@@ -619,7 +609,7 @@ impl Drop for AudioThreadClaim<'_> {
 }
 
 impl HostState {
-    /// Build an unclaimed `HostState`, taking the calling thread as the
+    /// Builds an unclaimed `HostState`, taking the calling thread as the
     /// `[main-thread]` role for the instance's whole life.
     pub fn new() -> Self {
         Self {
@@ -641,15 +631,15 @@ impl HostState {
         }
     }
 
-    /// Read a latch and clear it in one atomic step, returning whether it was
+    /// Reads a latch and clear it in one atomic step, returning whether it was
     /// set. Draining is the point: two consecutive polls of one unrepeated
     /// request answer `true` then `false`.
     pub fn poll(&self, flag: &AtomicBool) -> bool {
         flag.swap(false, Ordering::AcqRel)
     }
 
-    /// Claim the `[audio-thread]` role for the calling OS thread, blocking
-    /// until any other claim has been released (C1/C2).
+    /// Claims the `[audio-thread]` role for the calling OS thread, blocking
+    /// until any other claim has been released.
     ///
     /// Wrap **every** `[audio-thread]` plugin call in this: `process`,
     /// `start_processing`, `stop_processing`, and an active `params.flush`.
@@ -688,7 +678,7 @@ impl HostState {
 
     /// Whether the calling thread is currently acting as the main thread.
     ///
-    /// **Exclusive with [`is_audio_thread`](Self::is_audio_thread)** (C1): the
+    /// **Exclusive with [`is_audio_thread`](Self::is_audio_thread)**: the
     /// spec lets a host mark the OS main thread as the audio thread, but the
     /// two symbolic roles are alternatives, not simultaneous identities. While
     /// an [`AudioThreadClaim`] is held on this thread, this answers `false`,
@@ -727,9 +717,9 @@ mod transport_queue_tests {
 
     /// The queue is bounded, and the bound is what the constant says.
     ///
-    /// This is the leak half of the fix. Nothing obliges a host to drain — the
-    /// drain is behind `clap-extras` while the push path is always compiled —
-    /// so an unbounded `Vec` here grew for the lifetime of the session.
+    /// Nothing obliges a host to drain — the drain is behind `clap-extras`
+    /// while the push path is always compiled — so an unbounded `Vec` here
+    /// would grow for the lifetime of the session.
     ///
     /// Mutation check: drop the `len() == TRANSPORT_REQUEST_CAPACITY` arm and
     /// the length assertion fails.
@@ -800,8 +790,8 @@ mod transport_queue_tests {
     /// host's main thread across a whole drain.
     ///
     /// Mutation check: change `try_lock` back to `lock` and this deadlocks
-    /// rather than failing — which is itself the bug, so nextest's timeout is
-    /// the signal.
+    /// rather than failing — which is itself the failure, so nextest's timeout
+    /// is the signal.
     #[test]
     fn a_contended_push_drops_instead_of_blocking() {
         let state = TransportState::new();

@@ -47,14 +47,10 @@
 //!
 //! The ring has one `PosReader`, and the voice that took it owns it, by
 //! value. **A clone of the voice has no reader**, and renders silence: the
-//! graph renders the unit it was given, never a clone of it. (Under `Net`,
-//! whose commit handed its backend a clone of every node, clones shared the
-//! reader through a `try_lock`; no engine has rendered a `Net` since doc
-//! 013's PR 15, so the sharing went with item 7.) The clones a native graph
-//! does take — `Legacy::controlled`'s shadow, and a fork cloned from it —
-//! never read the live ring anyway: a fork severs itself (`isolate` →
-//! [`LiveRead::sever`]) and reads the file instead (`DiskVoice::isolate`). A
-//! block that reads nothing tells the ring so (`PosReader::idle`), so a
+//! graph renders the unit it was given, never a clone of it. The one copy
+//! the graph takes, a fork, never reads the live ring anyway: it severs
+//! itself (`DiskVoice::fork_copy` → [`LiveRead::sever`]) and reads the file
+//! instead. A block that reads nothing tells the ring so (`PosReader::idle`), so a
 //! paused voice holds no refill back.
 
 use tutti_core::{PosClaim, PosReader};

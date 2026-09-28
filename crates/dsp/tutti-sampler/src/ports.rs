@@ -19,7 +19,7 @@ use smol::channel::Sender;
 
 use crate::butler::{ButlerCommand, ButlerGone, ChannelPlan, SessionRate, TakeVoiceError};
 use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
-use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate, Timeline};
+use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate};
 use tutti_io::Wave;
 
 /// The caller's stated choice of playback tier for a voice: whole-file in memory
@@ -149,7 +149,7 @@ impl Commands {
         Self { tx }
     }
 
-    /// Dispatch a single command to the butler.
+    /// Dispatches a single command to the butler.
     ///
     /// `Ok` means the command was *queued* — the butler applies it on its own
     /// thread, and that outcome is not available synchronously.
@@ -218,7 +218,7 @@ impl Commands {
         }
     }
 
-    /// Dispatch a batch of commands, in order.
+    /// Dispatches a batch of commands, in order.
     ///
     /// Returns how many were queued. `< cmds.len()` means the butler was gone
     /// and the rest were **discarded** — dispatch stops at the first failure,
@@ -273,8 +273,9 @@ impl Status {
         self.sample_rate.get()
     }
 
-    /// Build a [`DiskVoice`] for a channel whose butler stream is ready, binding
-    /// it to the timeline placement gate.
+    /// Builds a [`DiskVoice`] for a channel whose butler stream is ready, placed
+    /// on the timeline at `start_beat` for `duration` (the transport it reads
+    /// is its block's, from the graph).
     ///
     /// Pulls the ring consumer and shared RT state out of the channel's plan and
     /// wraps them in a placement-gated reader. `start_beat` and `duration` are
@@ -286,16 +287,19 @@ impl Status {
     /// The voice also keeps a read-only handle onto the butler's record of
     /// the stream, so a fork of it for an offline render (an export) can read
     /// the same file on its own rather than through the live ring; see
-    /// `DiskVoice::rebind_offline`.
+    /// `DiskVoice::fork_copy`.
     ///
-    /// [`TakeVoiceError::NotStreaming`] while the butler has not installed the
-    /// link yet: a caller polls again next frame rather than treating it as a
-    /// failure. [`TakeVoiceError::ReaderTaken`] once a voice has been taken
+    /// Control thread; the returned voice is then moved into the graph.
+    ///
+    /// # Errors
+    ///
+    /// [`TakeVoiceError::NotStreaming`] while the butler has not opened the
+    /// stream yet: a caller polls again next frame rather than treating it as
+    /// a failure. [`TakeVoiceError::ReaderTaken`] once a voice has been taken
     /// from the stream: a stream serves one live voice.
     pub fn take_disk_voice(
         &self,
         channel_index: usize,
-        transport: Arc<dyn Timeline>,
         start_beat: Beat,
         duration: Option<BeatDuration>,
     ) -> Result<DiskVoice, TakeVoiceError> {
@@ -306,7 +310,6 @@ impl Status {
             inner,
             rt_state,
             DiskVoiceConfig {
-                timeline: transport,
                 window: VoiceWindow {
                     start: start_beat,
                     duration,

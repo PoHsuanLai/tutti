@@ -15,7 +15,9 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tutti_core::{AtomicF32, AudioUnit, BufferVec, ChannelLayout, SampleRate};
+use tutti_core::{AtomicF32, ChannelLayout, SampleRate, Samples};
+use tutti_graph::contract::drive;
+use tutti_graph::{Node, Prepare};
 use tutti_nodes::{
     CompressorNode, DelayLineNode, GateNode, LadderFilterNode, LadderType, ModDelayNode,
     PhaserNode, SvfFilterNode, SvfType,
@@ -23,67 +25,65 @@ use tutti_nodes::{
 
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
 
-fn noise_block(channels: usize, seed: u32) -> BufferVec {
-    let mut buf = BufferVec::new(channels);
+/// 64 frames of noise per channel, planar.
+fn noise_block(channels: usize, seed: u32) -> Vec<Vec<f32>> {
+    let mut buf = vec![vec![0.0f32; 64]; channels];
     let mut state = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    for c in 0..channels {
-        for i in 0..64 {
+    for ch in &mut buf {
+        for s in ch.iter_mut() {
             state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            buf.set_f32(c, i, (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0);
+            *s = (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
         }
     }
     buf
 }
 
-/// Render `blocks` blocks and return whether every output sample was finite.
-fn render_finite(node: &mut dyn AudioUnit, blocks: usize, seed: u32) -> bool {
-    let mut out = BufferVec::new(node.outputs());
+/// A control cell, and a finite value it can be moved to.
+type Cell = (&'static str, Arc<AtomicF32>, f32);
+
+/// [`render_finite`] for a graph node: `blocks` 64-frame blocks through
+/// `tutti_graph::contract::drive` at `rate`.
+fn render_node_finite(node: &mut dyn Node, rate: SampleRate, blocks: usize, seed: u32) -> bool {
+    let width = usize::from(node.shape().audio_in.count());
     let mut all = true;
     for b in 0..blocks {
-        let input = noise_block(node.inputs(), seed + b as u32);
-        node.process(64, &input.buffer_ref(), &mut out.buffer_mut());
-        for c in 0..node.outputs() {
-            all &= (0..64).all(|i| out.at_f32(c, i).is_finite());
-        }
+        let chans = noise_block(width, seed + b as u32);
+        let refs: Vec<&[f32]> = chans.iter().map(|c| &c[..]).collect();
+        let out = drive(node, rate, &refs, &[]);
+        all &= out.iter().flatten().all(|s| s.is_finite());
     }
     all
 }
 
-/// A control cell, and a finite value it can be moved to.
-type Cell = (&'static str, Arc<AtomicF32>, f32);
-
-/// For every cell and every non-finite value: write it while every other cell
-/// moves to its alternate value, render, change the sample rate and render, then restore a finite value and
-/// render again. Both renders must be finite. A fresh node per case, so one
-/// case's damage cannot hide another's.
-fn survives<N: AudioUnit>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -> Vec<Cell>) {
+/// [`survives`] for a graph node: the same cases, the rate change a
+/// re-`prepare`.
+fn survives_node<N: Node>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -> Vec<Cell>) {
+    let (a, b) = (SampleRate(48_000.0), SampleRate(44_100.0));
     for bad in BAD {
         let count = cells(&make()).len();
         for k in 0..count {
             let mut node = make();
-            node.set_sample_rate(SampleRate(48_000.0));
-            assert!(render_finite(&mut node, 4, 1), "{name}: finite before");
+            node.prepare(&Prepare::new(a, Samples(64)));
+            assert!(
+                render_node_finite(&mut node, a, 4, 1),
+                "{name}: finite before"
+            );
             let cs = cells(&node);
             let (cell, atomic, alt) = &cs[k];
             let before = atomic.load(Ordering::Acquire);
             atomic.store(bad, Ordering::Release);
-            // Every *other* control moves in the same block, so whichever of
-            // them triggers a re-solve (a filter's cutoff, an envelope's
-            // other time constant) does.
             for (j, (_, other, other_alt)) in cs.iter().enumerate() {
                 if j != k {
                     other.store(*other_alt, Ordering::Release);
                 }
             }
             assert!(
-                render_finite(&mut node, 8, 10),
+                render_node_finite(&mut node, a, 8, 10),
                 "{name}: {cell} = {bad} (with every other control moving) reached the output"
             );
-            // A rate change re-derives every time constant from the cells in
-            // one go — the path that skips the per-control change guards.
-            node.set_sample_rate(SampleRate(44_100.0));
+            node.prepare(&Prepare::new(b, Samples(64)));
             assert!(
-                render_finite(&mut node, 8, 30),
+                render_node_finite(&mut node, b, 8, 30),
                 "{name}: {cell} = {bad} reached the output through a rate change"
             );
             atomic.store(
@@ -91,7 +91,7 @@ fn survives<N: AudioUnit>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -
                 Ordering::Release,
             );
             assert!(
-                render_finite(&mut node, 8, 20),
+                render_node_finite(&mut node, b, 8, 20),
                 "{name}: {cell} = {bad} left the state non-finite after a finite write"
             );
         }
@@ -110,7 +110,7 @@ fn survives<N: AudioUnit>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -
 /// into a gate held open for good.
 #[test]
 fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls() {
-    survives(
+    survives_node(
         "svf",
         || SvfFilterNode::<f64>::with_channels(ChannelLayout::STEREO, SvfType::Bell, 900.0, 1.0),
         |n| {
@@ -121,7 +121,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "ladder",
         || {
             LadderFilterNode::<f64>::with_channels(
@@ -139,7 +139,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "delay",
         || {
             let n = DelayLineNode::stereo(0.1, 0.01, 0.013, 0.5);
@@ -156,7 +156,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "chorus",
         || ModDelayNode::chorus(ChannelLayout::STEREO),
         |n| {
@@ -168,7 +168,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "phaser",
         || PhaserNode::with_channels(ChannelLayout::STEREO, 6),
         |n| {
@@ -180,7 +180,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "compressor",
         || CompressorNode::stereo(-20.0, 4.0, 0.001, 0.05).with_soft_knee(6.0),
         |n| {
@@ -194,7 +194,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "gate",
         || GateNode::stereo(-30.0, 0.001, 0.01, 0.05),
         |n| {
@@ -219,7 +219,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
 fn the_convolver_holds_off_non_finite_controls() {
     use tutti_nodes::{generate_test_ir, ConvolverNode};
     let ir = generate_test_ir(128, 0.1, 48_000.0);
-    survives(
+    survives_node(
         "convolver",
         || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64),
         |n| vec![("mix", n.mix(), 0.8), ("gain", n.gain(), 2.0)],

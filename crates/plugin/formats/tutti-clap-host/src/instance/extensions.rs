@@ -285,7 +285,7 @@ impl ExtensionCache {
         }
     }
 
-    /// Query the stable id, falling back to the pre-1.2 `.draft` spelling.
+    /// Queries the stable id, falling back to the pre-1.2 `.draft` spelling.
     ///
     /// Ten extensions carry a `_COMPAT` id in clap-sys. The two spellings name
     /// the *same interface at the same version* — `clap.surround/4` and
@@ -359,11 +359,11 @@ mod tests {
 
     /// A plugin that answers only the pre-1.2 `.draft` id is still found.
     ///
-    /// This is the whole point of C-5. Before it, the host asked for
-    /// `clap.surround/4` alone; a plugin built against a pre-1.2 SDK answers
-    /// `clap.surround.draft/4` and nothing else, so the query returned null and
-    /// the host concluded the plugin had no surround map at all — identical, at
-    /// every later call site, to a plugin that genuinely lacks the extension.
+    /// A host asking for `clap.surround/4` alone would miss it: a plugin built
+    /// against a pre-1.2 SDK answers `clap.surround.draft/4` and nothing else,
+    /// so the query would return null and the host would conclude the plugin
+    /// had no surround map at all — identical, at every later call site, to a
+    /// plugin that genuinely lacks the extension.
     #[test]
     fn a_plugin_answering_only_the_draft_id_is_still_found() {
         let mut answers = Answers {

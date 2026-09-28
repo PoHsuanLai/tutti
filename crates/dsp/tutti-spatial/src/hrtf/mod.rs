@@ -9,5 +9,5 @@
 mod node;
 pub(crate) mod panner;
 
-pub use node::HrtfBinauralNode;
+pub use node::{HrtfBinauralControls, HrtfBinauralNode};
 pub use panner::HrtfBinauralError;

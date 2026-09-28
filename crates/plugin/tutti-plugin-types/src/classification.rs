@@ -1,22 +1,17 @@
 //! Shared plugin-classification vocabulary.
 //!
 //! Each native format reports a category/type taxonomy. These neutral mirrors
-//! live here so both the format host crate (which maps its native SDK enum into
-//! one, e.g. `tutti-vst2-host` from the `vst` crate's `Category`) and the
-//! catalog/wire layer in `tutti-plugin` (which embeds it in `PluginClass`)
-//! speak one type instead of each keeping a private copy plus a hand-written
-//! cross-walk.
-//!
-//! Distinct from [`crate::metadata`], which holds the *engine-wiring* load data
-//! (bus widths, latency); this is the *classification* taxonomy.
+//! are shared by the format host crate (which maps its native SDK enum into
+//! one) and the catalog in `tutti-plugin` (which embeds it in `PluginClass`).
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// The plugin's declared VST2 category — a neutral mirror of the `vst` crate's
-/// `Category`, owned here so neither the host crate's public API nor the wire
-/// vocab leaks the `vst` dependency. `tutti-vst2-host` maps the native value
-/// into this; `tutti-plugin` embeds it in `PluginClass::Vst2`.
+/// The category a VST2 plugin declared through `effGetPlugCategory`.
+///
+/// A neutral mirror of the `vst` crate's `Category`, so no public API has to
+/// name the `vst` dependency. `tutti-vst2-host` maps the native value into
+/// this, and [`PluginClass::Vst2`](crate::PluginClass::Vst2) carries it.
 ///
 /// Three kinds of answer, kept apart:
 ///
@@ -183,7 +178,7 @@ pub enum Vst3PlugType {
 }
 
 impl Vst3PlugType {
-    /// Parse one already-split, already-trimmed facet.
+    /// Parses one already-split, already-trimmed facet.
     ///
     /// Never fails: an unrecognized facet becomes [`Other`](Self::Other).
     /// Matching is exact and case-sensitive, as the SDK spells the constants —
@@ -315,7 +310,7 @@ impl From<Vst3SubCategories> for String {
 }
 
 impl Vst3SubCategories {
-    /// Parse a `|`-delimited subcategory string.
+    /// Parses a `|`-delimited subcategory string.
     ///
     /// Empty segments are dropped rather than becoming empty
     /// [`Other`](Vst3PlugType::Other) facets: `"Fx||Delay"` is malformed, and
@@ -461,8 +456,9 @@ pub enum ClapFeature {
 }
 
 impl ClapFeature {
-    /// Parse one feature tag. Never fails — an unrecognized tag becomes
-    /// [`Other`](Self::Other).
+    /// Parses one feature tag.
+    ///
+    /// Never fails: an unrecognized tag becomes [`Other`](Self::Other).
     pub fn parse(tag: &str) -> Self {
         match tag {
             "instrument" => Self::Instrument,
@@ -656,7 +652,7 @@ impl ClapFeature {
     }
 }
 
-/// The role a CLAP feature list describes.
+/// Returns the role a CLAP feature list describes.
 ///
 /// The tags are a set with no declared precedence, so a plugin may name more
 /// than one primary role. First-wins over the plugin's own ordering: that is
@@ -706,7 +702,7 @@ mod tests {
         assert!(!Vst2Category::default().was_answered());
     }
 
-    /// Both new shapes survive the bincode wire, and an `Unrecognized` payload
+    /// Both shapes survive the bincode wire, and an `Unrecognized` payload
     /// arrives with its code intact — a decode that dropped it would restore
     /// the flattening this variant exists to prevent.
     #[cfg(feature = "serde")]
@@ -962,9 +958,8 @@ mod tests {
     /// `"Fx|Instrument"` is an effect, not an instrument.
     ///
     /// The SDK defines it as "Fx which could be loaded as Instrument too", so
-    /// `Fx` is the plugin's primary claim. The substring test this replaces
-    /// (`raw.contains("Instrument")`) files every such effect as a synth — the
-    /// bug that motivated the facet types.
+    /// `Fx` is the plugin's primary claim. A substring test
+    /// (`raw.contains("Instrument")`) would file every such effect as a synth.
     #[test]
     fn an_fx_that_can_also_load_as_an_instrument_is_an_effect() {
         assert_eq!(

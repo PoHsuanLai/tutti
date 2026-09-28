@@ -31,8 +31,8 @@ pub(super) struct MmapCell(UnsafeCell<MmapMut>);
 // usually does — the other writer is in a different address space and no Rust
 // type can see it. What makes concurrent access sound is the header's
 // Release/Acquire discipline, and it is worth being precise about what that
-// buys, because the previous justification here ("single-writer enforced by IPC
-// protocol") named a guarantee that did not exist and a bypass shipped under it.
+// buys: "single-writer enforced by IPC protocol" would name a guarantee that
+// does not exist.
 //
 // Two claims, separately:
 //

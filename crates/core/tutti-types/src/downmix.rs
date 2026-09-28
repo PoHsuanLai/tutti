@@ -34,7 +34,8 @@
 
 use crate::ChannelLayout;
 
-/// −3 dB attenuation (`1/√2`) for center and surround fold-in.
+/// The −3 dB attenuation (`1/√2 ≈ 0.7071`) the downmix folds use for the
+/// centre and surround channels.
 pub const M3DB: f32 = core::f32::consts::FRAC_1_SQRT_2;
 
 /// Read channel `i` of `frame`, or `0.0` if the frame is narrower.
@@ -43,16 +44,32 @@ fn ch(frame: &[f32], i: usize) -> f32 {
     frame.get(i).copied().unwrap_or(0.0)
 }
 
-/// Fold one interleaved surround `frame` (width = `frame.len()`) to a stereo
-/// `(Lo, Ro)` pair using the ITU / Dolby matrix for its width. Widths without a
-/// defined surround matrix (already ≤ 2, or an unrecognized layout) fall back to
-/// front-pair passthrough.
+/// Folds one interleaved surround frame to a stereo `(Lo, Ro)` pair.
 ///
-/// - **≤2ch**: `(ch0, ch1-or-ch0)` — nothing to fold.
-/// - **4ch (quad, FL FR BL BR)**: `Lo = FL + −3dB·BL`, `Ro = FR + −3dB·BR`.
-/// - **6ch (5.1)**: `Lo = FL + −3dB·C + −3dB·SL`, `Ro = FR + −3dB·C + −3dB·SR`,
-///   LFE dropped.
-/// - **8ch (7.1)**: 5.1 fold plus the rear pair (BL/BR) into the surrounds.
+/// The frame's width is `frame.len()`. When a signal is wider than the sink it
+/// feeds, the extra channels are folded in rather than dropped, with the
+/// ITU-R BS.775 / Dolby consumer downmix coefficients a receiver applies to
+/// play surround on two speakers (−3 dB is [`M3DB`]). Channel order is
+/// SMPTE: `FL FR C LFE SL SR [BL BR]`. The LFE is omitted: it carries no
+/// program-critical content.
+///
+/// - **0–2 ch**: nothing to fold; mono is duplicated to both sides.
+/// - **4 ch (quad, FL FR BL BR)**: `Lo = FL + −3dB·BL`, `Ro = FR + −3dB·BR`.
+/// - **6 ch (5.1)**: `Lo = FL + −3dB·C + −3dB·SL`, `Ro = FR + −3dB·C + −3dB·SR`.
+/// - **8 ch (7.1)**: the 5.1 fold plus the rear pair (BL/BR) into its side.
+/// - **12 ch (7.1.4)**: every left-side channel, heights included, into `Lo`
+///   and every right-side one into `Ro`, all at −3 dB.
+/// - **any other width**: the front pair passes through.
+///
+/// Allocation-free, so safe on the audio thread.
+///
+/// ```
+/// use tutti_types::{fold_frame_to_stereo, M3DB};
+///
+/// // 5.1 with only the centre (dialogue) channel active.
+/// let (lo, ro) = fold_frame_to_stereo(&[0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+/// assert_eq!((lo, ro), (M3DB, M3DB));
+/// ```
 #[inline]
 pub fn fold_frame_to_stereo(frame: &[f32]) -> (f32, f32) {
     match frame.len() {
@@ -102,13 +119,15 @@ pub fn fold_frame_to_stereo(frame: &[f32]) -> (f32, f32) {
     }
 }
 
-/// Fold one interleaved `frame` to a single mono sample.
+/// Folds one interleaved frame to a single mono sample.
 ///
-/// For a **≤2-channel** source this is the plain L/R *average* (`(l+r)/2`) — the
-/// long-standing mono convention, unchanged. For a **surround** source it is the
+/// For a **≤2-channel** source this is the plain L/R *average* (`(l+r)/2`).
+/// For a **surround** source it is the
 /// stereo matrix downmix summed with a further −3 dB, so the center and surrounds
 /// fold in with correct relative levels (and the LFE is dropped) rather than
 /// every channel being averaged with equal weight.
+///
+/// Allocation-free, so safe on the audio thread.
 #[inline]
 pub fn fold_frame_to_mono(frame: &[f32]) -> f32 {
     match frame.len() {
@@ -122,9 +141,11 @@ pub fn fold_frame_to_mono(frame: &[f32]) -> f32 {
     }
 }
 
-/// Fold a `src`-width interleaved frame into a `dst`-width frame, writing every
-/// channel of `dst`. This is the general N→M form the live output path uses to
-/// match the device width:
+/// Folds a `src`-width interleaved frame into a `dst`-width frame, writing
+/// every channel of `dst`.
+///
+/// This is the general N→M form the live output path uses to match the device
+/// width:
 ///
 /// - `dst.len() == 1` → [`fold_frame_to_mono`].
 /// - `dst.len() == 2` → [`fold_frame_to_stereo`] (folds surround, passes stereo,
@@ -133,9 +154,10 @@ pub fn fold_frame_to_mono(frame: &[f32]) -> f32 {
 ///   zero-filled (never a synthetic upmix — a stereo signal on a 5.1 device
 ///   leaves C/LFE/surrounds silent).
 /// - narrowing to some other width (`2 < dst < src`) → front-`dst` passthrough
-///   (rare; no standard matrix for an arbitrary intermediate width).
+///   (there is no standard matrix for an arbitrary intermediate width).
 ///
-/// Allocation-free: only indexed reads/writes over the two slices.
+/// Allocation-free (only indexed reads and writes over the two slices), so
+/// safe on the audio thread.
 #[inline]
 pub fn fold_frame(src: &[f32], dst: &mut [f32]) {
     match dst.len() {
@@ -155,14 +177,13 @@ pub fn fold_frame(src: &[f32], dst: &mut [f32]) {
     }
 }
 
-/// Fold a whole interleaved buffer to mono, `layout`-wide frames in.
+/// Folds a whole interleaved buffer of `layout`-wide frames to mono.
 ///
-/// The buffer-level counterpart to [`fold_frame_to_mono`], for the cold-path
-/// consumers that hand a mono buffer to an analysis or a decoder. Every one of
-/// those wrote its own version, and the ones that read only channels 0 and 1
-/// silently discarded the centre and surrounds of anything wider.
+/// The buffer-level counterpart to [`fold_frame_to_mono`], for cold-path
+/// consumers that hand a mono buffer to an analysis or a decoder. Allocates the
+/// result, so keep it off the audio thread.
 ///
-/// `Mono` input is returned as-is. A trailing partial frame is ignored.
+/// `Mono` input is returned as a copy. A trailing partial frame is ignored.
 pub fn fold_buffer_to_mono(samples: &[f32], layout: ChannelLayout) -> Vec<f32> {
     match layout.count() {
         0 => Vec::new(),
@@ -174,28 +195,13 @@ pub fn fold_buffer_to_mono(samples: &[f32], layout: ChannelLayout) -> Vec<f32> {
     }
 }
 
-/// Fold planar channels to mono — one slice per channel, rather than one
+/// Folds planar channels to mono — one slice per channel, rather than one
 /// interleaved buffer.
 ///
 /// The shape decoders hand back. Channels shorter than the longest read as
 /// silence past their end, so a ragged decode is padded rather than truncated.
-///
-/// # Why this stays
-///
-/// Its keep was questioned once on the belief it had no callers. It had one at
-/// the time — a host's STFT path, folding a `Wave::load` decode to mono before
-/// the transform — and that call site is no longer in any tree we can point at,
-/// so the caller argument no longer holds it here.
-///
-/// What holds it is what that caller replaced: a hand-rolled average of channels
-/// 0 and 1, which discarded a 5.1 source's centre — the dialogue — and its
-/// surrounds. Deleting this reintroduces that bug the next time someone needs a
-/// planar fold, and "needs a planar fold" is not a rare event.
-///
-/// It also anchors [`fold_buffer_to_mono`]: the two must agree, which
-/// `fold_planar_matches_interleaved` asserts. That test is the proof the
-/// interleaved and planar folds are one policy rather than two drifting
-/// copies, and it cannot exist without both halves.
+/// Gives the same result as [`fold_buffer_to_mono`] over the same audio
+/// interleaved. Allocates the result, so keep it off the audio thread.
 pub fn fold_planar_to_mono(channels: &[&[f32]]) -> Vec<f32> {
     match channels {
         [] => Vec::new(),

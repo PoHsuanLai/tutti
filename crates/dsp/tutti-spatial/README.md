@@ -1,13 +1,11 @@
 # tutti-spatial
 
-Spatial audio: VBAP speaker panning, binaural HRTF rendering, and surround mix
-assembly.
+Spatial audio for the Tutti engine: VBAP speaker panning, binaural HRTF
+rendering, and surround mix assembly, as graph nodes (`tutti_graph::Node`).
 
-## What this is
-
-The engine's only **geometry** — azimuth, elevation, speaker layouts, HRIR
-spheres. Two independent renderers, each named for its algorithm rather than the
-category it falls in:
+Use it to place a source by bearing and height, either across a loudspeaker
+layout (stereo up to 7.1.4) or on headphones. Two independent renderers, each
+named for its algorithm:
 
 | | `vbap` | `hrtf` |
 |---|---|---|
@@ -16,8 +14,8 @@ category it falls in:
 | needs | a speaker layout | an HRIR dataset |
 | fails with | `VbapError` | `HrtfBinauralError` |
 
-Each owns its own error type; there is deliberately no crate-level `Error` and
-nothing called `SpatialPanner`. Shared between them: `SpatialTarget` (bearing and
+Each has its own error type; there is no crate-level `Error`, because the two
+fail for unrelated reasons. Shared between them: `SpatialTarget` (bearing and
 height as lock-free params), the position de-zipper, and the SMPTE/WAV
 channel-order conventions in `layout`.
 
@@ -28,83 +26,85 @@ presents the same sample on both ports. `HrtfBinauralNode` renders to headphones
 by FFT convolution against a measured HRIR sphere, using the
 [hrtf](https://crates.io/crates/hrtf) crate; the dataset is supplied by the caller
 as bytes. `build_vbap_mix` assembles the whole `sources → panners → sum` graph in
-one call, including LFE bass management — named for the algorithm, not the output
-shape, because there is no non-VBAP way to reach it.
+one call, including LFE bass management; `vbap_mix_parts` returns the same mix
+as owned nodes and edges for a graph built another way.
 
-Position changes are de-zippered by a one-pole smoother, so a moving source does
-not click.
+Position changes are de-zippered by a one-pole smoother (50 ms), so a moving
+source does not click. Controls are lock-free and may be changed while the
+node renders.
 
-## What it does not own
+## Scope
 
 - **No per-channel signal processing.** Filters, delays, dynamics and the mix
-  primitives are [`tutti-nodes`](../tutti-nodes)'s. This crate *depends* on that
-  one — `build_vbap_mix` folds its panners with `ChannelSumNode` and low-passes
-  the LFE send with `SvfFilterNode` at 120 Hz, the conservative end of the
-  Dolby/DTS 80–120 Hz bass-management crossover. The arrow runs geometry → DSP
-  and never back; neither of those units has anything spatial in it.
-- **No room simulation, and no reverb.** Convolution reverb is `tutti-nodes`'
+  primitives are `tutti-nodes`'. `build_vbap_mix` folds its panners with
+  `ChannelSumNode` and low-passes the LFE send with `SvfFilterNode` at 120 Hz,
+  the conservative end of the usual 80–120 Hz bass-management crossover.
+- **No room simulation and no reverb.** Convolution reverb is `tutti-nodes`'
   `convolution` feature.
-- **No HRIR data.** The dataset is the caller's bytes.
+- **No HRIR data.** The dataset is supplied by the caller as bytes.
 
 ## Quick start
 
-A panner alone: stereo in, one output per speaker.
+A panner alone: stereo in, one output per speaker. Both panners are
+graph nodes (`tutti_graph::Node`); inserting one hands back its controls.
 
 ```rust
-use tutti_core::dsp::Net;
-use tutti_core::AudioUnit;
-use tutti_core::{Azimuth, Elevation};
+use tutti_core::{Azimuth, Elevation, SampleRate, Samples};
+use tutti_graph::{Prepare, Solo};
 use tutti_spatial::VbapPannerNode;
 
 // 5.1: two inputs, six outputs. Only 2/4/6/8/12 have presets.
 let panner = VbapPannerNode::surround_5_1().expect("5.1 is a defined preset");
 assert_eq!(panner.num_channels(), 6);
 
-// 45° to the right, level with the listener. `store` normalizes: the bearing
-// wraps, the height clamps. It is a lock-free write, so it may happen while
-// the node renders.
+// 45° to the left, level with the listener. `store` normalizes: the bearing
+// wraps, the height clamps.
 panner.set_position(Azimuth(45.0), Elevation(0.0));
 
-let mut net = Net::new(2, 6);
-let node = net.push(Box::new(panner));
-net.pipe_input(node);
-net.pipe_output(node);
-net.check();
+// Alone in a graph (`Solo`, for tests and examples; a host inserts it with
+// `GraphBuilder::add_with_controls` or `Editor::insert`, and keeps the
+// controls the same way).
+let mut solo = Solo::new(panner, Prepare::new(SampleRate(48_000.0), Samples(64)));
 
-let mut out = [0.0f32; 6];
-net.tick(&[1.0, 1.0], &mut out);
+// The controls move the running node: a lock-free write, landing on its next
+// block, de-zippered over 50 ms.
+solo.controls().set_position(Azimuth(-30.0), Elevation(0.0));
+
+let out = solo.render_input(&[&[1.0; 64], &[1.0; 64]]); // one `Vec` per speaker
+assert_eq!(out.len(), 6);
 ```
 
 A whole mix: `build_vbap_mix` places several sources and returns the summed
 N-wide node.
 
 ```rust
-use tutti_core::dsp::Net;
-use tutti_core::AudioUnit;
+use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::Const;
 use tutti_spatial::{build_vbap_mix, VbapSource};
-use tutti_types::ChannelLayout;
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
-let mut net = Net::new(0, 4);
+let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
 
 // Two sources, each a node whose output ports 0 and 1 feed its panner. A mono
 // source presents the same sample on both.
-let front = net.push(Box::new(Const::frame(&[1.0, 1.0])));
-let rear = net.push(Box::new(Const::frame(&[1.0, 1.0])));
+let front = g.add(Const::frame(&[1.0, 1.0]));
+let rear = g.add(Const::frame(&[1.0, 1.0]));
 
 let mix = build_vbap_mix(
-    &mut net,
+    &mut g,
     ChannelLayout::QUAD,
     &[
         VbapSource::at(front, 45.0),   // front-left
         VbapSource::at(rear, 135.0),   // rear-left
     ],
 )?;
-net.pipe_output(mix);
-net.check();
+g.pipe_output(mix);
 
-let mut out = [0.0f32; 4];
-net.tick(&[], &mut out);
+let mut r = g
+    .renderer(Prepare::new(SampleRate(48_000.0), Samples(64)))
+    .expect("builds");
+let out = r.render(64); // one `Vec` per speaker
+assert_eq!(out.len(), 4);
 # Ok::<(), tutti_spatial::VbapError>(())
 ```
 
@@ -116,35 +116,31 @@ net.tick(&[], &mut out);
 the scalar space via `.get()`, and let `SpatialTarget::store` normalize — the
 bearing wraps, the height clamps.
 
-## Known deviation: `VbapPannerNode::reset` clears configuration, not just state
+## `reset` clears time, not placement
 
-`AudioUnit::reset` means "clear runtime state" everywhere else in the engine.
-This node's `reset` additionally rewrites caller-set **configuration**: it
-returns spread to `Spread::POINT`, width to `StereoWidth::NATURAL`, and the
-position to front/level. So a `reset` intended to drop a tail also silently
-discards where the caller had placed the source.
+Both panners' `Node::reset` drops the de-zipper ramp (and, for the binaural
+one, the frame bridge and convolution tails) and **keeps** position, spread,
+width and blend: those are caller-set configuration. It also seats the ramp on
+the commanded position, so the first block after a reset already renders there
+rather than gliding in from front-centre. A fork (an offline export) is reset
+before it renders, and its placement is the one set when it was taken.
 
-Stated rather than fixed, so nothing is written around it: **do not call `reset`
-to clear a tail on this node.** Rebuild the node, or re-`set_position` after.
+## Real-time safety
 
-## Node ids
-
-The `AudioUnit` fingerprints in `node_id.rs` are **persisted values** and must not
-be renumbered. `assert_unique` guards them within this crate; cross-crate
-uniqueness rests on the mnemonic convention described in `tutti_core::node_id`.
-
-## RT safety
-
-`tests/rt_no_alloc.rs` asserts both panners' `process` paths never allocate.
-Mutation-verified: injecting a `vec!` into the VBAP process path aborts the test.
+Both panners' `process` paths allocate nothing and take no lock; the crate's
+tests assert this with an allocation-trapping allocator. Construction, layout
+changes and loading an HRIR dataset allocate and belong on the control thread.
 
 ## Features
 
 `default = []`.
 
 - `hrtf` — real HRTF binaural rendering (`HrtfBinauralNode`), by FFT convolution
-  against a measured HRIR sphere. Pulls the `hrtf` crate. Off by default, so that
-  renderer is absent from a default build.
+  against a measured HRIR sphere. Pulls the `hrtf` crate.
+
+`tutti-spatial` depends on `tutti-nodes` for its mixing primitives. The
+`tutti` crate re-exports it as `tutti::spatial` behind its `spatial` feature,
+and `bevy-tutti` uses it behind its `spatial` and `hrtf` features.
 
 ## License
 

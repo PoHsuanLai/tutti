@@ -1,9 +1,10 @@
 # tutti-export
 
 **The OFFLINE edge**: render a Tutti graph to a file, or to buffers, faster (or
-slower) than real time.
+slower) than real time. The `tutti` facade re-exports this crate as
+`tutti::export` (feature `export`).
 
-## What this is
+## What is here
 
 The graph is *pulled* to a known frame count that `RenderConfig` fixes up front,
 then resampled, dithered and encoded on the way out. Three entry points, and the
@@ -30,9 +31,9 @@ below. Encoding is WAV, FLAC, AIFF or OGG Vorbis, each behind its own feature.
   the engine's `Config`/`State`/step analysis vocabulary is;
   `render_normalized_to_file` measures with it. The edge is acyclic —
   `tutti-analysis` does not depend on this crate.
-- **Threads.** Both entry points are synchronous and `Send`. A host that wants a
-  render off the main thread already owns a task pool that is better at it than
-  a raw `std::thread` would be.
+- **Threads.** Every entry point is synchronous and runs on the calling
+  thread. A host that wants a render off the main thread runs it on its own
+  task pool.
 - **A buffering strategy.** Every format streams, because every codec library
   used here supports incremental encoding. There is no buffered-versus-streaming
   mode to pick.
@@ -45,11 +46,10 @@ A config is a struct literal, so a caller states what it means and lets
 so forgetting a transport is a compile error rather than a silently silent
 render.
 
-The graph is the native one (`tutti_graph`), built with its `GraphBuilder` and
+The graph is `tutti_graph`'s, built with its `GraphBuilder` and
 prepared at the render's rate (`RenderGraph::prepare`): a graph prepared at
 another rate is refused rather than re-rated. A host exporting its live graph
-forks it instead, with `RenderGraph::fork`. The native graph is the only one
-an export renders: fundsp's `Net` is not accepted (doc 013 Phase 3 PR 14).
+forks it instead, with `RenderGraph::fork`.
 
 ```rust
 use tutti_core::{FrozenClock, Hz, SampleRate};
@@ -64,7 +64,7 @@ let rate = SampleRate(48_000.0);
 // A render consumes its graph, so build one per render.
 let tone = || {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let osc = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+    let osc = g.add(Osc::sine(Hz(440.0)));
     g.pipe_output(osc);
     let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
     RenderGraph::new(editor, executor).expect("built together")

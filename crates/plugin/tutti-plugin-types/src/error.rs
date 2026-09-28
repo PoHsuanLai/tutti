@@ -97,8 +97,8 @@ pub enum Delivered {
 }
 
 impl Delivered {
-    /// `true` only for [`Yes`](Self::Yes), for a call site that wants the bool
-    /// back. Named rather than a `From` impl so the collapse is visible at the
+    /// Returns `true` only for [`Yes`](Self::Yes), for a call site that wants
+    /// a bool. Named rather than a `From` impl so the collapse is visible at the
     /// site that chooses it.
     pub fn is_delivered(self) -> bool {
         matches!(self, Self::Yes)
@@ -117,10 +117,7 @@ impl Delivered {
 /// different blob (the plugin was upgraded, the file is truncated, the chunk
 /// came from another plugin), while [`PluginCrashed`](Self::PluginCrashed) means
 /// stop using this plugin and [`NoStateRoute`](Self::NoStateRoute) means never
-/// offer the operation again for this backend. A `bool` collapsed all three into
-/// "it didn't work", and the surrounding signature returned `()` — so the most
-/// common real failure, a plugin declining a chunk from an older version of
-/// itself, reached the user as a silently un-restored preset.
+/// offer the operation again for this backend.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum StateError {
     /// The plugin process is gone. Permanent — every later call answers the same.
@@ -179,18 +176,13 @@ pub enum StateError {
     /// [`PluginCrashed`](Self::PluginCrashed) means the subprocess is gone and
     /// every later call fails the same way. This is none of those — the socket
     /// is intact and the session is still healthy, so a retry is reasonable and
-    /// the plugin may simply be wedged rather than dead. Collapsing it into
-    /// `Rejected` was the old behaviour, and it reported a stalled transfer with
-    /// the string "the plugin did not answer within the state timeout", which
-    /// reads as a plugin that refused.
+    /// the plugin may simply be wedged rather than dead.
     ///
     /// **Whoever produces this must leave the session alive.** The variant
     /// promises a healthy socket and a worthwhile retry, so a transport that
     /// reports a stall *and* tears the connection down is telling the caller two
     /// incompatible things — and the caller acts on the error it can see, not on
-    /// the teardown it cannot. This is not hypothetical: the host's bridge thread
-    /// treats any dispatch error as connection-level, so an early version
-    /// answered `Stalled` and killed the session a beat later.
+    /// the teardown it cannot.
     ///
     /// `bytes` is what had arrived when progress stopped, which is what
     /// separates "never started" (0) from "died four fifths of the way in".

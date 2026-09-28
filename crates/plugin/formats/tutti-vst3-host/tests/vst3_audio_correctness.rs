@@ -280,10 +280,10 @@ fn render(
 
 /// Kept as a no-op so every test still names its precondition at the top.
 ///
-/// It used to decide whether to skip; [`probe_path`] now panics instead, because
-/// the probe is built from this tree rather than found on the machine. Returning
-/// a constant `true` keeps the call sites honest without reintroducing a path
-/// where a test reports success having run nothing.
+/// [`probe_path`] panics when the probe is missing, because the probe is built
+/// from this tree rather than found on the machine. Returning a constant `true`
+/// keeps the call sites honest without adding a path where a test reports
+/// success having run nothing.
 fn harness_ready() -> bool {
     // Resolve eagerly: this is what turns a missing probe into a failure at the
     // start of the test rather than a confusing error part-way through.

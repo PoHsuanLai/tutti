@@ -5,12 +5,13 @@ use thiserror::Error;
 #[cfg(target_os = "macos")]
 use crate::types::*;
 
-/// Plugin-load phase label. The shared superset lives in `tutti-plugin-types`;
-/// AU uses the Opening/Instantiation/Setup/Initialization subset — it has no
-/// distinct Scanning phase (the OS registry answers that, not this crate) and
-/// no Factory one (`AudioComponentInstanceNew` takes the component directly).
-/// Re-exported so `AuError` and callers keep referring to
-/// `crate::error::LoadStage`.
+/// The loading step an [`AuError::LoadFailed`] belongs to.
+///
+/// Re-exported from `tutti-plugin-types`, which shares it across all plugin
+/// formats. AU uses the Opening/Instantiation/Setup/Initialization subset: it
+/// has no distinct Scanning phase (the OS registry answers that, not this
+/// crate) and no Factory one (`AudioComponentInstanceNew` takes the component
+/// directly).
 pub use tutti_plugin_types::LoadStage;
 
 /// Errors returned by Audio Unit host operations.
@@ -27,9 +28,8 @@ pub enum AuError {
     /// path to carry. `component` names it the way a user can match it against
     /// a plugin list — `"aufx/dely/appl"`, the type/subtype/manufacturer triple
     /// the registry itself is keyed on.
-    /// Boxed for the reason [`AuError::PresetIo`] is: two inline `String`s
-    /// re-open the `result_large_err` hole on `AuActive::uninitialize`'s
-    /// `(AuActive, AuError)`.
+    // Boxed for the reason `PresetIo` is: two inline `String`s re-open the
+    // `result_large_err` hole on `AuActive::uninitialize`'s `(AuActive, AuError)`.
     #[error("Failed to load AudioUnit {}: {} - {}", .0.component, .0.stage, .0.reason)]
     LoadFailed(Box<LoadFailedError>),
 
@@ -72,10 +72,9 @@ pub enum AuError {
     /// CoreFoundation declined to allocate a string the host needed to hand to
     /// the AU.
     ///
-    /// A distinct variant rather than a silent `Ok`, because the caller of
-    /// `identity::set_nick_name` persists that name: reporting success for a
-    /// write that never happened would lose it from the session with nothing to
-    /// show the user.
+    /// A distinct variant rather than a silent `Ok`, because a caller setting a
+    /// nick name persists it: reporting success for a write that never happened
+    /// would lose it from the session with nothing to show the user.
     #[error("CoreFoundation string allocation failed")]
     CfStringAlloc,
     /// A buffer supplied to `process` was malformed or inconsistent with the
@@ -152,12 +151,11 @@ pub enum AuError {
     },
     /// A `.aupreset` file could not be read or written. Filesystem-level only —
     /// the file's *contents* fail as [`AuError::InvalidPreset`].
-    ///
-    /// Boxed for the reason [`AuError::PresetIdentityMismatch`] is: `AuError` is
-    /// the `Err` of every `Result` in this crate, and two inline `String`s here
-    /// widened the enum enough to push `AuActive::uninitialize`'s
-    /// `(AuActive, AuError)` past clippy's `result_large_err` threshold. A preset
-    /// diagnostic must not tax the render path's result size.
+    // Boxed for the reason `PresetIdentityMismatch` is: `AuError` is the `Err`
+    // of every `Result` in this crate, and two inline `String`s here would widen
+    // the enum enough to push `AuActive::uninitialize`'s `(AuActive, AuError)`
+    // past clippy's `result_large_err` threshold. A preset diagnostic must not
+    // tax the render path's result size.
     #[error("preset file I/O failed for {}: {}", .0.path, .0.message)]
     PresetIo(Box<PresetFileError>),
     /// A `.aupreset` file is not a usable preset: not a property list at all, a
@@ -167,8 +165,7 @@ pub enum AuError {
     /// Distinct from [`AuError::PresetIdentityMismatch`], which is a *well-formed*
     /// preset for a different plugin. A host reports the two differently: this one
     /// means the file is broken, that one means the user picked the wrong file.
-    ///
-    /// Boxed for the same size reason as [`AuError::PresetIo`].
+    // Boxed for the same size reason as `PresetIo`.
     #[error("{} is not a valid .aupreset: {}", .0.path, .0.message)]
     InvalidPreset(Box<PresetFileError>),
     /// A `.aupreset` file is well-formed but belongs to a **different** AU.
@@ -183,12 +180,11 @@ pub enum AuError {
     /// Both triples are reported as decoded four-char strings because that is the
     /// form a user can match against a plugin name; the comparison itself happens
     /// on the raw codes.
-    ///
-    /// Boxed because this is the widest variant by far — a path plus six four-char
-    /// strings — and `AuError` is the `Err` of every `Result` in the crate,
-    /// including `process`'s. Inlining it grew every one of those results by ~144
-    /// bytes for a diagnostic that only materialises on a rejected file
-    /// (`clippy::result_large_err`).
+    // Boxed because this is the widest variant by far — a path plus six
+    // four-char strings — and `AuError` is the `Err` of every `Result` in the
+    // crate, including `process`'s. Inlining it would grow every one of those
+    // results by ~144 bytes for a diagnostic that only materialises on a
+    // rejected file (`clippy::result_large_err`).
     #[error(
         "{} is a preset for {}/{}/{}, but this AU is {}/{}/{}; refusing to apply \
          another plugin's state",
@@ -204,8 +200,6 @@ pub enum AuError {
 }
 
 /// The component, phase and cause a [`AuError::LoadFailed`] reports.
-///
-/// Boxed into the variant for the same size reason [`PresetFileError`] is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadFailedError {
     /// The component the load was attempted against, as its decoded
@@ -269,7 +263,7 @@ pub type Result<T> = std::result::Result<T, AuError>;
 // callers exist.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl AuError {
-    /// Construct a [`AuError::RenderFailed`] from a failed `AudioUnitRender`
+    /// Constructs a [`AuError::RenderFailed`] from a failed `AudioUnitRender`
     /// call, optionally enriched with the AU's last-render-error.
     pub(crate) fn render_failed(
         function: &'static str,
@@ -283,7 +277,7 @@ impl AuError {
         }
     }
 
-    /// Construct an [`AuError::LoadFailed`] for `component`.
+    /// Constructs an [`AuError::LoadFailed`] for `component`.
     pub(crate) fn load_failed(
         component: impl Into<String>,
         stage: LoadStage,
@@ -296,7 +290,7 @@ impl AuError {
         }))
     }
 
-    /// Construct an [`AuError::InvalidPreset`] for `path`.
+    /// Constructs an [`AuError::InvalidPreset`] for `path`.
     ///
     /// A helper rather than an inline `Box::new(PresetFileError { .. })` at each of
     /// the eight construction sites, matching what
@@ -308,7 +302,7 @@ impl AuError {
         }))
     }
 
-    /// Construct an [`AuError::PresetIo`] for `path`.
+    /// Constructs an [`AuError::PresetIo`] for `path`.
     pub(crate) fn preset_io(path: impl Into<String>, message: impl Into<String>) -> Self {
         AuError::PresetIo(Box::new(PresetFileError {
             path: path.into(),
@@ -360,7 +354,7 @@ impl AuError {
     }
 }
 
-/// Decode a well-known AudioUnit `OSStatus` into a short description, falling
+/// Decodes a well-known AudioUnit `OSStatus` into a short description, falling
 /// back to `"unknown error"`. Shared by [`AuError::message`] and the `Display`
 /// text of [`AuError::OsStatus`] / [`AuError::RenderFailed`] so the two cannot
 /// drift.

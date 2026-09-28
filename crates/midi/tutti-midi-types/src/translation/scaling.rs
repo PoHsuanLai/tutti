@@ -95,7 +95,7 @@ pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
 /// one-code step — 7-bit `63` widens to `0x7fff` and `64` to `0x8000` — so the
 /// float `0.5` sits in a *gap* on the widened lattice, not on a lattice point.
 /// Interpolating uniformly across that gap lands at `0x7f00` and loses the exact
-/// center, which is the property the old 7-bit path was protecting.
+/// center, which a 7-bit path would keep.
 ///
 /// So each half is scaled independently against the anchor it belongs to:
 /// `0.0 → 0x0000`, `0.5 → 0x8000`, `1.0 → 0xffff`. That is the spec's own
@@ -395,11 +395,10 @@ mod tests {
 
     /// The two directions are inverses at the center, not merely near it.
     ///
-    /// `velocity_from_midi2` was a plain `v / 0xffff`, which maps `0x8000` to
-    /// `0.5000076` — so `CENTER` did not survive a round trip. The old forward
-    /// path hid it by only ever emitting 7-bit codes, where the error is below
-    /// the grid. Restoring resolution made it reachable, so both halves are now
-    /// piecewise about the same anchor.
+    /// A plain `v / 0xffff` would map `0x8000` to `0.5000076`, so `CENTER`
+    /// would not survive a round trip; both halves are piecewise about the
+    /// same anchor instead. A forward path that only emits 7-bit codes would
+    /// hide the error below the grid.
     #[test]
     fn the_two_velocity_directions_are_inverses() {
         use tutti_types::Velocity;

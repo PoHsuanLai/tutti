@@ -1,11 +1,11 @@
-//! The native audio-rate modulation adapter.
+//! The audio-rate modulation adapter.
 //!
-//! [`ModulatorNode<M>`] is the fundsp adapter over a pure
-//! [`tutti_mod::Modulator`]: it owns everything *audio* — the `impl AudioUnit`,
-//! the phase accumulator, the sample rate, the beat ports, `route`/PDC — and
-//! calls the modulator only for the one pure step `phase -> value`. The
-//! modulator itself (`tutti_mod::Lfo`, `SampleHold`, …) knows nothing of
-//! transport or audio.
+//! [`ModulatorNode<M>`] is the graph adapter over a pure
+//! [`tutti_mod::Modulator`]: it owns everything *audio* — the
+//! `tutti_graph::Node` impl, the phase accumulator, the sample rate, the beat
+//! read from each block's `Env` — and calls the modulator only for the one pure
+//! step `phase -> value`. The modulator itself (`tutti_mod::Lfo`, `SampleHold`,
+//! …) knows nothing of transport or audio.
 //!
 //! [`LfoNode`] is `ModulatorNode<Lfo>` — the concrete, monomorphized LFO node
 //! the graph builds. Because `M` is a concrete type param (not `Box<dyn>`),
@@ -18,9 +18,12 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{beat_from_ports, AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS};
 
-use tutti_core::{BeatDuration, Depth, Hz, Param, Phase, PhaseIncrement, SampleRate};
+use tutti_core::{
+    BeatDuration, ChannelLayout, Depth, Hz, Param, Phase, PhaseIncrement, SampleRate,
+};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::{Latency, Tail, UnitParam};
 
 // The waveform vocabulary + the pure LFO modulator live in tutti-mod now. Re-
 // exported so existing `use tutti_nodes::LfoShape` / `Lfo` sites are untouched.
@@ -47,9 +50,11 @@ pub enum LfoMode {
     /// independent of the transport. The node takes no inputs, so it needs no
     /// graph edge, and it keeps running while the transport is stopped.
     FreeRunning,
-    /// Phase is derived from the transport beat arriving on [`BEAT_PORTS`]
-    /// inputs, at a rate in [`BeatDuration`] beats per cycle. Sample-accurate
-    /// and identical offline, at the cost of an edge from the transport clock.
+    /// Phase is derived from the transport beat of each frame, read from the
+    /// block's `Env` ([`tutti_graph::Env::for_each_beat`]), at a rate in
+    /// [`BeatDuration`] beats per cycle. Sample-accurate and identical
+    /// offline, and, like free-running, with no graph edge: the node takes no
+    /// inputs in either mode.
     BeatSynced,
 }
 
@@ -73,21 +78,37 @@ impl core::fmt::Display for LfoMode {
     }
 }
 
-/// The native audio-rate modulation node: a fundsp `AudioUnit` that computes a
-/// phase from transport (free-running or beat-synced) and drives a pure
-/// [`Modulator`] `M`.
+/// The audio-rate modulation node: a graph node (`tutti_graph::Node`,
+/// no inputs, one output) that computes a phase — free-running, or from the
+/// transport beat of its block's `Env` — and drives a pure [`Modulator`] `M`.
 ///
 /// Owns everything audio; `M` owns the pure `phase -> value`. `depth` is held
 /// here (a live atomic the UI can write) and multiplied onto the modulator's
 /// output — the modulator itself stays at unit depth. That keeps the depth
 /// setter path unchanged and lets a modulator be shared across backends without
 /// carrying a per-node depth.
+///
+/// # In a graph
+///
+/// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// over the depth ([`UnitParam::Depth`]) and, free-running, the rate
+/// ([`UnitParam::Rate`], in [`Hz`]); a beat-synced node's rate cell holds a
+/// span in beats, which is not a `Rate`, so it has no address there (set it
+/// with [`set_beats_per_cycle`](Self::set_beats_per_cycle)). A fork starts
+/// from the values last set through the set and every other cell at its value
+/// when forked, at phase zero. It is a generator ([`Tail::Unbounded`]), so
+/// the executor never skips it.
+///
+/// **Arrival.** It has no inputs, so its compiled arrival is zero by
+/// construction and the beat it reads is its block's own; a consumer behind a
+/// latent path is aligned by the compiler, which delays this node's edge into
+/// it like any other source's.
 pub struct ModulatorNode<M: Modulator> {
     modulator: M,
     /// The modulator's threaded state — the node owns it (it has exclusive
     /// access during `process`), threading it through `Modulator::value` each
-    /// sample. This is where a stateful modulator's state lives on the native
-    /// path: in the node, not in the (stateless, `Sync`) modulator.
+    /// sample. This is where a stateful modulator's state lives: in the node,
+    /// not in the (stateless, `Sync`) modulator.
     mod_state: M::State,
     mode: LfoMode,
     /// `FreeRunning`: oscillator frequency in Hz. `BeatSynced`: beats per
@@ -105,14 +126,13 @@ pub struct ModulatorNode<M: Modulator> {
 }
 
 /// The concrete LFO node the graph builds — a [`ModulatorNode`] driving a pure
-/// [`Lfo`]. Monomorphized, so `value()` inlines to the old codegen.
+/// [`Lfo`]. Monomorphized, so `value()` inlines.
 ///
 /// **The per-sample tier.** This is not a different LFO from the one the
 /// modulation matrix drives — it is the same [`Lfo`] under a different adapter.
 /// Reach for this when a frame-rate scalar is too coarse: in `BeatSynced` mode
-/// it reads the beat as a *signal* on its input ports, so it is sample-accurate
-/// and renders identically offline. The cost is a graph edge — the node must be
-/// wired to the transport clock (`bevy_tutti::EngineNodes::clock` names it).
+/// it reads the beat of every frame from its block's `Env`, so it is
+/// sample-accurate and renders identically offline, with no edge to wire.
 ///
 /// The frame-rate alternative is `tutti_mod::ModPreFrame` sampling the same
 /// `Lfo` and writing a scalar, which is what `bevy_tutti`'s `ModSource` builds.
@@ -120,25 +140,18 @@ pub struct ModulatorNode<M: Modulator> {
 pub type LfoNode = ModulatorNode<Lfo>;
 
 impl ModulatorNode<Lfo> {
-    /// Create a free-running LFO with default frequency 1.0 Hz.
+    /// Creates a free-running LFO with default frequency 1.0 Hz.
     ///
     /// Chain `.with_frequency(hz)` or `.with_beat_sync(beats)` to configure
-    /// further.
-    ///
-    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**, as
-    /// [`with_modulator`](Self::with_modulator) explains — call
-    /// [`AudioUnit::set_sample_rate`] before the first `process` or the LFO
-    /// cycles 8.8% slow at 48 kHz.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
+    /// further. Its phase increment takes the rate [`Node::prepare`] hands
+    /// it.
     pub fn new(shape: LfoShape) -> Self {
         Self::with_modulator(Lfo::new(shape))
     }
 }
 
 impl<M: Modulator> ModulatorNode<M> {
-    /// Build a modulation node over an arbitrary pure modulator, free-running
+    /// Builds a modulation node over an arbitrary pure modulator, free-running
     /// at 1 Hz. The generic entry point behind [`LfoNode::new`]; also the seam
     /// any future modulator (envelope, sample & hold, …) wires through.
     ///
@@ -147,19 +160,10 @@ impl<M: Modulator> ModulatorNode<M> {
     /// also selects the clock — [`with_frequency`](Self::with_frequency) or
     /// [`with_beat_sync`](Self::with_beat_sync).
     ///
-    /// It takes no *sample* rate either, and that one is not a choice: the node
-    /// **starts at the placeholder [`SampleRate::DEFAULT`]** and must be given
-    /// the device rate through [`AudioUnit::set_sample_rate`] before the first
-    /// `process`. The two are separate quantities that meet in one place — the
-    /// per-sample phase increment is the modulation rate divided by the sample
-    /// rate — so a wrong sample rate misreports the modulation rate by the same
-    /// ratio. At 48 kHz an uncorrected node runs 8.8% slow: a 2 Hz LFO cycles at
-    /// 1.84 Hz, and a beat-synced one drifts against the transport it is
-    /// supposed to lock to. See the crate-level "born at a placeholder rate"
-    /// section.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
+    /// It takes no *sample* rate either: the graph hands it the device rate
+    /// in [`Node::prepare`] before its first block. The two are separate
+    /// quantities that meet in one place — the per-sample phase increment is
+    /// the modulation rate divided by the sample rate.
     pub fn with_modulator(modulator: M) -> Self {
         Self {
             modulator,
@@ -189,10 +193,9 @@ impl<M: Modulator> ModulatorNode<M> {
         self
     }
 
-    /// Switch to beat-synced mode, taking the beat on the input ports.
-    ///
-    /// The node gains [`BEAT_PORTS`] inputs, wired from `TransportClock`:
-    /// port 0 whole beats, port 1 the fraction. This is per-sample accurate.
+    /// Switch to beat-synced mode: the phase follows the transport beat of
+    /// every frame, read from the block's `Env`. Per-sample accurate, and
+    /// nothing to wire.
     ///
     /// Takes a [`BeatDuration`] — a span, so a larger value is *slower*. The
     /// backing cell is a `Param<Hz>` because it is exposed as a raw `AtomicF32`
@@ -213,7 +216,7 @@ impl<M: Modulator> ModulatorNode<M> {
         BeatDuration(f64::from(self.frequency.load().get()))
     }
 
-    /// Set the modulation [`Depth`], clamped to `-1.0..=1.0`.
+    /// Sets the modulation [`Depth`], clamped to `-1.0..=1.0`.
     ///
     /// Bipolar: a negative depth inverts the modulator, so `-1.0` is the same
     /// shape phase-flipped and `0.0` is flat. Values past full scale saturate
@@ -223,7 +226,7 @@ impl<M: Modulator> ModulatorNode<M> {
         self
     }
 
-    /// Set the [`PhaseIncrement`] offset, conventionally `0.0` to `1.0` for one
+    /// Sets the [`PhaseIncrement`] offset, conventionally `0.0` to `1.0` for one
     /// full cycle.
     ///
     /// Stored as given; the wrap happens where the offset is *applied*, via
@@ -275,7 +278,7 @@ impl<M: Modulator> ModulatorNode<M> {
         self.phase_offset.as_atomic()
     }
 
-    /// Set the free-running rate. **Ignored in [`LfoMode::BeatSynced`]**, where
+    /// Sets the free-running rate. **Ignored in [`LfoMode::BeatSynced`]**, where
     /// the cell holds a span in beats and an `Hz` would be a silent reciprocal
     /// — use [`set_beats_per_cycle`](Self::set_beats_per_cycle).
     ///
@@ -288,7 +291,7 @@ impl<M: Modulator> ModulatorNode<M> {
         }
     }
 
-    /// Set the beat-synced span. **Ignored in [`LfoMode::FreeRunning`]** — the
+    /// Sets the beat-synced span. **Ignored in [`LfoMode::FreeRunning`]** — the
     /// mirror of [`set_frequency`](Self::set_frequency).
     pub fn set_beats_per_cycle(&self, beats_per_cycle: impl Into<BeatDuration>) {
         if self.mode == LfoMode::BeatSynced {
@@ -334,29 +337,49 @@ impl<M: Modulator> ModulatorNode<M> {
     }
 }
 
-// The `AudioUnit` trait itself requires `Send + Sync + Clone + 'static` (a
-// fundsp `Net` node must be movable across the RT boundary and cloneable for
-// backend swaps). Those bounds live on the *adapter* impl, not on `Modulator`,
-// so `tutti-mod` stays usable by non-audio consumers with no such constraint.
-impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M> {
-    fn inputs(&self) -> usize {
+impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+    }
+
+    fn prepare(&mut self, p: &Prepare) {
+        self.sample_rate = p.sample_rate();
+    }
+
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        debug_assert_eq!(
+            cx.arrival,
+            Latency::ZERO,
+            "a node with no inputs arrives at zero"
+        );
+        let size = io.frames();
+        let out = io.output(0);
+        let phase_offset = self.phase_offset.load();
+
         match self.mode {
-            LfoMode::FreeRunning => 0,
-            LfoMode::BeatSynced => BEAT_PORTS,
+            LfoMode::FreeRunning => {
+                let freq = self.frequency.load().get();
+                let phase_increment = PhaseIncrement::per_sample(Hz(freq), self.sample_rate);
+
+                for o in &mut out[..size] {
+                    let phase = self.phase.offset_by(phase_offset);
+                    *o = self.evaluate(phase);
+                    self.phase = self.phase.advance(phase_increment);
+                }
+            }
+            LfoMode::BeatSynced => {
+                // Read once per block, not per sample.
+                let beats_per_cycle = self.beats_per_cycle();
+                cx.env.for_each_beat(|i, beat| {
+                    // A non-positive span freezes at the offset — the guard
+                    // lives in `Beat::cycles_of`, which `beat_phase` goes
+                    // through.
+                    let phase = beat_phase(beat, beats_per_cycle).offset_by(phase_offset);
+                    out[i] = self.evaluate(phase);
+                });
+            }
         }
-    }
-
-    fn outputs(&self) -> usize {
-        1
-    }
-
-    /// Detach every control cell this node reads (see `Param::detach`), so
-    /// a fork renders the controls as they were when it was taken, not the
-    /// live knob moves made while it runs. Values are kept.
-    fn isolate(&mut self) {
-        self.frequency.detach();
-        self.depth.detach();
-        self.phase_offset.detach();
+        Status::Modified
     }
 
     fn reset(&mut self) {
@@ -366,91 +389,41 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
         // Stateless modulators reset a `()`.
         self.mod_state = M::State::default();
     }
+}
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate;
-    }
-
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        let phase_offset = self.phase_offset.load();
-
-        let phase = match self.mode {
-            LfoMode::FreeRunning => {
-                // Evaluate the current phase, then advance — must match the
-                // ordering in `process` and `route` so one sample through
-                // `tick` equals the same sample through `process`.
-                let freq = self.frequency.load().get();
-                let phase = self.phase.offset_by(phase_offset);
-                self.phase = self
-                    .phase
-                    .advance(PhaseIncrement::per_sample(Hz(freq), self.sample_rate));
-                phase
-            }
-            LfoMode::BeatSynced => {
-                let beat = beat_from_ports(input[0], input[1]);
-                // A non-positive span freezes at the offset — the guard lives in
-                // `Beat::cycles_of`, which `beat_phase` goes through.
-                beat_phase(beat, self.beats_per_cycle()).offset_by(phase_offset)
-            }
-        };
-
-        output[0] = self.evaluate(phase);
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let phase_offset = self.phase_offset.load();
-
+impl<M: Modulator + Clone + Send + 'static> ParamNode for ModulatorNode<M> {
+    /// The depth, and the rate while free-running: a beat-synced node's rate
+    /// cell holds beats per cycle, which a `Rate` (in `Hz`) written by
+    /// address would silently reinterpret — the pun
+    /// [`set_frequency`](Self::set_frequency) refuses too.
+    fn param_set(&self) -> ParamSet {
+        let set = ParamSet::builder().param(UnitParam::Depth, self.depth.as_atomic());
         match self.mode {
-            LfoMode::FreeRunning => {
-                let freq = self.frequency.load().get();
-                let phase_increment = PhaseIncrement::per_sample(Hz(freq), self.sample_rate);
-
-                for i in 0..size {
-                    let phase = self.phase.offset_by(phase_offset);
-                    output.set_f32(0, i, self.evaluate(phase));
-
-                    self.phase = self.phase.advance(phase_increment);
-                }
-            }
-            LfoMode::BeatSynced => {
-                // Read once per block, not per sample.
-                let beats_per_cycle = self.beats_per_cycle();
-
-                for i in 0..size {
-                    let beat = beat_from_ports(input.at_f32(0, i), input.at_f32(1, i));
-                    let phase = beat_phase(beat, beats_per_cycle).offset_by(phase_offset);
-                    output.set_f32(0, i, self.evaluate(phase));
-                }
-            }
+            LfoMode::FreeRunning => set.param(UnitParam::Rate, self.frequency.as_atomic()),
+            LfoMode::BeatSynced => set,
         }
+        .build()
     }
 
-    fn get_id(&self) -> u64 {
-        crate::node_id::LFO_ID
+    /// A clone with every control cell detached (at its value now), at phase
+    /// zero with the modulator's state at its seed.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.frequency.detach();
+        fork.depth.detach();
+        fork.phase_offset.detach();
+        Node::reset(&mut fork);
+        fork
     }
+}
 
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
+/// Inserted with its [`ParamSet`] as its controls and a fork that starts
+/// from the values last set through it ([`tutti_graph::param_parts`]).
+impl<M: Modulator + Clone + Send + 'static> IntoNode for ModulatorNode<M> {
+    type Controls = ParamSet;
 
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        // A modulator's output is a running signal, not a statically-known
-        // constant, so every shape reports `Signal::Unknown` and fundsp's
-        // PDC/const-fold pass treats it as varying. Folding a deterministic LFO
-        // to a constant `Signal::Value` would need a per-modulator "is this
-        // foldable?" hook, which the pure `Modulator` trait deliberately does
-        // not carry — it is `phase -> value` and nothing else. `route` must
-        // also not step the modulator's state.
-        SignalFrame::new(1)
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
 
@@ -472,27 +445,48 @@ impl<M: Modulator + Clone> Clone for ModulatorNode<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::Signal;
+    use tutti_core::{Beat, Bpm, Samples};
+    use tutti_graph::contract::{assert_param_fork, Direct};
+    use tutti_graph::{Solo, Transport};
 
     // The waveform math is `tutti-mod`'s, and so are the tests that pin it.
     // What belongs here is the adapter around it: phase generation from
-    // transport, depth, and the `AudioUnit` surface.
+    // transport, depth, and the node surface.
+
+    /// `n` frames of `node` at `sr` in one block, transport stopped at beat 0.
+    fn render(node: LfoNode, sr: f64, n: usize) -> Vec<f32> {
+        let mut d = Direct::new(node, SampleRate(sr), n);
+        d.block();
+        d.output(0).to_vec()
+    }
+
+    /// `n` frames of `node` through a graph at 48 kHz, each block handed
+    /// `transport` as its own (advancing, when it rolls, by the block).
+    fn render_at(node: LfoNode, transport: Transport, n: usize) -> Vec<f32> {
+        let rate = SampleRate(48_000.0);
+        let mut solo = Solo::new(node, Prepare::new(rate, Samples(256)));
+        solo.renderer_mut().set_transport_fn(move |frame| {
+            let mut clock = tutti_core::FrameClock::new(transport.beat(), transport.tempo, rate);
+            if transport.playing {
+                clock.advance(Samples(frame.get() as usize), None);
+            }
+            Transport::counted(transport.playing, transport.tempo, clock.origin(), None)
+        });
+        solo.render(n).remove(0)
+    }
+
+    fn stopped_at(beat: f64) -> Transport {
+        Transport::new(false, Bpm(120.0), Beat(beat), None)
+    }
 
     #[test]
     fn test_free_running_lfo() {
-        let mut lfo = LfoNode::new(LfoShape::Sine);
-        lfo.set_sample_rate(tutti_core::SampleRate(100.0));
-
-        let mut output = [0.0f32];
-
-        for _ in 0..25 {
-            lfo.tick(&[], &mut output);
-        }
-
+        let out = render(LfoNode::new(LfoShape::Sine), 100.0, 25);
+        // The 25th sample: a quarter of a 1 Hz cycle at 100 Hz, the peak.
         assert!(
-            (output[0] - 1.0).abs() < 0.1,
+            (out[24] - 1.0).abs() < 0.1,
             "Expected ~1.0, got {}",
-            output[0]
+            out[24]
         );
     }
 
@@ -507,7 +501,11 @@ mod tests {
             .with_beat_sync(BeatDuration(4.0))
             .with_frequency(Hz(2.0));
         assert_eq!(lfo.mode, LfoMode::FreeRunning);
-        assert_eq!(lfo.inputs(), 0, "a free-running LFO reads no beat ports");
+        assert_eq!(
+            lfo.shape().audio_in.count(),
+            0,
+            "a free-running LFO has no inputs"
+        );
         assert_eq!(lfo.frequency.load(), Hz(2.0));
 
         // And the other direction.
@@ -543,77 +541,103 @@ mod tests {
         assert_eq!(free.frequency.load(), Hz(5.0));
     }
 
+    /// A fork starts from the values last set through the node's
+    /// `ParamSet` and shares no cell with it (see
+    /// `tutti_graph::contract::assert_param_fork`). The rate is addressed
+    /// only while free-running: a beat-synced cell holds beats, not `Hz`.
+    ///
+    /// Mutation (run): drop `fork.depth.detach()` in `fork_fresh` → "a live
+    /// write reached the fork" for `Depth`. Address `Rate` in both modes →
+    /// the beat-synced list fails.
+    #[test]
+    fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
+        let free = LfoNode::new(LfoShape::Sine).with_frequency(Hz(2.0));
+        assert_eq!(
+            free.param_set().params().collect::<Vec<_>>(),
+            [UnitParam::Depth, UnitParam::Rate]
+        );
+        assert_param_fork(free);
+        let synced = LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration(4.0));
+        assert_eq!(
+            synced.param_set().params().collect::<Vec<_>>(),
+            [UnitParam::Depth]
+        );
+        assert_param_fork(synced);
+    }
+
+    /// No inputs, one output, never skipped: a generator's tail is
+    /// unbounded, or the executor would stop calling it once its (absent)
+    /// inputs were silent.
+    ///
+    /// Mutation (run): `Shape::audio(..)` without `with_tail(Unbounded)`
+    /// (the default `Tail::None`) → fails.
+    #[test]
+    fn a_generator_with_no_inputs_is_never_skipped() {
+        for lfo in [
+            LfoNode::new(LfoShape::Sine),
+            LfoNode::new(LfoShape::Sine).with_beat_sync(1.0),
+        ] {
+            let shape = lfo.shape();
+            assert_eq!(shape.audio_in.count(), 0);
+            assert_eq!(shape.audio_out.count(), 1);
+            assert_eq!(shape.tail, Tail::Unbounded);
+        }
+    }
+
     #[test]
     fn test_beat_synced_lfo() {
-        let mut lfo = LfoNode::new(LfoShape::Sine).with_beat_sync(4.0);
-        assert_eq!(lfo.inputs(), BEAT_PORTS);
-
-        let mut output = [0.0f32];
-
+        let lfo = || LfoNode::new(LfoShape::Sine).with_beat_sync(4.0);
         // Beat 1.0 of a 4-beat cycle = quarter phase = sine peak.
-        lfo.tick(&[1.0, 0.0], &mut output);
-        assert!(
-            (output[0] - 1.0).abs() < 0.01,
-            "Expected 1.0, got {}",
-            output[0]
-        );
-
-        lfo.tick(&[2.0, 0.0], &mut output);
-        assert!(
-            (output[0] - 0.0).abs() < 0.01,
-            "Expected 0.0, got {}",
-            output[0]
-        );
+        let out = render_at(lfo(), stopped_at(1.0), 1);
+        assert!((out[0] - 1.0).abs() < 0.01, "Expected 1.0, got {}", out[0]);
+        let out = render_at(lfo(), stopped_at(2.0), 1);
+        assert!((out[0] - 0.0).abs() < 0.01, "Expected 0.0, got {}", out[0]);
     }
 
+    /// While the transport rolls, each frame is evaluated at its own beat,
+    /// not the block's first: a sine over one 4-beat cycle, frame by frame,
+    /// across blocks.
+    ///
+    /// Mutation (run): evaluate every frame at `cx.env.transport.beat()`
+    /// (the block's first beat) → the frames inside a block hold → fails.
     #[test]
-    fn beat_synced_lfo_reads_fraction_from_port_1() {
-        let mut lfo = LfoNode::new(LfoShape::Sine).with_beat_sync(4.0);
-        let mut split = [0.0f32];
-        let mut whole = [0.0f32];
-
-        // Beat 1.0 delivered as (0.0 whole + 1.0 frac) must equal (1.0 + 0.0):
-        // the node reconstructs the beat by summing both ports.
-        lfo.tick(&[0.0, 1.0], &mut split);
-        lfo.tick(&[1.0, 0.0], &mut whole);
-        assert!(
-            (split[0] - whole[0]).abs() < 1e-6,
-            "port split changed the beat: {} vs {}",
-            split[0],
-            whole[0]
+    fn a_rolling_transport_is_read_frame_by_frame() {
+        let rolling = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+        // 120 BPM at 48 kHz: 24 000 frames a beat, 96 000 a cycle.
+        let out = render_at(
+            LfoNode::new(LfoShape::Sine).with_beat_sync(4.0),
+            rolling,
+            3_000,
         );
+        for (i, &v) in out.iter().enumerate() {
+            let beat = i as f64 / 24_000.0;
+            let want = (core::f64::consts::TAU * beat / 4.0).sin() as f32;
+            assert!((v - want).abs() < 1e-3, "frame {i}: {v} vs {want}");
+        }
     }
 
-    /// The split exists so precision does not decay at high beat counts: a
-    /// single f32 cannot resolve sub-beat detail past ~16384 beats.
+    /// The beat is `f64` in the block's `Env`, so a phase far into a session
+    /// keeps its sub-beat detail.
     #[test]
     fn beat_synced_lfo_keeps_sub_beat_precision_at_high_beats() {
-        let mut lfo = LfoNode::new(LfoShape::Sine).with_beat_sync(4.0);
-        let mut at_edge = [0.0f32];
-        let mut past_edge = [0.0f32];
-
+        let lfo = || LfoNode::new(LfoShape::Sine).with_beat_sync(4.0);
         // Same fractional offset (0.5 beat) at beat 0 and at beat 20000.
-        lfo.tick(&[0.0, 0.5], &mut at_edge);
-        lfo.tick(&[20000.0, 0.5], &mut past_edge);
+        let at_edge = render_at(lfo(), stopped_at(0.5), 1)[0];
+        let past_edge = render_at(lfo(), stopped_at(20_000.5), 1)[0];
 
         // 20000 is a multiple of the 4-beat cycle, so both are the same phase.
         assert!(
-            (at_edge[0] - past_edge[0]).abs() < 0.01,
-            "sub-beat precision lost at high beat count: {} vs {}",
-            at_edge[0],
-            past_edge[0]
+            (at_edge - past_edge).abs() < 0.01,
+            "sub-beat precision lost at high beat count: {at_edge} vs {past_edge}"
         );
     }
 
     #[test]
     fn test_depth_control() {
-        let mut lfo = LfoNode::new(LfoShape::Square);
+        let lfo = LfoNode::new(LfoShape::Square);
         lfo.set_depth(0.5);
-
-        let mut output = [0.0f32];
-        lfo.tick(&[], &mut output);
-
-        assert!((output[0] - 0.5).abs() < 0.01);
+        let out = render(lfo, 48_000.0, 1);
+        assert!((out[0] - 0.5).abs() < 0.01);
     }
 
     /// Negative depth inverts the modulator rather than silencing it.
@@ -623,80 +647,44 @@ mod tests {
     /// LFO flat, which is silent in both senses.
     #[test]
     fn negative_depth_inverts_instead_of_silencing() {
-        let mut positive = LfoNode::new(LfoShape::Square);
-        positive.set_depth(1.0);
-        let mut a = [0.0f32];
-        positive.tick(&[], &mut a);
+        let first = |depth: f32| {
+            let lfo = LfoNode::new(LfoShape::Square);
+            lfo.set_depth(depth);
+            render(lfo, 48_000.0, 1)[0]
+        };
+        let (a, b) = (first(1.0), first(-1.0));
 
-        let mut negative = LfoNode::new(LfoShape::Square);
-        negative.set_depth(-1.0);
-        let mut b = [0.0f32];
-        negative.tick(&[], &mut b);
-
-        assert!(a[0].abs() > 0.01, "the reference tick must be audible");
-        assert!(
-            (b[0] + a[0]).abs() < 1e-6,
-            "expected {} to invert to {}",
-            a[0],
-            -a[0]
-        );
+        assert!(a.abs() > 0.01, "the reference sample must be audible");
+        assert!((b + a).abs() < 1e-6, "expected {b} to invert to {}", -a);
 
         // And the range still saturates past full scale.
-        let mut clamped = LfoNode::new(LfoShape::Square);
-        clamped.set_depth(-5.0);
-        let mut c = [0.0f32];
-        clamped.tick(&[], &mut c);
-        assert!((c[0] - b[0]).abs() < 1e-6);
+        let c = first(-5.0);
+        assert!((c - b).abs() < 1e-6);
     }
 
     #[test]
     fn test_phase_offset() {
-        let mut lfo = LfoNode::new(LfoShape::Sine);
-        lfo.set_sample_rate(tutti_core::SampleRate(100.0));
+        let lfo = LfoNode::new(LfoShape::Sine);
         lfo.set_phase_offset(0.25);
-
-        let mut output = [0.0f32];
-        lfo.tick(&[], &mut output);
-
-        assert!(
-            (output[0] - 1.0).abs() < 0.1,
-            "Expected ~1.0, got {}",
-            output[0]
-        );
+        let out = render(lfo, 100.0, 1);
+        assert!((out[0] - 1.0).abs() < 0.1, "Expected ~1.0, got {}", out[0]);
     }
 
     #[test]
     fn test_lfo_reset() {
-        let mut lfo = LfoNode::new(LfoShape::Sine);
-        lfo.set_sample_rate(tutti_core::SampleRate(100.0));
-
-        let mut output = [0.0f32];
-        for _ in 0..50 {
-            lfo.tick(&[], &mut output);
-        }
-
-        lfo.reset();
-
-        let mut output_after = [0.0f32];
-        lfo.tick(&[], &mut output_after);
+        let mut d = Direct::new(LfoNode::new(LfoShape::Sine), SampleRate(100.0), 50);
+        d.block();
+        Node::reset(&mut d.node);
+        d.block();
         assert!(
-            output_after[0].abs() < 0.1,
+            d.output(0)[0].abs() < 0.1,
             "After reset, LFO should start near zero"
         );
     }
 
     #[test]
     fn test_random_produces_different_values() {
-        let mut lfo = LfoNode::new(LfoShape::Random);
-        lfo.set_sample_rate(tutti_core::SampleRate(100.0));
-
-        let mut values = Vec::new();
-        let mut output = [0.0f32];
-
-        for _ in 0..500 {
-            lfo.tick(&[], &mut output);
-            values.push(output[0]);
-        }
+        let values = render(LfoNode::new(LfoShape::Random), 100.0, 500);
 
         let unique: std::collections::HashSet<u32> =
             values.iter().map(|v| (v * 1000.0) as u32).collect();
@@ -706,23 +694,5 @@ mod tests {
             "Random LFO should produce different values, got {}",
             unique.len()
         );
-    }
-
-    #[test]
-    fn test_route_reports_unknown_for_every_shape() {
-        // A modulator's output is a running signal, so `route` reports
-        // `Signal::Unknown` for *every* shape — never a constant. Sine, Random
-        // and the rest are uniformly Unknown; nothing folds a deterministic LFO
-        // to a `Signal::Value`. Covers the case where Random is misreported as
-        // constant-0.
-        for shape in LfoShape::all() {
-            let mut lfo = LfoNode::new(*shape);
-            lfo.set_sample_rate(tutti_core::SampleRate(44100.0));
-            let out = lfo.route(&SignalFrame::new(1), 44100.0);
-            assert!(
-                matches!(out.at(0), Signal::Unknown),
-                "{shape} LFO route() must be Signal::Unknown"
-            );
-        }
     }
 }

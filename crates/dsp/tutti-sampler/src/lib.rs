@@ -1,58 +1,48 @@
-//! Sample playback, disk streaming, and time-stretching for the Tutti audio
-//! engine.
-//!
-//! The entry points are the voices themselves — [`MemorySource`] in memory,
-//! [`DiskVoice`] streamed from disk — plus [`VoicePool`] over them and
-//! [`DiskStreamer`], the handle that owns the streaming engine. There is no
-//! `Sampler` façade type.
-//!
-//! # Crate layout
-//!
-//! - [`voice`] — the two playback tiers, the per-track mixer, and the shared
-//!   interpolation / placement kernels.
-//! - [`stretch`] — phase vocoder (pitch-independent stretch).
-//! - [`AudioIn`] / [`AudioOut`] / [`pump`] — the engine's I/O edge vocabulary,
-//!   re-exported from `tutti_types::io`.
-//!
-//! Rates are typed to keep the two tiers honest:
-//! [`PlaybackRate`](tutti_core::PlaybackRate) is varispeed (couples pitch),
-//! [`SrcRatio`](tutti_core::SrcRatio) is sample-rate conversion (derived, never
-//! user intent), and [`StretchFactor`](tutti_core::StretchFactor) drives the
-//! phase vocoder (pitch-independent).
-//!
-//! Streaming is driven through [`DiskStreamer::new`], the
-//! [`commands()`](DiskStreamer::commands) WRITE port and the
-//! [`status()`](DiskStreamer::status) READ port; that half needs a real file, so
-//! its example lives on [`DiskStreamer`] itself as `no_run`.
-//!
-//! The two-tier rule, the in-memory quick start, the channel ceiling and the
-//! features are in the crate README, included below.
 #![doc = include_str!("../README.md")]
+//!
+//! ## Main types
+//!
+//! - [`MemorySource`]: in-memory playback of a [`Wave`], configured with
+//!   [`MemorySourceConfig`], [`LoopSetting`] and [`VoiceWindow`].
+//! - [`DiskVoice`]: disk-streamed playback, built by [`Status::take_disk_voice`].
+//! - [`DiskStreamer`]: owns the butler thread; [`Commands`] (a stream
+//!   [`Command`]) in, [`Status`] out.
+//! - [`Voice`], [`VoiceSource`], [`Playback`]: a voice of either tier and its
+//!   control state.
+//! - [`VoicePool`] with [`VoicePoolHandle`], and [`VoiceNode`] with
+//!   [`VoiceNodeHandle`]: the graph nodes that play voices, and their
+//!   control-thread handles ([`VoiceCommand`]).
+//! - [`stretch::Unit`]: the phase-vocoder time stretch and pitch shift.
+//! - [`Source`] and `probe`: the tier choice and the header probe that
+//!   informs it.
+//! - [`voice::interp`]: the interpolation kernel and transport-placement
+//!   helpers the voices share.
+//! - [`AudioIn`], [`AudioOut`], [`pump`]: the engine's I/O edge vocabulary,
+//!   re-exported from `tutti-core` because the butler's refill path speaks it.
+//!
+//! ## License
+//!
+//! MIT OR Apache-2.0.
 
 mod error;
 pub use error::{Error, Result};
 
-/// Widest frame the sampler reads, interpolates, or emits.
+/// Widest frame the sampler reads, interpolates, or emits, in channels.
 ///
-/// Deliberately equal to [`tutti_core::MAX_ROOT_CHANNELS`] — the graph root's
-/// own ceiling. **The two move together:** a voice wider than the root can render
-/// is a voice nobody can hear, so there is no value in the sampler exceeding it,
-/// and letting it do so would mean the truncation happened silently downstream
-/// (at the root's fold) rather than visibly here.
-///
-/// Note the engine has several such ceilings for different paths and they are
-/// *not* interchangeable: export folds at 12 (`MAX_NET_CHANNELS`) because an
-/// offline render is not bound by the live stack scratch, and the plugin hosts
-/// use 16 because a plugin's own bus width is its business.
+/// Equal to [`tutti_core::MAX_ROOT_CHANNELS`], the graph root's own ceiling,
+/// and the two move together: a voice wider than the root can render is a
+/// voice nobody can hear, and letting the sampler exceed it would move the
+/// truncation silently downstream (to the root's fold) rather than reporting
+/// it here ([`PoolTooWide`]).
 pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
 
 /// Reject the empty layout for anything that is a **graph node**.
 ///
 /// [`ChannelLayout`](tutti_core::ChannelLayout) can represent an empty bus
 /// (`Multi(0)`) — deliberately, because a plugin port genuinely can be zero
-/// wide. A sampler node cannot: `outputs()` feeds fundsp's graph planner, and a
-/// node that reports zero outputs is a node nothing can be wired to. So the
-/// widths that reach `AudioUnit::outputs` go through here.
+/// wide. A sampler node cannot: a node that reports zero outputs is a node
+/// nothing can be wired to. So the widths a node's `Shape` declares go
+/// through here.
 ///
 /// This is the one place that clamp lives: the layout carries the declaration
 /// and this carries the node-arity invariant, so no call site has to re-remember
@@ -68,15 +58,11 @@ pub(crate) fn nonempty(layout: tutti_core::ChannelLayout) -> tutti_core::Channel
     }
 }
 
-#[macro_use]
-mod macros;
-
-mod node_id;
-
-// One mock `Timeline` for every test in the crate, replacing three near-identical
-// copies whose constructors disagreed on argument order. Test-only.
-#[cfg(test)]
-mod test_transport;
+// One mock transport and block driver for every test of the crate, in-crate
+// and in `tests/` (through `test-support`): a node reads the transport from
+// its block's `Env`, and this is what hands it one.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 // The I/O edge vocabulary is defined once in `tutti-types` and re-exported by
 // `tutti-core`. Re-exported again here because the butler's refill path speaks
@@ -103,8 +89,8 @@ mod lanes;
 // voice-playback concern: it owns no source and imports nothing from `voice`.
 pub mod stretch;
 
-// Bevy-free DSP leaves + value types from `voice` — usable for direct
-// FunDSP-graph integration without the ECS layer. The butler's `LruCache` /
+// Bevy-free DSP leaves + value types from `voice` — usable as plain
+// `tutti_graph` nodes without the ECS layer. The butler's `LruCache` /
 // `StreamPin` are internal machinery a consumer never constructs, so they stay
 // `pub(crate)`.
 // `DiskVoiceConfig` and `DiskSource` are deliberately NOT re-exported: nothing
@@ -116,13 +102,13 @@ pub mod stretch;
 // heavily in their own docs, and privatizing it turns 31 of those into dangling
 // references. It is a real internal namespace, not a redundant path.
 pub use voice::{
-    Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, Playback, PoolTooWide,
-    SlotId, Voice, VoiceCommand, VoiceNode, VoiceNodeHandle, VoicePool, VoicePoolHandle,
-    VoiceSource, VoiceWindow,
+    Direction, DiskVoice, DiskVoiceControls, LoopSetting, MemorySource, MemorySourceConfig,
+    Playback, PoolTooWide, SlotId, Voice, VoiceCommand, VoiceNode, VoiceNodeHandle, VoicePool,
+    VoicePoolHandle, VoiceSource, VoiceWindow,
 };
 // Entity-as-node markers for the voice pool. The asset loader and the playback
-// plugin moved to bevy-tutti (house rule R1); what stays here is the pair of
-// marker components, which are derives on this crate's own value types.
+// plugin are bevy-tutti's; what lives here is the pair of marker components,
+// which are derives on this crate's own value types.
 #[cfg(feature = "bevy")]
 pub use voice::{VoicePoolNode, VoicePoolRef};
 
@@ -157,8 +143,8 @@ mod probe;
 pub use probe::{probe, ProbeError, SampleFacts};
 
 // This crate exposes no Bevy plugin of its own. `DiskStreamer` is an engine
-// service, not a Bevy noun (house rule R2): bevy-tutti wraps it as
-// `DiskStreamerRes` and owns `TuttiPlaybackPlugin`.
+// service, not a Bevy noun: bevy-tutti wraps it as `DiskStreamerRes` and owns
+// `TuttiPlaybackPlugin`.
 //
 // The live I/O edge — `MicMonitorNode`, `WavOut`, `Recorder` — belongs to
 // `tutti-io`, not here, so that `tutti-cpal` (the device layer) need not depend

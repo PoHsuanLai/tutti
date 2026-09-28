@@ -108,7 +108,7 @@ impl TransportSettings {
         Bpm(self.tempo.load(Ordering::Acquire))
     }
 
-    /// Store a new tempo. **Unclamped** — zero and negative values reach the
+    /// Stores a new tempo. **Unclamped** — zero and negative values reach the
     /// clock, which is why the derived conversions guard against them.
     pub fn set_tempo(&self, bpm: impl Into<Bpm>) {
         self.tempo.store(bpm.into().get(), Ordering::Release);

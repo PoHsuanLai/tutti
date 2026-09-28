@@ -246,12 +246,10 @@ fn parse_write_parse_is_byte_stable() {
 ///
 /// In this format tempo and time signature are Flex Data *events*, so a parse
 /// puts them in `ParsedClipFile::events`. Handing those events back to the
-/// with-header writer used to emit them a second time, and the file grew a
-/// duplicate tempo declaration on every open-and-save cycle. Nothing errored,
-/// and a reader takes the *first* declaration, so the file kept playing
-/// correctly while accumulating junk — the quiet kind of wrong. This test was
-/// originally written to pin that behaviour, and said in as many words that it
-/// "should become an equality" once it was fixed. It is now that equality.
+/// with-header writer must not emit them a second time: the file would grow a
+/// duplicate tempo declaration on every open-and-save cycle, with no error,
+/// and since a reader takes the *first* declaration it would keep playing
+/// correctly while accumulating junk.
 ///
 /// *Mutation:* delete the `leading_header_len` strip from `write_clip`
 /// (make `let events = events;` unconditional) — `with_header` grows by two

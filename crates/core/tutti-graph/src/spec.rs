@@ -3,24 +3,21 @@
 //!
 //! # Why a wrapper and not an extension of `tutti_types::graph`
 //!
-//! Doc 013 §1 proposes giving `InPort`/`OutPort` a kind. Doing that in
-//! `tutti-types` is a breaking change: both are plain structs built by literal
-//! (`InPort { node, port }`) across `bevy-tutti` and the tests, and adding a
-//! field breaks every one of them. Event edges also have a different *shape*
-//! from audio edges — owner decision 6 allows fan-in on event ports, so an
-//! event sink holds a list of sources where an audio sink holds exactly one —
-//! so the two maps cannot share `Topology::edges`' type anyway.
+//! Giving `InPort`/`OutPort` a kind in `tutti-types` would break every place
+//! that builds them by literal (`InPort { node, port }`). Event edges also
+//! have a different *shape* from audio edges — fan-in is allowed on event
+//! ports, so an event sink holds a list of sources where an audio sink holds
+//! exactly one — so the two maps cannot share `Topology::edges`' type anyway.
 //!
 //! [`GraphSpec`] therefore **embeds** the `Topology` unchanged (audio stays one
 //! source per port, keyed on the sink — fan-in still unrepresentable there) and
 //! adds what is new beside it, with distinct port types ([`EventIn`],
 //! [`EventOut`]) so an audio port cannot be used as an event port by accident.
-//! Every existing `Topology` user keeps compiling; when the adapter flips
-//! (doc 013 Phase 3) the fields can move down if that still reads better.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use tutti_types::graph::{Invalid, Valid};
+use tutti_types::latency::{Feed, LatencyGraph};
 use tutti_types::{NodeKey, Samples, Topology};
 
 use crate::node::Resolution;
@@ -98,16 +95,26 @@ impl EventEdge {
     }
 }
 
-/// The graph value `compile` takes.
+/// The graph as a value: a [`Topology`] (nodes, audio edges, global inputs
+/// and outputs) plus event edges, param modulation and unit generations.
 ///
-/// See the `spec` module's docs (`src/spec.rs`) for why this wraps `Topology` rather than
-/// extending it.
+/// Plain data — `Clone`, `Eq` and `Hash` — built and edited on the control
+/// thread, usually through [`Editor::spec_mut`](crate::Editor::spec_mut).
+/// [`validate`](Self::validate) checks what can be checked without the
+/// nodes' shapes and returns a [`ValidGraph`], which is what
+/// [`compile`](crate::compile) takes.
+///
+/// Audio edges live in the embedded `Topology`, one source per input port,
+/// so audio fan-in cannot be written (summing is a node's job). Event ports
+/// ([`EventIn`], [`EventOut`]) are separate types, so an audio port cannot be
+/// used as an event port by accident, and an event input may have several
+/// sources, merged by offset.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GraphSpec {
     /// Nodes, audio edges, global outputs and global input width — unchanged.
     pub topology: Topology,
     /// Event edges, keyed on the sink port: every source of the port (an
-    /// event input may have several — owner decision 6). An empty `Vec` is
+    /// event input may have several). An empty `Vec` is
     /// the same as an absent key.
     ///
     /// The `Vec`'s order does **not** matter: fan-in merges by offset, and
@@ -118,15 +125,15 @@ pub struct GraphSpec {
     /// orders compare equal.
     pub events: BTreeMap<EventIn, Vec<EventEdge>>,
     /// Unit generation per node. Bumping it is how a value says "same key, new
-    /// unit" — a rebind or a replacement (doc 013 §1, `NodeSpec.gen`). Absent
+    /// unit" — a rebind or a replacement. Absent
     /// means generation 0.
     pub generations: BTreeMap<NodeKey, u32>,
     /// Event edges that require their sink to honour offsets at least this
     /// finely, keyed `(sink, source)` — see
     /// [`require_resolution`](Self::require_resolution).
     pub required_resolution: BTreeMap<(EventIn, EventOut), Resolution>,
-    /// Modulated params, keyed on the param port (design doc 013 item 6;
-    /// see the `param` module docs, `src/param.rs`): each one's range and
+    /// Modulated params, keyed on the param port (see
+    /// [`connect_param`](Self::connect_param)): each one's range and
     /// sources, in source order. A port with no entry, or an entry with no
     /// sources, reads its base.
     pub params: BTreeMap<ParamIn, ParamMod>,
@@ -147,7 +154,7 @@ impl GraphSpec {
         self.generations.get(&node).copied().unwrap_or(0)
     }
 
-    /// Add one event source to `at`, in source order (see
+    /// Adds one event source to `at`, in source order (see
     /// [`events`](Self::events)). A source already listed at `at` is added
     /// again, and [`validate`](Self::validate) refuses the duplicate.
     pub fn connect_events(&mut self, at: EventIn, edge: EventEdge) {
@@ -156,8 +163,8 @@ impl GraphSpec {
         sources.insert(i, edge);
     }
 
-    /// Mark the event edge `from → at` as requiring its sink to honour event
-    /// offsets at least as finely as `resolution` (doc 013 §6 item 5).
+    /// Marks the event edge `from → at` as requiring its sink to honour event
+    /// offsets at least as finely as `resolution`.
     ///
     /// **The rule:** `compile` refuses a marked edge whose sink declares a
     /// coarser [`Shape::event_resolution`](crate::Shape::event_resolution)
@@ -174,12 +181,12 @@ impl GraphSpec {
         self.required_resolution.insert((at, from), resolution);
     }
 
-    /// Drop the resolution mark on `from → at`, if any.
+    /// Drops the resolution mark on `from → at`, if any.
     pub fn unrequire_resolution(&mut self, at: EventIn, from: EventOut) {
         self.required_resolution.remove(&(at, from));
     }
 
-    /// Remove the event edge `from → at` (direct or feedback), and its
+    /// Removes the event edge `from → at` (direct or feedback), and its
     /// resolution mark with it — so a disconnect can never leave a stale mark
     /// that fails every later [`validate`](Self::validate). Returns whether an
     /// edge was removed.
@@ -197,7 +204,7 @@ impl GraphSpec {
         removed
     }
 
-    /// Drive param port `at` from `from` as well, shaped by `shaping`: one
+    /// Drives param port `at` from `from` as well, shaped by `shaping`: one
     /// more offset in its sum, in source order ([`ParamFrom`]'s `Ord`), so
     /// two specs with the same wiring compare equal whatever order it was
     /// made in. A source already listed at `at` has its shaping replaced.
@@ -207,6 +214,61 @@ impl GraphSpec {
     /// ([`CompileError::UnknownParam`](crate::CompileError::UnknownParam)).
     /// Until a range is set ([`set_param_range`](Self::set_param_range)) the
     /// sum is not clamped.
+    ///
+    /// # How a modulated param is computed
+    ///
+    /// Each modulated param becomes one fused step of its node's op,
+    /// computing, per frame:
+    ///
+    /// ```text
+    ///   value[i] = clamp(base_ramp[i] + Σ shape_j(source_j[i]), range)
+    /// ```
+    ///
+    /// - **The base** is the node's own control — a `Param<U>` it hands out in
+    ///   its `Controls` — read once per block through
+    ///   [`Node::param_base`](crate::Node::param_base) and ramped linearly
+    ///   across the block, landing exactly on the new value at its last frame,
+    ///   so a fader move under modulation does not zipper.
+    /// - **The offsets** come from audio outputs ([`ParamFrom::Audio`], one
+    ///   value per frame) or from [`ParamRamp`](crate::ParamRamp) events
+    ///   ([`ParamFrom::Events`], a sample-accurate ramp per source), each
+    ///   through its own [`ParamShaping`]: the identity, or a
+    ///   [`ShapeLut`](crate::ShapeLut) (the depth · polarity · curve table
+    ///   `tutti_mod::shape` bakes). They are summed in source order and clamped
+    ///   once to the port's [`ParamRange`].
+    /// - **An unconnected param resolves to its base, never to 0.** A port with
+    ///   no source this block reads
+    ///   [`ParamInput::Base`](crate::ParamInput::Base), and the node uses its
+    ///   own control, exactly as if nothing could modulate it: the fast path
+    ///   costs one branch, and nothing is copied. A port can be connected and
+    ///   disconnected by any commit.
+    /// - **Connecting or disconnecting is declicked.** When a port's sources
+    ///   change (a new source, one gone, a new shaping), its output crossfades
+    ///   from where it was — the last value it delivered, or the base — to the
+    ///   new value over [`PARAM_DECLICK`](crate::PARAM_DECLICK) frames. Nothing
+    ///   else is smoothed: a step in a modulator lands on its frame (the
+    ///   sample-accuracy contract). A unit's **first** block is not a change: a
+    ///   unit placed by a commit (an insert, a hard replace, a fork, a
+    ///   re-prepare's resume) starts at its modulated value, as its audio
+    ///   starts at its first frame.
+    /// - **A source's state is the source's, not its slot's.** An event
+    ///   source's ramp (the value it holds, and a ramp under way) is kept by
+    ///   [`ParamFrom`], so adding or removing *another* source, or reshaping
+    ///   this one, does not reset it. A PDC delay that appears on an audio
+    ///   source (the node's arrival moved) starts full of the source's last
+    ///   value, and one that grows is padded with it, so the port holds rather
+    ///   than dropping to 0 for the delay's length.
+    /// - **A crossfade's base.** A [`replace`](crate::Editor::replace) with a
+    ///   fade keeps the key's param state, so both units hear one modulation;
+    ///   the base is the incoming unit's control, ramped over one block like
+    ///   any control move, not over the fade. Ramping it over the fade would
+    ///   hold the incoming unit off its own control for the fade's length, and
+    ///   the audio crossfade already covers the swap.
+    /// - **PDC.** A param source is aligned to the node's arrival like any of
+    ///   its inputs: a source that arrives earlier is delayed
+    ///   ([`DelayKey::ParamAudio`](crate::DelayKey::ParamAudio),
+    ///   [`DelayKey::ParamEvent`](crate::DelayKey::ParamEvent)), and a later
+    ///   one raises the node's arrival.
     pub fn connect_param(&mut self, at: ParamIn, from: ParamFrom, shaping: ParamShaping) {
         let m = self.params.entry(at).or_default();
         match m.sources.binary_search_by(|s| s.from.cmp(&from)) {
@@ -215,7 +277,7 @@ impl GraphSpec {
         }
     }
 
-    /// Stop driving param port `at` from `from`. Returns whether it was a
+    /// Stops driving param port `at` from `from`. Returns whether it was a
     /// source. The port keeps its range; with no source left it reads its
     /// base.
     pub fn disconnect_param(&mut self, at: ParamIn, from: ParamFrom) -> bool {
@@ -227,7 +289,7 @@ impl GraphSpec {
         before != m.sources.len()
     }
 
-    /// Clamp param port `at`'s modulated value to `range` — the param's own
+    /// Clamps param port `at`'s modulated value to `range` — the param's own
     /// range, so no stack of modulators drives it past what the node
     /// accepts. A range change recompiles; it does not restart the port's
     /// sources. A NaN bound is refused by [`validate`](Self::validate)
@@ -236,13 +298,18 @@ impl GraphSpec {
         self.params.entry(at).or_default().range = range;
     }
 
-    /// Check everything that does not need the nodes' [`Shape`](crate::Shape)s.
+    /// Checks everything that does not need the nodes' [`Shape`](crate::Shape)s.
     ///
-    /// The `Topology` half runs `Topology::validate` unchanged (so an audio
-    /// cycle is reported exactly as it is today); the event half checks that
-    /// every event edge names nodes that exist and that no source is listed
-    /// twice at one sink. Event port *ranges* need the shapes and are checked
-    /// by `compile`, as is a cycle that runs through an event edge.
+    /// The `Topology` half runs `Topology::validate` unchanged; the event
+    /// half checks that every event edge names nodes that exist and that no
+    /// source is listed twice at one sink. Event port *ranges* need the
+    /// shapes and are checked by `compile`, as is a cycle that runs through
+    /// an event edge.
+    ///
+    /// # Errors
+    ///
+    /// Every fatal fault found, as a list of [`GraphInvalid`] (never just
+    /// the first). An unconnected input is not a fault: it reads silence.
     pub fn validate(&self) -> Result<ValidGraph, Vec<GraphInvalid>> {
         let mut errs: Vec<GraphInvalid> = Vec::new();
         let valid = match self.topology.validate() {
@@ -434,5 +501,54 @@ impl ValidGraph {
     /// The checked modulated params: only ports with at least one source.
     pub fn params(&self) -> &BTreeMap<ParamIn, ParamMod> {
         &self.params
+    }
+}
+
+/// The latency folds over the whole spec: the topology's audio ports, plus
+/// each node's event and param-modulation sources, which the compiler counts
+/// toward a node's arrival. So `tutti_types::latency::plan(&spec)` is the
+/// compensation `compile` gives the spec's plan (`tests/compile_passes.rs`
+/// pins it); over `spec.topology` alone, a node fed events by a latent node
+/// would arrive early.
+impl LatencyGraph for GraphSpec {
+    type Node = NodeKey;
+
+    fn nodes(&self) -> impl Iterator<Item = NodeKey> {
+        LatencyGraph::nodes(&self.topology)
+    }
+
+    fn latency(&self, node: NodeKey) -> Samples {
+        LatencyGraph::latency(&self.topology, node)
+    }
+
+    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = Feed<NodeKey>> {
+        LatencyGraph::inputs(&self.topology, node)
+    }
+
+    /// Direct event sources (a feedback edge carries last block's events, so
+    /// nothing along this block's path) and param-modulation sources.
+    fn other_sources(&self, node: NodeKey) -> impl Iterator<Item = NodeKey> {
+        let ports = EventIn { node, port: 0 }..=EventIn {
+            node,
+            port: u16::MAX,
+        };
+        let events = self
+            .events
+            .range(ports)
+            .flat_map(|(_, sources)| sources)
+            .filter_map(|e| match *e {
+                EventEdge::Direct(from) => Some(from.node),
+                EventEdge::Feedback { .. } => None,
+            });
+        let params = self
+            .params
+            .iter()
+            .filter(move |(at, _)| at.node == node)
+            .flat_map(|(_, m)| m.sources.iter().map(|s| s.from.node()));
+        events.chain(params)
+    }
+
+    fn outputs(&self) -> impl Iterator<Item = Option<NodeKey>> {
+        LatencyGraph::outputs(&self.topology)
     }
 }

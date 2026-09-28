@@ -484,6 +484,7 @@ unsafe extern "C" fn plugin_process(
     // `out_events.try_push` — and it is the host's audio thread, which is the
     // whole point.
     rt_probe::emit_sysex_output(p);
+    echo_notes(p);
 
     // RT-HAZARD: log through `clap.log` from inside the host's `process`. CLAP
     // marks that callback `[thread-safe]`, so this is legal plugin behaviour —
@@ -1023,6 +1024,12 @@ pub enum RenderMode {
     /// render's first non-zero frame is where the first note-on reached the
     /// plugin. Reads CLAP note events and MIDI-1 note messages alike, so it
     /// holds whichever dialect the host negotiated.
+    ///
+    /// Also a **MIDI thru**: every note event the block received goes back out
+    /// on output note port 0 at its own `time` (`echo_notes`), so the frame the
+    /// gate opens and the frame the plugin's MIDI-out carries the note-on are
+    /// the same frame, which is what a host keeping MIDI-out in place against
+    /// the audio must preserve.
     Notes = 4,
     /// The transport oracle: every output channel carries the block's
     /// `clap_event_transport` in its first [`TRANSPORT_ECHO_FRAMES`] frames,
@@ -1166,6 +1173,39 @@ unsafe fn note_event(p: &clap_process, index: usize) -> Option<(u32, NoteChange)
         seen += 1;
     }
     None
+}
+
+/// [`RenderMode::Notes`]' MIDI thru: push every note event (CLAP note on/off,
+/// MIDI-1) the block received into its output events, unchanged, `time`
+/// included. Only in `Notes` mode, so no other suite sees MIDI-out.
+///
+/// # Safety
+/// `p` must be the live `clap_process` the host passed to `process`.
+unsafe fn echo_notes(p: &clap_process) {
+    if RenderMode::from_u32(RENDER_MODE.load(Ordering::SeqCst)) != RenderMode::Notes {
+        return;
+    }
+    let (list, out) = (p.in_events, p.out_events);
+    if list.is_null() || out.is_null() {
+        return;
+    }
+    let (Some(size_fn), Some(get_fn), Some(try_push)) =
+        ((*list).size, (*list).get, (*out).try_push)
+    else {
+        return;
+    };
+    for i in 0..size_fn(list) {
+        let hdr = get_fn(list, i);
+        if hdr.is_null() {
+            continue;
+        }
+        if matches!(
+            (*hdr).type_,
+            CLAP_EVENT_NOTE_ON | CLAP_EVENT_NOTE_OFF | CLAP_EVENT_MIDI
+        ) {
+            try_push(out, hdr);
+        }
+    }
 }
 
 /// Clear the latency-mode delay lines — the probe's whole cross-block

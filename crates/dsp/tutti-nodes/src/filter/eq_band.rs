@@ -1,9 +1,10 @@
 //! Parametric EQ band: an SVF plus a zero-cost bypass.
 
+use super::Real;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
-use tutti_core::{Db, Hz, Q};
+use tutti_core::{ChannelLayout, Db, Hz, Q};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 
 use super::svf::{SvfFilterNode, SvfType};
 
@@ -18,8 +19,7 @@ pub enum BandState {
     /// The band passes its input through untouched, at zero DSP cost.
     ///
     /// Filter state is retained while bypassed, so re-enabling resumes from
-    /// stale integrator contents — call `AudioUnit::reset` first if that
-    /// matters.
+    /// stale integrator contents — reset the node first if that matters.
     Bypassed,
 }
 
@@ -55,7 +55,8 @@ impl From<bool> for BandState {
 ///
 /// The band adds nothing to the filter but [`BandState`] — cutoff, [`Q`] and
 /// gain are the inner SVF's live params, reached through the accessors here and
-/// through `AudioUnit::set`. Stack several to build a parametric EQ, one band
+/// by [`UnitParam`](tutti_core::UnitParam) through the [`ParamSet`] it is
+/// inserted with. Stack several to build a parametric EQ, one band
 /// per [`SvfType`].
 ///
 /// Bypass is a branch around the filter, not a dry/wet blend: it costs one
@@ -75,13 +76,6 @@ impl<F: Real> EqBandNode<F> {
     /// [`LowShelf`](SvfType::LowShelf) and [`HighShelf`](SvfType::HighShelf) —
     /// the usual EQ-band types. On the others it is stored and ignored.
     ///
-    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**, inherited from the
-    /// [`SvfFilterNode`] inside it: call [`AudioUnit::set_sample_rate`] before
-    /// the first `process` or the band's centre sits 8.8% high at 48 kHz. See
-    /// the crate-level "born at a placeholder rate" section.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(
         filter_type: SvfType,
         frequency: impl Into<Hz>,
@@ -146,80 +140,55 @@ impl<F: Real> EqBandNode<F> {
     }
 }
 
-impl<F: Real + 'static> AudioUnit for EqBandNode<F> {
-    fn inputs(&self) -> usize {
-        1
+impl<F: Real + 'static> Node for EqBandNode<F> {
+    /// Mono in and out. Unlike the bare filter it declares no modulatable
+    /// params: a band is set, not swept.
+    /// Its tail is the inner filter's: [`Tail::Unknown`](tutti_core::Tail::Unknown).
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_tail(self.svf.shape().tail)
     }
 
-    fn outputs(&self) -> usize {
-        1
+    fn prepare(&mut self, p: &Prepare) {
+        self.svf.prepare(p);
+    }
+
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        match self.state {
+            BandState::Active => self.svf.process(cx, io),
+            BandState::Bypassed => {
+                let (inputs, mut outputs) = io.split();
+                outputs.get(0).copy_from_slice(inputs.get(0));
+                Status::Modified
+            }
+        }
     }
 
     fn reset(&mut self) {
-        self.svf.reset();
+        Node::reset(&mut self.svf);
+    }
+}
+
+impl<F: Real + 'static> ParamNode for EqBandNode<F> {
+    /// The inner filter's: cutoff, Q and gain.
+    fn param_set(&self) -> ParamSet {
+        self.svf.param_set()
     }
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.svf.set_sample_rate(sample_rate);
-    }
-
-    /// Forwarded: the inner SVF's param cells are what a clone shares, and
-    /// `SvfFilterNode::isolate` severs them. Without this the default
-    /// no-op ran, and a fork (or a `Legacy::controlled` shadow) receiving a
-    /// `set` wrote the live band's cells.
-    fn isolate(&mut self) {
-        self.svf.isolate();
-    }
-
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        match self.state {
-            BandState::Active => self.svf.tick(input, output),
-            BandState::Bypassed => output[0] = input[0],
+    fn fork_fresh(&self) -> Self {
+        Self {
+            svf: self.svf.fork_fresh(),
+            state: self.state,
         }
     }
+}
 
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        match self.state {
-            BandState::Active => self.svf.process(size, input, output),
-            BandState::Bypassed => {
-                for i in 0..size {
-                    output.set_f32(0, i, input.at_f32(0, i));
-                }
-            }
-        }
-    }
+/// Inserted as the inner filter is: its [`ParamSet`] as its controls, and a
+/// fork from the values last set through it.
+impl<F: Real + 'static> IntoNode for EqBandNode<F> {
+    type Controls = ParamSet;
 
-    fn set(&mut self, setting: tutti_core::Setting) {
-        // Delegate to the inner SVF, which owns frequency/Q/gain.
-        self.svf.set(setting);
-    }
-
-    fn get_id(&self) -> u64 {
-        crate::node_id::EQ_BAND_ID
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
-        match self.state {
-            BandState::Active => self.svf.route(input, frequency),
-            BandState::Bypassed => {
-                let mut out = SignalFrame::new(1);
-                out.set(0, input.at(0));
-                out
-            }
-        }
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
 
@@ -235,40 +204,44 @@ impl<F: Real> Clone for EqBandNode<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter::test_utils::{generate_sine, process_mono, rms};
+    use crate::filter::test_utils::{generate_sine, rms};
+    use tutti_core::SampleRate;
+    use tutti_graph::contract::{assert_param_fork, drive, prepared};
 
-    /// **`isolate` reaches the inner SVF's param cells**: a clone shares
-    /// them, an isolated one has its own, holding the same values.
+    /// `eq`, prepared at 44.1 kHz, over `input` in one block.
+    fn render<F: Real + 'static>(eq: EqBandNode<F>, input: &[f32]) -> Vec<f32> {
+        let rate = SampleRate(44_100.0);
+        let mut eq = prepared(eq, rate, input.len());
+        drive(&mut eq, rate, &[input], &[]).remove(0)
+    }
+
+    /// **A fork reaches the inner SVF's param cells**: it starts from the
+    /// authored values and shares none of them.
     ///
-    /// Mutation: drop `EqBandNode::isolate` (the default does nothing) →
-    /// the isolated band still shares the live cells → fails.
+    /// Mutation (run): `fork_fresh` cloning `svf` instead of forking it →
+    /// "a live write reached the fork" → fails.
     #[test]
-    fn isolate_severs_the_inner_filters_cells() {
-        let live = EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 1.0, 6.0);
-        let shared = live.clone();
-        assert!(Arc::ptr_eq(&shared.frequency(), &live.frequency()));
-        let mut isolated = live.clone();
-        isolated.isolate();
-        for (a, b) in [
-            (isolated.frequency(), live.frequency()),
-            (isolated.q(), live.q()),
-            (isolated.gain_db(), live.gain_db()),
-        ] {
-            assert!(!Arc::ptr_eq(&a, &b), "a cell still shared");
-            assert_eq!(
-                a.load(tutti_core::Ordering::Relaxed),
-                b.load(tutti_core::Ordering::Relaxed),
-                "values kept"
-            );
-        }
+    fn a_fork_severs_the_inner_filters_cells() {
+        assert_param_fork(EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 1.0, 6.0));
+    }
+
+    /// The band declares the inner filter's tail, not the shape default.
+    ///
+    /// Mutation (run): drop the band's `.with_tail(..)` → `Tail::None` →
+    /// fails.
+    #[test]
+    fn the_band_rings_on_as_its_filter_does() {
+        let band = EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 8.0, 12.0);
+        assert_eq!(band.shape().tail, tutti_core::Tail::Unknown);
     }
 
     #[test]
     fn test_eq_band_f32_variant_compiles_and_runs() {
-        let mut eq = EqBandNode::<f32>::new(SvfType::Bell, 1000.0, 1.0, 6.0);
-        eq.set_sample_rate(tutti_core::SampleRate(44100.0));
         let input = generate_sine(1000.0, 44100.0, 1024);
-        let out = process_mono(&mut eq, &input);
+        let out = render(
+            EqBandNode::<f32>::new(SvfType::Bell, 1000.0, 1.0, 6.0),
+            &input,
+        );
         assert!(
             rms(&out[256..]) > 0.0,
             "eq f32 variant should produce signal"
@@ -278,12 +251,9 @@ mod tests {
     #[test]
     fn test_eq_band_bypass() {
         let mut eq = EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 1.0, 6.0);
-        eq.set_sample_rate(tutti_core::SampleRate(44100.0));
         eq.set_enabled(false);
-
         let sine = generate_sine(1000.0, 44100.0, 1024);
-        let out = process_mono(&mut eq, &sine);
-
+        let out = render(eq, &sine);
         for i in 0..sine.len() {
             assert!(
                 (sine[i] - out[i]).abs() < 0.0001,
@@ -294,15 +264,13 @@ mod tests {
 
     #[test]
     fn test_eq_band_bell_boost() {
-        let mut eq = EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 1.0, 12.0);
-        eq.set_sample_rate(tutti_core::SampleRate(44100.0));
-
         let sine = generate_sine(1000.0, 44100.0, 4096);
-        let out = process_mono(&mut eq, &sine);
-
+        let out = render(
+            EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 1.0, 12.0),
+            &sine,
+        );
         let rms_in = rms(&sine[512..]);
         let rms_out = rms(&out[512..]);
-
         assert!(
             rms_out > rms_in,
             "Bell boost should increase level: in={rms_in}, out={rms_out}"
@@ -311,19 +279,16 @@ mod tests {
 
     #[test]
     fn test_eq_band_filter_type_change() {
-        let mut eq = EqBandNode::<f64>::new(SvfType::LowPass, 500.0, 0.707, 0.0);
-        eq.set_sample_rate(tutti_core::SampleRate(44100.0));
-
         let high = generate_sine(5000.0, 44100.0, 2048);
-        let out_lp = process_mono(&mut eq, &high);
-        eq.reset();
-
+        let out_lp = render(
+            EqBandNode::<f64>::new(SvfType::LowPass, 500.0, 0.707, 0.0),
+            &high,
+        );
+        let mut eq = EqBandNode::<f64>::new(SvfType::LowPass, 500.0, 0.707, 0.0);
         eq.set_filter_type(SvfType::HighPass);
-        let out_hp = process_mono(&mut eq, &high);
-
+        let out_hp = render(eq, &high);
         let rms_lp = rms(&out_lp[512..]);
         let rms_hp = rms(&out_hp[512..]);
-
         assert!(
             rms_hp > rms_lp * 2.0,
             "HP should pass more high freq than LP: lp={rms_lp}, hp={rms_hp}"

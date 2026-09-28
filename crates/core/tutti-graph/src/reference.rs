@@ -1,8 +1,8 @@
 //! The reference interpreter: the oracle the plan executor is checked against.
 //!
-//! Doc 013 §3: "a naive reference interpreter (serial, copy every edge, no
-//! colouring) and the optimized executor must be bit-identical on
-//! proptest-generated topologies". Everything here is written to be *obviously*
+//! A naive interpreter (serial, copy every edge, no colouring) that the
+//! optimised executor must match bit for bit on randomly generated
+//! topologies. Everything here is written to be *obviously*
 //! right rather than fast, and — the point — **independently** of the compiler:
 //! it does not call `compile`, read a `Plan`, or share the executor's kernels.
 //! It re-derives the evaluation order (by repeated scanning), the latency solve
@@ -123,7 +123,23 @@ struct RefFifo {
     clock: u64,
 }
 
-/// The naive interpreter. See the `reference` module's docs (`src/reference.rs`).
+/// A naive graph interpreter that the [`Executor`](crate::Executor) is tested
+/// against, bit for bit.
+///
+/// It runs a [`ValidGraph`] directly, written to be obviously right rather
+/// than fast and independently of the compiler: it never calls
+/// [`compile`](crate::compile), reads a [`Plan`](crate::Plan) or shares the
+/// executor's kernels. It re-derives the evaluation order, the latency
+/// compensation, the delays, the event fan-in and the feedback from the spec
+/// alone, never skips a node, never aliases a buffer and passes nodes no
+/// silence or constant hints. It allocates freely, so it is for tests and
+/// offline checks, never the audio thread.
+///
+/// Its public methods mirror the [`Editor`](crate::Editor)/[`Executor`](crate::Executor)
+/// pair without the queues: [`set_graph`](Self::set_graph) in place of a
+/// commit, [`process`](Self::process) to render a block,
+/// [`schedule`](Self::schedule) for timestamped commands, and
+/// [`reprepare`](Self::reprepare) for a rate or block-size change.
 pub struct Reference {
     prepare: Prepare,
     graph: Option<ValidGraph>,
@@ -190,7 +206,7 @@ impl Reference {
         }
     }
 
-    /// Deliver `kind` into `to` at `at` — the same contract as
+    /// Delivers `kind` into `to` at `at` — the same contract as
     /// `Editor::schedule`, without the queue: a time already past lands at
     /// offset 0 of the next block and is counted late; one whose port is gone
     /// when it falls due is counted unrouted.
@@ -213,14 +229,14 @@ impl Reference {
         id
     }
 
-    /// Take back command `id` if it has not landed.
+    /// Takes back command `id` if it has not landed.
     pub fn cancel(&mut self, id: u64) {
         let before = self.scheduled.len();
         self.scheduled.retain(|c| c.id != id);
         self.cancelled += (before - self.scheduled.len()) as u64;
     }
 
-    /// Take back every command that has not landed.
+    /// Takes back every command that has not landed.
     pub fn cancel_all(&mut self) {
         self.cancelled += self.scheduled.len() as u64;
         self.scheduled.clear();
@@ -457,7 +473,7 @@ impl Reference {
         // Latency, by memoised recursion over direct predecessors. Read
         // from the spec, not the unit: `Editor::set_latency` changes a
         // node's figure without touching the unit, whose own `shape()` may
-        // lag (`Legacy` caches what it probed). The compiler reads the spec
+        // lag. The compiler reads the spec
         // too, and checks it against the shapes it was handed.
         let lat =
             |k: NodeKey| Latency::new(t.nodes[&k].latency).min(Latency::new(MAX_NODE_LATENCY));
@@ -690,7 +706,8 @@ impl Reference {
         self.graph = Some(graph.clone());
     }
 
-    /// Render one block. Same contract as `Executor::process`.
+    /// Renders one block. Same contract as
+    /// [`Executor::process`](crate::Executor::process).
     pub fn process(
         &mut self,
         frames: usize,
@@ -701,8 +718,8 @@ impl Reference {
         self.process_with_changes(frames, transport, &TransportChanges::NONE, inputs, outputs);
     }
 
-    /// Render one block with the transport changing inside it. Same contract
-    /// as `Executor::process_with_changes`.
+    /// Renders one block with the transport changing inside it. Same contract
+    /// as [`Executor::process_with_changes`](crate::Executor::process_with_changes).
     pub fn process_with_changes(
         &mut self,
         frames: usize,

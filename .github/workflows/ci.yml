@@ -24,7 +24,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Fewer codegen units keeps CI RAM in check on the large fundsp/Bevy graph.
+  # Fewer codegen units keeps CI RAM in check on the large Bevy graph.
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
 
@@ -85,25 +85,15 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
-          #                    criterion, which declares plotters with
-          #                    `default-features = false` (verified in 0.5.1
-          #                    and 0.8.2) and so never enables the `ttf`
-          #                    feature font-kit sits behind. The edge is
-          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
-          #                    dev-dep, which feature-unifies across every
-          #                    plotters consumer. `cargo tree -i font-kit`
-          #                    prints criterion first, which is what made the
-          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       # The two vendored forks are excluded: they are third-party code we do not
       # restyle, and they carry pre-existing lint debt that is not ours to pay.
-      - run: cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
+      - run: cargo clippy --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
 
   # The same lint, on Windows. The `clippy` job above cannot see a
   # `#[cfg(windows)]` block, and it cannot see a cast that is load-bearing on
@@ -130,7 +120,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Workspace
-        run: cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
+        run: cargo clippy --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
       # The workspace run builds each crate with the features the workspace
       # unifies to, which leaves tutti-plugin's format features and
       # clap-extras dark. `au` is macOS-only and compiles to nothing here.
@@ -139,10 +129,9 @@ jobs:
         run: |
           cargo clippy -p tutti-plugin --features clap,vst3,vst2,json --all-targets -- -D warnings
           cargo clippy -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
-      # WASAPI capture and the MIDI arms of the callback, which the `features`
-      # job lints only on Linux.
+      # WASAPI capture, which the `features` job lints only on Linux.
       - name: Device features
-        run: cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
+        run: cargo clippy -p tutti-cpal --features capture --all-targets -- -D warnings
 
   features:
     name: dark features
@@ -163,15 +152,14 @@ jobs:
       # Feature-gated code that no other job compiles.
       #
       # `cargo tree --workspace -e features -i tutti-cpal` reports only
-      # "default": nothing in this workspace turns `capture`, `midi` or
-      # `audio-io` on, so the clippy and test jobs above typecheck none of them.
+      # "default": nothing in this workspace turns `capture` or `audio-io`
+      # on, so the clippy and test jobs above typecheck none of them.
       # That is the same hole the Windows cross-check exists to close, and for
       # the same reason — a cfg block nothing compiles is a cfg block nothing
       # lints, and it rots in silence.
       #
       # What was dark until this job existed:
       #   tutti-cpal/capture  — all of src/mic.rs (MicIn, the capture ring)
-      #   tutti-cpal/midi     — the pre_block/post_block arms of process_audio
       #   bevy-tutti/audio-io — tests/audio_io_pump.rs, 12 tests that had
       #                         never once run in this repo
       #   bevy-tutti/soundfont — tests/midi_soundfont.rs (implies `midi`); its
@@ -193,8 +181,6 @@ jobs:
       - name: Lint
         run: |
           cargo clippy -p tutti-cpal --features capture --all-targets -- -D warnings
-          cargo clippy -p tutti-cpal --features midi --all-targets -- -D warnings
-          cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
@@ -212,7 +198,7 @@ jobs:
 
       - name: Test
         run: |
-          cargo nextest run -p tutti-cpal --features capture,midi
+          cargo nextest run -p tutti-cpal --features capture
           cargo nextest run -p bevy-tutti --features audio-io
           cargo nextest run -p bevy-tutti --features soundfont
           cargo nextest run -p bevy-tutti --features sampler
@@ -252,7 +238,8 @@ jobs:
   # Benchmarks: proved to RUN, never compared.
   #
   # GitHub's runners are shared and swing 30-50% on this workload, and the
-  # engine's own profile_stretch_clone documents an 81x spread on a QUIET
+  # engine's own profile_stretch_clone harness (deleted with `Net`, doc 013
+  # Phase 5; its figures are in doc 013) measured an 81x spread on a QUIET
   # machine. A timing threshold here would flap, and a flapping gate gets
   # `continue-on-error: true` within a month and then tests nothing — the same
   # death the pre-extraction workflow died. So this job runs every benchmark
@@ -276,7 +263,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Named targets, not a sweep: a bare `cargo bench` (and `--benches`)
@@ -309,18 +296,8 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
-          #                    criterion, which declares plotters with
-          #                    `default-features = false` (verified in 0.5.1
-          #                    and 0.8.2) and so never enables the `ttf`
-          #                    feature font-kit sits behind. The edge is
-          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
-          #                    dev-dep, which feature-unifies across every
-          #                    plotters consumer. `cargo tree -i font-kit`
-          #                    prints criterion first, which is what made the
-          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
@@ -409,18 +386,8 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
-          #                    criterion, which declares plotters with
-          #                    `default-features = false` (verified in 0.5.1
-          #                    and 0.8.2) and so never enables the `ttf`
-          #                    feature font-kit sits behind. The edge is
-          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
-          #                    dev-dep, which feature-unifies across every
-          #                    plotters consumer. `cargo tree -i font-kit`
-          #                    prints criterion first, which is what made the
-          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The engine must stay usable without Bevy. `--no-default-features` does
@@ -462,24 +429,14 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
-          #                    criterion, which declares plotters with
-          #                    `default-features = false` (verified in 0.5.1
-          #                    and 0.8.2) and so never enables the `ttf`
-          #                    feature font-kit sits behind. The edge is
-          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
-          #                    dev-dep, which feature-unifies across every
-          #                    plotters consumer. `cargo tree -i font-kit`
-          #                    prints criterion first, which is what made the
-          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The workspace sets broken_intra_doc_links and private_intra_doc_links to
       # deny; this is where that is actually enforced, since a plain build never
       # runs rustdoc.
-      - run: cargo doc --workspace --no-deps --exclude fundsp-tutti --exclude rustysynth-tutti
+      - run: cargo doc --workspace --no-deps --exclude rustysynth-tutti
         env:
           RUSTDOCFLAGS: -D warnings
       # `tutti_graph::contract` (doc 013 §6's harness) is behind the
@@ -497,13 +454,13 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   # Miri over the non-FFI `unsafe`. See docs/design/012-unsafe-policy.md for
-  # why these two crates and not the rest: ~95% of this repo's `unsafe` is a C
+  # why this crate and not the rest: ~95% of this repo's `unsafe` is a C
   # ABI, which miri does not execute at all, and out-of-process hosting is the
-  # structural answer there instead. What is left is seven sites, and the
-  # three that matter are the pointer arithmetic in `tutti-node`'s planar
-  # buffers (`slice::from_raw_parts` over a fixed stride, in the crate every
-  # graph node processes through), the aliasing in `tutti-types`'
-  # `AudioThreadCell`, and `RtPublish`'s hazard-slot reclamation.
+  # structural answer there instead. Of what is left, the two that matter are
+  # the aliasing in `tutti-types`' `AudioThreadCell` and `RtPublish`'s
+  # hazard-slot reclamation. (The third, the pointer arithmetic in
+  # `tutti-node`'s planar buffers, went with that crate in doc 013 Phase 5: a
+  # graph node's buffers are `tutti-graph`'s, which forbids `unsafe`.)
   #
   # Its own job because it needs nightly and is slow — minutes, not seconds —
   # and because a failure here should read as "a memory-safety claim broke",
@@ -520,7 +477,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      # ALSA headers: `tutti-node` and `tutti-types` do not need them, but
+      # ALSA headers: `tutti-types` does not need them, but
       # cargo resolves the whole workspace before building a member.
       - run: sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
       - uses: dtolnay/rust-toolchain@nightly
@@ -539,7 +496,6 @@ jobs:
       - run: cargo miri test -p tutti-types --lib rt::publish
         env:
           MIRIFLAGS: -Zmiri-many-seeds=0..16
-      - run: cargo miri test -p tutti-node
 
   # The loom models: `RtPublish`'s reclamation protocol and `PosRing`'s no-tear
   # protocol (both run against the shipped code — their atomics switch to

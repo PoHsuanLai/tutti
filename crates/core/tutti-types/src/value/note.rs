@@ -6,7 +6,7 @@
 //! `MidiNote` would let one consumer's wire format define what a note is, and
 //! would quietly make MIDI's range the limit of what is expressible.
 //!
-//! It is not: [`Note`] can name C#9 or A-2, neither of which has a MIDI
+//! It is not: [`Note`] can name A9 or A-2, neither of which has a MIDI
 //! number. That asymmetry is why the conversion out is fallible, and it is the
 //! evidence that the two concepts are genuinely different.
 //!
@@ -17,9 +17,8 @@ use super::units::{Cents, Hz, Semitones};
 
 /// One of the twelve pitch classes.
 ///
-/// Ordered C-first, and spelled with sharps throughout: a `[&str; 12]` lookup
-/// indexed by an open-coded `% 12` is the shape this replaces, and it gets the
-/// wrap wrong for negative input.
+/// Ordered C-first, and spelled with sharps throughout; the flat spelling is
+/// [`flat_name`](Self::flat_name).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PitchClass {
@@ -50,7 +49,7 @@ pub enum PitchClass {
 }
 
 impl PitchClass {
-    /// In ascending order from C.
+    /// All twelve classes, in ascending order from C.
     pub const ALL: [PitchClass; 12] = [
         Self::C,
         Self::CSharp,
@@ -66,19 +65,19 @@ impl PitchClass {
         Self::B,
     ];
 
-    /// Semitones above C.
+    /// Returns the semitones above C, in `0..12`.
     #[inline]
     pub const fn semitones_above_c(self) -> u8 {
         self as u8
     }
 
-    /// From semitones above C, wrapping every 12.
+    /// Returns the class `semitones` above C, wrapping every 12.
     #[inline]
     pub const fn from_semitones_above_c(semitones: u8) -> Self {
         Self::ALL[(semitones % 12) as usize]
     }
 
-    /// Sharp spelling: `C`, `C#`, `D`, …
+    /// Returns the sharp spelling: `C`, `C#`, `D`, …
     #[inline]
     pub const fn sharp_name(self) -> &'static str {
         match self {
@@ -97,7 +96,8 @@ impl PitchClass {
         }
     }
 
-    /// Flat spelling: `C`, `Db`, `D`, … The same twelve pitches, respelled.
+    /// Returns the flat spelling: `C`, `Db`, `D`, … The same twelve pitches,
+    /// respelled.
     #[inline]
     pub const fn flat_name(self) -> &'static str {
         match self {
@@ -116,7 +116,7 @@ impl PitchClass {
         }
     }
 
-    /// Whether this class is spelled with an accidental.
+    /// Returns whether this class is spelled with an accidental.
     #[inline]
     pub const fn is_accidental(self) -> bool {
         matches!(
@@ -130,7 +130,25 @@ impl PitchClass {
 ///
 /// Octaves use scientific pitch notation, where middle C is C4 and A4 is
 /// 440 Hz. MIDI's own numbering is a *different* convention and lives in the
-/// conversion rather than here.
+/// conversion rather than here: `Note` converts to and from a MIDI note number
+/// with `TryFrom`, in both directions fallible.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::{Hz, Note, PitchClass, Semitones};
+///
+/// let a4 = Note::try_from(69u8).unwrap();
+/// assert_eq!(a4, Note::A4);
+/// assert_eq!(a4.frequency(), Hz(440.0));
+///
+/// let c_sharp_5 = a4.transpose(Semitones(4.0));
+/// assert_eq!(c_sharp_5.class(), PitchClass::CSharp);
+/// assert_eq!(c_sharp_5.flat_name(), "Db5");
+///
+/// // A9 is a note, but not a MIDI note number.
+/// assert!(u8::try_from(Note::new(PitchClass::A, 9)).is_err());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Note {
@@ -138,7 +156,8 @@ pub struct Note {
     octave: i8,
 }
 
-/// A [`Note`] outside MIDI's 0..=127 range.
+/// The error converting a [`Note`] outside MIDI's `0..=127` range to a note
+/// number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NotOnMidiScale(pub Note);
 
@@ -150,7 +169,7 @@ impl core::fmt::Display for NotOnMidiScale {
 
 impl core::error::Error for NotOnMidiScale {}
 
-/// A MIDI note number above 127.
+/// The error converting a MIDI note number above 127 to a [`Note`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoteNumberOutOfRange(pub u8);
 
@@ -196,13 +215,14 @@ impl Note {
         self.octave
     }
 
-    /// Semitones from C0, which may be negative for sub-zero octaves.
+    /// Returns the semitones from C0, which may be negative for sub-zero
+    /// octaves.
     #[inline]
     pub const fn semitones_from_c0(self) -> i32 {
         self.octave as i32 * 12 + self.class.semitones_above_c() as i32
     }
 
-    /// From semitones above C0.
+    /// Returns the note `semitones` above C0 (below it when negative).
     #[inline]
     pub fn from_semitones_from_c0(semitones: i32) -> Self {
         // `rem_euclid`, not `%`: a negative index must wrap into the octave
@@ -213,13 +233,15 @@ impl Note {
         }
     }
 
-    /// Interval from `self` up to `other`.
+    /// Returns the interval from `self` up to `other` (negative when `other`
+    /// is lower).
     #[inline]
     pub fn interval_to(self, other: Note) -> Semitones {
         Semitones((other.semitones_from_c0() - self.semitones_from_c0()) as f32)
     }
 
-    /// Move by a whole number of semitones. Fractional input is truncated —
+    /// Returns the note a whole number of semitones away. Fractional input is
+    /// truncated —
     /// a note is a discrete pitch, so use [`frequency`](Self::frequency) and
     /// detune from there when you want the space between two notes.
     #[inline]
@@ -227,7 +249,7 @@ impl Note {
         Self::from_semitones_from_c0(self.semitones_from_c0() + by.get() as i32)
     }
 
-    /// Frequency in A440 twelve-tone equal temperament.
+    /// Returns the frequency in A440 twelve-tone equal temperament.
     ///
     /// This is the plain default. Alternative temperaments — just intonation,
     /// Pythagorean, meantone — are a tuning table's job, not a note's; see
@@ -238,10 +260,10 @@ impl Note {
         Self::A4_HZ * Semitones(steps).to_pitch_ratio()
     }
 
-    /// The nearest note to `freq`, and how far off it is.
+    /// Returns the nearest note to `freq`, and how far off it is.
     ///
     /// The offset is signed and lands in −50..=+50 cents: past that, a
-    /// different note is nearer.
+    /// different note is nearer. `None` for a frequency at or below zero.
     pub fn nearest_to(freq: Hz) -> Option<(Self, Cents)> {
         if freq.get() <= 0.0 {
             return None;
@@ -256,12 +278,12 @@ impl Note {
         Some((note, Semitones(steps.get() - nearest).to_cents()))
     }
 
-    /// Sharp spelling with octave: `A4`, `C#5`.
+    /// Returns the sharp spelling with octave: `A4`, `C#5`. Same as `Display`.
     pub fn sharp_name(self) -> String {
         format!("{}{}", self.class.sharp_name(), self.octave)
     }
 
-    /// Flat spelling with octave: `A4`, `Db5`.
+    /// Returns the flat spelling with octave: `A4`, `Db5`.
     pub fn flat_name(self) -> String {
         format!("{}{}", self.class.flat_name(), self.octave)
     }
@@ -283,7 +305,7 @@ impl core::fmt::Display for Note {
 // ── MIDI encoding ───────────────────────────────────────────────────────────
 //
 // One encoding of a note, not the note itself. Both directions are fallible
-// because the two ranges genuinely differ: MIDI cannot name C#9, and a `u8`
+// because the two ranges genuinely differ: MIDI cannot name A9, and a `u8`
 // can hold 200.
 
 impl TryFrom<u8> for Note {

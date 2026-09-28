@@ -10,18 +10,6 @@
 //! vocabulary, and deliberately nothing more: a newtype that pops the ring into
 //! the flat interleaved frame layout `AudioIn` speaks.
 //!
-//! ```no_run
-//! # use tutti_io::{TapIn, WavOut, BitDepth, Recorder};
-//! # fn go(tap: &tutti_core::AudioTap) -> tutti_io::Result<()> {
-//! let src = TapIn::new(tap.open().expect("tap is free"));
-//! let wav = WavOut::create("master.wav", 48_000.0, 2u16, BitDepth::Float32)
-//!     .expect("sink opens");
-//! let rec = Recorder::start(src, wav)?;   // both are stereo, so this pairs
-//! // ... later ...
-//! rec.stop()
-//! # }
-//! ```
-//!
 //! # The rate is the caller's to match
 //!
 //! Like every other [`AudioIn`], this carries no sample rate — the trait
@@ -33,22 +21,40 @@
 use tutti_core::io::{AudioIn, OnEmpty};
 use tutti_core::{ChannelLayout, Samples, TapCons};
 
-/// The analysis tap's consumer end as an [`AudioIn`].
+/// The master-output analysis tap's consumer end, as an [`AudioIn`]: records
+/// what the graph is playing.
 ///
-/// Construct with [`new`](Self::new) from whatever `AudioTap::open` returned.
-/// Drained by a pump thread — never by the audio thread, which is the *producer*
-/// side of this ring.
+/// The audio callback copies every master block into a lock-free stereo ring
+/// ([`tutti_core::AudioTap`]); construct this with [`new`](Self::new) from what
+/// `AudioTap::open` returned, and drain it from a pump thread (for example a
+/// [`Recorder`](crate::Recorder)), never from the audio thread.
+///
+/// Like every [`AudioIn`] it carries no sample rate: the tap runs at the
+/// graph's rate, so build the sink at that rate or the file plays at the wrong
+/// speed.
+///
+/// # Examples
+///
+/// ```no_run
+/// use tutti_io::{BitDepth, Recorder, TapIn, WavOut};
+///
+/// # fn go(tap: &tutti_core::AudioTap) -> tutti_io::Result<()> {
+/// let src = TapIn::new(tap.open().expect("tap is free"));
+/// let wav = WavOut::create("master.wav", 48_000.0, 2u16, BitDepth::Float32)?;
+/// let rec = Recorder::start(src, wav)?; // both are stereo, so this pairs
+/// // ... later ...
+/// rec.stop()
+/// # }
+/// ```
 pub struct TapIn {
     cons: TapCons,
 }
 
 impl TapIn {
-    /// Wrap the consumer half of an opened analysis tap.
+    /// Wraps the consumer half of an opened analysis tap.
     ///
-    /// Takes the consumer by value because a ring has exactly one reader: the
-    /// pump that owns this owns the drain. `AudioTap::open` enforces the other
-    /// half — it refuses while a consumer is live — so together they make "two
-    /// readers on one ring" unrepresentable rather than merely discouraged.
+    /// Takes the consumer by value because a ring has exactly one reader, and
+    /// `AudioTap::open` refuses while a consumer is live.
     pub fn new(cons: TapCons) -> Self {
         Self { cons }
     }

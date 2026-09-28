@@ -1,16 +1,15 @@
 //! Binding the DSP graph to an ECS world.
 //!
-//! The engine itself needs none of this: the graph is the native
-//! `tutti-graph` runtime (design doc 013), and transport, metering and PDC are
-//! plain value types a host can drive directly. This module is the adapter
-//! that lets
-//! a Bevy `App` reconcile ECS state into that graph:
+//! The engine itself needs none of this: the graph is the `tutti-graph`
+//! runtime, and transport, metering and PDC are plain value types a host can
+//! drive directly. This module is the adapter that lets a Bevy `App`
+//! reconcile ECS state into that graph:
 //!
 //! - the graph resources ([`AudioGraphRes`], [`AudioConfig`]) in [`resources`],
 //! - the pipeline, one file per duty: [`schedule`] (the set order, the
 //!   [`engine_ready`] gate, [`GraphDirty`]), [`spawn`] ([`SpawnAudioNode`],
 //!   [`crossfade_audio_node`]), [`capture`] (what an insertion keeps of the
-//!   unit: [`CapturedControls`]), [`despawn`] ([`reconcile_node_despawn`]) and
+//!   node: [`CapturedControls`]), [`despawn`] ([`reconcile_node_despawn`]) and
 //!   [`commit`] ([`commit_graph`]) — composed by [`GraphReconcilePlugin`],
 //! - params ([`AudioParam`]) in [`param`],
 //! - the graph as a **value** ([`LiveGraph`]) in [`topology`] — built in the
@@ -29,13 +28,14 @@
 pub mod capture;
 pub mod commit;
 pub mod despawn;
+pub mod events;
 pub mod latency;
 pub mod metering;
-pub(crate) mod native;
 pub mod param;
 pub mod plugin;
 pub mod pump;
 pub mod resources;
+pub(crate) mod runtime;
 pub mod schedule;
 pub mod spawn;
 pub mod tap;
@@ -43,23 +43,28 @@ pub mod topology;
 pub mod transport;
 pub mod wire;
 
-pub use capture::{CapturedControls, ControlCapture};
+pub use capture::CapturedControls;
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
+pub use events::{
+    EventFeeds, EventSource, EventSources, EventWiring, GraphEventsPlugin, GraphNode, NodeControls,
+};
 pub use metering::MeteringRes;
-#[cfg(feature = "plugin")]
-pub(crate) use native::clamp_latency;
-pub use native::{AudioSide, ReplaceRefused};
 pub use param::{reconcile_audio_param, write_param, AudioParam, AudioParamAppExt};
 pub use plugin::GraphReconcilePlugin;
 pub use pump::{
     drain_audio_pumps, finalize_removed_pumps, AudioPump, AudioPumpAppExt, PumpFinished, IDLE_PARK,
 };
 pub use resources::{AudioConfig, AudioGraphRes, GraphSource};
+#[cfg(feature = "plugin")]
+pub(crate) use runtime::clamp_latency;
+pub use runtime::{AudioSide, ReplaceRefused};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
 #[cfg(feature = "plugin")]
 pub use spawn::crossfade_plugin_node;
-pub use spawn::{crossfade_audio_node, InsertAudioNode, PendingCrossfades, SpawnAudioNode};
+pub use spawn::{
+    crossfade_audio_node, insert_and_bind, InsertAudioNode, PendingCrossfades, SpawnAudioNode,
+};
 pub use tap::AudioTapRes;
 pub use topology::LiveGraph;
 pub use transport::{EngineNodes, MetronomeRes, TransportRes};

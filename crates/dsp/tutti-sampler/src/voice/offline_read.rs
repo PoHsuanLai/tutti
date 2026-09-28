@@ -23,7 +23,8 @@
 //!
 //! A file that cannot be opened, sought or decoded renders silence from that
 //! point, and the first such failure is latched ([`FaultLatch`]): the fork
-//! hands the latch to the graph (`AudioUnit::render_fault`), and the export
+//! hands the latch to the graph (its `Forked` carries it as the fork's
+//! `ForkHealth`), and the export
 //! fails naming the node and the path rather than writing the silence as a
 //! success.
 //!
@@ -39,7 +40,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tutti_core::{FaultLatch, SamplePosition};
+use super::fault::FaultLatch;
+use tutti_core::SamplePosition;
 use tutti_io::Wave;
 
 use super::interp::{interpolate_taps, read_frame, read_looped_frame, tap_indices};
@@ -127,8 +129,8 @@ impl OfflineRead {
         }
     }
 
-    /// This reader, closed, latching into `fault` from now on: what a copy
-    /// isolated again keeps, with the new copy's latch.
+    /// This reader, closed, latching into `fault` from now on: what a fork
+    /// of a fork keeps, with the new fork's latch.
     pub(crate) fn relatched(mut self, fault: Arc<FaultLatch>) -> Self {
         self.open = None;
         self.failed = false;
@@ -543,7 +545,7 @@ mod tests {
         }
     }
 
-    /// **The taps wrap through the loop** (doc 013's N2, the disk fork): on a
+    /// **The taps wrap through the loop** (the disk fork): on a
     /// hard loop `[10, 20)`, half a frame before the end interpolates frames
     /// 18, 19, then 10, 11 — what the loop plays next, and what the butler's
     /// ring holds there — not 20, 21 from past it; half a frame into a later

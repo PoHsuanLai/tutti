@@ -56,13 +56,21 @@ impl Default for UnisonConfig {
     }
 }
 
+/// One unison sub-voice's derived parameters, recomputed by every unison
+/// setter.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UnisonVoiceParams {
-    /// 1.0 = center pitch. Stays a bare ratio: it is the output of
-    /// `Semitones::to_pitch_ratio`, and a multiplier is not one of the units.
+    /// Pitch ratio against the note's pitch; 1.0 is the center pitch. A bare
+    /// ratio: it is the output of `Semitones::to_pitch_ratio`, and a
+    /// multiplier is not one of the units.
     pub freq_ratio: f32,
+    /// Stereo position of this sub-voice.
     pub pan: Pan,
+    /// Start phase from the last random draw; `Phase::START` when
+    /// `phase_randomize` is off.
     pub phase_offset: Phase,
+    /// Gain of this sub-voice, `1 / sqrt(count)`, so the stack's power does
+    /// not grow with the voice count.
     pub amplitude: Amplitude,
 }
 
@@ -72,8 +80,8 @@ pub struct UnisonEngine {
     voices: [UnisonVoiceParams; MAX_UNISON_VOICES],
     rng_state: u32,
     /// Control-rate-modulatable mirrors of `config.detune_cents` /
-    /// `config.stereo_spread`. A modulator writes these (via
-    /// [`ModParams`](crate::ModParams)); [`sync_from_atomics`](Self::sync_from_atomics),
+    /// `config.stereo_spread`. A modulator writes these (through the
+    /// synth's `ParamSet`); [`sync_from_atomics`](Self::sync_from_atomics),
     /// called once per block, folds any change back into `config` + a
     /// recompute. Detune/spread only affect per-voice params on recompute (not
     /// per-sample), so a block-rate sync is exact.
@@ -96,10 +104,10 @@ impl UnisonEngine {
         engine
     }
 
-    /// Stop sharing the detune and spread cells with the live engine and its
+    /// Stops sharing the detune and spread cells with the live engine and its
     /// mod targets, keeping their current values (see `Param::detach`): the
-    /// half of `PolySynth::isolate` that makes a fork render the unison it
-    /// was taken with.
+    /// half of `PolySynth`'s `fork_fresh` that makes a fork render the unison
+    /// it was taken with.
     pub fn detach(&mut self) {
         self.detune.detach();
         self.spread.detach();
@@ -115,7 +123,7 @@ impl UnisonEngine {
         self.spread.as_atomic()
     }
 
-    /// Fold any control-rate change to the detune/spread atomics back into
+    /// Folds any control-rate change to the detune/spread atomics back into
     /// `config` and recompute per-voice params. Called once per block. Cheap
     /// when nothing moved (compares against the current config first).
     pub fn sync_from_atomics(&mut self) {
@@ -168,7 +176,7 @@ impl UnisonEngine {
         }
     }
 
-    /// Draw a fresh set of start phases, one per sub-voice, into the
+    /// Draws a fresh set of start phases, one per sub-voice, into the
     /// params table, and return them.
     ///
     /// Every call is a new draw, so each voice that starts calls this for its

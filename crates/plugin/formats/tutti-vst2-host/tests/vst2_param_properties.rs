@@ -77,9 +77,8 @@ where
     // value is written and then discarded with the unload, and the next load
     // maps a fresh image reading the default.
     //
-    // Measured on the same bug in `vst2_latency.rs`: 2 of 6 runs failed without
-    // this, 0 of 6 with it. It reads as flakiness because it passes whenever
-    // another test's instance happens to keep the image resident.
+    // Without the leak the lost write reads as flakiness, because it passes
+    // whenever another test's instance happens to keep the image resident.
     std::mem::forget(lib);
     r
 }
@@ -362,19 +361,17 @@ fn current_midi_program_zero_is_a_valid_answer_not_a_failure() {
 /// A plugin that does NOT implement `effGetCurrentMidiProgram` must not be
 /// reported as sitting on a nameless program 0.
 ///
-/// This is a **host bug this test caught**. The opcode returns a program
-/// *index*, so the obvious `current < 0` guard accepts `0` — but `0` is also
-/// what an unimplemented opcode returns after falling through the plugin's
-/// dispatcher, with the buffer still holding the host's own zeros. The first
-/// version of the host reported
+/// The opcode returns a program *index*, so the obvious `current < 0` guard
+/// accepts `0` — but `0` is also what an unimplemented opcode returns after
+/// falling through the plugin's dispatcher, with the buffer still holding the
+/// host's own zeros. A host with only that guard reports
 /// `Some(MidiProgram { index: 0, name: "", bank: Some((0, 0)), .. })` for the
 /// declining probe: an invented program, with an invented bank-select pair of
-/// (0, 0) that a caller could have emitted as a real bank change.
+/// (0, 0) that a caller could emit as a real bank change.
 ///
-/// The fix gates on `effGetMidiProgramName`, whose zero is unambiguous. The
-/// measured plugins answer `-1` and so would have passed a `-1`-only guard,
-/// which is why the probe — falling through to vst-rs's `0` — was needed to
-/// expose it.
+/// The host gates on `effGetMidiProgramName`, whose zero is unambiguous. The
+/// measured plugins answer `-1` and so would pass a `-1`-only guard, which is
+/// why the probe — falling through to vst-rs's `0` — is needed to expose it.
 ///
 /// Mutation that catches it: removing the `self.midi_program(channel, 0)?`
 /// gate from `current_midi_program` restores the invented program 0.
@@ -681,7 +678,8 @@ fn a_declining_plugin_reports_no_range_and_no_steps() {
 /// marked known", not "a `false` answer is carried through" — no input to
 /// `parameter_list` can produce a listed-but-non-automatable parameter. Making
 /// the probe decline a specific index would need a new switch; the value path
-/// is one branch on the vendored bool, and `known` is what regressed before.
+/// is one branch on the vendored bool, and `known` is the part most easily
+/// lost.
 #[test]
 fn the_automatable_flag_is_probed_rather_than_left_unasked() {
     let _guard = lock_probe();
@@ -723,13 +721,11 @@ fn the_automatable_flag_is_probed_rather_than_left_unasked() {
 /// typically an array subscript.
 ///
 /// The entry points take the ABI's own `i32`, so a caller can spell a negative
-/// index directly and the guard has to refuse it. The values below are the same
-/// hostile ones this test has always carried; they used to arrive as `u32`
-/// literals that wrapped negative on the way in, and are now written as the
-/// indices they became.
+/// index directly and the guard has to refuse it. The values below are hostile
+/// indices, including negative ones a wrapped `u32` would produce.
 ///
-/// `parameter_info` guarded already; `parameter` and `set_parameter` did not,
-/// which made the guard look like a convention rather than a requirement.
+/// All three entry points (`parameter_info`, `parameter`, `set_parameter`) are
+/// checked, so the guard is a requirement rather than a convention.
 #[test]
 fn an_out_of_range_id_never_reaches_the_plugin() {
     let _guard = lock_probe();

@@ -3,20 +3,19 @@
 //!
 //! # What this exists to catch
 //!
-//! The bug this whole change addresses was that per-plugin waits *summed*.
-//! fundsp runs nodes serially in one callback, so N stalled plugins cost N x
-//! budget, and 3 was enough to overrun 64 frames at 48 kHz. The synthetic
-//! `stalled_plugins_do_not_stall_the_audio_thread` test proves the waiting is
-//! gone using mock servers; this proves it with **real plugin subprocesses**,
+//! Per-plugin waits on the audio thread would *sum*: the graph's serial
+//! executor runs nodes one after another in one callback, so N stalled plugins
+//! would cost N x budget, and 3 is enough to overrun 64 frames at 48 kHz. The
+//! synthetic `stalled_plugins_do_not_stall_the_audio_thread` test proves
+//! nothing waits using mock servers; this proves it with **real plugin
+//! subprocesses**,
 //! which the mock cannot model: real scheduling, real dlopen'd DSP, real
 //! shared-memory traffic, real socket round-trips.
 //!
-//! **These used to be `#[ignore]`d for needing plugins installed, and were
-//! therefore run nowhere** — not locally on Linux, not in CI. `EFFECTS` names
-//! macOS system paths, so on a bare checkout the only harness measuring the
-//! out-of-process bridge executed zero assertions. `load_n` now falls back to
-//! the **reference CLAP probe**, which cargo builds as a dev-dependency, so
-//! they run anywhere the `clap` feature is on:
+//! `EFFECTS` names macOS system paths, so on a bare checkout no installed
+//! plugin is found. `load_n` then falls back to the **reference CLAP probe**,
+//! which cargo builds as a dev-dependency, so these run anywhere the `clap`
+//! feature is on:
 //!
 //! ```text
 //! cargo build -p tutti-plugin-server
@@ -71,13 +70,32 @@ mod clap_probe;
 #[cfg(not(feature = "clap"))]
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tutti_core::{BufferMut, BufferRef, BufferVec, F32};
 
-/// A loaded plugin as the only node of a native graph, driven with the
+/// Planar scratch, `channels` × [`BLOCK`] frames: what this harness fills and
+/// measures.
+struct Planes(Vec<Vec<f32>>);
+
+impl Planes {
+    fn new(channels: usize) -> Self {
+        Self(vec![vec![0.0; BLOCK]; channels])
+    }
+
+    fn clear(&mut self) {
+        for c in &mut self.0 {
+            c.fill(0.0);
+        }
+    }
+
+    fn at(&self, channel: usize, i: usize) -> f32 {
+        self.0[channel][i]
+    }
+}
+
+/// A loaded plugin as the only node of a graph, driven with the
 /// buffer types this suite fills and measures (`fill_sine`, `peak`).
 ///
-/// The plugin node is a `tutti_graph` node now, not an `AudioUnit`: a block
-/// reaches it through the executor, with the `Env` the engine would give it.
+/// A block reaches the plugin node through the executor, with the `Env` the
+/// engine would give it.
 /// The global inputs feed its inputs, its outputs feed the global outputs.
 struct GraphUnit {
     renderer: tutti_graph::Renderer,
@@ -142,7 +160,7 @@ impl GraphUnit {
     /// into `output`'s first `outputs` channels. [`stage`](Self::stage),
     /// [`run`](Self::run) and [`read`](Self::read) in one, for the untimed
     /// callers.
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+    fn process(&mut self, size: usize, input: &Planes, output: &mut Planes) {
         self.stage(size, input);
         self.run(size);
         self.read(size, output);
@@ -150,10 +168,10 @@ impl GraphUnit {
 
     /// Copy `input` into this unit's planar input buffers. Not the plugin
     /// path: outside a timed region.
-    fn stage(&mut self, size: usize, input: &BufferRef) {
+    fn stage(&mut self, size: usize, input: &Planes) {
         for (c, ch) in self.ins.iter_mut().enumerate() {
             for (i, s) in ch[..size].iter_mut().enumerate() {
-                *s = input.at_f32(c, i);
+                *s = input.at(c, i);
             }
         }
     }
@@ -181,11 +199,11 @@ impl GraphUnit {
 
     /// Copy the last block's output out, and drain what the executor sent
     /// back. Outside a timed region.
-    fn read(&mut self, size: usize, output: &mut BufferMut) {
+    fn read(&mut self, size: usize, output: &mut Planes) {
         self.renderer.editor_mut().collect();
         for (c, ch) in self.outs.iter().enumerate() {
             for (i, &s) in ch[..size].iter().enumerate() {
-                output.set_f32(c, i, s);
+                output.0[c][i] = s;
             }
         }
     }
@@ -193,27 +211,15 @@ impl GraphUnit {
 
 /// Take the machine, **across processes**.
 ///
-/// This was a `static Mutex`, and under `cargo nextest` a `static Mutex`
-/// serializes nothing: nextest gives every test its own *process*, so a
-/// process-local lock is uncontended in each one and the tests run fully
-/// parallel anyway. `clap_probe.rs` had already learned this and answered it
-/// with a lock directory — `create_dir` is atomic and fails with
-/// `AlreadyExists` on every OS this builds for — while this file kept the
-/// `Mutex` and a doc describing `cargo test`'s threading model, which is not
-/// the model this repo runs under.
+/// Under `cargo nextest` a `static Mutex` serializes nothing: nextest gives
+/// every test its own *process*, so a process-local lock is uncontended in
+/// each one. This uses `clap_probe.rs`'s lock directory instead — `create_dir`
+/// is atomic and fails with `AlreadyExists` on every OS this builds for.
 ///
-/// It went unnoticed because every test here was `#[ignore]`d. The first CI
-/// run after they were enabled failed exactly there:
-/// `repeated_load_and_drop_leaves_no_subprocesses` counts `plugin-server`
-/// processes **system-wide**, and its "before" count came back 5 rather than
-/// 0 — the three neighbouring tests' subprocesses, live in their own
-/// processes. It reported a leak that was a race.
-///
-/// What still needs serializing is wall clock, which is process-global: each
-/// test paces itself to a real block period, so neighbours halve the time each
-/// subprocess gets. The process count no longer does. The leak test now
-/// probes only the pids it launched itself, so a neighbour's servers are
-/// invisible to it.
+/// What needs serializing is wall clock, which is process-global: each test
+/// paces itself to a real block period, so neighbours halve the time each
+/// subprocess gets. The process count does not: the leak test probes only the
+/// pids it launched itself, so a neighbour's servers are invisible to it.
 #[cfg(feature = "clap")]
 fn exclusive() -> clap_probe::cross_process_lock::Guard {
     clap_probe::exclusive()
@@ -346,8 +352,8 @@ fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::Pl
     let mut handles = Vec::with_capacity(count);
     for i in 0..count {
         let path = paths[i % paths.len()];
-        // `Plugin::open` infers the format from the path, so this no longer
-        // dispatches on the extension itself. `available_effects` has already
+        // `Plugin::open` infers the format from the path, so this does not
+        // dispatch on the extension itself. `available_effects` has already
         // filtered to what is installed, and the whole function is cfg'd on the
         // formats `EFFECTS` can name.
         let built = tutti_plugin::catalog::Plugin::open(path, SAMPLE_RATE).map(|plugin| {
@@ -360,11 +366,9 @@ fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::Pl
                 handles.push(handle);
             }
             // A plugin that is *installed* but will not load is a failure, not a
-            // reason to skip. Skipping here made every test in this file report
-            // `ok` while loading nothing and asserting nothing — which is how a
-            // server-side regression that broke plugin loading outright went
-            // unnoticed through a full run. "Absent" and "broken" are different
-            // answers and only the first is a skip.
+            // reason to skip. Skipping here would make every test in this file
+            // report `ok` while loading nothing and asserting nothing. "Absent"
+            // and "broken" are different answers and only the first is a skip.
             Err(e) => panic!(
                 "instance {i} ({path}) is installed but failed to load: {e}\n\
                  This is a real failure. If the plugin is genuinely unavailable, \
@@ -376,21 +380,21 @@ fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::Pl
 }
 
 /// A sine block at full-ish scale, so "audio arrived" is unambiguous.
-fn fill_sine(input: &mut BufferVec<F32>, channels: usize, block_index: usize) {
+fn fill_sine(input: &mut Planes, channels: usize, block_index: usize) {
     for ch in 0..channels {
         for i in 0..BLOCK {
             let t = (block_index * BLOCK + i) as f32 / SAMPLE_RATE as f32;
-            input.set_scalar(ch, i, (t * 440.0 * std::f32::consts::TAU).sin() * 0.5);
+            input.0[ch][i] = (t * 440.0 * std::f32::consts::TAU).sin() * 0.5;
         }
     }
 }
 
 #[cfg(any(feature = "clap", feature = "vst3"))]
-fn peak(buf: &BufferVec<F32>, channels: usize) -> f32 {
+fn peak(buf: &Planes, channels: usize) -> f32 {
     (0..channels)
         .map(|ch| {
             (0..BLOCK)
-                .map(|i| buf.at_scalar(ch, i).abs())
+                .map(|i| buf.at(ch, i).abs())
                 .fold(0.0f32, f32::max)
         })
         .fold(0.0f32, f32::max)
@@ -409,16 +413,16 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
         .map(|u| u.inputs().max(u.outputs()).max(1))
         .max()
         .unwrap_or(2);
-    let mut input = BufferVec::<F32>::new(max_ch);
-    let mut output = BufferVec::<F32>::new(max_ch);
+    let mut input = Planes::new(max_ch);
+    let mut output = Planes::new(max_ch);
 
     for block in 0..blocks {
         fill_sine(&mut input, max_ch, block);
 
         // Every unit gets the SAME input and is processed one after another —
-        // the arrangement fundsp produces for parallel plugins on separate
-        // tracks, and precisely the one whose per-node waits used to sum inside
-        // a single callback.
+        // the arrangement the serial executor produces for parallel plugins on
+        // separate tracks, and precisely the one whose per-node waits would
+        // sum inside a single callback.
         //
         // Deliberately not chained output-to-input. Chaining looks like the
         // harsher test but measures the wrong thing here: each pipelined stage
@@ -431,7 +435,7 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
         // unit's planar buffers, and the editor's collect, are the harness's
         // and happen outside the region.
         for unit in units.iter_mut() {
-            unit.stage(BLOCK, &input.buffer_ref());
+            unit.stage(BLOCK, &input);
         }
         let start = Instant::now();
         for unit in units.iter_mut() {
@@ -441,7 +445,7 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
         costs.push(cost);
         for unit in units.iter_mut() {
             output.clear();
-            unit.read(BLOCK, &mut output.buffer_mut());
+            unit.read(BLOCK, &mut output);
         }
 
         if peak(&output, max_ch) > 0.0 {
@@ -571,7 +575,7 @@ fn eight_real_plugins_stay_under_the_callback_deadline() {
     // this a flake generator that tells us nothing about the design.
     //
     // The median is what distinguishes the two designs, and it does so by an
-    // order of magnitude. Eight plugins under the old summing budget could not
+    // order of magnitude. Eight plugins under a summing wait budget could not
     // come in under 8 x 667 us = 5333 us by construction; pipelined, the per-
     // block cost is memcpy plus a queue push. Measured across runs: 187-554 us
     // median for eight, i.e. ~23-70 us each.
@@ -697,8 +701,8 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
         .map(|u| u.inputs().max(u.outputs()).max(1))
         .max()
         .unwrap_or(2);
-    let mut input = BufferVec::<F32>::new(max_ch);
-    let mut output = BufferVec::<F32>::new(max_ch);
+    let mut input = Planes::new(max_ch);
+    let mut output = Planes::new(max_ch);
 
     // No sleep anywhere: as fast as the loop will go.
     let mut echoed = 0usize;
@@ -709,13 +713,12 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
 
         for unit in units.iter_mut() {
             output.clear();
-            unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+            unit.process(BLOCK, &input, &mut output);
         }
 
         // The bypass signature: output identical to the input we just fed in.
-        let matches_input = (0..max_ch).all(|ch| {
-            (0..BLOCK).all(|i| (output.at_scalar(ch, i) - input.at_scalar(ch, i)).abs() < 1e-6)
-        });
+        let matches_input = (0..max_ch)
+            .all(|ch| (0..BLOCK).all(|i| (output.at(ch, i) - input.at(ch, i)).abs() < 1e-6));
         if matches_input && in_peak > 0.0 {
             echoed += 1;
         }
@@ -764,7 +767,7 @@ fn repeated_load_and_drop_leaves_no_subprocesses() {
     // No `available_effects()` guard: subprocess teardown is the same code
     // whatever is loaded into it, so the reference probe exercises this
     // exactly as a third-party plugin does — and `load_n` falls back to it.
-    // The guard used to skip this test on every machine without plugins
+    // A guard would skip this test on every machine without plugins
     // installed, which is every bare checkout.
     let mut launched = Vec::new();
     for round in 0..8 {
@@ -825,8 +828,8 @@ const PASSTHROUGH_VST3: &str = "/Library/Audio/Plug-Ins/VST3/TDR Nova.vst3";
 ///
 /// Worth testing separately rather than trusting the VST3 result: it is a
 /// different format host, a different loader, and a different parameter/latency
-/// path in `tutti-plugin-server`. AU had no real-plugin coverage at all before
-/// this, despite an AU-specific NaN bug being one of the audit's findings.
+/// path in `tutti-plugin-server`, and AU has had format-specific bugs (NaN
+/// output) of its own.
 #[cfg(feature = "au")]
 const PASSTHROUGH_AU: &str = "/Library/Audio/Plug-Ins/Components/TDR Nova.component";
 
@@ -902,8 +905,9 @@ fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin::handles::Plu
 #[cfg(any(feature = "vst3", feature = "au"))]
 fn assert_nulls_at_declared_latency(mut unit: GraphUnit, path: &str) {
     let unit = &mut unit;
-    // Wide enough for *both* directions: fundsp indexes one buffer by channel for
-    // whichever side is wider, so sizing to the narrower one panics.
+    // Wide enough for *both* directions: one width sizes both `Planes`, and
+    // `stage`/`read` index each by channel up to its own side, so sizing to the
+    // narrower one panics.
     let channels = unit.inputs().max(unit.outputs()).max(1);
 
     let declared = unit
@@ -925,16 +929,16 @@ fn assert_nulls_at_declared_latency(mut unit: GraphUnit, path: &str) {
     let mut sent: Vec<Vec<f32>> = Vec::with_capacity(blocks);
     let mut got: Vec<Vec<f32>> = Vec::with_capacity(blocks);
 
-    let mut input = BufferVec::new(channels);
-    let mut output = BufferVec::new(channels);
+    let mut input = Planes::new(channels);
+    let mut output = Planes::new(channels);
 
     for b in 0..blocks {
         fill_sine(&mut input, channels, b);
-        sent.push((0..BLOCK).map(|i| input.at_scalar(0, i)).collect());
+        sent.push((0..BLOCK).map(|i| input.at(0, i)).collect());
 
         let start = Instant::now();
-        unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        got.push((0..BLOCK).map(|i| output.at_scalar(0, i)).collect());
+        unit.process(BLOCK, &input, &mut output);
+        got.push((0..BLOCK).map(|i| output.at(0, i)).collect());
 
         // Real callback pacing: without it the subprocess never runs and every
         // block reads back silent (see the module doc).

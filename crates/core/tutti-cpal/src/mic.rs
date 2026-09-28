@@ -21,7 +21,7 @@
 //!
 //! [`open_with_monitor`](MicIn::open_with_monitor) tees the same capture
 //! callback into a *second*, shallow ring drained by a [`MicMonitorNode`] (a
-//! a `tutti_io` `AudioUnit`, so it's device-free and lives in the graph).
+//! `tutti_io` graph node, so it's device-free and lives in the graph).
 //! Add that node to the audio graph — through effects if you like — to hear the
 //! mic live while recording the same input. The two rings are independent: the
 //! recording ring is deep (dropout-resistant, latency irrelevant to a file); the
@@ -60,20 +60,29 @@ const MONITOR_RING_FRAMES: usize = 480;
 
 /// Keeps the `cpal` input [`Stream`](cpal::Stream) alive. The callback runs for
 /// as long as this value exists; dropping it stops capture. The field is never
-/// read — ownership *is* the API, mirroring `audio_io::StreamHandle`.
+/// read — ownership *is* the API, as with the output side's `CpalStream`.
 struct StreamHandle(
     #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] cpal::Stream,
 );
 
 // SAFETY: `cpal::Stream` is not `Send` on every platform, but we only ever hold
 // it (never touch it across threads) and stop it by dropping on the owning
-// thread — the same contract `audio_io::StreamHandle` relies on.
+// thread — the same contract the output side's `CpalStream` relies on.
 unsafe impl Send for StreamHandle {}
 
-/// A live microphone as an [`AudioIn`]: the consumer end of the capture ring
-/// plus the stream handle that feeds it. Poll it with [`poll_into`](AudioIn::poll_into);
-/// pump it into any [`AudioOut`](tutti_core::io::AudioOut) (e.g. a `WavOut`) to
-/// record.
+/// A live microphone as an [`AudioIn`]. Requires the `capture` feature.
+///
+/// The CPAL input callback folds each device frame to stereo and pushes it
+/// into a lock-free ring of about one second; this value is the consumer end.
+/// Poll it with [`poll_into`](AudioIn::poll_into), or hand it to a
+/// `tutti_io::Recorder` with a sink from [`matching_sink`](Self::matching_sink)
+/// to record. If the consumer falls behind, the callback drops the newest
+/// frames rather than block. Capture stops when this value is dropped.
+///
+/// [`open_with_monitor`](Self::open_with_monitor) also returns a
+/// [`MicMonitorNode`] fed from the same callback through a second, shallow
+/// (about 10 ms) ring, so the mic can be heard live through the graph while it
+/// is recorded.
 pub struct MicIn {
     cons: HeapCons<[f32; 2]>,
     sample_rate: SampleRate,
@@ -82,41 +91,42 @@ pub struct MicIn {
 }
 
 impl MicIn {
-    /// Open an input device at the graph's sample rate and start capturing.
-    /// Returns once the stream is live.
+    /// Opens an input device on the default host at the graph's sample rate
+    /// and starts capturing. Returns once the stream is live.
     ///
-    /// **The rate is a parameter, not something read off the device**, and
-    /// that is the point. [`MicMonitorNode`](tutti_io::MicMonitorNode) renders
-    /// the mic into the graph with no resampling — its `set_sample_rate` is a
-    /// documented no-op resting on the assumption that the device layer opened
-    /// the mic at the graph's rate. Nothing enforced that: this function used
-    /// to take whatever `default_input_config` reported while
-    /// `AudioEngine::start` independently took whatever the *output* device
-    /// reported, and nothing compared them. A 44.1 kHz mic feeding a 48 kHz
-    /// graph drifted, silently, for as long as the take lasted.
+    /// The rate is a parameter rather than read off the device because nothing
+    /// downstream resamples: [`MicMonitorNode`] renders the mic into the graph
+    /// as-is, so the device must run at `graph_rate`. A device whose supported
+    /// range covers `graph_rate` is opened at it (preferring `f32` samples);
+    /// otherwise its default config is used if it already matches.
     ///
-    /// A device whose supported range covers `graph_rate` is opened **at**
-    /// `graph_rate`. One that cannot is [`Error::SampleRateMismatch`] rather
-    /// than a stream that sounds nearly right.
+    /// Asking for a rate does not prove a device produces it natively: ALSA
+    /// plug devices, for one, advertise wide ranges and resample internally.
     ///
-    /// Be aware of what this does *not* prove: asking for a rate does not make
-    /// a device produce it. ALSA plug devices advertise wide ranges and
-    /// resample internally. The error is honest about what was checked.
+    /// # Errors
+    /// [`Error::SampleRateMismatch`] if the device cannot run at
+    /// `graph_rate`; [`Error::InvalidDevice`] if `sel` does not resolve or
+    /// its configs cannot be queried; [`Error::DeviceNotAvailable`] if it has
+    /// no default input config; [`Error::InvalidConfig`] for an unsupported
+    /// sample format; [`Error::BuildStream`] / [`Error::PlayStream`] from
+    /// CPAL.
     pub fn open(sel: impl Into<DeviceSelector>, graph_rate: SampleRate) -> Result<Self> {
         let (source, _) = Self::open_inner(sel.into(), graph_rate, false)?;
         Ok(source)
     }
 
-    /// Open the mic *and* a live-monitor tap in one stream: the capture callback
-    /// pushes each frame into both the recording ring (drained by
-    /// [`poll_into`](AudioIn::poll_into) / `pump` → a `WavOut`) and a shallow
-    /// monitor ring drained by the returned [`MicMonitorNode`]. Add that node to
-    /// the audio graph to hear the mic live — through effects — *while*
-    /// recording the same input.
+    /// Opens the mic like [`open`](Self::open), and also returns a
+    /// live-monitor node fed by the same capture callback.
     ///
-    /// One device, one callback, two independent rings: recording tolerates
-    /// jitter with a deep buffer; monitoring stays low-latency with a shallow
-    /// one. Neither can stall the other or the capture thread.
+    /// Each captured frame goes into both the recording ring (drained by
+    /// [`poll_into`](AudioIn::poll_into)) and a shallow monitor ring drained
+    /// by the returned [`MicMonitorNode`]. Add that node to the graph to hear
+    /// the mic live, through effects if wanted, while recording the same
+    /// input. The rings are independent: when one is full it drops frames
+    /// without stalling the other or the capture thread.
+    ///
+    /// # Errors
+    /// As [`open`](Self::open).
     pub fn open_with_monitor(
         sel: impl Into<DeviceSelector>,
         graph_rate: SampleRate,
@@ -154,7 +164,7 @@ impl MicIn {
             let (mon_prod, mon_cons) = mon_rb.split();
             let ring: MicRing = share_mic_ring(mon_cons);
             // `new_at`, not `new`: the node then carries the rate it was
-            // opened at, and its `set_sample_rate` debug-asserts the graph
+            // opened at, and its `prepare` debug-asserts the graph
             // agrees. That assertion is the unchecked half of the same
             // guarantee `Error::SampleRateMismatch` is the checked half of —
             // the two-check shape `pump`'s layout `debug_assert` and
@@ -217,25 +227,20 @@ impl MicIn {
         ))
     }
 
-    /// The capture device's native sample rate. A recorder passes this to the
-    /// sink so the WAV header matches the frames it's fed.
+    /// Returns the rate the capture stream runs at (the `graph_rate` it was
+    /// opened with). A recorder passes this to its sink so the WAV header
+    /// matches the frames it is fed.
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
-    /// Build a WAV sink that matches this mic: its native rate, its own
-    /// reported width, at `depth`.
+    /// Creates a WAV file sink that matches this mic: its sample rate, its
+    /// (stereo) layout, at `depth`.
     ///
-    /// Recording needs a source and a sink whose rate and channel count agree,
-    /// and **nothing downstream can check that**: `AudioIn` deliberately carries
-    /// no rate (see its docs — a caller that needs one holds the concrete type),
-    /// so a pump handed an 8 kHz sink and a 48 kHz mic writes a valid WAV that
-    /// plays back six times too slow, silently.
-    ///
-    /// This is the one place both halves are in scope, so pairing them here is
-    /// what makes the mismatch unrepresentable for the common case. A caller
-    /// with a different sink still builds its own — the obligation is only
-    /// removed where it can be.
+    /// A source and sink must agree on rate and channel count, and nothing
+    /// downstream can check the rate: [`AudioIn`] carries none, so an 8 kHz
+    /// sink fed by a 48 kHz mic writes a valid WAV that plays six times too
+    /// slow. Building the sink here rules that out.
     ///
     /// # Errors
     ///
@@ -255,8 +260,11 @@ impl MicIn {
         WavOut::create(path, self.sample_rate, AudioIn::layout(self), depth)
     }
 
-    /// Input devices as `(index, name)` — the index is what [`open`](Self::open)
-    /// takes. Mirrors `AudioEngine::output_devices`.
+    /// Lists the default host's input devices as `(index, name)` pairs; the
+    /// index is what [`open`](Self::open) takes as a selector.
+    ///
+    /// # Errors
+    /// [`Error::DevicesError`] if the host cannot enumerate.
     pub fn input_devices() -> Result<impl Iterator<Item = (usize, String)>> {
         Ok(DeviceHost::open(AudioHost::Default)?
             .input_devices()?
@@ -315,8 +323,7 @@ impl AudioIn for MicIn {
 ///
 /// Reading `frame[0]` and `frame[1]` and discarding the rest would, on a 5.1
 /// capture device, silently throw away the **centre channel — the dialogue —
-/// and both surrounds**, which is precisely the defect `downmix`'s module doc
-/// calls out. Every device frame instead routes through
+/// and both surrounds**. Every device frame instead routes through
 /// [`fold_frame`](tutti_core::fold_frame), the engine's single ITU-R BS.775 /
 /// Dolby implementation, so a wide capture arrives correctly downmixed and a
 /// mono one still duplicates into both sides (the fold's 1→2 arm).
@@ -383,8 +390,7 @@ where
 ///
 /// Free and pure so it is testable with **no device**: cpal's
 /// `SupportedStreamConfigRange::new` is public, so a fixture can state a
-/// device's capabilities directly. Before this existed, every branch of the
-/// rate decision lived inside `MicIn::open_inner` behind a real sound card.
+/// device's capabilities directly.
 ///
 /// The rules, in order:
 /// 1. a supported range whose `[min, max]` contains `graph_rate` — preferring

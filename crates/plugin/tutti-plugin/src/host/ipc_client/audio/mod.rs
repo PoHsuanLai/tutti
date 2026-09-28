@@ -225,25 +225,54 @@ impl AudioBridge {
 
     // --- RT submit (fire-and-forget) ---
 
+    /// Drain every reply the bridge has queued into `midi_out` (appended):
+    /// block `seq`'s MIDI-out at its own frame offsets, and any earlier
+    /// block's (a reply that missed its own collection) at offset 0, since it
+    /// is already late. Returns whether `seq`'s reply (processed or failed)
+    /// was among them.
+    ///
+    /// These carry only the plugin's MIDI-out: whether the *audio* is there
+    /// is settled by the slab's sequence numbers, not by a reply arriving.
+    /// Draining rather than taking one: a reply for an abandoned block can
+    /// still be sitting here, and leaving it would put the queue one behind
+    /// forever. Lock-free; `midi_out` stays inline (a full one drops the rest).
+    pub fn take_replies(&self, seq: u64, midi_out: &mut MidiEventVec) -> bool {
+        let mut answered = false;
+        while let Some(resp) = self.channels.pop_audio_response() {
+            match resp {
+                AudioResponse::AudioProcessed {
+                    seq: s,
+                    midi_out: events,
+                } => {
+                    answered |= s == seq;
+                    for mut e in events {
+                        if midi_out.len() >= midi_out.inline_size() {
+                            break;
+                        }
+                        if s != seq {
+                            e.frame_offset = 0;
+                        }
+                        midi_out.push(e);
+                    }
+                }
+                AudioResponse::Error { seq: s } => answered |= s.is_none_or(|s| s == seq),
+            }
+        }
+        answered
+    }
+
     /// Hand block `seq` to the bridge thread and return **immediately**.
     ///
     /// Lock-free, allocation-free, and it never waits — see the module doc on
-    /// `Batcher` for why waiting here was the defect rather than a tuning problem.
+    /// `Batcher` for why waiting here would overrun the audio callback.
     ///
     /// The caller collects block `seq`'s *output* on a later call, gated on the
     /// slab's sequence number rather than on a reply (see `Batcher::collectable`).
     /// Returning `true` means only "the bridge accepted this block", never "the
     /// output is ready".
     ///
-    /// # What still comes back through the queue
-    ///
-    /// Only the plugin's MIDI-out; audio travels through the shared [`AudioSlab`]
-    /// in both directions. Everything pending is drained into `midi_out` (cleared
-    /// first); the caller-owned buffer reaches steady-state capacity so the
-    /// `append` is alloc-free.
-    ///
-    /// Those events' frame offsets are relative to the *earlier* block that
-    /// produced them. The caller shifts them; see `PluginClient::drain_midi_out`.
+    /// What comes back through the queue, the plugin's MIDI-out, is taken
+    /// with the block's audio: [`take_replies`](Self::take_replies).
     pub fn submit(
         &self,
         seq: u64,
@@ -253,29 +282,9 @@ impl AudioBridge {
         note_expression: NoteExpressionChanges,
         harmony: HarmonyInputs,
         transport: TransportInfo,
-        midi_out: &mut MidiEventVec,
     ) -> bool {
-        midi_out.clear();
         if self.lifecycle.is_crashed() {
             return false;
-        }
-
-        // Drain whatever the bridge has finished since the last block. These
-        // carry only the plugin's MIDI-out — the audio itself never travels
-        // through this queue, and whether the *audio* is there is settled by the
-        // slab's sequence numbers, not by a reply arriving.
-        //
-        // Draining rather than taking one: at ring depth 2 there is at most one
-        // block in flight, but a reply for an abandoned block can still be
-        // sitting here, and leaving it would put the queue one behind forever.
-        while let Some(resp) = self.channels.pop_audio_response() {
-            if let AudioResponse::AudioProcessed {
-                midi_out: mut events,
-                ..
-            } = resp
-            {
-                midi_out.append(&mut events);
-            }
         }
 
         let mut payload = self.payloads.acquire();
@@ -351,8 +360,7 @@ impl AudioBridge {
             // bridge thread is gone — the plugin is unreachable either way.
             return Err(StateError::PluginCrashed);
         }
-        // A refusal to answer is not an acceptance. Before this the fallback was
-        // `false`, which a `()`-returning caller could not see.
+        // A refusal to answer is not an acceptance.
         //
         // Same progress deadline as `save_state`, for the same reason: the write
         // direction is chunked too, so a total budget capped how large a state

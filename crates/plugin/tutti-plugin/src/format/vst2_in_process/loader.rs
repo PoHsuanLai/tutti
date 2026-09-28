@@ -1,4 +1,5 @@
-//! Construct the `(AudioUnit, PluginHandle)` pair for an in-process VST2.
+//! Construct the `(InProcessVst2Client, PluginHandle)` pair for an
+//! in-process VST2.
 
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
@@ -7,7 +8,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;
 
-use super::audio_unit::InProcessVst2Client;
+use super::client::InProcessVst2Client;
 use super::control_backend::InProcessVst2Backend;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::host::handles::PluginHandle;
@@ -22,26 +23,21 @@ use smallvec::SmallVec;
 /// smaller.
 const MAX_BLOCK_SIZE: usize = 4096;
 
-/// Load a VST2 plugin in-process. Returns the audio-graph node (a
-/// boxed `AudioUnit`) and a control handle.
+/// Loads a VST2 plugin in the host process, returning its graph node and
+/// control handle.
 ///
-/// The returned audio unit and handle share the underlying
-/// `tutti_vst2_host::Vst2Instance` via an `Arc<Mutex<…>>`. Drop both to drop
-/// the plugin. Editors are opened through the handle; audio happens on
-/// whatever thread fundsp drives the unit from.
-pub fn load(
-    path: &Path,
-    sample_rate: f64,
-) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-    let (client, handle) = load_client(path, sample_rate)?;
-    Ok((Box::new(client), handle))
-}
-
-/// [`load`], keeping the concrete [`InProcessVst2Client`].
+/// [`Plugin::open`](crate::catalog::Plugin::open) calls this for `.vst` files
+/// when the `vst2` feature is on; call it directly only to get the concrete
+/// [`InProcessVst2Client`] type. Insert the node with `Editor::insert` (it is a
+/// `tutti_graph::Node`). The node and handle share the plugin instance; drop
+/// both to drop the plugin. Editors are opened through the handle, and audio
+/// runs on whatever thread the graph's executor runs on. Blocks while the
+/// plugin loads, so call it off the audio thread.
 ///
-/// The same load, one boxing step earlier, so a caller that needs the client's
-/// own surface (its MIDI port) is not left with only the `AudioUnit` supertrait.
-/// `load` is this plus a `Box::new`, so the two cannot drift.
+/// # Errors
+///
+/// Returns [`BridgeError::LoadFailed`] when the library cannot be opened or
+/// the plugin fails to initialize.
 pub fn load_client(
     path: &Path,
     sample_rate: impl Into<tutti_core::SampleRate>,
@@ -128,7 +124,7 @@ pub fn load_client(
     // Built here rather than inside the node so the node's producer end and the
     // backend's drain end are the same cell: the audio thread parks a rate in
     // it, `editor_idle` dispatches from it.
-    let pending_sample_rate = Arc::new(AtomicU64::new(super::audio_unit::NO_PENDING_RATE));
+    let pending_sample_rate = Arc::new(AtomicU64::new(super::client::NO_PENDING_RATE));
 
     let backend = Arc::new(InProcessVst2Backend {
         inner: Arc::clone(&inner),
@@ -147,8 +143,6 @@ pub fn load_client(
         pending_sample_rate,
         Arc::clone(&contention),
     );
-    let midi_sender = client.midi_sender();
-
     // VST2 has an embeddable editor and carries a render mode: the same backend
     // Arc serves both optional slots, so a mode set through the handle reaches
     // the very `Vst2Instance` the node renders.
@@ -165,7 +159,6 @@ pub fn load_client(
         descriptor,
         loaded,
         param_sink,
-        midi_sender,
     );
 
     Ok((client, handle))

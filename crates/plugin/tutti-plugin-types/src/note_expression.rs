@@ -21,9 +21,10 @@ use smallvec::SmallVec;
 
 const NOTE_EXPR_STACK_CAPACITY: usize = 8;
 
-/// A per-note expression dimension. The union of what VST3 and CLAP support;
-/// VST3 covers the first five, CLAP adds [`Pressure`](Self::Pressure) and
-/// [`Expression`](Self::Expression).
+/// A per-note expression dimension.
+///
+/// The union of what VST3 and CLAP support: VST3 covers the first five, CLAP
+/// adds [`Pressure`](Self::Pressure) and [`Expression`](Self::Expression).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum NoteExpressionType {
@@ -83,11 +84,11 @@ pub struct NoteExpressionValue {
     pub value: f64,
 }
 
-/// Inline-first storage for one block's note-expression samples, holding
-/// `NOTE_EXPR_STACK_CAPACITY` before it spills.
+/// Inline-first storage for one block's note-expression samples, holding eight
+/// before it spills to the heap.
 pub type NoteExpressionVec = SmallVec<[NoteExpressionValue; NOTE_EXPR_STACK_CAPACITY]>;
 
-/// Per-block batch of note-expression samples.
+/// One block's note-expression samples.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct NoteExpressionChanges {
@@ -101,8 +102,10 @@ impl NoteExpressionChanges {
         Self::default()
     }
 
-    /// Appends one sample. Order is the caller's to maintain; nothing here
-    /// sorts by `sample_offset`.
+    /// Appends one sample.
+    ///
+    /// Order is the caller's to maintain; nothing here sorts by
+    /// `sample_offset`.
     pub fn add_change(&mut self, change: NoteExpressionValue) {
         self.changes.push(change);
     }

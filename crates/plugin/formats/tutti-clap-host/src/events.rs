@@ -1105,8 +1105,9 @@ impl OutputEventList {
     }
 
     /// RT-safe variant of [`Self::to_midi_events`] that drains into a
-    /// caller-supplied pooled `SmallVec`. Clears `out` first; reuses
-    /// existing heap capacity.
+    /// caller-supplied [`RtMidiEvents`]. Clears `out` first. `out` is an
+    /// `RtVec`, whose capacity is inline and fixed, so this never allocates:
+    /// events past that capacity are dropped and `out` reports the overflow.
     pub fn fill_midi_events(&self, out: &mut RtMidiEvents) {
         out.clear();
         for e in &self.events {
@@ -1119,30 +1120,76 @@ impl OutputEventList {
     }
 
     /// Extracts parameter-value events into a [`ParameterChanges`] grouped
-    /// by parameter ID.
+    /// by parameter ID. Allocates as it needs to and keeps every point; off
+    /// the audio thread only.
     pub fn to_param_changes(&self) -> ParameterChanges {
         let mut changes = ParameterChanges::new();
-        self.fill_param_changes(&mut changes);
+        for (addr, point) in self.param_points() {
+            match changes.get_queue_mut(addr) {
+                Some(queue) => queue.points.push(point),
+                None => {
+                    let mut queue = ParameterQueue::new(addr);
+                    queue.points.push(point);
+                    changes.add_queue(queue);
+                }
+            }
+        }
         changes
     }
 
     /// RT-safe variant of [`Self::to_param_changes`] that drains into a
-    /// caller-supplied pooled `ParameterChanges`. Clears `out.queues` first
-    /// and groups events by `param_id` via a linear scan over the inline
-    /// `SmallVec<[ParameterQueue; 16]>` — at the single-digit-N typical of
-    /// plugin param emission, this beats a `HashMap` and avoids the
-    /// allocator entirely.
-    pub fn fill_param_changes(&self, out: &mut ParameterChanges) {
-        // Drop previous queues' points without freeing the queues' heap
-        // capacity: clear in place, then the queue order is rebuilt below.
-        for queue in &mut out.queues {
-            queue.points.clear();
+    /// caller-supplied `ParameterChanges`, **bounded by the room `out` was
+    /// reserved with**: build it once, off the audio thread, with
+    /// [`ParameterChanges::reserved`] (the plugin's parameter count, and
+    /// [`ParameterQueue::chunk_room`] for the activated block size).
+    ///
+    /// `out` is emptied with [`ParameterChanges::clear`], which keeps every
+    /// queue's point storage as a spare, and each parameter's queue is taken
+    /// back with [`ParameterChanges::open_queue`], so a block within the room
+    /// neither allocates nor frees. Groups events by `param_id` with a linear
+    /// scan over the open queues.
+    ///
+    /// Past the room nothing grows. A point whose queue is full replaces that
+    /// queue's last point, so the parameter still ends the block on its latest
+    /// value; a point for a parameter with no queue left to open is lost.
+    /// Returns how many points went either way, for the caller to count.
+    pub fn fill_param_changes(&self, out: &mut ParameterChanges) -> u64 {
+        out.clear();
+        let mut dropped = 0u64;
+        for (addr, point) in self.param_points() {
+            // Linear scan: distinct param_ids per block are typically few, and
+            // the scan touches only the queues opened this block.
+            let queue = match out.queues.iter().position(|q| q.param_id == addr) {
+                Some(i) => &mut out.queues[i],
+                None if out.open_queue(addr) => {
+                    let last = out.queues.len() - 1;
+                    &mut out.queues[last]
+                }
+                None => {
+                    dropped += 1;
+                    continue;
+                }
+            };
+            if queue.has_room() {
+                queue.points.push(point);
+            } else {
+                // A full queue has a point (its room is never zero), so the
+                // last one gives way to the latest value.
+                dropped += 1;
+                if let Some(last) = queue.points.last_mut() {
+                    *last = point;
+                }
+            }
         }
-        out.queues.clear();
+        dropped
+    }
 
-        for event in &self.events {
+    /// Each `PARAM_VALUE` event in the list as the queue it belongs to and
+    /// the point it adds, in list order.
+    fn param_points(&self) -> impl Iterator<Item = (ParamAddress, ParameterPoint)> + '_ {
+        self.events.iter().filter_map(|event| {
             let ClapEvent::ParamValue(e) = event else {
-                continue;
+                return None;
             };
             let point = ParameterPoint {
                 // Saturate rather than wrap: `header.time` is `u32` and
@@ -1154,19 +1201,10 @@ impl OutputEventList {
                 // plugin's output event is as untrusted as any other input.
                 value: Normalized::new(e.value),
             };
-            // Linear scan: distinct param_ids per block are typically ≤8;
-            // a SmallVec scan stays in cache and is fully branch-predicted.
             // Outbound: a CLAP id is opaque, so it is tagged as such rather
             // than travelling as a number the receiver has to guess about.
-            let addr = ParamAddress::Opaque(e.param_id.into());
-            if let Some(queue) = out.queues.iter_mut().find(|q| q.param_id == addr) {
-                queue.points.push(point);
-            } else {
-                let mut queue = ParameterQueue::new(addr);
-                queue.points.push(point);
-                out.queues.push(queue);
-            }
-        }
+            Some((ParamAddress::Opaque(e.param_id.into()), point))
+        })
     }
 
     /// Extracts note-expression events into the safe
@@ -1179,7 +1217,9 @@ impl OutputEventList {
     }
 
     /// RT-safe variant of [`Self::to_note_expressions`] that drains into a
-    /// caller-supplied pooled `SmallVec`.
+    /// caller-supplied [`RtNoteExpressions`], an `RtVec` of fixed inline
+    /// capacity: it never allocates, and expressions past the capacity are
+    /// dropped and reported by `out`.
     pub fn fill_note_expressions(&self, out: &mut RtNoteExpressions) {
         out.clear();
         for event in &self.events {
@@ -1387,7 +1427,9 @@ mod tests {
         let mut list = OutputEventList::new();
         list.events.push(ClapEvent::param_value(u32::MAX, 7, 0.5));
 
-        let mut changes = ParameterChanges::default();
+        // `fill_param_changes` fills within the room the set was reserved
+        // with (an unreserved set has none); one queue is all this needs.
+        let mut changes = ParameterChanges::reserved(1, ParameterQueue::INLINE_POINTS);
         list.fill_param_changes(&mut changes);
 
         let point = changes
@@ -2256,7 +2298,10 @@ mod tests {
         assert!(gestures.iter().any(|e| matches!(e, ClapEvent::ParamMod(_))));
 
         // fill_param_changes only picks up the PARAM_VALUE, not gestures/mods.
-        let mut changes = ParameterChanges::new();
+        // Reserved: `fill_param_changes` fills within the set's room, and an
+        // unreserved set has none. Two queues, so a gesture or mod event
+        // wrongly queued would show as a second one.
+        let mut changes = ParameterChanges::reserved(2, ParameterQueue::INLINE_POINTS);
         output.fill_param_changes(&mut changes);
         assert_eq!(changes.queues.len(), 1, "only the PARAM_VALUE queued");
         assert_eq!(

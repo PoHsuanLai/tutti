@@ -161,7 +161,14 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// would let a plugin provoke a `malloc` inside the audio callback. Events
     /// past the cap are dropped; `overflowed()` reports it.
     pub out_midi: RtMidiEvents,
+    /// Reserved at activation, one queue per parameter with a block's point
+    /// room, and filled within that room (`fill_param_changes`); points past
+    /// it are counted in `out_param_points_dropped`.
     pub out_param_changes: ParameterChanges,
+    /// Output parameter points `fill_param_changes` could not keep whole
+    /// since activation: see
+    /// [`ClapActive::output_param_points_dropped`](super::ClapActive::output_param_points_dropped).
+    pub out_param_points_dropped: u64,
     pub out_note_expressions: RtNoteExpressions,
     /// Monotonic sample counter fed to CLAP's `steady_time`. Init 0 at
     /// activate; advances by `frames_count` each processed block; reset to 0
@@ -188,6 +195,7 @@ impl<T: super::ClapSample> AudioScratch<T> {
             output_events: OutputEventList::new(),
             out_midi: RtMidiEvents::new(),
             out_param_changes: ParameterChanges::new(),
+            out_param_points_dropped: 0,
             out_note_expressions: RtNoteExpressions::new(),
             steady_time: 0,
             last_process_status: AtomicI32::new(CLAP_PROCESS_CONTINUE),

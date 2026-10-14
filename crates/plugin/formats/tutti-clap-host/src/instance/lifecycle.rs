@@ -21,17 +21,16 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tutti_plugin_types::ParameterQueue;
+use tutti_plugin_types::{ParameterChanges, ParameterQueue};
 
 /// Heap reservation for pooled per-call event scratch on a `ClapActive`.
 ///
 /// Sized once at activation so steady-state `process` calls avoid the
 /// allocator.
 const EVENT_SCRATCH_CAPACITY: usize = 256;
-/// Floor of the heap reservation for the parameter-change queue list the
-/// plugin's output fills (one entry per distinct param_id it emits in a
-/// block). The reservation is the plugin's parameter count when that is
-/// larger.
+/// Floor of the queues reserved for the parameter changes the plugin's
+/// output fills (one per distinct param_id it emits in a block). The
+/// reservation is the plugin's parameter count when that is larger.
 const PARAM_QUEUE_CAPACITY: usize = 16;
 
 impl ClapLoaded {
@@ -183,14 +182,13 @@ impl ClapLoaded {
         // and one more when the bridge prepends a value carried from a block
         // it skipped. The list is reserved for all of them, and bounded to
         // that, so a block carrying more is counted rather than grown into on
-        // the audio thread (`InputEventList::param_points_dropped`).
+        // the audio thread (`InputEventList::param_points_dropped`). The
+        // output side is reserved the same way, one queue per parameter with
+        // a chunk's room, and bounded the same way
+        // (`ClapActive::output_param_points_dropped`).
         reserve_input_events(&mut scratch, max_frames);
         scratch.output_events.reserve(EVENT_SCRATCH_CAPACITY);
-        let params = scratch.param_ranges.len();
-        scratch
-            .out_param_changes
-            .queues
-            .reserve(params.max(PARAM_QUEUE_CAPACITY));
+        reserve_output_params(&mut scratch, max_frames);
 
         Ok(ClapActive {
             scratch,
@@ -469,6 +467,7 @@ impl<T: super::ClapSample> ClapActive<T> {
             num_out,
         );
         reserve_input_events(&mut self.scratch, max_frames as usize);
+        reserve_output_params(&mut self.scratch, max_frames as usize);
     }
 }
 
@@ -483,6 +482,23 @@ fn reserve_input_events<T: super::ClapSample>(scratch: &mut AudioScratch<T>, max
     let wanted = EVENT_SCRATCH_CAPACITY + param_points;
     events.reserve(wanted.saturating_sub(events.events.len()));
     events.set_param_point_room(param_points);
+}
+
+/// Reserve the queues the plugin's output parameter events are grouped into
+/// (`OutputEventList::fill_param_changes`): one per parameter (at least
+/// [`PARAM_QUEUE_CAPACITY`]), each with room for the points a block of
+/// `max_frames` can carry for one parameter (`ParameterQueue::chunk_room`),
+/// so the audio thread opens and clears them without allocating or freeing.
+/// Off the audio thread, between blocks: a re-reservation drops the old set,
+/// with whatever queues the last block left open in it, here.
+fn reserve_output_params<T: super::ClapSample>(scratch: &mut AudioScratch<T>, max_frames: usize) {
+    let queues = scratch.param_ranges.len().max(PARAM_QUEUE_CAPACITY);
+    let points = ParameterQueue::chunk_room(max_frames);
+    let out = &scratch.out_param_changes;
+    // Grows only, as the input reservation does: a smaller block keeps the room.
+    if out.capacity() < queues || out.point_capacity() < points {
+        scratch.out_param_changes = ParameterChanges::reserved(queues, points);
+    }
 }
 
 // The bridge that keeps the pre-activation surface reachable after activation.

@@ -111,6 +111,10 @@ fn set_sysex_output(count: u32, bytes: u32) {
     set_switch_u32_u32(b"tutti_test_plugin_set_sysex_output_bytes\0", count, bytes);
 }
 
+fn set_param_output(params: u32, points: u32) {
+    set_switch_u32_u32(b"tutti_test_plugin_set_param_output\0", params, points);
+}
+
 fn set_wide_layout(layout: WideLayout) {
     set_switch_u32(b"tutti_test_plugin_set_wide_layout\0", layout as u32);
 }
@@ -616,6 +620,176 @@ fn sysex_output_events_do_not_allocate() {
     assert_no_alloc::assert_no_alloc(|| {
         drive(&mut inst, &mut bufs, 256, &ctx).expect("process");
     });
+}
+
+// ===========================================================================
+// Parameter output events.
+// ===========================================================================
+
+/// One block through the plugin, outside any gate, returning how many points
+/// each output parameter queue holds and the value each ended on.
+fn drive_and_read_param_output(
+    inst: &mut ClapActive<f32>,
+    bufs: &mut StereoBufs,
+) -> Vec<(u32, usize, f64)> {
+    let transport = TransportInfo::default();
+    let ctx = ClapProcessContext {
+        transport: Some(&transport),
+        ..Default::default()
+    };
+    let outs: &mut [&mut [f32]] = &mut [&mut bufs.out_l[..], &mut bufs.out_r[..]];
+    let ins: &[&[f32]] = &[&bufs.in_l[..], &bufs.in_r[..]];
+    let mut buffer = AudioBuffer32 {
+        inputs: ins,
+        outputs: outs,
+        num_samples: FRAMES,
+        sample_rate: SAMPLE_RATE,
+    };
+    let out = inst.process(&mut buffer, &ctx).expect("process");
+    out.param_changes
+        .queues
+        .iter()
+        .map(|q| {
+            let id = q.param_id.opaque().expect("a CLAP id is opaque").get();
+            let last = q.points.last().expect("an open queue has a point");
+            (id, q.points.len(), last.value.get())
+        })
+        .collect()
+}
+
+/// The output queues the host reserves at activation for the reference
+/// plugin: its parameter count, floored at 16, which the probe stays under.
+const OUTPUT_QUEUES: u32 = 16;
+
+/// **A burst of plugin parameter output, within the room reserved at
+/// activation, neither allocates nor frees.** Sixteen parameters with twelve
+/// points each, every block: more than the ten points a queue holds inline,
+/// so a queue built per block would allocate, and one dropped per block would
+/// free. The host groups them into the queues it reserved at activation
+/// (16, each with `ParameterQueue::chunk_room(512)` = 20 points), takes each
+/// back with `open_queue` and returns it with `clear`. The gate covers many
+/// blocks, so the second and later reuse the queues the first returned.
+///
+/// Mutation (run): `fill_param_changes` emptying the set with
+/// `out.queues.clear()` again (dropping every queue) → aborts on the second
+/// gated block, freeing the queues the first took. Mutation (run): the
+/// activation not reserving the output queues (`reserve_output_params`
+/// removed) → no queue to open, so every point is dropped and the
+/// assertions after the gate fail.
+#[test]
+fn param_output_burst_does_not_allocate() {
+    let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    reset_probe();
+    let mut inst = load_probe();
+    assert!(
+        inst.parameter_count() <= OUTPUT_QUEUES as usize,
+        "the probe's parameter count sets the reservation; the burst assumes the floor"
+    );
+    let mut bufs = StereoBufs::new();
+    let transport = TransportInfo::default();
+    let ctx = ClapProcessContext {
+        transport: Some(&transport),
+        ..Default::default()
+    };
+    drive(&mut inst, &mut bufs, 32, &ctx).expect("warm-up blocks should succeed");
+
+    const POINTS: u32 = 12;
+    // Within the room: 192 events fit the output event list's reservation,
+    // and 12 points fit a queue's.
+    assert!(POINTS as usize <= tutti_plugin_types::ParameterQueue::chunk_room(MAX_FRAMES as usize));
+    assert!(POINTS as usize > tutti_plugin_types::ParameterQueue::INLINE_POINTS);
+    set_param_output(OUTPUT_QUEUES, POINTS);
+
+    assert_no_alloc::assert_no_alloc(|| {
+        drive(&mut inst, &mut bufs, 64, &ctx).expect("process");
+    });
+
+    let queues = drive_and_read_param_output(&mut inst, &mut bufs);
+    assert_eq!(
+        queues.len(),
+        OUTPUT_QUEUES as usize,
+        "one queue per parameter"
+    );
+    for (i, &(id, points, last)) in queues.iter().enumerate() {
+        assert_eq!(
+            id,
+            tutti_clap_test_plugin::rt_probe::PARAM_OUTPUT_FIRST_ID + i as u32
+        );
+        assert_eq!(points, POINTS as usize, "every point kept");
+        assert_eq!(last, f64::from(POINTS - 1) / f64::from(POINTS));
+    }
+    assert_eq!(inst.output_param_points_dropped(), 0);
+}
+
+/// **Plugin parameter output past the reserved room is counted, not grown
+/// into.** Two bursts, each inside the gate and each within the output event
+/// list's own reservation (256 events), so only the queues are under test:
+///
+/// - seventeen parameters with twelve points each: one more parameter than
+///   the sixteen queues reserved. The first sixteen are kept whole; the last
+///   one's twelve points are lost, and counted.
+/// - four parameters with thirty points each: ten more than a queue's room
+///   (`chunk_room(512)` = 20). Each queue keeps 20 points and ends on its
+///   parameter's latest value (each point past the room replaced the last
+///   one); 4 × 10 points a block are counted.
+///
+/// Mutation (run): `fill_param_changes` pushing without the `has_room`
+/// check → aborts in the second burst (a queue's points grow). Mutation
+/// (run): the overflow dropping the point instead of replacing the last one
+/// → each queue ends on point 19's value, not point 29's, and the value
+/// assertion fails. Mutation (run): `open_queue`'s refusal not counted → the
+/// first burst's count is 0, not 12 a block.
+#[test]
+fn param_output_past_the_room_is_counted_not_grown() {
+    let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    reset_probe();
+    let mut inst = load_probe();
+    let mut bufs = StereoBufs::new();
+    let transport = TransportInfo::default();
+    let ctx = ClapProcessContext {
+        transport: Some(&transport),
+        ..Default::default()
+    };
+    drive(&mut inst, &mut bufs, 32, &ctx).expect("warm-up blocks should succeed");
+    let room = tutti_plugin_types::ParameterQueue::chunk_room(MAX_FRAMES as usize);
+    assert_eq!(room, 20, "the burst sizes below assume a 512-frame room");
+
+    // One parameter too many.
+    const BLOCKS: u64 = 16;
+    set_param_output(OUTPUT_QUEUES + 1, 12);
+    assert_no_alloc::assert_no_alloc(|| {
+        drive(&mut inst, &mut bufs, BLOCKS as usize, &ctx).expect("process");
+    });
+    assert_eq!(inst.output_param_points_dropped(), BLOCKS * 12);
+    let queues = drive_and_read_param_output(&mut inst, &mut bufs);
+    assert_eq!(
+        queues.len(),
+        OUTPUT_QUEUES as usize,
+        "no queue past the reservation"
+    );
+    assert!(queues.iter().all(|&(_, points, _)| points == 12));
+    let after_first = inst.output_param_points_dropped();
+    assert_eq!(after_first, (BLOCKS + 1) * 12);
+
+    // Ten points too many for each of four parameters.
+    set_param_output(4, 30);
+    assert_no_alloc::assert_no_alloc(|| {
+        drive(&mut inst, &mut bufs, BLOCKS as usize, &ctx).expect("process");
+    });
+    assert_eq!(
+        inst.output_param_points_dropped() - after_first,
+        BLOCKS * 4 * 10
+    );
+    let queues = drive_and_read_param_output(&mut inst, &mut bufs);
+    assert_eq!(queues.len(), 4);
+    for &(_, points, last) in &queues {
+        assert_eq!(points, room, "a queue fills to its room and no further");
+        assert_eq!(
+            last,
+            29.0 / 30.0,
+            "a full queue ends on its parameter's latest value"
+        );
+    }
 }
 
 /// `ensure_processing` raising `StartProcessingFailed` must not allocate.

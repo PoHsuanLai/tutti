@@ -1018,6 +1018,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   full retirement channel (a host that never collects) degrades to the free
   in the callback. No API change.
 
+- **The CLAP host no longer drops and regrows the plugin's output
+  parameter queues on the audio thread** (tutti-clap-host).
+  `OutputEventList::fill_param_changes` emptied its set with
+  `queues.clear()`, dropping every queue each block, and built a new one
+  per parameter: a plugin emitting more than ten points for one parameter
+  in a block allocated and freed on the audio thread (and, before the
+  parameter-change rework, more than sixteen parameters did too). It now
+  empties the set with `ParameterChanges::clear` and takes each queue with
+  `open_queue`, so the queues keep their storage. Activation (and a
+  block-size grow) reserves the output set with
+  `ParameterChanges::reserved`: one queue per parameter, at least 16, each
+  with `ParameterQueue::chunk_room(max_frames)` points (about 0.3 KB per
+  parameter at 512 frames, 2 KB at 4096). Past that room nothing grows: a
+  point for a full queue replaces its last one, so the parameter still ends
+  the block on its latest value, a point for a parameter with no queue left
+  is lost, and both are counted.
+  - Added `ClapActive::output_param_points_dropped() -> u64`.
+    `OutputEventList::fill_param_changes` returns the points it dropped
+    (`u64`; it returned `()`).
+  - **Behaviour:** `fill_param_changes` fills only within the room its
+    `ParameterChanges` was reserved with, so a set built with `new()` or
+    `default()` now receives nothing. **Migration:** build it once, off the
+    audio thread, with `ParameterChanges::reserved(queues, points)`; or call
+    `to_param_changes()` off the audio thread, which still keeps every
+    point.
+  - Fixed: the `fill_midi_events` and `fill_note_expressions` docs called
+    their buffers pooled `SmallVec`s; they are fixed-capacity `RtVec`s.
+
 - **A live in-process VST2 plugin behind a latent path was told the wrong
   playhead** (tutti-plugin; design doc 013, "In-process VST2 live transport
   from `Cx` landed"). The live node polled the installed `Transport` once

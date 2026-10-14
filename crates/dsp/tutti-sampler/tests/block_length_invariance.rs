@@ -41,7 +41,12 @@
 //! schedule → "pool, plain" fails at frame 64; the disk tier's the same
 //! (`live_render`'s rate `× 1.0001`) → "disk voice node" fails at frame 64;
 //! the stretch filter forgetting its intake debt between calls (`start =
-//! 0.0`) → "pool, pitch +700c" fails.
+//! 0.0`) → "pool, pitch +700c" fails. The cold path (a block longer than
+//! the scratch, in pieces), each node's rendering only its first piece
+//! (`from = frames`): the pool's → "pool, plain" fails, `VoiceNode`'s →
+//! "voice node, plain", `MemorySource`'s → "memory source, placed",
+//! `DiskVoice`'s → "disk voice node", each "prepared at 64, 512-frame
+//! blocks" at frame 64.
 //!
 //! Not caught here, by design: a node that ignored `max_block` and kept
 //! rendering 64-frame pieces renders the same frames (that is the
@@ -57,7 +62,7 @@ use std::sync::Arc;
 use tutti_core::{
     Beat, Bpm, Cents, Frame, PlaybackRate, SamplePosition, SampleRate, Samples, StretchFactor,
 };
-use tutti_graph::contract::Direct;
+use tutti_graph::contract::{self, Direct};
 use tutti_graph::{Env, Node, Transport, TransportChanges};
 use tutti_io::Wave;
 use tutti_sampler::{
@@ -127,13 +132,84 @@ fn render<N: Node>(node: N, max_block: usize, schedule: &[usize]) -> [Vec<f32>; 
     out
 }
 
+/// [`FRAMES`] of `node` driven by hand (`contract::drive_in`) in blocks of
+/// `schedule`, prepared for `prepared` frames first or not at all: the
+/// cold path, a block longer than the node's scratch, rendered in pieces.
+fn render_by_hand<N: Node>(
+    mut node: N,
+    prepared: Option<usize>,
+    schedule: &[usize],
+) -> [Vec<f32>; 2] {
+    if let Some(max) = prepared {
+        node = contract::prepared(node, SampleRate(SR), max);
+    }
+    let mut out = [Vec::with_capacity(FRAMES), Vec::with_capacity(FRAMES)];
+    let mut frame = 0;
+    for &len in schedule.iter().cycle() {
+        if frame >= FRAMES {
+            break;
+        }
+        let len = len.min(FRAMES - frame);
+        let audio = contract::drive_in(&mut node, &env_at(frame, len), &[], &[], &[]).audio;
+        for (c, o) in out.iter_mut().enumerate() {
+            o.extend_from_slice(&audio[c]);
+        }
+        frame += len;
+    }
+    out
+}
+
+/// `got` equals `want` bit for bit, or the first frame that differs.
+fn assert_same(case: &str, name: &str, got: &[Vec<f32>; 2], want: &[Vec<f32>; 2]) {
+    for c in 0..2 {
+        assert_eq!(got[c].len(), FRAMES);
+        if let Some(i) = (0..FRAMES).find(|&i| got[c][i].to_bits() != want[c][i].to_bits()) {
+            panic!(
+                "{case}: {name}: channel {c} frame {i} is {} where the reference renders {}",
+                got[c][i], want[c][i]
+            );
+        }
+    }
+}
+
 /// Renders `build()` under every schedule and asserts the renders are equal
-/// bit for bit, and that they sound.
+/// bit for bit, and that they sound. Also the **cold path**, a block longer
+/// than the node's scratch, rendered in pieces: prepared at 64 but handed
+/// 512-frame blocks (against the 64-frame render), and never prepared, in
+/// 512-frame blocks (against the same, unprepared, in 64-frame blocks: an
+/// unprepared node keeps its construction-time rate, 44.1 kHz against this
+/// 48 kHz clock, so it is compared with itself; and at a mismatched rate
+/// its seat and step agree only to rounding, so to within 1e-6 there, not
+/// to the bit — a piece seated a block's beat plus 64 frames on, where a
+/// block seats on its own frame-derived beat).
 fn assert_block_invariant<N: Node>(case: &str, mut build: impl FnMut() -> N) {
     let renders: Vec<_> = SCHEDULES
         .iter()
         .map(|&(max, schedule)| render(build(), max, schedule))
         .collect();
+    let past_max = render_by_hand(build(), Some(64), &[512]);
+    assert_same(
+        case,
+        "prepared at 64, 512-frame blocks",
+        &past_max,
+        &renders[0],
+    );
+    let unprepared = render_by_hand(build(), None, &[512]);
+    let unprepared_64 = render_by_hand(build(), None, &[64]);
+    for c in 0..2 {
+        assert_eq!(unprepared[c].len(), FRAMES);
+        if let Some(i) =
+            (0..FRAMES).find(|&i| (unprepared[c][i] - unprepared_64[c][i]).abs() > 1e-6)
+        {
+            panic!(
+                "{case}: unprepared, 512-frame blocks: channel {c} frame {i} is {} where \
+                 64-frame blocks render {}",
+                unprepared[c][i], unprepared_64[c][i]
+            );
+        }
+    }
+    let peak = unprepared[0].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(peak > 0.05, "{case}: unprepared, silent (peak {peak})");
     let peak = renders[0][0].iter().fold(0.0f32, |m, s| m.max(s.abs()));
     assert!(peak > 0.05, "{case}: silent (peak {peak}); proves nothing");
     let (want, rest) = renders.split_first().expect("schedules");

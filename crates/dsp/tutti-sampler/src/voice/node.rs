@@ -10,11 +10,11 @@
 
 use std::sync::Arc;
 
-use crate::lanes::BlockScratch;
+use crate::lanes::{BlockScratch, UNPREPARED_FRAMES};
 use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
-use super::clock::Clock;
+use super::clock::{BlockClock, Clock};
 use super::command::{PlacementRecord, VoiceCommand, VoiceNodeHandle, COMMAND_CAPACITY};
 use super::disk_voice::VoiceHealth;
 use super::slot::{stretch_wanted, PlaybackSlot};
@@ -120,7 +120,7 @@ impl VoiceNode {
             gain,
             placement: PlacementRecord::default(),
             clock: Clock::new(),
-            scratch: BlockScratch::unprepared(),
+            scratch: BlockScratch::new(UNPREPARED_FRAMES, channels.count() as usize),
         }
     }
 
@@ -208,10 +208,32 @@ impl VoiceNode {
         &mut self.slot.voice
     }
 
-    /// The longest block its scratch renders in one piece.
+    /// A block longer than the scratch, in pieces as long as it: only a
+    /// node driven by hand without a `prepare` (its `UNPREPARED_FRAMES`) or
+    /// past the `max_block` it was prepared for reaches this.
+    #[cold]
+    #[inline(never)]
+    fn render_in_pieces(
+        &mut self,
+        clock: &BlockClock<'_>,
+        frames: usize,
+        n: usize,
+        out: &mut [&mut [f32]],
+    ) {
+        let piece = self.scratch.frames();
+        let mut from = 0;
+        while from < frames {
+            let to = (from + piece).min(frames);
+            self.slot
+                .render_into(clock, from..to, n, &mut self.scratch, out);
+            from = to;
+        }
+    }
+
+    /// Its scratch's frames and width.
     #[cfg(test)]
-    pub(crate) fn scratch_frames(&self) -> usize {
-        self.scratch.frames()
+    pub(crate) fn scratch_size(&self) -> (usize, usize) {
+        (self.scratch.frames(), self.scratch.width())
     }
 }
 
@@ -242,7 +264,8 @@ impl Node for VoiceNode {
     /// block scratch sized from `max_block` (a re-prepare at another size
     /// resizes it).
     fn prepare(&mut self, p: &Prepare) {
-        self.scratch.resize(p.max_block().get());
+        self.scratch
+            .resize(p.max_block().get(), self.channels.count() as usize);
         let sample_rate = p.sample_rate();
         self.slot.voice.source.prepare_rate(sample_rate);
         self.slot.sample_rate = sample_rate;
@@ -270,15 +293,12 @@ impl Node for VoiceNode {
         for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
             *slot = ch;
         }
-        // One piece: the lanes hold the prepared `max_block` (pieces that
-        // long only for a hand-driven block past it).
-        let piece = self.scratch.frames();
-        let mut from = 0;
-        while from < frames {
-            let to = (from + piece).min(frames);
+        // One piece: in a graph, `prepare` sized the scratch for every block.
+        if frames <= self.scratch.frames() {
             self.slot
-                .render_into(&clock, from..to, n, &mut self.scratch, &mut refs[..n]);
-            from = to;
+                .render_into(&clock, 0..frames, n, &mut self.scratch, &mut refs[..n]);
+        } else {
+            self.render_in_pieces(&clock, frames, n, &mut refs[..n]);
         }
         Status::Modified
     }

@@ -31,7 +31,7 @@ use tutti_io::Wave;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
     Command, DiskStreamer, DiskStreamerConfig, MemorySource, Playback, SlotId, StepOutcome, Voice,
-    VoiceCommand, VoicePool, VoiceSource,
+    VoiceCommand, VoiceNode, VoicePool, VoiceSource,
 };
 
 const SR: f64 = 48_000.0;
@@ -392,6 +392,73 @@ fn bench_pool512(c: &mut Criterion) {
     group.finish();
 }
 
+/// `n` clips, each its own `VoiceNode` (how `bevy-tutti` spawns a clip:
+/// one node per clip, each with its own scratch), in `block`-frame blocks on
+/// the moving transport. One block of every node per iteration.
+struct Clips {
+    nodes: Vec<Direct<VoiceNode>>,
+    t: Arc<MockTransport>,
+    block: usize,
+}
+
+impl Clips {
+    fn new(n: usize, block: usize) -> Self {
+        let mut wave = Wave::new(2, SR);
+        for i in 0..(SR * FILE_SECS) as usize {
+            wave.push_frame(&tone_frame(i));
+        }
+        let wave = Arc::new(wave);
+        let nodes = (0..n)
+            .map(|_| {
+                let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
+                let node = VoiceNode::new(Voice {
+                    source: VoiceSource::Memory(source),
+                    play: Playback::default(),
+                    channel_index: None,
+                });
+                Direct::new(node, SampleRate(SR), block)
+            })
+            .collect();
+        Self {
+            nodes,
+            t: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
+            block,
+        }
+    }
+
+    fn block(&mut self) -> f32 {
+        let env = self.t.env(self.block, SR);
+        let mut peak = 0.0f32;
+        for d in &mut self.nodes {
+            d.block_in(&env);
+            peak = peak.max(d.output(0)[self.block - 1].abs());
+        }
+        self.t.advance(self.block as i64, SR);
+        if self.t.beat().get() >= WRAP_BEATS {
+            self.t.seek(Beat::new(0.0));
+        }
+        peak
+    }
+}
+
+/// **A clip per `VoiceNode`**, as `bevy-tutti` spawns them: 64 stereo
+/// nodes, at 64- and 512-frame blocks (each node's scratch sized for its
+/// block: 57 bytes a stereo frame).
+fn bench_clips(c: &mut Criterion) {
+    let mut group = c.benchmark_group("clips");
+    for block in [64usize, 512] {
+        group.throughput(Throughput::Elements(block as u64));
+        let mut clips = Clips::new(64, block);
+        for _ in 0..(256 * BLOCK).div_ceil(block) {
+            clips.block();
+        }
+        group.bench_function(format!("voice-node/64/block-{block}"), |b| {
+            b.iter(|| black_box(clips.block()))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_voices,
@@ -399,6 +466,7 @@ criterion_group!(
     bench_pitch,
     bench_idle,
     bench_pool64,
-    bench_pool512
+    bench_pool512,
+    bench_clips
 );
 criterion_main!(benches);

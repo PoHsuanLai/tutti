@@ -412,11 +412,9 @@ impl PlaybackSlot {
             out,
             raw,
             positions,
-            ring_positions,
             gather,
         } = scratch;
         let positions = &mut positions[..frames];
-        let ring_positions = &mut ring_positions[..frames];
         match (&mut self.voice.source, self.stretch.as_mut()) {
             (VoiceSource::Memory(sampler), Some(unit)) if stretching => {
                 // **The stretch rate must reach the origin, not only the
@@ -477,7 +475,7 @@ impl PlaybackSlot {
                 // publish unity again — a set-once would leave the stream
                 // reading at the old factor.
                 reader.set_stretch_rate(unit.input_rate());
-                reader.render_lanes(clock, range, raw, n, (positions, ring_positions));
+                reader.render_lanes(clock, range, raw, n, positions);
                 unit.filter_lanes(raw.lanes(), out.lanes_mut(), n, 0..frames);
             }
             (VoiceSource::Memory(sampler), _) => {
@@ -502,7 +500,7 @@ impl PlaybackSlot {
                 // is reachable through ordinary use, not just teardown. The
                 // reader applies its own gain (the stream's control cell).
                 reader.set_stretch_rate(ReadRate::UNITY);
-                reader.render_lanes(clock, range, out, n, (positions, ring_positions));
+                reader.render_lanes(clock, range, out, n, positions);
             }
         }
     }

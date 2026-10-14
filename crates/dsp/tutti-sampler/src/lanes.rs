@@ -13,47 +13,60 @@
 //! to reading its frames one by one — IEEE-754 `+` and `*` on one element
 //! give one answer whether they run four at a time or one.
 //!
-//! **Sized from `Prepare::max_block`.** A rendering node builds its
-//! [`BlockScratch`] on the control thread and resizes it in its `prepare`,
-//! so the lanes are as long as the longest block the executor will hand it
-//! and a block renders in one piece. Nothing here is a fixed frame count.
+//! **Sized in `prepare`.** A rendering node sizes its [`BlockScratch`] in
+//! its `prepare`: as many lanes as the node has channels, each as long as
+//! `Prepare::max_block`, so a block renders in one piece. In a graph,
+//! `prepare` always precedes `process` and a block is never longer than
+//! `max_block`.
+//!
+//! **Driven by hand, unprepared.** A node driven straight through
+//! `Node::process` without a `prepare` (the crate's own
+//! `testing::block`/`play`, `contract::drive_in`, which the sampler's unit
+//! tests use throughout) is still served: it is built with
+//! [`UNPREPARED_FRAMES`] of scratch, and a block longer than its scratch
+//! renders in pieces that long, on a `#[cold]` path the prepared render
+//! never enters.
 
 use crate::MAX_SAMPLER_CHANNELS;
 use tutti_core::SamplePosition;
 
-/// Frames scratch built before any `prepare` holds: enough for a node a
-/// host drives by hand without preparing it. A node handed a block longer
-/// than its scratch renders it in pieces of [`BlockScratch::frames`], so
-/// this is a floor for an unprepared node, never a ceiling.
+/// Frames of scratch a node holds before any `prepare` (its constructor's
+/// size, a few KiB), and the piece length of a source's unprepared stack
+/// positions: what a node driven by hand without a `prepare` renders
+/// through. Never the length a prepared node renders in.
 pub(crate) const UNPREPARED_FRAMES: usize = 64;
 
 /// One channel of a block, planar: as long as its scratch's frames.
 pub(crate) type Lane = Vec<f32>;
 
-/// A block of planar scratch, [`MAX_SAMPLER_CHANNELS`] lanes wide, each
-/// lane as long as the longest block its owner is prepared for.
+/// A block of planar scratch: [`MAX_SAMPLER_CHANNELS`] lanes, the first
+/// `width` (the owner's channel count) as long as the longest block its
+/// owner is prepared for, the rest empty.
 ///
 /// Owned by the node that renders through it, built and resized on the
 /// control thread, boxed so a node that moves does not move it all. Carries
-/// nothing between blocks: every read writes each frame it hands on.
+/// nothing between blocks: every read writes each frame it hands on. A read
+/// writes only lanes below its `n`, which every caller clamps to the
+/// owner's width.
 pub(crate) struct Lanes(Box<[Lane; MAX_SAMPLER_CHANNELS]>);
 
 impl Lanes {
-    /// Zeroed scratch, `frames` frames per lane. Allocates: control thread.
-    fn new(frames: usize) -> Self {
-        Self(Box::new(std::array::from_fn(|_| vec![0.0; frames])))
+    /// No frames in any lane. Allocates the box: control thread.
+    fn empty() -> Self {
+        Self(Box::new(std::array::from_fn(|_| Vec::new())))
     }
 
-    /// Frames each lane holds.
+    /// Frames each sized lane holds.
     #[inline]
     pub(crate) fn frames(&self) -> usize {
         self.0[0].len()
     }
 
-    /// Each lane exactly `frames` long, zeroed. Allocates: control thread.
-    fn resize(&mut self, frames: usize) {
-        for lane in self.0.iter_mut() {
-            fit(lane, frames, 0.0);
+    /// The first `width` lanes exactly `frames` long, zeroed; the rest
+    /// empty. Allocates: control thread.
+    fn resize(&mut self, frames: usize, width: usize) {
+        for (c, lane) in self.0.iter_mut().enumerate() {
+            fit(lane, if c < width { frames } else { 0 }, 0.0);
         }
     }
 
@@ -95,12 +108,17 @@ impl std::fmt::Debug for Lanes {
 }
 
 /// What a voice's block read renders through: the lanes it hands on, the
-/// lanes its stretch filter reads from, and the block's positions and taps.
-/// One per rendering node (a pool reads every slot through its one), sized
-/// on the control thread from the node's `Prepare::max_block` (about 160
-/// bytes a frame at the sampler's 8 channels: 80 KiB at 512 frames), so a
-/// voice's block read touches no stack arrays of its own and renders a whole
-/// block in one piece.
+/// lanes its stretch filter reads from, and the block's positions and
+/// gather. One per rendering node (a pool reads every slot through its
+/// one), sized on the control thread from the node's width and
+/// `Prepare::max_block`, so a voice's block read touches no stack arrays of
+/// its own and renders a whole block in one piece.
+///
+/// **Its cost** a frame: 41 bytes (a position, 16; the gather's index, 4,
+/// fraction, 4, flag, 1, and four tap lanes, 16) plus 8 a channel (an `out`
+/// and a `raw` lane): 57 bytes a stereo frame, 57 KiB for a stereo voice
+/// prepared at 1024 frames (`tests::a_resize_sizes_every_buffer_to_the_width`
+/// counts it).
 #[derive(Debug)]
 pub(crate) struct BlockScratch {
     /// The voice's output for the block, before the mix.
@@ -108,61 +126,68 @@ pub(crate) struct BlockScratch {
     /// The source's frames, when a stretch filter sits between them and
     /// `out`.
     pub(crate) raw: Lanes,
-    /// Where each frame of the block reads (`None`: silence).
+    /// Where each frame of the block reads (`None`: silence). The disk tier
+    /// rewrites them in place to its ring positions (less its preroll).
     pub(crate) positions: Vec<Option<SamplePosition>>,
-    /// The disk tier's ring positions: the placed ones less its preroll.
-    pub(crate) ring_positions: Vec<Option<f64>>,
     /// The memory tier's along-time read (`MemorySource::read_placed_lanes`).
     pub(crate) gather: Gather,
 }
 
 impl BlockScratch {
-    /// Zeroed scratch for blocks of up to `frames` frames (at least one).
-    /// Allocates: control thread.
-    pub(crate) fn new(frames: usize) -> Self {
-        let mut s = Self {
-            out: Lanes::new(0),
-            raw: Lanes::new(0),
+    /// Scratch for blocks of up to `frames` frames of `width` channels (see
+    /// [`resize`](Self::resize)). Allocates: control thread.
+    pub(crate) fn new(frames: usize, width: usize) -> Self {
+        let mut s = Self::empty();
+        s.resize(frames, width);
+        s
+    }
+
+    /// No frames, no width. Allocates the lanes' boxes: control thread.
+    fn empty() -> Self {
+        Self {
+            out: Lanes::empty(),
+            raw: Lanes::empty(),
             positions: Vec::new(),
-            ring_positions: Vec::new(),
             gather: Gather {
-                taps: Vec::new(),
+                index: Vec::new(),
                 frac: Vec::new(),
                 live: Vec::new(),
                 y: std::array::from_fn(|_| Vec::new()),
             },
-        };
-        s.resize(frames);
-        s
+        }
     }
 
-    /// Scratch built before `prepare`: [`UNPREPARED_FRAMES`] long.
-    pub(crate) fn unprepared() -> Self {
-        Self::new(UNPREPARED_FRAMES)
+    /// Scratch sized as `other` is, for a copy of its owner. Allocates:
+    /// control thread.
+    pub(crate) fn sized_like(other: &Self) -> Self {
+        Self::new(other.frames(), other.width())
     }
 
-    /// The longest piece a block read through this scratch may be: the
-    /// `max_block` it was last prepared for. A block is never longer than
-    /// that (the executor's contract), so a node renders each block in one
-    /// piece; a node driven by hand past it renders pieces this long.
+    /// The longest block a read through this scratch may be: the
+    /// `max_block` it was last prepared for (0 before any `prepare`).
     #[inline]
     pub(crate) fn frames(&self) -> usize {
         self.positions.len()
     }
 
-    /// Sized for blocks of up to `frames` frames (at least one), every
-    /// buffer zeroed and exactly that long: what a node's `prepare` calls
-    /// with `Prepare::max_block`, so a re-prepare at a larger block grows it
-    /// and one at a smaller block gives the memory back. Allocates: control
-    /// thread only, never `process`.
-    pub(crate) fn resize(&mut self, frames: usize) {
-        let frames = frames.max(1);
-        self.out.resize(frames);
-        self.raw.resize(frames);
+    /// The channels its lanes are sized for.
+    pub(crate) fn width(&self) -> usize {
+        self.out.0.iter().take_while(|l| !l.is_empty()).count()
+    }
+
+    /// Sized for blocks of up to `frames` frames of `width` channels
+    /// (clamped to `1..=MAX_SAMPLER_CHANNELS`), every buffer zeroed and
+    /// exactly that long: what a node's `prepare` calls with
+    /// `Prepare::max_block` and its own width, so a re-prepare at a larger
+    /// block grows it and one at a smaller block gives the memory back.
+    /// Allocates: control thread only, never `process`.
+    pub(crate) fn resize(&mut self, frames: usize, width: usize) {
+        let width = width.clamp(1, MAX_SAMPLER_CHANNELS);
+        self.out.resize(frames, width);
+        self.raw.resize(frames, width);
         fit(&mut self.positions, frames, None);
-        fit(&mut self.ring_positions, frames, None);
         let g = &mut self.gather;
-        fit(&mut g.taps, frames, [0; 4]);
+        fit(&mut g.index, frames, 0);
         fit(&mut g.frac, frames, 0.0);
         fit(&mut g.live, frames, false);
         for lane in &mut g.y {
@@ -178,12 +203,14 @@ fn fit<T: Clone>(v: &mut Vec<T>, frames: usize, fill: T) {
     v.shrink_to_fit();
 }
 
-/// Each frame's four taps and fraction, and the taps gathered into four
+/// Each frame's whole index and fraction, and the taps gathered into four
 /// lanes, for the cubic along time. Each as long as its scratch's frames,
 /// and written in full for the frames a block reads before any is used.
+/// The four taps of frame `i` are derived from `index[i]` per channel
+/// (`interp::tap`), rather than kept: 4 bytes a frame, not 32.
 #[derive(Debug)]
 pub(crate) struct Gather {
-    pub(crate) taps: Vec<[usize; 4]>,
+    pub(crate) index: Vec<u32>,
     pub(crate) frac: Vec<f32>,
     /// Whether frame `i` has a sample (a position inside the file).
     pub(crate) live: Vec<bool>,
@@ -213,6 +240,14 @@ pub(crate) fn scale(lane: &mut [f32], gain: f32) {
 mod tests {
     use super::*;
 
+    /// [`BlockScratch`]'s bytes a frame that do not depend on the width: a
+    /// position, the gather's index, fraction, flag and four tap lanes.
+    const BYTES_PER_FRAME_FIXED: usize = size_of::<Option<SamplePosition>>() + 4 + 4 + 1 + 4 * 4;
+
+    /// [`BlockScratch`]'s bytes a frame per channel: an `out` and a `raw`
+    /// lane.
+    const BYTES_PER_FRAME_CHANNEL: usize = 2 * 4;
+
     /// **The kernels are the per-element arithmetic, exactly.** Against a
     /// scalar loop over values chosen so rounding shows (thirds, added to
     /// values of like size): equal bit for bit, so a vectorised kernel can
@@ -240,44 +275,67 @@ mod tests {
         }
     }
 
-    /// **A re-prepare resizes.** Scratch built at 64 frames and resized to
-    /// 512 holds 512 frames in every buffer a block read writes (each lane,
-    /// the positions, the gather); resized back to 64 it holds 64 again.
-    /// A node's `prepare` calls `resize` with `Prepare::max_block`, so a
-    /// block of the new length renders in one piece without allocating.
+    /// **A re-prepare resizes, to the owner's width.** Scratch resized to
+    /// 512 frames of 2 channels holds 512 frames in every buffer a block
+    /// read writes (the first two lanes of `out` and `raw`, the positions,
+    /// the gather) and nothing in the lanes past its width; resized to 64
+    /// frames of 6 it holds 64 in six lanes; and its bytes are the ones
+    /// [`BYTES_PER_FRAME_FIXED`] and [`BYTES_PER_FRAME_CHANNEL`] state (57 a
+    /// stereo frame).
     ///
-    /// Mutation (run): `resize` skipping `raw` → fails.
+    /// Mutations (each run): `resize` skipping `raw` → fails; `Lanes::resize`
+    /// sizing every lane (ignoring `width`) → fails.
     #[test]
-    fn a_resize_sizes_every_buffer() {
-        let mut s = BlockScratch::new(64);
-        for frames in [64usize, 512, 64, 1] {
-            s.resize(frames);
+    fn a_resize_sizes_every_buffer_to_the_width() {
+        let mut s = BlockScratch::new(UNPREPARED_FRAMES, 1);
+        assert_eq!((s.frames(), s.width()), (UNPREPARED_FRAMES, 1));
+        for (frames, width) in [(512usize, 2usize), (64, 6), (1024, 2), (1, 1)] {
+            s.resize(frames, width);
             assert_eq!(s.frames(), frames);
+            assert_eq!(s.width(), width);
             for lanes in [&s.out, &s.raw] {
-                assert!(lanes.lanes().iter().all(|l| l.len() == frames));
+                for (c, l) in lanes.lanes().iter().enumerate() {
+                    let want = if c < width { frames } else { 0 };
+                    assert_eq!(l.len(), want, "{frames}x{width}: lane {c}");
+                    assert_eq!(l.capacity(), want, "{frames}x{width}: lane {c}");
+                }
             }
-            assert_eq!(s.ring_positions.len(), frames);
             let g = &s.gather;
             assert_eq!(
-                (g.taps.len(), g.frac.len(), g.live.len()),
+                (g.index.len(), g.frac.len(), g.live.len()),
                 (frames, frames, frames)
             );
             assert!(g.y.iter().all(|l| l.len() == frames));
+            let bytes = s.positions.capacity() * size_of::<Option<SamplePosition>>()
+                + g.index.capacity() * 4
+                + g.frac.capacity() * 4
+                + g.live.capacity()
+                + g.y.iter().map(|l| l.capacity() * 4).sum::<usize>()
+                + [&s.out, &s.raw]
+                    .iter()
+                    .flat_map(|l| l.lanes().iter())
+                    .map(|l| l.capacity() * 4)
+                    .sum::<usize>();
+            assert_eq!(
+                bytes,
+                frames * (BYTES_PER_FRAME_FIXED + width * BYTES_PER_FRAME_CHANNEL)
+            );
         }
-        // Zero is refused to one frame: a block holds at least one.
-        s.resize(0);
-        assert_eq!(s.frames(), 1);
+        assert_eq!(BYTES_PER_FRAME_FIXED + 2 * BYTES_PER_FRAME_CHANNEL, 57);
     }
 
-    /// **Every voice node sizes its scratch from `Prepare::max_block`**, and
-    /// a re-prepare resizes it: a pool, a `VoiceNode` and a `MemorySource`
-    /// prepared at 512 render 512 frames in one piece, re-prepared at 1024
-    /// render 1024, and at 64, 64. (The disk voice's own check is
+    /// **Every voice node sizes its scratch from `Prepare::max_block` and
+    /// its own width**, and a re-prepare resizes it: a stereo pool, a stereo
+    /// `VoiceNode` and a `MemorySource` prepared at 512 hold 512 frames,
+    /// re-prepared at 1024 hold 1024, and at 64, 64; the pool's and the
+    /// node's lanes are two wide, not `MAX_SAMPLER_CHANNELS`. Unprepared, the pool
+    /// and the node hold `UNPREPARED_FRAMES` and the source none. (The disk voice's own check is
     /// `disk_voice::tests::a_disk_voice_sizes_its_positions_from_max_block`.)
     ///
     /// Mutations (each run): `VoicePool::prepare` not resizing its scratch
-    /// → the pool stays at 64 → fails; `VoiceNode::prepare` the same →
-    /// fails; `MemorySource::prepare` not sizing its positions → fails.
+    /// → fails; `VoiceNode::prepare` the same → fails;
+    /// `MemorySource::prepare` not sizing its positions → fails;
+    /// `VoiceNode::prepare` sizing to `MAX_SAMPLER_CHANNELS` → fails.
     #[test]
     fn every_voice_node_sizes_its_scratch_from_max_block() {
         use crate::voice::{MemorySource, Voice, VoiceNode, VoicePool, VoiceSource};
@@ -295,15 +353,16 @@ mod tests {
             channel_index: None,
         });
         let mut memory = source;
-        assert_eq!(pool.scratch_frames(), UNPREPARED_FRAMES);
-        assert_eq!(node.scratch_frames(), UNPREPARED_FRAMES);
+        assert_eq!(pool.scratch_size(), (UNPREPARED_FRAMES, 2));
+        assert_eq!(node.scratch_size(), (UNPREPARED_FRAMES, 2));
+        assert_eq!(memory.scratch_frames(), 0);
         for max in [512usize, 1024, 64] {
             let p = Prepare::new(SampleRate(48_000.0), Samples(max));
             pool.prepare(&p);
             node.prepare(&p);
             memory.prepare(&p);
-            assert_eq!(pool.scratch_frames(), max, "pool at {max}");
-            assert_eq!(node.scratch_frames(), max, "voice node at {max}");
+            assert_eq!(pool.scratch_size(), (max, 2), "pool at {max}");
+            assert_eq!(node.scratch_size(), (max, 2), "voice node at {max}");
             assert_eq!(memory.scratch_frames(), max, "memory source at {max}");
         }
     }

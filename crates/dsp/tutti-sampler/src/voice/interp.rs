@@ -351,16 +351,21 @@ pub fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
 pub(crate) fn tap_indices(len: usize, position: f64) -> ([usize; 4], f32) {
     let (idx, frac) = split_position(position);
     let last = len - 1;
+    ([0, 1, 2, 3].map(|t| tap(idx, last, t)), frac)
+}
+
+/// Tap `t` (0..4) of [`tap_indices`]'s four for whole frame `idx` of a
+/// source whose last frame is `last`: `idx - 1 + t`, clamped. The block
+/// read keeps only `idx` per frame and derives each tap here, so the two
+/// cannot disagree about which frames a position means.
+#[inline(always)]
+pub(crate) fn tap(idx: usize, last: usize, t: usize) -> usize {
     // All four taps clamp to `last`, `im1` included: `saturating_sub` guards
     // only the LOW end, so a `position` past `len` leaves `im1` past the end
     // too, and `Wave::at` is an unchecked index — that is a panic, not a bad
     // sample. The in-tree caller gates on `position >= len` first, but
     // `read_frame` is a `pub` function and must not depend on that.
-    let im1 = idx.saturating_sub(1).min(last);
-    let i0 = idx.min(last);
-    let i1 = (idx + 1).min(last);
-    let i2 = (idx + 2).min(last);
-    ([im1, i0, i1, i2], frac)
+    (idx + t).saturating_sub(1).min(last)
 }
 
 /// A position's whole frame and the fraction past it, as every tap layout

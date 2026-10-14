@@ -19,7 +19,7 @@ use tutti_graph::{
 use tutti_io::Wave;
 
 use super::clock::{BlockClock, Clock};
-use super::interp::{hermite_lanes, place, read_looped_frame, tap_indices, Gate};
+use super::interp::{hermite_lanes, place, read_looped_frame, split_position, tap, Gate};
 use super::loop_span::LoopSpan;
 use super::types::Direction;
 use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES};
@@ -900,7 +900,10 @@ impl MemorySource {
         let len = self.wave.len();
         let src_ch = self.wave.channels();
         let looped = direction == Direction::Forward && self.loop_mode.span(len).is_some();
-        let along_time = !looped && len > 0 && (src_ch == 1 || src_ch == n);
+        // (A wave past `u32::MAX` frames, 24 hours at 48 kHz, reads a frame
+        // at a time: the gather keeps each frame's whole index as a `u32`.)
+        let along_time =
+            !looped && len > 0 && len <= u32::MAX as usize && (src_ch == 1 || src_ch == n);
         if !along_time {
             let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
             for (i, pos) in positions.iter().enumerate() {
@@ -912,15 +915,18 @@ impl MemorySource {
             }
             return;
         }
-        // Each frame's taps and fraction, as `read_placed_into` →
-        // `get_sample_raw_into` → `read_frame` derive them, written for every
-        // frame: one with no sample reads taps 0 at `t` = 0, weighted out.
+        // Each frame's whole index and fraction, as `read_placed_into` →
+        // `get_sample_raw_into` → `read_frame` derive them (`tap_indices`:
+        // the taps are derived from the index per channel with its `tap`),
+        // written for every frame: one with no sample gathers zeros at
+        // `t` = 0, which the cubic returns as `0.0`.
         let Gather {
-            taps,
+            index,
             frac,
             live,
             y,
         } = gather;
+        let last = len - 1;
         let flen = len as f64;
         for (i, pos) in positions.iter().enumerate() {
             let at = pos.and_then(|pos| {
@@ -933,22 +939,28 @@ impl MemorySource {
                     Direction::Forward => Some(p),
                 }
             });
-            (taps[i], frac[i], live[i]) = match at {
+            (index[i], frac[i], live[i]) = match at {
                 Some(at) => {
-                    let (t, f) = tap_indices(len, at);
-                    (t, f, true)
+                    let (idx, f) = split_position(at);
+                    // `idx` ≤ `len` (a fraction rounding up to the next
+                    // frame), and `len` fits a `u32` (above).
+                    (idx as u32, f, true)
                 }
-                None => ([0; 4], 0.0, false),
+                None => (0, 0.0, false),
             };
         }
-        let (taps, frac, live) = (&taps[..frames], &frac[..frames], &live[..frames]);
+        let (index, frac, live) = (&index[..frames], &frac[..frames], &live[..frames]);
         // Mono fans one interpolated lane to every channel.
         let reads = if src_ch == 1 { 1 } else { n };
         for c in 0..reads {
             let wave = self.wave.channel(c);
             for (t, lane) in y.iter_mut().enumerate() {
-                for ((s, tap), &on) in lane.iter_mut().zip(taps).zip(live) {
-                    *s = if on { wave[tap[t]] } else { 0.0 };
+                for ((s, &idx), &on) in lane.iter_mut().zip(index).zip(live) {
+                    *s = if on {
+                        wave[tap(idx as usize, last, t)]
+                    } else {
+                        0.0
+                    };
                 }
             }
             let [y0, y1, y2, y3] = &*y;
@@ -1201,6 +1213,22 @@ impl MemorySource {
         self.set_session_sample_rate(sample_rate.get());
     }
 
+    /// A block longer than its positions, through a stack array in pieces
+    /// of [`UNPREPARED_FRAMES`]: only a source driven by hand without a
+    /// `prepare` (no positions) or past the `max_block` it was prepared for
+    /// reaches this, so the prepared render never initialises the array.
+    #[cold]
+    #[inline(never)]
+    fn render_unprepared(&mut self, clock: &BlockClock<'_>, frames: usize, out: &mut [&mut [f32]]) {
+        let mut positions = [None; UNPREPARED_FRAMES];
+        let mut from = 0;
+        while from < frames {
+            let to = (from + UNPREPARED_FRAMES).min(frames);
+            self.render_range(clock, from..to, &mut positions, out);
+            from = to;
+        }
+    }
+
     /// The longest block its own positions render in one piece (0: never
     /// prepared).
     #[cfg(test)]
@@ -1253,24 +1281,15 @@ impl Node for MemorySource {
         for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
             *slot = ch;
         }
-        // One piece: the positions hold the prepared `max_block` (pieces
-        // that long for a hand-driven block past it, and the stack's
-        // `UNPREPARED_FRAMES` for a source never prepared).
-        let mut positions = std::mem::take(&mut self.positions);
-        let mut stack = [None; UNPREPARED_FRAMES];
-        let scratch = if positions.is_empty() {
-            &mut stack[..]
+        // One piece: in a graph, `prepare` sized the positions for every
+        // block.
+        if frames <= self.positions.len() {
+            let mut positions = std::mem::take(&mut self.positions);
+            self.render_range(&clock, 0..frames, &mut positions, &mut refs[..n]);
+            self.positions = positions;
         } else {
-            &mut positions[..]
-        };
-        let piece = scratch.len();
-        let mut from = 0;
-        while from < frames {
-            let to = (from + piece).min(frames);
-            self.render_range(&clock, from..to, scratch, &mut refs[..n]);
-            from = to;
+            self.render_unprepared(&clock, frames, &mut refs[..n]);
         }
-        self.positions = positions;
         Status::Modified
     }
 

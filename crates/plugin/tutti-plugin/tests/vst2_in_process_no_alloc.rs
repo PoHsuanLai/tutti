@@ -65,6 +65,37 @@ fn process_steady_state_does_not_allocate() {
     drop(handle);
 }
 
+/// With a project meter installed (`set_meter`), each block reads it — the
+/// meter cell's load, then its `RtPublish` — and still does not allocate.
+///
+/// Mutation (run): allocate in `TransportFeed::block` only when a meter is
+/// installed → this test trips the gate, the two without a meter pass.
+#[test]
+fn process_with_a_meter_does_not_allocate() {
+    use std::sync::Arc;
+    use tutti_core::{
+        Beat, BeatsPerBar, MeterChange, MeterMap, NoteValue, RtPublish, TimeSignature,
+    };
+
+    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
+    let (unit, handle) = tutti_plugin::in_process_vst2_client(probe_path::probe_path(), 48_000.0)
+        .expect("load failed");
+    unit.set_meter(Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
+        Beat(0.0),
+        TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
+    )]))));
+    let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
+    for _ in 0..32 {
+        unit.block();
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..256 {
+            unit.block();
+        }
+    });
+    drop(handle);
+}
+
 #[test]
 fn process_with_midi_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();

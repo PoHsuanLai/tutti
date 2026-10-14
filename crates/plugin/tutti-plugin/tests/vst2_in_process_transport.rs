@@ -21,7 +21,7 @@ use tutti_core::{
     SampleRate, Samples, TimeSignature,
 };
 use tutti_graph::{
-    Cx, Env, GraphBuilder, Io, LoopRange, Node, Offset, Prepare, Renderer, Shape, Status,
+    Cx, Env, GraphBuilder, IntoNode, Io, LoopRange, Node, Offset, Prepare, Renderer, Shape, Status,
     Transport, TransportChanges, Unforkable,
 };
 use tutti_plugin::handles::PluginHandle;
@@ -120,20 +120,22 @@ impl Node for Latent {
 
 /// The live node fed by a silent source of `arrival` frames' latency on both
 /// its inputs, its outputs global.
-fn rig(client: InProcessVst2Client, arrival: usize) -> Renderer {
+fn rig<N: IntoNode>(node: N, arrival: usize) -> (Renderer, N::Controls) {
     let stereo = ChannelLayout::from_count(2);
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, stereo);
     let latent = g.add(Unforkable(Latent {
         latency: Latency::new(Samples(arrival)),
         width: stereo,
     }));
-    let key = g.add(client);
+    let (key, controls) = g.add_with_controls(node);
     for port in 0..2 {
         g.connect(latent, port, key, port);
     }
     g.pipe_output(key);
-    g.renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
-        .expect("the graph compiles")
+    let r = g
+        .renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
+        .expect("the graph compiles");
+    (r, controls)
 }
 
 /// One scene per block: the transport at its first frame, and the changes
@@ -257,7 +259,7 @@ fn a_live_node_behind_a_latent_path_is_told_its_inputs_transport() {
     let _lock = lock_probe();
     reset_probe();
     let (client, handle) = load();
-    let mut r = rig(client, ARRIVAL);
+    let (mut r, _) = rig(client, ARRIVAL);
 
     const BLOCKS: usize = 24;
     let seen = render_scenes(&mut r, BLOCKS);
@@ -293,7 +295,7 @@ fn a_live_node_with_no_latency_is_told_the_blocks_own_time() {
     let _lock = lock_probe();
     reset_probe();
     let (client, handle) = load();
-    let mut r = rig(client, 0);
+    let (mut r, _) = rig(client, 0);
 
     let seen = render_scenes(&mut r, 12);
     for (b, (env, told)) in seen.iter().enumerate() {
@@ -306,33 +308,63 @@ fn a_live_node_with_no_latency_is_told_the_blocks_own_time() {
     drop(handle);
 }
 
+fn seven_eight() -> Arc<RtPublish<MeterMap>> {
+    Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
+        Beat(0.0),
+        TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
+    )])))
+}
+
 /// **The live node's meter** reaches the plugin: a 7/8 meter installed with
-/// `set_meter` (on the client before it went in, a handle the host keeps);
-/// none installed is 4/4.
+/// `set_meter` on the client before it went in; cleared, after it went in,
+/// through the meter handle inserting it handed back (4/4); and installed
+/// again through that handle.
 ///
 /// Mutation (run): drop the meter source (`TransportFeed::block` reading
-/// `self.default_meter` always) → 4 → fails.
+/// `self.default_meter` always) → 4 → fails. Mutation (run): hand back a
+/// fresh `PluginMeter::default()` as the node's controls in its `IntoNode`
+/// → the handle is not the node's cell → fails.
 #[test]
 fn the_live_node_tells_the_plugin_its_meter() {
     let _lock = lock_probe();
     reset_probe();
     let (client, handle) = load();
     assert!(!client.has_meter());
-    client.set_meter(Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
-        Beat(0.0),
-        TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
-    )]))));
+    client.set_meter(seven_eight());
     assert!(client.has_meter());
-    let held = client.clone();
-    let mut r = rig(client, ARRIVAL);
+    let (mut r, meter) = rig(client, ARRIVAL);
     let seen = render_scenes(&mut r, 2);
     assert_eq!(seen[1].1.numerator, 7);
     let cap = read_capture();
     assert_eq!(cap.time_sig_denominator, 8);
 
-    held.clear_meter();
+    meter.clear_meter();
     let seen = render_scenes(&mut r, 1);
     assert_eq!(seen[0].1.numerator, 4, "no meter is 4/4");
-    drop(held);
+
+    meter.set_meter(seven_eight());
+    let seen = render_scenes(&mut r, 1);
+    assert_eq!(seen[0].1.numerator, 7, "installed after insertion");
+    drop(handle);
+}
+
+/// **`Plugin::set_meter` reaches an in-process VST2** (its VST2 arm): the
+/// catalog's `Plugin` for the probe is given 7/8 before it goes in, and the
+/// plugin is told 7/8.
+///
+/// Mutation (run): make the VST2 arm of `Plugin::meter` (which
+/// `Plugin::set_meter` writes through) a fresh `PluginMeter::default()`, so
+/// the install reaches no node → 4 → fails.
+#[test]
+fn plugin_set_meter_reaches_an_in_process_vst2() {
+    let _lock = lock_probe();
+    reset_probe();
+    let plugin = tutti_plugin::catalog::Plugin::open(probe_path::probe_path(), SAMPLE_RATE)
+        .expect("the probe opens");
+    let handle = plugin.handle().clone();
+    assert!(plugin.set_meter(seven_eight()), "a VST2 takes the meter");
+    let (mut r, _) = rig(plugin, 0);
+    let seen = render_scenes(&mut r, 1);
+    assert_eq!(seen[0].1.numerator, 7);
     drop(handle);
 }

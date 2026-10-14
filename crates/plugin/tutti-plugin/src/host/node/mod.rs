@@ -70,6 +70,7 @@ mod capability_view;
 mod controls;
 mod fork;
 mod graph_node;
+mod meter;
 mod param_automation_source;
 mod process;
 mod segment_points;
@@ -101,6 +102,7 @@ pub use automation_node::{AutomationControls, PluginAutomation, AUTOMATION_EVENT
 pub(crate) use capability_view::is_declined;
 pub use capability_view::TransportView;
 pub use controls::PluginControls;
+pub use meter::PluginMeter;
 pub use param_automation_source::{
     LfoCurve, LfoOffset, OffsetCurve, PluginParamTarget, TimedParam,
 };

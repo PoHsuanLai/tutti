@@ -317,8 +317,11 @@ pub fn plugin_load_promote(
                         (graph.insert_plugin(client), controls)
                     }
                     Err(plugin) => {
+                        // Its one control, its meter, taken before it moves
+                        // in: the meter binding installs through it.
+                        let meter = plugin.meter();
                         let (id, _) = graph.insert(*plugin);
-                        (id, CapturedControls::default())
+                        (id, CapturedControls::for_plugin_meter(meter))
                     }
                 };
                 edited = true;

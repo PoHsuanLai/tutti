@@ -15,6 +15,7 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
 
 use super::client::{drive_f32, InProcessVst2Client};
+use crate::host::node::PluginMeter;
 use crate::protocol::Features;
 
 /// The most channels a block hands the plugin (`drive_f32`'s stack tables).
@@ -141,22 +142,25 @@ fn sort_by_offset(events: &mut crate::protocol::MidiEventVec) {
     }
 }
 
-/// The plugin, inserted as a graph node. No controls (its per-block inputs
-/// are installed through it before it goes in), and a [`ForkSource`] that
-/// forks it **by state transfer**: a second instance of the plugin from the
-/// same library, restored from this one's saved state
+/// The plugin, inserted as a graph node. Its controls are its meter cell
+/// ([`PluginMeter`], the same cell as [`InProcessVst2Client::set_meter`]), so a
+/// host can give it the project meter after it has moved into the graph, as
+/// it does an out-of-process plugin through its `PluginControls`. Its
+/// [`ForkSource`] forks it **by state transfer**: a second instance of the
+/// plugin from the same library, restored from this one's saved state
 /// ([`InProcessVst2Client::fork_instance`]). So `Editor::fork` (an offline
 /// export) renders a graph holding it.
 ///
 /// [`ForkSource`]: tutti_graph::ForkSource
 impl IntoNode for InProcessVst2Client {
-    type Controls = ();
+    type Controls = PluginMeter;
 
-    fn into_parts(self) -> NodeParts<()> {
+    fn into_parts(self) -> NodeParts<PluginMeter> {
         let fork = super::fork::Vst2Fork::of(&self);
+        let controls = self.meter();
         NodeParts {
             node: Box::new(self),
-            controls: (),
+            controls,
             fork: Some(Box::new(fork)),
         }
     }

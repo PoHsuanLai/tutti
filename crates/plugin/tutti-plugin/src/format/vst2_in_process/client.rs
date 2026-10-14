@@ -15,7 +15,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use arc_swap::ArcSwapOption;
 use parking_lot::Mutex;
 use tutti_core::{MeterMap, RtPublish, Samples};
 use tutti_graph::{Cx, Offset};
@@ -23,6 +22,7 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
 use crate::host::node::transport_source::{self, SteadyTime};
+use crate::host::node::PluginMeter;
 use crate::protocol::{Features, MidiEventVec, TransportInfo};
 
 /// Per-channel f32 staging buffers.
@@ -140,21 +140,25 @@ pub(super) struct TransportFeed {
     /// live node's clones, so a [`set_meter`](InProcessVst2Client::set_meter)
     /// on any clone reaches the one the audio thread runs; a fork has a cell
     /// of its own ([`forked`](Self::forked)).
-    meter: Arc<ArcSwapOption<RtPublish<MeterMap>>>,
+    meter: PluginMeter,
     /// The meter read when none is installed (4/4 from bar 0), held so a
     /// block never builds one.
     default_meter: MeterMap,
     /// The free-running sample counter: frames this node rendered.
     steady: SteadyTime,
+    /// The last snapshot handed out: what an empty block (no frame to read
+    /// the transport at) repeats.
+    last: TransportInfo,
 }
 
 impl TransportFeed {
     /// No meter installed, nothing rendered.
     pub(super) fn new() -> Self {
         Self {
-            meter: Arc::new(ArcSwapOption::empty()),
+            meter: PluginMeter::default(),
             default_meter: MeterMap::default(),
             steady: SteadyTime::default(),
+            last: TransportInfo::default(),
         }
     }
 
@@ -163,37 +167,41 @@ impl TransportFeed {
     /// the out-of-process node's fork), and a counter from zero.
     pub(super) fn forked(&self) -> Self {
         Self {
-            meter: Arc::new(ArcSwapOption::new(self.meter.load_full())),
+            meter: PluginMeter::holding(self.meter.load_full()),
             default_meter: MeterMap::default(),
             steady: SteadyTime::default(),
+            last: TransportInfo::default(),
         }
     }
 
     /// The snapshot for a block of `frames`, then count them. A plugin that
     /// did not declare [`Features::TRANSPORT`] is handed the default
-    /// (stopped) snapshot. Audio thread: two lock-free loads (the meter's
-    /// cell, then its value), no allocation.
+    /// (stopped) snapshot; an empty block, which has no frame to read the
+    /// transport at, repeats the last one. Audio thread: two lock-free loads
+    /// (the meter's cell, then its value), no allocation.
     pub(super) fn block(
         &mut self,
         cx: &Cx<'_>,
         frames: usize,
         features: Features,
     ) -> TransportInfo {
-        let info = match Offset::new(0, Samples(frames)) {
-            Some(at) if features.contains(Features::TRANSPORT) => {
-                let slot = self.meter.load();
-                let meter = slot.as_ref().map(|m| m.read());
-                transport_source::from_cx(
-                    cx,
-                    at,
-                    self.steady.at(0),
-                    meter.as_deref().unwrap_or(&self.default_meter),
-                )
-            }
-            _ => TransportInfo::default(),
+        if !features.contains(Features::TRANSPORT) {
+            self.steady.advance(frames);
+            return TransportInfo::default();
+        }
+        let Some(at) = Offset::new(0, Samples(frames)) else {
+            return self.last;
         };
+        let slot = self.meter.load();
+        let meter = slot.as_ref().map(|m| m.read());
+        self.last = transport_source::from_cx(
+            cx,
+            at,
+            self.steady.at(0),
+            meter.as_deref().unwrap_or(&self.default_meter),
+        );
         self.steady.advance(frames);
-        info
+        self.last
     }
 }
 
@@ -288,17 +296,25 @@ impl InProcessVst2Client {
     /// reaches plugins declaring [`Features::TRANSPORT`], which the
     /// in-process loader declares for every VST2.
     pub fn set_meter(&self, meter: Arc<RtPublish<MeterMap>>) {
-        self.transport.meter.store(Some(meter));
+        self.transport.meter.set_meter(meter);
     }
 
     /// Drops the meter; the plugin is told 4/4 from bar 0.
     pub fn clear_meter(&self) {
-        self.transport.meter.store(None);
+        self.transport.meter.clear_meter();
     }
 
     /// Whether a meter is installed.
     pub fn has_meter(&self) -> bool {
-        self.transport.meter.load().is_some()
+        self.transport.meter.has_meter()
+    }
+
+    /// The node's meter cell, as a handle of its own: the same cell as
+    /// [`set_meter`](Self::set_meter), and what inserting the node hands
+    /// back as its controls, so a host can install the meter after the
+    /// node has moved into the graph.
+    pub fn meter(&self) -> PluginMeter {
+        self.transport.meter.clone()
     }
 
     /// Sets the render mode the plugin reads through
@@ -650,7 +666,7 @@ mod transport_tests {
         let e = env();
         let held = TransportFeed::new();
         let mut running = held.clone();
-        held.meter.store(Some(seven_eight_meter()));
+        held.meter.set_meter(seven_eight_meter());
         let got = running.block(&cx(&e), 64, loader_features());
         assert_eq!(got.timing.signature, seven_eight());
     }
@@ -659,17 +675,17 @@ mod transport_tests {
     /// installed on the live node afterwards; its counter starts at zero.
     ///
     /// Mutation (run, together with the counter's below): `forked` sharing
-    /// the live cell (`Arc::clone(&self.meter)`) and keeping `self.steady` →
+    /// the live cell (`self.meter.clone()`) and keeping `self.steady` →
     /// the later clear reaches the fork (4/4), its counter starts at 64 →
     /// fails.
     #[test]
     fn a_fork_has_the_meter_installed_when_it_forked() {
         let e = env();
         let mut live = TransportFeed::new();
-        live.meter.store(Some(seven_eight_meter()));
+        live.meter.set_meter(seven_eight_meter());
         let _ = live.block(&cx(&e), 64, loader_features());
         let mut fork = live.forked();
-        live.meter.store(None);
+        live.meter.clear_meter();
         let got = fork.block(&cx(&e), 64, loader_features());
         assert_eq!(got.timing.signature, seven_eight());
         assert_eq!(got.position.continuous_samples, 0);
@@ -687,5 +703,21 @@ mod transport_tests {
         let _ = feed.block(&cx(&e), 64, loader_features());
         let second = feed.block(&cx(&e), 64, loader_features());
         assert_eq!(second.position.continuous_samples, 64);
+    }
+
+    /// An empty block has no frame to read the transport at: the plugin is
+    /// handed the last snapshot again, not the stopped default.
+    ///
+    /// Mutation (run): return `TransportInfo::default()` for an empty block
+    /// → 120 BPM, stopped → fails.
+    #[test]
+    fn an_empty_block_repeats_the_last_snapshot() {
+        let e = env();
+        let mut feed = TransportFeed::new();
+        let _ = feed.block(&cx(&e), 64, loader_features());
+        let empty = feed.block(&cx(&e), 0, loader_features());
+        assert_eq!(empty.timing.tempo, 132.0);
+        assert!(empty.state.playing);
+        assert_eq!(empty.position.continuous_samples, 0);
     }
 }

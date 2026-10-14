@@ -254,32 +254,56 @@ impl Plugin {
         }
     }
 
-    /// Gives the plugin the project transport and meter.
+    /// Gives the plugin the project meter, for the time signature and bar of
+    /// the transport it is told. Pass the cell the host publishes meter edits
+    /// into, and an edit reaches the running plugin with nothing re-installed.
+    ///
+    /// The transport itself needs no install: every plugin node reads it from
+    /// each block's graph context once it is in a graph (the transport its
+    /// input was rendered at).
     ///
     /// Returns `false` if the plugin declared it does not want a transport
     /// snapshot.
+    #[must_use = "a false return means the plugin declined this input and nothing was installed"]
+    pub fn set_meter(&self, meter: Arc<tutti_core::RtPublish<tutti_core::MeterMap>>) -> bool {
+        if !self.accepts(Features::TRANSPORT) {
+            return false;
+        }
+        self.meter().set_meter(meter);
+        true
+    }
+
+    /// Drops the meter; the plugin is told 4/4 from bar 0.
+    pub fn clear_meter(&self) {
+        self.meter().clear_meter();
+    }
+
+    /// The node's meter cell, as a handle of its own, for either backend:
+    /// what a host keeps to install the meter after the plugin has moved
+    /// into a graph (the same cell [`set_meter`](Self::set_meter) writes).
+    pub fn meter(&self) -> crate::host::node::PluginMeter {
+        match &self.backend {
+            Backend::Subprocess(c) => c.controls().meter(),
+            #[cfg(feature = "vst2")]
+            Backend::InProcessVst2(c) => c.meter(),
+        }
+    }
+
+    /// Gives the plugin the project meter; `reader` is unused.
     ///
-    /// Every plugin node reads the transport from each block's graph context
-    /// once it is in a graph (the transport its input was rendered at), so
-    /// both backends take only `meter` and ignore `reader`; the in-process
-    /// VST2 node maps it into the `TimeInfo` its `audioMasterGetTime` callback
-    /// serves.
+    /// Returns `false` if the plugin declared it does not want a transport
+    /// snapshot.
+    #[deprecated(
+        note = "the transport needs no install (each node reads its block's); use `Plugin::set_meter`"
+    )]
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
     pub fn set_transport_source(
         &mut self,
         reader: tutti_core::transport::Transport,
         meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>,
     ) -> bool {
-        if !self.accepts(Features::TRANSPORT) {
-            return false;
-        }
         let _ = reader;
-        match &mut self.backend {
-            Backend::Subprocess(c) => c.set_meter(meter),
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.set_meter(meter),
-        }
-        true
+        self.set_meter(meter)
     }
 
     /// Returns whether the plugin takes chord and scale context (it declared
@@ -360,8 +384,8 @@ impl Plugin {
 /// the node moves into the graph.
 ///
 /// The controls are the subprocess node's [`PluginControls`]; `None` for an
-/// in-process VST2 plugin, whose per-block inputs are installed through
-/// `Plugin` before insertion. Either hands the editor its fork source: a fork
+/// in-process VST2 plugin, whose one control, its meter, is reached through
+/// [`Plugin::meter`] (take it before insertion). Either hands the editor its fork source: a fork
 /// by state transfer, into a new `plugin-server` for a subprocess plugin, and a
 /// second instance in this process for an in-process VST2 one.
 ///

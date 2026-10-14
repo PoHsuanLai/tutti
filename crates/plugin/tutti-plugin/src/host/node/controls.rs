@@ -30,7 +30,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwap;
 use atomic_float::AtomicF64;
 use tutti_core::meter::MeterMap;
 use tutti_core::{RtPublish, SampleRate, Samples};
@@ -74,7 +74,7 @@ pub struct PluginControls {
     /// transport the node sends. Empty until a host installs one; the node
     /// then reads 4/4 from bar 0. A nullable hot-swap slot, like the input
     /// slots: the node reads it once per block.
-    pub(super) meter: Arc<ArcSwapOption<RtPublish<MeterMap>>>,
+    pub(super) meter: super::PluginMeter,
     /// The rate stamped onto a freshly-installed source. Shared — see the module
     /// docs for why it could not stay a per-clone field. `f64` at the atomic.
     sample_rate: Arc<AtomicF64>,
@@ -96,7 +96,7 @@ impl PluginControls {
             latency: Arc::new(AtomicUsize::new(latency.get())),
             tail: Arc::new(ArcSwap::from_pointee(tail)),
             pipeline: Arc::new(AtomicUsize::new(MAX_CHUNK)),
-            meter: Arc::new(ArcSwapOption::empty()),
+            meter: super::PluginMeter::default(),
             sample_rate: Arc::new(AtomicF64::new(sample_rate.get())),
         }
     }
@@ -147,17 +147,25 @@ impl PluginControls {
     /// edit reaches the running plugin with nothing re-installed. Replaces any
     /// meter installed before.
     pub fn set_meter(&self, meter: Arc<RtPublish<MeterMap>>) {
-        self.meter.store(Some(meter));
+        self.meter.set_meter(meter);
     }
 
     /// Drop the meter; the node tells the plugin 4/4 from bar 0.
     pub fn clear_meter(&self) {
-        self.meter.store(None);
+        self.meter.clear_meter();
     }
 
     /// Whether a meter is installed — what a host's binding checks.
     pub fn has_meter(&self) -> bool {
-        self.meter.load().is_some()
+        self.meter.has_meter()
+    }
+
+    /// The node's meter cell, as a handle of its own: what a host keeps to
+    /// install the meter through (the same cell as
+    /// [`set_meter`](Self::set_meter)), and the in-process VST2 node's
+    /// controls are.
+    pub fn meter(&self) -> super::PluginMeter {
+        self.meter.clone()
     }
 
     /// Overwrite the reported latency. See

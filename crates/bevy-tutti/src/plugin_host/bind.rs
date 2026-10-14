@@ -32,9 +32,9 @@
 //! # Through the shadow, never the graph
 //!
 //! Every system here drives the plugin through its [`PluginShadow`] — the
-//! node's [`PluginControls`], captured when the plugin was loaded. Those are
-//! the node's input slots, meter, latency and tail cells and sample rate, each
-//! shared with the node, so an install through the shadow is seen live by the
+//! node's [`PluginControls`] (an in-process VST2 node's [`PluginMeter`]),
+//! captured when the plugin was loaded. Those are the node's meter, latency
+//! and tail cells and sample rate, each shared with the node, so an install through the shadow is seen live by the
 //! node the audio thread runs, lock-free and with no commit.
 
 use bevy_ecs::prelude::*;
@@ -42,32 +42,53 @@ use bevy_ecs::prelude::*;
 use bevy_log::warn;
 
 use tutti_core::{AudioNode, NodeKey};
-use tutti_plugin::handles::PluginControls;
+use tutti_plugin::handles::{PluginControls, PluginMeter};
 
 use crate::graph::MetronomeRes;
 use crate::plugin_host::editor::PluginEmitter;
 
-/// A loaded plugin's [`PluginControls`], captured from its node before the node
-/// went into the graph.
+/// A loaded plugin's controls, captured from its node before the node went
+/// into the graph: an out-of-process plugin's [`PluginControls`], or an
+/// in-process VST2 plugin's one control, its [`PluginMeter`].
 ///
 /// Inserted by the plugin load
-/// ([`CapturedControls::for_plugin`](crate::graph::CapturedControls::for_plugin)).
-/// Meter and param binding install through it, and the latency poll reads
-/// it; none of them touch the graph.
+/// ([`CapturedControls::for_plugin`](crate::graph::CapturedControls::for_plugin),
+/// [`CapturedControls::for_plugin_meter`](crate::graph::CapturedControls::for_plugin_meter)).
+/// The meter binding installs through it (either backend); param binding and
+/// the latency poll read the [`PluginControls`] (out-of-process only); none of
+/// them touch the graph.
 ///
 /// It records the node it came from, and [`controls_for`](Self::controls_for)
-/// answers only while that is still the entity's [`AudioNode`], so a shadow
-/// left behind by a node replaced by hand drives nothing.
+/// and [`meter_for`](Self::meter_for) answer only while that is still the
+/// entity's [`AudioNode`], so a shadow left behind by a node replaced by hand
+/// drives nothing.
 #[derive(Component, Debug, Clone)]
 pub struct PluginShadow {
     node: NodeKey,
-    controls: PluginControls,
+    controls: Option<PluginControls>,
+    meter: PluginMeter,
 }
 
 impl PluginShadow {
-    /// The controls captured from the plugin node that became `node`.
+    /// The controls captured from the out-of-process plugin node that became
+    /// `node`.
     pub fn new(node: NodeKey, controls: PluginControls) -> Self {
-        Self { node, controls }
+        let meter = controls.meter();
+        Self {
+            node,
+            controls: Some(controls),
+            meter,
+        }
+    }
+
+    /// The meter captured from the in-process VST2 plugin node that became
+    /// `node`: the only control that node has.
+    pub fn meter_only(node: NodeKey, meter: PluginMeter) -> Self {
+        Self {
+            node,
+            controls: None,
+            meter,
+        }
     }
 
     /// The graph node these controls were captured from.
@@ -76,9 +97,15 @@ impl PluginShadow {
     }
 
     /// The controls, if this shadow belongs to `node` — the entity's current
-    /// [`AudioNode`].
+    /// [`AudioNode`] — and is an out-of-process plugin's.
     pub fn controls_for(&self, node: &AudioNode) -> Option<&PluginControls> {
-        (self.node == node.0).then_some(&self.controls)
+        self.controls.as_ref().filter(|_| self.node == node.0)
+    }
+
+    /// The node's meter cell, if this shadow belongs to `node`: either
+    /// backend's.
+    pub fn meter_for(&self, node: &AudioNode) -> Option<&PluginMeter> {
+        (self.node == node.0).then_some(&self.meter)
     }
 }
 
@@ -130,10 +157,10 @@ pub fn plugin_bind_meter(
         // `None` means the shadow was captured for a node this entity no longer
         // carries — skip and retry next frame, the same "skip and retry" every
         // other resolver in this crate documents.
-        let Some(controls) = shadow.controls_for(node) else {
+        let Some(cell) = shadow.meter_for(node) else {
             continue;
         };
-        controls.set_meter(meter.clone());
+        cell.set_meter(meter.clone());
         commands.entity(entity).insert(PluginMeterBound);
     }
 }

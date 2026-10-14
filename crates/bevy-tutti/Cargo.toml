@@ -233,6 +233,12 @@ ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 # A dev-dependency so cargo builds the cdylib as part of the same test run; the
 # test finds it (and the server) beside its own binary.
 tutti-clap-test-plugin = { path = "../vendor/tutti-clap-test-plugin" }
+# `tests/plugin_vst2_meter.rs` loads the reference VST2 plugin in process
+# (`vst2`), and `libloading` re-opens the image the host loaded to read what
+# `audioMasterGetTime` answered: the linked rlib is a separate image with
+# separate statics. The same pair, for the same reason, as `tutti-plugin`'s.
+tutti-vst2-test-plugin = { path = "../plugin/vendor/tutti-vst2-test-plugin" }
+libloading = "0.8"
 tutti-fixture-resolve = { path = "../plugin/vendor/tutti-fixture-resolve" }
 
 # `modulated_fader`: an `AudioParam` driven by modulation, showing the

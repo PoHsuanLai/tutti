@@ -74,8 +74,9 @@ pub fn is_usable(value: f64) -> bool {
 ///
 /// Named `TransportFlags` after the plugin-SDK term for exactly this bundle —
 /// CLAP and VST2 both call the field `flags`. Distinct from tutti-core's
-/// `TransportState` *trait* (the live-timeline reader plugins consume); this is
-/// the wire snapshot.
+/// `TransportState` *trait* (a live-timeline reader, which no plugin node
+/// consumes: each reads its block's transport from the graph); this is the
+/// wire snapshot.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransportFlags {

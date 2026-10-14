@@ -3517,7 +3517,7 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | **Done (item 7).** **Sampler `PlaybackSlot`** | Render each voice **a block at a time** into a planar scratch lane, then do one vectorized accumulate. Today every voice goes through `set_f32(at_f32 + s)` per sample, and calls `stretch::Unit::tick` and the disk reader's `tick` per sample. Vertical SIMD along time is where the gain is; cross-voice SoA helps less here, because each voice reads a different wave at a different fractional position (gather-bound; this is a judgement) |
 | **Done (item 7).** **stretch `Unit` + shared vocoder `Bank`** | Owned by value. The `Arc<Bank>` sharing, the `ticker` claim token and the `AudioThreadCell` all exist only to avoid a 201.8 MB/commit clone, so they go |
 | `VoiceNode` | Shrinks to its `process` body. `Controls { placement: RtPublish<Window>, gain: Param<Amplitude> }` replaces the command channel, which exists only because "`Setting` is one `f32` wide". **Deferred by item 7** to the voice's native port: not clean behind `Legacy` ("Item 7 landed") |
-| `PluginClient` (the shell; IPC/bridge/shm stay) | **Done except the event ports (item 4, plugin half).** `PluginClient<Unbound>` → `bind()` → `PluginClient<Bound>`, a native node. Transport comes from `Env`. MIDI, param automation, harmony and note expression come in as **event ports**, so the four `InputSlot` shared cells go (**not yet**: see "Item 4's plugin half landed"). Delete the `AudioUnit<F64>` impl, and keep the f64 wire conversion inside the node |
+| `PluginClient` (the shell; IPC/bridge/shm stay) | **Done except the event ports (item 4, plugin half).** `PluginClient<Unbound>` → `bind()` → `PluginClient<Bound>`, a native node. Transport comes from `Env`. MIDI, param automation, harmony and note expression come in as **event ports**, so the four `InputSlot` shared cells go (**done**: the last, the in-process VST2 node's polled transport, went in "In-process VST2 live transport from `Cx` landed"). Delete the `AudioUnit<F64>` impl, and keep the f64 wire conversion inside the node |
 | `Batcher` | **Done (item 4, plugin half).** Delete tick mode and `TickStorage::{F32,F64}`. The chunk (and so the pipeline latency) comes from `prepare`: **one device callback** (`Prepare::quantum`), else `MaxBlock`. Owner decision 8 first kept an internal 64-frame pipeline; it was **reversed on measurement** (see decision 8): a 64-frame chunk inside a device callback left the server microseconds to answer, and live plugin audio was mostly silence |
 | `HarmonySource`, `ParamAutomationSource`, `NoteExpressionSource`, `MidiClipSource`, `AutomationLaneNode` | **Event source nodes**: an owned cursor, the `Env` beat window, an events out port. Their output then goes through the PDC pass, which fixes D9. The automation lane evaluates at block edges and breakpoints and emits ramp or curve-segment events, instead of evaluating the curve per sample off two f32 beat ports. **Done for the lane** ("Curve segments landed"): `AutomationLaneNode::for_param` sends curve segments; `new` keeps the audio output |
 | `MidiPreBlock` | A hardware-input source node with an events out port. `MidiRoutingSnapshot` compiles into router ops. `BlockClock` (clock/MTC out) becomes a sink node that reads `Env` |
@@ -5226,17 +5226,29 @@ the seqlock the callback reads before entering the plugin.
   `transport_source::from_cx` at the block's first frame, `Cx::transport_at`
   (the out-of-process node's mapping), with the meter and the node's
   `SteadyTime`. A plugin that does not declare `Features::TRANSPORT` is
-  handed the default snapshot, as before. Per block: two lock-free loads
-  (the meter's `ArcSwapOption`, then its `RtPublish`), no allocation, no new
-  lock.
-- **The meter** is an `ArcSwapOption<RtPublish<MeterMap>>` shared across the
-  live node's clones, installed with `InProcessVst2Client::set_meter`
-  (`clear_meter`, `has_meter`), as on `PluginClient`. A fork takes the meter
-  installed when it forks, in a cell of its own; none is 4/4 from bar 0.
+  handed the default snapshot, as before, and an empty block repeats the
+  last snapshot. Per block: two lock-free loads (the meter's
+  `ArcSwapOption`, then its `RtPublish`), no allocation, no new lock.
+- **The meter** is a `PluginMeter` (`tutti_plugin::handles`): one
+  `ArcSwapOption<RtPublish<MeterMap>>` cell shared across the node's
+  clones, and the out-of-process node's `PluginControls::meter` too.
+  Installed with `InProcessVst2Client::set_meter` (`clear_meter`,
+  `has_meter`), through the `PluginMeter` inserting the node hands back as
+  its controls (`IntoNode::Controls`, was `()`), or with `Plugin::set_meter`
+  / `Plugin::meter` for either backend. A fork takes the meter installed
+  when it forks, in a cell of its own; none is 4/4 from bar 0.
+- **bevy-tutti gives it the project meter.** The plugin load captured
+  nothing for an in-process VST2 (`CapturedControls::default()`), so
+  `plugin_bind_meter` never reached it and a bar-synced VST2 counted 4/4 in
+  a 7/8 project. It now captures the node's `PluginMeter`
+  (`CapturedControls::for_plugin_meter`); `PluginShadow` holds the meter
+  for either backend (`meter_for`) and `PluginControls` for an
+  out-of-process one (`controls_for`), and the meter binding installs
+  through `meter_for`.
 - **Deleted**: `PolledTransport`, `InProcessVst2Client::{set_transport_source,
   clear_transport_source}`, and the `InputSlot` / `BlockInput` /
   `BlockReset` plumbing whose last user it was. `Plugin::set_transport_source`
-  stays and, for both backends, takes only the meter.
+  is deprecated (its `reader` was unused); `Plugin::set_meter` replaces it.
 - **Behaviour**: with no meter installed the live node is now told the
   graph's transport (4/4), where it was told a stopped default until a
   reader was installed.
@@ -5246,9 +5258,13 @@ Pinned by `tests/vst2_in_process_transport.rs` against the reference probe's
 is told the transport 40 frames before its first frame (the previous
 block's, across a seek at the boundary, a tempo change, a loop that wrapped,
 a record toggle and a stop); with no latency, the block's own; the live
-node's 7/8 meter, and 4/4 once cleared. `TransportFeed`'s unit tests pin the
-feature gate, the meter shared across clones, a fork's meter taken at the
-fork, and the counter.
+node's 7/8 meter, 4/4 once cleared through the inserted node's handle, and
+`Plugin::set_meter`'s VST2 arm. `TransportFeed`'s unit tests pin the feature
+gate, the meter shared across clones, a fork's meter taken at the fork, the
+counter and the empty block; `vst2_in_process_no_alloc.rs` renders with a
+meter installed. bevy-tutti's `plugin_vst2_meter.rs` loads the probe through
+the request pipeline and reads 7/8 from its `audioMasterGetTime` once the
+metronome's meter is 7/8.
 
 ## Decisions for the owner
 

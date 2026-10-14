@@ -234,8 +234,8 @@ Rules:
   implementation details — don't code against a number.)
 - **Never `publish` from the audio thread** — it stalls the callback *and* frees
   inside it.
-- Nullable hot-swap slots (`SharedReader`, the plugin nodes' meter cells,
-  `Midi::out`) stay on `ArcSwapOption`; `RtPublish` doesn't model them. Control-thread-only
+- Nullable hot-swap slots (the plugin nodes' meter cells, `Midi::out`) stay
+  on `ArcSwapOption`; `RtPublish` doesn't model them. Control-thread-only
   cells (device enumeration in `tutti-midi-hardware`) stay plain.
 
 **The guarantee is structural.** `RtPublish` used to wrap `ArcSwap`, which made

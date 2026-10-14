@@ -24,8 +24,7 @@ use tutti_plugin::catalog::{Plugin, PluginRole};
 use tutti_plugin::handles::{LfoCurve, LfoShape, ParamAddress, ParamId, TimedParam};
 use tutti_plugin::Result;
 
-use tutti_core::transport::Transport;
-use tutti_core::{Beat, BeatDuration, Depth, PhaseIncrement, RtPublish, SampleRate};
+use tutti_core::{Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, RtPublish, SampleRate};
 
 const SAMPLE_RATE: SampleRate = SampleRate::SR_48K;
 
@@ -38,7 +37,7 @@ fn main() -> Result<()> {
 
     // 1. Open. A path, not a catalog entry — the catalog is for discovery, and
     //    this host already knows what it wants.
-    let mut plugin = Plugin::open(&path, SAMPLE_RATE)?;
+    let plugin = Plugin::open(&path, SAMPLE_RATE)?;
 
     println!("opened {:?}", plugin.descriptor().name);
     println!("  format {}", plugin.descriptor().class.format_name());
@@ -49,10 +48,11 @@ fn main() -> Result<()> {
     //    track type); the answers below are *what it will receive*, and the two
     //    are deliberately independent — an arpeggiator takes MIDI and is not an
     //    instrument.
-    let transport = Transport::new(SAMPLE_RATE);
-    let meter = Arc::new(RtPublish::new(tutti_core::meter::MeterMap::default()));
+    //    The transport itself needs no install: the node reads it from each
+    //    block it renders. The meter (time signature and bars) is the host's.
+    let meter = Arc::new(RtPublish::new(MeterMap::default()));
 
-    let took_transport = plugin.set_transport_source(transport.clone(), Arc::clone(&meter));
+    let took_transport = plugin.set_meter(Arc::clone(&meter));
 
     // Chords and scales are a node of their own too, wired to the plugin's
     // event input: `takes_harmony` answers whether the plugin will read them

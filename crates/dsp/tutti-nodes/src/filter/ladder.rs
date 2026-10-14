@@ -542,6 +542,7 @@ impl<F: Real + 'static> Node for LadderFilterNode<F> {
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.width() as u16);
         Shape::audio(width, width)
+            .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unknown)
             .with_params(&LADDER_PARAMS)
     }

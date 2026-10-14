@@ -154,6 +154,7 @@ use tutti_types::{AudioThread, Frame, NodeKey, Samples, ScopedNoDenormals, Tail}
 
 use crate::arena::{Arena, Role};
 use crate::command::{overlay_capacity, CommandRx, Deliveries};
+use crate::cost::Schedule;
 use crate::event::{merge_into, Event, EventWriter, SortedEvents};
 use crate::fade::CrossfadeCurve;
 use crate::history::TransportHistory;
@@ -649,8 +650,9 @@ pub struct Executor {
 }
 
 /// The parallel state for `plan` on `pool`, when it would run in
-/// parallel at all: a pool of more than one participant, and more than one
-/// task to spread.
+/// parallel at all: when the cost model ([`Plan::schedule`]) says spreading
+/// pays for some block length on this pool (which needs a pool of more
+/// than one participant, and more than one task).
 fn par_for(
     plan: &Plan,
     pool: Option<&Arc<dyn Pool>>,
@@ -659,15 +661,17 @@ fn par_for(
     overlay: usize,
 ) -> Option<Par> {
     let participants = pool?.participants();
-    (participants > 1 && plan.tasks.len() > 1).then(|| {
-        Par::new(
+    match plan.schedule(participants) {
+        Schedule::Serial => None,
+        Schedule::Parallel { wake, from } => Some(Par::new(
             plan,
             participants,
+            (wake, from.0),
             store_len,
             inject.iter().map(|i| i.unit),
             overlay,
-        )
-    })
+        )),
+    }
 }
 
 fn tail_elapsed(tail: Tail, quiet: u64) -> bool {
@@ -712,10 +716,14 @@ impl Executor {
     ///
     /// **Control thread**: it builds the parallel state for the running
     /// plan, which allocates. Set it before the executor goes to the audio
-    /// thread (before `Engine::new`, or before an export renders). A pool of
-    /// one participant, or a plan with fewer than two tasks, runs the serial
-    /// walk: the serial executor is the parallel one's one-worker case, and
-    /// both render the same samples.
+    /// thread (before `Engine::new`, or before an export renders).
+    ///
+    /// Whether a block spreads is the cost model's call
+    /// ([`Plan::schedule`]), made for each plan when it meets the pool: a
+    /// plan too cheap to pay for dispatch, a block shorter than the length
+    /// it pays from, a plan of one task and a pool of one participant all
+    /// run the serial walk. The serial executor is the parallel one's
+    /// one-worker case, and both render the same samples.
     pub fn set_pool(&mut self, pool: Option<Arc<dyn Pool>>) -> Option<Arc<dyn Pool>> {
         let old = std::mem::replace(&mut self.pool, pool);
         self.state.par = self.plan.as_deref().and_then(|plan| {
@@ -736,8 +744,9 @@ impl Executor {
     }
 
     /// Whether the running plan's blocks are spread across the pool: a pool
-    /// of more than one participant is set, and the plan has more than one
-    /// task. Otherwise blocks run the serial walk.
+    /// is set and [`Plan::schedule`] says spreading pays for the plan on
+    /// it (blocks shorter than its `from` still run the serial walk).
+    /// Otherwise every block runs the serial walk.
     pub fn is_parallel(&self) -> bool {
         self.state.par.is_some()
     }
@@ -1397,7 +1406,10 @@ impl Executor {
         }
 
         let due = commands.deliveries();
-        if let (Some(par), Some(pool)) = (par.as_mut(), pool.as_ref()) {
+        // The cost model's verdict for this plan on this pool, and for a
+        // block this long (`Plan::schedule`); either way the same samples.
+        let spread = par.as_ref().is_some_and(|p| p.spreads(frames));
+        if let (true, Some(par), Some(pool)) = (spread, par.as_mut(), pool.as_ref()) {
             let (lost, ended) = crate::par::run_block(
                 par,
                 pool,

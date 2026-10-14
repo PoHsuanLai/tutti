@@ -105,7 +105,9 @@ impl Node for DownmixNode {
     /// `src` in, `dst` out. A downmix is a per-frame matrix, so it has no
     /// latency and stops with its input.
     fn shape(&self) -> Shape {
-        Shape::audio(self.src, self.dst).with_tail(Tail::None)
+        Shape::audio(self.src, self.dst)
+            .with_cost(tutti_graph::Cost::Light)
+            .with_tail(Tail::None)
     }
 
     fn prepare(&mut self, _: &Prepare) {}

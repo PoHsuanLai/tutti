@@ -104,6 +104,7 @@ impl Node for Const {
             ChannelLayout::EMPTY,
             ChannelLayout::from_count(self.values.len() as u16),
         )
+        .with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -255,7 +256,7 @@ impl Osc {
 impl Node for Osc {
     /// A generator at zero latency; `Tail::None`, as [`Const`]'s.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.layout)
+        Shape::audio(ChannelLayout::EMPTY, self.layout).with_cost(tutti_graph::Cost::Moderate)
     }
 
     fn prepare(&mut self, prepare: &Prepare) {
@@ -304,7 +305,7 @@ impl Through {
 impl Node for Through {
     /// A copy stops with its input: `Tail::None`.
     fn shape(&self) -> Shape {
-        Shape::audio(self.layout, self.layout)
+        Shape::audio(self.layout, self.layout).with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -338,7 +339,7 @@ impl Split {
 impl Node for Split {
     /// A copy stops with its input: `Tail::None`.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, self.layout)
+        Shape::audio(ChannelLayout::MONO, self.layout).with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -376,7 +377,7 @@ impl Sink {
 
 impl Node for Sink {
     fn shape(&self) -> Shape {
-        Shape::audio(self.layout, ChannelLayout::EMPTY)
+        Shape::audio(self.layout, ChannelLayout::EMPTY).with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _: &Prepare) {}

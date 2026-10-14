@@ -415,6 +415,7 @@ impl Node for BusStripNode {
     /// stops with its input.
     fn shape(&self) -> Shape {
         Shape::audio(self.layout, self.layout)
+            .with_cost(tutti_graph::Cost::Light)
             .with_tail(Tail::None)
             .with_params(&STRIP_PARAMS)
     }

@@ -50,6 +50,7 @@ use tutti_types::graph::{InPort, OutPort, Source};
 use tutti_types::{Latency, NodeKey, Samples, Tail, UnitParam};
 
 use crate::arena::Role;
+use crate::cost::{Schedule, Work};
 use crate::fade::Fade;
 use crate::io::PortKind;
 use crate::node::{InPlaceMask, Prepare, Shape};
@@ -841,6 +842,8 @@ pub struct Plan {
     pub(crate) task_ops: Vec<u32>,
     pub(crate) task_succ: Csr,
     pub(crate) task_activation: Vec<u32>,
+    pub(crate) work: Work,
+    pub(crate) critical: Work,
     pub(crate) task_width: u32,
     pub(crate) audio_slots: u32,
     pub(crate) event_slots: u32,
@@ -899,8 +902,9 @@ impl Plan {
         &self.op_succ
     }
 
-    /// Tasks after chain coarsening: each is a run of op indices (into
-    /// [`task_ops`](Self::task_ops)) that execute back to back on one thread.
+    /// Tasks after coarsening (chains fused, cheap siblings packed): each is
+    /// a run of op indices (into [`task_ops`](Self::task_ops)), ascending,
+    /// that execute back to back on one thread.
     pub fn tasks(&self) -> &[Span] {
         &self.tasks
     }
@@ -921,15 +925,48 @@ impl Plan {
         &self.task_activation
     }
 
+    /// The cost model's estimate of one block's work, every op included
+    /// (see [`Work`] and [`Shape::cost`](crate::Shape::cost)).
+    pub fn work(&self) -> Work {
+        self.work
+    }
+
+    /// The cost model's estimate of the costliest chain of tasks through
+    /// the task DAG, each task charged for its dispatch: no number of
+    /// participants renders a block faster than this.
+    pub fn critical_path(&self) -> Work {
+        self.critical
+    }
+
     /// The most tasks on one level of the task DAG (a task's level is its
-    /// longest path from a task with no predecessor): how many workers a
-    /// parallel executor wakes per block. A heuristic, not a bound: tasks on
-    /// different levels can run at once (in A → {C, D}, B → {E, F},
-    /// D → {E, F} the widest level holds two, yet C, E and F can run
-    /// together), so a block may have more ready work than it woke helpers
-    /// for. That costs speed, never correctness.
+    /// longest path from a task with no predecessor), after coarsening.
+    /// One of the two estimates [`schedule`](Self::schedule) wakes
+    /// participants by, with the average parallelism: tasks on different
+    /// levels can be ready at once (in A → {C, D}, B → {E, F}, D → {E, F}
+    /// the widest level holds two, yet C, E and F can run together), so
+    /// neither bounds how many a block could use.
     pub fn task_width(&self) -> usize {
         self.task_width as usize
+    }
+
+    /// How this plan's blocks run on a pool of `participants` (the caller
+    /// included): serially, or spread from some block length up over some
+    /// number of participants. Pure arithmetic on [`work`](Self::work),
+    /// [`critical_path`](Self::critical_path) and the task count, the cost
+    /// model of doc 013 ("Phase 6, part (b)"); the executor asks it when a
+    /// plan meets a pool, never per block.
+    ///
+    /// A speed decision only: the parallel render is bit for bit the
+    /// serial one.
+    pub fn schedule(&self, participants: usize) -> Schedule {
+        crate::cost::schedule(
+            self.work,
+            self.critical,
+            self.tasks.len(),
+            self.task_width as usize,
+            self.prepare.max_block().samples(),
+            participants,
+        )
     }
 
     /// Arena size in slots for `kind`, including the null slot (0) and the

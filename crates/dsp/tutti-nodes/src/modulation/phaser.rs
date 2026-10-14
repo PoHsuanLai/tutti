@@ -362,7 +362,9 @@ impl PhaserNode {
 impl Node for PhaserNode {
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.width as u16);
-        Shape::audio(width, width).with_tail(Tail::Unknown)
+        Shape::audio(width, width)
+            .with_cost(tutti_graph::Cost::Moderate)
+            .with_tail(Tail::Unknown)
     }
 
     fn prepare(&mut self, p: &Prepare) {

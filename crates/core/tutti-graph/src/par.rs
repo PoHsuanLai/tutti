@@ -4,15 +4,18 @@
 //! everything a schedule needs, computed by the pure compiler: the ops fused
 //! into **tasks** (chains run back to back on one thread), the task DAG as
 //! CSR successor rows, each task's **activation count** (its distinct
-//! predecessor tasks) and the DAG's widest level ([`Plan::task_width`], the
-//! wake count). None
-//! of it is derived on the audio thread.
+//! predecessor tasks) and the cost model's totals, from which
+//! [`Plan::schedule`] decides — when the plan meets the pool, on the
+//! thread that applies it — whether blocks spread, from which block length,
+//! and how many participants they wake. Nothing is derived per block.
 //!
 //! # Per block
 //!
 //! 1. The caller (the audio thread) arms the block's [`TaskGraph`] — built
 //!    from those tables when the plan was applied — and asks the pool to run
-//!    one job on up to `task_width` participants, itself as participant 0.
+//!    one job on up to the schedule's `wake` participants, itself as
+//!    participant 0. (A block shorter than the schedule's `from` runs the
+//!    serial walk instead.)
 //! 2. Every participant takes ready tasks and runs each task's ops through
 //!    the same op code as the serial walk (`exec.rs`), on **claimed views**
 //!    of the arena and event slots (`slots.rs`) and claimed units, delay
@@ -135,6 +138,10 @@ pub(crate) struct Worker {
 /// table, built when the plan is applied (with the rest of the executor's
 /// state, `exec.rs`'s `rebuild`) for the pool's participant count.
 pub(crate) struct Par {
+    /// Participants a block wakes (`Schedule::Parallel::wake`).
+    wake: usize,
+    /// The shortest block that spreads (`Schedule::Parallel::from`).
+    from: usize,
     graph: TaskGraph,
     /// The per-slot flags, shared by the block's workers: seeded from the
     /// executor's own before each block (slot 0, the feedback reads), and
@@ -163,6 +170,7 @@ impl Par {
     pub(crate) fn new(
         plan: &Plan,
         participants: usize,
+        (wake, from): (usize, usize),
         store_len: usize,
         inject_units: impl Iterator<Item = u32>,
         overlay: usize,
@@ -188,6 +196,8 @@ impl Par {
         // every param source it reads, or an event merge's inputs and output.
         let held = 2 * MAX_PORTS + crate::param::MAX_PARAM_PORTS * MAX_PARAM_SOURCES + 1;
         Self {
+            wake,
+            from,
             graph,
             flags: (0..plan.audio_slots).map(|_| AtomicU8::new(0)).collect(),
             audio: ClaimTable::new(plan.audio_slots as usize),
@@ -212,6 +222,13 @@ impl Par {
                 .collect(),
             worker_claims: ClaimTable::new(participants.max(1)),
         }
+    }
+}
+
+impl Par {
+    /// Whether a block of `frames` spreads: the cost model's threshold.
+    pub(crate) fn spreads(&self, frames: usize) -> bool {
+        frames >= self.from
     }
 }
 
@@ -286,6 +303,8 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
         a.store(f, std::sync::atomic::Ordering::Relaxed);
     }
     let Par {
+        wake,
+        from: _,
         graph,
         flags,
         audio,
@@ -327,7 +346,7 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
             workers: SplitMut::new(workers, worker_claims),
             due: b.due,
         };
-        let wake = b.plan.task_width().clamp(1, pool.participants());
+        let wake = (*wake).clamp(1, pool.participants());
         pool.run(wake, &|w| shared.participate(w));
         shared.graph.aborted() || !shared.graph.done()
     };

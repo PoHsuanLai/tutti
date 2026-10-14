@@ -448,9 +448,7 @@ mod tests {
         for o in [1, 7, 8] {
             work[o] = HEAVY;
         }
-        for o in 9..15 {
-            work[o] = COPY;
-        }
+        work[9..15].fill(COPY);
         let t = coarsen(&preds, &succ, &work, MAX);
         let (ha, hb1, hb2) = (task_of(&t, 1), task_of(&t, 7), task_of(&t, 8));
         assert!(!reaches(&t, ha, hb1) && !reaches(&t, ha, hb2));

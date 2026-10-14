@@ -66,6 +66,8 @@ impl Node for MidiQueueNode {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
             .with_events(0, 1)
             .with_event_capacity(MIDI_QUEUE_CAPACITY as u32)
+            // Event-only: a ring drain, work per event, nothing per frame.
+            .with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _p: &Prepare) {}

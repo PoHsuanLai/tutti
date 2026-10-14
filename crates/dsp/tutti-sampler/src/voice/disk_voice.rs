@@ -251,7 +251,12 @@ impl Node for DiskSource {
     /// No inputs, the file's width out (at most [`MAX_SAMPLER_CHANNELS`]); a
     /// generator, never skipped.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.channels).with_tail(Tail::Unbounded)
+        Shape::audio(ChannelLayout::EMPTY, self.channels)
+            .with_tail(Tail::Unbounded)
+            // The memory tier's read (`MemorySource`, measured 16–17 ns per
+            // frame and channel), through the same kernel, from a ring of
+            // atomics: not measured on its own (doc 013, "Phase 6, part (b)").
+            .with_cost(tutti_graph::Cost::Moderate)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -846,7 +851,11 @@ impl DiskVoice {
 impl Node for DiskVoice {
     /// No inputs, the file's width out; a generator, never skipped.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.inner.channels()).with_tail(Tail::Unbounded)
+        Shape::audio(ChannelLayout::EMPTY, self.inner.channels())
+            .with_tail(Tail::Unbounded)
+            // A `DiskSource`'s read, placed on the transport as a memory
+            // voice is: `Moderate` for the same reason.
+            .with_cost(tutti_graph::Cost::Moderate)
     }
 
     /// The render rate, and the block's position scratch sized from

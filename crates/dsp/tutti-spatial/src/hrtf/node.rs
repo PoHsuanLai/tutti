@@ -221,6 +221,12 @@ impl Node for HrtfBinauralNode {
         Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
             .with_latency(Latency::new(Samples(LATENCY)))
             .with_tail(Tail::Finite(Samples(self.panner.ring_out())))
+            // FFT convolution: measured 32 ns per frame and channel with a
+            // four-vertex sphere of 128-tap HRIRs (a real sphere's are
+            // longer), against `SvfFilterNode`'s 7.2, and spent in bursts on
+            // the blocks that complete a 512-frame frame (doc 013, "Phase 6,
+            // part (b)"). The default, stated.
+            .with_cost(tutti_graph::Cost::Heavy)
     }
 
     /// Resamples the sphere to the graph's rate (allocates; control thread).

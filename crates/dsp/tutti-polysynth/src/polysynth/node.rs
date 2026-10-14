@@ -25,7 +25,33 @@ use super::PolySynth;
 /// dropped.
 pub(super) const MIDI_BUFFER: usize = 512;
 
+/// The most oscillator lanes (`max_voices` × unison sub-voices) a synth
+/// may render and still declare [`Cost::Moderate`](tutti_graph::Cost).
+///
+/// The voice bank renders each SIMD group of lanes that holds a sounding
+/// voice, so at full polyphony the synth costs what its lane count does.
+/// Measured with a saw, every voice held (doc 013, "Phase 6, part (b)"):
+/// 18–21 ns per frame and channel at 8 lanes, 74 at 32 (65 at 8 voices ×
+/// 4 unison), about 2.2 more per lane, against `SvfFilterNode`'s 7.2
+/// (`Moderate`'s reference) and `Heavy`'s 256. 16 lanes come to about
+/// 38 ns, under the two classes' geometric middle (45); 20 would be over.
+pub(super) const MODERATE_LANES: usize = 16;
+
 impl PolySynth {
+    /// What the synth declares to the cost model: `Moderate` up to
+    /// [`MODERATE_LANES`] oscillator lanes, `Heavy` past them.
+    ///
+    /// Read when the node is inserted. The lane count can change only
+    /// through `&mut` setters (`set_unison_voice_count`), which a node in a
+    /// graph is out of reach of, so the class stays true.
+    pub(crate) fn cost(&self) -> tutti_graph::Cost {
+        if self.config.max_voices * self.unison_voice_count() <= MODERATE_LANES {
+            tutti_graph::Cost::Moderate
+        } else {
+            tutti_graph::Cost::Heavy
+        }
+    }
+
     /// The block's MIDI from `events` into the scratch, in their (sorted)
     /// order; returns how many it holds.
     fn gather_events(&mut self, events: SortedEvents<'_>) -> usize {
@@ -53,6 +79,7 @@ impl Node for PolySynth {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
             .with_events(1, 0)
             .with_tail(self.release_tail())
+            .with_cost(self.cost())
     }
 
     fn prepare(&mut self, p: &Prepare) {

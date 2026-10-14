@@ -3318,9 +3318,76 @@ Decisions:
 3. **`tutti-nodes` declares.** Filters, oscillators, LFOs, dynamics,
    delays and modulation effects are `Moderate`; sums, the downmix, the bus
    strip, the brickwall clip and the test stimuli are `Light`; the
-   convolver (FFT partitions) declares nothing. Other crates' nodes
-   (sampler, synths, plugins) declare nothing for now, which is the safe
-   side.
+   convolver (FFT partitions) declares nothing.
+
+   **The other crates declare too** (landed 2026-10-14), each class from a
+   measured cost, not a guess. The method: each node driven alone through
+   `contract::Direct` in a release build, rolling, wall-clock per block at
+   256 and at 16 frames (best of five runs of 4 000 and 20 000 blocks),
+   solved for a fixed cost and a cost per frame and channel, on the same
+   4-core container as the tables below. (Callgrind instruction counts
+   were taken too, but they rank an f64 filter's divisions and a ring's
+   atomics like adds, so the classes follow the clock.) The references, measured the same way: a gain
+   (`Light`) 0.22 ns per frame and channel, `SvfFilterNode<f64>`
+   (`Moderate`) 7.2. A node goes to the class whose weight is nearer on a
+   log scale (`Light` 1, `Moderate` 8, `Heavy` 256: the boundaries fall at
+   about 2.8 and 45).
+
+   | node | ns / frame / channel | class |
+   |---|---|---|
+   | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `MidiQueueNode`, `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
+   | `ClickNode` | 3.8 | `Moderate` |
+   | `MicMonitorNode` (a ring pop per frame) | 5.4 | `Moderate` |
+   | `VbapPannerNode` | 10.9 stereo, 4.3 at 5.1 | `Moderate` |
+   | `VoiceNode`, a plain memory voice | 13 | `Moderate` |
+   | `MemorySource`, placed or free-running | 16–17 | `Moderate` |
+   | `DiskSource`, `DiskVoice` | not measured: the memory tier's kernel, from a ring of atomics | `Moderate` |
+   | `PolySynth`, saw, every voice held | 18–21 at 8 lanes, 65 at 8 × 4 unison, 74 at 32 | `Moderate` to 16 lanes, `Heavy` past |
+   | `HrtfBinauralNode` (a four-vertex sphere of 128-tap HRIRs; real ones are longer) | 32, in bursts each 512 frames | `Heavy` |
+   | `SoundFontUnit` | 76 at one note, 140 at eight | `Heavy` |
+   | `VoicePool` | 13 per plain voice (82 at eight); a stretched voice alone 288 | `Heavy` |
+   | `VoiceNode`, stretched (the phase vocoder) | 288 | `Heavy` |
+
+   Two classes are derived from the node, not fixed per type: a
+   `VoiceNode` is `Heavy` when it holds a stretch filter (built with the
+   node or never: `UpdateStretch` reaches only a pool's slots), and a
+   `PolySynth` is `Heavy` past 16 oscillator lanes, `max_voices` × unison
+   sub-voices (its voice bank renders each SIMD group holding a sounding
+   voice, about 2.2 ns per lane; 16 lanes come to about 38). Both are read
+   when the node is inserted and cannot change while it is in a graph
+   (the synth's lane count changes only through `&mut` setters). Explicit
+   `Heavy` is written out where it was measured (HRTF, the SoundFont unit,
+   the pool) rather than left as the default, so the decision is visible.
+
+   Still declaring nothing: the hosted plugin nodes (`PluginClient`,
+   `InProcessVst2Client`), which are what `Heavy` was calibrated on, and
+   `PluginAutomation`. The automation node is event-only, but its work is
+   a curve evaluation per parameter and point (up to `MAX_POINTS` per
+   block for each of up to hundreds of parameters), not a fixed few
+   events, and its lane count is published while it plays, so no one class
+   is clearly right; the plugin crate's automation path is under separate
+   review.
+
+   Evidence: each crate's `tests/cost_classes.rs` (tutti-core,
+   tutti-sampler, tutti-polysynth, tutti-spatial, tutti-midi-runtime)
+   builds a dozen or more of its nodes as siblings beside two `Heavy`
+   ones, at a block short enough for a `Moderate` stereo node to fall
+   under `GRAIN` (64 frames; 256 for the event-only MIDI lanes), summed
+   by a `Light` bus: the declared nodes pack into fewer tasks than the
+   same nodes wrapped to declare nothing, the plan still spreads, and on
+   pools of two and four the render (the events sent, for MIDI) is bit for
+   bit the serial one. Mutation (run, each crate): the node's declaration
+   reverted to `Heavy` → the task counts are equal → fails.
+
+   One finding, not changed here: siblings whose successors are separate
+   global outputs pack to *more* tasks than undeclared ones. Twelve
+   `Moderate` reads and two `Heavy` voices, each on two outputs of its
+   own, made 20 tasks against 14: undeclared, each node fuses with its two
+   output copies into one task, while packed reads leave their copies as
+   tasks of their own, since a pack's successors are not a chain. The
+   critical-path check allows it (no path grows), so it costs dispatches,
+   not latency; the cause above is read from the task counts, not traced
+   through `coarsen.rs`. The tests sum through a bus, the usual topology.
 4. **Siblings, guarded by the critical path, not levels.** The first
    version packed every cheap task on one level (longest-path depth). A
    level is a hop count, not a ready time, so it binned cheap tasks waiting

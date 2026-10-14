@@ -1251,7 +1251,13 @@ impl Node for MemorySource {
     /// No inputs, [`channels`](Self::channels) outputs; a generator, never
     /// skipped.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.channels).with_tail(Tail::Unbounded)
+        Shape::audio(ChannelLayout::EMPTY, self.channels)
+            .with_tail(Tail::Unbounded)
+            // A cubic Hermite read per frame and channel, behind the
+            // placement gate: measured 16–17 ns per frame and channel,
+            // placed or free-running, against `SvfFilterNode`'s 7.2 and
+            // `Heavy`'s 256 (doc 013, "Phase 6, part (b)").
+            .with_cost(tutti_graph::Cost::Moderate)
     }
 
     /// The session rate: the conversion from the wave's rate is derived from

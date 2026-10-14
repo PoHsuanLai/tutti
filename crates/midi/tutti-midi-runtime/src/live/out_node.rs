@@ -106,7 +106,10 @@ impl MidiOutControls {
 impl Node for MidiOutNode {
     /// No audio; one event input.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0)
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(1, 0)
+            // Event-only: a ring push per event, nothing per frame.
+            .with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _p: &Prepare) {}

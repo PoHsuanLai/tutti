@@ -237,8 +237,9 @@ impl VoiceNode {
     /// per frame and channel, a stretched one 288 (the phase vocoder),
     /// against `SvfFilterNode`'s 7.2 and `Heavy`'s 256. A node's filter is
     /// built with it or never (`UpdateStretch` reaches only a pool's
-    /// slots), so the class read when it is inserted stays true. A disk
-    /// voice reads through the same kernel as a memory one.
+    /// slots), so every read of the shape (at insert and at each
+    /// re-prepare) gives the same class. A disk voice reads through the
+    /// same kernel as a memory one.
     fn cost(&self) -> tutti_graph::Cost {
         if self.slot.stretch.is_some() {
             tutti_graph::Cost::Heavy

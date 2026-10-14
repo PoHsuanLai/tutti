@@ -197,7 +197,13 @@ fn moderate_synths_pack_and_render_bit_identically() {
         plan.tasks().len(),
         bare.tasks().len()
     );
-    assert!(matches!(plan.schedule(4), Schedule::Parallel { .. }));
+    // From a one-frame block: every ragged block below is spread, so the
+    // comparison is never a serial walk against itself.
+    assert!(
+        matches!(plan.schedule(4), Schedule::Parallel { from, .. } if from == Samples(1)),
+        "{:?}",
+        plan.schedule(4)
+    );
 
     let serial = render(&mut graph(1, true));
     assert!(serial.iter().all(|c| c.iter().any(|&x| x != 0.0)));

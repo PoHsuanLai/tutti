@@ -415,7 +415,11 @@ impl Node for BusStripNode {
     /// stops with its input.
     fn shape(&self) -> Shape {
         Shape::audio(self.layout, self.layout)
-            .with_cost(tutti_graph::Cost::Light)
+            // Volume, pan and mute as ramped per-frame gains:
+            // measured 3.7 ns per frame and channel, against a gain's 0.22
+            // and `SvfFilterNode`'s 7.2, past the `Light`/`Moderate`
+            // boundary (about 2.8; doc 013, "Phase 6, part (b)").
+            .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
             .with_params(&STRIP_PARAMS)
     }
@@ -491,6 +495,17 @@ mod tests {
     use super::*;
     use crate::test_support::{tick, RATE};
     use tutti_graph::contract::{assert_param_fork, drive};
+
+    /// The strip measured as a `Moderate` node, at every width.
+    ///
+    /// Mutation (run): back to `Cost::Light` → fails.
+    #[test]
+    fn the_strip_is_moderate() {
+        for layout in [ChannelLayout::MONO, ChannelLayout::STEREO] {
+            let strip = BusStripNode::with_channels(layout);
+            assert_eq!(strip.shape().cost, tutti_graph::Cost::Moderate);
+        }
+    }
 
     /// Set a param the way a host does — by address, through the node's
     /// `ParamSet` — rather than by calling the setter, so the test covers the

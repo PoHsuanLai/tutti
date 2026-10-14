@@ -41,9 +41,9 @@ impl PolySynth {
     /// What the synth declares to the cost model: `Moderate` up to
     /// [`MODERATE_LANES`] oscillator lanes, `Heavy` past them.
     ///
-    /// Read when the node is inserted. The lane count can change only
-    /// through `&mut` setters (`set_unison_voice_count`), which a node in a
-    /// graph is out of reach of, so the class stays true.
+    /// The editor reads it at every insert and re-prepare. The lane count
+    /// can change only through `&mut` setters (`set_unison_voice_count`),
+    /// which a node in a graph is out of reach of, so every read agrees.
     pub(crate) fn cost(&self) -> tutti_graph::Cost {
         if self.config.max_voices * self.unison_voice_count() <= MODERATE_LANES {
             tutti_graph::Cost::Moderate

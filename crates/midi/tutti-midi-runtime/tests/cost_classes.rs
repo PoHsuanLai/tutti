@@ -150,8 +150,10 @@ fn render(exec: &mut Executor) {
     }
 }
 
-/// Everything the graph sent: each out node's events (frame and words),
-/// then each recorder's.
+/// Everything the graph sent, by absolute frame: each out node's events
+/// (`MidiOutNode` stamps the block's frame plus the offset into
+/// `frame_offset`, wrapping at 2^32), then each recorder's (it adds
+/// `Env::frame` itself).
 fn sent(outs: &[MidiOutControls], seen: &[Seen]) -> Vec<Vec<(u64, [u32; 4])>> {
     let mut all: Vec<Vec<(u64, [u32; 4])>> = outs
         .iter()
@@ -189,8 +191,8 @@ fn every_midi_node_is_light() {
 
 /// Sixteen light clip → out lanes beside two heavy ones: the light lanes
 /// pack into fewer tasks than the same lanes declaring nothing, the plan
-/// still spreads, and on a pool of two and of four every event is sent on
-/// the frame the serial walk sends it on.
+/// spreads from a one-frame block, and on a pool of two and of four every
+/// event is sent on the absolute frame the serial walk sends it on.
 ///
 /// Mutation (run): the clip node's `with_cost(Cost::Light)` removed → each
 /// lane is a heavy task again → the task-count assert fails.
@@ -209,7 +211,13 @@ fn light_lanes_pack_and_send_on_the_serial_frames() {
         plan.tasks().len(),
         bare.tasks().len()
     );
-    assert!(matches!(plan.schedule(4), Schedule::Parallel { .. }));
+    // From a one-frame block: every ragged block below is spread, so the
+    // comparison is never a serial walk against itself.
+    assert!(
+        matches!(plan.schedule(4), Schedule::Parallel { from, .. } if from == Samples(1)),
+        "{:?}",
+        plan.schedule(4)
+    );
 
     let (mut exec, outs, seen) = graph(1, true);
     render(&mut exec);

@@ -63,21 +63,25 @@ impl<N: Node> Node for Undeclared<N> {
 }
 
 /// [`READS`] placed memory reads, each starting a little later, and
-/// [`STRETCHED`] stretched voices, summed (a `Light` bus) onto two global
-/// outputs; on a pool of `workers` when more than one. `declared`: the
-/// reads as shipped, or wrapped to declare nothing.
-fn graph(wave: &Arc<Wave>, workers: usize, declared: bool) -> Executor {
+/// [`STRETCHED`] stretched voices, on a pool of `workers` when more than
+/// one. `declared`: the reads as shipped, or wrapped to declare nothing.
+/// `bus`: every node summed (a `Light` bus) onto two global outputs, or
+/// each on two global outputs of its own (a track wired straight out).
+fn graph(wave: &Arc<Wave>, workers: usize, declared: bool, bus: bool) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(WorkerPool::new(workers))));
     }
     const SUM: NodeKey = NodeKey(1_000);
     let sources = READS + STRETCHED;
-    ed.insert(
-        SUM,
-        "sum",
-        ChannelSumNode::new(sources as usize, ChannelLayout::STEREO),
-    );
+    if bus {
+        ed.insert(
+            SUM,
+            "sum",
+            ChannelSumNode::new(sources as usize, ChannelLayout::STEREO),
+        );
+    }
+    let mut outputs = Vec::new();
     for k in 0..sources {
         let key = NodeKey(k + 1);
         if k < READS {
@@ -91,20 +95,27 @@ fn graph(wave: &Arc<Wave>, workers: usize, declared: bool) -> Executor {
             ed.insert(key, "stretched", stretched(wave));
         }
         for c in 0..2u16 {
-            let port = InPort {
-                node: SUM,
-                port: k as u16 * 2 + c,
-            };
             let from = Source::Node(OutPort { node: key, port: c });
-            ed.spec_mut()
-                .topology
-                .edges
-                .insert(port, Edge::Direct(from));
+            if bus {
+                let port = InPort {
+                    node: SUM,
+                    port: k as u16 * 2 + c,
+                };
+                ed.spec_mut()
+                    .topology
+                    .edges
+                    .insert(port, Edge::Direct(from));
+            } else {
+                outputs.push(from);
+            }
         }
     }
-    ed.spec_mut().topology.outputs = (0..2)
-        .map(|port| Source::Node(OutPort { node: SUM, port }))
-        .collect();
+    if bus {
+        outputs = (0..2)
+            .map(|port| Source::Node(OutPort { node: SUM, port }))
+            .collect();
+    }
+    ed.spec_mut().topology.outputs = outputs;
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -112,8 +123,7 @@ fn graph(wave: &Arc<Wave>, workers: usize, declared: bool) -> Executor {
 }
 
 /// Blocks from one frame to the maximum, ragged, rolling from beat 0.
-fn render(exec: &mut Executor) -> Vec<Vec<f32>> {
-    let channels = 2;
+fn render(exec: &mut Executor, channels: usize) -> Vec<Vec<f32>> {
     let mut all = vec![Vec::new(); channels];
     let mut frame = 0usize;
     for i in 0..60 {
@@ -161,44 +171,65 @@ fn each_node_declares_its_class() {
     assert_eq!(VoicePool::new().shape().cost, Cost::Heavy);
 }
 
-/// Twelve `Moderate` reads beside two stretched voices: the reads pack into
-/// fewer tasks than the same reads declaring nothing, each stretched voice
-/// keeps a task of its own, the plan still spreads, and on a pool of two
-/// and of four the render is bit for bit the serial one.
+/// Twelve `Moderate` reads beside two stretched voices, summed through a
+/// bus and each on outputs of its own: the reads pack into fewer tasks
+/// than the same reads declaring nothing, each stretched voice keeps a
+/// task of its own, the plan spreads from a one-frame block, and on a pool
+/// of two and of four the render is bit for bit the serial one.
 ///
 /// Mutation (run): `MemorySource`'s `with_cost(Cost::Moderate)` removed →
-/// the reads pack no further than undeclared → the task-count assert fails.
+/// the reads pack no further than undeclared (15 tasks each, with the bus)
+/// → the task-count assert fails. Mutation (run): one round of packing in
+/// `tutti-graph`'s `coarsen` (no fixed point) → without the bus, 20 tasks
+/// against 14 → fails.
 #[test]
 #[cfg_attr(miri, ignore = "spawns a worker pool")]
 fn moderate_reads_pack_and_render_bit_identically() {
     let wave = tone(1.0);
-    let declared = graph(&wave, 4, true);
-    let undeclared = graph(&wave, 4, false);
-    let (plan, bare) = (
-        declared.plan().expect("a plan"),
-        undeclared.plan().expect("a plan"),
-    );
-    assert!(
-        plan.tasks().len() < bare.tasks().len(),
-        "declared {} tasks, undeclared {}",
-        plan.tasks().len(),
-        bare.tasks().len()
-    );
-    for t in plan.tasks() {
-        let ops = &plan.task_ops()[t.start as usize..(t.start + t.len) as usize];
-        let heavy = ops.iter().filter(|&&o| {
-            matches!(plan.ops()[o as usize], tutti_graph::Op::Node { unit, .. }
-                if plan.units()[unit as usize].shape.cost == Cost::Heavy)
-        });
-        assert!(heavy.count() <= 1, "two stretched voices share a task");
-    }
-    assert!(matches!(plan.schedule(4), Schedule::Parallel { .. }));
+    for bus in [true, false] {
+        let declared = graph(&wave, 4, true, bus);
+        let undeclared = graph(&wave, 4, false, bus);
+        let (plan, bare) = (
+            declared.plan().expect("a plan"),
+            undeclared.plan().expect("a plan"),
+        );
+        assert!(
+            plan.tasks().len() < bare.tasks().len(),
+            "bus {bus}: declared {} tasks, undeclared {}",
+            plan.tasks().len(),
+            bare.tasks().len()
+        );
+        for t in plan.tasks() {
+            let ops = &plan.task_ops()[t.start as usize..(t.start + t.len) as usize];
+            let heavy = ops.iter().filter(|&&o| {
+                matches!(plan.ops()[o as usize], tutti_graph::Op::Node { unit, .. }
+                    if plan.units()[unit as usize].shape.cost == Cost::Heavy)
+            });
+            assert!(heavy.count() <= 1, "two stretched voices share a task");
+        }
+        // From a one-frame block: every ragged block below is spread, so
+        // the comparison is never a serial walk against itself.
+        assert!(
+            matches!(plan.schedule(4), Schedule::Parallel { from, .. } if from == Samples(1)),
+            "{:?}",
+            plan.schedule(4)
+        );
 
-    let serial = render(&mut graph(&wave, 1, true));
-    assert!(serial.iter().all(|c| c.iter().any(|&x| x != 0.0)));
-    for workers in [2, 4] {
-        let mut exec = graph(&wave, workers, true);
-        assert!(exec.is_parallel());
-        assert_eq!(bits(&serial), bits(&render(&mut exec)), "{workers} workers");
+        let channels = if bus {
+            2
+        } else {
+            2 * (READS + STRETCHED) as usize
+        };
+        let serial = render(&mut graph(&wave, 1, true, bus), channels);
+        assert!(serial.iter().all(|c| c.iter().any(|&x| x != 0.0)));
+        for workers in [2, 4] {
+            let mut exec = graph(&wave, workers, true, bus);
+            assert!(exec.is_parallel());
+            assert_eq!(
+                bits(&serial),
+                bits(&render(&mut exec, channels)),
+                "bus {bus}, {workers} workers"
+            );
+        }
     }
 }

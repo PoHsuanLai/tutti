@@ -3257,9 +3257,14 @@ What each layer holds:
   3. fuse the chains that leaves (a packed fan-out between its source and
      its sum becomes one task).
 
+  Passes 2 and 3 repeat until a round merges no groups: a pack makes its
+  members' private successors siblings (their predecessor set is now the
+  pack), which only a later round's sibling classes can see.
+
   The plan's critical path is therefore never longer than chain fusion
-  alone gives: pass 2 refuses any pack that lengthens it, and pass 3 only
-  removes hand-overs. A task runs its ops in ascending op index, a
+  alone gives: each round's pass 2 refuses any pack that lengthens the
+  critical path of the groups it starts from, and pass 3 only removes
+  hand-overs, so no round ends longer than the one before. A task runs its ops in ascending op index, a
   topological order of the op DAG, so every dependency inside a packed
   task is kept.
 - **The decision (`Plan::schedule(participants) -> Schedule`).** Pure
@@ -3316,9 +3321,11 @@ Decisions:
    speed-up per block; wrongly spreading cheap work costs a few
    microseconds. The default leans to the second.
 3. **`tutti-nodes` declares.** Filters, oscillators, LFOs, dynamics,
-   delays and modulation effects are `Moderate`; sums, the downmix, the bus
-   strip, the brickwall clip and the test stimuli are `Light`; the
-   convolver (FFT partitions) declares nothing.
+   delays and modulation effects are `Moderate`; sums, the downmix, the
+   brickwall clip and the test stimuli are `Light`; the convolver (FFT
+   partitions) declares nothing. The bus strip was `Light` and is
+   `Moderate` since the measurements below (3.7 ns per frame and channel,
+   past the 2.8 boundary, as the click's 3.8).
 
    **The other crates declare too** (landed 2026-10-14), each class from a
    measured cost, not a guess. The method: each node driven alone through
@@ -3343,19 +3350,30 @@ Decisions:
    | `MemorySource`, placed or free-running | 16–17 | `Moderate` |
    | `DiskSource`, `DiskVoice` | not measured: the memory tier's kernel, from a ring of atomics | `Moderate` |
    | `PolySynth`, saw, every voice held | 18–21 at 8 lanes, 65 at 8 × 4 unison, 74 at 32 | `Moderate` to 16 lanes, `Heavy` past |
-   | `HrtfBinauralNode` (a four-vertex sphere of 128-tap HRIRs; real ones are longer) | 32, in bursts each 512 frames | `Heavy` |
+   | `HrtfBinauralNode` (a four-vertex sphere of 128-tap HRIRs; real ones are longer) | 32 on average, in bursts each 512 frames | `Heavy` (the exception below) |
+   | `BusStripNode` (tutti-nodes, reclassified) | 3.7 | `Moderate` |
    | `SoundFontUnit` | 76 at one note, 140 at eight | `Heavy` |
    | `VoicePool` | 13 per plain voice (82 at eight); a stretched voice alone 288 | `Heavy` |
    | `VoiceNode`, stretched (the phase vocoder) | 288 | `Heavy` |
+
+   **One exception to the nearest-class rule: HRTF.** Its 32 ns average
+   is under the 45 boundary, but the frame bridge does all of a 512-frame
+   frame's FFT work in the one block that completes it. At 64-frame blocks
+   that block carries about 8 × 32 ns per frame and channel, and the
+   schedule decides per plan, for every block, so it must price the worst
+   block rather than the mean. With real (longer) HRIRs the burst grows
+   again.
 
    Two classes are derived from the node, not fixed per type: a
    `VoiceNode` is `Heavy` when it holds a stretch filter (built with the
    node or never: `UpdateStretch` reaches only a pool's slots), and a
    `PolySynth` is `Heavy` past 16 oscillator lanes, `max_voices` × unison
    sub-voices (its voice bank renders each SIMD group holding a sounding
-   voice, about 2.2 ns per lane; 16 lanes come to about 38). Both are read
-   when the node is inserted and cannot change while it is in a graph
-   (the synth's lane count changes only through `&mut` setters). Explicit
+   voice, about 2.2 ns per lane; 16 lanes come to about 38). The editor
+   reads a node's shape again at every insert and re-prepare, and neither
+   input can change while the node is in a graph (the synth's lane count
+   changes only through `&mut` setters, and a node's stretch filter only
+   at construction), so every read gives the same class. Explicit
    `Heavy` is written out where it was measured (HRTF, the SoundFont unit,
    the pool) rather than left as the default, so the decision is visible.
 
@@ -3373,21 +3391,37 @@ Decisions:
    builds a dozen or more of its nodes as siblings beside two `Heavy`
    ones, at a block short enough for a `Moderate` stereo node to fall
    under `GRAIN` (64 frames; 256 for the event-only MIDI lanes), summed
-   by a `Light` bus: the declared nodes pack into fewer tasks than the
-   same nodes wrapped to declare nothing, the plan still spreads, and on
-   pools of two and four the render (the events sent, for MIDI) is bit for
-   bit the serial one. Mutation (run, each crate): the node's declaration
+   by a `Light` bus (tutti-sampler's also with each node on outputs of its
+   own): the declared nodes pack into fewer tasks than the same nodes
+   wrapped to declare nothing, the plan spreads from a one-frame block
+   (`from` is asserted, so every ragged block is spread), and on pools of
+   two and four the render (for MIDI, each event's absolute frame) is bit
+   for bit the serial one. Mutation (run, each crate): the node's declaration
    reverted to `Heavy` → the task counts are equal → fails.
 
-   One finding, not changed here: siblings whose successors are separate
-   global outputs pack to *more* tasks than undeclared ones. Twelve
-   `Moderate` reads and two `Heavy` voices, each on two outputs of its
-   own, made 20 tasks against 14: undeclared, each node fuses with its two
-   output copies into one task, while packed reads leave their copies as
-   tasks of their own, since a pack's successors are not a chain. The
-   critical-path check allows it (no path grows), so it costs dispatches,
-   not latency; the cause above is read from the task counts, not traced
-   through `coarsen.rs`. The tests sum through a bus, the usual topology.
+   **One defect, fixed with the declarations.** Packing ran its sibling
+   classes once, from the predecessor sets before packing. Siblings that
+   each fed private successors (a track wired to its own two outputs)
+   packed, which made their outputs siblings of one another, with the
+   pack as their one predecessor. Pass 2 was already over, and pass 3
+   could not fuse the pack with them, because a pack with several
+   successor tasks is not a chain. Undeclared, each node fuses with its
+   own outputs, so declaring `Moderate` made *more* tasks: tutti-sampler's
+   twelve reads and two stretched voices, each on two outputs of its own,
+   made 20 tasks against 14. The critical-path
+   check allowed it, since no path grows, but every extra task also costs
+   `TASK_DISPATCH` in `Plan::schedule`'s estimate, so it could tip a plan
+   toward running serially as well as cost dispatches. Passes 2 and 3 now
+   repeat to a fixed point (`coarsen`). The same graph makes 8 tasks
+   (that test now asserts declared < undeclared without the bus too), and
+   `coarsen::tests::packed_siblings_fuse_with_their_private_outputs`
+   pins it at the op level: 6 tasks against 15 heavy. Mutation (run): one
+   round instead of the loop gives 15, as many as heavy, and fails.
+   Over
+   the differential generator's 512 seeds, declared costs now pack 335
+   plans further (90 still spreading), against 328 and 89 before. Every
+   tutti-graph test passes unchanged, including the critical-path
+   proptest and `coarsened_plans_are_bit_identical`.
 4. **Siblings, guarded by the critical path, not levels.** The first
    version packed every cheap task on one level (longest-path depth). A
    level is a hop count, not a ready time, so it binned cheap tasks waiting
@@ -3445,7 +3479,8 @@ Evidence:
   declared costs (two in three light) serially and on a pool against the
   reference; `the_cost_generator_packs_and_spreads` checks that over 512
   seeds those costs pack 328 plans further than undeclared, 89 of them
-  still spreading. **A dependency dropped while merging is caught by the
+  still spreading (335 and 90 since passes 2 and 3 repeat to a fixed
+  point; see "The other crates declare too"). **A dependency dropped while merging is caught by the
   verifier**: skipping the task edges out of any multi-op task makes
   `compile` refuse the plan ("op edge … crosses task …, which task_succ
   lacks") in every test above.

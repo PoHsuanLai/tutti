@@ -1,8 +1,10 @@
 //! [`Curve`] — a value as a pure function of a musical position.
 //!
 //! The rate-agnostic `beat -> value` interface shared by automation and
-//! modulation: an automation envelope, an LFO, a constant, and the summing
-//! [`crate::LayeredCurve`] are all `Curve`s. It lives here rather than in
+//! modulation: an automation envelope, an LFO, a constant, and the `routing`
+//! feature's summing `LayeredCurve` are all `Curve`s. Ungated (doc 014 §3):
+//! a [`ControlProgram`](crate::ControlProgram)'s automation is one, and
+//! automation needs no routing. It lives here rather than in
 //! `tutti-nodes` because modulation depends on it and `tutti-nodes` depends on
 //! this crate. The one foreign impl,
 //! [`AutomationEnvelope`], is orphan-legal here since `audio_automation` is a
@@ -45,8 +47,8 @@ pub enum CurveSegment {
 /// A value as a pure function of a musical position (`beat -> value`).
 ///
 /// An automation envelope (`audio_automation::AutomationEnvelope`), a shaped
-/// LFO ([`ShapedCurve`](crate::ShapedCurve)), a constant, and the summing
-/// [`LayeredCurve`](crate::LayeredCurve) are all curves. The stored form — breakpoints, a constant, an LFO shape, an expression — is
+/// LFO (the `routing` feature's `ShapedCurve`), a constant, and the summing
+/// `LayeredCurve` are all curves. The stored form — breakpoints, a constant, an LFO shape, an expression — is
 /// the implementor's business. Callers supply an already-resolved, already
 /// loop-wrapped [`Beat`]; the curve holds no clock and consults no loop range.
 /// That keeps it evaluable from a live transport, an offline render, or a

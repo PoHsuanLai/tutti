@@ -1,14 +1,14 @@
 #![forbid(unsafe_code)]
 #![doc = include_str!("../README.md")]
 
+mod curve;
 mod id;
 mod lfo;
 mod modulator;
+mod program;
 mod shape;
 mod target;
 
-#[cfg(feature = "routing")]
-mod curve;
 #[cfg(feature = "routing")]
 mod curve_source;
 #[cfg(feature = "routing")]
@@ -27,14 +27,17 @@ mod router;
 mod routing;
 
 pub use audio_automation::CurveType;
+pub use curve::{Curve, CurveSegment};
 pub use id::{LayerKey, ModTargetId};
 pub use lfo::{Lfo, RandomState, SampleHold};
 pub use modulator::Modulator;
+pub use program::{
+    Amount, Clock, ControlProgram, Corners, InputLayer, Layer, LayerId, PeriodPoint,
+    ProgramError, ProgramTime, RateAnchor, SourceId, Wave, MAX_LANE_INPUTS, MAX_LANE_LAYERS,
+};
 pub use shape::{curve_apply, fold, shape, LfoShape, Polarity};
 pub use target::ModTarget;
 
-#[cfg(feature = "routing")]
-pub use curve::{Curve, CurveSegment};
 #[cfg(feature = "routing")]
 pub use curve_source::{BeatLfo, CurveModulator, EdgeShape, ShapedCurve};
 #[cfg(feature = "routing")]

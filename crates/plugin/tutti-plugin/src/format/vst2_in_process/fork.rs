@@ -54,12 +54,18 @@
 //! Fork on the **main thread** — `Vst2Instance::load`'s rule. A fork runs the
 //! plugin's entry point (`VSTPluginMain`, through a loader whose entry-point
 //! slot is a process global) and dispatches state opcodes, and a plugin may
-//! assume all of that is on its host's main thread. bevy-tutti's export forks
-//! from its exclusive `start_exports`. Drop the fork there too: dropping it
-//! closes its instance (`effMainsChanged(0)`, `effClose`), which debug builds
-//! assert is on the main thread once one is marked. A fork may *render* on any
-//! thread, as the live node does; bevy-tutti renders on its compute pool and
-//! hands the graph back to `poll_exports`, on the main thread, to drop.
+//! assume all of that is on its host's main thread. Through the graph's split
+//! fork (`Editor::fork_gather`, then `PendingFork::build` on a worker) the
+//! source declares itself **pinned** (`ForkBuild::pinned`): the whole of the
+//! above, and the fork's `prepare` (its rate, `RateDelivery::InPrepare`),
+//! runs in the gather, which bevy-tutti's export calls from its exclusive
+//! `start_exports`; the worker's build only places the prepared unit. Drop
+//! the fork on the main thread too: dropping it closes its instance
+//! (`effMainsChanged(0)`, `effClose`), which debug builds assert is on the
+//! main thread once one is marked. A fork may *render* on any thread, as the
+//! live node does; bevy-tutti renders on its compute pool and sends the graph
+//! (or, when the export fails or is cancelled, whatever of it was built) back
+//! to the main thread to drop.
 //!
 //! Any failure is a [`PluginForkError`] naming the step, and the second
 //! instance (if one was built) is dropped with it — `effClose`. Through the
@@ -88,7 +94,7 @@ use std::sync::{Arc, Weak};
 use parking_lot::Mutex;
 use tutti_core::meter::MeterMap;
 use tutti_core::RtPublish;
-use tutti_graph::{ForkCause, ForkMode, ForkSource, Forked};
+use tutti_graph::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
 use tutti_vst2_host::Vst2Instance;
 
 use super::client::{EnvTransport, InProcessVst2Client, RateDelivery};
@@ -201,6 +207,15 @@ impl ForkSource for Vst2Fork {
         // In this process: nothing can fail while it renders that the render
         // would not see, so no health probe. Boxed bare: no fork of its own.
         Ok(Forked::new(Box::new(fork)))
+    }
+
+    /// **Pinned**, said here rather than left to the default: the second
+    /// instance is loaded and handed the state at the gather, and its
+    /// `prepare` (which tells the plugin the fork's rate,
+    /// `RateDelivery::InPrepare`) runs there too, on the main thread the
+    /// gather is called on. Only rendering it leaves that thread.
+    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+        self.fork(mode).map(ForkBuild::pinned)
     }
 }
 

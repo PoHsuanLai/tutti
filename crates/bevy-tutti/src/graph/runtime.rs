@@ -391,28 +391,31 @@ impl GraphRuntime {
         }
     }
 
-    /// A copy of `target` for an offline render at `rate`, sharing no state
-    /// with this graph: `Editor::fork` with `ForkMode::Offline(ctx)`, through
-    /// tutti-export (`RenderGraph::fork`, which prepares it at the render's
-    /// rate and `GRAPH_MAX_BLOCK`). `ctx` is the render's timeline, the one
-    /// type `ForkMode::Offline` takes.
+    /// The control-thread half of a copy of `target` for an offline render
+    /// at `rate`, sharing no state with this graph: `Editor::fork_gather`
+    /// with `ForkMode::Offline(ctx)`, through tutti-export
+    /// (`RenderGraph::gather`, at the render's rate and `GRAPH_MAX_BLOCK`).
+    /// `ctx` is the render's timeline, the one type `ForkMode::Offline`
+    /// takes. [`PendingExport::build`] makes the rest on a worker.
     #[cfg(feature = "export")]
-    pub(crate) fn fork_for_export(
+    pub(crate) fn gather_for_export(
         &self,
         target: tutti_graph::ForkTarget,
         ctx: &tutti_core::transport::OfflineTransport,
         rate: SampleRate,
-    ) -> tutti_export::Result<tutti_export::RenderGraph> {
-        let mut graph = tutti_export::RenderGraph::fork(
+    ) -> tutti_export::Result<PendingExport> {
+        let fork = tutti_export::RenderGraph::gather(
             &self.editor,
             target,
             tutti_graph::ForkMode::Offline(ctx),
             rate,
         )?;
-        // Its own pool, not the live engine's: the live callback would find
-        // a shared one busy with the export's job and render alone.
-        graph.set_pool(self.render_pool("tutti-export"));
-        Ok(graph)
+        Ok(PendingExport {
+            fork,
+            // Its own pool, not the live engine's: the live callback would
+            // find a shared one busy with the export's job and render alone.
+            pool: self.render_pool("tutti-export"),
+        })
     }
 
     /// Address `node`'s params by `params` (a `ParamNode`'s controls), so
@@ -1029,6 +1032,33 @@ impl AudioSide {
             }
             done += len;
         }
+    }
+}
+
+/// An export's fork, gathered on the main thread
+/// ([`GraphRuntime::gather_for_export`]) and not yet built: `Send`, holding
+/// nothing of the live graph.
+#[cfg(feature = "export")]
+pub(crate) struct PendingExport {
+    fork: tutti_graph::PendingFork,
+    pool: Option<Arc<dyn tutti_graph::Pool>>,
+}
+
+#[cfg(feature = "export")]
+impl PendingExport {
+    /// Build the fork (on the compute pool: a hosted plugin's
+    /// `plugin-server` launch is here) into the graph the export renders.
+    ///
+    /// # Errors
+    ///
+    /// A deferred fork source's failure, or a fork that does not commit,
+    /// with what was built, to drop on the main thread.
+    pub(crate) fn build(
+        self,
+    ) -> Result<tutti_export::RenderGraph, (tutti_export::Error, tutti_graph::ForkRemains)> {
+        let mut graph = tutti_export::RenderGraph::build(self.fork)?;
+        graph.set_pool(self.pool);
+        Ok(graph)
     }
 }
 

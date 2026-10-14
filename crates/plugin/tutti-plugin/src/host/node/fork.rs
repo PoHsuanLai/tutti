@@ -70,6 +70,20 @@
 //! process. Through the graph it is `ForkError::Source { key, cause }`, the
 //! cause downcastable to `PluginForkError`. There is no fallback.
 //!
+//! # Threads
+//!
+//! Through the graph's split fork (`Editor::fork_gather`, then
+//! `PendingFork::build`) the steps divide where the slow part starts. The
+//! **gather**, on the control thread at the moment of the fork, is step 1
+//! and the reads of the live node's rate and meter: everything the fork
+//! takes of the live node, so a parameter set or a meter installed after
+//! it does not reach the fork. Steps 2 to 5 (the `plugin-server` launch and
+//! the state load, half a second or more) are a **deferred build**
+//! (`ForkBuild::deferred`) that reads nothing live and may run on any
+//! thread: bevy-tutti's export runs it on its compute pool, so the frame
+//! the export starts in does not wait for it. [`PluginClient::fork_instance`]
+//! runs all five on the calling thread.
+//!
 //! # When the fork fails while rendering
 //!
 //! The fork's server can die, or hang, mid-render. `process` cannot say so,
@@ -104,10 +118,12 @@ use std::time::Duration;
 
 use tutti_core::Samples;
 use tutti_graph::{
-    ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node, NodeParts,
+    ForkBuild, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node,
+    NodeParts,
 };
 use tutti_types::Latency;
 
+use super::controls::ForkedSources;
 use super::{Bound, PluginClient, PluginControls, ProcessGuard};
 use crate::error::{PluginForkError, PluginRenderFault};
 use crate::host::ipc_client::PluginBridge;
@@ -268,12 +284,47 @@ impl PluginFork {
 
     /// The five steps in the module docs, in order.
     fn instance(&self, mode: ForkMode<'_>) -> Result<PluginClient<Bound>, PluginForkError> {
+        self.capture(mode)?.build()
+    }
+
+    /// Step 1, and everything else the fork reads of the live node: what the
+    /// gather takes on the control thread ("Threads" in the module docs).
+    fn capture(&self, mode: ForkMode<'_>) -> Result<Capture, PluginForkError> {
         // First, so a plugin that cannot save costs no subprocess. The `Arc`
         // is dropped straight after: the fork holds no strong reference.
         let live = self.bridge.upgrade().ok_or(PluginForkError::LiveGone)?;
         let state = live.save_state().map_err(PluginForkError::SaveState)?;
         drop(live);
+        Ok(Capture {
+            state,
+            origin: Arc::clone(&self.origin),
+            id: self.id.clone(),
+            sample_rate: self.controls.sample_rate(),
+            sources: self.controls.sources_now(),
+            offline: matches!(mode, ForkMode::Offline(_)),
+        })
+    }
+}
 
+/// What a plugin fork's gather read of the live node: its saved state, its
+/// rate and sources at that moment, and what to load. Steps 2 to 5 build the
+/// fork from this alone, on any thread, so nothing the host does to the live
+/// node after the gather reaches the fork.
+struct Capture {
+    state: Vec<u8>,
+    origin: Arc<Origin>,
+    /// The live instance's plugin id, which the fresh one must match.
+    id: String,
+    /// The live node's rate, which the fresh instance is launched at.
+    sample_rate: tutti_core::SampleRate,
+    sources: ForkedSources,
+    offline: bool,
+}
+
+impl Capture {
+    /// Steps 2 to 5 of the module docs: the slow part (a `plugin-server`
+    /// launch and a state load), free to run off the control thread.
+    fn build(self) -> Result<PluginClient<Bound>, PluginForkError> {
         let path = self.origin.plugin_path.clone();
         let config = BridgeConfig {
             // Its own rendezvous: two bridges on one socket path is the
@@ -282,24 +333,24 @@ impl PluginFork {
             ..self.origin.config.clone()
         };
         let timeout = Duration::from_millis(config.timeout_ms);
-        let fork = PluginClient::new(config, path.clone(), self.controls.sample_rate()).map_err(
-            |source| PluginForkError::Load {
+        let fork = PluginClient::new(config, path.clone(), self.sample_rate).map_err(|source| {
+            PluginForkError::Load {
                 path: path.clone(),
                 source,
-            },
-        )?;
+            }
+        })?;
         if fork.descriptor.id != self.id {
             return Err(PluginForkError::Mismatch {
                 path,
-                expected: self.id.clone(),
+                expected: self.id,
                 found: fork.descriptor.id.clone(),
             });
         }
         fork.bridge
-            .load_state(&state)
+            .load_state(&self.state)
             .map_err(PluginForkError::LoadState)?;
 
-        self.controls.rebind_sources_into(&fork.controls);
+        self.sources.install(&fork.controls);
         let watch = Arc::new(ForkWatch {
             controls: fork.controls.clone(),
             planned: AtomicUsize::new(usize::MAX),
@@ -310,7 +361,7 @@ impl PluginFork {
             budget: timeout,
         });
         let mut fork = fork.bind();
-        if let ForkMode::Offline(_) = mode {
+        if self.offline {
             // Advisory: a plugin without the concept keeps rendering as it
             // would live, which is not an error (`Features::RENDER_MODE`).
             let _ = fork.set_render_mode(RenderMode::Offline);
@@ -321,17 +372,31 @@ impl PluginFork {
     }
 }
 
+/// The fork as the graph inserts it: boxed bare, so it carries no fork
+/// source of its own, with its health probe.
+fn forked(fork: PluginClient<Bound>) -> Forked {
+    let health = fork.fork_health();
+    let forked = Forked::new(Box::new(fork));
+    match health {
+        Some(health) => forked.with_health(health),
+        None => forked,
+    }
+}
+
 impl ForkSource for PluginFork {
     fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
-        let fork = self.instance(mode).map_err(ForkCause::new)?;
-        let health = fork.fork_health();
-        // The fork runs as the live node does; boxed bare, so it
-        // carries no fork source of its own.
-        let forked = Forked::new(Box::new(fork));
-        Ok(match health {
-            Some(health) => forked.with_health(health),
-            None => forked,
-        })
+        self.instance(mode).map(forked).map_err(ForkCause::new)
+    }
+
+    /// The live instance's state (and rate, and meter) is read here, at the
+    /// gather; the `plugin-server` launch and the state load, half a second
+    /// or more, are the build's, on whichever thread runs it (bevy-tutti's
+    /// export: its compute pool).
+    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+        let capture = self.capture(mode).map_err(ForkCause::new)?;
+        Ok(ForkBuild::deferred(move || {
+            capture.build().map(forked).map_err(ForkCause::new)
+        }))
     }
 }
 

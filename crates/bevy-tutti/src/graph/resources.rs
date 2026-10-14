@@ -643,12 +643,13 @@ impl AudioGraphRes {
 
     // --- Export ---
 
-    /// The graph an export renders: `node`'s sub-graph, or the whole graph
-    /// for `None`, as a [`tutti_export::RenderGraph`] sharing no state with
-    /// this one. Main thread; the render then runs on a worker. See
+    /// The graph an export renders, gathered: `node`'s sub-graph, or the
+    /// whole graph for `None`, as a fork sharing no state with this one,
+    /// read from the live graph now and built on a worker
+    /// (`PendingExport::build`). Main thread. See
     /// `export::run::start_exports`.
     ///
-    /// `Editor::fork` (`ForkTarget::Master` or `ForkTarget::Node`) in
+    /// `Editor::fork_gather` (`ForkTarget::Master` or `ForkTarget::Node`) in
     /// `ForkMode::Offline(ctx)`, prepared at `rate`. Every node is forked from
     /// its shadow — isolated, rebound onto `ctx`, reset — **the master
     /// included**: a master export renders what the graph is driven to play
@@ -664,7 +665,7 @@ impl AudioGraphRes {
         node: Option<AudioNode>,
         ctx: &OfflineTransport,
         rate: SampleRate,
-    ) -> Result<tutti_export::RenderGraph, ExportRefused> {
+    ) -> Result<super::runtime::PendingExport, ExportRefused> {
         if self.outputs() == 0 {
             return Err(ExportRefused::GraphHasNoOutputs);
         }
@@ -672,7 +673,7 @@ impl AudioGraphRes {
             None => tutti_graph::ForkTarget::Master,
             Some(node) => tutti_graph::ForkTarget::Node(super::runtime::key(node)),
         };
-        match self.read().fork_for_export(target, ctx, rate) {
+        match self.read().gather_for_export(target, ctx, rate) {
             Ok(graph) => Ok(graph),
             Err(tutti_export::Error::Fork(
                 tutti_graph::ForkError::NoOutputs { .. }

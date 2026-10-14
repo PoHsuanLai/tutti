@@ -283,18 +283,10 @@ mod tests {
     /// export module removes it when reporting, and until then the render is
     /// still the thing being rendered.
     fn dummy_in_flight() -> ExportInFlight {
-        // A finished render hands its graph back with the result; an empty one.
-        let (editor, executor) = tutti_graph::Editor::new(tutti_export::RenderGraph::prepare(
-            tutti_core::SampleRate(48_000.0),
-        ));
-        let graph = tutti_export::RenderGraph::new(editor, executor).expect("a paired graph");
         ExportInFlight::new(
             bevy_tasks::AsyncComputeTaskPool::get_or_init(bevy_tasks::TaskPool::new).spawn(
                 async move {
-                    (
-                        Err(tutti_export::Error::InvalidConfig("test fixture".into()).into()),
-                        graph,
-                    )
+                    Err(tutti_export::Error::InvalidConfig("test fixture".into()).into())
                 },
             ),
         )

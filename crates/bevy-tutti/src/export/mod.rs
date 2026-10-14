@@ -79,9 +79,10 @@
 //! assert_eq!(*channels.lock().unwrap(), Some(2));
 //! ```
 //!
-//! A request may also carry a `with_prepare` hook — the last look at the graph
-//! before it leaves the main thread, which is where an isolated copy's voices
-//! get refilled from the app's world. See [`ExportRequest::with_prepare`].
+//! A request may also carry a `with_prepare` hook — a look at the app's
+//! world in the frame the export starts, returning an edit of the graph
+//! made once the fork is built, which is where an isolated copy's voices get
+//! refilled from the app's world. See [`ExportRequest::with_prepare`].
 //!
 //! # Which graph is rendered
 //!
@@ -102,7 +103,9 @@
 //!   new `plugin-server` process, loaded with the live one's state, told it
 //!   is rendering offline. Its MIDI clip comes with it, rebound onto the
 //!   render's timeline, so an exported instrument plays its notes; its live
-//!   MIDI inbox does not. The fork launches in the frame the export starts.
+//!   MIDI inbox does not. Its state is taken in the frame the export
+//!   starts; the new server is launched and loaded on the compute pool, so
+//!   that frame does not wait for it.
 //! - **A built-in synth plays its clip too**: a `PolySynth` or
 //!   `SoundFontUnit` forks through its own source, which rebinds the clip
 //!   installed on the live synth's port onto the render's timeline (a
@@ -136,9 +139,9 @@
 //! you want first, first.
 //!
 //! There *is* a cap, of exactly one: see [`ExportInFlight`]. It is enforced in
-//! [`start_exports`] rather than left to callers, because the per-request graph
-//! copy is main-thread work and a `run_if` gate cannot see requests spawned in
-//! its own frame.
+//! [`start_exports`] rather than left to callers, because the per-request
+//! gather of the graph copy is main-thread work and a `run_if` gate cannot see
+//! requests spawned in its own frame.
 //!
 //! **No progress reporting.** The render is one synchronous call; there is
 //! nothing to sample between blocks without the engine pushing a callback back
@@ -150,13 +153,13 @@ mod run;
 
 pub use request::{
     ExportClock, ExportDone, ExportError, ExportInFlight, ExportNode, ExportOutput, ExportRequest,
-    ExportSource, ExportTarget, PrepareGraph, PreparedGraph,
+    ExportSource, ExportTarget, PrepareEdit, PrepareGraph, PreparedGraph,
 };
 
 // The engine types this module's API hands out, so a host names them without
 // depending on the crates they come from: the graph a `prepare` hook edits,
 // and what an `ExportError` carries.
-pub use run::{poll_exports, start_exports};
+pub use run::{poll_exports, start_exports, ExportDrops};
 pub use tutti_export::RenderGraph;
 pub use tutti_graph::{ForkCause, ForkFaultKind};
 pub use tutti_types::NodeKey;
@@ -188,7 +191,7 @@ impl Plugin for ExportPlugin {
         // render's completion in the same frame it picks the next request, so
         // a queue of them drains at one per frame with no idle gap. The cost is
         // only that a just-finished render reports on the following frame.
-        app.add_systems(
+        app.init_resource::<ExportDrops>().add_systems(
             Update,
             (
                 poll_exports,

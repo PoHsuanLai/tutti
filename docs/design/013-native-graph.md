@@ -1887,11 +1887,54 @@ and the sampler export test checks the clip from its first frame on beat 3.
 Recorded for later:
 
 - ~~**The offline timeline's accumulated beat**~~ (above): done in #40.
-- **The fork runs on the main thread**, in the frame the export starts, as
+- ~~**The fork runs on the main thread**, in the frame the export starts, as
   the `Net` clone did — and a plugin's fork launches a `plugin-server` and
   transfers state (half a second or more), stalling that frame. Moving it
   off-thread needs `Editor::fork` split into a control-side gather (sources,
-  spec) and a build that can run on the worker.
+  spec) and a build that can run on the worker.~~ **Done.** `Editor::fork`
+  is now `Editor::fork_gather` (control thread) then `PendingFork::build`
+  (any thread), and still both in one call:
+  - **The gather** reads everything of the live graph the fork takes, at
+    that moment: the spec (filtered to what the target needs), the param
+    ramps the running units published (through their wait-free taps; the
+    live executor is sent nothing), and each node's
+    `ForkSource::gather`. A later live edit (a rewire, a `ParamSet` write, a
+    plugin parameter, a meter installed) does not reach the fork, however
+    long the build waits. `PendingFork` is `Send + 'static` and holds no
+    reference to the live editor.
+  - **Each source declares where its work runs**, as the `ForkBuild` its
+    `gather` returns: `pinned` (built and prepared in the gather, on its
+    thread: the in-process VST2 fork, whose `VSTPluginMain`, state opcodes,
+    `effSetSampleRate` in `prepare` and close are the main thread's; and the
+    trait's default, so a source that does not say keeps the old,
+    all-on-one-thread behaviour), `ready` (built in the gather, prepared in
+    the build: `ForkByClone`, `ParamFork`), or `deferred` (the source
+    captures in the gather what it must read live, and a closure builds the
+    unit on any thread: the out-of-process plugin, whose gather saves the
+    live state and reads its rate and meter, and whose build launches the
+    `plugin-server` and loads that state).
+  - **Failure**: `ForkError::Source` names the first source whose gather
+    fails, else the first deferred build that fails (none after it runs). A
+    failed build hands back `ForkRemains`, everything it had built, for the
+    caller to drop where a pinned unit belongs.
+  - **bevy-tutti**: `start_exports` gathers (and runs the `prepare` hook's
+    world read) in the frame the export starts; the compute-pool task builds
+    the fork, runs the hook's edit, commits and renders. Everything the task
+    holds is wrapped (`ToMain`) so that wherever it drops (finished, failed,
+    or cancelled before or mid-run) it is sent to `ExportDrops` and dropped
+    by `poll_exports` on the main thread. The `prepare` hook is split to
+    match: `with_prepare(|world| move |prepared| ..)`. tutti-export gains
+    `RenderGraph::gather` / `RenderGraph::build`.
+  - Pinned by tutti-graph's `a_gathered_fork_is_the_live_graph_at_the_gather`,
+    `each_source_builds_and_prepares_where_its_gather_says`,
+    `a_failing_build_names_its_key_and_hands_back_what_it_built`, and
+    bevy-tutti's `export_fork.rs` `off_thread` module (a slow deferred build
+    does not hold the frame and takes no later edit; a pinned source builds,
+    prepares and drops on the main thread; a cancelled export and a failed
+    build drop there too, the failure naming the entity). Those run in CI's
+    threaded-pool step beside `the_rendered_graph_is_dropped_on_the_main_thread`:
+    without `bevy_tasks/multi_threaded` a spawned task runs inside `spawn`, so
+    the whole export is on the main thread as before.
 - ~~**A forked `PolySynth` or `SoundFontUnit` has no clip.**~~ **Done.**
   Their MIDI port is severed by `isolate`, and bevy-tutti's
   `Legacy::controlled` shadow is isolated at insert, so the shadow a fork

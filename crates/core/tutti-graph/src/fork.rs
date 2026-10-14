@@ -5,18 +5,19 @@
 //!
 //! The rules are documented on [`Editor::fork`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
+use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source, Topology};
 use tutti_types::{NodeKey, OfflineTransport};
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
 use crate::node::{IntoNode, Node, NodeParts, Prepare};
-use crate::spec::EventIn;
+use crate::param::{ParamFrom, ParamIn, Ramp};
+use crate::spec::{EventIn, GraphSpec};
 
 /// Produces a fresh unit for a fork of the graph its node was inserted into:
 /// a per-node capability the [`Editor`] keeps from insert on (see
@@ -37,6 +38,231 @@ pub trait ForkSource: Send {
     /// handed the live instance's state — can, and must say so rather than
     /// fall back to anything that shares the live unit.
     fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause>;
+
+    /// The control-thread half of a fork ([`Editor::fork_gather`]): read
+    /// what the fork must take from the live node **now**, and say where the
+    /// rest of the build may run ([`ForkBuild`]).
+    ///
+    /// Called on the control thread at the moment of the fork. Whatever the
+    /// unit depends on that the host can still change afterwards (a shared
+    /// cell's value, a param's authored value, a plugin's state) is read
+    /// here, so a later edit does not reach the fork however long the build
+    /// waits.
+    ///
+    /// The default builds the whole unit here with [`fork`](Self::fork) and
+    /// returns it [`pinned`](ForkBuild::pinned): built and prepared on this
+    /// thread, as before the split. A source overrides it to move work off
+    /// the control thread: [`ForkBuild::ready`] for a unit cheap to build
+    /// here and free to prepare anywhere (a clone), [`ForkBuild::deferred`]
+    /// for a slow build that may run on any thread (a `plugin-server`
+    /// launch).
+    ///
+    /// An `Err` fails the fork as [`ForkError::Source`], naming the key.
+    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+        self.fork(mode).map(ForkBuild::pinned)
+    }
+}
+
+/// What a [`ForkSource::gather`] hands the editor: the forked unit, or how to
+/// build it, and **on which thread** the rest of the work may run. The
+/// source's declaration; see [`Editor::fork_gather`].
+pub struct ForkBuild(Build);
+
+enum Build {
+    Pinned(Forked),
+    Ready(Forked),
+    Deferred(Box<dyn FnOnce() -> Result<Forked, ForkCause> + Send>),
+}
+
+impl ForkBuild {
+    /// A unit built on the gathering thread whose `prepare` must run there
+    /// too: [`Editor::fork_gather`] prepares it before it returns, and
+    /// [`PendingFork::build`] places it as it is. For a unit confined to one
+    /// thread (an in-process VST2 plugin, whose construction, rate change and
+    /// close are the main thread's). Drop the fork that holds it on that
+    /// thread as well.
+    pub fn pinned(forked: Forked) -> Self {
+        Self(Build::Pinned(forked))
+    }
+
+    /// A unit built on the gathering thread (a template's clone is the
+    /// snapshot) that the build prepares on whichever thread runs it.
+    pub fn ready(forked: Forked) -> Self {
+        Self(Build::Ready(forked))
+    }
+
+    /// A unit [`PendingFork::build`] makes by calling `build`, on whichever
+    /// thread runs it: the source has captured in `build` everything it must
+    /// read of the live node, and `build` reads nothing live. For a slow
+    /// build (a hosted plugin's `plugin-server` launch and state load). An
+    /// `Err` fails the build as [`ForkError::Source`], naming the key.
+    pub fn deferred(build: impl FnOnce() -> Result<Forked, ForkCause> + Send + 'static) -> Self {
+        Self(Build::Deferred(Box::new(build)))
+    }
+}
+
+impl fmt::Debug for ForkBuild {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            Build::Pinned(_) => "ForkBuild::Pinned",
+            Build::Ready(_) => "ForkBuild::Ready",
+            Build::Deferred(_) => "ForkBuild::Deferred",
+        })
+    }
+}
+
+/// A unit of a [`PendingFork`], at the stage the gather left it.
+enum Unit {
+    /// Built and prepared on the gathering thread ([`ForkBuild::pinned`]).
+    Prepared(Forked),
+    /// Built, not prepared ([`ForkBuild::ready`]).
+    Built(Forked),
+    /// Not built ([`ForkBuild::deferred`]).
+    Deferred(Box<dyn FnOnce() -> Result<Forked, ForkCause> + Send>),
+}
+
+/// A fork gathered on the control thread and not yet built
+/// ([`Editor::fork_gather`]): the spec as the live graph held it, the param
+/// ramps it had published, and each node's unit or the build that makes it.
+///
+/// `Send`, and holds nothing of the live graph: build it on a worker
+/// ([`build`](Self::build)) while the control thread goes on, and later edits
+/// of the live editor do not reach it. Dropping it drops every unit it holds,
+/// pinned ones included, so drop it where those belong.
+pub struct PendingFork {
+    prepare: Prepare,
+    event_capacity: usize,
+    /// The fork's spec, but for what the inserts write (each node's shape
+    /// figures, generations).
+    spec: GraphSpec,
+    seeds: BTreeMap<ParamIn, Vec<(ParamFrom, Ramp)>>,
+    units: Vec<(NodeKey, Unit)>,
+}
+
+/// What a failed [`PendingFork::build`] had built: every unit (pinned ones
+/// included), and the half-built pair if it got that far. It has no use but
+/// to be **dropped where its pinned units belong** (for an in-process VST2
+/// plugin, the main thread), which is why the build hands it back rather than
+/// dropping it on its own thread.
+pub struct ForkRemains {
+    units: Vec<Forked>,
+    graph: Option<Box<(Editor, Executor)>>,
+}
+
+impl ForkRemains {
+    /// Whether it holds nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.units.is_empty() && self.graph.is_none()
+    }
+}
+
+impl fmt::Debug for ForkRemains {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ForkRemains")
+            .field("units", &self.units.len())
+            .field("graph", &self.graph.is_some())
+            .finish()
+    }
+}
+
+impl fmt::Debug for PendingFork {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingFork")
+            .field(
+                "nodes",
+                &self.units.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            )
+            .field("deferred", &self.deferred())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PendingFork {
+    /// How many units the build still has to make ([`ForkBuild::deferred`]).
+    pub fn deferred(&self) -> usize {
+        self.units
+            .iter()
+            .filter(|(_, u)| matches!(u, Unit::Deferred(_)))
+            .count()
+    }
+
+    /// The other half of [`Editor::fork_gather`], on any thread: run each
+    /// deferred build in key order, prepare every unit the gather left
+    /// unprepared, and install the fork, as [`Editor::fork`] returns it.
+    ///
+    /// # Errors
+    ///
+    /// [`ForkError::Source`] naming the first deferred build, in key order,
+    /// that fails (no later one runs), or [`ForkError::Commit`]. Either way
+    /// nothing is installed, and everything built so far comes back as
+    /// [`ForkRemains`], for the caller to drop where its pinned units belong.
+    pub fn build(self) -> Result<(Editor, Executor), (ForkError, ForkRemains)> {
+        let Self {
+            prepare,
+            event_capacity,
+            spec,
+            seeds,
+            units,
+        } = self;
+        // Every deferred build first, so a failure installs nothing.
+        let mut built = Vec::with_capacity(units.len());
+        let mut failed = None;
+        for (key, unit) in units {
+            let unit = match unit {
+                Unit::Deferred(build) if failed.is_none() => match build() {
+                    Ok(forked) => (forked, false),
+                    Err(cause) => {
+                        failed = Some(ForkError::Source { key, cause });
+                        continue;
+                    }
+                },
+                // Not run: the fork has already failed.
+                Unit::Deferred(_) => continue,
+                Unit::Built(forked) => (forked, false),
+                Unit::Prepared(forked) => (forked, true),
+            };
+            built.push((key, unit));
+        }
+        if let Some(error) = failed {
+            let units = built.into_iter().map(|(_, (forked, _))| forked).collect();
+            return Err((error, ForkRemains { units, graph: None }));
+        }
+
+        let (mut editor, mut executor) = Editor::with_event_capacity(prepare, event_capacity);
+        for (key, (forked, prepared)) in built {
+            let kind = &spec.topology.nodes[&key].kind;
+            // Not forkable itself (module docs: a fork is not a fork source).
+            if prepared {
+                editor.insert_prepared(key, kind, forked.node);
+            } else {
+                editor.insert(key, kind, Unforkable(forked.node));
+            }
+            if let Some(health) = forked.health {
+                editor.watch_fork(key, health);
+            }
+        }
+        let fork = editor.spec_mut();
+        fork.topology.inputs = spec.topology.inputs;
+        fork.topology.outputs = spec.topology.outputs;
+        fork.topology.edges = spec.topology.edges;
+        fork.events = spec.events;
+        fork.required_resolution = spec.required_resolution;
+        fork.params = spec.params;
+        for (key, node) in fork.topology.nodes.iter_mut() {
+            node.params = spec.topology.nodes[key].params.clone();
+        }
+        editor.seed_params(seeds);
+        if let Err(e) = editor.commit() {
+            let remains = ForkRemains {
+                units: Vec::new(),
+                graph: Some(Box::new((editor, executor))),
+            };
+            return Err((ForkError::Commit(e), remains));
+        }
+        executor.apply_pending();
+        editor.collect();
+        Ok((editor, executor))
+    }
 }
 
 /// What a [`ForkSource`] produces: the unit, and — for a unit that can fail
@@ -330,6 +556,12 @@ impl<N: Node + Clone + Send + 'static> ForkSource for CloneFork<N> {
         node.reset();
         Ok(Forked::new(Box::new(node)))
     }
+
+    /// The clone is the snapshot, taken here; a clone of a node that shares
+    /// nothing can be prepared on any thread.
+    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+        self.fork(mode).map(ForkBuild::ready)
+    }
 }
 
 impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
@@ -498,6 +730,14 @@ impl Editor {
     /// render. A unit that faults keeps rendering silence without further
     /// waiting, so a failed render ends promptly.
     ///
+    /// # Off the control thread: [`fork_gather`](Self::fork_gather)
+    ///
+    /// This is [`fork_gather`](Self::fork_gather) and
+    /// [`PendingFork::build`] in one call, on one thread. A host that must
+    /// not stall its control thread for a slow source (a hosted plugin's
+    /// fork launches a `plugin-server` and transfers its state: half a
+    /// second or more) gathers there and builds on a worker.
+    ///
     /// # Errors
     ///
     /// Nothing is built when this fails. [`ForkError::NotForkable`] names the
@@ -505,13 +745,73 @@ impl Editor {
     /// unit is forked); [`ForkError::NoSuchNode`] and [`ForkError::NoOutputs`]
     /// reject a [`ForkTarget::Node`] with nothing to render; and a source that
     /// fails, or a copy that does not compile, is reported as the matching
-    /// variant.
+    /// variant ([`ForkError::Source`] names the first source whose gather
+    /// fails, else the first whose build does; see
+    /// [`fork_gather`](Self::fork_gather)).
     pub fn fork(
         &self,
         target: ForkTarget,
         mode: ForkMode<'_>,
         prepare: Prepare,
     ) -> Result<(Editor, Executor), ForkError> {
+        // Whatever was built is dropped here, on the thread that gathered
+        // it, which is where a pinned unit belongs.
+        self.fork_gather(target, mode, prepare)?
+            .build()
+            .map_err(|(error, _remains)| error)
+    }
+
+    /// The control-thread half of [`fork`](Self::fork): everything the fork
+    /// must read of the live graph, read **now**, into a [`PendingFork`] that
+    /// shares nothing with this editor and builds on any thread
+    /// ([`PendingFork::build`]).
+    ///
+    /// The fork is the live graph **as it is at this call**. A later edit of
+    /// this editor (a rewire, an insert, a param set through a
+    /// [`ParamSet`](crate::ParamSet)) does not reach it, however long the
+    /// build waits.
+    ///
+    /// # What runs here, and what runs in the build
+    ///
+    /// Here, on this thread: the spec and the param ramps the running units
+    /// last published are copied, and each node's [`ForkSource::gather`]
+    /// runs, in key order. What a source does there is its own declaration
+    /// ([`ForkBuild`]):
+    ///
+    /// - [`ForkBuild::pinned`]: the unit is built **and prepared** here, for
+    ///   a unit whose construction and `prepare` are confined to one thread
+    ///   (an in-process VST2 plugin: the main thread). The default for a
+    ///   source that does not say.
+    /// - [`ForkBuild::ready`]: the unit is built here (a clone of a template
+    ///   is the snapshot), and prepared by the build.
+    /// - [`ForkBuild::deferred`]: the source captured what it must read now
+    ///   (a hosted plugin's saved state) and the build makes the unit (a
+    ///   `plugin-server` launch), on whichever thread calls it.
+    ///
+    /// The live executor is not touched: nothing is sent, and the only state
+    /// the audio thread writes that is read here (the ramps an event source
+    /// drives a param with) is read through the wait-free taps the running
+    /// units publish into.
+    ///
+    /// Call on the control thread, as [`fork`](Self::fork). Drop what it
+    /// returns, and what a failed build hands back, where a pinned unit's own
+    /// rule allows (for an in-process VST2 plugin, the main thread): a pinned
+    /// unit is dropped with it.
+    ///
+    /// # Errors
+    ///
+    /// As [`fork`](Self::fork), for the part that runs here:
+    /// [`ForkError::NotForkable`], [`ForkError::NoSuchNode`],
+    /// [`ForkError::NoOutputs`], and [`ForkError::Source`] for the first
+    /// source, in key order, whose **gather** fails. Every unit already built
+    /// is dropped here before this returns. A deferred build's failure is
+    /// [`PendingFork::build`]'s to report.
+    pub fn fork_gather(
+        &self,
+        target: ForkTarget,
+        mode: ForkMode<'_>,
+        prepare: Prepare,
+    ) -> Result<PendingFork, ForkError> {
         let live = self.spec();
         let (keys, outputs) = match target {
             // What the global outputs hear, and nothing else: a node no
@@ -570,68 +870,82 @@ impl Editor {
             }
         }
 
-        let (mut editor, mut executor) =
-            Editor::with_event_capacity(prepare, self.event_capacity());
-        for (key, source) in sources {
-            let kind = &live.topology.nodes[&key].kind;
-            let forked = source
-                .fork(mode)
-                .map_err(|cause| ForkError::Source { key, cause })?;
-            // Not forkable itself (module docs: a fork is not a fork source).
-            editor.insert(key, kind, Unforkable(forked.node));
-            if let Some(health) = forked.health {
-                editor.watch_fork(key, health);
-            }
-        }
-        let fork = editor.spec_mut();
-        fork.topology.inputs = live.topology.inputs;
-        fork.topology.outputs = outputs;
-        // An edge into a forked node comes from a forked node, a global
-        // input or silence: `upstream` closed the set over every edge kind.
-        fork.topology.edges = live
-            .topology
-            .edges
-            .iter()
-            .filter(|(at, _)| keys.contains(&at.node))
-            .map(|(at, e)| (*at, *e))
-            .collect();
-        fork.events = live
-            .events
-            .iter()
-            .filter(|(at, _)| keys.contains(&at.node))
-            .map(|(at, e)| (*at, e.clone()))
-            .collect();
-        fork.required_resolution = live
-            .required_resolution
-            .iter()
-            .filter(|((at, _), _)| keys.contains(&at.node))
-            .map(|(k, r)| (*k, *r))
-            .collect();
-        // A modulated param's sources are upstream of its node too
+        // The fork's spec as the live one holds it now: the nodes (their
+        // kinds and param values), and every edge into a forked node. An
+        // edge into a forked node comes from a forked node, a global input
+        // or silence: `upstream` closed the set over every edge kind. A
+        // modulated param's sources are upstream of its node too
         // (`upstream` walks them), so the fork modulates it as the live
         // graph does, riding on the forked unit's own control.
-        fork.params = live
-            .params
-            .iter()
-            .filter(|(at, _)| keys.contains(&at.node))
-            .map(|(at, m)| (*at, m.clone()))
-            .collect();
-        for (key, node) in fork.topology.nodes.iter_mut() {
-            node.params = live.topology.nodes[key].params.clone();
-        }
+        let spec = GraphSpec {
+            topology: Topology {
+                nodes: keys
+                    .iter()
+                    .map(|key| (*key, live.topology.nodes[key].clone()))
+                    .collect(),
+                edges: live
+                    .topology
+                    .edges
+                    .iter()
+                    .filter(|(at, _)| keys.contains(&at.node))
+                    .map(|(at, e)| (*at, *e))
+                    .collect(),
+                outputs,
+                inputs: live.topology.inputs,
+            },
+            events: live
+                .events
+                .iter()
+                .filter(|(at, _)| keys.contains(&at.node))
+                .map(|(at, e)| (*at, e.clone()))
+                .collect(),
+            // Generations start again at 0: the build's inserts set them.
+            generations: BTreeMap::new(),
+            required_resolution: live
+                .required_resolution
+                .iter()
+                .filter(|((at, _), _)| keys.contains(&at.node))
+                .map(|(k, r)| (*k, *r))
+                .collect(),
+            params: live
+                .params
+                .iter()
+                .filter(|(at, _)| keys.contains(&at.node))
+                .map(|(at, m)| (*at, m.clone()))
+                .collect(),
+        };
         // The event sources' ramps as the live units hold them, so a held
         // automation value is where the live graph has it from the fork's
         // first frame (a ramp under way carries on from where it is).
-        editor.seed_params(
-            keys.iter()
-                .flat_map(|&key| self.param_ramps(key))
-                .filter(|(_, ramps)| !ramps.is_empty())
-                .collect(),
-        );
-        editor.commit().map_err(ForkError::Commit)?;
-        executor.apply_pending();
-        editor.collect();
-        Ok((editor, executor))
+        let seeds = keys
+            .iter()
+            .flat_map(|&key| self.param_ramps(key))
+            .filter(|(_, ramps)| !ramps.is_empty())
+            .collect();
+
+        let mut units = Vec::with_capacity(sources.len());
+        for (key, source) in sources {
+            let build = source
+                .gather(mode)
+                .map_err(|cause| ForkError::Source { key, cause })?;
+            let unit = match build.0 {
+                Build::Pinned(mut forked) => {
+                    // Here, on the gathering thread: the unit's own rule.
+                    forked.node.prepare(&prepare);
+                    Unit::Prepared(forked)
+                }
+                Build::Ready(forked) => Unit::Built(forked),
+                Build::Deferred(build) => Unit::Deferred(build),
+            };
+            units.push((key, unit));
+        }
+        Ok(PendingFork {
+            prepare,
+            event_capacity: self.event_capacity(),
+            spec,
+            seeds,
+            units,
+        })
     }
 
     /// Whether every forked unit of this (forked) editor is still rendering

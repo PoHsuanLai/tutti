@@ -244,8 +244,8 @@ pub use event::{
 pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};
 pub use fork::{
-    ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkSource,
-    ForkTarget, Forked, Unforkable,
+    ForkBuild, ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode,
+    ForkRemains, ForkSource, ForkTarget, Forked, PendingFork, Unforkable,
 };
 pub use history::TransportHistory;
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};

@@ -189,14 +189,15 @@ impl PluginControls {
         self.sample_rate.store(sample_rate.get(), Ordering::Release);
     }
 
-    /// Give `fork` the live node's meter: the one control its transport
-    /// snapshot reads besides its own graph's `Env` (which for an offline fork
-    /// is the render's). Control thread. Every other input (MIDI, automation,
+    /// What a fork takes of the live node's sources, read now (a fork's
+    /// gather, on the control thread): its meter, the one control its
+    /// transport snapshot reads besides its own graph's `Env` (which for an
+    /// offline fork is the render's). Every other input (MIDI, automation,
     /// harmony) reaches a plugin on its event input, from nodes that fork
     /// themselves.
-    pub(super) fn rebind_sources_into(&self, fork: &PluginControls) {
-        if let Some(meter) = self.meter.load_full() {
-            fork.set_meter(meter);
+    pub(super) fn sources_now(&self) -> ForkedSources {
+        ForkedSources {
+            meter: self.meter.load_full(),
         }
     }
 
@@ -231,6 +232,23 @@ impl PluginControls {
         max: f32,
     ) -> Arc<PluginParamTarget> {
         Arc::new(PluginParamTarget::new(base, min, max))
+    }
+}
+
+/// The live node's sources as a fork's gather read them
+/// ([`PluginControls::sources_now`]), to install on the fork when it is
+/// built, wherever that is: a source the host installs on the live node
+/// afterwards does not reach the fork.
+pub(super) struct ForkedSources {
+    meter: Option<Arc<RtPublish<MeterMap>>>,
+}
+
+impl ForkedSources {
+    /// Give `fork` what was read.
+    pub(super) fn install(self, fork: &PluginControls) {
+        if let Some(meter) = self.meter {
+            fork.set_meter(meter);
+        }
     }
 }
 
@@ -277,10 +295,14 @@ mod tests {
         assert_eq!(held.sample_rate(), SampleRate(48_000.0));
     }
 
-    /// A fork has the live node's meter, the one control its transport
-    /// snapshot reads besides its own graph's `Env`.
+    /// A fork has the live node's meter as it was at the gather, the one
+    /// control its transport snapshot reads besides its own graph's `Env`:
+    /// a meter installed on the live node between the gather and the build
+    /// does not reach it.
     ///
-    /// Mutation: drop the meter copy from `rebind_sources_into` → fails.
+    /// Mutation: drop the meter copy from `ForkedSources::install` → fails.
+    /// Mutation (run): `sources_now` keeping the live cell (`Arc::clone(&self.meter)`)
+    /// and `install` reading it then → the fork gets the later meter → fails.
     #[test]
     fn a_fork_gets_the_live_meter() {
         let live = controls();
@@ -292,7 +314,9 @@ mod tests {
             SampleRate(96_000.0),
             false,
         );
-        live.rebind_sources_into(&fork);
+        let gathered = live.sources_now();
+        live.set_meter(Arc::new(RtPublish::new(MeterMap::default())));
+        gathered.install(&fork);
         let shared_meter = fork
             .meter
             .load_full()

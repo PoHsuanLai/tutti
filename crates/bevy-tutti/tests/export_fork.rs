@@ -22,7 +22,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use bevy_tutti::export::{
     ExportClock, ExportDone, ExportError, ExportNode, ExportOutput, ExportPlugin, ExportRequest,
-    ExportSource, ExportTarget,
+    ExportSource, ExportTarget, PreparedGraph,
 };
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphSource};
 use tutti_core::{Hz, Tail, Q};
@@ -362,7 +362,7 @@ fn latency_and_tail_come_from_the_graph() {
 ///
 /// Mutation (run): not applying the fork's committed hook edit before the
 /// figures are read (`executor.apply_pending()` after the hook's commit, in
-/// `start_exports`, a no-op) → the fork's plan is still the live graph's
+/// `start_exports`' task, a no-op) → the fork's plan is still the live graph's
 /// and nothing is trimmed. Mutation (run): reading the latency before the
 /// hook runs → fails.
 #[test]
@@ -375,15 +375,17 @@ fn the_trim_is_read_after_the_prepare_hook() {
     }
     let request = buffers(ExportSource::Master, 0.01)
         .trim_reported_latency()
-        .with_prepare(|prepared, _world| {
-            let key = prepared.fresh_key();
-            let editor = prepared.graph.editor_mut();
-            editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
-            for out in editor.spec_mut().topology.outputs.iter_mut() {
-                *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
-                    node: key,
-                    port: 0,
-                });
+        .with_prepare(|_world: &World| {
+            |prepared: PreparedGraph<'_>| {
+                let key = prepared.fresh_key();
+                let editor = prepared.graph.editor_mut();
+                editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
+                for out in editor.spec_mut().topology.outputs.iter_mut() {
+                    *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
+                        node: key,
+                        port: 0,
+                    });
+                }
             }
         });
     let planes = export(&mut app, request).planes();
@@ -1817,5 +1819,567 @@ mod disk {
             }
             other => panic!("expected a named failure, got {other:?}"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The fork is gathered in the frame the export starts and built on the pool
+// ---------------------------------------------------------------------------
+
+/// `Editor::fork_gather` on the main thread, `PendingFork::build` on the
+/// compute pool: a slow fork source does not hold the frame, a live edit
+/// after the start does not reach the fork, a main-thread-only source still
+/// builds on the main thread, and everything is dropped there.
+///
+/// **They bite only with a threaded pool**, so CI runs them threaded beside
+/// `the_rendered_graph_is_dropped_on_the_main_thread`: the `dark features`
+/// job (and `just test-features`) runs this module with
+/// `--features full,bevy_tasks/multi_threaded`. This crate's own feature set
+/// leaves `multi_threaded` off, and then `bevy_tasks` runs a spawned task to
+/// completion inside `spawn` (its single-threaded pool), on the main thread:
+/// the whole export, build and render, runs in `start_exports`, as before
+/// the split. Each test asks the pool which it is ([`threaded`]) and asserts
+/// what that pool does.
+mod off_thread {
+    use std::sync::atomic::AtomicU32;
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::thread::ThreadId;
+    use std::time::Duration;
+
+    use super::*;
+    use bevy_tutti::graph::GraphSource;
+    use tutti_graph::{param_parts, ForkBuild, ParamNode, ParamSet};
+    use tutti_types::{Amplitude, Param, UnitParam};
+
+    /// A constant the fork renders: a value the gather read.
+    #[derive(Clone)]
+    struct Held(f32);
+
+    impl Node for Held {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            io.output(0).fill(self.0);
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+
+    /// A live node whose level is a cell the host moves (`f32` bits). Its
+    /// fork is slow, as a hosted plugin's `plugin-server` launch is: the
+    /// gather reads the cell, and the deferred build waits on `wait` (at
+    /// most three seconds) before it makes a [`Held`] of that level.
+    struct Slow {
+        level: Arc<AtomicU32>,
+        wait: Mutex<Option<Receiver<()>>>,
+        built: Arc<AtomicBool>,
+    }
+
+    impl Node for Slow {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            io.output(0)
+                .fill(f32::from_bits(self.level.load(Ordering::SeqCst)));
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+
+    struct SlowFork {
+        level: Arc<AtomicU32>,
+        wait: Mutex<Option<Receiver<()>>>,
+        built: Arc<AtomicBool>,
+    }
+
+    impl ForkSource for SlowFork {
+        fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+            unreachable!("an export gathers")
+        }
+
+        fn gather(&self, _mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+            // Read now, in the frame the export starts.
+            let level = f32::from_bits(self.level.load(Ordering::SeqCst));
+            let wait = self.wait.lock().unwrap().take();
+            let built = Arc::clone(&self.built);
+            Ok(ForkBuild::deferred(move || {
+                if let Some(wait) = wait {
+                    let _ = wait.recv_timeout(Duration::from_secs(3));
+                }
+                built.store(true, Ordering::SeqCst);
+                Ok(Forked::new(Box::new(Held(level))))
+            }))
+        }
+    }
+
+    impl IntoNode for Slow {
+        type Controls = ();
+        fn into_parts(self) -> NodeParts<()> {
+            let fork = SlowFork {
+                level: Arc::clone(&self.level),
+                wait: Mutex::new(self.wait.lock().unwrap().take()),
+                built: Arc::clone(&self.built),
+            };
+            NodeParts {
+                node: Box::new(self),
+                controls: (),
+                fork: Some(Box::new(fork)),
+            }
+        }
+    }
+
+    /// Whether the compute pool runs tasks on threads of its own: a task
+    /// spawned from here runs elsewhere. Without them (`bevy_tasks` built
+    /// without `multi_threaded`) a task runs inside `spawn`, here.
+    fn threaded() -> bool {
+        let main = std::thread::current().id();
+        let task =
+            bevy_tasks::AsyncComputeTaskPool::get().spawn(async { std::thread::current().id() });
+        bevy_tasks::block_on(task) != main
+    }
+
+    /// A slow node at `level`, its build released by the returned sender.
+    fn slow(level: f32) -> (Slow, Arc<AtomicU32>, Sender<()>, Arc<AtomicBool>) {
+        let cell = Arc::new(AtomicU32::new(level.to_bits()));
+        let built = Arc::new(AtomicBool::new(false));
+        let (release, wait) = channel();
+        let node = Slow {
+            level: Arc::clone(&cell),
+            wait: Mutex::new(Some(wait)),
+            built: Arc::clone(&built),
+        };
+        (node, cell, release, built)
+    }
+
+    /// Outputs its volume, a param the host sets by address: a
+    /// `ParamNode`, whose fork reads the value last set at the gather.
+    #[derive(Clone)]
+    struct Level(Param<Amplitude>);
+
+    impl Node for Level {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            io.output(0).fill(self.0.load().get());
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+
+    impl ParamNode for Level {
+        fn param_set(&self) -> ParamSet {
+            ParamSet::builder()
+                .param(UnitParam::Volume, self.0.as_atomic())
+                .build()
+        }
+        fn fork_fresh(&self) -> Self {
+            let mut fork = self.clone();
+            fork.0.detach();
+            fork
+        }
+    }
+
+    impl IntoNode for Level {
+        type Controls = ParamSet;
+        fn into_parts(self) -> NodeParts<ParamSet> {
+            param_parts(self)
+        }
+    }
+
+    /// What [`at_start`] saw, in the frame the export started.
+    #[derive(Resource, Default, Clone)]
+    struct Seen(Arc<Mutex<Option<bool>>>);
+
+    /// Run, in the frame the export starts and right after `start_exports`,
+    /// by [`at_start`]: given the world, record whether the fork's build has
+    /// finished, then edit the live graph and release the build.
+    #[derive(Resource)]
+    struct AtStart {
+        built: Arc<AtomicBool>,
+        #[allow(clippy::type_complexity)]
+        then: Mutex<Option<Box<dyn FnOnce(&mut AudioGraphRes, &mut Commands) + Send>>>,
+    }
+
+    fn at_start(
+        started: Query<(), With<bevy_tutti::export::ExportInFlight>>,
+        at: Option<Res<AtStart>>,
+        seen: Res<Seen>,
+        mut graph: ResMut<AudioGraphRes>,
+        mut commands: Commands,
+    ) {
+        let Some(at) = at else { return };
+        if started.is_empty() {
+            return;
+        }
+        let Some(then) = at.then.lock().unwrap().take() else {
+            return;
+        };
+        *seen.0.lock().unwrap() = Some(at.built.load(Ordering::SeqCst));
+        then(&mut graph, &mut commands);
+    }
+
+    fn app_watching(graph: AudioGraphRes) -> App {
+        let mut app = app_over(graph);
+        app.init_resource::<Seen>();
+        app.add_systems(Update, at_start.after(bevy_tutti::export::start_exports));
+        app
+    }
+
+    /// **An export does not wait for a slow fork, and is the graph as it was
+    /// when it started.** A node whose fork build blocks until released (the
+    /// shape of a hosted plugin's `plugin-server` launch) is exported beside
+    /// a `ParamNode`. In the frame the export starts, right after
+    /// `start_exports` returns, the build has not run; there the live graph
+    /// is edited — the slow node's cell and the param moved, the outputs
+    /// rewired to another node — and only then is the build released. The
+    /// export renders the graph at the start: the slow node's level and the
+    /// param's value then, on the outputs as they were.
+    ///
+    /// Mutation (run): `start_exports` building the fork itself
+    /// (`pending.take().build()` before spawning the task) → the frame waits
+    /// out the build's three-second timeout and the build has finished when
+    /// it returns → fails. Mutation (run): `ParamFork::gather` deferring
+    /// `fork_node` into the build → the volume set after the start reaches
+    /// the fork → fails. Both with `bevy_tasks/multi_threaded`; without it
+    /// the export has finished before the edits are made. The gather's own
+    /// guarantee is pinned in tutti-graph's
+    /// `a_gathered_fork_is_the_live_graph_at_the_gather`.
+    #[test]
+    fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
+        let mut graph = graph_on();
+        let (node, cell, release, built) = slow(0.5);
+        let (slow_node, _) = graph.insert(node);
+        let (level, params) = graph.insert(Level(Param::new(Amplitude::new(0.5))));
+        graph.set_node_params(level, Some(params));
+        graph.set_param(level, UnitParam::Volume, 0.75);
+        let (other, _) = graph.insert(tutti_nodes::testing::Const::mono(9.0));
+        graph.set_output_source(0, GraphSource::Node(slow_node, 0));
+        graph.set_output_source(1, GraphSource::Node(level, 0));
+
+        let mut app = app_watching(graph);
+        let threaded = threaded();
+        // Without pool threads the build runs inside `start_exports`, before
+        // anything could release it: let it through rather than wait out
+        // its timeout.
+        let release = if threaded {
+            Some(release)
+        } else {
+            drop(release);
+            None
+        };
+        app.insert_resource(AtStart {
+            built: Arc::clone(&built),
+            then: Mutex::new(Some(Box::new(
+                move |graph: &mut AudioGraphRes, _: &mut Commands| {
+                    cell.store(0.25f32.to_bits(), Ordering::SeqCst);
+                    graph.set_param(level, UnitParam::Volume, 0.25);
+                    graph.set_outputs_from(other);
+                    if let Some(release) = release {
+                        let _ = release.send(());
+                    }
+                },
+            ))),
+        });
+        let planes = export(&mut app, buffers(ExportSource::Master, 0.05)).planes();
+
+        let seen = *app.world().resource::<Seen>().0.lock().unwrap();
+        assert_eq!(
+            seen,
+            Some(!threaded),
+            "whether the fork's build had run when the frame that started the \
+             export reached the end of `start_exports` (threaded pool: {threaded})"
+        );
+        assert!(built.load(Ordering::SeqCst), "the build ran");
+        assert!(
+            planes[0].iter().all(|&s| s == 0.5),
+            "the slow node's level at the start, on output 0: {:?}",
+            &planes[0][..4]
+        );
+        assert!(
+            planes[1].iter().all(|&s| s == 0.75),
+            "the param's value at the start, on output 1: {:?}",
+            &planes[1][..4]
+        );
+    }
+
+    /// Where a [`Pinned`] unit was built, prepared and dropped.
+    #[derive(Default)]
+    struct Threads {
+        built: Mutex<Vec<ThreadId>>,
+        prepared: Mutex<Vec<ThreadId>>,
+        dropped: Mutex<Vec<ThreadId>>,
+    }
+
+    fn here(at: &Mutex<Vec<ThreadId>>) {
+        at.lock().unwrap().push(std::thread::current().id());
+    }
+
+    /// A unit confined to the main thread, as an in-process VST2 fork is:
+    /// its source is pinned (`ForkBuild::pinned`), and it records where it
+    /// is built, prepared and dropped.
+    struct Pinned {
+        threads: Arc<Threads>,
+    }
+
+    impl Node for Pinned {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        }
+        fn prepare(&mut self, _: &Prepare) {
+            here(&self.threads.prepared);
+        }
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            io.output(0).fill(1.0);
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+
+    impl Drop for Pinned {
+        fn drop(&mut self) {
+            here(&self.threads.dropped);
+        }
+    }
+
+    struct PinnedFork(Arc<Threads>);
+
+    impl ForkSource for PinnedFork {
+        fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+            here(&self.0.built);
+            Ok(Forked::new(Box::new(Pinned {
+                threads: Arc::clone(&self.0),
+            })))
+        }
+
+        fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+            self.fork(mode).map(ForkBuild::pinned)
+        }
+    }
+
+    /// A live [`Pinned`] (recording nothing) whose forks record into
+    /// `threads`.
+    struct PinnedNode(Arc<Threads>);
+
+    impl IntoNode for PinnedNode {
+        type Controls = ();
+        fn into_parts(self) -> NodeParts<()> {
+            NodeParts {
+                node: Box::new(Pinned {
+                    threads: Arc::default(),
+                }),
+                controls: (),
+                fork: Some(Box::new(PinnedFork(self.0))),
+            }
+        }
+    }
+
+    fn all_main(what: &str, at: &Mutex<Vec<ThreadId>>) {
+        let main = std::thread::current().id();
+        let at = at.lock().unwrap();
+        assert!(!at.is_empty(), "the fork was never {what}");
+        assert!(
+            at.iter().all(|&t| t == main),
+            "the fork was {what} off the main thread: {at:?} (main {main:?})"
+        );
+    }
+
+    /// **A main-thread-only fork source builds on the main thread** though
+    /// the export builds the rest of its fork on the compute pool: a pinned
+    /// source (an in-process VST2 plugin's) is built and prepared in the
+    /// gather, in `start_exports`, and the unit it built is dropped by
+    /// `poll_exports`, on the main thread, after the render on the pool. A
+    /// slow deferred source beside it keeps the task on the pool for a
+    /// while.
+    ///
+    /// Bites only with a threaded pool; see the module docs.
+    ///
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): `fork_gather`
+    /// leaving a pinned unit unprepared and the build preparing it (as a
+    /// `ForkBuild::ready` one) → prepared on a pool thread → fails. Mutation
+    /// (run, threaded): `ToMain`'s drop dropping its value where it is
+    /// instead of sending it to `ExportDrops` → dropped on a pool thread →
+    /// fails.
+    #[test]
+    fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
+        let mut graph = graph_on();
+        let threads = Arc::<Threads>::default();
+        let (pinned, _) = graph.insert(PinnedNode(Arc::clone(&threads)));
+        let (node, _cell, release, _built) = slow(0.5);
+        let (slow_node, _) = graph.insert(node);
+        graph.set_output_source(0, GraphSource::Node(slow_node, 0));
+        graph.set_output_source(1, GraphSource::Node(pinned, 0));
+        drop(release); // the slow build goes straight through
+        let mut app = app_over(graph);
+
+        let planes = export(&mut app, buffers(ExportSource::Master, 0.05)).planes();
+        assert!(
+            planes[1].iter().all(|&s| s == 1.0),
+            "the pinned unit renders"
+        );
+        all_main("built", &threads.built);
+        all_main("prepared", &threads.prepared);
+        all_main("dropped", &threads.dropped);
+    }
+
+    /// **A cancelled export drops its fork on the main thread**, whenever it
+    /// is cancelled: an export whose fork holds a pinned unit (built in the
+    /// gather) is despawned in the frame it starts, while its slow build
+    /// waits (or before its task ever ran: a pool without threads has not
+    /// polled it yet); once released, whatever the task held (the pending
+    /// fork, or the graph if the build had begun) goes to `ExportDrops`, and
+    /// a later `poll_exports` drops it on the main thread. No `ExportDone`
+    /// fires.
+    ///
+    /// Bites only with a threaded pool; see the module docs.
+    ///
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): `ToMain`'s drop
+    /// dropping its value where it is → the pinned unit drops on a pool
+    /// thread (or wherever the cancelled task is dropped) → fails. Mutation
+    /// (run): `poll_exports` not draining `ExportDrops` → the unit is never
+    /// dropped → fails.
+    #[test]
+    fn a_cancelled_export_drops_its_fork_on_the_main_thread() {
+        let mut graph = graph_on();
+        let threads = Arc::<Threads>::default();
+        let (pinned, _) = graph.insert(PinnedNode(Arc::clone(&threads)));
+        let (node, _cell, release, built) = slow(0.5);
+        let (slow_node, _) = graph.insert(node);
+        graph.set_output_source(0, GraphSource::Node(slow_node, 0));
+        graph.set_output_source(1, GraphSource::Node(pinned, 0));
+        let mut app = app_watching(graph);
+        // Without pool threads the export runs to completion inside
+        // `start_exports`, before it is cancelled: let its build through.
+        let release = threaded().then_some(release);
+
+        let reported = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&reported);
+        let entity = app
+            .world_mut()
+            .spawn(buffers(ExportSource::Master, 0.05))
+            .observe(move |_: On<ExportDone>| seen.store(true, Ordering::SeqCst))
+            .id();
+        app.insert_resource(AtStart {
+            built: Arc::clone(&built),
+            then: Mutex::new(Some(Box::new(
+                move |_: &mut AudioGraphRes, commands: &mut Commands| {
+                    commands.entity(entity).despawn();
+                },
+            ))),
+        });
+        // The frame the export starts in, and is cancelled in.
+        app.update();
+        assert!(
+            app.world().resource::<Seen>().0.lock().unwrap().is_some(),
+            "the export started in the first frame"
+        );
+        assert!(app.world().get_entity(entity).is_err(), "cancelled");
+        if let Some(release) = release {
+            let _ = release.send(());
+        }
+        for _ in 0..2000 {
+            app.update();
+            if !threads.dropped.lock().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        all_main("built", &threads.built);
+        all_main("dropped", &threads.dropped);
+        assert!(
+            !reported.load(Ordering::SeqCst),
+            "a cancelled export reported"
+        );
+    }
+
+    /// Why a [`Broken`] fork's build fails: a type to downcast back out.
+    #[derive(Debug, PartialEq)]
+    struct NoServer;
+
+    impl std::fmt::Display for NoServer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("the server would not start")
+        }
+    }
+
+    impl std::error::Error for NoServer {}
+
+    /// A node whose fork's deferred build fails, as a hosted plugin's does
+    /// when its `plugin-server` will not start.
+    struct Broken;
+
+    impl Node for Broken {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+            Status::Silent
+        }
+        fn reset(&mut self) {}
+    }
+
+    struct BrokenFork;
+
+    impl ForkSource for BrokenFork {
+        fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+            unreachable!("an export gathers")
+        }
+        fn gather(&self, _mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+            Ok(ForkBuild::deferred(|| Err(ForkCause::new(NoServer))))
+        }
+    }
+
+    impl IntoNode for Broken {
+        type Controls = ();
+        fn into_parts(self) -> NodeParts<()> {
+            NodeParts {
+                node: Box::new(self),
+                controls: (),
+                fork: Some(Box::new(BrokenFork)),
+            }
+        }
+    }
+
+    /// **A fork whose build fails on the pool refuses the export by its
+    /// node's entity and name**, its cause kept whole, and what the build
+    /// had made (a pinned unit, built in the gather) is dropped on the main
+    /// thread, as a rendered graph is.
+    ///
+    /// The thread half bites only with a threaded pool; see the module docs.
+    ///
+    /// Mutation (run): `NodeNames::name` passing a `ForkError::Source` through
+    /// as `ExportError::Render` → the refusal names no entity → fails.
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): the task dropping a
+    /// failed build's `ForkRemains` where it is (`drop(remains)`) instead of
+    /// sending it to `ExportDrops` → the pinned unit drops on a pool thread
+    /// → fails.
+    #[test]
+    fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
+        let mut graph = graph_on();
+        let threads = Arc::<Threads>::default();
+        let (pinned, _) = graph.insert(PinnedNode(Arc::clone(&threads)));
+        let (broken, _) = graph.insert(Broken);
+        graph.set_output_source(0, GraphSource::Node(pinned, 0));
+        graph.set_output_source(1, GraphSource::Node(broken, 0));
+        let mut app = app_over(graph);
+        let entity = app.world_mut().spawn((broken, Name::new("Server"))).id();
+
+        match export(&mut app, buffers(ExportSource::Master, 0.05)) {
+            Got::ForkSource(node, cause) => {
+                assert_eq!(node.entity, Some(entity));
+                assert_eq!(node.name.as_deref(), Some("Server"));
+                assert_eq!(cause.downcast_ref::<NoServer>(), Some(&NoServer));
+            }
+            other => panic!("expected the failing build named, got {other:?}"),
+        }
+        all_main("built", &threads.built);
+        all_main("prepared", &threads.prepared);
+        all_main("dropped", &threads.dropped);
     }
 }

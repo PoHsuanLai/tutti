@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use common::{bits, prepare, Kind, TestNode};
 use tutti_graph::{
-    param_parts, CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventOut, Fade, ForkByClone,
-    ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkSource, ForkTarget,
-    Forked, GraphBuilder, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Renderer,
-    Shape, Status, Unforkable,
+    param_parts, CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventOut, Fade, ForkBuild,
+    ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkRemains,
+    ForkSource, ForkTarget, Forked, GraphBuilder, IntoNode, Io, Node, NodeParts, ParamNode,
+    ParamSet, PendingFork, Prepare, Renderer, Shape, Status, Unforkable,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{
@@ -1100,4 +1100,328 @@ fn a_master_fork_holds_only_what_the_outputs_reach() {
             .err(),
         Some(ForkError::NotForkable { key: NodeKey(2) })
     );
+}
+
+// ---------------------------------------------------------------------------
+// `Editor::fork_gather` + `PendingFork::build`: the fork split in two
+// ---------------------------------------------------------------------------
+
+/// Where a [`Witness`]'s fork was built, prepared and dropped, by thread.
+#[derive(Default)]
+struct Threads {
+    built: std::sync::Mutex<Vec<std::thread::ThreadId>>,
+    prepared: std::sync::Mutex<Vec<std::thread::ThreadId>>,
+    dropped: std::sync::Mutex<Vec<std::thread::ThreadId>>,
+}
+
+fn here(at: &std::sync::Mutex<Vec<std::thread::ThreadId>>) {
+    at.lock().unwrap().push(std::thread::current().id());
+}
+
+/// A unit that records where it is prepared and dropped, outputting
+/// `value`.
+struct Witness {
+    value: f32,
+    threads: Arc<Threads>,
+}
+
+impl Node for Witness {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, _: &Prepare) {
+        here(&self.threads.prepared);
+    }
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.output(0).fill(self.value);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+impl Drop for Witness {
+    fn drop(&mut self) {
+        here(&self.threads.dropped);
+    }
+}
+
+/// How a [`WitnessFork`] gathers.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum How {
+    /// The trait's default `gather`.
+    Default,
+    Pinned,
+    Ready,
+    Deferred,
+    /// A deferred build that fails.
+    Fails,
+}
+
+/// A source whose fork is a [`Witness`] of the value its live cell holds
+/// **at the gather**, gathered as `how` says.
+struct WitnessFork {
+    how: How,
+    value: Arc<AtomicU32>,
+    threads: Arc<Threads>,
+}
+
+impl ForkSource for WitnessFork {
+    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        here(&self.threads.built);
+        Ok(Forked::new(Box::new(Witness {
+            value: self.value.load(Ordering::SeqCst) as f32,
+            threads: Arc::clone(&self.threads),
+        })))
+    }
+
+    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+        Ok(match self.how {
+            // The trait's own default, by not overriding: see `Defaulted`.
+            How::Default => unreachable!("a `Default` witness forks through `Defaulted`"),
+            How::Pinned => ForkBuild::pinned(self.fork(mode)?),
+            How::Ready => ForkBuild::ready(self.fork(mode)?),
+            How::Deferred | How::Fails => {
+                // Read now; built later.
+                let value = self.value.load(Ordering::SeqCst) as f32;
+                let threads = Arc::clone(&self.threads);
+                let fails = self.how == How::Fails;
+                ForkBuild::deferred(move || {
+                    here(&threads.built);
+                    if fails {
+                        return Err(ForkCause::new(RefusedState("no server")));
+                    }
+                    Ok(Forked::new(Box::new(Witness { value, threads })))
+                })
+            }
+        })
+    }
+}
+
+/// A [`WitnessFork`] that keeps the trait's default `gather`.
+struct Defaulted(WitnessFork);
+
+impl ForkSource for Defaulted {
+    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        self.0.fork(mode)
+    }
+}
+
+/// A node forked through a [`WitnessFork`]; its live value is the cell's.
+struct Witnessed(WitnessFork);
+
+impl IntoNode for Witnessed {
+    type Controls = ();
+    fn into_parts(self) -> NodeParts<()> {
+        let node = Box::new(Witness {
+            value: self.0.value.load(Ordering::SeqCst) as f32,
+            threads: Arc::default(),
+        });
+        let fork: Box<dyn ForkSource> = match self.0.how {
+            How::Default => Box::new(Defaulted(self.0)),
+            _ => Box::new(self.0),
+        };
+        NodeParts {
+            node,
+            controls: (),
+            fork: Some(fork),
+        }
+    }
+}
+
+/// `how`'s witness at `key` in `ed`, its cell at `value`, wired to a new
+/// output channel; returns the cell and the threads record.
+fn witness(ed: &mut Editor, key: NodeKey, how: How, value: u32) -> (Arc<AtomicU32>, Arc<Threads>) {
+    let cell = Arc::new(AtomicU32::new(value));
+    let threads = Arc::<Threads>::default();
+    ed.insert(
+        key,
+        "witness",
+        Witnessed(WitnessFork {
+            how,
+            value: Arc::clone(&cell),
+            threads: Arc::clone(&threads),
+        }),
+    );
+    ed.spec_mut().topology.outputs.push(out(key, 0));
+    (cell, threads)
+}
+
+/// **A gathered fork is the live graph at the gather**, however long the
+/// build waits and whatever the live graph does meanwhile: a rewire of the
+/// outputs, a param set through its `ParamSet`, and a node's live cell
+/// moved after `fork_gather` returns all miss the fork built afterwards
+/// (on another thread), which renders the graph as it was.
+///
+/// Mutation (run): `ParamFork::gather` deferring `fork_node` to the build
+/// (`ForkBuild::deferred` over a clone of the source) → the 0.9 set after
+/// the gather reaches the fork → fails. Mutation (run): `fork_gather`
+/// running a deferred build at once → `deferred()` is 0 → fails. The spec
+/// half has no mutation here: a `PendingFork` holds no reference to the live
+/// editor (`Send + 'static`, `a_pending_fork_is_send_and_static`), so
+/// nothing the build does can read the live spec.
+#[test]
+fn a_gathered_fork_is_the_live_graph_at_the_gather() {
+    let pre = prepare(64);
+    let (mut ed, mut exec) = Editor::new(pre);
+    let level = ed.insert(NodeKey(1), "level", Level::new(0.5));
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    let (cell, _) = witness(&mut ed, NodeKey(2), How::Deferred, 3);
+    ed.insert(NodeKey(3), "other", consts(1, 100.0));
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    assert!(level.set(UnitParam::Volume, 0.75));
+
+    let pending = ed
+        .fork_gather(ForkTarget::Master, ForkMode::Live, pre)
+        .expect("gathers");
+    assert_eq!(pending.deferred(), 1, "the witness builds later");
+
+    // Every kind of live edit, after the gather.
+    assert!(level.set(UnitParam::Volume, 0.9));
+    cell.store(7, Ordering::SeqCst);
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(3), 0), out(NodeKey(3), 0)];
+    ed.commit().expect("the live rewire commits");
+    exec.apply_pending();
+    ed.collect();
+
+    let forked = std::thread::spawn(move || {
+        let (fed, fexec) = pending.build().map_err(|(e, _)| e).expect("builds");
+        render(fed, fexec, 128)
+    })
+    .join()
+    .expect("the build thread");
+    assert_eq!(forked.len(), 2, "the outputs at the gather");
+    assert!(
+        forked[0].iter().all(|&x| x == 0.75),
+        "{:?}",
+        &forked[0][..4]
+    );
+    assert!(forked[1].iter().all(|&x| x == 3.0), "{:?}", &forked[1][..4]);
+}
+
+/// **Each source's work runs where its gather says.** Gathered on this
+/// thread, built on another: a pinned unit (declared, and the trait's
+/// default) is built and prepared at the gather; a ready unit is built at
+/// the gather and prepared in the build; a deferred unit is built and
+/// prepared in the build. The fork renders all four.
+///
+/// Mutation (run): `fork_gather` leaving a pinned unit unprepared and the
+/// build preparing it as a ready one → the pinned and default units are
+/// prepared on the build thread → fails. Mutation (run): `fork_gather`
+/// running a deferred build at once (`Unit::Built(build()?)`) → the deferred
+/// unit is built on the gathering thread → fails. Mutation (run): the
+/// trait's default `gather` returning `ForkBuild::ready` → the default unit
+/// is prepared on the build thread → fails.
+#[test]
+fn each_source_builds_and_prepares_where_its_gather_says() {
+    let pre = prepare(64);
+    let (mut ed, _exec) = Editor::new(pre);
+    let hows = [How::Default, How::Pinned, How::Ready, How::Deferred];
+    let threads: Vec<Arc<Threads>> = hows
+        .iter()
+        .enumerate()
+        .map(|(i, &how)| witness(&mut ed, NodeKey(i as u64 + 1), how, i as u32 + 1).1)
+        .collect();
+
+    let gatherer = std::thread::current().id();
+    let pending = ed
+        .fork_gather(ForkTarget::Master, ForkMode::Live, pre)
+        .expect("gathers");
+    let (builder, rendered) = std::thread::spawn(move || {
+        let (fed, fexec) = pending.build().map_err(|(e, _)| e).expect("builds");
+        (std::thread::current().id(), render(fed, fexec, 64))
+    })
+    .join()
+    .expect("the build thread");
+    assert_ne!(gatherer, builder);
+
+    let one = |at: &std::sync::Mutex<Vec<std::thread::ThreadId>>| {
+        let at = at.lock().unwrap();
+        assert_eq!(at.len(), 1, "once: {at:?}");
+        at[0]
+    };
+    for (how, t) in hows.iter().zip(&threads) {
+        let (built, prepared) = (one(&t.built), one(&t.prepared));
+        let want = match how {
+            How::Default | How::Pinned => (gatherer, gatherer),
+            How::Ready => (gatherer, builder),
+            How::Deferred | How::Fails => (builder, builder),
+        };
+        assert_eq!(
+            (built, prepared),
+            want,
+            "{how:?}: (built, prepared) on (gatherer {gatherer:?}, builder {builder:?})"
+        );
+    }
+    for (i, channel) in rendered.iter().enumerate() {
+        assert!(channel.iter().all(|&x| x == i as f32 + 1.0), "channel {i}");
+    }
+}
+
+/// **A deferred build that fails names its key and hands back everything
+/// built**, for the caller to drop where a pinned unit belongs: the build
+/// (on another thread) fails as `ForkError::Source` naming the failing key,
+/// with its cause; the pinned unit is not dropped there but comes back in
+/// the `ForkRemains`, and drops here, on the gathering thread, with them;
+/// and no deferred build after the failing one runs.
+///
+/// Mutation (run): the build dropping what it built instead of handing it
+/// back (`ForkRemains { units: Vec::new(), .. }`) → the pinned unit drops on
+/// the build thread → fails. Mutation (run): the build running every
+/// deferred build after a failure → key 3's build runs → fails.
+#[test]
+fn a_failing_build_names_its_key_and_hands_back_what_it_built() {
+    let pre = prepare(64);
+    let (mut ed, _exec) = Editor::new(pre);
+    let (_, pinned) = witness(&mut ed, NodeKey(1), How::Pinned, 1);
+    let (_, _failing) = witness(&mut ed, NodeKey(2), How::Fails, 2);
+    let (_, later) = witness(&mut ed, NodeKey(3), How::Deferred, 3);
+
+    let pending = ed
+        .fork_gather(ForkTarget::Master, ForkMode::Live, pre)
+        .expect("gathers");
+    let (error, remains) = std::thread::spawn(move || {
+        pending
+            .build()
+            .err()
+            .expect("the failing deferred build fails it")
+    })
+    .join()
+    .expect("the build thread");
+    let ForkError::Source { key, cause } = &error else {
+        panic!("expected ForkError::Source, got {error:?}");
+    };
+    assert_eq!(*key, NodeKey(2));
+    assert_eq!(
+        cause.downcast_ref::<RefusedState>(),
+        Some(&RefusedState("no server"))
+    );
+    assert!(
+        later.built.lock().unwrap().is_empty(),
+        "key 3 was built after the failure"
+    );
+    assert!(
+        pinned.dropped.lock().unwrap().is_empty(),
+        "the pinned unit was dropped by the build"
+    );
+    assert!(!remains.is_empty());
+    drop(remains);
+    assert_eq!(
+        *pinned.dropped.lock().unwrap(),
+        [std::thread::current().id()],
+        "the pinned unit drops with the remains, here"
+    );
+}
+
+/// **A `PendingFork` and a `ForkRemains` cross threads**, and hold nothing
+/// borrowed: the property the build-anywhere promise rests on.
+///
+/// Mutation (run, at compile time): `Unit::Deferred`'s closure without
+/// `+ Send` → this does not compile.
+#[test]
+fn a_pending_fork_is_send_and_static() {
+    fn send_static<T: Send + 'static>() {}
+    send_static::<PendingFork>();
+    send_static::<ForkRemains>();
 }

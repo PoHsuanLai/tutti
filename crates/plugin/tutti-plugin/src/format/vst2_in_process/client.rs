@@ -22,8 +22,8 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
 use crate::host::node::transport_source::{self, SteadyTime};
-use crate::host::node::PluginMeter;
-use crate::protocol::{Features, MidiEventVec, TransportInfo};
+use crate::host::node::{DeliveryCounters, ParamDelivery, PluginMeter, SegmentPoints};
+use crate::protocol::{Features, MidiEventVec, ParamAddress, ParameterChanges, TransportInfo};
 
 /// Per-channel f32 staging buffers.
 ///
@@ -106,6 +106,14 @@ pub struct InProcessVst2Client {
     pub(super) origin: Arc<Path>,
     /// Who tells the plugin the rate the node is prepared at.
     pub(super) rate_delivery: RateDelivery,
+    /// The parameter events on the event input, as changes only: a slot per
+    /// parameter the plugin declared at load (and the spares), the value last
+    /// delivered to the instance in each (`host::node`'s `param_delivery`,
+    /// the out-of-process node's own). The block is its chunk.
+    pub(super) params: ParamDelivery,
+    /// The curve segments in flight on the event input, sent as points until
+    /// each lands. Slots sized at construction, one per parameter slot.
+    pub(super) segments: SegmentPoints,
 }
 
 /// Who tells the plugin the rate the node is prepared at.
@@ -259,7 +267,16 @@ impl InProcessVst2Client {
         pending_sample_rate: Arc<AtomicU64>,
         contention_count: Arc<AtomicU64>,
         origin: Arc<Path>,
+        param_count: i32,
     ) -> Self {
+        // A slot per declared parameter, by index: every parameter can move
+        // in one block. Its point room is sized in `prepare`.
+        let params = ParamDelivery::new(
+            (0..param_count.max(0)).map(ParamAddress::Index),
+            Arc::new(DeliveryCounters::default()),
+        );
+        let mut segments = SegmentPoints::default();
+        segments.prepare(params.room());
         // Empty until the node is prepared: `prepare` sizes both to the
         // graph's largest block.
         let scratch = RenderScratch::new(metadata.num_inputs, metadata.num_outputs, 0);
@@ -282,6 +299,8 @@ impl InProcessVst2Client {
             contention_count,
             origin,
             rate_delivery: RateDelivery::Parked,
+            params,
+            segments,
         }
     }
 
@@ -374,6 +393,14 @@ impl Clone for InProcessVst2Client {
             contention_count: Arc::clone(&self.contention_count),
             origin: Arc::clone(&self.origin),
             rate_delivery: self.rate_delivery,
+            // The same instance: the clone starts from what it was sent, and
+            // shares the counters and the record (`ParamDelivery`'s `Clone`).
+            params: self.params.clone(),
+            segments: {
+                let mut segments = SegmentPoints::default();
+                segments.prepare(self.params.room());
+                segments
+            },
         }
     }
 }
@@ -450,6 +477,7 @@ pub(super) fn block_context<'a>(
 pub(super) fn drive_f32(
     inner: &Arc<Mutex<Vst2Instance>>,
     contention: &AtomicU64,
+    params: &ParameterChanges,
     midi: &mut MidiEventVec,
     midi_out: &mut dyn FnMut(&[MidiEvent]),
     transport: &TransportInfo,
@@ -467,6 +495,7 @@ pub(super) fn drive_f32(
     sort_midi(&mut midi_events);
     match inner.try_lock() {
         Some(mut instance) => {
+            apply_params(&instance, params);
             // Build slice-of-slices on the stack via scratch arrays we
             // own — Vec<&[f32]>/Vec<&mut[f32]> would allocate, so drop
             // into stack arrays bounded by MAX_CHANNELS. 16 covers any
@@ -505,6 +534,28 @@ pub(super) fn drive_f32(
             contention.fetch_add(1, Ordering::Relaxed);
             false
         }
+    }
+}
+
+/// The block's parameter changes, before the plugin processes it: each
+/// queue's **last** point, set with `setParameter`, as the out-of-process
+/// VST2 loader does with a chunk's (`tutti-plugin-server`'s `loaders/vst2.rs`).
+/// VST 2.4 has no sample-accurate parameter events, so a point inside the
+/// block lands on its first frame, and only the latest one counts.
+///
+/// An opaque address addresses nothing on a VST2 plugin and is skipped; an
+/// index the plugin does not declare is refused by `Vst2Instance` (a spare
+/// slot learned it). Under the instance lock, on the audio thread:
+/// `setParameter` is the call a VST2 host automates through, and
+/// `Vst2Instance::set_parameter` does not allocate.
+fn apply_params(instance: &Vst2Instance, params: &ParameterChanges) {
+    for queue in &params.queues {
+        let (Some(point), Some(index)) = (queue.points.last(), queue.param_id.index()) else {
+            continue;
+        };
+        // Already on the unit interval: `Normalized` cannot be built
+        // otherwise. `f32` is the VST2 ABI's parameter type.
+        instance.set_parameter(index, point.value.get() as f32);
     }
 }
 

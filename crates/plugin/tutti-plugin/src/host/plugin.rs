@@ -325,19 +325,22 @@ impl Plugin {
     ///
     /// The returned [`PluginAutomation`](crate::handles::PluginAutomation) is
     /// an event source node: insert it and wire it to this plugin node's event
-    /// input ([`PluginControls::automation`](crate::handles::PluginControls::automation)).
+    /// input ([`PluginControls::automation`](crate::handles::PluginControls::automation),
+    /// or the in-process VST2 node's own).
     ///
-    /// No capability gate: every format carries parameter automation. `None`
-    /// for the in-process VST2 node, whose event input takes only MIDI (its
-    /// parameters are driven through the handle instead).
+    /// No capability gate: every format carries parameter automation, and
+    /// both backends take it on their event input. Addresses are the
+    /// plugin's own model: a VST2 plugin's are indices
+    /// ([`ParamAddress::Index`](crate::handles::ParamAddress::Index)), and
+    /// one of the other model is refused.
     pub fn automation(
         &self,
         params: impl IntoIterator<Item = crate::host::node::TimedParam>,
-    ) -> Option<crate::host::node::PluginAutomation> {
+    ) -> crate::host::node::PluginAutomation {
         match &self.backend {
-            Backend::Subprocess(c) => Some(c.automation(params)),
+            Backend::Subprocess(c) => c.automation(params),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(_) => None,
+            Backend::InProcessVst2(c) => c.automation(params),
         }
     }
 
@@ -384,8 +387,9 @@ impl Plugin {
 /// the node moves into the graph.
 ///
 /// The controls are the subprocess node's [`PluginControls`]; `None` for an
-/// in-process VST2 plugin, whose one control, its meter, is reached through
-/// [`Plugin::meter`] (take it before insertion). Either hands the editor its fork source: a fork
+/// in-process VST2 plugin, whose meter is reached through [`Plugin::meter`]
+/// (take it before insertion; its own `IntoNode` hands back its
+/// `InProcessVst2Controls`, which carry its parameter counters too). Either hands the editor its fork source: a fork
 /// by state transfer, into a new `plugin-server` for a subprocess plugin, and a
 /// second instance in this process for an in-process VST2 one.
 ///

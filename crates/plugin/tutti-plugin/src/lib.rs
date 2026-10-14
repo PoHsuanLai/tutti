@@ -47,7 +47,9 @@ pub mod backend {
 // Loads a VST2 plugin in the host process; most callers use `Plugin::open`,
 // which dispatches here for `.vst` files.
 #[cfg(feature = "vst2")]
-pub use format::vst2_in_process::{load_client as in_process_vst2_client, InProcessVst2Client};
+pub use format::vst2_in_process::{
+    load_client as in_process_vst2_client, InProcessVst2Client, InProcessVst2Controls,
+};
 
 /// Discovering, persisting, and loading plugins.
 ///

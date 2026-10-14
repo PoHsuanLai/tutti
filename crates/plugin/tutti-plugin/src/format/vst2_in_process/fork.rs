@@ -15,7 +15,9 @@
 //! [`InProcessVst2Client::fork_instance`], which the fork source calls, on the
 //! **main thread** (see "Threads" below):
 //!
-//! 1. **Ask the live instance for its state**, under its lock: the current
+//! 1. **Read what the live node has delivered** per parameter (its parameter
+//!    delivery's record, `host::node`'s `param_delivery`), then **ask the
+//!    live instance for its state**, under its lock: the current
 //!    program, when the plugin declares any (`effGetProgram`), its state blob
 //!    (`Vst2Instance::get_state`: the plugin's own chunk through `effGetChunk`
 //!    when it declares `effFlagsProgramChunks`, else every parameter's value,
@@ -40,7 +42,17 @@
 //! 4. **Read the transport from the block's `Cx`**, as the live node does:
 //!    for an offline fork the render's timeline, with the meter the live
 //!    node had installed when it was forked.
-//! 5. **Report the render mode**: an offline fork answers
+//! 5. **Seed the fork's parameter delivery** with that record, as the
+//!    out-of-process fork does (`host::node::fork`): a value the live node
+//!    delivered is the fork's too, so a host value held still is not sent to
+//!    the fork over the state it was loaded with (an edit made in the live
+//!    plugin's editor), and an export plays what live playback plays. Read
+//!    before the state, so every value the record shows is in it (the live
+//!    node records a value, `Release`, only once its `setParameter` has
+//!    returned, and the state is saved later, under the instance lock); a
+//!    value delivered between the two is in the state and sent to the fork
+//!    once more, harmlessly.
+//! 6. **Report the render mode**: an offline fork answers
 //!    `audioMasterGetCurrentProcessLevel` with `kVstProcessLevelOffline`; a
 //!    live fork ([`ForkMode::Live`]) answers as the live instance did when it
 //!    was forked (offline if a host had set the live one offline).
@@ -97,6 +109,7 @@ use tutti_vst2_host::Vst2Instance;
 
 use super::client::{InProcessVst2Client, RateDelivery, TransportFeed};
 use crate::error::{PluginForkError, StateError};
+use crate::host::node::DeliveryCounters;
 
 /// An in-process VST2 node's [`ForkSource`]: everything a fork needs from the
 /// live node, and nothing that keeps the live plugin alive.
@@ -116,6 +129,9 @@ pub(super) struct Vst2Fork {
     /// The live node's transport feed (its shared meter cell): the meter a
     /// fork reads its bars with, as installed when it forks.
     transport: TransportFeed,
+    /// The live node's parameter delivery: what it has delivered, read when
+    /// it forks, before its state.
+    delivery: Arc<DeliveryCounters>,
 }
 
 impl Vst2Fork {
@@ -126,14 +142,17 @@ impl Vst2Fork {
             id: client.metadata.id.clone(),
             sample_rate: client.sample_rate,
             transport: client.transport.clone(),
+            delivery: client.params.counters(),
         }
     }
 
-    /// The five steps in the module docs, in order.
+    /// The six steps in the module docs, in order.
     fn instance(&self, mode: ForkMode<'_>) -> Result<InProcessVst2Client, PluginForkError> {
         // First, so a plugin that cannot save costs no second instance. The
         // `Arc` is dropped straight after: the fork holds no strong reference.
         let live = self.live.upgrade().ok_or(PluginForkError::LiveGone)?;
+        // Before the state: see step 1.
+        let delivered = self.delivery.delivered();
         let (program, state, live_offline) = {
             let instance = live.lock();
             let program = (instance.program_count() > 0).then(|| instance.current_program());
@@ -181,6 +200,7 @@ impl Vst2Fork {
             instance.set_offline_render(offline);
         }
 
+        fork.params.seed(&delivered);
         fork.transport = self.transport.forked();
         fork.rate_delivery = RateDelivery::InPrepare;
         Ok(fork)
@@ -226,7 +246,9 @@ impl InProcessVst2Client {
     /// [`ForkMode::Offline`] tells the plugin it renders offline;
     /// [`ForkMode::Live`] keeps the live instance's render mode. A fork
     /// carries no running DSP state (voices, delay lines), so it starts
-    /// silent. Nothing set on either instance afterwards reaches the
+    /// silent. Its parameter delivery starts from what this node has
+    /// delivered, so a host value held still is not sent to it over the
+    /// saved state. Nothing set on either instance afterwards reaches the
     /// other.
     ///
     /// # Errors

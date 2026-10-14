@@ -3,27 +3,50 @@
 //! on an event output (a plugin that declared `Features::MIDI_OUT`), each
 //! event on the frame the plugin gave it.
 //!
+//! **Parameters** arrive on the same event input: a ramp (a
+//! [`PluginAutomation`] node's) or a curve segment, addressed by VST2 index.
+//! They go through the out-of-process node's delivery (`host::node`'s
+//! `param_delivery` and `param_input`): a slot per parameter declared at
+//! load, **changes only** against the value last delivered to the instance,
+//! and the same segment points. The block is the chunk: before the plugin
+//! processes it, each parameter that moved is set to its latest value in the
+//! block with `setParameter`, under the instance lock, as the out-of-process
+//! VST2 loader sets a chunk's. VST 2.4 has no sample-accurate parameter
+//! event, so a point inside the block lands on its first frame; the two
+//! hosts differ only in that the out-of-process one's chunk is the
+//! pipeline's, this one's the graph's block. A block the audio thread finds
+//! the instance locked for (silence, counted in
+//! [`contention_count`](InProcessVst2Client::contention_count)) delivers
+//! nothing, and its values are owed to the next block. Counted in
+//! [`InProcessVst2Controls::param_delivery`].
+//!
 //! Forkable by state transfer (see its `IntoNode` below, and `fork.rs`). The
 //! live node and its fork read the transport the same way: from the block's
 //! `Cx`, the transport its input was rendered at (`TransportFeed`).
 
-use tutti_core::{ChannelLayout, Samples};
+use std::sync::Arc;
+
+use tutti_core::{ChannelLayout, MeterMap, RtPublish, Samples};
 use tutti_graph::{
-    Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status, Ump,
+    Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, SortedEvents,
+    Status, Ump,
 };
 use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
 
 use super::client::{drive_f32, InProcessVst2Client};
-use crate::host::node::PluginMeter;
+use crate::host::node::{
+    param_input, DeliveryCounters, ParamDeliveryStats, PluginAutomation, PluginMeter, TimedParam,
+};
 use crate::protocol::Features;
 
 /// The most channels a block hands the plugin (`drive_f32`'s stack tables).
 const MAX_CHANNELS: usize = 16;
 
 impl Node for InProcessVst2Client {
-    /// The plugin's channels, one MIDI event input, and a MIDI event output
-    /// for a plugin that declared MIDI out; its latency and tail as loaded.
+    /// The plugin's channels, one event input (MIDI and parameter events),
+    /// and a MIDI event output for a plugin that declared MIDI out; its
+    /// latency and tail as loaded.
     fn shape(&self) -> Shape {
         let midi_out = u16::from(self.features.contains(Features::MIDI_OUT));
         let latency = Latency::new(self.metadata.latency_samples);
@@ -39,9 +62,15 @@ impl Node for InProcessVst2Client {
     /// The rate (parked for the plugin, dispatched from the main thread; a
     /// fork's dispatched here), and scratch for the largest block. Control
     /// thread.
+    ///
+    /// The parameter delivery's point room follows the largest block, and
+    /// the segments in flight are dropped (as a re-prepare starts the node
+    /// over); what was delivered to the plugin is kept.
     fn prepare(&mut self, p: &Prepare) {
         self.set_rate(p.sample_rate());
         self.ensure_scratch_size(p.max_block().get());
+        self.params.prepare(p.max_block().get());
+        self.segments.prepare(self.params.room());
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -50,21 +79,38 @@ impl Node for InProcessVst2Client {
         let n_out = (self.metadata.num_outputs.count() as usize).min(MAX_CHANNELS);
         // No clamp and no size check: `prepare` sized the scratch to the
         // prepared `MaxBlock`, and a block is never longer.
-        // The event input's MIDI, in its (sorted) order; past the inline
-        // capacity it is dropped rather than spill (allocate).
+        // The event input: its MIDI, in its (sorted) order, past the inline
+        // capacity dropped rather than spill (allocate); its parameter events
+        // into the block's changes (`param_input`, the out-of-process node's
+        // walk, with the block as the chunk).
         self.midi.clear();
-        if io.event_input_count() > 0 {
-            for e in io.events(0) {
+        self.params.begin();
+        let events = if io.event_input_count() > 0 {
+            io.events(0)
+        } else {
+            SortedEvents::EMPTY
+        };
+        let midi = &mut self.midi;
+        param_input::take(
+            events.as_slice(),
+            0,
+            size,
+            0,
+            cx.env.frame.get(),
+            true,
+            &mut self.segments,
+            &mut self.params,
+            |e, _| {
                 if let EventKind::Midi(Ump(data)) = e.kind {
-                    if self.midi.len() < self.midi.inline_size() {
-                        self.midi.push(MidiEvent {
+                    if midi.len() < midi.inline_size() {
+                        midi.push(MidiEvent {
                             frame_offset: e.offset.get(),
                             data,
                         });
                     }
                 }
-            }
-        }
+            },
+        );
         {
             let (inputs, _) = io.split();
             for ch in 0..n_in {
@@ -79,6 +125,7 @@ impl Node for InProcessVst2Client {
         let processed = drive_f32(
             &self.inner,
             &self.contention_count,
+            self.params.changes(),
             &mut self.midi,
             &mut |events| {
                 if sends {
@@ -97,6 +144,8 @@ impl Node for InProcessVst2Client {
             size,
             self.sample_rate,
         );
+        // Set on the plugin with the block, or owed to the next one.
+        self.params.handed_off(processed);
         let (_, mut outputs) = io.split();
         for (ch, out) in outputs.iter_mut().enumerate().take(n_out) {
             if processed {
@@ -120,6 +169,11 @@ impl Node for InProcessVst2Client {
     }
 
     fn reset(&mut self) {
+        // The segments in flight stop, as on the out-of-process node; what
+        // was delivered to the plugin is kept (the plugin keeps its
+        // parameters), and no block's changes are in flight between blocks.
+        self.segments.clear();
+        self.params.abandon();
         // Nothing reaches the plugin from here, and nothing can. VST 2.4 has no
         // opcode that clears DSP state on its own: the only two that touch it
         // are `effMainsChanged`, where plugins allocate and free their
@@ -142,10 +196,11 @@ fn sort_by_offset(events: &mut crate::protocol::MidiEventVec) {
     }
 }
 
-/// The plugin, inserted as a graph node. Its controls are its meter cell
-/// ([`PluginMeter`], the same cell as [`InProcessVst2Client::set_meter`]), so a
-/// host can give it the project meter after it has moved into the graph, as
-/// it does an out-of-process plugin through its `PluginControls`. Its
+/// The plugin, inserted as a graph node. Its controls
+/// ([`InProcessVst2Controls`]) are its meter cell (the same cell as
+/// [`InProcessVst2Client::set_meter`]), so a host can give it the project
+/// meter after it has moved into the graph, and its parameter delivery's
+/// counters, as an out-of-process plugin's `PluginControls` are. Its
 /// [`ForkSource`] forks it **by state transfer**: a second instance of the
 /// plugin from the same library, restored from this one's saved state
 /// ([`InProcessVst2Client::fork_instance`]). So `Editor::fork` (an offline
@@ -153,15 +208,92 @@ fn sort_by_offset(events: &mut crate::protocol::MidiEventVec) {
 ///
 /// [`ForkSource`]: tutti_graph::ForkSource
 impl IntoNode for InProcessVst2Client {
-    type Controls = PluginMeter;
+    type Controls = InProcessVst2Controls;
 
-    fn into_parts(self) -> NodeParts<PluginMeter> {
+    fn into_parts(self) -> NodeParts<InProcessVst2Controls> {
         let fork = super::fork::Vst2Fork::of(&self);
-        let controls = self.meter();
+        let controls = self.controls();
         NodeParts {
             node: Box::new(self),
             controls,
             fork: Some(Box::new(fork)),
         }
+    }
+}
+
+/// An in-process VST2 node's controls: what inserting it hands back, and what
+/// [`InProcessVst2Client::controls`] returns before then. Cheap to clone;
+/// every clone reaches the same node (and the clones of it, which drive the
+/// same plugin instance).
+#[derive(Clone, Debug)]
+pub struct InProcessVst2Controls {
+    meter: PluginMeter,
+    delivery: Arc<DeliveryCounters>,
+}
+
+impl InProcessVst2Controls {
+    /// Gives the plugin the project meter (see
+    /// [`InProcessVst2Client::set_meter`]).
+    pub fn set_meter(&self, meter: Arc<RtPublish<MeterMap>>) {
+        self.meter.set_meter(meter);
+    }
+
+    /// Drops the meter; the plugin is told 4/4 from bar 0.
+    pub fn clear_meter(&self) {
+        self.meter.clear_meter();
+    }
+
+    /// Whether a meter is installed.
+    pub fn has_meter(&self) -> bool {
+        self.meter.has_meter()
+    }
+
+    /// The node's meter cell, as a handle of its own.
+    pub fn meter(&self) -> PluginMeter {
+        self.meter.clone()
+    }
+
+    /// What the node has done with the parameter events on its event input
+    /// since the plugin was loaded: points sent (changes only), blocks whose
+    /// changes went a block late (the instance was locked), points dropped
+    /// for an address it has no slot for, and points a full queue replaced.
+    /// The same counters as an out-of-process node's
+    /// [`PluginControls::param_delivery`](crate::handles::PluginControls::param_delivery),
+    /// with the block as the chunk. A block's points all count as sent,
+    /// though VST2 is told only each parameter's last one. RT-safe: four
+    /// relaxed loads.
+    pub fn param_delivery(&self) -> ParamDeliveryStats {
+        self.delivery.snapshot()
+    }
+
+    /// A [`PluginAutomation`] node for this plugin: wire its event output to
+    /// the node's event input. Addresses are VST2 indices
+    /// ([`ParamAddress::Index`](crate::handles::ParamAddress::Index)); an
+    /// opaque one is refused.
+    pub fn automation(&self, params: impl IntoIterator<Item = TimedParam>) -> PluginAutomation {
+        PluginAutomation::new(params, true)
+    }
+}
+
+impl InProcessVst2Client {
+    /// The node's controls: its meter cell and its parameter delivery's
+    /// counters, the same [`InProcessVst2Controls`] inserting it hands back.
+    pub fn controls(&self) -> InProcessVst2Controls {
+        InProcessVst2Controls {
+            meter: self.meter(),
+            delivery: self.params.counters(),
+        }
+    }
+
+    /// What the node has done with the parameter events on its event input
+    /// (see [`InProcessVst2Controls::param_delivery`]).
+    pub fn param_delivery(&self) -> ParamDeliveryStats {
+        self.params.counters().snapshot()
+    }
+
+    /// A [`PluginAutomation`] node for this plugin (see
+    /// [`InProcessVst2Controls::automation`]).
+    pub fn automation(&self, params: impl IntoIterator<Item = TimedParam>) -> PluginAutomation {
+        PluginAutomation::new(params, true)
     }
 }

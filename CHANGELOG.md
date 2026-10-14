@@ -80,6 +80,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The in-process VST2 node delivers parameter events** (design doc 014
+  §13, decided question 2; doc 013, "Plugin parameter delivery"). Its
+  event input took MIDI only and dropped every parameter ramp and curve
+  segment. It now delivers them through the out-of-process node's
+  delivery (`host/node/param_delivery.rs`, and the event walk both nodes
+  now share, `param_input.rs`): a slot per parameter the plugin declared
+  at load (plus 64 spare), **changes only** against the value last
+  delivered to the instance, a curve segment as points along it. The block
+  is the chunk: before the plugin processes a block, each parameter that
+  moved in it is set to its last value there with `setParameter`, under
+  the instance lock, as the out-of-process VST2 loader sets a chunk's (VST
+  2.4 has no sample-accurate parameter events, so a point inside the block
+  lands on its first frame). A block the audio thread finds the instance
+  locked for owes its values to the next. Nothing allocates on the audio
+  thread with 200 parameters moving every block. A fork (an export) is
+  seeded with what the live node delivered, read before the live state is
+  saved, so an export plays an edit made in the plugin's editor as live
+  playback does. `Vst2Instance::{get_parameter, set_parameter}` no longer
+  allocate (their bounds check cloned the plugin's `Info`, name and vendor
+  strings included, on every call; this reached the out-of-process VST2
+  loader's per-chunk parameter writes too). **Breaking:**
+
+  | Was | Now |
+  |---|---|
+  | `IntoNode for InProcessVst2Client`: `type Controls = PluginMeter` | `type Controls = InProcessVst2Controls` (`tutti_plugin::InProcessVst2Controls`, also in `tutti_plugin::handles`): `set_meter`, `clear_meter`, `has_meter`, `meter()` as before, plus `param_delivery() -> ParamDeliveryStats` and `automation(params)` |
+  | — | `InProcessVst2Client::{controls, param_delivery, automation}` |
+  | `Plugin::automation(params) -> Option<PluginAutomation>`, `None` for an in-process VST2 plugin | `-> PluginAutomation`, for either backend (a VST2 plugin's addresses are `ParamAddress::Index`) |
+
+  **Migration.** Code that used the inserted node's controls as a
+  `PluginMeter` calls the same methods on `InProcessVst2Controls`, or
+  `.meter()` for the cell itself. Drop the `Option` from
+  `Plugin::automation`'s result. A host that drove an in-process VST2
+  plugin's parameters through its handle only can wire a
+  `PluginAutomation` (or any parameter event source) to the node's event
+  input instead; values set through the handle still reach the plugin and
+  are not overwritten by a host value held still.
+
 - **Plugin parameters are delivered as changes only, with no 16-queue
   cap** (modulation PR 1; design doc 013, "Plugin parameter delivery").
   The hosted plugin node reads the plugin's parameter list once, at

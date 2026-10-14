@@ -14,13 +14,14 @@ use tutti_graph::{
     Cx, Event, EventKind, Harmony, HarmonyKind, Io, Node, Offset, Prepare, Shape, SortedEvents,
     Status, MAX_PORTS,
 };
-use tutti_types::{ChannelLayout, ParamAddr, Samples};
+use tutti_types::{ChannelLayout, Samples};
 
 use super::batcher::{sort_by_offset, Chunks};
 use super::param_delivery::ParamDelivery;
+use super::param_input;
 use super::segment_points::SegmentPoints;
 use super::transport_source::{self, SteadyTime};
-use super::{automation_node, BlockPayload, Bound, PluginClient};
+use super::{BlockPayload, Bound, PluginClient};
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::protocol::{
     ChordValue, Features, MidiEvent, MidiEventVec, ParameterChanges, ScaleValue, TransportInfo,
@@ -267,70 +268,44 @@ impl Chunks for PluginChunks<'_> {
     /// harmony, for a plugin that takes sequencer context (no display text:
     /// the degrees are what a plugin acts on). Parameter points go through
     /// the node's delivery, which has a queue for every parameter and
-    /// passes on changes only (`param_delivery`). Past the MIDI and harmony
+    /// passes on changes only (`param_delivery`); the walk is `param_input`'s,
+    /// which the in-process VST2 node shares. Past the MIDI and harmony
     /// inline capacities events are dropped rather than spill (allocate) on
     /// the audio thread.
     fn take(&mut self, from: usize, n: usize, at: usize) {
-        let events = self.events.as_slice();
-        let first = events.partition_point(|e| e.offset.index() < from);
-        // This call's frame `i` as the node's absolute frame: where a
-        // segment in flight is along itself.
-        let base = self.cx.env.frame.get();
-        let abs = |i: usize| base + i as u64;
-        // The frames whose segment points are sent: up to each event's, then
-        // the rest of the take.
-        let mut done = from;
-        for e in &events[first..] {
-            let o = e.offset.index();
-            if o >= from + n {
-                break;
-            }
-            let frame = at + o - from;
-            self.segments
-                .points(self.params, abs(done), abs(o), at + done - from);
-            done = o;
-            match e.kind {
+        let Self {
+            cx,
+            events,
+            features,
+            pending,
+            indexed,
+            segments,
+            params,
+            ..
+        } = self;
+        let features = *features;
+        param_input::take(
+            events.as_slice(),
+            from,
+            n,
+            at,
+            cx.env.frame.get(),
+            *indexed,
+            segments,
+            params,
+            |e, frame| match e.kind {
                 EventKind::Midi(ump) => {
-                    let midi = &mut self.pending.midi;
+                    let midi = &mut pending.midi;
                     if midi.len() < midi.inline_size() {
                         midi.push(MidiEvent::from_ump(frame as u32, &ump.0));
                     }
                 }
-                EventKind::Ramp(ramp) => {
-                    let ParamAddr::Id(id) = ramp.addr() else {
-                        continue;
-                    };
-                    let (Some(address), Some(value)) = (
-                        automation_node::address(id, self.indexed),
-                        ramp.foreign_target(id),
-                    ) else {
-                        continue;
-                    };
-                    // A ramp stops a segment in flight on its parameter.
-                    self.segments.interrupt(address);
-                    let offset = i32::try_from(frame).unwrap_or(i32::MAX);
-                    self.params.point(address, offset, value);
-                }
-                EventKind::Segment(seg) => {
-                    // A plugin parameter takes point values: the segment's
-                    // value on its frame, then points along it until it
-                    // lands (`SegmentPoints`).
-                    let ParamAddr::Id(id) = seg.addr() else {
-                        continue;
-                    };
-                    let Some(address) = automation_node::address(id, self.indexed) else {
-                        continue;
-                    };
-                    self.segments
-                        .start(self.params, address, seg, abs(o), frame);
-                }
                 EventKind::Harmony(h) => {
-                    push_harmony(&mut self.pending.harmony, self.features, h, frame);
+                    push_harmony(&mut pending.harmony, features, h, frame);
                 }
-            }
-        }
-        self.segments
-            .points(self.params, abs(done), abs(from + n), at + done - from);
+                _ => {}
+            },
+        );
     }
 
     /// The chunk's MIDI, sorted by frame: the event input's, as its frames

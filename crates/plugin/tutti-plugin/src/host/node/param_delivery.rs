@@ -1,6 +1,14 @@
 //! A plugin node's parameter changes: one slot per parameter, sized at bind,
 //! and **changes only**.
 //!
+//! Both plugin nodes deliver through it: the out-of-process node, whose
+//! chunk is the pipeline's and is handed to the bridge, and the in-process
+//! VST2 node (`format::vst2_in_process`), whose chunk is the block and is
+//! handed off by setting each queue's last point on the plugin before it
+//! processes the block. What follows says "the bridge"; for the VST2 node
+//! read "the plugin instance", and "no free buffer" as "the instance was
+//! locked".
+//!
 //! # Capacity
 //!
 //! The plugin's parameter list is read once, when the client is loaded
@@ -60,11 +68,11 @@
 //!   host's value actually moves;
 //! - **a fork** starts from it: the live node's record is read just before
 //!   the live state is saved, and the fork's delivery is seeded with it
-//!   ([`seed`](ParamDelivery::seed), `fork.rs`), so a fork loaded with that
-//!   state sends what the live one would, and an export renders what live
-//!   playback plays (as a DAW's does). A value delivered between the read
-//!   and the save is in the state and is sent to the fork once more,
-//!   harmlessly.
+//!   ([`seed`](ParamDelivery::seed), `fork.rs` and
+//!   `vst2_in_process/fork.rs`), so a fork loaded with that state sends
+//!   what the live one would, and an export renders what live playback
+//!   plays (as a DAW's does). A value delivered between the read and the
+//!   save is in the state and is sent to the fork once more, harmlessly.
 //!
 //! Design doc 014 §9, requirement 4. (Doc 014's PR 4, which makes an editor
 //! edit write the lane's knob, may revisit this.)
@@ -272,6 +280,33 @@ impl std::fmt::Debug for ParamDelivery {
     }
 }
 
+/// Another delivery to the **same plugin instance**: an in-process VST2
+/// node's clone, which drives the one `AEffect` its original does. It starts
+/// from this one's slots (what the instance has been sent) and shares its
+/// counters and record, which describe the instance, not the node. The
+/// reserved room is reserved again (a `Vec`'s clone keeps only its length):
+/// control thread, allocates. A chunk being filled is not carried over.
+impl Clone for ParamDelivery {
+    fn clone(&self) -> Self {
+        let room = self.room();
+        let mut slots = Vec::with_capacity(room);
+        slots.extend(self.slots.iter().map(|s| Slot {
+            queue: NO_QUEUE,
+            ..*s
+        }));
+        Self {
+            slots,
+            staged: Vec::with_capacity(room),
+            changes: ParameterChanges::reserved(room, self.points),
+            owed: self.owed,
+            chunk_points: 0,
+            points: self.points,
+            counters: Arc::clone(&self.counters),
+            record: Arc::clone(&self.record),
+        }
+    }
+}
+
 impl ParamDelivery {
     /// Slots for `params` (the plugin's parameter list) and [`SPARE_SLOTS`]
     /// more, and a chunk with room for a queue in each. Control thread:
@@ -333,6 +368,13 @@ impl ParamDelivery {
         self.points = points_for(chunk);
         self.changes = ParameterChanges::reserved(self.room(), self.points);
         self.points
+    }
+
+    /// The counters and record this delivery writes, for the node's
+    /// controls.
+    #[cfg(feature = "vst2")]
+    pub(crate) fn counters(&self) -> Arc<DeliveryCounters> {
+        Arc::clone(&self.counters)
     }
 
     /// Each queue's point room: what the bridge's buffers are reserved with.

@@ -65,10 +65,10 @@ fn main() -> Result<()> {
 
     // Parameter automation is a node of its own, an event source to insert
     // beside the plugin and wire to its event input, so the graph's delay
-    // compensation covers it. Ungated — every format carries it; `None` only
-    // for a node with no event input (the in-process VST2 node). One slow LFO
-    // on the plugin's first parameter.
-    let automation = plugin.automation([TimedParam {
+    // compensation covers it. Ungated: every format carries it, and both
+    // backends take it on their event input. One slow LFO on the plugin's
+    // first parameter (opaque: a VST2 plugin's would be `ParamAddress::Index`).
+    let _automation = plugin.automation([TimedParam {
         param_id: ParamAddress::Opaque(ParamId::new(0)),
         curve: Arc::new(LfoCurve::new(
             LfoShape::Sine,
@@ -87,7 +87,6 @@ fn main() -> Result<()> {
 
     report("transport", took_transport);
     report("harmony", took_harmony);
-    report("automation", automation.is_some());
     report("midi in", takes_midi);
 
     if plugin.role() == PluginRole::Instrument && !takes_midi {

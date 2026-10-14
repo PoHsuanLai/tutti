@@ -309,16 +309,21 @@ mod tests {
     ///
     /// Mutation: make `wake` a no-op → after the helpers park, no job gets a
     /// helper again (participant 0 never waits for one) → the second phase's
-    /// count stays 1 → fails.
+    /// mask stays 0b001 until its deadline → fails (run: after 10 s).
     #[test]
     fn helpers_join_jobs_before_and_after_parking() {
         let pool = WorkerPool::builder(3)
             .spin(Duration::from_micros(10))
             .idle(Duration::from_micros(10))
             .build();
+        // Until both helpers have joined a job, or a deadline. The deadline
+        // is for a loaded CI runner, where nextest's other tests can keep a
+        // runnable helper off a core for tens of milliseconds; a fixed count
+        // of 200 jobs (about 40 ms of the caller's spinning) failed there.
         let seen = |pool: &WorkerPool| {
             let mask = AtomicUsize::new(0);
-            for _ in 0..200 {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline {
                 pool.run(3, &|i| {
                     mask.fetch_or(1 << i, Ordering::Relaxed);
                     // Keep participant 0 busy long enough for a helper to

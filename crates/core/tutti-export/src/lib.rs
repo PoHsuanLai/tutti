@@ -29,6 +29,7 @@ pub use process::ChunkSize;
 /// transport" answer.
 pub use tutti_core::transport::{FrozenClock, RenderClock};
 
+use std::borrow::BorrowMut;
 use std::path::{Path, PathBuf};
 use tutti_types::Samples;
 
@@ -168,6 +169,9 @@ pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) ->
 ///
 /// `graph` is built for the render or forked from a live one
 /// ([`RenderGraph`]), and must be prepared at `config.render.sample_rate`.
+/// Pass it by value, or as `&mut RenderGraph` to keep it: a graph holding a
+/// unit whose teardown is main-thread-only (an in-process VST2 plugin's fork)
+/// and rendered on a worker is brought back and dropped on the main thread.
 /// Blocks until the file is finalized.
 ///
 /// # Errors
@@ -177,22 +181,25 @@ pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) ->
 /// [`Error::ForkFailed`] if a forked node (a hosted plugin) failed during the
 /// render — the file may exist but is not a valid render.
 pub fn render_to_file(
-    mut graph: RenderGraph,
+    mut graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
     path: &Path,
 ) -> Result<Written> {
     frame_width(config.encode.channels)?;
     let plan = render::RenderPlan::new(&config.render);
-    render::with_source(&mut graph, config.render.sample_rate, clock, |src| {
-        encode::encode_to_file(src, config.render.sample_rate, &plan, config, path)
-    })
+    render::with_source(
+        graph.borrow_mut(),
+        config.render.sample_rate,
+        clock,
+        |src| encode::encode_to_file(src, config.render.sample_rate, &plan, config, path),
+    )
 }
 
 /// Renders `graph` ([`RenderGraph`]) into memory.
 ///
 /// Renders the same frames as [`render_to_file`] and reports the rate it
-/// actually rendered at. Only `config.render` and `config.encode.channels` are
+/// actually rendered at. `graph` by value or as `&mut RenderGraph`, as there. Only `config.render` and `config.encode.channels` are
 /// read.
 ///
 /// **Neither resampled nor dithered**, for the same reason in both cases: they
@@ -218,7 +225,7 @@ pub fn render_to_file(
 /// editor does not feed its executor; [`Error::ForkFailed`] if a forked node
 /// failed during the render.
 pub fn render_to_buffers(
-    mut graph: RenderGraph,
+    mut graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
 ) -> Result<Rendered> {
@@ -230,16 +237,21 @@ pub fn render_to_buffers(
     let mut planes: Vec<Vec<f32>> = (0..ch)
         .map(|_| Vec::with_capacity(plan.output_length.get()))
         .collect();
-    render::with_source(&mut graph, config.render.sample_rate, clock, |src| {
-        render::drive(src, ch, &plan, |block| {
-            for f in block.iter() {
-                for (plane, &s) in planes.iter_mut().zip(f.iter()) {
-                    plane.push(s);
+    render::with_source(
+        graph.borrow_mut(),
+        config.render.sample_rate,
+        clock,
+        |src| {
+            render::drive(src, ch, &plan, |block| {
+                for f in block.iter() {
+                    for (plane, &s) in planes.iter_mut().zip(f.iter()) {
+                        plane.push(s);
+                    }
                 }
-            }
-            Ok(())
-        })
-    })?;
+                Ok(())
+            })
+        },
+    )?;
 
     Ok(Rendered {
         planes,

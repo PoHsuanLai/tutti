@@ -66,6 +66,13 @@ impl Vst2Handle {
 
 impl Drop for Vst2Handle {
     fn drop(&mut self) {
+        // `effMainsChanged(0)` and `effClose` below are main-thread opcodes,
+        // like the `load` that opened the instance. Not while unwinding: a
+        // second panic in a drop aborts, and the first one is the finding.
+        if !std::thread::panicking() {
+            tutti_plugin_types::assert_main_thread();
+        }
+
         // Close the editor first — some plugins read audio state during
         // editor teardown (e.g., to flush meter buffers).
         if let Some(mut editor) = self.editor.take() {

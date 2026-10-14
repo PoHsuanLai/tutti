@@ -190,8 +190,9 @@ impl PluginParameters for ProbeParameters {
     fn load_bank_data(&self, data: &[u8]) -> bool {
         // Reject an empty blob rather than storing it: `effSetChunk` returns
         // 1 on success, and the probe needs at least one input whose refusal
-        // a host can be seen ignoring.
-        if data.is_empty() {
+        // a host can be seen ignoring. The switch refuses every blob, for a
+        // test whose second instance must refuse what the first one saved.
+        if data.is_empty() || switches::refuse_chunk_load() {
             return false;
         }
         *self.chunk.lock().unwrap_or_else(|p| p.into_inner()) = data.to_vec();
@@ -307,6 +308,24 @@ impl ProbePlugin {
     }
 }
 
+impl ProbePlugin {
+    /// The DC [`config::state_dc`] adds for this instance's state, or `0.0`
+    /// when [`ProbeConfig::state_dc`] is off. Read once per render call.
+    fn state_dc(&self) -> f32 {
+        if !self.config.state_dc {
+            return 0.0;
+        }
+        let chunk = self.params.chunk.lock().unwrap_or_else(|p| p.into_inner());
+        let param0 = self.params.get_parameter(0).unwrap_or(0.0);
+        config::state_dc(
+            self.config.preset_chunks,
+            &chunk,
+            param0,
+            self.params.get_preset_num(),
+        )
+    }
+}
+
 impl Plugin for ProbePlugin {
     fn new(host: HostCallback) -> Self {
         let config = ProbeConfig::from_env();
@@ -357,7 +376,7 @@ impl Plugin for ProbePlugin {
         Info {
             name: PROBE_NAME.to_string(),
             vendor: PROBE_VENDOR.to_string(),
-            unique_id: PROBE_UNIQUE_ID,
+            unique_id: self.config.unique_id,
             version: PROBE_VERSION,
             // The *declared* counts, which may exceed what `ProbeParameters`
             // services: that gap is the enumeration hole.
@@ -507,7 +526,8 @@ impl Plugin for ProbePlugin {
         if !self.begin_process(ProcessEntry::Replacing, samples) {
             return;
         }
-        write_tagged(buffer, samples, self.config.outputs as usize);
+        let dc = self.state_dc();
+        write_tagged(buffer, samples, self.config.outputs as usize, dc);
     }
 
     fn process_f64(&mut self, buffer: &mut AudioBuffer<f64>) {
@@ -515,18 +535,25 @@ impl Plugin for ProbePlugin {
         if !self.begin_process(ProcessEntry::ReplacingF64, samples) {
             return;
         }
-        write_tagged(buffer, samples, self.config.outputs as usize);
+        let dc = self.state_dc();
+        write_tagged(buffer, samples, self.config.outputs as usize, dc);
     }
 }
 
-/// The oracle: `out[ch][i] = in[ch][i] + channel_tag(ch)`.
+/// The oracle: `out[ch][i] = in[ch][i] + channel_tag(ch)`, plus `dc` (the
+/// instance's [`config::state_dc`], `0.0` unless a test asked for it).
 ///
 /// Generic over the sample type so the f32 and f64 entry points cannot drift
 /// — a divergence would look like a host bug in whichever was tested second.
 ///
 /// Output channels with no matching input get the tag alone, so an
 /// asymmetric layout is still checkable.
-fn write_tagged<S: Float>(buffer: &mut AudioBuffer<S>, samples: usize, declared_outputs: usize) {
+fn write_tagged<S: Float>(
+    buffer: &mut AudioBuffer<S>,
+    samples: usize,
+    declared_outputs: usize,
+    dc: f32,
+) {
     let (inputs, mut outputs) = buffer.split();
     let in_count = inputs.len();
     let out_count = outputs.len();
@@ -548,7 +575,7 @@ fn write_tagged<S: Float>(buffer: &mut AudioBuffer<S>, samples: usize, declared_
         // Unreachable — every tag is small and exactly representable. Zero
         // over a panic because a render call has no `catch_unwind` above it;
         // a disarmed oracle fails visibly in the test's assertions instead.
-        let tag = S::from(channel_tag(ch)).unwrap_or_else(S::zero);
+        let tag = S::from(channel_tag(ch) + dc).unwrap_or_else(S::zero);
         // `get_mut` panics past the end, which is what the write-extra switch
         // asks for. A render call has no `catch_unwind`, so that switch is
         // crash-capable and off by default.

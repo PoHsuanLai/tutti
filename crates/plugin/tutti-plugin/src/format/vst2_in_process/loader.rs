@@ -142,6 +142,7 @@ pub fn load_client(
         sample_rate,
         pending_sample_rate,
         Arc::clone(&contention),
+        Arc::from(path),
     );
     // VST2 has an embeddable editor and carries a render mode: the same backend
     // Arc serves both optional slots, so a mode set through the handle reaches

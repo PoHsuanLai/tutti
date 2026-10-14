@@ -1795,7 +1795,7 @@ clones). The pieces:
   second write (review of #38: mirror-and-reconcile). The rate is now an
   argument: `MidiUnitIn::poll_unit(unit, block, sample_rate, buf)` and
   `MidiInPort::poll(block, sample_rate, buf)`, the polling unit's own
-  (`PolySynth`'s bank rate, `SoundFontUnit`'s fixed rate, a plugin node's
+  (`PolySynth`'s bank rate, `SoundFontUnit`'s synthesizer's rate, a plugin node's
   `PluginControls::sample_rate`, the in-process VST2 node's). A
   `MidiClipSource` holds no rate (`MidiClipSource::new` lost its argument;
   its `BeatCursor` is `unrated` and advanced with `advance_at`). The ripple
@@ -1987,16 +1987,15 @@ Recorded for later:
   butler blends a stream's ring by too (`loops::RingLoop::blend_run`).
 - ~~**Taps across a loop seam read past the loop (N2, review of #43)**~~:
   done, "Sampler tier bugs (after #43)".
-- **Re-rate a live `SoundFontUnit` on a device restart.** `restart_device`
-  re-prepares the graph, but a live SoundFont unit keeps the rate it was
-  built at (its `set_sample_rate` is a no-op, and a test pins that), so after
-  a 44.1 → 48 kHz restart it plays off pitch and off tempo.
-  `SoundFontUnit::with_sample_rate` (this PR) builds the replacement — same
-  SoundFont, channel state and preset, at the new rate — so the restart hook
-  can crossfade one in per SoundFont node (`AudioGraphRes::replace_with`,
-  with its captured controls, so the new unit's port and fork are bound). It
-  must carry the installed clip across (the new unit's port shares the old
-  one's source cell, as a `with_sample_rate` copy does).
+- ~~**Re-rate a live `SoundFontUnit` on a device restart.**~~ **Done**
+  (item 5's SoundFont node, "SoundFont as a graph node"): the node's
+  `prepare` swaps in `SoundFontUnit::with_sample_rate` (same SoundFont,
+  channel state and preset, no sounding voice) when the prepared rate
+  differs (on failure, a rate rustysynth refuses, it keeps the old rate),
+  so `restart_device`'s re-prepare re-rates it with the graph and
+  no hook-side crossfade is needed. Pinned by `graph_node.rs`'s
+  `the_node_follows_its_graphs_rate` and `soundfont_unit_audio.rs`'s
+  `a_same_rate_reprepare_mid_stream_does_not_disturb_rendering`.
 - **The reference probe reports 137 frames of latency in every mode but
   delays only in its latency mode**; the effect test uses that mode, where
   report and delay agree. The probe's other modes are routing oracles, not
@@ -2334,7 +2333,11 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   changed are dropped from the window, so a jump back there (a DAW's cycle
   mode) moves the window and reads the new loop, not the old one on every
   pass (the second review's B1). The switch is chosen again if the reader
-  reaches it while the butler reads the record. The divergence search runs
+  reaches it while the butler reads the record, at most four times (then
+  the record's fade covers the crossing); pinned by `loops.rs`'s
+  `a_reader_reaching_the_switch_during_the_read_moves_it` and
+  `a_reader_keeping_pace_is_given_up_on_after_four_reads`, which move the
+  reader mid-read through a test-only hook. The divergence search runs
   a run of consecutive frames at a time, not a position at a time.
   **Decided (review of #48):** the guard's
   latency near the playhead (about 256 frames, crossfaded, where the memory
@@ -2531,11 +2534,11 @@ never touches the live ring; a free-running source follows a relayed seek).
   **Still at the build rate after a restart** (audited: everything else
   that holds a rate is a graph unit, re-rated with the graph, or reads the
   transport's shared rate):
-  - `SoundFontUnit` (`tutti-soundfont`): rustysynth fixes its rate at
-    `Synthesizer` construction and `set_sample_rate` is a no-op, so a
-    soundfont voice plays at the build rate's pitch. Fixing it means
-    rebuilding the synthesizer (and losing its voices), which is a
-    soundfont-crate change.
+  - ~~`SoundFontUnit` (`tutti-soundfont`)~~: **re-rated since** — rustysynth
+    still fixes a `Synthesizer`'s rate, but the graph node's `prepare`
+    rebuilds it at the prepared rate (keeping the preset, losing the
+    sounding voices; on failure, a rate rustysynth refuses, it keeps the
+    old rate), so a restart's re-prepare re-rates it.
   - A host-built `UmpOutRes` (`midi-hardware`): its `JrStream` stamps JR
     timestamps and paces JR Clock at the rate it was built with. The host
     constructs it, so the hook cannot see it; `JrStream` has no way to
@@ -3320,9 +3323,16 @@ vocoder retirement channel for voices the pool removes.
   not `Cx::arrival` earlier: `Env` cannot answer for frames before its block.
   A plugin behind a latent path therefore sees the uncompensated playhead, as
   it did under `Legacy`.
-- **In-process VST2.** Still an `AudioUnit` through `Legacy`, polling its
-  transport (`PolledTransport`, sharing the snapshot mapping); it ports with
-  the "Port mechanically" group.
+- **In-process VST2: ported** (with the "Port mechanically" group).
+  `impl Node for InProcessVst2Client`
+  (`format/vst2_in_process/node.rs`): MIDI on an event input, MIDI-out on
+  an event output for a plugin that declares it, the rate parked in
+  `prepare` for the main thread to dispatch. It goes in through its own
+  `IntoNode` with no fork source, so a graph holding one is refused a fork
+  (`ForkError::NotForkable`). What remains: it still polls its transport
+  (`PolledTransport`, sharing the snapshot mapping, installed with
+  `set_transport_source`) once per block rather than reading
+  `Env::transport_at`.
 - **A device whose callback is not known, or varies.** The chunk is the
   device's callback only when the host knows it: tutti-cpal opens a device
   that reports a buffer range with a fixed 512-frame buffer
@@ -3471,9 +3481,29 @@ place that says what a ported node can rely on:
   many short blocks can exceed it, and then a delay FIFO drops non-note-off
   events first (counted). A FIFO carried across a recompile that shrank
   its bound (a shorter delay across a `MaxBlock` multiple, a source
-  hard-replaced with a lower rate) keeps what it holds; should that exceed
-  the new bound and fall due at once, the excess goes out a block late,
-  never lost.
+  hard-replaced with a lower rate, a re-prepare to a larger `MaxBlock`)
+  keeps what it holds, and its backlog is delivered on time: **landed**
+  (the FIFO excess fix). The compiler is pure and prices the delay's
+  output at the new bound, not knowing what is queued, so the executor
+  widens it when it builds the new state: `Executor::rebuild` adds each
+  carried FIFO's `EventFifo::excess` (what it holds past its bound) to its
+  output slot and, summed, to every merge downstream — and to the buffers
+  a sink merges its inputs into (a flush's `Inject::merged`, the
+  scheduled-command overlay) — on the commit that already allocates that
+  state. A FIFO above its bound never grows: while the backlog is at or
+  past the new limit, a new non-note-off is refused (dropped, counted in
+  `dropped_events`) and a note-off takes the reserve or evicts, as at any
+  full FIFO; so rendering stays allocation-free. Before, the excess went
+  out a block late, or further behind when more of it fell due in later
+  blocks. Pinned by `event_ports.rs`'s
+  `a_fifo_whose_bound_a_{swap,reprepare}_lowered_delivers_its_backlog_on_time`
+  (the second with a scheduled command onto the sink in the backlog's
+  block) and `a_flush_into_a_port_a_lowered_bound_widened_drops_nothing`.
+  A full slot still never drops (the due events wait a block), kept as a
+  backstop. **One corner stays late** (as it did before, with no excess):
+  a delay retuned below one block makes its whole backlog overdue at once,
+  at offset 0, and if that fills the slot, new input falling due inside
+  the same block waits for the next.
 - **Found in CI (#50):** pricing a delay's output at its source's one
   block delivered an event a block late whenever two of the source's
   blocks came due in one (a write on a block's last frame and the next

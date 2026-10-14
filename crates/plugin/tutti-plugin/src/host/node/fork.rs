@@ -299,10 +299,14 @@ impl PluginFork {
         // First, so a plugin that cannot save costs no subprocess. The `Arc`
         // is dropped straight after: the fork holds no strong reference.
         let live = self.bridge.upgrade().ok_or(PluginForkError::LiveGone)?;
-        // What the live node has delivered, read *before* the state: a value
-        // delivered in between is in the state and is re-sent to the fork
-        // once, harmlessly. Read after, a value delivered in between would
-        // be recorded as the fork's though its state predates it.
+        // What the live node has delivered, read *before* the state. Each
+        // value the record shows was stored (`Release`) after its chunk's
+        // `Process` command was pushed, and is read here with `Acquire`, so
+        // that push happens before the `SaveState` pushed below and the
+        // bridge's FIFO delivers it first: every value read is in the state.
+        // A value delivered in between is in the state too and is re-sent to
+        // the fork once, harmlessly. Read after, a value delivered in between
+        // would be recorded as the fork's though its state predates it.
         let delivered = self.controls.delivered();
         let state = live.save_state().map_err(PluginForkError::SaveState)?;
         drop(live);

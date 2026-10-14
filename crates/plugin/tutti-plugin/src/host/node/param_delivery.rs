@@ -156,8 +156,15 @@ pub(crate) struct DeliveryCounters {
 /// (`fork.rs`), so a fresh instance carrying the live one's state does not
 /// receive a value the live one was never re-sent (module docs, "The
 /// record's lifetime"). One `f64`'s bits per listed parameter, NaN for
-/// never delivered; stored relaxed when a chunk is handed over. Addresses
-/// learned into spare slots are not mirrored.
+/// never delivered. Addresses learned into spare slots are not mirrored.
+///
+/// **Ordering.** A value is stored with `Release` when its chunk is handed
+/// over, which is after the chunk's `Process` command was pushed to the
+/// bridge; [`snapshot`](Self::snapshot) loads with `Acquire`. So a
+/// snapshot that sees a value also sees that push, and a `SaveState`
+/// pushed after the snapshot is queued behind the command that delivered
+/// it: every value the record shows is in the state saved after it.
+/// (`Relaxed` would not give the push's visibility formally.)
 #[derive(Debug)]
 pub(crate) struct DeliveredRecord {
     /// Sorted, the same order as the node's listed slots.
@@ -182,7 +189,7 @@ impl DeliveredRecord {
             .iter()
             .zip(self.values.iter())
             .filter_map(|(&a, v)| {
-                let v = f64::from_bits(v.load(Ordering::Relaxed));
+                let v = f64::from_bits(v.load(Ordering::Acquire));
                 (!v.is_nan()).then_some((a, v))
             })
             .collect()
@@ -311,7 +318,7 @@ impl ParamDelivery {
                 slot.sent = Some(value);
                 slot.staged = value;
                 if let Some(m) = self.record.values.get(slot.mirror as usize) {
-                    m.store(value.to_bits(), Ordering::Relaxed);
+                    m.store(value.to_bits(), Ordering::Release);
                 }
             }
         }
@@ -472,7 +479,7 @@ impl ParamDelivery {
             if delivered {
                 slot.sent = Some(slot.staged);
                 if let Some(m) = self.record.values.get(slot.mirror as usize) {
-                    m.store(slot.staged.to_bits(), Ordering::Relaxed);
+                    m.store(slot.staged.to_bits(), Ordering::Release);
                 }
             } else if !slot.owed {
                 slot.owed = true;

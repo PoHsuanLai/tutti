@@ -109,8 +109,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scratch reserved with the list and applies the order in place, keeping
   same-frame events in insertion order. **Memory:** the parameter buffers scale with the
   parameter count: about 43 MB for 2 000 parameters at a 4096-frame
-  chunk, 340 MB for a 16 384-parameter VST3 (the follow-up is in doc 014
-  §12). **Breaking:**
+  chunk, 340 MB for a 16 384-parameter VST3, on the host; the
+  plugin-server reserves for the same points again: the CLAP host's event
+  list about 19 MB at 2 000 parameters and 157 MB at 16 384 (4096
+  frames, uncapped), the VST3 host's queues about 35 MB at 16 384 (the
+  follow-up is in doc 014 §12). **Breaking:**
   - `ParameterChanges::queues` is a `Vec<ParameterQueue>` (was
     `SmallVec<[ParameterQueue; 16]>`), and the struct has a private field
     (spare queues, not serialized), so it is no longer built with a
@@ -138,7 +141,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     instead. The node's record of what it delivered survives a reset, a
     re-prepare and a state or preset load, and an export's fork is seeded
     with it, so an export plays an edit made in the plugin's editor as
-    live playback does.
+    live playback does. Addresses learned into spare slots (not in the
+    plugin's list at load) are not in that record, so an export re-sends
+    their held value.
+  - Behaviour: a CLAP plugin that lists no parameters now has a parameter
+    room of 0, so parameter points sent to it are dropped and counted in
+    `ClapActive::param_points_dropped` instead of passed through.
 
 - **An export's fork is built off the main thread** (design doc 013,
   "Recorded for later": the fork ran on the main thread). `Editor::fork` is

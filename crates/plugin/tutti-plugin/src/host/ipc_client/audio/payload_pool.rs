@@ -58,9 +58,22 @@ const POOL_CAPACITY: usize = super::channels::COMMAND_QUEUE_SIZE;
 /// room): about 2.3 KB a queue at a 4096-frame chunk. With the node's own
 /// buffer that is `(PARAM_BUFFERS + 1) × queues × (180 + 16 × points)`
 /// bytes per plugin: about 43 MB for 2 000 parameters at a 4096-frame chunk,
-/// about 340 MB for a VST3 listing 16 384. Doc 014 §12 records the
-/// follow-up (a shared per-chunk point arena, or a small per-queue room and
-/// a counted shared overflow).
+/// about 340 MB for a VST3 listing 16 384.
+///
+/// The plugin-server reserves for the same points again, per instance, at
+/// activation with its block size (`ParameterQueue::chunk_room(block) + 1`
+/// a parameter):
+/// - **CLAP** (`tutti-clap-host`'s `lifecycle.rs`): an input event list of
+///   `params × points` events at 64 bytes each, plus an 8-byte sort key
+///   each, uncapped: about 19 MB for 2 000 parameters at 4096 frames, about
+///   157 MB for 16 384.
+/// - **VST3** (`tutti-vst3-host`'s `instance.rs`, at most 16 384 queues):
+///   `queues × points × 16` bytes of points, about 4 MB for 2 000
+///   parameters and 35 MB for 16 384 at 4096 frames (about 40 MB with the
+///   queues themselves).
+///
+/// Doc 014 §12 records the follow-up (a shared per-chunk point arena, or a
+/// small per-queue room and a counted shared overflow), for both sides.
 pub(super) const PARAM_BUFFERS: usize = 8;
 
 /// The free list's capacity: twice the buffers in circulation, so a buffer

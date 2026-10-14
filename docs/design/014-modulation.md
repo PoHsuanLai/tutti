@@ -765,7 +765,11 @@ and PR 4 makes the in-process VST2 node deliver parameter events (§13).
 **Follow-up to PR 1: parameter-change memory.** PR 1 reserves every
 parameter-change buffer at `params × points_for(chunk)` points, and the
 bridge holds `PARAM_BUFFERS` of them: about 43 MB for 2000 parameters at a
-4096-frame chunk, about 340 MB for a 16k-parameter VST3. Replace it with a
+4096-frame chunk, about 340 MB for a 16k-parameter VST3. The plugin-server
+reserves for the same points again per instance: the CLAP host's input
+event list (64-byte events plus an 8-byte sort key, uncapped) about 19 MB
+at 2000 parameters and 157 MB at 16k, the VST3 host's input queues about
+35 MB at 16k (4096 frames). Replace both with a
 shared per-chunk point arena, or a small per-queue room with a counted,
 shared overflow, so the memory follows the points a chunk carries rather
 than the parameter count.

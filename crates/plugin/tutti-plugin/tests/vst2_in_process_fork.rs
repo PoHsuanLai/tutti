@@ -24,7 +24,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
-use tutti_core::{Beat, Bpm, SampleRate, Samples};
+use tutti_core::{
+    Beat, BeatsPerBar, Bpm, MeterChange, MeterMap, NoteValue, SampleRate, Samples, TimeSignature,
+};
 use tutti_graph::{
     Editor, ForkError, ForkMode, ForkTarget, IntoNode, Prepare, Renderer, Transport,
 };
@@ -466,34 +468,26 @@ fn a_plugin_handed_back_by_into_client_forks() {
     drop(handle);
 }
 
-/// **A fork reads its transport from the render, not the live reader.** The
-/// live node polls a live transport rolling at 132 BPM from beat 4; the
-/// render hands the fork's graph 93 BPM at beat 5. The probe records what
+/// **A fork reads its transport from the render, with the live node's
+/// meter.** The live node has a 7/8 meter installed; the render hands the
+/// fork's graph 93 BPM at beat 5. The probe records what
 /// `audioMasterGetTime` answered on its last block — the fork's — so it must
-/// read 93 BPM at quarter 5.
+/// read 93 BPM at quarter 5, in 7/8 (whose bar 2 starts at quarter 3.5).
 ///
-/// Mutation (run): have the fork read the polled reader (`match &mut
-/// None::<EnvTransport>` in the node's `process`) → the probe reads the live
-/// 132 BPM → fails.
+/// Mutation (run): hand the fork a default snapshot (`TransportInfo::default()`
+/// in `TransportFeed::block`) → the probe reads 120 BPM at 0 → fails.
+/// Mutation (run): give the fork an empty meter cell in
+/// `TransportFeed::forked` → the probe reads 4/4 → fails.
 #[test]
 fn a_fork_reads_its_transport_from_the_render() {
     let _lock = lock_probe();
     reset_probe();
     let _env = ProbeEnv::new(true);
-    let (mut client, handle) = load();
-    let live = tutti_core::transport::Transport::new(SAMPLE_RATE);
-    live.settings.set_tempo(132.0);
-    let _ = live.motion.try_send(tutti_core::MotionEvent::Play);
-    live.motion.drain();
-    live.clock_links()
-        .expect("the only playhead writer")
-        .set_playhead(4.0);
-    client.set_transport_source(
-        live.clone(),
-        Arc::new(tutti_core::RtPublish::new(
-            tutti_core::meter::MeterMap::default(),
-        )),
-    );
+    let (client, handle) = load();
+    let seven_eight = TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH);
+    client.set_meter(Arc::new(tutti_core::RtPublish::new(MeterMap::new([
+        MeterChange::new(Beat(0.0), seven_eight),
+    ]))));
 
     let key = NodeKey(6);
     let editor = live_graph(key, client);
@@ -514,8 +508,14 @@ fn a_fork_reads_its_transport_from_the_render() {
         cap.time_info_present,
         "the fork answered audioMasterGetTime"
     );
-    assert_eq!(cap.time_tempo, 93.0, "the render's tempo, not the live 132");
-    assert_eq!(cap.time_ppq_pos, 5.0, "the render's beat, not the live 4");
+    assert_eq!(cap.time_tempo, 93.0, "the render's tempo");
+    assert_eq!(cap.time_ppq_pos, 5.0, "the render's beat");
+    assert_eq!(
+        (cap.time_sig_numerator, cap.time_sig_denominator),
+        (7, 8),
+        "the live node's meter"
+    );
+    assert!((cap.time_bar_start_pos - 3.5).abs() < 1e-9);
     drop(handle);
 }
 

@@ -147,8 +147,8 @@ impl RenderClock for FrozenClock {
 /// `Timeline` only and keeps `loop_range` as an inherent method.
 ///
 /// The live [`Transport`] implements this; a consumer that needs record or loop
-/// state (the in-process VST2 plugin's polled transport) depends on
-/// `dyn TransportState`, never the concrete backend.
+/// state depends on `dyn TransportState`, never the concrete backend. (A graph
+/// node reads neither: its transport is its block's `Env`.)
 pub trait TransportState: Timeline {
     /// Whether the transport is armed and recording. Always `false` offline.
     fn is_recording(&self) -> bool;

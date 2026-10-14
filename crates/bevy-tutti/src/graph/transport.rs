@@ -95,9 +95,9 @@ impl TransportRes {
     ///
     /// Same seam and same sharing as `timeline`; the difference is only how much
     /// of the transport the consumer is allowed to ask about. Use this when the
-    /// sink genuinely needs those extras — a hosted plugin's `TransportInfo`
-    /// carries recording and loop state, so its sources take `TransportState`
-    /// — and `timeline` otherwise. `TransportState` is a strict supertrait of
+    /// sink genuinely needs those extras (one that reports recording or loop
+    /// state), and `timeline` otherwise. A graph node needs neither: its
+    /// transport is its block's `Env`. `TransportState` is a strict supertrait of
     /// `Timeline`, so an offline render (a `Timeline`-only implementor) cannot
     /// be passed where this is wanted, which is the point: it has no answer for
     /// "am I recording".

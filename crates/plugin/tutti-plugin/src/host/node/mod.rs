@@ -64,22 +64,18 @@
 //! LAST Arc drops. Main-thread editor / state / parameter access is on
 //! [`crate::host::handles::PluginHandle`].
 
+mod automation_node;
 mod batcher;
 mod capability_view;
 mod controls;
 mod fork;
 mod graph_node;
-// `input_slot` / `transport_source` are `pub(crate)` rather than private: the
-// in-process VST2 node (`crate::format::vst2_in_process`) is a peer host, not a
-// subprocess client, and reuses the same gated per-block plumbing and the same
-// transport mapping rather than hand-rolling a second copy.
-mod automation_node;
-// Only the in-process VST2 node still polls a per-block input slot.
-#[cfg(feature = "vst2")]
-pub(crate) mod input_slot;
 mod param_automation_source;
 mod process;
 mod segment_points;
+// `pub(crate)` rather than private: the in-process VST2 node
+// (`crate::format::vst2_in_process`) is a peer host, not a subprocess client,
+// and reads its transport through the same mapping rather than a second copy.
 pub(crate) mod transport_source;
 
 #[cfg(test)]

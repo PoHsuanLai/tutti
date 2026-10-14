@@ -32,8 +32,10 @@ is the compiler's own solve. Phase 6 is under way: the parallel executor
 - Musical delay is not latency. Report only processing latency to PDC.
 - Transport commands meant for playback take an `At`
   (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
-  graph node that needs the transport at a frame reads `Env::transport_at`:
-  a start or seek inside a block is in `Env`, never a split block.
+  graph node that needs the transport at a frame reads `Env::transport_at`
+  (the block's own time), or, behind a latent path, `Cx::transport_at` (the
+  transport its input was rendered at): a start or seek inside a block is in
+  `Env`, never a split block.
 - Doc 013 lists the defects and types each phase addresses. Update it when a
   phase lands or a decision changes.
 

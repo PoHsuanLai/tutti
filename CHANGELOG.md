@@ -939,6 +939,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A live in-process VST2 plugin behind a latent path was told the wrong
+  playhead** (tutti-plugin; design doc 013, "In-process VST2 live transport
+  from `Cx` landed"). The live node polled the installed `Transport` once
+  per block, so `audioMasterGetTime` answered with the block's own time,
+  not the time its input audio was rendered at. It now reads its block's
+  `Cx::transport_at`, as its fork and the out-of-process plugin node do, so
+  live and fork are one path. With no meter installed the plugin is now told
+  the graph's transport in 4/4 (it was told a stopped default until a
+  reader was installed). **Breaking** for code that called the in-process
+  client's transport install directly.
+
+  | Was | Now |
+  |---|---|
+  | `InProcessVst2Client::set_transport_source(reader, meter)`, `clear_transport_source()` | the transport needs no install. Give the meter: `InProcessVst2Client::{set_meter(meter), clear_meter(), has_meter()}` (`&self`; shared across the node's clones). `Plugin::set_transport_source(reader, meter)` stays; both backends now take only the meter |
+
 - **A live disk voice on a looped stream played 576 frames and then
   silence, and every live reposition cost frames and drift** (tutti-sampler;
   design doc 013, "The live disk loop and its repositions (#48)"). The

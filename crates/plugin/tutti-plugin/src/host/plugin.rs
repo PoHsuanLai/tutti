@@ -259,10 +259,11 @@ impl Plugin {
     /// Returns `false` if the plugin declared it does not want a transport
     /// snapshot.
     ///
-    /// The subprocess node reads the transport from each block's `Env` once it
-    /// is in a graph, so it takes only `meter` and ignores `reader`; the
-    /// in-process VST2 node polls `reader` into the `TimeInfo` its
-    /// `audioMasterGetTime` callback serves.
+    /// Every plugin node reads the transport from each block's graph context
+    /// once it is in a graph (the transport its input was rendered at), so
+    /// both backends take only `meter` and ignore `reader`; the in-process
+    /// VST2 node maps it into the `TimeInfo` its `audioMasterGetTime` callback
+    /// serves.
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
     pub fn set_transport_source(
         &mut self,
@@ -272,13 +273,11 @@ impl Plugin {
         if !self.accepts(Features::TRANSPORT) {
             return false;
         }
+        let _ = reader;
         match &mut self.backend {
-            Backend::Subprocess(c) => {
-                let _ = reader;
-                c.set_meter(meter);
-            }
+            Backend::Subprocess(c) => c.set_meter(meter),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.set_transport_source(reader, meter),
+            Backend::InProcessVst2(c) => c.set_meter(meter),
         }
         true
     }

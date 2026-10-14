@@ -4,9 +4,8 @@
 //! event on the frame the plugin gave it.
 //!
 //! Forkable by state transfer (see its `IntoNode` below, and `fork.rs`). The
-//! live node's transport still comes from the reader installed with
-//! `set_transport_source`, polled once per block; a fork's comes from its
-//! block's `Env`.
+//! live node and its fork read the transport the same way: from the block's
+//! `Cx`, the transport its input was rendered at (`TransportFeed`).
 
 use tutti_core::{ChannelLayout, Samples};
 use tutti_graph::{
@@ -16,8 +15,7 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
 
 use super::client::{drive_f32, InProcessVst2Client};
-use crate::host::node::transport_source;
-use crate::protocol::{Features, TransportInfo};
+use crate::protocol::Features;
 
 /// The most channels a block hands the plugin (`drive_f32`'s stack tables).
 const MAX_CHANNELS: usize = 16;
@@ -72,22 +70,9 @@ impl Node for InProcessVst2Client {
                 self.process_scratch.f32_in[ch][..size].copy_from_slice(&inputs.get(ch)[..size]);
             }
         }
-        let transport = match &mut self.env_transport {
-            // A fork: the transport its input at the block's first frame
-            // was rendered at (`Cx::transport_at`), as the out-of-process
-            // plugin node reads it.
-            Some(feed) => {
-                let info = match Offset::new(0, Samples(size)) {
-                    Some(at) if self.features.contains(Features::TRANSPORT) => {
-                        transport_source::from_cx(cx, at, feed.steady.at(0), &feed.meter.read())
-                    }
-                    _ => TransportInfo::default(),
-                };
-                feed.steady.advance(size);
-                info
-            }
-            None => *self.transport.drain(self.features),
-        };
+        // Built before the plugin is entered: `drive_f32` publishes it to the
+        // cell `audioMasterGetTime` reads, then calls `process`.
+        let transport = self.transport.block(cx, size, self.features);
         let sends = self.features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
         let mut out_events = crate::protocol::MidiEventVec::new();
         let processed = drive_f32(

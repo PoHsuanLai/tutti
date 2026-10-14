@@ -234,7 +234,9 @@ impl Chunks for PluginChunks<'_> {
     /// The event input's events on these frames join the chunk at the
     /// chunk's frames: MIDI to its MIDI, a parameter ramp (from a
     /// [`PluginAutomation`](super::PluginAutomation) node) to its parameter
-    /// points, in this plugin's address model, and a chord or scale to its
+    /// points, in this plugin's address model (a ramp as its target, a curve
+    /// segment as its value on its frame: a plugin takes point values), and
+    /// a chord or scale to its
     /// harmony, for a plugin that takes sequencer context (no display text:
     /// the degrees are what a plugin acts on). Past the inline capacities they
     /// are dropped rather than spill (allocate) on the audio thread.
@@ -265,6 +267,21 @@ impl Chunks for PluginChunks<'_> {
                         continue;
                     };
                     let offset = i32::try_from(frame).unwrap_or(i32::MAX);
+                    automation_node::add_point(&mut self.pending.params, address, offset, value);
+                }
+                EventKind::Segment(seg) => {
+                    // A plugin parameter takes point values: the segment's
+                    // value on its own frame. Its shape between points is
+                    // not sent; a curve meant for a plugin goes through
+                    // `PluginAutomation`, which samples it.
+                    let ParamAddr::Id(id) = seg.addr() else {
+                        continue;
+                    };
+                    let Some(address) = automation_node::address(id, self.indexed) else {
+                        continue;
+                    };
+                    let offset = i32::try_from(frame).unwrap_or(i32::MAX);
+                    let value = seg.raw_value_after(0);
                     automation_node::add_point(&mut self.pending.params, address, offset, value);
                 }
                 EventKind::Harmony(h) => {

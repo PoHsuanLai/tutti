@@ -66,8 +66,9 @@
 //!   declick — compared as values here, where the executor compares the
 //!   compiler's signatures — unless the port has no state yet (its unit's
 //!   first block). Each source's state is kept in a map by [`ParamFrom`],
-//!   where the executor re-keys an array. Ramps are evaluated from their
-//!   start frame rather than stepped. A param source's new or longer delay
+//!   where the executor re-keys an array. Ramps and curve segments are
+//!   evaluated from their start frame rather than stepped (a segment's
+//!   shape, `segment_value`, is shared with the executor, as the LUT is). A param source's new or longer delay
 //!   line is filled with the source's last value. Only the LUT lookup is
 //!   shared with the executor. A port's range is the graph's, unless
 //!   [`set_param_range`](Reference::set_param_range) moved it since the last
@@ -115,10 +116,25 @@ struct RefParam {
 /// One param source's state in the reference.
 #[derive(Default)]
 struct RefSrc {
-    /// `(from, target, start frame, length, value)` of its ramp.
-    ramp: (f32, f32, u64, u64, f32),
+    ramp: RefRamp,
     /// Its raw value on the last frame it ran.
     last_raw: f32,
+}
+
+/// The move an event source is on: where it started, where it goes, and
+/// how — evaluated from its start frame.
+#[derive(Default)]
+struct RefRamp {
+    from: f32,
+    target: f32,
+    /// The absolute frame of its event.
+    at: u64,
+    /// A linear ramp's length, in frames.
+    len: u64,
+    /// A curve segment's `(position, length, shape)`; `None`: linear.
+    curve: Option<(f32, f32, crate::event::SegmentShape)>,
+    /// Its value on the last frame evaluated.
+    value: f32,
 }
 
 struct RefFifo {
@@ -1233,27 +1249,52 @@ impl Reference {
                     let mut evs = ramp_events[j].iter().peekable();
                     for (i, v) in vals.iter_mut().enumerate() {
                         let now = start + i as u64;
+                        let want = tutti_types::ParamAddr::Unit(param);
                         while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
-                            if let EventKind::Ramp(r) = e.kind {
-                                if r.addr() == tutti_types::ParamAddr::Unit(param) {
-                                    let cur = src.ramp.4;
-                                    src.ramp =
-                                        (cur, r.raw_target(), now, r.duration().get() as u64, cur);
+                            match e.kind {
+                                EventKind::Ramp(r) if r.addr() == want => {
+                                    let cur = src.ramp.value;
+                                    src.ramp = RefRamp {
+                                        from: cur,
+                                        target: r.raw_target(),
+                                        at: now,
+                                        len: r.duration().get() as u64,
+                                        curve: None,
+                                        value: cur,
+                                    };
                                 }
+                                EventKind::Segment(s) if s.addr() == want => {
+                                    let (from, to, position, length) = s.raw();
+                                    src.ramp = RefRamp {
+                                        from,
+                                        target: to,
+                                        at: now,
+                                        len: 0,
+                                        curve: Some((position, length, s.shape())),
+                                        value: src.ramp.value,
+                                    };
+                                }
+                                _ => {}
                             }
                         }
-                        let (from, target, at_frame, len, _) = src.ramp;
-                        let value = if now < at_frame {
-                            src.ramp.4
+                        let r = &src.ramp;
+                        let value = if now < r.at {
+                            r.value
+                        } else if let Some((position, length, shape)) = r.curve {
+                            // Frames since its event, `0` on the event's own.
+                            let j = u32::try_from(now - r.at).unwrap_or(u32::MAX);
+                            crate::event::segment_value(
+                                r.from, r.target, shape, position, length, j,
+                            )
                         } else {
-                            let into = now - at_frame + 1;
-                            if into >= len {
-                                target
+                            let into = now - r.at + 1;
+                            if into >= r.len {
+                                r.target
                             } else {
-                                from + (target - from) * (into as f32 / len as f32)
+                                r.from + (r.target - r.from) * (into as f32 / r.len as f32)
                             }
                         };
-                        src.ramp.4 = value;
+                        src.ramp.value = value;
                         *v = value;
                     }
                     raw[j] = vals;

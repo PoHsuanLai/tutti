@@ -26,7 +26,7 @@ use assert_no_alloc::AllocDisabler;
 use common::{prepare, Kind, TestNode};
 use tutti_graph::{
     CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Node, ParamRamp,
-    Prepare, Shape, Status, Transport, Ump, Unforkable,
+    ParamSegment, Prepare, SegmentShape, Shape, Status, Transport, Ump, Unforkable,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, NodeKey, Samples, Tail};
@@ -586,7 +586,8 @@ impl Node for ParamSink {
     }
 }
 
-/// A ramp on `Cutoff` every 37 frames.
+/// A ramp or a curve segment on `Cutoff` every 37 frames (every shape
+/// class, a resumed one).
 struct RampEvery;
 
 impl Node for RampEvery {
@@ -599,14 +600,46 @@ impl Node for RampEvery {
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let start = cx.env.frame.get();
         for i in 0..io.frames() {
-            if (start + i as u64).is_multiple_of(37) {
-                let r = ParamRamp::new(
-                    tutti_types::ParamKey::<tutti_types::Hz>::CUTOFF,
-                    tutti_types::Hz(((start + i as u64) % 5) as f32),
-                    Samples(20),
-                );
+            let f = start + i as u64;
+            if f.is_multiple_of(37) {
                 let o = io.offset(i).expect("inside");
-                let _ = io.event_out(0).push(tutti_graph::Event::ramp(o, r));
+                let event = match (f / 37) % 3 {
+                    // A linear ramp, from wherever the source is.
+                    0 => tutti_graph::Event::ramp(
+                        o,
+                        ParamRamp::new(
+                            tutti_types::ParamKey::<tutti_types::Hz>::CUTOFF,
+                            tutti_types::Hz((f % 5) as f32),
+                            Samples(20),
+                        ),
+                    ),
+                    // A curve segment spanning the next event: interrupted.
+                    k => {
+                        let shape = [
+                            SegmentShape::PowerIn(2.0),
+                            SegmentShape::Exp(3.0),
+                            SegmentShape::PowerInOut(1.5),
+                            SegmentShape::Hold,
+                        ][(f / 111) as usize % 4];
+                        let seg = ParamSegment::new(
+                            tutti_types::ParamKey::<tutti_types::Hz>::CUTOFF,
+                            tutti_types::Hz((f % 3) as f32),
+                            tutti_types::Hz((f % 7) as f32),
+                            Samples(50),
+                            shape,
+                        );
+                        let seg = if k == 2 {
+                            seg.resumed(
+                                tutti_types::SamplePosition(3.5),
+                                tutti_types::SamplePosition(41.25),
+                            )
+                        } else {
+                            seg
+                        };
+                        tutti_graph::Event::segment(o, seg)
+                    }
+                };
+                let _ = io.event_out(0).push(event);
             }
         }
         Status::Silent
@@ -616,7 +649,8 @@ impl Node for RampEvery {
 
 /// Compiler-owned param modulation never allocates on the audio thread:
 /// the fused step over audio sources (one delayed by PDC behind a latent
-/// sibling), a ramp source and LUT shapings, the declick of a connection
+/// sibling), an event source of ramps and curve segments (every shape
+/// class) and LUT shapings, the declick of a connection
 /// made and one broken, blocks of every length, and ranges moved between
 /// blocks without a commit. The commits are applied before the gate
 /// (applying allocates by design); the declicks they start, and every block
@@ -627,6 +661,8 @@ impl Node for RampEvery {
 /// (`self.ramp_buf = vec![0.0; frames]`) → aborts. Box the live range as it
 /// is read (`*Box::new(r.load(k))`) → aborts (in the first phase already:
 /// the range is read every block a port is modulated, moved or not).
+/// Allocate where `render_ramps` starts a segment (a `Vec` per segment
+/// event) â aborts.
 fn modulated_params_are_allocation_free_on(workers: usize) {
     use tutti_graph::{ParamFrom, ParamIn, ParamShaping, ShapeLut};
     let (mut ed, mut exec) = Editor::new(prepare(256));

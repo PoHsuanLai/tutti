@@ -34,7 +34,7 @@ pub use shape::{curve_apply, fold, shape, LfoShape, Polarity};
 pub use target::ModTarget;
 
 #[cfg(feature = "routing")]
-pub use curve::Curve;
+pub use curve::{Curve, CurveSegment};
 #[cfg(feature = "routing")]
 pub use curve_source::{BeatLfo, CurveModulator, EdgeShape, ShapedCurve};
 #[cfg(feature = "routing")]

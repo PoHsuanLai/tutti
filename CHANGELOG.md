@@ -24,6 +24,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | — | `RenderGraph::{set_pool, is_parallel}` (tutti-export) |
   | — | `TuttiPlugin::render_workers` (bevy-tutti; default 1, `0` = one per core); an export forks onto a pool of its own |
 
+- **Curve-segment automation events** (design doc 013, decision 7,
+  "Curve segments landed"). A param port evaluates a non-linear automation
+  shape per frame inside the block, sample-accurate, with no sub-chunking
+  at breakpoints. **Breaking** for code that matches `EventKind`
+  exhaustively (a new variant).
+
+  | Was | Now |
+  |---|---|
+  | automation reached a param as linear `ParamRamp`s only | `EventKind::Segment(ParamSegment)`, `Event::segment`: an absolute move from a start value to an end value along a `SegmentShape`, with a fractional position and length in frames (`ParamSegment::{new, foreign, resumed}`) |
+  | — | `tutti_graph::SegmentShape::{Linear, Hold, PowerIn(p), PowerOut(p), PowerInOut(p), Exp(k)}` and `SegmentShape::eval` (a closed, `Copy` set; `Event` stays 32 bytes) |
+  | `AutomationLaneNode` had an audio output only | `AutomationLaneNode::{for_param, for_foreign}`: the lane sends its curve as segments on an event output, one per breakpoint (and at each block edge, loop wrap and transport change); `tutti_nodes::automation::{segment_shape, LANE_EVENT_CAPACITY}` |
+  | — | `tutti_mod::{CurveSegment, Curve::segment_at}` (default `None`: a producer samples `value_at`); `AutomationEnvelope` answers it from its breakpoints |
+  | `ParamRamp` stored its duration as `usize` | stored as `u32`, saturating (about a day at 48 kHz): `ParamRamp::duration()` is unchanged, and an `Event` stays 32 bytes |
+
+  **Migration.** A `match` on `EventKind` needs a `Segment(_)` arm. A node
+  that reads param automation from its own event input (rather than
+  through a declared param port) reads a segment's value at a frame with
+  `ParamSegment::raw_value_after(j)`; the hosted plugin node does this,
+  sending a segment's value on its event frame as a parameter point (a
+  plugin parameter takes points). `Editor::schedule` refuses a segment into
+  a node that does not honour offsets sample-accurately, as it refuses a
+  ramp.
+
 ### Changed
 
 - **A param range is a control, not plan** (design doc 013, "A param

@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | bevy-tutti forked in `start_exports`, on the main thread | `start_exports` gathers; the task builds, edits, commits and renders |
   | the rendered graph was handed back with the result; a cancelled export's graph dropped on the pool | everything the task holds goes to the new `ExportDrops` resource wherever it drops (finished, failed or cancelled) and `poll_exports` drops it on the main thread. `ExportPlugin` inserts it |
   | — | CI's threaded-pool step also runs `export_fork.rs`'s `off_thread` tests |
+  | `ForkError::Source` named the first failing source in key order | the first source whose **gather** fails, else the first deferred **build** that fails (gathers all run first): with key 1 failing in its build and key 2 in its gather, the error names key 2 |
+  | — | a pinned unit dropped off its gathering thread while that thread unwinds a panic (a deferred build, a render) is leaked, not torn down there |
+  | — | a `prepare` edit runs on the pool: it must not insert a main-thread-only unit (in-process VST2). One that never runs (failed build, cancelled export) is dropped on the main thread |
 
 - **A node behind a latent path reads the transport its input was rendered
   at** (design doc 013, "Arrival-aligned transport landed"). **Breaking**

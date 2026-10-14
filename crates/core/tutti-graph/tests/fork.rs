@@ -1155,6 +1155,10 @@ enum How {
     Deferred,
     /// A deferred build that fails.
     Fails,
+    /// A deferred build that panics.
+    Panics,
+    /// A gather that fails.
+    GatherFails,
 }
 
 /// A source whose fork is a [`Witness`] of the value its live cell holds
@@ -1180,6 +1184,8 @@ impl ForkSource for WitnessFork {
             How::Default => unreachable!("a `Default` witness forks through `Defaulted`"),
             How::Pinned => ForkBuild::pinned(self.fork(mode)?),
             How::Ready => ForkBuild::ready(self.fork(mode)?),
+            How::GatherFails => return Err(ForkCause::new(RefusedState("will not save"))),
+            How::Panics => ForkBuild::deferred(|| panic!("the server launcher panicked")),
             How::Deferred | How::Fails => {
                 // Read now; built later.
                 let value = self.value.load(Ordering::SeqCst) as f32;
@@ -1346,7 +1352,7 @@ fn each_source_builds_and_prepares_where_its_gather_says() {
         let want = match how {
             How::Default | How::Pinned => (gatherer, gatherer),
             How::Ready => (gatherer, builder),
-            How::Deferred | How::Fails => (builder, builder),
+            How::Deferred | How::Fails | How::Panics | How::GatherFails => (builder, builder),
         };
         assert_eq!(
             (built, prepared),
@@ -1424,4 +1430,121 @@ fn a_pending_fork_is_send_and_static() {
     fn send_static<T: Send + 'static>() {}
     send_static::<PendingFork>();
     send_static::<ForkRemains>();
+}
+
+/// **A pinned unit is not dropped on a worker that panics**: a deferred
+/// build that panics on the build thread unwinds through the build, and the
+/// pinned unit gathered beside it (an in-process VST2 plugin's, whose close
+/// is the main thread's and asserts so) is leaked there rather than torn
+/// down; the panic reaches the caller as a panic.
+///
+/// Mutation (run): `PinnedUnit`'s drop dropping its unit whatever the
+/// thread → the witness is dropped on the build thread → fails. Mutation
+/// (run): `fork_gather` not wrapping a pinned unit in `PinnedUnit` → the
+/// same.
+#[test]
+#[cfg_attr(miri, ignore = "spawns a thread that panics; leaks by design")]
+fn a_pinned_unit_is_not_dropped_on_a_worker_that_panics() {
+    let pre = prepare(64);
+    let (mut ed, _exec) = Editor::new(pre);
+    let (_, pinned) = witness(&mut ed, NodeKey(1), How::Pinned, 1);
+    witness(&mut ed, NodeKey(2), How::Panics, 2);
+
+    let pending = ed
+        .fork_gather(ForkTarget::Master, ForkMode::Live, pre)
+        .expect("gathers");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let joined = std::thread::spawn(move || {
+        tx.send(std::thread::current().id()).unwrap();
+        let _ = pending.build();
+    })
+    .join();
+    assert!(joined.is_err(), "the build panicked");
+    let worker = rx.recv().unwrap();
+    let dropped = pinned.dropped.lock().unwrap().clone();
+    assert!(
+        !dropped.contains(&worker),
+        "the pinned unit was dropped on the panicking worker {worker:?}: {dropped:?}"
+    );
+}
+
+/// **A gather that fails is named before a build that would fail**: key 1's
+/// deferred build would fail, key 2's gather fails; the gather runs first,
+/// so the fork's error names key 2, through `fork` and `fork_gather` alike,
+/// and key 1's build never runs. (Before the split, the first failing
+/// source in key order was named; see the CHANGELOG.)
+///
+/// Mutation (run): `fork_gather` running each deferred build at once → key
+/// 1's build fails first and is named → fails.
+#[test]
+fn a_gather_failure_is_named_before_a_build_failure() {
+    let pre = prepare(64);
+    let (mut ed, _exec) = Editor::new(pre);
+    let (_, failing) = witness(&mut ed, NodeKey(1), How::Fails, 1);
+    witness(&mut ed, NodeKey(2), How::GatherFails, 2);
+
+    for err in [
+        ed.fork(ForkTarget::Master, ForkMode::Live, pre).err(),
+        ed.fork_gather(ForkTarget::Master, ForkMode::Live, pre)
+            .err(),
+    ] {
+        let Some(ForkError::Source { key, cause }) = err else {
+            panic!("expected ForkError::Source, got {err:?}");
+        };
+        assert_eq!(key, NodeKey(2));
+        assert_eq!(
+            cause.downcast_ref::<RefusedState>(),
+            Some(&RefusedState("will not save"))
+        );
+    }
+    assert!(
+        failing.built.lock().unwrap().is_empty(),
+        "key 1's build ran"
+    );
+}
+
+/// **A build whose commit fails hands back the half-built graph**: a spec
+/// the live editor holds uncommitted and invalid (an edge into an input
+/// port the node does not have) gathers, and fails at the build's commit as
+/// `ForkError::Commit`; the pinned unit already placed in the fork's editor
+/// comes back inside the `ForkRemains` and drops with them, here, not on
+/// the build thread.
+///
+/// Mutation (run): `build` dropping the half-built pair on a commit failure
+/// (`graph: None`) → the pinned unit drops on the build thread → fails.
+#[test]
+fn a_build_whose_commit_fails_hands_back_the_graph() {
+    let pre = prepare(64);
+    let (mut ed, _exec) = Editor::new(pre);
+    let (_, pinned) = witness(&mut ed, NodeKey(1), How::Pinned, 1);
+    // Key 1 has no inputs: an edge into its port 0 does not validate.
+    ed.spec_mut().topology.edges.insert(
+        InPort {
+            node: NodeKey(1),
+            port: 0,
+        },
+        Edge::Direct(Source::Zero),
+    );
+    let pending = ed
+        .fork_gather(ForkTarget::Master, ForkMode::Live, pre)
+        .expect("gathers: the spec is checked at the commit");
+    let (error, remains) =
+        std::thread::spawn(move || pending.build().err().expect("the commit fails"))
+            .join()
+            .expect("the build thread");
+    assert!(
+        matches!(error, ForkError::Commit(_)),
+        "expected ForkError::Commit, got {error:?}"
+    );
+    assert!(
+        pinned.dropped.lock().unwrap().is_empty(),
+        "the pinned unit was dropped by the build"
+    );
+    assert!(!remains.is_empty());
+    drop(remains);
+    assert_eq!(
+        *pinned.dropped.lock().unwrap(),
+        [std::thread::current().id()],
+        "the pinned unit drops with the remains, here"
+    );
 }

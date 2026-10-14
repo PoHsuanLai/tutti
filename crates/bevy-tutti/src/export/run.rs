@@ -146,6 +146,10 @@ pub fn start_exports(world: &mut World) {
     // instance when dropped, which VST2 confines to the main thread.
     let drops = world.get_resource_or_init::<ExportDrops>().sender();
     let pending = ToMain::new(pending, drops.clone());
+    // The edit too: until it runs (on the pool, once the fork is built) it
+    // is the caller's state, and a failed build or a cancelled task drops it
+    // unrun.
+    let edit = edit.map(|edit| ToMain::new(edit, drops.clone()));
     let task = AsyncComputeTaskPool::get().spawn(async move {
         // The fork's build: a hosted plugin's `plugin-server` launch and
         // state load, here on the pool.
@@ -157,7 +161,7 @@ pub fn start_exports(world: &mut World) {
             }
         };
         if let Some(edit) = edit {
-            edit(PreparedGraph {
+            (edit.take())(PreparedGraph {
                 graph: &mut graph,
                 ctx: &ctx,
             });

@@ -351,6 +351,16 @@ impl ExportInFlight {
     /// first), goes to [`ExportDrops`](super::ExportDrops) and is dropped by
     /// the next `poll_exports`, on the main thread, where a forked in-process
     /// VST2 plugin in it must close.
+    ///
+    /// **At shutdown**, an export still in flight when the world (and its
+    /// [`ExportDrops`](super::ExportDrops)) is dropped has nowhere to send
+    /// what it holds when its task finishes or is dropped, and drops it where
+    /// it is: on a pool thread, for a pinned in-process VST2 fork a close off
+    /// the main thread. Nothing here waits for in-flight exports on exit (a
+    /// render can run for minutes, and an exit should not); a host with such
+    /// a plugin in its exports keeps updating until they have reported
+    /// (`ExportInFlight` gone; a finished export's graph is dropped by the
+    /// `poll_exports` that reports it) before it drops the world.
     pub fn cancel(self) {
         drop(self.task);
     }
@@ -550,7 +560,9 @@ impl PreparedGraph<'_> {
 /// A caller's hook into the graph, in two halves: the hook runs on the
 /// **main thread in the frame the export starts**, reads what it needs from
 /// `&World`, and returns the **edit**, which runs on the compute pool once
-/// the fork is built ([`PreparedGraph`]), before the render.
+/// the fork is built ([`PreparedGraph`]), before the render. The edit is a
+/// pool thread's: it must not insert a main-thread-only unit (see
+/// [`PrepareEdit`]).
 ///
 /// Split because the fork is: it is gathered from the live graph in the
 /// frame the export starts and built on the pool (a hosted plugin's fork
@@ -598,4 +610,12 @@ pub type PrepareGraph = Box<dyn Fn(&World) -> PrepareEdit + Send + Sync>;
 
 /// The edit half of a [`PrepareGraph`] hook: what it returns, run on the
 /// compute pool on the built fork.
+///
+/// **It runs on a pool thread**, and so do the `prepare` of every node it
+/// inserts and the drop of whatever it captured once it has run. It must not
+/// insert, prepare or capture a unit confined to the main thread (an
+/// in-process VST2 plugin: its load, `prepare` and close are the main
+/// thread's); such a node goes into the live graph, where the fork's gather
+/// builds it pinned on the main thread. An edit that never runs (the build
+/// failed, the export was cancelled) is dropped on the main thread.
 pub type PrepareEdit = Box<dyn for<'a> FnOnce(PreparedGraph<'a>) + Send>;

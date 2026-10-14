@@ -80,13 +80,16 @@ impl ForkBuild {
     /// [`PendingFork::build`] places it as it is. For a unit confined to one
     /// thread (an in-process VST2 plugin, whose construction, rate change and
     /// close are the main thread's). Drop the fork that holds it on that
-    /// thread as well.
+    /// thread as well. If it is dropped on another thread while that thread
+    /// unwinds a panic (a deferred build, a render that panics on a worker),
+    /// it is leaked rather than torn down there.
     pub fn pinned(forked: Forked) -> Self {
         Self(Build::Pinned(forked))
     }
 
-    /// A unit built on the gathering thread (a template's clone is the
-    /// snapshot) that the build prepares on whichever thread runs it.
+    /// A unit built on the gathering thread (a template's clone, a
+    /// `ParamNode` at its authored values) that the build prepares on
+    /// whichever thread runs it.
     pub fn ready(forked: Forked) -> Self {
         Self(Build::Ready(forked))
     }
@@ -108,6 +111,72 @@ impl fmt::Debug for ForkBuild {
             Build::Ready(_) => "ForkBuild::Ready",
             Build::Deferred(_) => "ForkBuild::Deferred",
         })
+    }
+}
+
+/// A pinned unit ([`ForkBuild::pinned`]) as the fork holds it from the gather
+/// on: the unit, delegated to, and the thread that gathered it.
+///
+/// **Leaked, not dropped, when it is dropped off its thread while that
+/// thread unwinds a panic**: a deferred build, a unit's `prepare`, a hook's edit or
+/// a render that panics on a worker unwinds through whatever holds the fork,
+/// and dropping a pinned unit there would run its teardown off the thread it
+/// is confined to (an in-process VST2 plugin's `effClose`, which debug
+/// builds abort on). A guard on the unit itself covers every such panic,
+/// wherever the fork is by then, where catching the unwind in
+/// [`PendingFork::build`] would cover the build alone (a panic in the render
+/// unwinds through the caller's frames, not the build's) and would have to
+/// keep every unit outside the caught closure. A panic is already a failed
+/// fork; leaking its pinned units is the price of not closing them on the
+/// wrong thread. Any other drop is an ordinary one, wherever it happens: the
+/// owner's rule is to drop the fork on the gathering thread.
+struct PinnedUnit {
+    node: Option<Box<dyn Node>>,
+    home: std::thread::ThreadId,
+}
+
+impl PinnedUnit {
+    fn here(node: Box<dyn Node>) -> Self {
+        Self {
+            node: Some(node),
+            home: std::thread::current().id(),
+        }
+    }
+
+    fn get(&self) -> &dyn Node {
+        self.node.as_deref().expect("present until dropped")
+    }
+
+    fn get_mut(&mut self) -> &mut dyn Node {
+        self.node.as_deref_mut().expect("present until dropped")
+    }
+}
+
+impl Node for PinnedUnit {
+    fn shape(&self) -> crate::Shape {
+        self.get().shape()
+    }
+    fn prepare(&mut self, p: &Prepare) {
+        self.get_mut().prepare(p);
+    }
+    fn process(&mut self, cx: &crate::Cx<'_>, io: crate::Io<'_>) -> crate::Status {
+        self.get_mut().process(cx, io)
+    }
+    fn reset(&mut self) {
+        self.get_mut().reset();
+    }
+    fn param_base(&self, port: usize) -> Option<f32> {
+        self.get().param_base(port)
+    }
+}
+
+impl Drop for PinnedUnit {
+    fn drop(&mut self) {
+        if std::thread::panicking() && std::thread::current().id() != self.home {
+            if let Some(node) = self.node.take() {
+                std::mem::forget(node);
+            }
+        }
     }
 }
 
@@ -557,8 +626,14 @@ impl<N: Node + Clone + Send + 'static> ForkSource for CloneFork<N> {
         Ok(Forked::new(Box::new(node)))
     }
 
-    /// The clone is the snapshot, taken here; a clone of a node that shares
-    /// nothing can be prepared on any thread.
+    /// The clone is taken here and prepared in the build, on any thread: a
+    /// node inserted `ForkByClone` promises its clone shares nothing the
+    /// build could race. What the clone holds is the node *as inserted*; a
+    /// `Param` cell in it is the live one's (a `Clone` of a `Param` shares
+    /// it), so a value set on that cell later reaches the fork, as it did
+    /// before the fork was split. A node whose controls must be frozen at
+    /// the fork is a `ParamNode` ([`ParamFork`](crate::ParamFork) reads the
+    /// authored values here and detaches its cells) or brings its own source.
     fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
         self.fork(mode).map(ForkBuild::ready)
     }
@@ -766,10 +841,16 @@ impl Editor {
     /// shares nothing with this editor and builds on any thread
     /// ([`PendingFork::build`]).
     ///
-    /// The fork is the live graph **as it is at this call**. A later edit of
-    /// this editor (a rewire, an insert, a param set through a
-    /// [`ParamSet`](crate::ParamSet)) does not reach it, however long the
-    /// build waits.
+    /// The fork is the live graph **as it is at this call**: a later edit of
+    /// this editor (a rewire, an insert) does not reach it, however long the
+    /// build waits, and nor does anything a source reads in its gather — a
+    /// param set through a [`ParamNode`](crate::ParamNode)'s
+    /// [`ParamSet`](crate::ParamSet) ([`ParamFork`](crate::ParamFork) reads
+    /// the authored values here and detaches its cells), a hosted plugin's
+    /// state. A source's unit can only be as detached as the source makes
+    /// it: a [`ForkByClone`] node whose clone shares a live `Param` cell
+    /// shares it with the fork too (the promise `ForkByClone` asks of its
+    /// node is that it shares nothing).
     ///
     /// # What runs here, and what runs in the build
     ///
@@ -932,6 +1013,7 @@ impl Editor {
                 Build::Pinned(mut forked) => {
                     // Here, on the gathering thread: the unit's own rule.
                     forked.node.prepare(&prepare);
+                    forked.node = Box::new(PinnedUnit::here(forked.node));
                     Unit::Prepared(forked)
                 }
                 Build::Ready(forked) => Unit::Built(forked),

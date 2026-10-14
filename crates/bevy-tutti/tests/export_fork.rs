@@ -2382,4 +2382,102 @@ mod off_thread {
         all_main("prepared", &threads.prepared);
         all_main("dropped", &threads.dropped);
     }
+
+    /// Records where it is dropped: captured by a `prepare` hook's edit, it
+    /// drops when the edit does.
+    struct EditWitness(Arc<Mutex<Vec<ThreadId>>>);
+
+    impl Drop for EditWitness {
+        fn drop(&mut self) {
+            here(&self.0);
+        }
+    }
+
+    /// A request for `source` whose `prepare` edit captures an
+    /// [`EditWitness`] recording into `drops`.
+    fn witnessed(source: ExportSource, drops: &Arc<Mutex<Vec<ThreadId>>>) -> ExportRequest {
+        let drops = Arc::clone(drops);
+        buffers(source, 0.05).with_prepare(move |_world: &World| {
+            let witness = EditWitness(Arc::clone(&drops));
+            move |_prepared: PreparedGraph<'_>| {
+                let _ = &witness;
+            }
+        })
+    }
+
+    /// **A `prepare` edit that never runs drops on the main thread**, as the
+    /// fork does: one whose fork's build fails (the task returns before the
+    /// edit), and one whose export is cancelled before its task ever ran
+    /// (every pool thread busy, so the task is queued; dropping it drops its
+    /// future on a pool thread when the queue reaches it). An edit may
+    /// capture anything the hook read on the main thread; until it runs it
+    /// is that state.
+    ///
+    /// Bites only with a threaded pool; see the module docs. (Without one,
+    /// the failing build still returns before the edit, on the main thread,
+    /// and the cancel comes after the export has run inside `spawn`.)
+    ///
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): the task capturing
+    /// the edit bare instead of in a `ToMain` → the failed build's witness
+    /// drops on a pool thread → fails. Mutation (run, threaded): the edit bare
+    /// but sent to `ExportDrops` on the failed-build path → the cancelled
+    /// task's witness drops on a pool thread → fails.
+    #[test]
+    fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
+        // A build that fails.
+        let mut graph = graph_on();
+        let (broken, _) = graph.insert(Broken);
+        graph.set_outputs_from(broken);
+        let mut app = app_over(graph);
+        let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
+        match export(&mut app, witnessed(ExportSource::Master, &drops)) {
+            Got::ForkSource(..) => {}
+            other => panic!("expected the failing build, got {other:?}"),
+        }
+        all_main("dropped (failed build)", &drops);
+
+        // A task cancelled before it ran.
+        let mut graph = graph_on();
+        let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.5));
+        graph.set_outputs_from(dc);
+        let mut app = app_over(graph);
+        let threaded = threaded();
+        // Hold every pool thread, so the export's task waits in the queue.
+        let (hold, held) = channel::<()>();
+        let held = Arc::new(Mutex::new(held));
+        if threaded {
+            let pool = bevy_tasks::AsyncComputeTaskPool::get();
+            let (started, waiting) = channel::<()>();
+            for _ in 0..pool.thread_num() {
+                let held = Arc::clone(&held);
+                let started = started.clone();
+                pool.spawn(async move {
+                    let _ = started.send(());
+                    let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(5));
+                })
+                .detach();
+            }
+            for _ in 0..pool.thread_num() {
+                waiting
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("every pool thread is held");
+            }
+        }
+        let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
+        let entity = app
+            .world_mut()
+            .spawn(witnessed(ExportSource::Master, &drops))
+            .id();
+        app.update(); // starts: gathers, and queues the task
+        app.world_mut().despawn(entity);
+        drop(hold); // free the pool: it drops the cancelled future
+        for _ in 0..2000 {
+            app.update();
+            if !drops.lock().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        all_main("dropped (cancelled before it ran)", &drops);
+    }
 }

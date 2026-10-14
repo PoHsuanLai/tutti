@@ -1900,7 +1900,8 @@ Recorded for later:
     live executor is sent nothing), and each node's
     `ForkSource::gather`. A later live edit (a rewire, a `ParamSet` write, a
     plugin parameter, a meter installed) does not reach the fork, however
-    long the build waits. `PendingFork` is `Send + 'static` and holds no
+    long the build waits. (A `ForkByClone` node's clone still shares any
+    live `Param` cell its `Clone` shares, as before the split.) `PendingFork` is `Send + 'static` and holds no
     reference to the live editor.
   - **Each source declares where its work runs**, as the `ForkBuild` its
     `gather` returns: `pinned` (built and prepared in the gather, on its
@@ -1915,15 +1916,25 @@ Recorded for later:
     `plugin-server` and loads that state).
   - **Failure**: `ForkError::Source` names the first source whose gather
     fails, else the first deferred build that fails (none after it runs). A
-    failed build hands back `ForkRemains`, everything it had built, for the
-    caller to drop where a pinned unit belongs.
+    failed build (a source, or the commit) hands back `ForkRemains`,
+    everything it had built, for the caller to drop where a pinned unit
+    belongs. A **panic** is not caught: a pinned unit is held in a guard
+    (`PinnedUnit`) that leaks it when it is dropped off its gathering thread
+    while that thread unwinds, so a deferred build, a hook's edit or a render
+    that panics on a worker never closes an in-process VST2 instance there.
+    A guard covers every panic wherever the fork is by then; `catch_unwind`
+    in `build` would cover the build alone.
   - **bevy-tutti**: `start_exports` gathers (and runs the `prepare` hook's
     world read) in the frame the export starts; the compute-pool task builds
     the fork, runs the hook's edit, commits and renders. Everything the task
     holds is wrapped (`ToMain`) so that wherever it drops (finished, failed,
     or cancelled before or mid-run) it is sent to `ExportDrops` and dropped
-    by `poll_exports` on the main thread. The `prepare` hook is split to
-    match: `with_prepare(|world| move |prepared| ..)`. tutti-export gains
+    by `poll_exports` on the main thread; that includes the hook's edit until
+    it runs. The `prepare` hook is split to match:
+    `with_prepare(|world| move |prepared| ..)`; its edit runs on the pool and
+    must not insert a main-thread-only unit. An export still in flight when
+    the world is dropped has no `ExportDrops` to send to and drops where it
+    is (documented on `ExportInFlight`; exit does not wait for renders). tutti-export gains
     `RenderGraph::gather` / `RenderGraph::build`.
   - Pinned by tutti-graph's `a_gathered_fork_is_the_live_graph_at_the_gather`,
     `each_source_builds_and_prepares_where_its_gather_says`,

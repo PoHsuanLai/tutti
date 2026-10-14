@@ -617,7 +617,10 @@ fn a_clone_renders_identically() {
 /// (`c + 1 < n_out`) → fails.
 #[test]
 fn filter_lanes_is_tick_per_frame() {
-    use crate::lanes::{Lane, LANE_FRAMES};
+    // One 64-frame lane per channel: the lane length when this was written
+    // (`filter_lanes` takes any length).
+    const LANE_FRAMES: usize = 64;
+    type Lane = [f32; LANE_FRAMES];
     let src = sine(440.0, 44_100.0, 160 * LANE_FRAMES);
     // (unit width, caller width, stretch, cents)
     let rows: &[(usize, usize, f32, f32)] = &[

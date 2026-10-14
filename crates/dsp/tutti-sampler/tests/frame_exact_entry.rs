@@ -22,9 +22,10 @@
 //! 96 000 on every path a voice is driven by — live, the engine
 //! (`Engine::new`) in 441-frame device blocks; offline, a graph rendered by
 //! `OfflineTimeline::render_graph` in 1023-frame blocks; and a node driven
-//! by hand in 77-frame blocks. On none is 96 000 the first frame of a block,
-//! or of a 64-frame piece of one (a voice renders its blocks 64 frames at a
-//! time from their start): it falls 47, 29 and 58 frames into a piece.
+//! by hand in 77-frame blocks. On none is 96 000 the first frame of a block
+//! (a voice renders each block in one piece, seated at its first frame),
+//! nor of a 64-frame piece of one, which voices rendered before their
+//! scratch was sized from `Prepare::max_block`.
 //!
 //! Mutations (run):
 //! - accumulate in `FrameClock::advance` (restart the segment on every call
@@ -37,8 +38,8 @@
 //!   start an ulp late enters a frame late → `a_start_an_ulp_after_the_frame_
 //!   enters_on_it` fails.
 //! - `place` gating only a range's first frame (a per-call gate) → every
-//!   path enters at the next 64-frame piece → all fail. (The block lengths
-//!   are chosen so 96 000 is never a piece's first frame; where it is, this
+//!   path enters at the next block → all fail. (The block lengths are
+//!   chosen so 96 000 is never a block's first frame; where it is, this
 //!   mutation passes.)
 
 use std::sync::{Arc, Mutex};
@@ -60,8 +61,8 @@ const START: Beat = Beat(3.0);
 const START_FRAME: usize = 96_000;
 /// Rendered: past the start by a few device blocks.
 const FRAMES: usize = 98_304;
-/// The block lengths of the three paths: none puts 96 000 on a block's, or
-/// a 64-frame piece's, first frame.
+/// The block lengths of the three paths: none puts 96 000 on a block's (or
+/// a 64-frame piece's) first frame.
 const DEVICE: usize = 441;
 const OFFLINE: usize = 1023;
 const HAND: usize = 77;

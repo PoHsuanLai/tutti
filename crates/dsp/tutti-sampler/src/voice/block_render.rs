@@ -13,7 +13,8 @@
 //! **What it isolates is the block machinery and the clock.** The two sides
 //! share every kernel; a bug inside one shows on both and is the kernel's own
 //! tests' (`interp`, `loop_span`, `stretch`, the tier tables) to catch. This
-//! pins the pieces (a longer block read as the same 64-frame pieces), the
+//! pins the pieces (a 256-frame block, read in one piece through scratch
+//! sized from `Prepare::max_block`, as the 64-frame ones read), the
 //! runs (the clock's cut at a change, a jump seen on its frame), the flush at
 //! a jump, the lanes, `hermite_lanes`, `filter_lanes`, the gain and the mix.
 

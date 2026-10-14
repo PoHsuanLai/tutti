@@ -79,6 +79,7 @@ use crate::exec::{
     audio_ring, capture_op, delay_op, event_delay_op, event_merge_op, event_ring, global_in,
     node_dispatch, output_op, Head, Inject, OpState, Ring, Unit,
 };
+use crate::history::TransportHistory;
 use crate::node::{Env, MaxBlock, MAX_PORTS};
 use crate::param::MAX_PARAM_SOURCES;
 use crate::plan::{Op, Plan, Span};
@@ -218,6 +219,8 @@ impl Par {
 pub(crate) struct Block<'b, 'o> {
     pub(crate) plan: &'b Plan,
     pub(crate) env: &'b Env,
+    /// Observed before the block, read-only while it runs.
+    pub(crate) history: &'b TransportHistory,
     pub(crate) frames: usize,
     pub(crate) max: MaxBlock,
     pub(crate) cap: usize,
@@ -241,6 +244,8 @@ pub(crate) struct Block<'b, 'o> {
 struct Shared<'s, 'o> {
     plan: &'s Plan,
     env: &'s Env,
+    /// The executor's, shared read-only by every participant.
+    history: &'s TransportHistory,
     frames: usize,
     max: MaxBlock,
     cap: usize,
@@ -301,6 +306,7 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
         let shared = Shared {
             plan: b.plan,
             env: b.env,
+            history: b.history,
             frames: b.frames,
             max: b.max,
             cap: b.cap,
@@ -428,6 +434,7 @@ impl Shared<'_, '_> {
                     max: self.max,
                     cap: self.cap,
                     env: self.env,
+                    history: self.history,
                 };
                 let mut st = OpState {
                     arena: &mut a,

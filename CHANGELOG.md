@@ -45,6 +45,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | — | `Reference::set_param_range`, the reference interpreter's mirror of the editor's |
   | bevy-tutti: a `ModParamRange` bounds edit recompiled the graph | `AudioGraphRes::set_param_mod` with the sources the graph already holds moves only the range, through `Editor::set_param_range`: a store, no commit |
 
+- **A node behind a latent path reads the transport its input was rendered
+  at** (design doc 013, "Arrival-aligned transport landed"). **Breaking**
+  for code that builds a `tutti_graph::Cx` by hand. The executor keeps a
+  `TransportHistory` of the transport's jumps (a fixed 256, about 24 KiB,
+  whatever the latency) and hands it to every node;
+  `Cx::transport_at(offset)` is the transport `Cx::arrival` frames before
+  `offset`, exact through seeks, transport changes and loop wraps in
+  earlier blocks. A hosted plugin is
+  now sent that transport for each chunk, so a tempo-synced plugin behind a
+  latent path is no longer off by the upstream latency.
+
+  | Was | Now |
+  |---|---|
+  | `Cx { env, arrival }` | `Cx { env, arrival, history }`: pass `TransportHistory::none()` where nothing is kept, or a `TransportHistory::new()` you `observe` every block |
+  | a node behind a latent path read `cx.env.transport_at(offset)` (its own frame) | `cx.transport_at(offset)` (its input's frame) |
+  | — | `Env::transport_before(offset, back, &history)`, `TransportHistory` (`JUMPS`, `CHECKPOINT`) |
+
 - **An in-process VST2 plugin forks by state transfer**, so an export of a
   graph holding one renders it (design doc 013, "In-process VST2 forks by
   state transfer"). **Breaking** for `Plugin::into_client`. Inserting an

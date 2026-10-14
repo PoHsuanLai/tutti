@@ -156,6 +156,7 @@ use crate::arena::{Arena, Role};
 use crate::command::{overlay_capacity, CommandRx, Deliveries};
 use crate::event::{merge_into, Event, EventWriter, SortedEvents};
 use crate::fade::CrossfadeCurve;
+use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
 use crate::node::{
@@ -640,6 +641,9 @@ pub struct Executor {
     /// The sample rate changed in a re-prepare: the next rebuild carries no
     /// time-based state (see `Editor::reprepare`).
     reset_time: bool,
+    /// The transport over the last frames, for nodes behind a latent path
+    /// (`Cx::transport_at`). Fed every block, whatever it renders.
+    history: TransportHistory,
     /// The pool blocks run on, if any (see [`set_pool`](Self::set_pool)).
     pool: Option<Arc<dyn Pool>>,
 }
@@ -697,6 +701,7 @@ impl Executor {
             suspended: false,
             next_prepare: None,
             reset_time: false,
+            history: TransportHistory::new(),
             pool: None,
         }
     }
@@ -857,6 +862,8 @@ impl Executor {
                 // every pending frame-timed command move to the same
                 // wall-clock time at the new rate.
                 self.reset_time = true;
+                // Frames at the old rate name nothing at the new one.
+                self.history.clear();
                 let ratio = new / old;
                 self.frame = crate::command::rescale(self.frame, ratio);
                 self.commands.rescale(ratio, c.seq);
@@ -1288,13 +1295,15 @@ impl Executor {
                 o[..frames].fill(0.0);
             }
             let rate = self.next_prepare.unwrap_or(self.prepare).sample_rate();
-            self.commands.observe(&Env {
+            let env = Env {
                 frame: self.frame,
                 sample_rate: rate,
                 block_len: Samples(frames),
                 transport: *transport,
                 changes: *changes,
-            });
+            };
+            self.commands.observe(&env);
+            self.history.observe(&env);
             self.frame += Samples(frames);
             return;
         }
@@ -1324,8 +1333,20 @@ impl Executor {
             suspended: _,
             next_prepare: _,
             reset_time: _,
+            history,
             pool,
         } = self;
+        let env = Env {
+            frame: *frame,
+            sample_rate: prepare.sample_rate(),
+            block_len: Samples(frames),
+            transport: *transport,
+            changes: *changes,
+        };
+        // Before any node reads it, and also when there is nothing to render:
+        // the transport moved all the same.
+        history.observe(&env);
+        let history: &TransportHistory = history;
         let Some(plan) = plan.as_ref() else {
             for o in outputs.iter_mut() {
                 o[..frames].fill(0.0);
@@ -1358,13 +1379,6 @@ impl Executor {
         );
         let plan: &Plan = plan;
         let cap = *event_cap;
-        let env = Env {
-            frame: *frame,
-            sample_rate: prepare.sample_rate(),
-            block_len: Samples(frames),
-            transport: *transport,
-            changes: *changes,
-        };
         commands.gather(&env, plan, *applied, has_due);
         let mut fade_ended = false;
 
@@ -1390,6 +1404,7 @@ impl Executor {
                 Block {
                     plan,
                     env: &env,
+                    history,
                     frames,
                     max,
                     cap,
@@ -1469,6 +1484,7 @@ impl Executor {
                             max,
                             cap,
                             env: &env,
+                            history,
                         };
                         st.at = unit as usize;
                         fade_ended |= node_dispatch(u, &head, &mut st);
@@ -1819,6 +1835,7 @@ fn fading_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
         let cx = Cx {
             env: h.env,
             arrival: h.rec.arrival,
+            history: h.history,
         };
         x.out
             .as_mut()
@@ -1910,6 +1927,10 @@ pub(crate) struct Head<'p, 'e> {
     pub(crate) max: MaxBlock,
     pub(crate) cap: usize,
     pub(crate) env: &'e Env,
+    /// The executor's transport history, observed before any op runs this
+    /// block: every participant reads the same one, and nobody writes it
+    /// until the block is done.
+    pub(crate) history: &'e TransportHistory,
 }
 
 /// What a node op may write besides its own unit: every buffer through `A`
@@ -2107,6 +2128,7 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     };
     let call = Call {
         env: h.env,
+        history: h.history,
         max: h.max,
         frames,
         rec,
@@ -2187,6 +2209,7 @@ struct Extra<'s> {
 /// One node call's constants, shared by every borrow form.
 struct Call<'p, 'e> {
     env: &'e Env,
+    history: &'e TransportHistory,
     max: MaxBlock,
     frames: usize,
     rec: &'p NodeRec,
@@ -2238,6 +2261,7 @@ impl<'p> Call<'p, '_> {
         Cx {
             env: self.env,
             arrival: self.rec.arrival,
+            history: self.history,
         }
     }
 

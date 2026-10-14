@@ -3336,9 +3336,21 @@ place that says what a ported node can rely on:
   many short blocks can exceed it, and then a delay FIFO drops non-note-off
   events first (counted). A FIFO carried across a recompile that shrank
   its bound (a shorter delay across a `MaxBlock` multiple, a source
-  hard-replaced with a lower rate) keeps what it holds; should that exceed
-  the new bound and fall due at once, the excess goes out a block late,
-  never lost.
+  hard-replaced with a lower rate, a re-prepare to a larger `MaxBlock`)
+  keeps what it holds, and is delivered on time: **landed** (the FIFO
+  excess fix). The compiler is pure and prices the delay's output at the
+  new bound, not knowing what is queued, so the executor widens it when
+  it builds the new state: `Executor::rebuild` adds each carried FIFO's
+  `EventFifo::excess` (what it holds past its bound) to its output slot
+  and, summed, to every merge downstream, on the commit that already
+  allocates that state. A FIFO above its bound never grows (a new
+  non-note-off waits, a note-off evicts), so rendering stays
+  allocation-free. Before, the excess went out a block late, or further
+  behind when more of it fell due in later blocks. Pinned by
+  `event_ports.rs`'s
+  `a_fifo_whose_bound_a_{swap,reprepare}_lowered_delivers_its_backlog_on_time`.
+  A full slot still never drops (the due events wait a block), kept as a
+  backstop.
 - **Found in CI (#50):** pricing a delay's output at its source's one
   block delivered an event a block late whenever two of the source's
   blocks came due in one (a write on a block's last frame and the next

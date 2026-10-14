@@ -183,13 +183,16 @@ impl AudioRing {
 /// even that is full it evicts the oldest non-note-off instead. A note-off is
 /// dropped only when the whole FIFO is note-offs.
 ///
-/// The queue never holds more than `limit + reserve` ([`bound`](Self::bound)),
+/// The queue never grows past `limit + reserve` ([`bound`](Self::bound)),
 /// and the compiler prices the delay's output slot at that same bound
 /// (`EventSlotCapacity::fifo`), so everything that falls due in a block —
 /// events input across several source blocks, or a backlog a retune made
-/// overdue — is delivered in it. Delivery never drops: should the slot be
-/// full anyway (a FIFO carried across a recompile that shrank its bound
-/// while holding more than the new one), the due events stay queued and go
+/// overdue — is delivered in it. A FIFO carried across a recompile that
+/// lowered its bound may hold more than the new one ([`excess`](Self::excess))
+/// until it drains; the executor widens its output slot (and every merge
+/// after it) by that excess when it builds the new state, so those are
+/// delivered on their frames too. Delivery never
+/// drops: should the slot be full anyway, the due events stay queued and go
 /// out at offset 0 of the next block — late, not lost.
 pub(crate) struct EventFifo {
     q: VecDeque<(u64, Event)>,
@@ -247,10 +250,10 @@ impl EventFifo {
     /// shrinks it. Control side: may allocate.
     ///
     /// The limit is the new bound, not the new bound plus what is queued:
-    /// the output slot is priced at the bound, so a queue past it could not
-    /// be delivered in one block. Queued events past a smaller new bound are
-    /// kept (and go out late if they all fall due at once); new ones wait
-    /// for room.
+    /// new events wait for room. Queued events past a smaller new bound are
+    /// kept, and are the FIFO's [`excess`](Self::excess), which the executor
+    /// adds to the output slot it prices at the bound, so they still go out
+    /// on their frames even if they all fall due at once.
     pub(crate) fn resize(&mut self, cap: usize, max_block: usize) {
         let (limit, reserve) = Self::bounds(self.len as usize, cap, max_block);
         self.limit = limit;
@@ -259,6 +262,15 @@ impl EventFifo {
         if self.q.capacity() < want {
             self.q.reserve_exact(want - self.q.len());
         }
+    }
+
+    /// How many queued events lie past the FIFO's bound: zero, except
+    /// after a [`resize`](Self::resize) that lowered the bound below what
+    /// was queued. The queue never grows while above its bound (a new
+    /// non-note-off is refused, a note-off evicts), so this is the most the
+    /// FIFO can hold past what its output slot was priced for.
+    pub(crate) fn excess(&self) -> usize {
+        self.q.len().saturating_sub(self.limit + self.reserve)
     }
 
     /// Every event still queued, oldest first.

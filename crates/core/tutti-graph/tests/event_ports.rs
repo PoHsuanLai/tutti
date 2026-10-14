@@ -26,7 +26,8 @@ use std::sync::{Arc, Mutex};
 
 use tutti_graph::{
     compile, Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, EventSlotCapacity,
-    GraphSpec, Io, Node, Op, Prepare, Reference, Shape, Shapes, Status, Transport, Ump, ValidGraph,
+    GraphSpec, Io, Node, Op, Prepare, Reference, Shape, Shapes, Status, Transport, Ump, Unforkable,
+    ValidGraph,
 };
 use tutti_types::graph::NodeSpec;
 use tutti_types::{ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail, Topology};
@@ -733,4 +734,161 @@ fn a_delay_delivers_what_came_due_across_its_sources_blocks() {
         assert_eq!(dropped, 0);
         assert_eq!(refused.load(Ordering::Relaxed), 0);
     }
+}
+
+/// What a sink logged, as `(port, absolute frame, tag)`, sorted.
+fn landed(seen: &Seen) -> Vec<(u16, u64, u32)> {
+    let mut got: Vec<(u16, u64, u32)> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&(start, offset, port, tag)| (port, start + u64::from(offset), tag))
+        .collect();
+    got.sort_unstable();
+    got
+}
+
+fn burst_unit(cap: u32, plan: &[(u64, u16, u32)], refused: &Arc<AtomicUsize>) -> Unforkable<Burst> {
+    Unforkable(Burst {
+        ports: 1,
+        cap: Some(cap),
+        plan: plan.to_vec(),
+        refused: Arc::clone(refused),
+    })
+}
+
+/// A PDC FIFO carried across a commit that **lowered its bound** still
+/// delivers every event it holds on its frame, through the merge after it.
+/// A source declaring 32 events a block fills a 300-frame PDC delay with
+/// 128 events; then it is swapped for one declaring 1, which shrinks the
+/// FIFO's bound to 16. The delay keeps its length, so every queued event is
+/// due exactly 300 frames after it was written, up to 32 of them in one
+/// block: the executor widens the delay's output slot by what the FIFO
+/// holds past the new bound, and the sink port's merge (the source and a
+/// latent sibling) with it, so nothing goes out late or is dropped.
+///
+/// Mutation (run): make `EventFifo::excess` return 0 → the delay's slot
+/// holds only the new bound (16), so of the 20 events due in the first block
+/// after the swap 4 wait a block, and later ones fall further behind →
+/// fails. Mutation (run): leave `Op::EventMerge` out of the widening pass in
+/// `Executor::rebuild` → the merge's slot holds 17, and it drops the rest →
+/// fails.
+#[test]
+fn a_fifo_whose_bound_a_swap_lowered_delivers_its_backlog_on_time() {
+    const LATE: usize = 300;
+    const PER_BLOCK: u64 = 32;
+    let seen: Seen = Arc::default();
+    let refused = Arc::new(AtomicUsize::new(0));
+    // 32 events in each of the first four 64-frame blocks, one per frame.
+    let plan: Vec<(u64, u16, u32)> = (0..4u64)
+        .flat_map(|b| (0..PER_BLOCK).map(move |i| b * 64 + i))
+        .map(|f| (f, 0, f as u32))
+        .collect();
+    let prep = Prepare::new(SampleRate(48_000.0), Samples(64));
+    // A default of 1, so nothing is sized by accident from the default.
+    let (mut ed, mut exec) = Editor::with_event_capacity(prep, 1);
+    ed.insert(
+        NodeKey(1),
+        "sink",
+        Unforkable(Sink {
+            ports: 1,
+            seen: Arc::clone(&seen),
+        }),
+    );
+    ed.insert(
+        NodeKey(2),
+        "burst",
+        burst_unit(PER_BLOCK as u32, &plan, &refused),
+    );
+    ed.insert(NodeKey(3), "late", Unforkable(Late { latency: LATE }));
+    let g = ed.spec_mut();
+    g.connect_events(at(1, 0), EventEdge::Direct(out(2, 0)));
+    g.connect_events(at(1, 0), EventEdge::Direct(out(3, 0)));
+    ed.commit().expect("commits");
+    let transport = Transport::default();
+    for _ in 0..4 {
+        exec.process(64, &transport, &[], &mut []);
+    }
+    assert!(seen.lock().unwrap().is_empty(), "nothing is due before 300");
+    // The same source, now declaring 1 a block: bound 1 × (⌈300/64⌉ + 2)
+    // + 7/4 + 8 = 16, against 128 queued.
+    ed.insert(NodeKey(2), "burst", burst_unit(1, &[], &refused));
+    ed.commit().expect("commits");
+    for _ in 4..12 {
+        exec.process(64, &transport, &[], &mut []);
+    }
+    ed.collect();
+    let want: Vec<(u16, u64, u32)> = plan
+        .iter()
+        .map(|&(f, _, tag)| (0, f + LATE as u64, tag))
+        .collect();
+    assert_eq!(landed(&seen), want, "every event on its frame");
+    assert_eq!(exec.dropped_events(), 0);
+    assert_eq!(refused.load(Ordering::Relaxed), 0);
+}
+
+/// The same through a re-prepare to a larger `MaxBlock`, which lowers the
+/// bound of a PDC FIFO **and** an event feedback edge (fewer blocks fit in
+/// the delay) while keeping both: 640 events queued in each at a 16-frame
+/// block, a bound of 88 at 512, and 512 of them due in the first 512-frame
+/// block after it. Both arrive on their frames.
+///
+/// Mutation (run): make `EventFifo::excess` return 0 → 88 a block go out on
+/// each path, the rest late → fails. Mutation (run): skip the feedback
+/// FIFOs in the widening pass in `Executor::rebuild` → the feedback port
+/// alone falls behind → fails.
+#[test]
+fn a_fifo_whose_bound_a_reprepare_lowered_delivers_its_backlog_on_time() {
+    const LEN: usize = 640;
+    let seen: Seen = Arc::default();
+    let refused = Arc::new(AtomicUsize::new(0));
+    // One event a frame for the first 640 frames.
+    let plan: Vec<(u64, u16, u32)> = (0..LEN as u64).map(|f| (f, 0, f as u32)).collect();
+    let small = Prepare::new(SampleRate(48_000.0), Samples(16));
+    let (mut ed, mut exec) = Editor::with_event_capacity(small, 1);
+    ed.insert(
+        NodeKey(1),
+        "sink",
+        Unforkable(Sink {
+            ports: 2,
+            seen: Arc::clone(&seen),
+        }),
+    );
+    ed.insert(NodeKey(2), "burst", burst_unit(16, &plan, &refused));
+    ed.insert(NodeKey(3), "late", Unforkable(Late { latency: LEN }));
+    let g = ed.spec_mut();
+    g.connect_events(at(1, 0), EventEdge::Direct(out(2, 0)));
+    g.connect_events(at(1, 0), EventEdge::Direct(out(3, 0)));
+    g.connect_events(at(1, 1), EventEdge::feedback(out(2, 0), Samples(LEN)));
+    ed.commit().expect("commits");
+    let transport = Transport::default();
+    for _ in 0..LEN / 16 {
+        exec.process(16, &transport, &[], &mut []);
+    }
+    assert!(seen.lock().unwrap().is_empty(), "nothing is due before 640");
+    // Bound 16 × (⌈640/512⌉ + 2) + 64/4 + 8 = 88, against 640 queued.
+    ed.reprepare(Prepare::new(SampleRate(48_000.0), Samples(512)))
+        .expect("reprepares");
+    exec.apply_pending();
+    ed.collect();
+    exec.apply_pending();
+    ed.collect();
+    for _ in 0..3 {
+        exec.process(512, &transport, &[], &mut []);
+    }
+    ed.collect();
+    let want: Vec<(u16, u64, u32)> = [0u16, 1]
+        .iter()
+        .flat_map(|&port| {
+            plan.iter()
+                .map(move |&(f, _, tag)| (port, f + LEN as u64, tag))
+        })
+        .collect();
+    assert_eq!(
+        landed(&seen),
+        want,
+        "every event on its frame, on both paths"
+    );
+    assert_eq!(exec.dropped_events(), 0);
+    assert_eq!(refused.load(Ordering::Relaxed), 0);
 }

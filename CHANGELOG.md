@@ -29,10 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A param range is a control, not plan** (design doc 013, "A param
   range is a control"). Moving a modulated param's range no longer
   recompiles: the running unit reads each port's range once per block
-  from a cell the editor writes, so a UI dragging one costs a store, as
-  the old `ClampBounds` did. The clamp is applied as the value is read: a
-  range that shrinks never rewrites the base or an event source's ramp,
-  and widening it again releases the value to where they are.
+  from a cell the editor writes. Through `Editor::set_param_range` a move
+  costs a store, as the old `ClampBounds` did; a range-only `commit`
+  sends no plan but still validates and clones the spec (linear in the
+  graph, on the control thread). The clamp is applied as the value is
+  read: a range that shrinks never rewrites the base or an event source's
+  ramp, and widening it again releases the value to where they are. A
+  range move steps, with no declick, as a recompiled range did.
   **Breaking** for `ParamPortOp`.
 
   | Was | Now |
@@ -40,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | a range change was a commit, and recompiled | `Editor::set_param_range(at, range) -> Result<(), GraphInvalid>` lands on the next block with no commit (refuses a NaN bound or a key with no node); a commit whose spec differs only in ranges (`GraphSpec::set_param_range` through `spec_mut`) validates, writes the ranges, and sends no plan |
   | `ParamPortOp::range` | removed: the plan carries no range (`ParamPortOp` is now `Eq`). Read a port's range from the spec (`GraphSpec::params`) |
   | — | `Reference::set_param_range`, the reference interpreter's mirror of the editor's |
-  | bevy-tutti: a `ModParamRange` bounds edit recompiled the graph | the same edit's commit sends no plan |
+  | bevy-tutti: a `ModParamRange` bounds edit recompiled the graph | `AudioGraphRes::set_param_mod` with the sources the graph already holds moves only the range, through `Editor::set_param_range`: a store, no commit |
 
 - **An in-process VST2 plugin forks by state transfer**, so an export of a
   graph holding one renders it (design doc 013, "In-process VST2 forks by

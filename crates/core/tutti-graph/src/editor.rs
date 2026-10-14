@@ -878,6 +878,12 @@ impl Editor {
     ///   [`spec_mut`](Self::spec_mut) instead lands at the next
     ///   [`commit`](Self::commit), which, for an edit that changes only
     ///   ranges, sends nothing either.
+    /// - **No declick.** The value steps to the new bound on the block's
+    ///   first frame, as it did when a range change was a commit. A host
+    ///   that wants a range to glide moves it in steps, or modulates the
+    ///   param instead.
+    /// - **Cost.** Two stores and a map lookup on the control side; nothing
+    ///   on the audio thread but the per-block load it always makes.
     /// - A port its node does not declare is recorded in the spec and
     ///   clamps nothing.
     ///
@@ -899,6 +905,15 @@ impl Editor {
         self.spec.set_param_range(at, range);
         if let Some(cells) = self.param_ranges.get(&at.node) {
             cells.store(at.param, range);
+        }
+        // The cells hold it now, so the spec last committed holds it too: a
+        // later commit with nothing else to send is the plain comparison,
+        // not a validate. (A committed spec without the node differs in its
+        // topology anyway, and gets a full commit.)
+        if let Some((committed, _)) = &mut self.committed {
+            if committed.topology.nodes.contains_key(&at.node) {
+                committed.set_param_range(at, range);
+            }
         }
         Ok(())
     }
@@ -1260,8 +1275,16 @@ impl Editor {
     /// already has, with an empty delta. So it costs a comparison, not a
     /// compile, and a host may commit every frame. Nor does one whose spec
     /// differs only in param **ranges**: those are controls, not plan, so it
-    /// validates the spec and writes the ranges to the running units (see
-    /// [`set_param_range`](Self::set_param_range)), and sends nothing.
+    /// validates the spec, writes the ranges to the running units (see
+    /// [`set_param_range`](Self::set_param_range)) and sends nothing. That
+    /// still costs the validate and a clone of the spec, on this thread;
+    /// [`set_param_range`](Self::set_param_range) costs a store.
+    ///
+    /// **A range and a rewire in one commit** do not land together: the
+    /// commit writes every range cell at once, and the plan lands when the
+    /// executor next drains its queue, so the old wiring can run a block
+    /// under the new range. A range is a clamp the node may hear at any
+    /// block, so that block is a legal state, not a torn one.
     ///
     /// # Errors
     ///

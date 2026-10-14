@@ -503,8 +503,14 @@ mod tests {
     /// a control the running unit reads per block, so a UI dragging it costs
     /// a store per frame, not a recompile.
     ///
-    /// Mutation (run): in `Editor::commit`, compare the committed spec with
-    /// `==` (a range is plan again) → each move sends a plan → fails.
+    /// And `set_param_mod` with the sources the graph already holds moves
+    /// the range alone, through `Editor::set_param_range`: nothing waits for
+    /// a commit.
+    ///
+    /// Mutations (run): in `Editor::commit`, compare the committed spec with
+    /// `==` (a range is plan again) → each move sends a plan → fails. In
+    /// `GraphRuntime::set_param_mod`, drop the range-only shortcut (always
+    /// rewrite the spec entry) → the call marks an edit → fails.
     #[test]
     fn a_range_move_sends_no_plan() {
         let (mut app, target, node) = app_with_target((0.0, 10.0));
@@ -544,6 +550,38 @@ mod tests {
             );
         }
         assert!(commits(&app));
+
+        // The same call a reconcile makes, directly: the sources it holds,
+        // a new range.
+        let src = *app
+            .world()
+            .get::<AudioNode>(app.world().get::<ModSourceNode>(lfo).expect("node").0)
+            .expect("node");
+        let shaping = app
+            .world()
+            .resource::<AudioGraphRes>()
+            .param_mod(node, UnitParam::Drive)
+            .expect("declared")
+            .sources[0]
+            .shaping
+            .clone();
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        assert!(!graph.has_uncommitted_edit());
+        let moved = tutti_graph::ParamRange::new(3.0, 7.0);
+        graph
+            .set_param_mod(node, UnitParam::Drive, &[(src, shaping)], moved)
+            .expect("a range");
+        assert_eq!(
+            graph
+                .param_mod(node, UnitParam::Drive)
+                .expect("declared")
+                .range,
+            moved
+        );
+        assert!(
+            !graph.has_uncommitted_edit(),
+            "a range move alone waits for no commit"
+        );
     }
 
     /// More routes than the graph can sum on one param: the first

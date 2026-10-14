@@ -77,6 +77,9 @@ struct Probe {
     bases: [Cell; 2],
     /// Answer `param_base` (a node that cannot say is never modulated).
     answers: bool,
+    /// The params it declares, in port order (`Cutoff, Q` unless
+    /// [`reversed`](Self::reversed)).
+    declared: [UnitParam; 2],
 }
 
 impl Probe {
@@ -84,14 +87,24 @@ impl Probe {
         Self {
             bases: [cutoff.clone(), q.clone()],
             answers: true,
+            declared: [UnitParam::Cutoff, UnitParam::Q],
+        }
+    }
+
+    /// Declaring `Q, Cutoff`: port 0 is `Q`, read from `q`, and written to
+    /// output 0.
+    fn reversed(cutoff: &Cell, q: &Cell) -> Self {
+        Self {
+            bases: [q.clone(), cutoff.clone()],
+            answers: true,
+            declared: [UnitParam::Q, UnitParam::Cutoff],
         }
     }
 }
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::from_count(3))
-            .with_params(&[UnitParam::Cutoff, UnitParam::Q])
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::from_count(3)).with_params(&self.declared)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1078,6 +1091,98 @@ fn a_range_move_lands_on_the_next_block_without_a_commit() {
     ed.commit().expect("a regenerated probe");
     let out = block(&mut exec, &mut ed, 64);
     check(&out, &mut frame, (-0.5, 0.5), "a placed unit's first block");
+}
+
+/// A crossfade keeps the key's running param state, and with it the range
+/// cells that state reads: once the fade is over, a range move reaches the
+/// unit that faded in, on the next block.
+///
+/// Mutation (run): in `Editor::send`, give every placed unit fresh range
+/// cells (`*c = ParamRanges::new(list)` unconditionally) → the editor
+/// writes cells the kept state does not read → the move never lands →
+/// fails.
+#[test]
+fn a_range_move_reaches_a_unit_that_faded_in() {
+    let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
+    let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
+    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
+    let at = param(PROBE, UnitParam::Cutoff);
+    ed.spec_mut()
+        .connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
+    ed.commit().expect("commits");
+    let _ = render(&mut exec, &mut ed, 128, 64);
+
+    let fade = tutti_graph::Fade::new(Samples(128), tutti_graph::CrossfadeCurve::EqualAmplitude);
+    let (c2, q2) = (Cell::new(0.0), Cell::new(0.0));
+    ed.replace(NodeKey(PROBE), Unforkable(Probe::new(&c2, &q2)), fade)
+        .expect("the same params fade");
+    ed.commit().expect("commits");
+    let out = render(&mut exec, &mut ed, 256, 64);
+    assert!(
+        out[0].iter().all(|&x| x == 1.0),
+        "unclamped through the fade"
+    );
+    assert_eq!(ed.fades_in_flight(), 0, "the fade is over");
+
+    ed.set_param_range(at, ParamRange::new(-1.0, 0.5))
+        .expect("a range");
+    let out = render(&mut exec, &mut ed, 64, 64);
+    assert!(
+        out[0].iter().all(|&x| x == 0.5),
+        "the faded-in unit clamps on the next block: {:?}",
+        &out[0][..4]
+    );
+}
+
+/// A unit at a key declaring the same params in another order gets range
+/// cells of its own: each of its ports clamps to its own param's range,
+/// from its first block and after a move — never to the range of the
+/// param the replaced unit had at that port.
+///
+/// Mutation (run): in `Editor::send`, keep a key's cells whatever the new
+/// unit declares (drop the `c.declared() != list` replacement) → the
+/// reversed probe's port 0 (`Q`) reads cell 0 (`Cutoff`'s range) → fails.
+#[test]
+fn a_reordered_param_list_clamps_each_port_to_its_own_range() {
+    let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
+    let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
+    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
+    let (cut_at, q_at) = (param(PROBE, UnitParam::Cutoff), param(PROBE, UnitParam::Q));
+    for at in [cut_at, q_at] {
+        ed.spec_mut()
+            .connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
+    }
+    ed.set_param_range(cut_at, ParamRange::new(-1.0, 0.25))
+        .expect("a range");
+    ed.set_param_range(q_at, ParamRange::new(-1.0, 0.75))
+        .expect("a range");
+    ed.commit().expect("commits");
+    let out = render(&mut exec, &mut ed, 64, 64);
+    assert!(out[0].iter().all(|&x| x == 0.25), "Cutoff on port 0");
+    assert!(out[1].iter().all(|&x| x == 0.75), "Q on port 1");
+
+    // A hard swap to a probe declaring `Q, Cutoff`: its output 0 is `Q`.
+    ed.insert(
+        NodeKey(PROBE),
+        "probe",
+        Unforkable(Probe::reversed(&cutoff, &q)),
+    );
+    ed.commit().expect("commits");
+    let out = render(&mut exec, &mut ed, 64, 64);
+    assert!(
+        out[0].iter().all(|&x| x == 0.75),
+        "Q, now on port 0, clamps to Q's range: {:?}",
+        &out[0][..4]
+    );
+    assert!(
+        out[1].iter().all(|&x| x == 0.25),
+        "Cutoff, now on port 1, clamps to Cutoff's range"
+    );
+    ed.set_param_range(q_at, ParamRange::new(-1.0, 0.5))
+        .expect("a range");
+    let out = render(&mut exec, &mut ed, 64, 64);
+    assert!(out[0].iter().all(|&x| x == 0.5), "a move reaches Q's port");
+    assert!(out[1].iter().all(|&x| x == 0.25), "and only Q's");
 }
 
 /// `Editor::set_param_range` refuses what a commit would, and changes

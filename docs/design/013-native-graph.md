@@ -3982,11 +3982,21 @@ the audio thread reads once per block, never a plan.
 - **The reference** mirrors it: `Reference::set_param_range` overrides the
   graph's range from the next block until the next `set_graph` (whose graph,
   from the editor's spec, carries it).
+- **Cost.** `Editor::set_param_range` is a store (and it updates the
+  spec last committed, so the next commit is the plain comparison). A
+  range-only `commit` sends nothing but still validates and clones the
+  spec, linear in the graph on the control thread.
+- **Timing against a rewire.** A commit that moves a range and the wiring
+  together writes the cells at once; the plan lands when the executor
+  next drains its queue, so the old wiring can run a block under the new
+  range (a legal clamp, not a torn state).
+- **No declick.** A range move steps on the next block's first frame, as
+  a recompiled range did; a host that wants a glide modulates the param.
 - **bevy-tutti** has no range-setting API of its own: a range edit
   (`ModParamRange`'s bounds) re-declares the modulation through
-  `AudioGraphRes::set_param_mod`, which rewrites the spec entry, and the
-  frame's commit now takes the range-only path. No change was needed there
-  beyond the doc.
+  `AudioGraphRes::set_param_mod`, which now, when the sources are the ones
+  the graph holds, moves only the range through `Editor::set_param_range`
+  (a store, no commit).
 
 **Tests.** tutti-graph `tests/param_mod.rs`:
 `a_range_move_lands_on_the_next_block_without_a_commit` (no plan sent, the
@@ -3995,8 +4005,10 @@ spec edit landing with a commit that sends nothing, a placed unit starting
 with the spec's range), `a_bad_range_move_is_refused`,
 `a_shrinking_range_rewrites_neither_the_base_nor_a_ramp` (a ramp in flight
 across a shrink below the base, pinned, then released onto the ramp), and
-the differential proptest moving ranges without a commit against the
-reference. `tests/parallel.rs`'s `ranges_moved_mid_render_stay_bit_identical`
+`a_range_move_reaches_a_unit_that_faded_in` (the crossfade keeps the
+key's cells), `a_reordered_param_list_clamps_each_port_to_its_own_range`
+(a unit declaring another list gets its own), and the differential
+proptest moving ranges without a commit against the reference. `tests/parallel.rs`'s `ranges_moved_mid_render_stay_bit_identical`
 (serial against every pool, every block schedule), and `tests/rt_no_alloc.rs`'s
 modulated-params gate moving ranges between gated blocks, serial and on a
 pool. bevy-tutti: `a_range_move_sends_no_plan`; the existing

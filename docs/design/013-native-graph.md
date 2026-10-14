@@ -3226,9 +3226,9 @@ measurable.
 **Status: landed** (2026-10-14). A pool spreads a block only when the cost
 model says it pays, and the compiler packs sibling tasks too cheap to
 dispatch alone. Part (a)'s weak spot — `tiny/16` costing more on a pool
-than serially (1.7–1.9× in part (a)'s idle-box table; 2.4× in this
-section's A/B runs, on a busier machine and a later `main`) — is gone: the
-plan now renders serially there. The render is still bit for bit the
+than serially (1.7–1.9× in part (a)'s table, 2.2× in this section's;
+both measured idle, against different `main`s) — is gone: the plan now
+renders serially there. The render is still bit for bit the
 serial one whatever the model decides; the model is a speed decision only.
 
 What each layer holds:
@@ -3395,50 +3395,48 @@ Evidence:
 
 Benchmarks (`tutti-nodes/benches/parallel_render.rs`, criterion medians,
 one 256-frame block at 48 kHz, the same 4-core container as part (a),
-**shared with other agents' builds — not idle**: each run started only
-once the one-minute load average was under 0.8 (0.60–0.77 at the starts);
-the load at the ends, 1.3–1.6, includes the bench's own spinning helpers).
-`main` is `origin/main` at 7fad0b0 (part (a)), built from the same bench
-file there; the branch figures are the mean of two runs alternating with
-`main`'s (`--measurement-time 3`). One `main` run was discarded: a
-neighbour's job started during it (its `wide/32x8` at four participants
-doubled). These were taken with the first, per-level packing; none of
-these graphs has a pack the sibling rule refuses (`tiny/16` still packs
-into four tasks and `mixed`'s gains into one task per lane), so they stand
-until re-measured on an idle machine.
+**idle**: no other builds ran, and each run started once the one-minute
+load average was under 0.8 (the load at the ends, about 3–4, is the bench's
+own spinning helpers). `main` is `origin/main` at 53385a5, built from the
+same bench file there; this branch is the final, sibling-only packing.
+Each figure is the mean of two runs alternating `main` and the branch; the
+two runs of a case moved apart by at most 10%.
 
 | graph | `main` serial | `main` 4 | branch serial | branch 4 |
 |---|---|---|---|---|
-| `wide/8x8` | 168.3 µs | 75.0 µs | 168.8 µs | 69.8 µs |
-| `wide/32x8` | 704.9 µs | 257.9 µs | 664.6 µs | 254.7 µs |
-| `wide/64x16` | 2.49 ms | 805.7 µs | 2.52 ms | 789.8 µs |
-| `deep/128` | 272.6 µs | 280.5 µs | 275.7 µs | 274.0 µs |
-| `tiny/16` | 10.4 µs | 24.7 µs | 10.9 µs | 10.9 µs |
+| `wide/8x8` | 161.7 µs | 64.2 µs | 163.6 µs | 63.6 µs |
+| `wide/32x8` | 661.1 µs | 229.4 µs | 672.5 µs | 233.0 µs |
+| `wide/64x16` | 2.42 ms | 786.2 µs | 2.35 ms | 790.7 µs |
+| `deep/128` | 270.1 µs | 271.8 µs | 265.4 µs | 267.1 µs |
+| `tiny/16` | 10.2 µs | 22.3 µs | 10.4 µs | 10.1 µs |
 
-The new cases, from one full run of the branch's bench (each group
-started under load 0.8), at 1, 2, 4 and 8 participants:
+The new cases (branch only; `main` has no cost classes), at 1, 2, 4 and
+8 participants:
 
 | graph | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
-| `tiny/16` (light gains) | 10.5 µs | 11.4 µs | 10.2 µs | 10.7 µs |
-| `tiny/16-undeclared` (part (a) behaviour) | 11.0 µs | 21.5 µs | 22.1 µs | 22.2 µs |
-| `mixed/8x4x8` (light gains packed) | 159.2 µs | 113.4 µs | 77.6 µs | 69.6 µs |
-| `mixed/8x4x8-undeclared` (a task per gain) | 144.4 µs | 137.1 µs | 148.3 µs | 188.3 µs |
+| `tiny/16` (light gains) | 10.4 µs | 10.1 µs | 10.1 µs | 10.1 µs |
+| `tiny/16-undeclared` (part (a) behaviour) | 10.3 µs | 20.1 µs | 20.7 µs | 20.0 µs |
+| `mixed/8x4x8` (light gains packed) | 140.2 µs | 94.9 µs | 69.8 µs | 66.9 µs |
+| `mixed/8x4x8-undeclared` (a task per gain) | 140.6 µs | 103.8 µs | 69.9 µs | 70.3 µs |
 
-The two `mixed` rows' one-participant figures differ by noise only: the
-serial walk ignores tasks, so the declared and undeclared graphs run the
-same ops, and the review's callgrind count of the serial walk, this
-branch against `main`, differs by 0.009%.
+What they show:
 
-What they show: `tiny/16` on a pool now costs what the serial walk costs
-(within run-to-run noise, about ±10% here), where `main` paid 2.4× in
-these runs; the same graph undeclared still loses, which is the part (a)
-behaviour this replaces. The wide graphs keep their speed-up (within noise
-of `main`), and `deep/128` is unchanged. `mixed` is where packing pays
-while still spreading: 64 cheap gains hanging off eight filter chains,
-dispatched one task each, lose every participant count's gain (148 µs at
-four, slower than serial); packed, they run at 77.6 µs, about 2× the
-serial walk.
+- **`tiny/16` no longer loses.** On a pool it costs what the serial walk
+  costs (10.1 µs against 10.4 µs), where `main` paid 2.2× (22.3 µs at
+  four). Undeclared, the same graph still pays about 2× (`tiny/16-undeclared`),
+  which is the part (a) behaviour declaring `Light` replaces.
+- **The wide graphs and `deep/128` are unchanged**, within run-to-run noise
+  of `main`, at every participant count.
+- **`mixed/8x4x8` gains little from packing on this machine.** 64 cheap
+  gains hanging off eight filter chains spread to about 2× the serial walk
+  whether or not they are packed (69.8 µs packed, 69.9 µs undeclared, at
+  four); packing helps at two participants (94.9 µs against 103.8 µs). An
+  earlier run on a loaded machine had shown the undeclared graph losing
+  outright (148 µs at four); that was the load, not the dispatch. The two
+  rows' one-participant figures agree, as they must: the serial walk ignores
+  tasks, and the review's callgrind count of the serial walk, this branch
+  against `main`, differs by 0.009%.
 
 ## Per-node rewrite plan
 

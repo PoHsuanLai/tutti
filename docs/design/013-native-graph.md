@@ -4210,14 +4210,17 @@ The follow-up PR 13 recorded (an export of a graph holding an in-process
 VST2 plugin was refused, `NotForkable`): `InProcessVst2Client` now hands the
 editor a `ForkSource` (`format::vst2_in_process`'s `fork` module), the
 in-process twin of the out-of-process plugin's (item 7's "plugin fork by
-state transfer"). A fork, on the control thread that forks:
+state transfer"). A fork, on the **main thread** (it runs the plugin's entry
+point again and dispatches state opcodes, `Vst2Instance::load`'s rule):
 
 1. **Asks the live instance for its state**, under its lock: the current
    program (`effGetProgram`, when the plugin declares programs) and
    `Vst2Instance::get_state` (the plugin's chunk, `effGetChunk`, when it
-   declares `effFlagsProgramChunks`; else every parameter's value). The live
-   audio thread finds the lock taken for that moment and renders the block
-   silent, as for a project save. The source holds the live instance
+   declares `effFlagsProgramChunks`; else every parameter's value) and the
+   live render mode. The live audio thread finds the lock taken for as long
+   as the save runs and renders silent blocks, as for a project save: one
+   for a chunk, possibly several for a non-chunk plugin with thousands of
+   parameters. The source holds the live instance
    weakly: a fork of a plugin that is gone is `PluginForkError::LiveGone`.
 2. **Loads a second instance** of the same file (`Vst2Instance::load`, as
    the live one was): a second `dlopen` of the path maps the image already
@@ -4239,7 +4242,21 @@ state transfer"). A fork, on the control thread that forks:
    thread's editor pump, which nothing runs for a fork; the fork's
    `prepare` runs on the forking control thread with the unit out of any
    executor, before its first block. Offline, it answers
-   `audioMasterGetCurrentProcessLevel` with offline.
+   `audioMasterGetCurrentProcessLevel` with offline; a `ForkMode::Live` fork
+   keeps the live instance's mode.
+
+**Dropping a fork is main-thread too**: it closes the second instance
+(`effMainsChanged(0)`, `effClose`), and `Vst2Handle::drop` now debug-asserts
+the main thread (once one is marked, and not while unwinding). An export
+renders anywhere but must drop on the main thread, so tutti-export's
+`render_to_file`, `render_to_buffers` and `render_normalized_to_file` take
+`impl BorrowMut<RenderGraph>` (by value as before, or `&mut` to keep it),
+and bevy-tutti's render task hands its graph back with the result to
+`poll_exports`, now pinned to the main thread (`NonSendMarker`), which drops
+it. A render cancelled mid-poll still drops on the pool. Pinned by
+`the_rendered_graph_is_dropped_on_the_main_thread`, which bites only with
+`bevy_tasks/multi_threaded` on (bevy-tutti's own feature set leaves it off, and
+a task then runs on the thread that polls it).
 
 Every failure fails the whole fork (`ForkError::Source`, naming the node's
 key; bevy-tutti's `ExportError::ForkSource`, naming its entity), never a fork
@@ -4258,9 +4275,13 @@ text no longer lists it. Pinned by `tutti-plugin`'s
 `vst2_in_process_fork.rs`, against the reference probe with its new
 `TUTTI_VST2_PROBE_STATE_DC` (each output sample carries the instance's
 state as a DC: the chunk's first byte, or `1000 · param0 + 10 000 ·
-program`), so a restored state is an exact figure in the fork's samples; and
-its `tutti_vst2_probe_set_refuse_chunk_load` switch, for a second instance
-that refuses the first one's chunk.
+program`), so a restored state is an exact figure in the fork's samples; its
+`tutti_vst2_probe_set_refuse_chunk_load` switch, for a second instance that
+refuses the first one's chunk; and `TUTTI_VST2_PROBE_UNIQUE_ID` and
+`_PROGRAMS` set between the two loads, for `Mismatch` and a live program the
+second instance lacks. The fork's `Env` transport is pinned by the probe's
+`audioMasterGetTime` capture (the render's 93 BPM at beat 5, not the live
+reader's 132 at 4).
 
 ## Decisions for the owner
 

@@ -103,8 +103,10 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// [`tutti_plugin_types::mark_main_thread`]; debug builds assert it.
 ///
 /// Dropping the instance closes the editor, suspends the plugin and dispatches
-/// `effClose`. The plugin's shared library is never unloaded, because
-/// unloading runs static destructors that crash many JUCE-based plugins.
+/// `effClose`, so drop it on the main thread, as it was loaded there (debug
+/// builds assert it, once a main thread is marked). The plugin's shared
+/// library is never unloaded, because unloading runs static destructors that
+/// crash many JUCE-based plugins.
 ///
 /// # Examples
 ///

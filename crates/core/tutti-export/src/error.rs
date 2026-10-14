@@ -72,15 +72,14 @@ pub enum Error {
     Unmeasurable(String),
 
     /// The graph could not be forked for the render because the node at
-    /// `key` cannot be: it handed the editor no fork source (a mic monitor, an
-    /// in-process VST2 plugin, a node inserted `Unforkable`), so a copy would share
-    /// the live node. From [`RenderGraph::fork`](crate::RenderGraph::fork);
+    /// `key` cannot be: it handed the editor no fork source (a mic monitor, a
+    /// node inserted `Unforkable`), so a copy would share the live node. From [`RenderGraph::fork`](crate::RenderGraph::fork);
     /// nothing was rendered.
     ///
     /// A variant of its own rather than inside [`Fork`](Self::Fork) because it
     /// is the one a host acts on — "remove or freeze this node" — and the key
     /// is what it acts on.
-    #[error("Cannot export: node {key:?} cannot be forked for an offline render (a mic monitor, an in-process VST2 plugin, or a node built unforkable)")]
+    #[error("Cannot export: node {key:?} cannot be forked for an offline render (a mic monitor, or a node built unforkable)")]
     NotForkable {
         /// The node, as the live graph keys it.
         key: tutti_types::NodeKey,

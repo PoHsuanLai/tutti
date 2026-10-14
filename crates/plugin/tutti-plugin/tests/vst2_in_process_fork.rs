@@ -24,10 +24,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
-use tutti_core::{SampleRate, Samples};
-use tutti_graph::{Editor, ForkError, ForkMode, ForkTarget, IntoNode, Prepare, Renderer};
+use tutti_core::{Beat, Bpm, SampleRate, Samples};
+use tutti_graph::{
+    Editor, ForkError, ForkMode, ForkTarget, IntoNode, Prepare, Renderer, Transport,
+};
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{in_process_vst2_client, InProcessVst2Client, PluginForkError, PresetId};
+use tutti_plugin::{
+    in_process_vst2_client, InProcessVst2Client, PluginForkError, PresetId, RenderMode,
+};
 use tutti_plugin_types::{Normalized, ParamAddress};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
@@ -45,6 +49,9 @@ const TAGS: [f32; 2] = [1.0, 101.0];
 
 /// `kVstProcessLevelOffline`.
 const LEVEL_OFFLINE: i32 = 4;
+
+/// `kVstProcessLevelRealtime`.
+const LEVEL_REALTIME: i32 = 2;
 
 /// Serializes against the probe's process-global switches, capture and
 /// environment.
@@ -120,6 +127,14 @@ impl ProbeEnv {
             unsafe { std::env::set_var(key, "1") };
         }
         Self(keys)
+    }
+
+    /// Also set `key` to `value`, for the instances constructed from now on
+    /// (the probe reads its environment in its constructor), cleared on drop.
+    fn set(&mut self, key: &'static str, value: &str) {
+        // SAFETY: as in `new`.
+        unsafe { std::env::set_var(key, value) };
+        self.0.push(key);
     }
 }
 
@@ -449,4 +464,151 @@ fn a_plugin_handed_back_by_into_client_forks() {
         "the fork",
     );
     drop(handle);
+}
+
+/// **A fork reads its transport from the render, not the live reader.** The
+/// live node polls a live transport rolling at 132 BPM from beat 4; the
+/// render hands the fork's graph 93 BPM at beat 5. The probe records what
+/// `audioMasterGetTime` answered on its last block — the fork's — so it must
+/// read 93 BPM at quarter 5.
+///
+/// Mutation (run): have the fork read the polled reader (`match &mut
+/// None::<EnvTransport>` in the node's `process`) → the probe reads the live
+/// 132 BPM → fails.
+#[test]
+fn a_fork_reads_its_transport_from_the_render() {
+    let _lock = lock_probe();
+    reset_probe();
+    let _env = ProbeEnv::new(true);
+    let (mut client, handle) = load();
+    let live = tutti_core::transport::Transport::new(SAMPLE_RATE);
+    live.settings.set_tempo(132.0);
+    let _ = live.motion.try_send(tutti_core::MotionEvent::Play);
+    live.motion.drain();
+    live.clock_links()
+        .expect("the only playhead writer")
+        .set_playhead(4.0);
+    client.set_transport_source(
+        live.clone(),
+        Arc::new(tutti_core::RtPublish::new(
+            tutti_core::meter::MeterMap::default(),
+        )),
+    );
+
+    let key = NodeKey(6);
+    let editor = live_graph(key, client);
+    let offline = offline();
+    let (fork_ed, fork_exec) = editor
+        .fork(
+            ForkTarget::Node(key),
+            ForkMode::Offline(&offline),
+            prepare_at(SAMPLE_RATE),
+        )
+        .expect("forks");
+    let mut renderer = Renderer::new(fork_ed, fork_exec);
+    renderer.set_transport(Transport::new(true, Bpm(93.0), Beat(5.0), None));
+    let _ = renderer.render(BLOCK);
+
+    let cap = read_capture();
+    assert!(
+        cap.time_info_present,
+        "the fork answered audioMasterGetTime"
+    );
+    assert_eq!(cap.time_tempo, 93.0, "the render's tempo, not the live 132");
+    assert_eq!(cap.time_ppq_pos, 5.0, "the render's beat, not the live 4");
+    drop(handle);
+}
+
+/// **A live fork keeps the live instance's render mode**: a host that set the
+/// live plugin offline gets an offline fork from `ForkMode::Live` too (and a
+/// realtime one otherwise).
+///
+/// Mutation (run): answer realtime for every `ForkMode::Live` fork → the
+/// offline live instance's fork reads realtime → fails. Mutation (run):
+/// answer offline for every fork → the realtime one's reads offline → fails.
+#[test]
+fn a_live_fork_keeps_the_live_render_mode() {
+    let _lock = lock_probe();
+    reset_probe();
+    let _env = ProbeEnv::new(true);
+    let (client, handle) = load();
+    for (mode, level) in [
+        (RenderMode::Realtime, LEVEL_REALTIME),
+        (RenderMode::Offline, LEVEL_OFFLINE),
+    ] {
+        assert!(client.set_render_mode(mode));
+        let fork = client.fork_instance(ForkMode::Live).expect("forks");
+        let key = NodeKey(7);
+        let (mut editor, exec) = Editor::new(prepare_at(SAMPLE_RATE));
+        editor.insert(key, "fork", tutti_graph::Unforkable(fork));
+        editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+        editor.commit().expect("commits");
+        let _ = Renderer::new(editor, exec).render(BLOCK);
+        assert_eq!(read_capture().process_level, level, "{mode:?}");
+    }
+    drop(client);
+    drop(handle);
+}
+
+/// **A file that now loads as another plugin is `Mismatch`**: the second
+/// instance's id is not the live one's, so the live state is not loaded into
+/// it. The probe's `uniqueId` is changed between the two loads (as a plugin
+/// replaced on disk would be).
+///
+/// Mutation (run): drop the id check → the fork succeeds → fails.
+#[test]
+fn a_second_instance_of_another_plugin_is_a_mismatch() {
+    let _lock = lock_probe();
+    reset_probe();
+    let mut env = ProbeEnv::new(true);
+    let (client, handle) = load();
+    env.set("TUTTI_VST2_PROBE_UNIQUE_ID", "4242");
+    let err = client
+        .fork_instance(ForkMode::Live)
+        .err()
+        .expect("a different plugin is not a fork");
+    match err {
+        PluginForkError::Mismatch {
+            expected, found, ..
+        } => {
+            assert_eq!(expected, client_id(&handle));
+            assert_eq!(found, "vst2.4242");
+        }
+        other => panic!("expected Mismatch, got {other:?}"),
+    }
+    drop(client);
+    drop(handle);
+}
+
+/// **A live program the second instance does not have is a named
+/// `LoadState`**, not a fork at program 0: the live instance is at program 1
+/// of 2, and the second instance (constructed with one program) has no
+/// program 1.
+///
+/// Mutation (run): ignore `set_program`'s answer → the fork succeeds →
+/// fails.
+#[test]
+fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
+    let _lock = lock_probe();
+    reset_probe();
+    let mut env = ProbeEnv::new(true);
+    let (client, handle) = load();
+    let presets = handle.presets().expect("the VST2 path carries presets");
+    assert!(presets.load_preset(&PresetId::Number(1)));
+    env.set("TUTTI_VST2_PROBE_PROGRAMS", "1");
+    let err = client
+        .fork_instance(ForkMode::Live)
+        .err()
+        .expect("program 1 does not exist in the second instance");
+    assert!(
+        matches!(err, PluginForkError::LoadState(_)),
+        "expected LoadState, got {err:?}"
+    );
+    drop(client);
+    drop(handle);
+}
+
+/// The live plugin's id, as the host reports it.
+fn client_id(handle: &PluginHandle) -> String {
+    handle.descriptor().id.clone()
 }

@@ -91,6 +91,10 @@ pub struct ProbeConfig {
     /// by state transfer (a second instance, restored from the first one's
     /// saved state) is checked on what the second instance renders.
     pub state_dc: bool,
+    /// `AEffect::uniqueId`, [`PROBE_UNIQUE_ID`](crate::PROBE_UNIQUE_ID) unless
+    /// a test names another: the same file then loads as a different plugin
+    /// (the host's id is `vst2.<unique_id>`), as one replaced on disk does.
+    pub unique_id: i32,
 }
 
 impl Default for ProbeConfig {
@@ -113,6 +117,7 @@ impl Default for ProbeConfig {
             midi_outputs: 1,
             effect_name: None,
             state_dc: false,
+            unique_id: crate::PROBE_UNIQUE_ID,
         }
     }
 }
@@ -150,6 +155,7 @@ impl ProbeConfig {
             midi_outputs: env_or("TUTTI_VST2_PROBE_MIDI_OUTPUTS", d.midi_outputs),
             effect_name: env::var("TUTTI_VST2_PROBE_EFFECT_NAME").ok(),
             state_dc: env_flag("TUTTI_VST2_PROBE_STATE_DC"),
+            unique_id: env_or("TUTTI_VST2_PROBE_UNIQUE_ID", d.unique_id),
         }
     }
 }

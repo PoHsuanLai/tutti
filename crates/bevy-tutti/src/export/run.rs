@@ -159,24 +159,33 @@ pub fn start_exports(world: &mut World) {
         export_config.render.tail = graph.reported_tail().resolve(cap);
     }
 
+    // The graph is rendered by reference and handed back with the result, so
+    // it is dropped on the main thread (`poll_exports`), not the pool's: a
+    // forked in-process VST2 plugin's teardown (`effMainsChanged`,
+    // `effClose`) is main-thread-only.
     let task = AsyncComputeTaskPool::get().spawn(async move {
+        let mut graph = graph;
         let rendered = match target {
             ExportTarget::File {
                 path,
                 normalize: None,
-            } => {
-                render_to_file(graph, &export_config, clock.as_ref(), &path).map(ExportOutput::File)
-            }
+            } => render_to_file(&mut graph, &export_config, clock.as_ref(), &path)
+                .map(ExportOutput::File),
             ExportTarget::File {
                 path,
                 normalize: Some(normalize),
-            } => render_normalized_to_file(graph, &export_config, clock.as_ref(), normalize, &path)
-                .map(ExportOutput::File),
-            ExportTarget::Buffers => {
-                render_to_buffers(graph, &export_config, clock.as_ref()).map(ExportOutput::Buffers)
-            }
+            } => render_normalized_to_file(
+                &mut graph,
+                &export_config,
+                clock.as_ref(),
+                normalize,
+                &path,
+            )
+            .map(ExportOutput::File),
+            ExportTarget::Buffers => render_to_buffers(&mut graph, &export_config, clock.as_ref())
+                .map(ExportOutput::Buffers),
         };
-        rendered.map_err(|e| nodes.name(e))
+        (rendered.map_err(|e| nodes.name(e)), graph)
     });
 
     world.entity_mut(entity).insert(ExportInFlight::new(task));
@@ -293,11 +302,21 @@ impl NodeNames {
 }
 
 /// Drives in-flight renders; triggers [`ExportDone`] on the ones that finished.
-pub fn poll_exports(mut commands: Commands, mut in_flight: Query<(Entity, &mut ExportInFlight)>) {
+///
+/// **Pinned to the main thread** ([`NonSendMarker`](bevy_ecs::system::NonSendMarker)):
+/// a finished render hands its graph back, and it is dropped here. A forked
+/// in-process VST2 plugin closes its instance when dropped, which VST2
+/// confines to the main thread.
+pub fn poll_exports(
+    mut commands: Commands,
+    mut in_flight: Query<(Entity, &mut ExportInFlight)>,
+    _main: bevy_ecs::system::NonSendMarker,
+) {
     for (entity, mut export) in in_flight.iter_mut() {
-        let Some(result) = export.poll() else {
+        let Some((result, graph)) = export.poll() else {
             continue; // still running
         };
+        drop(graph);
         commands
             .entity(entity)
             .remove::<ExportInFlight>()
@@ -403,6 +422,102 @@ mod tests {
             stream.render_block(256).expect("the stream is open");
         }
         (app, click, walker, stream)
+    }
+
+    /// A host node that records the thread it is dropped on: a stand-in for
+    /// a forked in-process VST2 plugin, whose drop closes its instance and
+    /// belongs on the main thread. Forked by clone, so the export's copy
+    /// shares the record.
+    #[derive(Clone)]
+    struct DropWitness(Arc<Mutex<Vec<std::thread::ThreadId>>>);
+
+    impl Drop for DropWitness {
+        fn drop(&mut self) {
+            self.0
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(std::thread::current().id());
+        }
+    }
+
+    impl tutti_graph::Node for DropWitness {
+        fn shape(&self) -> tutti_graph::Shape {
+            tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+        }
+        fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+        fn process(
+            &mut self,
+            _: &tutti_graph::Cx<'_>,
+            _: tutti_graph::Io<'_>,
+        ) -> tutti_graph::Status {
+            tutti_graph::Status::Silent
+        }
+        fn reset(&mut self) {}
+    }
+
+    /// **The rendered graph is dropped on the main thread**, though it
+    /// renders on the compute pool: the render hands it back with its result
+    /// and `poll_exports` (main-thread-pinned) drops it. A forked in-process
+    /// VST2 plugin closes its instance when dropped, which VST2 confines to
+    /// the main thread.
+    ///
+    /// **It bites only with a threaded pool.** This crate's own feature set
+    /// leaves `bevy_tasks/multi_threaded` off (an app with Bevy's default
+    /// features turns it on), and then a task runs on whichever thread polls
+    /// it — here the main one — so a pool-side drop is a main-thread drop too
+    /// and this passes either way. Run it with `cargo nextest run -p
+    /// bevy-tutti --features full,bevy_tasks/multi_threaded`. (Turning the
+    /// feature on for every test was tried: `export_surface`'s
+    /// `a_batch_spawned_in_one_frame_starts_one_at_a_time` assumes a render
+    /// finishes within the frame that polls it, which a threaded pool does
+    /// not promise.)
+    ///
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): drop the handed-back
+    /// graph in a compute-pool task instead of in `poll_exports` (what
+    /// rendering it by value in the task did) → the copy's drop is recorded on
+    /// a pool thread → fails.
+    #[test]
+    fn the_rendered_graph_is_dropped_on_the_main_thread() {
+        let (mut app, _click, _walker, _stream) = engine_app();
+        let drops: Arc<Mutex<Vec<std::thread::ThreadId>>> = Arc::default();
+        let witness = app
+            .world_mut()
+            .commands()
+            .spawn_audio_node(tutti_graph::ForkByClone(DropWitness(Arc::clone(&drops))))
+            .id();
+        app.world_mut().flush();
+        for _ in 0..2 {
+            app.update();
+        }
+        drops.lock().unwrap().clear();
+        let config = ExportConfig {
+            render: RenderConfig {
+                sample_rate: SampleRate(RATE),
+                duration_seconds: 0.1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let clock = ExportClock::timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+            sample_rate: SampleRate(RATE),
+            ..Default::default()
+        })));
+        let _ = export(
+            &mut app,
+            ExportRequest::new(
+                ExportSource::Node(witness),
+                ExportTarget::Buffers,
+                config,
+                clock,
+            ),
+        );
+        let main = std::thread::current().id();
+        let drops = drops.lock().unwrap().clone();
+        assert!(!drops.is_empty(), "the export's copy was never dropped");
+        assert!(
+            drops.iter().all(|&t| t == main),
+            "a copy was dropped off the main thread: {drops:?} (main {main:?})"
+        );
     }
 
     /// Spawn `request`, tick until it reports, return the left channel.

@@ -376,7 +376,7 @@ impl Plugin for ProbePlugin {
         Info {
             name: PROBE_NAME.to_string(),
             vendor: PROBE_VENDOR.to_string(),
-            unique_id: PROBE_UNIQUE_ID,
+            unique_id: self.config.unique_id,
             version: PROBE_VERSION,
             // The *declared* counts, which may exceed what `ProbeParameters`
             // services: that gap is the enumeration hole.

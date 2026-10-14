@@ -97,6 +97,7 @@ change its mind about is a switch.
 | `F64` | `effFlagsCanDoubleReplacing` |
 | `NO_CAN_REPLACING` | clears `effFlagsCanReplacing` while still being asked to process |
 | `TAIL_SIZE` | raw `effGetTailSize` answer: `0`, `1`, and large all mean different things |
+| `UNIQUE_ID` | `uniqueId` — the same file loading as a different plugin |
 | `STATE_DC` | adds the instance's saved state to every output sample (`config::state_dc`): the chunk's first byte with chunks, else `1000 · param0 + 10 000 · program` — what a fork by state transfer is checked on |
 
 Set these before `Vst2Instance::load` and serialize against other tests —

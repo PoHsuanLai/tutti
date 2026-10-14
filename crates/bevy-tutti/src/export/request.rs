@@ -311,15 +311,17 @@ impl std::fmt::Debug for ExportRequest {
 /// entities, but is not needed for safety.
 #[derive(Component)]
 pub struct ExportInFlight {
-    task: Task<Result<ExportOutput, ExportError>>,
+    task: Task<(Result<ExportOutput, ExportError>, RenderGraph)>,
 }
 
 impl ExportInFlight {
-    pub(crate) fn new(task: Task<Result<ExportOutput, ExportError>>) -> Self {
+    pub(crate) fn new(task: Task<(Result<ExportOutput, ExportError>, RenderGraph)>) -> Self {
         Self { task }
     }
 
-    pub(crate) fn poll(&mut self) -> Option<Result<ExportOutput, ExportError>> {
+    /// The finished render's result, and its graph: handed back so the caller
+    /// (`poll_exports`, on the main thread) drops it there.
+    pub(crate) fn poll(&mut self) -> Option<(Result<ExportOutput, ExportError>, RenderGraph)> {
         bevy_tasks::block_on(bevy_tasks::futures_lite::future::poll_once(&mut self.task))
     }
 
@@ -331,6 +333,11 @@ impl ExportInFlight {
     ///
     /// Despawning the entity does the same thing implicitly: dropping the
     /// component drops the task, which cancels it.
+    ///
+    /// A render already running finishes its poll first, and its graph is
+    /// then dropped on the pool's thread, not the main one: a forked
+    /// in-process VST2 plugin in it closes off the main thread. A finished
+    /// render is collected by `poll_exports` on the main thread.
     pub fn cancel(self) {
         drop(self.task);
     }

@@ -159,7 +159,7 @@ impl Normalize {
 /// mix is measured on its first six channels. [`Normalize::Peak`] is unaffected;
 /// true peak folds over every channel.
 pub fn render_normalized_to_file(
-    graph: crate::RenderGraph,
+    graph: impl std::borrow::BorrowMut<crate::RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
     normalize: Normalize,

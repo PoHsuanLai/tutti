@@ -12,16 +12,20 @@
 //!
 //! # What a fork is
 //!
-//! [`InProcessVst2Client::fork_instance`], which the fork source calls:
+//! [`InProcessVst2Client::fork_instance`], which the fork source calls, on the
+//! **main thread** (see "Threads" below):
 //!
-//! 1. **Ask the live instance for its state**, under its lock, on the control
-//!    thread that forks: the current program, when the plugin declares any
-//!    (`effGetProgram`), and its state blob (`Vst2Instance::get_state`: the
-//!    plugin's own chunk through `effGetChunk` when it declares
-//!    `effFlagsProgramChunks`, else every parameter's value). Nothing else is
-//!    touched. While the lock is held, the live node's audio thread finds it
-//!    taken (`try_lock`) and renders that block silent — the same stall a
-//!    project save through the handle causes.
+//! 1. **Ask the live instance for its state**, under its lock: the current
+//!    program, when the plugin declares any (`effGetProgram`), its state blob
+//!    (`Vst2Instance::get_state`: the plugin's own chunk through `effGetChunk`
+//!    when it declares `effFlagsProgramChunks`, else every parameter's value,
+//!    one `getParameter` each), and whether the host reports it as rendering
+//!    offline. Nothing else is touched. For as long as the lock is held the
+//!    live node's audio thread finds it taken (`try_lock`) and renders silent
+//!    blocks — the same stall a project save through the handle causes. That
+//!    is one block for a chunk or a few parameters, and can be several for a
+//!    plugin without chunks that has thousands of parameters, or a slow
+//!    `effGetChunk`.
 //! 2. **Load a second instance** of the same file at the live node's rate:
 //!    `Vst2Instance::load`, as the live one was. The second `dlopen` of the
 //!    path maps the image already loaded (one more reference to it), and the
@@ -36,12 +40,26 @@
 //! 4. **Read the transport from the block's `Env`**, not the live node's
 //!    polled reader (which reads the live timeline): for an offline fork the
 //!    render's timeline, with the live node's meter if one was installed.
-//! 5. **Offline only:** answer `audioMasterGetCurrentProcessLevel` with
-//!    `kVstProcessLevelOffline`.
+//! 5. **Report the render mode**: an offline fork answers
+//!    `audioMasterGetCurrentProcessLevel` with `kVstProcessLevelOffline`; a
+//!    live fork ([`ForkMode::Live`]) answers as the live instance did when it
+//!    was forked (offline if a host had set the live one offline).
 //!
 //! The fork's `prepare` tells the plugin its rate itself, under the lock
 //! ([`RateDelivery::InPrepare`]): nothing pumps a fork's editor, so a parked
 //! rate would never reach it.
+//!
+//! # Threads
+//!
+//! Fork on the **main thread** — `Vst2Instance::load`'s rule. A fork runs the
+//! plugin's entry point (`VSTPluginMain`, through a loader whose entry-point
+//! slot is a process global) and dispatches state opcodes, and a plugin may
+//! assume all of that is on its host's main thread. bevy-tutti's export forks
+//! from its exclusive `start_exports`. Drop the fork there too: dropping it
+//! closes its instance (`effMainsChanged(0)`, `effClose`), which debug builds
+//! assert is on the main thread once one is marked. A fork may *render* on any
+//! thread, as the live node does; bevy-tutti renders on its compute pool and
+//! hands the graph back to `poll_exports`, on the main thread, to drop.
 //!
 //! Any failure is a [`PluginForkError`] naming the step, and the second
 //! instance (if one was built) is dropped with it — `effClose`. Through the
@@ -114,13 +132,13 @@ impl Vst2Fork {
         // First, so a plugin that cannot save costs no second instance. The
         // `Arc` is dropped straight after: the fork holds no strong reference.
         let live = self.live.upgrade().ok_or(PluginForkError::LiveGone)?;
-        let (program, state) = {
+        let (program, state, live_offline) = {
             let instance = live.lock();
             let program = (instance.program_count() > 0).then(|| instance.current_program());
             let state = instance
                 .get_state()
                 .map_err(|e| PluginForkError::SaveState(StateError::Rejected(e.to_string())))?;
-            (program, state)
+            (program, state, instance.is_offline_render())
         };
         drop(live);
 
@@ -154,9 +172,11 @@ impl Vst2Fork {
             instance
                 .set_state(&state)
                 .map_err(|e| PluginForkError::LoadState(StateError::Rejected(e.to_string())))?;
-            if let ForkMode::Offline(_) = mode {
-                instance.set_offline_render(true);
-            }
+            let offline = match mode {
+                ForkMode::Offline(_) => true,
+                ForkMode::Live => live_offline,
+            };
+            instance.set_offline_render(offline);
         }
 
         let meter = self
@@ -190,17 +210,19 @@ impl InProcessVst2Client {
     ///
     /// This is a fork by state transfer, and what inserting the node into a
     /// graph ([`IntoNode`](tutti_graph::IntoNode)) hands the editor, so
-    /// `Editor::fork` (an offline export) forks a graph holding it. Call on a
-    /// control thread (the main thread, for a plugin that checks): it loads
-    /// the plugin a second time from the same library and dispatches its
-    /// state.
+    /// `Editor::fork` (an offline export) forks a graph holding it.
+    ///
+    /// **Main thread only**, as `Vst2Instance::load` is: it runs the plugin's
+    /// entry point a second time and dispatches its state. Drop the fork on
+    /// the main thread too (dropping closes its instance); it may render on
+    /// any thread.
     ///
     /// The state is the current program (when the plugin has programs) and
     /// what the plugin saves: its own chunk for a plugin that declares
     /// `effFlagsProgramChunks`, else every parameter's value. The fork reads
     /// its transport from the `Env` of the graph it renders in, not the
-    /// installed reader; [`ForkMode::Offline`] also tells the plugin it renders
-    /// offline. A fork carries no running DSP state (voices, delay lines), so
+    /// installed reader. [`ForkMode::Offline`] tells the plugin it renders
+    /// offline; [`ForkMode::Live`] keeps the live instance's render mode. A fork carries no running DSP state (voices, delay lines), so
     /// it starts silent. Nothing set on either instance afterwards reaches the
     /// other.
     ///

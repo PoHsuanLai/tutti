@@ -42,7 +42,8 @@
 //!
 //! A `SoundFontUnit` re-rates in its own `prepare` (rustysynth fixes a
 //! synthesizer's rate, so the node swaps in one built at the new rate,
-//! keeping its preset and channel state but no sounding voice). Not
+//! keeping its preset and channel state but no sounding voice; on failure,
+//! a rate rustysynth refuses, it keeps the old rate). Not
 //! re-rated here: a host-built `UmpOutRes` (its JR clock). A MIDI clip
 //! node needs nothing: it places its events by its block's `Env`, rate
 //! included.

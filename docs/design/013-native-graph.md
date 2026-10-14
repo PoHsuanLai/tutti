@@ -1990,7 +1990,8 @@ Recorded for later:
   (item 5's SoundFont node, "SoundFont as a graph node"): the node's
   `prepare` swaps in `SoundFontUnit::with_sample_rate` (same SoundFont,
   channel state and preset, no sounding voice) when the prepared rate
-  differs, so `restart_device`'s re-prepare re-rates it with the graph and
+  differs (on failure, a rate rustysynth refuses, it keeps the old rate),
+  so `restart_device`'s re-prepare re-rates it with the graph and
   no hook-side crossfade is needed. Pinned by `graph_node.rs`'s
   `the_node_follows_its_graphs_rate` and `soundfont_unit_audio.rs`'s
   `a_same_rate_reprepare_mid_stream_does_not_disturb_rendering`.
@@ -2535,7 +2536,8 @@ never touches the live ring; a free-running source follows a relayed seek).
   - ~~`SoundFontUnit` (`tutti-soundfont`)~~: **re-rated since** — rustysynth
     still fixes a `Synthesizer`'s rate, but the graph node's `prepare`
     rebuilds it at the prepared rate (keeping the preset, losing the
-    sounding voices), so a restart's re-prepare re-rates it.
+    sounding voices; on failure, a rate rustysynth refuses, it keeps the
+    old rate), so a restart's re-prepare re-rates it.
   - A host-built `UmpOutRes` (`midi-hardware`): its `JrStream` stamps JR
     timestamps and paces JR Clock at the rate it was built with. The host
     constructs it, so the hook cannot see it; `JrStream` has no way to

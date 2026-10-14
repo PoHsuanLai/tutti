@@ -461,13 +461,14 @@ mod tests {
     /// VST2 plugin closes its instance when dropped, which VST2 confines to
     /// the main thread.
     ///
-    /// **It bites only with a threaded pool.** This crate's own feature set
-    /// leaves `bevy_tasks/multi_threaded` off (an app with Bevy's default
-    /// features turns it on), and then a task runs on whichever thread polls
-    /// it — here the main one — so a pool-side drop is a main-thread drop too
-    /// and this passes either way. Run it with `cargo nextest run -p
-    /// bevy-tutti --features full,bevy_tasks/multi_threaded`. (Turning the
-    /// feature on for every test was tried: `export_surface`'s
+    /// **It bites only with a threaded pool**, so CI runs it threaded: the
+    /// `dark features` job (and `just test-features`) runs it alone with
+    /// `--features full,bevy_tasks/multi_threaded`. This crate's own feature
+    /// set leaves `multi_threaded` off (an app with Bevy's default features
+    /// turns it on), and then a task runs on whichever thread polls it — here
+    /// the main one — so in an ordinary run a pool-side drop is a main-thread
+    /// drop too and this passes either way. (Turning the feature on for every
+    /// test was tried: `export_surface`'s
     /// `a_batch_spawned_in_one_frame_starts_one_at_a_time` assumes a render
     /// finishes within the frame that polls it, which a threaded pool does
     /// not promise.)

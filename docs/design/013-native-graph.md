@@ -4256,7 +4256,8 @@ and bevy-tutti's render task hands its graph back with the result to
 it. A render cancelled mid-poll still drops on the pool. Pinned by
 `the_rendered_graph_is_dropped_on_the_main_thread`, which bites only with
 `bevy_tasks/multi_threaded` on (bevy-tutti's own feature set leaves it off, and
-a task then runs on the thread that polls it).
+a task then runs on the thread that polls it), so CI's `dark features` job and
+`just test-features` run it alone with that feature.
 
 Every failure fails the whole fork (`ForkError::Source`, naming the node's
 key; bevy-tutti's `ExportError::ForkSource`, naming its entity), never a fork

@@ -250,7 +250,10 @@ impl EventFifo {
     /// shrinks it. Control side: may allocate.
     ///
     /// The limit is the new bound, not the new bound plus what is queued:
-    /// new events wait for room. Queued events past a smaller new bound are
+    /// while the backlog is at or past the new limit, a new non-note-off is
+    /// refused (dropped, and counted in the executor's dropped events) and a
+    /// note-off takes the reserve or evicts the oldest non-note-off, as
+    /// [`push`](Self::push) does at any full FIFO. Queued events past a smaller new bound are
     /// kept, and are the FIFO's [`excess`](Self::excess), which the executor
     /// adds to the output slot it prices at the bound, so they still go out
     /// on their frames even if they all fall due at once.

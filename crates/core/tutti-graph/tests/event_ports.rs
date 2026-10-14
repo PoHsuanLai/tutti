@@ -30,7 +30,9 @@ use tutti_graph::{
     ValidGraph,
 };
 use tutti_types::graph::NodeSpec;
-use tutti_types::{ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail, Topology};
+use tutti_types::{
+    At, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail, Topology,
+};
 
 /// What a sink saw: `(block start frame, offset, port, tag)`.
 type Seen = Arc<Mutex<Vec<(u64, u32, u16, u32)>>>;
@@ -831,12 +833,16 @@ fn a_fifo_whose_bound_a_swap_lowered_delivers_its_backlog_on_time() {
 /// bound of a PDC FIFO **and** an event feedback edge (fewer blocks fit in
 /// the delay) while keeping both: 640 events queued in each at a 16-frame
 /// block, a bound of 88 at 512, and 512 of them due in the first 512-frame
-/// block after it. Both arrive on their frames.
+/// block after it. Both arrive on their frames, and so does a command
+/// scheduled onto the sink inside that block.
 ///
 /// Mutation (run): make `EventFifo::excess` return 0 → 88 a block go out on
 /// each path, the rest late → fails. Mutation (run): skip the feedback
 /// FIFOs in the widening pass in `Executor::rebuild` → the feedback port
-/// alone falls behind → fails.
+/// alone falls behind → fails. Mutation (run): size the overlay without
+/// the widening (`+ extra_total` dropped from `overlay_capacity`'s
+/// argument) → the overlay holds 433, the command's port merges 513 into
+/// it, and 80 are dropped → fails.
 #[test]
 fn a_fifo_whose_bound_a_reprepare_lowered_delivers_its_backlog_on_time() {
     const LEN: usize = 640;
@@ -873,22 +879,100 @@ fn a_fifo_whose_bound_a_reprepare_lowered_delivers_its_backlog_on_time() {
     ed.collect();
     exec.apply_pending();
     ed.collect();
+    // A command onto the delayed port inside the backlog's block: the sink's
+    // overlay merges it with the port's 512 events, past the slack the
+    // overlay has without the widening (89 + 88 planned + 256 commands).
+    // Timeline frame 360 is the sink's frame 1 000: its arrival is 640.
+    ed.schedule(
+        At::Frame(Frame(1_000 - LEN as u64)),
+        at(1, 0),
+        EventKind::Midi(Ump([COMMAND, 0, 0, 0])),
+    )
+    .expect("room");
     for _ in 0..3 {
         exec.process(512, &transport, &[], &mut []);
     }
     ed.collect();
-    let want: Vec<(u16, u64, u32)> = [0u16, 1]
+    const COMMAND: u32 = 99_999;
+    let mut want: Vec<(u16, u64, u32)> = [0u16, 1]
         .iter()
         .flat_map(|&port| {
             plan.iter()
                 .map(move |&(f, _, tag)| (port, f + LEN as u64, tag))
         })
         .collect();
+    want.push((0, 1_000, COMMAND));
+    want.sort_unstable();
     assert_eq!(
         landed(&seen),
         want,
         "every event on its frame, on both paths"
     );
+    assert_eq!(exec.dropped_events(), 0);
+    assert_eq!(refused.load(Ordering::Relaxed), 0);
+}
+
+/// **A flush into a port a lowered bound widened drops nothing.** In one
+/// commit, source A is swapped for one declaring 1 a block (its 256-frame
+/// PDC FIFO keeps 128 events against a bound of 15) and source B, wired to
+/// the same sink port behind its own delay, is removed, so B's delay
+/// flushes its 3 pending events into the port. In the first block after,
+/// the sink merges the flush with the port's 32 due events: the merge
+/// buffer is sized from the widened slots, so all 35 land — A's on their
+/// frames, B's from offset 0 keeping their spacing.
+///
+/// Mutation (run): size `Inject::merged` from the planned slots (`widest`
+/// without `extra`) → it holds 3 + 16, and 16 of the 35 are dropped →
+/// fails.
+#[test]
+fn a_flush_into_a_port_a_lowered_bound_widened_drops_nothing() {
+    const LATE: usize = 256;
+    let seen: Seen = Arc::default();
+    let refused = Arc::new(AtomicUsize::new(0));
+    // A: 32 events in each of the first four 64-frame blocks.
+    let a_plan: Vec<(u64, u16, u32)> = (0..4u64)
+        .flat_map(|b| (0..32u64).map(move |i| b * 64 + i))
+        .map(|f| (f, 0, f as u32))
+        .collect();
+    // B: three events, still queued (due from 456) when it goes.
+    let b_plan = [(200u64, 0u16, 9_001u32), (201, 0, 9_002), (202, 0, 9_003)];
+    let prep = Prepare::new(SampleRate(48_000.0), Samples(64));
+    let (mut ed, mut exec) = Editor::with_event_capacity(prep, 1);
+    ed.insert(
+        NodeKey(1),
+        "sink",
+        Unforkable(Sink {
+            ports: 1,
+            seen: Arc::clone(&seen),
+        }),
+    );
+    ed.insert(NodeKey(2), "a", burst_unit(32, &a_plan, &refused));
+    ed.insert(NodeKey(3), "late", Unforkable(Late { latency: LATE }));
+    ed.insert(NodeKey(4), "b", burst_unit(4, &b_plan, &refused));
+    let g = ed.spec_mut();
+    g.connect_events(at(1, 0), EventEdge::Direct(out(2, 0)));
+    g.connect_events(at(1, 0), EventEdge::Direct(out(3, 0)));
+    g.connect_events(at(1, 0), EventEdge::Direct(out(4, 0)));
+    ed.commit().expect("commits");
+    let transport = Transport::default();
+    for _ in 0..4 {
+        exec.process(64, &transport, &[], &mut []);
+    }
+    assert!(seen.lock().unwrap().is_empty(), "nothing is due before 256");
+    ed.insert(NodeKey(2), "a", burst_unit(1, &[], &refused));
+    ed.remove(NodeKey(4));
+    ed.commit().expect("commits");
+    for _ in 4..12 {
+        exec.process(64, &transport, &[], &mut []);
+    }
+    ed.collect();
+    let mut want: Vec<(u16, u64, u32)> = a_plan
+        .iter()
+        .map(|&(f, _, tag)| (0, f + LATE as u64, tag))
+        .collect();
+    want.extend([(0, 256, 9_001), (0, 257, 9_002), (0, 258, 9_003)]);
+    want.sort_unstable();
+    assert_eq!(landed(&seen), want, "every event, none dropped");
     assert_eq!(exec.dropped_events(), 0);
     assert_eq!(refused.load(Ordering::Relaxed), 0);
 }

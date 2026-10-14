@@ -1063,12 +1063,17 @@ impl Executor {
         // priced at. The compiler is pure and cannot know what is queued, so
         // the slot is widened here, by that excess (`EventFifo::excess`),
         // where the state is built — and so is every merge downstream of
-        // it, which the compiler priced at the sum of its inputs: everything
-        // the FIFO holds can still go out in one block, on its frame, and
-        // pass every merge after it. Here and only here, on a commit that
+        // it, which the compiler priced at the sum of its inputs, and the
+        // buffers a sink merges its inputs into (a flush's `merged`, the
+        // command overlay, below): the backlog the FIFO holds can still go
+        // out in one block, on its frames, and pass everything after it.
+        // (One corner stays late, as it was without an excess: a delay
+        // retuned below one block makes its whole backlog overdue at offset
+        // 0; if that fills the slot, new input falling due in the same
+        // block waits for the next.) Here and only here, on a commit that
         // already allocates this whole state; the queue never grows past it
-        // (it only drains while above its bound), so rendering stays
-        // allocation-free. The next rebuild prices it afresh.
+        // (a new non-note-off is refused while it is full), so rendering
+        // stays allocation-free. The next rebuild prices it afresh.
         //
         // Per slot, not per value: a slot the colouring pass shares takes
         // the largest excess of anything it holds, which only over-sizes.

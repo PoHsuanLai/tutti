@@ -3345,20 +3345,28 @@ place that says what a ported node can rely on:
   events first (counted). A FIFO carried across a recompile that shrank
   its bound (a shorter delay across a `MaxBlock` multiple, a source
   hard-replaced with a lower rate, a re-prepare to a larger `MaxBlock`)
-  keeps what it holds, and is delivered on time: **landed** (the FIFO
-  excess fix). The compiler is pure and prices the delay's output at the
-  new bound, not knowing what is queued, so the executor widens it when
-  it builds the new state: `Executor::rebuild` adds each carried FIFO's
-  `EventFifo::excess` (what it holds past its bound) to its output slot
-  and, summed, to every merge downstream, on the commit that already
-  allocates that state. A FIFO above its bound never grows (a new
-  non-note-off waits, a note-off evicts), so rendering stays
-  allocation-free. Before, the excess went out a block late, or further
-  behind when more of it fell due in later blocks. Pinned by
-  `event_ports.rs`'s
-  `a_fifo_whose_bound_a_{swap,reprepare}_lowered_delivers_its_backlog_on_time`.
+  keeps what it holds, and its backlog is delivered on time: **landed**
+  (the FIFO excess fix). The compiler is pure and prices the delay's
+  output at the new bound, not knowing what is queued, so the executor
+  widens it when it builds the new state: `Executor::rebuild` adds each
+  carried FIFO's `EventFifo::excess` (what it holds past its bound) to its
+  output slot and, summed, to every merge downstream — and to the buffers
+  a sink merges its inputs into (a flush's `Inject::merged`, the
+  scheduled-command overlay) — on the commit that already allocates that
+  state. A FIFO above its bound never grows: while the backlog is at or
+  past the new limit, a new non-note-off is refused (dropped, counted in
+  `dropped_events`) and a note-off takes the reserve or evicts, as at any
+  full FIFO; so rendering stays allocation-free. Before, the excess went
+  out a block late, or further behind when more of it fell due in later
+  blocks. Pinned by `event_ports.rs`'s
+  `a_fifo_whose_bound_a_{swap,reprepare}_lowered_delivers_its_backlog_on_time`
+  (the second with a scheduled command onto the sink in the backlog's
+  block) and `a_flush_into_a_port_a_lowered_bound_widened_drops_nothing`.
   A full slot still never drops (the due events wait a block), kept as a
-  backstop.
+  backstop. **One corner stays late** (as it did before, with no excess):
+  a delay retuned below one block makes its whole backlog overdue at once,
+  at offset 0, and if that fills the slot, new input falling due inside
+  the same block waits for the next.
 - **Found in CI (#50):** pricing a delay's output at its source's one
   block delivered an event a block late whenever two of the source's
   blocks came due in one (a write on a block's last frame and the next

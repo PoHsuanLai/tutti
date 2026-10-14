@@ -35,12 +35,11 @@ pub struct ParameterPoint {
 
 /// The automation points for one parameter within one process block.
 ///
-/// Inline storage keeps a full block's automation run allocation-free on the
-/// audio thread. It is sized for the densest producer: the host's automation
-/// node sends at most 10 points a parameter a block (one per 8 samples, the
-/// stride widening with the block, plus the final sample), and the plugin node
-/// keeps a chunk's queue at 10 by replacing its last point, so the queue never
-/// spills.
+/// Ten points live inline, so a queue built with [`new`](Self::new) holds a
+/// short block's automation without allocating. A producer that needs more
+/// reserves them ahead of time ([`with_capacity`](Self::with_capacity), or a
+/// whole set through [`ParameterChanges::reserved`]) and checks
+/// [`has_room`](Self::has_room) before each push on the audio thread.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ParameterQueue {
@@ -61,16 +60,60 @@ pub struct ParameterQueue {
     /// [`normalize`](ParameterQueue::normalize) re-establishes the invariant on
     /// deserialize — see the `Deserialize` impl below for why that isn't
     /// derived.
-    pub points: SmallVec<[ParameterPoint; 10]>,
+    pub points: SmallVec<[ParameterPoint; ParameterQueue::INLINE_POINTS]>,
 }
 
 impl ParameterQueue {
+    /// The points a queue holds before it allocates.
+    pub const INLINE_POINTS: usize = 10;
+
+    /// The spacing, in frames, a chunk's point room is sized for: a
+    /// parameter can carry a point every this many frames of a chunk.
+    pub const POINT_SPACING: usize = 32;
+
+    /// Points a queue has room for beyond one per
+    /// [`POINT_SPACING`](Self::POINT_SPACING): a segment's corners (its
+    /// start and its arrival) and the chunk's last frame.
+    pub const CORNER_POINTS: usize = 4;
+
+    /// The points one parameter can carry in a chunk of `chunk` frames: one
+    /// per [`POINT_SPACING`](Self::POINT_SPACING) frames and
+    /// [`CORNER_POINTS`](Self::CORNER_POINTS) more, and never fewer than the
+    /// [inline room](Self::INLINE_POINTS). The host's plugin node reserves
+    /// each queue with this room, and a format host that hands the points
+    /// on reserves for it at activation with its largest block, so neither
+    /// side allocates for a chunk's points.
+    ///
+    /// This is not yet design doc 014 §9 requirement 6
+    /// (`ceil(chunk / CONTROL_STEP) + 1 + C` with `C = 256`, and past the
+    /// room grid points dropped before corners); a full queue has its last
+    /// point replaced instead. Doc 014's PR 2 brings both.
+    pub fn chunk_room(chunk: usize) -> usize {
+        (chunk.div_ceil(Self::POINT_SPACING) + Self::CORNER_POINTS).max(Self::INLINE_POINTS)
+    }
+
     /// Builds an empty queue addressed to `param_id`.
     pub fn new(param_id: ParamAddress) -> Self {
         Self {
             param_id,
             points: SmallVec::new(),
         }
+    }
+
+    /// Builds an empty queue addressed to `param_id` with room for `points`
+    /// points before it allocates again. Allocates past the ten inline ones;
+    /// call it off the audio thread.
+    pub fn with_capacity(param_id: ParamAddress, points: usize) -> Self {
+        Self {
+            param_id,
+            points: SmallVec::with_capacity(points),
+        }
+    }
+
+    /// Whether one more point fits in the queue's storage, so that pushing it
+    /// does not allocate.
+    pub fn has_room(&self) -> bool {
+        self.points.len() < self.points.capacity()
     }
 
     /// Appends one automation point, **silently clamping `value` onto `0..=1`**.
@@ -170,17 +213,113 @@ impl<'de> serde::Deserialize<'de> for ParameterQueue {
 
 /// The per-block parameter automation passed into or returned from a plugin's
 /// process call, as one [`ParameterQueue`] per parameter.
+///
+/// **No queue cap.** `queues` is a plain `Vec`: a block can carry a queue for
+/// every parameter the plugin has. What keeps it off the allocator on an
+/// audio thread is capacity reserved ahead of time, the way the VST3 SDK's
+/// host reserves one queue per parameter (`ParameterChanges::setMaxParameters`):
+/// build it [`with_capacity`](Self::with_capacity) the plugin's parameter
+/// count on the control thread, and [`clear`](Self::clear) it between blocks
+/// (which keeps the capacity). A push past the reserved capacity grows the
+/// `Vec`, which allocates; a real-time producer checks
+/// [`has_room`](Self::has_room) first.
+///
+/// **Point capacity.** A set built [`reserved`](Self::reserved) also holds
+/// that many spare queues, each with room for a given number of points.
+/// [`open_queue`](Self::open_queue) takes a spare one, and
+/// [`clear`](Self::clear) puts every queue back (emptied, its storage kept),
+/// so a set reused block after block never allocates or frees a queue's
+/// points. The spares are not part of the value: they are not serialized,
+/// and a deserialized set has none.
+///
+/// On the wire a `Vec` and the `SmallVec` this used to be serialize the same
+/// way (a length, then the queues), so the IPC format is unchanged.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParameterChanges {
-    /// One queue per parameter; the first 16 live inline.
-    pub queues: SmallVec<[ParameterQueue; 16]>,
+    /// One queue per parameter.
+    pub queues: Vec<ParameterQueue>,
+    /// Emptied queues kept for reuse, their point storage intact.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    spare: Vec<ParameterQueue>,
 }
 
 impl ParameterChanges {
-    /// Builds an empty set of changes.
+    /// Builds an empty set of changes. Holds no capacity, so building one
+    /// does not allocate.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Builds an empty set of changes with room for `queues` parameter queues
+    /// before it allocates again. Allocates; call it off the audio thread,
+    /// with the plugin's parameter count.
+    pub fn with_capacity(queues: usize) -> Self {
+        Self {
+            queues: Vec::with_capacity(queues),
+            spare: Vec::new(),
+        }
+    }
+
+    /// Builds an empty set of changes with room for `queues` parameter
+    /// queues of `points` points each: every queue is built here, so
+    /// [`open_queue`](Self::open_queue) and pushes within a queue's room
+    /// never allocate. Allocates; call it off the audio thread.
+    pub fn reserved(queues: usize, points: usize) -> Self {
+        // A placeholder address: `open_queue` readdresses each queue.
+        let placeholder = ParamAddress::Index(0);
+        Self {
+            queues: Vec::with_capacity(queues),
+            spare: (0..queues)
+                .map(|_| ParameterQueue::with_capacity(placeholder, points))
+                .collect(),
+        }
+    }
+
+    /// Opens an empty queue for `param_id` at the end of `queues`: a spare
+    /// one when there is one (with its reserved point room), otherwise a new
+    /// one with the inline room. Returns `false`, opening nothing, when
+    /// `queues` has no room left ([`has_room`](Self::has_room)).
+    /// Allocation-free.
+    pub fn open_queue(&mut self, param_id: ParamAddress) -> bool {
+        if !self.has_room() {
+            return false;
+        }
+        let queue = match self.spare.pop() {
+            Some(mut q) => {
+                q.param_id = param_id;
+                q
+            }
+            None => ParameterQueue::new(param_id),
+        };
+        self.queues.push(queue);
+        true
+    }
+
+    /// The points each queue [`open_queue`](Self::open_queue) hands out can
+    /// hold before a push allocates: the smallest room among the spares, or
+    /// the inline room when there are none.
+    pub fn point_capacity(&self) -> usize {
+        self.spare
+            .iter()
+            .map(|q| q.points.capacity())
+            .min()
+            .unwrap_or_else(|| {
+                ParameterQueue::new(ParamAddress::Index(0))
+                    .points
+                    .capacity()
+            })
+    }
+
+    /// The number of queues this can hold before a push allocates.
+    pub fn capacity(&self) -> usize {
+        self.queues.capacity()
+    }
+
+    /// Whether one more queue fits in the reserved capacity, so that pushing
+    /// it does not allocate.
+    pub fn has_room(&self) -> bool {
+        self.queues.len() < self.queues.capacity()
     }
 
     /// Appends a point to the queue for `param_id`, creating that queue if it
@@ -225,9 +364,33 @@ impl ParameterChanges {
         self.queues.len()
     }
 
-    /// Drops every queue, keeping the inline capacity for reuse across blocks.
+    /// Empties the set, keeping the reserved capacity for reuse across
+    /// blocks: each queue goes back to the spares, emptied with its point
+    /// storage kept, while the spares have room for it. Allocation-free, and
+    /// frees nothing for a set built [`reserved`](Self::reserved) whose
+    /// queues all came from [`open_queue`](Self::open_queue).
+    ///
+    /// **The spares keep the largest queues.** When they are full (a queue
+    /// was pushed past them, with only the inline room), each further queue
+    /// replaces the spare with the least point room if it has more, and the
+    /// smaller one is dropped. So a set that held one inline queue among its
+    /// reserved ones keeps its reserved point room
+    /// ([`point_capacity`](Self::point_capacity)), whatever order the
+    /// queues were in.
     pub fn clear(&mut self) {
-        self.queues.clear();
+        while let Some(mut queue) = self.queues.pop() {
+            queue.points.clear();
+            if self.spare.len() < self.spare.capacity() {
+                self.spare.push(queue);
+                continue;
+            }
+            let smallest = self.spare.iter_mut().min_by_key(|q| q.points.capacity());
+            if let Some(smallest) = smallest {
+                if smallest.points.capacity() < queue.points.capacity() {
+                    core::mem::swap(smallest, &mut queue);
+                }
+            }
+        }
     }
 
     /// Returns the queue addressed by `param_id`, if one has been created.
@@ -362,5 +525,122 @@ mod serde_tests {
             .expect("queue 1");
         assert_eq!(q.points[0].sample_offset, 0);
         assert_eq!(q.points[1].sample_offset, 32);
+    }
+
+    /// **The wire format is unchanged**: a set of more than sixteen queues
+    /// (past the old inline sixteen) encodes byte for byte as the
+    /// `SmallVec<[_; 16]>` it used to be, and comes back whole. The spares
+    /// of a reserved set are not on the wire.
+    ///
+    /// Mutation (run): `spare` serialized (no `serde(skip)`) → the bytes gain
+    /// the spares → fails.
+    #[test]
+    fn more_than_sixteen_queues_cross_the_wire_unchanged() {
+        #[derive(serde::Serialize)]
+        struct Old {
+            queues: SmallVec<[ParameterQueue; 16]>,
+        }
+        let mut changes = ParameterChanges::reserved(200, 40);
+        for id in 0..200i32 {
+            assert!(changes.open_queue(ParamAddress::Index(id)));
+            let q = changes.queues.last_mut().expect("opened");
+            q.add_point(0, 0.25);
+            q.add_point(id, 0.5);
+        }
+        let old = Old {
+            queues: changes.queues.iter().cloned().collect(),
+        };
+        let bytes = bincode::serialize(&changes).expect("serialize");
+        assert_eq!(bytes, bincode::serialize(&old).expect("serialize"));
+        let back: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(back.queues.len(), 200);
+        for (id, q) in back.queues.iter().enumerate() {
+            assert_eq!(q.param_id, ParamAddress::Index(id as i32));
+            assert_eq!(q.points.len(), 2);
+        }
+    }
+}
+
+#[cfg(test)]
+mod reserved_tests {
+    use super::*;
+
+    /// **A reserved set hands out queues with the reserved point room, and
+    /// takes them back on `clear` with that room intact**, block after
+    /// block: what keeps a producer filling forty points a queue off the
+    /// allocator. The heap pointer of each queue's points is the witness
+    /// that the storage is the same allocation, never freed and rebuilt.
+    ///
+    /// Mutations (run), each fails: `clear` dropping the queues instead of
+    /// keeping them (the spare-room check `false`) → the second block's
+    /// queues have the inline room only; `open_queue` ignoring the spares
+    /// (always `ParameterQueue::new`) → the same.
+    #[test]
+    fn a_reserved_set_keeps_its_point_storage_across_blocks() {
+        let mut changes = ParameterChanges::reserved(3, 40);
+        assert_eq!(changes.point_capacity(), 40);
+        let mut first = Vec::new();
+        for block in 0..3 {
+            for id in 0..3i32 {
+                assert!(changes.open_queue(ParamAddress::Index(id)));
+                let q = changes.queues.last_mut().expect("opened");
+                assert_eq!(q.param_id, ParamAddress::Index(id));
+                assert!(q.is_empty(), "a reused queue starts empty");
+                for k in 0..40 {
+                    assert!(q.has_room(), "block {block} queue {id} point {k}");
+                    q.add_point(k, 0.5);
+                }
+                assert!(!q.has_room());
+            }
+            let ptrs: Vec<*const ParameterPoint> =
+                changes.queues.iter().map(|q| q.points.as_ptr()).collect();
+            if block == 0 {
+                first = ptrs;
+            } else {
+                let mut a = first.clone();
+                let mut b = ptrs;
+                a.sort();
+                b.sort();
+                assert_eq!(a, b, "the same storage, reused");
+            }
+            changes.clear();
+            assert!(changes.queues.is_empty());
+        }
+        // Past the reserved queues, nothing opens.
+        for id in 0..3 {
+            assert!(changes.open_queue(ParamAddress::Index(id)));
+        }
+        assert!(!changes.open_queue(ParamAddress::Index(3)));
+    }
+
+    /// **A queue pushed past the spares does not cost a reserved one its
+    /// place.** Two reserved queues opened and one inline queue pushed after
+    /// them (as the bridge's carry merge once did): `clear` takes them back
+    /// last-first, so the inline queue filled the spares' last free place
+    /// and a reserved queue was dropped, and every later chunk had a queue
+    /// with the inline room (10 points) among its 40-point ones.
+    ///
+    /// Mutation (run): `clear` without the swap (a queue past full spares is
+    /// dropped, the old behaviour) → `point_capacity()` is 10 → fails.
+    #[test]
+    fn clear_keeps_the_reserved_queues_over_an_inline_one() {
+        let mut changes = ParameterChanges::reserved(4, 40);
+        assert!(changes.open_queue(ParamAddress::Index(0)));
+        assert!(changes.open_queue(ParamAddress::Index(1)));
+        changes
+            .queues
+            .push(ParameterQueue::new(ParamAddress::Index(2)));
+        changes.clear();
+        assert_eq!(changes.point_capacity(), 40);
+        for id in 0..4 {
+            assert!(changes.open_queue(ParamAddress::Index(id)));
+            assert!(
+                changes
+                    .queues
+                    .last()
+                    .is_some_and(|q| q.points.capacity() >= 40),
+                "queue {id} has the reserved room"
+            );
+        }
     }
 }

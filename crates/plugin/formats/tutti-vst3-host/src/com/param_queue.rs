@@ -41,9 +41,16 @@ impl Class for ParamValueQueueImpl {
 
 impl ParamValueQueueImpl {
     pub fn new_empty(param_id: u32) -> ComWrapper<Self> {
+        Self::with_room(param_id, 0)
+    }
+
+    /// An empty queue with room for `points` points before it allocates
+    /// (the inline 16 when `points` is fewer). Allocates; call it off the
+    /// audio thread.
+    pub fn with_room(param_id: u32, points: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             param_id: AudioThreadCell::new(param_id),
-            points: AudioThreadCell::new(SmallVec::new()),
+            points: AudioThreadCell::new(SmallVec::with_capacity(points)),
         })
     }
 
@@ -84,6 +91,13 @@ impl ParamValueQueueImpl {
         if !points.is_sorted_by_key(|p| p.sample_offset) {
             points.sort_by_key(|p| p.sample_offset);
         }
+    }
+
+    /// Empties this queue for `param_id`, keeping its point storage. For a
+    /// pooled queue handed to the plugin through `addParameterData`.
+    pub fn reset(&self, param_id: u32) {
+        *self.param_id.borrow_mut() = param_id;
+        self.points.borrow_mut().clear();
     }
 
     /// Iterates over each `ParameterPoint` in this queue without exposing

@@ -71,15 +71,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so it follows a segment on its event input itself: points along it in
   every chunk (the `PluginAutomation` stride, at most 10 a chunk) and its
   end value on the frame it arrives (`arrives_after`); a later ramp or
-  segment on the parameter stops it. It follows up to 1024 parameters at
-  once (slots allocated in `prepare`); past that a segment is sent as a
-  ramp, its end value at once. Past a chunk's 16 parameter queues a
-  starved segment's end value lands on a later chunk instead of its own
-  frame. `Editor::schedule` refuses a segment into
+  segment on the parameter stops it. It follows a segment on every
+  parameter the plugin has (slots allocated in `prepare`), each landing on
+  its own frame (see "Plugin parameters are delivered as changes only"
+  below for the chunk's room). `Editor::schedule` refuses a segment into
   a node that does not honour offsets sample-accurately, as it refuses a
   ramp.
 
 ### Changed
+
+- **Plugin parameters are delivered as changes only, with no 16-queue
+  cap** (modulation PR 1; design doc 013, "Plugin parameter delivery").
+  The hosted plugin node reads the plugin's parameter list once, at
+  `PluginClient::new`, and reserves a slot per parameter (plus 64 spare)
+  at bind and, at prepare, a chunk with a queue per slot and room in each
+  for a point every 32 frames of the chunk plus 4 corners; the bridge's
+  parameter buffers are reserved the same and circulate with the node's,
+  so any number of parameters can move in one chunk and nothing is
+  allocated on the audio thread. Before, a chunk held 16 queues and the
+  points of a 17th parameter were dropped with nothing counted. The node
+  now sends a parameter only when the host's value differs from the last
+  one it delivered: a value held still is sent once, so it no longer
+  overwrites an edit made in the plugin's own editor, while a value that
+  moves replaces it (the rule is in `host/node/param_delivery.rs`'s
+  docs). A chunk whose changes cannot go (no free buffer, a refused
+  block) sends each parameter's latest value on the next chunk's first
+  frame. The VST3 host keeps its parameter queues pooled at the plugin's
+  parameter count instead of trimming and regrowing them every block, each
+  with room for a chunk's points at the activated block size
+  (`ParameterQueue::chunk_room`), and the CLAP host reserves its event
+  list for every parameter's points at its block size (past that room a
+  point replaces its parameter's previous one, counted by
+  `ClapActive::param_points_dropped`) and its output queues for the
+  parameter count. The CLAP host's `InputEventList::sort_by_time` no
+  longer allocates (std's stable sort took a scratch buffer past a small
+  list, on the server's audio thread): it sorts `(time, index)` keys in a
+  scratch reserved with the list and applies the order in place, keeping
+  same-frame events in insertion order. **Memory:** the parameter buffers scale with the
+  parameter count: about 43 MB for 2 000 parameters at a 4096-frame
+  chunk, 340 MB for a 16 384-parameter VST3, on the host; the
+  plugin-server reserves for the same points again: the CLAP host's event
+  list about 19 MB at 2 000 parameters and 157 MB at 16 384 (4096
+  frames, uncapped), the VST3 host's queues about 35 MB at 16 384 (the
+  follow-up is in doc 014 §12). **Breaking:**
+  - `ParameterChanges::queues` is a `Vec<ParameterQueue>` (was
+    `SmallVec<[ParameterQueue; 16]>`), and the struct has a private field
+    (spare queues, not serialized), so it is no longer built with a
+    struct literal. The wire format is unchanged.
+  - **Migration.** Build with `ParameterChanges::new()`,
+    `with_capacity(queues)` or, for a real-time producer,
+    `reserved(queues, points)` with `open_queue` and
+    `ParameterQueue::has_room`; code that indexed or iterated `queues`
+    is unchanged. A `SmallVec`-specific call (`inline_size`, `spilled`)
+    on `queues` has no replacement: use `capacity()` / `has_room()`.
+  - `tutti_clap_host::InputEventList::add_param_changes` takes its
+    `ranges` **sorted by id** (it binary-searches them); an unsorted list
+    finds the wrong range or none. Added
+    `InputEventList::{set_param_point_room, param_points_dropped}` and
+    `ClapActive::param_points_dropped`.
+  - Added `tutti_plugin_types::ParameterQueue::{chunk_room,
+    INLINE_POINTS, POINT_SPACING, CORNER_POINTS}`: the points one
+    parameter can carry in a chunk, which the plugin node and the format
+    hosts reserve.
+  - Added `PluginControls::param_delivery() -> ParamDeliveryStats`
+    (`points_sent`, `chunks_deferred`, `points_dropped`, `points_merged`;
+    `#[non_exhaustive]`), exported from `tutti_plugin::handles`.
+  - Behaviour: a plugin no longer receives the host's value every block.
+    A host that relied on that to undo an editor edit sends a new value
+    instead. The node's record of what it delivered survives a reset, a
+    re-prepare and a state or preset load, and an export's fork is seeded
+    with it, so an export plays an edit made in the plugin's editor as
+    live playback does. Addresses learned into spare slots (not in the
+    plugin's list at load) are not in that record, so an export re-sends
+    their held value.
+  - Behaviour: a CLAP plugin that lists no parameters now has a parameter
+    room of 0, so parameter points sent to it are dropped and counted in
+    `ClapActive::param_points_dropped` instead of passed through.
 
 - **An export's fork is built off the main thread** (design doc 013,
   "Recorded for later": the fork ran on the main thread). `Editor::fork` is

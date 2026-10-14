@@ -21,14 +21,17 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tutti_plugin_types::ParameterQueue;
 
 /// Heap reservation for pooled per-call event scratch on a `ClapActive`.
 ///
 /// Sized once at activation so steady-state `process` calls avoid the
 /// allocator.
 const EVENT_SCRATCH_CAPACITY: usize = 256;
-/// Heap reservation for the parameter-change queue list (one entry per
-/// distinct param_id emitted by the plugin per block).
+/// Floor of the heap reservation for the parameter-change queue list the
+/// plugin's output fills (one entry per distinct param_id it emits in a
+/// block). The reservation is the plugin's parameter count when that is
+/// larger.
 const PARAM_QUEUE_CAPACITY: usize = 16;
 
 impl ClapLoaded {
@@ -145,6 +148,9 @@ impl ClapLoaded {
                 Some((p.id.opaque()?.get(), min as f32, max as f32))
             })
             .collect();
+        // Sorted by id: `add_param_changes` finds each queue's range by
+        // binary search.
+        scratch.param_ranges.sort_unstable_by_key(|&(id, _, _)| id);
         // Read the plugin's own count, not the length of the map above: they
         // differ exactly when `parameters()` truncated at a hole, which is the
         // case `add_param_changes` has to tell apart from a params-less plugin.
@@ -166,12 +172,25 @@ impl ClapLoaded {
         // there is nothing to reserve. Reserving was how those two *used* to
         // avoid allocating — an off-RT bound that the on-RT push path then had
         // to be trusted to respect. It isn't trusted any more; it's enforced.
-        scratch.input_events.reserve(EVENT_SCRATCH_CAPACITY);
+        //
+        // The host delivers parameter changes only (the plugin node's
+        // `ParamDelivery`), so a block can carry one change for every
+        // parameter at once: the input list has room for that on top of the
+        // MIDI scratch, and the output queue list has one queue per parameter.
+        //
+        // Each parameter can carry `ParameterQueue::chunk_room` points in a
+        // block of `max_frames` (what the plugin node reserves per queue),
+        // and one more when the bridge prepends a value carried from a block
+        // it skipped. The list is reserved for all of them, and bounded to
+        // that, so a block carrying more is counted rather than grown into on
+        // the audio thread (`InputEventList::param_points_dropped`).
+        reserve_input_events(&mut scratch, max_frames);
         scratch.output_events.reserve(EVENT_SCRATCH_CAPACITY);
+        let params = scratch.param_ranges.len();
         scratch
             .out_param_changes
             .queues
-            .reserve(PARAM_QUEUE_CAPACITY);
+            .reserve(params.max(PARAM_QUEUE_CAPACITY));
 
         Ok(ClapActive {
             scratch,
@@ -449,7 +468,21 @@ impl<T: super::ClapSample> ClapActive<T> {
             num_in,
             num_out,
         );
+        reserve_input_events(&mut self.scratch, max_frames as usize);
     }
+}
+
+/// Reserve the input event list for a block of `max_frames`: the MIDI and
+/// note-expression scratch, and every parameter's points
+/// (`ParameterQueue::chunk_room`, plus one a skipped block's carried value
+/// can prepend), with the parameter events bounded to that room. Off the
+/// audio thread; grows only (a smaller block keeps the room).
+fn reserve_input_events<T: super::ClapSample>(scratch: &mut AudioScratch<T>, max_frames: usize) {
+    let param_points = scratch.param_ranges.len() * (ParameterQueue::chunk_room(max_frames) + 1);
+    let events = &mut scratch.input_events;
+    let wanted = EVENT_SCRATCH_CAPACITY + param_points;
+    events.reserve(wanted.saturating_sub(events.events.len()));
+    events.set_param_point_room(param_points);
 }
 
 // The bridge that keeps the pre-activation surface reachable after activation.

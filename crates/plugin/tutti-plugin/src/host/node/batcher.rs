@@ -72,7 +72,7 @@ use super::fork::ForkWatch;
 use crate::error::Result;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
-use crate::protocol::{MidiEvent, MidiEventVec, SampleFormat};
+use crate::protocol::{MidiEvent, MidiEventVec, ParameterChanges, SampleFormat};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tutti_core::Samples;
@@ -186,6 +186,14 @@ pub(super) trait Chunks {
     /// The payload of the chunk being submitted now, `frames` long: what
     /// [`begin`](Self::begin) gathered for it.
     fn payload(&mut self, frames: usize) -> BlockPayload;
+    /// The chunk's parameter changes, for the bridge to swap out (see
+    /// `AudioBridge::submit`); `None` for a host that sends none.
+    fn params(&mut self) -> Option<&mut ParameterChanges> {
+        None
+    }
+    /// Whether the chunk's parameter changes went with it, once it is
+    /// submitted.
+    fn handed_off(&mut self, _delivered: bool) {}
     /// The plugin's MIDI-out for the chunk the ring now holds, at that
     /// chunk's frames, sorted: handed over once, as its output starts to
     /// play.
@@ -477,21 +485,26 @@ impl Batcher {
         }
         if !staged {
             // The chunk will never be collectable; its output plays as silence.
+            // Its parameter changes did not go either: the host keeps them for
+            // the next chunk.
             self.expect_seq = None;
+            host.handed_off(false);
             return;
         }
         bridge.audio_buffer().publish_input(seq);
         let p = host.payload(chunk);
+        let mut none = ParameterChanges::new();
         let submitted = bridge.submit(
             seq,
             chunk,
             p.midi,
-            p.params,
+            host.params().unwrap_or(&mut none),
             p.note_expression,
             p.harmony,
             p.transport,
         );
-        if submitted {
+        host.handed_off(submitted.params);
+        if submitted.block {
             self.next_seq += 1;
             self.expect_seq = Some(seq);
         } else {

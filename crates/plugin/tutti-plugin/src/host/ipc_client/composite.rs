@@ -1,6 +1,6 @@
 //! Plugin bridge — composites out-of-process audio with in-process GUI.
 
-use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
+use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs, Submitted};
 use crate::error::{Delivered, EditorError, Result, StateError};
 use crate::format::gui::PluginEditor;
 use crate::protocol::{
@@ -75,18 +75,19 @@ impl PluginBridge {
     }
 
     /// Hand block `seq` to the bridge without waiting. See
-    /// [`AudioBridge::submit`] — returning `true` means the block was accepted,
+    /// [`AudioBridge::submit`]: `param_changes` is swapped for a free buffer
+    /// when it goes, and [`Submitted::block`] means the block was accepted,
     /// never that its output is ready.
     pub fn submit(
         &self,
         seq: u64,
         num_samples: usize,
         midi_events: MidiEventVec,
-        param_changes: ParameterChanges,
+        param_changes: &mut ParameterChanges,
         note_expression: NoteExpressionChanges,
         harmony: HarmonyInputs,
         transport: TransportInfo,
-    ) -> bool {
+    ) -> Submitted {
         self.audio.submit(
             seq,
             num_samples,
@@ -96,6 +97,13 @@ impl PluginBridge {
             harmony,
             transport,
         )
+    }
+
+    /// Reserve the buffers a block's parameter changes travel in, each with
+    /// room for `queues` queues of `points` points. Control thread. See
+    /// [`AudioBridge::reserve_param_changes`].
+    pub fn reserve_param_changes(&self, queues: usize, points: usize) {
+        self.audio.reserve_param_changes(queues, points);
     }
 
     /// Block `seq`'s MIDI-out, and any earlier block's still queued. See

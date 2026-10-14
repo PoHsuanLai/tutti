@@ -12,7 +12,10 @@
 //! **Points.** At frame 0, every `stride` frames and the block's last frame,
 //! the stride widening with the block so a parameter gets at most
 //! `MAX_POINTS` per block. A stopped transport sends nothing: the plugin
-//! keeps its last value, as a paused playhead freezes it. A curve with no
+//! keeps its last value, as a paused playhead freezes it. The node sends
+//! every lane at every point, changed or not; the plugin node passes on
+//! **changes only** (`param_delivery`), so a lane holding still reaches the
+//! plugin once and cannot overwrite an edit made in the plugin's editor. A curve with no
 //! value there, or a value that is not finite, sends nothing at that point.
 //!
 //! **Addresses.** A plugin's parameters are either opaque handles (VST3,
@@ -37,7 +40,7 @@ use tutti_graph::{
 use tutti_nodes::automation::Curve;
 use tutti_types::{ChannelLayout, Samples};
 
-use super::param_automation_source::{stride_for, MAX_POINTS};
+use super::param_automation_source::stride_for;
 use super::TimedParam;
 use crate::protocol::{ParamAddress, ParamId};
 
@@ -240,39 +243,10 @@ pub(super) fn address(id: u32, indexed: bool) -> Option<ParamAddress> {
     }
 }
 
-/// Add a point to `changes`' queue for `address`, making the queue if there
-/// is room. A queue already holding `MAX_POINTS` has its last point replaced
-/// (the latest value wins: a chunk spanning several blocks gets each block's
-/// points, and the end of the chunk must stay exact). Nothing allocates:
-/// past the inline queue count a new parameter is dropped, and this returns
-/// `false`.
-pub(super) fn add_point(
-    changes: &mut crate::protocol::ParameterChanges,
-    address: ParamAddress,
-    offset: i32,
-    value: f32,
-) -> bool {
-    let queues = &mut changes.queues;
-    let i = match queues.iter().position(|q| q.param_id == address) {
-        Some(i) => i,
-        None if queues.len() < queues.inline_size() => {
-            queues.push(crate::protocol::ParameterQueue::new(address));
-            queues.len() - 1
-        }
-        None => return false,
-    };
-    let q = &mut queues[i];
-    if q.points.len() >= MAX_POINTS {
-        q.points.pop();
-    }
-    q.add_point(offset, f64::from(value));
-    true
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::param_automation_source::MAX_POINTS;
     use super::*;
-    use crate::protocol::ParameterChanges;
     use audio_automation::{AutomationEnvelope, AutomationPoint};
     use std::sync::Mutex;
     use tutti_core::{Beat, Bpm, NodeKey, SampleRate};
@@ -513,27 +487,6 @@ mod tests {
         assert!(
             seen.iter().all(|s| (s.2 - 0.6).abs() < 1e-6),
             "base + authored automation, no modulation: {seen:?}"
-        );
-    }
-
-    /// **The plugin side keeps a chunk's points within budget**: a queue at
-    /// `MAX_POINTS` has its last point replaced, so the chunk's end value is
-    /// the latest.
-    ///
-    /// Mutation: push past the budget → the queue spills → fails.
-    #[test]
-    fn add_point_replaces_the_last_point_at_the_budget() {
-        let mut changes = ParameterChanges::new();
-        let a = ParamAddress::Opaque(ParamId::new(1));
-        for i in 0..(MAX_POINTS as i32 + 5) {
-            add_point(&mut changes, a, i, i as f32 / 100.0);
-        }
-        let q = &changes.queues[0];
-        assert_eq!(q.points.len(), MAX_POINTS);
-        assert!(!q.points.spilled());
-        assert_eq!(
-            q.points.last().unwrap().sample_offset,
-            MAX_POINTS as i32 + 4
         );
     }
 }

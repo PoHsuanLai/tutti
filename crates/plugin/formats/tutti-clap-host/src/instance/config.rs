@@ -138,7 +138,7 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// CLAP parameter events carry the plugin's **plain** value (CLAP has no
     /// normalization), but host-side automation authors values normalized
     /// `0..1` — so incoming param points are denormalized `min + v·(max-min)`
-    /// against this map before the plugin sees them.
+    /// against this map before the plugin sees them. Sorted by id.
     pub param_ranges: Vec<(u32, f32, f32)>,
     /// Whether the plugin reported a nonzero `params.count()` at activation.
     ///

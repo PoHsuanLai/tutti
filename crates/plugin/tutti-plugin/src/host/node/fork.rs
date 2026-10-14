@@ -59,6 +59,12 @@
 //!    offline fork, the render's), and parameter automation, chords and
 //!    scales and MIDI from the graph's event edges, whose nodes fork
 //!    themselves: an exported instrument plays the clip node that feeds it.
+//!    Just before the state, step 1 also reads **what the live node has
+//!    delivered** per parameter (`param_delivery`'s record), and step 5
+//!    seeds the fork's delivery with it. The node sends changes only, so a
+//!    host value the live plugin was sent once and then edited away from in
+//!    its own editor is never re-sent live; seeded, the fork does not send
+//!    it either, and the export renders what playback plays.
 //! 5. **Bind it**, and **offline only:** tell it
 //!    [`RenderMode::Offline`](crate::RenderMode), and make its batcher wait for
 //!    each chunk (see `Batcher::set_offline_wait`) — the live pipeline never
@@ -293,10 +299,20 @@ impl PluginFork {
         // First, so a plugin that cannot save costs no subprocess. The `Arc`
         // is dropped straight after: the fork holds no strong reference.
         let live = self.bridge.upgrade().ok_or(PluginForkError::LiveGone)?;
+        // What the live node has delivered, read *before* the state. Each
+        // value the record shows was stored (`Release`) after its chunk's
+        // `Process` command was pushed, and is read here with `Acquire`, so
+        // that push happens before the `SaveState` pushed below and the
+        // bridge's FIFO delivers it first: every value read is in the state.
+        // A value delivered in between is in the state too and is re-sent to
+        // the fork once, harmlessly. Read after, a value delivered in between
+        // would be recorded as the fork's though its state predates it.
+        let delivered = self.controls.delivered();
         let state = live.save_state().map_err(PluginForkError::SaveState)?;
         drop(live);
         Ok(Capture {
             state,
+            delivered,
             origin: Arc::clone(&self.origin),
             id: self.id.clone(),
             sample_rate: self.controls.sample_rate(),
@@ -312,6 +328,12 @@ impl PluginFork {
 /// node after the gather reaches the fork.
 struct Capture {
     state: Vec<u8>,
+    /// What the live node had delivered per parameter when the state was
+    /// saved: the fork's delivery is seeded with it, so a host value the
+    /// live plugin holds unchanged (under an edit made in its editor, say)
+    /// is not sent to the fork either, and the export renders what live
+    /// playback plays.
+    delivered: Vec<(crate::protocol::ParamAddress, f64)>,
     origin: Arc<Origin>,
     /// The live instance's plugin id, which the fresh one must match.
     id: String,
@@ -361,6 +383,7 @@ impl Capture {
             budget: timeout,
         });
         let mut fork = fork.bind();
+        fork.state.params.seed(&self.delivered);
         if self.offline {
             // Advisory: a plugin without the concept keeps rendering as it
             // would live, which is not an error (`Features::RENDER_MODE`).

@@ -360,8 +360,11 @@ impl Curve for PluginParamTarget {
 /// the last sample).
 const SAMPLE_STRIDE: usize = 8;
 
-/// The most points one parameter gets per block: a `ParameterQueue`'s inline
-/// capacity, so a queue never spills to the heap on the audio thread.
+/// The most points the automation node puts on one parameter per block (and
+/// a segment the plugin node follows, per chunk): a `ParameterQueue`'s inline
+/// capacity. Also the floor of the plugin node's per-chunk point room
+/// (`param_delivery::points_for`), which is what bounds a chunk spanning
+/// several blocks.
 pub(super) const MAX_POINTS: usize = 10;
 
 /// The spacing of automation points in a `block_size`-frame block: every

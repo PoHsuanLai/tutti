@@ -5,7 +5,10 @@ use super::messages::{AudioResponse, BridgeEvent, Command, ResyncKind};
 use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
-use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ProcessAudioData};
+use crate::protocol::{
+    BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParameterChanges, ParameterQueue,
+    ProcessAudioData,
+};
 use crate::util::transport::control::{self as ipc, ControlStream, PartialFrame};
 use crate::util::transport::shm::RING_SLOTS;
 use crate::util::transport::state_chunk::{self, ChunkError, Reassembler};
@@ -144,9 +147,62 @@ pub(super) struct Owed {
     count: u32,
     /// Where the last read stopped, so a timeout resumes rather than restarts.
     partial: PartialFrame,
+    /// The parameter changes of blocks skipped as stale, as each parameter's
+    /// last value: sent on the first frame of the next block that goes.
+    carried: ParameterChanges,
 }
 
 impl Owed {
+    /// Keep a skipped block's parameter changes: each parameter's last value.
+    ///
+    /// The plugin node sends a parameter only when its value changes, so a
+    /// change dropped with its block would never be sent again: the plugin
+    /// would hold the value before it until the host's value moved once more.
+    /// Bridge thread: may allocate.
+    fn carry(&mut self, changes: &ParameterChanges) {
+        for queue in &changes.queues {
+            let Some(last) = queue.points.last() else {
+                continue;
+            };
+            let value = last.value.get();
+            match self.carried.get_queue_mut(queue.param_id) {
+                Some(kept) => {
+                    kept.clear();
+                    kept.add_point(0, value);
+                }
+                None => {
+                    let mut kept = ParameterQueue::new(queue.param_id);
+                    kept.add_point(0, value);
+                    self.carried.queues.push(kept);
+                }
+            }
+        }
+    }
+
+    /// Put what [`carry`](Self::carry) kept into the block about to be sent,
+    /// on its first frame: a parameter the block moves itself keeps its own
+    /// points, preceded by the carried value when its first point is later
+    /// than frame 0.
+    fn merge_carried(&mut self, changes: &mut ParameterChanges) {
+        for kept in self.carried.queues.drain(..) {
+            if let Some(own) = changes.get_queue_mut(kept.param_id) {
+                if own.points.first().is_some_and(|p| p.sample_offset > 0) {
+                    own.points.insert(0, kept.points[0]);
+                }
+            } else if changes.open_queue(kept.param_id) {
+                // A reserved queue when the buffer has one spare, so the
+                // buffer goes back to the pool with its point room intact.
+                if let Some(own) = changes.queues.last_mut() {
+                    own.points.push(kept.points[0]);
+                }
+            } else {
+                // No spare: the empty placeholder of a block that had no
+                // changes (dropped on return), or a full buffer.
+                changes.queues.push(kept);
+            }
+        }
+    }
+
     /// Note that a block's reply was abandoned before it arrived.
     fn note(&mut self) {
         self.count = self.count.saturating_add(1);
@@ -271,10 +327,15 @@ pub(super) fn handle(
             // payload so the pool doesn't leak, and push nothing — the audio
             // thread stopped expecting this block two blocks ago.
             if is_stale(seq, channels.newest_submitted()) {
+                owed.carry(&payload.param_changes);
+                payloads.return_params(core::mem::take(&mut payload.param_changes));
                 payloads.recycle(payload);
                 return Ok(());
             }
 
+            if !owed.carried.queues.is_empty() {
+                owed.merge_carried(&mut payload.param_changes);
+            }
             let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
                 seq: payload.seq,
                 num_samples: payload.num_samples,
@@ -295,7 +356,14 @@ pub(super) fn handle(
             // below is this block's own rather than its predecessor's.
             owed.settle(stream, channels);
 
-            ipc::send(stream, &msg)?;
+            let sent = ipc::send(stream, &msg);
+            // The parameter-change buffer goes back to the audio thread's free
+            // list once its contents are on the wire (sent or not: a failed
+            // send crashes the bridge below, and the buffer is no use to it).
+            if let HostMessage::ProcessAudio(data) = msg {
+                payloads.return_params(data.param_changes);
+            }
+            sent?;
 
             // The block's own budget, then the same two-stage rule the drain
             // uses: a budget that expired mid-frame means bytes are moving, and
@@ -680,6 +748,43 @@ fn recv_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::ParamAddress;
+
+    /// **A carried value goes into a reserved queue of the block's buffer**,
+    /// so the buffer returns to the pool with its point room intact. A
+    /// queue pushed past the spares (the carry's own, with the inline room)
+    /// later took a reserved queue's place on `clear` and left the buffer
+    /// with a 10-point queue among its reserved ones.
+    ///
+    /// Mutation (run): `merge_carried` pushes the carried queue
+    /// (`changes.queues.push(kept)`) instead of opening a spare → the
+    /// merged queue has the inline room → fails.
+    #[test]
+    fn a_carried_value_fills_a_reserved_queue() {
+        let mut owed = Owed::default();
+        let mut skipped = ParameterChanges::new();
+        skipped.add_change(ParamAddress::Index(7), 3, 0.25);
+        owed.carry(&skipped);
+
+        let mut block = ParameterChanges::reserved(4, 40);
+        assert!(block.open_queue(ParamAddress::Index(1)));
+        if let Some(q) = block.queues.last_mut() {
+            q.add_point(5, 0.5);
+        }
+        owed.merge_carried(&mut block);
+
+        let carried = block.get_queue(ParamAddress::Index(7)).expect("carried");
+        assert_eq!(carried.points.len(), 1);
+        assert_eq!(carried.points[0].sample_offset, 0);
+        assert!((carried.points[0].value.get() - 0.25).abs() < 1e-12);
+        assert!(
+            carried.points.capacity() >= 40,
+            "the carried queue is a reserved one: {}",
+            carried.points.capacity()
+        );
+        block.clear();
+        assert_eq!(block.point_capacity(), 40);
+    }
 
     /// Every production block size / rate combination the engine can present.
     /// A chunk is one device callback (`MAX_CHUNK` at most), so the timeout

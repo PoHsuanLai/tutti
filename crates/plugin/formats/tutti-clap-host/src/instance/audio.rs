@@ -302,6 +302,15 @@ impl<T: ClapSample> ClapActive<T> {
         self.process_impl(buffer, ctx.midi, params, ctx.expressions, ctx.transport)
     }
 
+    /// Parameter points the host sent past the room this instance was
+    /// activated for (every parameter's points for a block of
+    /// [`block_size`](super::ClapLoaded::block_size)): each replaced its
+    /// parameter's previous point in the block, or was lost when there was
+    /// none. Zero while the host stays within it.
+    pub fn param_points_dropped(&self) -> u64 {
+        self.scratch.input_events.param_points_dropped()
+    }
+
     /// The raw `clap_process_status` the plugin returned on the most recent
     /// block, or `CLAP_PROCESS_CONTINUE` if none has run yet.
     ///

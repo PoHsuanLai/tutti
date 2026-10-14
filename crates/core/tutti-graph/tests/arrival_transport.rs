@@ -6,14 +6,14 @@
 //!
 //! The truth is the blocks themselves: the transport at timeline frame `F`
 //! is what `Env::transport_at` said for `F` in the block that held it. The
-//! one exception is a frame older than every piece the executor's ring
-//! keeps (before the first block, after a recompile raised the reach past
-//! what the old ring kept, and after a sample-rate change): the oldest piece
-//! kept, unmoved. Where that boundary falls is modelled here from the
-//! ring's documented rules: before a block, the front piece goes while the
-//! next one covers the frame `reach` before the block; at most
-//! `reach + 1 + MAX_TRANSPORT_CHANGES` pieces, the newest kept; cleared on a
-//! rate change.
+//! one exception is a frame older than every piece the executor's history
+//! keeps (before the first block, past more than `TransportHistory::JUMPS`
+//! pieces, and after a sample-rate change): the oldest piece kept, unmoved.
+//! Where that boundary falls is modelled here from the history's documented
+//! rules: a block's first frame or change is kept when its transport is not
+//! the newest piece rolled forward (or the newest is a checkpoint's length
+//! behind a block start), at most `JUMPS` are kept, the newest, and a rate
+//! change clears them. The roll is the public `Env::transport_at`'s.
 
 mod common;
 
@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, VecDeque};
 use common::prepare;
 use tutti_graph::{
     Cx, Editor, Env, Executor, Io, LoopRange, Node, Offset, Prepare, Reference, Shape, Status,
-    Transport, TransportChanges, Unforkable, MAX_TRANSPORT_CHANGES,
+    Transport, TransportChanges, TransportHistory, Unforkable,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples};
@@ -112,25 +112,14 @@ struct Rig {
     reference: Reference,
     /// Every block rendered, as both interpreters were handed it.
     played: Vec<Env>,
-    /// The pieces the executor's ring holds, by its documented size: each
-    /// piece's first frame and transport.
-    kept: VecDeque<(u64, Transport)>,
-    cap: usize,
-    /// The plan's longest arrival: the latent node's latency.
-    reach: u64,
+    /// The pieces the executor's history holds, by its documented rules:
+    /// each piece's first frame, transport and rate.
+    kept: VecDeque<(u64, Transport, SampleRate)>,
     /// The rate blocks are rendered at.
     rate: SampleRate,
     /// Frames checked that were older than every piece kept, and after
     /// frame 0.
     clamped: usize,
-}
-
-fn capacity(lat: usize) -> usize {
-    if lat == 0 {
-        0
-    } else {
-        lat + 1 + MAX_TRANSPORT_CHANGES
-    }
 }
 
 impl Rig {
@@ -148,8 +137,6 @@ impl Rig {
             reference,
             played: Vec::new(),
             kept: VecDeque::new(),
-            cap: capacity(lat),
-            reach: lat as u64,
             rate: prepare(MAX).sample_rate(),
             clamped: 0,
         }
@@ -163,11 +150,6 @@ impl Rig {
         self.ed.commit().expect("recompiles");
         self.reference
             .set_graph(&self.ed.spec().validate().expect("valid"), BTreeMap::new());
-        self.cap = capacity(lat);
-        self.reach = lat as u64;
-        while self.kept.len() > self.cap {
-            self.kept.pop_front();
-        }
     }
 
     /// Re-prepares both at `rate`, with no block between the two commits.
@@ -212,15 +194,33 @@ impl Rig {
         };
         assert_eq!(bits(&a), bits(&b), "executor and reference");
         self.played.push(env);
-        if self.cap > 0 {
-            while self.kept.len() >= 2 && self.kept[1].0 + self.reach <= env.frame.get() {
-                self.kept.pop_front();
-            }
-        }
-        for (_, piece) in env.segments() {
-            self.kept.push_back((piece.frame.get(), piece.transport));
-            if self.kept.len() > self.cap {
-                self.kept.pop_front();
+        for (start, piece) in env.segments() {
+            let keep = match self.kept.back() {
+                None => true,
+                Some(&(f, t, rate)) => {
+                    let gap = piece.frame.get() - f;
+                    // The newest piece rolled forward `gap` frames, through
+                    // the public walk.
+                    let rolled = Env {
+                        frame: Frame(f),
+                        sample_rate: rate,
+                        block_len: Samples(gap as usize + 1),
+                        transport: t,
+                        changes: TransportChanges::NONE,
+                    }
+                    .transport_at(Offset::new(gap as usize, Samples(gap as usize + 1)).unwrap());
+                    rate != env.sample_rate
+                        || rolled != piece.transport
+                        || (start == Offset::ZERO
+                            && gap >= TransportHistory::CHECKPOINT.get() as u64)
+                }
+            };
+            if keep {
+                self.kept
+                    .push_back((piece.frame.get(), piece.transport, env.sample_rate));
+                if self.kept.len() > TransportHistory::JUMPS {
+                    self.kept.pop_front();
+                }
             }
         }
         a
@@ -229,7 +229,7 @@ impl Rig {
     /// What the block holding timeline frame `f` said for it; older than
     /// every piece kept (or before frame 0), the oldest kept, unmoved.
     fn truth(&self, f: Option<u64>) -> Transport {
-        let (oldest, t) = *self.kept.front().expect("a block was observed");
+        let (oldest, t, _) = *self.kept.front().expect("a block was observed");
         let Some(f) = f.filter(|&f| f >= oldest) else {
             return t;
         };
@@ -262,6 +262,29 @@ impl Rig {
     }
 }
 
+/// Where `e`'s transport stands at its end: a host that counts frames starts
+/// the next block there, and the history keeps no piece for it.
+fn end_of(e: &Env) -> Transport {
+    let longer = Env {
+        block_len: Samples(e.block_len.get() + 1),
+        ..*e
+    };
+    longer.transport_at(Offset::new(e.block_len.get(), longer.block_len).unwrap())
+}
+
+/// Mostly a continuing roll, a `scene` every `every` blocks.
+fn mostly_rolling(
+    b: usize,
+    every: usize,
+    n: usize,
+    prev: Option<&Env>,
+) -> (Transport, TransportChanges) {
+    match prev {
+        Some(p) if !b.is_multiple_of(every) => (end_of(p), TransportChanges::NONE),
+        _ => scene(b / every, n, prev),
+    }
+}
+
 fn rolling(beat: f64) -> Transport {
     Transport::new(true, Bpm(120.0), Beat(beat), None)
 }
@@ -274,9 +297,7 @@ fn scene(b: usize, n: usize, prev: Option<&Env>) -> (Transport, TransportChanges
     let at = |i: usize| Offset::new(i, Samples(n)).expect("inside");
     let mut changes = TransportChanges::NONE;
     let t = match b % 7 {
-        0 => prev.map_or(rolling(1.0), |p| {
-            rolling(p.transport.beat().get() + p.block_len.get() as f64 / FPB)
-        }),
+        0 => prev.map_or(rolling(1.0), end_of),
         1 => rolling(16.0 + b as f64),
         2 => {
             if n > 1 {
@@ -318,9 +339,9 @@ fn scene(b: usize, n: usize, prev: Option<&Env>) -> (Transport, TransportChanges
 /// Mutation: drop `history.observe(&env)` from `Executor::process` → every
 /// frame before the block reads the clamp (the executor's oldest piece
 /// is from no block at all, so the block's own transport) → fails, and so
-/// does the executor/reference comparison. Mutation: in `Executor::apply`,
-/// ignore the commit's history (keep the empty `TransportHistory::new()`)
-/// → no reach → fails.
+/// does the executor/reference comparison. Mutation: in
+/// `TransportHistory::observe`, never keep a block start after the first
+/// (drop the `roll(..) != t` term) → the seeks are lost → fails.
 #[test]
 fn a_node_behind_a_latent_path_reads_the_transport_its_input_was_rendered_at() {
     const LAT: usize = 100;
@@ -334,48 +355,67 @@ fn a_node_behind_a_latent_path_reads_the_transport_its_input_was_rendered_at() {
     }
 }
 
-/// A recompile that raises the longest arrival hands the executor a larger
-/// ring; one that lowers it a smaller one. Each takes the pieces the old
-/// ring kept, so a node keeps reading what its blocks said, and the
-/// reference, re-sized the same way, agrees bit for bit. Right after the
-/// raise, one-frame blocks have left the old ring holding only its last 39
-/// frames: the frames further back read its oldest piece, unmoved (the
-/// documented boundary, and asserted to be reached), until the new ring has
-/// filled.
+/// A recompile that moves the arrival changes nothing in the history: it is
+/// a fixed set of jumps, not sized from the plan. A host that counts frames
+/// rolls on in one-frame blocks with a scene every 20, so the jumps inside
+/// even the raised 300-frame arrival fit, and once the probe has 300 frames
+/// behind it no frame reads the clamp, before or after either change.
 ///
-/// Mutation: in `Editor::send`, never send a history (`None`) → the
-/// executor keeps its `TransportHistory::new()`, which keeps nothing, so
-/// every frame before the block reads the block's own transport → fails
-/// (this test and the one above). Mutation: in `take_from`, drop the old
-/// pieces instead of moving them → right after each change the executor's
-/// ring holds only the new block → fails (this test alone).
+/// Mutation: keep every block start in `observe` (`keep = true`) → 128
+/// one-frame pieces cover 128 frames, frames 300 back read the clamp, and
+/// the no-clamp assertion fails.
 #[test]
-fn a_recompile_that_moves_the_reach_keeps_the_history() {
+fn a_recompile_that_moves_the_arrival_keeps_the_history() {
     let mut rig = Rig::new(30);
     let blocks =
         |rig: &mut Rig, count: usize, n: &dyn Fn(usize) -> usize, lat: usize, what: &str| {
             for b in 0..count {
                 let n = n(b);
-                let (t, c) = scene(b, n, rig.played.last());
+                let (t, c) = mostly_rolling(b, 20, n, rig.played.last());
                 let out = rig.block(n, t, c);
                 rig.check(&out, lat, &format!("{what}, block {b}"));
             }
         };
-    blocks(&mut rig, 200, &|_| 1, 30, "at 30");
+    blocks(&mut rig, 400, &|_| 1, 30, "at 30");
+    let before = rig.clamped;
     rig.set_latency(300);
     blocks(
         &mut rig,
-        400,
+        600,
         &|b| if b % 5 == 4 { 64 } else { 1 },
         300,
         "raised to 300",
     );
-    assert!(
-        rig.clamped > 0,
-        "the raise left frames older than the old ring"
-    );
     rig.set_latency(10);
     blocks(&mut rig, 50, &|b| 1 + b % 3, 10, "lowered to 10");
+    assert_eq!(
+        rig.clamped, before,
+        "no frame after the first read the clamp"
+    );
+}
+
+/// A burst of seeks, one per one-frame block, past `JUMPS` inside the
+/// arrival: the history keeps the newest 128, and the frames older than
+/// those read the oldest kept, unmoved: exactly where the model says, in the
+/// executor and the reference alike.
+///
+/// Mutation: in `TransportHistory::push`, overwrite the newest piece when
+/// full instead of dropping the oldest → the boundary moves → fails.
+#[test]
+fn a_burst_of_seeks_past_the_capacity_clamps_where_the_model_says() {
+    const LAT: usize = 300;
+    let mut rig = Rig::new(LAT);
+    for b in 0..700 {
+        // Seeks every frame (scene 1), then a counting host again.
+        let (t, c) = if (200..500).contains(&b) {
+            (rolling(16.0 + b as f64), TransportChanges::NONE)
+        } else {
+            mostly_rolling(b, 20, 1, rig.played.last())
+        };
+        let out = rig.block(1, t, c);
+        rig.check(&out, LAT, &format!("block {b}"));
+    }
+    assert!(rig.clamped > LAT, "the burst overflowed the history");
 }
 
 /// A sample-rate change clears the history: the executor's clock is
@@ -401,7 +441,9 @@ fn a_sample_rate_change_starts_the_history_over() {
     rig.reprepare(SampleRate(96_000.0));
     let before = rig.clamped;
     for b in 0..12 {
-        let (t, c) = scene(b, 64, rig.played.last());
+        // The first block at the new rate does not continue the old one.
+        let prev = rig.played.last().filter(|_| b > 0);
+        let (t, c) = scene(b, 64, prev);
         let out = rig.block(64, t, c);
         rig.check(&out, LAT, &format!("96 kHz, block {b}"));
     }

@@ -45,10 +45,9 @@ fn from(node: u64, port: u16) -> Edge {
 /// inside the gate grows its slot → aborts. Mutation: size the command
 /// overlay with `Vec::new()` in `rebuild` → the first scheduled command to
 /// land inside the gate grows it → aborts. Mutation: build the command
-/// channel's pending list with `Vec::new()` → aborts. Mutation: in
-/// `TransportHistory::observe`, drop the oldest piece no longer (the ring
-/// grows past its reserved capacity; the `Lag`s give the plan a reach, and
-/// one-frame blocks fill it) → aborts.
+/// channel's pending list with `Vec::new()` → aborts. (The transport
+/// history `process` feeds every block is a fixed array, so it has no
+/// allocation to gate; this pins that `observe` stays on the path.)
 #[test]
 fn process_is_allocation_free_in_steady_state() {
     let (mut ed, mut exec) = Editor::new(prepare(256));

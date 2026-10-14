@@ -3242,39 +3242,43 @@ latent sibling was off by the upstream latency.
   *input*, `Cx::arrival` frames earlier (`Env::transport_before(offset,
   back, history)`). Inside the block it is `Env::transport_at` of the earlier
   offset; before it, it is read from `Cx::history`.
-- **`TransportHistory`** (`tutti-graph/src/history.rs`): the executor
-  records every block's pieces (its first frame, and each transport change
-  inside it, as `Env::segments` cuts them) with the transport the host
-  reported there, before any node runs. The transport at an earlier frame is
-  the latest piece at or before it, rolled to the frame with the host's
-  clock (`FrameClock`, through the walk `Env::transport_at` now shares):
-  exactly what `Env::transport_at` said for that frame in the block that held
-  it, through any seek, start, stop, tempo or loop edit and any loop wrap
-  since. **Not a closed-form rewind**, which is wrong across such a
-  discontinuity and cannot tell a wrap from a start.
-- **Size, memory, and no audio-thread allocation.** Its reach is the plan's
-  longest arrival (`Plan::max_arrival`). Before each block the front piece
-  is dropped while the next one already covers the frame `reach` back, so at
-  most `reach + 1 + MAX_TRANSPORT_CHANGES` pieces are ever live (pieces start
-  on distinct frames; the bound is for one-frame blocks), and a host at the
-  device quantum keeps about `reach / quantum + 2`. The buffer keeps its
-  live pieces at the front (moved back once the dropped prefix is as long as
-  they are), so only about twice the peak live count is ever written; it is
-  *reserved* for twice the worst case (about 90 bytes a piece: a 10-second
-  lookahead at 48 kHz reserves ~85 MB of address space), since the audio
-  thread cannot grow it, and an allocator that maps large blocks lazily keeps
-  the unwritten pages out of resident memory. The editor builds a new ring on
-  the control thread only when a commit's plan changes the reach; applying
-  it moves the pieces across and returns the old ring in the box. A block
-  only appends, drops and moves pieces in place.
-- **Where it approximates, precisely.** A frame older than the oldest piece
-  kept reads that piece's transport, unmoved: before the graph's first block,
-  after a recompile raised the reach past what the old ring kept (until the
-  new ring fills), and after a sample-rate change (which clears it). In each
-  the audio the node hears there is a delay line or pipeline refilling, not
-  what the timeline played. `tests/arrival_transport.rs` models the ring's
-  rules and asserts the boundary is reached and honoured, after a raise and
-  after a rate change.
+- **`TransportHistory`** (`tutti-graph/src/history.rs`) keeps **the
+  transport's jumps**. The frame is the source of truth: away from a jump the
+  transport at a frame is the last jump rolled forward in closed form with
+  the host's clock (`FrameClock`, through the walk `Env::transport_at` now
+  shares, loop wraps included). Before any node runs, the executor offers
+  it each piece of the block (its first frame, and each change, as
+  `Env::segments` cuts them), and it keeps one only when its transport is
+  not the newest piece rolled forward: a start, stop, seek, tempo or loop
+  edit, an untimed command on a block start, a host that does not count
+  frames, the first block. It also keeps a **checkpoint**, a block start
+  `CHECKPOINT` (8 192) frames or more past the newest piece, so no roll
+  (whose cost grows with the loop wraps it walks) is longer than that plus a
+  block. A query takes the newest piece at or before its frame and rolls it:
+  **exactly** what `Env::transport_at` said for that frame in the block that
+  held it, to the bit, because a piece is skipped only when the block's
+  transport *equals* the roll and the clock's closed form is relative to its
+  segment's origin (rolling `a` then `b` frames lands where `a + b` does).
+  **Not a closed-form rewind** from the current block, which is wrong across
+  a discontinuity and cannot tell a wrap from a start.
+- **Size: fixed, whatever the latency.** `JUMPS` = 128 pieces inline, about
+  96 bytes each (some 12 KiB, no heap), in the executor from the start.
+  Nothing is sized from the plan, so a recompile touches nothing here, and
+  the audio thread never allocates or frees. (An earlier version of this PR
+  kept a piece per block, sized for one-frame blocks: about 85 MB of address
+  space for a 10-second lookahead, to buy the same answers.) 128 is at least
+  one block's pieces plus the one before it (`MAX_TRANSPORT_CHANGES + 2`),
+  and leaves some 70 jumps inside a 10-second lookahead at 48 kHz after its
+  59 checkpoints.
+- **Where it clamps, precisely.** A frame older than the oldest piece kept
+  reads that piece's transport, unmoved: before the graph's first block,
+  after a sample-rate change (which clears it), and past more than 128
+  pieces inside a node's arrival (a burst of seeks, or a host reporting a
+  hand-built transport or a new tempo, a ramp, every block). In the first
+  two the audio the node hears is a delay line refilling.
+  `tests/arrival_transport.rs` models the rules from the public walk and
+  asserts the boundary is reached and honoured: before the first block, for
+  a burst past the capacity, and after a rate change.
 - **The plugin node** reads `Cx::transport_at` for each chunk
   (`transport_source::from_cx`), so the plugin is told the playhead of the
   audio it is processing; `clap_transport.rs` checks it through a real

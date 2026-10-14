@@ -175,8 +175,7 @@ pub struct Reference {
     reset_time: bool,
     frame: Frame,
     params: BTreeMap<ParamIn, RefParam>,
-    /// The transport over the last frames, kept as the executor keeps it:
-    /// the same type, re-sized when a graph changes the longest arrival.
+    /// The transport's jumps, kept as the executor keeps them: the same type.
     /// (Its answers are checked against the blocks themselves in
     /// `history.rs`'s tests, not against this.)
     history: TransportHistory,
@@ -709,12 +708,6 @@ impl Reference {
             });
         }
 
-        let reach = arrival.values().copied().max().unwrap_or(Latency::ZERO);
-        if reach != self.history.reach() {
-            let mut h = TransportHistory::with_reach(reach);
-            h.take_from(&mut self.history);
-            self.history = h;
-        }
         self.arrival = arrival;
         self.delays = delays;
         self.graph = Some(graph.clone());

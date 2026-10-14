@@ -301,10 +301,6 @@ pub(crate) struct Commit {
     /// (the port's modulation runs on across a replace).
     spare_params: Vec<ParamState>,
     old_state: Option<State>,
-    /// A transport history sized for this plan's reach, built on the control
-    /// side when the plan changes it; applying moves the executor's pieces
-    /// in and sends the old ring back here (see `history.rs`).
-    history: Option<TransportHistory>,
 }
 
 impl Drop for Commit {
@@ -322,7 +318,6 @@ impl Commit {
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
         mut params: impl FnMut(NodeKey, usize, usize) -> ParamState,
-        history: Option<TransportHistory>,
     ) -> Box<Commit> {
         let wanted = delta
             .insert
@@ -383,7 +378,6 @@ impl Commit {
             retired,
             spare_params,
             old_state: None,
-            history,
         })
     }
 
@@ -401,7 +395,6 @@ impl Commit {
             retired: Vec::with_capacity(units),
             spare_params: Vec::with_capacity(units),
             old_state: None,
-            history: None,
         })
     }
 
@@ -896,12 +889,6 @@ impl Executor {
         }
         c.incoming = incoming;
 
-        if let Some(h) = c.history.as_mut() {
-            // The plan's reach changed: the new ring takes the pieces, the
-            // old one goes back in the box.
-            h.take_from(&mut self.history);
-            std::mem::swap(h, &mut self.history);
-        }
         let old_plan = self.plan.take();
         let new_state = self.rebuild(&plan, old_plan.as_deref());
         self.suspended = false;

@@ -1,14 +1,13 @@
-//! [`TransportHistory`]: the transport the graph played over its last
-//! frames, so a node behind a latent path reads the transport its input
-//! audio was rendered at ([`Cx::transport_at`](crate::Cx::transport_at)).
+//! [`TransportHistory`]: the transport's jumps over the graph's recent
+//! past, so a node behind a latent path reads the transport its input audio
+//! was rendered at ([`Cx::transport_at`](crate::Cx::transport_at)).
 
 use tutti_types::{Frame, Latency, SampleRate, Samples};
 
 use crate::node::{Env, Transport, MAX_TRANSPORT_CHANGES};
 use crate::time::Offset;
 
-/// One piece of a past block: from `frame` on, the transport was
-/// `transport`, counted at `rate`.
+/// From `frame` on, the transport was `transport`, counted at `rate`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Piece {
     frame: Frame,
@@ -16,232 +15,208 @@ struct Piece {
     transport: Transport,
 }
 
-/// The transport over the graph's last frames: what a node behind a latent
-/// path reads its transport from ([`Env::transport_before`],
+/// An unused slot.
+const EMPTY: Piece = Piece {
+    frame: Frame::ZERO,
+    rate: SampleRate(0.0),
+    transport: Transport::new(false, tutti_types::Bpm(120.0), tutti_types::Beat(0.0), None),
+};
+
+/// Pieces a history keeps: see [`TransportHistory`], "Size".
+const JUMPS: usize = 128;
+
+// One block's pieces (its start and every change) and the one covering the
+// frame before it always fit.
+const _: () = assert!(JUMPS > MAX_TRANSPORT_CHANGES + 1);
+
+/// The transport's jumps over the graph's recent past: what a node behind a
+/// latent path reads its transport from ([`Env::transport_before`],
 /// [`Cx::transport_at`](crate::Cx::transport_at)).
 ///
 /// # Why a history, and not a closed form
 ///
 /// A node whose compiled arrival latency is `a` hears, at frame `F` of its
-/// block, the audio of timeline frame `F - a`. When `a` reaches before the
+/// block, the audio of timeline frame `F - a`. When that is before the
 /// block's first frame, the transport there is not in the block's [`Env`].
-/// Rewinding the block-start transport in closed form (the beat minus
-/// `a / frames_per_beat`) is right only while nothing happened in between:
-/// a seek, a start or stop, a tempo or loop edit, or a loop wrap in the last
-/// `a` frames all make it wrong, and a loop wrap cannot even be detected
-/// from the block that follows it (a playhead at the loop's start may have
-/// wrapped there or been started there).
+/// Rewinding the block-start transport in closed form is right only while
+/// nothing happened in between: a seek, a start or stop, a tempo or loop
+/// edit in the last `a` frames makes it wrong, and a loop wrap cannot be
+/// told from a start by the block after it.
 ///
-/// So the executor keeps what it was told. Every block it renders adds its
-/// pieces ([`Env::segments`]: the block's first frame, and every
-/// [transport change](Env::changes) inside it), each as the frame it starts
-/// on and the transport the host reported there. The transport at an earlier
-/// frame is then the latest piece at or before it, rolled forward to the
-/// frame with the host's own clock — exactly what
-/// [`Env::transport_at`] answered for that frame in the block that held it,
-/// to the bit, through any wrap, seek or tempo change since.
+/// # What is kept: the jumps
 ///
-/// # Size, memory, and where it is allocated
+/// The frame is the source of truth: away from a jump, the transport at a
+/// frame is the last jump before it rolled forward in closed form with the
+/// host's clock ([`FrameClock`](tutti_types::FrameClock), the walk
+/// [`Env::transport_at`] uses, loop wraps included). So the history keeps a
+/// **piece** (a frame, and the transport the host reported there) only where
+/// the transport is not the previous piece rolled forward:
 ///
-/// A history answers for frames up to its **reach** before the block being
-/// rendered. Each block first drops the oldest piece while the next one
-/// already covers the earliest frame in reach, so what is kept is the piece
-/// covering that frame and the pieces starting after it: at most `reach` of
-/// those, since pieces start on distinct frames, plus the current block's
-/// `1 + MAX_TRANSPORT_CHANGES`. So at most `reach + 1 + MAX_TRANSPORT_CHANGES`
-/// pieces are ever live (that worst case is one-frame blocks); a host
-/// rendering the device's quantum keeps about `reach / quantum + 2`.
+/// - a block's first frame or a [transport change](Env::changes) inside it
+///   whose transport differs from that roll: a start, stop, seek, tempo or
+///   loop edit, an untimed command landing on a block start, a host whose
+///   position is not a frame count ([`Transport::new`]), the first block;
+/// - a **checkpoint**: a block's first frame when the newest piece is
+///   [`CHECKPOINT`](Self::CHECKPOINT) frames or more behind it, so no roll
+///   (whose cost grows with the loop wraps it walks) is ever longer than
+///   that plus a block.
 ///
-/// The ring is a buffer with a moving front: dropped pieces advance it, and
-/// the live pieces are moved back to the start once the dropped prefix is
-/// as long as they are, so only the first twice-the-peak-live slots are
-/// ever written. The buffer is **reserved** for the worst case,
-/// `2 * (reach + 1 + MAX_TRANSPORT_CHANGES)` pieces of about 90 bytes (a
-/// 10-second lookahead at 48 kHz reserves about 85 MB of address space),
-/// because the audio thread can never grow it; where the allocator maps a
-/// large block lazily (glibc, macOS) pages that are never written are never
-/// resident, so resident memory follows the pieces actually kept.
+/// A query takes the newest piece at or before its frame and rolls it
+/// forward. That is **exactly** what [`Env::transport_at`] said for that
+/// frame in the block that held it: a piece is skipped only when the block's
+/// transport *equals* the roll, and the clock's closed form makes rolling
+/// `a` then `b` frames land on the bits rolling `a + b` does
+/// ([`TimelineSegment::beat_at`](tutti_types::TimelineSegment::beat_at) is
+/// relative to its segment's origin, and a wrap lands on the unique frame
+/// that reaches the loop's end). Not a tolerance: the tests compare bits.
 ///
-/// The executor's reach is its plan's longest arrival
-/// ([`Plan::max_arrival`](crate::Plan::max_arrival)). A commit whose plan
-/// changes it carries a new ring, allocated on the control thread; applying
-/// it moves the pieces across and sends the old ring back in the box, so
-/// the audio thread neither allocates nor frees one. A block only appends,
-/// drops and moves pieces in place.
+/// # Size
+///
+/// Fixed, whatever the reach: [`JUMPS`](Self::JUMPS) pieces inline, about
+/// 96 bytes each (some 12 KiB, no heap). Nothing is sized from the plan, so
+/// a recompile changes nothing here, and the audio thread never allocates
+/// or frees.
 ///
 /// # Where it stops
 ///
 /// A frame older than the oldest piece kept is answered with that piece's
-/// transport, **unmoved** (a [`TransportHistory::new`], which keeps
-/// nothing, answers with the block's own [`Env::transport`]). That happens in
-/// three places, all where the audio the node hears there is a delay line's
-/// initial silence or a pipeline refilling, rather than anything the
-/// timeline played:
+/// transport, **unmoved** ([`TransportHistory::new`] before anything is
+/// observed: the block's own [`Env::transport`]). That happens:
 ///
 /// - **before the graph's first block**: the first `a` frames a node with
-///   arrival `a` renders;
-/// - **after a recompile raised the reach**: the new ring starts with what
-///   the old one kept, which may not go back the new reach yet (the
-///   path that raised the arrival is refilling too);
-/// - **after a sample-rate change**: frames counted at the old rate do not
-///   name frames at the new one, so the history starts over.
-///
-/// # Who keeps one
-///
-/// The executor keeps one and hands it to every node through
-/// [`Cx::history`](crate::Cx::history). A host that drives a node by hand
-/// keeps its own: [`with_reach`](Self::with_reach) on the control thread,
-/// then [`observe`](Self::observe) every block's [`Env`] before rendering
-/// it.
-#[derive(Clone, Debug, Default)]
+///   arrival `a` renders, where its input is a delay line's silence;
+/// - **after a sample-rate change**: frames counted at the old rate name
+///   nothing at the new one, so the history is [cleared](Self::clear);
+/// - **past more than `JUMPS` pieces**: when more than 128 pieces fall
+///   inside a node's arrival, the oldest are dropped. Continuous playback
+///   spends one checkpoint per `CHECKPOINT` frames (59 of them inside a
+///   10-second lookahead at 48 kHz), so this takes some 70 jumps inside the
+///   arrival: a burst of seeks, or a host reporting a hand-built transport
+///   or a new tempo (a ramp) every block.
+#[derive(Clone, Debug)]
 pub struct TransportHistory {
-    /// The pieces, oldest first, from `head` on; `buf[..head]` are dropped
-    /// pieces not yet moved over. Reserved for `2 * capacity`, which the
-    /// compaction rule never exceeds (see `observe`).
-    buf: Vec<Piece>,
+    /// A ring of pieces in frame order: `len` of them from `head`.
+    pieces: [Piece; JUMPS],
     head: usize,
-    /// Most pieces live at once: `reach + 1 + MAX_TRANSPORT_CHANGES`, or 0
-    /// for no reach.
-    capacity: usize,
-    reach: Latency,
+    len: usize,
 }
 
-/// A history with no reach, for a [`Cx`](crate::Cx) built where nothing is
-/// kept (a node driven by hand, the contract harness).
+impl Default for TransportHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A history that keeps nothing, for a [`Cx`](crate::Cx) built where nothing
+/// is observed (a node driven by hand, the contract harness).
 static NONE: TransportHistory = TransportHistory::new();
 
 impl TransportHistory {
-    /// A history that keeps nothing: every frame before the block is answered
-    /// with the block's own transport. Allocates nothing.
+    /// How many pieces it keeps.
+    pub const JUMPS: usize = JUMPS;
+
+    /// The longest continuous stretch, in frames, between pieces: a block
+    /// starting this far past the newest piece is recorded as a checkpoint.
+    pub const CHECKPOINT: Samples = Samples(8_192);
+
+    /// An empty history. Nothing is allocated, now or later.
     pub const fn new() -> Self {
         Self {
-            buf: Vec::new(),
+            pieces: [EMPTY; JUMPS],
             head: 0,
-            capacity: 0,
-            reach: Latency::ZERO,
+            len: 0,
         }
     }
 
-    /// The history that keeps nothing ([`new`](Self::new)), borrowed for
-    /// as long as anything needs it.
+    /// An empty history, borrowed for as long as anything needs it.
     pub fn none() -> &'static TransportHistory {
         &NONE
     }
 
-    /// A history answering exactly for frames up to `reach` before the block
-    /// being rendered. Allocates its ring here: control thread.
-    pub fn with_reach(reach: Latency) -> Self {
-        let capacity = if reach.is_zero() {
-            0
-        } else {
-            reach.samples().get() + 1 + MAX_TRANSPORT_CHANGES
-        };
-        Self {
-            buf: Vec::with_capacity(2 * capacity),
-            head: 0,
-            capacity,
-            reach,
-        }
+    fn get(&self, i: usize) -> &Piece {
+        &self.pieces[(self.head + i) % JUMPS]
     }
 
-    /// The pieces kept, oldest first.
-    fn live(&self) -> &[Piece] {
-        &self.buf[self.head..]
-    }
-
-    /// How far back it answers exactly.
-    pub fn reach(&self) -> Latency {
-        self.reach
-    }
-
-    /// Records the block about to be rendered: its first frame and each
-    /// transport change inside it, as [`Env::segments`] cuts them. Call it
-    /// once per block, before any node reads the history, in frame order.
-    /// Allocation-free: first the oldest pieces no frame in reach needs are
-    /// dropped, then the block's are appended.
+    /// Records the block about to be rendered: of its pieces as
+    /// [`Env::segments`] cuts them (its first frame, each change), those
+    /// that are not the newest piece rolled forward, and a checkpoint (see
+    /// the type docs). Call it once per block, in frame order, before any
+    /// node reads the history. Allocation-free; past [`JUMPS`](Self::JUMPS)
+    /// pieces the oldest is dropped.
     ///
     /// A block must start after every piece kept. The executor's clock only
-    /// moves forward, and the one time it moves back (a sample-rate change
-    /// rescales it) the history is cleared first, so this is
-    /// debug-asserted rather than repaired.
+    /// moves back on a sample-rate change, and the history is cleared
+    /// first, so this is debug-asserted rather than repaired.
     pub fn observe(&mut self, env: &Env) {
-        if self.capacity == 0 {
-            return;
-        }
         debug_assert!(
-            self.live().last().is_none_or(|p| p.frame < env.frame),
+            self.newest().is_none_or(|p| p.frame < env.frame),
             "a block observed at or before a piece already kept"
         );
-        // The earliest frame a node can ask for this block is `reach` before
-        // its first; the front piece is needed only while the next one starts
-        // after that frame.
-        let reach = self.reach.samples();
-        while self.live().len() >= 2
-            && env
-                .frame
-                .since(self.live()[1].frame)
-                .is_some_and(|d| d >= reach)
-        {
-            self.head += 1;
-        }
-        for (_, piece) in env.segments() {
-            if self.live().len() == self.capacity {
-                // Unreachable while the bound in the type docs holds; kept
-                // so a break in it costs the oldest piece, not an allocation.
-                // No test can reach it (`if false` here passes every one):
-                // the trim above is what keeps the bound, and
-                // `the_capacity_holds_exactly_the_worst_case` pins it.
-                self.head += 1;
+        for (start, piece) in env.segments() {
+            let t = piece.transport;
+            let keep = match self.newest() {
+                None => true,
+                Some(p) => {
+                    let gap = piece.frame.since(p.frame).unwrap_or(Samples::ZERO);
+                    p.rate != env.sample_rate
+                        || roll(p.transport, p.rate, gap) != t
+                        || (start == Offset::ZERO && gap.get() >= Self::CHECKPOINT.get())
+                }
+            };
+            if keep {
+                self.push(Piece {
+                    frame: piece.frame,
+                    rate: env.sample_rate,
+                    transport: t,
+                });
             }
-            // Move the live pieces to the front once the dropped prefix is
-            // as long as they are: amortised one move a push, and the buffer
-            // never holds more than twice the live pieces, so it never grows.
-            if self.head > 0 && self.head >= self.buf.len() - self.head {
-                self.buf.drain(..self.head);
-                self.head = 0;
-            }
-            self.buf.push(Piece {
-                frame: piece.frame,
-                rate: env.sample_rate,
-                transport: piece.transport,
-            });
         }
+    }
+
+    fn push(&mut self, p: Piece) {
+        if self.len == JUMPS {
+            // Full: the oldest goes, and frames before the new oldest clamp.
+            self.head = (self.head + 1) % JUMPS;
+            self.len -= 1;
+        }
+        self.pieces[(self.head + self.len) % JUMPS] = p;
+        self.len += 1;
+    }
+
+    fn newest(&self) -> Option<&Piece> {
+        self.len.checked_sub(1).map(|i| self.get(i))
     }
 
     /// Forgets every piece (a sample-rate change: see the type docs).
     pub fn clear(&mut self) {
-        self.buf.clear();
         self.head = 0;
-    }
-
-    /// Takes `older`'s pieces, the newest that fit, leaving it empty with
-    /// its buffer: applying a commit that carries a new ring. No allocation:
-    /// `with_reach` reserved room for twice what fits.
-    pub(crate) fn take_from(&mut self, older: &mut TransportHistory) {
-        self.clear();
-        let live = older.live();
-        let skip = live.len().saturating_sub(self.capacity);
-        self.buf.extend_from_slice(&live[skip..]);
-        older.clear();
+        self.len = 0;
     }
 
     /// The transport `back` frames before frame `start`, when a piece kept
     /// covers that frame; `None` when it is older than every piece.
     fn before(&self, start: Frame, back: Samples) -> Option<Transport> {
-        // Pieces are in frame order, so "starts at or before the frame" holds
-        // for a prefix. A piece too far back for `since` to count (only on a
-        // 32-bit target, a day of audio) is before it too.
+        // In frame order, so "starts at or before the frame" holds for a
+        // prefix: binary search for its end. A piece too far back for
+        // `since` to count (a 32-bit target, a day of audio) is before it.
         let covers = |p: &Piece| p.frame <= start && start.since(p.frame).is_none_or(|d| d >= back);
-        let live = self.live();
-        let i = live.partition_point(covers).checked_sub(1)?;
-        let p = &live[i];
+        let (mut lo, mut hi) = (0, self.len);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if covers(self.get(mid)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        let p = self.get(lo.checked_sub(1)?);
         let into = start.since(p.frame)?.checked_sub(back)?;
         Some(roll(p.transport, p.rate, into))
     }
 
     /// The oldest piece's transport, at its own frame.
     fn oldest(&self) -> Option<Transport> {
-        self.live().first().map(|p| p.transport)
+        (self.len > 0).then(|| self.get(0).transport)
     }
 }
 
@@ -303,7 +278,7 @@ impl Env {
 mod tests {
     use super::*;
     use crate::node::{LoopRange, TransportChanges};
-    use tutti_types::{Beat, Bpm};
+    use tutti_types::{Beat, Bpm, SegmentOrigin};
 
     const SR: SampleRate = SampleRate(48_000.0);
     /// Frames per beat at 120 BPM and 48 kHz.
@@ -323,6 +298,30 @@ mod tests {
         Transport::new(true, Bpm(120.0), Beat(beat), None)
     }
 
+    /// A host that counts frames, at `beat` (its segment's first frame).
+    fn counted(beat: f64, looping: Option<LoopRange>) -> Transport {
+        Transport::counted(
+            true,
+            Bpm(120.0),
+            SegmentOrigin {
+                beat: Beat(beat),
+                frame: Frame(0),
+                sample_rate: SR,
+            },
+            looping,
+        )
+    }
+
+    /// The transport at `e`'s end: where a host that counts frames starts
+    /// the next block.
+    fn end_of(e: &Env) -> Transport {
+        let longer = Env {
+            block_len: Samples(e.block_len.get() + 1),
+            ..*e
+        };
+        longer.transport_at(off(e.block_len.get()))
+    }
+
     fn off(i: usize) -> Offset {
         Offset::raw(i as u32)
     }
@@ -333,19 +332,13 @@ mod tests {
 
     /// The blocks a host played, kept so a test can ask what the block that
     /// held a frame said about it.
+    #[derive(Default)]
     struct Played {
         blocks: Vec<Env>,
         history: TransportHistory,
     }
 
     impl Played {
-        fn new(reach: usize) -> Self {
-            Self {
-                blocks: Vec::new(),
-                history: TransportHistory::with_reach(lat(reach)),
-            }
-        }
-
         fn play(&mut self, e: Env) {
             self.history.observe(&e);
             self.blocks.push(e);
@@ -353,11 +346,8 @@ mod tests {
 
         /// What the block holding absolute frame `f` reported for it.
         fn truth(&self, f: u64) -> Transport {
-            let e = self
-                .blocks
-                .iter()
-                .find(|e| e.offset_of(Frame(f)).is_some())
-                .expect("a block played that frame");
+            let i = self.blocks.partition_point(|e| e.frame.get() <= f) - 1;
+            let e = &self.blocks[i];
             e.transport_at(e.offset_of(Frame(f)).expect("inside"))
         }
     }
@@ -387,16 +377,17 @@ mod tests {
 
     /// Across block boundaries, through a seek at a block start, a seek
     /// inside a block, a loop that wraps, a tempo change and a stop: every
-    /// frame back to the reach reads what the block that held it said.
+    /// frame back to 200 reads what the block that held it said.
     ///
     /// Mutation: `before` answers `None` (every frame before the block reads
-    /// the oldest piece, unmoved) → fails. Mutation: in `transport_before`,
-    /// answer `transport_at(offset)` inside the block (ignore `back`) →
-    /// fails.
+    /// the oldest piece, unmoved) → fails. Mutation: in `before`, take the
+    /// piece *after* the newest one at or before the frame
+    /// (`self.get(lo.min(self.len - 1))`) → fails. Mutation: take the one
+    /// before it (`lo.checked_sub(2)`) → fails.
     #[test]
     fn every_frame_in_reach_reads_what_its_block_said() {
         const REACH: usize = 200;
-        let mut p = Played::new(REACH);
+        let mut p = Played::default();
         let loop_t = Transport::new(
             true,
             Bpm(120.0),
@@ -462,7 +453,7 @@ mod tests {
             start: Beat(4.0),
             end: Beat(4.0 + 32.0 / FPB),
         });
-        let mut p = Played::new(64);
+        let mut p = Played::default();
         let first = env(
             0,
             64,
@@ -479,148 +470,119 @@ mod tests {
         assert!((got.beat().get() - (4.0 + 24.0 / FPB)).abs() < 1e-12);
     }
 
-    /// Before the first block, and past what the ring keeps: the oldest
-    /// transport kept, unmoved. With no history at all: the block's own.
+    /// Before the first block: the oldest transport kept, unmoved. With no
+    /// history at all: the block's own.
     ///
-    /// Mutation: roll the oldest piece back (or forward) instead of
-    /// answering it unmoved → fails. Mutation: capacity `reach` instead of
-    /// `reach + 1 + MAX_TRANSPORT_CHANGES` → with one-frame blocks the
-    /// piece covering frame `start - reach` is dropped → the in-reach check
-    /// fails.
+    /// Mutation: roll the oldest piece forward a frame instead of answering
+    /// it unmoved → fails.
     #[test]
     fn older_than_the_history_is_the_oldest_transport_unmoved() {
         let e = env(0, 64, rolling(2.0), TransportChanges::NONE);
-        let mut h = TransportHistory::with_reach(lat(100));
+        let mut h = TransportHistory::new();
         h.observe(&e);
         assert_eq!(e.transport_before(off(10), lat(50), &h), rolling(2.0));
         let none = TransportHistory::none();
         let later = env(640, 64, rolling(9.0), TransportChanges::NONE);
         assert_eq!(later.transport_before(off(0), lat(10), none), rolling(9.0));
+    }
 
-        // One-frame blocks, each a seek: the ring is full of pieces, and the
-        // frame exactly `reach` back is still covered.
-        const REACH: usize = 20;
-        let mut p = Played::new(REACH);
-        for f in 0..100u64 {
-            let e1 = env(f, 1, rolling(f as f64), TransportChanges::NONE);
-            p.play(e1);
-            if f as usize >= REACH {
-                assert_eq!(
-                    e1.transport_before(off(0), lat(REACH), &p.history),
-                    p.truth(f - REACH as u64),
-                    "frame {f}"
-                );
+    /// A host that counts frames plays a 10-second lookahead's worth and
+    /// more in ordinary blocks, through a 1-beat loop that wraps every
+    /// 24 000 frames and a seek every 1 000 blocks: the history stays its
+    /// fixed size, keeps only the jumps and the checkpoints, and every frame
+    /// 480 000 back (a 10-second lookahead at 48 kHz) reads what its block
+    /// said, to the bit.
+    ///
+    /// Mutation: never keep a block start after the first (drop the
+    /// `roll(..) != t` term) → the seeks are lost → fails. Mutation: keep
+    /// every block start (`keep = true`) → 128 pieces cover 8 192 frames,
+    /// and frames 480 000 back read the clamp → fails. Mutation: drop the
+    /// checkpoint term → the pieces kept are the 12 jumps and nothing else
+    /// (the count check fails).
+    #[test]
+    fn a_counting_host_keeps_only_the_jumps_whatever_the_reach() {
+        const REACH: usize = 480_000;
+        const BLOCK: usize = 256;
+        let looping = LoopRange {
+            start: Beat(0.0),
+            end: Beat(1.0),
+        };
+        let mut p = Played::default();
+        let mut next = counted(0.0, Some(looping));
+        let mut checked = 0;
+        for b in 0..12_000u64 {
+            if b % 1_000 == 999 {
+                // A seek to a beat of its own, counted from here.
+                next = counted(0.25 + (b / 1_000) as f64 * 0.01, Some(looping));
+            }
+            let e = env(b * BLOCK as u64, BLOCK, next, TransportChanges::NONE);
+            p.play(e);
+            next = end_of(&e);
+            if b % 97 == 0 && e.frame.get() >= REACH as u64 {
+                for o in [0usize, 100] {
+                    let f = e.frame.get() + o as u64 - REACH as u64;
+                    assert_eq!(
+                        e.transport_before(off(o), lat(REACH), &p.history),
+                        p.truth(f),
+                        "block {b}, offset {o}"
+                    );
+                    checked += 1;
+                }
             }
         }
-    }
-
-    /// A ring that replaces another keeps the newest pieces that fit, in
-    /// order, and leaves the old one empty.
-    ///
-    /// Mutation: `.take(self.capacity)` for `.skip(skip)` in `take_from` →
-    /// it keeps the oldest pieces, and the frame before the last block
-    /// reads stale → fails. Mutation: skip 0 → it keeps all 20, past its
-    /// capacity → fails.
-    #[test]
-    fn a_new_ring_takes_the_newest_pieces() {
-        let mut big = Played::new(1_000);
-        for b in 0..20u64 {
-            big.play(env(
-                b * 32,
-                32,
-                rolling(b as f64 * 10.0),
-                TransportChanges::NONE,
-            ));
-        }
-        let mut small = TransportHistory::with_reach(lat(1));
-        small.take_from(&mut big.history);
-        assert!(big.history.live().is_empty());
-        assert_eq!(small.live().len(), 1 + 1 + MAX_TRANSPORT_CHANGES);
-        let last = *big.blocks.last().expect("played");
-        assert_eq!(
-            last.transport_before(off(0), lat(1), &small),
-            last.transport_before(off(0), lat(1), &{
-                let mut h = TransportHistory::with_reach(lat(1_000));
-                for e in &big.blocks {
-                    h.observe(e);
-                }
-                h
-            })
+        assert!(checked > 100);
+        // 12 000 blocks of 256 frames: 3 072 000 frames, a checkpoint at
+        // least every 8 192 (every 32 blocks), and a seek every 1 000.
+        assert_eq!(p.history.len, JUMPS, "the ring is full, and no larger");
+        let kept: Vec<u64> = (0..p.history.len)
+            .map(|i| p.history.get(i).frame.get())
+            .collect();
+        assert!(
+            kept.windows(2).all(|w| w[1] - w[0] <= 8_192 + BLOCK as u64),
+            "no gap between pieces is longer than a checkpoint and a block"
         );
+        assert_eq!(
+            std::mem::size_of::<TransportHistory>(),
+            std::mem::size_of::<[Piece; JUMPS]>() + 2 * std::mem::size_of::<usize>()
+        );
+        // The documented figure: about 96 bytes a piece, some 12 KiB.
+        let size = std::mem::size_of::<TransportHistory>();
+        assert!((11 * 1024..=13 * 1024).contains(&size), "{size} bytes");
     }
 
-    /// The capacity is tight: `reach` one-frame blocks, each a seek, then a
-    /// block carrying `MAX_TRANSPORT_CHANGES` changes. Nothing can be
-    /// dropped (every piece is within reach), so the ring holds exactly
-    /// `reach + 1 + MAX_TRANSPORT_CHANGES` pieces, and the frame `reach`
-    /// back, the very first one, still reads what its block said.
+    /// A burst of more than `JUMPS` seeks, one per one-frame block: the ring
+    /// keeps the newest 128, a frame the newest 128 still cover reads its
+    /// block, and an older one reads the oldest kept, unmoved: exactly at
+    /// the boundary.
     ///
-    /// Mutation: capacity `reach + MAX_TRANSPORT_CHANGES` in `with_reach` →
-    /// the first piece is dropped, the frame reads the clamp (frame 1's
-    /// seek) → fails.
+    /// Mutation: when full, overwrite the newest piece instead of dropping
+    /// the oldest (skip the `head` advance, write at `len - 1`) → the
+    /// boundary moves → fails.
     #[test]
-    fn the_capacity_holds_exactly_the_worst_case() {
-        const REACH: usize = 12;
-        let mut p = Played::new(REACH);
-        for f in 0..REACH as u64 {
+    fn a_burst_past_the_capacity_clamps_where_the_oldest_kept_starts() {
+        const SEEKS: u64 = 200;
+        let mut p = Played::default();
+        for f in 0..SEEKS {
             p.play(env(f, 1, rolling(f as f64 * 3.0), TransportChanges::NONE));
         }
-        let len = MAX_TRANSPORT_CHANGES + 1;
-        let mut changes = TransportChanges::NONE;
-        for k in 1..len {
-            changes
-                .push(off(k), rolling(100.0 + k as f64))
-                .expect("room for every change");
-        }
-        let last = env(REACH as u64, len, rolling(50.0), changes);
-        p.play(last);
-        assert_eq!(p.history.live().len(), REACH + 1 + MAX_TRANSPORT_CHANGES);
-        assert_eq!(
-            last.transport_before(off(0), lat(REACH), &p.history),
-            p.truth(0)
+        let e = env(SEEKS, 64, rolling(1_000.0), TransportChanges::NONE);
+        p.play(e);
+        // Kept: blocks SEEKS - 127 .. SEEKS, and `e`.
+        let oldest = SEEKS - (JUMPS as u64 - 1);
+        assert_eq!(p.history.get(0).frame.get(), oldest);
+        let at = |back: u64| e.transport_before(off(0), lat(back as usize), &p.history);
+        // The clamp hands back the piece as the host gave it (a bare beat);
+        // a roll reports it counted. The same transport either way.
+        let same = |a: Transport, b: Transport| {
+            (a.playing, a.tempo, a.beat(), a.looping, a.recording())
+                == (b.playing, b.tempo, b.beat(), b.looping, b.recording())
+        };
+        assert_eq!(at(SEEKS - oldest), p.truth(oldest));
+        assert!(
+            same(at(SEEKS - oldest + 1), p.truth(oldest)),
+            "clamped, unmoved"
         );
-    }
-
-    /// The ring keeps what is in reach, not what it could hold: blocks of a
-    /// device quantum leave about `reach / quantum + 2` pieces live however
-    /// long they run, and the buffer is written no further than twice that,
-    /// while every frame in reach still reads its block.
-    ///
-    /// Mutation: drop the trim loop in `observe` → the live pieces climb to
-    /// the capacity (1 009) → fails. Mutation: compact only when the buffer
-    /// is full (`self.buf.len() == self.buf.capacity()`) → the buffer is
-    /// written to its end → fails.
-    #[test]
-    fn the_ring_keeps_only_what_is_in_reach() {
-        const REACH: usize = 1_000;
-        const QUANTUM: usize = 64;
-        let mut p = Played::new(REACH);
-        let mut most = (0, 0);
-        for b in 0..5_000u64 {
-            let e = env(
-                b * QUANTUM as u64,
-                QUANTUM,
-                rolling(b as f64),
-                TransportChanges::NONE,
-            );
-            p.play(e);
-            most = (
-                most.0.max(p.history.live().len()),
-                most.1.max(p.history.buf.len()),
-            );
-            if b > 20 {
-                assert_eq!(
-                    e.transport_before(off(5), lat(REACH), &p.history),
-                    p.truth(b * QUANTUM as u64 + 5 - REACH as u64),
-                    "block {b}"
-                );
-            }
-            if p.blocks.len() > 64 {
-                p.blocks.remove(0);
-            }
-        }
-        let live = REACH / QUANTUM + 2;
-        assert!(most.0 <= live, "{} pieces live, {live} needed", most.0);
-        assert!(most.1 <= 2 * live, "{} slots written", most.1);
+        assert!(same(at(SEEKS), p.truth(oldest)), "clamped, unmoved");
+        assert!(!same(p.truth(oldest - 1), p.truth(oldest)));
     }
 }

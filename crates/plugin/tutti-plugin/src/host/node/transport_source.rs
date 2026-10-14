@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn behind_a_latent_path_the_snapshot_is_the_inputs_transport() {
         let meter = MeterMap::default();
-        let mut history = TransportHistory::with_reach(Latency::new(Samples(100)));
+        let mut history = TransportHistory::new();
         let first = env(
             0,
             64,

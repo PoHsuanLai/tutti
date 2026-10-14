@@ -4274,6 +4274,14 @@ under both.
 
 #### Item 6 landed: compiler-owned param modulation
 
+> **Superseded by [doc 014](014-modulation.md).** The param-port mechanism
+> below (ports on `Shape`, the fused base-plus-sources step, the port's
+> range) stays as the engine's guard, but modulation as a design is now
+> doc 014's: modulation is an API noun that `tutti-mod` compiles to lanes,
+> event sources and a per-lane control program, not an engine mechanism.
+> Read doc 014 before extending what follows; this section is kept as the
+> record of what landed.
+
 **What landed.**
 
 - **Param ports on `Shape`.** A node declares the params the graph may

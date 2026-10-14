@@ -732,19 +732,38 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
 /// # On the threshold
 ///
 /// The limit is expressed **per block-plugin step**, and derived from the wait
-/// budget this test exists to detect rather than picked as a round number.
+/// budget this test exists to detect rather than picked as a round number:
+/// [`SYNC_WAIT_BUDGET`] / 4, comfortably above the real cost (~10 us/step median, debug) and
+/// comfortably below a single re-inserted wait.
 ///
 /// A wall-clock bound over the *whole* test cannot do this job: rig setup alone
 /// (three mock servers, each with a 50 ms startup settle) accounts for ~150 ms,
-/// so the budget left for the measured work is enormous relative to the
-/// ~20 us/step it actually costs. A synchronous wait of 667 us per plugin per
-/// block — half the block period — still comes in under such a bound.
+/// so the budget left for the measured work is enormous relative to what it
+/// actually costs. Only the driving loop is timed.
 ///
-/// So only the driving loop is timed, and the bound is
-/// [`SYNC_WAIT_BUDGET`] / 4: comfortably above the real cost (~30x headroom,
-/// measured), and comfortably below a single re-inserted wait. The margin is
-/// what keeps it from flaking on a loaded box; the derivation is what keeps it
-/// meaningful. If the pipelining regresses, ONE waited block trips it.
+/// # Why the median step, not the total
+///
+/// The two errors the clock can make are not symmetric, and the assertion is
+/// built on that:
+///
+/// - **A wait is a lower bound.** A design that waits for the reply sleeps
+///   until the reply comes or it gives up, and no scheduler makes a sleep
+///   shorter. The server is single-threaded and stalls 10 ms per block, so it
+///   falls further behind with every block, and a step that waits for it takes
+///   at least [`SYNC_WAIT_BUDGET`]. Idle, that is every step from block 2 on,
+///   57 of the 60. Under load the steps themselves stretch to milliseconds and
+///   the server catches up on some, but the waiting mutation below still put
+///   45-56 of 60 over the limit across runs.
+/// - **Load only adds time, and only to the steps it lands on.** A descheduled
+///   thread makes the step it is in longer; it cannot touch the others.
+///
+/// An earlier version asserted the *mean* (total / 60) and failed on macOS CI
+/// at 285 us/step (17 ms in all, a docs-only PR): a few long deschedulings,
+/// spread across all 60 steps by the division, read exactly like a wait on
+/// each. The median cannot be moved by a minority of slow steps, but a
+/// waiting design puts a majority over the limit. So a regression fails, and
+/// a correct design fails only if the scheduler takes the core away for over
+/// 166 us in more than half of the steps individually.
 #[test]
 fn stalled_plugins_do_not_stall_the_audio_thread() {
     let _lock = exclusive();
@@ -776,10 +795,14 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
     }
     let mut midi_out = MidiEventVec::new();
 
-    let start = Instant::now();
+    // Each step timed on its own, so one descheduling costs one sample of the
+    // distribution rather than the whole measurement. Allocated up front: the
+    // loop under test pushes into it.
+    let mut step_times = Vec::with_capacity(BLOCKS * PLUGINS);
     for _ in 0..BLOCKS {
         for (batcher, (bridge, _, _)) in batchers.iter_mut().zip(rigs.iter()) {
             output.clear();
+            let step = Instant::now();
             batcher.process(
                 bridge,
                 BATCH_SIZE,
@@ -787,21 +810,38 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
                 &mut output.outs(),
                 &mut midi_out,
             );
+            step_times.push(step.elapsed());
         }
     }
-    let elapsed = start.elapsed();
 
-    let steps = (BLOCKS * PLUGINS) as u32;
-    let per_step = elapsed / steps;
-    // What a synchronous design would spend: every plugin, every block, waiting
-    // out its budget before giving up.
-    let synchronous_floor = SYNC_WAIT_BUDGET * steps;
+    // Block 1 has nothing in flight, so nothing to wait for; every later step
+    // collects a block the 10 ms server is behind on. For the median to see a
+    // waiting design, those must be the majority.
+    let waitable = (BLOCKS - 1) * PLUGINS;
+    assert!(waitable > step_times.len() / 2);
+
+    let total: Duration = step_times.iter().sum();
+    let slow = step_times.iter().filter(|&&t| t >= STEP_LIMIT).count();
+    let mut sorted = step_times.clone();
+    sorted.sort_unstable();
+    let median = sorted[sorted.len() / 2];
+    let slowest = sorted[sorted.len() - 1];
+    let steps = step_times.len();
+    // What a synchronous design would spend: every plugin, every block after the
+    // first, waiting out its budget before giving up.
+    let synchronous_floor = SYNC_WAIT_BUDGET * waitable as u32;
+    // Mutation: make the live path wait — in `Batcher::collect`, before
+    // `collectable`, poll `has_output(expect_seq)` every 50 us until a 667 us
+    // deadline. Idle, every step from block 2 on then takes >= 667 us (57 of
+    // 60 over the limit); under bursty load on one core, 45-56 of 60. Either
+    // way the median is one of them: it failed 6/6 runs, idle and loaded.
     assert!(
-        per_step < STEP_LIMIT,
-        "{PLUGINS} stalled plugins x {BLOCKS} blocks took {elapsed:?} — \
-         {per_step:?} per block-plugin step, over the {STEP_LIMIT:?} limit. \
-         A synchronous design waits {SYNC_WAIT_BUDGET:?} per step \
-         (~{synchronous_floor:?} total), so this looks like the audio thread is \
+        median < STEP_LIMIT,
+        "{PLUGINS} stalled plugins x {BLOCKS} blocks: the median block-plugin \
+         step took {median:?}, over the {STEP_LIMIT:?} limit ({slow} of {steps} \
+         steps over it, slowest {slowest:?}, {total:?} in all). A synchronous \
+         design waits {SYNC_WAIT_BUDGET:?} on every step after the first block \
+         (~{synchronous_floor:?} in all), so this looks like the audio thread is \
          waiting for replies again."
     );
 

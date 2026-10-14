@@ -343,10 +343,11 @@ fn a_real_plugin_that_stops_answering_is_abandoned_and_later_drained() {
 /// The counter really moves only because a block was abandoned.
 ///
 /// The control for the test above, and the reason its `settled > 0` assertion is
-/// worth anything: an identical run with **no** park must settle nothing. Without
-/// this, `settled_replies() > 0` could be satisfied by any incidental drain and
-/// the suite would be claiming to exercise the budget path without evidence that
-/// it ever entered it.
+/// worth anything: an identical run with **no** park must settle nothing it did
+/// not abandon (nothing at all, unless load made an ordinary block miss its
+/// budget). Without this, `settled_replies() > 0` could be satisfied by any
+/// incidental drain and the suite would be claiming to exercise the budget path
+/// without evidence that it ever entered it.
 ///
 /// This is also the mutation the brief calls for, kept as a permanent test rather
 /// than performed once and thrown away: releasing immediately means the "budget
@@ -373,13 +374,27 @@ fn a_plugin_that_never_parks_settles_nothing() {
         !handle.status().is_dead(),
         "an unstressed plugin stays alive"
     );
-    assert_eq!(
-        bridge.settled_replies(),
-        0,
-        "nothing was ever abandoned, so nothing can have been settled. A \
-         non-zero count here means the budget is being missed on an ordinary \
-         run — the counter would then prove nothing in the stall test, because \
-         it would be moving for reasons unrelated to the park."
+    // Bounded by `abandoned_replies`, not pinned to 0. With no park, nothing
+    // is *meant* to miss its budget, but the budget is a few ms of wall clock
+    // and on a loaded machine (CI running the workspace beside it) an ordinary
+    // block can miss it. The drain then rightly takes that reply back, and an
+    // exact `== 0` reads 1. What this control exists to show is that the
+    // counter moves *only* because something was abandoned — which is the
+    // bound. Idle, `abandoned` is 0 and this still pins `settled` to 0.
+    //
+    // `settled` first: its `Acquire` makes every `abandoned` bump that owed
+    // those replies visible to the read after it.
+    //
+    // Mutation: count a settle on every block (`note_settled(taken + 1)` in
+    // `Owed::settle`, which runs before each block's send) → `settled` grows
+    // with no abandonment → fails.
+    let settled = bridge.settled_replies();
+    let abandoned = bridge.abandoned_replies();
+    assert!(
+        settled <= abandoned,
+        "{settled} replies were settled but only {abandoned} were ever \
+         abandoned. The counter is moving for reasons unrelated to a missed \
+         budget, so it would prove nothing in the stall test."
     );
 }
 

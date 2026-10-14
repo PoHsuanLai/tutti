@@ -36,14 +36,15 @@
 //! 6. **Colour** ([`colour`]) — slot sharing that is correct under any
 //!    parallel schedule, with in-place aliasing where legal.
 //! 7. **Coarsen** — fuse single-successor/single-predecessor chains into
-//!    tasks. The serial executor ignores tasks; the plan carries them so a
-//!    parallel executor needs no format change.
+//!    tasks, and level the task DAG (`Plan::task_width`). The serial
+//!    executor ignores tasks; the parallel one (`par.rs`) dispatches them.
 //! 8. **Verify** ([`verify`]) in debug builds.
 //! 9. **Place** units: `NodeKey` → dense [`UnitIdx`], diffed against `prev`
 //!    into a [`Delta`].
 //!
-//! There is no serial-vs-parallel cost model yet: there is only a serial
-//! executor to pick.
+//! Doc 013's step 6 (a serial-vs-parallel cost model) is Phase 6 part (b):
+//! for now a plan with more than one task spreads whenever the executor has
+//! a pool of more than one participant.
 
 mod colour;
 mod order;
@@ -1241,6 +1242,7 @@ pub fn compile(
 
     // ---- 7. coarsen -------------------------------------------------------
     let (tasks, task_ops, task_succ, task_activation) = coarsen(&em.preds, &succ_rows);
+    let task_width = level_width(&task_succ, tasks.len());
 
     // ---- 9. place ---------------------------------------------------------
     let prev_units: BTreeMap<NodeKey, PlanUnit> = prev
@@ -1322,6 +1324,7 @@ pub fn compile(
         task_ops,
         task_succ,
         task_activation,
+        task_width,
         audio_slots: audio_fixed + audio_colour.count,
         event_slots: event_fixed + event_colour.count,
         event_slot_capacity,
@@ -1400,6 +1403,26 @@ fn merge_tree(em: &mut Emitted, refs: Vec<ERef>) -> ERef {
             merge_tree(em, runs)
         }
     }
+}
+
+/// The most tasks on one level of the task DAG (a task's level is the
+/// longest path to it): the executor's wake count, a heuristic for how many
+/// workers a block can keep busy (see `Plan::task_width`). Tasks are numbered in a topological order (each is numbered by its
+/// first op, and every predecessor of that op is in an earlier task), so one
+/// forward pass finds every level.
+fn level_width(succ: &Csr, tasks: usize) -> u32 {
+    let mut level = vec![0u32; tasks];
+    for t in 0..tasks {
+        for &s in succ.row(t) {
+            debug_assert!(s as usize > t, "tasks are topologically numbered");
+            level[s as usize] = level[s as usize].max(level[t] + 1);
+        }
+    }
+    let mut count = vec![0u32; tasks];
+    for &l in &level {
+        count[l as usize] += 1;
+    }
+    count.into_iter().max().unwrap_or(0)
 }
 
 /// Fuse chains: op `b` joins its only predecessor's task when that

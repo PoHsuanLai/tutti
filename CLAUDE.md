@@ -18,7 +18,8 @@ compiler's, export forks the live graph with `Editor::fork`), and every node
 is a `tutti_graph::Node`. Phase 5 deleted fundsp's `Net`, the vendored fork,
 `tutti-node` and its `AudioUnit` trait, `Setting` and the numeric tower;
 `AudioNode` wraps a `NodeKey`, and `tutti_types::latency` is a pure pass that
-is the compiler's own solve. Phase 6 (a parallel executor) is next.
+is the compiler's own solve. Phase 6 is under way: the parallel executor
+(part a) is below; the cost model and coarsening (part b) are next.
 
 - Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
   `reset`: declared latency and tail in the shape). A node with params is a
@@ -35,6 +36,29 @@ is the compiler's own solve. Phase 6 (a parallel executor) is next.
   a start or seek inside a block is in `Env`, never a split block.
 - Doc 013 lists the defects and types each phase addresses. Update it when a
   phase lands or a decision changes.
+
+## The parallel executor (doc 013 Phase 6)
+
+A block's tasks may run on several threads (`Executor::set_pool`,
+`tutti_core::WorkerPool`), and the render must stay bit-identical to the
+serial one.
+
+- **Nodes communicate only through ports.** Two nodes sharing mutable state
+  outside the graph (one `Arc<Mutex<_>>`, a shared cursor) are unordered in
+  parallel. Share through an edge, or make it one node.
+- **Op code is written once**, generic over `AudioSlots`/`EventSlots`
+  (`tutti-graph/src/slots.rs`). Do not add an op path that reaches the arena,
+  the event slots, a unit, a ring or an output except through them or a
+  claim: that is what keeps `tutti-graph` `#![forbid(unsafe_code)]`.
+- **New lock-free or `unsafe` runtime structure goes in `tutti-types`**, with
+  a loom model beside `rt_publish_loom.rs` that runs the shipped code, and a
+  mutation record in it.
+- **Store-load pairs use `SeqCst` fences**, not `SeqCst` accesses (loom
+  models fences exactly; see `rt/job_gate.rs`).
+- A parallel test compares against the **serial render, bit for bit**
+  (`tests/parallel.rs`, the differential suite's `modes`), and a gate on the
+  parallel path runs every participant inside `assert_no_alloc`, helpers
+  included (`TestPool::no_alloc`, `tutti-core`'s `GatedPool`).
 
 ## Commands
 

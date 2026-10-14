@@ -18,6 +18,13 @@ pub use tutti_types::value::{
 
 mod engine;
 
+// The threads the parallel graph executor runs a block on (doc 013 Phase 6):
+// the engine's implementation of `tutti_graph::Pool`, which a host hands to
+// `Executor::set_pool` before the executor goes to the audio thread.
+mod pool;
+pub use pool::{OnStart, WorkerPool, WorkerPoolBuilder};
+pub use tutti_graph::Pool;
+
 // The shape of a node swap: the graph's (`Editor::replace` follows
 // it), at the engine root. The law is pinned in tutti-graph's `fade.rs`.
 pub use tutti_graph::CrossfadeCurve;

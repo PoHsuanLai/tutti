@@ -130,11 +130,15 @@ miri:
 # replica). `--cfg loom` is global, so
 # each runs on its own target. This is what CI runs: the `RtPublish` models at a
 # preemption bound of 4, about a minute and a half, and the `PosRing` models at
-# the same bound, about five minutes.
+# the same bound, about five minutes, and the parallel executor's three
+# primitives (`split`, `job_gate`, `task_graph`) at a bound of 3.
 loom:
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test pos_ring_loom
     RUSTFLAGS="--cfg loom" cargo test -p tutti-shm-model --release
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test split_loom
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test job_gate_loom
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test task_graph_loom
 
 # The `RtPublish` loom models exhaustively (bar `xthread_overflow`, which is
 # always bounded): about 17 minutes. Run it after changing `rt/publish.rs`.

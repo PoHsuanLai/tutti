@@ -350,6 +350,7 @@ pub(super) fn handle(
                     // predecessor's answer. Owing it here is what keeps the
                     // stream synchronised without waiting for it now.
                     owed.note();
+                    channels.note_abandoned();
                     // The host needs no notification to fall back to silence —
                     // the server has not published, so the slab's sequence check
                     // fails for this block on its own. The response keeps the

@@ -182,6 +182,13 @@ impl PluginBridge {
         self.audio.settled_replies()
     }
 
+    /// How many blocks' replies the bridge thread abandoned. See
+    /// [`AudioBridge::abandoned_replies`](super::audio::AudioBridge::abandoned_replies).
+    #[cfg(test)]
+    pub fn abandoned_replies(&self) -> u64 {
+        self.audio.abandoned_replies()
+    }
+
     /// Why the bridge died, or `None` while it is alive. See
     /// [`AudioBridge::crash_cause`](super::audio::AudioBridge::crash_cause).
     pub fn crash_cause(&self) -> Option<String> {

@@ -1174,17 +1174,38 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
     //
     // `settled_replies` counts what the drain actually took off the socket, so
     // stubbing `settle` makes this fail every run rather than some of them.
-    // Exactly one block was stalled, so exactly one reply was abandoned and
-    // exactly one is owed back.
-    assert_eq!(
-        bridge.settled_replies(),
-        1,
-        "the drain took {} owed replies; block 1's reply was abandoned when its \
-         budget expired, so exactly one had to be taken back off the socket. \
-         Zero means `Owed::settle` never ran or never collected anything, and \
-         the abandoned frame is still queued — which the stamps below cannot \
-         reliably detect.",
-        bridge.settled_replies()
+    //
+    // It is bounded by `abandoned_replies`, not pinned to 1. Block 1's 120 ms
+    // stall is past `MAX_PROCESS_TIMEOUT`, so at least that one reply is
+    // abandoned on any machine; but every later block has the same few-ms
+    // budget, and on a loaded machine (macOS CI, three cores, the whole
+    // workspace running beside it) one of them missing it is a property of the
+    // scheduler, not of the drain. An exact `== 1` read 2 or 3 there. What the
+    // drain owes is what was abandoned, so that is the bound.
+    //
+    // Mutations: stub `settle` to `0` → `settled == 0` → the first assert fails
+    // every run. Over-count the drain (`note_settled(taken * 2)`) → `settled`
+    // exceeds `abandoned` → the third fails (every run on an unloaded machine,
+    // where block 1 is the only one abandoned).
+    let settled = bridge.settled_replies();
+    let abandoned = bridge.abandoned_replies();
+    assert!(
+        abandoned >= 1,
+        "block 1 stalled 120 ms against a budget of at most {:?}, yet no reply \
+         was abandoned — the rig did not stage the timeout this test is about",
+        std::time::Duration::from_millis(50),
+    );
+    assert!(
+        settled >= 1,
+        "the drain took no owed replies although {abandoned} were abandoned. \
+         `Owed::settle` never ran or never collected anything, and the abandoned \
+         frame is still queued — which the stamps below cannot reliably detect."
+    );
+    assert!(
+        settled <= abandoned,
+        "the drain took {settled} replies off the socket but only {abandoned} \
+         were ever abandoned: it consumed frames that belonged to blocks still \
+         waiting on them."
     );
 
     // The server stamps block `seq`'s reply with `data[0] == seq` (not its

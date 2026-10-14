@@ -6,9 +6,10 @@
 //!
 //! # Why not a clone of the node
 //!
-//! [`InProcessVst2Client`]'s clones share the one `AEffect` behind an
+//! A clone of [`InProcessVst2Client`] would share the one `AEffect` behind an
 //! `Arc<Mutex<_>>`: a fork by clone would render through the live plugin's
 //! state from the render thread, interleaving its blocks with the live ones.
+//! So the node is not `Clone` at all.
 //!
 //! # What a fork is
 //!

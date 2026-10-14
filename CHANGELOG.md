@@ -86,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   segment. It now delivers them through the out-of-process node's
   delivery (`host/node/param_delivery.rs`, and the event walk both nodes
   now share, `param_input.rs`): a slot per parameter the plugin declared
-  at load (plus 64 spare), **changes only** against the value last
+  at load (no spares: an index past them is refused and counted in
+  `points_dropped`), **changes only** against the value last
   delivered to the instance, a curve segment as points along it. The block
   is the chunk: before the plugin processes a block, each parameter that
   moved in it is set to its last value there with `setParameter`, under
@@ -107,6 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `IntoNode for InProcessVst2Client`: `type Controls = PluginMeter` | `type Controls = InProcessVst2Controls` (`tutti_plugin::InProcessVst2Controls`, also in `tutti_plugin::handles`): `set_meter`, `clear_meter`, `has_meter`, `meter()` as before, plus `param_delivery() -> ParamDeliveryStats` and `automation(params)` |
   | — | `InProcessVst2Client::{controls, param_delivery, automation}` |
   | `Plugin::automation(params) -> Option<PluginAutomation>`, `None` for an in-process VST2 plugin | `-> PluginAutomation`, for either backend (a VST2 plugin's addresses are `ParamAddress::Index`) |
+  | `InProcessVst2Client: Clone` (a clone drove the same `AEffect`) | not `Clone`: its delivery bookkeeping describes the one instance, so two copies would disagree about what it holds. A second node on the plugin is a fork (`IntoNode`'s fork, or `fork_instance`) |
 
   **Migration.** Code that used the inserted node's controls as a
   `PluginMeter` calls the same methods on `InProcessVst2Controls`, or
@@ -115,7 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plugin's parameters through its handle only can wire a
   `PluginAutomation` (or any parameter event source) to the node's event
   input instead; values set through the handle still reach the plugin and
-  are not overwritten by a host value held still.
+  are not overwritten by a host value held still. Code that cloned an
+  `InProcessVst2Client` forks it instead, or loads the plugin again.
 
 - **Plugin parameters are delivered as changes only, with no 16-queue
   cap** (modulation PR 1; design doc 013, "Plugin parameter delivery").

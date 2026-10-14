@@ -100,8 +100,8 @@ impl Node for InProcessVst2Client {
             true,
             &mut self.segments,
             &mut self.params,
-            |e, _| {
-                if let EventKind::Midi(Ump(data)) = e.kind {
+            |e, _| match e.kind {
+                EventKind::Midi(Ump(data)) => {
                     if midi.len() < midi.inline_size() {
                         midi.push(MidiEvent {
                             frame_offset: e.offset.get(),
@@ -109,6 +109,9 @@ impl Node for InProcessVst2Client {
                         });
                     }
                 }
+                // VST 2.4 has no chord or scale event; the walk keeps the
+                // parameter events for itself.
+                EventKind::Harmony(_) | EventKind::Ramp(_) | EventKind::Segment(_) => {}
             },
         );
         {
@@ -125,7 +128,7 @@ impl Node for InProcessVst2Client {
         let processed = drive_f32(
             &self.inner,
             &self.contention_count,
-            self.params.changes(),
+            &self.params,
             &mut self.midi,
             &mut |events| {
                 if sends {
@@ -223,8 +226,8 @@ impl IntoNode for InProcessVst2Client {
 
 /// An in-process VST2 node's controls: what inserting it hands back, and what
 /// [`InProcessVst2Client::controls`] returns before then. Cheap to clone;
-/// every clone reaches the same node (and the clones of it, which drive the
-/// same plugin instance).
+/// every clone is a handle on the same node (the node itself is not
+/// `Clone`).
 #[derive(Clone, Debug)]
 pub struct InProcessVst2Controls {
     meter: PluginMeter,
@@ -295,5 +298,90 @@ impl InProcessVst2Client {
     /// [`InProcessVst2Controls::automation`]).
     pub fn automation(&self, params: impl IntoIterator<Item = TimedParam>) -> PluginAutomation {
         PluginAutomation::new(params, true)
+    }
+}
+
+/// The owed path needs the instance lock held across a block, which only
+/// code inside the crate can reach (`InProcessVst2Client::inner`); the rest
+/// of the node's parameter delivery is pinned against the public API in
+/// `tests/vst2_in_process_params.rs`.
+#[cfg(test)]
+mod owed_tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
+    use std::sync::OnceLock;
+
+    use tutti_core::SampleRate;
+    use tutti_graph::contract::Direct;
+    use tutti_graph::{Event, Offset, ParamRamp};
+
+    use crate::handles::{ParamAddress, PluginHandle};
+
+    const BLOCK: usize = 64;
+
+    /// The reference probe (`tutti-vst2-test-plugin`), as the integration
+    /// tests resolve it (`tests/support/probe_path.rs`).
+    fn probe() -> &'static PathBuf {
+        static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
+        RESOLVED.get_or_init(|| {
+            PathBuf::from(tutti_fixture_resolve::resolve_or_panic(
+                env!("TUTTI_VST2_PROBE_CANDIDATES"),
+                "tutti-vst2-test-plugin",
+            ))
+        })
+    }
+
+    fn read(handle: &PluginHandle, i: i32) -> Option<f32> {
+        handle.params().parameter_value(ParamAddress::Index(i))
+    }
+
+    /// **A block the instance is locked for owes its values to the next.**
+    /// The control thread holds the instance lock for one block that ramps
+    /// parameter 1 to 0.75: the block renders silent (one contention), the
+    /// plugin keeps its default (`1 / 16`, the probe's), nothing is counted
+    /// sent and the block is counted deferred. The next block carries no
+    /// event, and the owed value reaches the plugin on it.
+    ///
+    /// Mutation (run): `self.params.handed_off(true)` in `process` (the
+    /// contended block counted as delivered) → nothing deferred, and the
+    /// value is recorded as sent, so the empty block sends nothing and the
+    /// plugin keeps `1 / 16` → fails.
+    #[test]
+    fn a_contended_block_owes_its_values_to_the_next() {
+        let (client, handle) = super::super::load_client(probe(), SampleRate(48_000.0))
+            .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
+        let inner = std::sync::Arc::clone(&client.inner);
+        let contention = std::sync::Arc::clone(&client.contention_count);
+        let controls = client.controls();
+        let mut unit = Direct::new(client, SampleRate(48_000.0), BLOCK);
+        assert_eq!(read(&handle, 1), Some(1.0 / 16.0), "the probe's default");
+
+        {
+            let _held = inner.lock();
+            unit.events(
+                0,
+                &[Event::ramp(
+                    Offset::new(0, tutti_core::Samples(BLOCK)).expect("inside the block"),
+                    ParamRamp::foreign(1, 0.75, tutti_core::Samples(0)),
+                )],
+            );
+            unit.block();
+        }
+        assert_eq!(
+            contention.load(Ordering::Relaxed),
+            1,
+            "the block was refused"
+        );
+        assert_eq!(read(&handle, 1), Some(1.0 / 16.0), "not yet delivered");
+        let stats = controls.param_delivery();
+        assert_eq!(stats.chunks_deferred, 1);
+        assert_eq!(stats.points_sent, 0);
+
+        unit.block();
+        assert_eq!(read(&handle, 1), Some(0.75), "owed to the next block");
+        let stats = controls.param_delivery();
+        assert_eq!(stats.points_sent, 1);
+        assert_eq!(stats.chunks_deferred, 1);
+        assert_eq!(stats.points_dropped, 0);
     }
 }

@@ -4657,8 +4657,10 @@ carried.
   The in-process VST2 node's event input took MIDI and dropped every
   parameter event. It now runs the out-of-process node's delivery, not a
   copy: `ParamDelivery` with a slot per parameter the plugin declared at
-  load (`Vst2Instance::parameter_count`, read once by the loader) plus the
-  spares, its `SegmentPoints`, and the event walk the two nodes now share
+  load (`Vst2Instance::parameter_count`, read once by the loader) and no
+  spares (`ParamDelivery::closed`: an index past the count is refused and
+  counted in `points_dropped`, where a spare slot would have staged a point
+  `setParameter` refuses), its `SegmentPoints`, and the event walk the two nodes now share
   (`host/node/param_input.rs`, which `PluginChunks::take` calls for each
   piece of a chunk and the VST2 node for each block). **The block is the
   chunk**, and before the plugin processes it each queue's last point is
@@ -4668,8 +4670,10 @@ carried.
   (VST 2.4 has no sample-accurate parameter events; a point inside the
   block lands on its first frame). A block the audio thread finds the
   instance locked for (silence, `contention_count`) hands nothing off, and
-  its values are owed to the next. A clone of the node (the same
-  `AEffect`) starts from its slots and shares its counters and record. The
+  its values are owed to the next. The node is not `Clone` (it was; a
+  clone shared one `AEffect` while each copy kept its own slots, so their
+  changes-only bookkeeping disagreed about the one instance): a second
+  node is a fork. The
   fork (`vst2_in_process/fork.rs`) reads the live record before it saves
   the live state and seeds the fork's delivery with it, as
   `PluginForkSource::capture` does. Counters are on the node's controls,

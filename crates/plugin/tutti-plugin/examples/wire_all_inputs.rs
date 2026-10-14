@@ -21,7 +21,7 @@ use std::sync::Arc;
 use tutti_graph::Harmony;
 use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
 use tutti_plugin::catalog::{Plugin, PluginRole};
-use tutti_plugin::handles::{LfoCurve, LfoShape, ParamAddress, ParamId, TimedParam};
+use tutti_plugin::handles::{LfoCurve, LfoShape, TimedParam};
 use tutti_plugin::Result;
 
 use tutti_core::{Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, RtPublish, SampleRate};
@@ -67,19 +67,28 @@ fn main() -> Result<()> {
     // beside the plugin and wire to its event input, so the graph's delay
     // compensation covers it. Ungated: every format carries it, and both
     // backends take it on their event input. One slow LFO on the plugin's
-    // first parameter (opaque: a VST2 plugin's would be `ParamAddress::Index`).
-    let _automation = plugin.automation([TimedParam {
-        param_id: ParamAddress::Opaque(ParamId::new(0)),
-        curve: Arc::new(LfoCurve::new(
-            LfoShape::Sine,
-            BeatDuration(4.0),
-            Depth(1.0),
-            PhaseIncrement(0.0),
-            0.5, // base
-            0.0, // min
-            1.0, // max
-        )),
-    }]);
+    // first parameter, addressed as the plugin lists it (an index on a VST2
+    // plugin, an opaque handle elsewhere): an address of the other model
+    // would be skipped. A plugin with no parameters gets no automation.
+    let first_param = plugin
+        .handle()
+        .params()
+        .parameter_descriptors()
+        .and_then(|list| list.first().map(|p| p.id));
+    let _automation = first_param.map(|param_id| {
+        plugin.automation([TimedParam {
+            param_id,
+            curve: Arc::new(LfoCurve::new(
+                LfoShape::Sine,
+                BeatDuration(4.0),
+                Depth(1.0),
+                PhaseIncrement(0.0),
+                0.5, // base
+                0.0, // min
+                1.0, // max
+            )),
+        }])
+    });
 
     // MIDI travels on the node's event ports: a clip node, a keyboard's
     // queue node, a hardware input node wire to its event input.
@@ -88,6 +97,7 @@ fn main() -> Result<()> {
     report("transport", took_transport);
     report("harmony", took_harmony);
     report("midi in", takes_midi);
+    report("automation", first_param.is_some());
 
     if plugin.role() == PluginRole::Instrument && !takes_midi {
         // Worth saying out loud: a synth that takes no MIDI will never sound.

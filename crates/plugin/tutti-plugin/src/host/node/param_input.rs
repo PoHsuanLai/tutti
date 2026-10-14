@@ -88,7 +88,7 @@ pub(crate) fn take(
                 };
                 segments.start(params, address, seg, abs(o), frame);
             }
-            _ => other(e, frame),
+            EventKind::Midi(_) | EventKind::Harmony(_) => other(e, frame),
         }
     }
     segments.points(params, abs(done), abs(from + n), at + done - from);

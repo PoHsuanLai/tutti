@@ -303,7 +303,8 @@ impl Chunks for PluginChunks<'_> {
                 EventKind::Harmony(h) => {
                     push_harmony(&mut pending.harmony, features, h, frame);
                 }
-                _ => {}
+                // The walk keeps parameter events for itself.
+                EventKind::Ramp(_) | EventKind::Segment(_) => {}
             },
         );
     }

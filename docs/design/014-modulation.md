@@ -773,7 +773,11 @@ at 2000 parameters and 157 MB at 16k, the VST3 host's input queues about
 35 MB at 16k (4096 frames). Replace both with a
 shared per-chunk point arena, or a small per-queue room with a counted,
 shared overflow, so the memory follows the points a chunk carries rather
-than the parameter count.
+than the parameter count. The in-process VST2 node reserves the same room
+and applies only each queue's last point (VST 2.4 has no sample-accurate
+parameter events), so its per-queue point room is mostly wasted: about
+400 KB per node at 200 parameters and a 4096-frame block; one point per
+queue would do there.
 
 ### PR 2: the control lane node
 

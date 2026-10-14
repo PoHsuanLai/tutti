@@ -828,6 +828,13 @@ impl GraphRuntime {
 
     /// The compensation of the plan sent last: what `commit_graph` publishes,
     /// since it is what the executor is handed.
+    /// The plan last sent to the audio thread, to tell whether a commit
+    /// sent one.
+    #[cfg(all(test, feature = "modulation"))]
+    pub(crate) fn sent_plan(&self) -> Option<std::sync::Arc<tutti_graph::Plan>> {
+        self.editor.base().cloned()
+    }
+
     pub(crate) fn sent_compensation(&self) -> Option<(Vec<Samples>, Samples)> {
         let plan = self.editor.base()?;
         Some((plan.compensation().to_vec(), plan.total_latency().samples()))

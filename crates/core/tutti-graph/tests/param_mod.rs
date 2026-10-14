@@ -955,6 +955,241 @@ fn a_reprepare_hands_param_state_back() {
     assert!(out[0].iter().all(|&x| x == 1.0), "{:?}", &out[0][..4]);
 }
 
+// ---- a range is a control ---------------------------------------------------
+
+/// Render one block of `n` frames through the probe graph's three outputs.
+fn block(exec: &mut Executor, ed: &mut Editor, n: usize) -> [Vec<f32>; 3] {
+    render(exec, ed, n, n)
+}
+
+/// The fused step's value with a constant base `b`, one identity source
+/// `x`, and range `(lo, hi)`: `clamp(b + (-0.0 + x))`, the step's own
+/// arithmetic, so the figure is exact.
+fn stepped(b: f32, x: f32, (lo, hi): (f32, f32)) -> f32 {
+    (b + (-0.0 + x)).clamp(lo, hi)
+}
+
+/// A range moved with `Editor::set_param_range` sends no commit — the plan
+/// the executor runs is the one it had — and clamps the very next block,
+/// every frame of it, while the block before it ran on the old range. A
+/// range edited through the spec instead lands with a commit that, the edit
+/// being only a range, sends nothing either.
+///
+/// Mutations (run): in `Editor::set_param_range`, skip the cell store (the
+/// running unit keeps the spec's range as of the last commit) → the next
+/// block is unclamped → fails. In `ParamState::port`, clamp with the range
+/// the port read on its *previous* block (a `PortState` field updated after
+/// the clamp) → the first block after the move is unclamped → fails. In
+/// `Editor::commit`, compare specs with `==` again (a range is plan) → the
+/// spec edit sends a new plan → fails. In `Editor::commit`'s range-only
+/// path, skip `sync_ranges` → the spec edit never reaches the running unit
+/// → fails.
+#[test]
+fn a_range_move_lands_on_the_next_block_without_a_commit() {
+    const SEED: u64 = 23;
+    let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
+    let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
+    ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: SEED }));
+    let at = param(PROBE, UnitParam::Cutoff);
+    ed.spec_mut()
+        .connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
+    ed.spec_mut()
+        .set_param_range(at, ParamRange::new(-2.0, 2.0));
+    ed.commit().expect("commits");
+    let plan = Arc::clone(ed.base().expect("a plan"));
+    let mut frame = 0u64;
+    let check = |out: &[Vec<f32>; 3], frame: &mut u64, range: (f32, f32), what: &str| {
+        for (i, &v) in out[0].iter().enumerate() {
+            let want = stepped(0.0, signal_at(SEED, *frame + i as u64), range);
+            assert_eq!(
+                v.to_bits(),
+                want.to_bits(),
+                "{what}, frame {i}: {v} vs {want}"
+            );
+        }
+        *frame += out[0].len() as u64;
+    };
+
+    for _ in 0..2 {
+        let out = block(&mut exec, &mut ed, 64);
+        check(&out, &mut frame, (-2.0, 2.0), "the spec's range");
+    }
+    // The signal reaches past ±0.25 in a block, so the clamp shows.
+    ed.set_param_range(at, ParamRange::new(-0.25, 0.25))
+        .expect("a range");
+    let out = block(&mut exec, &mut ed, 37);
+    assert!(out[0].contains(&0.25) && out[0].contains(&-0.25));
+    check(
+        &out,
+        &mut frame,
+        (-0.25, 0.25),
+        "the next block, every frame",
+    );
+    // Crossed bounds are ordered, as the spec's always were.
+    ed.set_param_range(at, ParamRange::new(0.5, -0.1))
+        .expect("a range");
+    let out = block(&mut exec, &mut ed, 64);
+    check(&out, &mut frame, (-0.1, 0.5), "crossed bounds");
+    assert!(
+        Arc::ptr_eq(&plan, ed.base().expect("a plan")),
+        "no plan was sent for a range move"
+    );
+    assert_eq!(ed.in_flight(), 0);
+    assert_eq!(
+        ed.spec().params[&at].range,
+        ParamRange::new(0.5, -0.1),
+        "the spec records the move"
+    );
+    ed.commit().expect("a commit after a move");
+    assert!(
+        Arc::ptr_eq(&plan, ed.base().expect("a plan")),
+        "a commit after a move sends nothing: the spec already says it"
+    );
+
+    // Through the spec: the edit waits for the commit, which sends no plan.
+    ed.spec_mut()
+        .set_param_range(at, ParamRange::new(-0.75, 0.0));
+    let out = block(&mut exec, &mut ed, 64);
+    check(
+        &out,
+        &mut frame,
+        (-0.1, 0.5),
+        "a spec edit waits for its commit",
+    );
+    ed.commit().expect("a range-only commit");
+    assert!(
+        Arc::ptr_eq(&plan, ed.base().expect("a plan")),
+        "a range-only commit sends no plan"
+    );
+    assert_eq!(ed.in_flight(), 0, "nor anything else");
+    let out = block(&mut exec, &mut ed, 64);
+    check(
+        &out,
+        &mut frame,
+        (-0.75, 0.0),
+        "the commit's range, next block",
+    );
+
+    // A plan the range rode along with: a unit placed by a commit starts
+    // with the spec's range.
+    ed.insert(NodeKey(PROBE), "probe", Unforkable(Probe::new(&cutoff, &q)));
+    ed.set_param_range(at, ParamRange::new(-0.5, 0.5))
+        .expect("a range");
+    ed.commit().expect("a regenerated probe");
+    let out = block(&mut exec, &mut ed, 64);
+    check(&out, &mut frame, (-0.5, 0.5), "a placed unit's first block");
+}
+
+/// `Editor::set_param_range` refuses what a commit would, and changes
+/// nothing when it does.
+///
+/// Mutation (run): drop the NaN check from `Editor::set_param_range` → the
+/// NaN is recorded → fails.
+#[test]
+fn a_bad_range_move_is_refused() {
+    let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
+    let (mut ed, _exec) = probe_graph(64, &cutoff, &q);
+    let at = param(PROBE, UnitParam::Cutoff);
+    for range in [
+        ParamRange::new(f32::NAN, 1.0),
+        ParamRange::new(0.0, f32::NAN),
+    ] {
+        assert!(matches!(
+            ed.set_param_range(at, range),
+            Err(GraphInvalid::BadParamRange { at: a, .. }) if a == at
+        ));
+    }
+    assert!(ed.spec().params.is_empty(), "nothing recorded");
+    let gone = param(99, UnitParam::Cutoff);
+    assert!(matches!(
+        ed.set_param_range(gone, ParamRange::new(0.0, 1.0)),
+        Err(GraphInvalid::UnknownParamNode { missing, .. }) if missing == NodeKey(99)
+    ));
+    assert!(ed.spec().params.is_empty(), "nothing recorded");
+    ed.commit().expect("the graph is untouched");
+}
+
+/// A range that shrinks around the base and around an event ramp in flight
+/// pins the value to its bound, and rewrites neither: when it widens again,
+/// the value is where the base and the ramp have got to, frame for frame —
+/// the ramp having run on, unclamped, the whole time.
+///
+/// Mutation (run): in `ParamState::port`, write the clamped value back into
+/// an event source's ramp (`s.ramp.value`, the value the next frame steps
+/// from, clamped with the sum) → after the widen the ramp resumes from the
+/// bound → fails.
+#[test]
+fn a_shrinking_range_rewrites_neither_the_base_nor_a_ramp() {
+    const BASE: f32 = 0.5;
+    const TARGET: f32 = 2.0;
+    const LEN: usize = 640;
+    let (cutoff, q) = (Cell::new(BASE), Cell::new(0.0));
+    let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
+    ed.insert(
+        NodeKey(1),
+        "ramps",
+        Unforkable(Ramps {
+            plan: vec![(0, UnitParam::Cutoff, TARGET, LEN)],
+        }),
+    );
+    let at = param(PROBE, UnitParam::Cutoff);
+    ed.spec_mut().connect_param(
+        at,
+        ParamFrom::Events(EventOut {
+            node: NodeKey(1),
+            port: 0,
+        }),
+        ParamShaping::Identity,
+    );
+    ed.commit().expect("commits");
+    // The ramp's value at absolute frame `f`: `Ramp::step`'s arithmetic.
+    let ramp = |f: u64| {
+        let done = f as usize + 1;
+        if done >= LEN {
+            TARGET
+        } else {
+            0.0 + (TARGET - 0.0) * (done as f32 / LEN as f32)
+        }
+    };
+    let unbounded = (f32::NEG_INFINITY, f32::INFINITY);
+    let mut frame = 0u64;
+    let check = |out: &[Vec<f32>; 3], frame: &mut u64, range: (f32, f32), what: &str| {
+        for (i, &v) in out[0].iter().enumerate() {
+            let want = stepped(BASE, ramp(*frame + i as u64), range);
+            assert_eq!(
+                v.to_bits(),
+                want.to_bits(),
+                "{what}, frame {i}: {v} vs {want}"
+            );
+        }
+        *frame += out[0].len() as u64;
+    };
+    let out = block(&mut exec, &mut ed, 64);
+    check(&out, &mut frame, unbounded, "ramping");
+    // Shrink below the base itself: the value sits on the upper bound.
+    ed.set_param_range(at, ParamRange::new(0.0, 0.25))
+        .expect("a range");
+    for _ in 0..4 {
+        let out = block(&mut exec, &mut ed, 64);
+        assert!(out[0].iter().all(|&v| v == 0.25), "pinned to the bound");
+        check(&out, &mut frame, (0.0, 0.25), "shrunk");
+    }
+    assert_eq!(cutoff.get(), BASE, "the base control is the node's own");
+    ed.set_param_range(at, ParamRange::UNBOUNDED)
+        .expect("a range");
+    let out = block(&mut exec, &mut ed, 64);
+    assert!(
+        out[0][0] > BASE + ramp(63) && out[0][0] < BASE + TARGET,
+        "back on the ramp, mid-flight: {}",
+        out[0][0]
+    );
+    check(&out, &mut frame, unbounded, "widened");
+    for _ in 0..6 {
+        let out = block(&mut exec, &mut ed, 64);
+        check(&out, &mut frame, unbounded, "landed");
+    }
+}
+
 // ---- differential: the executor against the reference ----------------------
 
 /// One generated graph: signals and ramp sources modulating probes, some
@@ -975,6 +1210,10 @@ struct Gen {
     /// `(step, probe, latency)`: re-insert the probe's sibling at another
     /// latency, so a param source's delay appears, grows, shrinks or goes.
     lags: Vec<(usize, usize, usize)>,
+    /// `(step, probe, param, range)`: move a port's range with
+    /// `Editor::set_param_range` after the step's commit, no commit of its
+    /// own (`None`: unbounded).
+    ranges: Vec<(usize, usize, usize, Option<(f32, f32)>)>,
     blocks: Vec<usize>,
 }
 
@@ -1049,9 +1288,18 @@ fn gen() -> impl Strategy<Value = Gen> {
                 0..3,
             ),
             prop::collection::vec(1usize..=MAX_BLOCK, steps),
+            prop::collection::vec(
+                (
+                    0..steps,
+                    0..np,
+                    0usize..2,
+                    prop::option::of((-1.5f32..0.5, -0.5f32..1.5)),
+                ),
+                0..4,
+            ),
         )
             .prop_map(
-                |(signals, ramps, probes, edges, moves, regens, lags, blocks)| Gen {
+                |(signals, ramps, probes, edges, moves, regens, lags, blocks, ranges)| Gen {
                     signals,
                     ramps,
                     probes,
@@ -1059,6 +1307,7 @@ fn gen() -> impl Strategy<Value = Gen> {
                     moves,
                     regens,
                     lags,
+                    ranges,
                     blocks,
                 },
             )
@@ -1185,6 +1434,18 @@ fn run_differential(g: &Gen) {
                 assert_eq!(reference.delay(d.key), d.len, "PDC of {:?}", d.key);
             }
         }
+        // Range moves, after the commit: a control each, to both.
+        for &(s, p, k, r) in &g.ranges {
+            if s == step {
+                let at = ParamIn {
+                    node: NodeKey(300 + p as u64),
+                    param: PARAMS[k],
+                };
+                let r = r.map_or(ParamRange::UNBOUNDED, |(lo, hi)| ParamRange::new(lo, hi));
+                ed.set_param_range(at, r).expect("a range");
+                reference.set_param_range(at, r);
+            }
+        }
 
         let mut a = vec![vec![0.0f32; n]; width];
         let mut b = vec![vec![0.0f32; n]; width];
@@ -1214,8 +1475,9 @@ proptest! {
     /// agree bit for bit on random modulated graphs — audio and ramp
     /// sources, identity and LUT shapings, ranges, PDC-delayed sources,
     /// connections made and broken mid-stream (declicks), base moves,
-    /// latency changes (param delays appearing, growing, shrinking) and
-    /// regenerated probes — and on every param source's PDC delay.
+    /// latency changes (param delays appearing, growing, shrinking),
+    /// regenerated probes and ranges moved without a commit — and on every
+    /// param source's PDC delay.
     ///
     /// Mutations (run), each diverges: in the reference, compare sources by
     /// their `from` only (a shaping change does not declick); in the
@@ -1224,7 +1486,9 @@ proptest! {
     /// reference, keep a regenerated probe's param state; in the reference,
     /// fill a new param delay line with 0; in the reference, declick a
     /// port's first block; in the reference, reset every source's state
-    /// when the port's sources change.
+    /// when the port's sources change; in the executor, ignore the live
+    /// range (clamp to the unbounded range); in the reference, ignore a
+    /// moved range (the graph's alone).
     #[test]
     fn modulated_graphs_match_the_reference(g in gen()) {
         run_differential(&g);

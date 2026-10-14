@@ -497,6 +497,55 @@ mod tests {
         assert!(commits(&app));
     }
 
+    /// Moving only a modulated param's bounds (`ModParamRange`'s `min` /
+    /// `max`) re-declares its range and nothing else: the graph value holds
+    /// the new range, and the frame's commit sends no new plan — a range is
+    /// a control the running unit reads per block, so a UI dragging it costs
+    /// a store per frame, not a recompile.
+    ///
+    /// Mutation (run): in `Editor::commit`, compare the committed spec with
+    /// `==` (a range is plan again) → each move sends a plan → fails.
+    #[test]
+    fn a_range_move_sends_no_plan() {
+        let (mut app, target, node) = app_with_target((0.0, 10.0));
+        let lfo = spawn_lfo(&mut app);
+        route(&mut app, lfo, target, 0.5);
+        app.update();
+        app.update();
+        let range = |app: &App| {
+            app.world()
+                .resource::<AudioGraphRes>()
+                .param_mod(node, UnitParam::Drive)
+                .expect("declared")
+                .range
+        };
+        let plan = |app: &App| {
+            app.world()
+                .resource::<AudioGraphRes>()
+                .sent_plan()
+                .expect("a plan")
+        };
+        assert_eq!(range(&app), tutti_graph::ParamRange::new(0.0, 10.0));
+        let before = plan(&app);
+        for (lo, hi) in [(1.0, 6.0), (2.0, 4.0), (0.5, 9.5)] {
+            {
+                let mut ranges = app
+                    .world_mut()
+                    .get_mut::<ModParamRange>(target)
+                    .expect("the target");
+                ranges.params[0].min = lo;
+                ranges.params[0].max = hi;
+            }
+            app.update();
+            assert_eq!(range(&app), tutti_graph::ParamRange::new(lo, hi));
+            assert!(
+                std::sync::Arc::ptr_eq(&before, &plan(&app)),
+                "moving the range to ({lo}, {hi}) sent a plan"
+            );
+        }
+        assert!(commits(&app));
+    }
+
     /// More routes than the graph can sum on one param: the first
     /// `MAX_PARAM_SOURCES` source nodes' routes are declared, the rest are
     /// dropped (with a warning naming them), and the graph keeps committing

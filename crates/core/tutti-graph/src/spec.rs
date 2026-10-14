@@ -291,11 +291,45 @@ impl GraphSpec {
 
     /// Clamps param port `at`'s modulated value to `range` — the param's own
     /// range, so no stack of modulators drives it past what the node
-    /// accepts. A range change recompiles; it does not restart the port's
-    /// sources. A NaN bound is refused by [`validate`](Self::validate)
+    /// accepts. A NaN bound is refused by [`validate`](Self::validate)
     /// ([`GraphInvalid::BadParamRange`]).
+    ///
+    /// A range is a control, not plan: the plan carries none, and a commit
+    /// whose only change is a range compiles and sends nothing (it writes
+    /// the range to the running unit, which clamps to it from its next
+    /// block). It does not restart the port's sources, and never rewrites
+    /// its base. [`Editor::set_param_range`](crate::Editor::set_param_range)
+    /// does the same without waiting for a commit.
     pub fn set_param_range(&mut self, at: ParamIn, range: ParamRange) {
         self.params.entry(at).or_default().range = range;
+    }
+
+    /// Whether `self` and `other` compile to the same plan, by value: equal
+    /// but for param ranges (a control, see
+    /// [`set_param_range`](Self::set_param_range)), with a param entry that
+    /// has no sources the same as none (as [`validate`](Self::validate)
+    /// treats it).
+    pub(crate) fn same_but_ranges(&self, other: &Self) -> bool {
+        // Destructured, so a field added later is compared or named here.
+        let Self {
+            topology,
+            events,
+            generations,
+            required_resolution,
+            params,
+        } = self;
+        fn wired(
+            p: &BTreeMap<ParamIn, ParamMod>,
+        ) -> impl Iterator<Item = (&ParamIn, &Vec<ParamSource>)> {
+            p.iter()
+                .filter(|(_, m)| !m.sources.is_empty())
+                .map(|(at, m)| (at, &m.sources))
+        }
+        *topology == other.topology
+            && *events == other.events
+            && *generations == other.generations
+            && *required_resolution == other.required_resolution
+            && wired(params).eq(wired(&other.params))
     }
 
     /// Checks everything that does not need the nodes' [`Shape`](crate::Shape)s.

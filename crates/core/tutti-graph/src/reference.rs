@@ -69,7 +69,10 @@
 //!   where the executor re-keys an array. Ramps are evaluated from their
 //!   start frame rather than stepped. A param source's new or longer delay
 //!   line is filled with the source's last value. Only the LUT lookup is
-//!   shared with the executor.
+//!   shared with the executor. A port's range is the graph's, unless
+//!   [`set_param_range`](Reference::set_param_range) moved it since the last
+//!   [`set_graph`](Reference::set_graph) — `Editor::set_param_range`'s
+//!   contract, taking effect on the next block, without a new graph.
 //!
 //! [`FeedbackKey`]: crate::FeedbackKey
 
@@ -86,7 +89,7 @@ use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, Node, Prepare, SilenceMask, Status, Transport,
     TransportChanges,
 };
-use crate::param::{ParamFrom, ParamIn, ParamInput, ParamSource, PARAM_DECLICK};
+use crate::param::{ParamFrom, ParamIn, ParamInput, ParamRange, ParamSource, PARAM_DECLICK};
 use crate::plan::DelayKey;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 use crate::time::Offset;
@@ -174,6 +177,9 @@ pub struct Reference {
     reset_time: bool,
     frame: Frame,
     params: BTreeMap<ParamIn, RefParam>,
+    /// Ranges moved by [`set_param_range`](Self::set_param_range) since the
+    /// last graph: they override the graph's.
+    ranges: BTreeMap<ParamIn, ParamRange>,
 }
 
 impl Reference {
@@ -195,6 +201,7 @@ impl Reference {
             next_id: 0,
             cancelled: 0,
             params: BTreeMap::new(),
+            ranges: BTreeMap::new(),
             playhead: RefPlayhead::default(),
             suspended: None,
             landing: BTreeMap::new(),
@@ -355,6 +362,14 @@ impl Reference {
     /// can compare its latency solve against the compiler's.
     pub fn delay(&self, key: DelayKey) -> Samples {
         self.delays.get(&key).copied().unwrap_or_default()
+    }
+
+    /// Moves param port `at`'s range, from the next block on, without a new
+    /// graph: `Editor::set_param_range`'s contract. The next
+    /// [`set_graph`](Self::set_graph) replaces it with the graph's (the
+    /// editor's spec records the move, so the two agree).
+    pub fn set_param_range(&mut self, at: ParamIn, range: ParamRange) {
+        self.ranges.insert(at, range);
     }
 
     /// Switch to `graph`. `fresh` supplies a unit for every node that is new or
@@ -704,6 +719,7 @@ impl Reference {
         self.arrival = arrival;
         self.delays = delays;
         self.graph = Some(graph.clone());
+        self.ranges.clear();
     }
 
     /// Renders one block. Same contract as
@@ -1147,6 +1163,7 @@ impl Reference {
                 .get(&at)
                 .map(|m| (m.range, m.sources.clone()))
                 .unwrap_or_default();
+            let range = self.ranges.get(&at).copied().unwrap_or(range);
             // Each source's raw values this block, through its PDC delay.
             let mut raw: Vec<Vec<f32>> = Vec::new();
             let mut ramp_events: Vec<Vec<Event>> = Vec::new();

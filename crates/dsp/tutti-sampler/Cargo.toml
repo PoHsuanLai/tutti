@@ -79,7 +79,6 @@ thiserror = "2"
 ringbuf = "0.4"
 crossbeam-channel = "0.5"
 dashmap = "6.1"
-arc-swap = "1.7"
 parking_lot = "0.12"
 
 # Parallel I/O

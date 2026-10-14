@@ -119,7 +119,7 @@ Changes:
 
 ```rust
 pub trait Node: Send + 'static {
-    /// Handles the control side keeps: Param<U> atomics, ArcSwapOption slots.
+    /// Handles the control side keeps: Param<U> atomics, RtPublish cells.
     /// Replaces `as_any` + `node_as::<T>` downcasts with a typed return.
     type Controls: Send + Sync + 'static;
 
@@ -217,7 +217,19 @@ the interpreter.
   shipped code (exhaustively under `just loom-full`). The read costs the same as the `ArcSwap::load` it
   replaced uncontended (~3 ns) and less under a hammering publisher (~25 ns vs
   ~41 ns), per `tutti-types/benches/rt_publish_read.rs`. `arc-swap` left
-  `tutti-types`; the nullable slots elsewhere stay on `ArcSwapOption`.
+  `tutti-types`.
+- **Done: nothing the audio thread reads is an `ArcSwap`.** Two audio-thread
+  `ArcSwap` reads remained after #15, each able to free on the audio thread
+  (a store settles a held guard's debt into a strong count, and the guard's
+  drop is then the last owner). The hardware MIDI port set
+  (`HardwareMidiInputs`) is an `RtPublish<Vec<_>>` whose read, append and
+  publish run under one publisher lock, which also fixes two concurrent
+  creators losing a port. The plugin nodes' meter slot (`PluginMeter`) is an
+  `RtPublish<Option<Arc<RtPublish<MeterMap>>>>`: the node borrows the
+  installed cell, so an install or clear mid-block retires it for the control
+  side, whether or not the host kept a clone. Its read is nested, one slot in
+  each of two cells. The plugin tail, which no audio thread reads, is a
+  `Mutex`. `arc-swap` is now only `tutti-types`' bench baseline.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
   tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is
@@ -5379,10 +5391,11 @@ the seqlock the callback reads before entering the plugin.
   (the out-of-process node's mapping), with the meter and the node's
   `SteadyTime`. A plugin that does not declare `Features::TRANSPORT` is
   handed the default snapshot, as before, and an empty block repeats the
-  last snapshot. Per block: two lock-free loads (the meter's
-  `ArcSwapOption`, then its `RtPublish`), no allocation, no new lock.
+  last snapshot. Per block: two wait-free borrows (the meter slot, then
+  the meter cell it holds), no allocation, no new lock.
 - **The meter** is a `PluginMeter` (`tutti_plugin::handles`): one
-  `ArcSwapOption<RtPublish<MeterMap>>` cell shared across the node's
+  `RtPublish<Option<Arc<RtPublish<MeterMap>>>>` cell (an `ArcSwapOption`
+  when this landed) shared across the node's
   clones, and the out-of-process node's `PluginControls::meter` too.
   Installed with `InProcessVst2Client::set_meter` (`clear_meter`,
   `has_meter`), through the `PluginMeter` inserting the node hands back as

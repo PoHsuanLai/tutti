@@ -3108,21 +3108,52 @@ Evidence:
 
 Benchmarks (`tutti-nodes/benches/parallel_render.rs`, criterion medians,
 one 256-frame block at 48 kHz, this crate's `SvfFilterNode`s; a 4-core
-container; `1` is the serial executor with no pool, the others
-`WorkerPool::new(n)`):
+container, otherwise idle (load under 0.8 before each run); `1` is the
+serial executor with no pool, the others `WorkerPool::new(n)`; `best` is
+the serial time over the fastest):
 
-BENCH_TABLE
+| graph | 1 (serial) | 2 | 4 | 8 | best |
+|---|---|---|---|---|---|
+| `wide/8x8` | 162.6 µs | 98.5 µs | 63.0 µs | 66.4 µs | 2.58× |
+| `wide/32x8` | 648.2 µs | 380.4 µs | 219.6 µs | 241.3 µs | 2.95× |
+| `wide/64x16` | 2.41 ms | 1.35 ms | 775.2 µs | 794.5 µs | 3.11× |
+| `deep/128` | 267.3 µs | 266.5 µs | 266.3 µs | 267.1 µs | 1.00× |
+| `tiny/16` | 11.4 µs | 19.9 µs | 20.4 µs | 21.6 µs | 1.00× |
 
 Where a pool loses: `tiny/16` (16 single gains, one multiply per sample)
-costs 2.7× the serial walk at two and four participants and 10× at eight,
-because each task is cheaper than dispatching it. That is what the cost
+costs 1.7× the serial walk at two participants, 1.8× at four and 1.9× at
+eight, because each task is cheaper than dispatching it. That is what the cost
 model (part b) is for. `deep/128` is one fused task: the executor takes the
 serial walk and the pool costs nothing. Eight participants oversubscribe the
 four cores and lose to four everywhere; those rows are measured, not
 dropped.
 
-Serial cost of the refactor (`tutti-graph`'s `graph_render`, the base
-branch against this one, same machine, same flags): SERIAL_TABLE
+Serial cost of the refactor (`tutti-graph`'s `graph_render`, `main` at
+b0ecb9c against this branch, same machine and flags, idle; each figure is
+the mean of two criterion medians, the runs alternating base and branch;
+the last column is how far `main`'s own two runs moved apart). Every
+case is within about ±4%, and every difference is within twice the
+run-to-run spread: the generic op code costs the serial walk nothing
+measurable.
+
+| case | main | this branch | change | main run-to-run |
+|---|---|---|---|---|
+| `nodes/1-nodes/64` | 1.14 µs | 1.14 µs | +0.1% | 0.6% |
+| `nodes/1-nodes/512` | 8.03 µs | 8.07 µs | +0.5% | 0.6% |
+| `nodes/8-nodes/64` | 4.48 µs | 4.31 µs | -3.9% | 2.8% |
+| `nodes/8-nodes/512` | 34.53 µs | 34.49 µs | -0.1% | 0.4% |
+| `nodes/32-nodes/64` | 15.67 µs | 15.82 µs | +1.0% | 0.9% |
+| `block_size/64` | 4.42 µs | 4.44 µs | +0.4% | 0.7% |
+| `block_size/128` | 8.65 µs | 8.76 µs | +1.3% | 0.7% |
+| `block_size/256` | 17.91 µs | 17.41 µs | -2.8% | 1.5% |
+| `block_size/512` | 34.35 µs | 34.43 µs | +0.2% | 0.7% |
+| `block_size/1024` | 68.99 µs | 68.84 µs | -0.2% | 1.2% |
+| `fan/4-wide/64` | 2.84 µs | 2.78 µs | -1.8% | 1.3% |
+| `fan/4-wide/512` | 20.23 µs | 20.54 µs | +1.6% | 2.4% |
+| `fan/16-wide/64` | 8.97 µs | 9.16 µs | +2.1% | 2.0% |
+| `fan/16-wide/512` | 67.82 µs | 67.86 µs | +0.1% | 0.8% |
+| `fan/64-wide/64` | 34.06 µs | 33.90 µs | -0.5% | 2.5% |
+| `fan/64-wide/512` | 256.64 µs | 255.64 µs | -0.4% | 1.8% |
 
 ## Per-node rewrite plan
 

@@ -1448,7 +1448,8 @@ impl Editor {
     ///   beat-timed one can wait indefinitely (a stopped transport, a beat
     ///   past the loop end, one a seek jumped over), so cancel what you no
     ///   longer want.
-    /// - A [`ParamRamp`](crate::ParamRamp) into a node that does not honour
+    /// - A [`ParamRamp`](crate::ParamRamp) or a
+    ///   [`ParamSegment`](crate::ParamSegment) into a node that does not honour
     ///   offsets sample-accurately is refused
     ///   ([`ScheduleError::ResolutionTooCoarse`]), as a marked edge would be.
     ///
@@ -1483,7 +1484,9 @@ impl Editor {
             return Err(ScheduleError::NoSuchPort { to });
         };
         let sink = unit.shape.event_resolution;
-        if matches!(kind, EventKind::Ramp(_)) && !sink.honours(Resolution::Sample) {
+        if matches!(kind, EventKind::Ramp(_) | EventKind::Segment(_))
+            && !sink.honours(Resolution::Sample)
+        {
             return Err(ScheduleError::ResolutionTooCoarse { to, sink });
         }
         self.commands.send(self.sent, at, to, kind)

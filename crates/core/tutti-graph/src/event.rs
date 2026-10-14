@@ -5,7 +5,9 @@
 //! port may have several sources, merged deterministically by `(offset,
 //! source order)`, where source order is the source port's `(NodeKey, port)`
 //! — layering a keyboard and a clip is the normal case, not an edge case.
-//! Automation is carried as **linear ramp** events.
+//! Automation is carried as **linear ramp** events ([`ParamRamp`]) and as
+//! **curve segments** ([`ParamSegment`]: a closed set of shapes a param port
+//! evaluates per frame).
 //!
 //! # Why a raw UMP payload and not `tutti-midi-types`
 //!
@@ -17,9 +19,7 @@
 
 use std::cell::Cell;
 
-#[cfg(doc)]
-use tutti_types::UnitParam;
-use tutti_types::{ParamAddr, ParamKey, Samples, Unit};
+use tutti_types::{ParamAddr, ParamKey, SamplePosition, Samples, Unit, UnitParam};
 
 use crate::time::Offset;
 
@@ -59,7 +59,10 @@ pub struct Ump(pub [u32; 4]);
 pub struct ParamRamp {
     addr: ParamAddr,
     target: f32,
-    duration: Samples,
+    // Frames, saturated to `u32` (what the param port counts in anyway):
+    // a `usize` would align the whole event to 8 and push it past 32
+    // bytes.
+    duration: u32,
 }
 
 impl ParamRamp {
@@ -69,7 +72,7 @@ impl ParamRamp {
         Self {
             addr: ParamAddr::Unit(key.id()),
             target: target.to_raw(),
-            duration,
+            duration: saturate(duration),
         }
     }
 
@@ -80,7 +83,7 @@ impl ParamRamp {
         Self {
             addr: ParamAddr::Id(id),
             target,
-            duration,
+            duration: saturate(duration),
         }
     }
 
@@ -106,10 +109,467 @@ impl ParamRamp {
         self.target
     }
 
-    /// How long the ramp takes.
+    /// How long the ramp takes (saturated at `u32::MAX` frames, about a
+    /// day at 48 kHz).
     pub fn duration(&self) -> Samples {
-        self.duration
+        Samples(self.duration as usize)
     }
+}
+
+/// A frame count as a `u32`, saturating.
+fn saturate(n: Samples) -> u32 {
+    u32::try_from(n.get()).unwrap_or(u32::MAX)
+}
+
+/// How a [`ParamSegment`] moves from its start value to its end value: a
+/// function `g` of its progress `t` in `[0, 1]`, with `g(0) = 0` and
+/// `g(1) = 1`; the value is `from + (to - from) · g(t)`.
+///
+/// A **closed set**, so a segment stays a `Copy` value a few words long on
+/// the audio thread rather than an `Arc<dyn Curve>`. Every shape is monotone
+/// between its endpoints, so a segment never leaves `[from, to]`.
+///
+/// A parameter that is not finite, or out of the range a variant states,
+/// evaluates as [`Linear`](Self::Linear): the audio thread never computes a
+/// NaN from a shape.
+///
+/// **Platform figures.** `Linear`, `Hold`, and the power shapes at exponents
+/// 0.5 and 1–5 evaluate with IEEE-exact operations (multiplication, `sqrt`),
+/// so they render the same bits on every target. Other exponents (`powf`)
+/// and [`Exp`](Self::Exp) (`exp_m1`) go through the platform's libm and may
+/// differ in the last ulp between targets; within one target they are
+/// deterministic, so a parallel render still equals the serial one.
+///
+/// ```
+/// use tutti_graph::SegmentShape;
+/// assert_eq!(SegmentShape::Linear.eval(0.25), 0.25);
+/// assert_eq!(SegmentShape::PowerIn(2.0).eval(0.5), 0.25);
+/// assert_eq!(SegmentShape::PowerOut(2.0).eval(0.5), 0.75);
+/// assert_eq!(SegmentShape::Hold.eval(0.99), 0.0);
+/// assert_eq!(SegmentShape::PowerIn(f32::NAN).eval(0.5), 0.5); // as linear
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SegmentShape {
+    /// `t`.
+    Linear,
+    /// `0` until the end, then `1`: the start value held, and a step onto
+    /// the end value on the segment's last frame.
+    Hold,
+    /// `t^p`, `p > 0`: an ease-in. `p > 1` starts slow (`2` is a quadratic,
+    /// `audio-automation`'s "exponential"), `p < 1` starts fast (`0.5` is a
+    /// square root, its "logarithmic").
+    PowerIn(f32),
+    /// `1 - (1 - t)^p`, `p > 0`: the ease-out mirror of
+    /// [`PowerIn`](Self::PowerIn).
+    PowerOut(f32),
+    /// [`PowerIn`](Self::PowerIn) over the first half and
+    /// [`PowerOut`](Self::PowerOut) over the second, `p > 0`: an S-curve
+    /// (`2` is the quadratic "S-curve").
+    PowerInOut(f32),
+    /// `(e^(k·t) - 1) / (e^k - 1)`: a true exponential with curvature `k`
+    /// (`|k|` past 64 is clamped). `k > 0` starts slow, `k < 0` starts fast;
+    /// `k` near 0 is linear. `k = ln(to / from)` makes the value geometric
+    /// (a frequency sweep linear in pitch).
+    Exp(f32),
+}
+
+impl SegmentShape {
+    /// `g(t)`, `t` clamped to `[0, 1]` (a NaN `t` is 0). Allocation-free:
+    /// what a param port calls once per frame.
+    #[inline]
+    pub fn eval(self, t: f32) -> f32 {
+        let t = if t >= 0.0 { t.min(1.0) } else { 0.0 };
+        match self {
+            Self::Linear => t,
+            Self::Hold => {
+                if t < 1.0 {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+            Self::PowerIn(p) if valid_exponent(p) => pow(t, p),
+            Self::PowerOut(p) if valid_exponent(p) => 1.0 - pow(1.0 - t, p),
+            Self::PowerInOut(p) if valid_exponent(p) => {
+                // `2^(p-1) · t^p` is `(2t)^p / 2`, which keeps the integer
+                // exponents on multiplications.
+                if t < 0.5 {
+                    pow(2.0 * t, p) / 2.0
+                } else {
+                    1.0 - pow(2.0 - 2.0 * t, p) / 2.0
+                }
+            }
+            Self::Exp(k) if k.is_finite() => {
+                let k = k.clamp(-EXP_CURVATURE_MAX, EXP_CURVATURE_MAX);
+                if k.abs() < 1e-4 {
+                    t
+                } else {
+                    (k * t).exp_m1() / k.exp_m1()
+                }
+            }
+            // An invalid parameter: linear (see the type docs).
+            Self::PowerIn(_) | Self::PowerOut(_) | Self::PowerInOut(_) | Self::Exp(_) => t,
+        }
+    }
+
+    /// The shape as its tag and parameter: how a segment and the fork tap
+    /// store it.
+    pub(crate) fn pack(self) -> (ShapeTag, f32) {
+        match self {
+            Self::Linear => (ShapeTag::Linear, 0.0),
+            Self::Hold => (ShapeTag::Hold, 0.0),
+            Self::PowerIn(p) => (ShapeTag::PowerIn, p),
+            Self::PowerOut(p) => (ShapeTag::PowerOut, p),
+            Self::PowerInOut(p) => (ShapeTag::PowerInOut, p),
+            Self::Exp(k) => (ShapeTag::Exp, k),
+        }
+    }
+
+    /// The inverse of [`pack`](Self::pack).
+    pub(crate) fn unpack(tag: ShapeTag, param: f32) -> Self {
+        match tag {
+            ShapeTag::Linear => Self::Linear,
+            ShapeTag::Hold => Self::Hold,
+            ShapeTag::PowerIn => Self::PowerIn(param),
+            ShapeTag::PowerOut => Self::PowerOut(param),
+            ShapeTag::PowerInOut => Self::PowerInOut(param),
+            ShapeTag::Exp => Self::Exp(param),
+        }
+    }
+}
+
+/// The largest `|k|` [`SegmentShape::Exp`] evaluates: `e^64` is far inside
+/// `f32`, so the ratio never overflows to `inf / inf`.
+const EXP_CURVATURE_MAX: f32 = 64.0;
+
+fn valid_exponent(p: f32) -> bool {
+    p.is_finite() && p > 0.0
+}
+
+/// `x^p` for `x` in `[0, 1]`: the integer exponents up to 5 and the square
+/// root by IEEE-exact operations, anything else through `powf`.
+#[inline]
+fn pow(x: f32, p: f32) -> f32 {
+    if p == 1.0 {
+        x
+    } else if p == 2.0 {
+        x * x
+    } else if p == 3.0 {
+        x * x * x
+    } else if p == 4.0 {
+        let x2 = x * x;
+        x2 * x2
+    } else if p == 5.0 {
+        let x2 = x * x;
+        x2 * x2 * x
+    } else if p == 0.5 {
+        x.sqrt()
+    } else {
+        x.powf(p)
+    }
+}
+
+/// [`SegmentShape`]'s variant, as a byte: a segment stores its shape as this
+/// and an `f32`, so an [`Event`] stays 32 bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum ShapeTag {
+    Linear,
+    Hold,
+    PowerIn,
+    PowerOut,
+    PowerInOut,
+    Exp,
+}
+
+impl ShapeTag {
+    /// The tag for a byte the fork tap stored (`Linear` for any other).
+    pub(crate) fn from_u8(b: u8) -> Self {
+        match b {
+            1 => Self::Hold,
+            2 => Self::PowerIn,
+            3 => Self::PowerOut,
+            4 => Self::PowerInOut,
+            5 => Self::Exp,
+            _ => Self::Linear,
+        }
+    }
+}
+
+/// A curve segment of one parameter: from a start value to an end value
+/// along a [`SegmentShape`], over a length in frames, evaluated by the param
+/// port **per frame inside the block** — sample-accurate non-linear
+/// automation, with no sub-chunking at breakpoints (doc 013, decision 7).
+///
+/// **Absolute, unlike a [`ParamRamp`].** A ramp moves from wherever its
+/// source's value stands; a segment says both its endpoints and where along
+/// itself it is at the event's frame. Re-sending the segment a producer is
+/// on (each block, after a seek, a loop wrap, a tempo change) is therefore
+/// idempotent: a producer can be a pure function of the transport, and a
+/// segment entered part-way renders what one started at its beginning
+/// would have there. The value at frame `j` after the event (`j = 0` is the
+/// event's own frame) is
+///
+/// ```text
+/// t = (position + j) / length
+/// t < 1:  from + (to - from) · shape.eval(t)
+/// t >= 1: to, held until the source's next event
+/// ```
+///
+/// [`new`](Self::new) builds the ramp convention (`position = 1`: the
+/// event's frame is one step in, `to` lands on frame `duration - 1`);
+/// [`resumed`](Self::resumed) sets a fractional position and length, for a
+/// producer whose breakpoints fall between frames. A **negative position**
+/// is a delayed start: the source holds `from` until `position + j` reaches
+/// 0, then moves. A length that is not finite and above zero (zero,
+/// negative, infinite, NaN) is a step to `to` on the event's frame.
+///
+/// **Interrupted** by any later ramp or segment event for the same
+/// parameter on the same source, from that event's frame: a segment jumps to
+/// its own value there (it is absolute), a ramp moves on from the value the
+/// interrupted segment had reached.
+///
+/// Addressed and typed as [`ParamRamp`] is (built-in params by
+/// [`ParamKey<U>`], foreign ones by an opaque `u32`). A param port's range
+/// is applied when the port reads the value, never to the endpoints.
+///
+/// ```
+/// use tutti_graph::{ParamSegment, SegmentShape};
+/// use tutti_types::{Hz, ParamKey, Samples};
+/// let s = ParamSegment::new(
+///     ParamKey::<Hz>::CUTOFF,
+///     Hz(200.0),
+///     Hz(800.0),
+///     Samples(480),
+///     SegmentShape::PowerIn(2.0),
+/// );
+/// assert_eq!(s.target(ParamKey::<Hz>::CUTOFF), Some(Hz(800.0)));
+/// assert_eq!(s.start(ParamKey::<Hz>::CUTOFF), Some(Hz(200.0)));
+/// assert_eq!(s.shape(), SegmentShape::PowerIn(2.0));
+/// // Frame 239 is 240/480 of the way: a quadratic ease-in is a quarter up.
+/// assert_eq!(s.raw_value_after(Samples(239)), 200.0 + 600.0 * 0.25);
+/// assert_eq!(s.raw_value_after(Samples(479)), 800.0);
+/// assert_eq!(s.arrives_after(), Some(Samples(479)));
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParamSegment {
+    // The address, packed (a `ParamAddr` takes 8 bytes and would push an
+    // `Event` past 32): a built-in param's `UnitParam` discriminant, or the
+    // foreign id, told apart by `foreign`.
+    id: u32,
+    from: f32,
+    to: f32,
+    // Position and length in frames. `f32`, not `SamplePosition`'s `f64`:
+    // this is where the types stop, because the event must stay 32 bytes.
+    // An `f32` frame count is exact to 2^24 frames (≈ 5.8 minutes at
+    // 48 kHz); past that a segment's progress rounds to a few frames.
+    position: f32,
+    length: f32,
+    shape_param: f32,
+    shape: ShapeTag,
+    foreign: bool,
+}
+
+impl ParamSegment {
+    /// A segment of built-in parameter `key` from `from` to `to` along
+    /// `shape` over `duration` frames, in the ramp convention: the event's
+    /// frame is one step in, and `to` lands on its last frame (a zero
+    /// duration is a step to `to`).
+    pub fn new<U: Unit<Raw = f32>>(
+        key: ParamKey<U>,
+        from: U,
+        to: U,
+        duration: Samples,
+        shape: SegmentShape,
+    ) -> Self {
+        Self::packed(
+            u32::from(u16::from(key.id())),
+            false,
+            from.to_raw(),
+            to.to_raw(),
+            duration,
+            shape,
+        )
+    }
+
+    /// A segment of a foreign unit's parameter `id`, in its own
+    /// normalisation, as [`new`](Self::new) otherwise.
+    pub fn foreign(id: u32, from: f32, to: f32, duration: Samples, shape: SegmentShape) -> Self {
+        Self::packed(id, true, from, to, duration, shape)
+    }
+
+    fn packed(
+        id: u32,
+        foreign: bool,
+        from: f32,
+        to: f32,
+        duration: Samples,
+        shape: SegmentShape,
+    ) -> Self {
+        let (tag, shape_param) = shape.pack();
+        Self {
+            id,
+            from,
+            to,
+            position: 1.0,
+            length: duration.get() as f32,
+            shape_param,
+            shape: tag,
+            foreign,
+        }
+    }
+
+    /// This segment, `position` frames along a `length`-frame span at the
+    /// event's frame: for a producer whose breakpoints fall between frames,
+    /// or that enters a segment part-way (a seek, a loop wrap, each block's
+    /// re-send). Both are fractional; see the type docs for the value each
+    /// frame gets. A length that is not finite and above zero is a step to
+    /// `to`; a negative position holds `from` until it reaches 0.
+    pub fn resumed(mut self, position: SamplePosition, length: SamplePosition) -> Self {
+        self.position = position.get() as f32;
+        self.length = length.get() as f32;
+        self
+    }
+
+    /// Which parameter this moves — for routing on the address.
+    pub fn addr(&self) -> ParamAddr {
+        if self.foreign {
+            return ParamAddr::Id(self.id);
+        }
+        // Built from a `UnitParam` by `new`, so it converts back.
+        u16::try_from(self.id)
+            .ok()
+            .and_then(|id| UnitParam::try_from(id).ok())
+            .map_or(ParamAddr::Id(self.id), ParamAddr::Unit)
+    }
+
+    /// Whether this segment is for `addr`. No conversion: what the param
+    /// port asks of every event, per event.
+    #[inline]
+    pub(crate) fn is_for(&self, addr: ParamAddr) -> bool {
+        match addr {
+            ParamAddr::Unit(p) => !self.foreign && self.id == u32::from(u16::from(p)),
+            ParamAddr::Id(id) => self.foreign && self.id == id,
+        }
+    }
+
+    /// The end value, in `key`'s unit, if this segment is for `key`.
+    pub fn target<U: Unit<Raw = f32>>(&self, key: ParamKey<U>) -> Option<U> {
+        self.is_for(ParamAddr::Unit(key.id()))
+            .then(|| U::from_raw(self.to))
+    }
+
+    /// The start value, in `key`'s unit, if this segment is for `key`.
+    pub fn start<U: Unit<Raw = f32>>(&self, key: ParamKey<U>) -> Option<U> {
+        self.is_for(ParamAddr::Unit(key.id()))
+            .then(|| U::from_raw(self.from))
+    }
+
+    /// The raw end value, if this segment is for foreign parameter `id`.
+    pub fn foreign_target(&self, id: u32) -> Option<f32> {
+        self.is_for(ParamAddr::Id(id)).then_some(self.to)
+    }
+
+    /// The raw start value, if this segment is for foreign parameter `id`.
+    pub fn foreign_start(&self, id: u32) -> Option<f32> {
+        self.is_for(ParamAddr::Id(id)).then_some(self.from)
+    }
+
+    /// The shape it moves along.
+    pub fn shape(&self) -> SegmentShape {
+        SegmentShape::unpack(self.shape, self.shape_param)
+    }
+
+    /// Its position along itself at the event's frame, in frames.
+    pub fn position(&self) -> SamplePosition {
+        SamplePosition(f64::from(self.position))
+    }
+
+    /// Its length, in frames.
+    pub fn length(&self) -> SamplePosition {
+        SamplePosition(f64::from(self.length))
+    }
+
+    /// The raw value `j` frames after the event's frame (`Samples(0)`: its
+    /// own), whatever the unit: the value a param port gives this source
+    /// there, for a node that takes point values (a hosted plugin's
+    /// parameter) or a test. Past `u32::MAX` frames it reads the value
+    /// there.
+    pub fn raw_value_after(&self, j: Samples) -> f32 {
+        segment_value(
+            self.from,
+            self.to,
+            self.shape(),
+            self.position,
+            self.length,
+            saturate(j),
+        )
+    }
+
+    /// How many frames after the event's frame the segment arrives: the
+    /// first `j` at which [`raw_value_after`](Self::raw_value_after) is the
+    /// end value (`Samples(0)` for a step). `None` when it never arrives
+    /// within `u32::MAX` frames. For a node that takes point values and
+    /// must land the end value on its frame.
+    pub fn arrives_after(&self) -> Option<Samples> {
+        let (p, l) = (self.position, self.length);
+        if segment_progress(p, l, 0).is_none() {
+            return Some(Samples(0));
+        }
+        // Finite here. The guess is within a frame or two of the
+        // predicate's answer, which decides.
+        let guess = (l - p).ceil().max(0.0);
+        if guess >= u32::MAX as f32 {
+            return None;
+        }
+        let mut j = guess as u32;
+        while j > 0 && segment_progress(p, l, j - 1).is_none() {
+            j -= 1;
+        }
+        while segment_progress(p, l, j).is_some() {
+            j = j.checked_add(1)?;
+        }
+        Some(Samples(j as usize))
+    }
+
+    /// The raw endpoints, position and length, for the graph's own param
+    /// port, which is erased over the unit as the port it drives is.
+    pub(crate) fn raw(&self) -> (f32, f32, f32, f32) {
+        (self.from, self.to, self.position, self.length)
+    }
+}
+
+/// A segment's value `j` frames after its event: `to` exactly once it
+/// has arrived (see [`segment_progress`]), so a segment always lands
+/// on its end value. The one definition the param port, the reference
+/// interpreter and [`ParamSegment::raw_value_after`] share, as they share a
+/// shaping LUT.
+#[inline]
+pub(crate) fn segment_value(
+    from: f32,
+    to: f32,
+    shape: SegmentShape,
+    position: f32,
+    length: f32,
+    j: u32,
+) -> f32 {
+    match segment_progress(position, length, j) {
+        Some(t) => from + (to - from) * shape.eval(t),
+        None => to,
+    }
+}
+
+/// A segment's progress `j` frames after its event, `None` once it has
+/// arrived: at 1 or past, NaN (a NaN position), or a length that is not
+/// finite and above zero (a step). A negative progress (a delayed start) is
+/// returned as is; the shape clamps it to 0.
+#[inline]
+pub(crate) fn segment_progress(position: f32, length: f32, j: u32) -> Option<f32> {
+    if !(length > 0.0 && length.is_finite()) {
+        return None;
+    }
+    let t = (position + j as f32) / length;
+    (t < 1.0).then_some(t)
 }
 
 /// What an [`Event`] says.
@@ -119,6 +579,9 @@ pub enum EventKind {
     Midi(Ump),
     /// A parameter automation ramp.
     Ramp(ParamRamp),
+    /// A parameter curve segment: a shaped, absolute move a param port
+    /// evaluates per frame (see [`ParamSegment`]).
+    Segment(ParamSegment),
     /// A chord or scale taking effect.
     Harmony(Harmony),
 }
@@ -210,7 +673,8 @@ pub struct Event {
 
 // An event is what every event buffer, merge and delay FIFO holds by value,
 // preallocated on the control side and copied on the audio thread: it must
-// stay `Copy` and small, whatever payload is added (a curve segment, say).
+// stay `Copy` and small, whatever payload is added (a curve segment packs
+// its address and shape tag for this).
 // Four UMP words cover every MIDI 2.0 message, 128-bit ones included, so a
 // MIDI payload never needs to grow it. Asserted here rather than discovered
 // as a slower merge.
@@ -251,6 +715,14 @@ impl Event {
         Self {
             offset,
             kind: EventKind::Ramp(ramp),
+        }
+    }
+
+    /// A parameter curve segment, its event frame at `offset`.
+    pub const fn segment(offset: Offset, segment: ParamSegment) -> Self {
+        Self {
+            offset,
+            kind: EventKind::Segment(segment),
         }
     }
 
@@ -805,5 +1277,132 @@ mod tests {
         assert!(Event::midi(Offset::ZERO, [0x4080_3c00, 0x8000_0000, 0, 0]).is_note_off());
         assert!(!Event::midi(Offset::ZERO, [0x4090_3c00, 0x8000_0000, 0, 0]).is_note_off());
         assert!(!Event::ramp(Offset::ZERO, ParamRamp::foreign(1, 0.0, Samples(0))).is_note_off());
+    }
+
+    /// Every shape runs from 0 to 1, monotonically, at its analytic figures
+    /// (closed forms in `f64`, within a tolerance: `Exp` and a non-integer
+    /// power go through libm), and a shape with an unusable parameter is
+    /// linear.
+    ///
+    /// Mutations (run), each fails: `PowerOut` as `pow(t, p)` (the ease-in);
+    /// `PowerInOut`'s first half as `pow(t, p)` (no `2t`); `Exp` with
+    /// `exp_m1(k)` and `exp_m1(k t)` swapped; dropping the `valid_exponent`
+    /// guard (`PowerIn(-1)` gives `inf` at 0).
+    #[test]
+    fn every_shape_meets_its_closed_form() {
+        use SegmentShape as S;
+        let closed = |s: S, t: f64| -> f64 {
+            match s {
+                S::Linear => t,
+                S::Hold => f64::from(u8::from(t >= 1.0)),
+                S::PowerIn(p) => t.powf(f64::from(p)),
+                S::PowerOut(p) => 1.0 - (1.0 - t).powf(f64::from(p)),
+                S::PowerInOut(p) if t < 0.5 => 2f64.powf(f64::from(p) - 1.0) * t.powf(f64::from(p)),
+                S::PowerInOut(p) => 1.0 - (2.0 - 2.0 * t).powf(f64::from(p)) / 2.0,
+                S::Exp(k) => {
+                    let k = f64::from(k);
+                    ((k * t).exp() - 1.0) / (k.exp() - 1.0)
+                }
+            }
+        };
+        let shapes = [
+            S::Linear,
+            S::Hold,
+            S::PowerIn(2.0),
+            S::PowerIn(0.5),
+            S::PowerIn(5.0),
+            S::PowerIn(1.7),
+            S::PowerOut(3.0),
+            S::PowerInOut(2.0),
+            S::PowerInOut(4.0),
+            S::Exp(5.0),
+            S::Exp(-3.0),
+        ];
+        for s in shapes {
+            assert_eq!(s.eval(0.0), 0.0, "{s:?} starts at 0");
+            assert_eq!(s.eval(1.0), 1.0, "{s:?} ends at 1");
+            let mut prev = 0.0f32;
+            for i in 0..=1000 {
+                let t = i as f32 / 1000.0;
+                let g = s.eval(t);
+                let want = closed(s, f64::from(t));
+                assert!(
+                    (f64::from(g) - want).abs() < 2e-6,
+                    "{s:?} at {t}: {g} vs {want}"
+                );
+                assert!(g >= prev, "{s:?} is monotone at {t}");
+                prev = g;
+            }
+        }
+        for s in [
+            S::PowerIn(-1.0),
+            S::PowerOut(0.0),
+            S::PowerInOut(f32::INFINITY),
+            S::Exp(f32::NAN),
+        ] {
+            assert_eq!(s.eval(0.0), 0.0, "{s:?}");
+            assert_eq!(s.eval(0.3), 0.3, "{s:?} is linear");
+        }
+        // Out of range and NaN progress: clamped, never a NaN.
+        assert_eq!(S::Exp(2.0).eval(-1.0), 0.0);
+        assert_eq!(S::PowerIn(2.0).eval(f32::NAN), 0.0);
+        assert!(S::Exp(1e9).eval(0.5).is_finite());
+    }
+
+    /// A segment's address round-trips, built-in and foreign never answer
+    /// for each other, and its shape and timing read back as built.
+    ///
+    /// Mutations (run), each fails: drop the `foreign` test in
+    /// `ParamSegment::is_for` (the foreign segment with id 0 reads back as a
+    /// cutoff); the step guard in `segment_progress` as `length == 0.0` (a
+    /// negative or infinite length holds `from`).
+    #[test]
+    fn a_segment_reads_back_as_built() {
+        use tutti_types::{Hz, ParamKey};
+        let key = ParamKey::<Hz>::CUTOFF;
+        let id = u32::from(u16::from(key.id()));
+        let foreign = ParamSegment::foreign(id, 0.25, 0.75, Samples(8), SegmentShape::Exp(2.0));
+        assert_eq!(foreign.target(key), None);
+        assert_eq!(foreign.foreign_target(id), Some(0.75));
+        assert_eq!(foreign.foreign_start(id), Some(0.25));
+        assert_eq!(foreign.addr(), ParamAddr::Id(id));
+        let s = ParamSegment::new(
+            key,
+            Hz(1.0),
+            Hz(2.0),
+            Samples(8),
+            SegmentShape::PowerOut(3.0),
+        )
+        .resumed(SamplePosition(2.5), SamplePosition(10.0));
+        assert_eq!(s.addr(), ParamAddr::Unit(key.id()));
+        assert_eq!(s.foreign_target(id), None);
+        assert_eq!(s.start(key), Some(Hz(1.0)));
+        assert_eq!(s.shape(), SegmentShape::PowerOut(3.0));
+        assert_eq!(s.position(), SamplePosition(2.5));
+        assert_eq!(s.length(), SamplePosition(10.0));
+        // 2.5 frames along at its event, 7.5 more to go: the end value
+        // lands on frame 8, held after.
+        assert!(s.raw_value_after(Samples(7)) < 2.0);
+        assert_eq!(s.raw_value_after(Samples(8)), 2.0);
+        assert_eq!(s.raw_value_after(Samples(1_000)), 2.0);
+        assert_eq!(s.arrives_after(), Some(Samples(8)));
+        // A zero length is a step.
+        let step = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), SegmentShape::Hold);
+        assert_eq!(step.raw_value_after(Samples(0)), 2.0);
+        assert_eq!(step.arrives_after(), Some(Samples(0)));
+        // A length that is not above zero and finite is a step too, never a
+        // segment held at its start.
+        for l in [-4.0, f64::INFINITY, f64::NAN] {
+            let s = step.resumed(SamplePosition(1.0), SamplePosition(l));
+            assert_eq!(s.raw_value_after(Samples(0)), 2.0, "length {l}");
+            assert_eq!(s.arrives_after(), Some(Samples(0)), "length {l}");
+        }
+        // A negative position holds `from` until it reaches 0, then moves.
+        let late = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), SegmentShape::Linear)
+            .resumed(SamplePosition(-3.0), SamplePosition(4.0));
+        assert_eq!(late.raw_value_after(Samples(2)), 1.0);
+        assert_eq!(late.raw_value_after(Samples(3)), 1.0);
+        assert_eq!(late.raw_value_after(Samples(5)), 1.5);
+        assert_eq!(late.arrives_after(), Some(Samples(7)));
     }
 }

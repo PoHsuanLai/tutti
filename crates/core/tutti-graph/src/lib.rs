@@ -112,8 +112,8 @@
 //! - **Events arrive sorted and in range** ([`SortedEvents`]), and
 //!   [`Io::sub_blocks`] splits the block at their offsets, so a node written
 //!   against it is sample-accurate by construction.
-//! - **Params are typed.** A [`ParamRamp`] is built from a typed `ParamKey<U>`
-//!   and read back as a `U`.
+//! - **Params are typed.** A [`ParamRamp`] or [`ParamSegment`] is built
+//!   from a typed `ParamKey<U>` and read back as a `U`.
 //!
 //! # Whole blocks
 //!
@@ -131,9 +131,9 @@
 //!
 //! # Events and timing
 //!
-//! Events ([`Event`], [`EventKind`]: MIDI 2.0 [`Ump`] packets, [`ParamRamp`]
-//! automation, [`Harmony`]) travel on graph ports ([`EventIn`],
-//! [`EventOut`]), so the same delay compensation that aligns audio aligns
+//! Events ([`Event`], [`EventKind`]: MIDI 2.0 [`Ump`] packets,
+//! [`ParamRamp`] and [`ParamSegment`] automation, [`Harmony`]) travel on
+//! graph ports ([`EventIn`], [`EventOut`]), so the same delay compensation that aligns audio aligns
 //! them. An event input may have several sources, merged by offset and then
 //! by the source port's `(NodeKey, port)` — a property of the wiring, not of
 //! the order edges were listed in. Audio keeps one source per input port;
@@ -239,7 +239,7 @@ pub use controls::{param_parts, ParamFork, ParamNode, ParamSet, ParamSetBuilder}
 pub use editor::{CommitError, Editor, Limits};
 pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, Harmony, HarmonyKind, ParamRamp,
-    SortedEvents, SubBlocks, Ump,
+    ParamSegment, SegmentShape, SortedEvents, SubBlocks, Ump,
 };
 pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};

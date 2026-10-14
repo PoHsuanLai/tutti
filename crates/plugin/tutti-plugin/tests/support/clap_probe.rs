@@ -67,18 +67,21 @@ impl Rig {
         prepare: Prepare,
         automation: Option<tutti_plugin::handles::PluginAutomation>,
     ) -> Self {
-        Self::build(client, prepare, automation, false).0
+        Self::build(client, prepare, automation, None, false).0
     }
 
     /// As [`prepared_with`](Self::prepared_with), with a keyboard: a
-    /// `MidiQueueNode` feeding the plugin's event input too, and its sender.
+    /// `MidiQueueNode` feeding the plugin's event input too, and its sender;
+    /// and `lane` (an event-output automation lane), when given, feeding it
+    /// as well.
     #[allow(dead_code)]
     pub fn prepared_with_keys(
         client: PluginClient<Bound>,
         prepare: Prepare,
         automation: Option<tutti_plugin::handles::PluginAutomation>,
+        lane: Option<tutti_nodes::automation::AutomationLaneNode>,
     ) -> (Self, tutti_midi_runtime::MidiSender) {
-        let (rig, keys) = Self::build(client, prepare, automation, true);
+        let (rig, keys) = Self::build(client, prepare, automation, lane, true);
         (rig, keys.expect("asked for keys"))
     }
 
@@ -86,6 +89,7 @@ impl Rig {
         client: PluginClient<Bound>,
         prepare: Prepare,
         automation: Option<tutti_plugin::handles::PluginAutomation>,
+        lane: Option<tutti_nodes::automation::AutomationLaneNode>,
         keys: bool,
     ) -> (Self, Option<tutti_midi_runtime::MidiSender>) {
         let (inputs, outputs) = (client.inputs(), client.outputs());
@@ -95,6 +99,10 @@ impl Rig {
         g.pipe_input(key).pipe_output(key);
         if let Some(automation) = automation {
             let (from, _controls) = g.add_with_controls(automation);
+            g.event_connect(from, 0, key, 0);
+        }
+        if let Some(lane) = lane {
+            let (from, ()) = g.add_with_controls(lane);
             g.event_connect(from, 0, key, 0);
         }
         let sender = keys.then(|| {

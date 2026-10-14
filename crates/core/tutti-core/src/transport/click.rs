@@ -518,7 +518,12 @@ impl Node for ClickNode {
     /// the transport rather than an input, so [`Tail::Unbounded`]: never
     /// skipped as silent.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO).with_tail(Tail::Unbounded)
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+            .with_tail(Tail::Unbounded)
+            // A beat derived and compared per frame: measured 3.8 ns per
+            // frame and channel, against a gain's 0.2 and `SvfFilterNode`'s
+            // 7.2 (doc 013, "Phase 6, part (b)").
+            .with_cost(tutti_graph::Cost::Moderate)
     }
 
     /// Render the two click waveforms at the prepared rate (control thread:

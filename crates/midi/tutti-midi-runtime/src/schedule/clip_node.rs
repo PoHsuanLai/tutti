@@ -212,6 +212,10 @@ impl Node for MidiClipNode {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
             .with_events(0, 1)
             .with_event_capacity(CLIP_EVENT_CAPACITY)
+            // Event-only: a walk over the block's events, nothing per frame
+            // (measured about 0.3 µs a block at any length; a gain's 256
+            // frames, 0.2).
+            .with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _p: &Prepare) {}

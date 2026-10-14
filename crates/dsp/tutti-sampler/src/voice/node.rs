@@ -230,6 +230,24 @@ impl VoiceNode {
         }
     }
 
+    /// What the node declares to the cost model: `Moderate` for a plain
+    /// read, `Heavy` with a time-stretch filter.
+    ///
+    /// Measured (doc 013, "Phase 6, part (b)"): a plain memory voice 13 ns
+    /// per frame and channel, a stretched one 288 (the phase vocoder),
+    /// against `SvfFilterNode`'s 7.2 and `Heavy`'s 256. A node's filter is
+    /// built with it or never (`UpdateStretch` reaches only a pool's
+    /// slots), so every read of the shape (at insert and at each
+    /// re-prepare) gives the same class. A disk voice reads through the
+    /// same kernel as a memory one.
+    fn cost(&self) -> tutti_graph::Cost {
+        if self.slot.stretch.is_some() {
+            tutti_graph::Cost::Heavy
+        } else {
+            tutti_graph::Cost::Moderate
+        }
+    }
+
     /// Its scratch's frames and width.
     #[cfg(test)]
     pub(crate) fn scratch_size(&self) -> (usize, usize) {
@@ -257,7 +275,9 @@ impl Node for VoiceNode {
     /// No inputs, [`channels`](Self::channels) outputs; a generator, never
     /// skipped.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.channels).with_tail(Tail::Unbounded)
+        Shape::audio(ChannelLayout::EMPTY, self.channels)
+            .with_tail(Tail::Unbounded)
+            .with_cost(self.cost())
     }
 
     /// The rate the voice's source and its stretch filter run at, and the

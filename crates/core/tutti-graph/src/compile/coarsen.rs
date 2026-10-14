@@ -17,6 +17,10 @@
 //!    pass never lengthens the critical path either: the plan's critical
 //!    path is never longer than chain fusion alone would give.
 //!
+//! Passes 2 and 3 repeat until a round merges nothing: a pack makes its
+//! members' private successors siblings (one predecessor set, the pack),
+//! which only a later round can pack and fuse back into it.
+//!
 //! A task runs its ops in ascending op index. The serial order numbers ops
 //! topologically (every op edge runs from a lower index to a higher one), so
 //! that order keeps every dependency inside a task, whatever the passes
@@ -53,12 +57,29 @@ pub(super) fn coarsen(
     let n = preds.len();
     debug_assert_eq!(work.len(), n);
     // 1. Chains over ops.
-    let (groups, of) = chained(preds, succ);
-    // 2. Pack cheap siblings.
-    let (groups, of) = pack(groups, &of, succ, work, max_block);
-    // 3. Chains over tasks.
-    let (gpreds, gsucc) = group_dag(&of, succ, groups.len());
-    let (groups, of) = chains(groups, &gpreds, &gsucc);
+    let (mut groups, mut of) = chained(preds, succ);
+    // 2 and 3, to a fixed point: pack cheap siblings, then fuse the chains
+    // that leaves. One round is not enough: packing two siblings makes
+    // their private successors siblings of each other (their predecessor
+    // set is now the pack), which only the next round's sibling classes
+    // see. Without it, cheap nodes each feeding their own outputs packed
+    // to *more* tasks than undeclared ones (the pack kept its successors
+    // as separate tasks, where an undeclared node fuses with its own).
+    //
+    // The critical path still never exceeds chain fusion's: each round's
+    // pack keeps a class only if it does not lengthen the critical path of
+    // the groups it starts from, and chain fusion only removes hand-overs,
+    // so every round is at most the last. The loop ends because a round
+    // that does not merge groups stops it, and groups cannot fall below one.
+    loop {
+        let before = groups.len();
+        let (packed, packed_of) = pack(groups, &of, succ, work, max_block);
+        let (gpreds, gsucc) = group_dag(&packed_of, succ, packed.len());
+        (groups, of) = chains(packed, &gpreds, &gsucc);
+        if groups.len() >= before {
+            break;
+        }
+    }
     finish(groups, &of, succ, work, max_block)
 }
 
@@ -469,6 +490,34 @@ mod tests {
         let t = coarsen(&preds, &succ, &work, MAX);
         assert!(t.tasks.len() < 5, "{} tasks", t.tasks.len());
         assert!(t.critical.at(MAX) < chain_only(&preds, &succ, &work));
+    }
+
+    /// Cheap siblings that each fan out to private successors (a track
+    /// wired to its own two outputs) pack to no more tasks than the same
+    /// siblings priced heavy: after a pack, its members' outputs are
+    /// siblings of one another, and the next round packs them and fuses
+    /// them into the pack.
+    ///
+    /// Mutation (run): one round of passes 2 and 3 instead of the loop in
+    /// `coarsen` → 15 tasks, as many as heavy (6 with the loop) → fails.
+    #[test]
+    fn packed_siblings_fuse_with_their_private_outputs() {
+        // 0 the input; 1..=14 the nodes; 15 + 2k and 16 + 2k node k's
+        // outputs.
+        let mut edges: Vec<(u32, u32)> = (1..=14).map(|k| (0, k)).collect();
+        for k in 1..=14u32 {
+            edges.push((k, 13 + 2 * k));
+            edges.push((k, 14 + 2 * k));
+        }
+        let (preds, succ) = dag(43, &edges);
+        let tasks = |node: Work| {
+            let mut work = vec![COPY; 43];
+            work[1..=14].fill(node);
+            coarsen(&preds, &succ, &work, MAX).tasks.len()
+        };
+        let (light, heavy) = (tasks(LIGHT), tasks(HEAVY));
+        assert!(light <= heavy, "light {light} tasks, heavy {heavy}");
+        assert!(light < heavy / 2, "light {light} tasks, heavy {heavy}");
     }
 
     proptest! {

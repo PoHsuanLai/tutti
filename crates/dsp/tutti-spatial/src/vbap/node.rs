@@ -515,7 +515,13 @@ fn render_channel(
 /// stalled ramp instead of the settled bearing.
 impl Node for VbapPannerNode {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::STEREO, self.layout).with_tail(Tail::Unknown)
+        Shape::audio(ChannelLayout::STEREO, self.layout)
+            .with_tail(Tail::Unknown)
+            // A ramped gain pair per output channel and frame, and the
+            // smoother stepped per frame: measured 10.9 ns per frame and
+            // channel at stereo, 4.3 at 5.1, against a gain's 0.2 and
+            // `SvfFilterNode`'s 7.2 (doc 013, "Phase 6, part (b)").
+            .with_cost(tutti_graph::Cost::Moderate)
     }
 
     fn prepare(&mut self, p: &Prepare) {

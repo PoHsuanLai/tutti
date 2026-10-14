@@ -146,6 +146,9 @@ impl Node for MidiInputNode {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
             .with_events(0, MIDI_INPUT_PORTS as u16)
             .with_event_capacity(MIDI_INPUT_EVENT_CAPACITY as u32)
+            // Event-only: a poll and a translation per event, nothing per
+            // frame.
+            .with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _p: &Prepare) {}

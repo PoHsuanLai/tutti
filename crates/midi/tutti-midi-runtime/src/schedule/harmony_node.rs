@@ -203,6 +203,9 @@ impl Node for HarmonyNode {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
             .with_events(0, 1)
             .with_event_capacity(HARMONY_EVENT_CAPACITY)
+            // Event-only: the clip node's walk over its changes, nothing per
+            // frame.
+            .with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, _p: &Prepare) {}

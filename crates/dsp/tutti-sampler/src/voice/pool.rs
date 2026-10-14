@@ -709,7 +709,13 @@ impl Node for VoicePool {
     /// No inputs, [`channels`](Self::channels) outputs; a generator (fed
     /// out of band, through its queue), never skipped.
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, self.channels).with_tail(Tail::Unbounded)
+        Shape::audio(ChannelLayout::EMPTY, self.channels)
+            .with_tail(Tail::Unbounded)
+            // Its voices arrive while it plays, each a `VoiceNode`'s cost:
+            // measured 13 ns per frame and channel at one plain voice, 82 at
+            // eight, and one stretched voice alone is 288 (doc 013, "Phase
+            // 6, part (b)"). The default, stated.
+            .with_cost(tutti_graph::Cost::Heavy)
     }
 
     /// The rate every slot, its source and its stretch filter run at, and

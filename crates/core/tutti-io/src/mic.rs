@@ -182,7 +182,12 @@ impl Node for MicMonitorNode {
     /// A live source: [`Tail::Unbounded`], so the executor never skips it as
     /// silent (a skipped block would leave its frames to pile up in the ring).
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO).with_tail(Tail::Unbounded)
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+            .with_tail(Tail::Unbounded)
+            // A ring pop (two atomics) per frame: measured 5.4 ns per frame
+            // and channel, against a gain's 0.2 and `SvfFilterNode`'s 7.2
+            // (doc 013, "Phase 6, part (b)").
+            .with_cost(tutti_graph::Cost::Moderate)
     }
 
     fn prepare(&mut self, p: &Prepare) {

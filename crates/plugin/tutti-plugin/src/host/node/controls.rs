@@ -28,9 +28,8 @@
 //! holder.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use arc_swap::ArcSwap;
 use atomic_float::AtomicF64;
 use tutti_core::meter::MeterMap;
 use tutti_core::{RtPublish, SampleRate, Samples};
@@ -60,12 +59,14 @@ pub struct PluginControls {
     /// plugin signals a change. A `usize` because an atomic needs a primitive;
     /// [`latency`](Self::latency) puts the unit back.
     latency: Arc<AtomicUsize>,
-    /// Runtime tail. An `ArcSwap` rather than an atomic because [`PluginTail`]
+    /// Runtime tail. A `Mutex` rather than an atomic because [`PluginTail`]
     /// is a four-arm sum whose payload is a `usize` — "unbounded" and "never
     /// asked" are not numbers, so there is no integer encoding to
     /// compare-and-swap that does not reintroduce the sentinel the type exists
-    /// to avoid. Read once per block, never per sample.
-    tail: Arc<ArcSwap<PluginTail>>,
+    /// to avoid. Nothing on the audio thread reads it: the bridge thread and a
+    /// host write it, and the node's `shape` (the compiler's, on the control
+    /// side) and an offline render's sizing read it.
+    tail: Arc<Mutex<PluginTail>>,
     /// The frames the node's IPC pipeline holds: one chunk, settled by the
     /// node's `prepare` (`Batcher::prepare`). Shared so
     /// [`declared_latency`](Self::declared_latency) is right on any handle.
@@ -97,7 +98,7 @@ impl PluginControls {
         Self {
             indexed,
             latency: Arc::new(AtomicUsize::new(latency.get())),
-            tail: Arc::new(ArcSwap::from_pointee(tail)),
+            tail: Arc::new(Mutex::new(tail)),
             pipeline: Arc::new(AtomicUsize::new(MAX_CHUNK)),
             meter: super::PluginMeter::default(),
             sample_rate: Arc::new(AtomicF64::new(sample_rate.get())),
@@ -141,7 +142,7 @@ impl PluginControls {
     }
 
     /// The tail cell, for the bridge-thread listener that writes it.
-    pub(super) fn tail_cell(&self) -> Arc<ArcSwap<PluginTail>> {
+    pub(super) fn tail_cell(&self) -> Arc<Mutex<PluginTail>> {
         Arc::clone(&self.tail)
     }
 
@@ -208,15 +209,16 @@ impl PluginControls {
         self.latency.store(samples.into().get(), Ordering::Release);
     }
 
-    /// What the plugin currently reports for its tail.
+    /// What the plugin currently reports for its tail. Control side: takes a
+    /// short lock.
     pub fn tail(&self) -> PluginTail {
-        **self.tail.load()
+        *lock_tail(&self.tail)
     }
 
     /// Overwrite the reported tail. See
     /// [`PluginClient::set_tail`](super::PluginClient::set_tail).
     pub fn set_tail(&self, tail: PluginTail) {
-        self.tail.store(Arc::new(tail));
+        *lock_tail(&self.tail) = tail;
     }
 
     /// The sample rate a source installed now would be stamped with.
@@ -239,7 +241,7 @@ impl PluginControls {
     /// themselves.
     pub(super) fn sources_now(&self) -> ForkedSources {
         ForkedSources {
-            meter: self.meter.load_full(),
+            meter: self.meter.installed(),
         }
     }
 
@@ -275,6 +277,12 @@ impl PluginControls {
     ) -> Arc<PluginParamTarget> {
         Arc::new(PluginParamTarget::new(base, min, max))
     }
+}
+
+/// Lock a tail cell. A poisoned lock still holds a whole `PluginTail` (a
+/// `Copy` value written in one assignment), so it is read through.
+pub(super) fn lock_tail(tail: &Mutex<PluginTail>) -> std::sync::MutexGuard<'_, PluginTail> {
+    tail.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The live node's sources as a fork's gather read them
@@ -361,7 +369,7 @@ mod tests {
         gathered.install(&fork);
         let shared_meter = fork
             .meter
-            .load_full()
+            .installed()
             .is_some_and(|m| Arc::ptr_eq(&m, &meter));
         assert!(shared_meter, "the fork reads the live node's meter");
     }

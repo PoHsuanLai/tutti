@@ -10,7 +10,6 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 workspace = true
 
 [dependencies]
-arc-swap = "1"
 # The two plugin→host callback queues. `ArrayQueue`, not `crossbeam-channel`:
 # `automate` and `process_events` are invoked from inside the plugin's
 # `processReplacing`, so their push runs on the audio thread. An unbounded

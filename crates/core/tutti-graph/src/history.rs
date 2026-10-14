@@ -2,8 +2,6 @@
 //! frames, so a node behind a latent path reads the transport its input
 //! audio was rendered at ([`Cx::transport_at`](crate::Cx::transport_at)).
 
-use std::collections::VecDeque;
-
 use tutti_types::{Frame, Latency, SampleRate, Samples};
 
 use crate::node::{Env, Transport, MAX_TRANSPORT_CHANGES};
@@ -43,22 +41,33 @@ struct Piece {
 /// [`Env::transport_at`] answered for that frame in the block that held it,
 /// to the bit, through any wrap, seek or tempo change since.
 ///
-/// # Size, and where it is allocated
+/// # Size, memory, and where it is allocated
 ///
 /// A history answers for frames up to its **reach** before the block being
-/// rendered. Pieces start on distinct frames, so at most `reach` of them
-/// start inside that window, one more covers its first frame, and the
-/// current block adds at most `1 + MAX_TRANSPORT_CHANGES`: the ring holds
-/// `reach + 1 + MAX_TRANSPORT_CHANGES` pieces and drops the oldest past
-/// that. A host that counts frames and blocks of the device's quantum fills
-/// a few of them; the bound is for blocks one frame long.
+/// rendered. Each block first drops the oldest piece while the next one
+/// already covers the earliest frame in reach, so what is kept is the piece
+/// covering that frame and the pieces starting after it: at most `reach` of
+/// those, since pieces start on distinct frames, plus the current block's
+/// `1 + MAX_TRANSPORT_CHANGES`. So at most `reach + 1 + MAX_TRANSPORT_CHANGES`
+/// pieces are ever live (that worst case is one-frame blocks); a host
+/// rendering the device's quantum keeps about `reach / quantum + 2`.
+///
+/// The ring is a buffer with a moving front: dropped pieces advance it, and
+/// the live pieces are moved back to the start once the dropped prefix is
+/// as long as they are, so only the first twice-the-peak-live slots are
+/// ever written. The buffer is **reserved** for the worst case,
+/// `2 * (reach + 1 + MAX_TRANSPORT_CHANGES)` pieces of about 90 bytes (a
+/// 10-second lookahead at 48 kHz reserves about 85 MB of address space),
+/// because the audio thread can never grow it; where the allocator maps a
+/// large block lazily (glibc, macOS) pages that are never written are never
+/// resident, so resident memory follows the pieces actually kept.
 ///
 /// The executor's reach is its plan's longest arrival
 /// ([`Plan::max_arrival`](crate::Plan::max_arrival)). A commit whose plan
 /// changes it carries a new ring, allocated on the control thread; applying
 /// it moves the pieces across and sends the old ring back in the box, so
-/// the audio thread neither allocates nor frees one. A block only appends
-/// and drops pieces in place.
+/// the audio thread neither allocates nor frees one. A block only appends,
+/// drops and moves pieces in place.
 ///
 /// # Where it stops
 ///
@@ -86,8 +95,13 @@ struct Piece {
 /// it.
 #[derive(Clone, Debug, Default)]
 pub struct TransportHistory {
-    pieces: VecDeque<Piece>,
-    /// Pieces kept: `reach + 1 + MAX_TRANSPORT_CHANGES`, or 0 for no reach.
+    /// The pieces, oldest first, from `head` on; `buf[..head]` are dropped
+    /// pieces not yet moved over. Reserved for `2 * capacity`, which the
+    /// compaction rule never exceeds (see `observe`).
+    buf: Vec<Piece>,
+    head: usize,
+    /// Most pieces live at once: `reach + 1 + MAX_TRANSPORT_CHANGES`, or 0
+    /// for no reach.
     capacity: usize,
     reach: Latency,
 }
@@ -101,7 +115,8 @@ impl TransportHistory {
     /// with the block's own transport. Allocates nothing.
     pub const fn new() -> Self {
         Self {
-            pieces: VecDeque::new(),
+            buf: Vec::new(),
+            head: 0,
             capacity: 0,
             reach: Latency::ZERO,
         }
@@ -122,10 +137,16 @@ impl TransportHistory {
             reach.samples().get() + 1 + MAX_TRANSPORT_CHANGES
         };
         Self {
-            pieces: VecDeque::with_capacity(capacity),
+            buf: Vec::with_capacity(2 * capacity),
+            head: 0,
             capacity,
             reach,
         }
+    }
+
+    /// The pieces kept, oldest first.
+    fn live(&self) -> &[Piece] {
+        &self.buf[self.head..]
     }
 
     /// How far back it answers exactly.
@@ -136,22 +157,50 @@ impl TransportHistory {
     /// Records the block about to be rendered: its first frame and each
     /// transport change inside it, as [`Env::segments`] cuts them. Call it
     /// once per block, before any node reads the history, in frame order.
-    /// Allocation-free: past its capacity the oldest piece is dropped.
+    /// Allocation-free: first the oldest pieces no frame in reach needs are
+    /// dropped, then the block's are appended.
     ///
-    /// A block that starts at or before a piece already kept (a clock that
-    /// went back) first drops every piece from that frame on.
+    /// A block must start after every piece kept. The executor's clock only
+    /// moves forward, and the one time it moves back (a sample-rate change
+    /// rescales it) the history is cleared first, so this is
+    /// debug-asserted rather than repaired.
     pub fn observe(&mut self, env: &Env) {
         if self.capacity == 0 {
             return;
         }
-        while self.pieces.back().is_some_and(|p| p.frame >= env.frame) {
-            self.pieces.pop_back();
+        debug_assert!(
+            self.live().last().is_none_or(|p| p.frame < env.frame),
+            "a block observed at or before a piece already kept"
+        );
+        // The earliest frame a node can ask for this block is `reach` before
+        // its first; the front piece is needed only while the next one starts
+        // after that frame.
+        let reach = self.reach.samples();
+        while self.live().len() >= 2
+            && env
+                .frame
+                .since(self.live()[1].frame)
+                .is_some_and(|d| d >= reach)
+        {
+            self.head += 1;
         }
         for (_, piece) in env.segments() {
-            if self.pieces.len() == self.capacity {
-                self.pieces.pop_front();
+            if self.live().len() == self.capacity {
+                // Unreachable while the bound in the type docs holds; kept
+                // so a break in it costs the oldest piece, not an allocation.
+                // No test can reach it (`if false` here passes every one):
+                // the trim above is what keeps the bound, and
+                // `the_capacity_holds_exactly_the_worst_case` pins it.
+                self.head += 1;
             }
-            self.pieces.push_back(Piece {
+            // Move the live pieces to the front once the dropped prefix is
+            // as long as they are: amortised one move a push, and the buffer
+            // never holds more than twice the live pieces, so it never grows.
+            if self.head > 0 && self.head >= self.buf.len() - self.head {
+                self.buf.drain(..self.head);
+                self.head = 0;
+            }
+            self.buf.push(Piece {
                 frame: piece.frame,
                 rate: env.sample_rate,
                 transport: piece.transport,
@@ -159,19 +208,21 @@ impl TransportHistory {
         }
     }
 
-    /// Forgets every piece (a sample-rate change: see the module docs).
+    /// Forgets every piece (a sample-rate change: see the type docs).
     pub fn clear(&mut self) {
-        self.pieces.clear();
+        self.buf.clear();
+        self.head = 0;
     }
 
     /// Takes `older`'s pieces, the newest that fit, leaving it empty with
-    /// its buffer: applying a commit that carries a new ring. No allocation
-    /// while this one's buffer holds its capacity, which `with_reach`
-    /// reserved.
+    /// its buffer: applying a commit that carries a new ring. No allocation:
+    /// `with_reach` reserved room for twice what fits.
     pub(crate) fn take_from(&mut self, older: &mut TransportHistory) {
-        self.pieces.clear();
-        let skip = older.pieces.len().saturating_sub(self.capacity);
-        self.pieces.extend(older.pieces.drain(..).skip(skip));
+        self.clear();
+        let live = older.live();
+        let skip = live.len().saturating_sub(self.capacity);
+        self.buf.extend_from_slice(&live[skip..]);
+        older.clear();
     }
 
     /// The transport `back` frames before frame `start`, when a piece kept
@@ -181,15 +232,16 @@ impl TransportHistory {
         // for a prefix. A piece too far back for `since` to count (only on a
         // 32-bit target, a day of audio) is before it too.
         let covers = |p: &Piece| p.frame <= start && start.since(p.frame).is_none_or(|d| d >= back);
-        let i = self.pieces.partition_point(covers).checked_sub(1)?;
-        let p = &self.pieces[i];
+        let live = self.live();
+        let i = live.partition_point(covers).checked_sub(1)?;
+        let p = &live[i];
         let into = start.since(p.frame)?.checked_sub(back)?;
         Some(roll(p.transport, p.rate, into))
     }
 
     /// The oldest piece's transport, at its own frame.
     fn oldest(&self) -> Option<Transport> {
-        self.pieces.front().map(|p| p.transport)
+        self.live().first().map(|p| p.transport)
     }
 }
 
@@ -482,8 +534,8 @@ mod tests {
         }
         let mut small = TransportHistory::with_reach(lat(1));
         small.take_from(&mut big.history);
-        assert!(big.history.pieces.is_empty());
-        assert_eq!(small.pieces.len(), 1 + 1 + MAX_TRANSPORT_CHANGES);
+        assert!(big.history.live().is_empty());
+        assert_eq!(small.live().len(), 1 + 1 + MAX_TRANSPORT_CHANGES);
         let last = *big.blocks.last().expect("played");
         assert_eq!(
             last.transport_before(off(0), lat(1), &small),
@@ -495,5 +547,80 @@ mod tests {
                 h
             })
         );
+    }
+
+    /// The capacity is tight: `reach` one-frame blocks, each a seek, then a
+    /// block carrying `MAX_TRANSPORT_CHANGES` changes. Nothing can be
+    /// dropped (every piece is within reach), so the ring holds exactly
+    /// `reach + 1 + MAX_TRANSPORT_CHANGES` pieces, and the frame `reach`
+    /// back, the very first one, still reads what its block said.
+    ///
+    /// Mutation: capacity `reach + MAX_TRANSPORT_CHANGES` in `with_reach` →
+    /// the first piece is dropped, the frame reads the clamp (frame 1's
+    /// seek) → fails.
+    #[test]
+    fn the_capacity_holds_exactly_the_worst_case() {
+        const REACH: usize = 12;
+        let mut p = Played::new(REACH);
+        for f in 0..REACH as u64 {
+            p.play(env(f, 1, rolling(f as f64 * 3.0), TransportChanges::NONE));
+        }
+        let len = MAX_TRANSPORT_CHANGES + 1;
+        let mut changes = TransportChanges::NONE;
+        for k in 1..len {
+            changes
+                .push(off(k), rolling(100.0 + k as f64))
+                .expect("room for every change");
+        }
+        let last = env(REACH as u64, len, rolling(50.0), changes);
+        p.play(last);
+        assert_eq!(p.history.live().len(), REACH + 1 + MAX_TRANSPORT_CHANGES);
+        assert_eq!(
+            last.transport_before(off(0), lat(REACH), &p.history),
+            p.truth(0)
+        );
+    }
+
+    /// The ring keeps what is in reach, not what it could hold: blocks of a
+    /// device quantum leave about `reach / quantum + 2` pieces live however
+    /// long they run, and the buffer is written no further than twice that,
+    /// while every frame in reach still reads its block.
+    ///
+    /// Mutation: drop the trim loop in `observe` → the live pieces climb to
+    /// the capacity (1 009) → fails. Mutation: compact only when the buffer
+    /// is full (`self.buf.len() == self.buf.capacity()`) → the buffer is
+    /// written to its end → fails.
+    #[test]
+    fn the_ring_keeps_only_what_is_in_reach() {
+        const REACH: usize = 1_000;
+        const QUANTUM: usize = 64;
+        let mut p = Played::new(REACH);
+        let mut most = (0, 0);
+        for b in 0..5_000u64 {
+            let e = env(
+                b * QUANTUM as u64,
+                QUANTUM,
+                rolling(b as f64),
+                TransportChanges::NONE,
+            );
+            p.play(e);
+            most = (
+                most.0.max(p.history.live().len()),
+                most.1.max(p.history.buf.len()),
+            );
+            if b > 20 {
+                assert_eq!(
+                    e.transport_before(off(5), lat(REACH), &p.history),
+                    p.truth(b * QUANTUM as u64 + 5 - REACH as u64),
+                    "block {b}"
+                );
+            }
+            if p.blocks.len() > 64 {
+                p.blocks.remove(0);
+            }
+        }
+        let live = REACH / QUANTUM + 2;
+        assert!(most.0 <= live, "{} pieces live, {live} needed", most.0);
+        assert!(most.1 <= 2 * live, "{} slots written", most.1);
     }
 }

@@ -3191,9 +3191,10 @@ vocoder retirement channel for voices the pool removes.
   `Env` could not answer for frames before its block; a plugin behind a
   latent path saw the uncompensated playhead. It now reads
   `Cx::transport_at`.
-- **In-process VST2.** Still an `AudioUnit` through `Legacy`, polling its
-  transport (`PolledTransport`, sharing the snapshot mapping); it ports with
-  the "Port mechanically" group.
+- **In-process VST2.** A `tutti_graph::Node` (`InProcessVst2Client`) that
+  ignores its `Cx` and polls its transport (`PolledTransport`, sharing the
+  snapshot mapping), so behind a latent path it is still told the
+  uncompensated playhead (see "Arrival-aligned transport landed").
 - **A device whose callback is not known, or varies.** The chunk is the
   device's callback only when the host knows it: tutti-cpal opens a device
   that reports a buffer range with a fixed 512-frame buffer
@@ -3251,21 +3252,29 @@ latent sibling was off by the upstream latency.
   it, through any seek, start, stop, tempo or loop edit and any loop wrap
   since. **Not a closed-form rewind**, which is wrong across such a
   discontinuity and cannot tell a wrap from a start.
-- **Size, and no audio-thread allocation.** Its reach is the plan's longest
-  arrival (`Plan::max_arrival`). Pieces start on distinct frames, so a ring
-  of `reach + 1 + MAX_TRANSPORT_CHANGES` pieces always holds the one covering
-  any frame in reach (the bound is for one-frame blocks; a counted host at
-  the device quantum uses a few). The editor builds a new ring on the control
-  thread only when a commit's plan changes the reach; applying it moves the
-  pieces across and returns the old ring in the box. A block only appends and
-  drops in place.
+- **Size, memory, and no audio-thread allocation.** Its reach is the plan's
+  longest arrival (`Plan::max_arrival`). Before each block the front piece
+  is dropped while the next one already covers the frame `reach` back, so at
+  most `reach + 1 + MAX_TRANSPORT_CHANGES` pieces are ever live (pieces start
+  on distinct frames; the bound is for one-frame blocks), and a host at the
+  device quantum keeps about `reach / quantum + 2`. The buffer keeps its
+  live pieces at the front (moved back once the dropped prefix is as long as
+  they are), so only about twice the peak live count is ever written; it is
+  *reserved* for twice the worst case (about 90 bytes a piece: a 10-second
+  lookahead at 48 kHz reserves ~85 MB of address space), since the audio
+  thread cannot grow it, and an allocator that maps large blocks lazily keeps
+  the unwritten pages out of resident memory. The editor builds a new ring on
+  the control thread only when a commit's plan changes the reach; applying
+  it moves the pieces across and returns the old ring in the box. A block
+  only appends, drops and moves pieces in place.
 - **Where it approximates, precisely.** A frame older than the oldest piece
   kept reads that piece's transport, unmoved: before the graph's first block,
   after a recompile raised the reach past what the old ring kept (until the
   new ring fills), and after a sample-rate change (which clears it). In each
   the audio the node hears there is a delay line or pipeline refilling, not
   what the timeline played. `tests/arrival_transport.rs` models the ring's
-  size and asserts the boundary is reached and honoured.
+  rules and asserts the boundary is reached and honoured, after a raise and
+  after a rate change.
 - **The plugin node** reads `Cx::transport_at` for each chunk
   (`transport_source::from_cx`), so the plugin is told the playhead of the
   audio it is processing; `clap_transport.rs` checks it through a real
@@ -3280,6 +3289,10 @@ sources with no audio or event input, so their arrival is zero (the lane and
 LFO assert it). One caveat: a modulated param counts toward arrival, so a
 voice whose declared param were modulated from a latent path would arrive
 late and should then read `Cx::transport_at`; nothing wires one so today.
+The **in-process VST2 node** (`InProcessVst2Client`) is the exception that
+does take audio input: it ignores its `Cx` and polls `PolledTransport`, so
+behind a latent path it is still told the uncompensated playhead. It is
+left for the in-process VST2 work under way, which owns that node.
 
 #### Item 3 landed (#10)
 

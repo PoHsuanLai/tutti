@@ -7,10 +7,13 @@
 //! The truth is the blocks themselves: the transport at timeline frame `F`
 //! is what `Env::transport_at` said for `F` in the block that held it. The
 //! one exception is a frame older than every piece the executor's ring
-//! keeps (before the first block, and after a recompile raised the reach
-//! past what the old ring kept): the oldest piece kept, unmoved. Where that
-//! boundary falls is modelled here from the ring's documented size
-//! (`reach + 1 + MAX_TRANSPORT_CHANGES` pieces, the newest kept).
+//! keeps (before the first block, after a recompile raised the reach past
+//! what the old ring kept, and after a sample-rate change): the oldest piece
+//! kept, unmoved. Where that boundary falls is modelled here from the
+//! ring's documented rules: before a block, the front piece goes while the
+//! next one covers the frame `reach` before the block; at most
+//! `reach + 1 + MAX_TRANSPORT_CHANGES` pieces, the newest kept; cleared on a
+//! rate change.
 
 mod common;
 
@@ -113,6 +116,10 @@ struct Rig {
     /// piece's first frame and transport.
     kept: VecDeque<(u64, Transport)>,
     cap: usize,
+    /// The plan's longest arrival: the latent node's latency.
+    reach: u64,
+    /// The rate blocks are rendered at.
+    rate: SampleRate,
     /// Frames checked that were older than every piece kept, and after
     /// frame 0.
     clamped: usize,
@@ -142,6 +149,8 @@ impl Rig {
             played: Vec::new(),
             kept: VecDeque::new(),
             cap: capacity(lat),
+            reach: lat as u64,
+            rate: prepare(MAX).sample_rate(),
             clamped: 0,
         }
     }
@@ -155,9 +164,24 @@ impl Rig {
         self.reference
             .set_graph(&self.ed.spec().validate().expect("valid"), BTreeMap::new());
         self.cap = capacity(lat);
+        self.reach = lat as u64;
         while self.kept.len() > self.cap {
             self.kept.pop_front();
         }
+    }
+
+    /// Re-prepares both at `rate`, with no block between the two commits.
+    /// The ring is cleared: frames at the old rate name nothing at the new.
+    fn reprepare(&mut self, rate: SampleRate) {
+        let p = Prepare::new(rate, Samples(MAX));
+        self.ed.reprepare(p).expect("reprepares");
+        self.exec.apply_pending(); // checks the units out
+        self.ed.collect(); // re-prepares them, sends them back
+        self.exec.apply_pending(); // installs them
+        self.ed.collect();
+        self.reference.reprepare(p);
+        self.rate = rate;
+        self.kept.clear();
     }
 
     /// One block through both; asserts they agree bit for bit and returns
@@ -165,7 +189,7 @@ impl Rig {
     fn block(&mut self, n: usize, t: Transport, changes: TransportChanges) -> [Vec<f32>; 3] {
         let env = Env {
             frame: self.exec.frame(),
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: self.rate,
             block_len: Samples(n),
             transport: t,
             changes,
@@ -188,6 +212,11 @@ impl Rig {
         };
         assert_eq!(bits(&a), bits(&b), "executor and reference");
         self.played.push(env);
+        if self.cap > 0 {
+            while self.kept.len() >= 2 && self.kept[1].0 + self.reach <= env.frame.get() {
+                self.kept.pop_front();
+            }
+        }
         for (_, piece) in env.segments() {
             self.kept.push_back((piece.frame.get(), piece.transport));
             if self.kept.len() > self.cap {
@@ -347,4 +376,38 @@ fn a_recompile_that_moves_the_reach_keeps_the_history() {
     );
     rig.set_latency(10);
     blocks(&mut rig, 50, &|b| 1 + b % 3, 10, "lowered to 10");
+}
+
+/// A sample-rate change clears the history: the executor's clock is
+/// rescaled to the new rate, and frames counted at the old one name nothing
+/// there. The first blocks after it read the clamp (the first block at the
+/// new rate, unmoved) until it has `reach` frames behind it, in the executor
+/// and the reference alike; then every frame reads its block again.
+///
+/// Mutation: drop `self.history.clear()` from `Executor::apply`'s suspend →
+/// the executor rolls the last 48 kHz piece across the rescaled gap and
+/// disagrees with the model and the reference → fails. Mutation: drop
+/// `self.history.clear()` from `Reference::suspend` → the reference does
+/// the same → the executor/reference comparison fails.
+#[test]
+fn a_sample_rate_change_starts_the_history_over() {
+    const LAT: usize = 100;
+    let mut rig = Rig::new(LAT);
+    for b in 0..12 {
+        let (t, c) = scene(b, 64, rig.played.last());
+        let out = rig.block(64, t, c);
+        rig.check(&out, LAT, &format!("48 kHz, block {b}"));
+    }
+    rig.reprepare(SampleRate(96_000.0));
+    let before = rig.clamped;
+    for b in 0..12 {
+        let (t, c) = scene(b, 64, rig.played.last());
+        let out = rig.block(64, t, c);
+        rig.check(&out, LAT, &format!("96 kHz, block {b}"));
+    }
+    assert!(
+        rig.clamped - before >= LAT,
+        "the first {LAT} frames after the change read the clamp ({} did)",
+        rig.clamped - before
+    );
 }

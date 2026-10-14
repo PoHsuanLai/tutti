@@ -153,6 +153,7 @@ use crate::arena::{borrow_disjoint, borrow_sorted, Arena, Role};
 use crate::command::{overlay_capacity, CommandRx};
 use crate::event::{merge_into, Event, EventWriter, SortedEvents};
 use crate::fade::CrossfadeCurve;
+use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
 use crate::node::{
@@ -300,6 +301,10 @@ pub(crate) struct Commit {
     /// (the port's modulation runs on across a replace).
     spare_params: Vec<ParamState>,
     old_state: Option<State>,
+    /// A transport history sized for this plan's reach, built on the control
+    /// side when the plan changes it; applying moves the executor's pieces
+    /// in and sends the old ring back here (see `history.rs`).
+    history: Option<TransportHistory>,
 }
 
 impl Drop for Commit {
@@ -317,6 +322,7 @@ impl Commit {
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
         mut params: impl FnMut(NodeKey, usize, usize) -> ParamState,
+        history: Option<TransportHistory>,
     ) -> Box<Commit> {
         let wanted = delta
             .insert
@@ -377,6 +383,7 @@ impl Commit {
             retired,
             spare_params,
             old_state: None,
+            history,
         })
     }
 
@@ -394,6 +401,7 @@ impl Commit {
             retired: Vec::with_capacity(units),
             spare_params: Vec::with_capacity(units),
             old_state: None,
+            history: None,
         })
     }
 
@@ -629,6 +637,9 @@ pub struct Executor {
     /// The sample rate changed in a re-prepare: the next rebuild carries no
     /// time-based state (see `Editor::reprepare`).
     reset_time: bool,
+    /// The transport over the last frames, for nodes behind a latent path
+    /// (`Cx::transport_at`). Fed every block, whatever it renders.
+    history: TransportHistory,
 }
 
 fn tail_elapsed(tail: Tail, quiet: u64) -> bool {
@@ -662,6 +673,7 @@ impl Executor {
             suspended: false,
             next_prepare: None,
             reset_time: false,
+            history: TransportHistory::new(),
         }
     }
 
@@ -785,6 +797,8 @@ impl Executor {
                 // every pending frame-timed command move to the same
                 // wall-clock time at the new rate.
                 self.reset_time = true;
+                // Frames at the old rate name nothing at the new one.
+                self.history.clear();
                 let ratio = new / old;
                 self.frame = crate::command::rescale(self.frame, ratio);
                 self.commands.rescale(ratio, c.seq);
@@ -882,6 +896,12 @@ impl Executor {
         }
         c.incoming = incoming;
 
+        if let Some(h) = c.history.as_mut() {
+            // The plan's reach changed: the new ring takes the pieces, the
+            // old one goes back in the box.
+            h.take_from(&mut self.history);
+            std::mem::swap(h, &mut self.history);
+        }
         let old_plan = self.plan.take();
         let new_state = self.rebuild(&plan, old_plan.as_deref());
         self.suspended = false;
@@ -1163,13 +1183,15 @@ impl Executor {
                 o[..frames].fill(0.0);
             }
             let rate = self.next_prepare.unwrap_or(self.prepare).sample_rate();
-            self.commands.observe(&Env {
+            let env = Env {
                 frame: self.frame,
                 sample_rate: rate,
                 block_len: Samples(frames),
                 transport: *transport,
                 changes: *changes,
-            });
+            };
+            self.commands.observe(&env);
+            self.history.observe(&env);
             self.frame += Samples(frames);
             return;
         }
@@ -1199,7 +1221,19 @@ impl Executor {
             suspended: _,
             next_prepare: _,
             reset_time: _,
+            history,
         } = self;
+        let env = Env {
+            frame: *frame,
+            sample_rate: prepare.sample_rate(),
+            block_len: Samples(frames),
+            transport: *transport,
+            changes: *changes,
+        };
+        // Before any node reads it, and also when there is nothing to render:
+        // the transport moved all the same.
+        history.observe(&env);
+        let history: &TransportHistory = history;
         let Some(plan) = plan.as_ref() else {
             for o in outputs.iter_mut() {
                 o[..frames].fill(0.0);
@@ -1231,13 +1265,6 @@ impl Executor {
         );
         let plan: &Plan = plan;
         let cap = *event_cap;
-        let env = Env {
-            frame: *frame,
-            sample_rate: prepare.sample_rate(),
-            block_len: Samples(frames),
-            transport: *transport,
-            changes: *changes,
-        };
         commands.gather(&env, plan, *applied, has_due);
         let mut fade_ended = false;
 
@@ -1323,6 +1350,7 @@ impl Executor {
                         max,
                         cap,
                         env: &env,
+                        history,
                     };
                     let mut st = OpState {
                         arena,
@@ -1557,6 +1585,7 @@ fn fading_node_op(
         let cx = Cx {
             env: h.env,
             arrival: h.rec.arrival,
+            history: h.history,
         };
         x.out
             .as_mut()
@@ -1648,6 +1677,7 @@ struct Head<'p, 'e> {
     max: MaxBlock,
     cap: usize,
     env: &'e Env,
+    history: &'e TransportHistory,
 }
 
 /// What a node op may write besides its own unit.
@@ -1837,6 +1867,7 @@ fn node_op_with(
     };
     let call = Call {
         env: h.env,
+        history: h.history,
         max: h.max,
         frames,
         rec,
@@ -1903,6 +1934,7 @@ struct Extra<'s> {
 /// One node call's constants, shared by every borrow form.
 struct Call<'p, 'e> {
     env: &'e Env,
+    history: &'e TransportHistory,
     max: MaxBlock,
     frames: usize,
     rec: &'p NodeRec,
@@ -1954,6 +1986,7 @@ impl<'p> Call<'p, '_> {
         Cx {
             env: self.env,
             arrival: self.rec.arrival,
+            history: self.history,
         }
     }
 

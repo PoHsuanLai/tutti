@@ -84,6 +84,7 @@ use crate::editor::Editor;
 use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::exec::Executor;
 use crate::fork::Unforkable;
+use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::node::{
     Cx, Env, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
@@ -1540,6 +1541,7 @@ pub fn drive_in(
     let cx = Cx {
         env,
         arrival: Latency::ZERO,
+        history: TransportHistory::none(),
     };
     let max = Prepare::new(env.sample_rate, Samples(frames)).max_block();
     let io = Io::new(
@@ -1924,6 +1926,7 @@ impl<N: Node> Direct<N> {
         let cx = Cx {
             env,
             arrival: Latency::ZERO,
+            history: TransportHistory::none(),
         };
         let max = Prepare::new(self.rate, Samples(self.frames)).max_block();
         let io = Io::new(

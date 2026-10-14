@@ -81,6 +81,7 @@ use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{At, Frame, Latency, NodeKey, Samples, ScopedNoDenormals};
 
 use crate::event::{Event, EventKind, EventWriter, SortedEvents};
+use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, Node, Prepare, SilenceMask, Status, Transport,
@@ -174,6 +175,11 @@ pub struct Reference {
     reset_time: bool,
     frame: Frame,
     params: BTreeMap<ParamIn, RefParam>,
+    /// The transport over the last frames, kept as the executor keeps it:
+    /// the same type, re-sized when a graph changes the longest arrival.
+    /// (Its answers are checked against the blocks themselves in
+    /// `history.rs`'s tests, not against this.)
+    history: TransportHistory,
 }
 
 impl Reference {
@@ -202,6 +208,7 @@ impl Reference {
             unrouted: 0,
             dropped: 0,
             reset_time: false,
+            history: TransportHistory::new(),
             frame: Frame::ZERO,
         }
     }
@@ -259,6 +266,7 @@ impl Reference {
             prepare.sample_rate().get(),
         );
         if old != new {
+            self.history.clear();
             let ratio = new / old;
             self.frame = Frame((self.frame.get() as f64 * ratio).round() as u64);
             for c in &mut self.scheduled {
@@ -701,6 +709,12 @@ impl Reference {
             });
         }
 
+        let reach = arrival.values().copied().max().unwrap_or(Latency::ZERO);
+        if reach != self.history.reach() {
+            let mut h = TransportHistory::with_reach(reach);
+            h.take_from(&mut self.history);
+            self.history = h;
+        }
         self.arrival = arrival;
         self.delays = delays;
         self.graph = Some(graph.clone());
@@ -752,9 +766,24 @@ impl Reference {
             for &(_, len, t) in &pieces {
                 self.playhead.observe(&t, next.sample_rate().get(), len);
             }
+            self.history.observe(&Env {
+                frame: self.frame,
+                sample_rate: next.sample_rate(),
+                block_len: Samples(frames),
+                transport: *transport,
+                changes: *changes,
+            });
             self.frame += Samples(frames);
             return;
         }
+        let env = Env {
+            frame: self.frame,
+            sample_rate: self.prepare.sample_rate(),
+            block_len: Samples(frames),
+            transport: *transport,
+            changes: *changes,
+        };
+        self.history.observe(&env);
         let Some(graph) = self.graph.clone() else {
             for o in outputs.iter_mut() {
                 o[..frames].fill(0.0);
@@ -764,13 +793,6 @@ impl Reference {
         };
         let t = graph.topology();
         let _ftz = ScopedNoDenormals::new();
-        let env = Env {
-            frame: self.frame,
-            sample_rate: self.prepare.sample_rate(),
-            block_len: Samples(frames),
-            transport: *transport,
-            changes: *changes,
-        };
 
         // Scheduled commands: which land this block, and where. Kept in
         // scheduling order per port; the gather below appends them after the
@@ -1009,6 +1031,7 @@ impl Reference {
         let cx = Cx {
             env,
             arrival: self.arrival[&key],
+            history: &self.history,
         };
         // A crossfade here: the outgoing unit first, on its own copy of the
         // inputs, with no events; what it emits goes nowhere.

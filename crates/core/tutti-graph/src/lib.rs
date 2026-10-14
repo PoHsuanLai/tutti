@@ -123,7 +123,10 @@
 //! A loop wrap is visible through [`Transport::looping`] and the block-start
 //! beat in [`Env`]; a start, stop or seek landing inside a block is carried
 //! by [`Env::changes`], and [`Env::transport_at`] answers "what was the
-//! transport at this frame".
+//! transport at this frame". A node behind a latent path reads
+//! [`Cx::transport_at`] instead: the transport its *input* was rendered at,
+//! [`Cx::arrival`] frames earlier, reaching into earlier blocks through the
+//! executor's [`TransportHistory`].
 //!
 //! # Events and timing
 //!
@@ -216,6 +219,7 @@ mod event;
 mod exec;
 mod fade;
 mod fork;
+mod history;
 mod io;
 mod kernels;
 mod node;
@@ -240,6 +244,7 @@ pub use fork::{
     ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkSource,
     ForkTarget, Forked, Unforkable,
 };
+pub use history::TransportHistory;
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, NodeParts, Prepare,

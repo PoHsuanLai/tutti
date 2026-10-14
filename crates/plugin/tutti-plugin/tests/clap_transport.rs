@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
 use tutti_graph::{Env, ForkMode, LoopRange, Offset, Transport, TransportChanges};
-use tutti_types::{Beat, Bpm, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// The pipeline's chunk: what the node ships per submission.
@@ -247,5 +247,78 @@ fn the_transport_an_offline_fork_sees_is_env_at_every_chunk() {
             < loop_env.transport.beat().get() + 0.001,
         "the loop wraps before the second chunk"
     );
+    drop(probe.handle);
+}
+
+/// What the blocks in `seen` said for timeline frame `f`: `Env::transport_at`
+/// in the block that held it, or, for a frame before the first block, the
+/// first block's transport, unmoved (`TransportHistory`'s rule).
+fn said_at(seen: &[(Env, Vec<f32>)], f: Option<u64>) -> Transport {
+    let Some(f) = f else {
+        return seen[0].0.transport;
+    };
+    let (env, _) = seen
+        .iter()
+        .find(|(e, _)| e.offset_of(Frame(f)).is_some())
+        .expect("a block held the frame");
+    env.transport_at(env.offset_of(Frame(f)).expect("inside"))
+}
+
+/// **Behind a latent path**: the plugin's input arrives 40 frames late (a
+/// silent source declaring 40 frames of latency feeds it), so each chunk is
+/// sent the transport 40 frames before its own first frame: the transport
+/// the audio it processes was rendered at. For the first chunk of a block
+/// that is the *previous* block's transport, 88 frames into it, across every
+/// seek, tempo change, loop wrap, stop and record toggle the scenes cycle
+/// through. For the second chunk it is 24 frames into its own block.
+/// Offline, so every chunk is collected.
+///
+/// Mutation: build `Snapshot::at` from `cx.env.transport_at(offset)` (the
+/// chunk's own frame, as before) → the first chunk of every block reports
+/// its own block's scene → fails. Mutation: hand the plugin node a `Cx`
+/// with `arrival: Latency::ZERO` in `PluginChunks::begin` → fails.
+#[test]
+fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() {
+    let _lock = exclusive();
+    let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
+    let probe = load_probe(SAMPLE_RATE);
+    let offline = OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        sample_rate: SampleRate(SAMPLE_RATE),
+        ..Default::default()
+    })));
+    let fork = probe
+        .client
+        .fork_instance(ForkMode::Offline(&offline))
+        .expect("the probe forks");
+    const BLOCK: usize = 2 * CHUNK;
+    const ARRIVAL: usize = 40;
+    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK))
+        .with_quantum(Samples(CHUNK));
+    let mut rig = Rig::behind(fork, prepare, Latency::new(Samples(ARRIVAL)));
+
+    const BLOCKS: usize = 24;
+    let seen = render_scenes(&mut rig, BLOCKS, BLOCK, Duration::ZERO);
+
+    let heard = |b: usize, o: usize| (b * BLOCK + o).checked_sub(ARRIVAL).map(|f| f as u64);
+    let mut differs = 0;
+    for b in 0..BLOCKS {
+        let (env, out) = &seen[b];
+        let first = echo_at(out, CHUNK).expect("an offline fork collects every chunk");
+        let want = said_at(&seen, heard(b, 0));
+        assert_echo(first, echo_of(&want), &format!("block {b}, chunk 0"));
+        if echo_of(&want) != echo_of(&env.transport_at(offset(0, BLOCK))) {
+            differs += 1;
+        }
+        if let Some((_, next)) = seen.get(b + 1) {
+            let second = echo_at(next, 0).expect("an offline fork collects every chunk");
+            assert_echo(
+                second,
+                echo_of(&said_at(&seen, heard(b, CHUNK))),
+                &format!("block {b}, chunk 1"),
+            );
+        }
+    }
+    // The previous block's transport is not this one's: the test can tell.
+    assert!(differs >= BLOCKS - 1, "{differs} chunks could tell");
     drop(probe.handle);
 }

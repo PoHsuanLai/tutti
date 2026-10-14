@@ -344,16 +344,7 @@ impl Env {
             .rev()
             .find(|c| c.at <= offset)
             .map_or((0, self.transport), |c| (c.at.index(), c.to));
-        if self.frames_per_beat_at(t.tempo.get()).is_none() || !t.playing {
-            return t;
-        }
-        let mut clock = t.clock(self.sample_rate);
-        let region = t
-            .looping
-            .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
-        clock.advance(Samples(offset.index() - start), region);
-        Transport::counted(t.playing, t.tempo, clock.origin(), t.looping)
-            .with_recording(t.recording())
+        crate::history::roll(t, self.sample_rate, Samples(offset.index() - start))
     }
 
     /// The beat of every frame of this block, in order, handed to `f` with
@@ -371,10 +362,12 @@ impl Env {
     /// [`transport_at`](Self::transport_at), which agrees with it to
     /// rounding past a loop wrap but not to the bit.
     ///
-    /// This is the block's own time: a node that reads it at a compiled
-    /// arrival ([`Cx::arrival`](crate::Cx::arrival)) other than zero would
-    /// need frames before the block, which an `Env` cannot answer for.
-    /// Allocation-free.
+    /// This is the block's own time. A node that reads the transport at its
+    /// compiled arrival ([`Cx::arrival`](crate::Cx::arrival)) other than
+    /// zero reads [`Cx::transport_at`](crate::Cx::transport_at), which
+    /// reaches before the block through the executor's
+    /// [`TransportHistory`](crate::TransportHistory); there is no per-frame
+    /// walk of that yet. Allocation-free.
     pub fn for_each_beat(&self, mut f: impl FnMut(usize, tutti_types::Beat)) {
         for (start, piece) in self.segments() {
             piece.for_each_piece_beat(start, &mut f);

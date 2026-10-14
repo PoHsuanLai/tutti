@@ -240,7 +240,11 @@ the interpreter.
 - **Env and PDC**: today the beat travels as an audio signal, so PDC delays it
   along with everything else. Once it comes from `Env`, `Cx` has to carry each
   node's compiled **arrival latency** so the node reads the transport at its
-  own compensated time. The compiler already knows that number.
+  own compensated time. The compiler already knows that number. (Landed: `Cx`
+  carries it, and `Cx::transport_at` reads the transport that many frames
+  earlier, reaching before the block through the executor's
+  `TransportHistory`; see ["Arrival-aligned transport
+  landed"](#arrival-aligned-transport-landed).)
 - **Executor, parallel** (phase 2): per-task `AtomicU32` activation counters,
   128-byte padded, **self-reset after run** (supernova — no O(n) reset);
   callback thread is worker 0; first ready successor runs inline, the rest go
@@ -3181,10 +3185,12 @@ vocoder retirement channel for voices the pool removes.
   slot's `drain` becomes a read of the node's event port. (MIDI has an event
   input since item 5's second part. The node no longer declares
   `Shape::legacy`: see "Item 5, first part landed".)
-- **Arrival latency.** The node reads the transport at its chunk's own frame,
-  not `Cx::arrival` earlier: `Env` cannot answer for frames before its block.
-  A plugin behind a latent path therefore sees the uncompensated playhead, as
-  it did under `Legacy`.
+- **Arrival latency: landed** (see ["Arrival-aligned transport
+  landed"](#arrival-aligned-transport-landed)). The node used to read the
+  transport at its chunk's own frame, not `Cx::arrival` earlier, because
+  `Env` could not answer for frames before its block; a plugin behind a
+  latent path saw the uncompensated playhead. It now reads
+  `Cx::transport_at`.
 - **In-process VST2.** Still an `AudioUnit` through `Legacy`, polling its
   transport (`PolledTransport`, sharing the snapshot mapping); it ports with
   the "Port mechanically" group.
@@ -3220,6 +3226,60 @@ vocoder retirement channel for voices the pool removes.
   fault (`PluginRenderFault::LatencyChanged`), never a silently misaligned
   export. Pinned by `an_export_is_aligned_when_the_plugin_latency_moves_offline`
   (the reference plugin adds 24 frames in offline mode).
+
+#### Arrival-aligned transport landed
+
+**The defect.** A node with compiled arrival latency `a` hears, at frame `F`
+of its block, the audio of timeline frame `F - a`; but the plugin node (the
+one transport reader that can sit behind a latent path) sent each chunk the
+transport at the chunk's own frame. A tempo-synced plugin effect behind a
+latent sibling was off by the upstream latency.
+
+**What landed.**
+
+- **`Cx::transport_at(offset)`**: the transport at `offset` of the node's
+  *input*, `Cx::arrival` frames earlier (`Env::transport_before(offset,
+  back, history)`). Inside the block it is `Env::transport_at` of the earlier
+  offset; before it, it is read from `Cx::history`.
+- **`TransportHistory`** (`tutti-graph/src/history.rs`): the executor
+  records every block's pieces (its first frame, and each transport change
+  inside it, as `Env::segments` cuts them) with the transport the host
+  reported there, before any node runs. The transport at an earlier frame is
+  the latest piece at or before it, rolled to the frame with the host's
+  clock (`FrameClock`, through the walk `Env::transport_at` now shares):
+  exactly what `Env::transport_at` said for that frame in the block that held
+  it, through any seek, start, stop, tempo or loop edit and any loop wrap
+  since. **Not a closed-form rewind**, which is wrong across such a
+  discontinuity and cannot tell a wrap from a start.
+- **Size, and no audio-thread allocation.** Its reach is the plan's longest
+  arrival (`Plan::max_arrival`). Pieces start on distinct frames, so a ring
+  of `reach + 1 + MAX_TRANSPORT_CHANGES` pieces always holds the one covering
+  any frame in reach (the bound is for one-frame blocks; a counted host at
+  the device quantum uses a few). The editor builds a new ring on the control
+  thread only when a commit's plan changes the reach; applying it moves the
+  pieces across and returns the old ring in the box. A block only appends and
+  drops in place.
+- **Where it approximates, precisely.** A frame older than the oldest piece
+  kept reads that piece's transport, unmoved: before the graph's first block,
+  after a recompile raised the reach past what the old ring kept (until the
+  new ring fills), and after a sample-rate change (which clears it). In each
+  the audio the node hears there is a delay line or pipeline refilling, not
+  what the timeline played. `tests/arrival_transport.rs` models the ring's
+  size and asserts the boundary is reached and honoured.
+- **The plugin node** reads `Cx::transport_at` for each chunk
+  (`transport_source::from_cx`), so the plugin is told the playhead of the
+  audio it is processing; `clap_transport.rs` checks it through a real
+  `plugin-server` behind a 40-frame path. The `Reference` keeps the same
+  history and agrees bit for bit.
+
+**Not changed, and why.** `Env::for_each_beat` (the per-frame walk) has no
+arrival form, and the other transport readers still read `Env`: the
+automation lane, the beat-synced LFO, the click, the MIDI clip, harmony and
+clock nodes, the plugin automation source and the sampler's voices are all
+sources with no audio or event input, so their arrival is zero (the lane and
+LFO assert it). One caveat: a modulated param counts toward arrival, so a
+voice whose declared param were modulated from a latent path would arrive
+late and should then read `Cx::transport_at`; nothing wires one so today.
 
 #### Item 3 landed (#10)
 

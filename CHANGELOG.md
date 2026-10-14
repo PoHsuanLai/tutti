@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A node behind a latent path reads the transport its input was rendered
+  at** (design doc 013, "Arrival-aligned transport landed"). **Breaking**
+  for code that builds a `tutti_graph::Cx` by hand. The executor keeps a
+  `TransportHistory` of the blocks it rendered, sized to the plan's longest
+  arrival, and hands it to every node; `Cx::transport_at(offset)` is the
+  transport `Cx::arrival` frames before `offset`, exact through seeks,
+  transport changes and loop wraps in earlier blocks. A hosted plugin is
+  now sent that transport for each chunk, so a tempo-synced plugin behind a
+  latent path is no longer off by the upstream latency.
+
+  | Was | Now |
+  |---|---|
+  | `Cx { env, arrival }` | `Cx { env, arrival, history }`: pass `TransportHistory::none()` where nothing is kept, or a `TransportHistory::with_reach(..)` you `observe` every block |
+  | a node behind a latent path read `cx.env.transport_at(offset)` (its own frame) | `cx.transport_at(offset)` (its input's frame) |
+  | — | `Env::transport_before(offset, back, &history)`, `TransportHistory`, `Plan::max_arrival` |
+
 - **`AudioUnit` and `tutti-node` are deleted** (design doc 013, "Phase 5,
   part 3"). **Breaking.** fundsp's node contract had no implementor left
   but the sampler's internal stretch filter. The node contract is

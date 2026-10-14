@@ -5,10 +5,15 @@
 //! block's [`Env`], whose
 //! transport is the engine's own playhead at the block's first frame, with
 //! every start, stop, seek, tempo or loop edit inside the block in
-//! [`Env::changes`]. [`from_env`] reads it at a frame with
-//! [`Env::transport_at`], which walks loop wraps and changes with the host's
-//! own clock, so what the plugin is told is what the engine played — live, and
-//! offline, where the forked node's `Env` is the render's.
+//! [`Env::changes`]. [`from_cx`] reads it at a frame with
+//! [`Cx::transport_at`]: the transport the node's **input** was rendered at,
+//! its compiled arrival latency earlier, reaching before the block through
+//! the executor's transport history. Behind a latent path the plugin is told
+//! the playhead of the audio it is processing, not of the graph's own frame,
+//! so a tempo-synced effect stays on the beat the audio is on. The walk is
+//! the host's own clock, through loop wraps and changes, so what the plugin
+//! is told is what the engine played — live, and offline, where the forked
+//! node's `Env` is the render's.
 //!
 //! The mapping onto the plugin ABIs' snapshot is [`transport_info`], shared
 //! with the one node that polls a timeline: the in-process VST2 client reads
@@ -18,7 +23,7 @@
 
 use tutti_core::meter::{Meter, MeterMap};
 use tutti_core::{Beat, Bpm, SampleRate};
-use tutti_graph::{Env, Offset};
+use tutti_graph::{Cx, Offset};
 
 use crate::protocol::TransportInfo;
 
@@ -68,11 +73,12 @@ impl SteadyTime {
 }
 
 impl Snapshot {
-    /// The transport at frame `offset` of `env`'s block: the change in force
-    /// there, its beat advanced to the frame (wrapping at the loop), with
-    /// `continuous` as the free-running counter ([`SteadyTime`]).
-    pub(crate) fn at(env: &Env, offset: Offset, continuous: i64) -> Self {
-        let t = env.transport_at(offset);
+    /// The transport the node's input at frame `offset` was rendered at
+    /// ([`Cx::transport_at`]: the node's arrival latency earlier, through
+    /// changes, loop wraps and earlier blocks), with `continuous` as the
+    /// free-running counter ([`SteadyTime`]).
+    pub(crate) fn at(cx: &Cx<'_>, offset: Offset, continuous: i64) -> Self {
+        let t = cx.transport_at(offset);
         Self {
             playing: t.playing,
             recording: t.recording(),
@@ -80,20 +86,20 @@ impl Snapshot {
             beat: t.beat(),
             looping: t.looping.map(|l| (l.start, l.end)),
             continuous,
-            sample_rate: env.sample_rate,
+            sample_rate: cx.env.sample_rate,
         }
     }
 }
 
 /// [`Snapshot::at`], as the plugin ABIs carry it, with `meter`'s signature
 /// and bar at the playhead.
-pub(crate) fn from_env(
-    env: &Env,
+pub(crate) fn from_cx(
+    cx: &Cx<'_>,
     offset: Offset,
     continuous: i64,
     meter: &MeterMap,
 ) -> TransportInfo {
-    transport_info(&Snapshot::at(env, offset, continuous), meter)
+    transport_info(&Snapshot::at(cx, offset, continuous), meter)
 }
 
 /// Map `s` onto the snapshot the plugin ABIs read, with `meter`'s signature
@@ -148,8 +154,8 @@ impl crate::host::node::input_slot::BlockReset for TransportInfo {
 }
 
 /// A transport read by **polling** a live [`TransportState`], for the one
-/// plugin node that does not read its [`Env`] for time: the in-process VST2
-/// client. The subprocess plugin node reads [`from_env`] instead.
+/// plugin node that does not read its [`Env`](tutti_graph::Env) for time: the in-process VST2
+/// client. The subprocess plugin node reads [`from_cx`] instead.
 ///
 /// [`TransportState`]: tutti_core::transport::TransportState
 #[cfg(feature = "vst2")]
@@ -260,7 +266,8 @@ mod tests {
     use super::*;
     use tutti_core::meter::{BarNumber, BeatsPerBar, MeterChange, NoteValue, TimeSignature};
     use tutti_core::{Frame, Samples, SegmentOrigin};
-    use tutti_graph::{LoopRange, Transport, TransportChanges};
+    use tutti_graph::{Env, LoopRange, Transport, TransportChanges, TransportHistory};
+    use tutti_types::Latency;
 
     const SR: SampleRate = SampleRate(48_000.0);
 
@@ -278,13 +285,22 @@ mod tests {
         Offset::new(i, Samples(len)).expect("inside the block")
     }
 
+    /// A node's context in `e` with no arrival latency.
+    fn cx(e: &Env) -> Cx<'_> {
+        Cx {
+            env: e,
+            arrival: Latency::ZERO,
+            history: TransportHistory::none(),
+        }
+    }
+
     /// Every transport field the snapshot carries is `Env`'s, at the frame
     /// asked for: the block's own transport at its first frame, the beat
     /// advanced to a later frame at the tempo. The continuous counter is the
     /// node's own [`SteadyTime`], not `Env`'s frame (which a re-prepare starts
     /// over).
     ///
-    /// Mutation: read `env.transport` instead of `env.transport_at(offset)`
+    /// Mutation: read `cx.env.transport` instead of `cx.transport_at(offset)`
     /// in `Snapshot::at` → the beat at offset 24 stays 2.0 → fails. Mutation:
     /// `continuous: env.frame_at(offset)` → the counter is 1024, not the
     /// node's 7 024 → fails. Mutation: drop `.with_recording` in
@@ -295,7 +311,7 @@ mod tests {
         let e = env(1_000, 64, t, TransportChanges::NONE);
         let meter = MeterMap::default();
 
-        let first = from_env(&e, at(0, 64), 0, &meter);
+        let first = from_cx(&cx(&e), at(0, 64), 0, &meter);
         assert!(first.state.playing);
         assert!(first.state.recording);
         assert_eq!(first.timing.tempo, 120.0);
@@ -307,7 +323,7 @@ mod tests {
         // frame says (1 000 here: as after a re-prepare restarted the graph).
         let mut steady = SteadyTime::default();
         steady.advance(7_000);
-        let later = from_env(&e, at(24, 64), steady.at(24), &meter);
+        let later = from_cx(&cx(&e), at(24, 64), steady.at(24), &meter);
         assert_eq!(
             later.position.beats,
             e.transport_at(at(24, 64)).beat().get()
@@ -349,19 +365,58 @@ mod tests {
         let meter = MeterMap::default();
 
         for i in 0..64 {
-            let got = from_env(&e, at(i, 64), 0, &meter);
+            let got = from_cx(&cx(&e), at(i, 64), 0, &meter);
             let want = e.transport_at(at(i, 64));
             assert_eq!(got.position.beats, want.beat().get(), "frame {i}");
             assert_eq!(got.timing.tempo, want.tempo.get(), "frame {i}");
             assert_eq!(got.state.cycle_active, want.looping.is_some(), "frame {i}");
         }
         // The wrap: 32 frames into a 32-frame loop is back at its start.
-        assert_eq!(from_env(&e, at(32, 64), 0, &meter).position.beats, 4.0);
+        assert_eq!(from_cx(&cx(&e), at(32, 64), 0, &meter).position.beats, 4.0);
         // The seek, and its tempo.
-        let seeked = from_env(&e, at(40, 64), 0, &meter);
+        let seeked = from_cx(&cx(&e), at(40, 64), 0, &meter);
         assert_eq!(seeked.position.beats, 16.0);
         assert_eq!(seeked.timing.tempo, 90.0);
         assert!(!seeked.state.cycle_active);
+    }
+
+    /// Behind a latent path the snapshot is the transport the node's input
+    /// was rendered at: `arrival` frames earlier, in an earlier block, before
+    /// the seek this block starts with — not the block's own playhead.
+    ///
+    /// Mutation: read `cx.env.transport_at(offset)` in `Snapshot::at` → the
+    /// snapshot reads the post-seek beat 32 → fails.
+    #[test]
+    fn behind_a_latent_path_the_snapshot_is_the_inputs_transport() {
+        let meter = MeterMap::default();
+        let mut history = TransportHistory::with_reach(Latency::new(Samples(100)));
+        let first = env(
+            0,
+            64,
+            Transport::new(true, Bpm(120.0), Beat(2.0), None),
+            TransportChanges::NONE,
+        );
+        history.observe(&first);
+        // A seek at the next block's start.
+        let second = env(
+            64,
+            64,
+            Transport::new(true, Bpm(120.0), Beat(32.0), None),
+            TransportChanges::NONE,
+        );
+        history.observe(&second);
+        let cx = Cx {
+            env: &second,
+            arrival: Latency::new(Samples(100)),
+            history: &history,
+        };
+        // Offset 50 of the second block hears frame 14 of the first.
+        let got = from_cx(&cx, at(50, 64), 0, &meter);
+        assert_eq!(
+            got.position.beats,
+            first.transport_at(at(14, 64)).beat().get()
+        );
+        assert!((got.position.beats - (2.0 + 14.0 / 24_000.0)).abs() < 1e-12);
     }
 
     /// The signature and bar fields come from the meter map. Left at their
@@ -379,7 +434,7 @@ mod tests {
             Transport::new(true, Bpm(120.0), Beat(3.5), None),
             TransportChanges::NONE,
         );
-        let out = from_env(&e, at(0, 64), 0, &meter);
+        let out = from_cx(&cx(&e), at(0, 64), 0, &meter);
 
         assert_eq!(out.timing.signature, seven_eight);
         assert_eq!(out.bar.number, BarNumber(2));

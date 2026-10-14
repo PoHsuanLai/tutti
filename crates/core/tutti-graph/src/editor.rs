@@ -68,6 +68,7 @@ use crate::exec::{
 };
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
+use crate::history::TransportHistory;
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamFrom, ParamIn, ParamState, ParamTap, Ramp};
 use crate::plan::{Delta, Placement, Plan};
@@ -1452,7 +1453,20 @@ impl Editor {
                 .collect();
             ParamState::new(ports, max, Some(Arc::clone(tap)), &port_seeds)
         };
-        let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units, params);
+        // A new transport history only when the plan's reach differs from
+        // the one sent last: commits apply in order, so that is the ring the
+        // executor holds by then.
+        let reach = plan.max_arrival();
+        let history = (self.plan.as_ref().map(|p| p.max_arrival()) != Some(reach))
+            .then(|| TransportHistory::with_reach(reach));
+        let commit = Commit::build(
+            self.sent + 1,
+            Arc::clone(&plan),
+            delta,
+            units,
+            params,
+            history,
+        );
         self.param_taps.retain(|k, _| plan.unit(*k).is_some());
         self.param_seeds.clear();
         if self.channels.to_executor.try_push(commit).is_err() {

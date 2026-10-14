@@ -959,6 +959,18 @@ impl Plan {
         &self.units
     }
 
+    /// The longest compiled arrival latency of any node: how far before its
+    /// block a node of this plan may read the transport
+    /// ([`Cx::transport_at`](crate::Cx::transport_at)), and so the reach of
+    /// the executor's [`TransportHistory`](crate::TransportHistory).
+    pub fn max_arrival(&self) -> Latency {
+        self.units
+            .iter()
+            .map(|u| u.arrival)
+            .max()
+            .unwrap_or(Latency::ZERO)
+    }
+
     /// The unit store length this plan needs.
     pub fn store_len(&self) -> u32 {
         self.store_len

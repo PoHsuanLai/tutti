@@ -25,6 +25,7 @@ use tutti_types::{
 };
 
 use crate::fork::ForkSource;
+use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::param::ParamPorts;
 use crate::time::Offset;
@@ -827,9 +828,29 @@ pub struct Cx<'a> {
     pub env: &'a Env,
     /// The compiled **arrival latency** at this node's inputs: how far behind
     /// the graph's own time its input signal is. A node reading the transport
-    /// reads it this many frames earlier, so a latent path and a direct path
-    /// agree about which beat a sample belongs to.
+    /// reads it this many frames earlier ([`transport_at`](Self::transport_at)),
+    /// so a latent path and a direct path agree about which beat a sample
+    /// belongs to.
     pub arrival: Latency,
+    /// The transport over the graph's last frames, kept by the executor for
+    /// as far back as its plan's longest arrival: what
+    /// [`transport_at`](Self::transport_at) reads before the block's first
+    /// frame. [`TransportHistory::none`] where nothing is kept.
+    pub history: &'a TransportHistory,
+}
+
+impl Cx<'_> {
+    /// The transport at frame `offset` of this node's **input**: the
+    /// transport [`arrival`](Self::arrival) frames before `offset`, which is
+    /// when the audio arriving there was rendered
+    /// ([`Env::transport_before`]). With no arrival it is
+    /// [`Env::transport_at`]. A node that reports the playhead to something
+    /// aligned with its input audio (a hosted plugin, a tempo-synced effect)
+    /// reads this, not the block's own time.
+    pub fn transport_at(&self, offset: Offset) -> Transport {
+        self.env
+            .transport_before(offset, self.arrival, self.history)
+    }
 }
 
 /// A processor in the graph.

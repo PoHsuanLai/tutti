@@ -432,7 +432,10 @@ impl AudioGraphRes {
     /// (its base) and clamped to `range`, per frame, by the graph's fused
     /// param step. Replaces whatever modulated it; the change crossfades
     /// (`PARAM_DECLICK`) rather than stepping. Takes effect with the frame's
-    /// commit, like any edge.
+    /// commit, like any edge. A call that changes only `range` is a control
+    /// move, not a rewire (`tutti_graph::Editor::set_param_range`): no commit
+    /// is needed, and the running node clamps to the new range from its next
+    /// block, stepping to it (a range move is not declicked).
     ///
     /// # Errors
     ///
@@ -552,6 +555,18 @@ impl AudioGraphRes {
         self.read()
             .planned_compensation()
             .map(|(channels, total)| PdcFigures { channels, total })
+    }
+
+    /// The plan last sent to the audio thread (`Editor::base`).
+    #[cfg(all(test, feature = "modulation"))]
+    pub(crate) fn sent_plan(&self) -> Option<std::sync::Arc<tutti_graph::Plan>> {
+        self.read().sent_plan()
+    }
+
+    /// Whether an edit waits for a commit.
+    #[cfg(all(test, feature = "modulation"))]
+    pub(crate) fn has_uncommitted_edit(&self) -> bool {
+        self.read().has_uncommitted_edit()
     }
 
     /// The compensation of the plan last sent to the audio thread.

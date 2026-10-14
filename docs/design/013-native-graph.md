@@ -4003,7 +4003,9 @@ under both.
     length.
   - **Range**: a NaN bound is refused by `GraphSpec::validate`
     (`GraphInvalid::BadParamRange`); it would otherwise reach
-    `f32::clamp` on the audio thread. Crossed bounds are ordered.
+    `f32::clamp` on the audio thread. Crossed bounds are ordered. The
+    range is a control the step reads per block, not plan (landed later:
+    "A param range is a control", below).
   - **Crossfade base**: a fade keeps the key's param state; the base is
     the incoming unit's control, ramped over one block like any control
     move, not over the fade: ramping it over the fade would hold the
@@ -4079,13 +4081,12 @@ fail on, by name.
   of the ported nodes did yet (they were `Legacy` + `ParamFeed`), so the
   per-frame slice crossed one copy per 64-frame chunk into the feed; both
   went with `Legacy` ([below](#legacy-deleted)).
-- **Follow-up: a range change recompiles** (the range is part of the
-  value, and of the plan's `ParamPortOp`). The old `ClampBounds` moved
-  without one, so a UI dragging a range now costs a commit per move where
-  it cost an atomic store. The fix is a per-port range control in
-  `ParamState` written from the control side (as a base is), with the
-  spec's range as its initial value; not done here. Until then a host
-  that animates a range should modulate the param instead.
+- ~~**Follow-up: a range change recompiles**~~ **Landed** (see "A
+  param range is a control" below): the range was part of the value and
+  of the plan's `ParamPortOp`, so a UI dragging one cost a commit per
+  move where the old `ClampBounds` cost an atomic store. It is now a
+  per-port control in `ParamState`, written from the control side, with
+  the spec's range as its initial value.
 - A re-prepare resumes each unit with fresh param state: event sources'
   held ramps restart at 0 (a sample-rate change would make their frame
   counts wrong anyway), as the reference does.
@@ -4093,6 +4094,75 @@ fail on, by name.
   curve-segment `EventKind` (decision 7) would slot in beside `Ramp`.
 - Param edges are direct only: no feedback modulation (a node modulating
   something upstream of itself is a `CompileError::Cycle`).
+
+#### A param range is a control
+
+The follow-up above, landed. A param port's range is the clamp a host
+drags (a UI's min/max handles), so it moves the way a base does: a store
+the audio thread reads once per block, never a plan.
+
+- **Where it lives.** `ParamRanges` (`src/param.rs`): per key with
+  declared params, one `AtomicU64` per port packing both bounds' bits (one
+  load, so a reader never pairs one write's `min` with another's `max`; two
+  `Param<U>` cells could). The editor keeps it per key beside the
+  `ParamTap`, and shares it with each unit's `ParamState`; a unit declaring
+  another param list gets fresh cells, so the unit it replaces never reads
+  a range meant for another param. A crossfade keeps the key's running
+  state, and its cells with it. It is a plain cell, like a base's
+  `AtomicF32`, not a lock-free structure with a protocol, so it stays in
+  `tutti-graph` with no loom model.
+- **The plan carries none.** `ParamPortOp::range` is gone; the fused step
+  reads the port's cell at its start and clamps the whole block to it.
+- **Writing it.** `Editor::set_param_range(at, range)` records the range in
+  the spec and stores the cell at once: no commit, nothing compiled or
+  sent, and the next block clamps to it, every frame. It refuses a NaN bound
+  (`BadParamRange`) and a key with no node (`UnknownParamNode`), as a commit
+  would. `GraphSpec::set_param_range` (through `spec_mut`) still works and
+  lands at the next commit, which, when ranges are all that changed
+  (`GraphSpec::same_but_ranges`: equal but for ranges, an entry with no
+  sources the same as none), validates, writes the cells from the spec and
+  sends nothing. Every full commit writes them too; a unit placed by one
+  starts with the spec's range.
+- **What a shrink does.** The clamp is applied as the value is read: the
+  node's base (its control) and each event source's ramp run on
+  unclamped. A range that shrinks around them pins the value to its bound;
+  one that widens again releases it to where the base and the ramp have got
+  to by then, ramp still in flight. Only a modulated port is clamped, as
+  before: a port nothing modulates reads its base.
+- **The reference** mirrors it: `Reference::set_param_range` overrides the
+  graph's range from the next block until the next `set_graph` (whose graph,
+  from the editor's spec, carries it).
+- **Cost.** `Editor::set_param_range` is a store (and it updates the
+  spec last committed, so the next commit is the plain comparison). A
+  range-only `commit` sends nothing but still validates and clones the
+  spec, linear in the graph on the control thread.
+- **Timing against a rewire.** A commit that moves a range and the wiring
+  together writes the cells at once; the plan lands when the executor
+  next drains its queue, so the old wiring can run a block under the new
+  range (a legal clamp, not a torn state).
+- **No declick.** A range move steps on the next block's first frame, as
+  a recompiled range did; a host that wants a glide modulates the param.
+- **bevy-tutti** has no range-setting API of its own: a range edit
+  (`ModParamRange`'s bounds) re-declares the modulation through
+  `AudioGraphRes::set_param_mod`, which now, when the sources are the ones
+  the graph holds, moves only the range through `Editor::set_param_range`
+  (a store, no commit).
+
+**Tests.** tutti-graph `tests/param_mod.rs`:
+`a_range_move_lands_on_the_next_block_without_a_commit` (no plan sent, the
+next block clamped frame for frame against the step's own arithmetic, a
+spec edit landing with a commit that sends nothing, a placed unit starting
+with the spec's range), `a_bad_range_move_is_refused`,
+`a_shrinking_range_rewrites_neither_the_base_nor_a_ramp` (a ramp in flight
+across a shrink below the base, pinned, then released onto the ramp), and
+`a_range_move_reaches_a_unit_that_faded_in` (the crossfade keeps the
+key's cells), `a_reordered_param_list_clamps_each_port_to_its_own_range`
+(a unit declaring another list gets its own), and the differential
+proptest moving ranges without a commit against the reference. `tests/parallel.rs`'s `ranges_moved_mid_render_stay_bit_identical`
+(serial against every pool, every block schedule), and `tests/rt_no_alloc.rs`'s
+modulated-params gate moving ranges between gated blocks, serial and on a
+pool. bevy-tutti: `a_range_move_sends_no_plan`; the existing
+`a_range_edit_reaches_a_live_clamp` now goes through the range-only path.
 
 #### Item 7 landed: sampler block render and ownership
 

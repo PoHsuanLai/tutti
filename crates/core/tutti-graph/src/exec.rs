@@ -2019,13 +2019,7 @@ fn run_params<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
                         s.from,
                     );
                 }
-                params.port(
-                    k,
-                    param,
-                    frames,
-                    Some((p.sig, p.range, &srcs[..list.len()])),
-                    base,
-                );
+                params.port(k, param, frames, Some((p.sig, &srcs[..list.len()])), base);
             }
             None => params.port(k, param, frames, None, base),
         }

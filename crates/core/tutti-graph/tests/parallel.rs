@@ -15,8 +15,8 @@ mod common;
 use common::{bits, test_pool, Kind, TestNode, WORKERS};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode, ForkSource,
-    ForkTarget, Forked, IntoNode, Io, Node, NodeParts, ParamFrom, ParamIn, ParamRamp, ParamShaping,
-    Prepare, Shape, Status, Transport, Ump,
+    ForkTarget, Forked, IntoNode, Io, Node, NodeParts, ParamFrom, ParamIn, ParamRamp, ParamRange,
+    ParamShaping, Prepare, Shape, Status, Transport, Ump,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, NodeKey, SampleRate, Samples};
@@ -285,6 +285,37 @@ fn schedules(max: usize) -> Vec<Vec<usize>> {
 /// scheduled into the consumer along the way and the transport rolling;
 /// every output channel, concatenated.
 fn render(ed: &mut Editor, exec: &mut Executor, blocks: &[usize]) -> Vec<Vec<f32>> {
+    render_with(ed, exec, blocks, false)
+}
+
+/// The param sink's two ports.
+fn sink_ports() -> [ParamIn; 2] {
+    [tutti_types::UnitParam::Cutoff, tutti_types::UnitParam::Q].map(|param| ParamIn {
+        node: NodeKey(30),
+        param,
+    })
+}
+
+/// [`render`], moving the param sink's ranges between blocks
+/// (`Editor::set_param_range`, no commit) when `ranges`.
+fn render_with(
+    ed: &mut Editor,
+    exec: &mut Executor,
+    blocks: &[usize],
+    ranges: bool,
+) -> Vec<Vec<f32>> {
+    const CUT: [ParamRange; 4] = [
+        ParamRange::new(1.0, 2.0),
+        ParamRange::new(0.5, 1.2),
+        ParamRange::new(3.0, 1.5),
+        ParamRange::UNBOUNDED,
+    ];
+    const Q: [ParamRange; 3] = [
+        ParamRange::new(1.8, 2.2),
+        ParamRange::UNBOUNDED,
+        ParamRange::new(2.0, 2.05),
+    ];
+    let [cut, q] = sink_ports();
     let outputs = 5;
     let mut all = vec![Vec::new(); outputs];
     let mut frame = 0u64;
@@ -299,6 +330,12 @@ fn render(ed: &mut Editor, exec: &mut Executor, blocks: &[usize]) -> Vec<Vec<f32
                 kind,
             )
             .expect("room");
+        }
+        if ranges && i % 5 == 2 {
+            let k = i / 5;
+            ed.set_param_range(cut, CUT[k % CUT.len()])
+                .expect("a range");
+            ed.set_param_range(q, Q[k % Q.len()]).expect("a range");
         }
         let input: Vec<f32> = (0..n)
             .map(|k| (((frame + k as u64) * 7919) % 211) as f32 / 211.0 - 0.5)
@@ -357,6 +394,46 @@ fn the_parallel_render_is_bit_identical_to_the_serial_one() {
                     &blocks[..blocks.len().min(4)]
                 );
             }
+        }
+    }
+}
+
+/// Param ranges moved between blocks, with no commit, render the same
+/// serially and on every pool, bit for bit — and no plan is sent for them.
+/// The live range is read in the op code both paths share (`run_params`),
+/// at the same point of the same op, so the two cannot disagree on which
+/// block a move lands on.
+///
+/// Mutations (run): drop the cell read in `ParamState::port` (clamp to
+/// the unbounded range) → the ranged render equals the unranged one → the
+/// "ranges bite" assert fails. No mutation of one path alone exists to
+/// run: the read is not duplicated per path.
+#[test]
+fn ranges_moved_mid_render_stay_bit_identical() {
+    for blocks in schedules(MAX_BLOCK) {
+        let (mut ed, mut exec) = pair(1);
+        let plan = std::sync::Arc::clone(ed.base().expect("a plan"));
+        let serial = render_with(&mut ed, &mut exec, &blocks, true);
+        assert!(
+            std::sync::Arc::ptr_eq(&plan, ed.base().expect("a plan")),
+            "a range move sends no plan"
+        );
+        let (mut ed0, mut exec0) = pair(1);
+        let unranged = render(&mut ed0, &mut exec0, &blocks);
+        assert_ne!(
+            bits(&serial[3..4]),
+            bits(&unranged[3..4]),
+            "the ranges bite on the param sink's output"
+        );
+        for workers in WORKERS {
+            let (mut ed, mut exec) = pair(workers);
+            let parallel = render_with(&mut ed, &mut exec, &blocks, true);
+            assert_eq!(
+                bits(&serial),
+                bits(&parallel),
+                "{workers} workers, blocks {:?}…",
+                &blocks[..blocks.len().min(4)]
+            );
         }
     }
 }

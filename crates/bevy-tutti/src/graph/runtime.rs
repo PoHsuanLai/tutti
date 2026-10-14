@@ -657,6 +657,10 @@ impl GraphRuntime {
     /// — every commit after it, since the same spec fails the same way — for
     /// a NaN bound, more than `MAX_PARAM_SOURCES` sources, or one node listed
     /// twice (which the spec could only keep once).
+    ///
+    /// When the sources are the ones the graph already holds, only the range
+    /// moves: that goes through `Editor::set_param_range`, a store the
+    /// running node reads on its next block, and marks nothing for commit.
     pub(crate) fn set_param_mod(
         &mut self,
         node: AudioNode,
@@ -684,10 +688,10 @@ impl GraphRuntime {
         {
             return Err(GraphInvalid::UnsortedParamSources { at });
         }
-        let spec = self.editor.spec_mut();
-        spec.params.remove(&at);
+        // The entry as the spec would hold it, built the spec's own way.
+        let mut want = tutti_graph::GraphSpec::default();
         for (from, shaping) in sources {
-            spec.connect_param(
+            want.connect_param(
                 at,
                 ParamFrom::Audio(OutPort {
                     node: key(*from),
@@ -696,7 +700,21 @@ impl GraphRuntime {
                 shaping.clone(),
             );
         }
-        spec.set_param_range(at, range);
+        let want = want.params.remove(&at).unwrap_or_default().sources;
+        let held = self.editor.spec().params.get(&at).map(|m| &m.sources);
+        if !want.is_empty() && held == Some(&want) {
+            // A range move alone: a control, not a rewire.
+            return self.editor.set_param_range(at, range);
+        }
+        let spec = self.editor.spec_mut();
+        spec.params.remove(&at);
+        spec.params.insert(
+            at,
+            ParamMod {
+                range,
+                sources: want,
+            },
+        );
         self.edited = true;
         Ok(())
     }
@@ -824,6 +842,20 @@ impl GraphRuntime {
         )
         .ok()?;
         Some((plan.compensation().to_vec(), plan.total_latency().samples()))
+    }
+
+    /// The plan last sent to the audio thread, to tell whether a commit
+    /// sent one.
+    #[cfg(all(test, feature = "modulation"))]
+    pub(crate) fn sent_plan(&self) -> Option<std::sync::Arc<tutti_graph::Plan>> {
+        self.editor.base().cloned()
+    }
+
+    /// Whether an edit waits for a commit (what a local render commits
+    /// first).
+    #[cfg(all(test, feature = "modulation"))]
+    pub(crate) fn has_uncommitted_edit(&self) -> bool {
+        self.edited
     }
 
     /// The compensation of the plan sent last: what `commit_graph` publishes,

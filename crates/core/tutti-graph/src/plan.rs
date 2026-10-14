@@ -53,7 +53,7 @@ use crate::arena::Role;
 use crate::fade::Fade;
 use crate::io::PortKind;
 use crate::node::{InPlaceMask, Prepare, Shape};
-use crate::param::{ParamFrom, ParamIn, ParamRange, ParamShaping};
+use crate::param::{ParamFrom, ParamIn, ParamShaping};
 use crate::spec::{EventIn, EventOut};
 
 /// The audio slot every unconnected or `Source::Zero` input reads.
@@ -394,15 +394,18 @@ pub enum Op {
 /// One modulated param port of a node op: the fused `ParamMod` step the op
 /// runs before its node (see
 /// [`GraphSpec::connect_param`](crate::GraphSpec::connect_param)).
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// It carries no range: the sum is clamped to the port's live range, a
+/// control the executor reads per block
+/// ([`Editor::set_param_range`](crate::Editor::set_param_range)), so moving a
+/// range never changes the plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParamPortOp {
     /// Its index in the node's declared params
     /// ([`Shape::params`](crate::Shape::params)).
     pub port: u16,
     /// The param.
     pub param: UnitParam,
-    /// What the sum is clamped to.
-    pub range: ParamRange,
     /// Its sources' signature: equal across plans exactly when the sources
     /// (outputs and shapings) are, so the executor crossfades a port whose
     /// sources changed and leaves one that only moved slots alone.

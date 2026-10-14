@@ -69,7 +69,7 @@ use crate::exec::{
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
-use crate::param::{ParamFrom, ParamIn, ParamState, ParamTap, Ramp};
+use crate::param::{ParamFrom, ParamIn, ParamRange, ParamRanges, ParamState, ParamTap, Ramp};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
 
@@ -363,6 +363,11 @@ pub struct Editor {
     /// `ParamTap`). Shared with the running unit's state, and handed to the
     /// next unit placed at the key.
     param_taps: BTreeMap<NodeKey, Arc<ParamTap>>,
+    /// Per key with declared params: its ports' live ranges
+    /// (`src/param.rs`, `ParamRanges`), shared with the running unit's
+    /// state. Written from the spec by every commit, and by
+    /// [`set_param_range`](Self::set_param_range) at once.
+    param_ranges: BTreeMap<NodeKey, Arc<ParamRanges>>,
     /// On a **fork**, until its first commit: the ramps each param port's
     /// event sources start from, read from the live graph's taps.
     param_seeds: BTreeMap<ParamIn, Vec<(ParamFrom, Ramp)>>,
@@ -432,6 +437,7 @@ impl Editor {
             event_capacity: cap,
             fork_health: Vec::new(),
             param_taps: BTreeMap::new(),
+            param_ranges: BTreeMap::new(),
             param_seeds: BTreeMap::new(),
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
@@ -849,6 +855,78 @@ impl Editor {
         Ok(())
     }
 
+    /// Sets param port `at`'s range — what its modulated value is clamped
+    /// to — **without a commit**: the spec records it, and the running unit
+    /// clamps to it from its next block on, as it reads a base moved through
+    /// its control. Nothing is compiled or sent, so a host may call this
+    /// for every move of a range control.
+    ///
+    /// - **When it lands.** The executor reads each port's range once per
+    ///   block, at the port's step: a range set between two blocks clamps
+    ///   the whole of the next one, frame for frame. A range set while the
+    ///   audio thread is inside a block lands on that block or the next.
+    /// - **What it clamps.** The modulated value only (base plus offsets): a
+    ///   port nothing modulates reads its base, unclamped, as it always did.
+    /// - **What it never rewrites.** The node's base (its control) and each
+    ///   event source's ramp run on unclamped; the clamp is applied as the
+    ///   value is read. A range that shrinks around a held base or a ramp in
+    ///   flight pins the value to its bound, and one that widens again lets
+    ///   it go back to where the base and the ramp have got to by then.
+    /// - **Before a commit.** The spec holds the range, so it is also the
+    ///   initial range of a unit the next commit places, and a unit not yet
+    ///   committed starts with it. A range edited through
+    ///   [`spec_mut`](Self::spec_mut) instead lands at the next
+    ///   [`commit`](Self::commit), which, for an edit that changes only
+    ///   ranges, sends nothing either.
+    /// - **No declick.** The value steps to the new bound on the block's
+    ///   first frame, as it did when a range change was a commit. A host
+    ///   that wants a range to glide moves it in steps, or modulates the
+    ///   param instead.
+    /// - **Cost.** Two stores and a map lookup on the control side; nothing
+    ///   on the audio thread but the per-block load it always makes.
+    /// - A port its node does not declare is recorded in the spec and
+    ///   clamps nothing.
+    ///
+    /// # Errors
+    ///
+    /// Refused, changing nothing, with the error the commit would fail on:
+    /// [`GraphInvalid::BadParamRange`] for a NaN bound, and
+    /// [`GraphInvalid::UnknownParamNode`] for a key with no node.
+    pub fn set_param_range(&mut self, at: ParamIn, range: ParamRange) -> Result<(), GraphInvalid> {
+        if range.min.is_nan() || range.max.is_nan() {
+            return Err(GraphInvalid::BadParamRange { at, range });
+        }
+        if !self.spec.topology.nodes.contains_key(&at.node) {
+            return Err(GraphInvalid::UnknownParamNode {
+                at,
+                missing: at.node,
+            });
+        }
+        self.spec.set_param_range(at, range);
+        if let Some(cells) = self.param_ranges.get(&at.node) {
+            cells.store(at.param, range);
+        }
+        // The cells hold it now, so the spec last committed holds it too: a
+        // later commit with nothing else to send is the plain comparison,
+        // not a validate. (A committed spec without the node differs in its
+        // topology anyway, and gets a full commit.)
+        if let Some((committed, _)) = &mut self.committed {
+            if committed.topology.nodes.contains_key(&at.node) {
+                committed.set_param_range(at, range);
+            }
+        }
+        Ok(())
+    }
+
+    /// Write every live range cell from the spec.
+    fn sync_ranges(&self) {
+        for (&node, cells) in &self.param_ranges {
+            for &param in cells.declared().as_slice() {
+                cells.store(param, range_of(&self.spec, ParamIn { node, param }));
+            }
+        }
+    }
+
     /// Removes `key` and every edge that touches it. Output channels it fed
     /// become [`Source::Zero`].
     pub fn remove(&mut self, key: NodeKey) {
@@ -1195,7 +1273,18 @@ impl Editor {
     /// commit, no unit pending, no crossfade or latency cut waiting — sends
     /// nothing and returns `Ok`: it would compile the plan the executor
     /// already has, with an empty delta. So it costs a comparison, not a
-    /// compile, and a host may commit every frame.
+    /// compile, and a host may commit every frame. Nor does one whose spec
+    /// differs only in param **ranges**: those are controls, not plan, so it
+    /// validates the spec, writes the ranges to the running units (see
+    /// [`set_param_range`](Self::set_param_range)) and sends nothing. That
+    /// still costs the validate and a clone of the spec, on this thread;
+    /// [`set_param_range`](Self::set_param_range) costs a store.
+    ///
+    /// **A range and a rewire in one commit** do not land together: the
+    /// commit writes every range cell at once, and the plan lands when the
+    /// executor next drains its queue, so the old wiring can run a block
+    /// under the new range. A range is a clamp the node may hear at any
+    /// block, so that block is a legal state, not a torn one.
     ///
     /// # Errors
     ///
@@ -1218,11 +1307,21 @@ impl Editor {
         if self.pending.is_empty()
             && self.fades.is_empty()
             && self.latency_cuts.is_empty()
-            && self
+            && self.committed.as_ref().is_some_and(|(spec, shapes)| {
+                *shapes == self.shapes && spec.same_but_ranges(&self.spec)
+            })
+        {
+            // The plan the executor has is this spec's: at most a range
+            // moved, which is a control.
+            if self
                 .committed
                 .as_ref()
-                .is_some_and(|(spec, shapes)| *spec == self.spec && *shapes == self.shapes)
-        {
+                .is_some_and(|(spec, _)| *spec != self.spec)
+            {
+                self.spec.validate().map_err(CommitError::Invalid)?;
+                self.sync_ranges();
+                self.committed = Some((self.spec.clone(), self.shapes.clone()));
+            }
             return Ok(());
         }
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
@@ -1280,6 +1379,7 @@ impl Editor {
             .collect();
         self.fades.clear();
         self.send(plan, delta, units);
+        self.sync_ranges();
         self.committed = Some((self.spec.clone(), self.shapes.clone()));
         Ok(())
     }
@@ -1425,9 +1525,11 @@ impl Editor {
         debug_assert!(self.fades_out <= FADE_CAPACITY);
         let plan = Arc::new(plan);
         let (taps, seeds) = (&mut self.param_taps, &mut self.param_seeds);
+        let (ranges, spec) = (&mut self.param_ranges, &self.spec);
         let params = |key: NodeKey, ports: usize, max: usize| {
             if ports == 0 {
                 taps.remove(&key);
+                ranges.remove(&key);
                 return ParamState::default();
             }
             // The key's tap, kept across a replace (a crossfade keeps the
@@ -1441,6 +1543,21 @@ impl Editor {
                 })
                 .or_insert_with(|| ParamTap::new(ports));
             let declared = plan.unit(key).map(|u| u.shape.params);
+            // The key's range cells, kept for a unit declaring the same
+            // params (a crossfade keeps the running state, which reads
+            // them); fresh ones, from the spec, for another list.
+            let list = declared.unwrap_or(crate::param::ParamPorts::NONE);
+            let cells = ranges
+                .entry(key)
+                .and_modify(|c| {
+                    if c.declared() != list {
+                        *c = ParamRanges::new(list);
+                    }
+                })
+                .or_insert_with(|| ParamRanges::new(list));
+            for &param in list.as_slice() {
+                cells.store(param, range_of(spec, ParamIn { node: key, param }));
+            }
             let port_seeds: Vec<Vec<(ParamFrom, Ramp)>> = declared
                 .iter()
                 .flat_map(|d| d.as_slice().iter())
@@ -1450,10 +1567,17 @@ impl Editor {
                         .unwrap_or_default()
                 })
                 .collect();
-            ParamState::new(ports, max, Some(Arc::clone(tap)), &port_seeds)
+            ParamState::new(
+                ports,
+                max,
+                Some(Arc::clone(tap)),
+                Some(Arc::clone(cells)),
+                &port_seeds,
+            )
         };
         let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units, params);
         self.param_taps.retain(|k, _| plan.unit(*k).is_some());
+        self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
         self.param_seeds.clear();
         if self.channels.to_executor.try_push(commit).is_err() {
             unreachable!("the queue has a free slot for every credit");
@@ -1497,6 +1621,13 @@ impl Editor {
     pub(crate) fn seed_params(&mut self, seeds: BTreeMap<ParamIn, Vec<(ParamFrom, Ramp)>>) {
         self.param_seeds = seeds;
     }
+}
+
+/// Param port `at`'s range as `spec` holds it: unbounded without an entry.
+fn range_of(spec: &GraphSpec, at: ParamIn) -> ParamRange {
+    spec.params
+        .get(&at)
+        .map_or(ParamRange::UNBOUNDED, |m| m.range)
 }
 
 /// The crossfades `delta` starts: one per fade that is not a plain swap.

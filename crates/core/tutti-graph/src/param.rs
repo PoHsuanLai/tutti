@@ -476,6 +476,76 @@ pub(crate) struct SrcState {
     last_raw: f32,
 }
 
+/// The live range of each of one key's declared param ports: what the fused
+/// step clamps a modulated value to, read once per block.
+///
+/// A range is a control, as a base is: written on the control side
+/// ([`Editor::set_param_range`](crate::Editor::set_param_range), and every
+/// commit from the spec), read by the audio thread at the start of the
+/// port's step, so a move lands on the next block and costs a store, not a
+/// plan. The spec's range is its initial value; the plan carries no range.
+///
+/// One cell per port: an `AtomicU64` packing both bounds' bits, so a reader
+/// never pairs one write's `min` with another's `max` (two `AtomicF32`s, as
+/// two `Param<U>`s would be, could). It is a plain cell, as a base's
+/// `AtomicF32` is: no protocol between cells, nothing to model.
+///
+/// Kept by the editor per key, as [`ParamTap`] is, and shared with the
+/// state of each unit placed there that declares the same params: a
+/// crossfade keeps the key's running state, and that state reads these
+/// cells. A unit declaring a different list gets fresh cells, so the unit it
+/// replaces never reads a range meant for another param.
+#[derive(Debug)]
+pub(crate) struct ParamRanges {
+    declared: ParamPorts,
+    cells: Box<[AtomicU64]>,
+}
+
+impl ParamRanges {
+    /// Unbounded cells for `declared`. Control side: allocates.
+    pub(crate) fn new(declared: ParamPorts) -> Arc<Self> {
+        let unbounded = pack(ParamRange::UNBOUNDED);
+        Arc::new(Self {
+            declared,
+            cells: (0..declared.len())
+                .map(|_| AtomicU64::new(unbounded))
+                .collect(),
+        })
+    }
+
+    /// The params the cells are for, in port order.
+    pub(crate) fn declared(&self) -> ParamPorts {
+        self.declared
+    }
+
+    /// Set `param`'s range; `false` if it is not one of these ports.
+    /// Control side.
+    pub(crate) fn store(&self, param: UnitParam, range: ParamRange) -> bool {
+        let Some(k) = self.declared.index_of(param) else {
+            return false;
+        };
+        self.cells[k].store(pack(range), Ordering::Release);
+        true
+    }
+
+    /// Port `k`'s range now (unbounded past the last port). Wait-free.
+    #[inline]
+    pub(crate) fn load(&self, k: usize) -> ParamRange {
+        self.cells
+            .get(k)
+            .map_or(ParamRange::UNBOUNDED, |c| unpack(c.load(Ordering::Acquire)))
+    }
+}
+
+/// Both bounds' bits in one word: `min` high, `max` low.
+fn pack(r: ParamRange) -> u64 {
+    (u64::from(r.min.to_bits()) << 32) | u64::from(r.max.to_bits())
+}
+
+fn unpack(w: u64) -> ParamRange {
+    ParamRange::new(f32::from_bits((w >> 32) as u32), f32::from_bits(w as u32))
+}
+
 /// One declared param port's running state, kept with its unit across
 /// blocks and plans.
 #[derive(Clone, Debug)]
@@ -576,17 +646,21 @@ pub(crate) struct ParamState {
     /// Where the event sources' ramps are published for a fork (see
     /// [`ParamTap`]).
     tap: Option<Arc<ParamTap>>,
+    /// Each port's live range (see [`ParamRanges`]); `None` only for a unit
+    /// with no declared params.
+    ranges: Option<Arc<ParamRanges>>,
 }
 
 impl ParamState {
     /// State for `ports` declared params at blocks of up to `max` frames,
-    /// publishing to `tap` and starting from `seeds` (per port, the event
-    /// sources' ramps a fork carries over). Allocates nothing when `ports`
-    /// is 0.
+    /// publishing to `tap`, clamping to `ranges` and starting from `seeds`
+    /// (per port, the event sources' ramps a fork carries over). Allocates
+    /// nothing when `ports` is 0.
     pub(crate) fn new(
         ports: usize,
         max: usize,
         tap: Option<Arc<ParamTap>>,
+        ranges: Option<Arc<ParamRanges>>,
         seeds: &[Vec<(ParamFrom, Ramp)>],
     ) -> Self {
         if ports == 0 {
@@ -613,6 +687,7 @@ impl ParamState {
             // seed each port (see `PortState::fresh`).
             busy: true,
             tap,
+            ranges,
         }
     }
 
@@ -655,10 +730,11 @@ impl ParamState {
     }
 
     /// Run the fused step for declared port `k` (param `param`) over one
-    /// block: its modulation this plan (its signature, range and sources, in
-    /// source order — `None` when nothing modulates it), and its base
-    /// (`None` for a node that cannot say, which then reads its own control,
-    /// unmodulated).
+    /// block: its modulation this plan (its signature and sources, in source
+    /// order — `None` when nothing modulates it), and its base (`None` for a
+    /// node that cannot say, which then reads its own control, unmodulated).
+    /// The sum is clamped to the port's live range as it stands at this
+    /// block's start ([`ParamRanges`]).
     #[allow(
         clippy::type_complexity,
         reason = "one borrowed view of a port's plan entry, built per block on the stack"
@@ -668,7 +744,7 @@ impl ParamState {
         k: usize,
         param: UnitParam,
         frames: usize,
-        m: Option<(u64, ParamRange, &[(SourceIn<'_>, &ParamShaping, ParamFrom)])>,
+        m: Option<(u64, &[(SourceIn<'_>, &ParamShaping, ParamFrom)])>,
         base: Option<f32>,
     ) {
         let d = PARAM_DECLICK.get();
@@ -679,8 +755,8 @@ impl ParamState {
             *st = PortState::default();
             return;
         };
-        let sig = m.as_ref().map_or(0, |(s, _, _)| *s);
-        let froms = || m.iter().flat_map(|(_, _, s)| s.iter().map(|&(_, _, f)| f));
+        let sig = m.as_ref().map_or(0, |(s, _)| *s);
+        let froms = || m.iter().flat_map(|(_, s)| s.iter().map(|&(_, _, f)| f));
         if st.fresh {
             // The first block: nothing to fade from (module docs).
             st.fresh = false;
@@ -705,7 +781,7 @@ impl ParamState {
         let out = &mut self.scratch[k * self.max..k * self.max + frames];
         let n = frames as f32;
         match m {
-            Some((_, range, sources)) => {
+            Some((_, sources)) => {
                 // `f32`'s `Sum` folds from `-0.0`; so does this, so the sum is
                 // bit-identical to an iterator `base + Σ`.
                 out.fill(-0.0);
@@ -728,6 +804,14 @@ impl ParamState {
                         }
                     }
                 }
+                // The live range, read once per block: a move lands on the
+                // next block, and the stored base and the sources' ramps are
+                // never rewritten, so a range that widens again releases
+                // the value to where they put it.
+                let range = self
+                    .ranges
+                    .as_ref()
+                    .map_or(ParamRange::UNBOUNDED, |r| r.load(k));
                 let (lo, hi) = range.ordered();
                 for (i, o) in out.iter_mut().enumerate() {
                     *o = (base_at(from, b1, i, frames, n) + *o).clamp(lo, hi);

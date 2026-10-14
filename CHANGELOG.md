@@ -26,6 +26,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A param range is a control, not plan** (design doc 013, "A param
+  range is a control"). Moving a modulated param's range no longer
+  recompiles: the running unit reads each port's range once per block
+  from a cell the editor writes. Through `Editor::set_param_range` a move
+  costs a store, as the old `ClampBounds` did; a range-only `commit`
+  sends no plan but still validates and clones the spec (linear in the
+  graph, on the control thread). The clamp is applied as the value is
+  read: a range that shrinks never rewrites the base or an event source's
+  ramp, and widening it again releases the value to where they are. A
+  range move steps, with no declick, as a recompiled range did.
+  **Breaking** for `ParamPortOp`.
+
+  | Was | Now |
+  |---|---|
+  | a range change was a commit, and recompiled | `Editor::set_param_range(at, range) -> Result<(), GraphInvalid>` lands on the next block with no commit (refuses a NaN bound or a key with no node); a commit whose spec differs only in ranges (`GraphSpec::set_param_range` through `spec_mut`) validates, writes the ranges, and sends no plan |
+  | `ParamPortOp::range` | removed: the plan carries no range (`ParamPortOp` is now `Eq`). Read a port's range from the spec (`GraphSpec::params`) |
+  | — | `Reference::set_param_range`, the reference interpreter's mirror of the editor's |
+  | bevy-tutti: a `ModParamRange` bounds edit recompiled the graph | `AudioGraphRes::set_param_mod` with the sources the graph already holds moves only the range, through `Editor::set_param_range`: a store, no commit |
+
 - **A node behind a latent path reads the transport its input was rendered
   at** (design doc 013, "Arrival-aligned transport landed"). **Breaking**
   for code that builds a `tutti_graph::Cx` by hand. The executor keeps a
@@ -301,10 +320,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source at the ramp the live unit holds. A crossfade's two units must
   declare the same params (`CommitError::FadeShape` otherwise); the base
   across a crossfade ramps over one block, as any control move does. A
-  NaN range bound is refused (`GraphInvalid::BadParamRange`). **A range
-  change recompiles** (the old `ClampBounds` moved without a commit; a
-  per-port range control is a recorded follow-up in doc 013). This
-  replaces the per-param
+  NaN range bound is refused (`GraphInvalid::BadParamRange`). A range
+  change recompiled when this landed (the old `ClampBounds` moved without
+  a commit); it no longer does ("A param range is a control", above).
+  This replaces the per-param
   sub-graph (`AtomicSourceNode → ParamSumNode ← ParamShaperNode × N`) and
   the extra input ports a node had to be born with. What changes for a
   caller:
@@ -317,7 +336,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | an `AudioUnit` read a modulated param from an input channel | an `AudioUnit` with a `ParamFeed` (new, `tutti_node`; `AudioUnit::param_feed` / `param_base`) is fed its modulated params per 64-frame chunk by `Legacy`, and reads its own control when a param is not fed. A forwarding wrapper must forward both methods |
   | `Op::Node { .., in_place }` | gains `params: Span` (into `Plan::param_ports`, each with its sources in `Plan::param_sources`) |
   | `GraphSpec`, `ValidGraph` | gain `params` (`ValidGraph::params`); `GraphInvalid` gains `UnknownParamNode`, `UnsortedParamSources`, `TooManyParamSources`, `BadParamRange`; `CompileError` gains `UnknownParam`, `ParamSourceOutOfRange`; `CycleEdge` gains `Param`; `DelayKey` gains `ParamAudio`, `ParamEvent`; `Shape` gains `params`; `ParamSourceOp` carries its `from` |
-  | `ClampBounds` moved a range with an atomic store | a range change (`GraphSpec::set_param_range`) is a commit, and recompiles |
+  | `ClampBounds` moved a range with an atomic store | `Editor::set_param_range` (no commit), or `GraphSpec::set_param_range` and a commit that sends no plan (see "A param range is a control") |
   | `ParamFeed::new` / `ParamPorts::new` only panicked on a list they cannot carry | `ParamFeed::try_new` (`ParamFeedError`) and `ParamPorts::try_new` (`ParamPortsError`) name it; `new` panics with that error. `MAX_FED_PARAMS == MAX_PARAM_PORTS` is asserted at compile time |
   | bevy-tutti: `ParamPortMap`, `DeclareParamPorts::with_param_ports` | removed: nothing to declare at spawn, the node's shape says it |
   | bevy-tutti: `AudioRateChains` (`base_cell`, `ParamChain`), `ShaperShaping` | `AudioRateRoutes` (`AudioRateParam`: the node, each route's source node and shaping, the range, the base). The modulation lives in the graph value: `AudioGraphRes::param_mod`, set with `set_param_mod` (which returns `Result<(), GraphInvalid>`, refusing a NaN bound, more than `MAX_PARAM_SOURCES` sources or a node listed twice) / `clear_param_mod`. Two routes from one `ModSource` onto one param sum into one table (`ParamModShaping::summed`); routes past `MAX_PARAM_SOURCES` source nodes are dropped with a warning; a NaN range keeps the route on the value path |

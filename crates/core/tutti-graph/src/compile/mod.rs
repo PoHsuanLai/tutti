@@ -57,7 +57,7 @@ use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
 
 use crate::node::{InPlaceMask, Prepare, Resolution, Shape, MAX_PORTS};
-use crate::param::{signature, ParamFrom, ParamIn, ParamRange, ParamShaping};
+use crate::param::{signature, ParamFrom, ParamIn, ParamShaping};
 use crate::plan::{
     Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, NodeTables, Op,
     ParamPortOp, ParamSlot, ParamSourceOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value,
@@ -338,7 +338,6 @@ enum Pre {
 struct PPort {
     port: u16,
     param: tutti_types::UnitParam,
-    range: ParamRange,
     sig: u64,
     sources: Vec<(PRef, ParamShaping, ParamFrom)>,
 }
@@ -884,7 +883,6 @@ pub fn compile(
             params.push(PPort {
                 port: k as u16,
                 param,
-                range: m.range,
                 sig: signature(&m.sources),
                 sources,
             });
@@ -1169,7 +1167,6 @@ pub fn compile(
                     param_ports.push(ParamPortOp {
                         port: p.port,
                         param: p.param,
-                        range: p.range,
                         sig: p.sig,
                         sources: Span {
                             start: sstart,

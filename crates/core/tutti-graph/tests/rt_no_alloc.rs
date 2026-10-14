@@ -617,13 +617,16 @@ impl Node for RampEvery {
 /// Compiler-owned param modulation never allocates on the audio thread:
 /// the fused step over audio sources (one delayed by PDC behind a latent
 /// sibling), a ramp source and LUT shapings, the declick of a connection
-/// made and one broken, blocks of every length. The commits are applied
-/// before the gate (applying allocates by design); the declicks they start
-/// run inside it.
+/// made and one broken, blocks of every length, and ranges moved between
+/// blocks without a commit. The commits are applied before the gate
+/// (applying allocates by design); the declicks they start, and every block
+/// that reads a moved range, run inside it.
 ///
 /// Mutation (run): in `ParamState::port`, copy an audio source into a
 /// `Vec` per block → aborts. Rebuild the ramp buffer per block
-/// (`self.ramp_buf = vec![0.0; frames]`) → aborts.
+/// (`self.ramp_buf = vec![0.0; frames]`) → aborts. Box the live range as it
+/// is read (`*Box::new(r.load(k))`) → aborts (in the first phase already:
+/// the range is read every block a port is modulated, moved or not).
 fn modulated_params_are_allocation_free_on(workers: usize) {
     use tutti_graph::{ParamFrom, ParamIn, ParamShaping, ShapeLut};
     let (mut ed, mut exec) = Editor::new(prepare(256));
@@ -709,6 +712,25 @@ fn modulated_params_are_allocation_free_on(workers: usize) {
         "the gate runs the mode it names"
     );
     assert_no_alloc::assert_no_alloc(|| run(&mut exec));
+
+    // Ranges moved between blocks (`Editor::set_param_range`, on this
+    // control thread, outside the gate): every block that reads a moved
+    // range runs inside it. No commit, so nothing to apply.
+    ed.collect();
+    let ranges = [
+        tutti_graph::ParamRange::new(0.0, 0.5),
+        tutti_graph::ParamRange::new(2.0, -1.0),
+        tutti_graph::ParamRange::UNBOUNDED,
+    ];
+    for i in 0..60 {
+        ed.set_param_range(cut, ranges[i % 3]).expect("a range");
+        ed.set_param_range(q, ranges[(i + 1) % 3]).expect("a range");
+        let n = sizes[i % sizes.len()];
+        assert_no_alloc::assert_no_alloc(|| {
+            exec.process(n, &transport, &[&input[..n]], &mut [&mut out[..n]]);
+        });
+    }
+    assert_eq!(ed.in_flight(), 0, "a range move sends nothing");
     let plan = exec.plan().expect("a plan");
     assert!(
         plan.delays()

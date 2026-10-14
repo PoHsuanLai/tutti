@@ -931,9 +931,10 @@ impl Plan {
         self.work
     }
 
-    /// The cost model's estimate of the costliest chain of tasks through
-    /// the task DAG, each task charged for its dispatch: no number of
-    /// participants renders a block faster than this.
+    /// The cost model's estimate of the costliest path through the task
+    /// DAG, each hand-over to a successor charged by its place in the
+    /// queue: no number of participants renders a block faster than this.
+    /// Coarsening never makes it longer than chain fusion alone would.
     pub fn critical_path(&self) -> Work {
         self.critical
     }

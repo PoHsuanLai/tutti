@@ -19,7 +19,7 @@ is a `tutti_graph::Node`. Phase 5 deleted fundsp's `Net`, the vendored fork,
 `tutti-node` and its `AudioUnit` trait, `Setting` and the numeric tower;
 `AudioNode` wraps a `NodeKey`, and `tutti_types::latency` is a pure pass that
 is the compiler's own solve. Phase 6 is under way: the parallel executor
-(part a) is below; the cost model and coarsening (part b) are next.
+(part a, below) and the cost model and coarsening (part b) have landed.
 
 - Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
   `reset`: declared latency and tail in the shape). A node with params is a
@@ -43,6 +43,8 @@ A block's tasks may run on several threads (`Executor::set_pool`,
 `tutti_core::WorkerPool`), and the render must stay bit-identical to the
 serial one.
 
+- **A cheap node declares its cost** (`Shape::with_cost`: `Cost::Light`
+  or `Moderate`); one that declares nothing is `Heavy`, worth a thread.
 - **Nodes communicate only through ports.** Two nodes sharing mutable state
   outside the graph (one `Arc<Mutex<_>>`, a shared cursor) are unordered in
   parallel. Share through an edge, or make it one node.

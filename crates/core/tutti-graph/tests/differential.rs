@@ -861,9 +861,8 @@ proptest! {
     /// Mutations (each applied to `src/compile/coarsen.rs`, seen to fail,
     /// reverted): in `finish`, skip the task edges out of any task of
     /// more than one op (a dependency dropped when merging) → the verifier
-    /// refuses the plan ("crosses task"); in `pack`, put every level's
-    /// cheap tasks into one bin shared across levels → the verifier
-    /// refuses it (a task graph cycle, or a task's ops out of order).
+    /// refuses the plan ("crosses task"). (Packing tasks that are not
+    /// siblings is pinned in `coarsen::tests`, by the critical path.)
     #[test]
     fn coarsened_plans_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
         for workers in modes(seed) {
@@ -889,6 +888,9 @@ proptest! {
 #[test]
 fn the_cost_generator_packs_and_spreads() {
     let (mut packed, mut packed_parallel, mut serial) = (0, 0, 0);
+    // Undeclared graphs, for the record (doc 013, part (b) decision 2):
+    // multi-task plans the model keeps serial at four participants.
+    let (mut plain_multi, mut plain_serial) = (0, 0);
     for seed in 0..512u64 {
         let desc = random_graph(seed);
         let valid = desc.spec.validate().expect("valid");
@@ -903,6 +905,12 @@ fn the_cost_generator_packs_and_spreads() {
             .0
         };
         let plain = compile(&BTreeMap::new());
+        if plain.tasks().len() > 1 {
+            plain_multi += 1;
+            if plain.schedule(4) == tutti_graph::Schedule::Serial {
+                plain_serial += 1;
+            }
+        }
         let costed = compile(&random_costs(&desc, seed));
         if costed.tasks().len() < plain.tasks().len() {
             packed += 1;
@@ -915,6 +923,7 @@ fn the_cost_generator_packs_and_spreads() {
         }
     }
     eprintln!("packed further: {packed}, of them parallel: {packed_parallel}, serial: {serial}");
+    eprintln!("undeclared multi-task plans: {plain_multi}, serial at 4: {plain_serial}");
     assert!(packed > 50, "only {packed} plans packed further");
     assert!(
         packed_parallel > 25,

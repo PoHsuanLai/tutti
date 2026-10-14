@@ -166,8 +166,9 @@ fn tiny(lanes: usize, light: bool, workers: usize) -> Executor {
     exec.apply_pending();
     ed.collect();
     // The cost model keeps the declared-light graph on one thread (its
-    // gains pack into one task, fused with its input and sum); the
-    // undeclared one spreads as part (a) did.
+    // gains pack into two tasks of eight, four tasks in all, too cheap to
+    // spread); the undeclared one spreads a task per gain, as part (a)
+    // did.
     assert_eq!(exec.is_parallel(), workers > 1 && !light);
     exec
 }

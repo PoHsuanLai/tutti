@@ -36,8 +36,9 @@
 //! 6. **Colour** ([`colour`]) — slot sharing that is correct under any
 //!    parallel schedule, with in-place aliasing where legal.
 //! 7. **Coarsen and price** ([`coarsen`]) — fuse single-successor /
-//!    single-predecessor chains into tasks, pack each level's tasks too
-//!    cheap to dispatch alone, fuse the chains that leaves, and total the
+//!    single-predecessor chains into tasks, pack sibling tasks too cheap to
+//!    dispatch alone (never lengthening the critical path), fuse the chains
+//!    that leaves, and total the
 //!    cost model's estimates (`Plan::work`, `Plan::critical_path`; see
 //!    `cost.rs`). The serial executor ignores tasks; the parallel one
 //!    (`par.rs`) dispatches them, when `Plan::schedule` says spreading

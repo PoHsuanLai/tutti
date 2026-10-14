@@ -222,9 +222,7 @@ fn a_wide_plan_spreads() {
 ///
 /// Mutations: in `coarsen.rs`'s `finish`, skip the task edges out of any
 /// task of more than one op (a dependency dropped when merging) → the
-/// verifier refuses the plan in `compile` ("crosses task") → fails; in
-/// `pack`, pack every level's cheap tasks into one shared bin across
-/// levels → the verifier refuses it → fails.
+/// verifier refuses the plan in `compile` ("crosses task") → fails.
 #[test]
 fn packed_siblings_render_bit_identically() {
     let build = |workers: usize| {
@@ -275,4 +273,52 @@ fn packed_siblings_render_bit_identically() {
         let parallel = render(&mut exec, 1, 1, &ragged());
         assert_eq!(bits(&serial), bits(&parallel), "{workers} workers");
     }
+}
+
+/// A pool that counts the blocks it is asked to run.
+struct Counting {
+    inner: std::sync::Arc<dyn tutti_graph::Pool>,
+    runs: std::sync::atomic::AtomicUsize,
+}
+
+impl tutti_graph::Pool for Counting {
+    fn participants(&self) -> usize {
+        self.inner.participants()
+    }
+    fn run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) {
+        self.runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.run(wake, job);
+    }
+}
+
+/// The executor honours the schedule's `from` per block: a block one frame
+/// shorter than `from` runs the serial walk (the pool is not asked), a
+/// block of exactly `from` frames is spread (the pool runs it once).
+///
+/// Mutations: make `Par::spreads` always true → the short block reaches
+/// the pool → fails; always false → the long block does not → fails.
+#[test]
+fn blocks_shorter_than_from_run_serially() {
+    let (mut ed, mut exec) = Editor::new(common::prepare(MAX_BLOCK));
+    let pool = std::sync::Arc::new(Counting {
+        inner: test_pool(4),
+        runs: std::sync::atomic::AtomicUsize::new(0),
+    });
+    exec.set_pool(Some(pool.clone()));
+    wide(&mut ed, 4, 4, Some(Cost::Moderate));
+    commit(&mut ed, &mut exec);
+    let plan = exec.plan().expect("a plan").clone();
+    let Schedule::Parallel { from, .. } = plan.schedule(4) else {
+        panic!("{:?}", plan.schedule(4));
+    };
+    assert!(
+        from > Samples(1) && from <= Samples(MAX_BLOCK),
+        "from {from:?}"
+    );
+    assert!(exec.is_parallel());
+    let runs = || pool.runs.load(std::sync::atomic::Ordering::Relaxed);
+    render(&mut exec, 1, 1, &[from.0 - 1]);
+    assert_eq!(runs(), 0, "a block shorter than `from` reached the pool");
+    render(&mut exec, 1, 1, &[from.0]);
+    assert_eq!(runs(), 1, "a block of `from` frames was not spread");
 }

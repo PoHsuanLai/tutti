@@ -5,13 +5,14 @@
 //! an affine function of the block length ([`Work`]). It uses the estimates
 //! twice:
 //!
-//! - **Coarsening** (`compile/coarsen.rs`): tasks cheaper than
-//!   [`GRAIN`] are packed with their independent siblings until a task is
-//!   worth dispatching.
+//! - **Coarsening** (`compile/coarsen.rs`): sibling tasks (one
+//!   predecessor set) cheaper than [`GRAIN`] are packed together until a
+//!   task is worth dispatching, where that does not lengthen the critical
+//!   path.
 //! - **The plan's totals**: [`Plan::work`](crate::Plan::work), the whole
 //!   block's work, and [`Plan::critical_path`](crate::Plan::critical_path),
-//!   the costliest chain of tasks through the task DAG, each task charged
-//!   [`TASK_DISPATCH`] for being handed to a thread.
+//!   the costliest path through the task DAG, every hand-over from a task
+//!   to a successor charged [`TASK_DISPATCH`] per place in the queue.
 //!
 //! [`schedule`] turns those totals into a [`Schedule`] for a pool of `p`
 //! participants: serial, or parallel from some block length up, waking a
@@ -37,10 +38,17 @@
 //!
 //! A declared class is pure and deterministic, costs nothing per block, and
 //! errs safely: the default, [`Cost::Heavy`], is the cost of a node that
-//! declares nothing (a plugin, a host's node), which keeps such a graph on
-//! the part (a) behaviour (any two independent tasks spread). Only a node
-//! that says it is cheap is packed or kept serial. A wrong `Light` costs at
-//! most the parallel speed-up of a graph its author said was trivial.
+//! declares nothing (a plugin, a host's node), so any two independent such
+//! nodes are each worth a task and spread at any block length. For a graph
+//! that declares nothing, three things still differ from part (a): its
+//! copy and event ops are priced cheap, so sibling ones pack (where that
+//! does not lengthen the critical path); the wake count is the larger of
+//! the average parallelism and the widest level, at least 2; and a plan
+//! whose only parallelism is in those cheap ops can run serially (24 of
+//! the differential generator's 510 undeclared multi-task plans do, at
+//! four participants). Only a node that says it is cheap is packed itself.
+//! A wrong `Light` costs at most the parallel speed-up of a graph its
+//! author said was trivial.
 //!
 //! # The constants
 //!
@@ -61,7 +69,11 @@ use tutti_types::Samples;
 ///
 /// A speed hint only. Whatever a node declares, the parallel render is bit
 /// for bit the serial one; a wrong class can only make a block slower.
+///
+/// `#[non_exhaustive]`: a finer class may come later without a breaking
+/// change.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Cost {
     /// A few arithmetic operations per sample and channel: a gain, a pan, a
     /// sum, a meter. Siblings this cheap are packed into one task, and a
@@ -131,7 +143,11 @@ impl Work {
 
 /// How a plan's blocks run on a pool: what [`Plan::schedule`](crate::Plan::schedule)
 /// decides from the cost model.
+///
+/// `#[non_exhaustive]`: a later schedule (per-level wake counts, say) is not
+/// a breaking change; a `match` outside this crate needs a wildcard arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Schedule {
     /// Every block runs the serial walk on the calling thread: spreading
     /// would not pay for its dispatch (or there is one task, or one

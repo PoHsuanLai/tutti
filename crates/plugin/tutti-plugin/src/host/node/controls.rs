@@ -279,16 +279,16 @@ impl PluginControls {
     }
 }
 
-/// The live node's sources as a fork's gather read them
-/// ([`PluginControls::sources_now`]), to install on the fork when it is
-/// built, wherever that is: a source the host installs on the live node
-/// afterwards does not reach the fork.
 /// Lock a tail cell. A poisoned lock still holds a whole `PluginTail` (a
 /// `Copy` value written in one assignment), so it is read through.
 pub(super) fn lock_tail(tail: &Mutex<PluginTail>) -> std::sync::MutexGuard<'_, PluginTail> {
     tail.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The live node's sources as a fork's gather read them
+/// ([`PluginControls::sources_now`]), to install on the fork when it is
+/// built, wherever that is: a source the host installs on the live node
+/// afterwards does not reach the fork.
 pub(super) struct ForkedSources {
     meter: Option<Arc<RtPublish<MeterMap>>>,
 }

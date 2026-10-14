@@ -28,12 +28,15 @@ type Installed = Option<Arc<RtPublish<MeterMap>>>;
 ///
 /// The node's block read is a nested one: this slot, then the meter cell it
 /// holds. Reader slots are per cell, so the two reads use one slot each, in
-/// different cells. This slot has one reader, the node the audio thread runs,
-/// once per block (plus the odd control-side [`has_meter`](Self::has_meter)).
-/// The meter cell is the project's, shared by every plugin node, so it has
-/// one reader per thread rendering a plugin node at that moment: within the
-/// cell's slot count on any pool of up to eight threads, and safe past it
-/// (the overflow path, which pins a retired meter a publish longer).
+/// different cells. This slot's readers are the nodes holding a handle on it
+/// (the node the audio thread runs, once per block, and any clone of an
+/// in-process VST2 node that shares the cell), plus the odd control-side
+/// [`has_meter`](Self::has_meter). The meter cell is the project's, shared
+/// by every plugin node and by other readers (the click node, export forks
+/// sharing the cell, control-side reads), so its live readers are bounded by
+/// the threads inside a read of that cell at one moment: within the cell's
+/// slot count while that is eight or fewer, and safe past it (the overflow
+/// path, which pins a retired meter a publish longer).
 #[derive(Clone)]
 pub struct PluginMeter(Arc<RtPublish<Installed>>);
 

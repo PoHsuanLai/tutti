@@ -673,6 +673,9 @@ pub trait EventList {
 pub struct InputEventList {
     pub(crate) list: clap_input_events,
     pub(crate) events: Vec<ClapEvent>,
+    /// [`sort_by_time`](Self::sort_by_time)'s scratch: one `(time, index)`
+    /// key per event, reserved with the events so the sort never allocates.
+    order: Vec<u64>,
     /// The parameter events one [`add_param_changes`](Self::add_param_changes)
     /// may push: the room reserved for them at activation
     /// ([`set_param_point_room`](Self::set_param_point_room)). Unbounded
@@ -693,6 +696,7 @@ impl InputEventList {
                 get: Some(input_events_get),
             },
             events: Vec::new(),
+            order: Vec::new(),
             param_room: usize::MAX,
             param_points_dropped: 0,
         }
@@ -707,6 +711,7 @@ impl InputEventList {
                 get: Some(input_events_get),
             },
             events,
+            order: Vec::new(),
             param_room: usize::MAX,
             param_points_dropped: 0,
         }
@@ -717,6 +722,8 @@ impl InputEventList {
     /// touch the allocator. `clear()` keeps the reserved capacity.
     pub fn reserve(&mut self, n: usize) {
         self.events.reserve(n);
+        let room = self.events.capacity();
+        self.order.reserve(room.saturating_sub(self.order.len()));
     }
 
     /// Bound the parameter events one
@@ -908,9 +915,53 @@ impl InputEventList {
     }
 
     /// Stable sort events by their `header.time`. CLAP requires inputs to
-    /// be in non-decreasing time order.
+    /// be in non-decreasing time order, and events on one frame keep the
+    /// order they were added in (a note-off before the note-on that reuses
+    /// its key, a parameter's points).
+    ///
+    /// **Allocation-free within the reserved room.** A block can carry a
+    /// point for every parameter many times over, and std's stable sort
+    /// allocates a scratch buffer past a small input. So the order is
+    /// computed on `(time, index)` keys in a scratch reserved with the list
+    /// ([`reserve`](Self::reserve)), with an unstable sort (which never
+    /// allocates; the index makes every key distinct, so the result is the
+    /// stable order), and the events are then moved into it in place, one
+    /// permutation cycle at a time. A list already in order (the common
+    /// case) is left as it is.
     pub fn sort_by_time(&mut self) -> &mut Self {
-        self.events.sort_by_key(|e| e.header().time);
+        if self.events.is_sorted_by_key(|e| e.header().time) {
+            return self;
+        }
+        self.order.clear();
+        self.order.extend(
+            self.events
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (u64::from(e.header().time) << 32) | i as u64),
+        );
+        self.order.sort_unstable();
+        // `order[i]` is now the index of the event that belongs at `i`.
+        for o in &mut self.order {
+            *o &= u64::from(u32::MAX);
+        }
+        // Apply the permutation in place: walk each cycle once, marking each
+        // position done by pointing it at itself.
+        for start in 0..self.order.len() {
+            let mut at = start;
+            loop {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "masked to an event index, which is below the list's length"
+                )]
+                let from = self.order[at] as usize;
+                self.order[at] = at as u64;
+                if from == start || from == at {
+                    break;
+                }
+                self.events.swap(at, from);
+                at = from;
+            }
+        }
         self
     }
 
@@ -1396,6 +1447,81 @@ mod tests {
             })
             .collect();
         assert_eq!(got, vec![(9, 600.0), (5, 2.5)]);
+    }
+
+    /// **A dense block sorts without allocating, and ties keep their
+    /// insertion order.** 200 parameters each carrying a chunk's room of
+    /// points (`ParameterQueue::chunk_room(512)`, 20), plus a note-off and a
+    /// note-on for one key on frames the points also land on: sorted inside
+    /// the no-alloc gate, the result is exactly std's stable sort of the
+    /// same list (computed outside the gate), so a note-off stays before the
+    /// note-on that reuses its key and a parameter's points keep their order.
+    ///
+    /// Mutation (run): `sort_by_time` back to `self.events.sort_by_key(..)`
+    /// (std's stable sort) → it allocates its scratch inside the gate →
+    /// aborts.
+    #[test]
+    fn a_dense_block_sorts_stably_without_allocating() {
+        use tutti_plugin_types::ParameterQueue;
+        let points = ParameterQueue::chunk_room(512);
+        let mut changes = ParameterChanges::new();
+        for id in 0..200u32 {
+            for k in 0..points {
+                // Every parameter on the same frames: many ties.
+                changes.add_change(
+                    ParamAddress::Opaque(id.into()),
+                    (k * 25) as i32,
+                    (id as f64 + k as f64) / 1000.0 % 1.0,
+                );
+            }
+        }
+        let build = || {
+            let mut list = InputEventList::new();
+            list.reserve(200 * points + 16);
+            list.add_param_changes(&changes, &[], false);
+            for frame in [0u32, 100, 475] {
+                list.add_midi(
+                    &MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
+                        .with_frame_offset(frame),
+                );
+                list.add_midi(
+                    &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                        .with_frame_offset(frame),
+                );
+            }
+            list
+        };
+        let print = |list: &InputEventList| -> Vec<(u32, u16, u32, u64)> {
+            list.events()
+                .iter()
+                .map(|e| {
+                    let h = e.header();
+                    let (id, v) = match e {
+                        ClapEvent::ParamValue(p) => (p.param_id, p.value.to_bits()),
+                        ClapEvent::NoteOn(n) | ClapEvent::NoteOff(n) => (n.key as u32, 0),
+                        _ => (u32::MAX, 0),
+                    };
+                    (h.time, h.type_, id, v)
+                })
+                .collect()
+        };
+        let mut reference = build();
+        reference.events.sort_by_key(|e| e.header().time);
+        let mut list = build();
+        assert_eq!(list.len(), 200 * points + 6);
+        assert_no_alloc::assert_no_alloc(|| {
+            list.sort_by_time();
+        });
+        assert_eq!(print(&list), print(&reference));
+        // The note-off still precedes the note-on on each frame.
+        let notes: Vec<u16> = list
+            .events()
+            .iter()
+            .filter(|e| !matches!(e, ClapEvent::ParamValue(_)))
+            .map(|e| e.header().type_)
+            .collect();
+        let pair = [CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON];
+        assert_eq!(notes, [pair, pair, pair].concat());
     }
 
     /// **Past the reserved room a parameter's points give way to its latest,

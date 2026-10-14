@@ -103,7 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list for every parameter's points at its block size (past that room a
   point replaces its parameter's previous one, counted by
   `ClapActive::param_points_dropped`) and its output queues for the
-  parameter count. **Memory:** the parameter buffers scale with the
+  parameter count. The CLAP host's `InputEventList::sort_by_time` no
+  longer allocates (std's stable sort took a scratch buffer past a small
+  list, on the server's audio thread): it sorts `(time, index)` keys in a
+  scratch reserved with the list and applies the order in place, keeping
+  same-frame events in insertion order. **Memory:** the parameter buffers scale with the
   parameter count: about 43 MB for 2 000 parameters at a 4096-frame
   chunk, 340 MB for a 16 384-parameter VST3 (the follow-up is in doc 014
   §12). **Breaking:**

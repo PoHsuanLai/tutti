@@ -161,9 +161,15 @@ impl PayloadPool {
         }
         changes.clear();
         if let Err(changes) = self.params.push(changes) {
-            // Unreachable: the bridge thread keeps at most `PARAM_BUFFERS`
-            // free, and the audio thread returns only what it took.
-            // Forgotten rather than freed on this thread.
+            // Unreachable. The list holds `2 * PARAM_BUFFERS`. The bridge
+            // thread pushes only while fewer than `PARAM_BUFFERS` are free,
+            // and `reserve_params` refills to `PARAM_BUFFERS` after draining,
+            // so between them they leave the list at most `PARAM_BUFFERS`
+            // plus the one push a bridge return racing a refill can add. The
+            // audio thread returns only a buffer it popped from this list in
+            // the same `submit`, so it never adds to that total. A full list
+            // here would mean that bound is broken: the buffer is leaked
+            // rather than freed on the audio thread.
             core::mem::forget(changes);
         }
     }

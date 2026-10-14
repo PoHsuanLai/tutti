@@ -1018,6 +1018,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   full retirement channel (a host that never collects) degrades to the free
   in the callback. No API change.
 
+- **A standalone `VoiceNode` can no longer be sent a command it would free
+  on the audio thread** (tutti-sampler). `VoiceNodeHandle::send` accepted
+  any `VoiceCommand`, and the node's drain applied `UpdatePlacement` and
+  dropped every other one in the callback, freeing what it carried: an
+  `AddVoice`'s boxed `Voice`, a `ReplaceWave`'s wave (the last reference
+  frees the decoded buffer), an `UpdateStretch`'s filter. The node's queue
+  now carries placements only, by type, so such a send does not compile.
+  **Breaking:** `VoiceNodeHandle::send` is removed. **Migration:** a
+  placement is `VoiceNodeHandle::set_placement(start, duration)` (same
+  `SendError`, which still hands back the lost edit as
+  `VoiceCommand::UpdatePlacement`); gain is `set_gain`. The other commands
+  never took effect on a node: a host changing a node's wave, speed or
+  pitch respawns it, or uses a `VoicePool`.
+
 - **The CLAP host no longer drops and regrows the plugin's output
   parameter queues on the audio thread** (tutti-clap-host).
   `OutputEventList::fill_param_changes` emptied its set with

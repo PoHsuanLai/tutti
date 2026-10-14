@@ -389,16 +389,50 @@ impl std::error::Error for SendError {}
 /// `AddVoice` / `Remove` have no meaning for a node that *is* its voice.
 ///
 /// So this carries the sender, the gain and the record a fork reads, and its
-/// methods name the voice implicitly. The wire format is shared:
-/// [`VoiceCommand`] is the same enum, and the node's drain is the same
-/// `try_recv` loop, so a command gains a consumer here without gaining a
-/// second definition.
+/// methods name the voice implicitly. The wire format is **not** shared: the
+/// node's queue carries a placement and nothing else, because a node's drain
+/// has a meaning for no other command, and every other [`VoiceCommand`] it
+/// was once able to receive was dropped there, in the callback, freeing
+/// whatever it carried (a boxed `Voice`, a wave, a stretch filter).
+///
+/// ```compile_fail
+/// # use tutti_sampler::{MemorySource, Playback, Voice, VoiceCommand, VoiceNode, VoiceSource};
+/// # use tutti_io::Wave;
+/// # use std::sync::Arc;
+/// # let wave = Arc::new(Wave::from_samples(48_000.0, &[0.0; 64]));
+/// # let voice = Voice {
+/// #     source: VoiceSource::Memory(MemorySource::new(wave.clone())),
+/// #     play: Playback::default(),
+/// #     channel_index: None,
+/// # };
+/// let (_node, handle) = VoiceNode::new(voice).with_handle();
+/// // A standalone voice node has no door for a pool command.
+/// let _ = handle.send(VoiceCommand::ReplaceWave { id: tutti_sampler::SlotId(0), wave });
+/// ```
+///
+/// The same setup with the one command it does take compiles:
+///
+/// ```
+/// # use tutti_sampler::{MemorySource, Playback, Voice, VoiceCommand, VoiceNode, VoiceSource};
+/// # use tutti_io::Wave;
+/// # use std::sync::Arc;
+/// # let wave = Arc::new(Wave::from_samples(48_000.0, &[0.0; 64]));
+/// # let voice = Voice {
+/// #     source: VoiceSource::Memory(MemorySource::new(wave.clone())),
+/// #     play: Playback::default(),
+/// #     channel_index: None,
+/// # };
+/// let (_node, handle) = VoiceNode::new(voice).with_handle();
+/// handle.set_placement(tutti_core::Beat::new(1.0), None).unwrap();
+/// ```
 #[derive(Clone, Debug)]
 pub struct VoiceNodeHandle {
-    /// Sends into the node's bounded command queue. No retirement receiver
-    /// beside it: a node's single voice lives as long as the node does, so
-    /// nothing is ever handed back to be freed.
-    pub(crate) tx: Sender<VoiceCommand>,
+    /// Sends into the node's bounded placement queue. Placements only, by
+    /// type: the queue carries no [`VoiceCommand`], so nothing a caller sends
+    /// can carry a payload the node's drain would have to drop (and free) on
+    /// the audio thread. No retirement receiver beside it, for the same
+    /// reason: nothing is ever handed back to be freed.
+    pub(crate) tx: Sender<NodePlacement>,
     /// The last placement this handle queued, shared with the node's fork
     /// source — see [`PlacementRecord`].
     pub(crate) placement: PlacementRecord,
@@ -407,6 +441,14 @@ pub struct VoiceNodeHandle {
     /// The gain by address ([`UnitParam::Volume`](tutti_core::UnitParam)),
     /// for a host that sets params by address.
     pub(crate) params: ParamSet,
+}
+
+/// What a [`VoiceNodeHandle`] queues for its node: a new timeline window, the
+/// one command a standalone node has.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NodePlacement {
+    pub(crate) start_beat: Beat,
+    pub(crate) duration_beats: Option<BeatDuration>,
 }
 
 /// The last placement a [`VoiceNodeHandle`] queued, for a **fork** of the node
@@ -431,22 +473,42 @@ impl VoiceNodeHandle {
     /// is no scalar param (an `f32` beat position loses whole frames past
     /// ~2²⁴). It rides the node's command queue, and lands on the node's next
     /// block. Lock-free and allocation-free; the placement is also recorded for
-    /// a fork of the node (see [`send`](Self::send)).
+    /// a fork of the node, once queued.
     ///
     /// # Errors
     ///
-    /// As for [`send`](Self::send): [`SendError::Full`] when the queue is full,
+    /// [`SendError::Full`] when the node's 64-entry queue is full (transient:
+    /// the node drains it every block),
     /// [`SendError::Disconnected`] once the node has been dropped.
     pub fn set_placement(
         &self,
         start_beat: Beat,
         duration_beats: Option<BeatDuration>,
     ) -> Result<(), SendError> {
-        self.send(VoiceCommand::UpdatePlacement {
+        // A refused placement comes back inside the error as the pool's
+        // command, so a caller sees *which* edit failed, as `SendError` says.
+        let lost = || VoiceCommand::UpdatePlacement {
             id: SlotId(0),
             start_beat,
             duration_beats,
-        })
+        };
+        self.tx
+            .try_send(NodePlacement {
+                start_beat,
+                duration_beats,
+            })
+            .map_err(|e| match e {
+                TrySendError::Full(_) => SendError::Full(lost()),
+                TrySendError::Disconnected(_) => SendError::Disconnected(lost()),
+            })?;
+        // Recorded only once queued, so a fork never plays a move the live
+        // voice did not get.
+        *self
+            .placement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((start_beat, duration_beats));
+        Ok(())
     }
 
     /// Sets the voice's gain, from the node's next block on. A write to a
@@ -464,62 +526,6 @@ impl VoiceNodeHandle {
     /// [`UnitParam::Volume`](tutti_core::UnitParam::Volume).
     pub fn params(&self) -> &ParamSet {
         &self.params
-    }
-
-    /// Queues a command for the node's next block.
-    ///
-    /// Public so a host can send anything the node's drain understands, and
-    /// fallible for the reason [`VoicePoolHandle::send`] gives: a full queue is
-    /// reported rather than logged and forgotten, so a caller can back off
-    /// instead of silently dropping a user's edit.
-    ///
-    /// **A node's drain understands exactly one variant: [`VoiceCommand::UpdatePlacement`].**
-    /// `VoiceNode::drain_commands` is an `if let` with no other arm, so every
-    /// other variant — `UpdateSpeed`, `UpdateStretch`, `UpdateGain`, `AddVoice` —
-    /// is accepted here, queued, drained and **dropped without a word**. `Ok(())`
-    /// means "queued", not "will take effect".
-    ///
-    /// That silence is deliberate (the wire format is shared with the pool, and
-    /// panicking in an audio callback is worse), but it makes this the wrong door
-    /// for anything but placement. A single-voice node's gain is
-    /// [`set_gain`](Self::set_gain); its speed and pitch are fixed at
-    /// construction, so a host changing either respawns the voice. Only
-    /// [`VoicePool`](crate::VoicePool) has the live-update path.
-    ///
-    /// A placement that is queued is also recorded for a fork of the node;
-    /// one that is refused is not, so a fork never plays a move the live
-    /// voice did not get.
-    ///
-    /// # Errors
-    ///
-    /// [`SendError::Full`] when the node's 64-command queue is full (transient:
-    /// the node drains it every block); [`SendError::Disconnected`] once the
-    /// node has been dropped (permanent). Either way the command is handed
-    /// back inside the error.
-    pub fn send(&self, command: VoiceCommand) -> Result<(), SendError> {
-        let placed = match command {
-            VoiceCommand::UpdatePlacement {
-                start_beat,
-                duration_beats,
-                ..
-            } => Some((start_beat, duration_beats)),
-            _ => None,
-        };
-        // The variants carry the lost command, deliberately — see `SendError`.
-        // Dropping it here would leave a caller able to see *that* an edit
-        // failed but not *which*, which is the difference between backing off
-        // and giving up.
-        self.tx.try_send(command).map_err(|e| match e {
-            TrySendError::Full(cmd) => SendError::Full(cmd),
-            TrySendError::Disconnected(cmd) => SendError::Disconnected(cmd),
-        })?;
-        if let Some(window) = placed {
-            *self
-                .placement
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(window);
-        }
-        Ok(())
     }
 }
 

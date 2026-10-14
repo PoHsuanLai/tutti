@@ -124,9 +124,9 @@ impl PlaybackSlot {
     /// # Turning stretch on later is a pool-only capability
     ///
     /// `VoiceCommand::UpdateStretch` reaches `set_stretch` below through the
-    /// pool's drain; `VoiceNode::drain_commands` handles `UpdatePlacement` and
-    /// nothing else, so the same command sent to a `VoiceNodeHandle` is discarded
-    /// without a word. A node's pitch is therefore fixed at construction, and a
+    /// pool's drain; a `VoiceNodeHandle` sends placements and nothing else
+    /// (its queue is typed that way), so there is no way to send a node this
+    /// command. A node's pitch is therefore fixed at construction, and a
     /// host that wants to change it respawns the voice, which is what the
     /// hosts we know of do.
     ///

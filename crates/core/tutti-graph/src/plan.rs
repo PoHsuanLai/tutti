@@ -838,6 +838,7 @@ pub struct Plan {
     pub(crate) task_ops: Vec<u32>,
     pub(crate) task_succ: Csr,
     pub(crate) task_activation: Vec<u32>,
+    pub(crate) task_width: u32,
     pub(crate) audio_slots: u32,
     pub(crate) event_slots: u32,
     pub(crate) event_slot_capacity: Vec<EventSlotCapacity>,
@@ -915,6 +916,17 @@ impl Plan {
     /// a parallel executor's per-task counter starts from.
     pub fn task_activation(&self) -> &[u32] {
         &self.task_activation
+    }
+
+    /// The most tasks on one level of the task DAG (a task's level is its
+    /// longest path from a task with no predecessor): how many workers a
+    /// parallel executor wakes per block. A heuristic, not a bound: tasks on
+    /// different levels can run at once (in A → {C, D}, B → {E, F},
+    /// D → {E, F} the widest level holds two, yet C, E and F can run
+    /// together), so a block may have more ready work than it woke helpers
+    /// for. That costs speed, never correctness.
+    pub fn task_width(&self) -> usize {
+        self.task_width as usize
     }
 
     /// Arena size in slots for `kind`, including the null slot (0) and the

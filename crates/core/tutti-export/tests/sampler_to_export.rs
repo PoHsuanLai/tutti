@@ -33,13 +33,14 @@
 //! The graph is prepared at `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK`
 //! (1024), and the voice reads the transport per frame from each block's
 //! `Env`: it seats its read at the playhead on the first frame of each
-//! 64-frame piece it renders and steps from there. A voice that read only the
-//! block's first beat would replay it for every piece of a 1024-frame block
-//! (the dry voice would export at ~768 Hz, not 440).
+//! block, renders the block in one piece (its scratch sized from the graph's
+//! `max_block`) and steps from there.
 //!
-//! Mutation (run): `interp::place` seating each piece at the block's first
-//! beat (`run.beat_at(e)` → `run.beat_at(0)`) → the voice replays each
-//! block's first piece → every case fails.
+//! (Mutation `interp::place` seating at the block's first beat,
+//! `run.beat_at(e)` → `run.beat_at(0)`, failed every case here while voices
+//! rendered 64-frame pieces, by replaying each block's first piece. In one
+//! piece, with no transport change inside a block, the two are the same
+//! frame: it passes here (run), and tutti-sampler's run tests catch it.)
 //!
 //! Gated on `wav`, because the assertions decode the exported file through
 //! `hound` — which this crate only links when that feature is on. `wav` is in

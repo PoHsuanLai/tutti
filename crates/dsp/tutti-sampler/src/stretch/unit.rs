@@ -11,7 +11,6 @@ use tutti_analysis::StftGeometry;
 
 use super::vocoder::Vocoder;
 use super::{FftSize, MAX_BUFFER_SIZE};
-use crate::lanes::Lane;
 use tutti_core::{
     AtomicF32, Cents, ChannelLayout, Ordering, ReadRate, RtScratch, SampleRate, Samples,
     StretchFactor, Tail,
@@ -510,10 +509,10 @@ impl Unit {
     ///   `tick` leaves them.
     ///
     /// Allocation-free.
-    pub(crate) fn filter_lanes(
+    pub(crate) fn filter_lanes<I: AsRef<[f32]>, O: AsMut<[f32]>>(
         &mut self,
-        input: &[Lane],
-        output: &mut [Lane],
+        input: &[I],
+        output: &mut [O],
         n: usize,
         frames: std::ops::Range<usize>,
     ) {
@@ -524,12 +523,12 @@ impl Unit {
         let stride = self.stride();
         let n_out = stride.min(n);
         for lane in &mut output[n_out..n] {
-            lane[frames.clone()].fill(0.0);
+            lane.as_mut()[frames.clone()].fill(0.0);
         }
         if !self.is_processing() {
             for (c, lane) in output[..n_out].iter_mut().enumerate() {
-                let src = &input[if c < n { c } else { 0 }];
-                lane[frames.clone()].copy_from_slice(&src[frames.clone()]);
+                let src = input[if c < n { c } else { 0 }].as_ref();
+                lane.as_mut()[frames.clone()].copy_from_slice(&src[frames.clone()]);
             }
             return;
         }
@@ -538,7 +537,7 @@ impl Unit {
         let start = self.intake_debt;
         let mut end = start;
         for (c, v) in self.ch.vocoders.iter_mut().enumerate() {
-            let src = &input[if c < n { c } else { 0 }];
+            let src = input[if c < n { c } else { 0 }].as_ref();
             let mut debt = start;
             let mut one = [0.0f32];
             for i in frames.clone() {
@@ -551,7 +550,7 @@ impl Unit {
                 if c < n_out {
                     one[0] = 0.0;
                     v.output.drain(&mut one);
-                    output[c][i] = one[0];
+                    output[c].as_mut()[i] = one[0];
                 }
             }
             end = debt;

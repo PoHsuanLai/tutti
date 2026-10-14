@@ -308,16 +308,16 @@ pub fn plugin_load_promote(
                 // An out-of-process plugin is bound as it goes in
                 // (`PluginClient::bind`): a graph node, with its own fork
                 // source so an export can fork it (by state transfer). An
-                // in-process VST2 plugin is a graph node too,
-                // with no fork source yet: it goes in `Unforkable`, and an export
-                // of a graph holding it is refused, naming it.
+                // in-process VST2 plugin goes in through its own `IntoNode`,
+                // which carries its fork source too (a second instance in this
+                // process, restored from the live one's state).
                 let (id, controls) = match plugin.into_client() {
                     Ok(client) => {
                         let controls = CapturedControls::for_plugin(&client);
                         (graph.insert_plugin(client), controls)
                     }
-                    Err(node) => {
-                        let (id, ()) = graph.insert(tutti_graph::Unforkable(node));
+                    Err(plugin) => {
+                        let (id, _) = graph.insert(*plugin);
                         (id, CapturedControls::default())
                     }
                 };

@@ -1,6 +1,7 @@
 //! The audio graph of the Tutti engine: a graph described as a value, a pure
 //! compiler from that value to an immutable [`Plan`], and a real-time
-//! [`Executor`] that runs the plan block by block.
+//! [`Executor`] that runs the plan block by block, serially or spread over
+//! a [`Pool`]'s threads.
 //!
 //! Use it directly to host audio processors ([`Node`]s) in a graph you build
 //! and edit at run time, or to write a node that runs inside the engine.
@@ -223,9 +224,11 @@ mod history;
 mod io;
 mod kernels;
 mod node;
+mod par;
 mod param;
 mod plan;
 mod reference;
+mod slots;
 mod spec;
 mod time;
 
@@ -251,6 +254,7 @@ pub use node::{
     Resolution, Scratch, Shape, SilenceMask, Status, Transport, TransportChange,
     TransportChangeRejected, TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
 };
+pub use par::Pool;
 pub use param::{
     ParamFrom, ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError, ParamRange,
     ParamShaping, ParamSource, ShapeLut, MAX_PARAM_PORTS, MAX_PARAM_SOURCES, PARAM_DECLICK,

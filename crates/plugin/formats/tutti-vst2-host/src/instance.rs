@@ -103,8 +103,10 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// [`tutti_plugin_types::mark_main_thread`]; debug builds assert it.
 ///
 /// Dropping the instance closes the editor, suspends the plugin and dispatches
-/// `effClose`. The plugin's shared library is never unloaded, because
-/// unloading runs static destructors that crash many JUCE-based plugins.
+/// `effClose`, so drop it on the main thread, as it was loaded there (debug
+/// builds assert it, once a main thread is marked). The plugin's shared
+/// library is never unloaded, because unloading runs static destructors that
+/// crash many JUCE-based plugins.
 ///
 /// # Examples
 ///
@@ -554,6 +556,16 @@ impl Vst2Instance {
         (0..count)
             .map(|i| (i, self.params.get_preset_name(i)))
             .collect()
+    }
+
+    /// Returns how many programs the plugin declares (`numPrograms`, read live;
+    /// `0` for a negative answer).
+    ///
+    /// [`programs`](Self::programs) without asking for every name: what a
+    /// caller that only needs to know whether a program is part of the
+    /// plugin's state reads.
+    pub fn program_count(&self) -> i32 {
+        self.handle.instance.read_num_programs().max(0)
     }
 
     /// Returns the index of the program the plugin reports as active.

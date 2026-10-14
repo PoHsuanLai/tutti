@@ -124,6 +124,7 @@ pub(crate) fn build_on(
         outputs,
         &transport,
         &click_settings,
+        plugin.render_workers,
     )?;
 
     // The engine's MIDI, as graph nodes: the
@@ -272,8 +273,10 @@ fn assemble(
     outputs: usize,
     transport: &Transport,
     click_settings: &Arc<ClickSettings>,
+    render_workers: usize,
 ) -> Result<Assembled> {
     let mut graph = AudioGraphRes::for_device(inputs, outputs, rate, quantum);
+    graph.set_render_workers(render_workers);
 
     // Metronome. The beat, play and record state come from its
     // block's `Env`, and the count-in flag off the transport it is built over
@@ -439,8 +442,8 @@ mod tests {
 /// click it builds).
 ///
 /// Each test stands on analytic figures (onset frames, the tone a dry voice
-/// reads), on what needs no oracle (a voice's render at two block sizes whose
-/// 64-frame chunks coincide), and, for the samples themselves, on a golden
+/// reads), on what needs no oracle (a voice's render at two block sizes, which
+/// a voice's frames do not depend on), and, for the samples themselves, on a golden
 /// digest of a render checked against an independent reference implementation
 /// when it was recorded. The click and the pitched voice call `sin`
 /// (and the vocoder's FFT), libm quality-of-implementation that differs in
@@ -534,7 +537,7 @@ mod engine_tests {
             engine,
             click,
             ..
-        } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings).expect("builds");
+        } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings, 1).expect("builds");
         for port in 0..2 {
             graph.set_output_source(port, GraphSource::Node(click, port));
         }
@@ -641,14 +644,14 @@ mod engine_tests {
     ///
     /// The voice is a clip reader, a graph node: it reads the playhead from
     /// each block's `Env`, per frame, seating its read on the first frame of
-    /// each 64-frame piece it renders.
+    /// each block (rendered in one piece).
     #[cfg(feature = "sampler")]
     fn render_voice(cents: f32, frames: usize, block: usize) -> Vec<f32> {
         let transport = Transport::new(SampleRate(RATE));
         let settings = Arc::new(ClickSettings::new());
         let Assembled {
             mut graph, engine, ..
-        } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings).expect("builds");
+        } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings, 1).expect("builds");
         let (voice, _handle) = graph.insert(voice(cents));
         for port in 0..2 {
             graph.set_output_source(port, GraphSource::Node(voice, port));
@@ -700,10 +703,12 @@ mod engine_tests {
     ///
     /// Mutation (run): `Cents::to_pitch_ratio` dividing by 1 100 cents to
     /// the octave → the pitched voice is not a fifth up, on every target.
-    /// Mutation (run): the voice seating each 64-frame piece at its block's
-    /// first beat (`interp::place` reading `run.beat_at(0)`) → both block
-    /// sizes fail. (Also pinned by tutti-sampler's `block_render.rs` and
-    /// tutti-export's `graph_source.rs` and `sampler_to_export.rs`.)
+    /// (Mutation `interp::place` seating at its block's first beat,
+    /// `run.beat_at(0)`, failed both block sizes here while voices rendered
+    /// 64-frame pieces. A voice now renders a block in one piece, where, with
+    /// no transport change inside the block, that is the same frame: it
+    /// passes here (run), and tutti-sampler's run tests — `interp`'s seek and
+    /// loop-wrap tests, `block_render` — catch it.)
     #[cfg(feature = "sampler")]
     fn a_voice_plays_in_time(block: usize) {
         let frames = 24_000;

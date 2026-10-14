@@ -93,8 +93,9 @@
 //! - **A fork of its own.** The node the fork source builds is inserted
 //!   without one, like every forked node.
 //!
-//! In-process VST2 (`InProcessVst2Client`) has no fork source and is not
-//! forkable.
+//! In-process VST2 (`InProcessVst2Client`) forks by state transfer too, into a
+//! second instance in this process from the same library
+//! (`format::vst2_in_process`'s `fork` module).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

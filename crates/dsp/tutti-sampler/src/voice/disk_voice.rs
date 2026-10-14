@@ -19,11 +19,10 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::lanes::LANE_FRAMES;
 use crate::MAX_SAMPLER_CHANNELS;
 use tutti_core::{
-    Amplitude, Beat, BeatDuration, ChannelLayout, PlaybackRate, ReadRate, SampleRate, SrcRatio,
-    Tail,
+    Amplitude, Beat, BeatDuration, ChannelLayout, PlaybackRate, ReadRate, SamplePosition,
+    SampleRate, SrcRatio, Tail,
 };
 use tutti_graph::{
     Cx, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
@@ -39,7 +38,7 @@ use super::offline_read::OfflineRead;
 use super::types::Direction;
 use crate::butler::control::StreamOrigin;
 use crate::butler::{RtState, SharedReader};
-use crate::lanes::Lanes;
+use crate::lanes::{Lanes, UNPREPARED_FRAMES};
 
 /// Frames a free-running block's positions are computed for at a time:
 /// `process` renders a longer block in pieces this long, so the positions
@@ -211,7 +210,9 @@ impl DiskSource {
         while done < size {
             let n = (size - done).min(BLOCK_FRAMES);
             for (k, p) in positions[..n].iter_mut().enumerate() {
-                *p = Some((position + rate * k as f64 - preroll).max(0.0));
+                *p = Some(SamplePosition(
+                    (position + rate * k as f64 - preroll).max(0.0),
+                ));
             }
             // A relayed seek is a new segment, even to where it stands.
             self.read.render(
@@ -385,6 +386,12 @@ pub struct DiskVoice {
     /// The transport as this voice reads it when it is a graph node of its
     /// own (a voice in a pool or a `VoiceNode` reads its owner's).
     clock: Clock,
+
+    /// A block's positions when this voice is a graph node of its own,
+    /// sized from `Prepare::max_block` in `prepare` (empty until then and in
+    /// a clone, so a voice that only ever plays in a pool or a `VoiceNode`,
+    /// which read through their own scratch, carries none).
+    positions: Vec<Option<SamplePosition>>,
 }
 
 /// A forked disk voice's own playback: the file it reads, and where its
@@ -479,6 +486,9 @@ impl Clone for DiskVoice {
             offline: self.offline.clone(),
             sample_rate: self.sample_rate,
             clock: Clock::new(),
+            // Unsized, so a clone stays allocation-free as it was: a copy
+            // inserted as a node is prepared, which sizes it.
+            positions: Vec::new(),
         }
     }
 }
@@ -500,6 +510,7 @@ impl DiskVoice {
             offline: None,
             sample_rate: None,
             clock: Clock::new(),
+            positions: Vec::new(),
         }
     }
 
@@ -661,38 +672,42 @@ impl DiskVoice {
         }
     }
 
-    /// Render block frames `range` (at most one lane) into frames
+    /// Render block frames `range` (at most the lanes' length) into frames
     /// `0..range.len()` of the first `n` lanes, every frame written: the
     /// voice's own channels, then silence on any lane past them. The live
     /// read claims the ring once per run of the block (a transport change or
     /// a loop wrap starts a run); a fork reads its file frame by frame. The
     /// block read of a slot holding this voice (`PlaybackSlot::render_lanes`),
-    /// and of the voice as a node.
+    /// through the owner's position scratch (`positions`, at least
+    /// `range.len()` long).
     pub(crate) fn render_lanes(
         &mut self,
         clock: &BlockClock<'_>,
         range: Range<usize>,
         lanes: &mut Lanes,
         n: usize,
+        positions: &mut [Option<SamplePosition>],
     ) {
         let w = self.width().min(n);
         let frames = range.len();
         lanes.clear(n, frames);
         if self.offline.is_some() {
-            self.offline_render(clock, range, |i, f| lanes.put(i, &f[..w]));
+            self.offline_render(clock, range, positions, |i, f| lanes.put(i, &f[..w]));
             return;
         }
-        self.live_render(clock, range, |i, f| lanes.put(i, &f[..w]));
+        self.live_render(clock, range, positions, |i, f| lanes.put(i, &f[..w]));
     }
 
     /// Render live frames `range`, frame `i - range.start` handed to `emit`:
     /// the placed positions, less the channel's preroll, read from the ring,
     /// one ring read per run (its generation the read's segment, so a jump
-    /// is crossfaded).
+    /// is crossfaded). `positions` is scratch, at least `range.len()` long:
+    /// each run's placed positions, rewritten in place to the ring's.
     fn live_render(
         &mut self,
         clock: &BlockClock<'_>,
         range: Range<usize>,
+        positions: &mut [Option<SamplePosition>],
         mut emit: impl FnMut(usize, &[f32]),
     ) {
         let rate = self.step_rate();
@@ -701,18 +716,16 @@ impl DiskVoice {
         let state = Arc::clone(&self.shared_state);
         let gate = self.gate();
         let base = range.start;
-        let mut placed = [None; LANE_FRAMES];
-        let mut positions = [None; LANE_FRAMES];
-        debug_assert!(range.len() <= LANE_FRAMES, "a piece longer than a lane");
         for run in clock.runs_in(range) {
             let (a, b) = (run.start, run.end);
             let n = b - a;
-            place(clock, a..b, gate, rate, &mut placed[..n]);
-            for (p, s) in positions[..n].iter_mut().zip(&placed[..n]) {
-                *p = s.map(|s| (s.get() - preroll).max(0.0));
+            let positions = &mut positions[..n];
+            place(clock, a..b, gate, rate, positions);
+            for p in positions.iter_mut() {
+                *p = p.map(|s| SamplePosition((s.get() - preroll).max(0.0)));
             }
             self.inner.read.render(
-                &positions[..n],
+                positions,
                 run.generation,
                 rate.get(),
                 gain,
@@ -727,11 +740,13 @@ impl DiskVoice {
     /// The placement is the live one; where the live voice reads the ring,
     /// this reads the file at the placed position. Once the playhead is past
     /// the window's end, the file is closed: a render holding many voices
-    /// keeps a file open per voice sounding.
+    /// keeps a file open per voice sounding. `positions` is scratch, at
+    /// least `range.len()` long.
     fn offline_render(
         &mut self,
         clock: &BlockClock<'_>,
         range: Range<usize>,
+        positions: &mut [Option<SamplePosition>],
         mut emit: impl FnMut(usize, &[f32]),
     ) {
         let w = self.width().min(MAX_SAMPLER_CHANNELS);
@@ -742,7 +757,6 @@ impl DiskVoice {
         let direction = self.shared_state.direction();
         let gain = self.shared_state.gain().get();
         let told_rate = self.sample_rate.is_some();
-        let mut positions = [None; LANE_FRAMES];
         place(clock, range.clone(), gate, rate, &mut positions[..frames]);
         let past = past_window(clock, range, gate);
         let Some(offline) = self.offline.as_mut() else {
@@ -788,6 +802,45 @@ impl DiskVoice {
     pub(crate) fn flush(&mut self) {
         self.inner.reset_interpolation();
     }
+
+    /// Block frames `range` of this voice as a node of its own into `out`
+    /// (its first `out.len()` channels), through `positions` (at least
+    /// `range.len()` long).
+    fn render_piece(
+        &mut self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        positions: &mut [Option<SamplePosition>],
+        out: &mut [&mut [f32]],
+    ) {
+        let base = range.start;
+        let emit = |i: usize, f: &[f32]| {
+            for (ch, &s) in out.iter_mut().zip(f) {
+                ch[base + i] = s;
+            }
+        };
+        if self.offline.is_some() {
+            self.offline_render(clock, range, positions, emit);
+        } else {
+            self.live_render(clock, range, positions, emit);
+        }
+    }
+
+    /// A block longer than its positions, through a stack array in pieces
+    /// of [`UNPREPARED_FRAMES`]: only a voice driven by hand without a
+    /// `prepare` (no positions) or past the `max_block` it was prepared for
+    /// reaches this, so the prepared render never initialises the array.
+    #[cold]
+    #[inline(never)]
+    fn render_unprepared(&mut self, clock: &BlockClock<'_>, frames: usize, out: &mut [&mut [f32]]) {
+        let mut positions = [None; UNPREPARED_FRAMES];
+        let mut from = 0;
+        while from < frames {
+            let to = (from + UNPREPARED_FRAMES).min(frames);
+            self.render_piece(clock, from..to, &mut positions, out);
+            from = to;
+        }
+    }
 }
 
 impl Node for DiskVoice {
@@ -796,10 +849,19 @@ impl Node for DiskVoice {
         Shape::audio(ChannelLayout::EMPTY, self.inner.channels()).with_tail(Tail::Unbounded)
     }
 
+    /// The render rate, and the block's position scratch sized from
+    /// `max_block` (a re-prepare at another size resizes it).
     fn prepare(&mut self, p: &Prepare) {
         self.set_render_rate(p.sample_rate());
+        let frames = p.max_block().get();
+        self.positions.clear();
+        self.positions.resize(frames, None);
+        self.positions.shrink_to_fit();
     }
 
+    /// The block in one piece through the positions `prepare` sized; a
+    /// voice driven by hand unprepared (or past its `max_block`) through
+    /// `render_unprepared`'s stack pieces.
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let clock = self.clock.observe(cx.env);
         let frames = io.frames();
@@ -813,20 +875,12 @@ impl Node for DiskVoice {
         for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
             *slot = ch;
         }
-        let mut from = 0;
-        while from < frames {
-            let to = (from + LANE_FRAMES).min(frames);
-            let emit = |i: usize, f: &[f32]| {
-                for (c, &s) in f[..n].iter().enumerate() {
-                    refs[c][from + i] = s;
-                }
-            };
-            if self.offline.is_some() {
-                self.offline_render(&clock, from..to, emit);
-            } else {
-                self.live_render(&clock, from..to, emit);
-            }
-            from = to;
+        if frames <= self.positions.len() {
+            let mut positions = std::mem::take(&mut self.positions);
+            self.render_piece(&clock, 0..frames, &mut positions, &mut refs[..n]);
+            self.positions = positions;
+        } else {
+            self.render_unprepared(&clock, frames, &mut refs[..n]);
         }
         Status::Modified
     }
@@ -1032,6 +1086,24 @@ mod tests {
                 file_sample_rate: SampleRate(44100.0),
             },
         )
+    }
+
+    /// **A disk voice sizes its block positions from `Prepare::max_block`**,
+    /// and a re-prepare resizes them (512, then 1024, then 64); a voice
+    /// never prepared (one that only plays in a pool) carries none, and
+    /// neither does a clone.
+    ///
+    /// Mutation (run): `prepare` not resizing the positions → 0 at 512 →
+    /// fails.
+    #[test]
+    fn a_disk_voice_sizes_its_positions_from_max_block() {
+        let mut voice = make_clip_reader(&[(0.0, 0.0); 8], Beat::new(0.0), None);
+        assert_eq!(voice.positions.len(), 0);
+        for max in [512usize, 1024, 64] {
+            voice.prepare(&Prepare::new(SampleRate(SR), Samples(max)));
+            assert_eq!(voice.positions.len(), max, "at {max}");
+        }
+        assert_eq!(voice.clone().positions.len(), 0);
     }
 
     /// A 48 kHz file in a 44.1 kHz session must read where the clock puts
@@ -1462,6 +1534,48 @@ mod tests {
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..100_000 {
                 direct.block_in(&transport.env(1, 48_000.0));
+            }
+        });
+    }
+
+    /// **A disk voice re-prepared at a 512-frame `max_block` renders ragged
+    /// blocks up to it without allocating**: prepared at 64 first, then at
+    /// 512 (its positions resized on the control thread), then driven in
+    /// blocks of 1 to 512 frames — the longest in one piece through its own
+    /// positions — on a transport that moves and winds back inside the
+    /// window (a jump, and its crossfade, every few hundred blocks).
+    ///
+    /// Mutation (run): `process` building its positions per block
+    /// (`vec![None; frames]`) → aborts.
+    #[test]
+    fn clip_reader_ragged_blocks_at_max_block_512_are_allocation_free() {
+        const RAGGED: [usize; 10] = [1, 37, 100, 511, 512, 64, 200, 129, 3, 65];
+        let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0));
+        let samples: Vec<_> = (1..2048)
+            .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
+            .collect();
+        let reader = make_clip_reader_at(
+            &samples,
+            22_046,
+            Beat::new(4.0),
+            Some(BeatDuration::new(4.0)),
+        );
+        let reader = tutti_graph::contract::prepared(reader, SampleRate::new(48_000.0), 64);
+        let mut direct = Direct::new(reader, SampleRate::new(48_000.0), 512);
+        let step = |i: usize, direct: &mut Direct<DiskVoice>| {
+            let len = RAGGED[i % RAGGED.len()];
+            direct.block_in(&transport.env(len, 48_000.0));
+            transport.advance(len as i64, 48_000.0);
+            if transport.beat() >= Beat::new(7.5) {
+                transport.seek(Beat::new(5.0));
+            }
+        };
+        for i in 0..32 {
+            step(i, &mut direct);
+        }
+        assert_no_alloc::assert_no_alloc(|| {
+            for i in 0..2_000 {
+                step(i, &mut direct);
             }
         });
     }

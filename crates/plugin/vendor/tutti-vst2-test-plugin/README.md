@@ -71,6 +71,7 @@ Call these across the dlopen seam on the image the host loaded. Reset with
 | `tutti_vst2_probe_set_silent_process(true)` | `process` returns without touching the outputs — the stale-buffer leak |
 | `tutti_vst2_probe_set_write_extra_output(true)` | writes one channel past `numOutputs` — a genuine out-of-bounds write, off by default |
 | `tutti_vst2_probe_set_read_extra_input(true)` | reads one channel past `numInputs` |
+| `tutti_vst2_probe_set_refuse_chunk_load(true)` | `effSetChunk` refuses every blob — armed after a first instance stored its chunk, only a later instance refuses |
 
 `can_do` is the important one. VST 2.4 defines **three** answers and hosts
 routinely collapse them into two: `-1` means "explicitly no", not "unknown", and
@@ -96,6 +97,8 @@ change its mind about is a switch.
 | `F64` | `effFlagsCanDoubleReplacing` |
 | `NO_CAN_REPLACING` | clears `effFlagsCanReplacing` while still being asked to process |
 | `TAIL_SIZE` | raw `effGetTailSize` answer: `0`, `1`, and large all mean different things |
+| `UNIQUE_ID` | `uniqueId` — the same file loading as a different plugin |
+| `STATE_DC` | adds the instance's saved state to every output sample (`config::state_dc`): the chunk's first byte with chunks, else `1000 · param0 + 10 000 · program` — what a fork by state transfer is checked on |
 
 Set these before `Vst2Instance::load` and serialize against other tests —
 `set_var` is process-global.

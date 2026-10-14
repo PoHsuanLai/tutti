@@ -98,6 +98,8 @@ test-features:
     cargo nextest run -p bevy-tutti --features sampler
     cargo nextest run -p bevy-tutti --features full,plugin
     cargo nextest run -p tutti-io --features bevy
+    # Threaded task pool, for the one test that needs it (see ci.yml).
+    cargo nextest run -p bevy-tutti --features full,bevy_tasks/multi_threaded -E 'test(the_rendered_graph_is_dropped_on_the_main_thread)'
 
 # JACK, separately: it hard-links libjack at BUILD time, so it needs
 # `libjack-jackd2-dev` (Debian) / `jack-audio-connection-kit-devel` (Fedora)
@@ -128,11 +130,15 @@ miri:
 # replica). `--cfg loom` is global, so
 # each runs on its own target. This is what CI runs: the `RtPublish` models at a
 # preemption bound of 4, about a minute and a half, and the `PosRing` models at
-# the same bound, about five minutes.
+# the same bound, about five minutes, and the parallel executor's three
+# primitives (`split`, `job_gate`, `task_graph`) at a bound of 3.
 loom:
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test pos_ring_loom
     RUSTFLAGS="--cfg loom" cargo test -p tutti-shm-model --release
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test split_loom
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test job_gate_loom
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test task_graph_loom
 
 # The `RtPublish` loom models exhaustively (bar `xthread_overflow`, which is
 # always bounded): about 17 minutes. Run it after changing `rt/publish.rs`.

@@ -456,3 +456,84 @@ fn a_sample_rate_change_starts_the_history_over() {
         rig.clamped - before
     );
 }
+
+/// Four latent paths (0, 37, 100 and 300 frames) into four probes: a graph
+/// wide enough to spread over a pool.
+fn wide(workers: usize) -> (Editor, Executor) {
+    const LATS: [usize; 4] = [0, 37, 100, 300];
+    let (mut ed, mut exec) = Editor::new(prepare(MAX));
+    let mut outputs = Vec::new();
+    for (i, &lat) in LATS.iter().enumerate() {
+        let (latent, probe) = (NodeKey(10 + i as u64), NodeKey(20 + i as u64));
+        ed.insert(latent, "latent", Unforkable(Latent(lat)));
+        ed.insert(probe, "probe", Unforkable(Probe));
+        ed.spec_mut().topology.edges.insert(
+            InPort {
+                node: probe,
+                port: 0,
+            },
+            Edge::Direct(Source::Node(OutPort {
+                node: latent,
+                port: 0,
+            })),
+        );
+        outputs.extend((0..3).map(|port| Source::Node(OutPort { node: probe, port })));
+    }
+    ed.spec_mut().topology.outputs = outputs;
+    ed.commit().expect("commits");
+    if workers > 1 {
+        exec.set_pool(Some(common::TestPool::new(workers)));
+    }
+    (ed, exec)
+}
+
+/// **Parallel equals serial for the arrival transport.** The same wide graph
+/// on a pool of 1 (serial), 2, 3 and 4 participants, through ragged blocks
+/// and every scene (seeks, a change inside a block, a loop that wraps, a
+/// stop, recording): every probe's output, the transport its input was
+/// rendered at, is bit-identical to the serial render's. Every participant
+/// reads the executor's one history, observed before the pool runs.
+///
+/// Mutation (run): in `par::run_block`, hand the workers
+/// `TransportHistory::none()` instead of the executor's (`history:
+/// b.history` in `Shared`) → the probes behind a latent path read the
+/// block's own transport before its first frame → differs from serial →
+/// fails.
+#[test]
+fn the_parallel_render_reads_the_same_history_as_the_serial_one() {
+    let lens = [64usize, 17, 50, 1, 33, 64, 2, 40];
+    let render = |workers: usize| -> Vec<Vec<u32>> {
+        let (mut ed, mut exec) = wide(workers);
+        let mut out: Vec<Vec<u32>> = vec![Vec::new(); 12];
+        let mut prev: Option<Env> = None;
+        for b in 0..80 {
+            let n = lens[b % lens.len()];
+            let (t, c) = scene(b, n, prev.as_ref());
+            let mut bufs: Vec<Vec<f32>> = vec![vec![0.0; n]; 12];
+            {
+                let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
+                prev = Some(Env {
+                    frame: exec.frame(),
+                    sample_rate: prepare(MAX).sample_rate(),
+                    block_len: Samples(n),
+                    transport: t,
+                    changes: c,
+                });
+                exec.process_with_changes(n, &t, &c, &[], &mut refs);
+            }
+            ed.collect();
+            assert_eq!(exec.is_parallel(), workers > 1, "{workers} workers");
+            for (o, b) in out.iter_mut().zip(&bufs) {
+                o.extend(b.iter().map(|x| x.to_bits()));
+            }
+        }
+        out
+    };
+    let serial = render(1);
+    for workers in 2..=4 {
+        assert!(
+            serial == render(workers),
+            "{workers} workers render the arrival transport as serial does"
+        );
+    }
+}

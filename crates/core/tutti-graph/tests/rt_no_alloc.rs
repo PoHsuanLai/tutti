@@ -4,6 +4,14 @@
 //! landing (on time, late, and still waiting), writers refusing past a declared event capacity, and block lengths that change
 //! every call.
 //!
+//! Each gate runs twice: on the serial executor and on the parallel one
+//! (doc 013 Phase 6, `src/par.rs`), whose every participant — the helper
+//! threads as well as the caller — runs its share of each block inside
+//! `assert_no_alloc` (`common::TestPool::no_alloc`), so an allocation or a
+//! free on any of them aborts. What the parallel gate cannot see: the pool's
+//! own idle loop between jobs (the test pool spins; `tutti_core::WorkerPool`'s
+//! park and wake are covered by `tutti-core`'s `rt_no_alloc_engine`).
+//!
 //! What this cannot cover, stated rather than implied: applying a commit
 //! allocates (see `exec.rs`), so it runs outside the gate; and a node
 //! that allocates is the node's bug, which this test catches only for the
@@ -25,6 +33,23 @@ use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, NodeKey, Samples, Tai
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
+
+/// Run `exec`'s blocks on a [`common::TestPool`] of `workers` participants
+/// whose every participant runs its share inside `assert_no_alloc` — the
+/// parallel path, helpers included (`1`: serial, no pool). Set before the
+/// first commit is applied, so the parallel state is built with the plan,
+/// outside the gate, as applying is.
+///
+/// Mutation (each applied to `src/par.rs`, seen to fail, reverted): allocate
+/// one byte per op in `Shared::run_op` → every parallel gate aborts (the
+/// serial ones pass); build the workers' overlay buffers with `Vec::new()` →
+/// `parallel_process_is_allocation_free_in_steady_state` aborts when the
+/// first scheduled command merges on a helper.
+fn use_pool(exec: &mut tutti_graph::Executor, workers: usize) {
+    if workers > 1 {
+        exec.set_pool(Some(common::TestPool::no_alloc(workers)));
+    }
+}
 
 fn at(node: u64, port: u16) -> InPort {
     InPort {
@@ -49,9 +74,9 @@ fn from(node: u64, port: u16) -> Edge {
 /// history `process` feeds every block is a fixed array, with nothing to
 /// allocate; that `process` feeds it at all is pinned by
 /// `arrival_transport.rs`'s "drop `history.observe`" mutation.)
-#[test]
-fn process_is_allocation_free_in_steady_state() {
+fn process_is_allocation_free_in_steady_state_on(workers: usize) {
     let (mut ed, mut exec) = Editor::new(prepare(256));
+    use_pool(&mut exec, workers);
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
     ed.insert(
         NodeKey(1),
@@ -224,6 +249,11 @@ fn process_is_allocation_free_in_steady_state() {
     .expect("under capacity");
     assert_eq!(ed.commands_outstanding(), 202);
 
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..2_000 {
             let n = sizes[i % sizes.len()];
@@ -240,6 +270,18 @@ fn process_is_allocation_free_in_steady_state() {
     );
 }
 
+#[test]
+fn process_is_allocation_free_in_steady_state() {
+    process_is_allocation_free_in_steady_state_on(1);
+}
+
+/// The same on the parallel executor, four participants, every one of them
+/// (the helpers too) inside the gate.
+#[test]
+fn parallel_process_is_allocation_free_in_steady_state() {
+    process_is_allocation_free_in_steady_state_on(4);
+}
+
 /// Crossfades never allocate on the audio thread: both units running, the
 /// blend, a fade's end (the crossfade and its outgoing unit onto the
 /// fade-return ring) and the start of the fade waiting behind it —
@@ -252,9 +294,9 @@ fn process_is_allocation_free_in_steady_state() {
 /// inside the gate → the push's assert fires → fails. Mutation: allocate
 /// the blend's gains per block (collect them into a `Vec` in
 /// `fading_node_op`) → aborts.
-#[test]
-fn crossfades_are_allocation_free() {
+fn crossfades_are_allocation_free_on(workers: usize) {
     let (mut ed, mut exec) = Editor::new(prepare(256));
+    use_pool(&mut exec, workers);
     ed.spec_mut().topology.inputs = ChannelLayout::STEREO;
     let gain = |g| TestNode::new(Kind::Gain { gain: g, width: 2 });
     ed.insert(NodeKey(1), "gain", Unforkable(gain(1.0)));
@@ -333,6 +375,11 @@ fn crossfades_are_allocation_free() {
     assert_eq!(ed.fades_in_flight(), 3);
 
     let sizes = [256usize, 1, 7, 64, 100, 255, 33];
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..200 {
             block(&mut exec, sizes[i % sizes.len()]);
@@ -343,6 +390,18 @@ fn crossfades_are_allocation_free() {
     back.sort();
     assert_eq!(back, vec![NodeKey(1), NodeKey(1), NodeKey(3)]);
     assert_eq!(ed.fades_in_flight(), 0);
+}
+
+#[test]
+fn crossfades_are_allocation_free() {
+    crossfades_are_allocation_free_on(1);
+}
+
+/// The same on the parallel executor, four participants, every one of them
+/// (the helpers too) inside the gate.
+#[test]
+fn parallel_crossfades_are_allocation_free() {
+    crossfades_are_allocation_free_on(4);
 }
 
 /// Pushes `burst` events on the first frame of every 256-frame bar into a
@@ -425,9 +484,9 @@ impl Node for Tally {
 /// merges, sized for one per source, drop what the writers accepted →
 /// fails. Mutation: size the PDC FIFOs from the default (`rate(from)` →
 /// `cap`) → they overflow and drop more than the writers refused → fails.
-#[test]
-fn declared_event_capacities_are_allocation_free() {
+fn declared_event_capacities_are_allocation_free_on(workers: usize) {
     let (mut ed, mut exec) = Editor::with_event_capacity(prepare(256), 1);
+    use_pool(&mut exec, workers);
     let refused = Arc::new(AtomicU64::new(0));
     let seen = [Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0))];
     for k in [1, 2] {
@@ -471,6 +530,11 @@ fn declared_event_capacities_are_allocation_free() {
         exec.process(n, &transport, &[], &mut []);
     }
     let before = refused.load(Ordering::Relaxed);
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..2_000 {
             exec.process(sizes[i % sizes.len()], &transport, &[], &mut []);
@@ -484,6 +548,18 @@ fn declared_event_capacities_are_allocation_free() {
         "only the writers refused anything"
     );
     assert!(seen[0].load(Ordering::Relaxed) > 0 && seen[1].load(Ordering::Relaxed) > 0);
+}
+
+#[test]
+fn declared_event_capacities_are_allocation_free() {
+    declared_event_capacities_are_allocation_free_on(1);
+}
+
+/// The same on the parallel executor, four participants, every one of them
+/// (the helpers too) inside the gate.
+#[test]
+fn parallel_declared_event_capacities_are_allocation_free() {
+    declared_event_capacities_are_allocation_free_on(4);
 }
 
 /// Declares `Cutoff` and `Q` (bases 1.0 and 2.0); writes the sum of what it
@@ -548,10 +624,10 @@ impl Node for RampEvery {
 /// Mutation (run): in `ParamState::port`, copy an audio source into a
 /// `Vec` per block → aborts. Rebuild the ramp buffer per block
 /// (`self.ramp_buf = vec![0.0; frames]`) → aborts.
-#[test]
-fn modulated_params_are_allocation_free() {
+fn modulated_params_are_allocation_free_on(workers: usize) {
     use tutti_graph::{ParamFrom, ParamIn, ParamShaping, ShapeLut};
     let (mut ed, mut exec) = Editor::new(prepare(256));
+    use_pool(&mut exec, workers);
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
     ed.insert(NodeKey(1), "sink", Unforkable(ParamSink));
     ed.insert(
@@ -613,6 +689,11 @@ fn modulated_params_are_allocation_free() {
         }
     };
     exec.apply_pending();
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
     assert_no_alloc::assert_no_alloc(|| run(&mut exec));
 
     // A connection made (Q, behind the lag's PDC: the gain is the early
@@ -622,6 +703,11 @@ fn modulated_params_are_allocation_free() {
     ed.spec_mut().disconnect_param(cut, gain);
     ed.commit().expect("commits");
     exec.apply_pending();
+    assert_eq!(
+        exec.is_parallel(),
+        workers > 1,
+        "the gate runs the mode it names"
+    );
     assert_no_alloc::assert_no_alloc(|| run(&mut exec));
     let plan = exec.plan().expect("a plan");
     assert!(
@@ -630,6 +716,18 @@ fn modulated_params_are_allocation_free() {
             .any(|d| matches!(d.key, tutti_graph::DelayKey::ParamAudio { .. })),
         "a param source was delayed by PDC inside the gate"
     );
+}
+
+#[test]
+fn modulated_params_are_allocation_free() {
+    modulated_params_are_allocation_free_on(1);
+}
+
+/// The same on the parallel executor, four participants, every one of them
+/// (the helpers too) inside the gate.
+#[test]
+fn parallel_modulated_params_are_allocation_free() {
+    modulated_params_are_allocation_free_on(4);
 }
 
 /// `contract::Direct`, the by-hand driver an instrument's allocation gate

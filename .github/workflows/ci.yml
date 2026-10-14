@@ -205,6 +205,19 @@ jobs:
           cargo nextest run -p bevy-tutti --features full,plugin
           cargo nextest run -p tutti-io --features bevy
 
+      # bevy-tutti builds `bevy_tasks` without `multi_threaded`, so its task
+      # pool runs each task on the thread that polls it (the main one), and a
+      # render's graph dropped on the pool is a main-thread drop too. Only with
+      # real pool threads (what an app with Bevy's default features has) can
+      # this test see a forked in-process VST2 instance closed off the main
+      # thread. One test, not the suite: `export_surface`'s batch test assumes
+      # a render finishes in the frame that polls it, which a threaded pool
+      # does not promise.
+      - name: Export drops its graph on the main thread (threaded pool)
+        run: >-
+          cargo nextest run -p bevy-tutti --features full,bevy_tasks/multi_threaded
+          -E 'test(the_rendered_graph_is_dropped_on_the_main_thread)'
+
       # JACK hard-links libjack at build time, so it gets its own step (and its
       # own apt package) rather than joining the list above. `AudioHost::Jack`
       # exists on every platform and answers `Error::HostUnavailable` where it
@@ -535,3 +548,24 @@ jobs:
         env:
           LOOM_MAX_PREEMPTIONS: 4
       - run: cargo test -p tutti-shm-model --release
+
+  # The parallel executor's runtime primitives (doc 013 Phase 6, part a), each
+  # against the shipped code: `SplitMut`/`SplitRw`'s claims, `JobGate`'s
+  # borrowed-job hand-off and `TaskGraph`'s dispatch and self-reset. Their own
+  # job, so neither this nor the one above nears its timeout. Every recorded
+  # mutation in the three files fails at this bound.
+  loom-parallel:
+    name: loom (parallel executor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: --cfg loom
+      LOOM_MAX_PREEMPTIONS: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p tutti-types --release --test split_loom
+      - run: cargo test -p tutti-types --release --test job_gate_loom
+      - run: cargo test -p tutti-types --release --test task_graph_loom

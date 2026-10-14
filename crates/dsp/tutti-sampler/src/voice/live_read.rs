@@ -53,7 +53,7 @@
 //! instead. A block that reads nothing tells the ring so (`PosReader::idle`), so a
 //! paused voice holds no refill back.
 
-use tutti_core::{PosClaim, PosReader};
+use tutti_core::{PosClaim, PosReader, SamplePosition};
 
 use crate::butler::{Arrangement, RingMap, RtState, SharedReader};
 use crate::MAX_SAMPLER_CHANNELS;
@@ -227,7 +227,7 @@ impl LiveRead {
     #[allow(clippy::too_many_arguments)] // one block's read, and where it goes
     pub(crate) fn render(
         &mut self,
-        positions: &[Option<f64>],
+        positions: &[Option<SamplePosition>],
         segment: u64,
         rate: f64,
         gain: f32,
@@ -247,11 +247,11 @@ impl LiveRead {
         };
         let (mut lo, mut hi) = (u64::MAX, 0u64);
         for p in positions.iter().flatten() {
-            let f = p.max(0.0).floor() as u64;
+            let f = p.get().max(0.0).floor() as u64;
             lo = lo.min(f.saturating_sub(3));
             hi = hi.max(f + 5);
         }
-        let Some(first) = positions.iter().flatten().next().copied() else {
+        let Some(first) = positions.iter().flatten().next().map(|p| p.get()) else {
             for i in 0..positions.len() {
                 emit(i, &silent[..w]);
             }
@@ -286,7 +286,7 @@ impl LiveRead {
 
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
         for (i, pos) in positions.iter().enumerate() {
-            let Some(pos) = *pos else {
+            let Some(pos) = pos.map(SamplePosition::get) else {
                 emit(i, &silent[..w]);
                 st.last = None;
                 st.fade = None;
@@ -444,7 +444,15 @@ fn read_ring(
     if !taps.iter().all(|&t| claim.holds(t)) {
         return false;
     }
-    let frames = taps.map(|t| claim.frame(t));
+    // Written out rather than `taps.map(..)`: the array map compiled to an
+    // outlined `try_map` here (callgrind: ~4.5% of a 16-voice disk pool's
+    // instructions per frame), where the four calls inline.
+    let frames = [
+        claim.frame(taps[0]),
+        claim.frame(taps[1]),
+        claim.frame(taps[2]),
+        claim.frame(taps[3]),
+    ];
     interpolate_taps(src, frac, out, |c, t| frames[t].get(c));
     true
 }

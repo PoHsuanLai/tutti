@@ -11,8 +11,8 @@
 
 use tutti_core::meter::MeterMap;
 use tutti_graph::{
-    Cx, Env, Event, EventKind, Harmony, HarmonyKind, Io, Node, Offset, Prepare, Shape,
-    SortedEvents, Status, MAX_PORTS,
+    Cx, Event, EventKind, Harmony, HarmonyKind, Io, Node, Offset, Prepare, Shape, SortedEvents,
+    Status, MAX_PORTS,
 };
 use tutti_types::{ChannelLayout, ParamAddr, Samples};
 
@@ -133,7 +133,7 @@ impl Node for PluginClient<Bound> {
         };
         let indexed = c.controls.indexed();
         let mut host = PluginChunks {
-            env: cx.env,
+            cx: *cx,
             events,
             frames,
             meter,
@@ -192,7 +192,9 @@ impl Node for PluginClient<Bound> {
 /// from the event input as the chunk's frames come in, and sent when it is
 /// submitted (possibly a block later; see the batcher's FIFO).
 struct PluginChunks<'a> {
-    env: &'a Env,
+    /// The call's context: the block's `Env`, and the node's arrival and the
+    /// transport history to read the playhead its input was rendered at.
+    cx: Cx<'a>,
     /// The block's MIDI event input, handed to the chunks its frames go
     /// into ([`Chunks::take`]).
     events: SortedEvents<'a>,
@@ -213,7 +215,7 @@ impl Chunks for PluginChunks<'_> {
     fn begin(&mut self, at: usize, _chunk: usize) {
         let transport = match Offset::new(at, Samples(self.frames)) {
             Some(offset) if self.features.contains(Features::TRANSPORT) => {
-                transport_source::from_env(self.env, offset, self.steady.at(at), self.meter)
+                transport_source::from_cx(&self.cx, offset, self.steady.at(at), self.meter)
             }
             _ => TransportInfo::default(),
         };

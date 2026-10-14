@@ -73,16 +73,13 @@ impl Node for InProcessVst2Client {
             }
         }
         let transport = match &mut self.env_transport {
-            // A fork: the block's own transport, at its first frame.
+            // A fork: the transport its input at the block's first frame
+            // was rendered at (`Cx::transport_at`), as the out-of-process
+            // plugin node reads it.
             Some(feed) => {
                 let info = match Offset::new(0, Samples(size)) {
                     Some(at) if self.features.contains(Features::TRANSPORT) => {
-                        transport_source::from_env(
-                            cx.env,
-                            at,
-                            feed.steady.at(0),
-                            &feed.meter.read(),
-                        )
+                        transport_source::from_cx(cx, at, feed.steady.at(0), &feed.meter.read())
                     }
                     _ => TransportInfo::default(),
                 };

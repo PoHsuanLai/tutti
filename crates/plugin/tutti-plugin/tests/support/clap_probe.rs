@@ -32,10 +32,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use tutti_graph::{GraphBuilder, Prepare, Renderer};
+use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Renderer, Shape, Status, Unforkable};
 use tutti_plugin::handles::{Bound, PluginClient, PluginControls, PluginHandle};
 use tutti_plugin::BridgeConfig;
-use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Latency, NodeKey, SampleRate, Samples};
 
 /// A bound plugin as the only node of a graph: the global inputs feed
 /// its inputs in order, its outputs feed the global outputs. The executor
@@ -115,7 +115,40 @@ impl Rig {
         )
     }
 
-    /// The plugin's audio inputs.
+    /// `client` in a graph prepared with `prepare`, behind a latent path: a
+    /// silent source declaring `latency` feeds every plugin input, so the
+    /// plugin's compiled arrival latency is `latency`. The graph has no
+    /// global inputs.
+    ///
+    /// # Panics
+    ///
+    /// If the plugin has no audio input (nothing to put a path in front of).
+    pub fn behind(client: PluginClient<Bound>, prepare: Prepare, latency: Latency) -> Self {
+        let (inputs, outputs) = (client.inputs(), client.outputs());
+        assert!(inputs > 0, "the plugin has an audio input");
+        let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout(outputs));
+        let latent = g.add(Unforkable(Latent {
+            latency,
+            width: layout(inputs),
+        }));
+        let (key, controls) = g.add_with_controls(client);
+        for port in 0..inputs {
+            g.connect(latent, port, key, port);
+        }
+        g.pipe_output(key);
+        let renderer = g.renderer(prepare).expect("the graph compiles");
+        Self {
+            renderer,
+            key,
+            controls,
+            inputs: 0,
+            outputs,
+        }
+    }
+
+    /// The graph's global audio inputs: the plugin's, unless it is
+    /// [`behind`](Self::behind) a latent path.
     pub fn inputs(&self) -> usize {
         self.inputs
     }
@@ -152,6 +185,27 @@ impl Rig {
     pub fn key(&self) -> NodeKey {
         self.key
     }
+}
+
+/// A silent source that declares `latency`: what puts a plugin behind a
+/// latent path ([`Rig::behind`]).
+struct Latent {
+    latency: Latency,
+    width: ChannelLayout,
+}
+
+impl Node for Latent {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, self.width).with_latency(self.latency)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for c in 0..io.output_count() {
+            io.output(c).fill(0.0);
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
 }
 
 /// `;`-separated candidate paths for the reference CLAP cdylib, from `build.rs`.

@@ -113,6 +113,7 @@ impl Clock {
                 }),
             ),
             changes: TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
         }
     }
 

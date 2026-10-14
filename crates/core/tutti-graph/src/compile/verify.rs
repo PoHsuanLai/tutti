@@ -34,7 +34,8 @@
 //! 9. **Params**: each node op's modulated params are in strict port order,
 //!    each a param its unit declares, and their sources are reads of the
 //!    op (rules 2–4 cover them like inputs; an input aliased in place is
-//!    never also a param source).
+//!    never also a param source). A port reads at most one event source,
+//!    unshaped: its value replaces the base (doc 014 §5.6).
 //!
 //! 8. **Fades** ([`verify_fades`], on a plan *and the delta that installs
 //!    it*): a crossfade's outgoing unit runs on the node op's own input slots
@@ -180,8 +181,31 @@ fn verify_params(plan: &Plan) -> Result<(), VerifyError> {
                     p.param, p.port
                 )));
             }
-            if p.sources.len == 0 || plan.param_sources.get(p.sources.range()).is_none() {
+            let Some(sources) = plan
+                .param_sources
+                .get(p.sources.range())
+                .filter(|s| !s.is_empty())
+            else {
                 return Err(bad(format!("give port {} no sources", p.port)));
+            };
+            // The port rule: an event source replaces the base, so a port
+            // has at most one, and it is unshaped.
+            let events: Vec<_> = sources
+                .iter()
+                .filter(|s| matches!(s.slot, crate::plan::ParamSlot::Event(_)))
+                .collect();
+            if events.len() > 1 {
+                return Err(bad(format!(
+                    "give port {} {} event sources",
+                    p.port,
+                    events.len()
+                )));
+            }
+            if events
+                .iter()
+                .any(|s| s.shaping != crate::param::ParamShaping::Identity)
+            {
+                return Err(bad(format!("shape port {}'s event source", p.port)));
             }
         }
     }
@@ -997,7 +1021,8 @@ mod tests {
     /// `verify_params(plan)?` call (the three table corruptions pass); drop
     /// the param reads from `accesses` (the unordered read passes); drop the
     /// `!param_reads(..)` clause from the in-place check (the param read of
-    /// the in-place slot passes).
+    /// the in-place slot passes); drop the event-source count check, or the
+    /// shaping check, from `verify_params` (that corruption passes).
     #[test]
     fn the_verifier_rejects_each_param_corruption() {
         use crate::plan::ParamSlot;
@@ -1063,6 +1088,24 @@ mod tests {
         let mut bad = good.clone();
         bad.param_sources[0].slot = ParamSlot::Audio(own);
         assert!(err(&bad).contains("in place"), "{}", err(&bad));
+
+        // The port rule, checked by rule 9 itself (an event slot invented
+        // here would trip the read rules first): a shaped event source, and
+        // two event sources on one port.
+        let rule9 = |p: &Plan| verify_params(p).expect_err("corrupt").0;
+        let mut bad = good.clone();
+        bad.param_sources[0].slot = ParamSlot::Event(0);
+        bad.param_sources[0].shaping =
+            crate::param::ParamShaping::Lut(crate::param::ShapeLut::from_fn(|x| 2.0 * x));
+        assert!(rule9(&bad).contains("shape port"), "{}", rule9(&bad));
+        let mut bad = good.clone();
+        bad.param_sources[0].slot = ParamSlot::Event(0);
+        let mut second = bad.param_sources[0].clone();
+        second.slot = ParamSlot::Event(1);
+        let at = bad.param_ports[0].sources.start as usize + 1;
+        bad.param_sources.insert(at, second);
+        bad.param_ports[0].sources.len += 1;
+        assert!(rule9(&bad).contains("2 event sources"), "{}", rule9(&bad));
     }
 
     /// The verifier is not a rubber stamp: forcing two concurrent values into

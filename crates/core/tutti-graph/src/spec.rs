@@ -204,10 +204,17 @@ impl GraphSpec {
         removed
     }
 
-    /// Drives param port `at` from `from` as well, shaped by `shaping`: one
-    /// more offset in its sum, in source order ([`ParamFrom`]'s `Ord`), so
-    /// two specs with the same wiring compare equal whatever order it was
-    /// made in. A source already listed at `at` has its shaping replaced.
+    /// Drives param port `at` from `from` as well, shaped by `shaping`: an
+    /// audio source is one more offset in its sum, an event source what the
+    /// offsets sit on in place of the base. Kept in source order
+    /// ([`ParamFrom`]'s `Ord`), so two specs with the same wiring compare
+    /// equal whatever order it was made in. A source already listed at `at`
+    /// has its shaping replaced.
+    ///
+    /// A port takes **at most one event source, unshaped**
+    /// ([`ParamShaping::Identity`]); [`validate`](Self::validate) refuses a
+    /// second ([`GraphInvalid::TooManyEventParamSources`]) or a shaped one
+    /// ([`GraphInvalid::ShapedEventParamSource`]).
     ///
     /// The port must be one its node declares
     /// ([`Shape::params`](crate::Shape::params)), or `compile` refuses it
@@ -221,7 +228,9 @@ impl GraphSpec {
     /// computing, per frame:
     ///
     /// ```text
-    ///   value[i] = clamp(base_ramp[i] + Σ shape_j(source_j[i]), range)
+    ///   value[i] = clamp(held[i] + Σ shape_j(audio_j[i]), range)
+    ///   held[i]  = the event source's value, from its first event on
+    ///            = base_ramp[i], before that, or with no event source
     /// ```
     ///
     /// - **The base** is the node's own control — a `Param<U>` it hands out in
@@ -229,13 +238,19 @@ impl GraphSpec {
     ///   [`Node::param_base`](crate::Node::param_base) and ramped linearly
     ///   across the block, landing exactly on the new value at its last frame,
     ///   so a fader move under modulation does not zipper.
+    /// - **An event source replaces the base** (doc 014 §5.6). Its
+    ///   [`ParamRamp`](crate::ParamRamp)s and
+    ///   [`ParamSegment`](crate::ParamSegment)s ([`ParamFrom::Events`]) are
+    ///   the param's own value, sample-accurate, from the source's first
+    ///   event on (a first ramp starts from the base at its frame); before
+    ///   it, the port reads its base. Automation replaces the knob, as in
+    ///   every DAW. A second event source, or a shaped one, is refused.
     /// - **The offsets** come from audio outputs ([`ParamFrom::Audio`], one
-    ///   value per frame) or from [`ParamRamp`](crate::ParamRamp) events
-    ///   ([`ParamFrom::Events`], a sample-accurate ramp per source), each
-    ///   through its own [`ParamShaping`]: the identity, or a
-    ///   [`ShapeLut`](crate::ShapeLut) (the depth · polarity · curve table
-    ///   `tutti_mod::shape` bakes). They are summed in source order and clamped
-    ///   once to the port's [`ParamRange`].
+    ///   value per frame), each through its own [`ParamShaping`]: the
+    ///   identity, or a [`ShapeLut`](crate::ShapeLut) (the depth · polarity ·
+    ///   curve table `tutti_mod::shape` bakes). They are summed in source
+    ///   order onto the held value and clamped once to the port's
+    ///   [`ParamRange`].
     /// - **An unconnected param resolves to its base, never to 0.** A port with
     ///   no source this block reads
     ///   [`ParamInput::Base`](crate::ParamInput::Base), and the node uses its
@@ -403,6 +418,23 @@ impl GraphSpec {
             if m.range.min.is_nan() || m.range.max.is_nan() {
                 errs.push(GraphInvalid::BadParamRange { at, range: m.range });
             }
+            // The port rule (doc 014 §5.6): one event source, unshaped, and
+            // its value replaces the base.
+            let mut event_sources = 0;
+            for src in &m.sources {
+                if let ParamFrom::Events(from) = src.from {
+                    event_sources += 1;
+                    if src.shaping != ParamShaping::Identity {
+                        errs.push(GraphInvalid::ShapedEventParamSource { at, from });
+                    }
+                }
+            }
+            if event_sources > 1 {
+                errs.push(GraphInvalid::TooManyEventParamSources {
+                    at,
+                    count: event_sources,
+                });
+            }
         }
         for &(at, from) in self.required_resolution.keys() {
             let wired = self
@@ -488,6 +520,25 @@ pub enum GraphInvalid {
         at: ParamIn,
         /// How many it has.
         count: usize,
+    },
+    /// A param port has more than one event source
+    /// ([`ParamFrom::Events`]). An event source's value replaces the port's
+    /// base, so two would be two values for one param: sum them in one node
+    /// (a control lane) and send the sum.
+    TooManyEventParamSources {
+        /// The param port.
+        at: ParamIn,
+        /// How many event sources it has.
+        count: usize,
+    },
+    /// A param port's event source is shaped other than
+    /// [`ParamShaping::Identity`]. Its value is the param's own value, which
+    /// replaces the base; shaping belongs to whoever computed it.
+    ShapedEventParamSource {
+        /// The param port.
+        at: ParamIn,
+        /// The event source.
+        from: EventOut,
     },
     /// A param port's range has a NaN bound. Refused here rather than
     /// ordered where it is applied: a NaN bound clamps every value to NaN or

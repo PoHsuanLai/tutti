@@ -175,6 +175,7 @@ impl Rig {
             block_len: Samples(n),
             transport: t,
             changes,
+            play: tutti_graph::PlayClock::ZERO,
         };
         let mut a: [Vec<f32>; 3] = std::array::from_fn(|_| vec![0.0; n]);
         let mut b: [Vec<f32>; 3] = std::array::from_fn(|_| vec![0.0; n]);
@@ -207,6 +208,7 @@ impl Rig {
                         block_len: Samples(gap as usize + 1),
                         transport: t,
                         changes: TransportChanges::NONE,
+                        play: tutti_graph::PlayClock::ZERO,
                     }
                     .transport_at(Offset::new(gap as usize, Samples(gap as usize + 1)).unwrap());
                     rate != env.sample_rate
@@ -518,6 +520,7 @@ fn the_parallel_render_reads_the_same_history_as_the_serial_one() {
                     block_len: Samples(n),
                     transport: t,
                     changes: c,
+                    play: tutti_graph::PlayClock::ZERO,
                 });
                 exec.process_with_changes(n, &t, &c, &[], &mut refs);
             }

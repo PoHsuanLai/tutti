@@ -8,8 +8,13 @@
 //! node's op:
 //!
 //! ```text
-//!   value[i] = clamp(base_ramp[i] + Σ shape_j(source_j[i]), range)
+//!   value[i] = clamp(held[i] + Σ shape_j(audio_j[i]), range)
+//!   held[i]  = the event source's value, from its first event on
+//!            = base_ramp[i], before that or with no event source
 //! ```
+//!
+//! An event source **replaces** the base (doc 014 §5.6): a port takes at
+//! most one, unshaped. Audio sources are offsets on top of whichever holds.
 //!
 //! The rules are documented on
 //! [`GraphSpec::connect_param`](crate::GraphSpec::connect_param).
@@ -25,7 +30,7 @@ use std::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tutti_types::graph::OutPort;
-use tutti_types::{AudioThread, NodeKey, ParamAddr, Samples, UnitParam};
+use tutti_types::{AudioThread, NodeKey, ParamAddr, RangeCell, Samples, UnitParam};
 
 use crate::event::{segment_progress, Event, EventKind, SegmentShape, ShapeTag};
 use crate::spec::EventOut;
@@ -177,8 +182,14 @@ pub enum ParamFrom {
     /// An event output: every [`ParamRamp`](crate::ParamRamp) on it
     /// addressed to this port's param starts a linear ramp of the source's
     /// value on its own frame, reaching the target on the ramp's last frame
-    /// (a zero-length ramp is a step). The value starts at 0; other events
-    /// are ignored.
+    /// (a zero-length ramp is a step), and every
+    /// [`ParamSegment`](crate::ParamSegment) starts that segment. The
+    /// source's value **replaces the port's base** from its first such
+    /// event on; before it, the port reads its base, and a first ramp starts
+    /// from the base at its frame. Other events are ignored. A port takes at
+    /// most one event source, with [`ParamShaping::Identity`]
+    /// ([`GraphInvalid::TooManyEventParamSources`](crate::GraphInvalid::TooManyEventParamSources),
+    /// [`GraphInvalid::ShapedEventParamSource`](crate::GraphInvalid::ShapedEventParamSource)).
     Events(EventOut),
 }
 
@@ -433,6 +444,9 @@ pub(crate) struct Ramp {
     active: bool,
     /// `Some` while the move is a curve segment.
     curve: Option<Curve>,
+    /// Whether the source has sent its first event: from then on its value
+    /// replaces the port's base.
+    started: bool,
 }
 
 impl Ramp {
@@ -446,6 +460,7 @@ impl Ramp {
         self.done = 0;
         self.active = true;
         self.curve = None;
+        self.started = true;
     }
 
     /// Start a curve segment from this frame on: its own endpoints, so the
@@ -458,6 +473,7 @@ impl Ramp {
         self.done = 0;
         self.active = true;
         self.curve = Some(curve);
+        self.started = true;
     }
 
     /// The value at this frame, after any move started on it. A ramp: its
@@ -495,14 +511,25 @@ impl Ramp {
 }
 
 /// Render one event source's values for a block into `out`: the ramps and
-/// curve segments its events for `param` start, frame by frame.
-pub(crate) fn render_ramps(ramp: &mut Ramp, events: &[Event], param: UnitParam, out: &mut [f32]) {
+/// curve segments its events for `param` start, frame by frame, and
+/// `base(i)` on each frame before its first event ever. A first ramp starts
+/// from `base` at its own frame.
+pub(crate) fn render_ramps(
+    ramp: &mut Ramp,
+    events: &[Event],
+    param: UnitParam,
+    out: &mut [f32],
+    base: impl Fn(usize) -> f32,
+) {
     let want = ParamAddr::Unit(param);
     let mut next = events.iter().peekable();
     for (i, o) in out.iter_mut().enumerate() {
         while let Some(e) = next.next_if(|e| e.offset.index() <= i) {
             match e.kind {
                 EventKind::Ramp(r) if r.addr() == want => {
+                    if !ramp.started {
+                        ramp.value = base(i);
+                    }
                     ramp.start(r.raw_target(), r.duration().get());
                 }
                 EventKind::Segment(s) if s.is_for(want) => {
@@ -521,7 +548,7 @@ pub(crate) fn render_ramps(ramp: &mut Ramp, events: &[Event], param: UnitParam, 
                 _ => {}
             }
         }
-        *o = ramp.step();
+        *o = if ramp.started { ramp.step() } else { base(i) };
     }
 }
 
@@ -546,10 +573,11 @@ pub(crate) struct SrcState {
 /// port's step, so a move lands on the next block and costs a store, not a
 /// plan. The spec's range is its initial value; the plan carries no range.
 ///
-/// One cell per port: an `AtomicU64` packing both bounds' bits, so a reader
-/// never pairs one write's `min` with another's `max` (two `AtomicF32`s, as
-/// two `Param<U>`s would be, could). It is a plain cell, as a base's
-/// `AtomicF32` is: no protocol between cells, nothing to model.
+/// One [`RangeCell`] per port: both bounds in one word, so a reader never
+/// pairs one write's `min` with another's `max` (two `AtomicF32`s, as two
+/// `Param<U>`s would be, could). Each is an `Arc`, so a reader outside the
+/// graph (a control lane, doc 014 §4.2) can hold the very cell the port
+/// clamps to ([`Editor::param_range_cell`](crate::Editor::param_range_cell)).
 ///
 /// Kept by the editor per key, as [`ParamTap`] is, and shared with the
 /// state of each unit placed there that declares the same params: a
@@ -559,17 +587,16 @@ pub(crate) struct SrcState {
 #[derive(Debug)]
 pub(crate) struct ParamRanges {
     declared: ParamPorts,
-    cells: Box<[AtomicU64]>,
+    cells: Box<[Arc<RangeCell>]>,
 }
 
 impl ParamRanges {
     /// Unbounded cells for `declared`. Control side: allocates.
     pub(crate) fn new(declared: ParamPorts) -> Arc<Self> {
-        let unbounded = pack(ParamRange::UNBOUNDED);
         Arc::new(Self {
             declared,
             cells: (0..declared.len())
-                .map(|_| AtomicU64::new(unbounded))
+                .map(|_| Arc::new(RangeCell::unbounded()))
                 .collect(),
         })
     }
@@ -579,32 +606,29 @@ impl ParamRanges {
         self.declared
     }
 
+    /// `param`'s cell, if it is one of these ports. Control side.
+    pub(crate) fn cell(&self, param: UnitParam) -> Option<&Arc<RangeCell>> {
+        self.cells.get(self.declared.index_of(param)?)
+    }
+
     /// Set `param`'s range; `false` if it is not one of these ports.
     /// Control side.
     pub(crate) fn store(&self, param: UnitParam, range: ParamRange) -> bool {
-        let Some(k) = self.declared.index_of(param) else {
+        let Some(cell) = self.cell(param) else {
             return false;
         };
-        self.cells[k].store(pack(range), Ordering::Release);
+        cell.store(range.min, range.max);
         true
     }
 
     /// Port `k`'s range now (unbounded past the last port). Wait-free.
     #[inline]
     pub(crate) fn load(&self, k: usize) -> ParamRange {
-        self.cells
-            .get(k)
-            .map_or(ParamRange::UNBOUNDED, |c| unpack(c.load(Ordering::Acquire)))
+        self.cells.get(k).map_or(ParamRange::UNBOUNDED, |c| {
+            let (min, max) = c.load();
+            ParamRange::new(min, max)
+        })
     }
-}
-
-/// Both bounds' bits in one word: `min` high, `max` low.
-fn pack(r: ParamRange) -> u64 {
-    (u64::from(r.min.to_bits()) << 32) | u64::from(r.max.to_bits())
-}
-
-fn unpack(w: u64) -> ParamRange {
-    ParamRange::new(f32::from_bits((w >> 32) as u32), f32::from_bits(w as u32))
 }
 
 /// One declared param port's running state, kept with its unit across
@@ -843,9 +867,14 @@ impl ParamState {
         let n = frames as f32;
         match m {
             Some((_, sources)) => {
-                // `f32`'s `Sum` folds from `-0.0`; so does this, so the sum is
-                // bit-identical to an iterator `base + Σ`.
+                // The audio offsets. `f32`'s `Sum` folds from `-0.0`; so
+                // does this, so the sum is bit-identical to an iterator
+                // `held + Σ`.
                 out.fill(-0.0);
+                // Whether the port's one event source (if any) rendered
+                // into `ramp_buf`: its values, or the base until its first
+                // event, are what the offsets sit on.
+                let mut held = false;
                 for (j, (src, shaping, _)) in sources.iter().enumerate() {
                     let s = &mut st.srcs[j];
                     match src {
@@ -856,12 +885,14 @@ impl ParamState {
                             s.last_raw = x[frames - 1];
                         }
                         SourceIn::Events(ev) => {
+                            // Unshaped: `GraphSpec::validate` refuses any
+                            // other shaping, and a second event source.
                             let buf = &mut self.ramp_buf[..frames];
-                            render_ramps(&mut s.ramp, ev, param, buf);
-                            for (o, &x) in out.iter_mut().zip(buf.iter()) {
-                                *o += shaping.apply(x);
-                            }
+                            render_ramps(&mut s.ramp, ev, param, buf, |i| {
+                                base_at(from, b1, i, frames, n)
+                            });
                             s.last_raw = buf[frames - 1];
+                            held = true;
                         }
                     }
                 }
@@ -874,8 +905,14 @@ impl ParamState {
                     .as_ref()
                     .map_or(ParamRange::UNBOUNDED, |r| r.load(k));
                 let (lo, hi) = range.ordered();
-                for (i, o) in out.iter_mut().enumerate() {
-                    *o = (base_at(from, b1, i, frames, n) + *o).clamp(lo, hi);
+                if held {
+                    for (o, &h) in out.iter_mut().zip(&self.ramp_buf[..frames]) {
+                        *o = (h + *o).clamp(lo, hi);
+                    }
+                } else {
+                    for (i, o) in out.iter_mut().enumerate() {
+                        *o = (base_at(from, b1, i, frames, n) + *o).clamp(lo, hi);
+                    }
                 }
             }
             None => {
@@ -958,6 +995,7 @@ struct TapSrc {
     len: AtomicU32,
     done: AtomicU32,
     active: AtomicBool,
+    started: AtomicBool,
     /// Whether the move is a curve segment, and its timing and shape.
     curved: AtomicBool,
     position: AtomicU32,
@@ -1007,6 +1045,7 @@ impl ParamTap {
                             len: s.len.load(Ordering::Relaxed),
                             done: s.done.load(Ordering::Relaxed),
                             active: s.active.load(Ordering::Relaxed),
+                            started: s.started.load(Ordering::Relaxed),
                             curve: s.curved.load(Ordering::Relaxed).then(|| Curve {
                                 position: f(&s.position),
                                 length: f(&s.length),
@@ -1048,6 +1087,7 @@ impl TapPort {
             t.len.store(r.len, Ordering::Relaxed);
             t.done.store(r.done, Ordering::Relaxed);
             t.active.store(r.active, Ordering::Relaxed);
+            t.started.store(r.started, Ordering::Relaxed);
             t.curved.store(r.curve.is_some(), Ordering::Relaxed);
             if let Some(c) = r.curve {
                 let (tag, param) = c.shape.pack();
@@ -1097,7 +1137,7 @@ mod tests {
         let events = [ev(4, 100.0, 4), ev(12, -5.0, 0)];
         let mut r = Ramp::default();
         let mut out = [0.0f32; 16];
-        render_ramps(&mut r, &events, UnitParam::Cutoff, &mut out);
+        render_ramps(&mut r, &events, UnitParam::Cutoff, &mut out, |_| 0.0);
         assert_eq!(&out[..4], &[0.0; 4], "nothing before the event");
         assert_eq!(out[4], 25.0);
         assert_eq!(out[7], 100.0, "on target at the ramp's last frame");
@@ -1105,7 +1145,7 @@ mod tests {
         assert_eq!(out[12], -5.0, "a step lands on its frame");
         // Another param's ramp is not this port's.
         let mut r = Ramp::default();
-        render_ramps(&mut r, &events, UnitParam::Q, &mut out);
+        render_ramps(&mut r, &events, UnitParam::Q, &mut out, |_| 0.0);
         assert!(out.iter().all(|&x| x == 0.0));
     }
 

@@ -1012,6 +1012,7 @@ mod tests {
                 block_len: block,
                 transport: tutti_graph::Transport::default(),
                 changes: tutti_graph::TransportChanges::NONE,
+                play: tutti_graph::PlayClock::ZERO,
             };
             let out = tutti_graph::contract::drive_in(self, &env, &[], &[], &[&events]).audio;
             for e in &past {

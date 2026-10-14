@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The control-lane floor** (design doc 014, PR 2a): the port rule for
+  event sources, the graph's play clock and a shareable range cell.
+  **Breaking** in three ways. A param port's event source *replaces* the
+  base instead of adding to it. A port refuses a second event source, or a
+  shaped one. And `tutti_graph::Env` has a new field, so a struct literal
+  must add `play`.
+
+  | Was | Now |
+  |---|---|
+  | an event-driven param port read `clamp(base + shape(event value) + Σ audio)`, its event value starting at 0 | it reads `clamp(held + Σ shape(audio))`: `held` is the event source's value from its first event on, and the base before it. A first `ParamRamp` starts from the base on its frame. Audio sources are still offsets, on whichever holds |
+  | any number of event sources per port, each with any `ParamShaping` | at most one, with `ParamShaping::Identity`; `GraphSpec::validate` and `Editor::commit` refuse a second (`GraphInvalid::TooManyEventParamSources`) or a shaped one (`GraphInvalid::ShapedEventParamSource`), and the plan verifier checks both (rule 9) |
+  | `Env { frame, sample_rate, block_len, transport, changes }` | adds `play: PlayClock`. An `Env` built by hand (a test, a node driven outside a graph) uses `PlayClock::ZERO` |
+  | — | the play clock (doc 014 §4.3): `Env::play_at(offset)`, `Cx::play_at(offset)` (at the input's time, through `TransportHistory`), `tutti_graph::{PlayClock, PlayReading}`, `Editor::play_reading()`, `Executor::play_reading()`. It counts one per frame, rolling or stopped, and restarts at 0 in a new epoch on every play start. Every executor, a fork's included, starts it at 0 |
+  | — | `tutti_types::RangeCell`: a `(min, max)` pair in one atomic word that is never torn, with a loom model. The param ports' live ranges sit on it, and `Editor::param_range_cell(at)` hands out the cell a port clamps to |
+
+  Migration:
+  - Remove any knob-to-zero workaround that kept the base from adding to automation.
+  - Wire two event streams to one param by summing them in one node (or one lane) first.
+  - Shape an event stream before it reaches the port, in the node that sends it.
+  - Add `play: PlayClock::ZERO` to every hand-built `Env`.
+
 - **A cost model and coarsening for the parallel executor** (design doc
   013, "Phase 6, part (b)"). The compiler prices every op from what its
   node declares, packs sibling tasks too cheap to dispatch alone into

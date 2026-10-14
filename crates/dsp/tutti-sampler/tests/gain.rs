@@ -82,6 +82,7 @@ impl Clock {
             block_len: Samples(BLOCK),
             transport: tutti_graph::Transport::new(true, Bpm::new(self.tempo), self.beat(), None),
             changes: TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
         };
         contract::drive_in(node, &env, &[], &[], &[]).audio
     }

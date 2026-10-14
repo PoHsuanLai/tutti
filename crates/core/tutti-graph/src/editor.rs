@@ -56,7 +56,7 @@ use std::sync::Arc;
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{Latency, NodeKey};
+use tutti_types::{Latency, NodeKey, RangeCell};
 
 use tutti_types::At;
 
@@ -499,6 +499,16 @@ impl Editor {
         self.commands.same_pair(executor.commands())
     }
 
+    /// The paired executor's play clock (`Env::play`), as it published it
+    /// at the end of its last block: `(play_epoch, play)` at the next
+    /// block's first frame, before a play start there. One wait-free load;
+    /// before the first block it is the executor's starting reading (play
+    /// 0). What the modulation compiler dates a rate edit's anchor from
+    /// (doc 014 §4.3).
+    pub fn play_reading(&self) -> crate::PlayReading {
+        self.channels.play.read()
+    }
+
     /// The graph value.
     pub fn spec(&self) -> &GraphSpec {
         &self.spec
@@ -874,8 +884,9 @@ impl Editor {
     ///   block, at the port's step: a range set between two blocks clamps
     ///   the whole of the next one, frame for frame. A range set while the
     ///   audio thread is inside a block lands on that block or the next.
-    /// - **What it clamps.** The modulated value only (base plus offsets): a
-    ///   port nothing modulates reads its base, unclamped, as it always did.
+    /// - **What it clamps.** The modulated value only (the held value, an
+    ///   event source's or the base, plus audio offsets): a port nothing
+    ///   modulates reads its base, unclamped, as it always did.
     /// - **What it never rewrites.** The node's base (its control) and each
     ///   event source's ramp run on unclamped; the clamp is applied as the
     ///   value is read. A range that shrinks around a held base or a ramp in
@@ -925,6 +936,23 @@ impl Editor {
             }
         }
         Ok(())
+    }
+
+    /// The live range cell of `at`, the very cell its port clamps to and
+    /// [`set_param_range`](Self::set_param_range) stores into: a handle for
+    /// a reader outside the graph (a control lane loads it once per block,
+    /// doc 014 §4.2). Control side.
+    ///
+    /// `None` until a commit has placed a unit declaring `at.param` at
+    /// `at.node`. The handle stays the port's while the units placed at the
+    /// key declare the same params; a commit that places one with another
+    /// list gives the key fresh cells, and an old handle then reads ranges
+    /// nothing writes. Ask again after such a commit.
+    pub fn param_range_cell(&self, at: ParamIn) -> Option<Arc<RangeCell>> {
+        self.param_ranges
+            .get(&at.node)
+            .and_then(|cells| cells.cell(at.param))
+            .map(Arc::clone)
     }
 
     /// Write every live range cell from the spec.

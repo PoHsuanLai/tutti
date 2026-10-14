@@ -125,6 +125,7 @@ fn render_scenes(
             block_len: Samples(block),
             transport,
             changes,
+            play: tutti_graph::PlayClock::ZERO,
         };
         let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
         r.executor_mut()

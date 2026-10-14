@@ -319,6 +319,12 @@ impl Env {
                         block_len: Samples(end - start),
                         transport,
                         changes: TransportChanges::NONE,
+                        // A piece holds no change, so no start of its own:
+                        // its clock is the block's at its first frame.
+                        play: crate::play::PlayClock {
+                            start: self.play_at(Offset(start as u32)),
+                            next_epoch: self.play.next_epoch,
+                        },
                     },
                 )
             })
@@ -629,6 +635,7 @@ mod tests {
             block_len: Samples(len),
             transport,
             changes: crate::node::TransportChanges::NONE,
+            play: crate::PlayClock::ZERO,
         }
     }
 
@@ -1087,6 +1094,7 @@ mod tests {
                 block_len: Samples(512),
                 transport: Transport::counted(true, host.tempo(), host.origin(), graph_loop),
                 changes: TransportChanges::NONE,
+                play: crate::PlayClock::ZERO,
             };
             let mut wraps = 0;
             for k in 0..512 {

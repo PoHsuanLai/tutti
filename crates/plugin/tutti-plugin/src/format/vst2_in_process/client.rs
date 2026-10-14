@@ -587,6 +587,7 @@ mod transport_tests {
             block_len: Samples(64),
             transport: Transport::new(true, Bpm(132.0), Beat(4.0), None),
             changes: TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
         }
     }
 

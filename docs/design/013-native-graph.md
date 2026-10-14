@@ -3822,7 +3822,8 @@ latent sibling was off by the upstream latency.
   **Not a closed-form rewind** from the current block, which is wrong across
   a discontinuity and cannot tell a wrap from a start.
 - **Size: fixed, whatever the latency.** `JUMPS` = 256 pieces inline,
-  about 96 bytes each (some 24 KiB, no heap), in the executor from the
+  about 104 bytes each (some 26 KiB, no heap; 96 before doc 014 added the
+  play clock to each piece), in the executor from the
   start. Nothing is sized from the plan, so a recompile touches nothing
   here, and the audio thread never allocates or frees. 256 is at least one
   block's pieces plus the one before (`MAX_TRANSPORT_CHANGES + 2`), and with
@@ -4281,6 +4282,11 @@ under both.
 > event sources and a per-lane control program, not an engine mechanism.
 > Read doc 014 before extending what follows; this section is kept as the
 > record of what landed.
+>
+> **Doc 014 PR 2a landed** the port rule (014 §5.6, marked below where it
+> changes the record): an event source replaces the base, one per port,
+> unshaped. It also landed the graph's play clock (`Env::play`,
+> `Cx::play_at`, `Editor::play_reading`) and `Editor::param_range_cell`.
 
 **What landed.**
 
@@ -4326,7 +4332,13 @@ under both.
     starts a linear ramp of that source's value on its frame, landing on
     the target on its last frame (a zero-length ramp is a step; a
     `ParamSegment` moves it along its shape instead, see "Curve segments
-    landed"); the value starts at 0 and is an offset like an audio source's. A source's state
+    landed"); the value starts at 0 and is an offset like an audio source's.
+  **Superseded by doc 014 §5.6 (PR 2a):** an event source's value now
+  *replaces* the base from its first event on (a first ramp starts from
+  the base on its frame), audio sources stay offsets on whichever holds,
+  and a port takes at most one event source, unshaped
+  (`GraphInvalid::TooManyEventParamSources`, `ShapedEventParamSource`).
+  The step is `clamp(held[i] + Σ shape_j(audio_j[i]))`. A source's state
     (its ramp, its last value) is kept by `ParamFrom`, not by its slot, so
     another source joining or leaving the port, or this one being
     reshaped, does not reset a held value. A fork starts each event source

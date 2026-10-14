@@ -273,6 +273,20 @@ a `Frame` the executor keeps:
   process-wide counter, so no fork's epoch equals a live one;
 - nothing else resets it.
 
+**As landed (PR 2a).** `Env::play` is a `PlayClock`, not a bare `Frame`
+plus `Env::play_epoch`: `{ start: PlayReading, next_epoch }`, the reading
+at the block's first frame and the epoch the block's first in-block start
+takes (the `k`-th takes `next_epoch + k`, reserved by the executor before
+the block runs). `Env::play_at(offset)` answers at any frame of the block
+through the starts in `Env::changes`, as `Env::transport_at` does, so no
+node walks the changes itself. A `PlayReading { epoch, play }` packs into
+one `u64` as 24 bits of epoch and 40 of play (`2^40` frames is 265 days at
+48 kHz); epochs are compared for equality only and wrap after `2^24` play
+starts. The control side reads `Editor::play_reading()` (and
+`Executor::play_reading()`), the next block's first reading. An `Env` built
+by hand uses `PlayClock::ZERO` (epoch 0, which no executor takes: the
+counter starts at 1). The reference interpreter keeps its own clock.
+
 **Read at the input's time.** A node reads it through **`Cx::play_at(offset)`**,
 which answers at the input's arrival time, as `Cx::transport_at` does
 (`crates/core/tutti-graph/src/node.rs:875`, through
@@ -775,6 +789,21 @@ shared overflow, so the memory follows the points a chunk carries rather
 than the parameter count.
 
 ### PR 2: the control lane node
+
+**Split in two (coordinator's decision).** **PR 2a, the floor: landed**
+(branch `claude/control-lane-floor`): `RangeCell` in `tutti-types` with a
+loom model, `ParamRanges` on it and `Editor::param_range_cell`; the play
+clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`,
+`TransportHistory` carrying it, `Editor::play_reading`, forks at 0, see
+§4.3 "As landed"); and the port rule (§5.6) in the executor, the
+reference, `GraphSpec::validate` (`GraphInvalid::TooManyEventParamSources`,
+`ShapedEventParamSource`), the verifier's rule 9 and the differential
+proptest. The rule was checked against main before it changed: no
+production path wires an event source into a param port (`bevy-tutti`'s
+`set_param_mod` connects audio sources only, which stay offsets), so it
+breaks no live feature. **PR 2b** is the rest of the scope below:
+`ControlProgram`, the lane, the signal sources, `SegmentPoints`, the
+automation constructors and the campaign tests.
 
 **Scope.** `ControlProgram` in `tutti-mod` with `Curve` in the floor;
 `RangeCell` in `tutti-types`; `Env::play`, `Env::play_epoch`,

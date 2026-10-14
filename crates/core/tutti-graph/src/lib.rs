@@ -228,6 +228,7 @@ mod node;
 mod par;
 mod param;
 mod plan;
+mod play;
 mod reference;
 mod slots;
 mod spec;
@@ -267,6 +268,7 @@ pub use plan::{
     ParamSlot, ParamSourceOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT,
     ZERO_SLOT,
 };
+pub use play::{PlayClock, PlayReading};
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 pub use time::{Due, Offset, Playhead};

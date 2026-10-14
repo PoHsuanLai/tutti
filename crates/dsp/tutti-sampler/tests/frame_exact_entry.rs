@@ -191,6 +191,7 @@ fn by_hand(start: Beat) -> Run {
             block_len: Samples(HAND),
             transport: tutti_graph::Transport::counted(true, TEMPO, host.origin(), None),
             changes: TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
         };
         left.extend_from_slice(&contract::drive_in(&mut node, &env, &[], &[], &[]).audio[0]);
         contract::drive_in(&mut probe, &env, &[], &[], &[]);

@@ -457,6 +457,7 @@ fn the_transport_harnesses_hand_the_node_their_transport() {
         block_len: Samples(4),
         transport: rolling_at_two(),
         changes,
+        play: tutti_graph::PlayClock::ZERO,
     };
     let out = drive_in(&mut node, &env, &[], &[], &[]).audio;
     let want = [2.0, 2.0 + per_frame, 10.0, 10.0 + per_frame];

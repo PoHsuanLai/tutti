@@ -1008,6 +1008,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The sampler no longer frees a decoded wave on the audio thread**
+  (tutti-sampler). A pool's `VoiceCommand::ReplaceWave` drain dropped the
+  slot's old `Arc<Wave>` in the callback, which freed the whole decoded
+  buffer when the slot held its last reference; a `ReplaceWave` aimed at a
+  missing or streaming slot dropped its own wave the same way. The wave the
+  drain lets go of now leaves through the retirement channel and is freed
+  by `VoicePoolHandle::collect_retired`, which now counts it. As before, a
+  full retirement channel (a host that never collects) degrades to the free
+  in the callback. No API change.
+
 - **A live in-process VST2 plugin behind a latent path was told the wrong
   playhead** (tutti-plugin; design doc 013, "In-process VST2 live transport
   from `Cx` landed"). The live node polled the installed `Transport` once

@@ -23,11 +23,13 @@ use super::types::Playback;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender};
+use std::sync::Arc;
 use tutti_core::{ChannelLayout, SampleRate, Tail};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare, Shape,
     Status,
 };
+use tutti_io::Wave;
 
 // ---------------------------------------------------------------------------
 // ECS components — live on the track entity.
@@ -58,10 +60,19 @@ pub struct VoicePoolNode(pub tutti_core::NodeKey);
 
 /// Something the drain took ownership of and must **not** free in the callback.
 ///
-/// Both variants exist for the same reason: dropping a [`stretch::Unit`] frees
-/// its vocoders (~100 KB per channel), which it owns. Rather than teach two call sites two different
-/// evasions, everything the drain needs to shed goes down one channel and is
-/// freed by [`VoicePoolHandle::collect_retired`] on the control thread.
+/// Every variant exists for the same reason: dropping it can free a large
+/// allocation — a [`stretch::Unit`]'s vocoders (~100 KB per channel), or a
+/// decoded [`Wave`] whose last reference it is. Rather than teach each call
+/// site its own evasion, everything the drain needs to shed goes down one
+/// channel and is freed by [`VoicePoolHandle::collect_retired`] on the
+/// control thread.
+///
+/// **A full channel** (the control thread is not collecting) or a
+/// disconnected one degrades to dropping the value in the drain: a free on
+/// the audio thread, and no other effect. That is the documented policy of
+/// [`VoicePoolHandle::collect_retired`]. Parking the overflow in a spare slot
+/// instead would only move the free one value later, since the channel is
+/// already the bound.
 ///
 /// `pub(crate)`, not `pub`: [`PlaybackSlot`] is crate-private, and the retirement
 /// channel is an internal thread-handoff detail. Callers only ever see the count
@@ -69,11 +80,11 @@ pub struct VoicePoolNode(pub tutti_core::NodeKey);
 ///
 /// # Why the payloads are never read
 ///
-/// Neither field is ever inspected, and that is the design: the *value* is the
+/// No field is ever inspected, and that is the design: the *value* is the
 /// payload, and receiving it is what frees it. `collect_retired` pulls each one
 /// and lets it fall out of scope, on the control thread. So `dead_code` is
 /// correct that nothing reads them, and wrong that they are dead — deleting
-/// either field would move the deallocation back into the audio callback.
+/// any field would move the deallocation back into the audio callback.
 ///
 /// The variants are also very different sizes (a `PlaybackSlot` dwarfs a bare
 /// filter), which normally argues for boxing the large one. Not here: this value
@@ -101,6 +112,13 @@ pub(crate) enum Retired {
     /// *deallocating* on the audio one, which is the hazard this type exists to
     /// avoid.
     Stretch(stretch::Unit),
+    /// A wave a `ReplaceWave` let go of: the one a memory slot swapped out,
+    /// or the new one when no memory slot took it.
+    ///
+    /// An `Arc`, so retiring it frees nothing unless this was the last
+    /// reference, and then it frees the whole decoded buffer: the reason it
+    /// is retired at all.
+    Wave(Arc<Wave>),
 }
 
 /// A [`VoicePool`] asked for more channels than the sampler reads
@@ -553,7 +571,13 @@ impl VoicePool {
                     }
                 }
                 VoiceCommand::ReplaceWave { id, wave } => {
-                    if let Some(slot) = self.slot_mut(id) {
+                    // Whichever wave this arm ends up not keeping — the old
+                    // one a memory slot swaps out, or the new one when there
+                    // is no memory slot to take it — may hold the last
+                    // reference to a decoded buffer, and dropping it here
+                    // would free that buffer in the callback. It leaves
+                    // through the retirement channel instead.
+                    let shed = match self.slot_mut(id).map(|s| &mut s.voice.source) {
                         // Match the tier explicitly rather than calling through
                         // a shared setter: the streaming half has nothing to
                         // do, and a shared setter would make a `ReplaceWave`
@@ -561,16 +585,20 @@ impl VoicePool {
                         // Swapping a streaming source means re-registering the
                         // butler stream on a different file, which is a
                         // control-thread op issued as a fresh `AddVoice`.
-                        match &mut slot.voice.source {
-                            VoiceSource::Memory(sampler) => sampler.set_wave(wave),
-                            VoiceSource::Disk(_) => {
-                                tracing::warn!(
-                                    "ReplaceWave ignored for slot {id:?}: a streaming voice \
-                                     changes source by re-issuing AddVoice, not in-unit"
-                                );
-                            }
+                        Some(VoiceSource::Memory(sampler)) => sampler.replace_wave(wave),
+                        Some(VoiceSource::Disk(_)) => {
+                            tracing::warn!(
+                                "ReplaceWave ignored for slot {id:?}: a streaming voice \
+                                 changes source by re-issuing AddVoice, not in-unit"
+                            );
+                            wave
                         }
-                    }
+                        None => wave,
+                    };
+                    // Same policy as the slot and filter retirements: a full
+                    // or disconnected channel drops the wave right here,
+                    // which costs a free on this thread and nothing else.
+                    let _ = self.retired.try_send(Retired::Wave(shed));
                 }
                 VoiceCommand::UpdatePlacement {
                     id,

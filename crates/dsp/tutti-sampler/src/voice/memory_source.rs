@@ -649,13 +649,26 @@ impl MemorySource {
 
     /// Replaces the wave data. Resets playback position to the start.
     ///
-    /// Call from `graph_mut` — not safe to call from the audio thread directly.
+    /// Call from `graph_mut` — not safe to call from the audio thread directly:
+    /// it drops the old wave, and if this source held its last reference that
+    /// frees the whole decoded buffer. The audio thread uses
+    /// `replace_wave` (crate-private), which hands the old wave back.
     pub fn set_wave(&mut self, wave: Arc<Wave>) {
+        drop(self.replace_wave(wave));
+    }
+
+    /// [`set_wave`](Self::set_wave) that returns the old wave instead of
+    /// dropping it, so it frees nothing and is safe on the audio thread. The
+    /// caller owns the returned reference and must release it off the audio
+    /// thread (the pool's drain retires it to the control thread).
+    #[must_use = "dropping the old wave here frees it on this thread"]
+    pub(crate) fn replace_wave(&mut self, wave: Arc<Wave>) -> Arc<Wave> {
         self.sample_rate = wave.sample_rate();
-        self.wave = wave;
+        let old = std::mem::replace(&mut self.wave, wave);
         self.position
             .store(SamplePosition::new(0.0), Ordering::Release);
         self.looped.store(false, Ordering::Relaxed);
+        old
     }
 
     /// Re-derives the sample-rate conversion ratio for a new session rate.

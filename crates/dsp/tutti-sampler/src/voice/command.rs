@@ -124,6 +124,11 @@ pub enum VoiceCommand {
     /// Ignored (with a warning) for a streaming slot: swapping a disk source
     /// means re-registering the butler stream on a different file, which is a
     /// control-thread operation issued as a fresh [`AddVoice`](Self::AddVoice).
+    ///
+    /// The wave the drain lets go of (the slot's old one, or this one when no
+    /// in-memory slot takes it) is never dropped in the callback: it leaves
+    /// through the retirement channel, since it may be the last reference to
+    /// a decoded buffer. See [`VoicePoolHandle::collect_retired`].
     ReplaceWave {
         /// The slot to re-point.
         id: SlotId,
@@ -547,7 +552,7 @@ pub struct VoicePoolHandle {
 
 impl VoicePoolHandle {
     /// Frees everything the audio thread has retired since the last call — removed
-    /// slots and surplus stretch filters alike.
+    /// slots, surplus stretch filters and replaced waves alike.
     ///
     /// Call this periodically from the control thread — once a frame is ample.
     /// Skipping it is safe but forfeits the point: the retirement channel fills,

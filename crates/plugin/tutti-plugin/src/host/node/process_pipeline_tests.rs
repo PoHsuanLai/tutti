@@ -705,7 +705,9 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
 }
 
 /// **The test that justifies the whole change.** Several stalled plugins driven
-/// in series must cost the audio thread no waiting, however many there are.
+/// in series must not make the audio thread wait for their replies: not on
+/// most steps, not on most of any one plugin's steps, and not on most blocks.
+/// A long wait on only a few steps is not covered; see the end of this comment.
 ///
 /// # Why waiting fails
 ///
@@ -733,37 +735,50 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
 ///
 /// The limit is expressed **per block-plugin step**, and derived from the wait
 /// budget this test exists to detect rather than picked as a round number:
-/// [`SYNC_WAIT_BUDGET`] / 4, comfortably above the real cost (~10 us/step median, debug) and
-/// comfortably below a single re-inserted wait.
+/// [`SYNC_WAIT_BUDGET`] / 4, far above the real cost (a 7-11 us median step
+/// measured, debug build) and far below a single re-inserted wait.
 ///
 /// A wall-clock bound over the *whole* test cannot do this job: rig setup alone
 /// (three mock servers, each with a 50 ms startup settle) accounts for ~150 ms,
 /// so the budget left for the measured work is enormous relative to what it
 /// actually costs. Only the driving loop is timed.
 ///
-/// # Why the median step, not the total
+/// # Why medians, not the total
 ///
-/// The two errors the clock can make are not symmetric, and the assertion is
+/// The two errors the clock can make are not symmetric, and the assertions are
 /// built on that:
 ///
 /// - **A wait is a lower bound.** A design that waits for the reply sleeps
 ///   until the reply comes or it gives up, and no scheduler makes a sleep
 ///   shorter. The server is single-threaded and stalls 10 ms per block, so it
 ///   falls further behind with every block, and a step that waits for it takes
-///   at least [`SYNC_WAIT_BUDGET`]. Idle, that is every step from block 2 on,
-///   57 of the 60. Under load the steps themselves stretch to milliseconds and
-///   the server catches up on some, but the waiting mutation below still put
-///   45-56 of 60 over the limit across runs.
+///   at least [`SYNC_WAIT_BUDGET`].
 /// - **Load only adds time, and only to the steps it lands on.** A descheduled
 ///   thread makes the step it is in longer; it cannot touch the others.
 ///
+/// So each assertion is a median, which a minority of slow samples cannot
+/// move, over a population in which a waiting design makes at least half the
+/// samples slow:
+///
+/// - **every step** (60): a design that waits on every step;
+/// - **each plugin's steps** (20 each): one plugin that waits on every block,
+///   such as a per-callback budget spent by whichever plugin runs first;
+/// - **each block's summed steps** (20), against `PLUGINS` limits: waits spread
+///   thinly, such as one on every 4th step, which put a wait in 3 of 4 blocks.
+///
+/// A correct design fails one only if the scheduler takes the core away for
+/// over the limit in at least half of that population's samples individually.
+///
 /// An earlier version asserted the *mean* (total / 60) and failed on macOS CI
-/// at 285 us/step (17 ms in all, a docs-only PR): a few long deschedulings,
-/// spread across all 60 steps by the division, read exactly like a wait on
-/// each. The median cannot be moved by a minority of slow steps, but a
-/// waiting design puts a majority over the limit. So a regression fails, and
-/// a correct design fails only if the scheduler takes the core away for over
-/// 166 us in more than half of the steps individually.
+/// at 285 us/step (17 ms in all, on a docs-only PR). The log shows only the
+/// total; the likely cause is a few long deschedulings, which the division
+/// spreads across all 60 steps until they read like a wait on each. Bursty
+/// load pinned to one core reproduced that shape (a ~10 us median, a handful
+/// of steps of 10-190 ms) and failed the mean every run.
+///
+/// **Not covered:** a long wait on only a few steps, such as one 10 ms wait
+/// per plugin. The mean caught that, but it is exactly what a descheduling
+/// looks like, and no wall-clock measurement here can tell the two apart.
 #[test]
 fn stalled_plugins_do_not_stall_the_audio_thread() {
     let _lock = exclusive();
@@ -778,6 +793,18 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
     const SYNC_WAIT_BUDGET: Duration = Duration::from_micros(667);
     /// Per block-plugin step. See the note on the threshold above.
     const STEP_LIMIT: Duration = Duration::from_micros(SYNC_WAIT_BUDGET.as_micros() as u64 / 4);
+
+    // Block 1 has nothing in flight, so nothing to wait for; every later block
+    // collects one the 10 ms server is behind on. A median of `n` samples is
+    // the `n / 2`-th smallest, so it is over the limit once `n - n / 2` samples
+    // are: a waiting design must be able to make that many slow in each
+    // population. Per plugin and per block, that is `BLOCKS - 1` of `BLOCKS`;
+    // over every step, `PLUGINS` times as many of `PLUGINS` times as many.
+    // (`BLOCKS - 1 >= BLOCKS - BLOCKS / 2`, written as clippy prefers it.)
+    const _: () = assert!(
+        BLOCKS > BLOCKS - BLOCKS / 2,
+        "too few blocks for a waiting design to own each median"
+    );
 
     let mut rigs: Vec<_> = (0..PLUGINS)
         .map(|_| bridge_with_server_stall(SERVER_STALL))
@@ -797,7 +824,8 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
 
     // Each step timed on its own, so one descheduling costs one sample of the
     // distribution rather than the whole measurement. Allocated up front: the
-    // loop under test pushes into it.
+    // loop under test pushes into it. Block-major: step `b * PLUGINS + p` is
+    // plugin `p` in block `b`.
     let mut step_times = Vec::with_capacity(BLOCKS * PLUGINS);
     for _ in 0..BLOCKS {
         for (batcher, (bridge, _, _)) in batchers.iter_mut().zip(rigs.iter()) {
@@ -814,35 +842,65 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
         }
     }
 
-    // Block 1 has nothing in flight, so nothing to wait for; every later step
-    // collects a block the 10 ms server is behind on. For the median to see a
-    // waiting design, those must be the majority.
-    let waitable = (BLOCKS - 1) * PLUGINS;
-    assert!(waitable > step_times.len() / 2);
-
+    fn median(samples: impl Iterator<Item = Duration>) -> Duration {
+        let mut sorted: Vec<Duration> = samples.collect();
+        sorted.sort_unstable();
+        sorted[sorted.len() / 2]
+    }
     let total: Duration = step_times.iter().sum();
     let slow = step_times.iter().filter(|&&t| t >= STEP_LIMIT).count();
-    let mut sorted = step_times.clone();
-    sorted.sort_unstable();
-    let median = sorted[sorted.len() / 2];
-    let slowest = sorted[sorted.len() - 1];
+    let slowest = step_times.iter().max().copied().unwrap_or_default();
     let steps = step_times.len();
-    // What a synchronous design would spend: every plugin, every block after the
-    // first, waiting out its budget before giving up.
-    let synchronous_floor = SYNC_WAIT_BUDGET * waitable as u32;
+    let shape = format!(
+        "{slow} of {steps} steps over {STEP_LIMIT:?}, slowest {slowest:?}, \
+         {total:?} in all"
+    );
+    let regressed = format!(
+        "A synchronous design waits {SYNC_WAIT_BUDGET:?} per plugin per block, \
+         so this looks like the audio thread is waiting for replies again."
+    );
+
     // Mutation: make the live path wait — in `Batcher::collect`, before
     // `collectable`, poll `has_output(expect_seq)` every 50 us until a 667 us
     // deadline. Idle, every step from block 2 on then takes >= 667 us (57 of
     // 60 over the limit); under bursty load on one core, 45-56 of 60. Either
     // way the median is one of them: it failed 6/6 runs, idle and loaded.
+    let every_step = median(step_times.iter().copied());
     assert!(
-        median < STEP_LIMIT,
-        "{PLUGINS} stalled plugins x {BLOCKS} blocks: the median block-plugin \
-         step took {median:?}, over the {STEP_LIMIT:?} limit ({slow} of {steps} \
-         steps over it, slowest {slowest:?}, {total:?} in all). A synchronous \
-         design waits {SYNC_WAIT_BUDGET:?} on every step after the first block \
-         (~{synchronous_floor:?} in all), so this looks like the audio thread is \
-         waiting for replies again."
+        every_step < STEP_LIMIT,
+        "{PLUGINS} stalled plugins x {BLOCKS} blocks: the median step took \
+         {every_step:?}, over the {STEP_LIMIT:?} limit ({shape}). {regressed}"
+    );
+
+    // Mutation: the same wait on plugin 0's steps only (a call counter shared
+    // by the three batchers, waiting when it is 0 mod 3) → 19-20 of 60 steps
+    // slow, so the median above stays fast, and plugin 0's median is ~750 us
+    // → fails here, 4/4 runs, idle and loaded. (Its blocks would also fail
+    // the block median below; a 300 us wait, steps of ~450 us, fails here
+    // too.)
+    for p in 0..PLUGINS {
+        let plugin = median(step_times.iter().skip(p).step_by(PLUGINS).copied());
+        assert!(
+            plugin < STEP_LIMIT,
+            "plugin {p}'s median step took {plugin:?}, over the {STEP_LIMIT:?} \
+             limit ({shape}). {regressed}"
+        );
+    }
+
+    // Mutation: the same wait on every 4th step only (the shared counter, 0
+    // mod 4) → 15 of 60 steps slow and 5 of each plugin's 20, so neither
+    // median above moves, but 15 of 20 blocks hold a wait and the median
+    // block takes ~740 us → fails here, 4/4 runs, idle and loaded.
+    let block_limit = STEP_LIMIT * PLUGINS as u32;
+    let block = median(
+        step_times
+            .chunks(PLUGINS)
+            .map(|b| b.iter().sum::<Duration>()),
+    );
+    assert!(
+        block < block_limit,
+        "the median block of {PLUGINS} steps took {block:?}, over the \
+         {block_limit:?} limit ({shape}). {regressed}"
     );
 
     for (_, thread, _) in rigs.iter_mut() {

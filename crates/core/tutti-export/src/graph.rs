@@ -7,10 +7,22 @@
 use std::sync::Arc;
 use tutti_core::SampleRate;
 
-use tutti_graph::{CommitError, Editor, Executor, ForkError, ForkMode, ForkTarget, Pool, Prepare};
+use tutti_graph::{
+    CommitError, Editor, Executor, ForkError, ForkMode, ForkRemains, ForkTarget, PendingFork, Pool,
+    Prepare,
+};
 use tutti_types::{GraphTail, Samples};
 
 use crate::{Error, Result};
+
+/// A fork's refusal as the render reports it: [`Error::NotForkable`] for
+/// the one a host acts on, [`Error::Fork`] for the rest.
+fn fork_error(e: ForkError) -> Error {
+    match e {
+        ForkError::NotForkable { key } => Error::NotForkable { key },
+        other => Error::Fork(other),
+    }
+}
 
 /// The largest block, in frames, a graph is prepared for in an export
 /// ([`RenderGraph::prepare`], [`RenderGraph::fork`]).
@@ -218,13 +230,53 @@ impl RenderGraph {
     ) -> Result<Self> {
         let (editor, executor) = live
             .fork(target, mode, Self::prepare(sample_rate))
-            .map_err(|e| match e {
-                ForkError::NotForkable { key } => Error::NotForkable { key },
-                other => Error::Fork(other),
-            })?;
+            .map_err(fork_error)?;
         // A fork returns its own installed pair; checked all the same, so no
         // constructor skips the pairing.
         Self::new(editor, executor)
+    }
+
+    /// [`fork`](Self::fork)'s control-thread half: `Editor::fork_gather`
+    /// at the render's `Prepare`. Everything the fork reads of the live
+    /// graph is read here; [`build`](Self::build) makes the rest on any
+    /// thread (a hosted plugin's `plugin-server` launch is the slow part).
+    ///
+    /// # Errors
+    ///
+    /// As [`fork`](Self::fork), for what fails at the gather.
+    ///
+    /// # Threading
+    ///
+    /// The gather is where an in-process VST2 plugin's fork is built and
+    /// prepared (it is pinned, `ForkBuild::pinned`): call it on the **main
+    /// thread** when the graph may hold one, and drop what it returns there
+    /// (see [`fork`](Self::fork)'s threading).
+    pub fn gather(
+        live: &Editor,
+        target: ForkTarget,
+        mode: ForkMode<'_>,
+        sample_rate: SampleRate,
+    ) -> Result<PendingFork> {
+        live.fork_gather(target, mode, Self::prepare(sample_rate))
+            .map_err(fork_error)
+    }
+
+    /// [`fork`](Self::fork)'s other half: build what
+    /// [`gather`](Self::gather) gathered (`PendingFork::build`), on any
+    /// thread, into a graph to render.
+    ///
+    /// # Errors
+    ///
+    /// A deferred source's failure ([`Error::Fork`] with
+    /// `ForkError::Source`, naming its node) or a fork that does not
+    /// commit, with what the build had made: drop the `ForkRemains` where
+    /// a pinned unit belongs (the main thread, for an in-process VST2
+    /// plugin), as the rendered graph is.
+    pub fn build(pending: PendingFork) -> std::result::Result<Self, (Error, ForkRemains)> {
+        let (editor, executor) = pending.build().map_err(|(e, r)| (fork_error(e), r))?;
+        // `PendingFork::build` returns the pair it built and installed
+        // together; the render checks the pairing again.
+        Ok(Self { editor, executor })
     }
 
     /// The look-ahead latency the graph reports, as a frame count — the

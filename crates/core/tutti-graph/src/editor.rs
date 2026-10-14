@@ -570,6 +570,15 @@ impl Editor {
         controls
     }
 
+    /// Adds a unit already prepared for this editor's [`Prepare`], without
+    /// preparing it again and without a fork source: a pinned unit of a
+    /// fork ([`PendingFork::build`](crate::PendingFork::build)), whose
+    /// `prepare` ran on the gathering thread.
+    pub(crate) fn insert_prepared(&mut self, key: NodeKey, kind: &str, unit: Box<dyn Node>) {
+        let shape = unit.shape();
+        self.place(key, kind, unit, shape, None);
+    }
+
     /// Replaces the unit running at `key` with `node`, crossfading from one
     /// to the other over `fade` once the next [`commit`](Self::commit) lands
     /// — a new generation, like [`insert`](Self::insert), but heard as a

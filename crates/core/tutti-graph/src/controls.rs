@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use tutti_types::{AtomicF32, UnitParam};
 
-use crate::fork::{ForkCause, ForkMode, ForkSource, Forked};
+use crate::fork::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
 use crate::node::{Node, NodeParts};
 
 /// One param: its address, the cell the node reads, and the authored value.
@@ -230,6 +230,13 @@ impl<N: ParamNode> ParamFork<N> {
 impl<N: ParamNode> ForkSource for ParamFork<N> {
     fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(self.fork_node())))
+    }
+
+    /// The authored values are read here, at the gather: a param set after
+    /// it does not reach the fork. The fork's cells are its own, so it can
+    /// be prepared on any thread.
+    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+        self.fork(mode).map(ForkBuild::ready)
     }
 }
 

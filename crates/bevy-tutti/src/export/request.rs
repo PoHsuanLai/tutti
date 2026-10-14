@@ -43,12 +43,15 @@ pub enum ExportSource {
     ///
     /// # Cost
     ///
-    /// Each export does one **main-thread copy** of the graph in the frame it
-    /// starts: a fork (a clone of each node's shadow — and for a hosted
-    /// plugin a fresh instance in a new `plugin-server` process loaded with
-    /// the live one's state, which takes half a second or more). Running several of those back to back can
-    /// stall the frame long enough to underrun the audio callback — an
-    /// audible glitch.
+    /// Each export **gathers** its fork on the main thread in the frame it
+    /// starts (`Editor::fork_gather`): the graph as it is then, a clone of
+    /// each node's shadow, a hosted plugin's saved state, and an in-process
+    /// VST2 plugin's second instance (built there because VST2 confines it
+    /// to the main thread). The slow part of a hosted plugin's fork, a fresh
+    /// instance in a new `plugin-server` process loaded with that state (half
+    /// a second or more), is built on the compute pool with the render, so
+    /// the frame does not wait for it. A gather is still main-thread work,
+    /// and several back to back could stall the frame.
     ///
     /// That is why only one export starts per frame (see [`ExportInFlight`]).
     /// Requests wait their turn as entities; nothing is dropped. A caller with
@@ -103,9 +106,9 @@ pub struct ExportRequest {
     /// what every transport-aware node in the rendered graph reads — one
     /// object, so the two cannot disagree. See [`ExportClock`].
     pub clock: ExportClock,
-    /// Optional last look at the graph before it leaves the main thread —
-    /// see [`PrepareGraph`]. Use [`ExportRequest::new`] when there is nothing
-    /// to do.
+    /// Optional hook: a look at the world when the export starts, and an
+    /// edit of the graph before it renders — see [`PrepareGraph`]. Use
+    /// [`ExportRequest::new`] when there is nothing to do.
     pub prepare: Option<PrepareGraph>,
     /// Trim the graph's own reported latency — its compensated look-ahead —
     /// instead of `config.render.latency`. See
@@ -146,12 +149,19 @@ impl ExportRequest {
         self
     }
 
-    /// Attaches a hook that runs on the graph before the render starts.
-    pub fn with_prepare(
-        mut self,
-        prepare: impl Fn(PreparedGraph, &World) + Send + Sync + 'static,
-    ) -> Self {
-        self.prepare = Some(Box::new(prepare));
+    /// Attaches a hook in two halves (see [`PrepareGraph`]): `prepare` reads
+    /// the world on the main thread in the frame the export starts, and
+    /// returns the edit to make to the graph, which runs on the compute pool
+    /// once the fork is built, before the render.
+    ///
+    /// Annotate the edit's argument (`|prepared: PreparedGraph<'_>|`) so it
+    /// takes a graph of any lifetime.
+    pub fn with_prepare<F, E>(mut self, prepare: F) -> Self
+    where
+        F: Fn(&World) -> E + Send + Sync + 'static,
+        E: FnOnce(PreparedGraph<'_>) + Send + 'static,
+    {
+        self.prepare = Some(Box::new(move |world| Box::new(prepare(world))));
         self
     }
 
@@ -160,7 +170,7 @@ impl ExportRequest {
     /// hosted plugin's) — in place of `config.render.latency`.
     ///
     /// Asked of the graph that is rendered, after the
-    /// [`prepare`](Self::prepare) hook: the forked plan's worst-case output
+    /// [`prepare`](Self::prepare) hook's edit: the forked plan's worst-case output
     /// latency (`RenderGraph::reported_latency`, probed at the render's
     /// rate).
     ///
@@ -298,11 +308,12 @@ impl std::fmt::Debug for ExportRequest {
     }
 }
 
-/// Present while a render occupies the task pool.
+/// Present while an export occupies the task pool: its fork building, then
+/// its render.
 ///
-/// **At most one of these exists at a time.** The per-request graph fork is
-/// main-thread work (see [`ExportSource::Node`]), so starting a batch of them in
-/// one frame is what stalls the audio callback. The limit is enforced where the
+/// **At most one of these exists at a time.** The per-request gather of the
+/// graph fork is main-thread work (see [`ExportSource::Node`]), so starting a
+/// batch of them in one frame is what could stall the audio callback. The limit is enforced where the
 /// renders start ([`start_exports`](super::start_exports)), so a burst of
 /// requests spawned in one frame still starts one at a time.
 ///
@@ -311,17 +322,18 @@ impl std::fmt::Debug for ExportRequest {
 /// entities, but is not needed for safety.
 #[derive(Component)]
 pub struct ExportInFlight {
-    task: Task<(Result<ExportOutput, ExportError>, RenderGraph)>,
+    task: Task<Result<ExportOutput, ExportError>>,
 }
 
 impl ExportInFlight {
-    pub(crate) fn new(task: Task<(Result<ExportOutput, ExportError>, RenderGraph)>) -> Self {
+    pub(crate) fn new(task: Task<Result<ExportOutput, ExportError>>) -> Self {
         Self { task }
     }
 
-    /// The finished render's result, and its graph: handed back so the caller
-    /// (`poll_exports`, on the main thread) drops it there.
-    pub(crate) fn poll(&mut self) -> Option<(Result<ExportOutput, ExportError>, RenderGraph)> {
+    /// The finished export's result. Its graph, or what of it was built, has
+    /// gone to [`ExportDrops`](super::ExportDrops) by then, for
+    /// `poll_exports` to drop on the main thread.
+    pub(crate) fn poll(&mut self) -> Option<Result<ExportOutput, ExportError>> {
         bevy_tasks::block_on(bevy_tasks::futures_lite::future::poll_once(&mut self.task))
     }
 
@@ -334,10 +346,21 @@ impl ExportInFlight {
     /// Despawning the entity does the same thing implicitly: dropping the
     /// component drops the task, which cancels it.
     ///
-    /// A render already running finishes its poll first, and its graph is
-    /// then dropped on the pool's thread, not the main one: a forked
-    /// in-process VST2 plugin in it closes off the main thread. A finished
-    /// render is collected by `poll_exports` on the main thread.
+    /// Whatever the export holds, whenever it is cancelled (before its fork
+    /// is built, or mid-render: a render already running finishes its poll
+    /// first), goes to [`ExportDrops`](super::ExportDrops) and is dropped by
+    /// the next `poll_exports`, on the main thread, where a forked in-process
+    /// VST2 plugin in it must close.
+    ///
+    /// **At shutdown**, an export still in flight when the world (and its
+    /// [`ExportDrops`](super::ExportDrops)) is dropped has nowhere to send
+    /// what it holds when its task finishes or is dropped, and drops it where
+    /// it is: on a pool thread, for a pinned in-process VST2 fork a close off
+    /// the main thread. Nothing here waits for in-flight exports on exit (a
+    /// render can run for minutes, and an exit should not); a host with such
+    /// a plugin in its exports keeps updating until they have reported
+    /// (`ExportInFlight` gone; a finished export's graph is dropped by the
+    /// `poll_exports` that reports it) before it drops the world.
     pub fn cancel(self) {
         drop(self.task);
     }
@@ -487,11 +510,12 @@ impl std::fmt::Display for ExportNode {
     }
 }
 
-/// The graph an export is about to render, handed back to the caller for a
-/// last look before it leaves the main thread.
+/// The graph an export is about to render, handed to the edit half of the
+/// caller's [`PrepareGraph`] hook on the compute pool, once the fork is built.
 ///
-/// [`ExportRequest::prepare`] receives this together with `&World`. Two things
-/// need it, and neither is something this crate can do on the caller's behalf:
+/// The hook reads `&World` in the frame the export starts and returns the
+/// edit that receives this. Two things need it, and neither is something this
+/// crate can do on the caller's behalf:
 ///
 /// - **Filling voices.** A fork of a voice pool is born *empty* — an empty
 ///   pool at its width, with no command queue — so nothing a pool played
@@ -512,8 +536,8 @@ impl std::fmt::Display for ExportNode {
 /// rebound onto. Voices built here must bind to it, not to the live one, or
 /// they read a playhead nothing advances.
 pub struct PreparedGraph<'a> {
-    /// The graph about to be rendered. Mutate it here or not at all — after
-    /// this it moves to the task pool.
+    /// The graph about to be rendered. Mutate it here or not at all — the
+    /// render starts when the edit returns.
     pub graph: &'a mut RenderGraph,
     /// The render's offline transport, which the graph was rebound onto.
     /// Voices built in the hook must bind to *this*, not the live transport.
@@ -533,8 +557,43 @@ impl PreparedGraph<'_> {
     }
 }
 
-/// A caller's hook into the graph, run on the main thread before the render is
-/// handed to the pool.
+/// A caller's hook into the graph, in two halves: the hook runs on the
+/// **main thread in the frame the export starts**, reads what it needs from
+/// `&World`, and returns the **edit**, which runs on the compute pool once
+/// the fork is built ([`PreparedGraph`]), before the render. The edit is a
+/// pool thread's: it must not insert a main-thread-only unit (see
+/// [`PrepareEdit`]).
+///
+/// Split because the fork is: it is gathered from the live graph in the
+/// frame the export starts and built on the pool (a hosted plugin's fork
+/// launches a `plugin-server`, half a second or more), so there is no graph
+/// to edit while the world is readable. Reading the world when the export
+/// starts keeps what the hook takes from the app consistent with the graph
+/// the fork was taken from: a clip edited a frame later reaches neither.
+///
+/// ```rust
+/// # use bevy_ecs::prelude::*;
+/// # use bevy_tutti::export::{ExportClock, ExportRequest, ExportSource, ExportTarget, PreparedGraph};
+/// # use tutti_export::ExportConfig;
+/// #[derive(Resource)]
+/// struct Level(f32);
+///
+/// let request = ExportRequest::new(
+///     ExportSource::Master,
+///     ExportTarget::Buffers,
+///     ExportConfig::default(),
+///     ExportClock::frozen(),
+/// )
+/// .with_prepare(|world: &World| {
+///     // On the main thread, in the frame the export starts.
+///     let level = world.resource::<Level>().0;
+///     // On the compute pool, once the fork is built.
+///     move |prepared: PreparedGraph<'_>| {
+///         let _ = (level, prepared.graph.editor_mut());
+///     }
+/// });
+/// # let _ = request;
+/// ```
 ///
 /// `&World` is read-only on purpose: preparing a render is a *read* of app
 /// state, and `&mut World` here would let the export pipeline mutate the app
@@ -547,4 +606,16 @@ impl PreparedGraph<'_> {
 /// register it renders silence with no diagnostic. Attaching the hook to the
 /// *request* means the caller that knows what this graph needs is the one
 /// that says so.
-pub type PrepareGraph = Box<dyn Fn(PreparedGraph, &World) + Send + Sync>;
+pub type PrepareGraph = Box<dyn Fn(&World) -> PrepareEdit + Send + Sync>;
+
+/// The edit half of a [`PrepareGraph`] hook: what it returns, run on the
+/// compute pool on the built fork.
+///
+/// **It runs on a pool thread**, and so do the `prepare` of every node it
+/// inserts and the drop of whatever it captured once it has run. It must not
+/// insert, prepare or capture a unit confined to the main thread (an
+/// in-process VST2 plugin: its load, `prepare` and close are the main
+/// thread's); such a node goes into the live graph, where the fork's gather
+/// builds it pinned on the main thread. An edit that never runs (the build
+/// failed, the export was cancelled) is dropped on the main thread.
+pub type PrepareEdit = Box<dyn for<'a> FnOnce(PreparedGraph<'a>) + Send>;

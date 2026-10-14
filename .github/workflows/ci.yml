@@ -206,17 +206,18 @@ jobs:
           cargo nextest run -p tutti-io --features bevy
 
       # bevy-tutti builds `bevy_tasks` without `multi_threaded`, so its task
-      # pool runs each task on the thread that polls it (the main one), and a
-      # render's graph dropped on the pool is a main-thread drop too. Only with
-      # real pool threads (what an app with Bevy's default features has) can
-      # this test see a forked in-process VST2 instance closed off the main
-      # thread. One test, not the suite: `export_surface`'s batch test assumes
-      # a render finishes in the frame that polls it, which a threaded pool
-      # does not promise.
-      - name: Export drops its graph on the main thread (threaded pool)
+      # pool runs each task inside `spawn`, on the main thread: a render's
+      # graph dropped on the pool is a main-thread drop too, and an export's
+      # fork is built in the frame it starts. Only with real pool threads
+      # (what an app with Bevy's default features has) can these tests see a
+      # forked in-process VST2 instance built, prepared or closed off the main
+      # thread, or a frame wait for a slow fork build. These tests, not the
+      # suite: `export_surface`'s batch test assumes a render finishes in the
+      # frame that polls it, which a threaded pool does not promise.
+      - name: Export forks and drops on the main thread (threaded pool)
         run: >-
           cargo nextest run -p bevy-tutti --features full,bevy_tasks/multi_threaded
-          -E 'test(the_rendered_graph_is_dropped_on_the_main_thread)'
+          -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
 
       # JACK hard-links libjack at build time, so it gets its own step (and its
       # own apt package) rather than joining the list above. `AudioHost::Jack`

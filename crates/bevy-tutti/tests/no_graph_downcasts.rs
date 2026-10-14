@@ -65,10 +65,11 @@ const PATTERNS: &[Pattern] = &[
 const ALLOWED: &[(&str, &str, usize, &str)] = &[(
     "tests/export_fork.rs",
     "downcast_ref / downcast_mut",
-    1,
-    "a_plugin_fork_that_cannot_be_built_is_a_named_failure downcasts an \
-         export error's `ForkCause` to the plugin's own error (the cause's \
-         documented use), not a graph node. (The `Net`-era oracle's downcast of the synth \
+    2,
+    "a_plugin_fork_that_cannot_be_built_is_a_named_failure and \
+         off_thread::a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread \
+         each downcast an export error's `ForkCause` to the source's own error \
+         (the cause's documented use), not a graph node. (The `Net`-era oracle's downcast of the synth \
          in its own `Net`, and its raw node access, went with it in doc 013 \
          PR 15.)",
 )];

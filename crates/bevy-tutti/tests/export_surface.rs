@@ -21,7 +21,7 @@ use bevy_ecs::prelude::*;
 use bevy_tutti::export::RenderGraph;
 use bevy_tutti::export::{
     ExportClock, ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest,
-    ExportSource, ExportTarget,
+    ExportSource, ExportTarget, PreparedGraph,
 };
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes};
 use tutti_export::{
@@ -245,9 +245,9 @@ fn an_unrenderable_node_reports_a_failure() {
 /// This is the property a caller-side `run_if(not(any_with_component::<
 /// ExportInFlight>))` cannot provide and this crate previously advertised: a run
 /// condition is evaluated against the previous frame's state, so every request
-/// spawned in one frame passes it and they all start together — each doing a
-/// main-thread copy of the live graph, back to back, which is what stalls the
-/// audio callback.
+/// spawned in one frame passes it and they all start together — each
+/// gathering a fork of the live graph on the main thread, back to back, which
+/// is what could stall the audio callback.
 #[test]
 fn a_batch_spawned_in_one_frame_starts_one_at_a_time() {
     let (mut app, _node) = app_with_engine_on();
@@ -320,17 +320,19 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
         stereo_config(),
         ExportClock::frozen(),
     )
-    .with_prepare(|prepared, world| {
+    .with_prepare(|world: &World| {
         // Replace the whole graph's output with a constant read from the world.
         let level = world.resource::<Level>().0;
-        let prepared_key = prepared.fresh_key();
-        // Named through `bevy_tutti::export`, the path a host uses.
-        let graph: &mut RenderGraph = prepared.graph;
-        let editor = graph.editor_mut();
-        let key = prepared_key;
-        editor.insert(key, "test:level", Const::mono(level));
-        for out in editor.spec_mut().topology.outputs.iter_mut() {
-            *out = Source::Node(OutPort { node: key, port: 0 });
+        move |prepared: PreparedGraph<'_>| {
+            let prepared_key = prepared.fresh_key();
+            // Named through `bevy_tutti::export`, the path a host uses.
+            let graph: &mut RenderGraph = prepared.graph;
+            let editor = graph.editor_mut();
+            let key = prepared_key;
+            editor.insert(key, "test:level", Const::mono(level));
+            for out in editor.spec_mut().topology.outputs.iter_mut() {
+                *out = Source::Node(OutPort { node: key, port: 0 });
+            }
         }
     });
 
@@ -393,16 +395,18 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
         ExportClock::timeline(timeline.clone()),
     )
     // The hook sees the very context the nodes were rebound with.
-    .with_prepare(|prepared, _world| {
-        let transport = prepared.ctx;
-        // Required for `tempo()`/`beat()` in a default build. Some
-        // feature-gated import already brings the trait into scope under
-        // `--all-features`, where it then reads as redundant — so it is
-        // allowed rather than removed; deleting it breaks the default build.
-        #[allow(unused_imports)]
-        use tutti_core::Timeline;
-        SEEN_TEMPO.store(transport.tempo().get().round() as usize, Ordering::SeqCst);
-        SEEN_BEAT.store(transport.beat().get().round() as usize, Ordering::SeqCst);
+    .with_prepare(|_world: &World| {
+        |prepared: PreparedGraph<'_>| {
+            let transport = prepared.ctx;
+            // Required for `tempo()`/`beat()` in a default build. Some
+            // feature-gated import already brings the trait into scope under
+            // `--all-features`, where it then reads as redundant — so it is
+            // allowed rather than removed; deleting it breaks the default build.
+            #[allow(unused_imports)]
+            use tutti_core::Timeline;
+            SEEN_TEMPO.store(transport.tempo().get().round() as usize, Ordering::SeqCst);
+            SEEN_BEAT.store(transport.beat().get().round() as usize, Ordering::SeqCst);
+        }
     });
 
     app.world_mut().spawn(request);
@@ -450,10 +454,13 @@ fn a_master_export_is_rebound_onto_the_callers_timeline() {
         stereo_config(),
         ExportClock::timeline(timeline.clone()),
     )
-    .with_prepare(move |prepared, _world| {
-        #[allow(unused_imports)]
-        use tutti_core::Timeline;
-        *hook.lock().unwrap() = Some(prepared.ctx.tempo().get().round() as usize);
+    .with_prepare(move |_world: &World| {
+        let hook = Arc::clone(&hook);
+        move |prepared: PreparedGraph<'_>| {
+            #[allow(unused_imports)]
+            use tutti_core::Timeline;
+            *hook.lock().unwrap() = Some(prepared.ctx.tempo().get().round() as usize);
+        }
     });
     app.world_mut().spawn(request);
     assert!(

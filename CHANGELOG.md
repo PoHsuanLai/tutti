@@ -26,6 +26,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An export's fork is built off the main thread** (design doc 013,
+  "Recorded for later": the fork ran on the main thread). `Editor::fork` is
+  split into a control-thread **gather** and a **build** that runs on any
+  thread; bevy-tutti gathers in the frame the export starts and builds on the
+  compute pool, so a hosted plugin's fork (a `plugin-server` launch and its
+  state load, half a second or more) no longer stalls that frame. The fork is
+  still the live graph at the moment the export starts. **Breaking** for
+  bevy-tutti's `prepare` hook and `ExportInFlight`'s internals; additive in
+  tutti-graph and tutti-export.
+
+  | Was | Now |
+  |---|---|
+  | `Editor::fork(target, mode, prepare)` only | unchanged, and now `Editor::fork_gather(target, mode, prepare) -> PendingFork` (control thread: reads the spec, the param ramps and each source's gather) then `PendingFork::build() -> Result<(Editor, Executor), (ForkError, ForkRemains)>` (any thread) |
+  | `ForkSource::fork` built every unit on the forking thread | new provided `ForkSource::gather(mode) -> Result<ForkBuild, ForkCause>`: `ForkBuild::pinned` (built and prepared in the gather; the default, so existing sources keep their behaviour), `ForkBuild::ready` (built in the gather, prepared in the build), `ForkBuild::deferred(closure)` (built in the build, on any thread). Override it to move work off the control thread; read anything live in `gather`, never in the closure |
+  | — | `ForkBuild`, `PendingFork` (`Send + 'static`; `deferred()` counts the units still to build), `ForkRemains` (what a failed build had made: drop it where a pinned unit belongs) |
+  | `ForkByClone` / `ParamFork` units were prepared on the forking thread | `ready`: prepared in the build |
+  | out-of-process plugin fork: state save and `plugin-server` launch in one step | its `gather` saves the live state and reads its rate and meter; the launch and the state load are a deferred build. `PluginClient::fork_instance` still does all of it on the calling thread |
+  | in-process VST2 fork | declares itself `pinned`: built, restored and prepared (`effSetSampleRate`) in the gather, on the main thread |
+  | — | tutti-export `RenderGraph::gather(live, target, mode, rate) -> Result<PendingFork>` and `RenderGraph::build(pending) -> Result<RenderGraph, (Error, ForkRemains)>` |
+  | bevy-tutti `ExportRequest::with_prepare(\|prepared, world\| ..)`, run on the main thread on the built fork | `with_prepare(\|world: &World\| move \|prepared: PreparedGraph<'_>\| ..)`: the hook reads the world in the frame the export starts and returns the edit, which runs on the compute pool once the fork is built. Move the world reads to the outer closure and the graph edits to the inner one; annotate the inner closure's argument |
+  | `PrepareGraph = Box<dyn Fn(PreparedGraph, &World) + Send + Sync>` | `Box<dyn Fn(&World) -> PrepareEdit + Send + Sync>`, `PrepareEdit = Box<dyn for<'a> FnOnce(PreparedGraph<'a>) + Send>` |
+  | bevy-tutti forked in `start_exports`, on the main thread | `start_exports` gathers; the task builds, edits, commits and renders |
+  | the rendered graph was handed back with the result; a cancelled export's graph dropped on the pool | everything the task holds goes to the new `ExportDrops` resource wherever it drops (finished, failed or cancelled) and `poll_exports` drops it on the main thread. `ExportPlugin` inserts it |
+  | — | CI's threaded-pool step also runs `export_fork.rs`'s `off_thread` tests |
+  | `ForkError::Source` named the first failing source in key order | the first source whose **gather** fails, else the first deferred **build** that fails (gathers all run first): with key 1 failing in its build and key 2 in its gather, the error names key 2 |
+  | — | a pinned unit dropped off its gathering thread while that thread unwinds a panic (a deferred build, a render) is leaked, not torn down there |
+  | — | a `prepare` edit runs on the pool: it must not insert a main-thread-only unit (in-process VST2). One that never runs (failed build, cancelled export) is dropped on the main thread |
+
 - **A param range is a control, not plan** (design doc 013, "A param
   range is a control"). Moving a modulated param's range no longer
   recompiles: the running unit reads each port's range once per block

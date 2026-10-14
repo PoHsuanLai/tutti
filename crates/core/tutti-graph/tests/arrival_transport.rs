@@ -361,9 +361,9 @@ fn a_node_behind_a_latent_path_reads_the_transport_its_input_was_rendered_at() {
 /// even the raised 300-frame arrival fit, and once the probe has 300 frames
 /// behind it no frame reads the clamp, before or after either change.
 ///
-/// Mutation: keep every block start in `observe` (`keep = true`) → 128
-/// one-frame pieces cover 128 frames, frames 300 back read the clamp, and
-/// the no-clamp assertion fails.
+/// Mutation: keep every block start in `observe` (`keep = true`) → 256
+/// pieces of mostly one-frame blocks cover too little, frames 300 back read
+/// the clamp, and the no-clamp assertion fails.
 #[test]
 fn a_recompile_that_moves_the_arrival_keeps_the_history() {
     let mut rig = Rig::new(30);
@@ -395,7 +395,7 @@ fn a_recompile_that_moves_the_arrival_keeps_the_history() {
 }
 
 /// A burst of seeks, one per one-frame block, past `JUMPS` inside the
-/// arrival: the history keeps the newest 128, and the frames older than
+/// arrival: the history keeps the newest 256, and the frames older than
 /// those read the oldest kept, unmoved: exactly where the model says, in the
 /// executor and the reference alike.
 ///
@@ -415,7 +415,10 @@ fn a_burst_of_seeks_past_the_capacity_clamps_where_the_model_says() {
         let out = rig.block(1, t, c);
         rig.check(&out, LAT, &format!("block {b}"));
     }
-    assert!(rig.clamped > LAT, "the burst overflowed the history");
+    // Which frames clamp is the model's to say (checked frame by frame
+    // above); here only that the burst did overflow: some 300 seeks inside a
+    // 300-frame arrival leave about 90 one-frame blocks reading the clamp.
+    assert!(rig.clamped > 50, "the burst overflowed the history");
 }
 
 /// A sample-rate change clears the history: the executor's clock is

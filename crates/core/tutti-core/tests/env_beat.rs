@@ -163,8 +163,10 @@ fn beat(p: (f32, f32)) -> f64 {
 /// split), so this is the segment walk, not only the block start.
 ///
 /// The walk runs the clock's own code (`FrameClock`) from each piece's
-/// origin, so it equals the clock by construction; `transport_at` agrees with it to rounding (it folds a loop
-/// by the unwrapped position), and the frame checks below pin each event.
+/// origin, so it equals the clock by construction; `transport_at` walks the
+/// same clock and agrees with it to the bit (tutti-graph's
+/// `transport_at_is_for_each_beat_to_the_bit`), and the frame checks below
+/// pin each event.
 ///
 /// Mutations (each failed; the walk is `Env::for_each_beat` in tutti-graph):
 /// - use the block's `env.transport` for every piece (ignore the cuts) →

@@ -46,8 +46,9 @@ fn from(node: u64, port: u16) -> Edge {
 /// overlay with `Vec::new()` in `rebuild` → the first scheduled command to
 /// land inside the gate grows it → aborts. Mutation: build the command
 /// channel's pending list with `Vec::new()` → aborts. (The transport
-/// history `process` feeds every block is a fixed array, so it has no
-/// allocation to gate; this pins that `observe` stays on the path.)
+/// history `process` feeds every block is a fixed array, with nothing to
+/// allocate; that `process` feeds it at all is pinned by
+/// `arrival_transport.rs`'s "drop `history.observe`" mutation.)
 #[test]
 fn process_is_allocation_free_in_steady_state() {
     let (mut ed, mut exec) = Editor::new(prepare(256));

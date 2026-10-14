@@ -2,6 +2,7 @@
 //! past, so a node behind a latent path reads the transport its input audio
 //! was rendered at ([`Cx::transport_at`](crate::Cx::transport_at)).
 
+use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{Frame, Latency, SampleRate, Samples};
 
 use crate::node::{Env, Transport, MAX_TRANSPORT_CHANGES};
@@ -23,11 +24,18 @@ const EMPTY: Piece = Piece {
 };
 
 /// Pieces a history keeps: see [`TransportHistory`], "Size".
-const JUMPS: usize = 128;
+const JUMPS: usize = 256;
+
+/// The longest continuous stretch between pieces: see
+/// [`TransportHistory::CHECKPOINT`].
+const CHECKPOINT: usize = 8_192;
 
 // One block's pieces (its start and every change) and the one covering the
 // frame before it always fit.
 const _: () = assert!(JUMPS > MAX_TRANSPORT_CHANGES + 1);
+// Continuous playback is exact back to `(JUMPS - 1) * CHECKPOINT` frames:
+// at least four maxed-out nodes in series.
+const _: () = assert!((JUMPS - 1) * CHECKPOINT >= 4 * MAX_NODE_LATENCY.get());
 
 /// The transport's jumps over the graph's recent past: what a node behind a
 /// latent path reads its transport from ([`Env::transport_before`],
@@ -68,14 +76,21 @@ const _: () = assert!(JUMPS > MAX_TRANSPORT_CHANGES + 1);
 /// `a` then `b` frames land on the bits rolling `a + b` does
 /// ([`TimelineSegment::beat_at`](tutti_types::TimelineSegment::beat_at) is
 /// relative to its segment's origin, and a wrap lands on the unique frame
-/// that reaches the loop's end). Not a tolerance: the tests compare bits.
+/// that reaches the loop's end). Not a tolerance: the tests compare
+/// `Transport`s with `==`.
 ///
-/// # Size
+/// # Size, and the cost of a query
 ///
-/// Fixed, whatever the reach: [`JUMPS`](Self::JUMPS) pieces inline, about
-/// 96 bytes each (some 12 KiB, no heap). Nothing is sized from the plan, so
-/// a recompile changes nothing here, and the audio thread never allocates
-/// or frees.
+/// Fixed, whatever the reach: [`JUMPS`](Self::JUMPS) = 256 pieces inline,
+/// about 96 bytes each (some 24 KiB, no heap). Nothing is sized from the
+/// plan, so a recompile changes nothing here, and the audio thread never
+/// allocates or frees.
+///
+/// A query is a binary search (8 steps) and one roll of under
+/// `CHECKPOINT` + `MaxBlock` frames. The roll is closed form except for loop
+/// wraps, which it walks one by one: the worst case, a loop one frame long,
+/// is about 8 200 wraps (one per frame) for a query at a 64-frame maximum
+/// block; a loop of a beat at 120 BPM and 48 kHz wraps at most once.
 ///
 /// # Where it stops
 ///
@@ -87,12 +102,17 @@ const _: () = assert!(JUMPS > MAX_TRANSPORT_CHANGES + 1);
 ///   arrival `a` renders, where its input is a delay line's silence;
 /// - **after a sample-rate change**: frames counted at the old rate name
 ///   nothing at the new one, so the history is [cleared](Self::clear);
-/// - **past more than `JUMPS` pieces**: when more than 128 pieces fall
+/// - **past more than `JUMPS` pieces**: when more than 256 pieces fall
 ///   inside a node's arrival, the oldest are dropped. Continuous playback
-///   spends one checkpoint per `CHECKPOINT` frames (59 of them inside a
-///   10-second lookahead at 48 kHz), so this takes some 70 jumps inside the
-///   arrival: a burst of seeks, or a host reporting a hand-built transport
-///   or a new tempo (a ramp) every block.
+///   spends one checkpoint per `CHECKPOINT` frames, so with no jump at all
+///   it is exact back to `(JUMPS - 1) * CHECKPOINT` = **2 088 960 frames**
+///   (43.5 s at 48 kHz), and clamps past that. An arrival is a sum of node
+///   latencies, each clamped to `MAX_NODE_LATENCY` (480 000), so that is
+///   four maxed-out nodes in series and some; a fifth goes past it. Jumps
+///   inside the arrival spend pieces too: a 10-second lookahead at 48 kHz
+///   holds 59 checkpoints and leaves room for some 196 jumps (a burst of
+///   seeks, or a host reporting a hand-built transport or a new tempo, a
+///   ramp, every block).
 #[derive(Clone, Debug)]
 pub struct TransportHistory {
     /// A ring of pieces in frame order: `len` of them from `head`.
@@ -116,8 +136,9 @@ impl TransportHistory {
     pub const JUMPS: usize = JUMPS;
 
     /// The longest continuous stretch, in frames, between pieces: a block
-    /// starting this far past the newest piece is recorded as a checkpoint.
-    pub const CHECKPOINT: Samples = Samples(8_192);
+    /// starting this far (or further) past the newest piece is recorded as a
+    /// checkpoint.
+    pub const CHECKPOINT: Samples = Samples(CHECKPOINT);
 
     /// An empty history. Nothing is allocated, now or later.
     pub const fn new() -> Self {
@@ -495,7 +516,7 @@ mod tests {
     ///
     /// Mutation: never keep a block start after the first (drop the
     /// `roll(..) != t` term) → the seeks are lost → fails. Mutation: keep
-    /// every block start (`keep = true`) → 128 pieces cover 8 192 frames,
+    /// every block start (`keep = true`) → 256 pieces cover 65 536 frames,
     /// and frames 480 000 back read the clamp → fails. Mutation: drop the
     /// checkpoint term → the pieces kept are the 12 jumps and nothing else
     /// (the count check fails).
@@ -545,13 +566,13 @@ mod tests {
             std::mem::size_of::<TransportHistory>(),
             std::mem::size_of::<[Piece; JUMPS]>() + 2 * std::mem::size_of::<usize>()
         );
-        // The documented figure: about 96 bytes a piece, some 12 KiB.
+        // The documented figure: about 96 bytes a piece, some 24 KiB.
         let size = std::mem::size_of::<TransportHistory>();
-        assert!((11 * 1024..=13 * 1024).contains(&size), "{size} bytes");
+        assert!((22 * 1024..=26 * 1024).contains(&size), "{size} bytes");
     }
 
     /// A burst of more than `JUMPS` seeks, one per one-frame block: the ring
-    /// keeps the newest 128, a frame the newest 128 still cover reads its
+    /// keeps the newest 256, a frame the newest 256 still cover reads its
     /// block, and an older one reads the oldest kept, unmoved: exactly at
     /// the boundary.
     ///
@@ -560,14 +581,14 @@ mod tests {
     /// boundary moves → fails.
     #[test]
     fn a_burst_past_the_capacity_clamps_where_the_oldest_kept_starts() {
-        const SEEKS: u64 = 200;
+        const SEEKS: u64 = 400;
         let mut p = Played::default();
         for f in 0..SEEKS {
             p.play(env(f, 1, rolling(f as f64 * 3.0), TransportChanges::NONE));
         }
         let e = env(SEEKS, 64, rolling(1_000.0), TransportChanges::NONE);
         p.play(e);
-        // Kept: blocks SEEKS - 127 .. SEEKS, and `e`.
+        // Kept: blocks SEEKS - 255 .. SEEKS, and `e`.
         let oldest = SEEKS - (JUMPS as u64 - 1);
         assert_eq!(p.history.get(0).frame.get(), oldest);
         let at = |back: u64| e.transport_before(off(0), lat(back as usize), &p.history);
@@ -584,5 +605,107 @@ mod tests {
         );
         assert!(same(at(SEEKS), p.truth(oldest)), "clamped, unmoved");
         assert!(!same(p.truth(oldest - 1), p.truth(oldest)));
+    }
+
+    /// The bound for continuous playback, exactly: blocks of `CHECKPOINT`
+    /// frames make every block start a checkpoint, so the newest 256 pieces
+    /// reach back `(JUMPS - 1) * CHECKPOINT` = 2 088 960 frames from the
+    /// last block's start (at least four `MAX_NODE_LATENCY`s). That frame
+    /// reads its block; the one before it reads the clamp (the oldest piece,
+    /// unmoved).
+    ///
+    /// Mutation: checkpoint on `gap > CHECKPOINT` (not `>=`) → a checkpoint
+    /// every other block, twice the reach, and the frame past the bound is
+    /// exact → fails. Mutation: `JUMPS` 255 → the bound moves a checkpoint
+    /// closer (the compile-time bound still holds) → fails.
+    #[test]
+    fn continuous_playback_is_exact_back_to_the_documented_bound() {
+        let block = TransportHistory::CHECKPOINT.get();
+        let bound = (JUMPS as u64 - 1) * block as u64;
+        assert_eq!(bound, 2_088_960);
+        assert!(bound >= 4 * MAX_NODE_LATENCY.get() as u64);
+        let mut p = Played::default();
+        let mut next = counted(0.0, None);
+        for b in 0..300u64 {
+            let e = env(b * block as u64, block, next, TransportChanges::NONE);
+            p.play(e);
+            next = end_of(&e);
+        }
+        let last = *p.blocks.last().expect("played");
+        let back = |n: u64| last.transport_before(off(0), lat(n as usize), &p.history);
+        let edge = last.frame.get() - bound;
+        assert_eq!(back(bound), p.truth(edge), "just inside: exact");
+        assert_eq!(back(bound + 1), p.truth(edge), "just past: the clamp");
+        assert_ne!(p.truth(edge - 1), p.truth(edge));
+    }
+
+    /// A host that counts frames changes one field and keeps its position:
+    /// a stop in place, recording armed, a loop armed around the playhead
+    /// (it wraps 40 frames on), a tempo step on the same origin. Each runs
+    /// on its own rolling host, at a block start and inside a block (at
+    /// offset 20); each is a piece (the roll is not the block's transport),
+    /// so every frame back reads its block.
+    ///
+    /// Mutations (each fails here, and nowhere else): in `observe`, compare
+    /// the roll `r` with `t` ignoring one field, through a copy `u` of `t`:
+    /// `u.playing = r.playing`, `u.looping = r.looping`,
+    /// `u.tempo = r.tempo`, and `r != t.with_recording(r.recording())`.
+    #[test]
+    fn a_change_of_one_field_is_a_jump() {
+        let one_field = |t: Transport, k: usize| -> Transport {
+            let origin = t.origin().expect("counted");
+            match k {
+                0 => Transport::counted(false, t.tempo, origin, t.looping),
+                1 => t.with_recording(true),
+                2 => {
+                    let b = t.beat().get();
+                    Transport::counted(
+                        t.playing,
+                        t.tempo,
+                        origin,
+                        Some(LoopRange {
+                            start: Beat(b - 0.001),
+                            end: Beat(b + 40.0 / FPB),
+                        }),
+                    )
+                }
+                _ => Transport::counted(t.playing, Bpm(97.0), origin, t.looping),
+            }
+        };
+        for k in 0..4 {
+            for inside in [false, true] {
+                let mut p = Played::default();
+                let mut next = counted(2.0, None);
+                for b in 0..8u64 {
+                    let mut changes = TransportChanges::NONE;
+                    if b == 3 {
+                        if inside {
+                            let probe = env(b * 64, 64, next, TransportChanges::NONE);
+                            changes
+                                .push(off(20), one_field(probe.transport_at(off(20)), k))
+                                .expect("inside");
+                        } else {
+                            next = one_field(next, k);
+                        }
+                    }
+                    let e = env(b * 64, 64, next, changes);
+                    p.play(e);
+                    next = end_of(&e);
+                    for o in [0usize, 30, 63] {
+                        for back in [1usize, 10, 25, 64, 100, 200] {
+                            let Some(f) = (e.frame.get() + o as u64).checked_sub(back as u64)
+                            else {
+                                continue;
+                            };
+                            assert_eq!(
+                                e.transport_before(off(o), lat(back), &p.history),
+                                p.truth(f),
+                                "field {k}, inside {inside}, block {b}, offset {o}, back {back}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

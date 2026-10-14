@@ -832,10 +832,11 @@ pub struct Cx<'a> {
     /// so a latent path and a direct path agree about which beat a sample
     /// belongs to.
     pub arrival: Latency,
-    /// The transport over the graph's last frames, kept by the executor for
-    /// as far back as its plan's longest arrival: what
-    /// [`transport_at`](Self::transport_at) reads before the block's first
-    /// frame. [`TransportHistory::none`] where nothing is kept.
+    /// The transport's recent jumps, kept by the executor in a fixed set
+    /// whatever the plan (see [`TransportHistory`] for how far back it is
+    /// exact): what [`transport_at`](Self::transport_at) reads before the
+    /// block's first frame. [`TransportHistory::none`] where nothing is
+    /// kept.
     pub history: &'a TransportHistory,
 }
 

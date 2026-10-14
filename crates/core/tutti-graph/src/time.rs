@@ -359,8 +359,8 @@ impl Env {
     /// while stopped. It is the host's own clock continued, to the bit (it
     /// was also `EnvClock`'s, the node that emitted it on two beat ports
     /// until every beat reader read its `Env`). It does not go through
-    /// [`transport_at`](Self::transport_at), which agrees with it to
-    /// rounding past a loop wrap but not to the bit.
+    /// [`transport_at`](Self::transport_at), which walks the same clock `k`
+    /// frames at once and so agrees with it to the bit, loop wraps included.
     ///
     /// This is the block's own time. A node that reads the transport at its
     /// compiled arrival ([`Cx::arrival`](crate::Cx::arrival)) other than
@@ -565,6 +565,38 @@ mod tests {
     /// start beat → fails. Walk the block's first transport only (the
     /// block as one piece with no changes, in place of `segments`) → the
     /// frames after the start stay held → fails.
+    /// `transport_at` and `for_each_beat` are the same walk: the host's
+    /// clock, advanced `k` frames at once or one at a time, lands on the same
+    /// bits, through loop wraps (a 7-frame loop wraps nine times here, at a
+    /// tempo whose frame is not a short binary fraction) and a change
+    /// inside the block.
+    ///
+    /// Mutation (run): in `history::roll`, compute the beat in closed form
+    /// from the block start, folded into the loop (`LoopRange::wrap` of
+    /// `beat + k / frames_per_beat`) → past the first wrap the two differ in
+    /// the last bits → fails.
+    #[test]
+    fn transport_at_is_for_each_beat_to_the_bit() {
+        let looping = Some(LoopRange {
+            start: Beat(1.1),
+            end: Beat(1.1 + 7.0 * 97.0 / (60.0 * 48_000.0)),
+        });
+        let t = Transport::new(true, Bpm(97.0), Beat(1.1), looping);
+        let mut e = env(5_000, 64, t);
+        e.changes
+            .push(
+                Offset(50),
+                Transport::new(true, Bpm(133.0), Beat(9.3), looping),
+            )
+            .expect("in order");
+        let mut walked = Vec::new();
+        e.for_each_beat(|i, b| walked.push((i, b)));
+        for (i, b) in walked {
+            let at = e.transport_at(Offset(i as u32)).beat();
+            assert_eq!(at.get().to_bits(), b.get().to_bits(), "frame {i}");
+        }
+    }
+
     #[test]
     fn for_each_beat_walks_each_piece_of_the_block() {
         let stopped = Transport::new(false, Bpm(120.0), Beat(3.0), None);

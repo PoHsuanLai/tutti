@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A node behind a latent path reads the transport its input was rendered
   at** (design doc 013, "Arrival-aligned transport landed"). **Breaking**
   for code that builds a `tutti_graph::Cx` by hand. The executor keeps a
-  `TransportHistory` of the transport's jumps (a fixed 128, about 12 KiB,
+  `TransportHistory` of the transport's jumps (a fixed 256, about 24 KiB,
   whatever the latency) and hands it to every node;
   `Cx::transport_at(offset)` is the transport `Cx::arrival` frames before
   `offset`, exact through seeks, transport changes and loop wraps in

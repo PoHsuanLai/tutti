@@ -3261,24 +3261,35 @@ latent sibling was off by the upstream latency.
   segment's origin (rolling `a` then `b` frames lands where `a + b` does).
   **Not a closed-form rewind** from the current block, which is wrong across
   a discontinuity and cannot tell a wrap from a start.
-- **Size: fixed, whatever the latency.** `JUMPS` = 128 pieces inline, about
-  96 bytes each (some 12 KiB, no heap), in the executor from the start.
-  Nothing is sized from the plan, so a recompile touches nothing here, and
-  the audio thread never allocates or frees. (An earlier version of this PR
-  kept a piece per block, sized for one-frame blocks: about 85 MB of address
-  space for a 10-second lookahead, to buy the same answers.) 128 is at least
-  one block's pieces plus the one before it (`MAX_TRANSPORT_CHANGES + 2`),
-  and leaves some 70 jumps inside a 10-second lookahead at 48 kHz after its
-  59 checkpoints.
+- **Size: fixed, whatever the latency.** `JUMPS` = 256 pieces inline,
+  about 96 bytes each (some 24 KiB, no heap), in the executor from the
+  start. Nothing is sized from the plan, so a recompile touches nothing
+  here, and the audio thread never allocates or frees. 256 is at least one
+  block's pieces plus the one before (`MAX_TRANSPORT_CHANGES + 2`), and with
+  `CHECKPOINT` = 8 192 it covers continuous playback back to
+  `(JUMPS - 1) * CHECKPOINT` = 2 088 960 frames, at least four
+  `MAX_NODE_LATENCY` (480 000) nodes in series (asserted at compile time).
+  A query is a binary search and one roll of under `CHECKPOINT` +
+  `MaxBlock` frames, closed form except for loop wraps, which it walks: the
+  worst case, a one-frame loop, is about 8 200 wraps per query at a 64-frame
+  maximum block.
 - **Where it clamps, precisely.** A frame older than the oldest piece kept
-  reads that piece's transport, unmoved: before the graph's first block,
-  after a sample-rate change (which clears it), and past more than 128
-  pieces inside a node's arrival (a burst of seeks, or a host reporting a
-  hand-built transport or a new tempo, a ramp, every block). In the first
-  two the audio the node hears is a delay line refilling.
-  `tests/arrival_transport.rs` models the rules from the public walk and
-  asserts the boundary is reached and honoured: before the first block, for
-  a burst past the capacity, and after a rate change.
+  reads that piece's transport, unmoved:
+  - before the graph's first block (the node's input is a delay line
+    refilling);
+  - after a sample-rate change, which clears the history;
+  - past more than 256 pieces inside a node's arrival. With no jump at all
+    that is an arrival past 2 088 960 frames (43.5 s at 48 kHz: a fifth
+    maxed-out node in series); with jumps, a 10-second lookahead at 48 kHz
+    holds 59 checkpoints and room for some 196 jumps (a burst of seeks, or a
+    host reporting a hand-built transport or a new tempo, a ramp, every
+    block).
+
+  `history.rs` pins the continuous bound frame-exactly (just inside reads
+  its block, the next frame clamps), and `tests/arrival_transport.rs`
+  models the rules from the public walk and asserts the boundary is reached
+  and honoured before the first block, for a burst past the capacity, and
+  after a rate change.
 - **The plugin node** reads `Cx::transport_at` for each chunk
   (`transport_source::from_cx`), so the plugin is told the playhead of the
   audio it is processing; `clap_transport.rs` checks it through a real

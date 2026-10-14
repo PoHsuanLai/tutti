@@ -234,9 +234,17 @@ Rules:
   implementation details — don't code against a number.)
 - **Never `publish` from the audio thread** — it stalls the callback *and* frees
   inside it.
-- Nullable hot-swap slots (the plugin nodes' meter cells, `Midi::out`) stay
-  on `ArcSwapOption`; `RtPublish` doesn't model them. Control-thread-only
-  cells (device enumeration in `tutti-midi-hardware`) stay plain.
+- Nullable hot-swap slots go through `RtPublish` as well, as
+  `RtPublish<Option<Arc<_>>>`: the plugin nodes' `PluginMeter` publishes the
+  installed meter cell's `Arc`, so the node borrows it and an install or
+  clear during playback retires the old cell for the control side to free.
+  They were `ArcSwapOption` until a host that installed a meter it did not
+  keep, then replaced it mid-block, was shown to free the whole cell on the
+  audio thread (the guard-debt hazard below). The node's read is then nested
+  (the slot, then the meter cell), but in two cells, one reader slot each.
+  Control-thread-only cells (device enumeration in `tutti-midi-hardware`)
+  stay plain; its per-block port set is an `RtPublish` behind a publisher
+  lock.
 
 **The guarantee is structural.** `RtPublish` used to wrap `ArcSwap`, which made
 RT deallocation very unlikely and bounded but not *impossible*: a guard whose

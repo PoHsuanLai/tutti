@@ -6,11 +6,10 @@
 //! `frame_offset` within that block. Everything on that path is RT-safe: bounded
 //! work, no locks, no allocation.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use arc_swap::ArcSwap;
-use tutti_core::{AudioThreadCell, RtEventBuf, SampleRate};
+use tutti_core::{AudioThreadCell, RtEventBuf, RtPublish, SampleRate};
 
 use super::async_port::HardwareMidiInput;
 use tutti_midi_types::ump::MidiEvent;
@@ -169,7 +168,20 @@ impl CycleScratch {
 ///
 /// [`cycle_start_read_all_inputs`]: HardwareMidiInputs::cycle_start_read_all_inputs
 pub struct HardwareMidiInputs {
-    input_ports: ArcSwap<Vec<Arc<HardwareMidiInput>>>,
+    /// The port set, published to the audio thread's drain. An [`RtPublish`]
+    /// rather than an `ArcSwap`: the drain only borrows the set, so a hotplug
+    /// that publishes a new one mid-drain retires the old one for the
+    /// *control* side to free. (An `ArcSwap` guard held across that store is
+    /// upgraded to a strong count, and its drop then freed the old `Vec` on
+    /// the audio thread.)
+    input_ports: RtPublish<Vec<Arc<HardwareMidiInput>>>,
+    /// Serializes the read, append and publish of [`create_input_port`]
+    /// (`RtPublish` has no compare-and-publish), so two creators racing on
+    /// hotplug cannot each publish a copy missing the other's port. Control
+    /// side only: the drain never takes it.
+    ///
+    /// [`create_input_port`]: Self::create_input_port
+    publish_lock: Mutex<()>,
     fifo_size: usize,
     /// Audio-thread-only scratch buffers. Every field here is `Sync` on its
     /// own, so the manager derives `Sync` rather than asserting it by hand.
@@ -184,7 +196,8 @@ impl HardwareMidiInputs {
     /// [`Default`] uses 2048.
     pub fn new(fifo_size: usize) -> Self {
         Self {
-            input_ports: ArcSwap::from_pointee(Vec::new()),
+            input_ports: RtPublish::new(Vec::new()),
+            publish_lock: Mutex::new(()),
             fifo_size,
             scratch: CycleScratch::new(),
         }
@@ -200,34 +213,35 @@ impl HardwareMidiInputs {
         self.scratch.set_sample_rate(sample_rate);
     }
 
-    /// Append `port` to `ports` (clone-and-swap) and return its index. The
-    /// port owns its own name and active flag — there is no parallel metadata
-    /// to keep in sync.
-    fn push_port(
-        ports: &ArcSwap<Vec<Arc<HardwareMidiInput>>>,
-        port: Arc<HardwareMidiInput>,
-    ) -> usize {
-        let mut new_ports = (**ports.load()).clone();
-        let port_index = new_ports.len();
-        new_ports.push(port);
-        ports.store(Arc::new(new_ports));
-        port_index
-    }
-
     /// Creates an input port named `name` and returns its index.
     ///
     /// The port starts **active**. Control-thread only: this clones the port vec
-    /// to append, so it allocates and must not be called from the audio thread.
+    /// to append and publishes the copy, so it allocates, may free the set it
+    /// replaces, and must not be called from the audio thread. Safe to call
+    /// from several control threads at once: each creator's port lands, at its
+    /// own index. The port owns its own name and active flag — there is no
+    /// parallel metadata to keep in sync.
     pub fn create_input_port(&self, name: impl Into<String>) -> usize {
         let port = Arc::new(HardwareMidiInput::new(name.into(), self.fifo_size));
-        Self::push_port(&self.input_ports, port)
+        // The lock holds no data: it makes read, append and publish one step.
+        // A poisoned lock guards nothing that could be inconsistent, since the
+        // published set is replaced whole or not at all.
+        let _publisher = self
+            .publish_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut new_ports = (*self.input_ports.read()).clone();
+        let port_index = new_ports.len();
+        new_ports.push(port);
+        self.input_ports.publish(Arc::new(new_ports));
+        port_index
     }
 
     /// The port vec for `port_type`. Only [`PortType::Input`] is backed by an
     /// `HardwareMidiInput` ring — outbound MIDI rides the engine mailbox to a
     /// `MidiOut` sink, not a port ring — so `Output` returns `None` (lists as
     /// empty / no-op).
-    fn ports_of(&self, port_type: PortType) -> Option<&ArcSwap<Vec<Arc<HardwareMidiInput>>>> {
+    fn ports_of(&self, port_type: PortType) -> Option<&RtPublish<Vec<Arc<HardwareMidiInput>>>> {
         match port_type {
             PortType::Input => Some(&self.input_ports),
             PortType::Output => None,
@@ -239,7 +253,7 @@ impl HardwareMidiInputs {
     /// Always `None` for [`PortType::Output`]: outputs are not backed here.
     pub fn get_port_info(&self, port_type: PortType, port_index: usize) -> Option<PortInfo> {
         self.ports_of(port_type)?
-            .load()
+            .read()
             .get(port_index)
             .map(|port| PortInfo::of(port, port_index, port_type))
     }
@@ -254,7 +268,7 @@ impl HardwareMidiInputs {
             return Vec::new();
         };
         ports
-            .load()
+            .read()
             .iter()
             .enumerate()
             .map(|(index, port)| PortInfo::of(port, index, port_type))
@@ -270,7 +284,7 @@ impl HardwareMidiInputs {
     pub fn set_port_active(&self, port_type: PortType, port_index: usize, active: bool) -> bool {
         match self
             .ports_of(port_type)
-            .and_then(|p| p.load().get(port_index).cloned())
+            .and_then(|p| p.read().get(port_index).cloned())
         {
             Some(port) => {
                 port.set_active(active);
@@ -284,7 +298,7 @@ impl HardwareMidiInputs {
     /// index and for every [`PortType::Output`] query.
     pub fn is_port_active(&self, port_type: PortType, port_index: usize) -> bool {
         self.ports_of(port_type)
-            .and_then(|p| p.load().get(port_index).map(|port| port.is_active()))
+            .and_then(|p| p.read().get(port_index).map(|port| port.is_active()))
             .unwrap_or(false)
     }
 
@@ -331,10 +345,12 @@ impl HardwareMidiInputs {
         buffer_start: Instant,
         mut visit: impl FnMut(usize, MidiEvent),
     ) -> usize {
-        // Hold the ArcSwap guard across the drain so the port set can't be
-        // swapped out mid-read. Events are copied into the scratch by value
-        // (`MidiEvent: Copy`), so nothing borrows from the snapshot.
-        let input_ports = self.input_ports.load();
+        // One borrow of the port set for the drain, so a hotplug publishing a
+        // new set mid-read leaves this one intact; the borrow cannot free it
+        // when it drops, whatever was published meanwhile. Events are copied
+        // into the scratch by value (`MidiEvent: Copy`), so nothing borrows
+        // from the snapshot past it.
+        let input_ports = self.input_ports.read();
         self.scratch
             .read_inputs(&input_ports, nframes, buffer_start);
         let mut n = 0;
@@ -356,7 +372,7 @@ impl HardwareMidiInputs {
         &self,
         port_index: usize,
     ) -> Option<super::async_port::InputProducerHandle> {
-        let input_ports = self.input_ports.load();
+        let input_ports = self.input_ports.read();
         input_ports
             .get(port_index)
             .map(|port| port.input_producer_handle())
@@ -372,7 +388,7 @@ impl HardwareMidiInputs {
     /// the manager but no handle; a real backend takes a handle once at connect
     /// rather than re-resolving the port per event.
     pub fn push_input_event(&self, port_index: usize, event: MidiEvent) -> bool {
-        let input_ports = self.input_ports.load();
+        let input_ports = self.input_ports.read();
         if let Some(port) = input_ports.get(port_index) {
             let handle = port.input_producer_handle();
             handle.push(event, Instant::now())
@@ -411,7 +427,7 @@ impl tutti_midi_types::MidiIn for HardwareMidiInputs {
 
 impl core::fmt::Debug for HardwareMidiInputs {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let input_ports = self.input_ports.load();
+        let input_ports = self.input_ports.read();
 
         f.debug_struct("HardwareMidiInputs")
             .field("num_input_ports", &input_ports.len())
@@ -584,6 +600,66 @@ mod tests {
         let port_ids: Vec<_> = events.iter().map(|(id, _)| *id).collect();
         assert!(port_ids.contains(&id1));
         assert!(port_ids.contains(&id2));
+    }
+
+    /// Concurrent creators each land their port: none is lost to another's
+    /// publish, and the indices handed back are exactly `0..n`, each once.
+    ///
+    /// Hotplug can create ports from more than one control thread (a backend's
+    /// notification thread, a session's rescan). Reading the set, appending
+    /// and publishing is not one atomic step, so two creators that interleave
+    /// would each publish a copy missing the other's port.
+    ///
+    /// Mutation: dropping `create_input_port`'s `publish_lock` guard (the
+    /// read, append and publish then run unserialized) fails this with fewer
+    /// than 8 x 200 ports listed and repeated indices.
+    #[test]
+    #[cfg_attr(miri, ignore = "threaded stress test; too slow under miri")]
+    fn concurrent_creators_all_land() {
+        use std::collections::BTreeSet;
+        use std::sync::Barrier;
+
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 200;
+        let manager = Arc::new(HardwareMidiInputs::new(4));
+        let start = Arc::new(Barrier::new(THREADS));
+
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let manager = Arc::clone(&manager);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    (0..PER_THREAD)
+                        .map(|i| (manager.create_input_port(format!("{t}/{i}")), t, i))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let created: Vec<(usize, usize, usize)> = handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("creator thread"))
+            .collect();
+
+        let ports = manager.list_input_ports();
+        assert_eq!(
+            ports.len(),
+            THREADS * PER_THREAD,
+            "a creator's port was lost"
+        );
+        let indices: BTreeSet<usize> = created.iter().map(|&(index, _, _)| index).collect();
+        assert_eq!(
+            indices,
+            (0..THREADS * PER_THREAD).collect(),
+            "every creator was handed its own index"
+        );
+        for (index, t, i) in created {
+            assert_eq!(
+                ports[index].name,
+                format!("{t}/{i}"),
+                "the index a creator was handed names its own port"
+            );
+        }
     }
 
     /// Push one event that arrived `age` before the block start, and read back

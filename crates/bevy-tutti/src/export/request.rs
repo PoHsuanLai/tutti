@@ -416,18 +416,19 @@ pub enum ExportError {
 
     /// `node` cannot be forked for an offline render, so the graph could not
     /// be copied: it shares live state a copy would
-    /// share too. A microphone monitor, an in-process VST2 plugin, a node
-    /// built unforkable. Nothing was rendered; remove, freeze or bounce the
-    /// node, or export a node that it does not feed.
-    #[error("cannot export: {node} cannot be forked for an offline render (a mic monitor, an in-process VST2 plugin, or a node built unforkable)")]
+    /// share too. A microphone monitor, a node built unforkable. Nothing was
+    /// rendered; remove, freeze or bounce the node, or export a node that it
+    /// does not feed.
+    #[error("cannot export: {node} cannot be forked for an offline render (a mic monitor, or a node built unforkable)")]
     NotForkable {
         /// The node.
         node: ExportNode,
     },
 
     /// Forking `node` failed before anything rendered: a hosted plugin whose
-    /// fresh instance did not load, did not match, or could not save or
-    /// load its state. `cause` downcasts to the source's error
+    /// fresh instance did not load (an in-process VST2 plugin that cannot be
+    /// instantiated twice), did not match, or could not save or load its
+    /// state. `cause` downcasts to the source's error
     /// (`tutti_plugin::PluginForkError` for a plugin).
     #[error("cannot export: forking {node} failed: {cause}")]
     ForkSource {

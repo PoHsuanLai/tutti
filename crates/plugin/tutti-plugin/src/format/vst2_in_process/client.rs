@@ -11,6 +11,7 @@
 //! A block is allocation-free in steady state (verified by the
 //! `assert_no_alloc` test in `tests/`).
 
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -19,7 +20,7 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
 use crate::host::node::input_slot::InputSlot;
-use crate::host::node::transport_source::PolledTransport;
+use crate::host::node::transport_source::{PolledTransport, SteadyTime};
 use crate::protocol::{Features, MidiEventVec, TransportInfo};
 
 /// Per-channel f32 staging buffers.
@@ -54,8 +55,12 @@ impl ProcessScratch {
 /// There is no process isolation: a plugin crash takes the host down. The
 /// audio thread takes the instance lock with `try_lock` and outputs silence on
 /// contention (counted by [`contention_count`](Self::contention_count)). Steady
-/// state processing does not allocate. A graph holding this node cannot be
-/// forked for offline rendering.
+/// state processing does not allocate.
+///
+/// A graph holding this node forks (`Editor::fork`, which an offline export
+/// takes) **by state transfer**: a second instance of the plugin, from the same
+/// library, restored from this one's saved state. See
+/// [`fork_instance`](Self::fork_instance).
 pub struct InProcessVst2Client {
     pub(super) inner: Arc<Mutex<Vst2Instance>>,
     pub(super) metadata: PluginInfo,
@@ -96,6 +101,39 @@ pub struct InProcessVst2Client {
     /// Bumped on every audio-thread `try_lock` failure. Shared across
     /// clones so the handle can read the global count.
     pub(super) contention_count: Arc<AtomicU64>,
+    /// The file the plugin was loaded from: what a fork loads again.
+    pub(super) origin: Arc<Path>,
+    /// Who tells the plugin the rate the node is prepared at.
+    pub(super) rate_delivery: RateDelivery,
+    /// Where the block's transport comes from: the installed polled reader
+    /// (`None`), or, on a fork, the block's own `Env`.
+    pub(super) env_transport: Option<EnvTransport>,
+}
+
+/// Who tells the plugin the rate the node is prepared at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RateDelivery {
+    /// Parked in `pending_sample_rate` for the main thread's editor pump
+    /// (`InProcessVst2Backend::editor_idle`) to dispatch: the live instance,
+    /// whose `effMainsChanged` bracket belongs on the main thread.
+    Parked,
+    /// Dispatched by `prepare` itself, under the instance lock: a fork. Nothing
+    /// pumps a fork's editor (it has no handle), so a parked rate would never
+    /// reach it; and its `prepare` runs on the control thread that forks it,
+    /// with the unit out of any executor (`Node::prepare`'s contract), before
+    /// its first block.
+    InPrepare,
+}
+
+/// A fork's transport: the block's [`Env`](tutti_graph::Env) (for an offline
+/// fork, the render's timeline), read the way the out-of-process plugin node
+/// reads it, with the live node's meter.
+#[derive(Clone)]
+pub(super) struct EnvTransport {
+    /// The project meter, read once per block.
+    pub(super) meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>,
+    /// The free-running sample counter: frames this node rendered.
+    pub(super) steady: SteadyTime,
 }
 
 /// [`InProcessVst2Client::pending_sample_rate`] sentinel: nothing is waiting.
@@ -151,6 +189,7 @@ impl InProcessVst2Client {
         sample_rate: f64,
         pending_sample_rate: Arc<AtomicU64>,
         contention_count: Arc<AtomicU64>,
+        origin: Arc<Path>,
     ) -> Self {
         // Empty until the node is prepared: `prepare` sizes both to the
         // graph's largest block.
@@ -172,6 +211,9 @@ impl InProcessVst2Client {
             sample_rate,
             pending_sample_rate,
             contention_count,
+            origin,
+            rate_delivery: RateDelivery::Parked,
+            env_transport: None,
         }
     }
 
@@ -273,6 +315,9 @@ impl Clone for InProcessVst2Client {
             // through another.
             pending_sample_rate: Arc::clone(&self.pending_sample_rate),
             contention_count: Arc::clone(&self.contention_count),
+            origin: Arc::clone(&self.origin),
+            rate_delivery: self.rate_delivery,
+            env_transport: self.env_transport.clone(),
         }
     }
 }
@@ -298,17 +343,26 @@ impl InProcessVst2Client {
     }
 
     /// Take `sample_rate` as the rate blocks run at: restamp the transport
-    /// source, and park the rate for the plugin (dispatched from the main
-    /// thread, see `pending_sample_rate`). What the node's `prepare` does
-    /// with its rate.
+    /// source, and hand the rate to the plugin as [`RateDelivery`] says —
+    /// parked for the main thread (see `pending_sample_rate`), or, on a fork,
+    /// dispatched here. What the node's `prepare` does with its rate.
     pub(super) fn set_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
+        let changed = sample_rate != self.sample_rate;
         self.sample_rate = sample_rate;
         self.restamp_transport_rate();
-        // Parked, not dispatched: `Vst2Instance::set_sample_rate` runs the
-        // allocating `effMainsChanged` bracket, which must not race a block
-        // the audio thread is rendering through the live plugin.
-        queue_sample_rate(&self.pending_sample_rate, sample_rate);
+        match self.rate_delivery {
+            // Parked, not dispatched: `Vst2Instance::set_sample_rate` runs the
+            // allocating `effMainsChanged` bracket, which must not race a
+            // block the audio thread is rendering through the live plugin.
+            RateDelivery::Parked => queue_sample_rate(&self.pending_sample_rate, sample_rate),
+            // Only on a change: the fork was loaded at `self.sample_rate`, and
+            // a redundant bracket makes a plugin reallocate its buffers.
+            RateDelivery::InPrepare if changed => {
+                self.inner.lock().set_sample_rate(sample_rate);
+            }
+            RateDelivery::InPrepare => {}
+        }
     }
 }
 

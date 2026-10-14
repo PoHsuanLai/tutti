@@ -8,6 +8,7 @@
 
 mod client;
 mod control_backend;
+mod fork;
 mod loader;
 mod node;
 

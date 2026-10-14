@@ -11,10 +11,10 @@
 //! offline, where the forked node's `Env` is the render's.
 //!
 //! The mapping onto the plugin ABIs' snapshot is [`transport_info`], shared
-//! with the one node that polls a timeline: the in-process VST2 client reads
-//! its transport from an installed reader rather than its `Env`, and builds
-//! the same
-//! [`Snapshot`] from it (`PolledTransport`, behind the `vst2` feature).
+//! with the one node that polls a timeline: the live in-process VST2 client
+//! reads its transport from an installed reader rather than its `Env`, and
+//! builds the same [`Snapshot`] from it (`PolledTransport`, behind the `vst2`
+//! feature). Its fork reads [`from_env`], like this node.
 
 use tutti_core::meter::{Meter, MeterMap};
 use tutti_core::{Beat, Bpm, SampleRate};
@@ -194,6 +194,12 @@ mod polled {
                 // `.get()` at the atomic, which needs a primitive.
                 sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
             }
+        }
+
+        /// The project meter this source reads bars with: what a fork of
+        /// the node reads its own (`Env`-driven) bars with.
+        pub(crate) fn meter(&self) -> &Arc<tutti_core::RtPublish<MeterMap>> {
+            &self.meter
         }
 
         /// Update the stamped rate live (device / rate switch).

@@ -1174,10 +1174,11 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    plugin that cannot save its state is known only when asked, so it fails
    at fork time with `SaveState`, not at insert as `NotForkable` (the
    protocol has no load-time "can save state" bit; adding one to
-   `Features` would let a fork refuse up front). **In-process VST2 stays
-   not forkable**: a second `AEffect` from the same library in this
+   `Features` would let a fork refuse up front). **In-process VST2 stayed
+   not forkable** here: a second `AEffect` from the same library in this
    process, and non-chunk plugins whose state is only the current
-   program's parameters, need their own design and tests.
+   program's parameters, needed their own design and tests. (Since landed:
+   [below](#in-process-vst2-forks-by-state-transfer).)
 
    Two rules from its review. **Modulation does not reach a fork.** A
    param-automation curve can be a live `PluginParamTarget` the mod router
@@ -1239,7 +1240,7 @@ nothing to move):
 | `SoundFontUnit` | tutti-soundfont | MIDI inbox and source (the `SoundFont` is read-only) | fresh port | yes | — |
 | `MicMonitorNode` | tutti-io | the ring consumer | — | **no** | — |
 | `PluginClient` | tutti-plugin | the plugin process | — | **no**: forks by state transfer through its own `ForkSource` (item 7) | `clap_fork.rs` |
-| `InProcessVst2Client` | tutti-plugin | the plugin | — | **no** (item 7) | — |
+| `InProcessVst2Client` | tutti-plugin | the plugin | — | **no**: forks by state transfer through its own `ForkSource`, a second instance in this process ([below](#in-process-vst2-forks-by-state-transfer)) | `vst2_in_process_fork.rs` |
 
 Width changes mid-run, the master meter and tap, and pruning need nothing.
 
@@ -2674,7 +2675,9 @@ naming the node), recorded in the CHANGELOG's migration table:
 - an **in-process VST2 plugin** (inserted boxed; its clones share the one
   plugin) — a **follow-up**: an in-process VST2 fork by state transfer
   (a second `AEffect` from the same library, and non-chunk plugins whose
-  state is only the current program's parameters; item 7 above);
+  state is only the current program's parameters; item 7 above). **Since
+  landed** ([below](#in-process-vst2-forks-by-state-transfer)): it forks,
+  and an export of a graph holding it renders it;
 - a **unit with a captured MIDI port pushed with `insert` /
   `insert_boxed`** — by design: `insert_with` carries its fork;
 - a **mic monitor** an output reaches — by design: a live input has
@@ -3573,7 +3576,9 @@ under both.
   keyboard sounds under a clip) and `export_fork`'s synth exports, whose
   golden digest is unchanged.
   **Follow-ups recorded:** the in-process VST2 node still takes its
-  transport from a polled reader rather than `Env`, and has no fork;
+  transport from a polled reader rather than `Env`, and has no fork (the
+  fork has since landed, reading its transport from `Env`:
+  [below](#in-process-vst2-forks-by-state-transfer));
   `crossfade_audio_node` takes an `AudioUnit`, so a graph-node synth cannot
   be crossfaded; JR stamping still works per drained batch rather than per
   block of the graph's clock.
@@ -4198,6 +4203,64 @@ named survives as the sampler's `LANE_FRAMES` (its voices render in 64-frame
 pieces) and as tutti-export's in-memory source's encoder pacing. Tests that
 built planar data with `BufferVec` build it with `Vec`s; the stretch unit's
 `route_width_tracks_outputs_at_every_width` went with `route` (its subject).
+
+#### In-process VST2 forks by state transfer
+
+The follow-up PR 13 recorded (an export of a graph holding an in-process
+VST2 plugin was refused, `NotForkable`): `InProcessVst2Client` now hands the
+editor a `ForkSource` (`format::vst2_in_process`'s `fork` module), the
+in-process twin of the out-of-process plugin's (item 7's "plugin fork by
+state transfer"). A fork, on the control thread that forks:
+
+1. **Asks the live instance for its state**, under its lock: the current
+   program (`effGetProgram`, when the plugin declares programs) and
+   `Vst2Instance::get_state` (the plugin's chunk, `effGetChunk`, when it
+   declares `effFlagsProgramChunks`; else every parameter's value). The live
+   audio thread finds the lock taken for that moment and renders the block
+   silent, as for a project save. The source holds the live instance
+   weakly: a fork of a plugin that is gone is `PluginForkError::LiveGone`.
+2. **Loads a second instance** of the same file (`Vst2Instance::load`, as
+   the live one was): a second `dlopen` of the path maps the image already
+   loaded, and its entry point builds a second `AEffect`. The image is never
+   unloaded (`Vst2Handle` leaks the module), so the library outlives both
+   instances. A plugin that cannot be instantiated twice fails here:
+   `PluginForkError::Load`.
+3. **Checks the id**, then **restores the program, then the blob**
+   (`effSetChunk`, or `setParameter` per value). The program comes first
+   because a program change may move every parameter, and it answers the
+   gap this section's predecessor named: a non-chunk plugin's saved state
+   is its parameters, which belong to its current program. A refusal is
+   `PluginForkError::LoadState`.
+4. **Reads its transport from the block's `Env`** (the render's timeline,
+   with the live node's meter), not the live node's polled reader. The live
+   node still polls; moving it onto `Env` is the follow-up recorded above.
+5. **Tells the plugin its rate from `prepare`**, under the lock
+   (`RateDelivery::InPrepare`). The live node parks the rate for the main
+   thread's editor pump, which nothing runs for a fork; the fork's
+   `prepare` runs on the forking control thread with the unit out of any
+   executor, before its first block. Offline, it answers
+   `audioMasterGetCurrentProcessLevel` with offline.
+
+Every failure fails the whole fork (`ForkError::Source`, naming the node's
+key; bevy-tutti's `ExportError::ForkSource`, naming its entity), never a fork
+at the plugin's defaults or one sharing the live instance. In-process, the
+fork has no health probe: nothing can fail while it renders that the render
+would not see. What a fork cannot have, recorded rather than worked around:
+state the plugin does not save (a non-chunk plugin's non-parameter state),
+running DSP state, and isolation from the live instance's image (a plugin
+keeping per-instance state in a process global; VST2 gives a host no way to
+ask).
+
+`Plugin::into_client` hands an in-process VST2 plugin back whole
+(`Err(Box<Plugin>)`, was `Err(Box<dyn Node>)`), so bevy-tutti inserts it through
+its own `IntoNode` and keeps the fork source. `ExportError::NotForkable`'s
+text no longer lists it. Pinned by `tutti-plugin`'s
+`vst2_in_process_fork.rs`, against the reference probe with its new
+`TUTTI_VST2_PROBE_STATE_DC` (each output sample carries the instance's
+state as a DC: the chunk's first byte, or `1000 · param0 + 10 000 ·
+program`), so a restored state is an exact figure in the fork's samples; and
+its `tutti_vst2_probe_set_refuse_chunk_load` switch, for a second instance
+that refuses the first one's chunk.
 
 ## Decisions for the owner
 

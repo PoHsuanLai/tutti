@@ -82,6 +82,15 @@ pub struct ProbeConfig {
     /// different from `Info::name` (`effGetProductString`), so a test can tell
     /// which of the two the host read.
     pub effect_name: Option<String>,
+    /// Add the instance's **state** to every output sample, on top of the
+    /// channel tag: [`state_dc`]. Off by default, so the routing oracle is
+    /// untouched for every suite that does not ask.
+    ///
+    /// The one observable that separates state a plugin *holds* from state a
+    /// host merely remembers is the samples — so a host that forks a plugin
+    /// by state transfer (a second instance, restored from the first one's
+    /// saved state) is checked on what the second instance renders.
+    pub state_dc: bool,
 }
 
 impl Default for ProbeConfig {
@@ -103,6 +112,7 @@ impl Default for ProbeConfig {
             midi_inputs: 1,
             midi_outputs: 1,
             effect_name: None,
+            state_dc: false,
         }
     }
 }
@@ -139,6 +149,7 @@ impl ProbeConfig {
             midi_inputs: env_or("TUTTI_VST2_PROBE_MIDI_INPUTS", d.midi_inputs),
             midi_outputs: env_or("TUTTI_VST2_PROBE_MIDI_OUTPUTS", d.midi_outputs),
             effect_name: env::var("TUTTI_VST2_PROBE_EFFECT_NAME").ok(),
+            state_dc: env_flag("TUTTI_VST2_PROBE_STATE_DC"),
         }
     }
 }
@@ -157,9 +168,46 @@ pub const fn channel_tag(channel: usize) -> f32 {
     (channel as f32) * 100.0 + 1.0
 }
 
+/// The DC the probe adds to every output sample when
+/// [`ProbeConfig::state_dc`] is on: what its saved state (`effGetChunk`, or
+/// the parameter snapshot a host takes when there is no chunk) holds.
+///
+/// - **With `effFlagsProgramChunks`** the chunk *is* the state, so the DC is
+///   the chunk's first byte (`0` for an empty chunk): its parameters and
+///   program are not in the chunk and do not count.
+/// - **Without** it a host saves the parameter values and the current
+///   program, so the DC is `1000 · param0 + 10 000 · program`. The program
+///   counts because a host that restores the values but not the program
+///   restores a different plugin state; the probe's `effProgramChange` moves
+///   no parameter, so the two terms are independent.
+///
+/// Every term is exact in `f32` for a byte, a program below 100 and a
+/// `param0` on a 1/1000 grid that `f32` represents, so a test can assert
+/// equality.
+pub fn state_dc(preset_chunks: bool, chunk: &[u8], param0: f32, program: i32) -> f32 {
+    if preset_chunks {
+        chunk.first().map_or(0.0, |&b| f32::from(b))
+    } else {
+        1000.0 * param0 + 10_000.0 * program as f32
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::channel_tag;
+    use super::{channel_tag, state_dc};
+
+    /// Pin the state DC's two shapes as literals, for the same reason as the
+    /// tags: a host test reading `state_dc(...)` back would move with it.
+    ///
+    /// Mutation (run): read the chunk's last byte instead of its first →
+    /// `200`, not `7` → fails.
+    #[test]
+    fn the_state_dc_is_pinned() {
+        assert_eq!(state_dc(true, &[7, 200], 0.5, 1), 7.0);
+        assert_eq!(state_dc(true, &[], 0.5, 1), 0.0);
+        assert_eq!(state_dc(false, &[7], 0.75, 1), 10_750.0);
+        assert_eq!(state_dc(false, &[7], 0.0, 0), 0.0);
+    }
 
     /// Pin the tags as literals. `channel_tag` is shared by the probe and the
     /// host tests, so an expectation written as `in + channel_tag(ch)` moves

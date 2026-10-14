@@ -334,15 +334,17 @@ impl Plugin {
     ///
     /// # Errors
     ///
-    /// Returns the graph node for a plugin that is not a `PluginClient` — an
-    /// in-process VST2 instance, which has no fork source: insert it as
-    /// `tutti_graph::Unforkable(node)`, and a fork of a graph holding it is
-    /// refused as not forkable.
-    pub fn into_client(self) -> std::result::Result<Box<PluginClient>, Box<dyn tutti_graph::Node>> {
+    /// Returns the plugin itself, unchanged (boxed, as the client is), when it
+    /// is not a `PluginClient` — an in-process VST2 instance. Insert it through
+    /// its own
+    /// [`IntoNode`](tutti_graph::IntoNode) (`editor.insert(key, kind, plugin)`),
+    /// which hands the editor its fork source (a fork by state transfer, in
+    /// this process).
+    pub fn into_client(self) -> std::result::Result<Box<PluginClient>, Box<Self>> {
         match self.backend {
             Backend::Subprocess(c) => Ok(c),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => Err(c),
+            Backend::InProcessVst2(_) => Err(Box::new(self)),
         }
     }
 }
@@ -360,8 +362,9 @@ impl Plugin {
 ///
 /// The controls are the subprocess node's [`PluginControls`]; `None` for an
 /// in-process VST2 plugin, whose per-block inputs are installed through
-/// `Plugin` before insertion. A subprocess plugin hands the editor its fork
-/// source (a fork by state transfer); an in-process VST2 one has none.
+/// `Plugin` before insertion. Either hands the editor its fork source: a fork
+/// by state transfer, into a new `plugin-server` for a subprocess plugin, and a
+/// second instance in this process for an in-process VST2 one.
 ///
 /// [`PluginControls`]: crate::host::node::PluginControls
 impl tutti_graph::IntoNode for Plugin {

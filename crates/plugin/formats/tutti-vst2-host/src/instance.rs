@@ -556,6 +556,16 @@ impl Vst2Instance {
             .collect()
     }
 
+    /// Returns how many programs the plugin declares (`numPrograms`, read live;
+    /// `0` for a negative answer).
+    ///
+    /// [`programs`](Self::programs) without asking for every name: what a
+    /// caller that only needs to know whether a program is part of the
+    /// plugin's state reads.
+    pub fn program_count(&self) -> i32 {
+        self.handle.instance.read_num_programs().max(0)
+    }
+
     /// Returns the index of the program the plugin reports as active.
     pub fn current_program(&self) -> i32 {
         self.params.get_preset_num()

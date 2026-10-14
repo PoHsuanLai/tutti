@@ -31,8 +31,8 @@ use tutti_io::Wave;
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
-    Direction, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoiceCommand, VoicePool,
-    VoiceSource, VoiceWindow,
+    Direction, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoiceCommand, VoiceNode,
+    VoicePool, VoiceSource, VoiceWindow,
 };
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -330,6 +330,82 @@ fn voice_pool_one_frame_blocks_are_allocation_free() {
             rig.block();
         }
     });
+}
+
+/// Block lengths from one frame to the maximum, straddling 64.
+const RAGGED: [usize; 10] = [1, 37, 100, 511, 512, 64, 200, 129, 3, 65];
+
+/// `node` prepared at 64 frames, then **re-prepared** at 512 (the scratch
+/// resized on the control thread), warmed, then 2 000 blocks of
+/// [`RAGGED`] lengths inside the guard, on a transport that moves and winds
+/// back to beat 0 at beat 3 (inside the test waves).
+fn ragged_at_512<N: Node>(node: N) {
+    let node = tutti_graph::contract::prepared(node, RATE, 64);
+    let mut direct = Direct::new(node, RATE, 512);
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let step = |i: usize, direct: &mut Direct<N>| {
+        let len = RAGGED[i % RAGGED.len()];
+        direct.block_in(&t.env(len, RATE));
+        t.advance(len as i64, RATE);
+        if t.beat().get() >= 3.0 {
+            t.seek(Beat::new(0.0));
+        }
+    };
+    for i in 0..64 {
+        step(i, &mut direct);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for i in 0..2_000 {
+            step(i, &mut direct);
+        }
+    });
+}
+
+/// A memory voice reading `wave` placed at beat 0, playing `stretch`.
+fn placed_voice(wave: &Arc<Wave>, stretch: f32) -> Voice {
+    let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
+    Voice {
+        play: Playback {
+            gain: sampler.gain(),
+            speed: sampler.speed(),
+            loop_: sampler.loop_setting(),
+            direction: Direction::Forward,
+            stretch: StretchFactor::new(stretch),
+            pitch: Cents::new(0.0),
+        },
+        source: VoiceSource::Memory(sampler),
+        channel_index: None,
+    }
+}
+
+/// **Every memory voice node, re-prepared at a 512-frame `max_block`,
+/// renders ragged blocks up to it without allocating**: a pool (two plain
+/// voices and a stretched one), a stretched `VoiceNode`, and a
+/// `MemorySource` placed and free-running — each block in one piece
+/// through scratch sized in `prepare`. (The disk voice's gate is in-crate:
+/// `clip_reader_ragged_blocks_at_max_block_512_are_allocation_free`.)
+///
+/// Mutation (run): `VoicePool::process` resizing its scratch to the block
+/// (`self.scratch.resize(frames)`) → aborts. Mutation (run):
+/// `MemorySource::process` taking a fresh `vec![None; frames]` for its
+/// positions → aborts.
+#[test]
+fn voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free() {
+    let wave = sine_wave(2.0, 48_000.0);
+
+    let mut pool = VoicePool::new();
+    pool.insert_voice(SlotId(0), placed_voice(&wave, 1.0));
+    pool.insert_voice(SlotId(1), placed_voice(&wave, 1.0));
+    pool.insert_voice(SlotId(2), placed_voice(&wave, 2.0));
+    ragged_at_512(pool);
+
+    ragged_at_512(VoiceNode::new(placed_voice(&wave, 0.5)));
+
+    ragged_at_512(MemorySource::placed(wave.clone(), Beat::new(0.0), None));
+
+    let free = MemorySource::new(wave.clone());
+    free.trigger();
+    ragged_at_512(free);
 }
 
 /// The `VoiceCommand::UpdateStretch` drain is allocation-free.

@@ -31,7 +31,7 @@ use tutti_io::Wave;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
     Command, DiskStreamer, DiskStreamerConfig, MemorySource, Playback, SlotId, StepOutcome, Voice,
-    VoiceCommand, VoicePool, VoiceSource,
+    VoiceCommand, VoiceNode, VoicePool, VoiceSource,
 };
 
 const SR: f64 = 48_000.0;
@@ -55,21 +55,29 @@ const WRAP_BEATS: f64 = 4.0;
 struct Rig {
     direct: Direct<VoicePool>,
     t: Arc<MockTransport>,
+    /// Frames per block, and the pool's `max_block`.
+    block: usize,
 }
 
 impl Rig {
     fn new(pool: VoicePool) -> Self {
+        Self::with_block(pool, BLOCK)
+    }
+
+    /// A rig whose blocks (and `max_block`) are `block` frames.
+    fn with_block(pool: VoicePool, block: usize) -> Self {
         Self {
-            direct: Direct::new(pool, SampleRate(SR), BLOCK),
+            direct: Direct::new(pool, SampleRate(SR), block),
             t: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
+            block,
         }
     }
 
     /// One block, then the transport moves on. Returns the block's peak on
     /// channel 0.
     fn block(&mut self) -> f32 {
-        self.direct.block_in(&self.t.env(BLOCK, SR));
-        self.t.advance(BLOCK as i64, SR);
+        self.direct.block_in(&self.t.env(self.block, SR));
+        self.t.advance(self.block as i64, SR);
         if self.t.beat().get() >= WRAP_BEATS {
             self.t.seek(Beat::new(0.0));
         }
@@ -224,6 +232,11 @@ fn tone_frame(i: usize) -> [f32; 2] {
 }
 
 fn pool64(tier: Tier, n: usize, speed: f32, stretch: f32) -> Pool64 {
+    pool_blocks(tier, n, speed, stretch, BLOCK)
+}
+
+/// [`pool64`] driven in `block`-frame blocks (the pool prepared for them).
+fn pool_blocks(tier: Tier, n: usize, speed: f32, stretch: f32, block: usize) -> Pool64 {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("tone.wav");
     let frames = (SR * FILE_SECS) as usize;
@@ -310,15 +323,16 @@ fn pool64(tier: Tier, n: usize, speed: f32, stretch: f32) -> Pool64 {
     }
     // The rig prepares the pool, which re-rates every voice it holds.
     let mut p = Pool64 {
-        rig: Rig::new(pool),
+        rig: Rig::with_block(pool, block),
         _streamer: streamer,
         _dir: dir,
     };
     // Drain the adds, then run past the vocoder's fill-up (a 2048 window at
     // 0.5x is 64 blocks of source), so a stretch case measures a sounding
-    // vocoder, not its silent fill.
+    // vocoder, not its silent fill. 256 blocks of 64 frames, however long
+    // a block is.
     let mut heard = 0.0f32;
-    for _ in 0..256 {
+    for _ in 0..(256 * BLOCK).div_ceil(block) {
         heard = heard.max(drive64(&mut p));
     }
     assert!(
@@ -356,12 +370,103 @@ fn bench_pool64(c: &mut Criterion) {
     group.finish();
 }
 
+/// [`bench_pool64`]'s cases in 512-frame blocks: what a host that calls
+/// back with 512 frames pays per block (a voice renders a block in one
+/// piece, its scratch sized from `Prepare::max_block`). Divide by 8 to
+/// compare with `pool64` per 64 frames.
+fn bench_pool512(c: &mut Criterion) {
+    const BLOCK512: usize = 512;
+    let mut group = c.benchmark_group("pool512");
+    group.throughput(Throughput::Elements(BLOCK512 as u64));
+    let cases: &[(&str, Tier, usize, f32, f32)] = &[
+        ("memory/64", Tier::Memory, 64, 1.0, 1.0),
+        ("memory-varispeed/64", Tier::Memory, 64, 1.37, 1.0),
+        ("memory-stretch/64", Tier::Memory, 64, 1.0, 0.5),
+        ("disk/64", Tier::Disk, 64, 1.0, 1.0),
+        ("disk-varispeed/64", Tier::Disk, 64, 1.37, 1.0),
+    ];
+    for &(name, tier, n, speed, stretch) in cases {
+        let mut p = pool_blocks(tier, n, speed, stretch, BLOCK512);
+        group.bench_function(name, |b| b.iter(|| black_box(drive64(&mut p))));
+    }
+    group.finish();
+}
+
+/// `n` clips, each its own `VoiceNode` (how `bevy-tutti` spawns a clip:
+/// one node per clip, each with its own scratch), in `block`-frame blocks on
+/// the moving transport. One block of every node per iteration.
+struct Clips {
+    nodes: Vec<Direct<VoiceNode>>,
+    t: Arc<MockTransport>,
+    block: usize,
+}
+
+impl Clips {
+    fn new(n: usize, block: usize) -> Self {
+        let mut wave = Wave::new(2, SR);
+        for i in 0..(SR * FILE_SECS) as usize {
+            wave.push_frame(&tone_frame(i));
+        }
+        let wave = Arc::new(wave);
+        let nodes = (0..n)
+            .map(|_| {
+                let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
+                let node = VoiceNode::new(Voice {
+                    source: VoiceSource::Memory(source),
+                    play: Playback::default(),
+                    channel_index: None,
+                });
+                Direct::new(node, SampleRate(SR), block)
+            })
+            .collect();
+        Self {
+            nodes,
+            t: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
+            block,
+        }
+    }
+
+    fn block(&mut self) -> f32 {
+        let env = self.t.env(self.block, SR);
+        let mut peak = 0.0f32;
+        for d in &mut self.nodes {
+            d.block_in(&env);
+            peak = peak.max(d.output(0)[self.block - 1].abs());
+        }
+        self.t.advance(self.block as i64, SR);
+        if self.t.beat().get() >= WRAP_BEATS {
+            self.t.seek(Beat::new(0.0));
+        }
+        peak
+    }
+}
+
+/// **A clip per `VoiceNode`**, as `bevy-tutti` spawns them: 64 stereo
+/// nodes, at 64- and 512-frame blocks (each node's scratch sized for its
+/// block: 57 bytes a stereo frame).
+fn bench_clips(c: &mut Criterion) {
+    let mut group = c.benchmark_group("clips");
+    for block in [64usize, 512] {
+        group.throughput(Throughput::Elements(block as u64));
+        let mut clips = Clips::new(64, block);
+        for _ in 0..(256 * BLOCK).div_ceil(block) {
+            clips.block();
+        }
+        group.bench_function(format!("voice-node/64/block-{block}"), |b| {
+            b.iter(|| black_box(clips.block()))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_voices,
     bench_stretch,
     bench_pitch,
     bench_idle,
-    bench_pool64
+    bench_pool64,
+    bench_pool512,
+    bench_clips
 );
 criterion_main!(benches);

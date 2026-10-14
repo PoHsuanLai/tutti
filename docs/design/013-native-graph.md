@@ -3947,12 +3947,14 @@ fail on, by name.
 #### Item 7 landed: sampler block render and ownership
 
 **Block render.** A voice renders a block at a time into planar scratch
-lanes (`tutti-sampler`'s `lanes`: `Lanes`, `MAX_BUFFER_SIZE` (64) frames ×
-`MAX_SAMPLER_CHANNELS`, owned by the rendering node with the block's
-positions and gathered taps, built on the control thread), and its owner
+lanes (`tutti-sampler`'s `lanes`: `Lanes`, owned by the rendering node
+with the block's positions and gathered taps, built on the control
+thread), and its owner
 adds each lane into its output channel with one `accumulate`
-(`PlaybackSlot::process_into` → `render_lanes`). What moved out of the
-per-sample loop:
+(`PlaybackSlot::process_into` → `render_lanes`). The lanes were then
+`MAX_BUFFER_SIZE` (64) frames × `MAX_SAMPLER_CHANNELS`; they are now sized
+from `Prepare::max_block` and the node's width (see "Sampler scratch sized
+from `max_block`" below). What moved out of the per-sample loop:
 
 - **The clock is read once per block** (`Seat::run`): the renderer moves it
   between blocks, never inside one, so a seat taken at a block's first frame
@@ -4066,10 +4068,12 @@ as `Option<Box<stretch::Unit>>`, and the drain unboxed both it and the
 replaced in place. The filter is unboxed now (a `Unit` moves as a pointer),
 the slot holds the voice boxed so the command's box moves in, and a replaced
 slot goes to the retirement channel (`tests/rt_no_free.rs` counts the
-drain's frees). The lanes are one block long: `AudioUnit::process` is never
-handed more than 64 frames, so 256-frame lanes were a split nothing reached
-and a memset nothing used; a native port sizes them from
-`Prepare::max_block`. A `VoicePool` wider than `MAX_SAMPLER_CHANNELS` is
+drain's frees). The lanes are one block long: `AudioUnit::process` was
+then never handed more than 64 frames, so 256-frame lanes were a split
+nothing reached and a memset nothing used. (`AudioUnit` is gone (Phase 5)
+and every voice is a `tutti_graph::Node`, so the reason for 64 went with
+it: the lanes are now sized from `Prepare::max_block`, landed under
+"Sampler scratch sized from `max_block`" below.) A `VoicePool` wider than `MAX_SAMPLER_CHANNELS` is
 refused (`PoolTooWide`) rather than declaring outputs it never writes, and a
 `VoiceNode` that wide (its constructor is infallible) clears the channels
 past it.
@@ -4191,9 +4195,10 @@ reference):
   (item 7's leftover: typed controls, placement on the node's own queue,
   gain a `Param`) and `MemorySource`. The clip readers read the transport
   from `Env` and are **frame-exact**: entry, exit, seek, stop and loop wrap
-  land on their frame. They still render in 64-frame pieces from each
-  block's start, re-seated per piece, which keeps the steady-state bits of
-  the chunked read. A jump (a seek while rolling, a wrap) is the node's
+  land on their frame. They then still rendered in 64-frame pieces from
+  each block's start, re-seated per piece, which kept the steady-state bits
+  of the chunked read; they now render each block in one piece (see
+  "Sampler scratch sized from `max_block`" below), with the same bits at the clocks its tests pin and to rounding elsewhere. A jump (a seek while rolling, a wrap) is the node's
   call, against its own clock's continuation. A live fork of a disk voice
   is refused (it would read the file on the audio thread).
 - **tutti-core / tutti-io / instruments** — the click (no inputs; its beat
@@ -4395,10 +4400,114 @@ What was kept, rehomed to its one user: the filters' float trait (`Real`,
 `f32`/`f64`, the same `libm` calls, so they render the same bits) is
 `tutti-nodes`'; `FaultLatch` is `tutti-sampler`'s (the `RenderFault` trait
 it was the only implementor of went); the 64-frame block `MAX_BUFFER_SIZE`
-named survives as the sampler's `LANE_FRAMES` (its voices render in 64-frame
-pieces) and as tutti-export's in-memory source's encoder pacing. Tests that
+named survived as the sampler's `LANE_FRAMES` (its voices rendered in
+64-frame pieces) until the sampler sized its scratch from
+`Prepare::max_block` (next section), and survives as tutti-export's
+in-memory source's encoder pacing. Tests that
 built planar data with `BufferVec` build it with `Vec`s; the stretch unit's
 `route_width_tracks_outputs_at_every_width` went with `route` (its subject).
+
+#### Sampler scratch sized from `max_block` (landed)
+
+The sampler's scratch lanes were a fixed 64 frames (`LANE_FRAMES`), and
+every voice node split its block into 64-frame pieces, with stack arrays of
+64 positions in `MemorySource` and `DiskVoice`. The reason was a `Legacy`
+unit that never saw `Prepare::max_block`; every voice is a
+`tutti_graph::Node` now, so the cap went:
+
+- **`BlockScratch` is sized in `prepare`.** `lanes::BlockScratch` (the
+  `out`/`raw` lanes, the positions, the gather) holds `Vec`s resized on
+  the control thread by `VoicePool::prepare` and `VoiceNode::prepare` to
+  `Prepare::max_block` frames and the node's own width (its lanes past the
+  width stay empty); a re-prepare resizes it. `MemorySource` and
+  `DiskVoice` keep their own position scratch for when they are nodes of
+  their own, sized the same way (empty in a pool's voices and in a clone,
+  which stays allocation-free). A voice in a pool or a `VoiceNode` reads
+  through its owner's scratch (`DiskVoice::render_lanes` takes it, and
+  rewrites the placed positions in place to its ring positions, so there is
+  no second position buffer). `stretch::Unit::filter_lanes` takes lanes of
+  any length.
+- **What it costs a node.** 41 bytes a frame plus 8 a channel: a position
+  (16), the gather's whole index (4, a `u32`; the four taps are derived
+  from it per channel by `interp::tap`, the one definition `tap_indices`
+  uses too, rather than kept as `[usize; 4]`, 32), its fraction (4) and
+  flag (1), four tap lanes (16), and an `out` and a `raw` lane a channel.
+  A stereo `VoiceNode` (how `bevy-tutti` spawns a clip) holds 57 bytes a
+  frame: 3.6 KiB at 64, 28.5 KiB at 512, **57 KiB at `LIVE_MAX_BLOCK`
+  (1024)**, against 8.3 KiB for the fixed 64-frame, eight-lane scratch
+  before. 300 clips at 1024 hold about 17 MB of it (2.5 MB before). That
+  is what rendering a 1024-frame block in one piece takes — the block's own
+  planar samples and its per-frame read state — and is small beside what a
+  clip already holds (a minute of stereo wave in memory is 23 MB; a
+  stretching voice's vocoder about 100 KB a channel); the alternative, a
+  capped scratch and pieces, is the chunking this change removes. A
+  re-prepare (a device change) zeroes it once, on the control thread.
+- **A block renders in one piece.** In a graph `prepare` always precedes
+  `process` and a block is never longer than `max_block`. The piece loops
+  stay only on a `#[cold]`, `#[inline(never)]` path for a block longer than
+  the scratch, which the crate's own hand-driven tests reach throughout
+  (`testing::block`/`play` and `contract::drive_in` call `process` without
+  a `prepare`): a pool or `VoiceNode` is built with `UNPREPARED_FRAMES`
+  (64) of scratch and renders past it in pieces that long; a
+  `MemorySource` or `DiskVoice` without positions renders through a
+  64-frame stack array, which the prepared render never initialises.
+  `tests/block_length_invariance.rs` drives both paths.
+- **Same frames.** The placed read re-seats once per block instead of per
+  64 frames, and steps from that one seat across the whole block. A seat
+  lands where the step would have put it to rounding; at the clocks the
+  tests pin (48 kHz, 120 BPM, a frame-derived beat) to the bit, so every
+  existing test, the golden digests in `tutti-export` (`GRAPH_MAX_BLOCK` =
+  1024) and `bevy-tutti` (recorded with 64-frame pieces) included, passes
+  unchanged; elsewhere a frame past the 64th of a block may differ in the
+  last ulp. `tests/block_length_invariance.rs` pins it: each voice node
+  (pool, `VoiceNode`, `MemorySource` placed and free-running, `DiskVoice`
+  live and in a pool; plain, varispeed, reverse, crossfaded loop, stretch,
+  pitch) renders the same frames, bit for bit, at 64-frame blocks, at 512,
+  in a ragged 1..512 schedule, and prepared at 64 but handed 512 (the cold
+  path).
+- **Controls land per block.** The control reads a voice takes once per
+  render call — its `gain`, the disk tier's `step_rate`, the stretch
+  filter's `input_rate` and parameters — are now taken once per block
+  rather than once per 64 frames, so a change can land up to one block
+  later than before (about 21 ms at 1024 frames and 48 kHz).
+- **Allocation-free.** `rt_no_alloc`'s
+  `voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free` and
+  `disk_voice`'s `clip_reader_ragged_blocks_at_max_block_512_are_allocation_free`
+  prepare at 64, re-prepare at 512 and run ragged blocks under the guard.
+- **One mutation moved.** `interp::place` seating at the block's first beat
+  (`run.beat_at(0)`) used to fail the export and adapter render tests by
+  replaying a block's first 64-frame piece; in one piece, with no transport
+  change inside the block, it is the same frame, so those tests pass under
+  it now (run). tutti-sampler's run tests (`interp`'s seek and loop-wrap
+  tests, `block_render`, `graph_engine_clock`) still fail on it (run).
+
+Not changed: `DiskSource`'s free-running read computes positions 256 frames
+at a time (`BLOCK_FRAMES`, a stack array); its position accumulates per
+piece, so a different piece length would round differently, and it is not
+a lane.
+
+**Measured.** Wall clock on the shared 4-core box (load 10–12 from other
+builds) moved ±15% between identical runs, so the figures are instructions
+per output frame (callgrind, the difference of two render lengths, so setup
+cancels): a `VoicePool` of 16 voices (2 for stretch), before and after.
+
+| case | 64-frame blocks | 512-frame blocks |
+|---|---|---|
+| memory | 4 260 → 4 226 (−0.8%) | 4 249 → 3 881 (−8.7%) |
+| memory, 1.37x varispeed | 4 404 → 4 370 (−0.8%) | 4 393 → 4 025 (−8.4%) |
+| disk | 9 010 → 8 982 (−0.3%) | 9 017 → 8 567 (−5.0%) |
+| memory, stretch 0.5x | 6 994 → 6 986 (−0.1%) | 6 974 → 6 916 (−0.8%) |
+
+At 512 the voices save the seven extra per-piece passes a block used to
+make (positions, gather, kernels, mix per voice). A first cut was 4–9%
+*slower* at 64 frames and on the disk tier: its lanes reached through
+eight-wide `Vec`s, and `live_read::read_ring`'s four-tap fetch
+(`taps.map(|t| claim.frame(t))`, tutti-sampler's own) compiled to an
+outlined `try_map` closure in that build; writing the four calls out
+inlines them, and the width-sized lanes and the `u32` gather index took
+the rest back. The criterion bench gained a `pool512` group (the `pool64`
+cases at 512-frame blocks) and a `clips` group (64 stereo `VoiceNode`s, a
+clip each, at 64- and 512-frame blocks).
 
 #### In-process VST2 forks by state transfer
 

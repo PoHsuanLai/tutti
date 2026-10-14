@@ -51,7 +51,8 @@
 //!
 //! Every excitation is swept over [`OFFSETS`], so the offset inside its block
 //! is 0, 1, either side of a 64-frame boundary (where a node that renders in
-//! 64-frame pieces, the sampler's clip readers, seams), the middle
+//! fixed pieces would seam, as the sampler's clip readers did before they
+//! sized their scratch from `Prepare::max_block`), the middle
 //! and the last frame — and, behind PDC, both where the excitation starts
 //! and where the node sees it.
 //!

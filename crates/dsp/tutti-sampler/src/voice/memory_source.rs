@@ -19,10 +19,10 @@ use tutti_graph::{
 use tutti_io::Wave;
 
 use super::clock::{BlockClock, Clock};
-use super::interp::{hermite_lanes, place, read_looped_frame, tap_indices, Gate};
+use super::interp::{hermite_lanes, place, read_looped_frame, split_position, tap, Gate};
 use super::loop_span::LoopSpan;
 use super::types::Direction;
-use crate::lanes::{Gather, Lanes, LANE_FRAMES};
+use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES};
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 /// Live loop state on a `MemorySource`. Internal: the public loop *intent* is
@@ -303,6 +303,12 @@ pub struct MemorySource {
     /// The wave's own width is reconciled against this one by
     /// [`read_frame`](super::interp::read_frame)'s channel policy.
     channels: ChannelLayout,
+
+    /// A block's placed positions when this source is a graph node of its
+    /// own, sized from `Prepare::max_block` in `prepare` (empty until then,
+    /// and in a clone: a source that only plays in a pool or a `VoiceNode`,
+    /// which read through their own scratch, carries none).
+    positions: Vec<Option<SamplePosition>>,
 }
 
 // Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>`. Print the wave length +
@@ -341,6 +347,9 @@ impl Clone for MemorySource {
             // A copy reads its own blocks' transport.
             clock: Clock::new(),
             channels: self.channels,
+            // Unsized, so a clone stays allocation-free: a copy inserted as
+            // a node is prepared, which sizes it.
+            positions: Vec::new(),
         }
     }
 }
@@ -366,6 +375,7 @@ impl MemorySource {
             looped: AtomicBool::new(false),
             clock: Clock::new(),
             channels: ChannelLayout::STEREO,
+            positions: Vec::new(),
         }
     }
 
@@ -890,7 +900,10 @@ impl MemorySource {
         let len = self.wave.len();
         let src_ch = self.wave.channels();
         let looped = direction == Direction::Forward && self.loop_mode.span(len).is_some();
-        let along_time = !looped && len > 0 && (src_ch == 1 || src_ch == n);
+        // (A wave past `u32::MAX` frames, 24 hours at 48 kHz, reads a frame
+        // at a time: the gather keeps each frame's whole index as a `u32`.)
+        let along_time =
+            !looped && len > 0 && len <= u32::MAX as usize && (src_ch == 1 || src_ch == n);
         if !along_time {
             let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
             for (i, pos) in positions.iter().enumerate() {
@@ -902,15 +915,18 @@ impl MemorySource {
             }
             return;
         }
-        // Each frame's taps and fraction, as `read_placed_into` →
-        // `get_sample_raw_into` → `read_frame` derive them, written for every
-        // frame: one with no sample reads taps 0 at `t` = 0, weighted out.
+        // Each frame's whole index and fraction, as `read_placed_into` →
+        // `get_sample_raw_into` → `read_frame` derive them (`tap_indices`:
+        // the taps are derived from the index per channel with its `tap`),
+        // written for every frame: one with no sample gathers zeros at
+        // `t` = 0, which the cubic returns as `0.0`.
         let Gather {
-            taps,
+            index,
             frac,
             live,
             y,
         } = gather;
+        let last = len - 1;
         let flen = len as f64;
         for (i, pos) in positions.iter().enumerate() {
             let at = pos.and_then(|pos| {
@@ -923,22 +939,28 @@ impl MemorySource {
                     Direction::Forward => Some(p),
                 }
             });
-            (taps[i], frac[i], live[i]) = match at {
+            (index[i], frac[i], live[i]) = match at {
                 Some(at) => {
-                    let (t, f) = tap_indices(len, at);
-                    (t, f, true)
+                    let (idx, f) = split_position(at);
+                    // `idx` ≤ `len` (a fraction rounding up to the next
+                    // frame), and `len` fits a `u32` (above).
+                    (idx as u32, f, true)
                 }
-                None => ([0; 4], 0.0, false),
+                None => (0, 0.0, false),
             };
         }
-        let (taps, frac, live) = (&taps[..frames], &frac[..frames], &live[..frames]);
+        let (index, frac, live) = (&index[..frames], &frac[..frames], &live[..frames]);
         // Mono fans one interpolated lane to every channel.
         let reads = if src_ch == 1 { 1 } else { n };
         for c in 0..reads {
             let wave = self.wave.channel(c);
             for (t, lane) in y.iter_mut().enumerate() {
-                for ((s, tap), &on) in lane.iter_mut().zip(taps).zip(live) {
-                    *s = if on { wave[tap[t]] } else { 0.0 };
+                for ((s, &idx), &on) in lane.iter_mut().zip(index).zip(live) {
+                    *s = if on {
+                        wave[tap(idx as usize, last, t)]
+                    } else {
+                        0.0
+                    };
                 }
             }
             let [y0, y1, y2, y3] = &*y;
@@ -1109,7 +1131,7 @@ impl MemorySource {
         }
     }
 
-    /// Render block frames `range` (at most [`LANE_FRAMES`](crate::lanes::LANE_FRAMES))
+    /// Render block frames `range` (at most `positions.len()`)
     /// into frame `i - range.start` of each of `out`'s channels: the node's
     /// own read, gained by its own gain.
     ///
@@ -1191,6 +1213,29 @@ impl MemorySource {
         self.set_session_sample_rate(sample_rate.get());
     }
 
+    /// A block longer than its positions, through a stack array in pieces
+    /// of [`UNPREPARED_FRAMES`]: only a source driven by hand without a
+    /// `prepare` (no positions) or past the `max_block` it was prepared for
+    /// reaches this, so the prepared render never initialises the array.
+    #[cold]
+    #[inline(never)]
+    fn render_unprepared(&mut self, clock: &BlockClock<'_>, frames: usize, out: &mut [&mut [f32]]) {
+        let mut positions = [None; UNPREPARED_FRAMES];
+        let mut from = 0;
+        while from < frames {
+            let to = (from + UNPREPARED_FRAMES).min(frames);
+            self.render_range(clock, from..to, &mut positions, out);
+            from = to;
+        }
+    }
+
+    /// The longest block its own positions render in one piece (0: never
+    /// prepared).
+    #[cfg(test)]
+    pub(crate) fn scratch_frames(&self) -> usize {
+        self.positions.len()
+    }
+
     /// Rewind the free-running cursor to the start and stop it; forget the
     /// transport. What [`Node::reset`] does.
     fn rewind(&mut self) {
@@ -1211,8 +1256,14 @@ impl Node for MemorySource {
 
     /// The session rate: the conversion from the wave's rate is derived from
     /// it ([`set_session_sample_rate`](Self::set_session_sample_rate)).
+    /// Its block positions are sized from `max_block` (a re-prepare at
+    /// another size resizes them).
     fn prepare(&mut self, p: &Prepare) {
         self.set_render_rate(p.sample_rate());
+        let frames = p.max_block().get();
+        self.positions.clear();
+        self.positions.resize(frames, None);
+        self.positions.shrink_to_fit();
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1230,12 +1281,14 @@ impl Node for MemorySource {
         for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
             *slot = ch;
         }
-        let mut positions = [None; LANE_FRAMES];
-        let mut from = 0;
-        while from < frames {
-            let to = (from + LANE_FRAMES).min(frames);
-            self.render_range(&clock, from..to, &mut positions, &mut refs[..n]);
-            from = to;
+        // One piece: in a graph, `prepare` sized the positions for every
+        // block.
+        if frames <= self.positions.len() {
+            let mut positions = std::mem::take(&mut self.positions);
+            self.render_range(&clock, 0..frames, &mut positions, &mut refs[..n]);
+            self.positions = positions;
+        } else {
+            self.render_unprepared(&clock, frames, &mut refs[..n]);
         }
         Status::Modified
     }

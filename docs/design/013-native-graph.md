@@ -1794,7 +1794,7 @@ clones). The pieces:
   second write (review of #38: mirror-and-reconcile). The rate is now an
   argument: `MidiUnitIn::poll_unit(unit, block, sample_rate, buf)` and
   `MidiInPort::poll(block, sample_rate, buf)`, the polling unit's own
-  (`PolySynth`'s bank rate, `SoundFontUnit`'s fixed rate, a plugin node's
+  (`PolySynth`'s bank rate, `SoundFontUnit`'s synthesizer's rate, a plugin node's
   `PluginControls::sample_rate`, the in-process VST2 node's). A
   `MidiClipSource` holds no rate (`MidiClipSource::new` lost its argument;
   its `BeatCursor` is `unrated` and advanced with `advance_at`). The ripple
@@ -1986,16 +1986,14 @@ Recorded for later:
   butler blends a stream's ring by too (`loops::RingLoop::blend_run`).
 - ~~**Taps across a loop seam read past the loop (N2, review of #43)**~~:
   done, "Sampler tier bugs (after #43)".
-- **Re-rate a live `SoundFontUnit` on a device restart.** `restart_device`
-  re-prepares the graph, but a live SoundFont unit keeps the rate it was
-  built at (its `set_sample_rate` is a no-op, and a test pins that), so after
-  a 44.1 → 48 kHz restart it plays off pitch and off tempo.
-  `SoundFontUnit::with_sample_rate` (this PR) builds the replacement — same
-  SoundFont, channel state and preset, at the new rate — so the restart hook
-  can crossfade one in per SoundFont node (`AudioGraphRes::replace_with`,
-  with its captured controls, so the new unit's port and fork are bound). It
-  must carry the installed clip across (the new unit's port shares the old
-  one's source cell, as a `with_sample_rate` copy does).
+- ~~**Re-rate a live `SoundFontUnit` on a device restart.**~~ **Done**
+  (item 5's SoundFont node, "SoundFont as a graph node"): the node's
+  `prepare` swaps in `SoundFontUnit::with_sample_rate` (same SoundFont,
+  channel state and preset, no sounding voice) when the prepared rate
+  differs, so `restart_device`'s re-prepare re-rates it with the graph and
+  no hook-side crossfade is needed. Pinned by `graph_node.rs`'s
+  `the_node_follows_its_graphs_rate` and `soundfont_unit_audio.rs`'s
+  `a_same_rate_reprepare_mid_stream_does_not_disturb_rendering`.
 - **The reference probe reports 137 frames of latency in every mode but
   delays only in its latency mode**; the effect test uses that mode, where
   report and delay agree. The probe's other modes are routing oracles, not
@@ -2530,11 +2528,10 @@ never touches the live ring; a free-running source follows a relayed seek).
   **Still at the build rate after a restart** (audited: everything else
   that holds a rate is a graph unit, re-rated with the graph, or reads the
   transport's shared rate):
-  - `SoundFontUnit` (`tutti-soundfont`): rustysynth fixes its rate at
-    `Synthesizer` construction and `set_sample_rate` is a no-op, so a
-    soundfont voice plays at the build rate's pitch. Fixing it means
-    rebuilding the synthesizer (and losing its voices), which is a
-    soundfont-crate change.
+  - ~~`SoundFontUnit` (`tutti-soundfont`)~~: **re-rated since** — rustysynth
+    still fixes a `Synthesizer`'s rate, but the graph node's `prepare`
+    rebuilds it at the prepared rate (keeping the preset, losing the
+    sounding voices), so a restart's re-prepare re-rates it.
   - A host-built `UmpOutRes` (`midi-hardware`): its `JrStream` stamps JR
     timestamps and paces JR Clock at the rate it was built with. The host
     constructs it, so the hook cannot see it; `JrStream` has no way to
@@ -3185,9 +3182,16 @@ vocoder retirement channel for voices the pool removes.
   not `Cx::arrival` earlier: `Env` cannot answer for frames before its block.
   A plugin behind a latent path therefore sees the uncompensated playhead, as
   it did under `Legacy`.
-- **In-process VST2.** Still an `AudioUnit` through `Legacy`, polling its
-  transport (`PolledTransport`, sharing the snapshot mapping); it ports with
-  the "Port mechanically" group.
+- **In-process VST2: ported** (with the "Port mechanically" group).
+  `impl Node for InProcessVst2Client`
+  (`format/vst2_in_process/node.rs`): MIDI on an event input, MIDI-out on
+  an event output for a plugin that declares it, the rate parked in
+  `prepare` for the main thread to dispatch. It goes in through its own
+  `IntoNode` with no fork source, so a graph holding one is refused a fork
+  (`ForkError::NotForkable`). What remains: it still polls its transport
+  (`PolledTransport`, sharing the snapshot mapping, installed with
+  `set_transport_source`) once per block rather than reading
+  `Env::transport_at`.
 - **A device whose callback is not known, or varies.** The chunk is the
   device's callback only when the host knows it: tutti-cpal opens a device
   that reports a buffer range with a fixed 512-frame buffer

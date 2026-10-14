@@ -40,8 +40,10 @@
 //! restart onto the old device at the old rate — `restart_device` with it,
 //! or a plain `TuttiDriver::restart` — moves nothing and plays again.
 //!
-//! Not re-rated here: a `SoundFontUnit` (rustysynth fixes its rate at
-//! construction) and a host-built `UmpOutRes` (its JR clock). A MIDI clip
+//! A `SoundFontUnit` re-rates in its own `prepare` (rustysynth fixes a
+//! synthesizer's rate, so the node swaps in one built at the new rate,
+//! keeping its preset and channel state but no sounding voice). Not
+//! re-rated here: a host-built `UmpOutRes` (its JR clock). A MIDI clip
 //! node needs nothing: it places its events by its block's `Env`, rate
 //! included.
 

@@ -166,7 +166,8 @@ pub struct Bound {
     /// `MeterMap` allocates.
     default_meter: MeterMap,
     /// The curve segments in flight on the event input, sent as parameter
-    /// points until each lands. A fixed array: nothing allocated.
+    /// points until each lands. Its slots are allocated by `prepare`;
+    /// nothing is allocated on the audio thread.
     segments: segment_points::SegmentPoints,
 }
 

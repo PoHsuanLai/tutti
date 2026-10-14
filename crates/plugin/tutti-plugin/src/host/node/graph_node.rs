@@ -78,7 +78,10 @@ impl Node for PluginClient<Bound> {
     fn prepare(&mut self, p: &Prepare) {
         let c = &mut *self;
         c.state.io.prepare(p);
-        c.state.segments.clear();
+        // Control thread: the one place the slots are allocated.
+        c.state
+            .segments
+            .prepare(super::segment_points::MAX_SEGMENTS);
         c.controls.set_pipeline(c.state.io.pipeline_latency());
         c.controls.restamp(p.sample_rate());
         // `.get()` here and nowhere earlier: `set_sample_rate_rt` puts the rate

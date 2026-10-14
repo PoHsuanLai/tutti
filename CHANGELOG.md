@@ -45,8 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ParamSegment::raw_value_after(j)`. The hosted plugin node takes points,
   so it follows a segment on its event input itself: points along it in
   every chunk (the `PluginAutomation` stride, at most 10 a chunk) and its
-  end value on the frame it arrives (`arrives_after`), for up to 16
-  parameters at once; a later ramp or segment on the parameter stops it. `Editor::schedule` refuses a segment into
+  end value on the frame it arrives (`arrives_after`); a later ramp or
+  segment on the parameter stops it. It follows up to 1024 parameters at
+  once (slots allocated in `prepare`); past that a segment is sent as a
+  ramp, its end value at once. Past a chunk's 16 parameter queues a
+  starved segment's end value lands on a later chunk instead of its own
+  frame. `Editor::schedule` refuses a segment into
   a node that does not honour offsets sample-accurately, as it refuses a
   ramp.
 

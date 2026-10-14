@@ -4213,10 +4213,19 @@ carried.
   `PluginAutomation` spaces them, at most 10 a chunk) and its end value on
   the frame it arrives (`ParamSegment::arrives_after`), after which the
   plugin holds it. A later ramp or segment on the parameter stops it on
-  its frame. The state is a fixed array of 16 parameters inside the node
-  (a 17th segment in flight sends its first point only), cleared on a
-  reset or re-prepare: nothing is allocated. A ramp is still its target at
-  its frame. `PluginAutomation` (the plugin's
+  its frame. **Bounds:** one slot per parameter address, 1024 slots,
+  allocated in the node's `prepare` (the plugin's parameter count would be
+  exact, but asking the plugin-server is a blocking round trip a live
+  `prepare` must not make); a segment that finds them all taken is sent as
+  a ramp, its end value at once on its event frame. A chunk's parameter
+  changes hold 16 queues (a protocol limit every automation source shares,
+  never spilled to the heap): a segment whose point finds no queue keeps
+  its slot, past its arrival if need be, and sends where it has got to on
+  the first frame of a later take with room, so with more than 16
+  parameters moving at once a starved segment lands late, never not at
+  all. Cleared on a reset or re-prepare; nothing is allocated on the audio
+  thread (`clap_node_no_alloc` drives a lane into the plugin under the
+  gate). A ramp is still its target at its frame. `PluginAutomation` (the plugin's
   automation source) is unchanged: it samples its curves into
   `ParamRamp::foreign` points at a stride, which is what its target takes.
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that

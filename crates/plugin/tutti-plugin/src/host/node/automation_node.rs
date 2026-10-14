@@ -244,13 +244,14 @@ pub(super) fn address(id: u32, indexed: bool) -> Option<ParamAddress> {
 /// is room. A queue already holding `MAX_POINTS` has its last point replaced
 /// (the latest value wins: a chunk spanning several blocks gets each block's
 /// points, and the end of the chunk must stay exact). Nothing allocates:
-/// past the inline queue count a new parameter is dropped.
+/// past the inline queue count a new parameter is dropped, and this returns
+/// `false`.
 pub(super) fn add_point(
     changes: &mut crate::protocol::ParameterChanges,
     address: ParamAddress,
     offset: i32,
     value: f32,
-) {
+) -> bool {
     let queues = &mut changes.queues;
     let i = match queues.iter().position(|q| q.param_id == address) {
         Some(i) => i,
@@ -258,13 +259,14 @@ pub(super) fn add_point(
             queues.push(crate::protocol::ParameterQueue::new(address));
             queues.len() - 1
         }
-        None => return,
+        None => return false,
     };
     let q = &mut queues[i];
     if q.points.len() >= MAX_POINTS {
         q.points.pop();
     }
     q.add_point(offset, f64::from(value));
+    true
 }
 
 #[cfg(test)]

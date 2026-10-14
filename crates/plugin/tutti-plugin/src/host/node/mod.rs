@@ -375,7 +375,7 @@ impl PluginClient<Unbound> {
                 listener_invalidate_sink.fire(PluginInvalidation::Latency { samples });
             }
             BridgeEvent::TailChanged { tail } => {
-                listener_tail.store(Arc::new(tail));
+                *controls::lock_tail(&listener_tail) = tail;
                 listener_invalidate_sink.fire(PluginInvalidation::Tail { tail });
             }
             BridgeEvent::ParameterChanged { index, value } => {
@@ -545,7 +545,8 @@ impl<S> PluginClient<S> {
         self.controls.tail()
     }
 
-    /// Overrides the plugin's reported tail. RT-safe.
+    /// Overrides the plugin's reported tail. Control side: takes a short lock
+    /// (nothing on the audio thread reads the tail).
     ///
     /// Normally driven by the bridge thread when the plugin-server emits
     /// `BridgeMessage::TailChanged`; exposed publicly so callers can also force

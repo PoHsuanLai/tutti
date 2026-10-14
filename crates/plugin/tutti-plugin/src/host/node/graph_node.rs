@@ -137,8 +137,9 @@ impl Node for PluginClient<Bound> {
         out_events.clear();
 
         // One meter read per block, never per chunk. A nested read (the
-        // slot's load, then the cell's), as the transport source always made.
-        let meter_slot = c.controls.meter.load();
+        // slot, then the meter cell it holds), one reader slot in each cell:
+        // see `PluginMeter`.
+        let meter_slot = c.controls.meter.read();
         let meter_ref = meter_slot.as_ref().map(|m| m.read());
         let meter = meter_ref.as_deref().unwrap_or(default_meter);
 

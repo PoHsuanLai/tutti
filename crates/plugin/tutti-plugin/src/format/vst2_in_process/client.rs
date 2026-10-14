@@ -181,7 +181,7 @@ impl TransportFeed {
     /// the out-of-process node's fork), and a counter from zero.
     pub(super) fn forked(&self) -> Self {
         Self {
-            meter: PluginMeter::holding(self.meter.load_full()),
+            meter: PluginMeter::holding(self.meter.installed()),
             default_meter: MeterMap::default(),
             steady: SteadyTime::default(),
             last: TransportInfo::default(),
@@ -191,8 +191,9 @@ impl TransportFeed {
     /// The snapshot for a block of `frames`, then count them. A plugin that
     /// did not declare [`Features::TRANSPORT`] is handed the default
     /// (stopped) snapshot; an empty block, which has no frame to read the
-    /// transport at, repeats the last one. Audio thread: two lock-free loads
-    /// (the meter's cell, then its value), no allocation.
+    /// transport at, repeats the last one. Audio thread: two wait-free
+    /// borrows (the meter slot, then the meter cell it holds), no allocation
+    /// and no free.
     pub(super) fn block(
         &mut self,
         cx: &Cx<'_>,
@@ -206,7 +207,7 @@ impl TransportFeed {
         let Some(at) = Offset::new(0, Samples(frames)) else {
             return self.last;
         };
-        let slot = self.meter.load();
+        let slot = self.meter.read();
         let meter = slot.as_ref().map(|m| m.read());
         self.last = transport_source::from_cx(
             cx,

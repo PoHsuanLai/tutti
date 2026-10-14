@@ -1361,7 +1361,11 @@ fn a_fork_carries_an_in_flight_segment() {
     );
     ed.commit().expect("commits");
     let live = render(&mut exec, &mut ed, 600, 64);
-    assert_eq!(live[1][599], seg.raw_value_after(199), "live, mid-segment");
+    assert_eq!(
+        live[1][599],
+        seg.raw_value_after(Samples(199)),
+        "live, mid-segment"
+    );
     let (mut fed, mut fexec) = ed
         .fork(ForkTarget::Master, ForkMode::Live, prepare(64))
         .expect("forks");
@@ -1369,7 +1373,7 @@ fn a_fork_carries_an_in_flight_segment() {
     for (i, &v) in out[1].iter().enumerate() {
         assert_eq!(
             v,
-            seg.raw_value_after(200 + i as u32),
+            seg.raw_value_after(Samples(200 + i)),
             "frame {i}: the segment, carried on"
         );
     }

@@ -303,7 +303,7 @@ fn an_unrepresentable_piece_is_linear_between_block_edges() {
 /// sine) takes the same fallback: exact on each block's first and last
 /// frame.
 ///
-/// Mutation (run): the fallback sending nothing â the port holds 0 â fails.
+/// Mutation (run): the fallback sending nothing → the port holds 0 → fails.
 #[test]
 fn a_curve_without_pieces_takes_the_fallback() {
     struct Sine;

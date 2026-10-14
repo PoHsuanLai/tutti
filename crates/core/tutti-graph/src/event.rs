@@ -319,7 +319,10 @@ impl ShapeTag {
 /// [`new`](Self::new) builds the ramp convention (`position = 1`: the
 /// event's frame is one step in, `to` lands on frame `duration - 1`);
 /// [`resumed`](Self::resumed) sets a fractional position and length, for a
-/// producer whose breakpoints fall between frames.
+/// producer whose breakpoints fall between frames. A **negative position**
+/// is a delayed start: the source holds `from` until `position + j` reaches
+/// 0, then moves. A length that is not finite and above zero (zero,
+/// negative, infinite, NaN) is a step to `to` on the event's frame.
 ///
 /// **Interrupted** by any later ramp or segment event for the same
 /// parameter on the same source, from that event's frame: a segment jumps to
@@ -344,8 +347,9 @@ impl ShapeTag {
 /// assert_eq!(s.start(ParamKey::<Hz>::CUTOFF), Some(Hz(200.0)));
 /// assert_eq!(s.shape(), SegmentShape::PowerIn(2.0));
 /// // Frame 239 is 240/480 of the way: a quadratic ease-in is a quarter up.
-/// assert_eq!(s.raw_value_after(239), 200.0 + 600.0 * 0.25);
-/// assert_eq!(s.raw_value_after(479), 800.0);
+/// assert_eq!(s.raw_value_after(Samples(239)), 200.0 + 600.0 * 0.25);
+/// assert_eq!(s.raw_value_after(Samples(479)), 800.0);
+/// assert_eq!(s.arrives_after(), Some(Samples(479)));
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamSegment {
@@ -419,8 +423,8 @@ impl ParamSegment {
     /// event's frame: for a producer whose breakpoints fall between frames,
     /// or that enters a segment part-way (a seek, a loop wrap, each block's
     /// re-send). Both are fractional; see the type docs for the value each
-    /// frame gets. A length of zero, or one that is not finite, is a step
-    /// to `to`.
+    /// frame gets. A length that is not finite and above zero is a step to
+    /// `to`; a negative position holds `from` until it reaches 0.
     pub fn resumed(mut self, position: SamplePosition, length: SamplePosition) -> Self {
         self.position = position.get() as f32;
         self.length = length.get() as f32;
@@ -486,19 +490,46 @@ impl ParamSegment {
         SamplePosition(f64::from(self.length))
     }
 
-    /// The raw value `j` frames after the event's frame (`0`: its own),
-    /// whatever the unit: the value a param port gives this source there,
-    /// for a node that takes point values (a hosted plugin's parameter) or a
-    /// test.
-    pub fn raw_value_after(&self, j: u32) -> f32 {
+    /// The raw value `j` frames after the event's frame (`Samples(0)`: its
+    /// own), whatever the unit: the value a param port gives this source
+    /// there, for a node that takes point values (a hosted plugin's
+    /// parameter) or a test. Past `u32::MAX` frames it reads the value
+    /// there.
+    pub fn raw_value_after(&self, j: Samples) -> f32 {
         segment_value(
             self.from,
             self.to,
             self.shape(),
             self.position,
             self.length,
-            j,
+            saturate(j),
         )
+    }
+
+    /// How many frames after the event's frame the segment arrives: the
+    /// first `j` at which [`raw_value_after`](Self::raw_value_after) is the
+    /// end value (`Samples(0)` for a step). `None` when it never arrives
+    /// within `u32::MAX` frames. For a node that takes point values and
+    /// must land the end value on its frame.
+    pub fn arrives_after(&self) -> Option<Samples> {
+        let (p, l) = (self.position, self.length);
+        if segment_progress(p, l, 0).is_none() {
+            return Some(Samples(0));
+        }
+        // Finite here. The guess is within a frame or two of the
+        // predicate's answer, which decides.
+        let guess = (l - p).ceil().max(0.0);
+        if guess >= u32::MAX as f32 {
+            return None;
+        }
+        let mut j = guess as u32;
+        while j > 0 && segment_progress(p, l, j - 1).is_none() {
+            j -= 1;
+        }
+        while segment_progress(p, l, j).is_some() {
+            j = j.checked_add(1)?;
+        }
+        Some(Samples(j as usize))
     }
 
     /// The raw endpoints, position and length, for the graph's own param
@@ -508,8 +539,8 @@ impl ParamSegment {
     }
 }
 
-/// A segment's value `j` frames after its event: `to` exactly once its
-/// progress reaches 1 (or is NaN: a zero length), so a segment always lands
+/// A segment's value `j` frames after its event: `to` exactly once it
+/// has arrived (see [`segment_progress`]), so a segment always lands
 /// on its end value. The one definition the param port, the reference
 /// interpreter and [`ParamSegment::raw_value_after`] share, as they share a
 /// shaping LUT.
@@ -529,9 +560,14 @@ pub(crate) fn segment_value(
 }
 
 /// A segment's progress `j` frames after its event, `None` once it has
-/// arrived: at 1 or past, or NaN (a zero length).
+/// arrived: at 1 or past, NaN (a NaN position), or a length that is not
+/// finite and above zero (a step). A negative progress (a delayed start) is
+/// returned as is; the shape clamps it to 0.
 #[inline]
 pub(crate) fn segment_progress(position: f32, length: f32, j: u32) -> Option<f32> {
+    if !(length > 0.0 && length.is_finite()) {
+        return None;
+    }
     let t = (position + j as f32) / length;
     (t < 1.0).then_some(t)
 }
@@ -1316,8 +1352,10 @@ mod tests {
     /// A segment's address round-trips, built-in and foreign never answer
     /// for each other, and its shape and timing read back as built.
     ///
-    /// Mutation (run): drop the `foreign` test in `ParamSegment::is_for` →
-    /// the foreign segment with id 0 reads back as a cutoff → fails.
+    /// Mutations (run), each fails: drop the `foreign` test in
+    /// `ParamSegment::is_for` (the foreign segment with id 0 reads back as a
+    /// cutoff); the step guard in `segment_progress` as `length == 0.0` (a
+    /// negative or infinite length holds `from`).
     #[test]
     fn a_segment_reads_back_as_built() {
         use tutti_types::{Hz, ParamKey};
@@ -1344,11 +1382,27 @@ mod tests {
         assert_eq!(s.length(), SamplePosition(10.0));
         // 2.5 frames along at its event, 7.5 more to go: the end value
         // lands on frame 8, held after.
-        assert!(s.raw_value_after(7) < 2.0);
-        assert_eq!(s.raw_value_after(8), 2.0);
-        assert_eq!(s.raw_value_after(1_000), 2.0);
+        assert!(s.raw_value_after(Samples(7)) < 2.0);
+        assert_eq!(s.raw_value_after(Samples(8)), 2.0);
+        assert_eq!(s.raw_value_after(Samples(1_000)), 2.0);
+        assert_eq!(s.arrives_after(), Some(Samples(8)));
         // A zero length is a step.
         let step = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), SegmentShape::Hold);
-        assert_eq!(step.raw_value_after(0), 2.0);
+        assert_eq!(step.raw_value_after(Samples(0)), 2.0);
+        assert_eq!(step.arrives_after(), Some(Samples(0)));
+        // A length that is not above zero and finite is a step too, never a
+        // segment held at its start.
+        for l in [-4.0, f64::INFINITY, f64::NAN] {
+            let s = step.resumed(SamplePosition(1.0), SamplePosition(l));
+            assert_eq!(s.raw_value_after(Samples(0)), 2.0, "length {l}");
+            assert_eq!(s.arrives_after(), Some(Samples(0)), "length {l}");
+        }
+        // A negative position holds `from` until it reaches 0, then moves.
+        let late = ParamSegment::new(key, Hz(1.0), Hz(2.0), Samples(0), SegmentShape::Linear)
+            .resumed(SamplePosition(-3.0), SamplePosition(4.0));
+        assert_eq!(late.raw_value_after(Samples(2)), 1.0);
+        assert_eq!(late.raw_value_after(Samples(3)), 1.0);
+        assert_eq!(late.raw_value_after(Samples(5)), 1.5);
+        assert_eq!(late.arrives_after(), Some(Samples(7)));
     }
 }

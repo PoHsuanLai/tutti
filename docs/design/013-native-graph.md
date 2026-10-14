@@ -4152,7 +4152,9 @@ carried.
   `f32`), its position and length are `f32` (exact to 2^24 frames, about
   5.8 minutes at 48 kHz, where the types stop for the event's size), and
   `ParamRamp`'s duration is now stored as a saturating `u32` (a `usize`
-  aligned the whole event to 8).
+  aligned the whole event to 8). A length that is not finite and above
+  zero is a step to `to`; a negative position is a delayed start (the
+  source holds `from` until it reaches 0).
 - **`audio-automation`'s curves**, mapped by
   `tutti_nodes::automation::segment_shape`: `Linear`; `Stepped` → `Hold`;
   `Exponential` and `QuadIn` (both `t²`) → `PowerIn(2)`; `Logarithmic`
@@ -4198,12 +4200,23 @@ carried.
   breakpoint or loop wrap inside the block): exact at those edges. Where
   the curve has no value it sends nothing and the port holds. At most
   `LANE_EVENT_CAPACITY` (128) sends a block; past that they are dropped and
-  counted. `AutomationLaneNode::new` keeps its audio output, for anything
+  counted (fixed, because a node's event capacity is read from its shape at
+  insert, before `prepare`): an envelope denser than about 127 breakpoints
+  in a block stays on the last segment that got through until the next
+  block re-sends. `AutomationLaneNode::new` keeps its audio output, for anything
   that reads a signal.
 - **A hosted plugin** takes parameter points (CLAP and VST3 parameter
-  changes are point values), so its node sends a segment that reaches its
-  event input as one point, the segment's value on its event frame; a ramp
-  is still its target at its frame. `PluginAutomation` (the plugin's
+  changes are point values), so its node follows a segment that reaches
+  its event input itself (`SegmentPoints`, `host/node/segment_points.rs`):
+  the segment's value on its event frame, then points along it in every
+  chunk (at `stride_for(chunk)` and on the chunk's last frame, as
+  `PluginAutomation` spaces them, at most 10 a chunk) and its end value on
+  the frame it arrives (`ParamSegment::arrives_after`), after which the
+  plugin holds it. A later ramp or segment on the parameter stops it on
+  its frame. The state is a fixed array of 16 parameters inside the node
+  (a 17th segment in flight sends its first point only), cleared on a
+  reset or re-prepare: nothing is allocated. A ramp is still its target at
+  its frame. `PluginAutomation` (the plugin's
   automation source) is unchanged: it samples its curves into
   `ParamRamp::foreign` points at a stride, which is what its target takes.
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
@@ -4231,6 +4244,15 @@ against `audio-automation`'s own value at every frame under ragged blocks
 (and at mid-piece, a quarter for a half: the curve, not a line); loop wraps
 inside blocks, and a seek, tempo change and stop mid-block; the fallback
 for `Elastic` and for a curve with no pieces, exact at block edges.
+`tests/rt_no_alloc_modulation.rs`: four event lanes (segments, loop wraps,
+both fallbacks) driving param ports under `assert_no_alloc`, serial and on
+a gated `WorkerPool`, and bit for bit serial against pools of 2, 3, 4 and
+8. tutti-plugin: `segment_points`' unit tests (points in every chunk, the
+end value on its frame, an interruption), and `tests/clap_automation.rs`
+against the reference CLAP plugin's gain: a scheduled segment drives it
+through the curve to exactly its end value on its frame across four
+chunks, an interrupting ramp wins, and a `for_foreign` lane does the
+same along its envelope.
 
 **Deferred.** `LayeredCurve` and the automation `Recorder` answer
 `segment_at` with `None` (the fallback): a sum of layers has no single

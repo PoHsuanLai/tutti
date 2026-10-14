@@ -15,8 +15,17 @@ use tutti_types::{Beat, Latency, ParamKey, SamplePosition, Samples, Tail, Unit};
 use super::Curve;
 
 /// Segments one event-output lane sends per block, at most: one where each
-/// transport piece starts, one per breakpoint and per loop wrap. Past it the
-/// rest are refused and counted (`Executor::dropped_events`).
+/// transport piece starts, one per breakpoint and per loop wrap (and, in the
+/// fallback, one per linear piece). Fixed, because a node's event capacity
+/// is read from its shape at insert, before `prepare` names a block size.
+///
+/// **The density limit.** An envelope with more than about 127 breakpoints
+/// inside one block (one every frame at 128-frame blocks, one every 8 at
+/// 1024) loses the sends past the capacity: they are refused and counted
+/// (`Executor::dropped_events`), and the port stays on the last segment
+/// that got through until the next block re-sends where the curve is. Thin
+/// such an envelope (`AutomationEnvelope::simplify`) or use the audio
+/// lane ([`AutomationLaneNode::new`]), which has no limit.
 pub const LANE_EVENT_CAPACITY: u32 = 128;
 
 /// The [`SegmentShape`] an `audio-automation` [`CurveType`] is, or `None`
@@ -401,8 +410,7 @@ impl AutomationLaneNode {
             });
         }
         if let Some((i, seg)) = last {
-            let j = u32::try_from(frames - 1 - i).unwrap_or(u32::MAX);
-            self.last_value = seg.raw_value_after(j);
+            self.last_value = seg.raw_value_after(Samples(frames - 1 - i));
         }
     }
 }

@@ -662,7 +662,7 @@ impl Node for RampEvery {
 /// is read (`*Box::new(r.load(k))`) → aborts (in the first phase already:
 /// the range is read every block a port is modulated, moved or not).
 /// Allocate where `render_ramps` starts a segment (a `Vec` per segment
-/// event) â aborts.
+/// event) → aborts.
 fn modulated_params_are_allocation_free_on(workers: usize) {
     use tutti_graph::{ParamFrom, ParamIn, ParamShaping, ShapeLut};
     let (mut ed, mut exec) = Editor::new(prepare(256));

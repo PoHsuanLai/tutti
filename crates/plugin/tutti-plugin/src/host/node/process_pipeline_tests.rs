@@ -1183,10 +1183,12 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
     // scheduler, not of the drain. An exact `== 1` read 2 or 3 there. What the
     // drain owes is what was abandoned, so that is the bound.
     //
-    // Mutations: stub `settle` to `0` → `settled == 0` → the first assert fails
+    // Mutations: stub `settle` to `0` → `settled == 0` → the second assert fails
     // every run. Over-count the drain (`note_settled(taken * 2)`) → `settled`
     // exceeds `abandoned` → the third fails (every run on an unloaded machine,
     // where block 1 is the only one abandoned).
+    // `settled` first: its `Acquire` makes every `abandoned` bump that owed
+    // those replies visible to the read after it.
     let settled = bridge.settled_replies();
     let abandoned = bridge.abandoned_replies();
     assert!(
@@ -1204,8 +1206,7 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
     assert!(
         settled <= abandoned,
         "the drain took {settled} replies off the socket but only {abandoned} \
-         were ever abandoned: it consumed frames that belonged to blocks still \
-         waiting on them."
+         were ever abandoned: the drain's count no longer matches what it owes."
     );
 
     // The server stamps block `seq`'s reply with `data[0] == seq` (not its

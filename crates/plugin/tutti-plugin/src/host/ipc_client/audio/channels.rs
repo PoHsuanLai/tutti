@@ -112,21 +112,25 @@ impl Channels {
     }
 
     /// Record that the drain took `n` owed replies off the socket. Called by the
-    /// bridge thread only; `Relaxed` because nothing branches on it.
+    /// bridge thread only. `Release`, paired with the `Acquire` in
+    /// [`settled`](Self::settled): a reader that sees a settle also sees the
+    /// [`note_abandoned`](Self::note_abandoned) that owed it, so a test may
+    /// assert `settled <= abandoned` by reading `settled` first.
     pub(super) fn note_settled(&self, n: u32) {
         if n > 0 {
-            self.settled.fetch_add(n as u64, Ordering::Relaxed);
+            self.settled.fetch_add(n as u64, Ordering::Release);
         }
     }
 
     /// How many owed replies the drain has taken, over the life of the bridge.
     #[cfg(test)]
     pub(super) fn settled(&self) -> u64 {
-        self.settled.load(Ordering::Relaxed)
+        self.settled.load(Ordering::Acquire)
     }
 
     /// Record that a block's reply missed its budget and is now owed. Called
-    /// by the bridge thread only; `Relaxed` because nothing branches on it.
+    /// by the bridge thread only, before any settle of that reply; `Relaxed`
+    /// because the `Release` on [`note_settled`](Self::note_settled) orders it.
     pub(super) fn note_abandoned(&self) {
         self.abandoned.fetch_add(1, Ordering::Relaxed);
     }

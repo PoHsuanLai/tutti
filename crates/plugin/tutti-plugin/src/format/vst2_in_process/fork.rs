@@ -37,9 +37,9 @@
 //!    (`effSetChunk`, or `setParameter` for each value). In that order because
 //!    a program change may move every parameter; the blob is what the live
 //!    instance holds now.
-//! 4. **Read the transport from the block's `Env`**, not the live node's
-//!    polled reader (which reads the live timeline): for an offline fork the
-//!    render's timeline, with the live node's meter if one was installed.
+//! 4. **Read the transport from the block's `Cx`**, as the live node does:
+//!    for an offline fork the render's timeline, with the meter the live
+//!    node had installed when it was forked.
 //! 5. **Report the render mode**: an offline fork answers
 //!    `audioMasterGetCurrentProcessLevel` with `kVstProcessLevelOffline`; a
 //!    live fork ([`ForkMode::Live`]) answers as the live instance did when it
@@ -92,15 +92,11 @@ use std::path::Path;
 use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
-use tutti_core::meter::MeterMap;
-use tutti_core::RtPublish;
 use tutti_graph::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
 use tutti_vst2_host::Vst2Instance;
 
-use super::client::{EnvTransport, InProcessVst2Client, RateDelivery};
+use super::client::{InProcessVst2Client, RateDelivery, TransportFeed};
 use crate::error::{PluginForkError, StateError};
-use crate::host::node::input_slot::InputSlot;
-use crate::host::node::transport_source::{PolledTransport, SteadyTime};
 
 /// An in-process VST2 node's [`ForkSource`]: everything a fork needs from the
 /// live node, and nothing that keeps the live plugin alive.
@@ -117,9 +113,9 @@ pub(super) struct Vst2Fork {
     /// instance is loaded at. The fork's own `prepare` then tells it the
     /// fork's rate.
     sample_rate: f64,
-    /// The live node's transport slot (its shared cell): the meter a fork
-    /// reads its bars with, if the host installed one.
-    transport: InputSlot<PolledTransport>,
+    /// The live node's transport feed (its shared meter cell): the meter a
+    /// fork reads its bars with, as installed when it forks.
+    transport: TransportFeed,
 }
 
 impl Vst2Fork {
@@ -185,17 +181,7 @@ impl Vst2Fork {
             instance.set_offline_render(offline);
         }
 
-        let meter = self
-            .transport
-            .source_ref()
-            .load()
-            .as_ref()
-            .map(|source| Arc::clone(source.meter()))
-            .unwrap_or_else(|| Arc::new(RtPublish::new(MeterMap::default())));
-        fork.env_transport = Some(EnvTransport {
-            meter,
-            steady: SteadyTime::default(),
-        });
+        fork.transport = self.transport.forked();
         fork.rate_delivery = RateDelivery::InPrepare;
         Ok(fork)
     }
@@ -235,10 +221,12 @@ impl InProcessVst2Client {
     /// The state is the current program (when the plugin has programs) and
     /// what the plugin saves: its own chunk for a plugin that declares
     /// `effFlagsProgramChunks`, else every parameter's value. The fork reads
-    /// its transport from the `Env` of the graph it renders in, not the
-    /// installed reader. [`ForkMode::Offline`] tells the plugin it renders
-    /// offline; [`ForkMode::Live`] keeps the live instance's render mode. A fork carries no running DSP state (voices, delay lines), so
-    /// it starts silent. Nothing set on either instance afterwards reaches the
+    /// its transport from the graph it renders in, as the live node does,
+    /// with the meter installed on this node now.
+    /// [`ForkMode::Offline`] tells the plugin it renders offline;
+    /// [`ForkMode::Live`] keeps the live instance's render mode. A fork
+    /// carries no running DSP state (voices, delay lines), so it starts
+    /// silent. Nothing set on either instance afterwards reaches the
     /// other.
     ///
     /// # Errors

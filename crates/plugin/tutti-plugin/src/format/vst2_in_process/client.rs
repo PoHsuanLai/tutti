@@ -16,11 +16,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use tutti_core::{MeterMap, RtPublish, Samples};
+use tutti_graph::{Cx, Offset};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
-use crate::host::node::input_slot::InputSlot;
-use crate::host::node::transport_source::{PolledTransport, SteadyTime};
+use crate::host::node::transport_source::{self, SteadyTime};
+use crate::host::node::PluginMeter;
 use crate::protocol::{Features, MidiEventVec, TransportInfo};
 
 /// Per-channel f32 staging buffers.
@@ -66,13 +68,12 @@ pub struct InProcessVst2Client {
     pub(super) metadata: PluginInfo,
     /// The block's MIDI in: its event input's.
     pub(super) midi: MidiEventVec,
-    /// Per-block transport snapshot, gated on [`Features::TRANSPORT`]. The
-    /// producer cell is shared across clones (see [`InputSlot`]), so a
-    /// `set_transport_source` on any clone reaches the one the audio thread
-    /// runs.
-    pub(super) transport: InputSlot<PolledTransport>,
+    /// The block's transport, read from the graph's [`Cx`] (live and in a
+    /// fork alike), with the project meter installed through
+    /// [`set_meter`](Self::set_meter).
+    pub(super) transport: TransportFeed,
     /// What the loader reported for this plugin, as the gate `transport` is
-    /// drained against. Stored rather than passed in per block so the node's
+    /// read against. Stored rather than passed in per block so the node's
     /// declared capability and its delivered behaviour read from one value.
     pub(super) features: Features,
     /// Per-clone audio scratch handed to `vst::AudioBuffer::from_raw`.
@@ -105,9 +106,6 @@ pub struct InProcessVst2Client {
     pub(super) origin: Arc<Path>,
     /// Who tells the plugin the rate the node is prepared at.
     pub(super) rate_delivery: RateDelivery,
-    /// Where the block's transport comes from: the installed polled reader
-    /// (`None`), or, on a fork, the block's own `Env`.
-    pub(super) env_transport: Option<EnvTransport>,
 }
 
 /// Who tells the plugin the rate the node is prepared at.
@@ -125,15 +123,86 @@ pub(super) enum RateDelivery {
     InPrepare,
 }
 
-/// A fork's transport: the block's [`Env`](tutti_graph::Env) (for an offline
-/// fork, the render's timeline), read the way the out-of-process plugin node
-/// reads it, with the live node's meter.
+/// The transport a block hands the plugin: what `audioMasterGetTime`
+/// answers while the plugin processes it.
+///
+/// One path for the live node and its fork: the transport the block's input
+/// was rendered at ([`Cx::transport_at`] at its first frame, the node's
+/// compiled arrival latency earlier), mapped the way the out-of-process
+/// plugin node maps it ([`transport_source::from_cx`]), with the project
+/// meter for the signature and bar. For an offline fork the `Cx` is the
+/// render's. The snapshot is built in `process` before the plugin is
+/// entered: `Vst2Instance::process_f32` publishes it to the cell the
+/// callback reads, then calls the plugin.
 #[derive(Clone)]
-pub(super) struct EnvTransport {
-    /// The project meter, read once per block.
-    pub(super) meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>,
+pub(super) struct TransportFeed {
+    /// The project meter, read once per block. The cell is shared across the
+    /// live node's clones, so a [`set_meter`](InProcessVst2Client::set_meter)
+    /// on any clone reaches the one the audio thread runs; a fork has a cell
+    /// of its own ([`forked`](Self::forked)).
+    meter: PluginMeter,
+    /// The meter read when none is installed (4/4 from bar 0), held so a
+    /// block never builds one.
+    default_meter: MeterMap,
     /// The free-running sample counter: frames this node rendered.
-    pub(super) steady: SteadyTime,
+    steady: SteadyTime,
+    /// The last snapshot handed out: what an empty block (no frame to read
+    /// the transport at) repeats.
+    last: TransportInfo,
+}
+
+impl TransportFeed {
+    /// No meter installed, nothing rendered.
+    pub(super) fn new() -> Self {
+        Self {
+            meter: PluginMeter::default(),
+            default_meter: MeterMap::default(),
+            steady: SteadyTime::default(),
+            last: TransportInfo::default(),
+        }
+    }
+
+    /// A fork's feed: the meter installed now, in a cell of its own (a meter
+    /// installed on the live node afterwards does not reach the fork, as for
+    /// the out-of-process node's fork), and a counter from zero.
+    pub(super) fn forked(&self) -> Self {
+        Self {
+            meter: PluginMeter::holding(self.meter.load_full()),
+            default_meter: MeterMap::default(),
+            steady: SteadyTime::default(),
+            last: TransportInfo::default(),
+        }
+    }
+
+    /// The snapshot for a block of `frames`, then count them. A plugin that
+    /// did not declare [`Features::TRANSPORT`] is handed the default
+    /// (stopped) snapshot; an empty block, which has no frame to read the
+    /// transport at, repeats the last one. Audio thread: two lock-free loads
+    /// (the meter's cell, then its value), no allocation.
+    pub(super) fn block(
+        &mut self,
+        cx: &Cx<'_>,
+        frames: usize,
+        features: Features,
+    ) -> TransportInfo {
+        if !features.contains(Features::TRANSPORT) {
+            self.steady.advance(frames);
+            return TransportInfo::default();
+        }
+        let Some(at) = Offset::new(0, Samples(frames)) else {
+            return self.last;
+        };
+        let slot = self.meter.load();
+        let meter = slot.as_ref().map(|m| m.read());
+        self.last = transport_source::from_cx(
+            cx,
+            at,
+            self.steady.at(0),
+            meter.as_deref().unwrap_or(&self.default_meter),
+        );
+        self.steady.advance(frames);
+        self.last
+    }
 }
 
 /// [`InProcessVst2Client::pending_sample_rate`] sentinel: nothing is waiting.
@@ -203,7 +272,7 @@ impl InProcessVst2Client {
             inner,
             metadata,
             midi: MidiEventVec::new(),
-            transport: InputSlot::new(Features::TRANSPORT),
+            transport: TransportFeed::new(),
             features,
             scratch,
             process_scratch,
@@ -213,50 +282,39 @@ impl InProcessVst2Client {
             contention_count,
             origin,
             rate_delivery: RateDelivery::Parked,
-            env_transport: None,
         }
     }
 
-    /// Installs a transport reader so the plugin receives a live per-block
-    /// [`TransportInfo`] (tempo, playhead, meter, bar, loop), which the VST2
-    /// host turns into the `audioMasterGetTime` snapshot the plugin polls.
+    /// Gives the plugin the project meter, for the time signature and bar
+    /// its `audioMasterGetTime` snapshot carries. Pass the cell the host
+    /// publishes meter edits into, and an edit reaches the running plugin
+    /// with nothing re-installed. Replaces any meter installed before, on
+    /// every clone of this node.
     ///
-    /// Wrapped in a `PolledTransport` stamped with the current sample rate
-    /// (updated live on a device change). The snapshot only reaches plugins
-    /// advertising [`Features::TRANSPORT`]; others always drain a default.
-    ///
-    /// `meter` is a separate handle rather than something read off the
-    /// transport: meter is a layer over the timeline, not transport state.
-    /// Passing the same handle the host publishes elsewhere means a meter edit
-    /// reaches running plugins without re-installing anything.
-    pub fn set_transport_source(
-        &mut self,
-        reader: tutti_core::transport::Transport,
-        meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>,
-    ) {
-        self.transport.install(Arc::new(PolledTransport::new(
-            Arc::new(reader),
-            meter,
-            self.sample_rate,
-        )));
+    /// The transport itself needs no install: each block reads it from the
+    /// graph (the transport the block's input was rendered at). The snapshot
+    /// reaches plugins declaring [`Features::TRANSPORT`], which the
+    /// in-process loader declares for every VST2.
+    pub fn set_meter(&self, meter: Arc<RtPublish<MeterMap>>) {
+        self.transport.meter.set_meter(meter);
     }
 
-    /// Removes the installed transport reader; later blocks feed the plugin a
-    /// default (stopped) snapshot.
-    pub fn clear_transport_source(&mut self) {
-        self.transport.clear();
+    /// Drops the meter; the plugin is told 4/4 from bar 0.
+    pub fn clear_meter(&self) {
+        self.transport.meter.clear_meter();
     }
 
-    /// Restamp the installed transport source with a new sample rate.
-    ///
-    /// Called from [`set_rate`](Self::set_rate). The source holds its rate in
-    /// a shared atomic, so this reaches the clone the audio thread runs;
-    /// a no-op when no source is installed, since one installed later is stamped
-    /// with `self.sample_rate` at that point.
-    fn restamp_transport_rate(&self) {
-        if let Some(src) = self.transport.source_ref().load().as_ref() {
-            src.set_sample_rate(self.sample_rate);
-        }
+    /// Whether a meter is installed.
+    pub fn has_meter(&self) -> bool {
+        self.transport.meter.has_meter()
+    }
+
+    /// The node's meter cell, as a handle of its own: the same cell as
+    /// [`set_meter`](Self::set_meter), and what inserting the node hands
+    /// back as its controls, so a host can install the meter after the
+    /// node has moved into the graph.
+    pub fn meter(&self) -> PluginMeter {
+        self.transport.meter.clone()
     }
 
     /// Sets the render mode the plugin reads through
@@ -302,9 +360,8 @@ impl Clone for InProcessVst2Client {
             inner: Arc::clone(&self.inner),
             metadata: self.metadata.clone(),
             midi: MidiEventVec::new(),
-            // `InputSlot::clone` shares the producer cell rather than the
-            // Option, so an install on any clone reaches the one the graph
-            // runs.
+            // Shares the meter cell, so a `set_meter` on any clone reaches
+            // the one the graph runs.
             transport: self.transport.clone(),
             features: self.features,
             scratch,
@@ -317,7 +374,6 @@ impl Clone for InProcessVst2Client {
             contention_count: Arc::clone(&self.contention_count),
             origin: Arc::clone(&self.origin),
             rate_delivery: self.rate_delivery,
-            env_transport: self.env_transport.clone(),
         }
     }
 }
@@ -342,15 +398,15 @@ impl InProcessVst2Client {
         }
     }
 
-    /// Take `sample_rate` as the rate blocks run at: restamp the transport
-    /// source, and hand the rate to the plugin as [`RateDelivery`] says —
-    /// parked for the main thread (see `pending_sample_rate`), or, on a fork,
-    /// dispatched here. What the node's `prepare` does with its rate.
+    /// Take `sample_rate` as the rate blocks run at, and hand it to the
+    /// plugin as [`RateDelivery`] says: parked for the main thread (see
+    /// `pending_sample_rate`), or, on a fork, dispatched here. What the
+    /// node's `prepare` does with its rate. (The transport snapshot's rate is
+    /// the block's own, from its `Env`.)
     pub(super) fn set_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         let changed = sample_rate != self.sample_rate;
         self.sample_rate = sample_rate;
-        self.restamp_transport_rate();
         match self.rate_delivery {
             // Parked, not dispatched: `Vst2Instance::set_sample_rate` runs the
             // allocating `effMainsChanged` bracket, which must not race a
@@ -370,9 +426,9 @@ impl InProcessVst2Client {
 /// transport snapshot.
 ///
 /// `transport` is always attached. The decision of *what* to attach happens one
-/// level up, in [`InputSlot::drain`], which yields a default snapshot for a
-/// plugin that did not declare [`Features::TRANSPORT`] or has no source
-/// installed — so there is no second format check here.
+/// level up, in [`TransportFeed::block`], which yields a default snapshot for a
+/// plugin that did not declare [`Features::TRANSPORT`] — so there is no second
+/// format check here.
 ///
 /// Named rather than inlined at the two call sites so the shape of the context
 /// the node builds is observable without a plugin binary on disk: whether
@@ -516,214 +572,152 @@ fn sort_midi(events: &mut MidiEventVec) {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
-    use tutti_core::meter::MeterMap;
-    use tutti_core::transport::Transport;
-    use tutti_core::RtPublish;
+    use tutti_core::TimeSignature;
+    use tutti_core::{Beat, BeatsPerBar, Bpm, Frame, MeterChange, NoteValue, SampleRate};
+    use tutti_graph::{Env, Transport, TransportChanges, TransportHistory};
+    use tutti_types::Latency;
 
-    /// The slot exactly as [`InProcessVst2Client::new`] builds it. Constructing
-    /// the whole node needs a live `Vst2Instance` (a real plugin binary on
-    /// disk), so the transport rail is exercised on its own — it is the piece
-    /// that was missing, and it is a pure function of the declared features.
-    fn slot() -> InputSlot<PolledTransport> {
-        InputSlot::new(Features::TRANSPORT)
+    /// A rolling block of 64 frames at 132 BPM from beat 4, at 48 kHz: 132,
+    /// not the 120 the default snapshot carries, so a live read is told
+    /// apart from the "nothing" answer.
+    fn env() -> Env {
+        Env {
+            frame: Frame(0),
+            sample_rate: SampleRate(48_000.0),
+            block_len: Samples(64),
+            transport: Transport::new(true, Bpm(132.0), Beat(4.0), None),
+            changes: TransportChanges::NONE,
+        }
     }
 
-    /// A rolling transport at `tempo`, plus the source the node installs for it.
-    fn rolling(tempo: f64, rate: f64) -> (Transport, Arc<PolledTransport>) {
-        let t = Transport::new(rate);
-        t.settings.set_tempo(tempo);
-        let _ = t.motion.try_send(tutti_core::MotionEvent::Play);
-        t.motion.drain();
-        let source = Arc::new(PolledTransport::new(
-            Arc::new(t.clone()),
-            Arc::new(RtPublish::new(MeterMap::default())),
-            rate,
-        ));
-        (t, source)
+    fn cx(e: &Env) -> Cx<'_> {
+        Cx {
+            env: e,
+            arrival: Latency::ZERO,
+            history: TransportHistory::none(),
+        }
     }
 
-    /// The feature set the in-process loader builds, for a plugin reporting no
-    /// optional capability of its own. `TRANSPORT` is unconditional there, so
-    /// this is the minimum any in-process VST2 declares.
+    fn seven_eight() -> TimeSignature {
+        TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH)
+    }
+
+    fn seven_eight_meter() -> Arc<RtPublish<MeterMap>> {
+        Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
+            Beat(0.0),
+            seven_eight(),
+        )])))
+    }
+
+    /// The feature set the in-process loader builds for a plugin reporting no
+    /// optional capability: `TRANSPORT` is unconditional there.
     fn loader_features() -> Features {
-        let mut f = Features::empty();
-        f.insert(Features::TRANSPORT);
-        f
+        Features::TRANSPORT
     }
 
-    /// Whether a drained snapshot carries transport data rather than the
-    /// "nothing installed" default.
+    /// The context the node hands `vst2-host` carries the block's transport
+    /// from its `Cx`: the only thing that gives `audioMasterGetTime`
+    /// something to serve. With no meter installed it is 4/4.
     ///
-    /// Compared field-wise against [`TransportInfo::default`] because the wire
-    /// type has no `PartialEq`, and against the *default* rather than against
-    /// zero because that default is a stopped transport at **120 BPM, 4/4** —
-    /// not a zeroed struct. A predicate reading `tempo != 0.0` is therefore true
-    /// for the default too, and would pass whether or not the snapshot was ever
-    /// filled. Every fixture here runs at a tempo other than 120 so a live read
-    /// is distinguishable from that default.
-    fn is_live(info: &TransportInfo) -> bool {
-        let default = TransportInfo::default();
-        info.state.playing != default.state.playing
-            || info.timing.tempo != default.timing.tempo
-            || info.position.quarters != default.position.quarters
-            || info.sample_rate != default.sample_rate
-    }
-
-    /// The context the node hands `vst2-host` each block carries a transport
-    /// snapshot, which is the only thing that gives `audioMasterGetTime`
-    /// something to serve.
-    ///
-    /// This is the claim [`Features::TRANSPORT`] makes. Before the node had a
-    /// transport rail, `ctx.transport` was left `None` on every block, so
-    /// `update_transport` never ran and the plugin's `get_time_info` callback
-    /// kept reading an unpublished cell while the capability bit read true.
+    /// Mutation (run): return `TransportInfo::default()` from
+    /// `TransportFeed::block` for every plugin → 120 BPM, stopped → fails.
     #[test]
-    fn the_block_context_carries_a_transport_snapshot() {
-        let mut slot = slot();
-        let (transport, source) = rolling(132.0, 48_000.0);
-        transport
-            .clock_links()
-            .expect("the only playhead writer")
-            .set_playhead(4.0);
-        slot.install(source);
-        let snapshot = *slot.drain(loader_features());
-
+    fn the_block_context_carries_the_transport_from_cx() {
+        let e = env();
+        let mut feed = TransportFeed::new();
+        let snapshot = feed.block(&cx(&e), 64, loader_features());
         let ctx = block_context(48_000.0, &[], &snapshot);
-
-        let delivered = ctx
-            .transport
-            .expect("the block context must carry a transport snapshot");
-        // 132, not the 120 the default carries — an assertion against 120 would
-        // hold for an unfilled snapshot.
-        assert!(
-            (delivered.timing.tempo - 132.0).abs() < 1e-9,
-            "the running tempo must reach the plugin, got {}",
-            delivered.timing.tempo
-        );
-        assert!(
-            delivered.state.playing,
-            "a rolling transport must read as playing"
-        );
-        assert!(
-            (delivered.position.quarters - 4.0).abs() < 1e-9,
-            "the playhead must reach the plugin, got {}",
-            delivered.position.quarters
-        );
-    }
-
-    /// A node declaring `TRANSPORT` drains the live snapshot, not a default.
-    #[test]
-    fn a_node_declaring_transport_is_handed_the_live_snapshot() {
-        let mut slot = slot();
-        let (transport, source) = rolling(132.0, 48_000.0);
-        transport
-            .clock_links()
-            .expect("the only playhead writer")
-            .set_playhead(4.0);
-        slot.install(source);
-
-        let snapshot = slot.drain(loader_features());
-
-        assert!(
-            (snapshot.timing.tempo - 132.0).abs() < 1e-9,
-            "declared TRANSPORT must deliver the running tempo, got {}",
-            snapshot.timing.tempo
-        );
-        assert!(
-            is_live(snapshot),
-            "the snapshot must differ from the no-transport default"
-        );
-    }
-
-    /// The declared bit is what gates delivery, so a node that does not declare
-    /// `TRANSPORT` drains the default even with a source installed.
-    ///
-    /// Pins the gate as the reason delivery happens, rather than the mere
-    /// presence of an installed source.
-    #[test]
-    fn a_node_not_declaring_transport_drains_the_default() {
-        let mut slot = slot();
-        let (transport, source) = rolling(132.0, 48_000.0);
-        transport
-            .clock_links()
-            .expect("the only playhead writer")
-            .set_playhead(4.0);
-        slot.install(source);
-
-        let snapshot = slot.drain(Features::empty());
-
-        assert!(
-            !is_live(snapshot),
-            "an undeclared capability must not be fed"
-        );
-    }
-
-    /// With no source installed the node still drains a usable default, so the
-    /// `Vst2ProcessContext` is filled on every block rather than only once a host
-    /// has wired a transport.
-    #[test]
-    fn an_uninstalled_slot_drains_the_default_snapshot() {
-        let mut slot = slot();
-        let snapshot = slot.drain(loader_features());
-        assert!(!is_live(snapshot));
-    }
-
-    /// Installing on one clone reaches the clone the audio thread runs.
-    ///
-    /// A host installs the transport through whichever clone it holds, which
-    /// need not be the one in the graph (the type is `Clone`). Sharing the
-    /// producer cell rather than the `Option` is what makes the install
-    /// visible.
-    #[test]
-    fn a_transport_installed_on_one_clone_reaches_another() {
-        let original = slot();
-        let mut running = original.clone();
-        let (transport, source) = rolling(90.0, 44_100.0);
-        transport
-            .clock_links()
-            .expect("the only playhead writer")
-            .set_playhead(1.0);
-
-        original.install(source);
-
-        let snapshot = running.drain(loader_features());
-        assert!(
-            (snapshot.timing.tempo - 90.0).abs() < 1e-9,
-            "an install on a sibling clone must reach the running node"
-        );
-    }
-
-    /// The declared capability and the delivered behaviour are the same value.
-    ///
-    /// The node gates its per-block send on `loaded.features`, the field the
-    /// handle reports, so a reader cannot see `TRANSPORT` on the handle while
-    /// the audio path silently withholds it.
-    #[test]
-    fn the_declared_transport_bit_is_the_one_the_send_is_gated_on() {
-        let declared = loader_features();
-        assert!(
-            declared.contains(Features::TRANSPORT),
-            "the in-process loader declares TRANSPORT unconditionally"
-        );
-
-        let mut slot = slot();
-        let (transport, source) = rolling(96.0, 48_000.0);
-        transport
-            .clock_links()
-            .expect("the only playhead writer")
-            .set_playhead(2.0);
-        slot.install(source);
-        let snapshot = *slot.drain(declared);
-
-        // Through `block_context`, so this reads the value the plugin is
-        // actually handed rather than only the slot's output.
-        let delivered = block_context(48_000.0, &[], &snapshot)
-            .transport
-            .is_some_and(is_live);
+        let delivered = ctx.transport.expect("a transport snapshot");
+        assert_eq!(delivered.timing.tempo, 132.0);
+        assert!(delivered.state.playing);
+        assert_eq!(delivered.position.quarters, 4.0);
+        assert_eq!(delivered.sample_rate, 48_000.0);
         assert_eq!(
-            declared.contains(Features::TRANSPORT),
-            delivered,
-            "a declared transport capability must be a delivered one"
+            delivered.timing.signature,
+            TimeSignature::new(BeatsPerBar::new(4), NoteValue::QUARTER)
         );
+    }
+
+    /// The declared bit gates delivery: a plugin without `TRANSPORT` is
+    /// handed the default (stopped, 120 BPM) snapshot, whatever the `Cx`.
+    ///
+    /// Mutation (run): drop the `features.contains(Features::TRANSPORT)`
+    /// guard → the undeclared plugin reads 132 → fails.
+    #[test]
+    fn a_plugin_not_declaring_transport_is_handed_the_default() {
+        let e = env();
+        let mut feed = TransportFeed::new();
+        let got = feed.block(&cx(&e), 64, Features::empty());
+        let default = TransportInfo::default();
+        assert_eq!(got.timing.tempo, default.timing.tempo);
+        assert_eq!(got.state.playing, default.state.playing);
+        assert_eq!(got.position.quarters, default.position.quarters);
+    }
+
+    /// A meter installed through one clone reaches the clone the graph runs
+    /// (a host installs through whichever clone it holds), and the snapshot
+    /// carries its signature.
+    ///
+    /// Mutation (run): read `self.default_meter` always in
+    /// `TransportFeed::block` (drop the meter source) → 4/4 → fails. A
+    /// `Clone` minting a fresh meter cell fails it the same way.
+    #[test]
+    fn a_meter_installed_on_one_clone_reaches_another() {
+        let e = env();
+        let held = TransportFeed::new();
+        let mut running = held.clone();
+        held.meter.set_meter(seven_eight_meter());
+        let got = running.block(&cx(&e), 64, loader_features());
+        assert_eq!(got.timing.signature, seven_eight());
+    }
+
+    /// A fork's feed holds the meter installed when it forked, and nothing
+    /// installed on the live node afterwards; its counter starts at zero.
+    ///
+    /// Mutation (run, together with the counter's below): `forked` sharing
+    /// the live cell (`self.meter.clone()`) and keeping `self.steady` →
+    /// the later clear reaches the fork (4/4), its counter starts at 64 →
+    /// fails.
+    #[test]
+    fn a_fork_has_the_meter_installed_when_it_forked() {
+        let e = env();
+        let mut live = TransportFeed::new();
+        live.meter.set_meter(seven_eight_meter());
+        let _ = live.block(&cx(&e), 64, loader_features());
+        let mut fork = live.forked();
+        live.meter.clear_meter();
+        let got = fork.block(&cx(&e), 64, loader_features());
+        assert_eq!(got.timing.signature, seven_eight());
+        assert_eq!(got.position.continuous_samples, 0);
+    }
+
+    /// The free-running counter is the frames the node rendered, block after
+    /// block.
+    ///
+    /// Mutation (run): drop `self.steady.advance(frames)` → the second block
+    /// reads 0 → fails.
+    #[test]
+    fn the_counter_counts_the_frames_rendered() {
+        let e = env();
+        let mut feed = TransportFeed::new();
+        let _ = feed.block(&cx(&e), 64, loader_features());
+        let second = feed.block(&cx(&e), 64, loader_features());
+        assert_eq!(second.position.continuous_samples, 64);
+    }
+
+    /// An empty block has no frame to read the transport at: the plugin is
+    /// handed the last snapshot again, not the stopped default.
+    ///
+    /// Mutation (run): return `TransportInfo::default()` for an empty block
+    /// → 120 BPM, stopped → fails.
+    #[test]
+    fn an_empty_block_repeats_the_last_snapshot() {
+        let e = env();
+        let mut feed = TransportFeed::new();
+        let _ = feed.block(&cx(&e), 64, loader_features());
+        let empty = feed.block(&cx(&e), 0, loader_features());
+        assert_eq!(empty.timing.tempo, 132.0);
+        assert!(empty.state.playing);
+        assert_eq!(empty.position.continuous_samples, 0);
     }
 }

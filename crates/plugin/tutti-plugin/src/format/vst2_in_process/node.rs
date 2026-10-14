@@ -4,9 +4,8 @@
 //! event on the frame the plugin gave it.
 //!
 //! Forkable by state transfer (see its `IntoNode` below, and `fork.rs`). The
-//! live node's transport still comes from the reader installed with
-//! `set_transport_source`, polled once per block; a fork's comes from its
-//! block's `Env`.
+//! live node and its fork read the transport the same way: from the block's
+//! `Cx`, the transport its input was rendered at (`TransportFeed`).
 
 use tutti_core::{ChannelLayout, Samples};
 use tutti_graph::{
@@ -16,8 +15,8 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
 
 use super::client::{drive_f32, InProcessVst2Client};
-use crate::host::node::transport_source;
-use crate::protocol::{Features, TransportInfo};
+use crate::host::node::PluginMeter;
+use crate::protocol::Features;
 
 /// The most channels a block hands the plugin (`drive_f32`'s stack tables).
 const MAX_CHANNELS: usize = 16;
@@ -72,22 +71,9 @@ impl Node for InProcessVst2Client {
                 self.process_scratch.f32_in[ch][..size].copy_from_slice(&inputs.get(ch)[..size]);
             }
         }
-        let transport = match &mut self.env_transport {
-            // A fork: the transport its input at the block's first frame
-            // was rendered at (`Cx::transport_at`), as the out-of-process
-            // plugin node reads it.
-            Some(feed) => {
-                let info = match Offset::new(0, Samples(size)) {
-                    Some(at) if self.features.contains(Features::TRANSPORT) => {
-                        transport_source::from_cx(cx, at, feed.steady.at(0), &feed.meter.read())
-                    }
-                    _ => TransportInfo::default(),
-                };
-                feed.steady.advance(size);
-                info
-            }
-            None => *self.transport.drain(self.features),
-        };
+        // Built before the plugin is entered: `drive_f32` publishes it to the
+        // cell `audioMasterGetTime` reads, then calls `process`.
+        let transport = self.transport.block(cx, size, self.features);
         let sends = self.features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
         let mut out_events = crate::protocol::MidiEventVec::new();
         let processed = drive_f32(
@@ -156,22 +142,25 @@ fn sort_by_offset(events: &mut crate::protocol::MidiEventVec) {
     }
 }
 
-/// The plugin, inserted as a graph node. No controls (its per-block inputs
-/// are installed through it before it goes in), and a [`ForkSource`] that
-/// forks it **by state transfer**: a second instance of the plugin from the
-/// same library, restored from this one's saved state
+/// The plugin, inserted as a graph node. Its controls are its meter cell
+/// ([`PluginMeter`], the same cell as [`InProcessVst2Client::set_meter`]), so a
+/// host can give it the project meter after it has moved into the graph, as
+/// it does an out-of-process plugin through its `PluginControls`. Its
+/// [`ForkSource`] forks it **by state transfer**: a second instance of the
+/// plugin from the same library, restored from this one's saved state
 /// ([`InProcessVst2Client::fork_instance`]). So `Editor::fork` (an offline
 /// export) renders a graph holding it.
 ///
 /// [`ForkSource`]: tutti_graph::ForkSource
 impl IntoNode for InProcessVst2Client {
-    type Controls = ();
+    type Controls = PluginMeter;
 
-    fn into_parts(self) -> NodeParts<()> {
+    fn into_parts(self) -> NodeParts<PluginMeter> {
         let fork = super::fork::Vst2Fork::of(&self);
+        let controls = self.meter();
         NodeParts {
             node: Box::new(self),
-            controls: (),
+            controls,
             fork: Some(Box::new(fork)),
         }
     }

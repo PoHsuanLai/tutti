@@ -941,6 +941,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A live in-process VST2 plugin behind a latent path was told the wrong
+  playhead** (tutti-plugin; design doc 013, "In-process VST2 live transport
+  from `Cx` landed"). The live node polled the installed `Transport` once
+  per block, so `audioMasterGetTime` answered with the block's own time,
+  not the time its input audio was rendered at. It now reads its block's
+  `Cx::transport_at`, as its fork and the out-of-process plugin node do, so
+  live and fork are one path. With no meter installed the plugin is now told
+  the graph's transport in 4/4 (it was told a stopped default until a
+  reader was installed). bevy-tutti now gives an in-process VST2 the
+  project meter, as it does an out-of-process plugin: it read 4/4 in a 7/8
+  project. **Breaking** for code that called the in-process
+  client's transport install directly.
+
+  | Was | Now |
+  |---|---|
+  | `InProcessVst2Client::set_transport_source(reader, meter)`, `clear_transport_source()` | the transport needs no install. Give the meter: `InProcessVst2Client::{set_meter(meter), clear_meter(), has_meter(), meter()}` (`&self`; shared across the node's clones) |
+  | `IntoNode for InProcessVst2Client`: `Controls = ()` | `Controls = PluginMeter` (new, `tutti_plugin::handles::PluginMeter`: `set_meter`, `clear_meter`, `has_meter`; the node's meter cell). `GraphBuilder::add(client)` no longer compiles: use `add_with_controls`. `PluginControls::meter()` hands the out-of-process node's cell as the same type |
+  | `Plugin::set_transport_source(reader, meter)` (`reader` unused by both backends) | **deprecated**: `Plugin::set_meter(meter) -> bool` (`&self`), `Plugin::clear_meter()`, `Plugin::meter() -> PluginMeter` |
+  | bevy-tutti: an in-process VST2 was never given the project meter (no `PluginShadow`) | captured with `CapturedControls::for_plugin_meter`; `PluginShadow::meter_only`, `PluginShadow::meter_for`; `controls_for` is `None` for an in-process VST2 |
+
 - **A live disk voice on a looped stream played 576 frames and then
   silence, and every live reposition cost frames and drift** (tutti-sampler;
   design doc 013, "The live disk loop and its repositions (#48)"). The

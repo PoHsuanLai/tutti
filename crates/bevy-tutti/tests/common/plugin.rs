@@ -64,3 +64,20 @@ pub fn clap_probe() -> PathBuf {
     });
     tutti_fixture_resolve::publish_with_extension(&real, "clap")
 }
+
+/// The reference VST2 cdylib (`tutti-vst2-test-plugin`), under its own name:
+/// a bare library is what the in-process VST2 loader takes.
+///
+/// Used by `plugin_vst2_meter.rs` only; the crate's unit tests, which include
+/// this file too, do not load a VST2.
+#[allow(dead_code)]
+pub fn vst2_probe() -> PathBuf {
+    let lib = tutti_fixture_resolve::lib_filename("tutti_vst2_test_plugin");
+    beside_this_binary(&lib).unwrap_or_else(|| {
+        panic!(
+            "the reference VST2 plugin `{lib}` is a dev-dependency built by this \
+             same test run, but is not under {}",
+            profile_dir().display()
+        )
+    })
+}

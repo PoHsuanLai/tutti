@@ -295,8 +295,8 @@ impl AudioPipeline {
         // an over-eager payload arrives.)
         //
         // Parameter automation is the exception: the host sends it *universally*
-        // (`InputSlot::new(Features::empty())` — every plugin has automatable
-        // params, regardless of whether it advertises `PARAM_AUTOMATION`), so it
+        // (every plugin has automatable params, regardless of whether it
+        // advertises `PARAM_AUTOMATION`), so it
         // is forwarded unconditionally to match. Gating it on `PARAM_AUTOMATION`
         // here would silently drop automation for any plugin that leaves that
         // optional flag unset — host says send, server throws it away.

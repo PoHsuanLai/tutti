@@ -15,11 +15,9 @@
 //! is told is what the engine played — live, and offline, where the forked
 //! node's `Env` is the render's.
 //!
-//! The mapping onto the plugin ABIs' snapshot is [`transport_info`], shared
-//! with the one node that polls a timeline: the live in-process VST2 client
-//! reads its transport from an installed reader rather than its `Env`, and
-//! builds the same [`Snapshot`] from it (`PolledTransport`, behind the `vst2`
-//! feature). Its fork reads [`from_cx`], like this node.
+//! The mapping onto the plugin ABIs' snapshot is [`transport_info`]. The
+//! in-process VST2 node, live and forked, reads [`from_cx`] too, so every
+//! hosted plugin is told its transport by this one path.
 
 use tutti_core::meter::{Meter, MeterMap};
 use tutti_core::{Beat, Bpm, SampleRate};
@@ -142,129 +140,6 @@ pub(crate) fn transport_info(s: &Snapshot, meter: &MeterMap) -> TransportInfo {
         info = info.with_loop(true, start.get(), end.get());
     }
     info
-}
-
-// `BlockReset for TransportInfo` lives next to its definition's consumers; a
-// reset is a full default snapshot (the "no transport installed" state).
-#[cfg(feature = "vst2")]
-impl crate::host::node::input_slot::BlockReset for TransportInfo {
-    fn reset(&mut self) {
-        *self = TransportInfo::default();
-    }
-}
-
-/// A transport read by **polling** a live [`TransportState`], for the one
-/// plugin node that does not read its [`Env`](tutti_graph::Env) for time: the in-process VST2
-/// client. The subprocess plugin node reads [`from_cx`] instead.
-///
-/// [`TransportState`]: tutti_core::transport::TransportState
-#[cfg(feature = "vst2")]
-pub(crate) use polled::PolledTransport;
-
-#[cfg(feature = "vst2")]
-mod polled {
-    use std::sync::atomic::Ordering;
-    use std::sync::Arc;
-
-    use atomic_float::AtomicF64;
-    use tutti_core::meter::MeterMap;
-    use tutti_core::transport::TransportState;
-    use tutti_core::SampleRate;
-
-    use super::{transport_info, Snapshot};
-    use crate::host::node::input_slot::BlockInput;
-    use crate::protocol::TransportInfo;
-
-    /// A live [`TransportState`] and the project meter, snapshotted each
-    /// block. The rate is an `Arc<AtomicF64>` the running box reads live, so
-    /// a device change reaches an installed source without a re-install.
-    #[derive(Clone)]
-    pub(crate) struct PolledTransport {
-        reader: Arc<dyn TransportState>,
-        /// A separate handle from `reader`: meter is a layer over the
-        /// timeline, not transport state, and an edit to it reaches the
-        /// running box without a re-install.
-        meter: Arc<tutti_core::RtPublish<MeterMap>>,
-        sample_rate: Arc<AtomicF64>,
-    }
-
-    impl PolledTransport {
-        pub(crate) fn new(
-            reader: Arc<dyn TransportState>,
-            meter: Arc<tutti_core::RtPublish<MeterMap>>,
-            sample_rate: impl Into<SampleRate>,
-        ) -> Self {
-            Self {
-                reader,
-                meter,
-                // `.get()` at the atomic, which needs a primitive.
-                sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
-            }
-        }
-
-        /// The project meter this source reads bars with: what a fork of
-        /// the node reads its own (`Env`-driven) bars with.
-        pub(crate) fn meter(&self) -> &Arc<tutti_core::RtPublish<MeterMap>> {
-            &self.meter
-        }
-
-        /// Update the stamped rate live (device / rate switch).
-        pub(crate) fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
-            self.sample_rate
-                .store(sample_rate.into().get(), Ordering::Release);
-        }
-    }
-
-    impl BlockInput for PolledTransport {
-        type Out = TransportInfo;
-        fn refill(&self, out: &mut TransportInfo) {
-            let r = &self.reader;
-            let snapshot = Snapshot {
-                playing: r.is_rolling(),
-                recording: r.is_recording(),
-                tempo: r.tempo(),
-                beat: r.beat(),
-                looping: r.loop_range().map(|l| (l.start(), l.end())),
-                continuous: r.steady_time(),
-                sample_rate: SampleRate(self.sample_rate.load(Ordering::Acquire)),
-            };
-            // One meter read per block — this runs in `refill`, not per sample.
-            *out = transport_info(&snapshot, &self.meter.read());
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use tutti_core::transport::Transport;
-
-        /// The polled source reads the live transport through the shared
-        /// mapping, and its rate is live.
-        ///
-        /// Mutation: read `r.beat()` as `Beat(0.0)` → the seconds are 0 →
-        /// fails. Mutation: a per-clone rate → the second read keeps 44.1 kHz
-        /// → fails.
-        #[test]
-        fn a_polled_snapshot_reflects_the_transport_and_a_live_rate() {
-            let t = Transport::new(44_100.0);
-            t.settings.set_tempo(120.0);
-            let _ = t.motion.try_send(tutti_core::MotionEvent::Play);
-            t.motion.drain();
-            t.clock_links()
-                .expect("the only playhead writer")
-                .set_playhead(2.0);
-            let meter = Arc::new(tutti_core::RtPublish::new(MeterMap::default()));
-            let src = PolledTransport::new(Arc::new(t.clone()), meter, 44_100.0);
-            let mut out = TransportInfo::default();
-            src.refill(&mut out);
-            assert!(out.state.playing);
-            // seconds = beats * 60 / tempo = 2 * 60 / 120 = 1.0
-            assert!((out.position.seconds - 1.0).abs() < 1e-6);
-            src.set_sample_rate(48_000.0);
-            src.refill(&mut out);
-            assert_eq!(out.sample_rate, 48_000.0);
-        }
-    }
 }
 
 #[cfg(test)]

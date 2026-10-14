@@ -12,7 +12,7 @@
 //! | Component | Captured from | Read by |
 //! |---|---|---|
 //! | `ModParamsHandle` (`modulation`) | a node's `ParamSet` ([`CapturedControls::for_params`]), or a host-supplied target (`ModTargetRegistry::insert_target`) | the modulation resolver |
-//! | `PluginShadow` (`plugin`) | a loaded `PluginClient` (`CapturedControls::for_plugin`) | plugin meter bind and latency poll |
+//! | `PluginShadow` (`plugin`) | a loaded `PluginClient` (`CapturedControls::for_plugin`), or an in-process VST2 plugin's meter (`CapturedControls::for_plugin_meter`) | plugin meter bind and latency poll |
 //!
 //! Every one holds only state the node shares with the graph's copy (its
 //! `Param` cells, the plugin's controls), so the component reaches the
@@ -59,6 +59,11 @@ pub struct CapturedControls {
     params: Option<std::sync::Arc<dyn tutti_mod::ModParams + Send + Sync>>,
     #[cfg(feature = "plugin")]
     plugin: Option<tutti_plugin::handles::PluginControls>,
+    /// An in-process VST2 plugin's meter cell, its one control (a plugin with
+    /// [`PluginControls`](tutti_plugin::handles::PluginControls) carries its
+    /// meter in them).
+    #[cfg(feature = "plugin")]
+    plugin_meter: Option<tutti_plugin::handles::PluginMeter>,
 }
 
 impl CapturedControls {
@@ -74,6 +79,22 @@ impl CapturedControls {
             #[cfg(feature = "modulation")]
             params: None,
             plugin: Some(client.controls()),
+            plugin_meter: None,
+        }
+    }
+
+    /// Captures an in-process VST2 plugin's meter cell
+    /// ([`Plugin::meter`](tutti_plugin::catalog::Plugin::meter)), its one
+    /// control: it becomes the entity's `PluginShadow` once [bound](Self::bind),
+    /// so the meter binding gives it the project meter as it does an
+    /// out-of-process plugin.
+    #[cfg(feature = "plugin")]
+    pub fn for_plugin_meter(meter: tutti_plugin::handles::PluginMeter) -> Self {
+        Self {
+            #[cfg(feature = "modulation")]
+            params: None,
+            plugin: None,
+            plugin_meter: Some(meter),
         }
     }
 
@@ -94,6 +115,8 @@ impl CapturedControls {
             ))),
             #[cfg(feature = "plugin")]
             plugin: None,
+            #[cfg(feature = "plugin")]
+            plugin_meter: None,
         }
     }
 
@@ -136,11 +159,14 @@ impl CapturedControls {
             }
         }
         #[cfg(feature = "plugin")]
-        match self.plugin {
-            Some(controls) => {
+        match (self.plugin, self.plugin_meter) {
+            (Some(controls), _) => {
                 entity.insert(crate::plugin_host::PluginShadow::new(node, controls));
             }
-            None => {
+            (None, Some(meter)) => {
+                entity.insert(crate::plugin_host::PluginShadow::meter_only(node, meter));
+            }
+            (None, None) => {
                 entity.remove::<crate::plugin_host::PluginShadow>();
             }
         }

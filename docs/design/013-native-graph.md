@@ -3619,7 +3619,7 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | **Done (item 7).** **Sampler `PlaybackSlot`** | Render each voice **a block at a time** into a planar scratch lane, then do one vectorized accumulate. Today every voice goes through `set_f32(at_f32 + s)` per sample, and calls `stretch::Unit::tick` and the disk reader's `tick` per sample. Vertical SIMD along time is where the gain is; cross-voice SoA helps less here, because each voice reads a different wave at a different fractional position (gather-bound; this is a judgement) |
 | **Done (item 7).** **stretch `Unit` + shared vocoder `Bank`** | Owned by value. The `Arc<Bank>` sharing, the `ticker` claim token and the `AudioThreadCell` all exist only to avoid a 201.8 MB/commit clone, so they go |
 | `VoiceNode` | Shrinks to its `process` body. `Controls { placement: RtPublish<Window>, gain: Param<Amplitude> }` replaces the command channel, which exists only because "`Setting` is one `f32` wide". **Deferred by item 7** to the voice's native port: not clean behind `Legacy` ("Item 7 landed") |
-| `PluginClient` (the shell; IPC/bridge/shm stay) | **Done except the event ports (item 4, plugin half).** `PluginClient<Unbound>` → `bind()` → `PluginClient<Bound>`, a native node. Transport comes from `Env`. MIDI, param automation, harmony and note expression come in as **event ports**, so the four `InputSlot` shared cells go (**not yet**: see "Item 4's plugin half landed"). Delete the `AudioUnit<F64>` impl, and keep the f64 wire conversion inside the node |
+| `PluginClient` (the shell; IPC/bridge/shm stay) | **Done except the event ports (item 4, plugin half).** `PluginClient<Unbound>` → `bind()` → `PluginClient<Bound>`, a native node. Transport comes from `Env`. MIDI, param automation, harmony and note expression come in as **event ports**, so the four `InputSlot` shared cells go (**done**: the last, the in-process VST2 node's polled transport, went in "In-process VST2 live transport from `Cx` landed"). Delete the `AudioUnit<F64>` impl, and keep the f64 wire conversion inside the node |
 | `Batcher` | **Done (item 4, plugin half).** Delete tick mode and `TickStorage::{F32,F64}`. The chunk (and so the pipeline latency) comes from `prepare`: **one device callback** (`Prepare::quantum`), else `MaxBlock`. Owner decision 8 first kept an internal 64-frame pipeline; it was **reversed on measurement** (see decision 8): a 64-frame chunk inside a device callback left the server microseconds to answer, and live plugin audio was mostly silence |
 | `HarmonySource`, `ParamAutomationSource`, `NoteExpressionSource`, `MidiClipSource`, `AutomationLaneNode` | **Event source nodes**: an owned cursor, the `Env` beat window, an events out port. Their output then goes through the PDC pass, which fixes D9. The automation lane evaluates at block edges and breakpoints and emits ramp or curve-segment events, instead of evaluating the curve per sample off two f32 beat ports. **Done for the lane** ("Curve segments landed"): `AutomationLaneNode::for_param` sends curve segments; `new` keeps the audio output |
 | `MidiPreBlock` | A hardware-input source node with an events out port. `MidiRoutingSnapshot` compiles into router ops. `BlockClock` (clock/MTC out) becomes a sink node that reads `Env` |
@@ -3750,11 +3750,11 @@ vocoder retirement channel for voices the pool removes.
   an event output for a plugin that declares it, the rate parked in
   `prepare` for the main thread to dispatch. It forks by state transfer
   (see "In-process VST2 forks by state transfer"), and a fork reads its
-  transport with `Cx::transport_at`, aligned with its input. What remains:
-  the live instance still polls its transport (`PolledTransport`, sharing
-  the snapshot mapping, installed with `set_transport_source`) once per
-  block rather than reading its `Cx`, so behind a latent path it is told
-  the uncompensated playhead.
+  transport with `Cx::transport_at`, aligned with its input. The live
+  instance now reads it the same way (see ["In-process VST2 live transport
+  from `Cx` landed"](#in-process-vst2-live-transport-from-cx-landed)); it
+  used to poll a `PolledTransport` once per block and, behind a latent path,
+  was told the uncompensated playhead.
 - **A device whose callback is not known, or varies.** The chunk is the
   device's callback only when the host knows it: tutti-cpal opens a device
   that reports a buffer range with a fixed 512-frame buffer
@@ -3871,11 +3871,11 @@ sources with no audio or event input, so their arrival is zero (the lane and
 LFO assert it). One caveat: a modulated param counts toward arrival, so a
 voice whose declared param were modulated from a latent path would arrive
 late and should then read `Cx::transport_at`; nothing wires one so today.
-The **in-process VST2 node** (`InProcessVst2Client`) is the exception that
-does take audio input. A fork of it reads `Cx::transport_at`, as the
-out-of-process node does; the live instance still polls `PolledTransport`,
-so behind a latent path it is told the uncompensated playhead. Moving it
-onto its `Cx` is left to the in-process VST2 work, which owns that node.
+The **in-process VST2 node** (`InProcessVst2Client`) is the other reader
+that takes audio input. It and its fork read `Cx::transport_at`, as the
+out-of-process node does (the live instance polled `PolledTransport` until
+["In-process VST2 live transport from `Cx`
+landed"](#in-process-vst2-live-transport-from-cx-landed)).
 
 #### Item 3 landed (#10)
 
@@ -4166,8 +4166,9 @@ under both.
   as before. Note expression belongs in the MIDI stream as MIDI 2 per-note
   messages; turning those into VST3 note-expression events on the plugin
   side is a follow-up. With these three inputs gone, the plugin node's
-  `InputSlot`s are gone; the in-process VST2 node's polled transport is the
-  last user of the slot type.
+  `InputSlot`s are gone; the in-process VST2 node's polled transport was the
+  last user of the slot type (both since deleted: ["In-process VST2 live
+  transport from `Cx` landed"](#in-process-vst2-live-transport-from-cx-landed)).
 - **Plugin MIDI out on an event output: landed** (stacked on item 5's first
   PR). A plugin that declares `Features::MIDI_OUT` has one MIDI event
   output. Its reply is now taken when its chunk's audio is collected
@@ -4249,9 +4250,11 @@ under both.
   keyboard sounds under a clip) and `export_fork`'s synth exports, whose
   golden digest is unchanged.
   **Follow-ups recorded:** the in-process VST2 node still takes its
-  transport from a polled reader rather than `Env`, and has no fork (the
-  fork has since landed, reading its transport from `Env`:
-  [below](#in-process-vst2-forks-by-state-transfer));
+  transport from a polled reader rather than `Env`, and has no fork (both
+  have since landed: the fork, reading its transport from `Env`,
+  [below](#in-process-vst2-forks-by-state-transfer), and the live node
+  reading its `Cx`, ["In-process VST2 live transport from `Cx`
+  landed"](#in-process-vst2-live-transport-from-cx-landed));
   `crossfade_audio_node` takes an `AudioUnit`, so a graph-node synth cannot
   be crossfaded; JR stamping still works per drained batch rather than per
   block of the graph's clock.
@@ -5247,7 +5250,7 @@ point again and dispatches state opcodes, `Vst2Instance::load`'s rule):
    `PluginForkError::LoadState`.
 4. **Reads its transport from the block's `Env`** (the render's timeline,
    with the live node's meter), not the live node's polled reader. The live
-   node still polls; moving it onto `Env` is the follow-up recorded above.
+   node has since moved onto its `Cx` too (next section): one path for both.
 5. **Tells the plugin its rate from `prepare`**, under the lock
    (`RateDelivery::InPrepare`). The live node parks the rate for the main
    thread's editor pump, which nothing runs for a fork; the fork's
@@ -5293,7 +5296,77 @@ refuses the first one's chunk; and `TUTTI_VST2_PROBE_UNIQUE_ID` and
 `_PROGRAMS` set between the two loads, for `Mismatch` and a live program the
 second instance lacks. The fork's `Env` transport is pinned by the probe's
 `audioMasterGetTime` capture (the render's 93 BPM at beat 5, not the live
-reader's 132 at 4).
+reader's 132 at 4; since the next section, the render's 93 at 5 in the live
+node's 7/8 meter).
+
+#### In-process VST2 live transport from `Cx` landed
+
+The follow-up "Arrival-aligned transport landed" and the section above
+record: the live in-process VST2 node
+read its transport by polling a `PolledTransport` (the live `Transport`
+installed with `set_transport_source`) once per block, ignoring its `Cx`.
+Behind a latent path its `audioMasterGetTime` therefore answered with the
+block's own time, not the time of the audio it was processing.
+
+**Why it polled.** History, not a need. The node predates `Env`: it was a
+`Legacy` unit with no block context, so it read the shared timeline itself,
+and the port to `tutti_graph::Node` kept the reader. The reader supplied
+nothing `Env` does not: the same engine transport (playing, recording,
+tempo, beat, loop), the rate (now the block's), and a free-running counter
+(the transport's stream time; now the node's own `SteadyTime`, as the other
+plugin nodes keep). The one thing it carried that `Env` does not is the
+**meter**, which rode beside the reader and is kept. The order relative to
+`process` is unchanged: `audioMasterGetTime` is answered on the audio
+thread from inside the plugin's `process`, and the snapshot is built in the
+node's `process` before `Vst2Instance::process_f32`, which publishes it to
+the seqlock the callback reads before entering the plugin.
+
+**What landed.**
+
+- **One path for the live node and its fork**: `TransportFeed`
+  (`format/vst2_in_process/client.rs`) builds each block's snapshot with
+  `transport_source::from_cx` at the block's first frame, `Cx::transport_at`
+  (the out-of-process node's mapping), with the meter and the node's
+  `SteadyTime`. A plugin that does not declare `Features::TRANSPORT` is
+  handed the default snapshot, as before, and an empty block repeats the
+  last snapshot. Per block: two lock-free loads (the meter's
+  `ArcSwapOption`, then its `RtPublish`), no allocation, no new lock.
+- **The meter** is a `PluginMeter` (`tutti_plugin::handles`): one
+  `ArcSwapOption<RtPublish<MeterMap>>` cell shared across the node's
+  clones, and the out-of-process node's `PluginControls::meter` too.
+  Installed with `InProcessVst2Client::set_meter` (`clear_meter`,
+  `has_meter`), through the `PluginMeter` inserting the node hands back as
+  its controls (`IntoNode::Controls`, was `()`), or with `Plugin::set_meter`
+  / `Plugin::meter` for either backend. A fork takes the meter installed
+  when it forks, in a cell of its own; none is 4/4 from bar 0.
+- **bevy-tutti gives it the project meter.** The plugin load captured
+  nothing for an in-process VST2 (`CapturedControls::default()`), so
+  `plugin_bind_meter` never reached it and a bar-synced VST2 counted 4/4 in
+  a 7/8 project. It now captures the node's `PluginMeter`
+  (`CapturedControls::for_plugin_meter`); `PluginShadow` holds the meter
+  for either backend (`meter_for`) and `PluginControls` for an
+  out-of-process one (`controls_for`), and the meter binding installs
+  through `meter_for`.
+- **Deleted**: `PolledTransport`, `InProcessVst2Client::{set_transport_source,
+  clear_transport_source}`, and the `InputSlot` / `BlockInput` /
+  `BlockReset` plumbing whose last user it was. `Plugin::set_transport_source`
+  is deprecated (its `reader` was unused); `Plugin::set_meter` replaces it.
+- **Behaviour**: with no meter installed the live node is now told the
+  graph's transport (4/4), where it was told a stopped default until a
+  reader was installed.
+
+Pinned by `tests/vst2_in_process_transport.rs` against the reference probe's
+`audioMasterGetTime` capture: behind a 40-frame latent sibling, each block
+is told the transport 40 frames before its first frame (the previous
+block's, across a seek at the boundary, a tempo change, a loop that wrapped,
+a record toggle and a stop); with no latency, the block's own; the live
+node's 7/8 meter, 4/4 once cleared through the inserted node's handle, and
+`Plugin::set_meter`'s VST2 arm. `TransportFeed`'s unit tests pin the feature
+gate, the meter shared across clones, a fork's meter taken at the fork, the
+counter and the empty block; `vst2_in_process_no_alloc.rs` renders with a
+meter installed. bevy-tutti's `plugin_vst2_meter.rs` loads the probe through
+the request pipeline and reads 7/8 from its `audioMasterGetTime` once the
+metronome's meter is 7/8.
 
 ## Decisions for the owner
 

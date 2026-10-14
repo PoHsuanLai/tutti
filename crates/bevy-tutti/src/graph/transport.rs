@@ -94,10 +94,10 @@ impl TransportRes {
     /// transport is recording, its loop region, and free-running stream time.
     ///
     /// Same seam and same sharing as `timeline`; the difference is only how much
-    /// of the transport the consumer is allowed to ask about. Use this when the
-    /// sink genuinely needs those extras — a hosted plugin's `TransportInfo`
-    /// carries recording and loop state, so its sources take `TransportState`
-    /// — and `timeline` otherwise. `TransportState` is a strict supertrait of
+    /// of the transport the consumer is allowed to ask about. Nothing in this
+    /// repository consumes it now (a graph node, a hosted plugin's included,
+    /// reads its block's `Env`); it is kept as public API for a host's own
+    /// sink that needs those extras. `TransportState` is a strict supertrait of
     /// `Timeline`, so an offline render (a `Timeline`-only implementor) cannot
     /// be passed where this is wanted, which is the point: it has no answer for
     /// "am I recording".

@@ -32,8 +32,10 @@ is the compiler's own solve. Phase 6 is under way: the parallel executor
 - Musical delay is not latency. Report only processing latency to PDC.
 - Transport commands meant for playback take an `At`
   (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
-  graph node that needs the transport at a frame reads `Env::transport_at`:
-  a start or seek inside a block is in `Env`, never a split block.
+  graph node that needs the transport at a frame reads `Env::transport_at`
+  (the block's own time), or, behind a latent path, `Cx::transport_at` (the
+  transport its input was rendered at): a start or seek inside a block is in
+  `Env`, never a split block.
 - Doc 013 lists the defects and types each phase addresses. Update it when a
   phase lands or a decision changes.
 
@@ -226,7 +228,7 @@ Non-scalar state handed to the audio thread goes through
 - Never `publish` from the audio thread.
 - Do not try to prove the race with a no-alloc test. The loom model and miri
   cover it; a single-threaded gate can only pin the reader's code path.
-- Nullable hot-swap slots (`InputSlot`, `Midi::out`) stay on
+- Nullable hot-swap slots (the plugin nodes' meter cells, `Midi::out`) stay on
   `ArcSwapOption`. Control-thread-only cells stay plain. (The sampler's
   `SharedReader` is a plain `Arc` of a position-indexed ring of atomics;
   nothing swaps it.)

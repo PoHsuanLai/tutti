@@ -2331,7 +2331,11 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   changed are dropped from the window, so a jump back there (a DAW's cycle
   mode) moves the window and reads the new loop, not the old one on every
   pass (the second review's B1). The switch is chosen again if the reader
-  reaches it while the butler reads the record. The divergence search runs
+  reaches it while the butler reads the record, at most four times (then
+  the record's fade covers the crossing); pinned by `loops.rs`'s
+  `a_reader_reaching_the_switch_during_the_read_moves_it` and
+  `a_reader_keeping_pace_is_given_up_on_after_four_reads`, which move the
+  reader mid-read through a test-only hook. The divergence search runs
   a run of consecutive frames at a time, not a position at a time.
   **Decided (review of #48):** the guard's
   latency near the playhead (about 256 frames, crossfaded, where the memory

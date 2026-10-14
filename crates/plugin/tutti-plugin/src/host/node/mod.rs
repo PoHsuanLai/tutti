@@ -79,6 +79,7 @@ mod automation_node;
 pub(crate) mod input_slot;
 mod param_automation_source;
 mod process;
+mod segment_points;
 pub(crate) mod transport_source;
 
 #[cfg(test)]
@@ -164,6 +165,10 @@ pub struct Bound {
     /// controls: built once here, on the control thread, because building a
     /// `MeterMap` allocates.
     default_meter: MeterMap,
+    /// The curve segments in flight on the event input, sent as parameter
+    /// points until each lands. Its slots are allocated by `prepare`;
+    /// nothing is allocated on the audio thread.
+    segments: segment_points::SegmentPoints,
 }
 
 impl std::fmt::Debug for Bound {
@@ -439,6 +444,7 @@ impl PluginClient<Unbound> {
                 out_events: MidiEventVec::new(),
                 steady: transport_source::SteadyTime::default(),
                 default_meter: MeterMap::default(),
+                segments: segment_points::SegmentPoints::default(),
             },
         }
     }

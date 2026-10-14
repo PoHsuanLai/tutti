@@ -3,7 +3,9 @@
 //! the FIFO and ring, the transport snapshot from `Env` (with a meter
 //! installed), the per-chunk payload (MIDI from the live inbox, parameter
 //! automation from an LFO through an automation node on the plugin's event
-//! input), the IPC submit and collect, and the executor around them.
+//! input, and curve segments from an automation lane followed along by the
+//! node's `SegmentPoints`), the IPC submit and collect, and the executor
+//! around them.
 //!
 //! What this can cover is the calling thread's code path; the audio thread
 //! is this test's thread. The bridge thread and the `plugin-server` process
@@ -31,6 +33,7 @@ use tutti_graph::{Offset, Transport, TransportChanges};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_nodes::automation::{AutomationEnvelope, AutomationLaneNode, AutomationPoint, CurveType};
 use tutti_plugin::handles::{LfoCurve, LfoShape, ParamAddress, ParamId, TimedParam};
 use tutti_types::{Beat, Bpm, Samples};
 
@@ -62,6 +65,11 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// Mutation: let a chunk's parameter queue grow past its budget
 /// (`automation_node::add_point` pushing without replacing the last point) →
 /// eight blocks of points spill the queue to the heap → aborts.
+/// Mutation: allocate where the node starts following a segment (a `Vec`
+/// per `SegmentPoints::start`) → aborts. (Growing the slots past what
+/// `prepare` reserved is not seen here: the lane re-sends one segment per
+/// block on one parameter, so a single slot is ever live; the overflow
+/// path's fallback is pinned by `segment_points`' unit tests.)
 #[test]
 fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let _lock = exclusive();
@@ -81,7 +89,20 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     }]);
     let prepare = tutti_graph::Prepare::new(tutti_types::SampleRate(SAMPLE_RATE), Samples(BLOCK))
         .with_quantum(Samples(QUANTUM));
-    let (mut rig, sender) = Rig::prepared_with_keys(probe.client.bind(), prepare, Some(automation));
+    // Curve segments on another parameter: an exponential envelope, so
+    // each segment runs across chunks and the node follows it.
+    let mut env = AutomationEnvelope::new(());
+    for k in 0..200 {
+        let v = if k % 2 == 0 { 0.2 } else { 0.9 };
+        env.add_point(AutomationPoint::with_curve(
+            f64::from(k) * 2.0,
+            v,
+            CurveType::Exponential,
+        ));
+    }
+    let lane = AutomationLaneNode::for_foreign(env, 78);
+    let (mut rig, sender) =
+        Rig::prepared_with_keys(probe.client.bind(), prepare, Some(automation), Some(lane));
     let meter = Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),

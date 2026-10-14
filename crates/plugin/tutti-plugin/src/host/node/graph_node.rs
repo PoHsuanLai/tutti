@@ -17,6 +17,7 @@ use tutti_graph::{
 use tutti_types::{ChannelLayout, ParamAddr, Samples};
 
 use super::batcher::{sort_by_offset, Chunks};
+use super::segment_points::SegmentPoints;
 use super::transport_source::{self, SteadyTime};
 use super::{automation_node, BlockPayload, Bound, PluginClient};
 use crate::host::ipc_client::audio::HarmonyInputs;
@@ -77,6 +78,10 @@ impl Node for PluginClient<Bound> {
     fn prepare(&mut self, p: &Prepare) {
         let c = &mut *self;
         c.state.io.prepare(p);
+        // Control thread: the one place the slots are allocated.
+        c.state
+            .segments
+            .prepare(super::segment_points::MAX_SEGMENTS);
         c.controls.set_pipeline(c.state.io.pipeline_latency());
         c.controls.restamp(p.sample_rate());
         // `.get()` here and nowhere earlier: `set_sample_rate_rt` puts the rate
@@ -117,6 +122,7 @@ impl Node for PluginClient<Bound> {
             pending,
             out_events,
             steady,
+            segments,
         } = &mut c.state;
         out_events.clear();
 
@@ -142,6 +148,7 @@ impl Node for PluginClient<Bound> {
             pending,
             out_events,
             indexed,
+            segments,
         };
 
         // The block's channels, on the stack: no allocation per call.
@@ -183,6 +190,7 @@ impl Node for PluginClient<Bound> {
     /// Drop the chunk in flight and tell the plugin to reset.
     fn reset(&mut self) {
         self.state.io.reset();
+        self.state.segments.clear();
         let _ = self.bridge.reset_rt();
     }
 }
@@ -209,10 +217,13 @@ struct PluginChunks<'a> {
     /// Whether the plugin addresses parameters by VST2 index: how a ramp's
     /// number is read.
     indexed: bool,
+    /// The curve segments in flight on the event input.
+    segments: &'a mut SegmentPoints,
 }
 
 impl Chunks for PluginChunks<'_> {
-    fn begin(&mut self, at: usize, _chunk: usize) {
+    fn begin(&mut self, at: usize, chunk: usize) {
+        self.segments.begin(chunk);
         let transport = match Offset::new(at, Samples(self.frames)) {
             Some(offset) if self.features.contains(Features::TRANSPORT) => {
                 transport_source::from_cx(&self.cx, offset, self.steady.at(at), self.meter)
@@ -234,19 +245,35 @@ impl Chunks for PluginChunks<'_> {
     /// The event input's events on these frames join the chunk at the
     /// chunk's frames: MIDI to its MIDI, a parameter ramp (from a
     /// [`PluginAutomation`](super::PluginAutomation) node) to its parameter
-    /// points, in this plugin's address model, and a chord or scale to its
+    /// points, in this plugin's address model (a ramp as its target, a curve
+    /// segment as points along it until it lands: a plugin takes point
+    /// values; see `segment_points`), and a chord or scale to its
     /// harmony, for a plugin that takes sequencer context (no display text:
     /// the degrees are what a plugin acts on). Past the inline capacities they
     /// are dropped rather than spill (allocate) on the audio thread.
     fn take(&mut self, from: usize, n: usize, at: usize) {
         let events = self.events.as_slice();
         let first = events.partition_point(|e| e.offset.index() < from);
+        // This call's frame `i` as the node's absolute frame: where a
+        // segment in flight is along itself.
+        let base = self.cx.env.frame.get();
+        let abs = |i: usize| base + i as u64;
+        // The frames whose segment points are sent: up to each event's, then
+        // the rest of the take.
+        let mut done = from;
         for e in &events[first..] {
             let o = e.offset.index();
             if o >= from + n {
                 break;
             }
             let frame = at + o - from;
+            self.segments.points(
+                &mut self.pending.params,
+                abs(done),
+                abs(o),
+                at + done - from,
+            );
+            done = o;
             match e.kind {
                 EventKind::Midi(ump) => {
                     let midi = &mut self.pending.midi;
@@ -264,14 +291,35 @@ impl Chunks for PluginChunks<'_> {
                     ) else {
                         continue;
                     };
+                    // A ramp stops a segment in flight on its parameter.
+                    self.segments.interrupt(address);
                     let offset = i32::try_from(frame).unwrap_or(i32::MAX);
                     automation_node::add_point(&mut self.pending.params, address, offset, value);
+                }
+                EventKind::Segment(seg) => {
+                    // A plugin parameter takes point values: the segment's
+                    // value on its frame, then points along it until it
+                    // lands (`SegmentPoints`).
+                    let ParamAddr::Id(id) = seg.addr() else {
+                        continue;
+                    };
+                    let Some(address) = automation_node::address(id, self.indexed) else {
+                        continue;
+                    };
+                    self.segments
+                        .start(&mut self.pending.params, address, seg, abs(o), frame);
                 }
                 EventKind::Harmony(h) => {
                     push_harmony(&mut self.pending.harmony, self.features, h, frame);
                 }
             }
         }
+        self.segments.points(
+            &mut self.pending.params,
+            abs(done),
+            abs(from + n),
+            at + done - from,
+        );
     }
 
     /// The chunk's MIDI, sorted by frame: the event input's, as its frames

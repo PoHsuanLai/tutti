@@ -334,7 +334,7 @@ means:
 |---|---|---|
 | Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)`, source order being the source port's `(NodeKey, port)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
-| Automation | `ParamRamp` events at an offset, starting on their exact frame | Linear segments only for now (decision 7). Non-linear curves need curve-segment events or sub-chunking at breakpoints |
+| Automation | `ParamRamp` events (linear) and `ParamSegment` events (a closed set of curve shapes, evaluated by the param port per frame) at an offset, starting on their exact frame (decision 7, "Curve segments landed") | A curve shape outside the closed set (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Bezier`, `Circular`): an automation lane sends it as linear pieces, exact at block edges |
 | Transport and clips | `Env.frame: Frame` (`u64`), beat as f64 derived from an integer frame count (item 6 below), the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click (D8) and sampler placement use the offset inside the block; every clip and MIDI reader places a beat by the one frame rule (`first_frame_at_or_after`) | none by construction for a native node (a declick moves the transport on its frame; the fade is audio only). A `Legacy` clip reader (the sampler today) polls a timeline instead, once per 64-frame call; a graph holding one is rendered chunk-major, 64 frames across every node (the `Legacy` compatibility mode, see "A `Legacy` clip reader reads its timeline per 64-frame chunk" under Phase 3): 64-frame resolution, as through `Net`, until Phase 4 ports it to `Env::transport_at` |
 | Plugins | Offsets reach CLAP/VST3, whose event APIs are sample-accurate | the plugin |
 
@@ -342,8 +342,8 @@ means:
 
 - **Atomic controls (`Param<U>`)** are read once per block and ramped across
   it (#10). That is right for a user dragging a fader. Automation must never
-  take this path: it goes through `ParamRamp` events or audio-rate parameter
-  ports.
+  take this path: it goes through `ParamRamp` or `ParamSegment` events or
+  audio-rate parameter ports.
 - **Untimed control-thread commands** land at the next block boundary, and
   are now spelled that way: `At::NextBlock`. **The timestamped command queue
   exists** (Phase 2, done): `Editor::schedule(At, EventIn, EventKind)`
@@ -3519,7 +3519,7 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | `VoiceNode` | Shrinks to its `process` body. `Controls { placement: RtPublish<Window>, gain: Param<Amplitude> }` replaces the command channel, which exists only because "`Setting` is one `f32` wide". **Deferred by item 7** to the voice's native port: not clean behind `Legacy` ("Item 7 landed") |
 | `PluginClient` (the shell; IPC/bridge/shm stay) | **Done except the event ports (item 4, plugin half).** `PluginClient<Unbound>` → `bind()` → `PluginClient<Bound>`, a native node. Transport comes from `Env`. MIDI, param automation, harmony and note expression come in as **event ports**, so the four `InputSlot` shared cells go (**not yet**: see "Item 4's plugin half landed"). Delete the `AudioUnit<F64>` impl, and keep the f64 wire conversion inside the node |
 | `Batcher` | **Done (item 4, plugin half).** Delete tick mode and `TickStorage::{F32,F64}`. The chunk (and so the pipeline latency) comes from `prepare`: **one device callback** (`Prepare::quantum`), else `MaxBlock`. Owner decision 8 first kept an internal 64-frame pipeline; it was **reversed on measurement** (see decision 8): a 64-frame chunk inside a device callback left the server microseconds to answer, and live plugin audio was mostly silence |
-| `HarmonySource`, `ParamAutomationSource`, `NoteExpressionSource`, `MidiClipSource`, `AutomationLaneNode` | **Event source nodes**: an owned cursor, the `Env` beat window, an events out port. Their output then goes through the PDC pass, which fixes D9. The automation lane evaluates at block edges and breakpoints and emits ramp or curve-segment events, instead of evaluating the curve per sample off two f32 beat ports |
+| `HarmonySource`, `ParamAutomationSource`, `NoteExpressionSource`, `MidiClipSource`, `AutomationLaneNode` | **Event source nodes**: an owned cursor, the `Env` beat window, an events out port. Their output then goes through the PDC pass, which fixes D9. The automation lane evaluates at block edges and breakpoints and emits ramp or curve-segment events, instead of evaluating the curve per sample off two f32 beat ports. **Done for the lane** ("Curve segments landed"): `AutomationLaneNode::for_param` sends curve segments; `new` keeps the audio output |
 | `MidiPreBlock` | A hardware-input source node with an events out port. `MidiRoutingSnapshot` compiles into router ops. `BlockClock` (clock/MTC out) becomes a sink node that reads `Env` |
 | `Svf` + "Stereo" `Svf` | One width-generic node. (The "Stereo" types are already N-wide, so the name is left over from the extraction.) `Controls` makes the filter type switchable live. Coefficients recompute every k samples, or ramp `g`/`k` within a block, instead of a per-sample `tan`. SoA over channels |
 | `Ladder` + `StereoLadder` | One width-generic node with shared coefficients and 4 stages × N lanes. Removes 3 atomic loads per channel per sample |
@@ -4211,8 +4211,9 @@ under both.
     the live graph from frame 0.
   - **Event sources**: each `ParamRamp` addressed to the port's param
     starts a linear ramp of that source's value on its frame, landing on
-    the target on its last frame (a zero-length ramp is a step); the value
-    starts at 0 and is an offset like an audio source's. A source's state
+    the target on its last frame (a zero-length ramp is a step; a
+    `ParamSegment` moves it along its shape instead, see "Curve segments
+    landed"); the value starts at 0 and is an offset like an audio source's. A source's state
     (its ramp, its last value) is kept by `ParamFrom`, not by its slot, so
     another source joining or leaving the port, or this one being
     reshaped, does not reset a held value. A fork starts each event source
@@ -4315,8 +4316,9 @@ fail on, by name.
 - A re-prepare resumes each unit with fresh param state: event sources'
   held ramps restart at 0 (a sample-rate change would make their frame
   counts wrong anyway), as the reference does.
-- Event-sourced offsets are unshaped ramps of the target value; a
-  curve-segment `EventKind` (decision 7) would slot in beside `Ramp`.
+- ~~Event-sourced offsets are unshaped ramps of the target value; a
+  curve-segment `EventKind` (decision 7) would slot in beside `Ramp`.~~
+  **Landed**: `EventKind::Segment` (see "Curve segments landed" below).
 - Param edges are direct only: no feedback modulation (a node modulating
   something upstream of itself is a `CompileError::Cycle`).
 
@@ -4388,6 +4390,163 @@ proptest moving ranges without a commit against the reference. `tests/parallel.r
 modulated-params gate moving ranges between gated blocks, serial and on a
 pool. bevy-tutti: `a_range_move_sends_no_plan`; the existing
 `a_range_edit_reaches_a_live_clamp` now goes through the range-only path.
+
+#### Curve segments landed (decision 7)
+
+Decision 7, resolved: automation is carried as linear ramps **and** curve
+segments. A param port evaluates a non-linear shape per frame inside the
+block, sample-accurate, with no sub-chunking at breakpoints; the linear
+`ParamRamp` stays, unchanged to the bit, for the moves it already
+carried.
+
+- **The event.** `EventKind::Segment(ParamSegment)` beside `Ramp`. A
+  segment is **absolute**: its start and end values, a `SegmentShape`, and
+  where along itself it is at the event's frame (`position`) over its
+  `length`, both in fractional frames. Frame `j` after the event reads
+  `from + (to - from) · shape.eval((position + j) / length)`, and `to`
+  from the frame that progress reaches 1 (a zero length is a step).
+  `ParamSegment::new` is the ramp convention (position 1: the event's
+  frame is one step in, `to` on the last frame); `resumed` sets the
+  position and length, for a breakpoint between frames or a segment
+  entered part-way. Because the segment says where it is, re-sending the
+  one a producer is on is idempotent: a producer can be a pure function of
+  the transport, a seek or loop wrap is just another send, and a segment
+  entered mid-way renders what one started at its beginning would have.
+  (A relative form, "from wherever the source is, along a shape", would
+  need the source's value at the send and could not be re-sent; the linear
+  ramp is that form.)
+- **The shapes: a closed set, `Copy`.** `SegmentShape::{Linear, Hold,
+  PowerIn(p), PowerOut(p), PowerInOut(p), Exp(k)}`, each monotone between
+  its endpoints, rather than an `Arc<dyn Curve>` on the audio thread. An
+  unusable parameter (not finite, a non-positive exponent) evaluates as
+  linear, and `Exp`'s curvature is clamped to ±64, so the port never makes
+  a NaN from a shape. `Linear`, `Hold` and the powers at 0.5 and 1–5 use
+  IEEE-exact operations (multiplications, `sqrt`) and so render the same
+  bits on every target; other exponents (`powf`) and `Exp` (`exp_m1`) are
+  libm, deterministic on one target (serial equals parallel) but not
+  across targets, so the tests that pin them use tolerances.
+- **Size.** An `Event` stays 32 bytes (the const assert in `event.rs`).
+  The segment packs its address (a `UnitParam` discriminant or foreign id
+  and a flag, not an 8-byte `ParamAddr`) and its shape (a tag byte and an
+  `f32`), its position and length are `f32` (exact to 2^24 frames, about
+  5.8 minutes at 48 kHz, where the types stop for the event's size), and
+  `ParamRamp`'s duration is now stored as a saturating `u32` (a `usize`
+  aligned the whole event to 8). A length that is not finite and above
+  zero is a step to `to`; a negative position is a delayed start (the
+  source holds `from` until it reaches 0).
+- **`audio-automation`'s curves**, mapped by
+  `tutti_nodes::automation::segment_shape`: `Linear`; `Stepped` → `Hold`;
+  `Exponential` and `QuadIn` (both `t²`) → `PowerIn(2)`; `Logarithmic`
+  (`√t`) → `PowerIn(0.5)`; the cubic, quartic and quintic ins → `PowerIn(3,
+  4, 5)`; the outs → `PowerOut(2 … 5)`; `SCurve` and `QuadInOut` →
+  `PowerInOut(2)`, the other in-outs `PowerInOut(3 … 5)`. **Not carried:**
+  `Back`, `Elastic`, `Bounce` (they overshoot their endpoints), `Bezier`
+  (two control values; also `audio-automation`'s evaluates to its end value
+  at `t = 0`) and `Circular`. A lane sends those pieces as the
+  piecewise-linear fallback below. The pinned `audio-automation` rev is
+  unchanged.
+- **The param port** (`param.rs`). An event source's running state
+  (`Ramp`) gains the segment's timing and shape (`Curve`); `render_ramps`
+  starts a segment on its frame from its own endpoints, and `step`
+  evaluates it at its progress each frame, holding `to` once it arrives.
+  Nothing allocates; the state lives in the same fixed per-source array.
+  An interruption is any later ramp or segment for the same param on the
+  same source, on its frame: a segment jumps to its own value there, a ramp
+  moves on from the value the segment reached. The fork tap publishes the
+  segment's timing and shape too, so a fork mid-segment carries on along
+  it. The reference interpreter evaluates segments from their start frame,
+  sharing only `segment_value` (the shape's definition), as it shares the
+  LUT.
+- **Ranges and modulation.** A segment is a source's raw value like a
+  ramp's: through the source's shaping, summed with the base and the other
+  sources, clamped to the port's live range when the port reads it. The
+  segment's endpoints are never rewritten: a range that shrinks pins the
+  value, and widening it releases the value onto the curve where the
+  segment has run on to.
+- **The producer: `AutomationLaneNode::for_param` / `for_foreign`.** The
+  lane, made with one of these, has one event output (no audio) and sends
+  its curve as segments for one param. It is still a pure function of its
+  block's `Env`: per transport piece (`Env::segments`) it walks the beat
+  per frame and sends the piece the curve is on (`Curve::segment_at`,
+  tutti-mod) at the piece's first frame, at each breakpoint, and at each
+  loop wrap, with the fractional position the frame is at (beats to frames
+  at the piece's tempo), so the port renders the curve's own value at
+  every frame. While stopped it sends the value at its beat, held. A piece
+  with no segment shape, or a curve that cannot say its pieces
+  (`segment_at` is `None` by default: an LFO, a `LayeredCurve`, an
+  envelope with a `step_size`, or a min/max cutting into a piece), goes as
+  **linear pieces between the curve's values at each block edge** (and at a
+  breakpoint or loop wrap inside the block): exact at those edges. Where
+  the curve has no value it sends nothing and the port holds. At most
+  `LANE_EVENT_CAPACITY` (128) sends a block; past that they are dropped and
+  counted (fixed, because a node's event capacity is read from its shape at
+  insert, before `prepare`): an envelope denser than about 127 breakpoints
+  in a block stays on the last segment that got through until the next
+  block re-sends. `AutomationLaneNode::new` keeps its audio output, for anything
+  that reads a signal.
+- **A hosted plugin** takes parameter points (CLAP and VST3 parameter
+  changes are point values), so its node follows a segment that reaches
+  its event input itself (`SegmentPoints`, `host/node/segment_points.rs`):
+  the segment's value on its event frame, then points along it in every
+  chunk (at `stride_for(chunk)` and on the chunk's last frame, as
+  `PluginAutomation` spaces them, at most 10 a chunk) and its end value on
+  the frame it arrives (`ParamSegment::arrives_after`), after which the
+  plugin holds it. A later ramp or segment on the parameter stops it on
+  its frame. **Bounds:** one slot per parameter address, 1024 slots,
+  allocated in the node's `prepare` (the plugin's parameter count would be
+  exact, but asking the plugin-server is a blocking round trip a live
+  `prepare` must not make); a segment that finds them all taken is sent as
+  a ramp, its end value at once on its event frame. A chunk's parameter
+  changes hold 16 queues (a protocol limit every automation source shares,
+  never spilled to the heap): a segment whose point finds no queue keeps
+  its slot, past its arrival if need be, and sends where it has got to on
+  the first frame of a later take with room, so with more than 16
+  parameters moving at once a starved segment lands late, never not at
+  all. Cleared on a reset or re-prepare; nothing is allocated on the audio
+  thread (`clap_node_no_alloc` drives a lane into the plugin under the
+  gate). A ramp is still its target at its frame. `PluginAutomation` (the plugin's
+  automation source) is unchanged: it samples its curves into
+  `ParamRamp::foreign` points at a stride, which is what its target takes.
+- **Scheduled.** `Editor::schedule` refuses a segment into a node that
+  does not honour offsets sample-accurately, as it refuses a ramp.
+
+**Tests.** tutti-graph `src/event.rs`: `every_shape_meets_its_closed_form`
+(every shape against closed forms in `f64`, monotone, unusable parameters
+linear, no NaN), `a_segment_reads_back_as_built`. `tests/param_mod.rs`:
+`a_segment_hits_its_analytic_values_per_frame` (a segment spanning eight
+blocks, an `Exp`, a resumed one at a fractional position, under one-frame,
+odd, even and ragged blocks, within 1e-5 of the closed form),
+`an_interrupted_segment_hands_over_on_the_frame` (by a segment mid-block,
+then a ramp), `a_range_clamps_a_segment_without_rewriting_it`,
+`a_segment_sums_with_other_modulators_through_its_shaping`,
+`a_fork_carries_an_in_flight_segment`, and the differential proptest's
+generator sending segments of every shape (some resumed) interleaved with
+ramps, executor against reference bit for bit. `tests/parallel.rs` and
+`tests/rt_no_alloc.rs`: the ramp source there now alternates ramps with
+segments of each shape class, so the parallel renders and the no-alloc
+gate (serial and on a pool) cover them. tutti-mod: the envelope's pieces
+(`an_envelopes_pieces_are_its_breakpoints`, `a_bent_piece_is_no_segment`).
+tutti-nodes `tests/automation_segments.rs`: an exponential, cubic-out,
+S-curve and linear envelope at a tempo whose beats fall between frames,
+against `audio-automation`'s own value at every frame under ragged blocks
+(and at mid-piece, a quarter for a half: the curve, not a line); loop wraps
+inside blocks, and a seek, tempo change and stop mid-block; the fallback
+for `Elastic` and for a curve with no pieces, exact at block edges.
+`tests/rt_no_alloc_modulation.rs`: four event lanes (segments, loop wraps,
+both fallbacks) driving param ports under `assert_no_alloc`, serial and on
+a gated `WorkerPool`, and bit for bit serial against pools of 2, 3, 4 and
+8. tutti-plugin: `segment_points`' unit tests (points in every chunk, the
+end value on its frame, an interruption), and `tests/clap_automation.rs`
+against the reference CLAP plugin's gain: a scheduled segment drives it
+through the curve to exactly its end value on its frame across four
+chunks, an interrupting ramp wins, and a `for_foreign` lane does the
+same along its envelope.
+
+**Deferred.** `LayeredCurve` and the automation `Recorder` answer
+`segment_at` with `None` (the fallback): a sum of layers has no single
+shape, and a take in progress changes under the lane. A relative curved
+move ("from where it is, exponentially to X") has no event; the linear
+`ParamRamp` is the only relative form.
 
 #### Item 7 landed: sampler block render and ownership
 
@@ -5092,6 +5251,11 @@ now (**reversed** 2026-09-26, see 8). Item 5 was decided when Phase 0 ran:
 7. **Automation encoding.** Linear ramp events (nih-plug, Web Audio) vs
    curve-segment events. Curve segments are needed for sample-accurate
    non-linear shapes without sub-chunking at breakpoints.
+
+   **Decided and landed (2026-10-14): both.** Linear `ParamRamp`s stay;
+   `EventKind::Segment(ParamSegment)` carries an absolute move along a
+   closed, `Copy` set of shapes (`SegmentShape`) that the param port
+   evaluates per frame. See "Curve segments landed".
 8. **Out-of-process plugin pipeline.** Either keep an internal 64-frame
    pipeline (a fixed 64-frame latency), or follow the device block (the latency
    grows with the buffer size).

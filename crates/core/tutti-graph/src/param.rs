@@ -27,7 +27,7 @@ use std::sync::Arc;
 use tutti_types::graph::OutPort;
 use tutti_types::{AudioThread, NodeKey, ParamAddr, Samples, UnitParam};
 
-use crate::event::{Event, EventKind};
+use crate::event::{segment_progress, Event, EventKind, SegmentShape, ShapeTag};
 use crate::spec::EventOut;
 
 /// Most params one node can declare modulatable.
@@ -406,15 +406,33 @@ pub(crate) fn signature(sources: &[ParamSource]) -> u64 {
     h.finish().max(1)
 }
 
-/// One event source's ramp: its value, and the ramp it is on.
+/// A curve segment's timing and shape, as a source's running state keeps it
+/// (see [`ParamSegment`](crate::ParamSegment)).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Curve {
+    /// Its position along itself at its event's frame, in frames.
+    pub(crate) position: f32,
+    /// Its length, in frames.
+    pub(crate) length: f32,
+    pub(crate) shape: SegmentShape,
+}
+
+/// One event source's ramp: its value, and the move it is on — a linear
+/// [`ParamRamp`](crate::ParamRamp) from the value it had, or a curve
+/// segment between its own endpoints.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Ramp {
     value: f32,
     from: f32,
     target: f32,
+    /// A linear ramp's length, in frames.
     len: u32,
+    /// Frames done: a ramp's steps taken, a segment's frames since its
+    /// event's.
     done: u32,
     active: bool,
+    /// `Some` while the move is a curve segment.
+    curve: Option<Curve>,
 }
 
 impl Ramp {
@@ -427,37 +445,80 @@ impl Ramp {
         self.len = u32::try_from(len).unwrap_or(u32::MAX);
         self.done = 0;
         self.active = true;
+        self.curve = None;
     }
 
-    /// The value at this frame, after any ramp started on it: the ramp's
+    /// Start a curve segment from this frame on: its own endpoints, so the
+    /// value it interrupts is not read. A second event on the same frame
+    /// replaces it.
+    fn start_segment(&mut self, from: f32, to: f32, curve: Curve) {
+        self.from = from;
+        self.target = to;
+        self.len = 0;
+        self.done = 0;
+        self.active = true;
+        self.curve = Some(curve);
+    }
+
+    /// The value at this frame, after any move started on it. A ramp: its
     /// `done`-th of `len` steps, the target from its last one (a zero-length
-    /// ramp reaches it on its first frame).
+    /// ramp reaches it on its first frame). A segment: its shape at its
+    /// progress this frame, the target once it has arrived.
     #[inline]
     fn step(&mut self) -> f32 {
         if self.active {
-            self.done += 1;
-            self.value = if self.done >= self.len {
-                self.active = false;
-                self.target
+            if let Some(c) = self.curve {
+                // `segment_value`'s arithmetic, stepped: arrived, it holds
+                // the target as a finished ramp does.
+                match segment_progress(c.position, c.length, self.done) {
+                    Some(t) => {
+                        self.value = self.from + (self.target - self.from) * c.shape.eval(t);
+                    }
+                    None => {
+                        self.value = self.target;
+                        self.active = false;
+                    }
+                }
+                self.done = self.done.saturating_add(1);
             } else {
-                self.from + (self.target - self.from) * (self.done as f32 / self.len as f32)
-            };
+                self.done += 1;
+                self.value = if self.done >= self.len {
+                    self.active = false;
+                    self.target
+                } else {
+                    self.from + (self.target - self.from) * (self.done as f32 / self.len as f32)
+                };
+            }
         }
         self.value
     }
 }
 
-/// Render one event source's values for a block into `out`: the ramps its
-/// events for `param` start, frame by frame.
+/// Render one event source's values for a block into `out`: the ramps and
+/// curve segments its events for `param` start, frame by frame.
 pub(crate) fn render_ramps(ramp: &mut Ramp, events: &[Event], param: UnitParam, out: &mut [f32]) {
     let want = ParamAddr::Unit(param);
     let mut next = events.iter().peekable();
     for (i, o) in out.iter_mut().enumerate() {
         while let Some(e) = next.next_if(|e| e.offset.index() <= i) {
-            if let EventKind::Ramp(r) = e.kind {
-                if r.addr() == want {
+            match e.kind {
+                EventKind::Ramp(r) if r.addr() == want => {
                     ramp.start(r.raw_target(), r.duration().get());
                 }
+                EventKind::Segment(s) if s.is_for(want) => {
+                    let (from, to, position, length) = s.raw();
+                    let shape = s.shape();
+                    ramp.start_segment(
+                        from,
+                        to,
+                        Curve {
+                            position,
+                            length,
+                            shape,
+                        },
+                    );
+                }
+                _ => {}
             }
         }
         *o = ramp.step();
@@ -897,6 +958,12 @@ struct TapSrc {
     len: AtomicU32,
     done: AtomicU32,
     active: AtomicBool,
+    /// Whether the move is a curve segment, and its timing and shape.
+    curved: AtomicBool,
+    position: AtomicU32,
+    length: AtomicU32,
+    shape: AtomicU32,
+    shape_param: AtomicU32,
 }
 
 impl ParamTap {
@@ -940,6 +1007,14 @@ impl ParamTap {
                             len: s.len.load(Ordering::Relaxed),
                             done: s.done.load(Ordering::Relaxed),
                             active: s.active.load(Ordering::Relaxed),
+                            curve: s.curved.load(Ordering::Relaxed).then(|| Curve {
+                                position: f(&s.position),
+                                length: f(&s.length),
+                                shape: SegmentShape::unpack(
+                                    ShapeTag::from_u8(s.shape.load(Ordering::Relaxed) as u8),
+                                    f(&s.shape_param),
+                                ),
+                            }),
                         },
                     )
                 })
@@ -973,6 +1048,14 @@ impl TapPort {
             t.len.store(r.len, Ordering::Relaxed);
             t.done.store(r.done, Ordering::Relaxed);
             t.active.store(r.active, Ordering::Relaxed);
+            t.curved.store(r.curve.is_some(), Ordering::Relaxed);
+            if let Some(c) = r.curve {
+                let (tag, param) = c.shape.pack();
+                t.position.store(c.position.to_bits(), Ordering::Relaxed);
+                t.length.store(c.length.to_bits(), Ordering::Relaxed);
+                t.shape.store(u32::from(tag as u8), Ordering::Relaxed);
+                t.shape_param.store(param.to_bits(), Ordering::Relaxed);
+            }
             n += 1;
         }
         self.n.store(n as u32, Ordering::Relaxed);

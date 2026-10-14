@@ -47,6 +47,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | — | `RenderGraph::{set_pool, is_parallel}` (tutti-export) |
   | — | `TuttiPlugin::render_workers` (bevy-tutti; default 1, `0` = one per core); an export forks onto a pool of its own |
 
+- **Curve-segment automation events** (design doc 013, decision 7,
+  "Curve segments landed"). A param port evaluates a non-linear automation
+  shape per frame inside the block, sample-accurate, with no sub-chunking
+  at breakpoints. **Breaking** for code that matches `EventKind`
+  exhaustively (a new variant).
+
+  | Was | Now |
+  |---|---|
+  | automation reached a param as linear `ParamRamp`s only | `EventKind::Segment(ParamSegment)`, `Event::segment`: an absolute move from a start value to an end value along a `SegmentShape`, with a fractional position and length in frames (`ParamSegment::{new, foreign, resumed}`) |
+  | — | `tutti_graph::SegmentShape::{Linear, Hold, PowerIn(p), PowerOut(p), PowerInOut(p), Exp(k)}` and `SegmentShape::eval` (a closed, `Copy` set; `Event` stays 32 bytes) |
+  | `AutomationLaneNode` had an audio output only | `AutomationLaneNode::{for_param, for_foreign}`: the lane sends its curve as segments on an event output, one per breakpoint (and at each block edge, loop wrap and transport change); `tutti_nodes::automation::{segment_shape, LANE_EVENT_CAPACITY}` |
+  | — | `ParamSegment::{raw_value_after(Samples), arrives_after}`: its value `j` frames after its event, and the frame it lands its end value on, for a node that takes point values. A length that is not finite and above zero is a step; a negative position is a delayed start |
+  | — | `tutti_mod::{CurveSegment, Curve::segment_at}` (default `None`: a producer samples `value_at`); `AutomationEnvelope` answers it from its breakpoints |
+  | `ParamRamp` stored its duration as `usize` | stored as `u32`, so an `Event` stays 32 bytes: `ParamRamp::duration()` still returns `Samples`, but a duration past `u32::MAX` frames (about a day at 48 kHz) now reads back saturated at `u32::MAX`. The executor already counted a ramp in `u32` while the reference interpreter used the full `usize`; both now see the same saturated length, so they agree on such a ramp |
+
+  **Migration.** A `match` on `EventKind` needs a `Segment(_)` arm. A node
+  that reads param automation from its own event input (rather than
+  through a declared param port) reads a segment's value at a frame with
+  `ParamSegment::raw_value_after(j)`. The hosted plugin node takes points,
+  so it follows a segment on its event input itself: points along it in
+  every chunk (the `PluginAutomation` stride, at most 10 a chunk) and its
+  end value on the frame it arrives (`arrives_after`); a later ramp or
+  segment on the parameter stops it. It follows up to 1024 parameters at
+  once (slots allocated in `prepare`); past that a segment is sent as a
+  ramp, its end value at once. Past a chunk's 16 parameter queues a
+  starved segment's end value lands on a later chunk instead of its own
+  frame. `Editor::schedule` refuses a segment into
+  a node that does not honour offsets sample-accurately, as it refuses a
+  ramp.
+
 ### Changed
 
 - **An export's fork is built off the main thread** (design doc 013,

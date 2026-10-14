@@ -56,6 +56,11 @@ pub(super) struct Channels {
     /// enough run — which is a load-dependent assertion of exactly the kind this
     /// work exists to remove.
     settled: Arc<AtomicU64>,
+    /// How many blocks the bridge thread abandoned on a missed budget, ever.
+    /// The other half of [`settled`](Self::settled): every abandoned reply is
+    /// owed back, so a test can bound what the drain took by what was owed
+    /// instead of by how many budgets a loaded machine happened to miss.
+    abandoned: Arc<AtomicU64>,
 }
 
 impl Channels {
@@ -68,6 +73,7 @@ impl Channels {
             worker: Arc::new(Mutex::new(None)),
             sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.to_bits())),
             settled: Arc::new(AtomicU64::new(0)),
+            abandoned: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -106,17 +112,33 @@ impl Channels {
     }
 
     /// Record that the drain took `n` owed replies off the socket. Called by the
-    /// bridge thread only; `Relaxed` because nothing branches on it.
+    /// bridge thread only. `Release`, paired with the `Acquire` in
+    /// [`settled`](Self::settled): a reader that sees a settle also sees the
+    /// [`note_abandoned`](Self::note_abandoned) that owed it, so a test may
+    /// assert `settled <= abandoned` by reading `settled` first.
     pub(super) fn note_settled(&self, n: u32) {
         if n > 0 {
-            self.settled.fetch_add(n as u64, Ordering::Relaxed);
+            self.settled.fetch_add(n as u64, Ordering::Release);
         }
     }
 
     /// How many owed replies the drain has taken, over the life of the bridge.
     #[cfg(test)]
     pub(super) fn settled(&self) -> u64 {
-        self.settled.load(Ordering::Relaxed)
+        self.settled.load(Ordering::Acquire)
+    }
+
+    /// Record that a block's reply missed its budget and is now owed. Called
+    /// by the bridge thread only, before any settle of that reply; `Relaxed`
+    /// because the `Release` on [`note_settled`](Self::note_settled) orders it.
+    pub(super) fn note_abandoned(&self) {
+        self.abandoned.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many blocks' replies were abandoned, over the life of the bridge.
+    #[cfg(test)]
+    pub(super) fn abandoned(&self) -> u64 {
+        self.abandoned.load(Ordering::Relaxed)
     }
 
     /// Pushes, then wakes the bridge thread. `Thread::unpark` is a non-blocking

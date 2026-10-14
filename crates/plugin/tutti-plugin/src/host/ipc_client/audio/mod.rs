@@ -162,6 +162,13 @@ impl AudioBridge {
         self.channels.settled()
     }
 
+    /// How many blocks' replies the bridge thread abandoned on a missed budget.
+    /// `cfg(test)` for the reason [`settled_replies`](Self::settled_replies) is.
+    #[cfg(test)]
+    pub fn abandoned_replies(&self) -> u64 {
+        self.channels.abandoned()
+    }
+
     pub fn audio_buffer(&self) -> &Arc<AudioSlab> {
         &self.audio_buffer
     }

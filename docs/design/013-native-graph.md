@@ -1174,10 +1174,11 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    plugin that cannot save its state is known only when asked, so it fails
    at fork time with `SaveState`, not at insert as `NotForkable` (the
    protocol has no load-time "can save state" bit; adding one to
-   `Features` would let a fork refuse up front). **In-process VST2 stays
-   not forkable**: a second `AEffect` from the same library in this
+   `Features` would let a fork refuse up front). **In-process VST2 stayed
+   not forkable** here: a second `AEffect` from the same library in this
    process, and non-chunk plugins whose state is only the current
-   program's parameters, need their own design and tests.
+   program's parameters, needed their own design and tests. (Since landed:
+   [below](#in-process-vst2-forks-by-state-transfer).)
 
    Two rules from its review. **Modulation does not reach a fork.** A
    param-automation curve can be a live `PluginParamTarget` the mod router
@@ -1239,7 +1240,7 @@ nothing to move):
 | `SoundFontUnit` | tutti-soundfont | MIDI inbox and source (the `SoundFont` is read-only) | fresh port | yes | — |
 | `MicMonitorNode` | tutti-io | the ring consumer | — | **no** | — |
 | `PluginClient` | tutti-plugin | the plugin process | — | **no**: forks by state transfer through its own `ForkSource` (item 7) | `clap_fork.rs` |
-| `InProcessVst2Client` | tutti-plugin | the plugin | — | **no** (item 7) | — |
+| `InProcessVst2Client` | tutti-plugin | the plugin | — | **no**: forks by state transfer through its own `ForkSource`, a second instance in this process ([below](#in-process-vst2-forks-by-state-transfer)) | `vst2_in_process_fork.rs` |
 
 Width changes mid-run, the master meter and tap, and pruning need nothing.
 
@@ -1794,7 +1795,7 @@ clones). The pieces:
   second write (review of #38: mirror-and-reconcile). The rate is now an
   argument: `MidiUnitIn::poll_unit(unit, block, sample_rate, buf)` and
   `MidiInPort::poll(block, sample_rate, buf)`, the polling unit's own
-  (`PolySynth`'s bank rate, `SoundFontUnit`'s fixed rate, a plugin node's
+  (`PolySynth`'s bank rate, `SoundFontUnit`'s synthesizer's rate, a plugin node's
   `PluginControls::sample_rate`, the in-process VST2 node's). A
   `MidiClipSource` holds no rate (`MidiClipSource::new` lost its argument;
   its `BeatCursor` is `unrated` and advanced with `advance_at`). The ripple
@@ -1986,16 +1987,15 @@ Recorded for later:
   butler blends a stream's ring by too (`loops::RingLoop::blend_run`).
 - ~~**Taps across a loop seam read past the loop (N2, review of #43)**~~:
   done, "Sampler tier bugs (after #43)".
-- **Re-rate a live `SoundFontUnit` on a device restart.** `restart_device`
-  re-prepares the graph, but a live SoundFont unit keeps the rate it was
-  built at (its `set_sample_rate` is a no-op, and a test pins that), so after
-  a 44.1 → 48 kHz restart it plays off pitch and off tempo.
-  `SoundFontUnit::with_sample_rate` (this PR) builds the replacement — same
-  SoundFont, channel state and preset, at the new rate — so the restart hook
-  can crossfade one in per SoundFont node (`AudioGraphRes::replace_with`,
-  with its captured controls, so the new unit's port and fork are bound). It
-  must carry the installed clip across (the new unit's port shares the old
-  one's source cell, as a `with_sample_rate` copy does).
+- ~~**Re-rate a live `SoundFontUnit` on a device restart.**~~ **Done**
+  (item 5's SoundFont node, "SoundFont as a graph node"): the node's
+  `prepare` swaps in `SoundFontUnit::with_sample_rate` (same SoundFont,
+  channel state and preset, no sounding voice) when the prepared rate
+  differs (on failure, a rate rustysynth refuses, it keeps the old rate),
+  so `restart_device`'s re-prepare re-rates it with the graph and
+  no hook-side crossfade is needed. Pinned by `graph_node.rs`'s
+  `the_node_follows_its_graphs_rate` and `soundfont_unit_audio.rs`'s
+  `a_same_rate_reprepare_mid_stream_does_not_disturb_rendering`.
 - **The reference probe reports 137 frames of latency in every mode but
   delays only in its latency mode**; the effect test uses that mode, where
   report and delay agree. The probe's other modes are routing oracles, not
@@ -2333,7 +2333,11 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   changed are dropped from the window, so a jump back there (a DAW's cycle
   mode) moves the window and reads the new loop, not the old one on every
   pass (the second review's B1). The switch is chosen again if the reader
-  reaches it while the butler reads the record. The divergence search runs
+  reaches it while the butler reads the record, at most four times (then
+  the record's fade covers the crossing); pinned by `loops.rs`'s
+  `a_reader_reaching_the_switch_during_the_read_moves_it` and
+  `a_reader_keeping_pace_is_given_up_on_after_four_reads`, which move the
+  reader mid-read through a test-only hook. The divergence search runs
   a run of consecutive frames at a time, not a position at a time.
   **Decided (review of #48):** the guard's
   latency near the playhead (about 256 frames, crossfaded, where the memory
@@ -2530,11 +2534,11 @@ never touches the live ring; a free-running source follows a relayed seek).
   **Still at the build rate after a restart** (audited: everything else
   that holds a rate is a graph unit, re-rated with the graph, or reads the
   transport's shared rate):
-  - `SoundFontUnit` (`tutti-soundfont`): rustysynth fixes its rate at
-    `Synthesizer` construction and `set_sample_rate` is a no-op, so a
-    soundfont voice plays at the build rate's pitch. Fixing it means
-    rebuilding the synthesizer (and losing its voices), which is a
-    soundfont-crate change.
+  - ~~`SoundFontUnit` (`tutti-soundfont`)~~: **re-rated since** — rustysynth
+    still fixes a `Synthesizer`'s rate, but the graph node's `prepare`
+    rebuilds it at the prepared rate (keeping the preset, losing the
+    sounding voices; on failure, a rate rustysynth refuses, it keeps the
+    old rate), so a restart's re-prepare re-rates it.
   - A host-built `UmpOutRes` (`midi-hardware`): its `JrStream` stamps JR
     timestamps and paces JR Clock at the rate it was built with. The host
     constructs it, so the hook cannot see it; `JrStream` has no way to
@@ -2674,7 +2678,9 @@ naming the node), recorded in the CHANGELOG's migration table:
 - an **in-process VST2 plugin** (inserted boxed; its clones share the one
   plugin) — a **follow-up**: an in-process VST2 fork by state transfer
   (a second `AEffect` from the same library, and non-chunk plugins whose
-  state is only the current program's parameters; item 7 above);
+  state is only the current program's parameters; item 7 above). **Since
+  landed** ([below](#in-process-vst2-forks-by-state-transfer)): it forks,
+  and an export of a graph holding it renders it;
 - a **unit with a captured MIDI port pushed with `insert` /
   `insert_boxed`** — by design: `insert_with` carries its fork;
 - a **mic monitor** an output reaches — by design: a live input has
@@ -3185,9 +3191,16 @@ vocoder retirement channel for voices the pool removes.
   not `Cx::arrival` earlier: `Env` cannot answer for frames before its block.
   A plugin behind a latent path therefore sees the uncompensated playhead, as
   it did under `Legacy`.
-- **In-process VST2.** Still an `AudioUnit` through `Legacy`, polling its
-  transport (`PolledTransport`, sharing the snapshot mapping); it ports with
-  the "Port mechanically" group.
+- **In-process VST2: ported** (with the "Port mechanically" group).
+  `impl Node for InProcessVst2Client`
+  (`format/vst2_in_process/node.rs`): MIDI on an event input, MIDI-out on
+  an event output for a plugin that declares it, the rate parked in
+  `prepare` for the main thread to dispatch. It goes in through its own
+  `IntoNode` with no fork source, so a graph holding one is refused a fork
+  (`ForkError::NotForkable`). What remains: it still polls its transport
+  (`PolledTransport`, sharing the snapshot mapping, installed with
+  `set_transport_source`) once per block rather than reading
+  `Env::transport_at`.
 - **A device whose callback is not known, or varies.** The chunk is the
   device's callback only when the host knows it: tutti-cpal opens a device
   that reports a buffer range with a fixed 512-frame buffer
@@ -3336,9 +3349,29 @@ place that says what a ported node can rely on:
   many short blocks can exceed it, and then a delay FIFO drops non-note-off
   events first (counted). A FIFO carried across a recompile that shrank
   its bound (a shorter delay across a `MaxBlock` multiple, a source
-  hard-replaced with a lower rate) keeps what it holds; should that exceed
-  the new bound and fall due at once, the excess goes out a block late,
-  never lost.
+  hard-replaced with a lower rate, a re-prepare to a larger `MaxBlock`)
+  keeps what it holds, and its backlog is delivered on time: **landed**
+  (the FIFO excess fix). The compiler is pure and prices the delay's
+  output at the new bound, not knowing what is queued, so the executor
+  widens it when it builds the new state: `Executor::rebuild` adds each
+  carried FIFO's `EventFifo::excess` (what it holds past its bound) to its
+  output slot and, summed, to every merge downstream — and to the buffers
+  a sink merges its inputs into (a flush's `Inject::merged`, the
+  scheduled-command overlay) — on the commit that already allocates that
+  state. A FIFO above its bound never grows: while the backlog is at or
+  past the new limit, a new non-note-off is refused (dropped, counted in
+  `dropped_events`) and a note-off takes the reserve or evicts, as at any
+  full FIFO; so rendering stays allocation-free. Before, the excess went
+  out a block late, or further behind when more of it fell due in later
+  blocks. Pinned by `event_ports.rs`'s
+  `a_fifo_whose_bound_a_{swap,reprepare}_lowered_delivers_its_backlog_on_time`
+  (the second with a scheduled command onto the sink in the backlog's
+  block) and `a_flush_into_a_port_a_lowered_bound_widened_drops_nothing`.
+  A full slot still never drops (the due events wait a block), kept as a
+  backstop. **One corner stays late** (as it did before, with no excess):
+  a delay retuned below one block makes its whole backlog overdue at once,
+  at offset 0, and if that fills the slot, new input falling due inside
+  the same block waits for the next.
 - **Found in CI (#50):** pricing a delay's output at its source's one
   block delivered an event a block late whenever two of the source's
   blocks came due in one (a write on a block's last frame and the next
@@ -3573,7 +3606,9 @@ under both.
   keyboard sounds under a clip) and `export_fork`'s synth exports, whose
   golden digest is unchanged.
   **Follow-ups recorded:** the in-process VST2 node still takes its
-  transport from a polled reader rather than `Env`, and has no fork;
+  transport from a polled reader rather than `Env`, and has no fork (the
+  fork has since landed, reading its transport from `Env`:
+  [below](#in-process-vst2-forks-by-state-transfer));
   `crossfade_audio_node` takes an `AudioUnit`, so a graph-node synth cannot
   be crossfaded; JR stamping still works per drained batch rather than per
   block of the graph's clock.
@@ -4307,6 +4342,86 @@ inlines them, and the width-sized lanes and the `u32` gather index took
 the rest back. The criterion bench gained a `pool512` group (the `pool64`
 cases at 512-frame blocks) and a `clips` group (64 stereo `VoiceNode`s, a
 clip each, at 64- and 512-frame blocks).
+
+#### In-process VST2 forks by state transfer
+
+The follow-up PR 13 recorded (an export of a graph holding an in-process
+VST2 plugin was refused, `NotForkable`): `InProcessVst2Client` now hands the
+editor a `ForkSource` (`format::vst2_in_process`'s `fork` module), the
+in-process twin of the out-of-process plugin's (item 7's "plugin fork by
+state transfer"). A fork, on the **main thread** (it runs the plugin's entry
+point again and dispatches state opcodes, `Vst2Instance::load`'s rule):
+
+1. **Asks the live instance for its state**, under its lock: the current
+   program (`effGetProgram`, when the plugin declares programs) and
+   `Vst2Instance::get_state` (the plugin's chunk, `effGetChunk`, when it
+   declares `effFlagsProgramChunks`; else every parameter's value) and the
+   live render mode. The live audio thread finds the lock taken for as long
+   as the save runs and renders silent blocks, as for a project save: one
+   for a chunk, possibly several for a non-chunk plugin with thousands of
+   parameters. The source holds the live instance
+   weakly: a fork of a plugin that is gone is `PluginForkError::LiveGone`.
+2. **Loads a second instance** of the same file (`Vst2Instance::load`, as
+   the live one was): a second `dlopen` of the path maps the image already
+   loaded, and its entry point builds a second `AEffect`. The image is never
+   unloaded (`Vst2Handle` leaks the module), so the library outlives both
+   instances. A plugin that cannot be instantiated twice fails here:
+   `PluginForkError::Load`.
+3. **Checks the id**, then **restores the program, then the blob**
+   (`effSetChunk`, or `setParameter` per value). The program comes first
+   because a program change may move every parameter, and it answers the
+   gap this section's predecessor named: a non-chunk plugin's saved state
+   is its parameters, which belong to its current program. A refusal is
+   `PluginForkError::LoadState`.
+4. **Reads its transport from the block's `Env`** (the render's timeline,
+   with the live node's meter), not the live node's polled reader. The live
+   node still polls; moving it onto `Env` is the follow-up recorded above.
+5. **Tells the plugin its rate from `prepare`**, under the lock
+   (`RateDelivery::InPrepare`). The live node parks the rate for the main
+   thread's editor pump, which nothing runs for a fork; the fork's
+   `prepare` runs on the forking control thread with the unit out of any
+   executor, before its first block. Offline, it answers
+   `audioMasterGetCurrentProcessLevel` with offline; a `ForkMode::Live` fork
+   keeps the live instance's mode.
+
+**Dropping a fork is main-thread too**: it closes the second instance
+(`effMainsChanged(0)`, `effClose`), and `Vst2Handle::drop` now debug-asserts
+the main thread (once one is marked, and not while unwinding). An export
+renders anywhere but must drop on the main thread, so tutti-export's
+`render_to_file`, `render_to_buffers` and `render_normalized_to_file` take
+`impl BorrowMut<RenderGraph>` (by value as before, or `&mut` to keep it),
+and bevy-tutti's render task hands its graph back with the result to
+`poll_exports`, now pinned to the main thread (`NonSendMarker`), which drops
+it. A render cancelled mid-poll still drops on the pool. Pinned by
+`the_rendered_graph_is_dropped_on_the_main_thread`, which bites only with
+`bevy_tasks/multi_threaded` on (bevy-tutti's own feature set leaves it off, and
+a task then runs on the thread that polls it), so CI's `dark features` job and
+`just test-features` run it alone with that feature.
+
+Every failure fails the whole fork (`ForkError::Source`, naming the node's
+key; bevy-tutti's `ExportError::ForkSource`, naming its entity), never a fork
+at the plugin's defaults or one sharing the live instance. In-process, the
+fork has no health probe: nothing can fail while it renders that the render
+would not see. What a fork cannot have, recorded rather than worked around:
+state the plugin does not save (a non-chunk plugin's non-parameter state),
+running DSP state, and isolation from the live instance's image (a plugin
+keeping per-instance state in a process global; VST2 gives a host no way to
+ask).
+
+`Plugin::into_client` hands an in-process VST2 plugin back whole
+(`Err(Box<Plugin>)`, was `Err(Box<dyn Node>)`), so bevy-tutti inserts it through
+its own `IntoNode` and keeps the fork source. `ExportError::NotForkable`'s
+text no longer lists it. Pinned by `tutti-plugin`'s
+`vst2_in_process_fork.rs`, against the reference probe with its new
+`TUTTI_VST2_PROBE_STATE_DC` (each output sample carries the instance's
+state as a DC: the chunk's first byte, or `1000 · param0 + 10 000 ·
+program`), so a restored state is an exact figure in the fork's samples; its
+`tutti_vst2_probe_set_refuse_chunk_load` switch, for a second instance that
+refuses the first one's chunk; and `TUTTI_VST2_PROBE_UNIQUE_ID` and
+`_PROGRAMS` set between the two loads, for `Mismatch` and a live program the
+second instance lacks. The fork's `Env` transport is pinned by the probe's
+`audioMasterGetTime` capture (the render's 93 BPM at beat 5, not the live
+reader's 132 at 4).
 
 ## Decisions for the owner
 

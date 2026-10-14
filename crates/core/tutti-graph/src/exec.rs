@@ -921,7 +921,7 @@ impl Executor {
             plan.event_port_capacity(from)
                 .map_or(cap, |n| n.get() as usize)
         };
-        let rings = plan
+        let rings: Vec<Option<Ring>> = plan
             .delays
             .iter()
             .map(|d| {
@@ -994,7 +994,7 @@ impl Executor {
                 Some(carried.unwrap_or_else(|| AudioRing::new(f.key.delay())))
             })
             .collect();
-        let event_fb = plan
+        let event_fb: Vec<Option<EventFifo>> = plan
             .event_feedback
             .iter()
             .map(|f| {
@@ -1057,12 +1057,61 @@ impl Executor {
                 }
             }
         }
+        // A FIFO carried across a commit that lowered its bound (a source
+        // now declaring a smaller rate, a shorter delay, a larger
+        // `MaxBlock`) can hold more than the bound its output slot was
+        // priced at. The compiler is pure and cannot know what is queued, so
+        // the slot is widened here, by that excess (`EventFifo::excess`),
+        // where the state is built — and so is every merge downstream of
+        // it, which the compiler priced at the sum of its inputs, and the
+        // buffers a sink merges its inputs into (a flush's `merged`, the
+        // command overlay, below): the backlog the FIFO holds can still go
+        // out in one block, on its frames, and pass everything after it.
+        // (One corner stays late, as it was without an excess: a delay
+        // retuned below one block makes its whole backlog overdue at offset
+        // 0; if that fills the slot, new input falling due in the same
+        // block waits for the next.) Here and only here, on a commit that
+        // already allocates this whole state; the queue never grows past it
+        // (a new non-note-off is refused while it is full), so rendering
+        // stays allocation-free. The next rebuild prices it afresh.
+        //
+        // Per slot, not per value: a slot the colouring pass shares takes
+        // the largest excess of anything it holds, which only over-sizes.
+        let mut extra = vec![0usize; plan.event_slot_capacity.len()];
+        for (f, spec) in event_fb.iter().zip(&plan.event_feedback) {
+            if let Some(f) = f {
+                let x = &mut extra[spec.slot as usize];
+                *x = (*x).max(f.excess());
+            }
+        }
+        // Ops run in topological order, so a merge comes after whatever
+        // feeds it.
+        for op in &plan.ops {
+            match *op {
+                Op::EventDelay { delay, dst, .. } => {
+                    if let Some(Ring::Event(f)) = &rings[delay as usize] {
+                        let x = &mut extra[dst as usize];
+                        *x = (*x).max(f.excess());
+                    }
+                }
+                Op::EventMerge { srcs, dst } => {
+                    let sum = plan.event_list[srcs.range()]
+                        .iter()
+                        .map(|&s| extra[s as usize])
+                        .sum::<usize>();
+                    let x = &mut extra[dst as usize];
+                    *x = (*x).max(sum);
+                }
+                _ => {}
+            }
+        }
+        let extra_total: usize = extra.iter().sum();
+        let slot_capacity = |i: usize| plan.event_slot_capacity[i].events(cap) + extra[i];
+
         let mut has_inject = vec![false; plan.units.len()];
         let flushed_total: usize = flushed.values().map(Vec::len).sum();
-        let widest = plan
-            .event_slot_capacity
-            .iter()
-            .map(|c| c.events(cap))
+        let widest = (0..plan.event_slot_capacity.len())
+            .map(slot_capacity)
             .max()
             .unwrap_or(0);
         let inject = flushed
@@ -1090,10 +1139,8 @@ impl Executor {
                 v[0] = SILENT | CONSTANT;
                 v
             },
-            events: plan
-                .event_slot_capacity
-                .iter()
-                .map(|c| Vec::with_capacity(c.events(cap)))
+            events: (0..plan.event_slot_capacity.len())
+                .map(|i| Vec::with_capacity(slot_capacity(i)))
                 .collect(),
             rings,
             audio_fb,
@@ -1101,7 +1148,9 @@ impl Executor {
             inject,
             has_inject,
             has_due: vec![false; plan.units.len()],
-            overlay: Vec::with_capacity(overlay_capacity(plan, cap, flushed_total)),
+            // The widened slots, all of them: an over-estimate of what they
+            // add to the widest node's inputs.
+            overlay: Vec::with_capacity(overlay_capacity(plan, cap, flushed_total + extra_total)),
         }
     }
 

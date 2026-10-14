@@ -52,6 +52,15 @@ pub(crate) const GUARD_FRAMES: u64 = 256;
 /// the reader plays if it reaches the switch before the rewrite has.
 const GAP_COVER_FRAMES: usize = 2048;
 
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for the reader moving while [`apply_mapping`] reads
+    /// its fade record: called with the attempt number (from 1) after that
+    /// read, before the reader's in-flight end is taken again.
+    static DURING_RECORD_READ: std::cell::RefCell<Option<Box<dyn FnMut(u32)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// How the reader turns a position into four straight taps: the parts of a
 /// [`Mapping`] the audio thread needs (no sample data).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -524,12 +533,11 @@ pub(crate) fn apply_mapping(
     // The switch: where they part, or past the block in flight. The record's
     // disk read takes time, during which the reader moves on: take where it
     // is again afterwards, and choose again if it has reached the switch.
-    // Not covered by a test: the live tests step the reader and the butler by
-    // hand, so the reader never moves during the butler's read; a reader that
-    // did would still be caught by the record's fade (it crosses the switch
-    // with the old side in hand), only at a later `at`.
+    // (The live tests step the reader and the butler by hand, so there the
+    // reader never moves during the read; `DURING_RECORD_READ` moves it in
+    // this module's tests.)
     let mut busy = writer.in_flight_end();
-    let mut tries = 0;
+    let mut tries: u32 = 0;
     let (at, fade, record) = loop {
         tries += 1;
         let mut at = parts.max(busy + GUARD_FRAMES);
@@ -554,6 +562,12 @@ pub(crate) fn apply_mapping(
                 frames,
                 data: data.into(),
                 fade_frames,
+            }
+        });
+        #[cfg(test)]
+        DURING_RECORD_READ.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook(tries);
             }
         });
         let now = writer.in_flight_end();
@@ -922,6 +936,108 @@ mod tests {
         assert_eq!(content.parts_from(&a, 0, 1_000), Some(60));
         assert_eq!(content.parts_from(&a, 65, 1_000), Some(65));
         assert_eq!(content.parts_from(&a, 70, 1_000), None);
+    }
+
+    /// A 20 000-frame mono ring writer holding frames `0..10_000` of a
+    /// resident ramp, unlooped, with its reader's block in flight at
+    /// `[0, 64)`; the reader, for a hook to move; and the ramp.
+    fn switching_ring() -> (RegionOut, tutti_core::PosReader, Arc<Wave>) {
+        use super::super::command::RegionId;
+        use super::super::prefetch::RegionBuffer;
+        const LEN: usize = 20_000;
+        let wave = Arc::new(make_mono_wave(
+            &(0..LEN).map(|i| i as f32).collect::<Vec<_>>(),
+        ));
+        let (mut writer, shared) =
+            RegionBuffer::for_file(RegionId(1), std::path::PathBuf::new(), LEN, 1u16, LEN);
+        writer.set_resident(Arc::clone(&wave));
+        let mut held = vec![0.0f32; 10_000];
+        writer.fill_with(&Mapping::plain(LEN), 0, &mut held);
+        assert_eq!(writer.push_interleaved(&held), tutti_core::Samples(10_000));
+        let mut reader = shared.take_reader(false).expect("the ring's reader");
+        let _ = reader.claim(0, [(0, 64), (0, 0)]);
+        assert_eq!(writer.in_flight_end(), 64);
+        (writer, reader, wave)
+    }
+
+    /// Installs `hook` as the reader moving during the record's read, and
+    /// removes it when dropped (so a failed assertion leaves no hook behind).
+    struct DuringRead;
+    impl DuringRead {
+        fn install(hook: impl FnMut(u32) + 'static) -> Self {
+            DURING_RECORD_READ.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+            Self
+        }
+    }
+    impl Drop for DuringRead {
+        fn drop(&mut self) {
+            DURING_RECORD_READ.with(|h| *h.borrow_mut() = None);
+        }
+    }
+
+    /// **A reader that reaches the switch during the butler's read moves the
+    /// switch past it.** A loop `[1 000, 3 000)` set on an unlooped ring
+    /// parts from it at 3 000, which is where the switch goes while the
+    /// reader is at 64 — no fade. But the reader claims `[2 999, 3 100)`
+    /// while the butler reads: the switch is chosen again, a guard past the
+    /// new in-flight end, and crossfaded (the reader would have played the
+    /// old content past where the two part).
+    ///
+    /// Mutation (run): `apply_mapping` keeping its first choice (`break`
+    /// whatever `now` is) → the switch stays at 3 000, under the reader's
+    /// block, unfaded → fails. Mutation (run): the retry keeping the old
+    /// `busy` (`busy = now` removed) → it chooses 3 000 again, four times →
+    /// fails.
+    #[test]
+    fn a_reader_reaching_the_switch_during_the_read_moves_it() {
+        let (mut writer, mut reader, wave) = switching_ring();
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let seen = Arc::clone(&calls);
+        let _hook = DuringRead::install(move |tries| {
+            seen.store(tries, std::sync::atomic::Ordering::Relaxed);
+            if tries == 1 {
+                let _ = reader.claim(2_999, [(2_999, 3_100), (0, 0)]);
+            }
+        });
+        let edit = apply_mapping(&mut writer, looped(&wave, (1_000, 3_000), 0), 64, 1.0);
+        assert_eq!(
+            edit,
+            Edit::Switch {
+                at: 3_100 + GUARD_FRAMES,
+                fade: true
+            }
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(writer.content().switch_at, 3_100 + GUARD_FRAMES);
+    }
+
+    /// **A reader that keeps pace with every read is given up on after four**:
+    /// each read the reader claims a block past where the switch was just
+    /// chosen, and the fourth choice stands (its fade record covers the
+    /// reader crossing it), rather than chasing the reader to the ring's end.
+    ///
+    /// Mutation (run): the `tries == 4` bound removed → the butler chases
+    /// the reader until it claims past the ring's end, at 9 256 → fails.
+    #[test]
+    fn a_reader_keeping_pace_is_given_up_on_after_four_reads() {
+        let (mut writer, mut reader, wave) = switching_ring();
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let seen = Arc::clone(&calls);
+        let _hook = DuringRead::install(move |tries| {
+            seen.store(tries, std::sync::atomic::Ordering::Relaxed);
+            let end = 3_000 + u64::from(tries) * 1_000;
+            let _ = reader.claim(end - 100, [(end - 100, end), (0, 0)]);
+        });
+        let edit = apply_mapping(&mut writer, looped(&wave, (1_000, 3_000), 0), 64, 1.0);
+        // Chosen at 3 000, then a guard past 4 000, 5 000 and 6 000.
+        assert_eq!(
+            edit,
+            Edit::Switch {
+                at: 6_000 + GUARD_FRAMES,
+                fade: true
+            }
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 4);
     }
 
     #[test]

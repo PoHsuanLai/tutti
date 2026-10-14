@@ -168,7 +168,10 @@ pub trait Node: Send + 'static {
    to `MAX_NODE_LATENCY`; retuning never allocates. Output alignment and the
    `ChannelCompensation` pre-roll table fall out of the same pass.
 4. **Coarsen** — fuse single-in/single-out chains into one task (no atomics on
-   those edges).
+   those edges). (Landed with Phase 6: chains in part (a); part (b) also
+   packs sibling tasks too cheap to dispatch alone, where that does not
+   lengthen the critical path, and fuses the chains that leaves — see ["Phase 6, part
+   (b)"](#phase-6-part-b-the-cost-model-and-coarsening).)
 5. **Buffer colouring over the partial order** — serial liveness colouring
    (JUCE) is *wrong* under a parallel order. Two values share a slot only if
    every reader of one happens-before the writer of the other (reachability
@@ -176,7 +179,9 @@ pub trait Node: Send + 'static {
    input's last reader is this node (Firewheel only copies). One aligned
    `Vec<f32>` arena per port kind, reused when capacity allows.
 6. **Cost model** — pick serial vs parallel from critical path / total work
-   and node count.
+   and node count. (Landed in Phase 6 part (b) as `Plan::schedule`: the
+   compiler totals the estimates, and the decision is made when the plan
+   meets a pool, whose participant count the compiler cannot know.)
 7. **Verify** (debug) — no slot written twice by steps that may run
    concurrently (Dropseed's verifier), every read preceded by a write.
 8. **Emit** SoA `Plan`: `ops: Vec<Op>` (enum, not `Box<dyn Fn>`), `u32` slot
@@ -3068,8 +3073,10 @@ What each layer holds:
   many helpers the executor wakes per block. It is a heuristic, not a
   bound: tasks on different levels can be ready at once (the review's
   counterexample is in `Plan::task_width`'s docs), and then a block runs
-  with fewer participants than it could. The cost model (part b) is where
-  a better estimate belongs.
+  with fewer participants than it could. (Part (b) replaced it as the wake
+  count: a block now wakes the larger of the plan's average parallelism
+  and its widest level, `Schedule::Parallel::wake`; the level width is
+  still `Plan::task_width`, one of the two inputs.)
 - **The contract (`tutti_graph::Pool`).** A trait of two methods:
   `participants()` and `run(wake, job)`, which runs `job(0)` on the caller
   and `job(i)` on at most `participants - 1` other threads and returns only
@@ -3181,7 +3188,8 @@ the serial time over the fastest):
 Where a pool loses: `tiny/16` (16 single gains, one multiply per sample)
 costs 1.7× the serial walk at two participants, 1.8× at four and 1.9× at
 eight, because each task is cheaper than dispatching it. That is what the cost
-model (part b) is for. `deep/128` is one fused task: the executor takes the
+model is for ([part (b)](#phase-6-part-b-the-cost-model-and-coarsening),
+whose measurements supersede this row). `deep/128` is one fused task: the executor takes the
 serial walk and the pool costs nothing. Eight participants oversubscribe the
 four cores and lose to four everywhere; those rows are measured, not
 dropped.
@@ -3212,6 +3220,223 @@ measurable.
 | `fan/16-wide/512` | 67.82 µs | 67.86 µs | +0.1% | 0.8% |
 | `fan/64-wide/64` | 34.06 µs | 33.90 µs | -0.5% | 2.5% |
 | `fan/64-wide/512` | 256.64 µs | 255.64 µs | -0.4% | 1.8% |
+
+#### Phase 6, part (b): the cost model and coarsening
+
+**Status: landed** (2026-10-14). A pool spreads a block only when the cost
+model says it pays, and the compiler packs sibling tasks too cheap to
+dispatch alone. Part (a)'s weak spot — `tiny/16` costing more on a pool
+than serially (1.7–1.9× in part (a)'s table, 2.2× in this section's;
+both measured idle, against different `main`s) — is gone: the plan now
+renders serially there. The render is still bit for bit the
+serial one whatever the model decides; the model is a speed decision only.
+
+What each layer holds:
+
+- **The estimate (`Shape::cost`, `src/cost.rs`).** Each node declares a
+  coarse class, `Cost::{Light, Moderate, Heavy}`; the compiler prices a
+  node op at `fixed + per-sample weight × channels × frames` for its class
+  (channels: the wider of its sides), and every other op at a copy (global
+  input, output, PDC delay, capture) or an event op. The result is a
+  `Work`, affine in the block length, in units of about a nanosecond of one
+  core on the calibration box. `Plan::work()` is the block's total.
+- **The critical path (`Plan::critical_path()`).** The longest path through
+  the task DAG with every hand-over priced: a task's `j`-th successor (from
+  0, in row order) starts `(j + 1) × TASK_DISPATCH` after it finishes, and
+  the `k`-th root `(k + 1) × TASK_DISPATCH` after the block starts — the
+  executor runs the first ready successor inline and queues the rest, in
+  row order, on one shared list. So the last of a wide fan-out of tiny
+  tasks pays the whole queue, which is what packing shortens.
+- **Coarsening (`src/compile/coarsen.rs`, compiler step 7).** Three passes:
+  1. fuse chains (part (a));
+  2. pack **siblings** — tasks with the same predecessor set — priced under
+     `GRAIN` (five dispatches) at the plan's maximum block, into
+     `max(1, total / GRAIN)` tasks of about equal cost, one sibling class
+     at a time, keeping a class's packs only if the critical path does not
+     grow (and the task graph stays acyclic);
+  3. fuse the chains that leaves (a packed fan-out between its source and
+     its sum becomes one task).
+
+  The plan's critical path is therefore never longer than chain fusion
+  alone gives: pass 2 refuses any pack that lengthens it, and pass 3 only
+  removes hand-overs. A task runs its ops in ascending op index, a
+  topological order of the op DAG, so every dependency inside a packed
+  task is kept.
+- **The decision (`Plan::schedule(participants) -> Schedule`).** Pure
+  integer arithmetic on the plan's totals, made when a plan meets a pool
+  (`Executor::set_pool`, or the rebuild that applies a plan — the
+  participant count is the pool's, not the compiler's to know), never per
+  block. A block spreads when
+
+  ```text
+  BLOCK_DISPATCH + max(critical, (work + tasks × TASK_DISPATCH) / p)  <  work
+  ```
+
+  with `p` the participants it wakes: the larger of the average
+  parallelism (`work / critical`, rounded up) and the widest level
+  (`Plan::task_width`), at least 2 and at most the pool's. Both sides are
+  affine in the block length and the left grows no faster, so a plan that
+  pays at all pays from some length up; `Schedule::Parallel { wake, from }`
+  carries that length, found by bisection, and the executor runs a block
+  shorter than `from` serially (`Par::spreads`, per block, one compare).
+  `Executor::is_parallel` reports the verdict.
+
+Decisions:
+
+1. **Declared, not measured.** Channels × frames alone cannot tell a gain
+   from a filter from a plugin (two to three orders of magnitude apart at
+   one width), and that difference is the whole question of whether a
+   sibling is worth a task. Measuring on the audio thread would know real
+   costs, but needs a clock read around every task (tens of nanoseconds,
+   the size of the tasks it is meant to judge), makes the plan's shape
+   depend on timing noise (no test could pin it), and would have to
+   re-coarsen on the audio thread or round-trip to the compiler. A
+   declared class is pure, deterministic and free per block.
+2. **The default is `Heavy`.** A node that declares nothing — a hosted
+   plugin, a host's node — is priced as a plugin (a fixed 20 µs, the order
+   of an out-of-process call, plus 256 per sample and channel), so any two
+   independent ones are each worth a task and spread at any block length.
+   What still changes for a graph that declares nothing, against part (a):
+   - its **copy and event ops** (global inputs, outputs, PDC delays,
+     captures, merges) are priced cheap, so sibling ones are packed — only
+     where that does not lengthen the critical path;
+   - the **wake count** is the larger of the average parallelism and the
+     widest level, at least 2 (part (a) woke the widest level, at least 1);
+   - a plan whose only parallelism is in those cheap ops can now run
+     **serially**: 24 of the 510 multi-task plans the differential
+     generator makes over 512 seeds, undeclared, do at four participants
+     (`the_cost_generator_packs_and_spreads` prints the count). Each is a
+     plan whose heavy nodes sit on one chain, so spreading it would only
+     dispatch copies.
+
+   All three are meant as improvements, and none can change a sample. Only
+   a node that says it is cheap is packed itself, and the cost of a wrong
+   `Light` is bounded by the speed-up of a graph its author called
+   trivial. Wrongly keeping heavy work serial costs up to the pool's
+   speed-up per block; wrongly spreading cheap work costs a few
+   microseconds. The default leans to the second.
+3. **`tutti-nodes` declares.** Filters, oscillators, LFOs, dynamics,
+   delays and modulation effects are `Moderate`; sums, the downmix, the bus
+   strip, the brickwall clip and the test stimuli are `Light`; the
+   convolver (FFT partitions) declares nothing. Other crates' nodes
+   (sampler, synths, plugins) declare nothing for now, which is the safe
+   side.
+4. **Siblings, guarded by the critical path, not levels.** The first
+   version packed every cheap task on one level (longest-path depth). A
+   level is a hop count, not a ready time, so it binned cheap tasks waiting
+   on *different* heavy nodes: in the review's case (input → heavy `HA` and
+   light `X`; `HA` → `a1`, `a2`; `X` → `b1`, `b2`; `b1` → heavy `HB1`,
+   `b2` → heavy `HB2`) it made `{a1, a2, b1, b2}` one task, so `HB1` and
+   `HB2` waited for `HA` and the critical path doubled — declaring `Light`
+   made a pool slower. Siblings become ready at the same moment, so packing
+   them delays none of them; what it can delay is a successor, which now
+   waits for the whole pack, and the critical-path check refuses exactly
+   those packs. The other options — binning by cost-weighted earliest
+   start, or checking each pack's longest incoming path — need the same
+   path computation and decide less: neither bounds the effect on the
+   successors' side.
+5. **`Cost` and `Schedule` are `#[non_exhaustive]`.** A finer class, or a
+   schedule with per-level wake counts, can come later without a breaking
+   change; a `match` outside the crate needs a wildcard arm.
+6. **The constants are a calibration, not a contract.** `TASK_DISPATCH`
+   (400), `BLOCK_DISPATCH` (6 000), `GRAIN` (2 000) and the class weights
+   (`Light` 100 + 1/sample·channel, `Moderate` 200 + 8, `Heavy` 20 000 +
+   256) were set from part (a)'s figures on the 4-core box (`tiny/16`'s
+   dispatch overhead, `SvfFilterNode`'s cost per frame: the model prices
+   `wide/8x8`'s work at 164 µs against 163 µs measured) and checked against
+   the benchmarks below. Only their ratios matter: a faster core shrinks
+   node work and dispatch alike. A wrong one changes speed, never a sample.
+
+Evidence:
+
+- **The decision.** `tests/cost_model.rs`: `tiny/16` (sixteen light gains
+  and a light sum) packs into four tasks and `Plan::schedule` is `Serial`
+  at every pool size, while the same graph undeclared keeps eighteen tasks
+  and spreads; two such fans side by side keep several tasks and still
+  render serially; eight chains of moderate nodes spread over all four
+  participants of a pool of four from a short block up. `cost::tests` pin
+  the arithmetic, including the `from` threshold (it pays there and not one
+  frame below). Mutations: `pays` always true, always false, and `par_for`
+  ignoring the schedule (part (a)) each fail them.
+- **The per-block gate.** `blocks_shorter_than_from_run_serially` runs a
+  plan whose `from` is above one frame on a pool that counts its jobs: a
+  block of `from - 1` frames never reaches the pool, a block of `from`
+  frames reaches it once. `Par::spreads` mutated to always true, and to
+  always false, each fail it.
+- **Packing never lengthens the critical path.** `coarsen::tests`: the
+  review's graph above (`HB1`/`HB2` never depend on `HA`'s task, and the
+  critical path is at most chain fusion's), and a proptest over 512 random
+  DAGs of mixed heavy, light and copy ops: the coarsened plan's critical
+  path is at most what chain fusion alone gives, and its tasks partition
+  the ops in ascending order. Swapping `pack` back for the per-level
+  version fails both; dropping the critical-path check fails the proptest.
+- **Packed plans are bit-identical.** `tests/cost_model.rs` renders light
+  gains packed beside heavy ones at 2, 3, 4 and 8 participants and ragged
+  blocks, bit for bit the serial render, and checks each heavy gain kept a
+  task of its own. The differential suite's
+  `coarsened_plans_are_bit_identical` runs every random graph with random
+  declared costs (two in three light) serially and on a pool against the
+  reference; `the_cost_generator_packs_and_spreads` checks that over 512
+  seeds those costs pack 328 plans further than undeclared, 89 of them
+  still spreading. **A dependency dropped while merging is caught by the
+  verifier**: skipping the task edges out of any multi-op task makes
+  `compile` refuse the plan ("op edge … crosses task …, which task_succ
+  lacks") in every test above.
+- **The verifier's rule 5** no longer requires a task's ops to be ordered
+  by the DAG (packed siblings are not): it requires them ascending, which,
+  with every op edge running forward (checked), keeps every dependency
+  inside a task, and every cross-task op edge in `task_succ` as before.
+- Part (a)'s tests stay green: `tests/parallel.rs`, the differential
+  modes, the `rt_no_alloc` gates and `alloc_budget`. Their test nodes
+  declare nothing, so their plans still spread. One changed:
+  `the_graph_spreads` asserted `task_width >= 5`, and now asserts the
+  schedule (`Parallel { wake: 4, from: 1 }` on a pool of four), since the
+  wake count is the schedule's.
+
+Benchmarks (`tutti-nodes/benches/parallel_render.rs`, criterion medians,
+one 256-frame block at 48 kHz, the same 4-core container as part (a),
+**idle**: no other builds ran, and each run started once the one-minute
+load average was under 0.8 (the load at the ends, about 3–4, is the bench's
+own spinning helpers). `main` is `origin/main` at 53385a5, built from the
+same bench file there; this branch is the final, sibling-only packing.
+Each figure is the mean of two runs alternating `main` and the branch; the
+two runs of a case moved apart by at most 10%.
+
+| graph | `main` serial | `main` 4 | branch serial | branch 4 |
+|---|---|---|---|---|
+| `wide/8x8` | 161.7 µs | 64.2 µs | 163.6 µs | 63.6 µs |
+| `wide/32x8` | 661.1 µs | 229.4 µs | 672.5 µs | 233.0 µs |
+| `wide/64x16` | 2.42 ms | 786.2 µs | 2.35 ms | 790.7 µs |
+| `deep/128` | 270.1 µs | 271.8 µs | 265.4 µs | 267.1 µs |
+| `tiny/16` | 10.2 µs | 22.3 µs | 10.4 µs | 10.1 µs |
+
+The new cases (branch only; `main` has no cost classes), at 1, 2, 4 and
+8 participants:
+
+| graph | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| `tiny/16` (light gains) | 10.4 µs | 10.1 µs | 10.1 µs | 10.1 µs |
+| `tiny/16-undeclared` (part (a) behaviour) | 10.3 µs | 20.1 µs | 20.7 µs | 20.0 µs |
+| `mixed/8x4x8` (light gains packed) | 140.2 µs | 94.9 µs | 69.8 µs | 66.9 µs |
+| `mixed/8x4x8-undeclared` (a task per gain) | 140.6 µs | 103.8 µs | 69.9 µs | 70.3 µs |
+
+What they show:
+
+- **`tiny/16` no longer loses.** On a pool it costs what the serial walk
+  costs (10.1 µs against 10.4 µs), where `main` paid 2.2× (22.3 µs at
+  four). Undeclared, the same graph still pays about 2× (`tiny/16-undeclared`),
+  which is the part (a) behaviour declaring `Light` replaces.
+- **The wide graphs and `deep/128` are unchanged**, within run-to-run noise
+  of `main`, at every participant count.
+- **`mixed/8x4x8` gains little from packing on this machine.** 64 cheap
+  gains hanging off eight filter chains spread to about 2× the serial walk
+  whether or not they are packed (69.8 µs packed, 69.9 µs undeclared, at
+  four); packing helps at two participants (94.9 µs against 103.8 µs). An
+  earlier run on a loaded machine had shown the undeclared graph losing
+  outright (148 µs at four); that was the load, not the dispatch. The two
+  rows' one-participant figures agree, as they must: the serial walk ignores
+  tasks, and the review's callgrind count of the serial walk, this branch
+  against `main`, differs by 0.009%.
 
 ## Per-node rewrite plan
 

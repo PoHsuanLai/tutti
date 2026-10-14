@@ -573,6 +573,7 @@ impl<F: Real + 'static> Node for SvfFilterNode<F> {
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.width() as u16);
         Shape::audio(width, width)
+            .with_cost(tutti_graph::Cost::Moderate)
             .with_params(&SVF_PARAMS)
             .with_tail(Tail::Unknown)
     }

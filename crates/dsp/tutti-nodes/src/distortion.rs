@@ -226,6 +226,7 @@ impl Node for DistortionNode {
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.channels as u16);
         Shape::audio(width, width)
+            .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
             .with_params(&DISTORTION_PARAMS)
     }

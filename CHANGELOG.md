@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A cost model and coarsening for the parallel executor** (design doc
+  013, "Phase 6, part (b)"). The compiler prices every op from what its
+  node declares, packs sibling tasks too cheap to dispatch alone into
+  larger ones (never lengthening the critical path), and totals the work and the critical path; `Plan::schedule`
+  turns those into the decision whether a pool spreads a block, from which
+  block length, over how many participants. A graph too cheap to spread
+  (sixteen gains and a sum) now renders serially on a pool instead of
+  losing to it. A speed decision only: the parallel render stays bit for
+  bit the serial one. **Breaking** only for code that builds a
+  `tutti_graph::Shape` with a struct literal (it has a new field); every
+  `Shape::audio(..)` builder keeps compiling and declares `Cost::Heavy`.
+  `Cost` and `Schedule` are `#[non_exhaustive]`: match them with a
+  wildcard arm.
+
+  | Was | Now |
+  |---|---|
+  | — | `Shape::cost`, `Shape::with_cost(Cost)`; `tutti_graph::Cost::{Light, Moderate, Heavy}` (default `Heavy`: a node that declares nothing is assumed worth a thread) |
+  | — | `Plan::schedule(participants) -> Schedule` (`Serial`, or `Parallel { wake, from }`); `Plan::work()`, `Plan::critical_path()` (`tutti_graph::Work`, affine in the block length) |
+  | a pool spread every plan of two or more tasks, waking `Plan::task_width()` participants | a pool spreads what `Plan::schedule` says pays, from its `from` block length up, waking its `wake` participants; `Executor::is_parallel()` reports that verdict |
+  | `Plan::tasks()` were fused chains | tasks are fused chains with cheap siblings (one predecessor set) packed together; a task's ops are ascending but need not be ordered by the DAG (the verifier checks every dependency) |
+  | a graph whose nodes declare nothing spread whenever it had two tasks | its nodes are still each worth a task (`Heavy`), but its copy and event ops are priced cheap and may pack, the wake count is `max(work / critical, widest level)` (at least 2), and a plan whose only parallelism is in those ops may run serially |
+  | — | `tutti-nodes`' filters, oscillators, dynamics, delays and modulation declare `Cost::Moderate`; its sums, downmix, bus strip, brickwall and test stimuli `Cost::Light`; convolution declares nothing (`Heavy`) |
+
 - **The parallel executor** (design doc 013, "Phase 6, part (a)"). A
   block's independent nodes run across a pool's threads, bit for bit the
   render the serial executor makes; the serial walk is the one-participant
@@ -20,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | — | `tutti_graph::Pool` (the trait a pool implements: `participants`, `run(wake, job)`), re-exported as `tutti_core::Pool` |
   | — | `tutti_core::{WorkerPool, WorkerPoolBuilder, OnStart}`: helper threads that spin, yield, then park; `on_start` hook for RT priority / workgroups |
   | — | `tutti_types::{JobGate, TaskGraph, Participant, SplitMut, SplitRw, RwView, Held, ClaimTable, Claimed, ClaimedRun, ClaimConflict}` (loom-checked runtime primitives) |
-  | — | `Plan::task_width()` (the task DAG's widest level: how many helpers a block wakes) |
+  | — | `Plan::task_width()` (the task DAG's widest level; since part (b) one input to the wake count, see above) |
   | — | `RenderGraph::{set_pool, is_parallel}` (tutti-export) |
   | — | `TuttiPlugin::render_workers` (bevy-tutti; default 1, `0` = one per core); an export forks onto a pool of its own |
 

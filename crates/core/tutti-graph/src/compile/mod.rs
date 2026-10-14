@@ -35,17 +35,24 @@
 //!    readers, and the op DAG.
 //! 6. **Colour** ([`colour`]) — slot sharing that is correct under any
 //!    parallel schedule, with in-place aliasing where legal.
-//! 7. **Coarsen** — fuse single-successor/single-predecessor chains into
-//!    tasks, and level the task DAG (`Plan::task_width`). The serial
-//!    executor ignores tasks; the parallel one (`par.rs`) dispatches them.
+//! 7. **Coarsen and price** ([`coarsen`]) — fuse single-successor /
+//!    single-predecessor chains into tasks, pack sibling tasks too cheap to
+//!    dispatch alone (never lengthening the critical path), fuse the chains
+//!    that leaves, and total the
+//!    cost model's estimates (`Plan::work`, `Plan::critical_path`; see
+//!    `cost.rs`). The serial executor ignores tasks; the parallel one
+//!    (`par.rs`) dispatches them, when `Plan::schedule` says spreading
+//!    pays.
 //! 8. **Verify** ([`verify`]) in debug builds.
 //! 9. **Place** units: `NodeKey` → dense [`UnitIdx`], diffed against `prev`
 //!    into a [`Delta`].
 //!
-//! Doc 013's step 6 (a serial-vs-parallel cost model) is Phase 6 part (b):
-//! for now a plan with more than one task spreads whenever the executor has
-//! a pool of more than one participant.
+//! Doc 013's step 6, the serial-vs-parallel decision, is
+//! `Plan::schedule`: pure arithmetic on what step 7 totals, made when the
+//! plan meets a pool (the pool's participant count is not the compiler's
+//! to know).
 
+mod coarsen;
 mod colour;
 mod order;
 pub(crate) mod verify;
@@ -1237,9 +1244,17 @@ pub fn compile(
     let audio_values = lower_values(&em.audio, &aslot);
     let event_values = lower_values(&em.event, &eslot);
 
-    // ---- 7. coarsen -------------------------------------------------------
-    let (tasks, task_ops, task_succ, task_activation) = coarsen(&em.preds, &succ_rows);
-    let task_width = level_width(&task_succ, tasks.len());
+    // ---- 7. coarsen, and price the plan (the cost model) -----------------
+    let op_work: Vec<crate::cost::Work> = ops
+        .iter()
+        .map(|op| crate::cost::op_work(op, &node_shapes))
+        .collect();
+    let coarse = coarsen::coarsen(
+        &em.preds,
+        &succ_rows,
+        &op_work,
+        prepare.max_block().samples(),
+    );
 
     // ---- 9. place ---------------------------------------------------------
     let prev_units: BTreeMap<NodeKey, PlanUnit> = prev
@@ -1317,11 +1332,13 @@ pub fn compile(
         audio_list,
         event_list,
         op_succ: Csr::from_rows(&succ_rows),
-        tasks,
-        task_ops,
-        task_succ,
-        task_activation,
-        task_width,
+        tasks: coarse.tasks,
+        task_ops: coarse.task_ops,
+        task_succ: coarse.succ,
+        task_activation: coarse.activation,
+        work: coarse.work,
+        critical: coarse.critical,
+        task_width: coarse.width,
         audio_slots: audio_fixed + audio_colour.count,
         event_slots: event_fixed + event_colour.count,
         event_slot_capacity,
@@ -1400,76 +1417,4 @@ fn merge_tree(em: &mut Emitted, refs: Vec<ERef>) -> ERef {
             merge_tree(em, runs)
         }
     }
-}
-
-/// The most tasks on one level of the task DAG (a task's level is the
-/// longest path to it): the executor's wake count, a heuristic for how many
-/// workers a block can keep busy (see `Plan::task_width`). Tasks are numbered in a topological order (each is numbered by its
-/// first op, and every predecessor of that op is in an earlier task), so one
-/// forward pass finds every level.
-fn level_width(succ: &Csr, tasks: usize) -> u32 {
-    let mut level = vec![0u32; tasks];
-    for t in 0..tasks {
-        for &s in succ.row(t) {
-            debug_assert!(s as usize > t, "tasks are topologically numbered");
-            level[s as usize] = level[s as usize].max(level[t] + 1);
-        }
-    }
-    let mut count = vec![0u32; tasks];
-    for &l in &level {
-        count[l as usize] += 1;
-    }
-    count.into_iter().max().unwrap_or(0)
-}
-
-/// Fuse chains: op `b` joins its only predecessor's task when that
-/// predecessor's only successor is `b`. Such an edge needs no activation
-/// counter at all under a parallel executor — the task just runs on.
-fn coarsen(preds: &[BTreeSet<u32>], succ: &[Vec<u32>]) -> (Vec<Span>, Vec<u32>, Csr, Vec<u32>) {
-    let n = preds.len();
-    let mut task_of = vec![u32::MAX; n];
-    let mut members: Vec<Vec<u32>> = Vec::new();
-    for op in 0..n {
-        let fused = (preds[op].len() == 1)
-            .then(|| *preds[op].iter().next().expect("len 1"))
-            .filter(|&p| succ[p as usize].len() == 1);
-        match fused {
-            Some(p) => {
-                let t = task_of[p as usize];
-                task_of[op] = t;
-                members[t as usize].push(op as u32);
-            }
-            None => {
-                task_of[op] = members.len() as u32;
-                members.push(vec![op as u32]);
-            }
-        }
-    }
-    let mut tasks = Vec::with_capacity(members.len());
-    let mut task_ops = Vec::with_capacity(n);
-    for m in &members {
-        let start = task_ops.len() as u32;
-        task_ops.extend_from_slice(m);
-        tasks.push(Span {
-            start,
-            len: m.len() as u32,
-        });
-    }
-    let mut rows: Vec<BTreeSet<u32>> = vec![BTreeSet::new(); members.len()];
-    for (a, ss) in succ.iter().enumerate() {
-        for &b in ss {
-            let (ta, tb) = (task_of[a], task_of[b as usize]);
-            if ta != tb {
-                rows[ta as usize].insert(tb);
-            }
-        }
-    }
-    let mut activation = vec![0u32; members.len()];
-    for row in &rows {
-        for &t in row {
-            activation[t as usize] += 1;
-        }
-    }
-    let rows: Vec<Vec<u32>> = rows.into_iter().map(|r| r.into_iter().collect()).collect();
-    (tasks, task_ops, Csr::from_rows(&rows), activation)
 }

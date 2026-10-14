@@ -16,7 +16,7 @@ use common::{bits, test_pool, Kind, TestNode, WORKERS};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode, ForkSource,
     ForkTarget, Forked, IntoNode, Io, Node, NodeParts, ParamFrom, ParamIn, ParamRamp, ParamRange,
-    ParamSegment, ParamShaping, Prepare, SegmentShape, Shape, Status, Transport, Ump,
+    ParamSegment, ParamShaping, Prepare, Schedule, SegmentShape, Shape, Status, Transport, Ump,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, NodeKey, SampleRate, Samples};
@@ -472,16 +472,24 @@ fn ranges_moved_mid_render_stay_bit_identical() {
     }
 }
 
-/// The plan really is parallel: several tasks, a level wide enough to
-/// spread.
+/// The plan really is parallel: several tasks, and the cost model spreads
+/// every block of it over all four participants (its nodes declare no
+/// cost, so each is assumed worth a thread).
 ///
-/// Mutation: make `compile`'s `level_width` return 1 → fails.
+/// Mutations: make `cost::schedule` return `Serial` → fails; clamp its
+/// `wake` to 2 → fails.
 #[test]
 fn the_graph_spreads() {
     let (_ed, exec) = pair(4);
     let plan = exec.plan().expect("a plan");
     assert!(plan.tasks().len() > 8, "{} tasks", plan.tasks().len());
-    assert!(plan.task_width() >= 5, "width {}", plan.task_width());
+    assert_eq!(
+        plan.schedule(4),
+        Schedule::Parallel {
+            wake: 4,
+            from: Samples(1)
+        }
+    );
 }
 
 /// An offline fork (what export renders) renders the same on a pool as

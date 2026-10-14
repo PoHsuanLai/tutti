@@ -339,7 +339,9 @@ impl<M: Modulator> ModulatorNode<M> {
 
 impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+            .with_cost(tutti_graph::Cost::Moderate)
+            .with_tail(Tail::Unbounded)
     }
 
     fn prepare(&mut self, p: &Prepare) {

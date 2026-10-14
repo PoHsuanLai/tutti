@@ -832,6 +832,106 @@ fn the_generator_covers_what_the_suite_claims() {
     }
 }
 
+/// Declared costs for `desc`'s nodes, a pure function of the seed: about
+/// two in three declare `Cost::Light`, a few `Cost::Moderate`, the rest
+/// nothing (`Cost::Heavy`) — so cheap siblings pack (doc 013, "Phase 6,
+/// part (b)") beside heavy tasks that keep the plan parallel.
+fn random_costs(desc: &Desc, seed: u64) -> BTreeMap<NodeKey, tutti_graph::Cost> {
+    let mut rng = Rng::new(seed ^ 0xC057);
+    desc.kinds
+        .keys()
+        .filter_map(|&k| match rng.below(6) {
+            0..=3 => Some((k, tutti_graph::Cost::Light)),
+            4 => Some((k, tutti_graph::Cost::Moderate)),
+            _ => None,
+        })
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+    /// With random declared costs the compiler packs cheap tasks together
+    /// (and `Plan::schedule` picks serial or parallel per plan, and per
+    /// block length); the executor, serial and on a pool, still renders
+    /// every graph exactly as the reference does. `compile` runs the
+    /// verifier on every packed plan (debug), and `Pair::switch` runs it
+    /// again.
+    ///
+    /// Mutations (each applied to `src/compile/coarsen.rs`, seen to fail,
+    /// reverted): in `finish`, skip the task edges out of any task of
+    /// more than one op (a dependency dropped when merging) → the verifier
+    /// refuses the plan ("crosses task"). (Packing tasks that are not
+    /// siblings is pinned in `coarsen::tests`, by the critical path.)
+    #[test]
+    fn coarsened_plans_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
+        for workers in modes(seed) {
+            let desc = random_graph(seed);
+            let valid = desc.spec.validate().expect("generated graphs are valid");
+            let mut pair = Pair::with_workers(MAX_BLOCK, workers);
+            pair.costs = random_costs(&desc, seed);
+            pair.switch(&valid, &desc.kinds);
+            let mut frame = 0;
+            run(&mut pair, &schedule(which, seed, 700), &mut frame);
+        }
+    }
+}
+
+/// `coarsened_plans_are_bit_identical` exercises what it claims: over 512
+/// seeds, declared costs pack plans further than the same graphs
+/// undeclared, and many of those packed plans still spread on a pool of
+/// four (so packed tasks run in parallel), while others go serial.
+///
+/// Mutations: make `random_costs` declare nothing → no plan packs further
+/// → fails; make it declare every node `Light` → too few packed plans
+/// spread → fails.
+#[test]
+fn the_cost_generator_packs_and_spreads() {
+    let (mut packed, mut packed_parallel, mut serial) = (0, 0, 0);
+    // Undeclared graphs, for the record (doc 013, part (b) decision 2):
+    // multi-task plans the model keeps serial at four participants.
+    let (mut plain_multi, mut plain_serial) = (0, 0);
+    for seed in 0..512u64 {
+        let desc = random_graph(seed);
+        let valid = desc.spec.validate().expect("valid");
+        let compile = |costs: &BTreeMap<NodeKey, tutti_graph::Cost>| {
+            tutti_graph::compile(
+                &valid,
+                &common::shapes_costed(&desc.kinds, costs),
+                &common::prepare(MAX_BLOCK),
+                None,
+            )
+            .expect("compiles")
+            .0
+        };
+        let plain = compile(&BTreeMap::new());
+        if plain.tasks().len() > 1 {
+            plain_multi += 1;
+            if plain.schedule(4) == tutti_graph::Schedule::Serial {
+                plain_serial += 1;
+            }
+        }
+        let costed = compile(&random_costs(&desc, seed));
+        if costed.tasks().len() < plain.tasks().len() {
+            packed += 1;
+            if matches!(costed.schedule(4), tutti_graph::Schedule::Parallel { .. }) {
+                packed_parallel += 1;
+            }
+        }
+        if plain.tasks().len() > 1 && costed.schedule(4) == tutti_graph::Schedule::Serial {
+            serial += 1;
+        }
+    }
+    eprintln!("packed further: {packed}, of them parallel: {packed_parallel}, serial: {serial}");
+    eprintln!("undeclared multi-task plans: {plain_multi}, serial at 4: {plain_serial}");
+    assert!(packed > 50, "only {packed} plans packed further");
+    assert!(
+        packed_parallel > 25,
+        "only {packed_parallel} packed plans spread"
+    );
+    assert!(serial > 25, "only {serial} multi-task plans went serial");
+}
+
 /// Add a direct back edge — audio or event — from a node to one created no
 /// later than it, closing a cycle no feedback edge breaks.
 fn close_a_cycle(desc: &mut Desc, rng: &mut Rng) -> bool {

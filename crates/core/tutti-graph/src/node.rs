@@ -24,6 +24,7 @@ use tutti_types::{
     UnitParam,
 };
 
+use crate::cost::Cost;
 use crate::fork::ForkSource;
 use crate::history::TransportHistory;
 use crate::io::Io;
@@ -115,6 +116,13 @@ pub struct Shape {
     /// until something is connected to it, and the node must then answer
     /// [`Node::param_base`] for it.
     pub params: ParamPorts,
+    /// About how much work the node does per sample and channel: the
+    /// compiler's cost model packs cheap siblings into one task and keeps a
+    /// graph too cheap to spread on one thread (doc 013, "Phase 6, part
+    /// (b)"). [`Cost::Heavy`] unless set with [`with_cost`](Self::with_cost):
+    /// a node that declares nothing is assumed worth a thread of its own.
+    /// A speed hint only — it never changes a sample.
+    pub cost: Cost,
 }
 
 /// How finely a node honours event offsets: the timing it promises for what
@@ -173,6 +181,7 @@ impl Shape {
             in_place: false,
             event_resolution: Resolution::Sample,
             params: ParamPorts::NONE,
+            cost: Cost::Heavy,
         }
     }
 
@@ -262,6 +271,21 @@ impl Shape {
     #[must_use]
     pub const fn with_event_resolution(mut self, resolution: Resolution) -> Self {
         self.event_resolution = resolution;
+        self
+    }
+
+    /// This shape, declaring about how much work the node does per sample
+    /// and channel (see [`cost`](Self::cost)).
+    ///
+    /// ```
+    /// use tutti_graph::{Cost, Shape};
+    /// use tutti_types::ChannelLayout;
+    /// let gain = Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO).with_cost(Cost::Light);
+    /// assert_eq!(gain.cost, Cost::Light);
+    /// ```
+    #[must_use]
+    pub const fn with_cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
         self
     }
 

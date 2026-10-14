@@ -423,9 +423,12 @@ impl Node for AutomationLaneNode {
             return Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
                 .with_events(0, 1)
                 .with_event_capacity(LANE_EVENT_CAPACITY)
+                .with_cost(tutti_graph::Cost::Moderate)
                 .with_tail(Tail::Unbounded);
         }
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+            .with_cost(tutti_graph::Cost::Moderate)
+            .with_tail(Tail::Unbounded)
     }
 
     /// Nothing is derived from the rate: the beat arrives in each block's

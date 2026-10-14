@@ -435,6 +435,7 @@ impl Node for CompressorNode {
     fn shape(&self) -> Shape {
         let n = self.channels.count();
         Shape::audio(ChannelLayout::from_count(2 * n), self.channels)
+            .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
             .with_params(&COMPRESSOR_PARAMS)
     }

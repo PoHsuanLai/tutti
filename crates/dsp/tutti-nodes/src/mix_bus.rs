@@ -94,7 +94,9 @@ impl Node for ChannelSumNode {
     /// stops with its inputs.
     fn shape(&self) -> Shape {
         let ins = ChannelLayout::from_count((self.sources * self.channels()) as u16);
-        Shape::audio(ins, self.layout).with_tail(Tail::None)
+        Shape::audio(ins, self.layout)
+            .with_cost(tutti_graph::Cost::Light)
+            .with_tail(Tail::None)
     }
 
     fn prepare(&mut self, _: &Prepare) {}

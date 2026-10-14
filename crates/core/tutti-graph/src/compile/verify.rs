@@ -15,9 +15,11 @@
 //! 4. An op never writes one slot twice, and never writes a slot it reads
 //!    unless the op is the declared in-place form; an in-place bit on a node
 //!    is only set where its input and output slot really are one.
-//! 5. **Tasks** partition the ops; within a task the ops increase and each
-//!    happens-before the next; every op edge between two tasks appears in the
-//!    task successor lists; each task's activation count equals its number of
+//! 5. **Tasks** partition the ops; within a task the ops increase — and
+//!    every op edge runs to a later op (checked with the DAG), so no task
+//!    runs a dependency backwards, though it may hold ops the DAG does not
+//!    order (packed siblings); every op edge between two tasks appears in
+//!    the task successor lists; each task's activation count equals its number of
 //!    distinct predecessor tasks; the task graph is acyclic.
 //! 6. **Tables**: every delay index is used by exactly one op, every unit by
 //!    exactly one `Node` op, and no two units share a store index. Every
@@ -380,7 +382,7 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
 
     verify_params(plan)?;
     verify_in_place(plan)?;
-    verify_tasks(plan, &reach)?;
+    verify_tasks(plan)?;
     verify_tables(plan)?;
     verify_lowered(plan)?;
     Ok(())
@@ -597,7 +599,7 @@ fn verify_in_place(plan: &Plan) -> Result<(), VerifyError> {
 }
 
 /// Rule 5: the task structure a parallel executor will run.
-fn verify_tasks(plan: &Plan, reach: &Reach) -> Result<(), VerifyError> {
+fn verify_tasks(plan: &Plan) -> Result<(), VerifyError> {
     let n = plan.ops.len();
     let tasks = plan.tasks.len();
     let mut task_of = vec![u32::MAX; n];
@@ -614,13 +616,11 @@ fn verify_tasks(plan: &Plan, reach: &Reach) -> Result<(), VerifyError> {
                 return Err(VerifyError(format!("op {op} is in two tasks")));
             }
             *slot = t as u32;
-            if j > 0 {
-                let prev = ops[j - 1];
-                if prev >= op || !reach.before(prev, op) {
-                    return Err(VerifyError(format!(
-                        "task {t} runs op {prev} then op {op}, which the DAG does not order"
-                    )));
-                }
+            if j > 0 && ops[j - 1] >= op {
+                return Err(VerifyError(format!(
+                    "task {t} runs op {} then op {op}, out of ascending order",
+                    ops[j - 1]
+                )));
             }
         }
     }
@@ -1200,7 +1200,8 @@ mod tests {
     ///
     /// Mutations, one per case (each applied, each failed this test):
     /// delete `verify_in_place`'s slot comparison; delete the "op is in two
-    /// tasks" check; delete the cross-task edge check; compare activation to
+    /// tasks" check; delete the cross-task edge check; delete the
+    /// ascending-order check; compare activation to
     /// `vec![0; tasks]`; delete the delay-uses check; delete the store-index
     /// uniqueness check.
     #[test]
@@ -1268,6 +1269,19 @@ mod tests {
             t
         };
         assert!(verify(&crossing).unwrap_err().0.contains("crosses task"));
+
+        // A task's ops out of ascending order (a packed task may hold ops
+        // the DAG does not order, so ascending is what keeps the ones it
+        // does in order).
+        let mut bad = good.clone();
+        let t = bad
+            .tasks
+            .iter()
+            .position(|s| s.len >= 2)
+            .expect("the pair fuses a chain");
+        let r = bad.tasks[t].range();
+        bad.task_ops[r].reverse();
+        assert!(verify(&bad).unwrap_err().0.contains("ascending"));
 
         // Activation counts that do not match.
         let mut bad = good.clone();

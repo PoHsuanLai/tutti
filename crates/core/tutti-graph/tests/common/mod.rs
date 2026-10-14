@@ -125,6 +125,9 @@ pub struct TestNode {
     /// The rate last prepared for.
     rate: Option<f64>,
     calls: Arc<AtomicUsize>,
+    /// What its shape declares to the cost model (`Cost::Heavy`, the
+    /// default, unless set with `with_cost`).
+    cost: tutti_graph::Cost,
 }
 
 impl TestNode {
@@ -147,12 +150,19 @@ impl TestNode {
             pending: VecDeque::with_capacity(1024),
             rate: None,
             calls,
+            cost: tutti_graph::Cost::default(),
         }
+    }
+
+    /// This node, declaring `cost` (`Shape::cost`).
+    pub fn with_cost(mut self, cost: tutti_graph::Cost) -> Self {
+        self.cost = cost;
+        self
     }
 }
 
-impl Node for TestNode {
-    fn shape(&self) -> Shape {
+impl TestNode {
+    fn kind_shape(&self) -> Shape {
         match self.kind {
             Kind::Const { width, .. } => Shape::audio(ch(0), ch(width)),
             Kind::Gain { width, .. } => Shape::audio(ch(width), ch(width)).with_in_place(),
@@ -199,6 +209,12 @@ impl Node for TestNode {
                 .with_latency(lat(latency))
                 .with_tail(tail),
         }
+    }
+}
+
+impl Node for TestNode {
+    fn shape(&self) -> Shape {
+        self.kind_shape().with_cost(self.cost)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -442,10 +458,26 @@ impl Node for TestNode {
 
 /// Shapes for every node in `kinds`.
 pub fn shapes_of(kinds: &BTreeMap<NodeKey, Kind>) -> Shapes {
+    shapes_costed(kinds, &BTreeMap::new())
+}
+
+/// Shapes for every node in `kinds`, those in `costs` declaring that cost.
+pub fn shapes_costed(
+    kinds: &BTreeMap<NodeKey, Kind>,
+    costs: &BTreeMap<NodeKey, tutti_graph::Cost>,
+) -> Shapes {
     kinds
         .iter()
-        .map(|(&k, kind)| (k, TestNode::new(kind.clone()).shape()))
+        .map(|(&k, kind)| (k, costed(k, kind, costs).shape()))
         .collect()
+}
+
+fn costed(k: NodeKey, kind: &Kind, costs: &BTreeMap<NodeKey, tutti_graph::Cost>) -> TestNode {
+    let node = TestNode::new(kind.clone());
+    match costs.get(&k) {
+        Some(&c) => node.with_cost(c),
+        None => node,
+    }
 }
 
 /// A fresh unit for each key in `keys`.
@@ -453,13 +485,17 @@ pub fn units_for(
     kinds: &BTreeMap<NodeKey, Kind>,
     keys: impl IntoIterator<Item = NodeKey>,
 ) -> BTreeMap<NodeKey, Box<dyn Node>> {
+    units_costed(kinds, &BTreeMap::new(), keys)
+}
+
+/// `units_for`, those in `costs` declaring that cost.
+pub fn units_costed(
+    kinds: &BTreeMap<NodeKey, Kind>,
+    costs: &BTreeMap<NodeKey, tutti_graph::Cost>,
+    keys: impl IntoIterator<Item = NodeKey>,
+) -> BTreeMap<NodeKey, Box<dyn Node>> {
     keys.into_iter()
-        .map(|k| {
-            (
-                k,
-                Box::new(TestNode::new(kinds[&k].clone())) as Box<dyn Node>,
-            )
-        })
+        .map(|k| (k, Box::new(costed(k, &kinds[&k], costs)) as Box<dyn Node>))
         .collect()
 }
 
@@ -472,6 +508,9 @@ pub struct Pair {
     pub outputs: usize,
     pub inputs: usize,
     pub max_block: usize,
+    /// Declared costs (`Shape::cost`) by key; every other node declares
+    /// none (`Cost::Heavy`).
+    pub costs: BTreeMap<NodeKey, tutti_graph::Cost>,
 }
 
 impl Pair {
@@ -487,6 +526,7 @@ impl Pair {
             outputs: 0,
             inputs: 0,
             max_block,
+            costs: BTreeMap::new(),
         }
     }
 
@@ -523,7 +563,7 @@ impl Pair {
         kinds: &BTreeMap<NodeKey, Kind>,
         fades: &BTreeMap<NodeKey, Fade>,
     ) {
-        let mut shapes = shapes_of(kinds);
+        let mut shapes = shapes_costed(kinds, &self.costs);
         for (k, s) in shapes.iter_mut() {
             if let Some(n) = graph.topology().nodes.get(k) {
                 s.latency = Latency::new(n.latency);
@@ -569,14 +609,14 @@ impl Pair {
         // Back on the control side, where the box and what it retired are
         // freed.
         self.editor
-            .package(plan, delta, units_for(kinds, placed))
+            .package(plan, delta, units_costed(kinds, &self.costs, placed))
             .expect("the harness collects every box");
         self.exec.apply_pending();
         self.editor.collect();
 
         // The reference decides for itself what is new, from generations; give
         // it a fresh unit for every key it might need.
-        let all = units_for(kinds, graph.topology().nodes.keys().copied());
+        let all = units_costed(kinds, &self.costs, graph.topology().nodes.keys().copied());
         self.reference.set_graph_with_fades(graph, all, fades);
     }
 

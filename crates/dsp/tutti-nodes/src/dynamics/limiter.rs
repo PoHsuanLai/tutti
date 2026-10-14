@@ -399,6 +399,7 @@ impl Node for LimiterNode {
             s => Tail::Finite(s),
         };
         Shape::audio(self.layout, self.layout)
+            .with_cost(tutti_graph::Cost::Moderate)
             .with_latency(Latency::new(Samples(self.ring.lookahead_samples)))
             .with_tail(tail)
             .with_params(&LIMITER_PARAMS)
@@ -615,6 +616,7 @@ impl Node for BrickwallLimiterNode {
     /// and stops with its input.
     fn shape(&self) -> Shape {
         Shape::audio(self.layout, self.layout)
+            .with_cost(tutti_graph::Cost::Light)
             .with_tail(Tail::None)
             .with_params(&BRICKWALL_PARAMS)
     }

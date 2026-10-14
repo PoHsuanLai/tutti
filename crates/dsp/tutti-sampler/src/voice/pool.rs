@@ -5,7 +5,6 @@
 //! summing unit: adding or removing a voice then costs a queued command instead
 //! of a graph edit, which is what keeps voice churn off the commit path.
 
-use crate::lanes::LANE_FRAMES;
 use crate::ports::{Command, Commands};
 use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
@@ -202,8 +201,8 @@ pub struct VoicePool {
     pub(crate) clock: Clock,
 
     /// The lanes every slot's block read renders through, one voice at a
-    /// time (`PlaybackSlot::process_into`). Built with the pool, on the
-    /// control thread.
+    /// time (`PlaybackSlot::process_into`). Built with the pool and sized
+    /// from `Prepare::max_block` in `prepare`, on the control thread.
     scratch: BlockScratch,
 }
 
@@ -244,7 +243,7 @@ impl VoicePool {
             butler,
             channels: nonempty(channels.into()),
             clock: Clock::new(),
-            scratch: BlockScratch::new(),
+            scratch: BlockScratch::unprepared(),
         }
     }
 
@@ -319,6 +318,12 @@ impl VoicePool {
     /// queue). Diagnostic / test helper.
     pub fn voice_count(&self) -> usize {
         self.voices.len()
+    }
+
+    /// The longest block its scratch renders in one piece.
+    #[cfg(test)]
+    pub(crate) fn scratch_frames(&self) -> usize {
+        self.scratch.frames()
     }
 
     /// The control intent recorded for a slot. Test helper: lets a test assert
@@ -664,7 +669,7 @@ impl Clone for VoicePool {
             clock: Clock::new(),
             butler: self.butler.clone(),
             channels: self.channels,
-            scratch: BlockScratch::new(),
+            scratch: BlockScratch::new(self.scratch.frames()),
         }
     }
 }
@@ -683,11 +688,13 @@ impl Node for VoicePool {
     }
 
     /// The rate every slot, its source and its stretch filter run at, and
-    /// the handle builds filters at.
+    /// the handle builds filters at; the block scratch sized from
+    /// `max_block` (a re-prepare at another size resizes it).
     fn prepare(&mut self, p: &Prepare) {
         let sample_rate = p.sample_rate();
         self.sample_rate = sample_rate;
         self.rate.store(sample_rate);
+        self.scratch.resize(p.max_block().get());
         for slot in &mut self.voices {
             slot.voice.source.prepare_rate(sample_rate);
             slot.sample_rate = sample_rate;
@@ -717,10 +724,12 @@ impl Node for VoicePool {
         // Each slot renders its ONE voice into the pool's lanes and adds them
         // in, a lane at a time, via the shared `PlaybackSlot::render_into`
         // (the same per-variant `VoiceSource` match a standalone `VoiceNode`
-        // uses).
+        // uses). The lanes hold the prepared `max_block`, so this is one
+        // piece; a hand-driven block past it renders in pieces that long.
+        let piece = self.scratch.frames();
         let mut from = 0;
         while from < frames {
-            let to = (from + LANE_FRAMES).min(frames);
+            let to = (from + piece).min(frames);
             for slot in &mut self.voices {
                 slot.render_into(&clock, from..to, n, &mut self.scratch, &mut refs[..n]);
             }

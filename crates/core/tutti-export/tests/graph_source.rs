@@ -854,9 +854,10 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 ///
 /// The voice reads the render clock's transport from each block's `Env`,
 /// per frame: it seats its read at the playhead on the first frame of each
-/// 64-frame piece it renders, and the export asks for 1024-frame blocks. A
-/// voice that read only the block's first beat would replay the first 64
-/// frames sixteen times (a dry 440 Hz voice would measure 768 Hz).
+/// 1024-frame block (rendered in one piece, its scratch sized from the
+/// graph's `max_block`) and steps from there. The digest was recorded when
+/// voices rendered 64-frame pieces, each re-seated; the one-piece render
+/// keeps it, because a seat lands where the step would have put it.
 ///
 /// Why a digest and not a tolerance for the pitched voice: the vocoder turns
 /// an ulp of beat into far more — computing the chunk positions a different
@@ -865,10 +866,12 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 /// Mutations (run): the graph path's output scaled by `1.0 + f32::EPSILON`
 /// → the dry render is not the tone, and the pitched digest moves;
 /// `Cents::to_pitch_ratio` dividing by 1 100 cents to the octave → the
-/// pitched voice is not a fifth up, on every target; `interp::place`
-/// seating each piece at the block's first beat (`run.beat_at(e)` →
-/// `run.beat_at(0)`, the chunk replay above moved into the node) → the dry
-/// render is not the tone.
+/// pitched voice is not a fifth up, on every target. (`interp::place`
+/// seating a run at the block's first beat, `run.beat_at(e)` →
+/// `run.beat_at(0)`, failed here while voices rendered 64-frame pieces; in
+/// one piece with no transport change inside a block the two are the same
+/// frame, so it passes here (run) and tutti-sampler's run tests —
+/// `interp`'s seek and loop-wrap tests, `block_render` — catch it.)
 #[test]
 fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get(), 1024, "the block this pins");

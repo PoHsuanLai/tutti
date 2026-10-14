@@ -22,7 +22,7 @@ use super::clock::{BlockClock, Clock};
 use super::interp::{hermite_lanes, place, read_looped_frame, tap_indices, Gate};
 use super::loop_span::LoopSpan;
 use super::types::Direction;
-use crate::lanes::{Gather, Lanes, LANE_FRAMES};
+use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES};
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 /// Live loop state on a `MemorySource`. Internal: the public loop *intent* is
@@ -303,6 +303,12 @@ pub struct MemorySource {
     /// The wave's own width is reconciled against this one by
     /// [`read_frame`](super::interp::read_frame)'s channel policy.
     channels: ChannelLayout,
+
+    /// A block's placed positions when this source is a graph node of its
+    /// own, sized from `Prepare::max_block` in `prepare` (empty until then,
+    /// and in a clone: a source that only plays in a pool or a `VoiceNode`,
+    /// which read through their own scratch, carries none).
+    positions: Vec<Option<SamplePosition>>,
 }
 
 // Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>`. Print the wave length +
@@ -341,6 +347,9 @@ impl Clone for MemorySource {
             // A copy reads its own blocks' transport.
             clock: Clock::new(),
             channels: self.channels,
+            // Unsized, so a clone stays allocation-free: a copy inserted as
+            // a node is prepared, which sizes it.
+            positions: Vec::new(),
         }
     }
 }
@@ -366,6 +375,7 @@ impl MemorySource {
             looped: AtomicBool::new(false),
             clock: Clock::new(),
             channels: ChannelLayout::STEREO,
+            positions: Vec::new(),
         }
     }
 
@@ -1109,7 +1119,7 @@ impl MemorySource {
         }
     }
 
-    /// Render block frames `range` (at most [`LANE_FRAMES`](crate::lanes::LANE_FRAMES))
+    /// Render block frames `range` (at most `positions.len()`)
     /// into frame `i - range.start` of each of `out`'s channels: the node's
     /// own read, gained by its own gain.
     ///
@@ -1191,6 +1201,13 @@ impl MemorySource {
         self.set_session_sample_rate(sample_rate.get());
     }
 
+    /// The longest block its own positions render in one piece (0: never
+    /// prepared).
+    #[cfg(test)]
+    pub(crate) fn scratch_frames(&self) -> usize {
+        self.positions.len()
+    }
+
     /// Rewind the free-running cursor to the start and stop it; forget the
     /// transport. What [`Node::reset`] does.
     fn rewind(&mut self) {
@@ -1211,8 +1228,14 @@ impl Node for MemorySource {
 
     /// The session rate: the conversion from the wave's rate is derived from
     /// it ([`set_session_sample_rate`](Self::set_session_sample_rate)).
+    /// Its block positions are sized from `max_block` (a re-prepare at
+    /// another size resizes them).
     fn prepare(&mut self, p: &Prepare) {
         self.set_render_rate(p.sample_rate());
+        let frames = p.max_block().get();
+        self.positions.clear();
+        self.positions.resize(frames, None);
+        self.positions.shrink_to_fit();
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1230,13 +1253,24 @@ impl Node for MemorySource {
         for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
             *slot = ch;
         }
-        let mut positions = [None; LANE_FRAMES];
+        // One piece: the positions hold the prepared `max_block` (pieces
+        // that long for a hand-driven block past it, and the stack's
+        // `UNPREPARED_FRAMES` for a source never prepared).
+        let mut positions = std::mem::take(&mut self.positions);
+        let mut stack = [None; UNPREPARED_FRAMES];
+        let scratch = if positions.is_empty() {
+            &mut stack[..]
+        } else {
+            &mut positions[..]
+        };
+        let piece = scratch.len();
         let mut from = 0;
         while from < frames {
-            let to = (from + LANE_FRAMES).min(frames);
-            self.render_range(&clock, from..to, &mut positions, &mut refs[..n]);
+            let to = (from + piece).min(frames);
+            self.render_range(&clock, from..to, scratch, &mut refs[..n]);
             from = to;
         }
+        self.positions = positions;
         Status::Modified
     }
 

@@ -203,10 +203,11 @@ impl Gate {
 /// **Seated, then stepped.** At the first frame of the range a run sounds
 /// on (or its entry frame), the read seats where the gate puts the
 /// playhead ([`window_position`]'s origin) and steps from there by `step`
-/// per frame: `origin + step × k`. The owner renders a block in pieces of at
-/// most `LANE_FRAMES` (64), so the read re-seats on the clock at each piece,
-/// as it did when the graph called it once per 64-frame chunk — the same
-/// positions, bit for bit, wherever the window is open throughout. The step
+/// per frame: `origin + step × k`. The owner renders a block in one piece
+/// (its scratch is sized from `Prepare::max_block`), so the read re-seats on
+/// the clock once per block; a seat lands where the step would have put it,
+/// so the positions do not depend on how the blocks are cut (to rounding;
+/// bit for bit at the clocks `tests/block_length_invariance.rs` pins). The step
 /// is the read's own rate (with the conversion to the render rate), the
 /// origin the gate's (in the source's frames); they agree to rounding.
 pub(crate) fn place(

@@ -3746,8 +3746,9 @@ fail on, by name.
 #### Item 7 landed: sampler block render and ownership
 
 **Block render.** A voice renders a block at a time into planar scratch
-lanes (`tutti-sampler`'s `lanes`: `Lanes`, `MAX_BUFFER_SIZE` (64) frames ×
-`MAX_SAMPLER_CHANNELS`, owned by the rendering node with the block's
+lanes (`tutti-sampler`'s `lanes`: `Lanes`, then `MAX_BUFFER_SIZE` (64)
+frames × `MAX_SAMPLER_CHANNELS`, since sized from `Prepare::max_block`: see
+"Sampler scratch sized from `max_block`" below; owned by the rendering node with the block's
 positions and gathered taps, built on the control thread), and its owner
 adds each lane into its output channel with one `accumulate`
 (`PlaybackSlot::process_into` → `render_lanes`). What moved out of the
@@ -3865,10 +3866,12 @@ as `Option<Box<stretch::Unit>>`, and the drain unboxed both it and the
 replaced in place. The filter is unboxed now (a `Unit` moves as a pointer),
 the slot holds the voice boxed so the command's box moves in, and a replaced
 slot goes to the retirement channel (`tests/rt_no_free.rs` counts the
-drain's frees). The lanes are one block long: `AudioUnit::process` is never
-handed more than 64 frames, so 256-frame lanes were a split nothing reached
-and a memset nothing used; a native port sizes them from
-`Prepare::max_block`. A `VoicePool` wider than `MAX_SAMPLER_CHANNELS` is
+drain's frees). The lanes are one block long: `AudioUnit::process` was
+then never handed more than 64 frames, so 256-frame lanes were a split
+nothing reached and a memset nothing used. (`AudioUnit` is gone (Phase 5)
+and every voice is a `tutti_graph::Node`, so the reason for 64 went with
+it: the lanes are now sized from `Prepare::max_block`, landed under
+"Sampler scratch sized from `max_block`" below.) A `VoicePool` wider than `MAX_SAMPLER_CHANNELS` is
 refused (`PoolTooWide`) rather than declaring outputs it never writes, and a
 `VoiceNode` that wide (its constructor is infallible) clears the channels
 past it.
@@ -3990,9 +3993,10 @@ reference):
   (item 7's leftover: typed controls, placement on the node's own queue,
   gain a `Param`) and `MemorySource`. The clip readers read the transport
   from `Env` and are **frame-exact**: entry, exit, seek, stop and loop wrap
-  land on their frame. They still render in 64-frame pieces from each
-  block's start, re-seated per piece, which keeps the steady-state bits of
-  the chunked read. A jump (a seek while rolling, a wrap) is the node's
+  land on their frame. They then still rendered in 64-frame pieces from
+  each block's start, re-seated per piece, which kept the steady-state bits
+  of the chunked read; they now render each block in one piece (see
+  "Sampler scratch sized from `max_block`" below), with the same bits. A jump (a seek while rolling, a wrap) is the node's
   call, against its own clock's continuation. A live fork of a disk voice
   is refused (it would read the file on the audio thread).
 - **tutti-core / tutti-io / instruments** — the click (no inputs; its beat
@@ -4194,10 +4198,82 @@ What was kept, rehomed to its one user: the filters' float trait (`Real`,
 `f32`/`f64`, the same `libm` calls, so they render the same bits) is
 `tutti-nodes`'; `FaultLatch` is `tutti-sampler`'s (the `RenderFault` trait
 it was the only implementor of went); the 64-frame block `MAX_BUFFER_SIZE`
-named survives as the sampler's `LANE_FRAMES` (its voices render in 64-frame
-pieces) and as tutti-export's in-memory source's encoder pacing. Tests that
+named survived as the sampler's `LANE_FRAMES` (its voices rendered in
+64-frame pieces) until the sampler sized its scratch from
+`Prepare::max_block` (next section), and survives as tutti-export's
+in-memory source's encoder pacing. Tests that
 built planar data with `BufferVec` build it with `Vec`s; the stretch unit's
 `route_width_tracks_outputs_at_every_width` went with `route` (its subject).
+
+#### Sampler scratch sized from `max_block` (landed)
+
+The sampler's scratch lanes were a fixed 64 frames (`LANE_FRAMES`), and
+every voice node split its block into 64-frame pieces, with stack arrays of
+64 positions in `MemorySource` and `DiskVoice`. The reason was a `Legacy`
+unit that never saw `Prepare::max_block`; every voice is a
+`tutti_graph::Node` now, so the cap went:
+
+- **`BlockScratch` is sized in `prepare`.** `lanes::BlockScratch` (the
+  `out`/`raw` lanes, the positions, the disk tier's ring positions, the
+  gather) holds `Vec`s resized to `Prepare::max_block` on the control
+  thread by `VoicePool::prepare` and `VoiceNode::prepare`; a re-prepare at
+  another size resizes it. `MemorySource` and `DiskVoice` keep their own
+  position scratch for when they are nodes of their own, sized the same way
+  (empty in a pool's voices and in a clone, which stays allocation-free). A
+  voice in a pool or a `VoiceNode` reads through its owner's scratch
+  (`DiskVoice::render_lanes` takes it). `stretch::Unit::filter_lanes` takes
+  lanes of any length.
+- **A block renders in one piece.** The piece loops remain only as a
+  guard: a block past the prepared `max_block` (a host breaking the
+  contract) renders in pieces that long, and a node never prepared renders
+  through a 64-frame stack array (`UNPREPARED_FRAMES`).
+- **Same bits.** The placed read re-seats once per block instead of per 64
+  frames; a seat lands where the step would have put it, so every existing
+  test, the golden digests in `tutti-export` (`GRAPH_MAX_BLOCK` = 1024) and
+  `bevy-tutti` (recorded with 64-frame pieces) included, passes unchanged.
+  `tests/block_length_invariance.rs` pins it: each voice node (pool,
+  `VoiceNode`, `MemorySource` placed and free-running, `DiskVoice` live and
+  in a pool; plain, varispeed, reverse, crossfaded loop, stretch, pitch)
+  renders the same frames, bit for bit, at 64-frame blocks, at 512, and in
+  a ragged 1..512 schedule. What can move with the blocks is a control read
+  once per block (gain, varispeed, stretch, the disk tier's rates), now
+  once per block rather than per 64 frames.
+- **Allocation-free.** `rt_no_alloc`'s
+  `voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free` and
+  `disk_voice`'s `clip_reader_ragged_blocks_at_max_block_512_are_allocation_free`
+  prepare at 64, re-prepare at 512 and run ragged blocks under the guard.
+- **One mutation moved.** `interp::place` seating at the block's first beat
+  (`run.beat_at(0)`) used to fail the export and adapter render tests by
+  replaying a block's first 64-frame piece; in one piece, with no transport
+  change inside the block, it is the same frame, so those tests pass under
+  it now (run). tutti-sampler's run tests (`interp`'s seek and loop-wrap
+  tests, `block_render`, `graph_engine_clock`) still fail on it (run).
+
+Not changed: `DiskSource`'s free-running read computes positions 256 frames
+at a time (`BLOCK_FRAMES`, a stack array); its position accumulates per
+piece, so a different piece length would round differently, and it is not
+a lane.
+
+**Measured.** Wall clock on the shared 4-core box (load 10–12 from other
+builds) moved ±15% between identical runs, so the figures are instructions
+per output frame (callgrind, the difference of two render lengths, so setup
+cancels): a `VoicePool` of 16 voices (2 for stretch), before and after.
+
+| case | 64-frame blocks | 512-frame blocks |
+|---|---|---|
+| memory | 4 260 → 4 432 (+4.0%) | 4 249 → 4 089 (−3.8%) |
+| memory, 1.37x varispeed | 4 404 → 4 576 (+3.9%) | 4 393 → 4 233 (−3.6%) |
+| disk | 9 020 → 9 828 (+9.0%) | 9 018 → 9 426 (+4.5%) |
+| memory, stretch 0.5x | 6 994 → 7 012 (+0.3%) | 6 974 → 6 942 (−0.5%) |
+
+At 512 the memory tier saves the seven extra per-piece calls a block used
+to make (positions, gather, kernels, mix per voice); at 64 it pays a little
+for reaching its lanes through `Vec`s (bounds and length loads per call).
+The disk tier's rise is not in code this change touches: the ring read's
+`PosReader` frame fetch (`[u64; 4]::map` in `tutti-types`' `pos_ring`) is
+no longer inlined into `live_read::read_ring` in this build (an outlined
+`try_map` at ~3.8% of the run); a follow-up can pin it. The criterion
+bench gained a `pool512` group (the `pool64` cases at 512-frame blocks).
 
 ## Decisions for the owner
 

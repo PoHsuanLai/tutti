@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use crate::lanes::{BlockScratch, LANE_FRAMES};
+use crate::lanes::BlockScratch;
 use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
@@ -76,8 +76,8 @@ pub struct VoiceNode {
     /// The transport as the voice reads it, kept across blocks so a jump is
     /// flushed where it happens.
     clock: Clock,
-    /// The block read's lanes (`PlaybackSlot::render_into`), built here, on
-    /// the control thread.
+    /// The block read's lanes (`PlaybackSlot::render_into`), built here and
+    /// sized from `Prepare::max_block` in `prepare`, on the control thread.
     scratch: BlockScratch,
 }
 
@@ -120,7 +120,7 @@ impl VoiceNode {
             gain,
             placement: PlacementRecord::default(),
             clock: Clock::new(),
-            scratch: BlockScratch::new(),
+            scratch: BlockScratch::unprepared(),
         }
     }
 
@@ -207,6 +207,12 @@ impl VoiceNode {
     pub fn voice_mut(&mut self) -> &mut Voice {
         &mut self.slot.voice
     }
+
+    /// The longest block its scratch renders in one piece.
+    #[cfg(test)]
+    pub(crate) fn scratch_frames(&self) -> usize {
+        self.scratch.frames()
+    }
 }
 
 // Hand-rolled: wraps a non-`Debug` `PlaybackSlot`. Print the wrapped `Voice`
@@ -232,8 +238,11 @@ impl Node for VoiceNode {
         Shape::audio(ChannelLayout::EMPTY, self.channels).with_tail(Tail::Unbounded)
     }
 
-    /// The rate the voice's source and its stretch filter run at.
+    /// The rate the voice's source and its stretch filter run at, and the
+    /// block scratch sized from `max_block` (a re-prepare at another size
+    /// resizes it).
     fn prepare(&mut self, p: &Prepare) {
+        self.scratch.resize(p.max_block().get());
         let sample_rate = p.sample_rate();
         self.slot.voice.source.prepare_rate(sample_rate);
         self.slot.sample_rate = sample_rate;
@@ -261,9 +270,12 @@ impl Node for VoiceNode {
         for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
             *slot = ch;
         }
+        // One piece: the lanes hold the prepared `max_block` (pieces that
+        // long only for a hand-driven block past it).
+        let piece = self.scratch.frames();
         let mut from = 0;
         while from < frames {
-            let to = (from + LANE_FRAMES).min(frames);
+            let to = (from + piece).min(frames);
             self.slot
                 .render_into(&clock, from..to, n, &mut self.scratch, &mut refs[..n]);
             from = to;

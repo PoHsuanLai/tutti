@@ -15,10 +15,13 @@ use crate::{Error, Result};
 ///
 /// 1024 frames: long enough that the executor's per-block walk is paid rarely
 /// on a long bounce, short enough that a block's planes stay in cache.
-// A multiple of 64 on purpose: a node that renders in 64-frame pieces from each
-// block's start (the sampler's clip readers) cuts them on the same frames at
-// any multiple of 64, and the golden digests `tests/graph_source.rs` pins were
-// recorded with 64-frame pieces.
+// A multiple of 64, from when the sampler's clip readers rendered 64-frame
+// pieces from each block's start: the golden digests `tests/graph_source.rs`
+// pins were recorded with those pieces. The readers now render each block in
+// one piece (scratch sized from `Prepare::max_block`) and re-seat once per
+// block where their step would have put them, and the digests are unchanged
+// (tutti-sampler's `tests/block_length_invariance.rs` pins that a voice's
+// frames do not depend on its blocks).
 pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 
 /// The graph an export renders: a `tutti_graph` editor/executor pair.

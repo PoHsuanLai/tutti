@@ -9,7 +9,7 @@
 
 use std::ops::Range;
 
-use crate::lanes::{accumulate, scale, BlockScratch, LANE_FRAMES};
+use crate::lanes::{accumulate, scale, BlockScratch};
 use crate::nonempty;
 use crate::stretch;
 
@@ -235,7 +235,8 @@ impl PlaybackSlot {
     }
 
     /// Accumulate this slot's contribution to block frames `range` (at most
-    /// [`LANE_FRAMES`]) into `out` (one slice per channel, block-long),
+    /// [`BlockScratch::frames`], the owner's prepared `max_block`) into `out`
+    /// (one slice per channel, block-long),
     /// **a block at a time**: the voice renders into `scratch`'s planar lanes
     /// ([`render_lanes`](Self::render_lanes)), and each lane is added into its
     /// output channel by one vectorised [`accumulate`]. Shared by the mixer
@@ -268,7 +269,10 @@ impl PlaybackSlot {
         out: &mut [&mut [f32]],
     ) {
         let n = width.min(out.len());
-        debug_assert!(range.len() <= LANE_FRAMES, "a piece longer than a lane");
+        debug_assert!(
+            range.len() <= scratch.frames(),
+            "a piece longer than the scratch"
+        );
         let mut from = range.start;
         for run in clock.runs_in(range.clone()) {
             if run.jump {
@@ -329,6 +333,7 @@ impl PlaybackSlot {
             raw,
             positions,
             gather,
+            ..
         } = scratch;
         sampler.placed_positions(clock, at..at + 1, stretch_rate, &mut positions[..1]);
         let Some(origin) = positions[0] else {
@@ -337,7 +342,7 @@ impl PlaybackSlot {
         let step = sampler.read_rate().then(stretch_rate).get();
         let mut done = 0;
         while done < refill {
-            let frames = (refill - done).min(LANE_FRAMES);
+            let frames = (refill - done).min(positions.len());
             for (i, slot) in positions[..frames].iter_mut().enumerate() {
                 let back = (refill - done - i) as f64;
                 let pos = origin.get() - back * step;
@@ -383,7 +388,7 @@ impl PlaybackSlot {
         }
     }
 
-    /// Render block frames `range` (at most [`LANE_FRAMES`]) of this voice,
+    /// Render block frames `range` (at most [`BlockScratch::frames`]) of this voice,
     /// `n` channels wide, into frames `0..range.len()` of `scratch.out`:
     /// every frame of each of the `n` lanes is written, silence as zero.
     /// `scratch.raw` is the filter's input, when the voice stretches.
@@ -407,9 +412,11 @@ impl PlaybackSlot {
             out,
             raw,
             positions,
+            ring_positions,
             gather,
         } = scratch;
         let positions = &mut positions[..frames];
+        let ring_positions = &mut ring_positions[..frames];
         match (&mut self.voice.source, self.stretch.as_mut()) {
             (VoiceSource::Memory(sampler), Some(unit)) if stretching => {
                 // **The stretch rate must reach the origin, not only the
@@ -470,7 +477,7 @@ impl PlaybackSlot {
                 // publish unity again — a set-once would leave the stream
                 // reading at the old factor.
                 reader.set_stretch_rate(unit.input_rate());
-                reader.render_lanes(clock, range, raw, n);
+                reader.render_lanes(clock, range, raw, n, (positions, ring_positions));
                 unit.filter_lanes(raw.lanes(), out.lanes_mut(), n, 0..frames);
             }
             (VoiceSource::Memory(sampler), _) => {
@@ -495,7 +502,7 @@ impl PlaybackSlot {
                 // is reachable through ordinary use, not just teardown. The
                 // reader applies its own gain (the stream's control cell).
                 reader.set_stretch_rate(ReadRate::UNITY);
-                reader.render_lanes(clock, range, out, n);
+                reader.render_lanes(clock, range, out, n, (positions, ring_positions));
             }
         }
     }

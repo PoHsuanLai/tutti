@@ -693,8 +693,16 @@ implementation here. Requirements 1–5 are PR 1's; 6 lands with PR 2.
    cannot go now is owed to the next chunk, never dropped (it fixes M5).
 3. **Unknown addresses** (not in the list at bind) are bounded and counted,
    never silent.
-4. **The delivered record is cleared** on reset, re-prepare, fork and a
-   state or preset load, so automation and modulation re-assert afterwards.
+4. **The delivered record is what the host last delivered to this plugin
+   instance.** Nothing clears it: it persists across a reset, a re-prepare
+   and a state or preset load, so a held host value is not re-sent over an
+   edit made in the plugin's editor or a loaded preset; a moving host value
+   re-asserts itself as it moves. A fork's delivery is seeded with the live
+   node's record (read before the live state is saved), so an export
+   renders what live playback plays. (Amended in PR 1, which first said the
+   record is cleared on all four; clearing it made an export overwrite an
+   editor edit that live playback kept. PR 4, which makes an editor edit
+   write the lane's knob, may revisit this.)
 5. **No format host's lists grow after activation** (VST3's queue list,
    CLAP's input-event scratch).
 6. **Point capacity:** each parameter can carry at least
@@ -753,6 +761,14 @@ in the "Was | Now" style. The `audio-automation` pin and the bevy 0.19 line
 are unaffected. PR 1 is §9's requirements 1–5. **PR 2 lands after PR 1**:
 it edits `segment_points.rs`, which PR 1 rewrites. A small PR between PR 1
 and PR 4 makes the in-process VST2 node deliver parameter events (§13).
+
+**Follow-up to PR 1: parameter-change memory.** PR 1 reserves every
+parameter-change buffer at `params × points_for(chunk)` points, and the
+bridge holds `PARAM_BUFFERS` of them: about 43 MB for 2000 parameters at a
+4096-frame chunk, about 340 MB for a 16k-parameter VST3. Replace it with a
+shared per-chunk point arena, or a small per-queue room with a counted,
+shared overflow, so the memory follows the points a chunk carries rather
+than the parameter count.
 
 ### PR 2: the control lane node
 

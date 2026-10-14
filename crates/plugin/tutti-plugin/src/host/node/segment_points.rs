@@ -10,10 +10,18 @@
 //! - its value on its event frame;
 //! - its value at every [`stride_for`]`(chunk)`-th frame of each chunk and
 //!   on each chunk's last frame, as [`PluginAutomation`](super::PluginAutomation)
-//!   spaces its points (so a segment puts at most [`MAX_POINTS`] points a
-//!   chunk on its parameter, within the queue's room, `param_delivery::points_for`);
+//!   spaces its points (at most [`MAX_POINTS`] grid points a chunk);
 //! - its end value on the frame it arrives ([`ParamSegment::arrives_after`]),
 //!   after which it is dropped: the plugin holds the end value exactly.
+//!
+//! So a segment can put up to [`MAX_POINTS`]` + 2` (12) points on a chunk:
+//! the grid's, its event frame and its arrival. The queue's room
+//! (`param_delivery::points_for`, `ceil(chunk / 32) + 4` and never fewer
+//! than [`MAX_POINTS`]) is smaller than that on chunks of 224 frames or
+//! fewer; there the surplus replaces the queue's last point (the chunk
+//! still ends on the latest value) and is counted
+//! (`ParamDeliveryStats::points_merged`). Doc 014's PR 2 replaces the grid
+//! and this room (§9 requirement 6).
 //!
 //! A later ramp or segment for the same parameter interrupts it on its
 //! frame, as in a graph param port.

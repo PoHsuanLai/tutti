@@ -120,9 +120,19 @@ impl PluginControls {
     /// The node sends a parameter only when the host's value differs from
     /// the last one it sent: an unchanged value is never re-sent, so it
     /// cannot overwrite an edit made in the plugin's own editor; a value
-    /// that moves is sent and replaces it. RT-safe: three relaxed loads.
+    /// that moves is sent and replaces it. Points merged count the points a
+    /// full queue replaced (see [`ParamDeliveryStats::points_merged`]).
+    /// RT-safe: four relaxed loads.
+    ///
+    /// [`ParamDeliveryStats::points_merged`]: super::ParamDeliveryStats::points_merged
     pub fn param_delivery(&self) -> super::ParamDeliveryStats {
         self.delivery.snapshot()
+    }
+
+    /// What the node has delivered so far, per listed parameter: what a fork
+    /// is seeded with. Control thread: allocates.
+    pub(super) fn delivered(&self) -> Vec<(crate::protocol::ParamAddress, f64)> {
+        self.delivery.delivered()
     }
 
     /// The latency cell, for the bridge-thread listener that writes it.

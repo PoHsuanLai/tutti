@@ -673,6 +673,14 @@ pub trait EventList {
 pub struct InputEventList {
     pub(crate) list: clap_input_events,
     pub(crate) events: Vec<ClapEvent>,
+    /// The parameter events one [`add_param_changes`](Self::add_param_changes)
+    /// may push: the room reserved for them at activation
+    /// ([`set_param_point_room`](Self::set_param_point_room)). Unbounded
+    /// until set.
+    param_room: usize,
+    /// Parameter points not handed on whole since the list was built: see
+    /// [`param_points_dropped`](Self::param_points_dropped).
+    param_points_dropped: u64,
 }
 
 impl InputEventList {
@@ -685,6 +693,8 @@ impl InputEventList {
                 get: Some(input_events_get),
             },
             events: Vec::new(),
+            param_room: usize::MAX,
+            param_points_dropped: 0,
         }
     }
 
@@ -697,6 +707,8 @@ impl InputEventList {
                 get: Some(input_events_get),
             },
             events,
+            param_room: usize::MAX,
+            param_points_dropped: 0,
         }
     }
 
@@ -705,6 +717,29 @@ impl InputEventList {
     /// touch the allocator. `clear()` keeps the reserved capacity.
     pub fn reserve(&mut self, n: usize) {
         self.events.reserve(n);
+    }
+
+    /// Bound the parameter events one
+    /// [`add_param_changes`](Self::add_param_changes) pushes to `points`,
+    /// the room the caller reserved for them (with [`reserve`](Self::reserve),
+    /// on top of the room for MIDI and note expressions), so a block carrying
+    /// more never grows the list on the audio thread. Off-RT; call it at
+    /// activation, with the plugin's parameter count times the points a
+    /// chunk can carry for one parameter
+    /// ([`ParameterQueue::chunk_room`](tutti_plugin_types::ParameterQueue::chunk_room)).
+    pub fn set_param_point_room(&mut self, points: usize) {
+        self.param_room = points;
+    }
+
+    /// Parameter points [`add_param_changes`](Self::add_param_changes) could
+    /// not hand on whole, past the room set with
+    /// [`set_param_point_room`](Self::set_param_point_room): one that
+    /// replaced its parameter's previous point (so the parameter still ends
+    /// the block on its latest value), or one with no room at all. Counted
+    /// since the list was built; zero while the host stays within the room
+    /// it was activated for.
+    pub fn param_points_dropped(&self) -> u64 {
+        self.param_points_dropped
     }
 
     /// Converts a [`MidiEvent`] to a [`ClapEvent`] and append it. UMP
@@ -742,12 +777,21 @@ impl InputEventList {
     /// is the lesser harm. The flag is needed because `ranges.is_empty()`
     /// cannot tell the two apart — a hole at index 0 empties the map while the
     /// plugin still claims parameters.
+    ///
+    /// `ranges` is **sorted by id** (each id is found by binary search, so a
+    /// block with a change for every parameter costs `n log n`, not `n²`).
+    ///
+    /// At most the [room](Self::set_param_point_room) of points is pushed;
+    /// past it, a point replaces its parameter's previous one, or is dropped
+    /// when its parameter has none in the list, and either is counted
+    /// ([`param_points_dropped`](Self::param_points_dropped)).
     pub fn add_param_changes(
         &mut self,
         changes: &ParameterChanges,
         ranges: &[(u32, f32, f32)],
         plugin_claims_params: bool,
     ) -> &mut Self {
+        let mut pushed = 0usize;
         for queue in &changes.queues {
             // `clap_id` is opaque; a VST2 positional index addresses nothing
             // here, so it is skipped rather than reaching the plugin as though
@@ -755,10 +799,14 @@ impl InputEventList {
             let Some(param_id) = queue.param_id.opaque().map(|id| id.get()) else {
                 continue;
             };
-            let range = ranges.iter().find(|(id, _, _)| *id == param_id);
+            let range = ranges
+                .binary_search_by_key(&param_id, |&(id, _, _)| id)
+                .ok()
+                .map(|i| &ranges[i]);
             if range.is_none() && plugin_claims_params {
                 continue;
             }
+            let mut pushed_here = false;
             for point in &queue.points {
                 let value = match range {
                     Some(&(_, min, max)) => {
@@ -779,7 +827,7 @@ impl InputEventList {
                     }
                     None => point.value.get(),
                 };
-                self.events.push(ClapEvent::param_value(
+                let event = ClapEvent::param_value(
                     // `sample_offset` is `i32`; a bare `as u32` turns a
                     // negative offset into ~4.29 billion, which sorts last and
                     // is handed to the plugin as a buffer index. Saturate at 0
@@ -789,7 +837,22 @@ impl InputEventList {
                     point.sample_offset.max(0) as u32,
                     param_id,
                     value,
-                ));
+                );
+                if pushed < self.param_room {
+                    self.events.push(event);
+                    pushed += 1;
+                    pushed_here = true;
+                    continue;
+                }
+                // Past the room: the parameter's previous point gives way, so
+                // it still ends on its latest value; with none, the point is
+                // lost. Counted either way.
+                self.param_points_dropped += 1;
+                if pushed_here {
+                    if let Some(last) = self.events.last_mut() {
+                        *last = event;
+                    }
+                }
             }
         }
         self
@@ -1308,6 +1371,72 @@ mod tests {
                 _ => None,
             })
             .expect("a PARAM_VALUE event")
+    }
+
+    /// **Every parameter is found in a sorted range list**, not only the
+    /// first: the ranges are binary-searched by id, so each queue
+    /// denormalizes against its own parameter's range.
+    ///
+    /// Mutation (run): the search keyed on the wrong field (`|&(_, min, _)|
+    /// min as u32`) → ids 5 and 9 find no range and are dropped → fails.
+    #[test]
+    fn add_param_changes_finds_each_range_in_a_sorted_list() {
+        let ranges = [(1, 0.0, 1.0), (5, 0.0, 10.0), (9, 100.0, 1100.0)];
+        let mut changes = ParameterChanges::new();
+        changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.5);
+        changes.add_change(ParamAddress::Opaque(5u32.into()), 1, 0.25);
+        let mut list = InputEventList::new();
+        list.add_param_changes(&changes, &ranges, true);
+        let got: Vec<(u32, f64)> = list
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                ClapEvent::ParamValue(v) => Some((v.param_id, v.value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(got, vec![(9, 600.0), (5, 2.5)]);
+    }
+
+    /// **Past the reserved room a parameter's points give way to its latest,
+    /// counted, and the list does not grow.** Room for 5 events: the first
+    /// parameter's 4 points and the second's first fit; the second's next 2
+    /// each replace its previous point (it still ends on 0.3); the third
+    /// parameter has no room at all. Three points are counted.
+    ///
+    /// Mutations (run), each fails: no room check (every point pushed) →
+    /// 8 events, nothing counted; the overflow not replacing the previous
+    /// point (dropped only) → the second parameter ends on 0.1.
+    #[test]
+    fn add_param_changes_stays_within_its_room() {
+        let mut changes = ParameterChanges::new();
+        for k in 0..4 {
+            changes.add_change(ParamAddress::Opaque(1u32.into()), k, 0.5);
+        }
+        for (k, v) in [0.1, 0.2, 0.3].into_iter().enumerate() {
+            changes.add_change(ParamAddress::Opaque(2u32.into()), k as i32, v);
+        }
+        changes.add_change(ParamAddress::Opaque(3u32.into()), 0, 0.9);
+        let mut list = InputEventList::new();
+        list.reserve(5);
+        list.set_param_point_room(5);
+        list.add_param_changes(&changes, &[], false);
+        let got: Vec<(u32, f64)> = list
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                ClapEvent::ParamValue(v) => Some((v.param_id, v.value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(got.len(), 5);
+        assert_eq!(got[4].0, 2);
+        assert!(
+            (got[4].1 - 0.3).abs() < 1e-12,
+            "ends on the latest: {got:?}"
+        );
+        assert!(got.iter().all(|&(id, _)| id != 3));
+        assert_eq!(list.param_points_dropped(), 3);
     }
 
     /// A VST2 positional index addresses no CLAP parameter and must be dropped,

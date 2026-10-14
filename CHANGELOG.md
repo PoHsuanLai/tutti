@@ -97,9 +97,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs). A chunk whose changes cannot go (no free buffer, a refused
   block) sends each parameter's latest value on the next chunk's first
   frame. The VST3 host keeps its parameter queues pooled at the plugin's
-  parameter count instead of trimming and regrowing them every block, and
-  the CLAP host reserves its event list and output queues for the
-  parameter count. **Breaking:**
+  parameter count instead of trimming and regrowing them every block, each
+  with room for a chunk's points at the activated block size
+  (`ParameterQueue::chunk_room`), and the CLAP host reserves its event
+  list for every parameter's points at its block size (past that room a
+  point replaces its parameter's previous one, counted by
+  `ClapActive::param_points_dropped`) and its output queues for the
+  parameter count. **Memory:** the parameter buffers scale with the
+  parameter count: about 43 MB for 2 000 parameters at a 4096-frame
+  chunk, 340 MB for a 16 384-parameter VST3 (the follow-up is in doc 014
+  §12). **Breaking:**
   - `ParameterChanges::queues` is a `Vec<ParameterQueue>` (was
     `SmallVec<[ParameterQueue; 16]>`), and the struct has a private field
     (spare queues, not serialized), so it is no longer built with a
@@ -110,13 +117,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ParameterQueue::has_room`; code that indexed or iterated `queues`
     is unchanged. A `SmallVec`-specific call (`inline_size`, `spilled`)
     on `queues` has no replacement: use `capacity()` / `has_room()`.
+  - `tutti_clap_host::InputEventList::add_param_changes` takes its
+    `ranges` **sorted by id** (it binary-searches them); an unsorted list
+    finds the wrong range or none. Added
+    `InputEventList::{set_param_point_room, param_points_dropped}` and
+    `ClapActive::param_points_dropped`.
+  - Added `tutti_plugin_types::ParameterQueue::{chunk_room,
+    INLINE_POINTS, POINT_SPACING, CORNER_POINTS}`: the points one
+    parameter can carry in a chunk, which the plugin node and the format
+    hosts reserve.
   - Added `PluginControls::param_delivery() -> ParamDeliveryStats`
     (`points_sent`, `chunks_deferred`, `points_dropped`, `points_merged`;
     `#[non_exhaustive]`), exported from `tutti_plugin::handles`.
   - Behaviour: a plugin no longer receives the host's value every block.
     A host that relied on that to undo an editor edit sends a new value
-    instead. An export (a fork) starts with nothing delivered, so it
-    renders the automation over editor edits.
+    instead. The node's record of what it delivered survives a reset, a
+    re-prepare and a state or preset load, and an export's fork is seeded
+    with it, so an export plays an edit made in the plugin's editor as
+    live playback does.
 
 - **An export's fork is built off the main thread** (design doc 013,
   "Recorded for later": the fork ran on the main thread). `Editor::fork` is

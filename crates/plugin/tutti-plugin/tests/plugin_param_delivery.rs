@@ -5,8 +5,10 @@
 //! the values read back from the plugin.
 //!
 //! What it pins: a chunk carries a change for every parameter (no 16-queue
-//! cap), the node sends changes only, and an unchanged host value does not
-//! overwrite an edit made on the plugin's side, while a moving one does.
+//! cap), the node sends changes only, an unchanged host value does not
+//! overwrite an edit made on the plugin's side while a moving one does, and
+//! an export (a fork) renders that edit as live playback does (the
+//! reference CLAP plugin, whose gain parameter is audible).
 //!
 //! Needs `cargo build -p tutti-plugin-server` first (see `CLAUDE.md`).
 
@@ -19,13 +21,14 @@ mod param_probe;
 #[path = "support/probe_path.rs"]
 mod probe_path;
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use clap_probe::{exclusive, Rig};
-use param_probe::{knobs, load_vst2_probe, until};
-use tutti_graph::Prepare;
-use tutti_graph::Transport;
-use tutti_plugin::handles::{ParamAddress, PluginHandle};
+use clap_probe::{exclusive, load_probe, render, ProbeEnv, Rig};
+use param_probe::{knobs, load_vst2_probe, until, Knob};
+use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
+use tutti_graph::{ForkMode, ForkTarget, Prepare, Transport};
+use tutti_plugin::handles::{ParamAddress, ParamId, PluginHandle, TimedParam};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -198,4 +201,113 @@ fn an_edit_on_the_plugin_survives_a_held_host_value() {
         ),
         "a moving host value did not replace the edit"
     );
+}
+
+/// The reference CLAP plugin's gain parameter, and its plain range in dB.
+const GAIN: ParamAddress = ParamAddress::Opaque(ParamId::new(77));
+const GAIN_DB: (f64, f64) = (-60.0, 12.0);
+
+/// The normalized gain for `db` (exact for whole dB: 72ths).
+fn gain_at(db: f64) -> f32 {
+    ((db - GAIN_DB.0) / (GAIN_DB.1 - GAIN_DB.0)) as f32
+}
+
+/// The probe's tag (1.0 on channel 0) at `db`.
+fn amplitude(db: f64) -> f32 {
+    10f64.powf(db / 20.0) as f32
+}
+
+/// **An export renders an edit made in the plugin's own editor, as live
+/// playback does.** The host holds the gain at -6 dB (an automation lane
+/// that never moves); the plugin's gain is then set to -15 dB behind the
+/// node's back, through the plugin handle, as an edit in its editor would
+/// be. Live, the held -6 dB is never re-sent, so the plugin plays -15 dB.
+/// The graph is then forked offline (an export): the fork is loaded with
+/// the live state (-15 dB) and its delivery is seeded with what the live
+/// node had delivered (-6 dB), so the frozen lane's -6 dB is not sent to
+/// it either, and the export plays -15 dB too.
+///
+/// Mutation (run): the fork's delivery not seeded (no
+/// `fork.state.params.seed(..)` in `fork.rs`) → the fork sends the lane's
+/// -6 dB over the loaded -15 dB → the export plays -6 dB → fails.
+#[test]
+fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
+    const FORK_BLOCK: usize = 256;
+    let _lock = exclusive();
+    let _env = ProbeEnv::new()
+        .render_mode(render::TAG_ONLY)
+        .gain_enabled(true);
+    let probe = load_probe(SAMPLE_RATE);
+    let held = Knob::new(gain_at(-6.0));
+    let automation = probe.client.automation([TimedParam {
+        param_id: GAIN,
+        curve: held as Arc<dyn tutti_nodes::automation::Curve>,
+    }]);
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(FORK_BLOCK));
+    let mut live = Rig::prepared_with(probe.client.bind(), prepare, Some(automation));
+    live.renderer()
+        .set_transport(Transport::new(true, Bpm(120.0), Beat(0.0), None));
+    let near = |out: &[Vec<f32>], db: f64| {
+        out.first()
+            .and_then(|c| c.last())
+            .is_some_and(|&s| (s - amplitude(db)).abs() < 1e-4)
+    };
+    let last = std::cell::RefCell::new(Vec::new());
+    assert!(
+        until(
+            SETTLE,
+            || *last.borrow_mut() = live.run(FORK_BLOCK, |_, _| 0.0),
+            || near(&last.borrow(), -6.0)
+        ),
+        "the held host value reached the plugin"
+    );
+
+    // The edit, behind the node's back.
+    probe.handle.params().set_parameter_value(
+        GAIN,
+        tutti_plugin::handles::Normalized::new(f64::from(gain_at(-15.0))),
+    );
+    assert!(
+        until(
+            SETTLE,
+            || *last.borrow_mut() = live.run(FORK_BLOCK, |_, _| 0.0),
+            || near(&last.borrow(), -15.0)
+        ),
+        "the edit reached the plugin"
+    );
+    for _ in 0..20 {
+        *last.borrow_mut() = live.run(FORK_BLOCK, |_, _| 0.0);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let last = last.into_inner();
+    assert!(
+        near(&last, -15.0),
+        "live keeps the edit: {:?}",
+        last[0].last()
+    );
+
+    // The export.
+    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        sample_rate: SampleRate(SAMPLE_RATE),
+        ..Default::default()
+    }));
+    let offline = OfflineTransport::new(Arc::clone(&timeline));
+    let (_fork_ed, mut fork_exec) = live
+        .renderer()
+        .editor()
+        .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+        .expect("the automation node and the plugin fork");
+    let silence = vec![0.0f32; FORK_BLOCK];
+    let inputs: Vec<&[f32]> = (0..live.inputs()).map(|_| &silence[..]).collect();
+    let mut out = vec![vec![0.0f32; FORK_BLOCK]; live.outputs()];
+    for _ in 0..8 {
+        let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+        timeline.render_graph(&mut fork_exec, FORK_BLOCK, &inputs, &mut outs);
+    }
+    assert!(
+        near(&out, -15.0),
+        "the export plays {:?}, not the -15 dB live playback plays",
+        out[0].last()
+    );
+    drop(probe.handle);
 }

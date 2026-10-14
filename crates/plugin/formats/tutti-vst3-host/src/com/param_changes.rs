@@ -42,18 +42,22 @@ impl ParameterChangesImpl {
     /// An empty list with no pooled queues (tests; the host presizes).
     #[cfg(test)]
     pub fn new_empty() -> ComWrapper<Self> {
-        Self::with_queues(0)
+        Self::with_queues(0, 0)
     }
 
-    /// An empty changes list whose pool already holds `queues` queues, so
-    /// no block with up to that many allocates. Allocates; call it off the
-    /// audio thread with the plugin's parameter count.
-    pub fn with_queues(queues: usize) -> ComWrapper<Self> {
+    /// An empty changes list whose pool already holds `queues` queues, each
+    /// with room for `points` points, so no block with up to that many
+    /// queues of up to that many points allocates. Allocates; call it off
+    /// the audio thread with the plugin's parameter count and, for the
+    /// host's input list, the points a chunk carries for one parameter at
+    /// the activated block size (`ParameterQueue::chunk_room`). The output
+    /// list, which the plugin fills, passes 0 (the inline room).
+    pub fn with_queues(queues: usize, points: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             // Placeholder param ids: each queue is refilled before it is live.
             queues: AudioThreadCell::new(
                 (0..queues)
-                    .map(|_| ParamValueQueueImpl::new_empty(0))
+                    .map(|_| ParamValueQueueImpl::with_room(0, points))
                     .collect(),
             ),
             live: AudioThreadCell::new(0),
@@ -231,7 +235,7 @@ mod tests {
     fn a_varying_queue_count_never_touches_the_allocator() {
         use vst3::Steinberg::Vst::{IParameterChanges, IParameterChangesTrait};
 
-        let wrapper = ParameterChangesImpl::with_queues(200);
+        let wrapper = ParameterChangesImpl::with_queues(200, 0);
         let ptr = wrapper.to_com_ptr::<IParameterChanges>().unwrap();
         let sizes = [200, 3, 0, 150, 1, 200, 17];
         let blocks: Vec<ParameterChanges> = sizes.iter().map(|&n| changes_with(n, 1)).collect();
@@ -253,6 +257,24 @@ mod tests {
         assert!(unsafe { ptr.getParameterData(17) }.is_null());
     }
 
+    /// **A list presized for the chunk's points refills without allocating
+    /// on first use**: every queue already has the room, so the first block
+    /// that carries 140 points on each of 50 parameters reserves nothing
+    /// (it used to grow each queue past its inline 16 on the audio thread).
+    ///
+    /// Mutation (run): `with_room` ignoring `points` (`SmallVec::new()`) →
+    /// the first refill grows each queue inside the gate → fails.
+    #[test]
+    fn a_presized_list_takes_its_first_dense_block_without_allocating() {
+        let wrapper = ParameterChangesImpl::with_queues(50, 140);
+        let block = changes_with(50, 140);
+        assert_no_alloc::assert_no_alloc(|| {
+            wrapper.refill_from_changes(&block);
+        });
+        assert_eq!(wrapper.len(), 50);
+        assert!(wrapper.queues.borrow().iter().all(|q| q.len() == 140));
+    }
+
     /// The plugin's own `addParameterData` on the output list reuses the
     /// pooled queues block after block: each block's queues start empty and
     /// under the id the plugin asked for, and none is allocated.
@@ -265,7 +287,7 @@ mod tests {
             IParamValueQueueTrait, IParameterChanges, IParameterChangesTrait,
         };
 
-        let changes = ParameterChangesImpl::with_queues(4);
+        let changes = ParameterChangesImpl::with_queues(4, 0);
         let ptr = changes.to_com_ptr::<IParameterChanges>().unwrap();
         let block = |id: u32| unsafe {
             changes.clear_in_place();

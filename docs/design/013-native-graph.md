@@ -4639,12 +4639,17 @@ carried.
   latest value goes on the next chunk's first frame; a block the bridge
   skips as stale carries its values into the next one sent). Server side,
   the VST3 host keeps a pool of parameter queues sized to the plugin's
-  parameter count and never trims it (it used to truncate and regrow as
-  the queue count varied), and the CLAP host reserves its event list and
-  output queues for the parameter count. Not here: a ramp is still a step
-  on a plugin, the in-process VST2 node has no parameter path, CLAP
-  `PARAM_MOD`, and a fork starts with no delivered values (an export
-  renders the automation over editor edits, the DAW convention).
+  parameter count, each with room for a chunk's points at the activated
+  block size, and never trims it (it used to truncate and regrow as the
+  queue count varied); the CLAP host reserves its event list for every
+  parameter's points at its block size (bounded there, and counted past
+  it) and its output queues for the parameter count. The delivered record
+  is what the host last delivered to the instance: a reset, a re-prepare
+  and a state load keep it, and a fork is seeded with it, so an export
+  plays an edit made in the plugin's editor as live playback does. Not
+  here: a ramp is still a step on a plugin, the in-process VST2 node has
+  no parameter path, CLAP `PARAM_MOD`, and the parameter-change buffers'
+  memory scales with the parameter count (doc 014 §12's follow-up).
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
   does not honour offsets sample-accurately, as it refuses a ramp.
 

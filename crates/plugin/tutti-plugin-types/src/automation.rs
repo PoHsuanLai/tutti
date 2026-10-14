@@ -60,10 +60,38 @@ pub struct ParameterQueue {
     /// [`normalize`](ParameterQueue::normalize) re-establishes the invariant on
     /// deserialize — see the `Deserialize` impl below for why that isn't
     /// derived.
-    pub points: SmallVec<[ParameterPoint; 10]>,
+    pub points: SmallVec<[ParameterPoint; ParameterQueue::INLINE_POINTS]>,
 }
 
 impl ParameterQueue {
+    /// The points a queue holds before it allocates.
+    pub const INLINE_POINTS: usize = 10;
+
+    /// The spacing, in frames, a chunk's point room is sized for: a
+    /// parameter can carry a point every this many frames of a chunk.
+    pub const POINT_SPACING: usize = 32;
+
+    /// Points a queue has room for beyond one per
+    /// [`POINT_SPACING`](Self::POINT_SPACING): a segment's corners (its
+    /// start and its arrival) and the chunk's last frame.
+    pub const CORNER_POINTS: usize = 4;
+
+    /// The points one parameter can carry in a chunk of `chunk` frames: one
+    /// per [`POINT_SPACING`](Self::POINT_SPACING) frames and
+    /// [`CORNER_POINTS`](Self::CORNER_POINTS) more, and never fewer than the
+    /// [inline room](Self::INLINE_POINTS). The host's plugin node reserves
+    /// each queue with this room, and a format host that hands the points
+    /// on reserves for it at activation with its largest block, so neither
+    /// side allocates for a chunk's points.
+    ///
+    /// This is not yet design doc 014 §9 requirement 6
+    /// (`ceil(chunk / CONTROL_STEP) + 1 + C` with `C = 256`, and past the
+    /// room grid points dropped before corners); a full queue has its last
+    /// point replaced instead. Doc 014's PR 2 brings both.
+    pub fn chunk_room(chunk: usize) -> usize {
+        (chunk.div_ceil(Self::POINT_SPACING) + Self::CORNER_POINTS).max(Self::INLINE_POINTS)
+    }
+
     /// Builds an empty queue addressed to `param_id`.
     pub fn new(param_id: ParamAddress) -> Self {
         Self {
@@ -341,11 +369,26 @@ impl ParameterChanges {
     /// storage kept, while the spares have room for it. Allocation-free, and
     /// frees nothing for a set built [`reserved`](Self::reserved) whose
     /// queues all came from [`open_queue`](Self::open_queue).
+    ///
+    /// **The spares keep the largest queues.** When they are full (a queue
+    /// was pushed past them, with only the inline room), each further queue
+    /// replaces the spare with the least point room if it has more, and the
+    /// smaller one is dropped. So a set that held one inline queue among its
+    /// reserved ones keeps its reserved point room
+    /// ([`point_capacity`](Self::point_capacity)), whatever order the
+    /// queues were in.
     pub fn clear(&mut self) {
         while let Some(mut queue) = self.queues.pop() {
+            queue.points.clear();
             if self.spare.len() < self.spare.capacity() {
-                queue.points.clear();
                 self.spare.push(queue);
+                continue;
+            }
+            let smallest = self.spare.iter_mut().min_by_key(|q| q.points.capacity());
+            if let Some(smallest) = smallest {
+                if smallest.points.capacity() < queue.points.capacity() {
+                    core::mem::swap(smallest, &mut queue);
+                }
             }
         }
     }
@@ -568,5 +611,36 @@ mod reserved_tests {
             assert!(changes.open_queue(ParamAddress::Index(id)));
         }
         assert!(!changes.open_queue(ParamAddress::Index(3)));
+    }
+
+    /// **A queue pushed past the spares does not cost a reserved one its
+    /// place.** Two reserved queues opened and one inline queue pushed after
+    /// them (as the bridge's carry merge once did): `clear` takes them back
+    /// last-first, so the inline queue filled the spares' last free place
+    /// and a reserved queue was dropped, and every later chunk had a queue
+    /// with the inline room (10 points) among its 40-point ones.
+    ///
+    /// Mutation (run): `clear` without the swap (a queue past full spares is
+    /// dropped, the old behaviour) → `point_capacity()` is 10 → fails.
+    #[test]
+    fn clear_keeps_the_reserved_queues_over_an_inline_one() {
+        let mut changes = ParameterChanges::reserved(4, 40);
+        assert!(changes.open_queue(ParamAddress::Index(0)));
+        assert!(changes.open_queue(ParamAddress::Index(1)));
+        changes
+            .queues
+            .push(ParameterQueue::new(ParamAddress::Index(2)));
+        changes.clear();
+        assert_eq!(changes.point_capacity(), 40);
+        for id in 0..4 {
+            assert!(changes.open_queue(ParamAddress::Index(id)));
+            assert!(
+                changes
+                    .queues
+                    .last()
+                    .is_some_and(|q| q.points.capacity() >= 40),
+                "queue {id} has the reserved room"
+            );
+        }
     }
 }

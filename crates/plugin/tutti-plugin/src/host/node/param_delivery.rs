@@ -15,7 +15,7 @@
 //! room (`PluginBridge::reserve_param_changes`).
 //!
 //! **Points.** Each queue has room for [`points_for`] the chunk: one point
-//! per [`POINT_SPACING`] (32) frames and [`CORNER_POINTS`] more, sized in
+//! per 32 frames and 4 more ([`ParameterQueue::chunk_room`]), sized in
 //! [`prepare`](ParamDelivery::prepare) once the chunk length is known
 //! (`ParameterChanges::reserved`, here and in the bridge's buffers). The
 //! queues are kept, emptied, from chunk to chunk, so their point storage is
@@ -48,6 +48,27 @@
 //! the slot. If they did, an editor edit to 0.8 would make the host's
 //! unchanged 0.5 look like a change, and the node would overwrite the edit.
 //!
+//! # The record's lifetime
+//!
+//! The record means **what the host last delivered to this plugin
+//! instance**, so nothing clears it:
+//!
+//! - **a reset** (a stop or a seek) keeps it: clearing it would re-send
+//!   every held host value on every stop and clobber the editor's edits;
+//! - **a re-prepare** keeps it (the chunk in flight is owed, not lost);
+//! - **a state or preset load** keeps it: the loaded values stay until the
+//!   host's value actually moves;
+//! - **a fork** starts from it: the live node's record is read just before
+//!   the live state is saved, and the fork's delivery is seeded with it
+//!   ([`seed`](ParamDelivery::seed), `fork.rs`), so a fork loaded with that
+//!   state sends what the live one would, and an export renders what live
+//!   playback plays (as a DAW's does). A value delivered between the read
+//!   and the save is in the state and is sent to the fork once more,
+//!   harmlessly.
+//!
+//! Design doc 014 §9, requirement 4. (Doc 014's PR 4, which makes an editor
+//! edit write the lane's knob, may revisit this.)
+//!
 //! # Delivered late, never lost
 //!
 //! A value counts as delivered only once its chunk is handed over
@@ -64,10 +85,10 @@
 //! address is inserted within that capacity.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use super::param_automation_source::MAX_POINTS;
-use crate::protocol::{Normalized, ParamAddress, ParameterChanges};
+use crate::protocol::{Normalized, ParamAddress, ParameterChanges, ParameterQueue};
 
 /// Slots beyond the plugin's parameter list, for addresses it did not name:
 /// learned on the audio thread, within the reserved capacity.
@@ -76,19 +97,22 @@ pub(crate) const SPARE_SLOTS: usize = 64;
 /// A slot with no queue in the chunk being filled.
 const NO_QUEUE: u32 = u32::MAX;
 
-/// The spacing, in frames, the point budget is sized for: a parameter can
-/// carry a point every this many frames of a chunk.
-pub(crate) const POINT_SPACING: usize = 32;
-
-/// Points a queue has beyond one per [`POINT_SPACING`]: a segment's corners
-/// (its start and its arrival) and the chunk's last frame.
-pub(crate) const CORNER_POINTS: usize = 4;
+/// A slot with no entry in the [`DeliveredRecord`] (a learned address).
+const NO_MIRROR: u32 = u32::MAX;
 
 /// The points one parameter can carry in a chunk of `chunk` frames: one per
-/// [`POINT_SPACING`] frames and [`CORNER_POINTS`] more, and never fewer
-/// than a queue holds inline.
+/// `ParameterQueue::POINT_SPACING` (32) frames and
+/// `ParameterQueue::CORNER_POINTS` (4) more, and never fewer
+/// than a queue holds inline ([`ParameterQueue::chunk_room`], which the
+/// format hosts reserve for too).
+///
+/// Not yet design doc 014 §9 requirement 6, which asks for
+/// `ceil(chunk / CONTROL_STEP) + 1 + C` points (`C = 256`, a lane's corners
+/// in one block) and, past the room, grid points dropped before corners;
+/// here a full queue has its last point replaced instead
+/// ([`ParamDeliveryStats::points_merged`]). Doc 014's PR 2 changes both.
 pub(crate) fn points_for(chunk: usize) -> usize {
-    (chunk.div_ceil(POINT_SPACING) + CORNER_POINTS).max(MAX_POINTS)
+    ParameterQueue::chunk_room(chunk).max(MAX_POINTS)
 }
 
 /// What the node's parameter delivery has done since the plugin was loaded.
@@ -115,16 +139,63 @@ pub struct ParamDeliveryStats {
 }
 
 /// The counters behind [`ParamDeliveryStats`], shared between the node and
-/// its controls. Written on the audio thread, read anywhere.
+/// its controls, and the [`DeliveredRecord`]. Written on the audio thread,
+/// read anywhere.
 #[derive(Debug, Default)]
 pub(crate) struct DeliveryCounters {
     sent: AtomicU64,
     deferred: AtomicU64,
     dropped: AtomicU64,
     merged: AtomicU64,
+    /// Set once, at bind ([`ParamDelivery::new`]).
+    record: OnceLock<Arc<DeliveredRecord>>,
+}
+
+/// What the node last delivered for each parameter the plugin listed at
+/// load, readable off the audio thread: what a fork is seeded with
+/// (`fork.rs`), so a fresh instance carrying the live one's state does not
+/// receive a value the live one was never re-sent (module docs, "The
+/// record's lifetime"). One `f64`'s bits per listed parameter, NaN for
+/// never delivered; stored relaxed when a chunk is handed over. Addresses
+/// learned into spare slots are not mirrored.
+#[derive(Debug)]
+pub(crate) struct DeliveredRecord {
+    /// Sorted, the same order as the node's listed slots.
+    addresses: Box<[ParamAddress]>,
+    values: Box<[AtomicU64]>,
+}
+
+impl DeliveredRecord {
+    fn new(addresses: &[ParamAddress]) -> Self {
+        Self {
+            addresses: addresses.into(),
+            values: addresses
+                .iter()
+                .map(|_| AtomicU64::new(f64::NAN.to_bits()))
+                .collect(),
+        }
+    }
+
+    /// Each listed parameter the node has delivered, with its value.
+    fn snapshot(&self) -> Vec<(ParamAddress, f64)> {
+        self.addresses
+            .iter()
+            .zip(self.values.iter())
+            .filter_map(|(&a, v)| {
+                let v = f64::from_bits(v.load(Ordering::Relaxed));
+                (!v.is_nan()).then_some((a, v))
+            })
+            .collect()
+    }
 }
 
 impl DeliveryCounters {
+    /// What the node has delivered so far, per listed parameter: empty
+    /// before bind. Control thread: allocates.
+    pub(crate) fn delivered(&self) -> Vec<(ParamAddress, f64)> {
+        self.record.get().map(|r| r.snapshot()).unwrap_or_default()
+    }
+
     pub(crate) fn snapshot(&self) -> ParamDeliveryStats {
         ParamDeliveryStats {
             points_sent: self.sent.load(Ordering::Relaxed),
@@ -148,6 +219,8 @@ struct Slot {
     queue: u32,
     /// A value whose chunk did not go: placed on the next chunk's first frame.
     owed: bool,
+    /// Its index in the [`DeliveredRecord`], or [`NO_MIRROR`].
+    mirror: u32,
 }
 
 impl Slot {
@@ -158,6 +231,7 @@ impl Slot {
             staged: 0.0,
             queue: NO_QUEUE,
             owed: false,
+            mirror: NO_MIRROR,
         }
     }
 }
@@ -178,6 +252,8 @@ pub(crate) struct ParamDelivery {
     /// Each queue's point room ([`prepare`](Self::prepare)).
     points: usize,
     counters: Arc<DeliveryCounters>,
+    /// The mirror of `sent` for the listed slots.
+    record: Arc<DeliveredRecord>,
 }
 
 impl std::fmt::Debug for ParamDelivery {
@@ -201,8 +277,16 @@ impl ParamDelivery {
         addresses.sort_unstable();
         addresses.dedup();
         let room = addresses.len() + SPARE_SLOTS;
+        let record = Arc::new(DeliveredRecord::new(&addresses));
+        // Once per controls: a client binds once. A second `new` on the same
+        // counters (tests) keeps the first record for the controls' readers
+        // and mirrors into its own.
+        let _ = counters.record.set(Arc::clone(&record));
         let mut slots = Vec::with_capacity(room);
-        slots.extend(addresses.into_iter().map(Slot::new));
+        slots.extend(addresses.into_iter().enumerate().map(|(i, a)| Slot {
+            mirror: u32::try_from(i).unwrap_or(NO_MIRROR),
+            ..Slot::new(a)
+        }));
         Self {
             slots,
             staged: Vec::with_capacity(room),
@@ -211,6 +295,25 @@ impl ParamDelivery {
             chunk_points: 0,
             points: MAX_POINTS,
             counters,
+            record,
+        }
+    }
+
+    /// Take `delivered` (a live instance's [`DeliveredRecord`], read before
+    /// its state was saved) as already delivered to this instance: a fork
+    /// loaded with that state then sends a parameter only once the host's
+    /// value differs from it, as the live one does. Control thread, before
+    /// the node runs.
+    pub(crate) fn seed(&mut self, delivered: &[(ParamAddress, f64)]) {
+        for &(address, value) in delivered {
+            if let Some(i) = self.slot(address) {
+                let slot = &mut self.slots[i];
+                slot.sent = Some(value);
+                slot.staged = value;
+                if let Some(m) = self.record.values.get(slot.mirror as usize) {
+                    m.store(value.to_bits(), Ordering::Relaxed);
+                }
+            }
         }
     }
 
@@ -368,6 +471,9 @@ impl ParamDelivery {
             slot.queue = NO_QUEUE;
             if delivered {
                 slot.sent = Some(slot.staged);
+                if let Some(m) = self.record.values.get(slot.mirror as usize) {
+                    m.store(slot.staged.to_bits(), Ordering::Relaxed);
+                }
             } else if !slot.owed {
                 slot.owed = true;
                 self.owed += 1;
@@ -500,6 +606,45 @@ mod tests {
         assert!(chunk(&d).is_empty(), "delivered once, not again");
     }
 
+    /// **The record is what the host last delivered to the instance**: a
+    /// reset and a re-prepare keep it, so a held value is not re-sent after
+    /// either; it is published for a fork, and a fork seeded with it sends
+    /// that value only once the host's value moves.
+    ///
+    /// Mutations (run), each fails: `abandon` clearing the record (every
+    /// slot's `sent = None`) → the held 0.5 is re-sent after the reset;
+    /// `settle` not mirroring the delivered value → `delivered()` is empty;
+    /// `seed` doing nothing → the fork re-sends 0.5.
+    #[test]
+    fn the_record_survives_reset_and_reprepare_and_seeds_a_fork() {
+        let (mut d, counters) = delivery(4);
+        d.prepare(256);
+        d.begin();
+        d.point(op(1), 0, 0.5);
+        hand_off(&mut d, true);
+
+        d.abandon(); // a reset
+        d.prepare(512); // a re-prepare
+        d.begin();
+        d.point(op(1), 0, 0.5);
+        assert!(chunk(&d).is_empty(), "held: not re-sent");
+
+        let delivered = counters.delivered();
+        assert_eq!(delivered, vec![(op(1), 0.5)]);
+
+        let (mut fork, _) = delivery(4);
+        fork.seed(&delivered);
+        fork.prepare(512);
+        fork.begin();
+        fork.point(op(1), 0, 0.5);
+        assert!(
+            chunk(&fork).is_empty(),
+            "the fork holds what live delivered"
+        );
+        fork.point(op(1), 8, 0.25);
+        assert_eq!(chunk(&fork), vec![(op(1), vec![(8, 0.25)])]);
+    }
+
     /// **An address the list did not name is learned into a spare slot**;
     /// past the spares it is refused and counted, never grown into.
     ///
@@ -561,7 +706,7 @@ mod tests {
     #[test]
     fn a_queue_carries_a_point_every_32_frames_of_its_chunk() {
         const CHUNK: usize = 2048;
-        let budget = CHUNK / POINT_SPACING + CORNER_POINTS;
+        let budget = CHUNK / ParameterQueue::POINT_SPACING + ParameterQueue::CORNER_POINTS;
         let (mut d, counters) = delivery(200);
         assert_eq!(d.prepare(CHUNK), budget);
         let mut spare = ParameterChanges::reserved(d.room(), d.points());

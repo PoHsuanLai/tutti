@@ -373,7 +373,7 @@ impl AudioBridge {
                         std::mem::swap(param_changes, &mut payload.param_changes);
                     }
                     self.payloads
-                        .return_params(std::mem::take(&mut payload.param_changes));
+                        .return_params_rt(std::mem::take(&mut payload.param_changes));
                     self.payloads.recycle(payload);
                 }
                 Submitted::REFUSED

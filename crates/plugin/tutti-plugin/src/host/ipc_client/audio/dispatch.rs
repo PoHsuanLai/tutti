@@ -185,13 +185,20 @@ impl Owed {
     /// than frame 0.
     fn merge_carried(&mut self, changes: &mut ParameterChanges) {
         for kept in self.carried.queues.drain(..) {
-            match changes.get_queue_mut(kept.param_id) {
-                Some(own) => {
-                    if own.points.first().is_some_and(|p| p.sample_offset > 0) {
-                        own.points.insert(0, kept.points[0]);
-                    }
+            if let Some(own) = changes.get_queue_mut(kept.param_id) {
+                if own.points.first().is_some_and(|p| p.sample_offset > 0) {
+                    own.points.insert(0, kept.points[0]);
                 }
-                None => changes.queues.push(kept),
+            } else if changes.open_queue(kept.param_id) {
+                // A reserved queue when the buffer has one spare, so the
+                // buffer goes back to the pool with its point room intact.
+                if let Some(own) = changes.queues.last_mut() {
+                    own.points.push(kept.points[0]);
+                }
+            } else {
+                // No spare: the empty placeholder of a block that had no
+                // changes (dropped on return), or a full buffer.
+                changes.queues.push(kept);
             }
         }
     }
@@ -741,6 +748,43 @@ fn recv_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::ParamAddress;
+
+    /// **A carried value goes into a reserved queue of the block's buffer**,
+    /// so the buffer returns to the pool with its point room intact. A
+    /// queue pushed past the spares (the carry's own, with the inline room)
+    /// later took a reserved queue's place on `clear` and left the buffer
+    /// with a 10-point queue among its reserved ones.
+    ///
+    /// Mutation (run): `merge_carried` pushes the carried queue
+    /// (`changes.queues.push(kept)`) instead of opening a spare → the
+    /// merged queue has the inline room → fails.
+    #[test]
+    fn a_carried_value_fills_a_reserved_queue() {
+        let mut owed = Owed::default();
+        let mut skipped = ParameterChanges::new();
+        skipped.add_change(ParamAddress::Index(7), 3, 0.25);
+        owed.carry(&skipped);
+
+        let mut block = ParameterChanges::reserved(4, 40);
+        assert!(block.open_queue(ParamAddress::Index(1)));
+        if let Some(q) = block.queues.last_mut() {
+            q.add_point(5, 0.5);
+        }
+        owed.merge_carried(&mut block);
+
+        let carried = block.get_queue(ParamAddress::Index(7)).expect("carried");
+        assert_eq!(carried.points.len(), 1);
+        assert_eq!(carried.points[0].sample_offset, 0);
+        assert!((carried.points[0].value.get() - 0.25).abs() < 1e-12);
+        assert!(
+            carried.points.capacity() >= 40,
+            "the carried queue is a reserved one: {}",
+            carried.points.capacity()
+        );
+        block.clear();
+        assert_eq!(block.point_capacity(), 40);
+    }
 
     /// Every production block size / rate combination the engine can present.
     /// A chunk is one device callback (`MAX_CHUNK` at most), so the timeout

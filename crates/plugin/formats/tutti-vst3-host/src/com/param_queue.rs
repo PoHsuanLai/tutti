@@ -41,9 +41,16 @@ impl Class for ParamValueQueueImpl {
 
 impl ParamValueQueueImpl {
     pub fn new_empty(param_id: u32) -> ComWrapper<Self> {
+        Self::with_room(param_id, 0)
+    }
+
+    /// An empty queue with room for `points` points before it allocates
+    /// (the inline 16 when `points` is fewer). Allocates; call it off the
+    /// audio thread.
+    pub fn with_room(param_id: u32, points: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             param_id: AudioThreadCell::new(param_id),
-            points: AudioThreadCell::new(SmallVec::new()),
+            points: AudioThreadCell::new(SmallVec::with_capacity(points)),
         })
     }
 

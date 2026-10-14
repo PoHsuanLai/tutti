@@ -361,6 +361,11 @@ impl<T: Vst3Sample> Vst3Active<T> {
         let param_queues = (loaded.parameter_count().min(MAX_PRESIZED_QUEUES) as usize)
             .max(OUTPUT_PARAM_QUEUE_RESERVE);
         let emitted_param_changes = ParameterChanges::with_capacity(param_queues);
+        // Each input queue has room for the points one parameter can carry
+        // in a block of `block_size` (what the host's plugin node reserves),
+        // and one more a skipped block's carried value can prepend, so
+        // `refill_from_queue` never grows a queue on the audio thread.
+        let param_points = tutti_plugin_types::ParameterQueue::chunk_room(block_size) + 1;
 
         let audio = AudioIO {
             config: ProcessConfig {
@@ -379,12 +384,14 @@ impl<T: Vst3Sample> Vst3Active<T> {
             input: InputStaging {
                 buses: in_scratch.buses,
                 events: EventList::new(),
-                param_changes: ParameterChangesImpl::with_queues(param_queues),
+                param_changes: ParameterChangesImpl::with_queues(param_queues, param_points),
             },
             output: OutputStaging {
                 buses: out_scratch.buses,
                 events: EventList::new(),
-                param_changes: ParameterChangesImpl::with_queues(param_queues),
+                // The plugin fills this one: its points per queue are its
+                // own, so the queues start with the inline room.
+                param_changes: ParameterChangesImpl::with_queues(param_queues, 0),
                 emitted_midi: RtMidiEvents::new(),
                 emitted_param_changes,
             },

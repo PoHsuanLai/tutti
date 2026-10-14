@@ -50,7 +50,24 @@ const POOL_CAPACITY: usize = super::channels::COMMAND_QUEUE_SIZE;
 /// parameter's latest value on the next chunk's first frame (late, never
 /// lost), and counts the chunk
 /// ([`ParamDeliveryStats::chunks_deferred`](crate::handles::ParamDeliveryStats)).
+///
+/// **What it costs.** Each buffer holds `queues` parameter queues (the
+/// plugin's parameter count plus the node's 64 spare slots), each with room
+/// for `points_for(chunk)` points (`ceil(chunk / 32) + 4`, at least 10) of
+/// 16 bytes, on top of the queue itself (about 180 bytes with its inline
+/// room): about 2.3 KB a queue at a 4096-frame chunk. With the node's own
+/// buffer that is `(PARAM_BUFFERS + 1) × queues × (180 + 16 × points)`
+/// bytes per plugin: about 43 MB for 2 000 parameters at a 4096-frame chunk,
+/// about 340 MB for a VST3 listing 16 384. Doc 014 §12 records the
+/// follow-up (a shared per-chunk point arena, or a small per-queue room and
+/// a counted shared overflow).
 pub(super) const PARAM_BUFFERS: usize = 8;
+
+/// The free list's capacity: twice the buffers in circulation, so a buffer
+/// the audio thread hands back always fits (it never drops one, which would
+/// free on that thread), while the bridge thread drops what comes back once
+/// [`PARAM_BUFFERS`] are free.
+const PARAM_SLOTS: usize = 2 * PARAM_BUFFERS;
 
 /// Bounded pool of recycled `ProcessPayload` boxes, and the parameter-change
 /// buffers that travel in them. Cheap to clone (one Arc each).
@@ -82,7 +99,7 @@ impl PayloadPool {
         }
         Self {
             recycle: Arc::new(recycle),
-            params: Arc::new(ArrayQueue::new(PARAM_BUFFERS)),
+            params: Arc::new(ArrayQueue::new(PARAM_SLOTS)),
             params_room: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -98,8 +115,8 @@ impl PayloadPool {
         self.params_room.store(queues, Ordering::Release);
         while self.params.pop().is_some() {}
         for _ in 0..PARAM_BUFFERS {
-            // Cannot fail: drained above, and only `return_params` pushes,
-            // which refuses a buffer reserved before this call.
+            // Cannot fail: drained above, and the list holds twice this many
+            // (a buffer the bridge thread returns meanwhile still fits).
             let _ = self.params.push(ParameterChanges::reserved(queues, points));
         }
     }
@@ -111,22 +128,44 @@ impl PayloadPool {
         self.params.pop()
     }
 
-    /// Bridge thread (or the audio thread handing back one it could not
-    /// send): return a parameter-change buffer, cleared, to the free list.
-    /// One smaller than the current reservation is dropped: the empty
-    /// placeholder a payload carries when its chunk had no changes, or a
-    /// buffer reserved before a larger reservation. Before any reservation
-    /// nothing is kept. Allocation-free on the audio thread:
-    /// that caller only ever returns a buffer it took from here, which has
-    /// the reserved capacity, and a full list is impossible for it.
+    /// Bridge thread: return a parameter-change buffer, cleared, to the free
+    /// list, once its contents are on the wire. **This is where a buffer is
+    /// freed**, never on the audio thread: one smaller than the current
+    /// reservation (the empty placeholder a payload carries when its chunk
+    /// had no changes, or a buffer reserved before a larger reservation), any
+    /// before a reservation, and any past [`PARAM_BUFFERS`] free ones (a
+    /// re-reservation refilled the list while older buffers were in flight)
+    /// are dropped here.
     #[inline]
     pub(super) fn return_params(&self, mut changes: ParameterChanges) {
         let room = self.params_room.load(Ordering::Acquire);
-        if room == 0 || changes.capacity() < room {
+        if room == 0 || changes.capacity() < room || self.params.len() >= PARAM_BUFFERS {
             return;
         }
         changes.clear();
         let _ = self.params.push(changes);
+    }
+
+    /// Audio thread: hand back a buffer taken with
+    /// [`take_params`](Self::take_params) that its block could not use (the
+    /// command queue refused the block). **Never frees**: it is kept whatever
+    /// its capacity (one reserved before a re-reservation goes round once
+    /// more and is dropped by the bridge thread on its way back), and the
+    /// list has room for it, being twice the buffers the bridge thread keeps.
+    /// Only the empty placeholder, which owns no memory, is not kept.
+    /// Allocation-free.
+    #[inline]
+    pub(super) fn return_params_rt(&self, mut changes: ParameterChanges) {
+        if changes.capacity() == 0 {
+            return;
+        }
+        changes.clear();
+        if let Err(changes) = self.params.push(changes) {
+            // Unreachable: the bridge thread keeps at most `PARAM_BUFFERS`
+            // free, and the audio thread returns only what it took.
+            // Forgotten rather than freed on this thread.
+            core::mem::forget(changes);
+        }
     }
 
     /// Audio-thread: hand back a payload to fill in.
@@ -149,5 +188,51 @@ impl PayloadPool {
     #[inline]
     pub(super) fn recycle(&self, payload: Box<ProcessPayload>) {
         let _ = self.recycle.push(payload);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The audio thread never drops a parameter-change buffer; the bridge
+    /// thread drops the surplus.** With every buffer free and one more
+    /// coming back (a re-reservation refilled the list while an older one
+    /// was in flight), the bridge thread's return drops it; a buffer the
+    /// audio thread took and hands back is kept even then, so its memory is
+    /// never freed on the audio thread. (A drop is observed as the free
+    /// list's length: an assert-no-alloc gate needs the test binary's global
+    /// allocator, which this unit-test binary does not install.)
+    ///
+    /// Mutations (run), each fails: the bridge return without the
+    /// `len() >= PARAM_BUFFERS` check → the surplus is kept, the list holds
+    /// one more; `return_params_rt` applying the bridge's rule (its body
+    /// `self.return_params(changes)`) → the taken buffer is dropped, the
+    /// list one short.
+    #[test]
+    fn the_bridge_drops_surplus_buffers_and_the_audio_thread_none() {
+        let pool = PayloadPool::new();
+        pool.reserve_params(4, 10);
+        assert_eq!(pool.params.len(), PARAM_BUFFERS);
+
+        // A surplus buffer reaches the bridge thread: dropped there.
+        pool.return_params(ParameterChanges::reserved(4, 10));
+        assert_eq!(
+            pool.params.len(),
+            PARAM_BUFFERS,
+            "the bridge drops the surplus"
+        );
+
+        // The audio thread takes one; the bridge returns another meanwhile.
+        let taken = pool.take_params().expect("a free buffer");
+        pool.return_params(ParameterChanges::reserved(4, 10));
+        assert_eq!(pool.params.len(), PARAM_BUFFERS);
+        // The block is refused: the audio thread hands its buffer back.
+        pool.return_params_rt(taken);
+        assert_eq!(
+            pool.params.len(),
+            PARAM_BUFFERS + 1,
+            "the audio thread's buffer is kept, never dropped"
+        );
     }
 }

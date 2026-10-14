@@ -1045,6 +1045,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     point.
   - Fixed: the `fill_midi_events` and `fill_note_expressions` docs called
     their buffers pooled `SmallVec`s; they are fixed-capacity `RtVec`s.
+  - **The plugin's `try_push` no longer grows the output event list on the
+    audio thread.** It pushed every event unconditionally into a list
+    reserved for 256, so a plugin pushing more in one block made the host
+    allocate inside the plugin's `process`. `OutputEventList::reserve(n)`
+    now also bounds the list to `n` events: past it `try_push` returns
+    `false` (CLAP lets it fail; a plugin must handle that) and counts the
+    refusal (`OutputEventList::events_refused`,
+    `ClapActive::output_events_refused`). The activated room is derived
+    from the output parameter room: every parameter's
+    `chunk_room(max_frames)` points (at least 16 parameters) plus 256 for
+    MIDI and the rest, re-derived on a block-size grow. **Memory:** about
+    19 MB at 2 000 parameters and a 4096-frame block, on the plugin-server
+    side, as for the input list. **Behaviour:** `reserve(n)` sets the room
+    to `n` events in total (it reserved `n` more); a list never reserved
+    is unbounded, as before.
 
 - **A live in-process VST2 plugin behind a latent path was told the wrong
   playhead** (tutti-plugin; design doc 013, "In-process VST2 live transport

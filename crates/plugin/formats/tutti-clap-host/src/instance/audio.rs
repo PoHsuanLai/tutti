@@ -321,6 +321,16 @@ impl<T: ClapSample> ClapActive<T> {
         self.scratch.out_param_points_dropped
     }
 
+    /// Output events the plugin pushed past the room this instance was
+    /// activated for (every parameter's points for a block of
+    /// [`block_size`](super::ClapLoaded::block_size), plus 256 more), each
+    /// refused: the plugin's `try_push` returned `false` rather than the
+    /// host growing its list on the audio thread. Counted over this
+    /// instance's life; zero while the plugin stays within it.
+    pub fn output_events_refused(&self) -> u64 {
+        self.scratch.output_events.events_refused()
+    }
+
     /// The raw `clap_process_status` the plugin returned on the most recent
     /// block, or `CLAP_PROCESS_CONTINUE` if none has run yet.
     ///

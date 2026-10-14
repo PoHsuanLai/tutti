@@ -1049,6 +1049,12 @@ pub struct OutputEventList {
     /// pointer aliases its own payload, and an arena reallocating mid-fill would
     /// dangle every pointer already handed out.
     pub(crate) sysex_pool: Vec<Vec<u8>>,
+    /// The events `try_push` accepts in one block: the room reserved with
+    /// [`reserve`](Self::reserve). Unbounded until set.
+    room: usize,
+    /// Pushes `try_push` refused since the list was built: see
+    /// [`events_refused`](Self::events_refused).
+    refused: u64,
 }
 
 impl OutputEventList {
@@ -1061,6 +1067,8 @@ impl OutputEventList {
             },
             events: Vec::new(),
             sysex_pool: Vec::new(),
+            room: usize::MAX,
+            refused: 0,
         }
     }
 
@@ -1075,20 +1083,32 @@ impl OutputEventList {
         &self.events
     }
 
+    /// Pushes the plugin's `try_push` made past the room set with
+    /// [`reserve`](Self::reserve), each refused (the plugin was told `false`)
+    /// rather than grown into. Counted since the list was built; zero while
+    /// the plugin stays within the room.
+    pub fn events_refused(&self) -> u64 {
+        self.refused
+    }
+
     /// Move all events out of the list, leaving it empty.
     pub fn take_events(&mut self) -> Vec<ClapEvent> {
         std::mem::take(&mut self.events)
     }
 
-    /// Reserve heap capacity for at least `n` events. Off-RT only; call
-    /// once during plugin activation so the plugin's `try_push` callback
-    /// doesn't grow the inner Vec.
+    /// Reserve room for `n` events in all, and **bound the plugin's pushes
+    /// to it**: once the list holds `n` events, `try_push` refuses (returns
+    /// `false`, as CLAP lets it, and a plugin must handle) and counts the
+    /// refusal ([`events_refused`](Self::events_refused)), so the plugin's
+    /// callback never grows the list on the audio thread. Off-RT only; call
+    /// it at activation, and again when the block size grows.
     ///
     /// Also pre-warms the SysEx payload pool: the pool is fed only by `clear`,
     /// so without priming, the first block emitting SysEx still allocates on
     /// the audio thread.
     pub fn reserve(&mut self, n: usize) {
-        self.events.reserve(n);
+        self.events.reserve(n.saturating_sub(self.events.len()));
+        self.room = n;
 
         let wanted = n.min(SYSEX_POOL_PREWARM);
         self.sysex_pool.reserve(wanted);
@@ -1322,6 +1342,14 @@ unsafe extern "C" fn output_events_try_push(
 
     let output_list = &mut *(list as *mut OutputEventList);
     let header = &*event;
+
+    // Past the reserved room the push is refused, never grown into: this is
+    // the plugin's callback, inside its `process`, on the audio thread. CLAP
+    // lets `try_push` fail, and a plugin must handle it.
+    if output_list.events.len() >= output_list.room {
+        output_list.refused += 1;
+        return false;
+    }
 
     match header.type_ {
         CLAP_EVENT_NOTE_ON => {

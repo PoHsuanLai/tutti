@@ -723,7 +723,7 @@ fn param_output_burst_does_not_allocate() {
 
 /// **Plugin parameter output past the reserved room is counted, not grown
 /// into.** Two bursts, each inside the gate and each within the output event
-/// list's own reservation (256 events), so only the queues are under test:
+/// list's own room (576 events), so only the queues are under test:
 ///
 /// - seventeen parameters with twelve points each: one more parameter than
 ///   the sixteen queues reserved. The first sixteen are kept whole; the last
@@ -790,6 +790,51 @@ fn param_output_past_the_room_is_counted_not_grown() {
             "a full queue ends on its parameter's latest value"
         );
     }
+}
+
+/// **A plugin pushing more output events than the host reserved is refused,
+/// not grown into.** The host reserves its output event list at activation
+/// for every parameter's points (16 queues × `chunk_room(512)` = 20) plus
+/// 256 more: 576 events. A plugin pushing 40 parameters × 20 points = 800
+/// events a block is told `false` for the last 224 of them each block, and
+/// the host counts each refusal (`ClapActive::output_events_refused`)
+/// instead of growing its list in the plugin's `try_push` on the audio
+/// thread.
+///
+/// Mutation (run): `output_events_try_push` without the room check → aborts
+/// (the list grows past its reservation inside the gate). Mutation (run):
+/// the refusal not counted → the count assertion fails.
+#[test]
+fn output_events_past_the_room_are_refused_not_grown() {
+    let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    reset_probe();
+    let mut inst = load_probe();
+    assert!(inst.parameter_count() <= OUTPUT_QUEUES as usize);
+    let mut bufs = StereoBufs::new();
+    let transport = TransportInfo::default();
+    let ctx = ClapProcessContext {
+        transport: Some(&transport),
+        ..Default::default()
+    };
+    drive(&mut inst, &mut bufs, 32, &ctx).expect("warm-up blocks should succeed");
+    let room = 256
+        + OUTPUT_QUEUES as u64
+            * tutti_plugin_types::ParameterQueue::chunk_room(MAX_FRAMES as usize) as u64;
+    assert_eq!(room, 576);
+    assert_eq!(inst.output_events_refused(), 0);
+
+    const PARAMS: u32 = 40;
+    const POINTS: u32 = 20;
+    const BLOCKS: u64 = 16;
+    set_param_output(PARAMS, POINTS);
+    assert_no_alloc::assert_no_alloc(|| {
+        drive(&mut inst, &mut bufs, BLOCKS as usize, &ctx).expect("process");
+    });
+    assert_eq!(
+        inst.output_events_refused(),
+        BLOCKS * (u64::from(PARAMS * POINTS) - room),
+        "every push past the room is refused and counted"
+    );
 }
 
 /// `ensure_processing` raising `StartProcessingFailed` must not allocate.

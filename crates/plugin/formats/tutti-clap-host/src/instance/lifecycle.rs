@@ -23,10 +23,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tutti_plugin_types::{ParameterChanges, ParameterQueue};
 
-/// Heap reservation for pooled per-call event scratch on a `ClapActive`.
+/// Heap reservation for pooled per-call event scratch on a `ClapActive`,
+/// beyond the parameter points each list also has room for.
 ///
-/// Sized once at activation so steady-state `process` calls avoid the
-/// allocator.
+/// Sized at activation (and on a block-size grow) so steady-state `process`
+/// calls avoid the allocator.
 const EVENT_SCRATCH_CAPACITY: usize = 256;
 /// Floor of the queues reserved for the parameter changes the plugin's
 /// output fills (one per distinct param_id it emits in a block). The
@@ -187,7 +188,6 @@ impl ClapLoaded {
         // a chunk's room, and bounded the same way
         // (`ClapActive::output_param_points_dropped`).
         reserve_input_events(&mut scratch, max_frames);
-        scratch.output_events.reserve(EVENT_SCRATCH_CAPACITY);
         reserve_output_params(&mut scratch, max_frames);
 
         Ok(ClapActive {
@@ -491,9 +491,18 @@ fn reserve_input_events<T: super::ClapSample>(scratch: &mut AudioScratch<T>, max
 /// so the audio thread opens and clears them without allocating or freeing.
 /// Off the audio thread, between blocks: a re-reservation drops the old set,
 /// with whatever queues the last block left open in it, here.
+///
+/// The output event list the plugin pushes into is reserved, and bounded, by
+/// the same formula: room for every one of those points on top of
+/// [`EVENT_SCRATCH_CAPACITY`] for MIDI, note expressions and the rest, so
+/// a plugin filling its parameter room is never refused for it. A push past
+/// that is refused (`ClapActive::output_events_refused`).
 fn reserve_output_params<T: super::ClapSample>(scratch: &mut AudioScratch<T>, max_frames: usize) {
     let queues = scratch.param_ranges.len().max(PARAM_QUEUE_CAPACITY);
     let points = ParameterQueue::chunk_room(max_frames);
+    scratch
+        .output_events
+        .reserve(EVENT_SCRATCH_CAPACITY + queues * points);
     let out = &scratch.out_param_changes;
     // Grows only, as the input reservation does: a smaller block keeps the room.
     if out.capacity() < queues || out.point_capacity() < points {

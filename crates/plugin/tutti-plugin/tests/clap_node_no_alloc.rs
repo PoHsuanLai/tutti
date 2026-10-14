@@ -62,9 +62,9 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// `MeterMap::default()` per block in place of the prebuilt
 /// `Bound::default_meter` → it allocates → aborts. Mutation: collect each
 /// payload's MIDI into a `Vec` before cloning it into the payload → aborts.
-/// Mutation: let a chunk's parameter queue grow past its budget
-/// (`automation_node::add_point` pushing without replacing the last point) →
-/// eight blocks of points spill the queue to the heap → aborts.
+/// Mutation: let a chunk's parameter queue grow past its point room (no
+/// `has_room` check in `ParamDelivery::place`) → eight blocks of points
+/// outgrow the queue's reserved storage → aborts.
 /// Mutation: allocate where the node starts following a segment (a `Vec`
 /// per `SegmentPoints::start`) → aborts. (Growing the slots past what
 /// `prepare` reserved is not seen here: the lane re-sends one segment per

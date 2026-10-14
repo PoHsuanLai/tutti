@@ -5,7 +5,10 @@ use super::messages::{AudioResponse, BridgeEvent, Command, ResyncKind};
 use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
-use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ProcessAudioData};
+use crate::protocol::{
+    BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParameterChanges, ParameterQueue,
+    ProcessAudioData,
+};
 use crate::util::transport::control::{self as ipc, ControlStream, PartialFrame};
 use crate::util::transport::shm::RING_SLOTS;
 use crate::util::transport::state_chunk::{self, ChunkError, Reassembler};
@@ -144,9 +147,55 @@ pub(super) struct Owed {
     count: u32,
     /// Where the last read stopped, so a timeout resumes rather than restarts.
     partial: PartialFrame,
+    /// The parameter changes of blocks skipped as stale, as each parameter's
+    /// last value: sent on the first frame of the next block that goes.
+    carried: ParameterChanges,
 }
 
 impl Owed {
+    /// Keep a skipped block's parameter changes: each parameter's last value.
+    ///
+    /// The plugin node sends a parameter only when its value changes, so a
+    /// change dropped with its block would never be sent again: the plugin
+    /// would hold the value before it until the host's value moved once more.
+    /// Bridge thread: may allocate.
+    fn carry(&mut self, changes: &ParameterChanges) {
+        for queue in &changes.queues {
+            let Some(last) = queue.points.last() else {
+                continue;
+            };
+            let value = last.value.get();
+            match self.carried.get_queue_mut(queue.param_id) {
+                Some(kept) => {
+                    kept.clear();
+                    kept.add_point(0, value);
+                }
+                None => {
+                    let mut kept = ParameterQueue::new(queue.param_id);
+                    kept.add_point(0, value);
+                    self.carried.queues.push(kept);
+                }
+            }
+        }
+    }
+
+    /// Put what [`carry`](Self::carry) kept into the block about to be sent,
+    /// on its first frame: a parameter the block moves itself keeps its own
+    /// points, preceded by the carried value when its first point is later
+    /// than frame 0.
+    fn merge_carried(&mut self, changes: &mut ParameterChanges) {
+        for kept in self.carried.queues.drain(..) {
+            match changes.get_queue_mut(kept.param_id) {
+                Some(own) => {
+                    if own.points.first().is_some_and(|p| p.sample_offset > 0) {
+                        own.points.insert(0, kept.points[0]);
+                    }
+                }
+                None => changes.queues.push(kept),
+            }
+        }
+    }
+
     /// Note that a block's reply was abandoned before it arrived.
     fn note(&mut self) {
         self.count = self.count.saturating_add(1);
@@ -271,10 +320,15 @@ pub(super) fn handle(
             // payload so the pool doesn't leak, and push nothing — the audio
             // thread stopped expecting this block two blocks ago.
             if is_stale(seq, channels.newest_submitted()) {
+                owed.carry(&payload.param_changes);
+                payloads.return_params(core::mem::take(&mut payload.param_changes));
                 payloads.recycle(payload);
                 return Ok(());
             }
 
+            if !owed.carried.queues.is_empty() {
+                owed.merge_carried(&mut payload.param_changes);
+            }
             let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
                 seq: payload.seq,
                 num_samples: payload.num_samples,
@@ -295,7 +349,14 @@ pub(super) fn handle(
             // below is this block's own rather than its predecessor's.
             owed.settle(stream, channels);
 
-            ipc::send(stream, &msg)?;
+            let sent = ipc::send(stream, &msg);
+            // The parameter-change buffer goes back to the audio thread's free
+            // list once its contents are on the wire (sent or not: a failed
+            // send crashes the bridge below, and the buffer is no use to it).
+            if let HostMessage::ProcessAudio(data) = msg {
+                payloads.return_params(data.param_changes);
+            }
+            sent?;
 
             // The block's own budget, then the same two-stage rule the drain
             // uses: a budget that expired mid-frame means bytes are moving, and

@@ -260,14 +260,15 @@ pub(crate) struct CcRoute {
 }
 
 impl CcRoute {
-    /// Builds with an empty mapping queried from `controller`, plus empty
-    /// scratch. The MIDI scratch is capped and never grows; `param_changes`
-    /// grows once on first use and is reused thereafter.
-    pub(crate) fn new(mapping: MidiCcMapping) -> Self {
+    /// Builds with `mapping` and empty scratch. The MIDI scratch is capped
+    /// and never grows; `param_changes` has room for `queues` parameter
+    /// queues (the plugin's parameter count), and past that grows once and
+    /// is reused thereafter.
+    pub(crate) fn new(mapping: MidiCcMapping, queues: usize) -> Self {
         Self {
             mapping,
             filtered_midi: RtMidiEvents::new(),
-            param_changes: ParameterChanges::new(),
+            param_changes: ParameterChanges::with_capacity(queues),
         }
     }
 

@@ -9,10 +9,15 @@
 //!
 //! [`refill_from_changes`](ParameterChangesImpl::refill_from_changes)
 //! lets a host reuse a single `ComWrapper<ParameterChangesImpl>` across
-//! buffers — clearing the internal queues, recycling their backing
-//! `ComWrapper<ParamValueQueueImpl>` storage, and refilling in place —
-//! so the RT path makes no new heap allocations once the process loop
-//! has warmed up.
+//! buffers. The queues form a pool that only grows: a block uses the first
+//! `live` of them and the rest stay allocated, so a block with fewer queues
+//! than the last frees nothing and the next block with more allocates
+//! nothing. (The host sends changes only, so the queue count varies from
+//! block to block; trimming the pool to each block's count would free and
+//! reallocate queues every time it did.) The pool is sized for every
+//! parameter at construction ([`with_queues`](ParameterChangesImpl::with_queues)),
+//! the way the SDK's own host reserves one queue per parameter
+//! (`ParameterChanges::setMaxParameters`).
 
 use vst3::Steinberg::Vst::{IParamValueQueue, IParameterChanges, IParameterChangesTrait};
 use vst3::{Class, ComWrapper};
@@ -23,7 +28,10 @@ use tutti_plugin_types::ParamAddress;
 use tutti_types::AudioThreadCell;
 
 pub struct ParameterChangesImpl {
+    /// The pool of queues; the first `live` are this block's.
     queues: AudioThreadCell<Vec<ComWrapper<ParamValueQueueImpl>>>,
+    /// How many of `queues` hold this block's changes.
+    live: AudioThreadCell<usize>,
 }
 
 impl Class for ParameterChangesImpl {
@@ -31,54 +39,51 @@ impl Class for ParameterChangesImpl {
 }
 
 impl ParameterChangesImpl {
+    /// An empty list with no pooled queues (tests; the host presizes).
+    #[cfg(test)]
     pub fn new_empty() -> ComWrapper<Self> {
+        Self::with_queues(0)
+    }
+
+    /// An empty changes list whose pool already holds `queues` queues, so
+    /// no block with up to that many allocates. Allocates; call it off the
+    /// audio thread with the plugin's parameter count.
+    pub fn with_queues(queues: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
-            queues: AudioThreadCell::new(Vec::with_capacity(32)),
+            // Placeholder param ids: each queue is refilled before it is live.
+            queues: AudioThreadCell::new(
+                (0..queues)
+                    .map(|_| ParamValueQueueImpl::new_empty(0))
+                    .collect(),
+            ),
+            live: AudioThreadCell::new(0),
         })
     }
 
-    /// Refill this changes list from `changes` in place. Reuses existing
-    /// `ComWrapper<ParamValueQueueImpl>` slots; grows once (off the hot
-    /// path in practice) if `changes` carries more queues than have been
-    /// seen before, and keeps the larger capacity thereafter.
+    /// Refill this changes list from `changes` in place, reusing the pool's
+    /// queues.
     ///
     /// # Real-time
     ///
-    /// Allocation-free once the host has seen at least as many distinct
-    /// parameter queues as `changes.queues.len()`. The first few blocks
-    /// may grow; stable-state automation is alloc-free.
+    /// Allocation-free when the pool holds at least `changes.queues.len()`
+    /// queues (and each queue's points fit what it already holds). Past the
+    /// pool it grows once and keeps the larger size; it never shrinks.
     pub fn refill_from_changes(&self, changes: &ParameterChanges) {
         let mut queues = self.queues.borrow_mut();
-        // Grow (off-the-hot-path) if needed.
         while queues.len() < changes.queues.len() {
             // Placeholder param_id — refilled immediately below.
             queues.push(ParamValueQueueImpl::new_empty(0));
         }
-        // Refill the live slots in place.
         for (slot, q) in queues.iter().zip(changes.queues.iter()) {
             slot.refill_from_queue(q);
         }
-        // Trim leftover slots from a larger previous block. Drop only
-        // drops the ComWrapper (refcount--); the queue storage returns
-        // to the allocator off-RT if no other reference holds it.
-        if queues.len() > changes.queues.len() {
-            queues.truncate(changes.queues.len());
-        }
+        *self.live.borrow_mut() = changes.queues.len();
     }
 
-    /// Clears all queues in place (reuse-friendly variant of drop-and-refill).
-    ///
-    /// **Note:** If the previous buffer left queues behind (e.g. the
-    /// plugin's output side pushed some via `addParameterData`),
-    /// dropping their `ComWrapper`s here does allocate through
-    /// refcount bookkeeping. That makes this call *not* strictly
-    /// allocation-free on the output-side recycling path — that cost is
-    /// accepted because VST3 plugins rarely emit param
-    /// output events every buffer. If profiling shows it matters,
-    /// swap this for a pool that recycles `ComWrapper` slots instead
-    /// of dropping them.
+    /// Empties the list for the next block. The queues stay in the pool, so
+    /// this frees nothing and never allocates.
     pub fn clear_in_place(&self) {
-        self.queues.borrow_mut().clear();
+        *self.live.borrow_mut() = 0;
     }
 
     /// Drains the plugin's emitted parameter changes into a caller-supplied
@@ -93,7 +98,8 @@ impl ParameterChangesImpl {
         }
         out.queues.clear();
 
-        for queue in self.queues.borrow().iter() {
+        let live = *self.live.borrow();
+        for queue in self.queues.borrow().iter().take(live) {
             // Outbound across the COM edge: the plugin answered with a bare
             // `ParamID`, and VST3 ids are opaque — tag it rather than letting
             // the number travel with its model unstated.
@@ -106,23 +112,30 @@ impl ParameterChangesImpl {
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.queues.borrow().len()
+        *self.live.borrow()
     }
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.queues.borrow().is_empty()
+        self.len() == 0
+    }
+
+    /// How many queues the pool holds, live or not.
+    #[cfg(test)]
+    pub fn pooled(&self) -> usize {
+        self.queues.borrow().len()
     }
 }
 
 impl IParameterChangesTrait for ParameterChangesImpl {
     unsafe fn getParameterCount(&self) -> i32 {
-        self.queues.borrow().len() as i32
+        i32::try_from(*self.live.borrow()).unwrap_or(i32::MAX)
     }
 
     unsafe fn getParameterData(&self, index: i32) -> *mut IParamValueQueue {
         let queues = self.queues.borrow();
-        if index < 0 || index >= queues.len() as i32 {
+        let live = *self.live.borrow();
+        if index < 0 || index as usize >= live {
             return std::ptr::null_mut();
         }
         // Borrowed pointer: VST3 plugins do not release queues returned here.
@@ -137,16 +150,23 @@ impl IParameterChangesTrait for ParameterChangesImpl {
             return std::ptr::null_mut();
         }
         let param_id = *id;
-        let new_queue = ParamValueQueueImpl::new_empty(param_id);
-        let queue_ptr = new_queue
+        let mut queues = self.queues.borrow_mut();
+        let mut live = self.live.borrow_mut();
+        // The next pooled queue, emptied for `param_id`; a new one only past
+        // the pool.
+        if *live < queues.len() {
+            queues[*live].reset(param_id);
+        } else {
+            queues.push(ParamValueQueueImpl::new_empty(param_id));
+        }
+        let queue_ptr = queues[*live]
             .as_com_ref::<IParamValueQueue>()
             .map(|r| r.as_ptr())
             .unwrap_or(std::ptr::null_mut());
-        let mut queues = self.queues.borrow_mut();
-        queues.push(new_queue);
         if !index.is_null() {
-            *index = (queues.len() - 1) as i32;
+            *index = i32::try_from(*live).unwrap_or(i32::MAX);
         }
+        *live += 1;
         queue_ptr
     }
 }
@@ -196,6 +216,79 @@ mod tests {
             }
         });
         assert_eq!(wrapper.len(), 8);
+    }
+
+    /// **A block with fewer queues than the last frees nothing, and the next
+    /// with more allocates nothing**: the host sends changes only, so the
+    /// queue count varies block to block, and a list sized for every
+    /// parameter must ride that out without touching the allocator. The
+    /// plugin sees exactly this block's queues.
+    ///
+    /// Mutation (run): trimming the pool to each block's count
+    /// (`queues.truncate(changes.queues.len())` after the refill, as before
+    /// this change) → the gate trips on the block that grows again.
+    #[test]
+    fn a_varying_queue_count_never_touches_the_allocator() {
+        use vst3::Steinberg::Vst::{IParameterChanges, IParameterChangesTrait};
+
+        let wrapper = ParameterChangesImpl::with_queues(200);
+        let ptr = wrapper.to_com_ptr::<IParameterChanges>().unwrap();
+        let sizes = [200, 3, 0, 150, 1, 200, 17];
+        let blocks: Vec<ParameterChanges> = sizes.iter().map(|&n| changes_with(n, 1)).collect();
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..100 {
+                for (changes, &n) in blocks.iter().zip(&sizes) {
+                    if changes.is_empty() {
+                        wrapper.clear_in_place();
+                    } else {
+                        wrapper.refill_from_changes(changes);
+                    }
+                    assert_eq!(unsafe { ptr.getParameterCount() }, n as i32);
+                }
+            }
+        });
+        assert_eq!(wrapper.pooled(), 200);
+        // A queue past the live count is not reachable by the plugin.
+        assert!(unsafe { ptr.getParameterData(17) }.is_null());
+    }
+
+    /// The plugin's own `addParameterData` on the output list reuses the
+    /// pooled queues block after block: each block's queues start empty and
+    /// under the id the plugin asked for, and none is allocated.
+    ///
+    /// Mutation (run): `addParameterData` without `reset` (a reused queue
+    /// keeps last block's points and id) → the point count and id fail.
+    #[test]
+    fn add_parameter_data_reuses_pooled_queues() {
+        use vst3::Steinberg::Vst::{
+            IParamValueQueueTrait, IParameterChanges, IParameterChangesTrait,
+        };
+
+        let changes = ParameterChangesImpl::with_queues(4);
+        let ptr = changes.to_com_ptr::<IParameterChanges>().unwrap();
+        let block = |id: u32| unsafe {
+            changes.clear_in_place();
+            let mut index = -1;
+            let q = ptr.addParameterData(&id, &mut index);
+            let q = vst3::ComRef::from_raw(q).unwrap();
+            let mut at = -1;
+            assert_eq!(q.getPointCount(), 0);
+            q.addPoint(0, 0.5, &mut at);
+            assert_eq!(index, 0);
+            assert_eq!(q.getParameterId(), id);
+        };
+        block(1);
+        assert_no_alloc::assert_no_alloc(|| {
+            for id in 2..100 {
+                block(id);
+            }
+        });
+        let mut out = ParameterChanges::new();
+        changes.fill_changes(&mut out);
+        assert_eq!(out.queues.len(), 1);
+        assert_eq!(out.queues[0].points.len(), 1);
+        assert_eq!(changes.pooled(), 4);
     }
 
     /// `clear_in_place` on an already-empty wrapper is allocation-free

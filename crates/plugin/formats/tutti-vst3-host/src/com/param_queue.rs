@@ -86,6 +86,13 @@ impl ParamValueQueueImpl {
         }
     }
 
+    /// Empties this queue for `param_id`, keeping its point storage. For a
+    /// pooled queue handed to the plugin through `addParameterData`.
+    pub fn reset(&self, param_id: u32) {
+        *self.param_id.borrow_mut() = param_id;
+        self.points.borrow_mut().clear();
+    }
+
     /// Iterates over each `ParameterPoint` in this queue without exposing
     /// the underlying `AudioThreadCell`. RT-safe.
     pub fn for_each_point(&self, mut f: impl FnMut(&ParameterPoint)) {

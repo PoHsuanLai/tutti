@@ -72,6 +72,7 @@ mod fork;
 mod graph_node;
 mod meter;
 mod param_automation_source;
+mod param_delivery;
 mod process;
 mod segment_points;
 // `pub(crate)` rather than private: the in-process VST2 node
@@ -106,6 +107,7 @@ pub use meter::PluginMeter;
 pub use param_automation_source::{
     LfoCurve, LfoOffset, OffsetCurve, PluginParamTarget, TimedParam,
 };
+pub use param_delivery::ParamDeliveryStats;
 pub(crate) use process::ProcessGuard;
 // The largest chunk that can cross the process edge. Re-exported because
 // `subprocess::launch` sizes the shared-memory slab from it — the slab and the
@@ -118,8 +120,8 @@ use crate::host::ipc_client::audio::{BridgeEvent, PluginInvalidation, ResyncClas
 use crate::host::ipc_client::PluginBridge;
 use crate::host::subprocess;
 use crate::protocol::{
-    LoadedPlugin, MidiEventVec, Normalized, ParamAddress, ParameterChanges, PluginDescriptor,
-    SampleFormat, TransportInfo,
+    LoadedPlugin, MidiEventVec, Normalized, ParamAddress, PluginDescriptor, SampleFormat,
+    TransportInfo,
 };
 use crate::util::config::BridgeConfig;
 use batcher::Batcher;
@@ -167,6 +169,9 @@ pub struct Bound {
     /// points until each lands. Its slots are allocated by `prepare`;
     /// nothing is allocated on the audio thread.
     segments: segment_points::SegmentPoints,
+    /// The chunk's parameter changes: a slot per parameter of the plugin,
+    /// sized at bind, sending changes only (`param_delivery`).
+    params: param_delivery::ParamDelivery,
 }
 
 impl std::fmt::Debug for Bound {
@@ -239,6 +244,11 @@ pub struct PluginClient<S = Unbound> {
     /// On a **fork** only: whether it has failed while rendering
     /// ([`fork_health`](Self::fork_health)).
     fork_watch: Option<Arc<fork::ForkWatch>>,
+    /// The plugin's parameter addresses, read once at load: what
+    /// [`bind`](PluginClient::bind) sizes the node's parameter delivery by.
+    /// Empty when the plugin-server could not list them; the delivery then
+    /// learns addresses into its spare slots.
+    params: Arc<[ParamAddress]>,
     /// [`Unbound`] or [`Bound`].
     state: S,
 }
@@ -255,10 +265,13 @@ impl<S> std::fmt::Debug for PluginClient<S> {
 /// Everything the host produces for one chunk, aggregated for the bridge
 /// call. Host-side only — the batcher unpacks it into the (unchanged)
 /// positional `bridge.submit` arguments, so the IPC wire shape is untouched.
+///
+/// The chunk's parameter changes are not here: they stay in the node's
+/// `ParamDelivery`, whose buffer the bridge swaps rather than moves
+/// (`Chunks::params`), so nothing is allocated or freed per chunk.
 #[derive(Default)]
 pub(super) struct BlockPayload {
     pub midi: crate::protocol::MidiEventVec,
-    pub params: ParameterChanges,
     pub note_expression: crate::protocol::NoteExpressionChanges,
     pub harmony: HarmonyInputs,
     pub transport: TransportInfo,
@@ -373,6 +386,20 @@ impl PluginClient<Unbound> {
             }
         })));
 
+        // The parameter list, once, while loading blocks anyway: the node's
+        // per-parameter delivery is sized from it at bind. A `prepare` may
+        // not make this round trip; a load already has.
+        let params: Arc<[ParamAddress]> = match bridge.parameters() {
+            Some(list) => list.into_iter().map(|p| p.id).collect(),
+            None => {
+                tracing::warn!(
+                    "plugin-server listed no parameters at load; parameter \
+                     delivery falls back to its spare slots"
+                );
+                Arc::from([])
+            }
+        };
+
         Ok(Self {
             bridge,
             descriptor: server.descriptor,
@@ -388,6 +415,7 @@ impl PluginClient<Unbound> {
             process_guard,
             origin,
             fork_watch: None,
+            params,
             state: Unbound { _private: () },
         })
     }
@@ -404,6 +432,13 @@ impl PluginClient<Unbound> {
     /// the running node.
     pub fn bind(self) -> PluginClient<Bound> {
         let io = Batcher::new(self.inputs, self.outputs, self.format, self.ceiling);
+        // A slot per parameter: every parameter can move in one chunk. The
+        // chunk's point room, here and in the bridge's buffers, is sized in
+        // `prepare`, once the chunk length is known.
+        let params = param_delivery::ParamDelivery::new(
+            self.params.iter().copied(),
+            self.controls.delivery_counters(),
+        );
         let Self {
             bridge,
             descriptor,
@@ -419,6 +454,7 @@ impl PluginClient<Unbound> {
             process_guard,
             origin,
             fork_watch,
+            params: addresses,
             state: Unbound { _private: () },
         } = self;
         PluginClient {
@@ -436,6 +472,7 @@ impl PluginClient<Unbound> {
             process_guard,
             origin,
             fork_watch,
+            params: addresses,
             state: Bound {
                 io,
                 pending: BlockPayload::default(),
@@ -443,6 +480,7 @@ impl PluginClient<Unbound> {
                 steady: transport_source::SteadyTime::default(),
                 default_meter: MeterMap::default(),
                 segments: segment_points::SegmentPoints::default(),
+                params,
             },
         }
     }

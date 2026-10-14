@@ -62,9 +62,10 @@ use super::{speakers, IComponentExt, K_INPUT, K_OUTPUT};
 
 pub(super) const K_EVENT: i32 = sdk_enum_i32(kEvent);
 
-/// Pre-reserve capacity for output param-change queues. One slot per
-/// distinct param_id the plugin might emit in a single block; growing
-/// beyond this allocates once and then sticks.
+/// Floor of the pre-reserved capacity for param-change queues. One slot per
+/// distinct param_id in a single block; the reservation is the plugin's
+/// parameter count when that is larger. Growing past it allocates once and
+/// then sticks.
 const OUTPUT_PARAM_QUEUE_RESERVE: usize = 32;
 
 /// The arrangement to propose for a bus of `layout` channels, when the host has
@@ -349,13 +350,17 @@ impl<T: Vst3Sample> Vst3Active<T> {
             block_size,
         );
 
-        let mut emitted_param_changes = ParameterChanges::new();
-        // SmallVec doesn't expose a sized constructor for inline capacity;
-        // pre-reserve via grow_to_capacity-by-clear-after-push. Cheaper
-        // approach: just call reserve to pump heap capacity once.
-        emitted_param_changes
-            .queues
-            .reserve(OUTPUT_PARAM_QUEUE_RESERVE);
+        // One queue per parameter on every param-change list, built here off
+        // the audio thread: the host sends changes only, so one block can
+        // carry a change for every parameter at once, and the count varies
+        // from block to block.
+        // Capped so a controller reporting a negative or absurd count (read
+        // back through `as u32`) cannot reserve gigabytes; past the cap a
+        // list grows on first use, as it did before it was presized.
+        const MAX_PRESIZED_QUEUES: u32 = 1 << 14;
+        let param_queues = (loaded.parameter_count().min(MAX_PRESIZED_QUEUES) as usize)
+            .max(OUTPUT_PARAM_QUEUE_RESERVE);
+        let emitted_param_changes = ParameterChanges::with_capacity(param_queues);
 
         let audio = AudioIO {
             config: ProcessConfig {
@@ -374,16 +379,19 @@ impl<T: Vst3Sample> Vst3Active<T> {
             input: InputStaging {
                 buses: in_scratch.buses,
                 events: EventList::new(),
-                param_changes: ParameterChangesImpl::new_empty(),
+                param_changes: ParameterChangesImpl::with_queues(param_queues),
             },
             output: OutputStaging {
                 buses: out_scratch.buses,
                 events: EventList::new(),
-                param_changes: ParameterChangesImpl::new_empty(),
+                param_changes: ParameterChangesImpl::with_queues(param_queues),
                 emitted_midi: RtMidiEvents::new(),
                 emitted_param_changes,
             },
-            cc: CcRoute::new(MidiCcMapping::query(loaded.interfaces.controller.as_ref())),
+            cc: CcRoute::new(
+                MidiCcMapping::query(loaded.interfaces.controller.as_ref()),
+                param_queues,
+            ),
             midi_learn: loaded.midi_learn.producer(),
         };
 

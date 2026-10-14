@@ -4605,21 +4605,46 @@ carried.
   `PluginAutomation` spaces them, at most 10 a chunk) and its end value on
   the frame it arrives (`ParamSegment::arrives_after`), after which the
   plugin holds it. A later ramp or segment on the parameter stops it on
-  its frame. **Bounds:** one slot per parameter address, 1024 slots,
-  allocated in the node's `prepare` (the plugin's parameter count would be
-  exact, but asking the plugin-server is a blocking round trip a live
-  `prepare` must not make); a segment that finds them all taken is sent as
-  a ramp, its end value at once on its event frame. A chunk's parameter
-  changes hold 16 queues (a protocol limit every automation source shares,
-  never spilled to the heap): a segment whose point finds no queue keeps
-  its slot, past its arrival if need be, and sends where it has got to on
-  the first frame of a later take with room, so with more than 16
-  parameters moving at once a starved segment lands late, never not at
-  all. Cleared on a reset or re-prepare; nothing is allocated on the audio
-  thread (`clap_node_no_alloc` drives a lane into the plugin under the
+  its frame. **Bounds:** one slot per parameter address, as many as the
+  node has parameter slots, allocated in the node's `prepare`; a segment
+  on an address with no parameter slot is refused and counted, and one
+  that found every slot taken would be sent as a ramp, its end value at
+  once on its event frame. Cleared on a reset or re-prepare; nothing is
+  allocated on the audio thread (`clap_node_no_alloc` drives a lane into
+  the plugin under the
   gate). A ramp is still its target at its frame. `PluginAutomation` (the plugin's
   automation source) is unchanged: it samples its curves into
   `ParamRamp::foreign` points at a stride, which is what its target takes.
+- **Plugin parameter delivery (landed, modulation PR 1).** The 16-queue
+  chunk is gone. The plugin's parameter list is read once at
+  `PluginClient::new` (which already blocks on the server; no protocol
+  change), and the node's `ParamDelivery` (`host/node/param_delivery.rs`)
+  holds one slot per parameter plus `SPARE_SLOTS` (64) for addresses the
+  list did not name. A chunk's `ParameterChanges` is a `Vec` (wire format
+  unchanged) reserved at prepare with a queue per slot and, per queue,
+  `points_for(chunk)` = one point per 32 frames plus 4 corners (never
+  under the inline 10); the bridge circulates `PARAM_BUFFERS` (8) buffers
+  of the same room, swapped with the node's on submit, so nothing is
+  allocated or freed on the audio thread (`plugin_param_delivery_no_alloc`:
+  200 parameters moving every block). **Changes only:** each slot
+  remembers the last value the node delivered and does not resend it; the
+  comparison is never against the plugin's value, and plugin reports do
+  not update it, so an unchanged host value does not overwrite an edit in
+  the plugin's editor while a moving one replaces it
+  (`plugin_param_delivery`). Bounds left, each counted in
+  `PluginControls::param_delivery()`: an address past every slot
+  (`points_dropped`), a queue past its point room (its last point
+  replaced, `points_merged`), and a chunk whose changes found no free
+  buffer or whose block was refused (`chunks_deferred`: each parameter's
+  latest value goes on the next chunk's first frame; a block the bridge
+  skips as stale carries its values into the next one sent). Server side,
+  the VST3 host keeps a pool of parameter queues sized to the plugin's
+  parameter count and never trims it (it used to truncate and regrow as
+  the queue count varied), and the CLAP host reserves its event list and
+  output queues for the parameter count. Not here: a ramp is still a step
+  on a plugin, the in-process VST2 node has no parameter path, CLAP
+  `PARAM_MOD`, and a fork starts with no delivered values (an export
+  renders the automation over editor edits, the DAW convention).
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
   does not honour offsets sample-accurately, as it refuses a ramp.
 

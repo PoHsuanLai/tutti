@@ -71,15 +71,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so it follows a segment on its event input itself: points along it in
   every chunk (the `PluginAutomation` stride, at most 10 a chunk) and its
   end value on the frame it arrives (`arrives_after`); a later ramp or
-  segment on the parameter stops it. It follows up to 1024 parameters at
-  once (slots allocated in `prepare`); past that a segment is sent as a
-  ramp, its end value at once. Past a chunk's 16 parameter queues a
-  starved segment's end value lands on a later chunk instead of its own
-  frame. `Editor::schedule` refuses a segment into
+  segment on the parameter stops it. It follows a segment on every
+  parameter the plugin has (slots allocated in `prepare`), each landing on
+  its own frame (see "Plugin parameters are delivered as changes only"
+  below for the chunk's room). `Editor::schedule` refuses a segment into
   a node that does not honour offsets sample-accurately, as it refuses a
   ramp.
 
 ### Changed
+
+- **Plugin parameters are delivered as changes only, with no 16-queue
+  cap** (modulation PR 1; design doc 013, "Plugin parameter delivery").
+  The hosted plugin node reads the plugin's parameter list once, at
+  `PluginClient::new`, and reserves a slot per parameter (plus 64 spare)
+  at bind and, at prepare, a chunk with a queue per slot and room in each
+  for a point every 32 frames of the chunk plus 4 corners; the bridge's
+  parameter buffers are reserved the same and circulate with the node's,
+  so any number of parameters can move in one chunk and nothing is
+  allocated on the audio thread. Before, a chunk held 16 queues and the
+  points of a 17th parameter were dropped with nothing counted. The node
+  now sends a parameter only when the host's value differs from the last
+  one it delivered: a value held still is sent once, so it no longer
+  overwrites an edit made in the plugin's own editor, while a value that
+  moves replaces it (the rule is in `host/node/param_delivery.rs`'s
+  docs). A chunk whose changes cannot go (no free buffer, a refused
+  block) sends each parameter's latest value on the next chunk's first
+  frame. The VST3 host keeps its parameter queues pooled at the plugin's
+  parameter count instead of trimming and regrowing them every block, and
+  the CLAP host reserves its event list and output queues for the
+  parameter count. **Breaking:**
+  - `ParameterChanges::queues` is a `Vec<ParameterQueue>` (was
+    `SmallVec<[ParameterQueue; 16]>`), and the struct has a private field
+    (spare queues, not serialized), so it is no longer built with a
+    struct literal. The wire format is unchanged.
+  - **Migration.** Build with `ParameterChanges::new()`,
+    `with_capacity(queues)` or, for a real-time producer,
+    `reserved(queues, points)` with `open_queue` and
+    `ParameterQueue::has_room`; code that indexed or iterated `queues`
+    is unchanged. A `SmallVec`-specific call (`inline_size`, `spilled`)
+    on `queues` has no replacement: use `capacity()` / `has_room()`.
+  - Added `PluginControls::param_delivery() -> ParamDeliveryStats`
+    (`points_sent`, `chunks_deferred`, `points_dropped`, `points_merged`;
+    `#[non_exhaustive]`), exported from `tutti_plugin::handles`.
+  - Behaviour: a plugin no longer receives the host's value every block.
+    A host that relied on that to undo an editor edit sends a new value
+    instead. An export (a fork) starts with nothing delivered, so it
+    renders the automation over editor edits.
 
 - **An export's fork is built off the main thread** (design doc 013,
   "Recorded for later": the fork ran on the main thread). `Editor::fork` is

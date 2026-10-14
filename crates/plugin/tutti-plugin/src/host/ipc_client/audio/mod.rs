@@ -37,6 +37,25 @@ pub struct HarmonyInputs {
     pub expr_texts: NoteExpressionTextChanges,
     pub expr_ints: NoteExpressionIntChanges,
 }
+
+/// What [`AudioBridge::submit`] did with a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Submitted {
+    /// The bridge accepted the block (its output is collectable later).
+    pub block: bool,
+    /// The block carries the caller's parameter changes (trivially, when
+    /// there were none). `false` leaves them with the caller.
+    pub params: bool,
+}
+
+impl Submitted {
+    /// Nothing went: the bridge is crashed or its queue is full.
+    pub const REFUSED: Self = Self {
+        block: false,
+        params: false,
+    };
+}
+
 use ask::ask;
 use channels::Channels;
 use lifecycle::Lifecycle;
@@ -117,6 +136,15 @@ impl AudioBridge {
     #[cfg(test)]
     pub(crate) fn set_state_progress_timeout(&mut self, timeout: Duration) {
         self.state_progress_timeout = timeout;
+    }
+
+    /// Reserve the buffers a block's parameter changes travel in, each with
+    /// room for `queues` parameter queues (the plugin's parameter count, and
+    /// some) of `points` points each (the node's per-chunk budget). Control
+    /// thread: allocates. See [`submit`](Self::submit) and
+    /// `PayloadPool::reserve_params`.
+    pub fn reserve_param_changes(&self, queues: usize, points: usize) {
+        self.payloads.reserve_params(queues, points);
     }
 
     /// Install a listener for plugin-originated unsolicited events. Pass
@@ -275,8 +303,17 @@ impl AudioBridge {
     ///
     /// The caller collects block `seq`'s *output* on a later call, gated on the
     /// slab's sequence number rather than on a reply (see `Batcher::collectable`).
-    /// Returning `true` means only "the bridge accepted this block", never "the
-    /// output is ready".
+    /// [`Submitted::block`] means only "the bridge accepted this block", never
+    /// "the output is ready".
+    ///
+    /// **`param_changes` is swapped, not moved.** When it holds a queue, it
+    /// goes into the block and the caller's buffer is replaced with a free
+    /// one of the same reserved capacity (`PayloadPool::reserve_params`), so
+    /// neither side allocates. With no free buffer (every one in flight), or
+    /// when the block is refused, the changes stay where they were and
+    /// [`Submitted::params`] is `false`: the caller still holds them and
+    /// decides what to do (the plugin node sends each parameter's latest
+    /// value on its next chunk). An empty one is never swapped.
     ///
     /// What comes back through the queue, the plugin's MIDI-out, is taken
     /// with the block's audio: [`take_replies`](Self::take_replies).
@@ -285,20 +322,30 @@ impl AudioBridge {
         seq: u64,
         num_samples: usize,
         midi_events: MidiEventVec,
-        param_changes: ParameterChanges,
+        param_changes: &mut ParameterChanges,
         note_expression: NoteExpressionChanges,
         harmony: HarmonyInputs,
         transport: TransportInfo,
-    ) -> bool {
+    ) -> Submitted {
         if self.lifecycle.is_crashed() {
-            return false;
+            return Submitted::REFUSED;
         }
 
         let mut payload = self.payloads.acquire();
         payload.seq = seq;
         payload.num_samples = num_samples;
         payload.midi_events = midi_events;
-        payload.param_changes = param_changes;
+        // A pooled payload's changes are always the empty placeholder (the
+        // bridge thread takes the buffer out before recycling), so the
+        // assignments below drop nothing that holds memory.
+        let mut params = param_changes.queues.is_empty();
+        if !params {
+            if let Some(mut fresh) = self.payloads.take_params() {
+                std::mem::swap(param_changes, &mut fresh);
+                payload.param_changes = fresh;
+                params = true;
+            }
+        }
         payload.note_expression = note_expression;
         payload.chords = harmony.chords;
         payload.scales = harmony.scales;
@@ -312,7 +359,26 @@ impl AudioBridge {
         // block is judged against a stale `newest` and dropped as if it were two
         // blocks old.
         self.channels.note_submitted(seq);
-        self.channels.push_command(Command::Process(payload))
+        match self.channels.try_push_command(Command::Process(payload)) {
+            Ok(()) => Submitted {
+                block: true,
+                params,
+            },
+            Err(cmd) => {
+                // Refused (the queue is full): hand the changes back to the
+                // caller and the buffers back to their pools, rather than
+                // dropping (freeing) them on this thread.
+                if let Command::Process(mut payload) = cmd {
+                    if !payload.param_changes.queues.is_empty() {
+                        std::mem::swap(param_changes, &mut payload.param_changes);
+                    }
+                    self.payloads
+                        .return_params(std::mem::take(&mut payload.param_changes));
+                    self.payloads.recycle(payload);
+                }
+                Submitted::REFUSED
+            }
+        }
     }
 
     // --- Main-thread sync request+response ---

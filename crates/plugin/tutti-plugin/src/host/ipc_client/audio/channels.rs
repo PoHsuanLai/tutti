@@ -153,15 +153,20 @@ impl Channels {
     /// and if it ever did happen the bridge thread's park timeout still picks
     /// the command up.
     pub(super) fn push_command(&self, cmd: Command) -> bool {
-        let pushed = self.commands.push(cmd).is_ok();
-        if pushed {
-            if let Some(guard) = self.worker.try_lock() {
-                if let Some(thread) = guard.as_ref() {
-                    thread.unpark();
-                }
+        self.try_push_command(cmd).is_ok()
+    }
+
+    /// [`push_command`](Self::push_command), handing a refused command back
+    /// rather than dropping it, so the audio thread can return what it holds
+    /// to its pools instead of freeing it.
+    pub(super) fn try_push_command(&self, cmd: Command) -> Result<(), Command> {
+        self.commands.push(cmd)?;
+        if let Some(guard) = self.worker.try_lock() {
+            if let Some(thread) = guard.as_ref() {
+                thread.unpark();
             }
         }
-        pushed
+        Ok(())
     }
 
     pub(super) fn pop_command(&self) -> Option<Command> {

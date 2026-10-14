@@ -82,6 +82,9 @@ pub struct PluginControls {
     /// by opaque handle: what a parameter ramp's number means to its node.
     /// Fixed at load.
     indexed: bool,
+    /// What the node's parameter delivery has done
+    /// ([`param_delivery`](Self::param_delivery)).
+    delivery: Arc<super::param_delivery::DeliveryCounters>,
 }
 
 impl PluginControls {
@@ -98,7 +101,28 @@ impl PluginControls {
             pipeline: Arc::new(AtomicUsize::new(MAX_CHUNK)),
             meter: super::PluginMeter::default(),
             sample_rate: Arc::new(AtomicF64::new(sample_rate.get())),
+            delivery: Arc::default(),
         }
+    }
+
+    /// The counters the node's parameter delivery writes, for the node.
+    pub(super) fn delivery_counters(&self) -> Arc<super::param_delivery::DeliveryCounters> {
+        Arc::clone(&self.delivery)
+    }
+
+    /// What the node has done with the parameter changes on its event input
+    /// since the plugin was loaded: points sent (changes only), chunks whose
+    /// changes went a chunk late, and points dropped for a parameter it has
+    /// no slot for. The node has a slot for every parameter the plugin
+    /// listed at load (and some spare), so the last stays zero unless the
+    /// plugin is sent addresses it does not have.
+    ///
+    /// The node sends a parameter only when the host's value differs from
+    /// the last one it sent: an unchanged value is never re-sent, so it
+    /// cannot overwrite an edit made in the plugin's own editor; a value
+    /// that moves is sent and replaces it. RT-safe: three relaxed loads.
+    pub fn param_delivery(&self) -> super::ParamDeliveryStats {
+        self.delivery.snapshot()
     }
 
     /// The latency cell, for the bridge-thread listener that writes it.

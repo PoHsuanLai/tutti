@@ -27,8 +27,10 @@ use std::sync::Arc;
 /// Sized once at activation so steady-state `process` calls avoid the
 /// allocator.
 const EVENT_SCRATCH_CAPACITY: usize = 256;
-/// Heap reservation for the parameter-change queue list (one entry per
-/// distinct param_id emitted by the plugin per block).
+/// Floor of the heap reservation for the parameter-change queue list the
+/// plugin's output fills (one entry per distinct param_id it emits in a
+/// block). The reservation is the plugin's parameter count when that is
+/// larger.
 const PARAM_QUEUE_CAPACITY: usize = 16;
 
 impl ClapLoaded {
@@ -166,12 +168,20 @@ impl ClapLoaded {
         // there is nothing to reserve. Reserving was how those two *used* to
         // avoid allocating — an off-RT bound that the on-RT push path then had
         // to be trusted to respect. It isn't trusted any more; it's enforced.
-        scratch.input_events.reserve(EVENT_SCRATCH_CAPACITY);
+        //
+        // The host delivers parameter changes only (the plugin node's
+        // `ParamDelivery`), so a block can carry one change for every
+        // parameter at once: the input list has room for that on top of the
+        // MIDI scratch, and the output queue list has one queue per parameter.
+        let params = scratch.param_ranges.len();
+        scratch
+            .input_events
+            .reserve(EVENT_SCRATCH_CAPACITY + params);
         scratch.output_events.reserve(EVENT_SCRATCH_CAPACITY);
         scratch
             .out_param_changes
             .queues
-            .reserve(PARAM_QUEUE_CAPACITY);
+            .reserve(params.max(PARAM_QUEUE_CAPACITY));
 
         Ok(ClapActive {
             scratch,

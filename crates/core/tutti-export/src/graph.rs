@@ -4,8 +4,10 @@
 //! nothing else. It becomes a frame source (`render::driver`), and the gate,
 //! resample, dither and encoders downstream see only frames.
 
+use std::sync::Arc;
 use tutti_core::SampleRate;
-use tutti_graph::{CommitError, Editor, Executor, ForkError, ForkMode, ForkTarget, Prepare};
+
+use tutti_graph::{CommitError, Editor, Executor, ForkError, ForkMode, ForkTarget, Pool, Prepare};
 use tutti_types::{GraphTail, Samples};
 
 use crate::{Error, Result};
@@ -151,6 +153,22 @@ impl RenderGraph {
         self.executor.apply_pending();
         self.editor.collect();
         Ok(())
+    }
+
+    /// Render on `pool` (the parallel executor, doc 013 Phase 6), or with
+    /// `None` on the render's own thread. Returns the pool it replaces. The
+    /// render is bit for bit the same either way; a pool only spreads each
+    /// block's independent nodes across its threads. Give an export its own
+    /// pool (a `tutti_core::WorkerPool`), not the live engine's: a job finds
+    /// a pool busy with another caller's and runs on its caller alone.
+    pub fn set_pool(&mut self, pool: Option<Arc<dyn Pool>>) -> Option<Arc<dyn Pool>> {
+        self.executor.set_pool(pool)
+    }
+
+    /// Whether the render spreads its blocks over a pool (see
+    /// [`set_pool`](Self::set_pool) and `Executor::is_parallel`).
+    pub fn is_parallel(&self) -> bool {
+        self.executor.is_parallel()
     }
 
     /// Both halves, for the render. Crate-private: outside the crate the

@@ -535,3 +535,24 @@ jobs:
         env:
           LOOM_MAX_PREEMPTIONS: 4
       - run: cargo test -p tutti-shm-model --release
+
+  # The parallel executor's runtime primitives (doc 013 Phase 6, part a), each
+  # against the shipped code: `SplitMut`/`SplitRw`'s claims, `JobGate`'s
+  # borrowed-job hand-off and `TaskGraph`'s dispatch and self-reset. Their own
+  # job, so neither this nor the one above nears its timeout. Every recorded
+  # mutation in the three files fails at this bound.
+  loom-parallel:
+    name: loom (parallel executor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: --cfg loom
+      LOOM_MAX_PREEMPTIONS: 3
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p tutti-types --release --test split_loom
+      - run: cargo test -p tutti-types --release --test job_gate_loom
+      - run: cargo test -p tutti-types --release --test task_graph_loom

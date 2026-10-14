@@ -49,6 +49,13 @@
 //!   position the window it took holds.
 //! - [`Retire`] — an owning box that must not be dropped on the audio thread,
 //!   checked in debug builds against the [`AudioThread`] marker.
+//! - [`SplitMut`] / [`SplitRw`] — one slice borrowed by several threads at
+//!   once, each element (or chunk) claimed before use, so a borrow that would
+//!   alias is refused rather than made: a parallel executor's buffers.
+//! - [`TaskGraph`] — a DAG of tasks run once per block by any number of
+//!   threads: self-resetting activation counters and a ready list.
+//! - [`JobGate`] — lends a borrowed job to a pool's helper threads for one
+//!   call and returns only when every helper has let go of it.
 //! - [`ScopedNoDenormals`] — RAII guard that flushes subnormals to zero for the
 //!   duration of an audio block, then restores the FPU control register.
 
@@ -57,20 +64,26 @@ mod capped;
 pub mod cell;
 pub mod denormals;
 pub mod event_buf;
+pub mod job_gate;
 pub mod pos_ring;
 pub mod publish;
 pub mod retire;
 pub mod scratch;
+pub mod split;
+pub mod task_graph;
 pub mod vec;
 
 pub use audio_thread::{AudioThread, AudioThreadGuard};
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
 pub use event_buf::RtEventBuf;
+pub use job_gate::JobGate;
 pub use pos_ring::{
     PosClaim, PosFrame, PosReader, PosRing, PosWriter, RingWindow, MAX_POS_RING_FRAMES,
 };
 pub use publish::{RtPublish, RtRef};
 pub use retire::Retire;
 pub use scratch::{RtScratch, RtScratchOverflow};
+pub use split::{ClaimConflict, ClaimTable, Claimed, ClaimedRun, Held, RwView, SplitMut, SplitRw};
+pub use task_graph::{Participant, TaskGraph};
 pub use vec::RtVec;

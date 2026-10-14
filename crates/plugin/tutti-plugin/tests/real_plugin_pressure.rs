@@ -63,7 +63,11 @@
 // checkout. `clap_probe` is the same module the out-of-process CLAP suites
 // use; it resolves the cdylib and the `plugin-server` binary that `build.rs`
 // located, both of which cargo builds as dev-dependencies.
-#[cfg(feature = "clap")]
+// Also built for VST3 alone: `repeated_load_and_drop_leaves_no_subprocesses`
+// runs there too and checks its servers with `clap_probe::is_alive`, which is
+// a plain process check, not CLAP's. (Without this the `vst3`-only build of
+// this suite did not compile.)
+#[cfg(any(feature = "clap", feature = "vst3"))]
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
 
@@ -80,6 +84,7 @@ impl Planes {
         Self(vec![vec![0.0; BLOCK]; channels])
     }
 
+    #[cfg(any(feature = "clap", feature = "vst3"))]
     fn clear(&mut self) {
         for c in &mut self.0 {
             c.fill(0.0);
@@ -99,6 +104,8 @@ impl Planes {
 /// The global inputs feed its inputs, its outputs feed the global outputs.
 struct GraphUnit {
     renderer: tutti_graph::Renderer,
+    /// Read only by [`latency`](Self::latency), for the VST3/AU null test.
+    #[cfg(any(feature = "vst3", feature = "au"))]
     key: tutti_types::NodeKey,
     inputs: usize,
     outputs: usize,
@@ -123,8 +130,11 @@ impl GraphUnit {
                 tutti_types::Samples(BLOCK),
             ))
             .expect("a one-plugin graph compiles");
+        #[cfg(not(any(feature = "vst3", feature = "au")))]
+        let _ = key;
         Self {
             renderer,
+            #[cfg(any(feature = "vst3", feature = "au"))]
             key,
             inputs,
             outputs,
@@ -151,6 +161,7 @@ impl GraphUnit {
     }
 
     /// The node's latency as the graph compiles it: its declared `Shape`.
+    #[cfg(any(feature = "vst3", feature = "au"))]
     fn latency(&self) -> Option<f64> {
         let l = self.renderer.editor().spec().topology.nodes[&self.key].latency;
         Some(l.get() as f64)

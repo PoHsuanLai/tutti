@@ -3,9 +3,10 @@
 //! on an event output (a plugin that declared `Features::MIDI_OUT`), each
 //! event on the frame the plugin gave it.
 //!
-//! Not forkable (see its `IntoNode` below): a graph holding one is refused a
-//! fork. Its transport still comes from the reader installed with
-//! `set_transport_source`, polled once per block.
+//! Forkable by state transfer (see its `IntoNode` below, and `fork.rs`). The
+//! live node's transport still comes from the reader installed with
+//! `set_transport_source`, polled once per block; a fork's comes from its
+//! block's `Env`.
 
 use tutti_core::{ChannelLayout, Samples};
 use tutti_graph::{
@@ -15,7 +16,8 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
 
 use super::client::{drive_f32, InProcessVst2Client};
-use crate::protocol::Features;
+use crate::host::node::transport_source;
+use crate::protocol::{Features, TransportInfo};
 
 /// The most channels a block hands the plugin (`drive_f32`'s stack tables).
 const MAX_CHANNELS: usize = 16;
@@ -35,14 +37,15 @@ impl Node for InProcessVst2Client {
         .with_tail(self.metadata.tail)
     }
 
-    /// The rate (parked for the plugin, dispatched from the main thread),
-    /// and scratch for the largest block. Control thread.
+    /// The rate (parked for the plugin, dispatched from the main thread; a
+    /// fork's dispatched here), and scratch for the largest block. Control
+    /// thread.
     fn prepare(&mut self, p: &Prepare) {
         self.set_rate(p.sample_rate());
         self.ensure_scratch_size(p.max_block().get());
     }
 
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
         let n_in = (self.metadata.num_inputs.count() as usize).min(MAX_CHANNELS);
         let n_out = (self.metadata.num_outputs.count() as usize).min(MAX_CHANNELS);
@@ -69,7 +72,25 @@ impl Node for InProcessVst2Client {
                 self.process_scratch.f32_in[ch][..size].copy_from_slice(&inputs.get(ch)[..size]);
             }
         }
-        let transport = *self.transport.drain(self.features);
+        let transport = match &mut self.env_transport {
+            // A fork: the block's own transport, at its first frame.
+            Some(feed) => {
+                let info = match Offset::new(0, Samples(size)) {
+                    Some(at) if self.features.contains(Features::TRANSPORT) => {
+                        transport_source::from_env(
+                            cx.env,
+                            at,
+                            feed.steady.at(0),
+                            &feed.meter.read(),
+                        )
+                    }
+                    _ => TransportInfo::default(),
+                };
+                feed.steady.advance(size);
+                info
+            }
+            None => *self.transport.drain(self.features),
+        };
         let sends = self.features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
         let mut out_events = crate::protocol::MidiEventVec::new();
         let processed = drive_f32(
@@ -139,25 +160,22 @@ fn sort_by_offset(events: &mut crate::protocol::MidiEventVec) {
 }
 
 /// The plugin, inserted as a graph node. No controls (its per-block inputs
-/// are installed through it before it goes in), and **no fork source**: a
-/// graph holding an in-process VST2 plugin is refused a fork
-/// (`ForkError::NotForkable`), so it cannot be rendered offline through
-/// `Editor::fork`. Use the out-of-process
-/// [`PluginClient`](crate::handles::PluginClient) when you need that.
-//
-// A clone shares the one in-process instance, so a fork would render through
-// the live plugin's state. Forking would need a second `AEffect` from the same
-// library in this process (one more image-global the two could share), and a
-// plugin whose state is not a chunk (`programsAreChunks` clear) saves only its
-// current program's parameters.
+/// are installed through it before it goes in), and a [`ForkSource`] that
+/// forks it **by state transfer**: a second instance of the plugin from the
+/// same library, restored from this one's saved state
+/// ([`InProcessVst2Client::fork_instance`]). So `Editor::fork` (an offline
+/// export) renders a graph holding it.
+///
+/// [`ForkSource`]: tutti_graph::ForkSource
 impl IntoNode for InProcessVst2Client {
     type Controls = ();
 
     fn into_parts(self) -> NodeParts<()> {
+        let fork = super::fork::Vst2Fork::of(&self);
         NodeParts {
             node: Box::new(self),
             controls: (),
-            fork: None,
+            fork: Some(Box::new(fork)),
         }
     }
 }

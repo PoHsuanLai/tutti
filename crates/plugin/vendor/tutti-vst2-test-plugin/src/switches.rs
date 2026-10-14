@@ -58,6 +58,11 @@ static ACCEPT_SOFT_BYPASS: AtomicBool = AtomicBool::new(false);
 /// it accepted. `-1` until the host sends one, so "never asked" is distinct
 /// from "asked with 0".
 static LAST_BYPASS: AtomicI32 = AtomicI32::new(-1);
+/// Whether `effSetChunk` refuses every blob. A switch, not an env var: one
+/// image serves every instance, so arming it after a first instance stored its
+/// chunk makes only what comes later (a second instance restored from the
+/// first's state) refuse.
+static REFUSE_CHUNK_LOAD: AtomicBool = AtomicBool::new(false);
 
 /// Ordered log of preset-related opcodes the probe received, one bit-packed
 /// entry per call. Records *order*, not just arrival: an `effBeginSetProgram`
@@ -272,6 +277,17 @@ pub(crate) fn read_extra_input() -> bool {
     READ_EXTRA_INPUT.load(Ordering::SeqCst)
 }
 
+/// Make `effSetChunk` refuse every blob (answer `0`), as a plugin does a
+/// chunk it cannot read.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_set_refuse_chunk_load(refuse: bool) {
+    REFUSE_CHUNK_LOAD.store(refuse, Ordering::SeqCst);
+}
+
+pub(crate) fn refuse_chunk_load() -> bool {
+    REFUSE_CHUNK_LOAD.load(Ordering::SeqCst)
+}
+
 /// Restore every switch to its well-behaved default.
 ///
 /// Tests share one loaded image, so a switch left set contaminates every
@@ -289,6 +305,7 @@ pub extern "C" fn tutti_vst2_probe_reset_switches() {
     SERVICED_MIDI_PROGRAMS.store(0, Ordering::SeqCst);
     ACCEPT_SOFT_BYPASS.store(false, Ordering::SeqCst);
     LAST_BYPASS.store(-1, Ordering::SeqCst);
+    REFUSE_CHUNK_LOAD.store(false, Ordering::SeqCst);
     PRESET_TRACE.store(0, Ordering::SeqCst);
     PRESET_TRACE_LEN.store(0, Ordering::SeqCst);
 }

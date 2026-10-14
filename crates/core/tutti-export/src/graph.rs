@@ -175,10 +175,19 @@ impl RenderGraph {
     /// # Errors
     ///
     /// [`Error::NotForkable`] naming the first node that cannot be forked (a
-    /// mic monitor, an in-process VST2 plugin), checked before anything is
+    /// mic monitor, a node inserted `Unforkable`), checked before anything is
     /// forked; any other fork failure is [`Error::Fork`] (a plugin fork whose
     /// fresh instance did not load or refused the state is
-    /// `ForkError::Source`). A fork that fails *during* the render is
+    /// `ForkError::Source`).
+    ///
+    /// # Threading
+    ///
+    /// Call on the **main thread** when the graph may hold an in-process VST2
+    /// plugin: its fork loads a second instance (`VSTPluginMain`, through a
+    /// loader whose entry-point slot is a process global) and dispatches its
+    /// state, which VST2 confines to the main thread. Drop the graph there
+    /// too, after rendering it anywhere: dropping the fork closes that instance
+    /// (`effMainsChanged`, `effClose`). A fork that fails *during* the render is
     /// [`Error::ForkFailed`] from the render call.
     pub fn fork(
         live: &Editor,

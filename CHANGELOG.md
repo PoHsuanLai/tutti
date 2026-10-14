@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An in-process VST2 plugin forks by state transfer**, so an export of a
+  graph holding one renders it (design doc 013, "In-process VST2 forks by
+  state transfer"). **Breaking** for `Plugin::into_client`. Inserting an
+  `InProcessVst2Client` hands the editor a fork source: a second instance
+  from the same library, restored from the live instance's current program
+  and saved state (its chunk, or its parameter values), reading its
+  transport from the graph's `Env`, told its rate by its own `prepare`, and
+  told it renders offline in an offline fork (a live fork keeps the live
+  instance's mode). Fork and drop it on the main thread. A plugin that will not save,
+  will not load a second time, or refuses the state fails the fork by name
+  (`ForkError::Source`, a `PluginForkError`; bevy-tutti's
+  `ExportError::ForkSource`).
+
+  | Was | Now |
+  |---|---|
+  | `Plugin::into_client() -> Result<Box<PluginClient>, Box<dyn tutti_graph::Node>>` | `-> Result<Box<PluginClient>, Box<Plugin>>`: the in-process VST2 plugin comes back whole; insert `*plugin` through its `IntoNode` (`editor.insert(key, kind, plugin)`), which carries its fork source. `tutti_graph::Unforkable(node)` around the old `Err` would refuse every fork |
+  | `IntoNode for InProcessVst2Client` handed no fork source; a fork was `ForkError::NotForkable` | hands one; new `InProcessVst2Client::fork_instance(ForkMode)` |
+  | bevy-tutti: an export through an in-process VST2 plugin was `ExportError::NotForkable` | renders; `NotForkable`'s message no longer lists it |
+  | — | `tutti_vst2_host::Vst2Instance::program_count` |
+  | dropping a `Vst2Instance` anywhere | debug-asserts the main thread once one is marked (`effMainsChanged(0)`, `effClose`), as `load` does |
+  | tutti-export `render_to_file` / `render_to_buffers` / `render_normalized_to_file` took `RenderGraph` | take `impl BorrowMut<RenderGraph>`: by value as before, or `&mut` to keep the graph and drop it on the main thread |
+  | bevy-tutti dropped the rendered graph on the compute pool | hands it back; `poll_exports` (now main-thread-pinned) drops it |
+  | tutti-export `Error::NotForkable`'s message listed in-process VST2 | no longer does |
+  | — | `tutti-vst2-test-plugin`: `TUTTI_VST2_PROBE_STATE_DC` (the instance's state as an output DC, `config::state_dc`), `TUTTI_VST2_PROBE_UNIQUE_ID`, and `tutti_vst2_probe_set_refuse_chunk_load` |
+
 - **`AudioUnit` and `tutti-node` are deleted** (design doc 013, "Phase 5,
   part 3"). **Breaking.** fundsp's node contract had no implementor left
   but the sampler's internal stretch filter. The node contract is

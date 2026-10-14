@@ -119,8 +119,12 @@
 //!   butler are not touched.
 //! - **Some nodes cannot be forked**, and an export that needs one (an
 //!   output reaches it) is refused naming the node's entity
-//!   ([`ExportError::NotForkable`]): a microphone monitor and an in-process
-//!   VST2 plugin. Export a node it does not feed.
+//!   ([`ExportError::NotForkable`]): a microphone monitor. Export a node it
+//!   does not feed. A hosted plugin forks by state transfer — out of process
+//!   into a new `plugin-server`, an in-process VST2 plugin into a second
+//!   instance from the same library — and one whose fork cannot be built
+//!   (it will not save its state, or a second instance will not load) is
+//!   refused naming it too ([`ExportError::ForkSource`]).
 //! - **A fork that fails while rendering** — a plugin server that crashes or
 //!   hangs, a disk voice whose file cannot be read (its cause names the
 //!   file) — fails the export by name ([`ExportError::ForkFailed`]) rather

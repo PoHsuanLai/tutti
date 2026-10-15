@@ -305,8 +305,9 @@ impl Chunks for PluginChunks<'_> {
                 EventKind::Harmony(h) => {
                     push_harmony(&mut pending.harmony, features, h, frame);
                 }
-                // The walk keeps parameter events for itself.
-                EventKind::Ramp(_) | EventKind::Segment(_) => {}
+                // The walk keeps parameter events for itself, and never
+                // hands over a resync (a plugin re-sends nothing).
+                EventKind::Ramp(_) | EventKind::Segment(_) | EventKind::Resync => {}
             },
         );
     }

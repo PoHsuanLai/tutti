@@ -4632,6 +4632,15 @@ under both.
 > built from the compiler's `SourceNode` with `from_decl` (014 §6, §12 "PR
 > 3b"). A lane frees the input slots its new program no longer reads, and
 > the compiler never gives a `SourceId` twice (014 §7).
+>
+> **Doc 014 PR 4a landed** the reconcile, Bevy-free:
+> `tutti_nodes::Modulation` applies compiled declarations to a plain
+> `Editor` through a host seam (`ModHost`), republishing a changed program
+> without a commit, building and removing lanes, signal sources and their
+> edges, refusing a follower downstream of its target by route, and
+> scheduling the new `EventKind::Resync` into a note envelope a lane newly
+> reads (014 §6, §8.2, §12 "PR 4a"). `ParamSegment::unit` and
+> `ControlLaneNode::for_unit` address a param by `UnitParam` alone.
 
 **What landed.**
 

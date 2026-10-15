@@ -45,7 +45,7 @@ impl Node for Probe {
                         self.level = r.foreign_target(0).expect("ramps address id 0");
                         u32::MAX
                     }
-                    EventKind::Harmony(_) | EventKind::Segment(_) => {
+                    EventKind::Harmony(_) | EventKind::Segment(_) | EventKind::Resync => {
                         unreachable!("this test sends none")
                     }
                 };

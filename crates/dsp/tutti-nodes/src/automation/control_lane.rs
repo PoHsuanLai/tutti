@@ -14,7 +14,7 @@ use tutti_graph::{
 use tutti_mod::{Clock, ControlProgram, CurveSegment, ProgramTime, Wave, MAX_LANE_INPUTS};
 use tutti_types::{
     AtomicF32, Beat, Frame, ParamAddr, ParamKey, RangeCell, RtPublish, SamplePosition, Samples,
-    Tail, Unit,
+    Tail, Unit, UnitParam,
 };
 
 use super::lane::segment_shape;
@@ -316,8 +316,26 @@ impl ControlLaneNode {
     /// (`Editor::param_range_cell`), read once per block for the span the
     /// program's offsets scale by; `None` is unranged, which sends the base
     /// alone.
-    pub fn for_param<U: Unit<Raw = f32> + 'static>(
+    ///
+    /// The typed spelling of [`for_unit`](Self::for_unit), which it calls:
+    /// the lane is erased over the unit (doc 014 §4.1), so the key only
+    /// names the param.
+    pub fn for_param<U: Unit<Raw = f32>>(
         key: ParamKey<U>,
+        program: ControlProgram,
+        knob: Option<Arc<AtomicF32>>,
+        range: Option<ParamRangeReader>,
+    ) -> Self {
+        Self::for_unit(key.id(), program, knob, range)
+    }
+
+    /// A lane for built-in parameter `param`, its values the param's raw
+    /// `f32`s ([`ParamSegment::unit`]), as [`for_param`](Self::for_param)
+    /// otherwise. For a caller that holds a `ParamAddr` rather than a typed
+    /// key (the [`Modulation`](crate::Modulation) reconciler), and for a
+    /// param with no `ParamKey` yet (`RoomSize`, `Pan`, …).
+    pub fn for_unit(
+        param: UnitParam,
         program: ControlProgram,
         knob: Option<Arc<AtomicF32>>,
         range: Option<ParamRangeReader>,
@@ -326,9 +344,7 @@ impl ControlLaneNode {
             Arc::new(program),
             knob,
             range.map_or(RangeSource::None, RangeSource::Port),
-            Arc::new(move |from, to, shape| {
-                ParamSegment::new(key, U::from_raw(from), U::from_raw(to), Samples(0), shape)
-            }),
+            Arc::new(move |from, to, shape| ParamSegment::unit(param, from, to, Samples(0), shape)),
             true,
         )
     }

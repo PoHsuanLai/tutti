@@ -1086,3 +1086,178 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
         );
     }
 }
+
+/// **An `apply` that republishes allocates nothing on the audio thread.**
+/// A saw into a low-pass SVF; `tutti_nodes::Modulation` puts a 2 Hz LFO on
+/// its cutoff and a follower of the saw on its Q. Between gated blocks a
+/// depth edit is applied (on the control thread, outside the gate): each
+/// republishes the LFO's lane and sends no plan, and the blocks after each
+/// one read the new program inside the gate. (That the lane adopts it, the
+/// render moving with the depth, is `modulation_reconcile.rs`' depth test;
+/// a single-threaded gate pins only the reader's path, per CLAUDE.md.)
+///
+/// Mutation (run): `std::hint::black_box(vec![0u8; 1]);` in
+/// `ControlLaneNode::process`'s new-program branch (taken only on a
+/// republish) → aborts.
+#[test]
+fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
+    use std::sync::Arc;
+    use tutti_core::graph::{Edge, InPort, OutPort, Source};
+    use tutti_graph::{Editor, ForkByClone, Prepare, Transport};
+    use tutti_mod::{
+        Clock, CurveType, Declarations, Polarity, RouteDecl, RouteKey, RouteTarget,
+        Source as ModSource, SourceKey, TargetDecl, TargetKey, Wave,
+    };
+    use tutti_nodes::testing::Osc;
+    use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
+    use tutti_types::{
+        AtomicF32, Beat, Bpm, Depth, Hz, NodeKey, ParamAddr, PhaseIncrement, Samples, Seconds,
+        UnitParam, Q,
+    };
+
+    struct Host {
+        filter: NodeKey,
+        saw: NodeKey,
+        knobs: [Option<Arc<AtomicF32>>; 2],
+    }
+    impl ModHost for Host {
+        fn target(&self, t: TargetKey) -> Option<Target> {
+            let knob = match t.param {
+                ParamAddr::Unit(UnitParam::Cutoff) => self.knobs[0].clone(),
+                ParamAddr::Unit(UnitParam::Q) => self.knobs[1].clone(),
+                _ => return None,
+            };
+            Some(Target::Native {
+                node: self.filter,
+                knob,
+            })
+        }
+        fn feed(&self, _: SourceKey) -> Option<Feed> {
+            Some(Feed::Audio(self.saw))
+        }
+    }
+    let at = |p| TargetKey {
+        node: 1,
+        param: ParamAddr::Unit(p),
+    };
+    let route = |s: u64, p, depth: f32| RouteDecl {
+        source: SourceKey(s),
+        to: RouteTarget::Param(at(p)),
+        depth: Depth(depth),
+        polarity: Polarity::Bipolar,
+        curve: CurveType::Linear,
+    };
+
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(128)));
+    let (saw, filter) = (NodeKey(1 << 48), NodeKey((1 << 48) + 1));
+    ed.insert(saw, "saw", ForkByClone(Osc::saw(Hz(110.0))));
+    let params = ed.insert(
+        filter,
+        "svf",
+        SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)),
+    );
+    let topology = &mut ed.spec_mut().topology;
+    topology.edges.insert(
+        InPort {
+            node: filter,
+            port: 0,
+        },
+        Edge::Direct(Source::Node(OutPort { node: saw, port: 0 })),
+    );
+    topology.outputs = vec![Source::Node(OutPort {
+        node: filter,
+        port: 0,
+    })];
+    ed.commit().expect("commits");
+    let transport = Transport::new(false, Bpm(120.0), Beat(0.0), None);
+    let mut out = vec![0.0f32; 128];
+    exec.process(128, &transport, &[], &mut [&mut out[..]]);
+    ed.collect();
+
+    let host = Host {
+        filter,
+        saw,
+        knobs: [params.cell(UnitParam::Cutoff), params.cell(UnitParam::Q)],
+    };
+    let sources = [
+        (
+            SourceKey(1),
+            ModSource::Lfo {
+                wave: Wave::Shape {
+                    shape: tutti_mod::LfoShape::Sine,
+                    seed: 0,
+                },
+                clock: Clock::Seconds {
+                    rate: Hz(2.0),
+                    phase: PhaseIncrement(0.0),
+                    anchor: None,
+                },
+            },
+        ),
+        (
+            SourceKey(2),
+            ModSource::Follower {
+                attack: Seconds(0.001),
+                release: Seconds(0.05),
+            },
+        ),
+    ];
+    let mut routes = [
+        (RouteKey(1), route(1, UnitParam::Cutoff, 0.2)),
+        (RouteKey(2), route(2, UnitParam::Q, 0.3)),
+    ];
+    let targets = [
+        (
+            at(UnitParam::Cutoff),
+            TargetDecl {
+                min: 100.0,
+                max: 4_000.0,
+                automation: None,
+            },
+        ),
+        (
+            at(UnitParam::Q),
+            TargetDecl {
+                min: 0.5,
+                max: 4.0,
+                automation: None,
+            },
+        ),
+    ];
+    let mut m = Modulation::new();
+    let decl = Declarations {
+        sources: &sources,
+        routes: &routes,
+        targets: &targets,
+    };
+    assert!(m.apply(&decl, &mut ed, &host).expect("applies").commit);
+    m.commit(&mut ed).expect("commits");
+    // Warm-up outside the gate: the commit lands, the connects' declick
+    // runs out.
+    for _ in 0..8 {
+        exec.process(128, &transport, &[], &mut [&mut out[..]]);
+        ed.collect();
+    }
+    let mut sounded = false;
+    for i in 0..40 {
+        routes[0].1.depth = Depth(if i % 2 == 0 { 0.4 } else { 0.1 });
+        let decl = Declarations {
+            sources: &sources,
+            routes: &routes,
+            targets: &targets,
+        };
+        let applied = m.apply(&decl, &mut ed, &host).expect("applies");
+        assert!(!applied.commit, "a depth edit sends no plan");
+        assert_eq!(applied.republished.len(), 1, "the LFO's lane republished");
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..4 {
+                exec.process(128, &transport, &[], &mut [&mut out[..]]);
+            }
+        });
+        // The next `apply`'s publish frees the retired program, here on the
+        // control thread.
+        ed.collect();
+        sounded |= out.iter().any(|x| x.abs() > 1e-3);
+    }
+    assert!(sounded, "the filter rendered; the gate walked the graph");
+}

@@ -77,9 +77,12 @@ fn note(e: &Event) -> Option<(bool, usize)> {
 ///   a 0 there unless it was idle already. A note-on on that same frame (a
 ///   clip's first note) then starts from 0.
 ///
-/// - **It sends only on events**: a lane that starts reading it while it
-///   holds a sustain (a newly wired route) reads 0 until its next note or
-///   stage boundary (doc 014 §6; a source-side resync is PR 4's).
+/// - **It sends only on events**, so a lane that starts reading it while it
+///   holds a sustain (a newly wired route) would read 0 until its next note
+///   or stage boundary. An [`EventKind::Resync`] on its input closes that:
+///   it re-sends where it stands, resumed, on the event's frame (doc 014
+///   §6). The [`Modulation`](crate::Modulation) reconciler schedules one
+///   whenever a lane's program newly reads the envelope.
 ///
 /// Insert it `ForkByClone(node)`: it shares nothing with a clone, and a
 /// fork's (the node as inserted, reset) starts idle, as a live play start
@@ -240,6 +243,22 @@ impl NoteEnvelopeNode {
         }
     }
 
+    /// Re-sends the level on frame `at`, as the segment in flight resumed
+    /// there (the same trajectory, so a lane already reading it hears no
+    /// change): after a refused segment, and on an [`EventKind::Resync`].
+    /// Before its first segment it stands idle at 0 and sends that: a lane
+    /// may hold the last value of a node this one replaced.
+    fn resend(&mut self, out: &mut Out<'_, '_>, at: Frame) {
+        let seg = match self.level {
+            Some((seg, sent)) => {
+                let along = at.since(sent).map_or(0.0, |s| s.get() as f64);
+                seg.resumed(seg.position() + SamplePosition(along), seg.length())
+            }
+            None => self.segment(0.0, 0.0, Samples(0)),
+        };
+        self.send(out, at, seg);
+    }
+
     /// Sends `seg` on frame `at` (one per frame: a later one on the same
     /// frame replaces it), and makes it the level.
     fn send(&mut self, out: &mut Out<'_, '_>, at: Frame, seg: ParamSegment) {
@@ -312,11 +331,7 @@ impl Node for NoteEnvelopeNode {
         };
         if std::mem::take(&mut self.owed) {
             // Refused last block: where it stands now, as a resumed segment.
-            if let Some((seg, sent)) = self.level {
-                let along = base.since(sent).map_or(0.0, |s| s.get() as f64);
-                let seg = seg.resumed(seg.position() + SamplePosition(along), seg.length());
-                self.send(&mut out, base, seg);
-            }
+            self.resend(&mut out, base);
         }
         let mut starts = walk.starts(cx, len, self.epoch).peekable();
         let (mut ev, mut from) = (0usize, 0usize);
@@ -341,6 +356,9 @@ impl Node for NoteEnvelopeNode {
             while let Some(e) = events.get(ev).filter(|e| e.offset.index() == p) {
                 if let Some((on, key)) = note(e) {
                     self.on_note(&mut out, at, on, key);
+                } else if e.kind == EventKind::Resync {
+                    // A lane newly reads it: where it stands, resumed.
+                    self.resend(&mut out, at);
                 }
                 ev += 1;
             }

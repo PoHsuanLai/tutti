@@ -326,6 +326,12 @@ pub fn plugin_load_promote(
                 };
                 edited = true;
 
+                // After the saved state: its values are what a modulation
+                // lane's knob starts at.
+                #[cfg(feature = "modulation")]
+                commands
+                    .entity(entity)
+                    .insert(crate::plugin_host::PluginParamValues::read(&handle));
                 commands
                     .entity(entity)
                     .insert((PluginEmitter { handle }, PluginHealth::default()));

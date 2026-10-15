@@ -1293,11 +1293,6 @@ mod synths {
 
         let peak = |volume: Option<f32>| {
             let (mut app, synth) = app_with(poly());
-            // Under `modulation` the param reconciler asks the matrix whether
-            // a param has a second writer, so the plugin that owns it must
-            // be present.
-            #[cfg(feature = "modulation")]
-            app.add_plugins(bevy_tutti::modulation::TuttiModulationPlugin);
             app.add_audio_param::<Amplitude, { UnitParam::Volume as u16 }>();
             if let Some(v) = volume {
                 app.world_mut()

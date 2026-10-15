@@ -93,15 +93,6 @@ fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
     app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
     app.add_plugins((GraphReconcilePlugin, LatencyCompensationPlugin));
-    // Under `modulation` the param reconciler asks the matrix whether a param
-    // has a second writer, so the plugin that owns it must be present.
-    #[cfg(feature = "modulation")]
-    {
-        app.insert_resource(bevy_tutti::graph::TransportRes(
-            tutti_core::transport::Transport::new(RATE),
-        ));
-        app.add_plugins(bevy_tutti::modulation::TuttiModulationPlugin);
-    }
     app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 
     let world = app.world_mut();

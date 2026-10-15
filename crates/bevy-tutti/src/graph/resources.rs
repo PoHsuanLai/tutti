@@ -323,7 +323,7 @@ impl AudioGraphRes {
     }
 
     /// The event outputs feeding `sink`'s event input `port`, as the graph
-    /// holds them.
+    /// holds them: a modulation lane on a plugin's parameter events is one.
     pub fn event_sources(&self, sink: AudioNode, port: u16) -> Vec<crate::graph::EventSource> {
         self.read().event_sources(sink, port)
     }
@@ -363,7 +363,8 @@ impl AudioGraphRes {
         self.write().remove(node)
     }
 
-    /// Whether `node` is in the graph.
+    /// Whether `node` is in the graph, a modulation lane or signal node
+    /// included (staged, committed or not).
     pub fn contains(&self, node: AudioNode) -> bool {
         self.read().contains(node)
     }
@@ -564,7 +565,7 @@ impl AudioGraphRes {
     }
 
     /// Whether an edit waits for a commit.
-    #[cfg(all(test, feature = "modulation"))]
+    #[cfg(feature = "modulation")]
     pub(crate) fn has_uncommitted_edit(&self) -> bool {
         self.read().has_uncommitted_edit()
     }
@@ -586,14 +587,23 @@ impl AudioGraphRes {
         self.read().fork().ok()
     }
 
-    /// Record the value a fork of `node` starts `param` at, without touching
-    /// the live node: its `ParamSet`'s authored value. For a param
-    /// the modulation driver owns: live, the driver writes `base + Σ layers`
-    /// into the node's cell every frame; a fork is not driven by it and must
-    /// carry the authored base.
+    /// Applies modulation declarations to the editor (doc 014 §8.2). See
+    /// `GraphRuntime::modulate`.
     #[cfg(feature = "modulation")]
-    pub(crate) fn set_param_snapshot(&mut self, node: AudioNode, param: UnitParam, value: f32) {
-        self.write().set_param_snapshot(node, param, value);
+    pub(crate) fn modulate(
+        &mut self,
+        m: &mut tutti_nodes::Modulation,
+        decl: &tutti_mod::Declarations<'_>,
+        entities: &dyn crate::modulation::ModEntities,
+    ) -> Result<tutti_nodes::Applied, tutti_nodes::ReconcileError> {
+        self.write().modulate(m, decl, entities)
+    }
+
+    /// Schedules the resyncs `m` owes, after the commit that sent their
+    /// nodes.
+    #[cfg(feature = "modulation")]
+    pub(crate) fn send_mod_resyncs(&mut self, m: &mut tutti_nodes::Modulation) {
+        self.write().send_mod_resyncs(m);
     }
 
     /// `node`'s latency moved at runtime — a hosted plugin's latency cell

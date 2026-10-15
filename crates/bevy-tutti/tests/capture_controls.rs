@@ -11,6 +11,12 @@
 //! The fixture is the suites' own [`DriveUnit`](common::drive_unit::DriveUnit),
 //! a host's `ParamNode` registered with `param_graph_node!`, beside an engine
 //! node, `DistortionNode`.
+//!
+//! **Legacy.** The `ModParamsHandle` captured here is read only by the
+//! modulation driver that control lanes replaced
+//! (`bevy_tutti::modulation::legacy`, added here as `LegacyModulationPlugin`);
+//! PR 5 deletes both. A lane finds a node's params through the graph's own
+//! `ParamSet` instead (`mod_lanes.rs`).
 
 #![cfg(feature = "modulation")]
 
@@ -23,9 +29,9 @@ mod modulation {
     use bevy_ecs::system::RunSystemOnce;
 
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode, TransportRes};
-    use bevy_tutti::modulation::{
-        LfoShape, ModParamRange, ModParamsHandle, ModRoute, ModSource, ModSourceRate,
-        ModTargetResolver, TuttiModulationPlugin,
+    use bevy_tutti::modulation::legacy::{
+        LegacyModulationPlugin, LfoShape, ModParamRange, ModParamsHandle, ModRoute, ModSource,
+        ModSourceRate, ModTargetResolver,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -42,7 +48,7 @@ mod modulation {
         app.insert_resource(AudioGraphRes::headless(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
         app
     }
 
@@ -203,8 +209,8 @@ mod crossfade_consumers {
         crossfade_audio_node, AudioConfig, AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode,
         TransportRes,
     };
-    use bevy_tutti::modulation::{
-        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
+    use bevy_tutti::modulation::legacy::{
+        LegacyModulationPlugin, LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -239,7 +245,7 @@ mod crossfade_consumers {
         ));
         // The synth is a `ParamNode`, whose params are control-rate targets
         // through its `ParamSet` (`CapturedControls::for_params`).
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
 
         // One synth, modulated.
         let outgoing = synth();

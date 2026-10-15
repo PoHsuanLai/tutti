@@ -173,9 +173,15 @@ fn _surface_compiles() {
         AudioParam::new(tutti_core::Db(-6.0))
     }
 
-    // A mod route is only completable with `ModDelivery` — it picks the rate.
+    // Modulation declared from the prelude alone: a range, a source and a
+    // route on a param named by `ParamRef`.
     #[cfg(feature = "modulation")]
-    let _: ModDelivery = ModDelivery::PerFrame;
+    fn _declare_modulation(mut mods: Mods, filter: bevy_ecs::entity::Entity) {
+        let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
+        mods.range(cutoff, 200.0, 4_000.0);
+        let lfo = mods.lfo(Lfo::sine());
+        mods.route(lfo, cutoff, tutti_core::Depth(0.3));
+    }
 
     // Sampler: build a voice, and clamp a file width to what it will play.
     // Every type in this signature comes from the prelude — `Playback`,

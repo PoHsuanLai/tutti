@@ -142,8 +142,8 @@
 //! - `audio-io`: microphone capture, WAV writing and recording (the `io`
 //!   module).
 //! - `wav`, `flac`, `mp3`, `ogg`: audio file decoders.
-//! - `modulation`: LFOs and a modulation matrix as ECS entities (the
-//!   `modulation` module).
+//! - `modulation`: modulation sources, routes, ranges and automation as ECS
+//!   declarations, rendered on control lanes (the `modulation` module).
 //! - `spatial`: VBAP and binaural panners (`spatial`, re-exported
 //!   `tutti-spatial`); `hrtf` adds the HRTF binaural panner.
 //! - `convolution`: the FFT convolution reverb node.
@@ -265,8 +265,8 @@ pub mod prelude {
     pub use crate::midi::{MidiDeviceEvent, MidiIoRes};
     #[cfg(feature = "modulation")]
     pub use crate::modulation::{
-        ModClock, ModDelivery, ModParamRange, ModRoute, ModSource, ModSourceRate,
-        ModTargetRegistry, ModulationMatrix, TuttiModulationPlugin,
+        Automation, Lfo, ModRange, ModRoute, ModSource, Mods, ModulationRefused, ModulationState,
+        ParamRef, TuttiModulationPlugin,
     };
     #[cfg(feature = "plugin")]
     pub use crate::plugin_host::{PluginsRes, SetEditorVisible, TuttiHostingPlugin};

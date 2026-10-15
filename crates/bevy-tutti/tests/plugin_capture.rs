@@ -264,20 +264,20 @@ fn load_probe_entity(app: &mut App) -> bevy_ecs::entity::Entity {
 }
 
 /// A crossfaded plugin is bound again: the incoming `PluginClient` gets the
-/// meter (and, with modulation, its param automation) installed, and the
-/// latency poll follows the incoming plugin's figure.
+/// meter installed, (with modulation) a lane on one of its parameters feeds
+/// the incoming plugin's event input, and the latency poll follows the
+/// incoming plugin's figure.
 ///
-/// The binding systems latch on `PluginMeterBound` / `PluginParamsBound`,
-/// which describe the *outgoing* client. A crossfade keeps the entity and its
-/// markers, so unless the re-capture clears them the incoming client never has
-/// anything installed — a plugin told 4/4 from bar 0 with no automation, and
-/// nothing logs.
+/// The meter binding latches on `PluginMeterBound`, which describes the
+/// *outgoing* client. A crossfade keeps the entity and its markers, so
+/// unless the re-capture clears them the incoming client never has anything
+/// installed — a plugin told 4/4 from bar 0, and nothing logs.
 ///
 /// # Mutation
 ///
 /// Deleting the marker-clearing block at the top of
-/// `CapturedControls::replace` fails the meter (and params) assertion: the
-/// incoming client's slots stay empty. Not replacing the shadow at all
+/// `CapturedControls::replace` fails the meter assertion: the incoming
+/// client's slot stays empty. Not replacing the shadow at all
 /// (dropping the `plugin` arm of `replace`) fails the latency assertion too,
 /// since the poll keeps reading the outgoing client's cell.
 #[test]
@@ -286,20 +286,24 @@ fn a_crossfaded_plugin_is_bound_again() {
     #[cfg(feature = "modulation")]
     app.add_plugins(bevy_tutti::modulation::TuttiModulationPlugin);
     let entity = load_probe_entity(&mut app);
+    // A lane on the probe's gain (id 77), on the plugin's event input.
     #[cfg(feature = "modulation")]
-    app.world_mut().entity_mut(entity).insert(
-        bevy_tutti::modulation::ModParamRange::default().with(
-            tutti_types::ParamAddr::Id(0),
-            0.5,
-            0.0,
-            1.0,
-        ),
-    );
+    let gain = {
+        use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource, ParamRef};
+        let gain = ParamRef::plugin(entity, 77);
+        let world = app.world_mut();
+        world.spawn(ModRange::new(gain, 0.0, 1.0));
+        let offset = world.spawn(ModSource::new(Macro(0.0))).id();
+        world.spawn(ModRoute::new(offset, gain));
+        gain
+    };
     app.update();
     assert!(
         app.world().get::<PluginMeterBound>(entity).is_some(),
         "precondition: the outgoing plugin was bound"
     );
+    #[cfg(feature = "modulation")]
+    lane_of(&mut app, gain);
 
     // A second instance of the probe, told a different latency so the poll's
     // record says which client it read.
@@ -321,24 +325,23 @@ fn a_crossfaded_plugin_is_bound_again() {
         "the incoming plugin must get the meter installed"
     );
     let node = *app.world().get::<AudioNode>(entity).expect("still bound");
-    // The entity's automation node feeds whichever plugin it is bound to:
-    // the incoming one now. Mutation: `plugin_bind_params` not feeding the
-    // node (`feeds.set` dropped) → no event source → fails.
+    // The gain's lane feeds whichever plugin the entity is bound to: the
+    // incoming one now (a crossfade keeps the key and its edges). Mutation
+    // (run): `GraphRuntime::event_sources` listing only edges from nodes
+    // the runtime holds (a lane is the reconciler's) → no event source →
+    // fails.
     #[cfg(feature = "modulation")]
-    {
-        let automation = app
-            .world()
-            .get::<bevy_tutti::plugin_host::PluginAutomationNode>(entity)
-            .expect("the entity has an automation node")
-            .node;
+    let lane = {
+        let lane = lane_of(&mut app, gain);
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
                 .event_sources(node, 0),
-            vec![automation.into()],
-            "and its param automation"
+            vec![lane.into()],
+            "and its gain's lane"
         );
-    }
+        lane
+    };
     assert_eq!(
         app.world().resource::<AudioGraphRes>().node_latency(node),
         Samples(INCOMING_LATENCY + CHUNK),
@@ -362,17 +365,37 @@ fn a_crossfaded_plugin_is_bound_again() {
     app.update();
     assert!(app.world().get::<PluginShadow>(entity).is_none());
 
-    // And the entity's automation node leaves the graph with the entity.
-    // Mutation: drop the observer's `graph.remove` → it stays → fails.
+    // And the gain's lane leaves the graph with the entity. Mutation (run):
+    // `Modulation::apply` keeping a lane whose target no longer resolves
+    // (`binds.get(t).is_none_or(..)` as `is_some_and`) → the lane stays →
+    // fails.
     #[cfg(feature = "modulation")]
     {
-        let automation = app
-            .world()
-            .get::<bevy_tutti::plugin_host::PluginAutomationNode>(entity)
-            .expect("kept while the entity lives")
-            .node;
         app.world_mut().despawn(entity);
         app.update();
-        assert!(!app.world().resource::<AudioGraphRes>().contains(automation));
+        app.update();
+        assert!(!app.world().resource::<AudioGraphRes>().contains(lane));
+    }
+}
+
+/// The node of `target`'s lane, waiting for it while the plugin's values
+/// are read.
+#[cfg(feature = "modulation")]
+fn lane_of(app: &mut App, target: bevy_tutti::modulation::ParamRef) -> AudioNode {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some((key, _)) = app
+            .world()
+            .resource::<bevy_tutti::modulation::ModulationState>()
+            .lane(target)
+        {
+            return AudioNode(key);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no lane on {target:?}"
+        );
+        app.update();
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }

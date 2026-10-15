@@ -93,6 +93,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`bevy-tutti` modulation runs on control lanes** (design doc 014, PR
+  4b). Sources, routes, ranges and automation are declarations on
+  entities; `TuttiModulationPlugin` applies them every frame through
+  `tutti_nodes::Modulation`, so each modulated param gets one control lane
+  (sample-accurate on a 32-frame grid) and each follower or note envelope
+  a node, all graph nodes an export forks: an export renders the
+  modulation live playback plays, on native params and on hosted plugins'
+  parameters alike (on `main` a plugin's modulated gain exported at its
+  authored value). A depth, range, curve or automation edit is a store,
+  never a new plan, and an LFO keeps its phase across one. **Breaking**
+  for every user of `bevy_tutti::modulation`; the old frame-rate driver is
+  kept, unscheduled, in `modulation::legacy` until PR 5 deletes it.
+
+  | Was | Now |
+  |---|---|
+  | `ModSource::new(LfoShape::Sine)` plus `ModSourceRate::beat_synced(b)` / `free_running(hz)` | `ModSource::new(Lfo::sine().rate(BeatDuration(b)))` / `.hz(Hz(f))` (`Lfo::{new, sine, triangle, square, saw}`, `.phase(..)`); also `Macro(value)`, `Follower::new(input_entity)`, `NoteEnvelope::new(midi_entity, Adsr)`, or a host's own `ModSourceKind` (`declare(&self) -> tutti_mod::Source`, `feed`) |
+  | `ModRoute::new(source, entity, ParamAddr::Unit(p))` | `ModRoute::new(source, ParamRef::unit(entity, p))`; a plugin parameter is `ParamRef::plugin(entity, id)`; `with_depth`, `with_polarity`, `with_curve` and `enabled` as before |
+  | `ModRoute::per_block()`, `per_sample()`, `deliver(ModDelivery)` | gone: every route is on the param's lane |
+  | `ModParamRange::default().with(param, base, min, max)` on the node's entity | `ModRange::new(ParamRef, min, max)` on an entity of its own; no base: the base is the param's knob (its `Param` cell, written by `AudioParam` and `write_param`; a plugin parameter's lane knob, started at the plugin's value) or its `Automation` |
+  | — | `Mods` (a `SystemParam`: `lfo`, `macro_`, `follower`, `note_envelope`, `source`, `route`, `range`, `automate`, each spawning an entity and returning it); `Automation::new(ParamRef, Arc<dyn Curve>)`; `AutomationTake` (a touch, latch or write take on an `Automation`'s entity: the knob plays while it is open, its envelope becomes the curve when it closes) |
+  | `ModulationMatrix`, `ModTargetRegistry`, `ModClock`, `ModBusRes`, `drive`/`rebuild` | `ModulationState` (`lane(ParamRef)` with its `LaneControls`, `set_knob`, `source_node`, `refusal`, `unresolved_targets`, `unresolved_sources`) and `ModulationSystems::{Apply, AfterCommit}`; a refused declaration is a `ModulationRefused` message (`route()`, `target()`) and stays in `ModulationState::refusal` |
+  | `write_param(graph, matrix, entity, node, param, value)` | `write_param(graph, node, param, value)`: one writer per knob, the node's cell, modulated or not |
+  | `ParamSet::set_authored(param, value)` | gone: `ParamSet::set` writes the live cell and the authored value together |
+  | a plugin parameter was modulated per block through `plugin_bind_params` (`PluginControls::automation`), which an export did not fork | a lane on the plugin's event input; `PluginParamValues` (on a loaded plugin's entity) mirrors its values and seeds the knob; an edit in the plugin's GUI moves the knob (`plugin_param_edits`). `plugin_bind_params` is no longer scheduled |
+  | the old types at `bevy_tutti::modulation::*` | at `bevy_tutti::modulation::legacy::*`, with `LegacyModulationPlugin` to schedule them |
+  | `AudioGraphRes::contains(node)` saw only nodes inserted through it | every node in the graph's spec, a modulation lane or signal node included |
+  | `AudioGraphRes::event_sources(sink, port)` listed only sources inserted through it | every edge on the port, a plugin parameter's lane included |
+  | the prelude's `ModClock`, `ModDelivery`, `ModParamRange`, `ModSourceRate`, `ModTargetRegistry`, `ModulationMatrix` | `Automation`, `Lfo`, `ModRange`, `Mods`, `ModulationRefused`, `ModulationState`, `ParamRef` (with `ModRoute`, `ModSource`, `TuttiModulationPlugin`) |
+
+  **Migration.** Declare a range for every routed param
+  (`ModRange::new(param, min, max)`), and move each route's base into the
+  knob: write it with `AudioParam`/`write_param` (a plugin parameter's
+  knob is its own value). **Depth is span-scaled everywhere:** a route's
+  depth is a fraction of `max − min`, as a per-block route's was, so an
+  old `PerSample` route is `max − min` times stronger; divide its depth
+  by the span. `per_block()`/`per_sample()` calls go. A plugin parameter
+  declared in `ModParamRange` on the plugin's entity becomes
+  `ModRange::new(ParamRef::plugin(entity, id), min, max)`. A host that
+  wired a sink with `ModTargetRegistry::insert_target` names a
+  `ParamRef` instead. `TuttiModulationPlugin` must still be added
+  explicitly, after `TuttiPlugin`.
+
 - **The modulation reconcile, Bevy-free** (design doc 014, PR 4a):
   `tutti_nodes::Modulation` applies declared sources, routes and targets
   to a plain `Editor`. It compiles them against the last compile, builds a

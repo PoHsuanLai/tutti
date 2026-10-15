@@ -3,7 +3,7 @@
 //!
 //! Turns `tutti-plugin`'s catalog and handles into an ECS surface: a
 //! [`PluginRequest`] becomes a loaded plugin bound to the transport, the MIDI
-//! bus and the modulation matrix, with a native GUI window and a liveness state.
+//! bus and modulation lanes, with a native GUI window and a liveness state.
 //!
 //! Every module here is ECS and window glue over `tutti-plugin` and the
 //! `tutti-plugin-server` subprocess it launches; a non-Bevy host uses
@@ -45,6 +45,8 @@ pub mod health;
 pub mod latency;
 pub mod load;
 pub mod native_window;
+#[cfg(feature = "modulation")]
+pub mod params;
 // `render_mode` needs `crate::export`'s `ExportInFlight` to know a bounce is
 // running, and that module is itself `export`-gated. This is the one place a
 // `cfg` is right rather than an `is_plugin_added` check: without the feature
@@ -80,6 +82,8 @@ pub use load::{
     plugin_load_promote, plugin_load_start, PendingPlugin, PluginLoadDone, PluginLoadTerminated,
     PluginRequest,
 };
+#[cfg(feature = "modulation")]
+pub use params::{plugin_param_edits, PluginParamValues};
 #[cfg(feature = "export")]
 pub use render_mode::{plugin_render_mode_drive, PluginRenderMode, RenderModeAnnounced};
 pub use scan::{
@@ -328,25 +332,17 @@ impl Plugin for TuttiHostingPlugin {
                 .run_if(crate::graph::engine_ready),
         );
 
-        // Param accumulators are modulation vocabulary (`ModParamRange`,
-        // `ModTargetRegistry`), so this half only exists when that feature does.
-        // A `plugin` build without `modulation` still loads, follows the
-        // transport and receives MIDI — it just has no route to modulate a param with.
+        // A plugin's parameter values, mirrored for modulation lanes' knobs,
+        // and its GUI edits written into them (doc 014 §8.2). The old
+        // automation binding (`plugin_bind_params`) is not scheduled: plugin
+        // targets are lanes (`TuttiModulationPlugin`).
         #[cfg(feature = "modulation")]
-        {
-            app.init_resource::<crate::graph::EventFeeds>();
-            app.add_observer(remove_plugin_automation);
-            app.add_systems(
-                Update,
-                plugin_bind_params
-                    .after(GraphReconcileSystems::Spawn)
-                    // Before the event wiring, so a new automation node is
-                    // wired to its plugin on the frame it is made.
-                    .before(crate::graph::EventWiring)
-                    .before(GraphReconcileSystems::Commit)
-                    .run_if(crate::graph::engine_ready),
-            );
-        }
+        app.add_systems(
+            Update,
+            params::plugin_param_edits
+                .after(plugin_load_promote)
+                .in_set(GraphReconcileSystems::Spawn),
+        );
 
         // Reaps AppKit observers for editors that lost `PluginEditorOpen`
         // without going through `set_editor_visible_observer` — chiefly

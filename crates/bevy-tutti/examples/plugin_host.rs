@@ -50,9 +50,7 @@ use tutti_core::AudioNode;
 use tutti_plugin::catalog::{CatalogConfig, PluginId, Plugins, NO_SCAN_DIRS};
 
 #[cfg(feature = "modulation")]
-use bevy_tutti::modulation::{ModParamRange, TuttiModulationPlugin};
-#[cfg(feature = "modulation")]
-use tutti_types::ParamAddr;
+use bevy_tutti::modulation::{Mods, ParamRef, TuttiModulationPlugin};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// The project tempo. Deliberately not 120: a plugin that reports 120 here is
@@ -170,7 +168,12 @@ fn main() {
 }
 
 /// Spawn the request. This is the entire load API from a host's side.
-fn request_plugin(mut commands: Commands, target: Res<Target>, config: Res<AudioConfig>) {
+fn request_plugin(
+    mut commands: Commands,
+    #[cfg(feature = "modulation")] mut mods: Mods,
+    target: Res<Target>,
+    config: Res<AudioConfig>,
+) {
     let Some(id) = target.0.clone() else {
         return;
     };
@@ -186,11 +189,12 @@ fn request_plugin(mut commands: Commands, target: Res<Target>, config: Res<Audio
     });
 
     // Declare which params modulation may reach. A plugin addresses its params
-    // by numeric id, so these are `ParamAddr::Id`; a native node would use
-    // `ParamAddr::Unit`. Ranges come from the host because asking the plugin
-    // means a blocking IPC round-trip.
+    // by numeric id (`ParamRef::plugin`); a native node's are `UnitParam`s
+    // (`ParamRef::unit`). Ranges come from the host because asking the plugin
+    // means a blocking IPC round-trip; the base is the plugin's own value,
+    // read off the frame thread once it loads, and moved by its GUI.
     #[cfg(feature = "modulation")]
-    entity.insert(ModParamRange::default().with(ParamAddr::Id(0), 0.5, 0.0, 1.0));
+    mods.range(ParamRef::plugin(entity.id(), 0), 0.0, 1.0);
 
     // Observed at the spawn site, where the surrounding context is in scope.
     entity.observe(|done: On<PluginLoadDone>| match &done.result {

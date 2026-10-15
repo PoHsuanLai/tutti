@@ -21,7 +21,7 @@ use tutti_core::AudioNode;
 use tutti_mod::{ModBus, ModParams, ModTarget};
 use tutti_types::ParamAddr;
 
-use crate::modulation::components::ParamRange;
+use crate::modulation::legacy::components::ParamRange;
 
 /// A unit's control-rate params, held apart from the graph.
 type SharedModParams = Arc<dyn ModParams + Send + Sync>;
@@ -49,7 +49,7 @@ impl ModTargetRegistry {
     /// This is also the only way to reach a sink that accepts **curve** layers,
     /// since `AtomicTarget` declines them (it collapses at a fixed beat, so a
     /// curve stored there would never move). Registering one is what makes
-    /// [`ModDelivery::PerBlock`](crate::modulation::ModDelivery) more than a
+    /// [`ModDelivery::PerBlock`](crate::modulation::legacy::ModDelivery) more than a
     /// request that always falls back.
     ///
     /// The entity need not carry an [`AudioNode`] — it need not be in the graph
@@ -184,7 +184,7 @@ pub struct ModTargetResolver<'w, 's> {
     nodes: Query<'w, 's, (&'static AudioNode, &'static ModParamsHandle)>,
     /// Source entities whose own rate is modulated. A separate query because a
     /// modulation source is *not* a graph node — see [`resolve`](Self::resolve).
-    rate_cells: Query<'w, 's, &'static crate::modulation::ModRateCell>,
+    rate_cells: Query<'w, 's, &'static crate::modulation::legacy::ModRateCell>,
 }
 
 impl ModTargetResolver<'_, '_> {
@@ -198,7 +198,7 @@ impl ModTargetResolver<'_, '_> {
     ///    is an explicit override: a host that hands over an accumulator for a
     ///    param means that one, even if the entity's node would also answer.
     /// 2. **A modulation source's own rate** — the cascade case. A source entity
-    ///    carries a [`ModRateCell`](crate::modulation::ModRateCell) and no
+    ///    carries a [`ModRateCell`](crate::modulation::legacy::ModRateCell) and no
     ///    `AudioNode`, so the graph path below could never have served it. The
     ///    accumulator mirrors straight into that cell, which is what makes an
     ///    LFO able to drive another LFO's rate.
@@ -238,7 +238,7 @@ impl ModTargetResolver<'_, '_> {
     /// Sharing that one cell is the entire mechanism, and getting it wrong
     /// fails silently: an accumulator pointed at any other atomic type-checks,
     /// runs, and modulates nothing. Hence
-    /// [`ModRateCell::as_atomic`](crate::modulation::ModRateCell::as_atomic)
+    /// [`ModRateCell::as_atomic`](crate::modulation::legacy::ModRateCell::as_atomic)
     /// rather than a fresh `Param`.
     fn resolve_rate(
         &self,

@@ -41,8 +41,8 @@ use tutti_core::AudioNode;
 use tutti_types::ParamAddr;
 
 use crate::graph::{AudioGraphRes, GraphDirty};
-use crate::modulation::components::{ModClock, ModDelivery, ModParamRange, ModRoute};
-use crate::modulation::driver::ParamKey;
+use crate::modulation::legacy::components::{ModClock, ModDelivery, ModParamRange, ModRoute};
+use crate::modulation::legacy::driver::ParamKey;
 
 /// One param's audio-rate modulation, as this reconciler declared it to the
 /// graph.
@@ -152,8 +152,8 @@ pub fn ensure_source_nodes(
     dirty: Option<ResMut<GraphDirty>>,
     routes: Query<&ModRoute>,
     sources: Query<(
-        &crate::modulation::ModSource,
-        &crate::modulation::ModSourceRate,
+        &crate::modulation::legacy::ModSource,
+        &crate::modulation::legacy::ModSourceRate,
     )>,
     existing: Query<&ModSourceNode>,
 ) {
@@ -405,7 +405,7 @@ mod tests {
     use tutti_types::{Depth, Hz, UnitParam};
 
     use crate::graph::GraphReconcilePlugin;
-    use crate::modulation::{ModSourceRate, TuttiModulationPlugin};
+    use crate::modulation::legacy::{LegacyModulationPlugin, ModSourceRate};
 
     /// An app with one distortion whose Drive a route can target, ranged
     /// `range`.
@@ -413,7 +413,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(crate::AudioEngineState::Running);
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
         let dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 5.0);
         // A `ParamNode`: its `ParamSet`'s cells are its targets, no registry
         // entry.
@@ -433,7 +433,7 @@ mod tests {
     fn spawn_lfo(app: &mut App) -> Entity {
         app.world_mut()
             .spawn((
-                crate::modulation::ModSource::new(tutti_mod::LfoShape::Sine),
+                crate::modulation::legacy::ModSource::new(tutti_mod::LfoShape::Sine),
                 ModSourceRate::free_running(Hz(2.0)),
             ))
             .id()

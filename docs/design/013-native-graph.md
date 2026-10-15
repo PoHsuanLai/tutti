@@ -4641,6 +4641,14 @@ under both.
 > scheduling the new `EventKind::Resync` into a note envelope a lane newly
 > reads (014 §6, §8.2, §12 "PR 4a"). `ParamSegment::unit` and
 > `ControlLaneNode::for_unit` address a param by `UnitParam` alone.
+>
+> **Doc 014 PR 4b landed** `bevy-tutti` on lanes: modulation is declared
+> on entities (`Mods`, `ModRoute`, `ModRange`, `Automation`, `ParamRef`)
+> and `TuttiModulationPlugin` applies it through `Modulation` on the
+> graph's editor, so every modulated param, a hosted plugin's included,
+> is a lane in the graph an export forks (014 §8.2 "As landed (PR 4b)",
+> §12 "PR 4b"). The frame-rate driver and `plugin_bind_params` are
+> unscheduled (`modulation::legacy`); `ParamSet::set_authored` is gone.
 
 **What landed.**
 

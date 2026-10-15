@@ -32,8 +32,8 @@ pub use id::{LayerKey, ModTargetId};
 pub use lfo::{Lfo, RandomState, SampleHold};
 pub use modulator::Modulator;
 pub use program::{
-    Amount, Clock, ControlProgram, Corners, InputLayer, Layer, LayerId, PeriodPoint,
-    ProgramError, ProgramTime, RateAnchor, SourceId, Wave, MAX_LANE_INPUTS, MAX_LANE_LAYERS,
+    Amount, Clock, ControlProgram, Corners, InputLayer, Layer, LayerId, PeriodPoint, ProgramError,
+    ProgramTime, RateAnchor, SourceId, Wave, MAX_LANE_INPUTS, MAX_LANE_LAYERS,
 };
 pub use shape::{curve_apply, fold, shape, LfoShape, Polarity};
 pub use target::ModTarget;

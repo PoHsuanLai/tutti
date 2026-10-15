@@ -232,7 +232,10 @@ impl fmt::Display for ProgramError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooManyLayers { count } => {
-                write!(f, "{count} layers, past MAX_LANE_LAYERS ({MAX_LANE_LAYERS})")
+                write!(
+                    f,
+                    "{count} layers, past MAX_LANE_LAYERS ({MAX_LANE_LAYERS})"
+                )
             }
             Self::TooManyInputs { count } => {
                 write!(
@@ -467,10 +470,7 @@ impl ControlProgram {
         let base = self
             .automation
             .as_ref()
-            .and_then(|c| {
-                let b = at.beat.get();
-                c.value_at(Beat(if left { b - tol(b) } else { b }))
-            })
+            .and_then(|c| automation_at(c.as_ref(), at.beat.get(), left))
             .filter(|v| v.is_finite())
             .or(knob)?;
         if !span.is_finite() {
@@ -535,6 +535,38 @@ impl ControlProgram {
         }
         out
     }
+}
+
+/// `curve`'s value at beat `b`, or just before it when `left`.
+///
+/// A left limit inside a piece the curve can describe is evaluated from
+/// the piece, its position rounded *down* to `f32`: an envelope rounds the
+/// position up to 1.0 a nanobeat before a breakpoint, which on a stepped
+/// piece reads the level after the step.
+fn automation_at(curve: &dyn Curve, b: f64, left: bool) -> Option<f32> {
+    if !left {
+        return curve.value_at(Beat(b));
+    }
+    let x = b - tol(b);
+    if let Some(CurveSegment::Move {
+        start,
+        end,
+        from,
+        to,
+        shape,
+    }) = curve.segment_at(Beat(x))
+    {
+        let (s, e) = (start.get(), end.get());
+        if e > s {
+            let t = (x - s) / (e - s);
+            let mut t32 = t as f32;
+            if f64::from(t32) > t {
+                t32 = t32.next_down();
+            }
+            return Some(shape.interpolate(from, to, t32));
+        }
+    }
+    curve.value_at(Beat(x))
 }
 
 impl Layer {
@@ -672,7 +704,15 @@ impl Wave {
                     let (a, b) = (hash_cycle(n - 1.0, *seed), hash_cycle(n, *seed));
                     a + (b - a) * frac as f32
                 }
-                periodic => periodic.evaluate_periodic(Phase((frac as f32).min(1.0))),
+                periodic => {
+                    // A left limit stays left of a corner in `f32` too:
+                    // 0.5 - 1e-9 rounds to 0.5, a square's edge.
+                    let mut p = frac as f32;
+                    if left && f64::from(p) > frac {
+                        p = p.next_down();
+                    }
+                    periodic.evaluate_periodic(Phase(p.min(1.0)))
+                }
             },
             Self::Drawn(points) => drawn_value(points, frac),
         }
@@ -777,12 +817,7 @@ fn drawn_value(points: &[PeriodPoint], frac: f64) -> f32 {
     let after = points.partition_point(|p| f64::from(p.at) <= frac);
     let (p, start, q, end) = if after == 0 {
         // Before the first point: the last piece, wrapped.
-        (
-            last,
-            f64::from(last.at) - 1.0,
-            *first,
-            f64::from(first.at),
-        )
+        (last, f64::from(last.at) - 1.0, *first, f64::from(first.at))
     } else if after == points.len() {
         (last, f64::from(last.at), *first, 1.0 + f64::from(first.at))
     } else {

@@ -583,6 +583,10 @@ impl PluginParams for ClapInstance {
         // `ParameterInfo` at its own boundary, so the loader maps no flags here.
         clap_dispatch!(self, i => i.get_parameter_list())
     }
+
+    fn parameter_count(&self) -> usize {
+        clap_dispatch!(self, i => i.parameter_count())
+    }
 }
 
 impl PluginEditorHost for ClapInstance {

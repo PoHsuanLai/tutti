@@ -131,11 +131,6 @@ impl ParameterQueue {
         }
     }
 
-    /// Whether one more point fits in the queue's own storage.
-    pub fn has_room(&self) -> bool {
-        self.points.has_room()
-    }
-
     /// Appends one automation point, **silently clamping `value` onto `0..=1`**.
     /// Never grows the queue: when it is full the point is handled by the one
     /// full-queue policy ([`PointBuf::push_or_replace_last`]), which keeps the
@@ -466,10 +461,13 @@ impl ParameterChanges {
     /// Puts `carried` (a skipped block's last value for this parameter, on
     /// frame 0) ahead of `self.queues[queue]`'s points, in the slot a set
     /// built [`reserved_bridged`](Self::reserved_bridged) kept for it. With
-    /// no slot (a set built otherwise, full), or an index past the queues, it
-    /// is dropped: the queue's own points are later, so its latest value is
-    /// already there. Counted in [`points_overflowed`](Self::points_overflowed)
-    /// and `false` returned. Allocation-free.
+    /// no slot (a set built otherwise, full) it is dropped: the queue's own
+    /// points are later, so its latest value is already there. With an index
+    /// past the queues (no queue for the parameter) it is dropped too, and
+    /// there it is the parameter's latest value; the IPC bridge never asks
+    /// that, since its buffers hold a queue for every slot of the delivery.
+    /// Counted in [`points_overflowed`](Self::points_overflowed) and `false`
+    /// returned. Allocation-free.
     pub fn prepend_carried(&mut self, queue: usize, carried: ParameterPoint) -> bool {
         let stored = self
             .queues
@@ -874,10 +872,10 @@ mod reserved_tests {
                 assert_eq!(q.param_id, ParamAddress::Index(id));
                 assert!(q.is_empty(), "a reused queue starts empty");
                 for k in 0..41 {
-                    assert!(q.has_room(), "block {block} queue {id} point {k}");
+                    assert!(q.points.has_room(), "block {block} queue {id} point {k}");
                     q.add_point(k, 0.5);
                 }
-                assert!(!q.has_room());
+                assert!(!q.points.has_room());
             }
             let ptrs: Vec<*const ParameterPoint> =
                 changes.queues.iter().map(|q| q.points.as_ptr()).collect();

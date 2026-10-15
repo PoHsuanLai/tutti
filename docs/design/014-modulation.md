@@ -815,7 +815,11 @@ bridge's buffers) are built `reserved_bridged`, the one layout with one
 point of every queue and every block kept back from the producers, so they
 stop at `room` and the carried value always fits. With no slot (a set built
 otherwise, full) it is dropped and counted: it is older than every point
-the queue holds. (Before, the prepend grew a floor queue past its two
+the queue holds. With no queue for the parameter and no spare queue to
+open, it is dropped and counted as well, and there it is the parameter's
+latest value; that is unreachable from the bridge, because every buffer
+holds the delivery's slot count (the parameters + 64) and every id it
+carries is one of those slots. (Before, the prepend grew a floor queue past its two
 points on the bridge thread.) A chunk can therefore arrive with
 `point_budget` points, and everything that receives one reserves that: the
 CLAP input event list's parameter room, the VST3 input list (the same
@@ -838,6 +842,12 @@ report them. The server's own copy of the plugin's parameter output
 plugin's parameters at the activated block's `chunk_room`, and again, at
 that room, when a plugin says its parameter list changed (a VST3
 `kParamTitlesChanged` or reload, an AU parameter-list change) and it grew.
+That re-reserve runs on the server's audio-phase thread between blocks,
+sized by the format's count query (`PluginInstance::parameter_count`), not
+the descriptor list. It helps a VST3 reload (the new instance's lists are
+sized at its activation) and an AU change; a VST3 `kParamTitlesChanged`
+without a reload keeps the instance's activation-time output and emitted
+queue counts, so the instance drops (and counts) points past them first.
 
 Per instance, at today's `chunk_room` (20 points at a 512-frame chunk, 132
 at 4096). The figures are point storage and queue headers (a queue 32

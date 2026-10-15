@@ -233,13 +233,22 @@ impl AudioPipeline {
 
     /// Re-reserves the plugin's parameter output for `queues` parameters,
     /// at the room it was reserved with, when it holds fewer queues: a
-    /// plugin whose parameter list grew after load. Called by `Session` when
-    /// the plugin says its list changed, **not on the audio thread**: it
-    /// allocates.
+    /// plugin whose parameter list grew after load. Called by `Session`'s
+    /// `drain_async_events` when the plugin says its list changed, which runs
+    /// **on the server's realtime audio-phase thread, between blocks**: a
+    /// growth allocates there, once per change; an unchanged or smaller list
+    /// does not.
     pub(crate) fn fit_params(&mut self, queues: usize) {
         if queues > self.plugin_output.param_changes.capacity() {
             self.plugin_output.reserve_params(queues, self.param_room);
         }
+    }
+
+    /// The parameter queues the plugin's output holds, for the session's
+    /// tests of when it is re-reserved.
+    #[cfg(test)]
+    pub(crate) fn param_queues(&self) -> usize {
+        self.plugin_output.param_changes.capacity()
     }
 
     /// Reseat the scratch variant when the session's negotiated format changes.

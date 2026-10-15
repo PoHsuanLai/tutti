@@ -212,6 +212,12 @@ impl Owed {
                 }
                 None if changes.open_queue(param_id) => changes.queues.len() - 1,
                 // No spare queue: past the queues, so dropped and counted.
+                // Here the carried value is the parameter's latest, and it
+                // is lost. Unreachable from the delivery: every buffer holds
+                // its slot count (the parameters + `SPARE_QUEUES`), and each
+                // id a block holds or the bridge carries is one of those
+                // slots. No `debug_assert`: a buffer built smaller reaches
+                // it, and the test below builds one.
                 None => changes.queues.len(),
             };
             let _ = changes.prepend_carried(i, carried);

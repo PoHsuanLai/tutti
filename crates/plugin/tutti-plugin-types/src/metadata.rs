@@ -255,6 +255,71 @@ mod tests {
         assert_eq!(bincode::serialize(&topology).unwrap(), seq(&topology));
     }
 
+    /// The [`LoadedPlugin`] behind [`GOLDEN_LOADED_PLUGIN`]: two input buses
+    /// (a six-speaker 5.1 bed and a mono bus with no topology) and a stereo
+    /// output, so the bus lists and `ChannelTopology`'s positions are both
+    /// on the wire.
+    fn golden_loaded_plugin() -> LoadedPlugin {
+        use tutti_types::Speaker;
+        let five_one = ChannelTopology::new([
+            Speaker::FrontLeft,
+            Speaker::FrontRight,
+            Speaker::FrontCenter,
+            Speaker::LowFrequency,
+            Speaker::BackLeft,
+            Speaker::BackRight,
+        ]);
+        LoadedPlugin {
+            inputs: [ChannelLayout::from_count(6), ChannelLayout::MONO]
+                .into_iter()
+                .collect(),
+            outputs: [ChannelLayout::STEREO].into_iter().collect(),
+            latency_samples: Samples::new(64),
+            tail: PluginTail::Finite(Samples::new(4800)),
+            features: Features::MIDI_IN | Features::TRANSPORT,
+            probed: Features::MIDI_IN | Features::TRANSPORT | Features::EDITOR,
+            input_topology: [Some(five_one), None].into_iter().collect(),
+            output_topology: [ChannelTopology::smpte(ChannelLayout::STEREO)]
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// `golden_loaded_plugin()` encoded by origin/main at `f07984d6`, the code
+    /// before `smallvec` was removed (bus lists and topology positions were
+    /// `SmallVec`s then). Recorded by running the same fixture there.
+    const GOLDEN_LOADED_PLUGIN: [u8; 113] = [
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00, 0xc0, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x2a,
+        0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x06, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    ];
+
+    /// **A load reply encodes to the bytes the code before this change
+    /// produced, and decodes from them.** Unlike the sequence-shape test
+    /// above, these bytes were recorded from the old code rather than
+    /// restated from the layout, so a host and a server built on either side
+    /// of the change are shown to exchange the same reply, topology positions
+    /// included.
+    ///
+    /// Mutation (run): `input_topology` and `output_topology` swapped in
+    /// `LoadedPlugin`'s declaration → the encoding differs → fails.
+    #[test]
+    fn a_load_reply_encodes_as_before_smallvec_was_removed() {
+        let value = golden_loaded_plugin();
+        assert_eq!(bincode::serialize(&value).unwrap(), GOLDEN_LOADED_PLUGIN);
+        let back: LoadedPlugin = bincode::deserialize(&GOLDEN_LOADED_PLUGIN).unwrap();
+        assert_eq!(back, value);
+        assert_eq!(
+            back.input_topology[0].as_ref().map(|t| t.positions().len()),
+            Some(6)
+        );
+    }
+
     /// Per-bus topology survives the real bincode wire, `None` entries included.
     ///
     /// The `None` is the load-bearing part: it means "this bus's placement is

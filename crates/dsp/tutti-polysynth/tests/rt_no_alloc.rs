@@ -13,11 +13,12 @@
 //! at runtime, or that frees the finished-indices buffer on the audio
 //! thread, would land here.
 //!
-//! Note that most tests below run at `max_voices: 8` — half the inline
-//! capacity — so they exercise the steady state but *not* the collection's
-//! worst case. `polysynth_all_voices_finishing_together_is_allocation_free`
-//! is the one that fills it; `max_voices` past the inline capacity is
-//! refused by the constructor and covered separately.
+//! Note that most tests below run at `max_voices: 8`, so they exercise the
+//! steady state but *not* the finished-indices list's worst case: every
+//! voice finishing in one block, which fills the list to the `max_voices`
+//! capacity it was sized with. `polysynth_all_voices_finishing_together_is_allocation_free`
+//! is the one that fills it, at 64 voices. The constructor puts no upper
+//! bound on `max_voices` (only 0 is refused).
 
 use assert_no_alloc::AllocDisabler;
 mod support;
@@ -179,7 +180,7 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
 }
 
 /// The case the tests above never reached: **every** voice finishing in the
-/// same block, at the maximum `max_voices` the constructor accepts.
+/// same block, at a `max_voices` well past the old 16-voice cap.
 ///
 /// `finished_indices` collects one entry per voice that finished, so this
 /// fills it exactly to its capacity: every voice releasing in the same block,

@@ -755,7 +755,11 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn rebuild_midi_cc_mapping(&mut self) {
         tutti_plugin_types::assert_main_thread();
-        self.audio.cc.mapping = MidiCcMapping::query(self.loaded.interfaces.controller.as_ref());
+        // Reserves the CC route's param scratch here, on the control thread,
+        // when the mapping becomes non-empty (and releases it when it empties).
+        self.audio.cc.set_mapping(MidiCcMapping::query(
+            self.loaded.interfaces.controller.as_ref(),
+        ));
     }
 
     /// Tells the plugin's audio processor to idle. Safe to call repeatedly;

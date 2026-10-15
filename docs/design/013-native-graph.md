@@ -3568,7 +3568,11 @@ Two audio-thread paths depended on the inline room and are reserved now:
 a `ParameterQueue` built per block had ten points inline, and a `Vec` has
 none, so `ParameterChanges::add_change` takes a spare queue as `open_queue`
 does, and the VST3 host reserves its output and CC-routing sets
-(`ParameterChanges::reserved`) and empties them with `clear`. The VST3
+(`ParameterChanges::reserved`) and empties them with `clear`. The CC-routing
+set is reserved only while the plugin has a CC mapping (`IMidiMapping`), at
+activation or when `rebuild_midi_cc_mapping` installs one on the control
+thread: at the parameter cap and a large block it is tens of megabytes, and
+most plugins map nothing. The VST3
 event list's text arena reserves its room once and refuses (and counts) a
 text past it, since the plugin holds pointers into it for the block.
 

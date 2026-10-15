@@ -632,8 +632,19 @@ fn drive_and_read_param_output(
     inst: &mut ClapActive<f32>,
     bufs: &mut StereoBufs,
 ) -> Vec<(u32, usize, f64)> {
+    drive_and_read_output(inst, bufs, &[]).0
+}
+
+/// [`drive_and_read_param_output`] with `midi` sent in, also returning how
+/// many note-offs the plugin's output carried.
+fn drive_and_read_output(
+    inst: &mut ClapActive<f32>,
+    bufs: &mut StereoBufs,
+    midi: &[MidiEvent],
+) -> (Vec<(u32, usize, f64)>, usize) {
     let transport = TransportInfo::default();
     let ctx = ClapProcessContext {
+        midi,
         transport: Some(&transport),
         ..Default::default()
     };
@@ -646,7 +657,8 @@ fn drive_and_read_param_output(
         sample_rate: SAMPLE_RATE,
     };
     let out = inst.process(&mut buffer, &ctx).expect("process");
-    out.param_changes
+    let queues = out
+        .param_changes
         .queues
         .iter()
         .map(|q| {
@@ -654,7 +666,9 @@ fn drive_and_read_param_output(
             let last = q.points.last().expect("an open queue has a point");
             (id, q.points.len(), last.value.get())
         })
-        .collect()
+        .collect();
+    let note_offs = out.midi_events.iter().filter(|e| e.is_note_off()).count();
+    (queues, note_offs)
 }
 
 /// The output queues the host reserves at activation for the reference
@@ -723,7 +737,8 @@ fn param_output_burst_does_not_allocate() {
 
 /// **Plugin parameter output past the reserved room is counted, not grown
 /// into.** Two bursts, each inside the gate and each within the output event
-/// list's own room (576 events), so only the queues are under test:
+/// list's own `PARAM_VALUE` room (16 queues × 20 points = 320 events), so
+/// only the queues are under test:
 ///
 /// - seventeen parameters with twelve points each: one more parameter than
 ///   the sixteen queues reserved. The first sixteen are kept whole; the last
@@ -794,15 +809,16 @@ fn param_output_past_the_room_is_counted_not_grown() {
 
 /// **A plugin pushing more output events than the host reserved is refused,
 /// not grown into.** The host reserves its output event list at activation
-/// for every parameter's points (16 queues × `chunk_room(512)` = 20) plus
-/// 256 more: 576 events. A plugin pushing 40 parameters × 20 points = 800
-/// events a block is told `false` for the last 224 of them each block, and
-/// the host counts each refusal (`ClapActive::output_events_refused`)
-/// instead of growing its list in the plugin's `try_push` on the audio
-/// thread.
+/// with room for every parameter's points (16 queues × `chunk_room(512)` =
+/// 20: 320 parameter events), and 256 more for everything else. A plugin
+/// pushing 40 parameters × 20 points = 800 parameter events a block, for ids
+/// that are not its own (so none has a latest-value slot), is told `false`
+/// for the last 480 of them each block, and the host counts each refusal
+/// (`ClapActive::output_events_refused`) instead of growing its list in the
+/// plugin's `try_push` on the audio thread.
 ///
-/// Mutation (run): `output_events_try_push` without the room check → aborts
-/// (the list grows past its reservation inside the gate). Mutation (run):
+/// Mutation (run): `output_events_try_push` without the parameter room check
+/// → aborts (the list grows past its reservation inside the gate). Mutation (run):
 /// the refusal not counted → the count assertion fails.
 #[test]
 fn output_events_past_the_room_are_refused_not_grown() {
@@ -817,10 +833,9 @@ fn output_events_past_the_room_are_refused_not_grown() {
         ..Default::default()
     };
     drive(&mut inst, &mut bufs, 32, &ctx).expect("warm-up blocks should succeed");
-    let room = 256
-        + OUTPUT_QUEUES as u64
-            * tutti_plugin_types::ParameterQueue::chunk_room(MAX_FRAMES as usize) as u64;
-    assert_eq!(room, 576);
+    let room = OUTPUT_QUEUES as u64
+        * tutti_plugin_types::ParameterQueue::chunk_room(MAX_FRAMES as usize) as u64;
+    assert_eq!(room, 320, "the parameter room");
     assert_eq!(inst.output_events_refused(), 0);
 
     const PARAMS: u32 = 40;
@@ -834,6 +849,97 @@ fn output_events_past_the_room_are_refused_not_grown() {
         inst.output_events_refused(),
         BLOCKS * (u64::from(PARAMS * POINTS) - room),
         "every push past the room is refused and counted"
+    );
+}
+
+fn set_param_output_own(points: u32) {
+    set_switch_u32(b"tutti_test_plugin_set_param_output_own\0", points);
+}
+
+/// **A parameter flood neither refuses a note-off nor loses a parameter's
+/// final value.** The plugin floods its own four parameters with 200 points
+/// each, every block (800 parameter events against a parameter room of 320),
+/// and echoes a note-on and a note-off after the flood (the probe's note
+/// mode). Under one shared room the note events came after the room was full
+/// and were refused: a stuck note, since plugins rarely check `try_push`.
+/// With separate rooms the note-off arrives every block, inside the gate,
+/// and nothing is refused. The 480 parameter values past the room are
+/// coalesced into a latest-value table, so every parameter still ends the
+/// block on its last value, 199/200; the points that cost is counted.
+///
+/// Points lost a block: the list holds parameter 0's 200 points and 120 of
+/// parameter 1's, which their 20-point queues reduce by 180 and 100; the
+/// table keeps one value per parameter for the other 80 + 200 + 200 (477
+/// overwritten), and parameter 1's latest replaces its queue's last point
+/// (1 more). 758.
+///
+/// Mutation (run): one shared room for every event (`try_push` refusing any
+/// push once the list holds `room + param_room`) → the note-off is refused
+/// and the note-off assertion fails. Mutation (run): no latest-value table
+/// (`coalesce_param` refusing every push) → the 480 values past the room
+/// are refused (parameters 2 and 3 would end with no queue) and the refusal
+/// assertion fails. Mutation (run): the parameter room check removed → the
+/// flood grows the list inside the gate and aborts.
+#[test]
+fn a_param_flood_keeps_note_offs_and_final_values() {
+    let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    reset_probe();
+    set_switch_u32(b"tutti_test_plugin_set_render_mode\0", 4); // Notes: MIDI thru
+    let mut inst = load_probe();
+    let mut bufs = StereoBufs::new();
+    let transport = TransportInfo::default();
+    let notes = [
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+    ];
+    let ctx = ClapProcessContext {
+        midi: &notes,
+        transport: Some(&transport),
+        ..Default::default()
+    };
+    drive(&mut inst, &mut bufs, 32, &ctx).expect("warm-up blocks should succeed");
+    let params = tutti_clap_test_plugin::params_state::probe_params();
+    assert_eq!(
+        params.len(),
+        4,
+        "the counts below assume the probe's four parameters"
+    );
+    let before = inst.output_param_points_dropped();
+
+    const POINTS: u32 = 200;
+    const BLOCKS: u64 = 16;
+    set_param_output_own(POINTS);
+    assert_no_alloc::assert_no_alloc(|| {
+        drive(&mut inst, &mut bufs, BLOCKS as usize, &ctx).expect("process");
+    });
+    let (queues, note_offs) = drive_and_read_output(&mut inst, &mut bufs, &notes);
+    set_switch_u32(b"tutti_test_plugin_set_render_mode\0", 0);
+
+    assert_eq!(
+        note_offs, 1,
+        "the note-off must survive the parameter flood"
+    );
+    assert_eq!(
+        inst.output_events_refused(),
+        0,
+        "the plugin's own ids are never refused"
+    );
+    assert_eq!(
+        queues.len(),
+        params.len(),
+        "every flooded parameter has a queue"
+    );
+    for (&(id, _, last), param) in queues.iter().zip(params) {
+        assert_eq!(id, param.id);
+        assert_eq!(
+            last,
+            f64::from(POINTS - 1) / f64::from(POINTS),
+            "parameter {id} must end on its final value"
+        );
+    }
+    assert_eq!(
+        inst.output_param_points_dropped() - before,
+        (BLOCKS + 1) * 758
     );
 }
 

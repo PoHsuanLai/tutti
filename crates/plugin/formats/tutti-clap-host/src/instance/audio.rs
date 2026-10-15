@@ -321,12 +321,17 @@ impl<T: ClapSample> ClapActive<T> {
         self.scratch.out_param_points_dropped
     }
 
-    /// Output events the plugin pushed past the room this instance was
-    /// activated for (every parameter's points for a block of
-    /// [`block_size`](super::ClapLoaded::block_size), plus 256 more), each
-    /// refused: the plugin's `try_push` returned `false` rather than the
-    /// host growing its list on the audio thread. Counted over this
-    /// instance's life; zero while the plugin stays within it.
+    /// Output events the plugin pushed past their room, each refused: the
+    /// plugin's `try_push` returned `false` rather than the host growing its
+    /// list on the audio thread. The rooms are separate: 256 events other
+    /// than parameter values (notes, MIDI, expressions), so a parameter flood
+    /// never refuses a note-off, and every parameter's points for a block of
+    /// [`block_size`](super::ClapLoaded::block_size). Past the parameter room
+    /// a value for one of the plugin's own parameters is not refused but kept
+    /// as that parameter's latest (the points it displaces are counted in
+    /// [`output_param_points_dropped`](Self::output_param_points_dropped));
+    /// one for an unknown id is refused. Counted over this instance's life;
+    /// zero while the plugin stays within its rooms.
     pub fn output_events_refused(&self) -> u64 {
         self.scratch.output_events.events_refused()
     }

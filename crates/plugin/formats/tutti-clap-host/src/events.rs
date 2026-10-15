@@ -1049,9 +1049,30 @@ pub struct OutputEventList {
     /// pointer aliases its own payload, and an arena reallocating mid-fill would
     /// dangle every pointer already handed out.
     pub(crate) sysex_pool: Vec<Vec<u8>>,
-    /// The events `try_push` accepts in one block: the room reserved with
-    /// [`reserve`](Self::reserve). Unbounded until set.
+    /// The events other than `PARAM_VALUE` `try_push` accepts in one block:
+    /// the room reserved with [`reserve`](Self::reserve). Unbounded until set.
+    /// Parameter events never take from it, so a parameter flood cannot
+    /// refuse a note-off.
     room: usize,
+    /// The `PARAM_VALUE` events `try_push` keeps in the list in one block:
+    /// the room set with [`set_param_room`](Self::set_param_room). Unbounded
+    /// until set.
+    param_room: usize,
+    /// `PARAM_VALUE` events in the list this block.
+    param_pushed: usize,
+    /// The plugin's parameter ids, sorted: the keys of `latest`.
+    latest_ids: Vec<u32>,
+    /// Per parameter (index-parallel to `latest_ids`), the latest
+    /// `PARAM_VALUE` pushed this block past `param_room`, so a flood still
+    /// delivers each parameter's final value.
+    latest: Vec<Option<clap_event_param_value>>,
+    /// The `latest` entries filled this block, in the order first filled.
+    /// Reserved for every parameter, so pushing never grows it.
+    touched: Vec<u32>,
+    /// `latest` values overwritten by a later one this block: points lost
+    /// in a flood, which [`fill_param_changes`](Self::fill_param_changes)
+    /// adds to the count it returns.
+    coalesced: u64,
     /// Pushes `try_push` refused since the list was built: see
     /// [`events_refused`](Self::events_refused).
     refused: u64,
@@ -1068,6 +1089,12 @@ impl OutputEventList {
             events: Vec::new(),
             sysex_pool: Vec::new(),
             room: usize::MAX,
+            param_room: usize::MAX,
+            param_pushed: 0,
+            latest_ids: Vec::new(),
+            latest: Vec::new(),
+            touched: Vec::new(),
+            coalesced: 0,
             refused: 0,
         }
     }
@@ -1083,10 +1110,14 @@ impl OutputEventList {
         &self.events
     }
 
-    /// Pushes the plugin's `try_push` made past the room set with
-    /// [`reserve`](Self::reserve), each refused (the plugin was told `false`)
-    /// rather than grown into. Counted since the list was built; zero while
-    /// the plugin stays within the room.
+    /// Pushes the plugin's `try_push` made past their room, each refused
+    /// (the plugin was told `false`) rather than grown into: an event other
+    /// than `PARAM_VALUE` past the room set with [`reserve`](Self::reserve),
+    /// or a `PARAM_VALUE` past the room set with
+    /// [`set_param_room`](Self::set_param_room) whose id is not one of the
+    /// plugin's parameters (a listed one keeps its latest value instead).
+    /// Counted since the list was built; zero while the plugin stays within
+    /// the room.
     pub fn events_refused(&self) -> u64 {
         self.refused
     }
@@ -1096,19 +1127,21 @@ impl OutputEventList {
         std::mem::take(&mut self.events)
     }
 
-    /// Reserve room for `n` events in all, and **bound the plugin's pushes
-    /// to it**: once the list holds `n` events, `try_push` refuses (returns
-    /// `false`, as CLAP lets it, and a plugin must handle) and counts the
-    /// refusal ([`events_refused`](Self::events_refused)), so the plugin's
-    /// callback never grows the list on the audio thread. Off-RT only; call
-    /// it at activation, and again when the block size grows.
+    /// Reserve room for `n` events other than `PARAM_VALUE` (notes, MIDI,
+    /// note expressions, SysEx, gestures), and **bound the plugin's pushes
+    /// of them to it**: once the block holds `n` of them, `try_push` refuses
+    /// (returns `false`, as CLAP lets it, and a plugin must handle) and
+    /// counts the refusal ([`events_refused`](Self::events_refused)), so the
+    /// plugin's callback never grows the list on the audio thread. Parameter
+    /// events have their own room ([`set_param_room`](Self::set_param_room))
+    /// and never take from this one. Off-RT only; call it at activation.
     ///
     /// Also pre-warms the SysEx payload pool: the pool is fed only by `clear`,
     /// so without priming, the first block emitting SysEx still allocates on
     /// the audio thread.
     pub fn reserve(&mut self, n: usize) {
-        self.events.reserve(n.saturating_sub(self.events.len()));
         self.room = n;
+        self.reserve_events();
 
         let wanted = n.min(SYSEX_POOL_PREWARM);
         self.sysex_pool.reserve(wanted);
@@ -1116,6 +1149,72 @@ impl OutputEventList {
             self.sysex_pool
                 .push(Vec::with_capacity(SYSEX_PREWARM_BYTES));
         }
+    }
+
+    /// Bound the `PARAM_VALUE` events the plugin's `try_push` keeps in the
+    /// list in one block to `points`, and key the latest-value table by
+    /// `param_ids` (the plugin's parameter ids). Off-RT; call it at
+    /// activation, with the plugin's parameter count times the points a
+    /// block can carry for one parameter
+    /// ([`ParameterQueue::chunk_room`]), and again when the block size
+    /// changes. **Grows only:** a smaller `points` keeps the larger room.
+    ///
+    /// Past the room, a push for one of `param_ids` is accepted into the
+    /// table instead of the list: the table holds each parameter's latest
+    /// such value, and [`fill_param_changes`](Self::fill_param_changes) folds
+    /// it in as that parameter's last point, so a flood loses middle points
+    /// (counted), never a parameter's final value. A push for any other id
+    /// is refused and counted ([`events_refused`](Self::events_refused)).
+    pub fn set_param_room(&mut self, points: usize, param_ids: &[u32]) {
+        self.param_room = if self.param_room == usize::MAX {
+            points
+        } else {
+            self.param_room.max(points)
+        };
+        let mut ids = param_ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        self.latest = vec![None; ids.len()];
+        self.touched = Vec::with_capacity(ids.len());
+        self.latest_ids = ids;
+        self.coalesced = 0;
+        self.reserve_events();
+    }
+
+    /// Capacity for both rooms, once both are bounded; grows only.
+    fn reserve_events(&mut self) {
+        if self.room != usize::MAX {
+            let params = if self.param_room == usize::MAX {
+                0
+            } else {
+                self.param_room
+            };
+            let wanted = self.room.saturating_add(params);
+            self.events
+                .reserve(wanted.saturating_sub(self.events.len()));
+        }
+    }
+
+    /// A `PARAM_VALUE` the plugin pushed past the parameter room: kept as its
+    /// parameter's latest value when the id is one of the plugin's (a binary
+    /// search, no scan), refused otherwise.
+    fn coalesce_param(&mut self, e: &clap_event_param_value) -> bool {
+        let Ok(i) = self.latest_ids.binary_search(&e.param_id) else {
+            self.refused += 1;
+            return false;
+        };
+        if self.latest[i].replace(*e).is_some() {
+            self.coalesced += 1;
+        } else {
+            // Each index enters `touched` once a block, and `touched` is
+            // reserved for every parameter: this push never grows it.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "an index into the plugin's parameter list, which CLAP counts in u32"
+            )]
+            self.touched.push(i as u32);
+        }
+        true
     }
 
     /// Extracts MIDI events from the output as UMP [`MidiEvent`]s,
@@ -1172,10 +1271,19 @@ impl OutputEventList {
     /// Past the room nothing grows. A point whose queue is full replaces that
     /// queue's last point, so the parameter still ends the block on its latest
     /// value; a point for a parameter with no queue left to open is lost.
-    /// Returns how many points went either way, for the caller to count.
+    /// Each parameter's latest value pushed past the list's own parameter
+    /// room ([`set_param_room`](Self::set_param_room)) is folded in after the
+    /// list's points, as its last. Returns how many points were lost any of
+    /// those ways (or overwritten in that table), for the caller to count.
+    #[must_use = "the points lost past the room; a caller counts them"]
     pub fn fill_param_changes(&self, out: &mut ParameterChanges) -> u64 {
+        debug_assert!(
+            out.capacity() > 0 || self.param_points().next().is_none(),
+            "fill_param_changes into a set with no reserved room drops every \
+             parameter event: reserve it with ParameterChanges::reserved"
+        );
         out.clear();
-        let mut dropped = 0u64;
+        let mut dropped = self.coalesced;
         for (addr, point) in self.param_points() {
             // Linear scan: distinct param_ids per block are typically few, and
             // the scan touches only the queues opened this block.
@@ -1205,12 +1313,18 @@ impl OutputEventList {
     }
 
     /// Each `PARAM_VALUE` event in the list as the queue it belongs to and
-    /// the point it adds, in list order.
+    /// the point it adds, in list order, then each parameter's latest value
+    /// pushed past the parameter room.
     fn param_points(&self) -> impl Iterator<Item = (ParamAddress, ParameterPoint)> + '_ {
-        self.events.iter().filter_map(|event| {
-            let ClapEvent::ParamValue(e) = event else {
-                return None;
-            };
+        let listed = self.events.iter().filter_map(|event| match event {
+            ClapEvent::ParamValue(e) => Some(e),
+            _ => None,
+        });
+        let latest = self
+            .touched
+            .iter()
+            .filter_map(|&i| self.latest[i as usize].as_ref());
+        listed.chain(latest).map(|e| {
             let point = ParameterPoint {
                 // Saturate rather than wrap: `header.time` is `u32` and
                 // `ParameterPoint::sample_offset` is `i32`, so a bare cast turns
@@ -1223,7 +1337,7 @@ impl OutputEventList {
             };
             // Outbound: a CLAP id is opaque, so it is tagged as such rather
             // than travelling as a number the receiver has to guess about.
-            Some((ParamAddress::Opaque(e.param_id.into()), point))
+            (ParamAddress::Opaque(e.param_id.into()), point)
         })
     }
 
@@ -1316,6 +1430,12 @@ impl EventList for OutputEventList {
     /// block; a plain `events.clear()` dropped the `Vec<u8>` inside each
     /// `MidiSysex`, pairing a free here with an allocation in `try_push`.
     fn clear(&mut self) {
+        self.param_pushed = 0;
+        self.coalesced = 0;
+        for &i in &self.touched {
+            self.latest[i as usize] = None;
+        }
+        self.touched.clear();
         for event in self.events.drain(..) {
             if let ClapEvent::MidiSysex { _data, .. } = event {
                 // `_data`'s capacity is what is worth keeping; the length is
@@ -1345,8 +1465,20 @@ unsafe extern "C" fn output_events_try_push(
 
     // Past the reserved room the push is refused, never grown into: this is
     // the plugin's callback, inside its `process`, on the audio thread. CLAP
-    // lets `try_push` fail, and a plugin must handle it.
-    if output_list.events.len() >= output_list.room {
+    // lets `try_push` fail, and a plugin must handle it. Parameter events and
+    // the rest have separate rooms, so a parameter flood cannot refuse a
+    // note-off (a refused note-off is a stuck note: plugins rarely check).
+    if header.type_ == CLAP_EVENT_PARAM_VALUE {
+        if output_list.param_pushed >= output_list.param_room {
+            let e = &*(event as *const clap_event_param_value);
+            return output_list.coalesce_param(e);
+        }
+    } else if output_list
+        .events
+        .len()
+        .saturating_sub(output_list.param_pushed)
+        >= output_list.room
+    {
         output_list.refused += 1;
         return false;
     }
@@ -1385,6 +1517,7 @@ unsafe extern "C" fn output_events_try_push(
         CLAP_EVENT_PARAM_VALUE => {
             let e = &*(event as *const clap_event_param_value);
             output_list.events.push(ClapEvent::ParamValue(*e));
+            output_list.param_pushed += 1;
             true
         }
         CLAP_EVENT_PARAM_MOD => {
@@ -1458,7 +1591,11 @@ mod tests {
         // `fill_param_changes` fills within the room the set was reserved
         // with (an unreserved set has none); one queue is all this needs.
         let mut changes = ParameterChanges::reserved(1, ParameterQueue::INLINE_POINTS);
-        list.fill_param_changes(&mut changes);
+        assert_eq!(
+            list.fill_param_changes(&mut changes),
+            0,
+            "nothing past the room"
+        );
 
         let point = changes
             .queues
@@ -2330,7 +2467,11 @@ mod tests {
         // unreserved set has none. Two queues, so a gesture or mod event
         // wrongly queued would show as a second one.
         let mut changes = ParameterChanges::reserved(2, ParameterQueue::INLINE_POINTS);
-        output.fill_param_changes(&mut changes);
+        assert_eq!(
+            output.fill_param_changes(&mut changes),
+            0,
+            "nothing past the room"
+        );
         assert_eq!(changes.queues.len(), 1, "only the PARAM_VALUE queued");
         assert_eq!(
             changes.queues[0].param_id,

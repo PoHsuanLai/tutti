@@ -12,6 +12,7 @@
 //! | [`crate::rt_probe::tutti_test_plugin_set_sysex_output_bytes`] | per-event `to_vec()` in `output_events_try_push` |
 //! | [`crate::rt_probe::tutti_test_plugin_set_audio_thread_log_lines`] | `String` + stderr lock + `Mutex` in `clap.log` |
 //! | [`crate::rt_probe::tutti_test_plugin_set_param_output`] | output parameter queues dropped and regrown per block |
+//! | [`crate::rt_probe::tutti_test_plugin_set_param_output_own`] | a parameter flood starving note events of output room |
 //! | [`WideLayout`]                 | `SmallVec<[*mut T; 16]>` spilling past its inline capacity |
 //!
 //! These are process-global switches because a `clap_process_status` is a
@@ -382,6 +383,10 @@ static PARAM_OUTPUT_PARAMS: AtomicU32 = AtomicU32::new(0);
 /// How many points each of those parameters gets per block.
 static PARAM_OUTPUT_POINTS: AtomicU32 = AtomicU32::new(0);
 
+/// Nonzero: [`emit_param_output`] writes the plugin's own parameters (its
+/// `clap.params` ids) instead of ids from [`PARAM_OUTPUT_FIRST_ID`].
+static PARAM_OUTPUT_OWN: AtomicU32 = AtomicU32::new(0);
+
 /// The id of the first parameter the parameter output writes; the rest
 /// follow it. Not one of the plugin's own ids: a host groups output points by
 /// id and does not check them against the plugin's list.
@@ -397,7 +402,25 @@ pub const PARAM_OUTPUT_FIRST_ID: u32 = 10_000;
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
 #[no_mangle]
 pub unsafe extern "C" fn tutti_test_plugin_set_param_output(params: u32, points: u32) {
+    PARAM_OUTPUT_OWN.store(0, Ordering::SeqCst);
     PARAM_OUTPUT_PARAMS.store(params, Ordering::SeqCst);
+    PARAM_OUTPUT_POINTS.store(points, Ordering::SeqCst);
+}
+
+/// Emit `points` `PARAM_VALUE` output events for **each of the plugin's own
+/// parameters** (its `clap.params` ids, in its list order), on every block:
+/// what a plugin reporting a dense automation of its own controls sends.
+/// 0 disables the output.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_set_param_output_own(points: u32) {
+    PARAM_OUTPUT_OWN.store(1, Ordering::SeqCst);
+    PARAM_OUTPUT_PARAMS.store(
+        crate::params_state::probe_params().len() as u32,
+        Ordering::SeqCst,
+    );
     PARAM_OUTPUT_POINTS.store(points, Ordering::SeqCst);
 }
 
@@ -418,7 +441,14 @@ pub(crate) unsafe fn emit_param_output(p: &clap_process) {
         return;
     };
     let frames = p.frames_count.max(1);
+    let own = PARAM_OUTPUT_OWN.load(Ordering::SeqCst) != 0;
+    let probe = crate::params_state::probe_params();
     for param in 0..params {
+        let param_id = if own {
+            probe[param as usize % probe.len()].id
+        } else {
+            PARAM_OUTPUT_FIRST_ID + param
+        };
         for k in 0..points {
             let ev = clap_event_param_value {
                 header: clap_event_header {
@@ -428,7 +458,7 @@ pub(crate) unsafe fn emit_param_output(p: &clap_process) {
                     type_: CLAP_EVENT_PARAM_VALUE,
                     flags: 0,
                 },
-                param_id: PARAM_OUTPUT_FIRST_ID + param,
+                param_id,
                 cookie: std::ptr::null_mut(),
                 note_id: -1,
                 port_index: -1,
@@ -466,4 +496,5 @@ pub unsafe extern "C" fn tutti_test_plugin_reset_rt_probe() {
     LOG_LINES_PER_BLOCK.store(0, Ordering::SeqCst);
     PARAM_OUTPUT_PARAMS.store(0, Ordering::SeqCst);
     PARAM_OUTPUT_POINTS.store(0, Ordering::SeqCst);
+    PARAM_OUTPUT_OWN.store(0, Ordering::SeqCst);
 }

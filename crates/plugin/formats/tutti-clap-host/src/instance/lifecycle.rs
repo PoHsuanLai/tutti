@@ -492,17 +492,20 @@ fn reserve_input_events<T: super::ClapSample>(scratch: &mut AudioScratch<T>, max
 /// Off the audio thread, between blocks: a re-reservation drops the old set,
 /// with whatever queues the last block left open in it, here.
 ///
-/// The output event list the plugin pushes into is reserved, and bounded, by
-/// the same formula: room for every one of those points on top of
-/// [`EVENT_SCRATCH_CAPACITY`] for MIDI, note expressions and the rest, so
-/// a plugin filling its parameter room is never refused for it. A push past
-/// that is refused (`ClapActive::output_events_refused`).
+/// The output event list the plugin pushes into has two rooms, each reserved
+/// and bounded: [`EVENT_SCRATCH_CAPACITY`] events for notes, MIDI, note
+/// expressions and the rest, and, by the same formula as the queues, every
+/// one of those parameter points. A parameter flood fills only its own room,
+/// so it never refuses a note-off; past it each of the plugin's parameters
+/// keeps its latest value. Both grow only. A push past either room is
+/// refused (`ClapActive::output_events_refused`).
 fn reserve_output_params<T: super::ClapSample>(scratch: &mut AudioScratch<T>, max_frames: usize) {
     let queues = scratch.param_ranges.len().max(PARAM_QUEUE_CAPACITY);
     let points = ParameterQueue::chunk_room(max_frames);
-    scratch
-        .output_events
-        .reserve(EVENT_SCRATCH_CAPACITY + queues * points);
+    let ids: Vec<u32> = scratch.param_ranges.iter().map(|&(id, _, _)| id).collect();
+    let events = &mut scratch.output_events;
+    events.reserve(EVENT_SCRATCH_CAPACITY);
+    events.set_param_room(queues * points, &ids);
     let out = &scratch.out_param_changes;
     // Grows only, as the input reservation does: a smaller block keeps the room.
     if out.capacity() < queues || out.point_capacity() < points {

@@ -1018,8 +1018,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   full retirement channel (a host that never collects) degrades to the free
   in the callback. No API change.
 
-- **A standalone `VoiceNode` can no longer be sent a command it would free
-  on the audio thread** (tutti-sampler). `VoiceNodeHandle::send` accepted
+- **Breaking: `VoiceNodeHandle::send` is removed; a standalone `VoiceNode`
+  can no longer be sent a command it would free on the audio thread**
+  (tutti-sampler). `VoiceNodeHandle::send` accepted
   any `VoiceCommand`, and the node's drain applied `UpdatePlacement` and
   dropped every other one in the callback, freeing what it carried: an
   `AddVoice`'s boxed `Voice`, a `ReplaceWave`'s wave (the last reference
@@ -1059,21 +1060,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     point.
   - Fixed: the `fill_midi_events` and `fill_note_expressions` docs called
     their buffers pooled `SmallVec`s; they are fixed-capacity `RtVec`s.
-  - **The plugin's `try_push` no longer grows the output event list on the
-    audio thread.** It pushed every event unconditionally into a list
-    reserved for 256, so a plugin pushing more in one block made the host
-    allocate inside the plugin's `process`. `OutputEventList::reserve(n)`
-    now also bounds the list to `n` events: past it `try_push` returns
-    `false` (CLAP lets it fail; a plugin must handle that) and counts the
-    refusal (`OutputEventList::events_refused`,
-    `ClapActive::output_events_refused`). The activated room is derived
-    from the output parameter room: every parameter's
-    `chunk_room(max_frames)` points (at least 16 parameters) plus 256 for
-    MIDI and the rest, re-derived on a block-size grow. **Memory:** about
-    19 MB at 2 000 parameters and a 4096-frame block, on the plugin-server
-    side, as for the input list. **Behaviour:** `reserve(n)` sets the room
-    to `n` events in total (it reserved `n` more); a list never reserved
-    is unbounded, as before.
+  - `fill_param_changes`' returned count is `#[must_use]`.
+
+- **The CLAP plugin's `try_push` no longer grows the output event list on
+  the audio thread, and a parameter flood no longer starves note events**
+  (tutti-clap-host). `try_push` pushed every event unconditionally into a
+  list reserved for 256, so a plugin pushing more in one block made the
+  host allocate inside the plugin's `process`. The list now has two
+  separate rooms, both reserved off the audio thread at activation:
+  - **Note, MIDI and other non-parameter events** get their own 256
+    (`OutputEventList::reserve(n)`). A parameter flood cannot use it, so
+    note-offs still arrive. Past it `try_push` returns `false` (CLAP lets
+    it fail; a plugin must handle that) and counts the refusal
+    (`OutputEventList::events_refused`, `ClapActive::output_events_refused`).
+  - **`PARAM_VALUE` events** get every parameter's
+    `ParameterQueue::chunk_room(max_frames)` points (at least 16
+    parameters), set with the new `OutputEventList::set_param_room(points,
+    ids)`. Past that room a point is folded into a preallocated
+    latest-value table keyed by the plugin's sorted parameter ids (a binary
+    search, no scan), so each parameter still ends the block on its latest
+    value; `fill_param_changes` counts the points that replaced in the
+    table as dropped. Only a point for an id the plugin never declared is
+    refused. The room is grow-only: a smaller block keeps the larger room.
+  - **Memory:** the output side is about 16.9 MB of event list plus about
+    4.6 MB of `out_param_changes`, about 21.5 MB, at 2 000 parameters and a
+    4096-frame block, and about 172 MB at 16 000 parameters, on the
+    plugin-server side, beside the input list's figure (design doc 014
+    §12). The arena follow-up there covers both sides.
+  - **Behaviour:** `reserve(n)` now bounds the non-parameter events to `n`
+    (it reserved `n` more); a list never reserved is unbounded, as before.
+    A list never given a parameter room is unbounded on that side too.
 
 - **A live in-process VST2 plugin behind a latent path was told the wrong
   playhead** (tutti-plugin; design doc 013, "In-process VST2 live transport

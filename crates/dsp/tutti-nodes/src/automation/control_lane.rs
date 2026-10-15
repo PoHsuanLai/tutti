@@ -565,8 +565,10 @@ impl Block<'_> {
                     }) if from.is_finite() && to.is_finite() && end.get() > beat => {
                         segment_shape(shape).map(|shape| {
                             let (s, e) = (start.get(), end.get());
-                            let seg = make(from, to, shape)
-                                .resumed(SamplePosition((beat - s) * f), SamplePosition((e - s) * f));
+                            let seg = make(from, to, shape).resumed(
+                                SamplePosition((beat - s) * f),
+                                SamplePosition((e - s) * f),
+                            );
                             (seg, from, to, Some((e - beat) * f))
                         })
                     }
@@ -676,10 +678,19 @@ impl Block<'_> {
                 .filter(|x| x.is_finite())
                 .map(f64::from)
                 .filter(|&x| (a - x) * (b - x) < 0.0)
-                .map(|x| (x - a) / (b - a))
-                .min_by(f64::total_cmp);
-            if let Some(x) = cross {
-                let k = (x * d).ceil();
+                .map(|x| ((x - a) / (b - a), x))
+                .min_by(|p, q| p.0.total_cmp(&q.0));
+            if let Some((x, bound)) = cross {
+                // The first frame at or past the crossing. `a` and `b` are
+                // `f32`s, so a crossing on a frame can compute a hair past
+                // it: a frame whose line value is the bound to `f32`
+                // precision is the crossing's own.
+                let line = |k: f64| a + (b - a) * k / d;
+                let mut k = (x * d).ceil();
+                let tol = bound.abs().max(1.0) * f64::from(f32::EPSILON);
+                if k > 1.0 && (line(k - 1.0) - bound).abs() <= tol {
+                    k -= 1.0;
+                }
                 if k >= 1.0 && k < d {
                     v1 = (a + (b - a) * k / d) as f32;
                     d = k;
@@ -687,8 +698,8 @@ impl Block<'_> {
             }
         }
         let (v0, v1) = (self.clamp(v0), self.clamp(v1));
-        let seg = make(v0, v1, SegmentShape::Linear)
-            .resumed(SamplePosition(0.0), SamplePosition(d));
+        let seg =
+            make(v0, v1, SegmentShape::Linear).resumed(SamplePosition(0.0), SamplePosition(d));
         if unchanged(None, v1, Some(d), &seg) {
             return Ok(());
         }
@@ -767,7 +778,10 @@ impl Block<'_> {
                 .iter()
                 .map(|c| c.at.index())
                 .find(|&i| i >= from && i < len);
-            let input = events.get(ev).map(|e| e.offset.index()).filter(|&i| i < len);
+            let input = events
+                .get(ev)
+                .map(|e| e.offset.index())
+                .filter(|&i| i < len);
             let next = [sched, change, input].into_iter().flatten().min();
             match next {
                 Some(p) => cur = Some((p, false)),
@@ -918,7 +932,11 @@ impl Node for ControlLaneNode {
             generation,
             knob: knob.map(f32::to_bits),
             range: range_bits,
-            end: Some((env.frame + Samples(len), cx.transport_at(last), cx.play_at(last))),
+            end: Some((
+                env.frame + Samples(len),
+                cx.transport_at(last),
+                cx.play_at(last),
+            )),
         };
         Status::Modified
     }

@@ -312,7 +312,11 @@ fn an_unrepresentable_piece_is_linear_on_the_grid() {
     let lane = || AutomationLaneNode::for_param(curve.clone(), ParamKey::<Hz>::CUTOFF);
     let a = check_grid(&curve, lane(), &ragged(total), 1e-4);
     let b = check_grid(&curve, lane(), &vec![MAX; total.div_ceil(MAX)], 1e-4);
-    assert_eq!(a[..], b[..a.len()], "the grid does not move with the blocks");
+    assert_eq!(
+        a[..],
+        b[..a.len()],
+        "the grid does not move with the blocks"
+    );
 }
 
 /// A curve that cannot say its pieces (`segment_at` is `None`: here a

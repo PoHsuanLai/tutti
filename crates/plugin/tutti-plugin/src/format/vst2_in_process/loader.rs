@@ -117,6 +117,8 @@ pub fn load_client(
         output_topology: Default::default(),
     };
 
+    // Read once, here: the node's parameter slots are sized from it.
+    let param_count = inner.parameter_count();
     let inner = Arc::new(Mutex::new(inner));
     let contention = Arc::new(AtomicU64::new(0));
     let param_sink = ParameterChangeSink::new();
@@ -143,6 +145,7 @@ pub fn load_client(
         pending_sample_rate,
         Arc::clone(&contention),
         Arc::from(path),
+        param_count,
     );
     // VST2 has an embeddable editor and carries a render mode: the same backend
     // Arc serves both optional slots, so a mode set through the handle reaches

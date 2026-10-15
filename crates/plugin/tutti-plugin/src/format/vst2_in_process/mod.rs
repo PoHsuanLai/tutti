@@ -14,3 +14,4 @@ mod node;
 
 pub use client::InProcessVst2Client;
 pub use loader::load_client;
+pub use node::InProcessVst2Controls;

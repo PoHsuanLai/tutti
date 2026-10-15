@@ -73,6 +73,9 @@ mod graph_node;
 mod meter;
 mod param_automation_source;
 mod param_delivery;
+// `pub(crate)` for the in-process VST2 node, which reads its event input's
+// parameter events through the same walk (see `param_delivery` below).
+pub(crate) mod param_input;
 mod process;
 mod segment_points;
 // `pub(crate)` rather than private: the in-process VST2 node
@@ -108,7 +111,14 @@ pub use param_automation_source::{
     LfoCurve, LfoOffset, OffsetCurve, PluginParamTarget, TimedParam,
 };
 pub use param_delivery::ParamDeliveryStats;
+// The in-process VST2 node (`crate::format::vst2_in_process`) delivers its
+// parameters through the same slots, segments and event walk as this node:
+// one copy of each.
+#[cfg(feature = "vst2")]
+pub(crate) use param_delivery::{DeliveryCounters, ParamDelivery};
 pub(crate) use process::ProcessGuard;
+#[cfg(feature = "vst2")]
+pub(crate) use segment_points::SegmentPoints;
 // The largest chunk that can cross the process edge. Re-exported because
 // `subprocess::launch` sizes the shared-memory slab from it — the slab and the
 // batcher must agree on the per-chunk ceiling or one of them is wrong.

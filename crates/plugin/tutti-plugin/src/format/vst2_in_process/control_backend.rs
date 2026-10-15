@@ -27,8 +27,8 @@ use crate::util::window::EditorSize;
 pub(crate) struct InProcessVst2Backend {
     pub(crate) inner: Arc<Mutex<Vst2Instance>>,
     pub(crate) param_sink: ParameterChangeSink,
-    /// The cell the audio unit parks a rate change in, shared with every clone
-    /// of the node. Drained here because telling a VST2 plugin its rate runs
+    /// The cell the audio unit parks a rate change in, shared with the
+    /// node. Drained here because telling a VST2 plugin its rate runs
     /// the `effMainsChanged` bracket, which allocates.
     pub(crate) pending_sample_rate: Arc<AtomicU64>,
 }

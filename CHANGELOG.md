@@ -1299,6 +1299,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The VST3 host no longer allocates on the audio thread for a block of
+  more than 73 events** (tutti-vst3-host). The input event list was sorted
+  with std's stable sort, which heap-allocates its scratch past 4 KiB (73
+  events). The list also grew past its 256 reserved events, and the
+  plugin's `addEvent` grew the output list.
+  - **Sort.** Both lists are sorted by `tutti_plugin_types::StableOrder`
+    (reserved scratch, `n log n`, stable: events on one frame keep source
+    order).
+  - **Cap.** Both lists hold 528 events (256 MIDI, 256 per-note
+    expressions, four of each harmony kind). Past that, events are
+    dropped and counted: `Vst3Active::events_dropped` and
+    `output_events_dropped` (new). A note-off past the room replaces the
+    latest-staged event that is not a note-off, so no note hangs.
+    `addEvent` past the room answers `kResultFalse`.
+  - **Parameter queues.** The VST3 parameter queues' refill and the
+    `IMidiMapping` route's point sort had the same std sort. It allocated
+    past 256 points in one queue, which is reachable from an 8 Ki-frame
+    block. Both now use `tutti_plugin_types::insertion_sort_by_key`.
+  - **New API.** `tutti_plugin_types::{insertion_sort_by_key, StableOrder}`
+    are the shared allocation-free stable sorts. The CLAP input list's
+    `sort_by_time` and `tutti-plugin`'s three copies of the MIDI insertion
+    sort now use them. Nothing is removed, so there is no migration.
+
 - **A MIDI input driver can no longer push into a freed ring**
   (tutti-midi-hardware). The producer handle was a raw pointer into a ring
   the port manager owned, so an ALSA pump thread still running while a

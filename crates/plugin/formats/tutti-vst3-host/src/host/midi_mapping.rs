@@ -239,9 +239,15 @@ pub(crate) fn route_cc_events(
 /// a jump up reads as a jump down. An unstable sort is free to swap equal
 /// keys, so it silently corrupts exactly the case the two-point form exists
 /// to express, and only when both sources land on the same frame.
+///
+/// And it must not allocate: this runs on the audio thread, and std's stable
+/// sort heap-allocates its scratch past 256 points while a queue holds up to a
+/// chunk's room and one more (`ParameterQueue::chunk_room`: past 256 from a
+/// block of 8 Ki frames). The points are two runs each in order (the host's,
+/// then the CCs'), so an insertion sort is near linear.
 pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
     for queue in params.queues.iter_mut() {
-        queue.points.sort_by_key(|point| point.sample_offset);
+        tutti_plugin_types::insertion_sort_by_key(&mut queue.points, |point| point.sample_offset);
     }
 }
 
@@ -669,6 +675,35 @@ mod tests {
     /// `add_point` has no cap, and a dense automation curve merged with CC
     /// traffic on one param exceeds it. A smaller fixture would pass against
     /// either sort and pin nothing.
+    /// **The merged points sort without allocating, past 256 in one queue**
+    /// (a chunk's room at a block of 8 Ki frames and more): std's stable
+    /// sort allocates its scratch past 256 points. Two runs, each in order
+    /// and interleaved, as the host's points and then the CCs' arrive.
+    ///
+    /// Mutation (run): `sort_param_points` back to
+    /// `queue.points.sort_by_key(|point| point.sample_offset)` aborts in the
+    /// gate.
+    #[test]
+    fn sorting_a_queue_past_256_points_does_not_allocate() {
+        const RUN: i32 = 150;
+        let mut params = ParameterChanges::reserved(1, 2 * RUN as usize);
+        let param = ParamAddress::Opaque(7u32.into());
+        for i in 0..RUN {
+            params.add_change(param, 2 * i, 0.25);
+        }
+        for i in 0..RUN {
+            params.add_change(param, 2 * i + 1, 0.75);
+        }
+        assert_eq!(params.queues[0].points.len(), 2 * RUN as usize);
+        assert_no_alloc::assert_no_alloc(|| sort_param_points(&mut params));
+        let offsets: Vec<i32> = params.queues[0]
+            .points
+            .iter()
+            .map(|p| p.sample_offset)
+            .collect();
+        assert_eq!(offsets, (0..2 * RUN).collect::<Vec<_>>());
+    }
+
     #[test]
     fn points_sharing_a_sample_offset_keep_their_insertion_order() {
         let mut params = ParameterChanges::reserved(1, 80);

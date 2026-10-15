@@ -16,7 +16,7 @@ use tutti_graph::{
 };
 use tutti_types::{ChannelLayout, Samples};
 
-use super::batcher::{sort_by_offset, Chunks};
+use super::batcher::Chunks;
 use super::param_delivery::ParamDelivery;
 use super::param_input;
 use super::segment_points::SegmentPoints;
@@ -315,7 +315,7 @@ impl Chunks for PluginChunks<'_> {
     /// came in. A stable insertion sort, in place: the list is short, and
     /// already sorted unless a chunk's frames came in out of order.
     fn payload(&mut self, _frames: usize) -> BlockPayload {
-        sort_by_offset(&mut self.pending.midi);
+        tutti_plugin_types::insertion_sort_by_key(&mut self.pending.midi, |e| e.frame_offset);
         std::mem::take(self.pending)
     }
 

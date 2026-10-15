@@ -11,22 +11,44 @@
 //! The cell enforces the single-thread discipline with a debug-build
 //! thread-identity assertion and compiles to a bare `UnsafeCell` in
 //! release; see [`tutti_types::AudioThreadCell`] for the wrapper.
+//!
+//! Nothing here allocates after construction. The list holds at most
+//! [`EVENT_CAPACITY`] events, reserved once; an event past it is dropped and
+//! counted ([`EventList::dropped`]), never grown into. And it is put in
+//! frame order by [`StableOrder`], whose scratch is reserved with it: std's
+//! stable sort borrows a scratch from the heap past 73 events.
 
 use vst3::Steinberg::{
-    kInvalidArgument, kResultOk, tresult,
+    kInvalidArgument, kResultFalse, kResultOk, tresult,
     Vst::{Event, IEventList, IEventListTrait},
 };
 use vst3::{Class, ComWrapper};
 
 use crate::types::{
     from_c_event, note_expression_to_vst3, to_c_event, TextArena, Vst3Event, Vst3InputEvents,
+    K_NOTE_OFF_EVENT,
 };
 // Only the `#[cfg(test)]` staging helper names this directly; the RT fill path
 // goes through `RtMidiEvents`.
 #[cfg(test)]
 use crate::types::MidiEvent;
-use tutti_plugin_types::RtMidiEvents;
+use tutti_plugin_types::{RtMidiEvents, StableOrder, HARMONY_CAPACITY, MIDI_STACK_CAPACITY};
 use tutti_types::AudioThreadCell;
+
+/// The events one list holds in a block: what its sources can deliver.
+///
+/// - **MIDI**: at most [`MIDI_STACK_CAPACITY`]. The host's chunk and the
+///   wire decode both cap it there, and each message stages as one event
+///   at most.
+/// - **Chords, scales, per-note texts and per-note integer expressions**:
+///   at most [`HARMONY_CAPACITY`] of each kind, by their containers' type.
+/// - **Per-note expression values**: nothing upstream caps them (the plugin
+///   node sends none today; the wire carries a `Vec`). They get a MIDI
+///   block's worth, [`MIDI_STACK_CAPACITY`], as the room for one
+///   expression per MIDI event.
+///
+/// A plugin's output list (`addEvent`) is held to the same room.
+pub(crate) const EVENT_CAPACITY: usize = 2 * MIDI_STACK_CAPACITY + 4 * HARMONY_CAPACITY;
 
 /// Per-block event storage. Both members are written **only** while staging
 /// (`update_from_sources` / `addEvent`) and only *read* by `getEvent`, which is
@@ -45,13 +67,20 @@ struct Inner {
     /// handed out is never moved; a text past the room is refused and
     /// counted ([`TextArena`]).
     text_arena: TextArena,
+    /// The sort's scratch, reserved for [`EVENT_CAPACITY`] events.
+    order: StableOrder,
+    /// Events dropped for want of room since the list was made
+    /// ([`EventList::dropped`]).
+    dropped: u64,
 }
 
 impl Default for Inner {
     fn default() -> Self {
         Self {
-            events: Vec::with_capacity(256),
+            events: Vec::with_capacity(EVENT_CAPACITY),
             text_arena: TextArena::new(),
+            order: StableOrder::with_capacity(EVENT_CAPACITY),
+            dropped: 0,
         }
     }
 }
@@ -62,6 +91,57 @@ impl Inner {
     fn clear(&mut self) {
         self.events.clear();
         self.text_arena.clear();
+    }
+
+    /// Whether one more event fits without growing the list.
+    fn has_room(&self) -> bool {
+        self.events.len() < EVENT_CAPACITY
+    }
+
+    /// Stage `event`, within the room: never grows the list. Returns whether
+    /// it was staged.
+    ///
+    /// Past the room, **a note-off is kept and something else gives way**:
+    /// the latest-staged event that is not a note-off is dropped to make
+    /// room for it. A dropped note-on leaves at worst a note unplayed, but a
+    /// dropped note-off leaves one sounding until the plugin is reset. Every
+    /// other event past the room is dropped. Either way one event is lost,
+    /// and counted. The events kept keep the order they were staged in, so
+    /// equal offsets still sort in source order. A list full of note-offs
+    /// drops the new one.
+    fn push(&mut self, event: Vst3Event) -> bool {
+        if self.has_room() {
+            self.events.push(event);
+            return true;
+        }
+        self.dropped += 1;
+        if !matches!(event, Vst3Event::NoteOff(_)) {
+            return false;
+        }
+        match self
+            .events
+            .iter()
+            .rposition(|e| !matches!(e, Vst3Event::NoteOff(_)))
+        {
+            Some(evict) => {
+                // `remove` shifts within the reserved storage; the push
+                // after it lands in the slot it freed.
+                self.events.remove(evict);
+                self.events.push(event);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Put the staged events in frame order, stably. Never allocates.
+    fn sort(&mut self) {
+        // Order-preserving map of the signed offset onto `u32`: flipping the
+        // sign bit puts negative offsets (which a plugin may hand `addEvent`)
+        // below zero, as `i32` order does.
+        self.order.sort_by_key(&mut self.events, |e| {
+            e.sample_offset().cast_unsigned() ^ 0x8000_0000
+        });
     }
 }
 
@@ -95,34 +175,43 @@ impl EventList {
     /// per-note expression (value + int), chord, scale, and per-note text. Text
     /// for chord/scale/text events is interned into the arena so the borrowed
     /// `text` pointers stay valid for the block. Events are sorted by frame
-    /// offset, as VST3's event list requires.
+    /// offset, as VST3's event list requires, and stably: events on one frame
+    /// keep the order of the sources above, and each source's own order (a
+    /// note-off before the note-on that reuses its key).
+    ///
+    /// Never allocates. Past [`EVENT_CAPACITY`] events, the rest are dropped
+    /// and counted, except that a note-off takes the place of an event
+    /// staged before it (see [`dropped`](Self::dropped)).
     pub fn update_from_sources(&self, src: &Vst3InputEvents) {
         let mut inner = self.inner.borrow_mut();
         inner.clear();
-        let Inner {
-            events, text_arena, ..
-        } = &mut *inner;
-        events.extend(src.midi.iter().filter_map(Vst3Event::from_midi));
+        for event in src.midi.iter().filter_map(Vst3Event::from_midi) {
+            inner.push(event);
+        }
         // `note_expression_to_vst3` returns `None` for a dimension VST3 can't
         // encode (Pressure/Expression); those are skipped, not coerced.
-        events.extend(
-            src.note_expressions
-                .iter()
-                .filter_map(note_expression_to_vst3),
-        );
-        for expr in src.expr_ints {
-            events.push(expr.to_vst3_event());
+        for event in src
+            .note_expressions
+            .iter()
+            .filter_map(note_expression_to_vst3)
+        {
+            inner.push(event);
         }
+        for expr in src.expr_ints {
+            inner.push(expr.to_vst3_event());
+        }
+        // A text-bearing event is checked for room before its text is
+        // interned, so one that will be dropped spends none of the arena.
         for chord in src.chords {
-            events.push(chord.to_vst3_event(text_arena));
+            stage_with_text(&mut inner, |arena| chord.to_vst3_event(arena));
         }
         for scale in src.scales {
-            events.push(scale.to_vst3_event(text_arena));
+            stage_with_text(&mut inner, |arena| scale.to_vst3_event(arena));
         }
         for text in src.expr_texts {
-            events.push(text.to_vst3_event(text_arena));
+            stage_with_text(&mut inner, |arena| text.to_vst3_event(arena));
         }
-        events.sort_by_key(|e| e.sample_offset());
+        inner.sort();
     }
 
     pub fn clear(&self) {
@@ -134,6 +223,13 @@ impl EventList {
     /// The event itself was still staged, with an empty text.
     pub fn text_dropped(&self) -> usize {
         self.inner.borrow().text_arena.dropped()
+    }
+
+    /// Events this list dropped for want of room since it was made: staged
+    /// past [`EVENT_CAPACITY`] in one block (by the host, or by the plugin
+    /// through `addEvent`), or given way to a later note-off.
+    pub fn dropped(&self) -> u64 {
+        self.inner.borrow().dropped
     }
 
     #[cfg(test)]
@@ -187,16 +283,33 @@ impl IEventListTrait for EventList {
         }
         let c_event = &*e;
         let mut inner = self.inner.borrow_mut();
-        let Inner {
-            events, text_arena, ..
-        } = &mut *inner;
-        match from_c_event(c_event, text_arena) {
+        // Checked before the conversion interns the event's text: a full
+        // list refuses a non-note-off without spending the arena on it.
+        if !inner.has_room() && c_event.r#type != K_NOTE_OFF_EVENT {
+            inner.dropped += 1;
+            return kResultFalse;
+        }
+        match from_c_event(c_event, &mut inner.text_arena) {
             Some(ev) => {
-                events.push(ev);
-                kResultOk
+                if inner.push(ev) {
+                    kResultOk
+                } else {
+                    kResultFalse
+                }
             }
             None => kInvalidArgument,
         }
+    }
+}
+
+/// Stage a text-bearing event (`make` interns its text), or drop it, counted,
+/// without touching the arena when the list has no room for it.
+fn stage_with_text(inner: &mut Inner, make: impl FnOnce(&mut TextArena) -> Vst3Event) {
+    if inner.has_room() {
+        let event = make(&mut inner.text_arena);
+        inner.push(event);
+    } else {
+        inner.dropped += 1;
     }
 }
 
@@ -564,5 +677,307 @@ mod tests {
                 list.clear();
             }
         });
+    }
+
+    /// The kind and identity of a staged event, to read an order back: a
+    /// MIDI note by its pitch, a per-note expression by its note id, a
+    /// chord by its root, a scale by its root.
+    fn tag(e: &Vst3Event) -> (&'static str, i32) {
+        match e {
+            Vst3Event::NoteOn(n) => ("on", i32::from(n.pitch)),
+            Vst3Event::NoteOff(n) => ("off", i32::from(n.pitch)),
+            Vst3Event::NoteExpression(x) => ("expr", x.note_id),
+            Vst3Event::NoteExpressionInt(x) => ("int", x.note_id),
+            Vst3Event::Chord(c) => ("chord", i32::from(c.root)),
+            Vst3Event::Scale(c) => ("scale", i32::from(c.root)),
+            Vst3Event::NoteExpressionText(x) => ("text", x.note_id),
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+
+    fn staged(list: &EventList) -> Vec<(i32, (&'static str, i32))> {
+        list.inner
+            .borrow()
+            .events
+            .iter()
+            .map(|e| (e.sample_offset(), tag(e)))
+            .collect()
+    }
+
+    fn expr(offset: i32, note_id: i32) -> NoteExpressionValue {
+        NoteExpressionValue {
+            sample_offset: offset,
+            note_id,
+            expression_type: crate::types::NoteExpressionType::Tuning,
+            value: 0.5,
+        }
+    }
+
+    fn chord(offset: i32, root: i16) -> ChordValue {
+        ChordValue {
+            sample_offset: offset,
+            root,
+            bass_note: 0,
+            mask: 0,
+            text: "C".encode_utf16().collect(),
+        }
+    }
+
+    /// **A full block from every source stages without allocating**:
+    /// [`EVENT_CAPACITY`] events (256 MIDI on even frames, 256 per-note
+    /// expressions on odd ones, and four of each harmony kind on frames
+    /// running backwards), every source in its own order and the sources
+    /// interleaved, so the sort moves events across the whole list. Std's
+    /// stable sort allocates past 73 of these.
+    ///
+    /// Mutations (run): `Inner::sort` back to
+    /// `self.events.sort_by_key(|e| e.sample_offset())` aborts in the gate,
+    /// as does `Inner::push` pushing past the room
+    /// (`self.events.push(event); return true;` first) when the block is
+    /// staged twice its room.
+    #[test]
+    fn a_full_block_from_every_source_stages_without_allocating() {
+        use tutti_plugin_types::{HARMONY_CAPACITY, MIDI_STACK_CAPACITY};
+        let midi: Vec<MidiEvent> = (0..MIDI_STACK_CAPACITY)
+            .map(|i| {
+                MidiEvent::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    (i % 128) as u8,
+                    0x8000,
+                )
+                .with_frame_offset(2 * i as u32)
+            })
+            .collect();
+        let note_expressions: Vec<NoteExpressionValue> = (0..MIDI_STACK_CAPACITY as i32)
+            .map(|i| expr(2 * i + 1, i))
+            .collect();
+        let backwards = |i: usize| (HARMONY_CAPACITY - i) as i32 * 100;
+        let chords: Vec<ChordValue> = (0..HARMONY_CAPACITY)
+            .map(|i| chord(backwards(i), i as i16))
+            .collect();
+        let scales: Vec<ScaleValue> = (0..HARMONY_CAPACITY)
+            .map(|i| ScaleValue {
+                sample_offset: backwards(i),
+                root: i as i16,
+                mask: 0,
+                text: "D".encode_utf16().collect(),
+            })
+            .collect();
+        let expr_texts: Vec<NoteExpressionText> = (0..HARMONY_CAPACITY)
+            .map(|i| NoteExpressionText {
+                sample_offset: backwards(i),
+                note_id: i as i32,
+                type_id: 0,
+                text: "la".encode_utf16().collect(),
+            })
+            .collect();
+        let expr_ints: Vec<NoteExpressionIntValue> = (0..HARMONY_CAPACITY)
+            .map(|i| NoteExpressionIntValue {
+                sample_offset: backwards(i),
+                note_id: i as i32,
+                type_id: 0,
+                value: 1,
+            })
+            .collect();
+        let src = Vst3InputEvents {
+            midi: &midi,
+            note_expressions: &note_expressions,
+            chords: &chords,
+            scales: &scales,
+            expr_texts: &expr_texts,
+            expr_ints: &expr_ints,
+        };
+
+        let list = EventList::new();
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..4 {
+                list.update_from_sources(&src);
+            }
+        });
+        assert_eq!(list.len(), EVENT_CAPACITY, "every event fits the room");
+        assert_eq!(list.dropped(), 0);
+        let offsets: Vec<i32> = staged(&list).iter().map(|(o, _)| *o).collect();
+        assert!(offsets.is_sorted(), "in frame order: {offsets:?}");
+
+        // Twice the room: the rest is dropped, counted, never grown into.
+        let twice = Vst3InputEvents {
+            midi: &[midi.as_slice(), midi.as_slice()].concat(),
+            note_expressions: &[note_expressions.as_slice(), note_expressions.as_slice()].concat(),
+            ..src
+        };
+        assert_no_alloc::assert_no_alloc(|| list.update_from_sources(&twice));
+        assert_eq!(list.len(), EVENT_CAPACITY);
+        let offered = 2 * (MIDI_STACK_CAPACITY + MIDI_STACK_CAPACITY) + 4 * HARMONY_CAPACITY;
+        assert_eq!(list.dropped(), (offered - EVENT_CAPACITY) as u64);
+    }
+
+    /// **Events on one frame keep their source order**: the sources' order
+    /// (MIDI, then per-note expressions, integer expressions, chords), and
+    /// each source's own (a note-off before the note-on that reuses its key).
+    /// 330 events on ten frames, the expressions arriving on frames running
+    /// backwards, so the sort has many equal keys to move past each other.
+    ///
+    /// Mutation (run): `Inner::sort` as `self.events.sort_unstable_by_key(..)`
+    /// fails here (equal frames transposed).
+    #[test]
+    fn events_on_one_frame_keep_their_source_order() {
+        // 12 MIDI events a frame, alternating off/on, the pitch their arrival.
+        let midi: Vec<MidiEvent> = (0..120u8)
+            .map(|i| {
+                let e = if i % 2 == 0 {
+                    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, i, 0)
+                } else {
+                    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, i, 0x8000)
+                };
+                e.with_frame_offset(u32::from(i / 12))
+            })
+            .collect();
+        // 20 expressions a frame, frames 9 down to 0.
+        let note_expressions: Vec<NoteExpressionValue> =
+            (0..200).map(|j| expr(9 - j / 20, j)).collect();
+        let expr_ints: Vec<NoteExpressionIntValue> = (0..4)
+            .map(|j| NoteExpressionIntValue {
+                sample_offset: 5,
+                note_id: j,
+                type_id: 0,
+                value: 1,
+            })
+            .collect();
+        let chords: Vec<ChordValue> = (0..4).map(|j| chord(5, j)).collect();
+
+        let list = EventList::new();
+        list.update_from_sources(&Vst3InputEvents {
+            midi: &midi,
+            note_expressions: &note_expressions,
+            chords: &chords,
+            expr_ints: &expr_ints,
+            ..Default::default()
+        });
+
+        // The expected order, built from the sources: every event in source
+        // order, then a stable sort by frame (outside any gate).
+        let mut expected: Vec<(i32, (&'static str, i32))> = Vec::new();
+        for i in 0..120i32 {
+            let kind = if i % 2 == 0 { "off" } else { "on" };
+            expected.push((i / 12, (kind, i)));
+        }
+        for j in 0..200 {
+            expected.push((9 - j / 20, ("expr", j)));
+        }
+        for j in 0..4 {
+            expected.push((5, ("int", j)));
+        }
+        for j in 0..4 {
+            expected.push((5, ("chord", j)));
+        }
+        expected.sort_by_key(|(offset, _)| *offset);
+        assert_eq!(staged(&list), expected);
+    }
+
+    /// **Past the room, a note-off is kept and a note-on gives way, and
+    /// every loss is counted once; the list never grows.** A block of
+    /// [`EVENT_CAPACITY`] note-ons and then ten note-offs keeps all ten
+    /// note-offs, in place of the last ten note-ons. A chord past the room
+    /// is dropped without spending the text arena.
+    ///
+    /// Mutations (run): `Inner::push` returning `false` for every event past
+    /// the room (no eviction) fails the note-off assertion; the
+    /// `self.dropped += 1` removed fails the count; `stage_with_text`
+    /// interning before its room check fails the arena assertion.
+    #[test]
+    fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
+        let ons = EVENT_CAPACITY;
+        let midi: Vec<MidiEvent> = (0..ons)
+            .map(|i| {
+                MidiEvent::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    (i % 100) as u8,
+                    0x8000,
+                )
+                .with_frame_offset(i as u32)
+            })
+            .chain((0..10u8).map(|k| {
+                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 100 + k, 0)
+                    .with_frame_offset(ons as u32)
+            }))
+            .collect();
+        let chords = [chord(0, 1)];
+        let src = Vst3InputEvents {
+            midi: &midi,
+            chords: &chords,
+            ..Default::default()
+        };
+
+        let list = EventList::new();
+        let capacity = list.inner.borrow().events.capacity();
+        assert_no_alloc::assert_no_alloc(|| list.update_from_sources(&src));
+        assert_eq!(
+            list.inner.borrow().events.capacity(),
+            capacity,
+            "the list never grew"
+        );
+        assert_eq!(list.len(), EVENT_CAPACITY);
+        assert_eq!(list.dropped(), 11, "ten note-ons gave way, and the chord");
+        assert!(
+            list.inner.borrow().text_arena.is_empty(),
+            "the dropped chord spent no text"
+        );
+
+        let events = staged(&list);
+        let offs: Vec<i32> = events
+            .iter()
+            .filter(|(_, (kind, _))| *kind == "off")
+            .map(|(_, (_, pitch))| *pitch)
+            .collect();
+        assert_eq!(offs, (100..110).collect::<Vec<_>>(), "every note-off kept");
+        // The note-ons that gave way are the last ten staged.
+        let last_on = events
+            .iter()
+            .rev()
+            .find(|(_, (kind, _))| *kind == "on")
+            .unwrap();
+        assert_eq!(last_on.0, (ons - 11) as i32);
+    }
+
+    /// **`addEvent` refuses past the room, counted**: the plugin's output list
+    /// holds [`EVENT_CAPACITY`] events and answers `kResultFalse` for the
+    /// next, without growing.
+    ///
+    /// A refused chord spends none of the text arena.
+    ///
+    /// Mutations (run): `addEvent`'s room check removed fails the arena
+    /// assertion (the chord's text is interned, then the event refused);
+    /// that and `Inner::push` growing past the room together abort in the
+    /// gate.
+    #[test]
+    fn add_event_refuses_past_the_room() {
+        let list = EventList::new();
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        let mut on = to_c_event(&Vst3Event::NoteOn(make_note_on()), &[]);
+        let mut chord_arena = TextArena::new();
+        let chord_event = chord(0, 1).to_vst3_event(&mut chord_arena);
+        let mut chord_c = to_c_event(&chord_event, &chord_arena);
+        let mut results = [0; 4];
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..EVENT_CAPACITY - 1 {
+                assert_eq!(unsafe { ptr.addEvent(&mut on) }, kResultOk);
+            }
+            for r in &mut results[..3] {
+                *r = unsafe { ptr.addEvent(&mut on) };
+            }
+            results[3] = unsafe { ptr.addEvent(&mut chord_c) };
+        });
+        assert_eq!(
+            results,
+            [kResultOk, kResultFalse, kResultFalse, kResultFalse]
+        );
+        assert_eq!(unsafe { ptr.getEventCount() } as usize, EVENT_CAPACITY);
+        assert_eq!(list.dropped(), 3);
+        assert!(
+            list.inner.borrow().text_arena.is_empty(),
+            "the refused chord spent no text"
+        );
     }
 }

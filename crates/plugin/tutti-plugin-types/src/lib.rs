@@ -17,6 +17,7 @@ mod metadata;
 mod midi;
 mod note_expression;
 mod note_id;
+mod order;
 mod parameters;
 mod points;
 mod presets;
@@ -53,6 +54,7 @@ pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescrip
 pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
 };
+pub use order::{insertion_sort_by_key, StableOrder};
 pub use points::{PointBuf, PointPool};
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a
 // glob import.

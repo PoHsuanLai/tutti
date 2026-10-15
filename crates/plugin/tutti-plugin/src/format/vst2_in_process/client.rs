@@ -422,7 +422,7 @@ pub(super) fn drive_f32(
     // MIDI rather than play it a block late. Sorted, stably: a queue may hold
     // it out of order.
     let mut midi_events = std::mem::take(midi);
-    sort_midi(&mut midi_events);
+    tutti_plugin_types::insertion_sort_by_key(&mut midi_events, |e| e.frame_offset);
     match inner.try_lock() {
         Some(mut instance) => {
             apply_params(&instance, params);
@@ -466,18 +466,6 @@ fn apply_params(instance: &Vst2Instance, params: &ParamDelivery) {
         }
     }
     params.refused(refused);
-}
-
-/// Sort `events` by frame offset, stably, in place: an insertion sort, for a
-/// short list, nearly sorted. Allocation-free.
-fn sort_midi(events: &mut MidiEventVec) {
-    for i in 1..events.len() {
-        let mut j = i;
-        while j > 0 && events[j - 1].frame_offset > events[j].frame_offset {
-            events.swap(j - 1, j);
-            j -= 1;
-        }
-    }
 }
 
 #[cfg(test)]

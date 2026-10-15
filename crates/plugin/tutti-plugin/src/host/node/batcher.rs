@@ -204,18 +204,6 @@ pub(super) trait Chunks {
     fn emit(&mut self, frame: usize, event: MidiEvent);
 }
 
-/// Sort `events` by frame offset, stably, in place: an insertion sort, for
-/// lists that are short and nearly sorted. Allocation-free.
-pub(super) fn sort_by_offset(events: &mut MidiEventVec) {
-    for i in 1..events.len() {
-        let mut j = i;
-        while j > 0 && events[j - 1].frame_offset > events[j].frame_offset {
-            events.swap(j - 1, j);
-            j -= 1;
-        }
-    }
-}
-
 /// The pipeline between the plugin node and the plugin-server bridge: an
 /// input FIFO that ships a chunk when full, and an output ring the previous
 /// chunk's output is read from.
@@ -462,7 +450,7 @@ impl Batcher {
         for e in self.reply.iter_mut() {
             e.frame_offset = e.frame_offset.min(last);
         }
-        sort_by_offset(&mut self.reply);
+        tutti_plugin_types::insertion_sort_by_key(&mut self.reply, |e| e.frame_offset);
         host.midi_out(&self.reply);
         self.expect_seq = None;
     }

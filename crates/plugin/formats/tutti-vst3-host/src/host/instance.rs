@@ -756,6 +756,26 @@ impl<T: Vst3Sample> Vst3Active<T> {
         self.audio.input.events.text_dropped() + self.audio.output.events.text_dropped()
     }
 
+    /// Input events not handed to the plugin since activation because the
+    /// block staged more than the input event list's reserved room (MIDI,
+    /// note expressions, chords, scales and per-note texts together). The
+    /// list never grows on the audio thread; past its room a note-off still
+    /// takes the place of an earlier event, so no note is left hanging, and
+    /// every other event is dropped. Each lost event is counted once. Zero
+    /// while a block stays within the room. Read on this instance only, like
+    /// [`param_points_dropped`](Self::param_points_dropped).
+    pub fn events_dropped(&self) -> u64 {
+        self.audio.input.events.dropped()
+    }
+
+    /// Events the plugin emitted through `addEvent` that its output list
+    /// refused (with `kResultFalse`) or that gave way to a later note-off,
+    /// since activation: past the room the list reserved, as for
+    /// [`events_dropped`](Self::events_dropped).
+    pub fn output_events_dropped(&self) -> u64 {
+        self.audio.output.events.dropped()
+    }
+
     /// Host parameter points not handed to the plugin whole since
     /// activation: the input list holds a chunk's points as the host's chunk
     /// does (a few per parameter and a shared pool of a chunk's room), and a

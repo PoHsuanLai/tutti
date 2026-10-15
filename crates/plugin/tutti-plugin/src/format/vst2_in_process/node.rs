@@ -172,7 +172,7 @@ impl Node for InProcessVst2Client {
         // Set on the plugin with the block, or owed to the next one.
         self.params.handed_off(processed);
         if sends {
-            sort_by_offset(&mut out_events);
+            tutti_plugin_types::insertion_sort_by_key(&mut out_events, |e| e.frame_offset);
             let writer = io.event_out(0);
             let block = Samples(size);
             for e in &out_events {
@@ -199,17 +199,6 @@ impl Node for InProcessVst2Client {
         // legal while resumed. Neither may race the audio thread's `process`.
         // `Vst2Instance::reset_processing_state` is that cycle, on the main
         // thread, for a host that wants it on a locate or a loop wrap.
-    }
-}
-
-/// Stable insertion sort by frame offset; allocation-free.
-fn sort_by_offset(events: &mut crate::protocol::MidiEventVec) {
-    for i in 1..events.len() {
-        let mut j = i;
-        while j > 0 && events[j - 1].frame_offset > events[j].frame_offset {
-            events.swap(j - 1, j);
-            j -= 1;
-        }
     }
 }
 

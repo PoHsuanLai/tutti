@@ -191,6 +191,9 @@ pub(crate) struct AudioPipeline {
     /// Read back through [`midi_out`](Self::midi_out) after each
     /// [`process`](Self::process); it is cleared at the top of the next one.
     plugin_output: ProcessOutput,
+    /// The point room `plugin_output`'s parameter queues were reserved with
+    /// ([`reserve_params`](Self::reserve_params)).
+    param_room: usize,
 }
 
 impl AudioPipeline {
@@ -200,6 +203,7 @@ impl AudioPipeline {
         Self {
             buffers: AudioBuffers::new(format),
             plugin_output: ProcessOutput::default(),
+            param_room: 0,
         }
     }
 
@@ -223,7 +227,19 @@ impl AudioPipeline {
     /// loaders' copy into it never grows. Called by `Session` on plugin load,
     /// **not on the audio thread**: it allocates.
     pub(crate) fn reserve_params(&mut self, queues: usize, points: usize) {
+        self.param_room = points;
         self.plugin_output.reserve_params(queues, points);
+    }
+
+    /// Re-reserves the plugin's parameter output for `queues` parameters,
+    /// at the room it was reserved with, when it holds fewer queues: a
+    /// plugin whose parameter list grew after load. Called by `Session` when
+    /// the plugin says its list changed, **not on the audio thread**: it
+    /// allocates.
+    pub(crate) fn fit_params(&mut self, queues: usize) {
+        if queues > self.plugin_output.param_changes.capacity() {
+            self.plugin_output.reserve_params(queues, self.param_room);
+        }
     }
 
     /// Reseat the scratch variant when the session's negotiated format changes.
@@ -352,6 +368,7 @@ impl AudioPipeline {
         let Self {
             buffers,
             plugin_output,
+            ..
         } = self;
         plugin_output.clear();
         match &mut *buffers {
@@ -1307,5 +1324,30 @@ mod tests {
                 copy(&mut out);
             }
         });
+    }
+
+    /// **A parameter list that grows after load gets its output reserved
+    /// again, at the load's room; one that shrinks keeps it.** A pipeline
+    /// reserved for 4 parameters at a room of 10, fitted to 8: it holds 8
+    /// queues and the budget for them at that room. Fitted to 2: unchanged.
+    ///
+    /// Mutations (run), each fails: `fit_params` doing nothing → 4 queues;
+    /// re-reserving at no room (`0` for `param_room`) → the storage is the
+    /// budget at a room of 0; re-reserving whatever the count (no
+    /// `capacity` check) → fitted to 2, it holds 2.
+    #[test]
+    fn a_grown_parameter_list_is_reserved_again_at_the_loads_room() {
+        let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
+        pipeline.reserve_params(4, 10);
+        assert_eq!(pipeline.plugin_output.param_changes.capacity(), 4);
+        pipeline.fit_params(8);
+        let changes = &pipeline.plugin_output.param_changes;
+        assert_eq!(changes.capacity(), 8);
+        assert_eq!(
+            changes.point_storage(),
+            ParameterChanges::point_budget(8, 10)
+        );
+        pipeline.fit_params(2);
+        assert_eq!(pipeline.plugin_output.param_changes.capacity(), 8);
     }
 }

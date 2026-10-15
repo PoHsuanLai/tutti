@@ -314,8 +314,19 @@ impl Session {
         let Some(plugin) = self.plugin.as_mut() else {
             return Vec::new();
         };
-        plugin
-            .poll_async_events()
+        let events = plugin.poll_async_events();
+        // A parameter list that changed may have grown past the output
+        // reserved at load. (A CLAP plugin's `params.rescan` reaches no
+        // event here, so its output stays reserved for the load's count:
+        // points past it are dropped, counted.)
+        if events
+            .iter()
+            .any(|e| matches!(e, AsyncEvent::ParamTitlesChanged | AsyncEvent::Reloaded))
+        {
+            let params = plugin.instance().get_parameter_list().len();
+            self.pipeline.fit_params(params);
+        }
+        events
             .into_iter()
             .map(|e| match e {
                 AsyncEvent::ParameterChanged { index, value } => {

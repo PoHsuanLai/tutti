@@ -59,24 +59,28 @@ const POOL_CAPACITY: usize = super::channels::COMMAND_QUEUE_SIZE;
 /// room, `points_for(chunk)` points (`ceil(chunk / 32) + 4`, at least 10). A
 /// queue is about 64 bytes besides (its slot in the queue list and among the
 /// spares). With the node's own buffer that is `(PARAM_BUFFERS + 1) ×
-/// (queues × 96 + 256 × 16 × points)` bytes per plugin: about 6.6 MB for
-/// 2 000 parameters at a 4096-frame chunk (2.5 MB at 512), and about 19 MB
-/// for a VST3 listing 16 384 (15 MB at 512). The pool term does not grow with
-/// the parameter count; before the pool every queue held the full room, and
-/// the same figures were 43 MB and 340 MB.
+/// (queues × 96 + 256 × 16 × points)` bytes per plugin (plus about 14 KB a
+/// buffer of pool bookkeeping): about 6.65 MB for 2 000 parameters at a
+/// 4096-frame chunk (2.52 MB at 512), and about 19.08 MB for a VST3 listing
+/// 16 384 (14.95 MB at 512). The pool term does not grow with the parameter
+/// count; before the pool every queue held the full room, and the same
+/// figures were about 43 MB and 340 MB.
 ///
 /// The plugin-server reserves for the same points again, per instance, at
-/// activation with its block size, by the same budget
-/// (`ParameterChanges::point_budget` of the plugin's parameters, each with a
-/// room of `ParameterQueue::chunk_room(block) + 1`):
-/// - **CLAP** (`tutti-clap-host`'s `lifecycle.rs`): an input event list of
-///   that many events at 64 bytes each, plus an 8-byte sort key each: about
-///   2.7 MB for 2 000 parameters at 4096 frames and 4.8 MB for 16 384; and
-///   the output side (the event list's parameter room and the reserved
-///   output queues) about 3.2 MB and 6.4 MB.
+/// activation with its block size, for what such a buffer can arrive with
+/// after the bridge prepends a skipped block's carried value to its queues
+/// (`ParameterChanges::carried_budget` of the plugin's parameters with a
+/// room of `ParameterQueue::chunk_room(block)`: three points a parameter
+/// and 256 blocks of the room and one):
+/// - **CLAP** (`tutti-clap-host`'s `lifecycle.rs`): the input event list's
+///   parameter room, that many events at 64 bytes each plus an 8-byte sort
+///   key each: about 2.88 MB for 2 000 parameters at 4096 frames and
+///   5.99 MB for 16 384; and the output side (the event list's parameter
+///   room, `ParameterChanges::point_budget`, and the reserved output
+///   queues) about 3.15 MB and 6.37 MB.
 /// - **VST3** (`tutti-vst3-host`'s `instance.rs`, at most 16 384 queues): an
-///   input list storing its points the same way, about 0.6 MB of points for
-///   2 000 parameters and 1.1 MB for 16 384 at 4096 frames.
+///   input list storing its points the same way, about 0.64 MB of points
+///   for 2 000 parameters and 1.33 MB for 16 384 at 4096 frames.
 ///
 /// Design doc 014 §9 and §12 give the budget's derivation.
 pub(super) const PARAM_BUFFERS: usize = 8;

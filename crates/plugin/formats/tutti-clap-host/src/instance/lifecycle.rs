@@ -476,14 +476,18 @@ impl<T: super::ClapSample> ClapActive<T> {
 
 /// Reserve the input event list for a block of `max_frames`: the MIDI and
 /// note-expression scratch, and the parameter points the host's chunk can
-/// carry (`ParameterChanges::point_budget` for the plugin's parameters, each
-/// with a room of `ParameterQueue::chunk_room` plus one a skipped block's
-/// carried value can prepend), with the parameter events bounded to that
-/// room. Off the audio thread; grows only (a smaller block keeps the room).
+/// arrive with (`ParameterChanges::carried_budget` for the plugin's
+/// parameters with a room of `ParameterQueue::chunk_room`: the chunk's
+/// pooled points, and one more in every queue for the value a skipped
+/// block carries, which the bridge prepends), with the parameter events
+/// bounded to that room. So a chunk the host's pool bounded reaches the
+/// plugin whole; past it (a set nothing bounded) the list's own overflow
+/// policy applies (`InputEventList::add_param_changes`). Off the audio
+/// thread; grows only (a smaller block keeps the room).
 fn reserve_input_events<T: super::ClapSample>(scratch: &mut AudioScratch<T>, max_frames: usize) {
-    let param_points = ParameterChanges::point_budget(
+    let param_points = ParameterChanges::carried_budget(
         scratch.param_ranges.len(),
-        ParameterQueue::chunk_room(max_frames) + 1,
+        ParameterQueue::chunk_room(max_frames),
     );
     let events = &mut scratch.input_events;
     let wanted = EVENT_SCRATCH_CAPACITY + param_points;
@@ -578,10 +582,12 @@ mod tests {
 
     /// **Activation reserves the pool budget, not parameters × room**: for
     /// 2 000 and 16 384 parameters at 512- and 4096-frame blocks, the input
-    /// event list's parameter room is `ParameterChanges::point_budget` of the
-    /// parameters with a room of `chunk_room + 1`, the output list's is the
-    /// budget with `chunk_room`, and the output queues hold exactly that
-    /// budget; each under a quarter of a full room per parameter.
+    /// event list's parameter room is `ParameterChanges::carried_budget` of
+    /// the parameters with a room of `chunk_room` (a floor of
+    /// `FLOOR_POINTS + 1` each and `POOLED_QUEUES` blocks of `chunk_room +
+    /// 1`), the output list's is `point_budget` with `chunk_room`, and the
+    /// output queues hold exactly that budget; the input under a third of a
+    /// full room per parameter, the output under a quarter.
     ///
     /// Mutation (run): `reserve_input_events` back to `params × (room + 1)`
     /// → the input room is the old product → fails; `reserve_output_params`'
@@ -596,11 +602,11 @@ mod tests {
                 reserve_output_params(&mut scratch, frames);
                 let n = params as usize;
                 let room = ParameterQueue::chunk_room(frames);
-                let input = ParameterChanges::point_budget(n, room + 1);
+                let input = ParameterChanges::carried_budget(n, room);
                 let output = ParameterChanges::point_budget(n, room);
                 assert_eq!(
                     input,
-                    n * ParameterChanges::FLOOR_POINTS
+                    n * (ParameterChanges::FLOOR_POINTS + 1)
                         + ParameterChanges::POOLED_QUEUES * (room + 1)
                 );
                 assert_eq!(
@@ -608,11 +614,76 @@ mod tests {
                     "{params} at {frames}"
                 );
                 assert!(scratch.input_events.events.capacity() >= EVENT_SCRATCH_CAPACITY + input);
-                assert!(4 * input < n * (room + 1));
+                assert!(3 * input < n * (room + 1));
                 assert_eq!(scratch.output_events.param_room, output);
                 assert_eq!(scratch.out_param_changes.point_storage(), output);
                 assert!(4 * output < n * room);
             }
+        }
+    }
+
+    /// **A chunk the host's pool bounded reaches the plugin whole, carried
+    /// values and all.** 2 000 parameters at a 512-frame block, the input
+    /// list reserved as activation reserves it. The host's chunk at its
+    /// budget (`POOLED_QUEUES` parameters at full room, every other one at
+    /// its floor), then a skipped block's carried value prepended to every
+    /// queue, as the bridge does (`make_room`, then an insert at frame 0,
+    /// which grows a queue the pool cannot give room to: that is the bridge
+    /// thread): every point is handed on, none counted, each parameter's
+    /// points in order.
+    ///
+    /// Mutation (run): `reserve_input_events` sizing the room as the plain
+    /// pool budget with one more point a block (`point_budget(params, room +
+    /// 1)`, as it first did) → the carried values of the floor queues
+    /// overflow it: the last parameters lose all their points, counted →
+    /// fails.
+    #[test]
+    fn a_chunk_with_carried_values_reaches_the_plugin_whole() {
+        use tutti_plugin_types::{ParamAddress, ParameterPoint};
+        const PARAMS: u32 = 2_000;
+        const FRAMES: usize = 512;
+        let mut scratch = AudioScratch::<f32>::new();
+        scratch.param_ranges = (0..PARAMS).map(|id| (id, 0.0, 1.0)).collect();
+        reserve_input_events(&mut scratch, FRAMES);
+        let room = ParameterQueue::chunk_room(FRAMES);
+        let mut chunk = ParameterChanges::reserved(PARAMS as usize, room);
+        for id in 0..PARAMS {
+            assert!(chunk.open_queue(ParamAddress::Opaque(id.into())));
+        }
+        for k in 0..room {
+            for i in 0..PARAMS as usize {
+                if k >= ParameterChanges::FLOOR_POINTS && i >= ParameterChanges::POOLED_QUEUES {
+                    continue;
+                }
+                assert!(chunk.make_room(i));
+                chunk.queues[i].add_point(1 + 3 * k as i32, 0.5);
+            }
+        }
+        for i in 0..PARAMS as usize {
+            let _ = chunk.make_room(i);
+            chunk.queues[i].points.insert(
+                0,
+                ParameterPoint {
+                    sample_offset: 0,
+                    value: tutti_plugin_types::Normalized::new(0.25),
+                },
+            );
+        }
+        let total: usize = chunk.queues.iter().map(|q| q.points.len()).sum();
+        let list = &mut scratch.input_events;
+        list.add_param_changes(&chunk, &[], false);
+        list.sort_by_time();
+        assert_eq!(list.param_points_dropped(), 0);
+        assert_eq!(list.events().len(), total);
+        let mut per: Vec<Vec<u32>> = vec![Vec::new(); PARAMS as usize];
+        for e in list.events() {
+            if let crate::ClapEvent::ParamValue(v) = e {
+                per[v.param_id as usize].push(v.header.time);
+            }
+        }
+        for (q, got) in chunk.queues.iter().zip(&per) {
+            let want: Vec<u32> = q.points.iter().map(|p| p.sample_offset as u32).collect();
+            assert_eq!(got, &want);
         }
     }
 }

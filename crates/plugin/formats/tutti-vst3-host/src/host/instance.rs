@@ -367,12 +367,14 @@ impl<T: Vst3Sample> Vst3Active<T> {
         // Each input queue has room for the points one parameter can carry
         // in a block of `block_size` (what the host's plugin node reserves),
         // and one more a skipped block's carried value can prepend, stored
-        // as the host's chunk stores them: a floor of its own and a block
-        // from the list's shared pool when it carries more
-        // (`ParameterChangesImpl::with_pool`), so the refill never grows a
+        // as the host's chunk stores them: a floor of its own (one more than
+        // the host's, for that carried value) and a block from the list's
+        // shared pool when it carries more (`ParameterChangesImpl::with_pool`,
+        // `ParameterChanges::carried_budget`), so the refill never grows a
         // queue on the audio thread and the list's memory follows the points
         // a chunk carries, not the parameter count.
-        let param_points = tutti_plugin_types::ParameterQueue::chunk_room(block_size) + 1;
+        let chunk_room = tutti_plugin_types::ParameterQueue::chunk_room(block_size);
+        let param_points = chunk_room + 1;
 
         let audio = AudioIO {
             config: ProcessConfig {
@@ -391,7 +393,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
             input: InputStaging {
                 buses: in_scratch.buses,
                 events: EventList::new(),
-                param_changes: ParameterChangesImpl::with_pool(param_queues, param_points),
+                param_changes: ParameterChangesImpl::with_pool(param_queues, chunk_room),
             },
             output: OutputStaging {
                 buses: out_scratch.buses,
@@ -752,10 +754,23 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// activation: the input list holds a chunk's points as the host's chunk
     /// does (a few per parameter and a shared pool of a chunk's room), and a
     /// point past a queue's room, or past its own few with the pool spent,
-    /// gives way to its parameter's latest value and is counted here. Zero
-    /// while the host stays within the room the instance was activated for.
+    /// gives way to its parameter's latest value and is counted here, as is
+    /// one the `IMidiMapping` route's merge of host automation and mapped
+    /// controllers could not hold. Zero while the host stays within the
+    /// room the instance was activated for. Read on this instance only: the
+    /// plugin-server does not report it (as it does not report the CLAP
+    /// host's `param_points_dropped`).
     pub fn param_points_dropped(&self) -> u64 {
-        self.audio.input.param_changes.points_dropped()
+        self.audio.input.param_changes.points_dropped() + self.audio.cc.points_overflowed()
+    }
+
+    /// Points the plugin emitted that the drained output set could not hold
+    /// whole since activation: past a queue's `MIN_POINT_ROOM` with the
+    /// set's pool spent, each replaced its queue's last point (the
+    /// parameter still ends on its latest value). Read on this instance
+    /// only, like [`param_points_dropped`](Self::param_points_dropped).
+    pub fn output_param_points_dropped(&self) -> u64 {
+        self.audio.output.emitted_param_changes.points_overflowed()
     }
 
     /// Re-query the `IMidiMapping` CC→parameter table from the controller.

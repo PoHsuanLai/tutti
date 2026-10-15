@@ -196,8 +196,15 @@ impl Owed {
                     .is_some_and(|p| p.sample_offset > 0)
                 {
                     // Room from the buffer's own pool when the queue's is
-                    // spent; past that the insert grows the queue (this is
-                    // the bridge thread).
+                    // spent; past that (a floor queue with the pool spent,
+                    // or a queue at its full room) the insert grows the
+                    // queue. Allowed here: this is the bridge thread, not the
+                    // audio thread, and the grown storage stays with the
+                    // buffer (in its spares, or a block back in its pool), so
+                    // a later block reuses it rather than freeing it. The
+                    // server reserves for the extra point
+                    // (`ParameterChanges::carried_budget`); the buffer's own
+                    // floor stays `FLOOR_POINTS`, so the growth stays too.
                     let _ = changes.make_room(i);
                     changes.queues[i].points.insert(0, kept.points[0]);
                 }

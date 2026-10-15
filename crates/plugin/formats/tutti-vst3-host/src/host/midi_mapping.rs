@@ -257,7 +257,8 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 /// **`param_changes` is reserved exactly while `mapping` is non-empty.** The
 /// reservation is `ParameterChanges::point_budget(queues, points)` (up to
 /// 16384 queues of a few points each and a shared pool of a block's chunk
-/// room, about a megabyte at a large block), and `route` never touches
+/// room, about a megabyte at a large block; past it a point gives way,
+/// counted, and nothing grows), and `route` never touches
 /// the scratch for an empty mapping, so a plugin with no CC mapping (most of
 /// them) holds none of it. `mapping` is private so that the only ways to
 /// change it, [`new`](Self::new) and [`set_mapping`](Self::set_mapping), both
@@ -271,14 +272,21 @@ pub(crate) struct CcRoute {
     queues: usize,
     /// The points each reserved queue has room for (the host input list's).
     points: usize,
+    /// Points earlier scratches could not hold (see
+    /// [`points_overflowed`](Self::points_overflowed)), kept across a
+    /// [`set_mapping`](Self::set_mapping) that replaces the scratch.
+    overflowed_before: u64,
 }
 
 impl CcRoute {
     /// Builds with `mapping` and empty scratch. The MIDI scratch is capped
     /// and never grows. When `mapping` is non-empty, `param_changes` is
     /// reserved with `queues` parameter queues (the plugin's parameter
-    /// count) of `points` points each (the host input list's room), and past
-    /// that grows once and is reused thereafter; when it is empty,
+    /// count) of `points` points each (the host input list's room, held as
+    /// `ParameterChanges::reserved` holds it: a floor each and a shared
+    /// pool), and never grows: past it a point gives way to its parameter's
+    /// latest value, counted ([`points_overflowed`](Self::points_overflowed));
+    /// when it is empty,
     /// `param_changes` holds nothing until [`set_mapping`](Self::set_mapping)
     /// installs a non-empty one. Allocates; call it off the audio thread.
     pub(crate) fn new(mapping: MidiCcMapping, queues: usize, points: usize) -> Self {
@@ -288,9 +296,20 @@ impl CcRoute {
             param_changes: ParameterChanges::new(),
             queues,
             points,
+            overflowed_before: 0,
         };
         route.set_mapping(mapping);
         route
+    }
+
+    /// Points the merged host-automation and CC changes could not hold
+    /// whole since the route was built: past a queue's room with the
+    /// scratch's pool spent (the point replaced the queue's last one, so the
+    /// parameter still ends on its latest value), or for a parameter past
+    /// every reserved queue (dropped). Zero while the host's chunk and the
+    /// mapped controllers stay within the reservation.
+    pub(crate) fn points_overflowed(&self) -> u64 {
+        self.overflowed_before + self.param_changes.points_overflowed()
     }
 
     /// Installs `mapping`, reserving the param scratch when it is non-empty
@@ -299,10 +318,16 @@ impl CcRoute {
     /// to. Allocates or frees; call it off the audio thread (the `&mut self`
     /// already excludes a concurrent `route`).
     pub(crate) fn set_mapping(&mut self, mapping: MidiCcMapping) {
-        if mapping.is_empty() {
-            self.param_changes = ParameterChanges::new();
+        let replaced = if mapping.is_empty() {
+            Some(ParameterChanges::new())
         } else if self.mapping.is_empty() {
-            self.param_changes = ParameterChanges::reserved(self.queues, self.points);
+            Some(ParameterChanges::reserved(self.queues, self.points))
+        } else {
+            None
+        };
+        if let Some(scratch) = replaced {
+            let old = core::mem::replace(&mut self.param_changes, scratch);
+            self.overflowed_before += old.points_overflowed();
         }
         self.mapping = mapping;
     }
@@ -766,6 +791,66 @@ mod tests {
                 .expect("host queue");
             assert_eq!(host_queue.points.len(), 4);
         });
+    }
+
+    /// **Merged host automation and CC points never grow the reserved
+    /// scratch, past its pool too.** 1 000 parameters at a 512-frame block,
+    /// reserved as activation reserves the route. Warmed with one pattern
+    /// (the host's chunk moving parameters `0..256` at a full room, one CC
+    /// for the mapped parameter), then measured with another inside the
+    /// no-alloc gate (parameters `256..512`, so no warm-up left them storage,
+    /// and three CCs for the mapped parameter, whose third finds the
+    /// scratch's pool spent): nothing allocates, the mapped parameter ends
+    /// on its latest CC value, and one point is counted.
+    ///
+    /// Mutation (run): `ParameterChanges::add_change` pushing past the room
+    /// on a reserved set (the unbounded path) → the third CC point grows
+    /// the mapped parameter's floor inside the gate → aborts.
+    #[test]
+    fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        const QUEUES: usize = 1_000;
+        const MAPPED: u32 = 999;
+        let room = tutti_plugin_types::ParameterQueue::chunk_room(512);
+        let pooled = ParameterChanges::POOLED_QUEUES as u32;
+        let chunk = |moving: core::ops::Range<u32>| {
+            let mut host = ParameterChanges::new();
+            for id in moving {
+                for k in 0..room {
+                    host.add_change(ParamAddress::Opaque(id.into()), k as i32, 0.5);
+                }
+            }
+            host
+        };
+        let cc = |frame: u32, value: u8| {
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(value),
+            )
+            .with_frame_offset(frame)
+        };
+        let (warm, measured) = (chunk(0..pooled), chunk(pooled..2 * pooled));
+        let one = [cc(0, 10)];
+        let three = [cc(0, 10), cc(8, 20), cc(16, 127)];
+        let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), QUEUES, room + 1);
+        let _ = route.route(&one, Some(&warm)).expect("mapped");
+        assert_eq!(route.points_overflowed(), 0);
+        assert_no_alloc::assert_no_alloc(|| {
+            let _ = route.route(&three, Some(&measured)).expect("mapped");
+        });
+        assert_eq!(route.points_overflowed(), 1);
+        let (_, params) = route.route(&three, Some(&measured)).expect("mapped");
+        let q = params
+            .get_queue(ParamAddress::Opaque(MAPPED.into()))
+            .expect("the CC");
+        assert_eq!(q.points.len(), ParameterChanges::FLOOR_POINTS);
+        assert_eq!(
+            q.points.last().map(|p| (p.sample_offset, p.value.get())),
+            Some((16, 1.0))
+        );
+        assert_eq!(route.points_overflowed(), 2);
     }
 
     /// RT regression: once the scratch buffers are warmed, repeated routing

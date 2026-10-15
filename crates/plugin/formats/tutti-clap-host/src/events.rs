@@ -731,9 +731,8 @@ impl InputEventList {
     /// the room the caller reserved for them (with [`reserve`](Self::reserve),
     /// on top of the room for MIDI and note expressions), so a block carrying
     /// more never grows the list on the audio thread. Off-RT; call it at
-    /// activation, with the points the host's chunk can carry: the point
-    /// budget
-    /// ([`ParameterChanges::point_budget`](tutti_plugin_types::ParameterChanges::point_budget))
+    /// activation, with the points the host's chunk can arrive with:
+    /// [`ParameterChanges::carried_budget`](tutti_plugin_types::ParameterChanges::carried_budget)
     /// for the plugin's parameter count and the points a chunk can carry for
     /// one parameter
     /// ([`ParameterQueue::chunk_room`](tutti_plugin_types::ParameterQueue::chunk_room)).
@@ -2723,8 +2722,10 @@ mod tests {
     /// **A chunk at the pool budget reaches the plugin whole, time-sorted,
     /// without allocating; one point past it is counted.** 2 000 parameters
     /// at a 512-frame block (a room of 21 with the carried value's one):
-    /// the input list is reserved as activation reserves it
-    /// (`ParameterChanges::point_budget`), and the host's pooled chunk, its
+    /// the input list is reserved at the chunk's pool budget
+    /// (`ParameterChanges::point_budget`; activation reserves more, for the
+    /// carried values: `ParameterChanges::carried_budget`), and the host's
+    /// pooled chunk, its
     /// points arriving interleaved, is flattened and sorted inside the
     /// no-alloc gate. Every event is in time order, and each parameter's
     /// points are its queue's, in order. Then a set past the budget (the last
@@ -2778,18 +2779,19 @@ mod tests {
             assert_eq!(got, want, "parameter {id}");
         }
 
-        // One point past the budget (a set the pool did not bound: the last
-        // parameter given the rest of the list's room, and one more).
-        let mut over = changes.clone();
-        let extra = budget - carried + 1;
-        for k in 0..extra {
-            over.add_change(
-                ParamAddress::Opaque((PARAMS - 1).into()),
-                70 + k as i32 % 300,
-                0.5,
-            );
+        // One point past the budget (a set the pool did not bound, built by
+        // hand: the last parameter given the rest of the list's room, and
+        // one more).
+        let mut over = ParameterChanges::new();
+        for q in &changes.queues {
+            over.add_queue(q.clone());
         }
-        over.add_change(ParamAddress::Opaque((PARAMS - 1).into()), 400, 0.875);
+        let extra = budget - carried + 1;
+        let last = over.queues.last_mut().expect("a queue");
+        for k in 0..extra {
+            last.add_point(70 + k as i32 % 300, 0.5);
+        }
+        last.add_point(400, 0.875);
         assert_no_alloc::assert_no_alloc(|| fill(&mut list, &over));
         assert_eq!(list.len(), budget);
         assert_eq!(list.param_points_dropped(), 2);

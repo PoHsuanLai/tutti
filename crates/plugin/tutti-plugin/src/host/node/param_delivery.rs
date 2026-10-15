@@ -916,7 +916,9 @@ mod tests {
     /// a corner never evicting (always the merge) → the first grid point
     /// stays and the count is merged, not dropped; the evicted point the
     /// last grid point rather than the first → the queue's first offset is
-    /// not 1.
+    /// not 1; the grid bits not shifted down past an evicted point → the
+    /// bits no longer name the queue's grid points, and the next corner
+    /// evicts a corner.
     #[test]
     fn grid_points_are_dropped_before_corners() {
         let (mut d, counters) = delivery(1);

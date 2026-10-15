@@ -569,15 +569,19 @@ fn an_anchor_is_carried_until_a_play_start() {
 
 /// A signal source keeps its `SourceId` across compiles: adding a follower
 /// with a lower key does not renumber the existing ones (the new one takes
-/// the lowest free id). Removing one frees its id, but not in the compile
-/// that removes it (a lane that read the removed source still holds its
-/// last segment), so a source added in the same compile takes the next
-/// id, and only a later compile reuses the freed one.
+/// the next id never given). Removing one frees nothing: no later compile
+/// gives its id again, so no lane can read a removed source's last segment
+/// as a new source's (doc 014 §7).
+///
+/// Changed in doc 014 PR 3b: a removed source's id was reusable from the
+/// compile after the one that removed it (the last assertion read
+/// `SourceId(0)`, "freed last time"); a lane that skipped the program
+/// between could then read the stale segment. Ids are now never reused.
 ///
 /// Mutations (run), each fails: `prev` ignored (`kept` always `None`) →
-/// the new follower takes id 0 and renumbers the others; `taken` starting
-/// empty (a freed id reused in the compile that frees it) → the follower
-/// added beside the removal takes id 0.
+/// the new follower takes id 0 and renumbers the others; the next id not
+/// carried (`next` starting at 0: the lowest id not held) → follower 2
+/// takes 13's id 0 in the compile that removes 13.
 #[test]
 fn a_signal_source_keeps_its_id() {
     let rig = Rig::new();
@@ -602,12 +606,13 @@ fn a_signal_source_keeps_its_id() {
     swap.sources.push((SourceKey(2), follower()));
     let c2 = swap.compile(Some(&c1), now(1, 0));
     assert!(!c2.nodes.contains_key(&SourceKey(13)));
-    assert_eq!(c2.nodes[&SourceKey(2)].id, SourceId(3), "not 13's id yet");
-    // The next compile may reuse it.
+    assert_eq!(c2.nodes[&SourceKey(2)].id, SourceId(3), "not 13's id");
+    // Nor in any later compile.
     swap.sources.push((SourceKey(3), follower()));
     let c3 = swap.compile(Some(&c2), now(1, 0));
     assert_eq!(c3.nodes[&SourceKey(2)].id, SourceId(3));
-    assert_eq!(c3.nodes[&SourceKey(3)].id, SourceId(0), "freed last time");
+    assert_eq!(c3.nodes[&SourceKey(3)].id, SourceId(4), "never 13's id");
+    assert_eq!(c3.next_source, SourceId(5));
 }
 
 /// Each refusal fires, by name.

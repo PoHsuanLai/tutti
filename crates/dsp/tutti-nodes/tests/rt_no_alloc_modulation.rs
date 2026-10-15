@@ -173,6 +173,7 @@ fn delay_and_modulation_with_moving_controls_are_allocation_free() {
 // ---- an event-output lane on the audio thread ---------------------------------
 
 /// Writes the `Cutoff` it reads (base 0) per frame, allocation-free.
+#[derive(Clone)]
 struct ParamProbe;
 
 impl tutti_graph::Node for ParamProbe {
@@ -733,6 +734,355 @@ fn two_hundred_lanes_are_allocation_free_serial_and_on_a_pool() {
         assert!(
             bufs.iter().all(|b| b.iter().any(|&v| v != 0.0)),
             "every lane drove its port: the gate walked the lanes"
+        );
+    }
+}
+
+// ---- signal sources into lanes (doc 014 §6) -------------------------------
+
+/// Stereo bursts on the executor's clock: 1.0 (the right channel at half)
+/// on the first `width` frames of every `period`, allocation-free.
+#[derive(Clone)]
+struct Bursts {
+    period: u64,
+    width: u64,
+}
+
+impl tutti_graph::Node for Bursts {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        cx: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        let base = cx.env.frame.get();
+        for i in 0..io.frames() {
+            let v = if (base + i as u64) % self.period < self.width {
+                1.0
+            } else {
+                0.0
+            };
+            io.output(0)[i] = v;
+            io.output(1)[i] = v * 0.5;
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// Two overlapping notes every `period` frames of the executor's clock (A
+/// on at 0, B on at a quarter, A off at a half, B off at three quarters),
+/// allocation-free.
+#[derive(Clone)]
+struct Notes {
+    period: u64,
+}
+
+impl tutti_graph::Node for Notes {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        cx: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        let (base, n) = (cx.env.frame.get(), cx.env.block_len);
+        let q = self.period / 4;
+        for i in 0..n.get() {
+            let words = match (base + i as u64) % self.period {
+                0 => 0x2090_3c64,
+                x if x == q => 0x2090_3e64,
+                x if x == 2 * q => 0x2080_3c00,
+                x if x == 3 * q => 0x2080_3e00,
+                _ => continue,
+            };
+            let at = tutti_graph::Offset::new(i, n).expect("in the block");
+            let _ = io
+                .event_out(0)
+                .push(tutti_graph::Event::midi(at, [words, 0, 0, 0]));
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// `CHAINS` followers (stereo bursts in) and `CHAINS` note envelopes (two
+/// overlapping notes in), each into a lane on a probe's cutoff (knob 0.5,
+/// range 0..1, depth ±0.4 on source `k`); the probes' outputs in chain
+/// order, followers first.
+const CHAINS: usize = 12;
+
+fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
+    use std::sync::Arc;
+    use tutti_graph::{
+        EventEdge, EventIn, EventOut, ForkByClone, ParamFrom, ParamIn, ParamRange, ParamShaping,
+        Prepare,
+    };
+    use tutti_mod::{
+        Adsr, Amount, ControlProgram, CurveType, InputLayer, LayerId, Polarity, SourceId,
+    };
+    use tutti_nodes::automation::ControlLaneNode;
+    use tutti_nodes::{EnvelopeFollowerNode, NoteEnvelopeNode};
+    use tutti_types::graph::{Edge, InPort, OutPort, Source};
+    use tutti_types::{
+        Amplitude, AtomicF32, Depth, Hz, NodeKey, ParamKey, Samples, Seconds, UnitParam,
+    };
+    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
+    let probe = |k: usize| NodeKey(5000 + k as u64);
+    let cutoff = |k: usize| ParamIn {
+        node: probe(k),
+        param: UnitParam::Cutoff,
+    };
+    for k in 0..2 * CHAINS {
+        ed.insert(probe(k), "probe", ForkByClone(ParamProbe));
+        ed.spec_mut().topology.outputs.push(Source::Node(OutPort {
+            node: probe(k),
+            port: 0,
+        }));
+        ed.set_param_range(cutoff(k), ParamRange::new(0.0, 1.0))
+            .expect("a probe");
+    }
+    ed.commit().expect("commits");
+    for k in 0..2 * CHAINS {
+        let (src, node) = (NodeKey(3000 + k as u64), NodeKey(4000 + k as u64));
+        let id = SourceId(k as u32);
+        if k < CHAINS {
+            ed.insert(
+                src,
+                "bursts",
+                ForkByClone(Bursts {
+                    period: 1_500 + 97 * k as u64,
+                    width: 300 + 11 * k as u64,
+                }),
+            );
+            let follower = EnvelopeFollowerNode::new(
+                id,
+                Seconds(0.001 + 0.0005 * k as f32),
+                Seconds(0.03),
+                ChannelLayout::STEREO,
+            );
+            ed.insert(node, "follower", ForkByClone(follower));
+            for port in 0..2 {
+                ed.spec_mut().topology.edges.insert(
+                    InPort { node, port },
+                    Edge::Direct(Source::Node(OutPort { node: src, port })),
+                );
+            }
+        } else {
+            ed.insert(
+                src,
+                "notes",
+                ForkByClone(Notes {
+                    period: 2_000 + 64 * k as u64,
+                }),
+            );
+            let adsr = Adsr {
+                attack: Seconds(0.002),
+                decay: Seconds(0.004),
+                sustain: Amplitude(0.6),
+                release: Seconds(0.005),
+            };
+            ed.insert(
+                node,
+                "envelope",
+                ForkByClone(NoteEnvelopeNode::new(id, adsr)),
+            );
+            ed.spec_mut().connect_events(
+                EventIn { node, port: 0 },
+                EventEdge::Direct(EventOut { node: src, port: 0 }),
+            );
+        }
+        let input = InputLayer {
+            id: LayerId(1),
+            source: id,
+            amount: Amount {
+                depth: Depth(if k % 2 == 0 { -0.4 } else { 0.4 }),
+                polarity: Polarity::Bipolar,
+                curve: CurveType::Linear,
+            },
+        };
+        let lane = ControlLaneNode::for_param(
+            ParamKey::<Hz>::CUTOFF,
+            ControlProgram::new(None, vec![], vec![input]).expect("valid"),
+            Some(Arc::new(AtomicF32::new(0.5))),
+            Some(ed.param_range_cell(cutoff(k)).expect("committed")),
+        );
+        let lane_key = NodeKey(6000 + k as u64);
+        ed.insert(lane_key, "lane", lane);
+        ed.spec_mut().connect_events(
+            EventIn {
+                node: lane_key,
+                port: 0,
+            },
+            EventEdge::Direct(EventOut { node, port: 0 }),
+        );
+        ed.spec_mut().connect_param(
+            cutoff(k),
+            ParamFrom::Events(EventOut {
+                node: lane_key,
+                port: 0,
+            }),
+            ParamShaping::Identity,
+        );
+    }
+    ed.commit().expect("commits");
+    (ed, exec)
+}
+
+/// Block `b` of the signal rig: stopped for 20 blocks, a play start inside
+/// block 20 (both kinds of source reset on its frame), then rolling. `n`
+/// frames; the clock moved on while rolling.
+fn signal_block(
+    exec: &mut tutti_graph::Executor,
+    clock: &mut tutti_types::FrameClock,
+    b: usize,
+    n: usize,
+    refs: &mut [&mut [f32]],
+) {
+    use tutti_graph::{Offset, Transport, TransportChanges};
+    let rolling =
+        |c: &tutti_types::FrameClock| Transport::counted(true, c.tempo(), c.origin(), None);
+    let stopped = Transport::new(false, clock.tempo(), tutti_types::Beat(0.0), None);
+    let mut ch = TransportChanges::NONE;
+    let t = match b {
+        0..20 => stopped,
+        20 => {
+            let at = (n / 2).min(n - 1);
+            ch.push(
+                Offset::new(at, tutti_types::Samples(n)).expect("in"),
+                rolling(clock),
+            )
+            .expect("room");
+            clock.advance(tutti_types::Samples(n - at), None);
+            stopped
+        }
+        _ => {
+            let t = rolling(clock);
+            clock.advance(tutti_types::Samples(n), None);
+            t
+        }
+    };
+    exec.process_with_changes(n, &t, &ch, &[], refs);
+}
+
+/// Followers and note envelopes into lanes render bit for bit the same
+/// serial and on pools of 2, 3, 4 and 8, under ragged blocks with a play
+/// start inside one.
+///
+/// Not mutation-tested against a property of the sources: each node's
+/// state is its own (one node, one op), so nothing it does can differ
+/// between schedules. This pins that it stays so. Mutation (run): state
+/// shared across followers (each one's envelope nudged by the parity of a
+/// `static` counter every follower's `process` bumps) → the pools render
+/// other bits → fails.
+#[test]
+#[cfg_attr(miri, ignore = "threaded worker pools")]
+fn signal_sources_render_the_same_serial_and_parallel() {
+    use std::sync::Arc;
+    let render = |workers: Option<usize>| {
+        let (mut ed, mut exec) = signal_graph(128);
+        if let Some(w) = workers {
+            exec.set_pool(Some(Arc::new(tutti_core::WorkerPool::builder(w).build())));
+        }
+        let mut clock = tutti_types::FrameClock::new(
+            tutti_types::Beat(0.0),
+            tutti_types::Bpm(120.0),
+            SampleRate(48_000.0),
+        );
+        let mut bufs = vec![vec![0.0f32; 128]; 2 * CHAINS];
+        let mut all = vec![Vec::new(); 2 * CHAINS];
+        for (b, n) in lane_blocks(20_000).into_iter().enumerate() {
+            {
+                let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| &mut b[..n]).collect();
+                signal_block(&mut exec, &mut clock, b, n, &mut refs);
+            }
+            ed.collect();
+            for (a, b) in all.iter_mut().zip(&bufs) {
+                a.extend(b[..n].iter().map(|v| v.to_bits()));
+            }
+        }
+        assert_eq!(exec.is_parallel(), workers.is_some(), "{workers:?}");
+        all
+    };
+    let serial = render(None);
+    assert!(
+        serial.iter().all(|c| c.iter().any(|&v| v != c[0])),
+        "every source moves its port"
+    );
+    for w in [2, 3, 4, 8] {
+        let par = render(Some(w));
+        for (k, (a, b)) in serial.iter().zip(&par).enumerate() {
+            assert!(a == b, "{w} participants, chain {k}");
+        }
+    }
+}
+
+/// Followers and note envelopes (and the lanes they feed) never allocate
+/// on the audio thread, serial and on a pool whose helpers run under the
+/// gate too, through a play start inside a block.
+///
+/// Mutation (run): a `Vec::with_capacity(8)` per block in
+/// `EnvelopeFollowerNode::process` → aborts; the same in
+/// `NoteEnvelopeNode::process` → aborts.
+#[test]
+#[cfg_attr(miri, ignore = "threaded worker pools")]
+fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
+    use std::sync::Arc;
+    for workers in [None, Some(4)] {
+        let (mut ed, mut exec) = signal_graph(128);
+        if let Some(w) = workers {
+            let pool = tutti_core::WorkerPool::builder(w)
+                .spin(std::time::Duration::from_micros(1))
+                .idle(std::time::Duration::from_micros(1))
+                .build();
+            exec.set_pool(Some(Arc::new(GatedPool(pool))));
+        }
+        let mut clock = tutti_types::FrameClock::new(
+            tutti_types::Beat(0.0),
+            tutti_types::Bpm(120.0),
+            SampleRate(48_000.0),
+        );
+        let mut bufs = vec![vec![0.0f32; 128]; 2 * CHAINS];
+        let blocks = lane_blocks(24_000);
+        // Warm-up outside the gate: the first blocks (and the first
+        // commit's leftovers) on the control thread.
+        for (b, &n) in blocks.iter().enumerate().take(4) {
+            let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| &mut b[..n]).collect();
+            signal_block(&mut exec, &mut clock, b, n, &mut refs);
+            drop(refs);
+            ed.collect();
+        }
+        // The executor takes output slices longer than the block (it
+        // writes the first `n` frames of each).
+        let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| &mut b[..]).collect();
+        // Each chain's first gated value, and whether it ever left it (on
+        // the stack: the check runs inside the gate).
+        let mut first = [f32::NAN; 2 * CHAINS];
+        let mut moved = [false; 2 * CHAINS];
+        assert_no_alloc::assert_no_alloc(|| {
+            for (b, &n) in blocks.iter().enumerate().skip(4) {
+                signal_block(&mut exec, &mut clock, b, n, &mut refs);
+                for (k, r) in refs.iter().enumerate() {
+                    for &v in &r[..n] {
+                        if first[k].is_nan() {
+                            first[k] = v;
+                        }
+                        moved[k] |= v != first[k];
+                    }
+                }
+            }
+        });
+        drop(refs);
+        ed.collect();
+        assert_eq!(exec.is_parallel(), workers.is_some(), "{workers:?}");
+        assert!(
+            moved.iter().all(|&m| m),
+            "every source moved its port inside the gate: {moved:?}"
         );
     }
 }

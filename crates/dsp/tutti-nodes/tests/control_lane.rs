@@ -1058,6 +1058,13 @@ fn feed_into(ed: &mut Editor, feed: u64, lane: u64) {
 /// Mutation (run): the slot fallback only a free slot (`Option::is_none`,
 /// not a slot whose source the program no longer reads) → 10.0 from frame
 /// 640 → fails.
+///
+/// Changed in doc 014 PR 3b (the mutation record only): a lane now frees
+/// every slot its new program does not read when it takes the program, so
+/// a free slot is the only fallback. Mutation (run): that freeing dropped
+/// (the `generation != self.seen.generation` sweep in `process`) → the
+/// eight stale slots stay, source 9 finds none, 10.0 from frame 640 →
+/// fails.
 #[test]
 fn a_republished_program_reads_a_new_source() {
     let (mut ed, mut exec) = probes(128, &[2], (0.0, 96.0));
@@ -1089,6 +1096,67 @@ fn a_republished_program_reads_a_new_source() {
     }
     for (f, &got) in all[0].iter().enumerate() {
         let want = if f < 640 { 10.0 } else { 34.0 };
+        assert_eq!(got, want, "frame {f}");
+    }
+}
+
+/// **A reused source id starts from nothing** (doc 014 §7's hazard, closed
+/// in PR 3b). A lane reads source 3 at depth 0.5 of a 0..96 range on knob
+/// 10, and source 3 steps to 0.5 on frame 0: 34.0. A republish drops the
+/// source (the lane glides to 10.0 by the next grid point), then another
+/// reads source 3 again, as a new source given the old id would be, which
+/// has not sent yet: it contributes 0, so the lane reads 10.0, never the
+/// removed source's 0.5. When the new source sends 0.25 on frame 1 000,
+/// 22.0.
+///
+/// Mutation (run): the lane keeping unread slots when it takes a program
+/// (the sweep in `process` dropped) → after the second republish (from
+/// frame 513) the lane glides back to 34.0 → fails. The case where both
+/// republishes land before one block (the lane never sees the program
+/// between) is closed by the compiler, which never gives an id twice
+/// (`tutti-mod`'s `a_signal_source_keeps_its_id`).
+#[test]
+fn a_reused_source_id_starts_from_nothing() {
+    let (mut ed, mut exec) = probes(128, &[2], (0.0, 96.0));
+    let reads3 = || {
+        let input = InputLayer {
+            id: LayerId(1),
+            source: SourceId(3),
+            amount: amount(0.5),
+        };
+        ControlProgram::new(None, vec![], vec![input]).expect("valid")
+    };
+    let lane = native(&ed, 2, reads3(), Some(10.0));
+    let controls = wire(&mut ed, 1, lane, 2);
+    let step = |v| ParamSegment::foreign(3, v, v, Samples(0), SegmentShape::Linear);
+    let plan = vec![(0, step(0.5)), (1_000, step(0.25))];
+    ed.insert(NodeKey(5), "feed", ForkByClone(Feed { plan }));
+    feed_into(&mut ed, 5, 1);
+    ed.commit().expect("commits");
+    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let mut all = Vec::new();
+    for k in 0..10 {
+        if k == 2 {
+            controls.publish(ControlProgram::default());
+        }
+        if k == 4 {
+            controls.publish(reads3());
+        }
+        let got = block(&mut ed, &mut exec, &stopped, &TransportChanges::NONE, 128);
+        append(&mut all, got);
+    }
+    for (f, &got) in all[0].iter().enumerate() {
+        let want = match f {
+            0..256 => 34.0,
+            // The first republish glides to the knob by the next grid
+            // point (doc 014 §4.2).
+            256..288 => {
+                assert!((10.0..=34.0).contains(&got), "frame {f}: {got}, gliding");
+                continue;
+            }
+            288..1_000 => 10.0,
+            _ => 22.0,
+        };
         assert_eq!(got, want, "frame {f}");
     }
 }

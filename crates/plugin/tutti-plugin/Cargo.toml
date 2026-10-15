@@ -157,9 +157,16 @@ tutti-clap-test-plugin = { path = "../../vendor/tutti-clap-test-plugin" }
 # `kill(pid, 0)`, so `real_plugin_pressure`'s leak check asks about the exact
 # `plugin-server` pids it launched rather than spawning `pgrep` to scan the
 # process table. The Windows half of the same probe uses the `windows` crate
-# this package already depends on.
+# this package already depends on. Also `getrusage(RUSAGE_THREAD)`, for the
+# voluntary context switches its step clock reads on Linux.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+
+# `real_plugin_pressure` asks for the same raise `plugin-server`'s
+# `raise_to_realtime` makes, on a scratch thread, to learn what the OS grants
+# before checking the server got it. The version `tutti-plugin-server` uses.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+thread-priority = "1.1"
 
 # NOTE: the `loom` model of this crate's shared-memory header protocol lives in
 # the sibling `tutti-shm-model` crate, not here. `--cfg loom` is a global

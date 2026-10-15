@@ -1,32 +1,40 @@
-//! Regression gate: the RT event collector must not allocate on its steady
-//! state. A capacity is reserved inline at construction; refill/push/sort/
-//! for_each then touch only that inline storage.
+//! Regression gate: the RT capped collection must not allocate on its steady
+//! state. A capacity is reserved inline at construction; push/sort/iterate
+//! then touch only that inline storage.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_types::RtEventBuf;
+use tutti_types::{AudioThreadCell, RtVec};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
+/// `RtVec` reached through `&self`, as `tutti-midi-hardware`'s drain holds it:
+/// behind an `AudioThreadCell`. Ported from the gate on `RtEventBuf`, the
+/// `&self` wrapper this composition replaced, so the cap stays gated.
+///
+/// Mutation (run): `Capped` over an uncapped `Vec` in place of the
+/// `ArrayVec` → the first block pushes past the warm-up's capacity, grows the
+/// `Vec` inside the gate, and aborts.
 #[test]
-fn rt_event_buf_steady_state_is_allocation_free() {
-    let buf: RtEventBuf<(u32, u32), 64> = RtEventBuf::new();
+fn rt_vec_steady_state_is_allocation_free() {
+    let buf: AudioThreadCell<RtVec<(u32, u32), 64>> = AudioThreadCell::new(RtVec::new());
     // Warm up well within the inline capacity.
-    buf.refill((0..32).map(|i| (32 - i, i)));
+    buf.borrow_mut().extend((0..32).map(|i| (32 - i, i)));
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..10_000 {
-            buf.clear();
-            for i in 0..32u32 {
-                let _ = buf.push((32 - i, i));
+            let mut v = buf.borrow_mut();
+            v.clear();
+            for i in 0..96u32 {
+                let _ = v.push((96 - i, i));
             }
-            buf.sort_by_key(|&(k, _)| k);
-            let mut sum = 0u32;
-            buf.for_each(|&(_, v)| sum += v);
+            v.as_mut_slice().sort_by_key(|&(k, _)| k);
+            let sum: u32 = v.iter().map(|&(_, x)| x).sum();
             core::hint::black_box(sum);
         }
     });
-    assert_eq!(buf.len(), 32);
+    assert_eq!(buf.borrow().len(), 64);
+    assert!(buf.borrow().overflowed());
 }
 
 /// The whole reader side of `RtPublish` — slot reads, overflow reads past the

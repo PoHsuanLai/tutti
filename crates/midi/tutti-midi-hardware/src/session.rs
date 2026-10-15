@@ -25,6 +25,7 @@
 //!
 //! [`RtPublish`]: tutti_midi_types::RtPublish
 //! [`HardwareMidiInputs`]: crate::HardwareMidiInputs
+//! [`InputProducerHandle`]: crate::InputProducerHandle
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -33,7 +34,7 @@ use crate::backend;
 use crate::capability::{EndpointId, EndpointInfo};
 use crate::endpoints::{InputConnection, MidiEndpoints};
 use crate::error::{Error, Result};
-use crate::{HardwareMidiInputs, InputProducerHandle};
+use crate::{HardwareMidiInputs, PortId};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiOut;
 
@@ -46,25 +47,76 @@ pub struct MidiSession {
     inner: Arc<Inner>,
 }
 
+/// The session's state.
+///
+/// # Drop order
+///
+/// Stated, not left to field order alone: [`Drop`] closes every input first
+/// (each connection, then its port), and only then do the fields drop, in
+/// declaration order: what is left open (the output), then the ring manager
+/// handle, then the backend whose client every connection was opened on.
+/// Closing a connection stops its driver: the ALSA backend joins its pump
+/// thread, which drops the producer handle before the port is retired. On
+/// macOS the handle lives in the input callback, which CoreMIDI retains and
+/// may release (and so drop the handle) after the port is disposed; a push
+/// in that window lands in a ring nobody drains, which is harmless. The order
+/// is about not leaving ports behind, not about soundness: each handle owns
+/// its half of the ring and cannot outlive the memory it pushes into.
 struct Inner {
-    backend: Box<dyn MidiEndpoints>,
-    /// Ring manager the backend pushes inbound events into. Held so
-    /// `connect_input` can mint a producer handle per connection.
-    ports: Arc<HardwareMidiInputs>,
     open: Mutex<Open>,
+    /// Ring manager the backend pushes inbound events into. Held so
+    /// `connect_input` can mint a producer handle per connection, and
+    /// `disconnect_input` can retire the port it fed.
+    ports: Arc<HardwareMidiInputs>,
+    backend: Box<dyn MidiEndpoints>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        let open = self
+            .open
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (_, input) in open.inputs.drain() {
+            input.close(&self.ports);
+        }
+    }
 }
 
 /// What is currently connected.
 #[derive(Default)]
 struct Open {
-    /// Live input connections, keyed by endpoint. Dropping a value closes its
-    /// port, which is the whole reason they are held rather than discarded.
-    inputs: HashMap<EndpointId, Box<dyn InputConnection>>,
-    /// Names, parallel to `inputs`, so a caller can report what is connected
-    /// without re-enumerating (which would miss a device that has since gone).
-    input_names: HashMap<EndpointId, String>,
+    /// Live input connections, keyed by endpoint.
+    inputs: HashMap<EndpointId, OpenInput>,
     /// The single output sink, if one is connected.
     output: Option<OpenOutput>,
+}
+
+/// One open input: the driver connection, and the port it feeds.
+struct OpenInput {
+    /// Dropping it closes the driver side, which is the whole reason it is
+    /// held rather than discarded.
+    connection: Box<dyn InputConnection>,
+    /// The manager port this connection's producer handle feeds.
+    port: PortId,
+    /// So a caller can report what is connected without re-enumerating (which
+    /// would miss a device that has since gone).
+    name: String,
+}
+
+impl OpenInput {
+    /// Closes the connection, then retires its port.
+    ///
+    /// In that order: dropping the connection stops the driver (on ALSA it
+    /// joins the pump thread, which drops the producer handle; on macOS the
+    /// handle can outlive this, and anything it pushes is discarded with the
+    /// ring). The port's slot is then free for the next connection, which is
+    /// what keeps a hot-plug cycle from growing the port set by one ring each
+    /// time.
+    fn close(self, ports: &HardwareMidiInputs) {
+        drop(self.connection);
+        ports.remove_input_port(self.port);
+    }
 }
 
 struct OpenOutput {
@@ -98,9 +150,9 @@ impl MidiSession {
     pub fn with_backend(backend: Box<dyn MidiEndpoints>, ports: Arc<HardwareMidiInputs>) -> Self {
         Self {
             inner: Arc::new(Inner {
-                backend,
-                ports,
                 open: Mutex::new(Open::default()),
+                ports,
+                backend,
             }),
         }
     }
@@ -165,11 +217,27 @@ impl MidiSession {
             .find(|e| e.id == id)
             .ok_or_else(|| Error::MidiDevice(format!("no MIDI input with id {}", id.raw())))?;
 
-        let producer = self.producer_for(&info.name);
-        let connection = self.inner.backend.open_input(id, producer)?;
+        // One ring per connection, and its only producer goes to the backend.
+        let producer = self.inner.ports.create_input_port(info.name.as_str());
+        let port = producer.port_id();
+        let connection = match self.inner.backend.open_input(id, producer) {
+            Ok(connection) => connection,
+            Err(e) => {
+                // The backend dropped the handle; the port it would have fed
+                // must not outlive the failed open.
+                self.inner.ports.remove_input_port(port);
+                return Err(e);
+            }
+        };
 
-        open.inputs.insert(id, connection);
-        open.input_names.insert(id, info.name);
+        open.inputs.insert(
+            id,
+            OpenInput {
+                connection,
+                port,
+                name: info.name,
+            },
+        );
         Ok(())
     }
 
@@ -195,20 +263,15 @@ impl MidiSession {
         self.connect_input(info.id)
     }
 
-    /// Mint a ring + producer handle for a newly connected input.
-    fn producer_for(&self, name: &str) -> InputProducerHandle {
-        let port_index = self.inner.ports.create_input_port(name);
-        self.inner
-            .ports
-            .get_input_producer_handle(port_index)
-            .expect("port was just created")
-    }
-
-    /// Closes an input endpoint. Closing one that is not open is a no-op.
+    /// Closes an input endpoint and retires the port its events landed in.
+    /// Closing one that is not open is a no-op.
+    ///
+    /// Events still queued in that port are discarded with it.
     pub fn disconnect_input(&self, id: EndpointId) {
         let mut open = self.inner.open.lock().unwrap();
-        open.inputs.remove(&id);
-        open.input_names.remove(&id);
+        if let Some(input) = open.inputs.remove(&id) {
+            input.close(&self.inner.ports);
+        }
     }
 
     /// Closes one open input whose name contains `name`, matched
@@ -227,9 +290,9 @@ impl MidiSession {
         let needle = name.to_lowercase();
         let id = {
             let open = self.inner.open.lock().unwrap();
-            open.input_names
+            open.inputs
                 .iter()
-                .find(|(_, n)| n.to_lowercase().contains(&needle))
+                .find(|(_, input)| input.name.to_lowercase().contains(&needle))
                 .map(|(id, _)| *id)
         };
         if let Some(id) = id {
@@ -237,11 +300,12 @@ impl MidiSession {
         }
     }
 
-    /// Closes every open input.
+    /// Closes every open input, retiring each one's port.
     pub fn disconnect_all_inputs(&self) {
         let mut open = self.inner.open.lock().unwrap();
-        open.inputs.clear();
-        open.input_names.clear();
+        for (_, input) in open.inputs.drain() {
+            input.close(&self.inner.ports);
+        }
     }
 
     /// Whether any input is open.
@@ -263,9 +327,9 @@ impl MidiSession {
             .open
             .lock()
             .unwrap()
-            .input_names
+            .inputs
             .values()
-            .cloned()
+            .map(|input| input.name.clone())
             .collect()
     }
 
@@ -385,6 +449,7 @@ impl MidiOut for MidiSession {
 mod tests {
     use super::*;
     use crate::test_support::FakeBackend;
+    use crate::InputProducerHandle;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // The fake backend is in `crate::test_support` so `bevy-tutti` can test
@@ -559,5 +624,136 @@ mod tests {
         s.connect_output_by_name("synth a").unwrap();
         MidiOut::queue(&s, &[note()]);
         assert_eq!(sent.load(Ordering::SeqCst), 1);
+    }
+
+    /// Repeated connect/disconnect cycles keep the port set bounded: a
+    /// disconnect retires its port, and the reconnect takes its slot back.
+    ///
+    /// Device 2 stays connected throughout, so device 1's slot is an interior
+    /// one on every cycle after the first.
+    ///
+    /// Mutation: `OpenInput::close` dropping the connection without
+    /// `remove_input_port` (the old behaviour) → every cycle appends a port and
+    /// the list is 101 long at the end.
+    #[test]
+    fn hot_plug_cycles_keep_the_port_set_bounded() {
+        let (s, _, opens) = session();
+        s.connect_input(EndpointId::from_raw(1)).unwrap();
+        s.connect_input(EndpointId::from_raw(2)).unwrap();
+        for cycle in 0..100 {
+            s.disconnect_input(EndpointId::from_raw(1));
+            assert_eq!(s.ports().list_input_ports().len(), 1, "cycle {cycle}");
+            s.connect_input(EndpointId::from_raw(1)).unwrap();
+            assert_eq!(s.ports().list_input_ports().len(), 2, "cycle {cycle}");
+            assert_eq!(s.ports().slot_count(), 2, "cycle {cycle}");
+        }
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            102,
+            "each cycle really reopened"
+        );
+
+        s.disconnect_all_inputs();
+        assert!(s.ports().list_input_ports().is_empty());
+        assert_eq!(s.ports().slot_count(), 0, "the set shrinks back to nothing");
+    }
+
+    /// A backend whose connections, and itself, log their drop, and which can
+    /// be told to refuse every open.
+    struct LoggingBackend {
+        log: Arc<Mutex<Vec<&'static str>>>,
+        refuse: bool,
+    }
+
+    struct LoggingConnection {
+        log: Arc<Mutex<Vec<&'static str>>>,
+        _producer: InputProducerHandle,
+    }
+
+    impl InputConnection for LoggingConnection {}
+
+    impl Drop for LoggingConnection {
+        fn drop(&mut self) {
+            self.log.lock().unwrap().push("connection");
+        }
+    }
+
+    impl Drop for LoggingBackend {
+        fn drop(&mut self) {
+            self.log.lock().unwrap().push("backend");
+        }
+    }
+
+    impl MidiEndpoints for LoggingBackend {
+        fn inputs(&self) -> Vec<EndpointInfo> {
+            vec![crate::test_support::endpoint(1, "Logged")]
+        }
+        fn outputs(&self) -> Vec<EndpointInfo> {
+            Vec::new()
+        }
+        fn open_input(
+            &self,
+            _id: EndpointId,
+            producer: InputProducerHandle,
+        ) -> Result<Box<dyn InputConnection>> {
+            if self.refuse {
+                return Err(Error::MidiDevice("refused".into()));
+            }
+            Ok(Box::new(LoggingConnection {
+                log: Arc::clone(&self.log),
+                _producer: producer,
+            }))
+        }
+        fn open_output(&self, _id: EndpointId) -> Result<Box<dyn MidiOut>> {
+            Err(Error::MidiDevice("no outputs".into()))
+        }
+    }
+
+    fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let backend = LoggingBackend {
+            log: Arc::clone(&log),
+            refuse,
+        };
+        let ports = Arc::new(HardwareMidiInputs::new(16));
+        (MidiSession::with_backend(Box::new(backend), ports), log)
+    }
+
+    /// Dropping the session closes its inputs before the backend they were
+    /// opened on, and retires their ports from a manager that outlives it.
+    ///
+    /// Mutations: deleting `impl Drop for Inner` and declaring `backend`
+    /// before `open` (the old field order) → the log reads
+    /// `["backend", "connection"]`; deleting only the `Drop` impl → the
+    /// order holds by field order, but the shared manager still lists the
+    /// session's port.
+    #[test]
+    fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
+        let (s, log) = logging_session(false);
+        s.connect_input(EndpointId::from_raw(1)).unwrap();
+        let ports = Arc::clone(s.ports());
+        assert_eq!(ports.list_input_ports().len(), 1);
+
+        drop(s);
+        assert_eq!(*log.lock().unwrap(), vec!["connection", "backend"]);
+        assert!(
+            ports.list_input_ports().is_empty(),
+            "the session's port does not outlive it in a shared manager"
+        );
+    }
+
+    /// An open the backend refuses leaves no port behind.
+    ///
+    /// Mutation: dropping the `remove_input_port` in `connect_input`'s error
+    /// arm → the manager lists one dead port per failed attempt.
+    #[test]
+    fn a_refused_open_leaves_no_port() {
+        let (s, _log) = logging_session(true);
+        for _ in 0..3 {
+            assert!(s.connect_input(EndpointId::from_raw(1)).is_err());
+        }
+        assert!(!s.is_any_input_connected());
+        assert!(s.ports().list_input_ports().is_empty());
+        assert_eq!(s.ports().slot_count(), 0);
     }
 }

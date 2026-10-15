@@ -1,9 +1,15 @@
 //! `IPlugFrame` host-side impl. The plugin calls `resizeView` from its
-//! UI thread; the size is queued for the main thread to drain. The
-//! main thread is responsible for resizing the parent window and
+//! UI thread; the size is held, latest wins, for the main thread to take.
+//! The main thread is responsible for resizing the parent window and
 //! calling `onSize` — it is not called reentrantly from here, since
 //! many plugins re-issue `resizeView` from their own `onSize`
 //! handler, which causes a feedback loop.
+//!
+//! Latest-wins, not a queue: a window is resized to the size the plugin wants
+//! *now*, so a burst of requests between two polls (a drag-resize) is one
+//! resize, and an older size is never worth keeping. Both ends run on the UI
+//! thread (`resizeView` is `[UI-thread]` in `iplugview.h`), so the cell is a
+//! plain mutex that is never contended.
 //!
 //! On Linux this object also carries `IRunLoop`, delegating to the shared
 //! [`RunLoop`](super::run_loop::RunLoop). Some plugin toolkits look for the run
@@ -17,7 +23,7 @@
 //! therefore driven from the library-scoped loop, via
 //! [`Vst3Loaded::run_editor_loop_iteration`](crate::Vst3Loaded::run_editor_loop_iteration).
 
-use crossbeam_channel::{Receiver, Sender};
+use parking_lot::Mutex;
 use vst3::Steinberg::{kResultOk, tresult, IPlugFrame, IPlugView, ViewRect};
 use vst3::{Class, ComWrapper};
 
@@ -34,7 +40,8 @@ use vst3::Steinberg::Linux::{
 use super::run_loop::RunLoop;
 
 pub(crate) struct HostPlugFrame {
-    sender: Sender<EditorSize>,
+    /// The latest `resizeView` request not yet taken.
+    resize_request: Mutex<Option<EditorSize>>,
     /// Shared with `HostApplication` — see `run_loop.rs`.
     #[cfg(target_os = "linux")]
     run_loop: Arc<RunLoop>,
@@ -53,16 +60,17 @@ impl Class for HostPlugFrame {
 }
 
 impl HostPlugFrame {
-    pub(crate) fn new(
-        #[cfg(target_os = "linux")] run_loop: Arc<RunLoop>,
-    ) -> (ComWrapper<Self>, Receiver<EditorSize>) {
-        let (sender, receiver) = crossbeam_channel::unbounded();
-        let wrapper = ComWrapper::new(Self {
-            sender,
+    pub(crate) fn new(#[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
+        ComWrapper::new(Self {
+            resize_request: Mutex::new(None),
             #[cfg(target_os = "linux")]
             run_loop,
-        });
-        (wrapper, receiver)
+        })
+    }
+
+    /// The latest size the plugin asked for since the last take, if any.
+    pub(crate) fn take_resize_request(&self) -> Option<EditorSize> {
+        self.resize_request.lock().take()
     }
 }
 
@@ -72,7 +80,7 @@ impl vst3::Steinberg::IPlugFrameTrait for HostPlugFrame {
             return kResultOk;
         }
         let rect = unsafe { *new_size };
-        let _ = self.sender.send(EditorSize {
+        *self.resize_request.lock() = Some(EditorSize {
             width: (rect.right - rect.left) as u32,
             height: (rect.bottom - rect.top) as u32,
         });
@@ -104,5 +112,70 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostPlugFrame {
 
     unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
         self.run_loop.unregister_timer(handler)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vst3::Steinberg::IPlugFrameTrait;
+
+    fn frame() -> ComWrapper<HostPlugFrame> {
+        HostPlugFrame::new(
+            #[cfg(target_os = "linux")]
+            RunLoop::new(),
+        )
+    }
+
+    fn rect(width: i32, height: i32) -> ViewRect {
+        ViewRect {
+            left: 10,
+            top: 20,
+            right: 10 + width,
+            bottom: 20 + height,
+        }
+    }
+
+    /// Several requests between two takes yield only the last; a take
+    /// consumes it, so the next poll reports nothing until the plugin asks
+    /// again.
+    ///
+    /// Mutation: keeping the *first* request (`get_or_insert` instead of the
+    /// overwrite in `resizeView`) fails the first assertion; `clone()` in
+    /// place of `take()` fails the second.
+    #[test]
+    fn the_latest_resize_request_wins_and_is_taken_once() {
+        let frame = frame();
+        let ptr = frame.to_com_ptr::<IPlugFrame>().unwrap();
+
+        unsafe {
+            for (w, h) in [(300, 200), (640, 480), (800, 600)] {
+                let mut r = rect(w, h);
+                assert_eq!(ptr.resizeView(std::ptr::null_mut(), &mut r), kResultOk);
+            }
+        }
+
+        assert_eq!(
+            frame.take_resize_request(),
+            Some(EditorSize {
+                width: 800,
+                height: 600
+            })
+        );
+        assert_eq!(frame.take_resize_request(), None);
+
+        // A null rect is ignored rather than clearing or corrupting the cell.
+        unsafe {
+            let mut r = rect(320, 240);
+            ptr.resizeView(std::ptr::null_mut(), &mut r);
+            ptr.resizeView(std::ptr::null_mut(), std::ptr::null_mut());
+        }
+        assert_eq!(
+            frame.take_resize_request(),
+            Some(EditorSize {
+                width: 320,
+                height: 240
+            })
+        );
     }
 }

@@ -327,3 +327,53 @@ fn a_clocks_fork_sends_nothing() {
     );
     assert!(seen.lock().unwrap().is_empty());
 }
+
+/// **A block with more clock events than the port holds sends the first
+/// [`CLOCK_EVENT_CAPACITY`](tutti_midi_runtime::CLOCK_EVENT_CAPACITY) and
+/// counts the rest.**
+///
+/// 300 BPM with MTC on at 48 kHz is 120 ticks and 100 quarter-frames a
+/// second, so one 65 536-frame block (1.37 s) produces more events than the
+/// port's 256. The same span in four quarter-length blocks fits every event,
+/// so it is the reference total: what one long block sent plus what it
+/// counted must equal it, exactly.
+///
+/// Mutation (run): drop the `count_dropped` call (the old silent drop) → the
+/// count stays 0 and the sum falls short → fails.
+#[test]
+fn a_clock_flood_past_the_port_capacity_is_counted() {
+    use tutti_midi_runtime::CLOCK_EVENT_CAPACITY;
+    const LONG: usize = 65_536;
+    const BPM: f64 = 300.0;
+
+    let run = |blocks: &[usize]| -> (usize, u64) {
+        let (_ed, mut exec, clock, seen) = rig(ClockNode::new(), 1, LONG);
+        clock.set_enabled(true);
+        clock.set_send_mtc(true);
+        let mut frame = 0usize;
+        for &len in blocks {
+            let beat = frame as f64 / RATE * BPM / 60.0;
+            let rolling = Transport::new(true, Bpm(BPM), Beat(beat), None);
+            let mut out = vec![0.0f32; len];
+            exec.process(len, &rolling, &[], &mut [&mut out[..]]);
+            frame += len;
+        }
+        let sent = seen.lock().unwrap().len();
+        (sent, clock.dropped_events())
+    };
+
+    let (whole, none) = run(&[LONG / 4; 4]);
+    assert_eq!(none, 0, "a quarter-length block fits every event");
+    assert!(
+        whole > CLOCK_EVENT_CAPACITY,
+        "the span produces more than one block can carry ({whole})"
+    );
+
+    let (sent, dropped) = run(&[LONG]);
+    assert_eq!(sent, CLOCK_EVENT_CAPACITY, "one block sends up to the cap");
+    assert_eq!(
+        sent as u64 + dropped,
+        whole as u64,
+        "every event past the cap is counted"
+    );
+}

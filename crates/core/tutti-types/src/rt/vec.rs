@@ -9,8 +9,6 @@ use super::capped::Capped;
 /// caller" shape — the most common one on the RT path, and the one the other
 /// `rt` buffers do not serve:
 ///
-/// - [`RtEventBuf`](crate::RtEventBuf) deliberately hides its storage behind
-///   `for_each`/`drain_each`, so it cannot return `&[T]`.
 /// - [`RtScratch`](crate::RtScratch) has no `push`: its length is chosen by
 ///   slicing a preallocated run, not by appending.
 ///

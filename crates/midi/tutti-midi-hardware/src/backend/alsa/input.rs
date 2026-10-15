@@ -91,7 +91,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
 ///
 /// Takes `seq` **by value** so the client is dropped here, on this thread, when
 /// the loop ends — the port unsubscribes exactly when the pump stops.
-fn pump(seq: SeqClient, running: Arc<AtomicBool>, producer: InputProducerHandle) {
+fn pump(seq: SeqClient, running: Arc<AtomicBool>, mut producer: InputProducerHandle) {
     while running.load(Ordering::Acquire) {
         let mut ev: *mut sys::snd_seq_ump_event_t = std::ptr::null_mut();
         // SAFETY: `seq` is open for the life of this function; `ev` is a valid

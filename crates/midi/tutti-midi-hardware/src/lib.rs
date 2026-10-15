@@ -20,7 +20,7 @@ pub mod test_support;
 pub use capability::{EndpointId, EndpointInfo, UmpCapability};
 pub use endpoints::{InputConnection, MidiEndpoints};
 pub use error::{Error, Result};
-pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
+pub use port::{HardwareMidiInputs, InputProducerHandle, PortId, PortInfo, PortType};
 pub use session::MidiSession;
 pub use sysex::Sysex7ByteAssembler;
 
@@ -78,8 +78,6 @@ pub use tutti_midi_runtime::{
     MidiInputNode, MidiMailbox, MidiOutNode, MidiReceiver, MidiSender, Sysex7PacketReassembler,
     TimedMidiEvent,
 };
-
-pub use crossbeam_channel;
 
 // --- Standard MIDI File codec: NOT here ---
 //

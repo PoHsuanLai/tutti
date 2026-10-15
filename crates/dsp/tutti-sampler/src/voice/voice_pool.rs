@@ -1429,6 +1429,298 @@ mod tests {
         );
     }
 
+    /// A streaming voice on butler channel `channel_index` over a ring whose
+    /// writer is gone: enough for the drain's loop forward, which reads only
+    /// the tier and the channel.
+    fn streaming_voice(channel_index: Option<usize>) -> Voice {
+        use crate::butler::{RegionBuffer, RegionId, RtState};
+        use crate::voice::disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
+
+        let (writer, reader) =
+            RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128, 2usize);
+        drop(writer);
+        let state = Arc::new(RtState::new());
+        let inner = DiskSource::new(reader, state.clone());
+        Voice {
+            source: VoiceSource::Disk(DiskVoice::new(
+                inner,
+                state,
+                DiskVoiceConfig {
+                    window: VoiceWindow {
+                        start: Beat::new(0.0),
+                        duration: None,
+                    },
+                    file_sample_rate: SampleRate(44100.0),
+                },
+            )),
+            play: Playback::default(),
+            channel_index,
+        }
+    }
+
+    fn loop_on(id: SlotId) -> VoiceCommand {
+        VoiceCommand::UpdateLoop {
+            id,
+            looping: true,
+            loop_start: SamplePosition::new(0.0),
+            loop_end: SamplePosition::new(64.0),
+            crossfade_frames: 0,
+        }
+    }
+
+    /// Runs one block of `pool` on another thread and waits at most five
+    /// seconds for it: a block that waits on the butler fails here instead
+    /// of hanging the run.
+    fn block_within_timeout(pool: VoicePool) -> VoicePool {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut pool = pool;
+            let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+            let mut out = [0.0f32; 2];
+            tick(&mut pool, &transport, SR, &mut out);
+            let _ = done_tx.send(pool);
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the block waited on the butler: `process` must never block on its queue")
+    }
+
+    /// **A stalled butler does not block `process`, and the dropped loop is
+    /// counted.**
+    ///
+    /// The drain forwards a streaming voice's loop to the butler from inside
+    /// `process`. The butler's queue is bounded, so a butler stalled on I/O
+    /// fills it, and a blocking send would then hold the audio callback until
+    /// the butler drained it. Here the queue is full and nothing drains it:
+    /// the block must still return, refuse the forward, count it, and leave
+    /// the loop unrecorded (the butler never heard it). A butler that has
+    /// exited is the other refusal, counted apart.
+    ///
+    /// Deterministic: a one-slot butler queue with no butler thread, so
+    /// nothing drains it, filled by the `AddVoice`'s own forward (an add
+    /// forwards its voice's loop, `Off` here). No sleep: the timeout only
+    /// bounds a failure.
+    ///
+    /// Mutation (run): `apply_loop` forwarding through the blocking
+    /// `Commands::send` → the block never returns → fails at the timeout.
+    /// Mutation (run): the `Full` refusal bumping `loops_butler_gone` →
+    /// fails on the count. Mutation (run): recording `play.loop_` before the
+    /// forward → fails on the recorded loop.
+    #[test]
+    fn a_stalled_butler_does_not_block_the_drain() {
+        let butler = crate::butler::ButlerQueue::new(1);
+        let (pool, handle) = VoicePool::with_butler(stalled_commands(&butler)).with_handle();
+        let id = SlotId(3);
+        handle
+            .send(VoiceCommand::AddVoice {
+                id,
+                voice: Box::new(streaming_voice(Some(0))),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
+        let pool = block_within_timeout(pool);
+        assert_eq!(butler.len(), 1, "the add's own forward filled the queue");
+        assert_eq!(handle.drops(), PoolDrops::default(), "nothing refused yet");
+
+        // The butler is stalled: its one slot is taken and nobody reads it.
+        handle
+            .send(loop_on(id))
+            .expect("the command queue has room in a test");
+        let pool = block_within_timeout(pool);
+        let drops = handle.drops();
+        assert_eq!(drops.loops_butler_full, 1, "the refused forward is counted");
+        assert_eq!(drops.loops_butler_gone, 0);
+        assert_eq!(
+            pool.playback_of(id).expect("slot exists").loop_,
+            LoopSetting::Off,
+            "a loop the butler never received must not be recorded as applied"
+        );
+
+        // The butler exits: the same forward is refused as gone.
+        butler.close();
+        handle
+            .send(loop_on(id))
+            .expect("the command queue has room in a test");
+        let pool = block_within_timeout(pool);
+        let drops = handle.drops();
+        assert_eq!(drops.loops_butler_full, 1);
+        assert_eq!(drops.loops_butler_gone, 1, "a gone butler is counted apart");
+        assert_eq!(
+            pool.playback_of(id).expect("slot exists").loop_,
+            LoopSetting::Off
+        );
+    }
+
+    /// **A forward the butler takes is recorded.** The other half of the
+    /// rule above, so the stalled case is not passing because nothing is
+    /// ever recorded.
+    ///
+    /// Mutation (run): `apply_loop` returning before recording on success →
+    /// fails.
+    #[test]
+    fn a_loop_the_butler_takes_is_recorded() {
+        let butler = crate::butler::ButlerQueue::new(4);
+        let (pool, handle) = VoicePool::with_butler(stalled_commands(&butler)).with_handle();
+        let id = SlotId(3);
+        handle
+            .send(VoiceCommand::AddVoice {
+                id,
+                voice: Box::new(streaming_voice(Some(0))),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
+        handle
+            .send(loop_on(id))
+            .expect("the command queue has room in a test");
+        let pool = block_within_timeout(pool);
+        assert_eq!(butler.len(), 2, "the add's forward and the loop's");
+        assert!(matches!(
+            pool.playback_of(id).expect("slot exists").loop_,
+            LoopSetting::On { .. }
+        ));
+        assert_eq!(handle.drops(), PoolDrops::default());
+    }
+
+    /// **The drain's other silent drops are counted**, not logged: a loop
+    /// turned on for a streaming voice with no butler, and a `ReplaceWave`
+    /// aimed at a streaming voice. Clearing a loop there (the add's own
+    /// `Off`) loses nothing and is not counted.
+    ///
+    /// Mutation (run): deleting the `loops_no_butler` bump → fails.
+    /// Mutation (run): counting `Off` too (the `matches!(setting, On)` guard
+    /// removed) → fails on the add's count. Mutation (run): deleting the
+    /// `wave_swaps_ignored` bump → fails.
+    #[test]
+    fn the_drains_silent_drops_are_counted() {
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let (mut pool, handle) = VoicePool::new().with_handle();
+        let id = SlotId(5);
+        handle
+            .send(VoiceCommand::AddVoice {
+                id,
+                voice: Box::new(streaming_voice(Some(0))),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
+        let mut out = [0.0f32; 2];
+        tick(&mut pool, &transport, SR, &mut out);
+        assert_eq!(
+            handle.drops().loops_no_butler,
+            0,
+            "the add's loop is `Off`: there is nothing to lose without a butler"
+        );
+
+        handle
+            .send(loop_on(id))
+            .expect("the command queue has room in a test");
+        handle
+            .send(VoiceCommand::ReplaceWave {
+                id,
+                wave: Arc::new(Wave::zero(2, 44_100.0, 0.01)),
+            })
+            .expect("the command queue has room in a test");
+        tick(&mut pool, &transport, SR, &mut out);
+        let drops = handle.drops();
+        assert_eq!(drops.loops_no_butler, 1, "the lost `On` is counted");
+        assert_eq!(drops.wave_swaps_ignored, 1);
+        assert_eq!(
+            handle.collect_retired(),
+            1,
+            "the ignored wave still leaves through the retirement channel"
+        );
+    }
+
+    /// A `Commands` onto `queue` with no butler thread behind it: nothing
+    /// drains it, so a test fills it to stall the butler.
+    fn stalled_commands(queue: &Arc<crate::butler::ButlerQueue>) -> crate::ports::Commands {
+        crate::ports::Commands::new(crate::butler::ButlerSender::new(Arc::clone(queue)))
+    }
+
+    /// **An added voice whose loop the stalled butler refused does not
+    /// claim it.** The add carries its loop in `voice.play`; the drain must
+    /// record it only once the butler took the forward, as an `UpdateLoop`
+    /// does, not leave the voice's own `On` standing in the slot.
+    ///
+    /// Mutation (run): `insert_voice_inner` copying the loop
+    /// (`let loop_ = voice.play.loop_;`) instead of taking it out → the
+    /// slot keeps `On` → fails.
+    #[test]
+    fn an_add_whose_loop_the_butler_refused_does_not_claim_it() {
+        let butler = crate::butler::ButlerQueue::new(1);
+        let commands = stalled_commands(&butler);
+        // Stall it: its one slot taken, nothing draining.
+        commands
+            .send(crate::ports::Command::Stop { channel_index: 9 })
+            .expect("room for one");
+        let (pool, handle) = VoicePool::with_butler(commands).with_handle();
+        let id = SlotId(4);
+        let mut voice = streaming_voice(Some(0));
+        voice.play.loop_ = LoopSetting::On {
+            start: SamplePosition::new(0.0),
+            end: SamplePosition::new(64.0),
+            crossfade_frames: 0,
+        };
+        handle
+            .send(VoiceCommand::AddVoice {
+                id,
+                voice: Box::new(voice),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
+        let pool = block_within_timeout(pool);
+        assert_eq!(
+            handle.drops().loops_butler_full,
+            1,
+            "the forward was refused"
+        );
+        assert_eq!(
+            pool.playback_of(id).expect("slot exists").loop_,
+            LoopSetting::Off,
+            "a loop the butler never received must not be recorded as applied"
+        );
+    }
+
+    /// **A control-thread `insert_voice` waits for the butler's room rather
+    /// than dropping its loop.** It is control-thread code (it allocates the
+    /// slot's box), so it sends as the control thread does: blocking, while
+    /// the drain refuses.
+    ///
+    /// Mutation (run): `insert_voice` forwarding with `Forward::Refuse` → the
+    /// loop is dropped on the full queue → fails.
+    #[test]
+    fn a_control_thread_insert_waits_for_the_butler() {
+        let butler = crate::butler::ButlerQueue::new(1);
+        let commands = stalled_commands(&butler);
+        commands
+            .send(crate::ports::Command::Stop { channel_index: 9 })
+            .expect("room for one");
+        let mut pool = VoicePool::with_butler(commands);
+        // The butler catches up a moment later.
+        let drainer = {
+            let butler = Arc::clone(&butler);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                assert!(butler.pop().is_some());
+            })
+        };
+        let mut voice = streaming_voice(Some(0));
+        voice.play.loop_ = LoopSetting::On {
+            start: SamplePosition::new(0.0),
+            end: SamplePosition::new(64.0),
+            crossfade_frames: 0,
+        };
+        pool.insert_voice(SlotId(1), voice);
+        drainer.join().unwrap();
+        assert!(matches!(
+            pool.playback_of(SlotId(1)).expect("slot exists").loop_,
+            LoopSetting::On { .. }
+        ));
+        assert!(matches!(
+            butler.pop(),
+            Some(crate::butler::ButlerCommand::SetStreamLoop { .. })
+        ));
+    }
+
     /// Channel `c` carries the constant `c + 1`.
     fn indexed_wave(channels: usize, len: usize) -> Arc<Wave> {
         let mut w = Wave::zero(channels, 44_100.0, len as f64 / 44_100.0);
@@ -1697,6 +1989,7 @@ mod tests {
                 retired: bounded(0).1,
                 channels: ChannelLayout::from(6u16),
                 rate: SharedRate::new(SampleRate::SR_44K1),
+                counters: Default::default(),
             };
             probe
                 .send(VoiceCommand::AddVoice {

@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use dashmap::DashMap;
-use smol::channel::{bounded, Receiver, Sender};
 use thread_priority::ThreadPriority;
 use tutti_core::RtPublish;
 use tutti_core::SampleRate;
@@ -19,9 +18,10 @@ use super::cache::LruCache;
 use super::command::ButlerCommand;
 use super::config::BufferConfig;
 use super::handlers::{Handles, SessionRate};
-use super::loop_body::butler_loop_async;
+use super::loop_body::{butler_loop, Pacing};
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
+use super::queue::{ButlerQueue, ButlerSender};
 #[cfg(any(test, feature = "test-support"))]
 use super::step::{ButlerCycle, StepOutcome};
 
@@ -32,12 +32,15 @@ use super::step::{ButlerCycle, StepOutcome};
 /// [`command_sender`](Self::command_sender), and read stream state through
 /// [`plans`](Self::plans). `Drop` stops the thread and joins it.
 pub struct ButlerThread {
-    tx: Sender<ButlerCommand>,
-    rx: Option<Receiver<ButlerCommand>>,
+    /// The command queue. The butler thread pops it; every sender pushes
+    /// and unparks.
+    queue: Arc<ButlerQueue>,
     thread_handle: Option<JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
     shared: Handles,
     config: BufferConfig,
+    /// How long the thread parks between cycles.
+    pacing: Pacing,
     /// The synchronous cycle, when this controller is being driven by hand
     /// rather than by a thread. `Some` only after [`step_once`](Self::step_once)
     /// has been called on an unstarted controller; `start` refuses once it is
@@ -50,8 +53,9 @@ impl ButlerThread {
     /// Build the controller and its shared handles without spawning anything —
     /// [`start`](Self::start) does that.
     ///
-    /// `channel_capacity` bounds the command queue in messages; a full queue
-    /// blocks the sender rather than dropping a command. `sample_rate` is the
+    /// `channel_capacity` bounds the command queue in messages. A full queue
+    /// makes a control-thread send wait and an audio-thread send refuse
+    /// ([`ButlerSender`]). `sample_rate` is the
     /// *session* rate, against which each file's own rate becomes the stream's
     /// [`SrcRatio`](tutti_core::SrcRatio).
     pub fn with_config(
@@ -59,7 +63,7 @@ impl ButlerThread {
         sample_rate: SampleRate,
         config: BufferConfig,
     ) -> Self {
-        let (tx, rx) = bounded(channel_capacity);
+        let queue = ButlerQueue::new(channel_capacity);
 
         let shared = Handles {
             plans: Arc::new(DashMap::new()),
@@ -73,12 +77,12 @@ impl ButlerThread {
         };
 
         Self {
-            tx,
-            rx: Some(rx),
+            queue,
             thread_handle: None,
             shutdown: Arc::new(AtomicBool::new(false)),
             shared,
             config,
+            pacing: Pacing::DEFAULT,
             #[cfg(any(test, feature = "test-support"))]
             manual: None,
         }
@@ -99,10 +103,18 @@ impl ButlerThread {
     /// A cloneable sender onto the butler's command queue.
     ///
     /// Valid before `start`: commands sent then simply queue until the thread
-    /// drains them. Sending is control-thread work — it blocks when the queue is
-    /// full, so it must not be done from the audio thread.
-    pub fn command_sender(&self) -> Sender<ButlerCommand> {
-        self.tx.clone()
+    /// drains them. Its blocking send is control-thread work; its `try_send`
+    /// is the audio thread's.
+    pub(crate) fn command_sender(&self) -> ButlerSender {
+        ButlerSender::new(Arc::clone(&self.queue))
+    }
+
+    /// This controller with its thread parking for `pacing` between cycles
+    /// (tests: a long park shows a command does not wait for it).
+    #[cfg(test)]
+    pub(super) fn with_pacing(mut self, pacing: Pacing) -> Self {
+        self.pacing = pacing;
+        self
     }
 
     /// Spawn the butler thread at maximum priority. Idempotent — a second call
@@ -126,20 +138,31 @@ impl ButlerThread {
             "start on a hand-stepped butler: the cycle state is already owned here"
         );
 
-        // Fatal-init invariant: `rx` is `Some` for the whole pre-start lifetime
-        // and is only taken here. The `thread_handle.is_some()` guard above
-        // returns early once the thread is running, so `start()` reaches this
-        // point exactly once — the `take()` can never observe `None`.
-        let rx = self.rx.take().expect("rx already taken");
+        let queue = Arc::clone(&self.queue);
         let shutdown = Arc::clone(&self.shutdown);
         let shared = self.shared.clone();
         let config = self.config;
+        let pacing = self.pacing;
 
         let handle = thread::Builder::new()
             .name("tutti-butler".into())
             .spawn(move || {
+                // Closes the queue however the loop ends (a panic included),
+                // so a sender learns the butler is gone instead of queueing
+                // into nothing, and drops what was left queued, here on the
+                // butler's own thread (`ButlerQueue::close`).
+                struct CloseOnExit(Arc<ButlerQueue>);
+                impl Drop for CloseOnExit {
+                    fn drop(&mut self) {
+                        self.0.close();
+                    }
+                }
+                let queue = CloseOnExit(queue);
+                // Before the first cycle: a command pushed before this wakes
+                // nobody, and that first cycle drains it.
+                queue.0.register_butler();
                 let _ = thread_priority::set_current_thread_priority(ThreadPriority::Max);
-                smol::block_on(butler_loop_async(rx, shared, config, shutdown));
+                butler_loop(&queue.0, shared, config, shutdown, pacing);
             })
             // Fatal init: spawning the disk-I/O butler thread is a prerequisite
             // for all streaming/recording. A spawn failure means the OS is out of
@@ -153,17 +176,23 @@ impl ButlerThread {
 
     /// Signal shutdown and join the butler thread, blocking until it exits.
     ///
-    /// Both a flag and a `Shutdown` command are sent: the flag ends the loop
-    /// even mid-cycle, the command wakes a thread parked waiting for one. Called
-    /// by `Drop`, and idempotent — stopping an unstarted or already-stopped
-    /// controller does nothing.
+    /// The flag ends the loop at its next cycle, and an unpark starts that
+    /// cycle now; a `Shutdown` command is also queued when there is room,
+    /// which ends a cycle already draining. The queue is closed (and
+    /// drained) afterwards, so a sender still holding it is told the butler
+    /// is gone; for a started butler its thread has already done so on its
+    /// way out, and this covers a controller that never started. Called by
+    /// `Drop`, and idempotent — stopping an already-stopped controller does
+    /// nothing more.
     pub fn stop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
-        let _ = self.tx.send_blocking(ButlerCommand::Shutdown);
+        let _ = self.command_sender().try_send(ButlerCommand::Shutdown);
+        self.queue.wake();
 
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
+        self.queue.close();
     }
 
     /// Run exactly one butler cycle on the **calling** thread: drain every
@@ -192,15 +221,11 @@ impl ButlerThread {
             self.thread_handle.is_none(),
             "step_once on a started butler: the thread already owns the cycle state"
         );
-        let rx = self
-            .rx
-            .as_ref()
-            .expect("rx is taken only by `start`, which the assert above excludes")
-            .clone();
+        let queue = Arc::clone(&self.queue);
         let cycle = self
             .manual
             .get_or_insert_with(|| ButlerCycle::new(self.config));
-        cycle.step(&self.shared, || rx.try_recv().ok())
+        cycle.step(&self.shared, || queue.pop())
     }
 
     /// The shared per-channel plan map, keyed by channel index.
@@ -236,5 +261,130 @@ impl ButlerThread {
 impl Drop for ButlerThread {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::butler::loop_body::Pacing;
+    use crate::butler::ButlerGone;
+    use crate::ports::{Command, Commands};
+
+    /// A butler that, left alone, would sleep far longer than any test waits.
+    const LONG_PARK: Pacing = Pacing {
+        idle: Duration::from_secs(60),
+        healthy: Duration::from_secs(60),
+    };
+
+    /// Polls `done` until it holds or `bound` passes; whether it held.
+    fn within(bound: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < bound {
+            if done() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        done()
+    }
+
+    /// **A sent command wakes a parked butler**: it is drained well inside
+    /// the park's timeout, not when the timeout ends.
+    ///
+    /// The butler parks for 60 s between cycles and the test allows 10 s:
+    /// the bound is generous for a loaded machine, and still six times
+    /// shorter than a butler that only ever wakes on its own. The first send
+    /// may land before the thread parks; the second is sent once the first
+    /// has been drained, by which point the thread is (or is about to be)
+    /// parked, and the park token makes the two cases one.
+    ///
+    /// Mutation (run): `try_send` without its `wake()` → the second command
+    /// sits for the park's 60 s → fails at the 10 s bound.
+    #[test]
+    fn a_send_wakes_a_parked_butler() {
+        let mut butler =
+            ButlerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default())
+                .with_pacing(LONG_PARK);
+        let tx = butler.command_sender();
+        butler.start();
+
+        for channel_index in [90, 91] {
+            tx.try_send(ButlerCommand::StopStreaming { channel_index })
+                .expect("room in an empty queue");
+            assert!(
+                within(Duration::from_secs(10), || tx.queue().len() == 0),
+                "command {channel_index} waited on the butler's 60 s park"
+            );
+            // Let the butler finish its cycle and park again.
+            thread::sleep(Duration::from_millis(20));
+        }
+        butler.stop();
+    }
+
+    /// **A stopped butler is gone** to every sender, started or not:
+    /// `Commands::send` reports [`ButlerGone`] and the audio thread's
+    /// `try_send` refuses.
+    ///
+    /// A started butler's queue is closed twice over (its thread's exit
+    /// guard, then `stop`), so the mutation that bites is on the controller
+    /// that never started. Mutation (run): `stop` without its
+    /// `queue.close()` → the started half still passes (the guard closed
+    /// it), the unstarted half queues into a queue nobody drains, `Ok(())`
+    /// → fails.
+    #[test]
+    fn a_stopped_butler_reports_gone() {
+        let mut unstarted =
+            ButlerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
+        unstarted.stop();
+        assert_eq!(
+            Commands::new(unstarted.command_sender()).send(Command::Stop { channel_index: 0 }),
+            Err(ButlerGone),
+            "a controller stopped before it started"
+        );
+
+        let mut butler =
+            ButlerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
+        butler.start();
+        let commands = Commands::new(butler.command_sender());
+        assert_eq!(commands.send(Command::Stop { channel_index: 0 }), Ok(()));
+
+        butler.stop();
+        assert_eq!(
+            commands.send(Command::Stop { channel_index: 0 }),
+            Err(ButlerGone)
+        );
+        assert!(matches!(
+            butler
+                .command_sender()
+                .try_send(ButlerCommand::StopStreaming { channel_index: 0 }),
+            Err(crate::butler::TrySendError::Closed)
+        ));
+    }
+
+    /// **A butler thread that exits on its own closes the queue**, without
+    /// its controller's `stop`: a `Shutdown` command ends the loop, and the
+    /// thread's exit guard closes the queue on the way out.
+    ///
+    /// Mutation (run): the thread body without its `CloseOnExit` guard →
+    /// the queue never closes → fails at the bound.
+    #[test]
+    fn a_butler_that_exits_closes_its_queue() {
+        let mut butler =
+            ButlerThread::with_config(8, SampleRate::new(48_000.0), BufferConfig::default());
+        butler.start();
+        let tx = butler.command_sender();
+        tx.try_send(ButlerCommand::Shutdown).unwrap();
+        assert!(
+            within(Duration::from_secs(10), || tx.queue().is_closed()),
+            "the thread exited but the queue still accepts commands"
+        );
+        let commands = Commands::new(tx);
+        assert_eq!(
+            commands.send(Command::Stop { channel_index: 0 }),
+            Err(ButlerGone)
+        );
     }
 }

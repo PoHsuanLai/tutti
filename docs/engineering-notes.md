@@ -264,6 +264,51 @@ stress test. A plain x86 run does not — its CAS is
 already a full barrier — which is why neither check can be replaced by more
 iterations.
 
+### The butler queue's close handshake (an exception to the loom rule)
+
+`tutti-sampler`'s butler command queue (`butler/queue.rs`, crate-private) is
+lock-free runtime state the audio thread touches, and it lives in
+`tutti-sampler`, with no loom model. It is the one exception, and this is why.
+
+It is a `crossbeam_queue::ArrayQueue`, std's park token for the wake, and a
+`closed` flag. The queue and the token bring their own ordering. The one
+argument the queue owns is the close handshake, which keeps a command from
+being reported sent and never popped:
+
+- The closer (the butler thread on its way out, or `stop` on a controller
+  that never started) stores `closed`, issues a `SeqCst` fence, then drains.
+- A sender pushes, issues a `SeqCst` fence, then loads `closed`, and reports
+  the butler gone if it is set. It also checks `closed` before the push, but
+  only as a fast path, so a send after the close pushes nothing.
+
+This is store-buffering with a fence on each side, as in `rt/job_gate.rs`.
+In C++20 terms the two fences are ordered in the single total order `S`.
+If the closer's fence comes first, the sender's load after its fence sees
+`closed`. If the sender's fence comes first, the drain's loads after the
+closer's fence see the push's stamp store, so the drain pops the command.
+Either way the command is not stranded. The cost of the overlap: a command
+can be both popped (run by a last cycle, or dropped by the drain) and
+reported gone. The module docs state that meaning.
+
+Why no loom model:
+
+- crossbeam has no `cfg(loom)` build, so a model cannot run the shipped
+  queue. It could run the handshake only over a stand-in queue, and the
+  rule asks for the shipped code.
+- Moving the queue into `tutti-types` to host such a model would add a
+  type there that wraps one crate's queue for one consumer.
+
+What covers it instead:
+
+- `a_push_after_the_final_drain_reports_closed` pins the recheck
+  deterministically, by running the sender's half after the close.
+- `closing_drains_what_is_queued` pins the drain.
+
+Nothing pins the fences. On x86 crossbeam's tail CAS is already a full
+barrier, so removing either fence passes every test there, as it does for
+`RtPublish` outside loom and miri. If this handshake ever grows past one
+flag and one drain, move it to `tutti-types` and model it.
+
 ## Two buffer vocabularies — edges vs graph nodes
 
 The engine has **two** buffer interfaces, and which to use is decided by *what
@@ -406,6 +451,20 @@ param takes nothing. `AudioNode` is the only thing `tutti-core` gates behind its
   A test that cannot fail is worse than no test: it claims coverage it does not
   have. When a property genuinely cannot be covered here, say so in a comment
   rather than writing an assertion that always passes.
+
+### What guards `plugin-server`'s realtime raise
+
+`real_plugin_pressure` once named its 90% audio floor as the only guard on
+`raise_to_realtime`. The floor could not stay there: under bursty load it
+failed on correct code, and any floor loose enough to hold under load passes
+an unraised server too. It is 70% now, a check on the bridge, and
+`plugin_server_audio_thread_is_raised_where_the_os_allows` reads the server's
+audio thread (policy, realtime priority, nice) from `/proc` instead, against
+a scratch thread that made the same call. That is Linux-only, and it bites
+only where the OS grants the raise: GitHub's runners are unprivileged
+(`RLIMIT_NICE` 0, no `CAP_SYS_NICE`), so in CI it checks only that the server
+stayed where an unraised thread does. Run it as root, or with `CAP_SYS_NICE`,
+to cover the call.
 
 ## Check the constraint before designing around it
 

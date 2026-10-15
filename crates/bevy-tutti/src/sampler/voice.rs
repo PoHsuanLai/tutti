@@ -5,8 +5,8 @@
 //! node takes), [`PortSources`](crate::graph::PortSources) on a sink
 //! names it as a source, and the `On<Remove, AudioNode>` observer takes it
 //! back out. Its controls are typed: a [`VoiceNodeHandle`] (gain as a param
-//! cell, also addressable as `UnitParam::Volume`; placement over the node's
-//! command queue), kept on the entity as [`VoiceCommands`].
+//! cell, also addressable as `UnitParam::Volume`; placement as a published
+//! value the node reads each block), kept on the entity as [`VoiceCommands`].
 //!
 //! # One node per voice, or a pool
 //!

@@ -110,6 +110,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   command. Unused dependencies dropped: `ringbuf` (tutti-plugin),
   `crossbeam-channel` and `parking_lot` (tutti-plugin-server).
 
+- **Sampler real-time fixes** (tutti-sampler; design doc 013, "Sampler
+  real-time fixes"). A voice pool's drain no longer blocks on a stalled
+  butler, no longer grows its voice vector in the callback, and counts
+  what it drops instead of logging it. A standalone `VoiceNode`'s
+  placement is a published value rather than a queue. **Breaking** for
+  `VoiceNodeHandle::set_placement`, which returns `()`.
+
+  | Was | Now |
+  |---|---|
+  | a streaming voice's loop forward blocked `process` while the butler's queue was full | it is refused, counted (`PoolDrops::loops_butler_full`), and not recorded in the voice's `Playback`; a host re-sends it. `Commands::send` (control thread) still blocks |
+  | the drain's dropped loops and ignored `ReplaceWave`s went to `tracing::warn!` | `VoicePoolHandle::drops() -> PoolDrops` (`loops_butler_full`, `loops_butler_gone`, `loops_no_butler`, `wave_swaps_ignored`, `voices_refused`, `freed_in_callback`); `#[non_exhaustive]` |
+  | an `AddVoice` past 64 resident voices reallocated the voice vector in the callback | it is refused, counted (`voices_refused`), and the voice handed back for `collect_retired` to free |
+  | a value the full retirement channel could not take was freed in the callback silently | still freed there, now counted (`freed_in_callback`) |
+  | `VoiceNodeHandle::set_placement(..) -> Result<(), SendError>` (a 64-entry queue, `Full` when it filled) | `-> ()`: the window is published, latest wins, from the node's next block. **Migration:** drop the `?`/`.unwrap()`; two placements between blocks play the second |
+  | the butler's command queue was a `smol` channel, whose send locked a listener list (and allocated it on the first send) | a lock-free (not wait-free: on a full queue a send can spin briefly behind the butler's in-progress pop), allocation-free fixed queue whose send unparks the butler. A butler thread that exits, however it exits, closes it and drops what was queued, and every later `Commands::send` returns `ButlerGone`; a command sent as it exits either is popped (run, or dropped by that drain) or reports `ButlerGone` |
+  | an `AddVoice` whose voice carried a loop recorded it in `Playback` even when the butler refused the forward | the loop is recorded only once the butler takes it |
+  | a control-thread `insert_voice` of a streaming voice with a loop | waits for room in the butler's queue (retrying every 100 µs) instead of refusing, as `Commands::send` does; it returns early only when the butler is gone (counted as `loops_butler_gone`). It waits as long as a stalled butler stalls, and for good on an unstarted controller or a `DiskStreamer::manual` stepped on the calling thread: step or start it before inserting a looping voice into a full queue |
+  | `loops_no_butler` counted every loop change on a streaming voice with no butler, `Off` included | it counts only a lost `On`; an `Off` there has nothing to clear |
+  | `tutti-sampler` depended on `ringbuf`, `smol` and `futures-lite` | it depends on none of them (`crossbeam-queue` instead) |
+
+- **A hardware MIDI input ring has one producer, by ownership**
+  (tutti-midi-hardware; design doc 013, "Hardware MIDI input ring"). Each
+  port's ring is split once: `create_input_port` returns its only
+  `InputProducerHandle`, which owns the producer half, is not `Clone`, and
+  pushes through `&mut self`; the port keeps the consumer. The `unsafe`
+  `SpscRing` is deleted. A disconnect retires its port, and a new port takes
+  the lowest free slot, so the port set no longer grows with every hot-plug
+  cycle. A port is named by a `PortId` (its slot and a generation), so an
+  id kept past its port's removal reaches nothing, not the port that took
+  its slot. **Breaking:**
+
+  | Was | Now |
+  |---|---|
+  | `HardwareMidiInputs::create_input_port(name) -> usize` | `-> InputProducerHandle`; the port is `handle.port_id()`, a `PortId` |
+  | `HardwareMidiInputs::get_input_producer_handle(index)` | removed: keep the handle `create_input_port` returned. There is no second handle to a ring |
+  | `HardwareMidiInputs::push_input_event(index, event)` | removed: `handle.push(event, Instant::now())` |
+  | `InputProducerHandle: Clone`, `push(&self, ..)` | not `Clone`, `push(&mut self, ..)`: a driver callback owns its handle (`move` it into an `FnMut`, or the pump thread) |
+  | ports were only appended; a `PortInfo::index` was never reused | `HardwareMidiInputs::remove_input_port(id: PortId) -> bool`; a removed port's slot is reused by the next port, under a new generation. `MidiSession` retires a port on disconnect, on a failed open, and when the session drops |
+  | a port named by `usize` index: `PortInfo::index`, `get_port_info(type, index)`, `set_port_active(type, index, on)`, `is_port_active(type, index)` | by `PortId`: `PortInfo::id`, and each of those takes a `PortId`. A stale id (its port removed) is a no-op: `None` / `false`. `PortId::index()` is still the slot, for display |
+  | `cycle_start_read_all_inputs[_at]`'s visitor: `FnMut(usize, MidiEvent)` | `FnMut(PortId, MidiEvent)`. A drain started from inside a visitor returns 0 and visits nothing; the outer drain still hands out every event |
+  | `set_sample_rate` wrote an audio-thread cell (a concurrent drain could trip it) | an atomic, safe from any thread; a drain reads it once per block |
+  | — | `HardwareMidiInputs::collect() -> usize`: frees a removed port whose ring a drain still held when it was removed, without waiting for the next port change; returns how many retired sets are still held |
+  | `tutti_midi_hardware::crossbeam_channel` | removed (and the dependency): depend on `crossbeam-channel` directly |
+  | `tutti_types::RtEventBuf` / `tutti_core::RtEventBuf` | removed (its one user was this crate): `AudioThreadCell<RtVec<T, N>>` |
+  | `ClockNode` dropped events past `CLOCK_EVENT_CAPACITY` in a block silently | it still drops them, and counts them: `ClockMaster::dropped_events()` |
+
+  `tutti-midi-runtime` no longer depends on `parking_lot` or `dashmap`
+  (nothing used them).
+
+- **VST3 host callbacks are bounded and allocation-free** (design doc 013,
+  "VST3 host callbacks bounded"). Plugins call `performEdit` and
+  `restartComponent` from their process thread, where the host's unbounded
+  channels allocated; the plugin server's restart poll, in its audio phase,
+  collected every queued edit into a `Vec` to keep only the restart flags.
+  Restart flags are now one atomic word, and edits, progress and unit news
+  share one preallocated queue whose overflow is counted, and a progress
+  description is held inline, so no callback allocates. **Breaking** for
+  `tutti-vst3-host` callers of the notification poll.
+
+  | Was | Now |
+  |---|---|
+  | `Vst3Loaded::poll_plugin_notifications() -> PluginNotifications` (`param_edits`, `progress`, `units` as fresh `Vec`s, `restart`) | `poll_plugin_notifications(\|n: PluginNotification\| ..) -> RestartOutcome`: each event goes to the closure in arrival order across all three kinds; nothing is collected. `news.restart` → the return value; `news.param_edits` → match `PluginNotification::Edit(e)`, `news.progress` → `Progress(e)`, `news.units` → `Unit(e)` |
+  | `PluginNotifications` | removed; `tutti_vst3_host::PluginNotification` (`Edit`, `Progress`, `Unit`) is the queued item |
+  | `ParameterEditEvent::RestartComponent(i32)` (never surfaced: the poll folded it into `restart`) | removed; restart requests arrive only as the coalesced `RestartOutcome`, and carry no position among the events |
+  | — | `Vst3Loaded::take_restart() -> RestartOutcome`: the restart flags alone, wait-free and allocation-free (the plugin server's `poll_restart` reads only this) |
+  | unbounded queues | `NOTIFICATION_CAPACITY` (512) unread notifications; past it the newest is dropped, counted in `Vst3Loaded::dropped_notifications()`, and reported once by the next poll as `RestartOutcome::notifications_overflowed` (re-read every parameter value) |
+  | `RestartOutcome` had only restart flags | new field `notifications_overflowed`; a struct literal needs it (or `..Default::default()`) |
+  | `ProgressEvent::Started { description: String }` | `description: ProgressDescription`, inline, at most `PROGRESS_DESCRIPTION_CAPACITY` (128) UTF-8 bytes, cut at a character boundary. `description.as_str()`, or deref to `&str`; `.to_string()` for an owned copy |
+  | — | `Vst3Loaded::discard_notifications()` (drop every queued notification, lock-free; the plugin server's `poll_restart` calls it) and `Vst3Loaded::pending_notifications()` |
+  | `poll_editor_resize_request` drained a channel | the same method reads a latest-wins cell; behaviour unchanged (it returned the last size) |
+
 - **`smallvec` is gone from the workspace** (design doc 013, "SmallVec
   removed"). A type whose inline storage bought nothing is a `Vec` (or a
   boxed slice); a type whose inline storage was a hard cap is an
@@ -1143,6 +1214,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     CoreMIDI type. It now takes an erased sink, so every backend gets it.
 
 ### Fixed
+
+- **A MIDI input driver can no longer push into a freed ring**
+  (tutti-midi-hardware). The producer handle was a raw pointer into a ring
+  the port manager owned, so an ALSA pump thread still running while a
+  session dropped (the manager before the connections) could write through
+  a dangling pointer, and two handles to one port were two producers. The
+  handle now owns its half of the ring; the session closes its inputs before
+  the rest of its state, in a stated order.
 
 - **The sampler no longer frees a decoded wave on the audio thread**
   (tutti-sampler). A pool's `VoiceCommand::ReplaceWave` drain dropped the

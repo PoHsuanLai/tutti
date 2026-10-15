@@ -2,8 +2,7 @@
 //!
 //! Zero inputs, N outputs, and typed controls ([`VoiceNodeHandle`], what its
 //! `IntoNode` hands back): its gain, a scalar cell the node reads once per
-//! block, and its placement, over a command queue the node drains at the top
-//! of each block. For resynth, preview and a single timeline clip, where a
+//! block, and its placement, a published window it reads once per block. For resynth, preview and a single timeline clip, where a
 //! whole pool would be ceremony. It shares `PlaybackSlot` with
 //! [`VoicePool`](super::pool::VoicePool), so the per-voice read is the same
 //! code in both — a fix in one is a fix in both.
@@ -15,12 +14,12 @@ use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::clock::{BlockClock, Clock};
-use super::command::{NodePlacement, PlacementRecord, VoiceNodeHandle, COMMAND_CAPACITY};
+use super::command::{PlacementCell, VoiceNodeHandle};
 use super::disk_voice::VoiceHealth;
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice};
-use crossbeam_channel::{bounded, Receiver};
-use tutti_core::{Amplitude, ChannelLayout, Param, SampleRate, Tail, UnitParam};
+use super::VoiceWindow;
+use tutti_core::{Amplitude, ChannelLayout, Param, RtPublish, SampleRate, Tail, UnitParam};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, ParamSet, Prepare,
     Shape, Status,
@@ -43,15 +42,15 @@ use tutti_graph::{
 ///   [`UnitParam::Volume`] through the handle's [`ParamSet`]. The node reads
 ///   it once per block into the voice's `Playback` record and its source.
 /// - **placement** — a [`Beat`](tutti_core::Beat) and an optional duration:
-///   not a scalar, so it rides a bounded command queue the node owns and
-///   drains at the top of each block, allocation-free.
+///   not a scalar, so the handle publishes it to an `RtPublish` cell the
+///   node reads once per block, latest wins, allocation-free.
 ///
 /// # Forks
 ///
 /// The node's fork source keeps a copy of the voice as it was inserted, and a
 /// fork is that copy made to share nothing with the live node
 /// (`Voice::fork_copy`: its own gain cell; a disk voice reading its file
-/// itself), moved to the placement the handle last queued and set to the gain
+/// itself), moved to the placement the handle last published and set to the gain
 /// last set, with a stretch filter of its own. It reads its render's
 /// transport from its block's `Env`: nothing to rebind. A disk voice's node
 /// forks only for an offline render.
@@ -63,16 +62,15 @@ pub struct VoiceNode {
     /// Declared rather than inferred from the voice, so an edge wired against
     /// it cannot be re-arityed under a live graph.
     pub(crate) channels: ChannelLayout,
-    /// Commands from the control thread, drained at the top of every block.
-    ///
-    /// **A dead channel until a handle exists**, not an `Option`: the drain
-    /// is one `try_recv` that immediately answers `Empty` rather than a
-    /// branch on every block.
-    pub(crate) rx: Receiver<NodePlacement>,
+    /// The window the handle publishes, read once per block; the fork source
+    /// reads the same cell. Empty (`None`) until a handle sets one, so a node
+    /// driven by hand keeps the window it was built with.
+    placement: PlacementCell,
+    /// The window last applied from `placement`, so a block applies a
+    /// window once, when it changes, rather than every block.
+    applied: Option<VoiceWindow>,
     /// The gain the handle writes; read once per block.
     gain: Param<Amplitude>,
-    /// The last placement the handle queued, for the fork source.
-    placement: PlacementRecord,
     /// The transport as the voice reads it, kept across blocks so a jump is
     /// flushed where it happens.
     clock: Clock,
@@ -116,25 +114,23 @@ impl VoiceNode {
         Self {
             slot,
             channels,
-            rx: bounded(0).1,
+            placement: PlacementCell::default(),
+            applied: None,
             gain,
-            placement: PlacementRecord::default(),
             clock: Clock::new(),
             scratch: BlockScratch::new(UNPREPARED_FRAMES, channels.count() as usize),
         }
     }
 
-    /// This node with a fresh command queue, and the handle that drives it:
-    /// what [`into_parts`](IntoNode::into_parts) hands the graph and the
-    /// caller. For a host (or a test) that calls the node by hand. A handle
-    /// taken before goes dead
-    /// ([`SendError::Disconnected`](super::command::SendError::Disconnected)).
+    /// This node with a fresh placement cell, and the handle that drives
+    /// it: what [`into_parts`](IntoNode::into_parts) hands the graph and the
+    /// caller. For a host (or a test) that calls the node by hand. A
+    /// placement set through a handle taken before no longer reaches the
+    /// node (its gain still does: that cell is the node's for life).
     pub fn with_handle(mut self) -> (Self, VoiceNodeHandle) {
-        let (tx, rx) = bounded(COMMAND_CAPACITY);
-        self.rx = rx;
+        self.placement = Arc::new(RtPublish::new(None));
         let params = self.param_set();
         let handle = VoiceNodeHandle {
-            tx,
             placement: Arc::clone(&self.placement),
             gain: self.gain.handle(),
             params,
@@ -151,29 +147,29 @@ impl VoiceNode {
             .build()
     }
 
-    /// Apply every queued placement, and the gain. Runs at the top of each
+    /// Apply the published placement, and the gain. Runs at the top of each
     /// block.
     ///
-    /// Allocation- and free-free by construction: the queue carries only
-    /// [`NodePlacement`]s, two `Copy` scalars, and applying one is a field
-    /// write. The pool's drain has to be more careful because its commands
-    /// carry owned payloads (a `Voice`, a wave, a stretch filter), which is
-    /// why it retires what it lets go of. A node's queue is typed so that no
-    /// such payload can reach it: there is nothing for it to drop.
+    /// Allocation- and free-free by construction: one `RtPublish` read (a
+    /// borrow that cannot free, dropped before the block's read), a `Copy`
+    /// window, and a field write when it changed. The pool's drain has to be
+    /// more careful because its commands carry owned payloads (a `Voice`, a
+    /// wave, a stretch filter), which is why it retires what it lets go of.
+    /// A node takes no such payload: there is nothing for it to drop.
     #[inline]
     fn drain_commands(&mut self) {
-        while let Ok(NodePlacement {
-            start_beat,
-            duration_beats,
-        }) = self.rx.try_recv()
-        {
-            // Placement is the source's alone: `Playback` has no placement
-            // field (two copies kept in sync by hand is how a fork reaches
-            // the wrong one), so there is exactly one write.
-            self.slot
-                .voice
-                .source
-                .apply_placement(start_beat, duration_beats);
+        let published = *self.placement.read();
+        if published != self.applied {
+            if let Some(window) = published {
+                // Placement is the source's alone: `Playback` has no
+                // placement field (two copies kept in sync by hand is how a
+                // fork reaches the wrong one), so there is exactly one write.
+                self.slot
+                    .voice
+                    .source
+                    .apply_placement(window.start, window.duration);
+            }
+            self.applied = published;
         }
         // Both halves of the gain: `Playback` is what the memory tier's read
         // scales by, the source's own cell what the disk tier's does.
@@ -332,7 +328,8 @@ struct VoiceNodeFork {
     /// with `Voice::fork_copy`, which shares nothing.
     template: Voice,
     channels: ChannelLayout,
-    placement: PlacementRecord,
+    /// The live node's placement cell, read when a fork is taken.
+    placement: PlacementCell,
     /// The node's params: a fork starts from the gain last **set** (the
     /// authored value), not a modulation composite caught in the live cell.
     params: ParamSet,
@@ -341,12 +338,9 @@ struct VoiceNodeFork {
 impl ForkSource for VoiceNodeFork {
     fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         let mut voice = self.template.fork_copy(mode)?;
-        let placed = *self
-            .placement
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((start_beat, duration_beats)) = placed {
-            voice.source.apply_placement(start_beat, duration_beats);
+        let placed = *self.placement.read();
+        if let Some(window) = placed {
+            voice.source.apply_placement(window.start, window.duration);
         }
         let gain = self
             .params

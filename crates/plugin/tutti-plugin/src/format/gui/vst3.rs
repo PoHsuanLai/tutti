@@ -84,28 +84,25 @@ impl PluginEditor for Vst3GuiInstance {
     }
 
     fn poll_gui_param_changes(&mut self) -> Vec<(ParamAddress, f32)> {
-        // Drain through the unified notification poll so `restartComponent`
-        // requests (latency / IO / param re-reads) are applied to host state
-        // instead of being silently dropped. The GUI path forwards param
-        // edits up; the `RestartOutcome` side effects (latency re-read, bus
-        // re-enumeration) are applied in-place by `poll_plugin_notifications`.
-        // Progress / unit notifications are not surfaced through the GUI param
-        // path.
-        let notifications = self.inner.poll_plugin_notifications();
-        notifications
-            .param_edits
-            .into_iter()
-            .filter_map(|e| {
-                use tutti_vst3_host::ParameterEditEvent;
-                match e {
-                    ParameterEditEvent::PerformEdit { param_id, value } => {
-                        // The plugin's editor reported one of its own `ParamID`s.
-                        Some((ParamAddress::Opaque(param_id.into()), value as f32))
-                    }
-                    _ => None,
-                }
-            })
-            .collect()
+        // Drain through the unified notification poll, which also forwards
+        // pending MIDI-learn CCs. The GUI path forwards `PerformEdit`s up.
+        //
+        // NOT HANDLED: the returned `RestartOutcome`. In particular a
+        // `kParamValuesChanged` (or `notifications_overflowed`) from this
+        // editor instance is dropped, so a preset loaded inside the plugin's
+        // own UI does not refresh the host's parameter values. Known gap,
+        // older than the bounded queue. Progress / unit notifications are not
+        // surfaced through the GUI param path either.
+        use tutti_vst3_host::{ParameterEditEvent, PluginNotification};
+        let mut edits = Vec::new();
+        let _restart = self.inner.poll_plugin_notifications(|n| {
+            if let PluginNotification::Edit(ParameterEditEvent::PerformEdit { param_id, value }) = n
+            {
+                // The plugin's editor reported one of its own `ParamID`s.
+                edits.push((ParamAddress::Opaque(param_id.into()), value as f32));
+            }
+        });
+        edits
     }
 
     fn editor_capabilities(&mut self) -> EditorCapabilities {

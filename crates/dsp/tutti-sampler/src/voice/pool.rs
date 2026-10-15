@@ -5,7 +5,7 @@
 //! summing unit: adding or removing a voice then costs a queued command instead
 //! of a graph edit, which is what keeps voice churn off the commit path.
 
-use crate::ports::{Command, Commands};
+use crate::ports::{ButlerRefused, Command, Commands};
 use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
@@ -23,6 +23,7 @@ use super::types::Playback;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tutti_core::{ChannelLayout, SampleRate, Tail};
 use tutti_graph::{
@@ -69,7 +70,8 @@ pub struct VoicePoolNode(pub tutti_core::NodeKey);
 ///
 /// **A full channel** (the control thread is not collecting) or a
 /// disconnected one degrades to dropping the value in the drain: a free on
-/// the audio thread, and no other effect. That is the documented policy of
+/// the audio thread, counted ([`PoolDrops::freed_in_callback`]), and no
+/// other effect. That is the documented policy of
 /// [`VoicePoolHandle::collect_retired`]. Parking the overflow in a spare slot
 /// instead would only move the free one value later, since the channel is
 /// already the bound.
@@ -119,6 +121,88 @@ pub(crate) enum Retired {
     /// reference, and then it frees the whole decoded buffer: the reason it
     /// is retired at all.
     Wave(Arc<Wave>),
+    /// A voice an `AddVoice` brought to a pool already holding
+    /// `MAX_RESIDENT_VOICES` slots, refused whole: its box, and the filter
+    /// the sender built for it.
+    ///
+    /// Taking it would grow the slot vector (a reallocation in the
+    /// callback), and dropping it would free the box, the source and the
+    /// filter there. Counted as [`PoolDrops::voices_refused`].
+    Refused {
+        voice: Box<Voice>,
+        stretch: Option<stretch::Unit>,
+    },
+}
+
+/// What a [`VoicePool`]'s drain dropped, refused or freed where it should
+/// not have, since the pool was built: a reading a host polls
+/// ([`VoicePoolHandle::drops`]), never a log line from the callback.
+///
+/// Each is a count of commands (or values) and only ever grows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct PoolDrops {
+    /// Streaming loop commands the drain found the butler's queue full for
+    /// (the butler is stalled). The loop is not applied and not recorded in the voice's
+    /// `Playback`; a host re-sends it.
+    pub loops_butler_full: u64,
+    /// Streaming loop commands sent after the butler thread exited.
+    pub loops_butler_gone: u64,
+    /// Streaming loops turned on (`LoopSetting::On`) for a voice with no
+    /// butler to forward to: a pool built without one, or a voice with no
+    /// butler channel. Clearing a loop there is a no-op, not a drop.
+    pub loops_no_butler: u64,
+    /// `ReplaceWave` commands aimed at a streaming voice, which changes
+    /// source by a fresh `AddVoice` instead.
+    pub wave_swaps_ignored: u64,
+    /// `AddVoice` commands for a new slot refused because the pool already
+    /// held `MAX_RESIDENT_VOICES` (64) slots. The voice goes back through
+    /// the retirement channel to be freed by
+    /// [`collect_retired`](VoicePoolHandle::collect_retired).
+    pub voices_refused: u64,
+    /// Values the drain had to free in the callback because the retirement
+    /// channel was full: the control thread was not calling
+    /// [`collect_retired`](VoicePoolHandle::collect_retired) often enough.
+    pub freed_in_callback: u64,
+}
+
+/// The atomics behind [`PoolDrops`], shared by a pool and its handle. Bumped
+/// on the audio thread with a relaxed add; read on the control thread.
+#[derive(Debug, Default)]
+pub(crate) struct DrainCounters {
+    loops_butler_full: AtomicU64,
+    loops_butler_gone: AtomicU64,
+    loops_no_butler: AtomicU64,
+    wave_swaps_ignored: AtomicU64,
+    voices_refused: AtomicU64,
+    freed_in_callback: AtomicU64,
+}
+
+impl DrainCounters {
+    fn bump(counter: &AtomicU64) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn snapshot(&self) -> PoolDrops {
+        let load = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        PoolDrops {
+            loops_butler_full: load(&self.loops_butler_full),
+            loops_butler_gone: load(&self.loops_butler_gone),
+            loops_no_butler: load(&self.loops_no_butler),
+            wave_swaps_ignored: load(&self.wave_swaps_ignored),
+            voices_refused: load(&self.voices_refused),
+            freed_in_callback: load(&self.freed_in_callback),
+        }
+    }
+}
+
+/// How [`VoicePool`] forwards a streaming loop to the butler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Forward {
+    /// Refuse on a full queue (the audio-thread drain).
+    Refuse,
+    /// Wait for room (a control-thread insert).
+    Wait,
 }
 
 /// A [`VoicePool`] asked for more channels than the sampler reads
@@ -165,8 +249,11 @@ pub struct PoolTooWide {
 /// which is what keeps a per-tier difference visible at the call site.
 pub struct VoicePool {
     /// The resident slots, one per voice, summed in order. Reserved to
-    /// `MAX_RESIDENT_VOICES` at construction so the audio-thread `AddVoice`
-    /// drain does not reallocate.
+    /// `MAX_RESIDENT_VOICES` at construction, and the audio-thread
+    /// `AddVoice` drain never grows it: an add for a new slot once it is full
+    /// is refused and retired (`Retired::Refused`). Only a control-thread
+    /// [`insert_voice`](Self::insert_voice) may grow it, and the drain then
+    /// fills the larger capacity before refusing.
     pub(crate) voices: Vec<PlaybackSlot>,
     /// Commands from the control thread, drained at the top of every block.
     /// This pool's own: a dead one until [`into_parts`](IntoNode::into_parts)
@@ -184,8 +271,12 @@ pub struct VoicePool {
     /// Pushing to a bounded channel instead is lock-free and allocation-free.
     /// The control thread drains it via [`VoicePoolHandle::collect_retired`];
     /// if nobody ever does, the channel fills and the slot is dropped in the
-    /// callback — a degraded free, never a leak.
+    /// callback — a degraded free, never a leak, counted as
+    /// [`PoolDrops::freed_in_callback`].
     pub(crate) retired: Sender<Retired>,
+    /// What the drain dropped or refused, shared with the handle
+    /// ([`VoicePoolHandle::drops`]).
+    pub(crate) counters: Arc<DrainCounters>,
     /// The engine rate every slot and its stretch filter is tuned to. Written by
     /// `prepare` and forwarded to each of them, so a device-rate change
     /// cannot leave a filter tuned to the old one.
@@ -250,11 +341,11 @@ impl VoicePool {
         let channels = nonempty(channels.into());
         Self {
             retired,
+            counters: Arc::default(),
             // Reserved, not empty: `AddVoice` is drained inside `process`, so
-            // a `push` that grows this vector is a reallocation in the audio
-            // callback. `MAX_RESIDENT_VOICES` is the point past which a track
-            // stops being allocation-free; beyond it the push still works, it
-            // just costs one grow.
+            // a `push` that grows this vector would be a reallocation in the
+            // audio callback. The drain refuses an add past the capacity
+            // instead (`Retired::Refused`).
             voices: Vec::with_capacity(MAX_RESIDENT_VOICES),
             rx: bounded(0).1,
             sample_rate,
@@ -273,7 +364,8 @@ impl VoicePool {
     }
 
     /// A stereo pool with no butler: a streaming voice's loop command is
-    /// dropped with a warning, because loop is butler-owned. Placed voices
+    /// dropped and counted ([`PoolDrops::loops_no_butler`]), because loop is
+    /// butler-owned. Placed voices
     /// play their windows of the transport; for a pool that forwards loops,
     /// [`with_butler`](Self::with_butler); for one at a non-stereo width,
     /// [`with_channels`](Self::with_channels). Its controls come with it into
@@ -284,8 +376,8 @@ impl VoicePool {
 
     /// A stereo pool forwarding streaming voices' loop commands to `butler`
     /// — the typed write handle streaming voices need: without it a
-    /// disk-backed voice still plays, but its loop commands are dropped with
-    /// a warning, because the loop-start fadein head lives on the butler side
+    /// disk-backed voice still plays, but its loop commands are dropped and
+    /// counted, because the loop-start fadein head lives on the butler side
     /// and the reader cannot reach it.
     pub fn with_butler(butler: Commands) -> Self {
         Self::from_parts(Some(butler), ChannelLayout::STEREO)
@@ -329,6 +421,7 @@ impl VoicePool {
             retired,
             channels: self.channels,
             rate: self.rate.clone(),
+            counters: Arc::clone(&self.counters),
         };
         (self, handle)
     }
@@ -400,10 +493,20 @@ impl VoicePool {
     ///   is what lets a host speak one `VoiceCommand` for both tiers instead of
     ///   forking on the tier itself.
     ///
-    /// RT-safe: this runs on the COLD command drain (top of `process`, before
-    /// the read), so the channel send is fine — it never touches the
-    /// per-sample hot path.
-    fn apply_loop(&mut self, id: SlotId, setting: LoopSetting) {
+    /// `forward` says how the streaming forward is sent. From the drain it is
+    /// [`Forward::Refuse`] ([`Commands::try_send`]), which does not wait
+    /// for room in a full butler queue: a stalled butler would otherwise
+    /// hold the callback until it drained. (It is lock-free rather than
+    /// wait-free: it can spin briefly behind a pop in progress.) A refused forward is counted ([`PoolDrops`]) and
+    /// leaves the intent unrecorded. A control-thread
+    /// [`insert_voice`](Self::insert_voice) sends [`Forward::Wait`]
+    /// ([`Commands::send`]), which waits for room as any control-thread send
+    /// does, so a loop it was handed is not lost to a momentarily full queue.
+    ///
+    /// A streaming voice with no butler cannot be told to clear a loop it
+    /// could never have been given, so `Off` there is a no-op and only a lost
+    /// `On` is counted.
+    fn apply_loop(&mut self, id: SlotId, setting: LoopSetting, forward: Forward) {
         let Some(slot) = self.voices.iter_mut().find(|s| s.id == id) else {
             return;
         };
@@ -423,9 +526,9 @@ impl VoicePool {
                     // a `play.loop_` that says "looping" while the stream is
                     // not would make `Playback` lie about the applied state —
                     // which `insert_voice` then replays as if it were real.
-                    tracing::warn!(
-                        "loop command dropped for slot {id:?}: streaming voice has no butler channel"
-                    );
+                    if matches!(setting, LoopSetting::On { .. }) {
+                        DrainCounters::bump(&self.counters.loops_no_butler);
+                    }
                     return;
                 };
                 // Same rule as the guard above, now that the send can report:
@@ -433,11 +536,19 @@ impl VoicePool {
                 // `play.loop_` that says "looping" while the stream is not would
                 // make `Playback` lie about the applied state, and
                 // `insert_voice` replays that as if it were real.
-                if let Err(e) = butler.send(Command::Loop {
+                let cmd = Command::Loop {
                     channel_index,
                     setting,
-                }) {
-                    tracing::warn!("loop command dropped for slot {id:?}: {e}");
+                };
+                let sent = match forward {
+                    Forward::Refuse => butler.try_send(cmd),
+                    Forward::Wait => butler.send(cmd).map_err(|_| ButlerRefused::Gone),
+                };
+                if let Err(refused) = sent {
+                    DrainCounters::bump(match refused {
+                        ButlerRefused::Full => &self.counters.loops_butler_full,
+                        ButlerRefused::Gone => &self.counters.loops_butler_gone,
+                    });
                     return;
                 }
                 slot.voice.play.loop_ = setting;
@@ -453,13 +564,15 @@ impl VoicePool {
     ///
     /// Boxes the voice (the slot holds it boxed), so control thread only; the
     /// audio-thread drain hands the box it received straight to the slot.
+    /// It can wait on the butler as `insert_voice` does
+    /// (see its "Blocking" section).
     pub fn insert_voice_with_stretch(
         &mut self,
         id: SlotId,
         voice: Voice,
         stretch: Option<stretch::Unit>,
     ) {
-        self.insert_voice_inner(id, Box::new(voice), stretch);
+        self.insert_voice_inner(id, Box::new(voice), stretch, Forward::Wait);
     }
 
     /// Inserts a fully-built [`Voice`] as a new slot and realises its full
@@ -491,6 +604,26 @@ impl VoicePool {
     /// sender. Either way the work sits on the COLD
     /// command drain, above the per-sample loop, so the loop's butler send never
     /// touches the hot path.
+    ///
+    /// # Blocking
+    ///
+    /// A streaming voice whose `play.loop_` is `On` forwards the loop with
+    /// the butler's blocking send ([`Commands::send`]): while the butler's
+    /// queue is full, this waits, retrying every 100 µs, until there is room
+    /// or the butler is gone (then the loop is dropped, counted as
+    /// [`PoolDrops::loops_butler_gone`], and not recorded). Two cases make
+    /// that wait long:
+    ///
+    /// - **A stalled butler** (on disk I/O, or descheduled): this waits as
+    ///   long as the stall does.
+    /// - **Nobody draining the queue**: a butler controller that was never
+    ///   started, or a `DiskStreamer::manual` (`test-support`) stepped on
+    ///   the thread that calls this. The queue then drains only
+    ///   when that same thread steps it, so a full queue waits for good.
+    ///   Step the streamer (or start it) before inserting a looping voice
+    ///   into a full queue.
+    ///
+    /// Every other voice, and every in-memory one, never waits.
     pub fn insert_voice(&mut self, id: SlotId, voice: Voice) {
         let stretch = stretch_wanted(&voice.play).then(|| {
             let unit = stretch::Unit::with_channels(self.sample_rate, self.channels);
@@ -498,27 +631,29 @@ impl VoicePool {
             unit.set_pitch_cents(voice.play.pitch);
             unit
         });
-        self.insert_voice_inner(id, Box::new(voice), stretch);
+        self.insert_voice_inner(id, Box::new(voice), stretch, Forward::Wait);
     }
 
     /// Allocation-free and free-free, so the drain can run it: the voice
     /// arrives boxed and the box moves into the slot, and a slot this one
     /// replaces goes to the retirement channel rather than being dropped here.
+    /// The drain passes [`Forward::Refuse`]; see [`apply_loop`](Self::apply_loop).
     fn insert_voice_inner(
         &mut self,
         id: SlotId,
-        voice: Box<Voice>,
+        mut voice: Box<Voice>,
         stretch: Option<stretch::Unit>,
+        forward: Forward,
     ) {
         if let Some(i) = self.voices.iter().position(|s| s.id == id) {
             let old = self.voices.swap_remove(i);
-            // A full or disconnected channel drops it here instead: only the
-            // thread that pays for the free changes.
-            let _ = self.retired.try_send(Retired::Slot(old));
+            self.retire(Retired::Slot(old));
         }
-        // Split the loop out: `apply_loop` needs the slot present to look it up,
-        // and `Playback` moves into the `Voice`. Take the rest by copy first.
-        let loop_ = voice.play.loop_;
+        // Take the loop out, leaving `Off` behind: `apply_loop` needs the slot
+        // present to look it up, and it records the loop only once it is
+        // applied. Leaving the voice's own `On` in place would record a loop
+        // a refused forward never set.
+        let loop_ = std::mem::replace(&mut voice.play.loop_, LoopSetting::Off);
         let gain = voice.play.gain;
         let speed = voice.play.speed;
         let direction = voice.play.direction;
@@ -546,16 +681,44 @@ impl VoicePool {
             slot.voice.play.direction = direction;
             slot.voice.source.apply_direction(direction);
         }
-        self.apply_loop(id, loop_);
+        self.apply_loop(id, loop_, forward);
+    }
+
+    /// Hands a value the drain let go of to the control thread.
+    ///
+    /// A full channel (the control thread is not collecting) or a
+    /// disconnected one (a pool no handle was taken for) drops it right here
+    /// instead: correctness is unaffected, only the thread that pays for the
+    /// free, and the count says it happened.
+    ///
+    /// The channel holds `MAX_RESIDENT_VOICES` (64) values, and one drain
+    /// takes at most `COMMAND_CAPACITY` (64) commands, each retiring at most
+    /// one value: a control thread that collects once between sends never
+    /// overflows it. Refused voices share the bound with every other
+    /// retirement, so a host that floods a full pool with adds and never
+    /// collects frees the 65th refusal in the callback, counted.
+    fn retire(&self, value: Retired) {
+        if self.retired.try_send(value).is_err() {
+            DrainCounters::bump(&self.counters.freed_in_callback);
+        }
     }
 
     fn drain_commands(&mut self) {
         while let Ok(cmd) = self.rx.try_recv() {
             match cmd {
                 VoiceCommand::AddVoice { id, voice, stretch } => {
+                    // A new slot in a full vector would grow it here, in the
+                    // callback. Refuse it whole instead (an add at a resident
+                    // id replaces in place and always fits).
+                    let replaces = self.voices.iter().any(|s| s.id == id);
+                    if !replaces && self.voices.len() == self.voices.capacity() {
+                        DrainCounters::bump(&self.counters.voices_refused);
+                        self.retire(Retired::Refused { voice, stretch });
+                        continue;
+                    }
                     // The filter arrives prebuilt from `send` (control thread);
                     // this only moves it into the slot.
-                    self.insert_voice_inner(id, voice, stretch);
+                    self.insert_voice_inner(id, voice, stretch, Forward::Refuse);
                 }
                 VoiceCommand::Remove(id) => {
                     // `retain` would DROP the slot here, on the audio thread,
@@ -564,10 +727,7 @@ impl VoicePool {
                     // instead — a lock-free push, no free.
                     if let Some(i) = self.voices.iter().position(|s| s.id == id) {
                         let slot = self.voices.swap_remove(i);
-                        // A full or disconnected channel drops the slot right
-                        // here instead: correctness is unaffected, only the
-                        // thread that pays for the free.
-                        let _ = self.retired.try_send(Retired::Slot(slot));
+                        self.retire(Retired::Slot(slot));
                     }
                 }
                 VoiceCommand::ReplaceWave { id, wave } => {
@@ -587,18 +747,12 @@ impl VoicePool {
                         // control-thread op issued as a fresh `AddVoice`.
                         Some(VoiceSource::Memory(sampler)) => sampler.replace_wave(wave),
                         Some(VoiceSource::Disk(_)) => {
-                            tracing::warn!(
-                                "ReplaceWave ignored for slot {id:?}: a streaming voice \
-                                 changes source by re-issuing AddVoice, not in-unit"
-                            );
+                            DrainCounters::bump(&self.counters.wave_swaps_ignored);
                             wave
                         }
                         None => wave,
                     };
-                    // Same policy as the slot and filter retirements: a full
-                    // or disconnected channel drops the wave right here,
-                    // which costs a free on this thread and nothing else.
-                    let _ = self.retired.try_send(Retired::Wave(shed));
+                    self.retire(Retired::Wave(shed));
                 }
                 VoiceCommand::UpdatePlacement {
                     id,
@@ -606,9 +760,9 @@ impl VoicePool {
                     duration_beats,
                 } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        // The source owns the gate; each backend's
-                        // `set_placement` re-arms its own (streaming re-seeks on
-                        // the next inside-frame).
+                        // The source owns the window: each backend's setter
+                        // overwrites it, and the next block's read places the
+                        // voice by it.
                         slot.voice
                             .source
                             .apply_placement(start_beat, duration_beats);
@@ -648,10 +802,10 @@ impl VoicePool {
                     } else {
                         LoopSetting::Off
                     };
-                    self.apply_loop(id, setting);
+                    self.apply_loop(id, setting, Forward::Refuse);
                 }
                 VoiceCommand::ClearLoop(id) => {
-                    self.apply_loop(id, LoopSetting::Off);
+                    self.apply_loop(id, LoopSetting::Off, Forward::Refuse);
                 }
                 VoiceCommand::UpdateReverse { id, direction } => {
                     if let Some(slot) = self.slot_mut(id) {
@@ -686,7 +840,7 @@ impl VoicePool {
                         None => stretch,
                     };
                     if let Some(unit) = surplus {
-                        let _ = self.retired.try_send(Retired::Stretch(unit));
+                        self.retire(Retired::Stretch(unit));
                     }
                 }
             }
@@ -705,17 +859,20 @@ impl Clone for VoicePool {
             // Dead, like the command `Receiver` beside it: a clone must not hand
             // slots back to the live pool's control thread.
             retired: bounded(0).0,
-            voices: self
-                .voices
-                .iter()
-                .map(|s| PlaybackSlot {
+            counters: Arc::default(),
+            voices: {
+                // Reserved like a new pool's, so a clone's drain refuses at the
+                // same count rather than at whatever `collect` sized.
+                let mut voices = Vec::with_capacity(MAX_RESIDENT_VOICES.max(self.voices.len()));
+                voices.extend(self.voices.iter().map(|s| PlaybackSlot {
                     id: s.id,
                     voice: s.voice.clone(),
                     stretch: s.stretch.clone(),
                     channels: s.channels,
                     sample_rate: s.sample_rate,
-                })
-                .collect(),
+                }));
+                voices
+            },
             rx: bounded(0).1,
             sample_rate: self.sample_rate,
             rate: SharedRate::new(self.sample_rate),

@@ -255,8 +255,9 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 /// [`Vst3Active::rebuild_midi_cc_mapping`](crate::Vst3Active)).
 ///
 /// **`param_changes` is reserved exactly while `mapping` is non-empty.** The
-/// reservation is `queues × points` (up to 16384 queues of a block's chunk
-/// room each, tens of megabytes at a large block), and `route` never touches
+/// reservation is `ParameterChanges::point_budget(queues, points)` (up to
+/// 16384 queues of a few points each and a shared pool of a block's chunk
+/// room, about a megabyte at a large block), and `route` never touches
 /// the scratch for an empty mapping, so a plugin with no CC mapping (most of
 /// them) holds none of it. `mapping` is private so that the only ways to
 /// change it, [`new`](Self::new) and [`set_mapping`](Self::set_mapping), both

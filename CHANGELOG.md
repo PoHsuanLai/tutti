@@ -80,6 +80,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Plugin parameter changes draw their points from a shared pool**
+  (design doc 014, §9's point-storage note; §12's memory follow-up). A
+  reserved `ParameterChanges` held every queue at its full room, so a
+  plugin's parameter-change memory grew with `params × room`: about 43 MB
+  in the IPC node's buffers and 40 MB in a CLAP instance's lists at 2000
+  parameters and a 4096-frame chunk, ten times that at 16k. Now each queue
+  keeps a 2-point floor and the set a pool of 256 full-room blocks, so it
+  holds `queues × 2 + 256 × room` points (6.8 MB and 6 MB at that size;
+  the per-instance figures are in doc 014 §9). A queue's logical room
+  (`ParameterQueue::chunk_room`), the counters, the overflow policies and
+  the wire bytes are unchanged. **Breaking** for code that fills a
+  reserved set by hand: `ParameterQueue::has_room` now reports a queue's own floor, so a
+  producer that wants the full room must ask for it with `make_room`.
+
+  | Was | Now |
+  |---|---|
+  | `ParameterChanges::reserved(queues, points)`: every queue with room for `points` | every queue with a floor of `ParameterChanges::FLOOR_POINTS` (2), the set with a pool of `ParameterChanges::POOLED_QUEUES` (256) blocks of `points`; a set for few queues, where the pool saves nothing, keeps every queue at `points` as before (`ParameterChanges::point_layout(queues, points) -> (floor, blocks)`) |
+  | a producer pushed while `queues[i].has_room()` | `ParameterChanges::make_room(i) -> bool`: `true` when the queue has room of its own or took a block from the pool; `false` at the queue's room or with the pool spent (replace the last point or drop it, counted, as before). `ParameterQueue::has_room` alone stops at the floor. `add_change` calls `make_room` itself |
+  | `point_capacity()`: the smallest room among the spare queues | the same, or the pool's block room while a block is left (what a queue can reach through `make_room`) |
+  | — | `ParameterChanges::point_budget(queues, points)`: the points a reserved set holds, and what a format host reserves for a chunk; `ParameterChanges::point_storage()`: the points it holds now, queues, spares, pool and floors |
+  | the CLAP host's input list reserved and bounded at `params × (room + 1)` events, its output list's parameter room `queues × room` | both at `ParameterChanges::point_budget` of the same; past it a point replaces its parameter's previous one, counted (`param_points_dropped`, `output_param_points_dropped`), as before |
+  | the VST3 host's input queues each reserved a full room | a 2-point floor each and a pool of 256 full-room blocks lent to the queues that need them per block; a queue past its room keeps its first `room − 1` points and its last, counted in `Vst3Instance::param_points_dropped()` (new) |
+
+  Migrating: a producer that filled a reserved set with `has_room` checks
+  calls `make_room(i)` in their place. Code that only calls `add_change`,
+  `open_queue` or reads `queues` needs no change.
+
 - **`smallvec` is gone from the workspace** (design doc 013, "SmallVec
   removed"). A type whose inline storage bought nothing is a `Vec` (or a
   boxed slice); a type whose inline storage was a hard cap is an

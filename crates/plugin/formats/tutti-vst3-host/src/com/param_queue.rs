@@ -53,6 +53,28 @@ impl ParamValueQueueImpl {
         })
     }
 
+    /// An empty queue with room for exactly `points` points: a pooled list's
+    /// floor ([`ParameterChangesImpl::with_pool`](super::ParameterChangesImpl::with_pool)),
+    /// which draws on the list's shared pool past it. Allocates; call it off
+    /// the audio thread.
+    pub fn with_exact_room(param_id: u32, points: usize) -> ComWrapper<Self> {
+        ComWrapper::new(Self {
+            param_id: AudioThreadCell::new(param_id),
+            points: AudioThreadCell::new(Vec::with_capacity(points)),
+        })
+    }
+
+    /// The points this queue holds before a push allocates.
+    pub(crate) fn capacity(&self) -> usize {
+        self.points.borrow().capacity()
+    }
+
+    /// Swaps this queue's point storage with `other`, contents and all: how
+    /// a pooled list lends a queue a block and takes it back. Allocation-free.
+    pub(crate) fn swap_points(&self, other: &mut Vec<ParameterPoint>) {
+        core::mem::swap(&mut *self.points.borrow_mut(), other);
+    }
+
     /// Replaces this queue's contents with `queue`'s points in place.
     /// Allocation-free when `queue.points.len() <= capacity` (at least
     /// [`MIN_POINT_ROOM`], or whatever it has grown to after prior reuse).
@@ -62,12 +84,34 @@ impl ParamValueQueueImpl {
     /// the host's authoring convention — so each point's value is clamped to
     /// `[0, 1]` here, guarding against an over-range authored/modulated value.
     pub fn refill_from_queue(&self, queue: &ParameterQueue) {
+        {
+            let mut points = self.points.borrow_mut();
+            points.clear();
+            points.reserve(queue.points.len());
+        }
+        let _ = self.refill_within(queue);
+    }
+
+    /// [`refill_from_queue`](Self::refill_from_queue) within the room this
+    /// queue already has: never allocates. Past the room the last point the
+    /// room holds gives way to `queue`'s last, so the parameter still ends
+    /// the block on its latest value (`queue`'s points are in time order:
+    /// the wire's deserialize and the CC routing sort them), and the points
+    /// left out are returned, for the caller to count.
+    pub(crate) fn refill_within(&self, queue: &ParameterQueue) -> u64 {
         // Same boundary as `from_queue`: unwrap the opaque handle for the ABI.
         *self.param_id.borrow_mut() = queue.param_id.opaque().map(|id| id.get()).unwrap_or(0);
         let mut points = self.points.borrow_mut();
         points.clear();
-        points.reserve(queue.points.len());
-        for p in &queue.points {
+        let room = points.capacity();
+        let (kept, last) = match queue.points.len() {
+            n if n <= room => (&queue.points[..], None),
+            // No room at all: nothing is handed on.
+            _ if room == 0 => (&queue.points[..0], None),
+            _ => (&queue.points[..room - 1], queue.points.last()),
+        };
+        let left_out = (queue.points.len() - kept.len() - usize::from(last.is_some())) as u64;
+        for p in kept.iter().chain(last) {
             points.push(ParameterPoint {
                 sample_offset: p.sample_offset,
                 // Copied verbatim: `Normalized` carries the unit-interval guard
@@ -90,6 +134,7 @@ impl ParamValueQueueImpl {
         if !points.is_sorted_by_key(|p| p.sample_offset) {
             points.sort_by_key(|p| p.sample_offset);
         }
+        left_out
     }
 
     /// Empties this queue for `param_id`, keeping its point storage. For a

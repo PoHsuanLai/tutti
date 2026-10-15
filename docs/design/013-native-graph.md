@@ -4698,8 +4698,8 @@ carried.
   and a state load keep it, and a fork is seeded with it, so an export
   plays an edit made in the plugin's editor as live playback does. Not
   here: a ramp is still a step on a plugin, CLAP `PARAM_MOD`, and the
-  parameter-change buffers' memory scales with the parameter count (doc
-  014 §12's follow-up). (The in-process VST2 node had no parameter path
+  parameter-change buffers' memory scaled with the parameter count (doc
+  014 §12's follow-up; since landed, below). (The in-process VST2 node had no parameter path
   either; it has since landed, next.)
 - **In-process VST2 parameter delivery (landed, doc 014 §13 question 2).**
   The in-process VST2 node's event input took MIDI and dropped every
@@ -4738,6 +4738,22 @@ carried.
   renders the plugin-side edit, through the probe's state DC) and
   `vst2_in_process_no_alloc.rs` (200 parameters moving every block under
   `assert_no_alloc`).
+- **Parameter-change point pool (landed, doc 014 §12's follow-up).** The
+  parameter-change buffers' memory follows the points a chunk carries, not
+  the parameter count. `ParameterChanges::reserved(queues, room)` gives
+  each queue a 2-point floor of its own and the set a shared pool of 256
+  full-room blocks; a queue past its floor takes one
+  (`ParameterChanges::make_room`), and `clear` gives them back. A queue is
+  still one contiguous, time-ordered `Vec`, so CLAP's flattening and sort,
+  VST3's per-parameter queues and the wire bytes are unchanged (the pool is
+  not serialized). The node's delivery, the bridge's buffers, the CLAP
+  host's input and output lists and the VST3 host's input queues reserve
+  `ParameterChanges::point_budget` points; past it a point is counted under
+  each site's existing policy, and the parameter still ends on its latest
+  value. At 2000 parameters and a 4096-frame chunk the IPC node's buffers
+  went from about 43 MB to 6.8 MB, a CLAP instance's lists from about
+  40 MB to 6 MB; the figures, the budget's derivation and what is left
+  (the VST3 host's output queues) are in doc 014 §9.
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
   does not honour offsets sample-accurately, as it refuses a ramp.
 

@@ -185,9 +185,21 @@ impl Owed {
     /// than frame 0.
     fn merge_carried(&mut self, changes: &mut ParameterChanges) {
         for kept in self.carried.queues.drain(..) {
-            if let Some(own) = changes.get_queue_mut(kept.param_id) {
-                if own.points.first().is_some_and(|p| p.sample_offset > 0) {
-                    own.points.insert(0, kept.points[0]);
+            if let Some(i) = changes
+                .queues
+                .iter()
+                .position(|q| q.param_id == kept.param_id)
+            {
+                if changes.queues[i]
+                    .points
+                    .first()
+                    .is_some_and(|p| p.sample_offset > 0)
+                {
+                    // Room from the buffer's own pool when the queue's is
+                    // spent; past that the insert grows the queue (this is
+                    // the bridge thread).
+                    let _ = changes.make_room(i);
+                    changes.queues[i].points.insert(0, kept.points[0]);
                 }
             } else if changes.open_queue(kept.param_id) {
                 // A reserved queue when the buffer has one spare, so the

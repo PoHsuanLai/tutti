@@ -222,9 +222,9 @@ the interpreter.
   `ArcSwap` reads remained after #15, each able to free on the audio thread
   (a store settles a held guard's debt into a strong count, and the guard's
   drop is then the last owner). The hardware MIDI port set
-  (`HardwareMidiInputs`) is an `RtPublish<Vec<_>>` whose read, append and
-  publish run under one publisher lock, which also fixes two concurrent
-  creators losing a port. The plugin nodes' meter slot (`PluginMeter`) is an
+  (`HardwareMidiInputs`) is an `RtPublish<Vec<_>>` whose read, change and
+  publish (a port created or removed) run under one publisher lock, which
+  also fixes two concurrent creators losing a port. The plugin nodes' meter slot (`PluginMeter`) is an
   `RtPublish<Option<Arc<RtPublish<MeterMap>>>>`: the node borrows the
   installed cell, so an install or clear mid-block retires it for the control
   side, whether or not the host kept a clone. Its read is nested, one slot in
@@ -318,7 +318,8 @@ the race. Every type below exists because the audit found the bug it prevents.
 
 - `AudioThreadCell`, `RtEventBuf`'s `&self` interior mutability and
   `reset_owner`. All three exist so `Arc`-shared state survives
-  clone-on-commit. Units owned once by the audio thread only need `&mut self`.
+  clone-on-commit. (`RtEventBuf` is deleted: see "Hardware MIDI input
+  ring".) Units owned once by the audio thread only need `&mut self`.
 - `Param<U>` as a way to survive the clone. `Param<U>` stays, as the control
   value handed out through `Controls`; the hand-written sharing `Clone` impls
   go.
@@ -3654,6 +3655,63 @@ need to be), and what review of the fix turned up:
   it when it changed, and the fork source reads the same cell.
   `VoiceNodeHandle::set_placement` returns `()`: it can no longer be full.
 - `ringbuf` was an unused dependency of `tutti-sampler` and is removed.
+
+#### Hardware MIDI input ring
+
+**Status: landed** (2026-10-15). From the collections audit of `9f397d3d`.
+`tutti-midi-hardware`'s input ring was an `unsafe` `SpscRing` holding both
+`ringbuf` halves in `UnsafeCell`s, with a cloneable `Send + Sync` raw-pointer
+producer: safe calls (`get_input_producer_handle`, `push_input_event`) made a
+second producer for one ring, and a session dropped its port manager before
+its connections, so an ALSA pump thread being joined could push through a
+dangling pointer. And a disconnect never retired its port: each hot-plug cycle
+added a 2048-slot ring the audio thread kept draining.
+
+- **One producer, by ownership.** A port's `HeapRb` is split once.
+  `create_input_port` returns the only `InputProducerHandle`, which owns the
+  producer half, is not `Clone` and pushes through `&mut self`; the port keeps
+  the consumer in an `AudioThreadCell`, the drain being its one reader. Both
+  halves hold the ring by `Arc`, so a handle that outlives its port (or the
+  manager) pushes into memory it owns. The file of `unsafe` is deleted; the
+  crate's port module has none.
+- **Ports are retired.** `remove_input_port` takes a port out of the
+  published set; the next port takes the lowest free slot, and trailing free
+  slots are trimmed. The set the drain borrows is retired, so the port and its
+  ring are freed on the control side: by the next publish, or by
+  `HardwareMidiInputs::collect` when no further change comes. `MidiSession`
+  closes a connection and then retires its port, on disconnect, on a failed
+  open, and in its own `Drop` (inputs first, then the output, the manager and
+  the backend, in a stated order). On ALSA, closing joins the pump thread, so
+  the handle is gone before the port is; CoreMIDI may release its callback
+  (and the handle in it) later, and a late push lands in a ring nothing
+  drains, which is harmless.
+- **Ports are named by `PortId`**, a slot and a generation no earlier port in
+  that slot had. Removal, activation and lookup take one, a stale id reaches
+  nothing, and each drained event carries its port's id, so a slot reused by
+  a hot-plug cannot be mistaken for the port that left it.
+- **One scratch.** The drain converts each event's arrival to a
+  `frame_offset` as it leaves its ring, into one `AudioThreadCell<RtVec<..>>`;
+  the second (timestamp) buffer is gone, and with it `RtEventBuf`, whose only
+  user this was. Its no-alloc gate is ported to `RtVec` behind a cell, and
+  its re-entrancy test to the drain: a drain started from inside a visitor
+  returns 0 (a flag on the scratch), and the outer one reads each event by
+  `get` and stops at the end, so it hands out every event.
+- **The sample rate is an atomic** (`f64` bits in an `AtomicU64`), set from
+  any thread and read once per block; it was an `AudioThreadCell` a control
+  thread wrote while the audio thread could be reading it.
+- **Counted, not silent.** `ClockNode`'s per-block events are an
+  `RtVec<MidiEvent, CLOCK_EVENT_CAPACITY>`; what a block produces past it is
+  counted on `ClockMaster::dropped_events`.
+- `tutti_midi_hardware::crossbeam_channel` and the dependency are gone, as
+  are `tutti-midi-runtime`'s unused `parking_lot` and `dashmap`.
+
+Gates: `unplug_during_a_drain_frees_nothing_on_the_audio_thread` beside the
+plug-in one (an owning snapshot of the port set aborts both), the session's
+`hot_plug_cycles_keep_the_port_set_bounded`, and the manager's
+`a_stale_port_id_cannot_reach_the_port_that_reused_its_slot`,
+`a_drain_re_entered_from_its_visitor_hands_out_every_event`,
+`the_sample_rate_can_be_set_while_a_drain_runs` and
+`collect_frees_a_port_removed_during_a_drain`.
 
 #### VST3 host callbacks bounded
 

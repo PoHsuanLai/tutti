@@ -108,7 +108,7 @@ impl UmpVirtualDestination {
     /// # Errors
     ///
     /// As [`new`](Self::new).
-    pub fn with_producer(name: &str, producer: crate::InputProducerHandle) -> Result<Self> {
+    pub fn with_producer(name: &str, mut producer: crate::InputProducerHandle) -> Result<Self> {
         Self::new(name, move |event| {
             if !producer.push(event, std::time::Instant::now()) {
                 debug!("UMP input ring full, dropping event");

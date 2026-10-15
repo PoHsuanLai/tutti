@@ -52,21 +52,54 @@ impl PlayWalk {
         }
     }
 
-    /// The first frame at or after `from` whose epoch is not the one before
-    /// it (`prev` is the epoch at frame `from - 1`, or the last block's last
-    /// frame's): a play start. `None` before the node's first frame was
-    /// ever read (`prev` is `None`: a fresh node is already idle).
-    fn next_start(&self, cx: &Cx<'_>, from: usize, len: usize, prev: Option<u32>) -> Option<usize> {
-        let mut prev = prev?;
-        if self.straight {
-            return (from == 0 && self.first.epoch != prev).then_some(0);
+    /// The block's play starts, in order: each frame whose epoch is not
+    /// the one before it. `prev` is the epoch on the last block's last
+    /// frame, `None` for a fresh node: a fresh node is already idle, so a
+    /// start on its first frame is none, but one later in its first block
+    /// is. One scan per block, however often the caller asks.
+    fn starts<'w, 'c, 'a>(
+        &'w self,
+        cx: &'c Cx<'a>,
+        len: usize,
+        prev: Option<u32>,
+    ) -> Starts<'w, 'c, 'a> {
+        Starts {
+            walk: self,
+            cx,
+            i: 0,
+            len,
+            prev: prev.unwrap_or(self.first.epoch),
         }
-        for i in from..len {
-            let e = self.at(cx, i).epoch;
-            if e != prev {
+    }
+}
+
+/// [`PlayWalk::starts`]: scans each frame once.
+struct Starts<'w, 'c, 'a> {
+    walk: &'w PlayWalk,
+    cx: &'c Cx<'a>,
+    /// The next frame to read.
+    i: usize,
+    len: usize,
+    /// The epoch on frame `i - 1`.
+    prev: u32,
+}
+
+impl Iterator for Starts<'_, '_, '_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        if self.walk.straight {
+            // No start after the first frame: at most one, on it.
+            let first = std::mem::replace(&mut self.i, self.len) == 0;
+            return (first && self.walk.first.epoch != self.prev).then_some(0);
+        }
+        while self.i < self.len {
+            let (i, e) = (self.i, self.walk.at(self.cx, self.i).epoch);
+            self.i += 1;
+            if e != self.prev {
+                self.prev = e;
                 return Some(i);
             }
-            prev = e;
         }
         None
     }

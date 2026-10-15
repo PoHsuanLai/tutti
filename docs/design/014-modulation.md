@@ -695,7 +695,9 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
     mono. The peak reads the same at any width, as a compressor's linked
     sidechain does. Time smoothing is the one-pole's job.
   - **The one-pole** is `env ← c · env + (1 − c) · level`, with
-    `c = exp(−1 / (τ · rate))` in `f64` through `libm`, `τ` the attack
+    `c = exp(−1 / (τ · rate))` in `f64` through `libm`, and the envelope
+    is kept in `f64` too (in `f32`, `c` rounds to 1 past about 640 s at
+    48 kHz and the envelope never decays), `τ` the attack
     while the level is above the envelope and the release otherwise; a `τ`
     of zero follows exactly. Below `1e-7` the envelope is 0, so a release
     reaches silence in finite time, and a silent follower sends nothing (a
@@ -712,8 +714,10 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
     channel and key.
   - **Play start** is read as an epoch change of `Cx::play_at` (the input's
     time, so a latent path's start lands on the frame its input was
-    rendered at), frame by frame only in a block whose play clock jumps.
-    Neither node resets on its first block: a fresh node is already idle.
+    rendered at), frame by frame only in a block whose play clock jumps,
+    and each frame once. A fresh node reads no start on its very first
+    frame (it is idle already), but does on any later frame of its first
+    block.
   - **`ForkByClone`**: neither node holds a cell, a handle or anything a
     clone would share, and neither has controls, so a `ForkSource` would
     gather nothing; the fork (the node as inserted, cloned, reset) starts
@@ -726,6 +730,18 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
   - **Capacity**: 256 events each. A follower sends one piece per grid
     point, so a block past 8192 frames drops pieces; each later piece
     carries both its ends, so the next one sent is exact again.
+  - **A held note envelope reads 0 on a newly wired lane.** The note
+    envelope sends only on a note, a stage boundary or a play start, and a
+    lane reads an input that has not sent as 0. So a lane whose new
+    program starts reading a note envelope already in its sustain (a route
+    added while a key is held) reads 0 until the next note or boundary;
+    with §7's sweep, so does a lane whose program drops the source and
+    takes it back. A follower recovers within a grid step (it sends a
+    piece on every grid point while it is not silent). The cure is a
+    source-side resync beside `LaneControls::resync`: on request the source
+    re-sends where it stands, as a resumed segment, as it already does
+    after a refused segment. Deferred to PR 4, where the host knows which
+    routes it adds (§12).
 
 ## 7. `tutti-mod` as a pure compiler
 
@@ -837,6 +853,9 @@ open:
   program no longer reads when it adopts a new program generation, and
   **the compiler** never gives an id twice, which covers the case the lane
   cannot see (a program replaced twice before the lane's next block).
+  The sweep has one cost: a lane re-reading a note envelope that is held
+  reads 0 until its next segment (§6, "A held note envelope reads 0"),
+  which PR 4's source-side resync closes.
   Tests: `a_reused_source_id_starts_from_nothing` (`tutti-nodes`) and
   `a_signal_source_keeps_its_id` (`tutti-mod`).
 - **`layer_id(route, depth_by)`** is a fixed 64-bit mix of the keys; two
@@ -1503,7 +1522,11 @@ an epoch change at the input's time, `ForkByClone`, `from_decl` in
   and a note envelope, with a start off the executor's grid; serial ==
   parallel bit for bit and no allocation, serial and on a gated pool
   (`rt_no_alloc_modulation.rs`); the reused-id hazard (`control_lane.rs`,
-  `compile/tests.rs`).
+  `compile/tests.rs`). From review: a fresh note envelope resets at a
+  start inside its first block; MIDI 2.0 notes and both protocols'
+  velocity-0 note-ons; zero-length stages and the sustain clamp; a
+  refused segment re-sent resumed, bit for bit against 1-frame blocks; a
+  1000 s release decaying at its own rate.
 - **Breaking** (CHANGELOG): `Compiled` gained `next_source`, and a new
   source's id is no longer the lowest free one.
 
@@ -1519,7 +1542,10 @@ render level (M2); export == live in an app on a native param and on the
 reference CLAP plugin's gain at a pinned chunk size (M3: fails on `main`);
 a despawned source leaves no node or layer (M10); range and depth edits send
 no plan, a follower route one commit; a knob written after a route edit is
-the knob (M9); a plugin GUI edit becomes the knob; a take suspends then
+the knob (M9); a route added to a note envelope that is held reads the
+envelope's level at once (a source-side resync beside
+`LaneControls::resync`: the source re-sends where it stands, resumed, as
+it does after a refused segment; §6); a plugin GUI edit becomes the knob; a take suspends then
 restores automation; a follower downstream of its target is refused by
 route.
 

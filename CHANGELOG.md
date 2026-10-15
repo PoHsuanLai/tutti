@@ -106,7 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   | Was | Now |
   |---|---|
-  | — | `tutti_nodes::EnvelopeFollowerNode::new(source, attack, release, input_width)`: the peak over its input's channels through a one-pole attack/release, sent as linear pieces on the play-clock grid (`CONTROL_STEP`), one step late; `Cost::Moderate`, `FOLLOWER_EVENT_CAPACITY` (256) |
+  | — | `tutti_nodes::EnvelopeFollowerNode::new(source, attack, release, input: ChannelLayout)`: the peak over its input's channels through a one-pole attack/release (in `f64`, so a long time constant decays at its own rate), sent as linear pieces on the play-clock grid (`CONTROL_STEP`), one step late; `Cost::Moderate`, `FOLLOWER_EVENT_CAPACITY` (256) |
   | — | `tutti_nodes::NoteEnvelopeNode::new(source, adsr)`: an ADSR on one MIDI event input (MIDI 1.0 or 2.0 notes), its stages as exact linear segments at note-on, note-off and each stage boundary; mono, last-note priority, retrigger from the current level; `Cost::Light`, `NOTE_ENVELOPE_EVENT_CAPACITY` (256) |
   | the host built a signal source's node from `Compiled::nodes` itself | `EnvelopeFollowerNode::from_decl(&SourceNode, ChannelLayout)` and `NoteEnvelopeNode::from_decl(&SourceNode)`, each `None` for the other kind; `source()` on both |
   | a new signal source took the lowest free `SourceId`, so a later compile could give a removed source's id to a new one | ids are never given twice: `Compiled::next_source` (carried from `prev`) is the next one; after 2^32 the counter wraps, skipping ids still held. Migration: a struct literal of `Compiled` adds `next_source: SourceId::default()` (or carries the previous compile's) |

@@ -77,6 +77,10 @@ fn note(e: &Event) -> Option<(bool, usize)> {
 ///   a 0 there unless it was idle already. A note-on on that same frame (a
 ///   clip's first note) then starts from 0.
 ///
+/// - **It sends only on events**: a lane that starts reading it while it
+///   holds a sustain (a newly wired route) reads 0 until its next note or
+///   stage boundary (doc 014 §6; a source-side resync is PR 4's).
+///
 /// Insert it `ForkByClone(node)`: it shares nothing with a clone, and a
 /// fork's (the node as inserted, reset) starts idle, as a live play start
 /// leaves it.
@@ -314,10 +318,10 @@ impl Node for NoteEnvelopeNode {
                 self.send(&mut out, base, seg);
             }
         }
-        let mut epoch = self.epoch;
+        let mut starts = walk.starts(cx, len, self.epoch).peekable();
         let (mut ev, mut from) = (0usize, 0usize);
         loop {
-            let start = walk.next_start(cx, from, len, epoch);
+            let start = starts.peek().copied();
             let boundary = self
                 .boundary
                 .map(|b| (b.get().saturating_sub(base.get()) as usize).max(from))
@@ -328,7 +332,7 @@ impl Node for NoteEnvelopeNode {
             };
             let at = base + Samples(p);
             if start == Some(p) {
-                epoch = Some(walk.at(cx, p).epoch);
+                starts.next();
                 self.idle(&mut out, at);
             }
             if self.boundary.is_some_and(|b| b <= at) {

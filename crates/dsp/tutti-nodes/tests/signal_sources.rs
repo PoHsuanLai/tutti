@@ -112,6 +112,16 @@ fn note_off(note: u32) -> [u32; 4] {
     [0x2080_0000 | (note << 8), 0, 0, 0]
 }
 
+/// A MIDI 2.0 note-on (group 0, channel 0) at 16-bit `velocity`.
+fn note_on_2(note: u32, velocity: u32) -> [u32; 4] {
+    [0x4090_0000 | (note << 8), velocity << 16, 0, 0]
+}
+
+/// A MIDI 2.0 note-off (group 0, channel 0).
+fn note_off_2(note: u32) -> [u32; 4] {
+    [0x4080_0000 | (note << 8), 0, 0, 0]
+}
+
 /// A MIDI clip: while rolling, note 60 on at every beat and off half a
 /// beat later. While stopped, note 64 on at executor frame `stopped_on` (a
 /// key pressed before the take, never released).
@@ -151,7 +161,7 @@ impl Node for Seq {
     fn reset(&mut self) {}
 }
 
-/// MIDI on its planned executor frames.
+/// MIDI on its planned executor frames (up to 1024 a block).
 #[derive(Clone)]
 struct Midi {
     plan: Vec<(u64, [u32; 4])>,
@@ -159,7 +169,9 @@ struct Midi {
 
 impl Node for Midi {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_event_capacity(1024)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -450,10 +462,10 @@ impl Host {
     }
 }
 
-/// The one-pole coefficient the follower uses: `exp(−1 / (τ · rate))` as
-/// an `f32`, in `f64` (as `libm::exp` computes it, to the last bit or so).
+/// The one-pole coefficient the follower uses: `exp(−1 / (τ · rate))` in
+/// `f64` (as `libm::exp` computes it, to the last bit or so).
 fn pole(tau: f32) -> f64 {
-    f64::from((-1.0 / (f64::from(tau) * RATE)).exp() as f32)
+    (-1.0 / (f64::from(tau) * RATE)).exp()
 }
 
 fn follower(source: u32, attack: f32, release: f32, width: ChannelLayout) -> EnvelopeFollowerNode {
@@ -467,6 +479,32 @@ fn adsr(a: f32, d: f32, s: f32, r: f32) -> Adsr {
         sustain: Amplitude(s),
         release: Seconds(r),
     }
+}
+
+/// MIDI `plan` into a note envelope of `adsr` into a `Tap` (outputs 0..4),
+/// committed, at most `max` frames a block.
+fn envelope_rig(max: usize, plan: Vec<(u64, [u32; 4])>, adsr: Adsr) -> (Editor, Executor) {
+    let (mut ed, exec) = editor(max);
+    ed.insert(NodeKey(1), "midi", ForkByClone(Midi { plan }));
+    ed.insert(
+        NodeKey(2),
+        "envelope",
+        ForkByClone(NoteEnvelopeNode::new(SourceId(1), adsr)),
+    );
+    wire_events(&mut ed, 1, 2);
+    tap(&mut ed, 2, 3);
+    ed.commit().expect("commits");
+    (ed, exec)
+}
+
+/// The frames a `Tap` saw a segment on.
+fn marks(tap: &[Vec<f32>]) -> Vec<usize> {
+    (0..tap[1].len()).filter(|&f| tap[1][f] != 0.0).collect()
+}
+
+/// The `(start, end)` of the segment a `Tap` saw on frame `f`.
+fn piece(tap: &[Vec<f32>], f: usize) -> (f32, f32) {
+    (tap[2][f], tap[3][f])
 }
 
 // ---------------------------------------------------------------- tests --
@@ -563,7 +601,7 @@ fn a_follower_lags_one_step_at_any_block_size() {
 ///
 /// Mutations (run), each fails: the follower's reset dropped (`idle` not
 /// called on an epoch change) → its piece at s ends near 1, not 0; the
-/// note envelope's dropped (`next_start` never answering) → no segment on
+/// note envelope's dropped (`starts` never answering) → no segment on
 /// the start's frame.
 #[test]
 fn a_follower_and_a_note_envelope_reset_at_play_start() {
@@ -971,4 +1009,194 @@ fn an_export_is_the_live_render_for_signal_sources() {
             );
         }
     }
+}
+
+/// **A fresh note envelope resets at a start inside its first block.** A
+/// fresh node, stopped, takes a note-on at frame 10 (attack 10 ms, 480
+/// frames), and the transport starts on frame 50 of that same first
+/// block: there it sends a 0 and reads 0 to the end of the render (its
+/// note is forgotten). Only a start on a fresh node's very first frame is
+/// none (it is idle already).
+///
+/// Mutation (run): the old first-block skip (no starts read while the
+/// node is fresh: `walk.starts` given a length of 0 then) → no segment at
+/// 50, and it attacks on (0.083 at 50) → fails.
+#[test]
+fn a_fresh_note_envelope_resets_at_a_start_in_its_first_block() {
+    let (mut ed, mut exec) =
+        envelope_rig(128, vec![(10, note_on(60))], adsr(0.01, 0.01, 0.5, 0.01));
+    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let host = Host::new();
+    let mut ch = TransportChanges::NONE;
+    ch.push(Offset::new(50, Samples(128)).expect("in"), host.rolling())
+        .expect("room");
+    let mut all = Vec::new();
+    append(&mut all, block(&mut ed, &mut exec, &stopped, &ch, 128));
+    for _ in 0..4 {
+        let t = host.rolling();
+        append(
+            &mut all,
+            block(&mut ed, &mut exec, &t, &TransportChanges::NONE, 128),
+        );
+    }
+    assert_eq!(marks(&all), [10, 50]);
+    assert_eq!(piece(&all, 10), (0.0, 1.0), "the attack");
+    assert_eq!(piece(&all, 50), (0.0, 0.0), "idle on the start's frame");
+    assert!(all[0][50..].iter().all(|&v| v == 0.0), "and from it on");
+    assert!(all[0][11..50].iter().all(|&v| v > 0.0), "it was attacking");
+}
+
+/// **MIDI 2.0 notes, and a note-on at velocity 0.** Attack and decay 5 ms
+/// (240 frames), sustain 0.5, release 10 ms: a MIDI 2.0 note-on at 100
+/// attacks (0 → 1, the peak at 340, decay 1 → 0.5), a MIDI 2.0 note-off at
+/// 1000 releases (0.5 → 0). A MIDI 2.0 note-on at velocity 0 is a note-on
+/// (MIDI 2.0 has no velocity-0 note-off): at 3000 it attacks again. A MIDI
+/// 1.0 note-on at velocity 0 is a note-off, and the same group, channel
+/// and key across the two protocols is one note: at 4000 it releases
+/// from the sustain.
+///
+/// Mutations (run), each fails: the MIDI 2.0 note-off not read (`(0x2,
+/// 0x8)` only) → no release at 1000; MIDI 2.0 note-on not read → nothing
+/// at 100; a MIDI 1.0 velocity 0 read as a note-on → an attack at 4000.
+#[test]
+fn a_note_envelope_reads_midi_2_and_velocity_0() {
+    let plan = vec![
+        (100, note_on_2(60, 0x8000)),
+        (1_000, note_off_2(60)),
+        (3_000, note_on_2(60, 0)),
+        (4_000, [0x2090_3c00, 0, 0, 0]),
+    ];
+    let (mut ed, mut exec) = envelope_rig(128, plan, adsr(0.005, 0.005, 0.5, 0.01));
+    let all = render_stopped(&mut ed, &mut exec, &[128], 6_000);
+    assert_eq!(marks(&all), [100, 340, 1_000, 3_000, 3_240, 4_000]);
+    assert_eq!(piece(&all, 100), (0.0, 1.0));
+    assert_eq!(piece(&all, 340), (1.0, 0.5));
+    assert_eq!(piece(&all, 1_000), (0.5, 0.0));
+    assert_eq!(piece(&all, 3_000), (0.0, 1.0));
+    assert_eq!(piece(&all, 3_240), (1.0, 0.5));
+    assert_eq!(piece(&all, 4_000), (0.5, 0.0));
+    assert_eq!(all[0][220], 0.5, "half way up the attack");
+    assert_eq!(all[0][4_480], 0.0, "released");
+}
+
+/// **Zero-length stages are skipped on their frame, and the sustain is
+/// clamped to 1.**
+///
+/// - A = D = R = 0, S = 0.7: a note-on at 100 is one step to 0.7 on its
+///   frame (no attack to 1 first), held; its note-off at 500 one step to
+///   0 on its frame.
+/// - D = 0, S = 0 (attack 5 ms): the attack peaks at 340 and steps to 0
+///   on that frame; the note-off at 1000 releases from 0, so it reads 0.
+/// - S = 1.5 reads as 1: the decay holds at 1 and the level never passes
+///   it.
+///
+/// Mutations (run), each fails: the zero-length skip dropped (a stage of
+/// length 0 sent as a segment) → the first rig sends other segments
+/// from 100; the clamp dropped (`s.min(1.0)` → `s`) → the third rises to 1.5.
+#[test]
+fn zero_length_stages_and_the_sustain_clamp() {
+    let plan = vec![(100, note_on(60)), (500, note_off(60))];
+    let (mut ed, mut exec) = envelope_rig(128, plan, adsr(0.0, 0.0, 0.7, 0.0));
+    let a = render_stopped(&mut ed, &mut exec, &[128], 1_000);
+    assert_eq!(marks(&a), [100, 500]);
+    assert_eq!(piece(&a, 100), (0.7, 0.7), "straight to the sustain");
+    assert!(a[0][..100].iter().all(|&v| v == 0.0));
+    assert!(a[0][100..500].iter().all(|&v| v == 0.7), "held");
+    assert_eq!(piece(&a, 500), (0.0, 0.0), "straight to 0");
+    assert!(a[0][500..].iter().all(|&v| v == 0.0));
+
+    let plan = vec![(100, note_on(60)), (1_000, note_off(60))];
+    let (mut ed, mut exec) = envelope_rig(128, plan, adsr(0.005, 0.0, 0.0, 0.01));
+    let b = render_stopped(&mut ed, &mut exec, &[128], 2_000);
+    assert_eq!(&marks(&b)[..2], [100, 340]);
+    assert_eq!(b[0][339], 239.0 / 240.0, "the attack up to its last frame");
+    assert_eq!(piece(&b, 340), (0.0, 0.0), "the decay skipped to 0");
+    assert!(
+        b[0][340..].iter().all(|&v| v == 0.0),
+        "the release is from 0"
+    );
+
+    let plan = vec![(100, note_on(60)), (2_000, note_off(60))];
+    let (mut ed, mut exec) = envelope_rig(128, plan, adsr(0.005, 0.005, 1.5, 0.01));
+    let c = render_stopped(&mut ed, &mut exec, &[128], 3_000);
+    assert_eq!(piece(&c, 340), (1.0, 1.0), "the decay holds at 1");
+    assert!(c[0][340..2_000].iter().all(|&v| v == 1.0));
+    assert!(c[0].iter().all(|&v| v <= 1.0), "never past 1");
+}
+
+/// **A segment the event buffer refuses is re-sent, resumed.** 400 note
+/// events in one 512-frame block (on at even frames, off at odd, from 0)
+/// are 400 segments, past the capacity of 256: the envelope sends the
+/// first 256 and nothing more that block. At the next block's first frame
+/// (512) it re-sends where it stands, the release that began at 399
+/// resumed 113 frames in, so from 512 on it reads bit for bit what the
+/// same input reads in 1-frame blocks (where nothing is refused).
+///
+/// Mutation (run): the re-send dropped (`owed` never read) → no segment
+/// at 512, and the tap holds frame 255's segment, not the release → fails.
+#[test]
+fn a_refused_segment_is_resent_resumed() {
+    let plan: Vec<(u64, [u32; 4])> = (0..400u64)
+        .map(|f| {
+            (
+                f,
+                if f % 2 == 0 {
+                    note_on(60)
+                } else {
+                    note_off(60)
+                },
+            )
+        })
+        .collect();
+    let shape = adsr(0.02, 0.02, 0.5, 0.05);
+    let (mut ed, mut exec) = envelope_rig(512, plan.clone(), shape);
+    let big = render_stopped(&mut ed, &mut exec, &[512], 4_096);
+    let (mut ed, mut exec) = envelope_rig(512, plan, shape);
+    let one = render_stopped(&mut ed, &mut exec, &[1], 4_096);
+    assert_eq!(
+        marks(&big)[..256],
+        (0..256).collect::<Vec<_>>()[..],
+        "the first 256 segments"
+    );
+    assert_eq!(marks(&big)[256..], [512], "then the re-send");
+    assert_eq!(marks(&one), (0..400).collect::<Vec<_>>(), "nothing refused");
+    assert!(one[0][512] > 0.0, "the release is still in flight at 512");
+    for f in 512..4_096 {
+        assert_eq!(big[0][f].to_bits(), one[0][f].to_bits(), "frame {f}");
+    }
+}
+
+/// **A long time constant decays at its own rate.** Full scale for 4800
+/// frames (attack 0: followed exactly), then silence into a release of
+/// 1000 s: 48 000 frames later the envelope is `exp(−48 000 / 48e6) =
+/// exp(−0.001)`, within 1e-6. In `f32` the coefficient `exp(−1/48e6)`
+/// rounds to 1, and the envelope would never decay.
+///
+/// Mutation (run): the coefficient rounded through `f32` (`as f32 as
+/// f64`) → still 1.0 there → fails.
+#[test]
+fn a_long_release_decays_at_its_own_rate() {
+    let (mut ed, mut exec) = editor(128);
+    ed.insert(
+        NodeKey(1),
+        "pulse",
+        ForkByClone(Pulse {
+            width: ChannelLayout::MONO,
+            on: vec![(0, 4_800, 1.0)],
+        }),
+    );
+    ed.insert(
+        NodeKey(2),
+        "follower",
+        ForkByClone(follower(1, 0.0, 1_000.0, ChannelLayout::MONO)),
+    );
+    wire_audio(&mut ed, 1, 2, 1);
+    tap(&mut ed, 2, 3);
+    ed.commit().expect("commits");
+    let all = render_stopped(&mut ed, &mut exec, &[128], 53_000);
+    assert_eq!(all[3][4_800], 1.0, "full scale at the burst's end");
+    let g = 4_800 + 48_000;
+    let want = (-0.001f64).exp();
+    let got = f64::from(all[3][g]);
+    assert!((got - want).abs() < 1e-6, "{got} vs {want}");
 }

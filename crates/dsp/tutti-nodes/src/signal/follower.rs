@@ -18,19 +18,23 @@ use crate::automation::CONTROL_STEP;
 pub const FOLLOWER_EVENT_CAPACITY: u32 = 256;
 
 /// Below this the envelope is 0: a release decays to silence in finite
-/// time (about `16 × release` from full scale) rather than through
-/// subnormals forever, and a silent follower sends nothing.
-const FLOOR: f32 = 1e-7;
+/// time (`ln(1e7) ≈ 16.1` release time constants from full scale, at any
+/// `τ`) rather than through subnormals forever, and a silent follower
+/// sends nothing.
+const FLOOR: f64 = 1e-7;
 
 /// The one-pole coefficient of time constant `tau` at `rate`:
 /// `exp(−1 / (τ · rate))` in `f64` through `libm` (the same bits on every
 /// target), 0 (follow exactly) for a `τ` that is not above zero. A rate
 /// times a time constant is a decay length, not a frame count, so no
-/// `Seconds::to_samples*` rounding applies.
-fn coeff(tau: Seconds, rate: SampleRate) -> f32 {
+/// `Seconds::to_samples*` rounding applies. Kept in `f64`, as the envelope
+/// is: in `f32`, `c` would round to 1 past about 640 s at 48 kHz (the
+/// envelope would never decay) and shorten long constants well before
+/// that (400 s would act as about 349 s).
+fn coeff(tau: Seconds, rate: SampleRate) -> f64 {
     let frames = f64::from(tau.get()) * rate.get();
     if frames > 0.0 && frames.is_finite() {
-        libm::exp(-1.0 / frames) as f32
+        libm::exp(-1.0 / frames)
     } else {
         0.0
     }
@@ -47,10 +51,11 @@ fn coeff(tau: Seconds, rate: SampleRate) -> f32 {
 ///   and all of itself in mono; the peak reads the same at any width, as a
 ///   compressor's linked sidechain does.
 /// - **One-pole attack and release**, per frame:
-///   `env ← c · env + (1 − c) · level`, `c = exp(−1 / (τ · rate))`, with
-///   `τ` the attack while the level is above the envelope and the release
-///   otherwise. A `τ` of zero follows the level exactly. Below `1e-7` the
-///   envelope is 0, so a release reaches silence in finite time.
+///   `env ← c · env + (1 − c) · level`, `c = exp(−1 / (τ · rate))`, in
+///   `f64`, with `τ` the attack while the level is above the envelope and
+///   the release otherwise. A `τ` of zero follows the level exactly. Below
+///   `1e-7` the envelope is 0, so a release reaches silence in finite
+///   time. The pieces it sends are `f32`.
 /// - **On the grid, one step late.** On every frame `g` whose play count is
 ///   a multiple of [`CONTROL_STEP`] it sends a piece from `env(g − step)`
 ///   to `env(g)` over `[g, g + step)`, where `env(g)` is the envelope after
@@ -72,11 +77,12 @@ pub struct EnvelopeFollowerNode {
     attack: Seconds,
     release: Seconds,
     input: ChannelLayout,
-    attack_coeff: f32,
-    release_coeff: f32,
-    env: f32,
+    attack_coeff: f64,
+    release_coeff: f64,
+    /// In `f64`, so a long time constant decays at its own rate (`coeff`).
+    env: f64,
     /// `env` at the last grid point: the next piece's start.
-    from: f32,
+    from: f64,
     /// The end of the last piece sent (0 before any).
     sent: f32,
     /// The play clock's epoch at the last frame read; `None` while fresh.
@@ -121,7 +127,7 @@ impl EnvelopeFollowerNode {
 
     /// One frame's level into the envelope.
     #[inline]
-    fn follow(&mut self, level: f32) {
+    fn follow(&mut self, level: f64) {
         let c = if level > self.env {
             self.attack_coeff
         } else {
@@ -172,7 +178,7 @@ impl Node for EnvelopeFollowerNode {
             }
             self.epoch = Some(r.epoch);
             if r.play.get().is_multiple_of(step) {
-                let (from, to) = (self.from, self.env);
+                let (from, to) = (self.from as f32, self.env as f32);
                 if from != 0.0 || to != 0.0 || self.sent != 0.0 {
                     let seg = ParamSegment::foreign(
                         self.source,
@@ -190,14 +196,14 @@ impl Node for EnvelopeFollowerNode {
                         }
                     }
                 }
-                self.from = to;
+                self.from = self.env;
             }
             let mut level = 0.0f32;
             for c in 0..channels {
                 // `max` ignores a NaN operand: a NaN sample reads 0.
                 level = level.max(io.input(c)[i].abs());
             }
-            self.follow(level.min(1.0));
+            self.follow(f64::from(level.min(1.0)));
         }
         Status::Modified
     }

@@ -106,12 +106,13 @@ impl ParamValueQueueImpl {
         // MIDI CCs) and have no obligation to interleave them in order, so the
         // sort belongs here, at the boundary where the plugin's view is built.
         //
-        // `sort_by` on a nearly-sorted slice is the common case and cheap;
-        // it is also stable, so two points sharing an offset keep insertion
-        // order (the spec's "jump" idiom: old value then new value).
-        if !points.is_sorted_by_key(|p| p.sample_offset) {
-            points.sort_by_key(|p| p.sample_offset);
-        }
+        // A stable sort, so two points sharing an offset keep insertion
+        // order (the spec's "jump" idiom: old value then new value), and an
+        // allocation-free one (`PointBuf::sort_by_offset`): std's stable
+        // sort allocates a scratch buffer past 256 points, and a queue holds
+        // up to a chunk's room (273 at 512 frames). Linear on points already
+        // in order, the common case.
+        points.sort_by_offset();
         left_out
     }
 

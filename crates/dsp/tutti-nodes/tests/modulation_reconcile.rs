@@ -995,8 +995,9 @@ fn a_foreign_target_takes_a_lane_on_its_event_input() {
 /// the commit, and the lane is rebuilt on the new cell. A range edit to
 /// `0..=2000` is then a store the lane reads: 500.
 ///
-/// Mutation (run): `resolve_target` without the committed-generation check
-/// → the target resolves before the commit → fails on
+/// Mutation (run): `resolve_target` without the committed param-list check
+/// (any unit in the plan at the node will do) → the target resolves
+/// before the commit → fails on
 /// `unresolved_targets`; with the asserts on the gap removed as well, the
 /// lane is rebuilt on the old cell and the range edit reaches nothing (the
 /// review's repro): 250 → fails on the last assert.
@@ -1170,6 +1171,183 @@ fn a_key_the_host_takes_is_followed() {
             "frame {f}: {v} vs {want}"
         );
     }
+}
+
+/// **Two targets on one param port are refused, and the editor still
+/// commits.** Target ids 1 and 7 both name probe 1's cutoff, both new in
+/// one apply: one lane each would be two event sources on the port, and
+/// the graph would refuse every later commit. The apply is `SharedPort`,
+/// nothing changes, and the editor commits.
+///
+/// Mutation (run): the claimed-port check removed → the apply succeeds
+/// (wiring two lanes into the port, which the commit would refuse) →
+/// fails.
+#[test]
+fn two_targets_on_one_port_are_refused() {
+    let (mut ed, mut exec) = editor(128);
+    let mut host = Host::default();
+    probe(&mut ed, &mut host, 1, 500.0);
+    let one = host.targets[&1].clone();
+    host.targets.insert(7, one);
+    render(&mut ed, &mut exec, 128, 128);
+    let mut decl = Decl::default();
+    decl.target(cutoff_of(1), 0.0, 1000.0);
+    decl.target(cutoff_of(7), 0.0, 1000.0);
+    let lfo = decl.source(1, sine(2.0));
+    decl.route(1, lfo, cutoff_of(1), 0.1);
+    decl.route(2, lfo, cutoff_of(7), 0.1);
+    let mut m = Modulation::new();
+    let targets = [cutoff_of(1), cutoff_of(7)];
+    let before = state(&ed, &m, &targets, &[lfo]);
+    assert_eq!(
+        m.apply(&decl.get(), &mut ed, &host),
+        Err(ReconcileError::SharedPort {
+            first: cutoff_of(1),
+            second: cutoff_of(7),
+        })
+    );
+    assert_eq!(state(&ed, &m, &targets, &[lfo]), before);
+    ed.commit().expect("the editor still commits");
+}
+
+/// **A target moved to another key on its port takes the port in one
+/// apply** (an entity despawned and respawned in one frame): the rig's
+/// LFO route moves from target id 1 to id 7, which names the same cutoff.
+/// The old lane goes, the new one connects, and probe 1 renders the sine
+/// again past the new lane's declick.
+///
+/// Mutation (run): a port's own sources counted as this target's lane
+/// only → `PortTaken(7)` (the old lane is still on the port when 7 is
+/// checked) → fails.
+#[test]
+fn a_target_moved_to_another_key_on_its_port_takes_it() {
+    let mut r = rig(128);
+    let mut all = render(&mut r.ed, &mut r.exec, 128, 1_024);
+    let one = r.host.targets[&1].clone();
+    r.host.targets.insert(7, one);
+    r.decl.targets[0].0 = cutoff_of(7);
+    r.decl.routes[0].1.to = RouteTarget::Param(cutoff_of(7));
+    let applied =
+        r.m.apply(&r.decl.get(), &mut r.ed, &r.host)
+            .expect("applies");
+    assert!(applied.commit);
+    assert!(r.m.lane(cutoff_of(1)).is_none());
+    assert!(r.m.lane(cutoff_of(7)).is_some());
+    r.m.commit(&mut r.ed).expect("commits");
+    append(&mut all, render(&mut r.ed, &mut r.exec, 128, 4_096));
+    let tol = lfo_tolerance(0.3, 2.0);
+    for (f, &v) in all[0].iter().enumerate().skip(1_024 + DECLICK + STEP) {
+        let want = lfo_value(0.3, 2.0, f);
+        assert!(
+            (f64::from(v) - want).abs() < tol,
+            "frame {f}: {v} vs {want}"
+        );
+    }
+}
+
+/// **A replace with the same param list keeps modulating.** As the rebind
+/// test above, but the new probe declares `[Cutoff]` again: the commit
+/// keeps the port's range cell, so the target resolves before it, the lane
+/// is rebuilt at once, and every frame after that commit reads 250. A
+/// range edit then reads 500.
+///
+/// Mutation (run): `resolve_target` requiring the plan's unit generation
+/// to be the spec's (the check of 877174d3) → the target is unresolved
+/// (its lane goes, the port reads its knob) → fails.
+#[test]
+fn a_replace_with_the_same_params_keeps_modulating() {
+    let (mut ed, mut exec) = editor(128);
+    let mut host = Host::default();
+    probe(&mut ed, &mut host, 1, 0.0);
+    let mut decl = Decl::default();
+    decl.target(cutoff_of(1), 0.0, 1000.0);
+    let one = decl.source(1, ModSource::Macro { value: 1.0 });
+    decl.route(1, one, cutoff_of(1), 0.25);
+    let mut m = Modulation::new();
+    m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    m.commit(&mut ed).expect("commits");
+    render(&mut ed, &mut exec, 128, 1_024);
+
+    let knob = Arc::clone(&host.targets[&1].1);
+    ed.insert(
+        key(1),
+        "probe",
+        ForkByClone(Probe {
+            param: UnitParam::Cutoff,
+            extra: None,
+            knob,
+        }),
+    );
+    let applied = m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    assert!(applied.unresolved_targets.is_empty());
+    m.commit(&mut ed).expect("commits");
+    let got = render(&mut ed, &mut exec, 128, 1_024);
+    for (f, &v) in got[0].iter().enumerate() {
+        assert!((v - 250.0).abs() < 1e-3, "frame {f}: {v}");
+    }
+
+    decl.targets[0].1.max = 2_000.0;
+    m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    let got = render(&mut ed, &mut exec, 128, 1_024);
+    assert_eq!(got[0][1_023], 500.0);
+}
+
+/// **Undoing a taken lane's wiring leaves the host's own.** A foreign
+/// lane's key is taken by a host's MIDI node, which the host wires into the
+/// plugin's event input through a feedback edge. The apply removes the
+/// direct edge the lane wired and keeps the host's feedback edge.
+///
+/// Mutation (run): the taken foreign lane unwired with
+/// `disconnect_events` (every edge from the key) → the feedback edge goes
+/// → fails.
+#[test]
+fn a_taken_lanes_unwiring_keeps_the_hosts_edges() {
+    let (mut ed, mut exec) = editor(128);
+    let mut host = Host::default();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    ed.insert(key(50), "plugin", ForkByClone(Capture(Arc::clone(&log))));
+    ed.commit().expect("commits");
+    host.foreign.insert(50, key(50));
+    let param = TargetKey {
+        node: 50,
+        param: ParamAddr::Id(7),
+    };
+    let mut decl = Decl::default();
+    decl.target(param, 0.0, 1.0);
+    let one = decl.source(1, ModSource::Macro { value: 1.0 });
+    decl.route(1, one, param, 0.25);
+    let mut m = Modulation::new();
+    m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    m.commit(&mut ed).expect("commits");
+    render(&mut ed, &mut exec, 128, 256);
+
+    let lane = m.lane(param).expect("a lane").0;
+    ed.insert(lane, "clip", ForkByClone(Held { on: 10 }));
+    let to = EventIn {
+        node: key(50),
+        port: 0,
+    };
+    let feedback = EventEdge::Feedback {
+        from: EventOut {
+            node: lane,
+            port: 0,
+        },
+        delay: Samples(128),
+    };
+    ed.spec_mut().connect_events(to, feedback);
+    m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    let edges = &ed.spec().events[&to];
+    assert!(
+        edges.contains(&feedback),
+        "the host's edge stays: {edges:?}"
+    );
+    assert!(
+        !edges.contains(&EventEdge::Direct(EventOut {
+            node: lane,
+            port: 0
+        })),
+        "the lane's edge goes: {edges:?}"
+    );
 }
 
 /// Snapshot of everything a refused `apply` must leave alone.

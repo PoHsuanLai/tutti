@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tutti_core::ChannelLayout;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventKind, EventOut, ForkByClone, ParamFrom, ParamIn,
-    ParamRange, ParamShaping, ScheduleError,
+    ParamRange, ParamShaping, ParamSource, ScheduleError,
 };
 use tutti_mod::{
     compile, CompileError, Compiled, ControlProgram, Declarations, RouteKey, RouteTarget,
@@ -107,8 +107,16 @@ pub enum ReconcileError {
     /// A foreign target whose node has no event input at the port given.
     NoSuchEventInput(TargetKey),
     /// A native target whose param port already takes an event source that
-    /// is not this target's lane: the graph allows one per port.
+    /// is not one of this reconciler's lanes: the graph allows one per port.
     PortTaken(TargetKey),
+    /// Two native targets the host resolved to the same param port: one
+    /// lane each would be two event sources on it.
+    SharedPort {
+        /// The first, in key order.
+        first: TargetKey,
+        /// The second.
+        second: TargetKey,
+    },
     /// A follower fed events, a note envelope fed audio, or a note
     /// envelope fed from an event output its node does not have. (A feed
     /// naming a node not in the graph is no feed: the follower is
@@ -129,6 +137,12 @@ impl fmt::Display for ReconcileError {
             Self::NoSuchParam(t) => write!(f, "target {t:?}: its node does not declare it"),
             Self::NoSuchEventInput(t) => write!(f, "target {t:?}: no such event input"),
             Self::PortTaken(t) => write!(f, "target {t:?}: its port has another event source"),
+            Self::SharedPort { first, second } => {
+                write!(
+                    f,
+                    "targets {first:?} and {second:?} resolve to one param port"
+                )
+            }
             Self::WrongFeed(s) => write!(f, "source {}: a feed it cannot take", s.0),
         }
     }
@@ -153,12 +167,12 @@ pub struct Applied {
     /// The targets whose program was republished to their running lane
     /// (no commit).
     pub republished: Vec<TargetKey>,
-    /// Targets with a program whose node the host did not resolve, or whose
-    /// node is not committed at its current generation (inserted or
-    /// replaced since the last commit: its param port's range cell is not
-    /// the one the next commit hands out). No lane until a later `apply`
-    /// resolves them, and a lane they had is removed. **A host re-applies
-    /// after each commit while this is not empty.**
+    /// Targets with a program whose node the host did not resolve, whose
+    /// node is not in the last plan committed yet, or whose node was
+    /// replaced since by a unit declaring another param list (its param
+    /// port's range cell is not the one the next commit hands out). No lane
+    /// until a later `apply` resolves them, and a lane they had is removed.
+    /// **A host re-applies after each commit while this is not empty.**
     pub unresolved_targets: Vec<TargetKey>,
     /// Followers with no feed, or whose feed node is not in the graph: no
     /// node until a later `apply`.
@@ -287,12 +301,18 @@ struct SourcePlan {
 /// ring and starts idle. A follower needs none: it sends on every grid
 /// point while it is not silent.
 ///
-/// **Rebinds and re-applying.** A native target resolves only once its
-/// node's current generation is committed: a node inserted or replaced at
-/// a key since the last commit leaves the target unresolved, and the lane
-/// it had goes (its port reads the node's knob meanwhile). A host
-/// re-applies after each commit while [`Applied::unresolved_targets`] is
-/// not empty, and the lane is rebuilt on the cells that commit handed out.
+/// **Rebinds and re-applying.** A native target resolves once the last
+/// plan committed has a unit at its node declaring the params the node
+/// declares now: a node new since the last commit, or replaced by a unit
+/// with another param list (which the commit gives fresh range cells),
+/// leaves the target unresolved, and the lane it had goes (its port reads
+/// the node's knob meanwhile). A host re-applies after each commit while
+/// [`Applied::unresolved_targets`] is not empty, and the lane is rebuilt
+/// on the cells that commit handed out. A replace with the same list keeps
+/// its cells: the lane is rebuilt at once (a fresh lane sends at its first
+/// frame, so the new unit hears it). Two targets on one param port are
+/// refused ([`ReconcileError::SharedPort`]); a target moved from one key to
+/// another on the same port in one `apply` is not two.
 /// A node this reconciler built whose key the host has since taken (a
 /// replace or a removal) is forgotten, the wiring around it undone, and
 /// built again at a fresh key.
@@ -463,10 +483,34 @@ impl Modulation {
             .collect();
 
         // Resolve and check, changing nothing.
+        // The event sources this reconciler wired into param ports: each
+        // lane's key at its bound port. One that stays has its target's
+        // bind on that port (two binds on a port are refused below); every
+        // other is removed (a lane whose target went, moved or was rebound)
+        // or unwired (one whose key a host took) before a new lane
+        // connects. Any other event source at a port is someone else's.
+        let own: BTreeSet<(ParamIn, NodeKey)> = self
+            .lanes
+            .values()
+            .filter_map(|l| match l.bind {
+                Bind::Native { at, .. } => Some((at, l.key)),
+                Bind::Foreign { .. } => None,
+            })
+            .collect();
         let mut binds = BTreeMap::new();
+        let mut claimed: BTreeMap<ParamIn, TargetKey> = BTreeMap::new();
         for &target in compiled.programs.keys() {
-            match self.resolve_target(target, editor, host)? {
+            match self.resolve_target(target, &own, editor, host)? {
                 Some(bind) => {
+                    if let Bind::Native { at, .. } = bind {
+                        if let Some(&first) = claimed.get(&at) {
+                            return Err(ReconcileError::SharedPort {
+                                first,
+                                second: target,
+                            });
+                        }
+                        claimed.insert(at, target);
+                    }
                     binds.insert(target, bind);
                 }
                 None => applied.unresolved_targets.push(target),
@@ -504,7 +548,8 @@ impl Modulation {
                 continue;
             }
             if let (Some(src), Some(lane)) = (self.sources.get(&s), self.lanes.get(&t)) {
-                editor.spec_mut().disconnect_events(
+                remove_event_edge(
+                    editor,
                     EventIn {
                         node: lane.key,
                         port: 0,
@@ -524,13 +569,16 @@ impl Modulation {
             };
             match lane.bind {
                 Bind::Native { at, .. } => {
-                    editor
-                        .spec_mut()
-                        .disconnect_param(at, ParamFrom::Events(out));
+                    // Only the source it wired: event sources are unshaped.
+                    let ours = ParamSource {
+                        from: ParamFrom::Events(out),
+                        shaping: ParamShaping::Identity,
+                    };
+                    if let Some(m) = editor.spec_mut().params.get_mut(&at) {
+                        m.sources.retain(|s| *s != ours);
+                    }
                 }
-                Bind::Foreign { to, .. } => {
-                    editor.spec_mut().disconnect_events(to, out);
-                }
+                Bind::Foreign { to, .. } => remove_event_edge(editor, to, out),
             }
             *commit = true;
         }
@@ -801,6 +849,7 @@ impl Modulation {
     fn resolve_target(
         &self,
         target: TargetKey,
+        own: &BTreeSet<(ParamIn, NodeKey)>,
         editor: &Editor,
         host: &dyn ModHost,
     ) -> Result<Option<Bind>, ReconcileError> {
@@ -819,31 +868,34 @@ impl Modulation {
                 let at = ParamIn { node, param };
                 // One event source per param port: another's (a host's
                 // own) would make the commit refuse the graph.
-                let own = self.lanes.get(&target).map(|l| l.key);
                 let other = editor.spec().params.get(&at).is_some_and(|m| {
-                    m.sources
-                        .iter()
-                        .any(|s| matches!(s.from, ParamFrom::Events(out) if Some(out.node) != own))
+                    m.sources.iter().any(
+                        |s| matches!(s.from, ParamFrom::Events(out) if !own.contains(&(at, out.node))),
+                    )
                 });
                 if other {
                     return Err(ReconcileError::PortTaken(target));
                 }
                 // The port's range cell is the one a commit handed out for
-                // the node's unit: before the node's current generation is
-                // committed (a node inserted or replaced since), the cell is
-                // missing or the old unit's, which the commit may replace
-                // (a unit declaring another param list gets fresh cells), so
-                // a lane built on it would read a cell nothing writes (doc
-                // 014 §4.2).
-                let gen = editor.spec().generation(node);
+                // the unit the last plan has at the node. The next commit
+                // keeps the key's cells for a unit declaring the same params
+                // and gives fresh ones for another list (doc 014 §4.2). So a
+                // node not in that plan yet, or replaced since by a unit
+                // with another list, waits for the commit: a lane built on
+                // the cell now would read one nothing writes. A replace
+                // with the same list keeps its cells and resolves at once.
                 let committed = editor
                     .base()
                     .and_then(|plan| plan.unit(node))
-                    .map(|u| u.gen);
-                if committed != Some(gen) || editor.param_range_cell(at).is_none() {
+                    .map(|u| u.shape.params);
+                if committed != Some(shape.params) || editor.param_range_cell(at).is_none() {
                     return Ok(None);
                 }
-                Ok(Some(Bind::Native { at, knob, gen }))
+                Ok(Some(Bind::Native {
+                    at,
+                    knob,
+                    gen: editor.spec().generation(node),
+                }))
             }
             (Target::Foreign { node, port, knob }, ParamAddr::Id(id)) => {
                 let Some(shape) = shape(node) else {
@@ -1111,4 +1163,18 @@ fn unused_key(editor: &Editor) -> NodeKey {
 fn taken(editor: &Editor, key: NodeKey, gen: u32) -> bool {
     let spec = editor.spec();
     !spec.topology.nodes.contains_key(&key) || spec.generation(key) != gen
+}
+
+/// Removes the direct event edge `from` → `at` this reconciler wired, and
+/// no other edge between them (a host's feedback edge from a node it put
+/// at a taken key stays). An identical direct edge the host wired itself
+/// cannot be told apart, and goes too.
+fn remove_event_edge(editor: &mut Editor, at: EventIn, from: EventOut) {
+    let events = &mut editor.spec_mut().events;
+    if let Some(sources) = events.get_mut(&at) {
+        sources.retain(|e| *e != EventEdge::Direct(from));
+        if sources.is_empty() {
+            events.remove(&at);
+        }
+    }
 }

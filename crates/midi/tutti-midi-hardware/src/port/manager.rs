@@ -4,14 +4,15 @@
 //! One manager holds N input rings. `cycle_start_read_all_inputs` fans them all
 //! in for one block, converting each event's arrival `Instant` into a
 //! `frame_offset` within that block. Everything on that path is RT-safe: bounded
-//! work, no locks, no allocation.
+//! work, no locks, no allocation, and no free.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use tutti_core::{AudioThreadCell, RtEventBuf, RtPublish, SampleRate};
+use tutti_core::{AudioThreadCell, RtPublish, RtVec, SampleRate};
 
-use super::async_port::HardwareMidiInput;
+use super::async_port::{HardwareMidiInput, InputProducerHandle};
 use tutti_midi_types::ump::MidiEvent;
 
 /// Which direction a port carries.
@@ -28,16 +29,57 @@ pub enum PortType {
     Output,
 }
 
+/// One port's identity: its slot in the manager, and which of the ports ever
+/// created there it is.
+///
+/// A removed port's slot is reused by the next port created, so the slot
+/// alone does not name a port: an id kept past its port's removal would
+/// otherwise reach whichever port took the slot. The generation tells them
+/// apart. Every method taking a `PortId` checks both, and a stale id (its port
+/// removed, whether or not the slot was reused) matches nothing: it removes
+/// nothing, toggles nothing, and reads as no port.
+///
+/// The drain tags each event with the `PortId` of the port it came from, so
+/// a consumer can tell the ports apart within a block and across a reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PortId {
+    index: usize,
+    generation: u64,
+}
+
+impl PortId {
+    /// A port id for this crate's unit tests of a lone port.
+    #[cfg(test)]
+    pub(crate) const TEST: PortId = PortId {
+        index: 0,
+        generation: 0,
+    };
+
+    /// The slot this port occupies. Unique among the ports open at one time,
+    /// and reused after the port is removed; compare `PortId`s, not slots, to
+    /// tell ports apart.
+    #[must_use]
+    pub fn index(self) -> usize {
+        self.index
+    }
+
+    /// Which port created in this manager this is: unique for the manager's
+    /// life, increasing in creation order.
+    #[must_use]
+    pub fn generation(self) -> u64 {
+        self.generation
+    }
+}
+
 /// A snapshot view of one port, computed on demand from the underlying
 /// `HardwareMidiInput`. The port is the single source of truth for `name` and
-/// `active` — `PortInfo` just bundles them with the port's index/type for
+/// `active` — `PortInfo` just bundles them with the port's id/type for
 /// listing. `active` is a point-in-time value, not a live handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortInfo {
-    /// Position in the manager's port list, and the key every other method on
-    /// [`HardwareMidiInputs`] takes. Stable for the life of the manager: ports
-    /// are only appended, never removed or reordered.
-    pub index: usize,
+    /// The port's identity, and the key every other method on
+    /// [`HardwareMidiInputs`] takes.
+    pub id: PortId,
     /// The endpoint name the port was created with — for an open connection,
     /// the name the OS reported for that device.
     pub name: String,
@@ -50,9 +92,9 @@ pub struct PortInfo {
 }
 
 impl PortInfo {
-    fn of(port: &HardwareMidiInput, index: usize, port_type: PortType) -> Self {
+    fn of(port: &HardwareMidiInput, port_type: PortType) -> Self {
         Self {
-            index,
+            id: port.id(),
             name: port.name().to_string(),
             port_type,
             active: port.is_active(),
@@ -63,49 +105,69 @@ impl PortInfo {
 /// Events carried from all ports through one audio block.
 ///
 /// This is a hard cap, not a hint: the drain takes at most this many events per
-/// block and leaves the rest in the port rings. Both scratch buffers are sized
-/// to it and neither is allowed to grow, because growing means `realloc` inside
-/// the audio callback. A dense SysEx dump or a multi-port sweep therefore
-/// spreads across blocks — one block of added latency, no missed deadline, and
-/// no dropped events.
+/// block and leaves the rest in the port rings. The scratch is sized to it and
+/// cannot grow, because growing means `realloc` inside the audio callback. A
+/// dense SysEx dump or a multi-port sweep therefore spreads across blocks — one
+/// block of added latency, no missed deadline, and no dropped events.
 const CYCLE_SCRATCH_CAP: usize = 256;
 
-/// Audio-thread-only scratch state for the per-cycle fan-in/fan-out.
+/// The published port set: one slot per index, `None` where a port was
+/// removed and no new one has taken its place yet.
+type PortSlots = Vec<Option<Arc<HardwareMidiInput>>>;
+
+/// The drain's per-block state.
 ///
-/// Every field is touched **only** from the audio callback, one borrow at a
-/// time. Isolating them here keeps that single-thread reasoning contained to
-/// one small type rather than spread across the whole [`HardwareMidiInputs`] — and
-/// because every field is a `Sync` primitive ([`AudioThreadCell`] /
-/// [`RtEventBuf`]), this type *derives* `Sync` with no hand-written
-/// `unsafe impl`.
+/// `events` is touched **only** from the audio callback, one borrow at a time,
+/// so it is an [`AudioThreadCell`]. `sample_rate` is written by the control
+/// side and read by the drain, so it is an atomic (the `f64`'s bits), read
+/// once per block. `draining` marks a drain in progress, so one re-entered
+/// from its own visitor is refused rather than clearing the events the outer
+/// one is still handing out. All three are `Sync` on their own; the type
+/// derives it with no hand-written `unsafe impl`.
 ///
-/// All three are safe wrappers: this module contains no `unsafe`. The drained
-/// events reach the caller through a visitor rather than a borrowed slice, so
-/// nothing holds a reference into the scratch past the call — which is what
-/// keeps `event_buffer` a plain [`RtEventBuf`] and the `(port_index, event)`
-/// pairing intact.
+/// One buffer, not two: the timestamp → `frame_offset` conversion needs only
+/// the rate, `nframes` and the block start, all known before the first pop, so
+/// each event is converted as it leaves its ring and stored once, already
+/// timed. The drained events reach the caller through a visitor rather than a
+/// borrowed slice, copied out one at a time, so nothing holds a borrow of the
+/// scratch while the visitor runs.
 struct CycleScratch {
-    sample_rate: AudioThreadCell<SampleRate>,
-    timestamped_buffer: AudioThreadCell<Vec<(Instant, usize, MidiEvent)>>,
-    event_buffer: RtEventBuf<(usize, MidiEvent), CYCLE_SCRATCH_CAP>,
+    sample_rate: AtomicU64,
+    draining: AtomicBool,
+    events: AudioThreadCell<RtVec<(PortId, MidiEvent), CYCLE_SCRATCH_CAP>>,
+}
+
+/// Clears [`CycleScratch::draining`] when the drain ends, however it ends: a
+/// visitor that panics must not leave every later drain refused.
+struct Draining<'a>(&'a AtomicBool);
+
+impl Drop for Draining<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 impl CycleScratch {
     fn new() -> Self {
         Self {
-            sample_rate: AudioThreadCell::new(SampleRate::SR_44K1),
-            timestamped_buffer: AudioThreadCell::new(Vec::with_capacity(CYCLE_SCRATCH_CAP)),
-            event_buffer: RtEventBuf::new(),
+            sample_rate: AtomicU64::new(SampleRate::SR_44K1.get().to_bits()),
+            draining: AtomicBool::new(false),
+            events: AudioThreadCell::new(RtVec::new()),
         }
     }
 
     fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
-        *self.sample_rate.borrow_mut() = sample_rate.into();
+        self.sample_rate
+            .store(sample_rate.into().get().to_bits(), Ordering::Relaxed);
     }
 
-    /// Drain `input_ports`' active rings into `event_buffer`, converting arrival
-    /// timestamps to sample-accurate `frame_offset`s. RT-safe (lock-free, no
-    /// heap allocation). Read the result with `event_buffer.drain_each`.
+    fn sample_rate(&self) -> SampleRate {
+        SampleRate(f64::from_bits(self.sample_rate.load(Ordering::Relaxed)))
+    }
+
+    /// Drain `input_ports`' active rings into `events`, converting arrival
+    /// timestamps to sample-accurate `frame_offset`s, and return how many were
+    /// taken. RT-safe (lock-free, no heap allocation).
     ///
     /// `buffer_start` is when this block began — the instant every event's age
     /// is measured back from. Taken as a parameter rather than read from the
@@ -113,78 +175,86 @@ impl CycleScratch {
     /// otherwise control, so passing it is what makes the arithmetic below
     /// checkable at all. See
     /// [`cycle_start_read_all_inputs_at`](HardwareMidiInputs::cycle_start_read_all_inputs_at).
-    fn read_inputs(
-        &self,
-        input_ports: &[Arc<HardwareMidiInput>],
-        nframes: usize,
-        buffer_start: Instant,
-    ) {
-        let sample_rate = *self.sample_rate.borrow();
+    fn read_inputs(&self, input_ports: &PortSlots, nframes: usize, buffer_start: Instant) -> usize {
+        // Once per block: a rate the control side changes mid-drain applies
+        // from the next one.
+        let sample_rate = self.sample_rate();
+        let nframes_u32 = nframes as u32;
+        let frame_offset = |arrival: Instant| {
+            let delta = buffer_start.saturating_duration_since(arrival);
+            let samples_ago = (delta.as_secs_f64() * sample_rate.get()) as u32;
+            let offset = nframes_u32.saturating_sub(samples_ago);
+            if offset >= nframes_u32 {
+                nframes_u32.saturating_sub(1)
+            } else {
+                offset
+            }
+        };
 
-        // Drain all active input ports into the timestamp scratch. Each port
-        // gets the headroom left by the ports before it, so the total can never
-        // exceed the buffer's reserved capacity.
-        let mut timestamped = self.timestamped_buffer.borrow_mut();
-        timestamped.clear();
-        let mut headroom = CYCLE_SCRATCH_CAP;
-        for (port_index, port) in input_ports.iter().enumerate() {
+        // Each port gets the headroom left by the ports before it, so the
+        // total can never exceed the scratch's capacity and no push is refused.
+        let mut events = self.events.borrow_mut();
+        events.clear();
+        for port in input_ports.iter().flatten() {
+            let headroom = events.remaining();
             if headroom == 0 {
                 break;
             }
             if !port.is_active() {
                 continue;
             }
-            headroom -= port.cycle_start_read_input_into(&mut *timestamped, port_index, headroom);
+            let id = port.id();
+            port.drain_limited(headroom, |arrival, mut event| {
+                event.frame_offset = frame_offset(arrival);
+                let stored = events.push((id, event));
+                debug_assert!(stored, "the drain is limited to the headroom");
+            });
         }
-        let timestamped_snapshot = timestamped;
-
-        self.event_buffer.clear();
-        for &(midi_instant, port_index, mut event) in timestamped_snapshot.iter() {
-            let delta = buffer_start.saturating_duration_since(midi_instant);
-            let samples_ago = (delta.as_secs_f64() * sample_rate.get()) as u32;
-            let nframes_u32 = nframes as u32;
-            event.frame_offset = nframes_u32.saturating_sub(samples_ago);
-            if event.frame_offset >= nframes_u32 {
-                event.frame_offset = nframes_u32.saturating_sub(1);
-            }
-            if !self.event_buffer.push((port_index, event)) {
-                break;
-            }
-        }
+        events.len()
     }
+}
+
+/// What the control side last published, and the next generation to hand out.
+/// Behind [`HardwareMidiInputs::published`]'s lock.
+struct Published {
+    /// The set the drain currently reads: kept here so a change starts from it
+    /// and [`collect`](HardwareMidiInputs::collect) can publish it again.
+    slots: Arc<PortSlots>,
+    next_generation: u64,
 }
 
 /// Every open hardware MIDI input, and the per-block drain over them.
 ///
-/// A backend creates one port per connection and pushes into its
-/// [`InputProducerHandle`](super::InputProducerHandle) from the driver's own
-/// thread; the audio thread calls [`cycle_start_read_all_inputs`] once per block
-/// to take what arrived. Ports are appended and never removed, so an index stays
-/// valid for the life of the manager — a departed device is deactivated, not
-/// deleted.
+/// A backend creates one port per connection with
+/// [`create_input_port`](Self::create_input_port) and pushes into the
+/// [`InputProducerHandle`] it returns from the driver's own thread; the audio
+/// thread calls [`cycle_start_read_all_inputs`] once per block to take what
+/// arrived. When the connection closes, [`remove_input_port`] retires the port
+/// and frees its slot for the next one, so hot-plug cycles do not grow the set.
 ///
 /// Cheap to share: hold it in an `Arc` and hand clones to the session and the
 /// audio graph.
 ///
 /// [`cycle_start_read_all_inputs`]: HardwareMidiInputs::cycle_start_read_all_inputs
+/// [`remove_input_port`]: HardwareMidiInputs::remove_input_port
 pub struct HardwareMidiInputs {
     /// The port set, published to the audio thread's drain. An [`RtPublish`]
     /// rather than an `ArcSwap`: the drain only borrows the set, so a hotplug
     /// that publishes a new one mid-drain retires the old one for the
     /// *control* side to free. (An `ArcSwap` guard held across that store is
     /// upgraded to a strong count, and its drop then freed the old `Vec` on
-    /// the audio thread.)
-    input_ports: RtPublish<Vec<Arc<HardwareMidiInput>>>,
-    /// Serializes the read, append and publish of [`create_input_port`]
-    /// (`RtPublish` has no compare-and-publish), so two creators racing on
-    /// hotplug cannot each publish a copy missing the other's port. Control
-    /// side only: the drain never takes it.
-    ///
-    /// [`create_input_port`]: Self::create_input_port
-    publish_lock: Mutex<()>,
+    /// the audio thread.) The same holds for a removed port: the set that
+    /// still holds it is retired, and the port and its ring are freed on the
+    /// control side (see [`collect`](Self::collect)).
+    input_ports: RtPublish<PortSlots>,
+    /// Serializes the read, change and publish of every control-side change
+    /// (`RtPublish` has no compare-and-publish), so two control threads racing
+    /// on hotplug cannot each publish a copy missing the other's change. The
+    /// drain never takes it.
+    published: Mutex<Published>,
     fifo_size: usize,
-    /// Audio-thread-only scratch buffers. Every field here is `Sync` on its
-    /// own, so the manager derives `Sync` rather than asserting it by hand.
+    /// The drain's state. Every field here is `Sync` on its own, so the
+    /// manager derives `Sync` rather than asserting it by hand.
     scratch: CycleScratch,
 }
 
@@ -195,9 +265,13 @@ impl HardwareMidiInputs {
     /// overflow (`push` returns `false`) rather than blocking its callback.
     /// [`Default`] uses 2048.
     pub fn new(fifo_size: usize) -> Self {
+        let slots = Arc::new(PortSlots::new());
         Self {
-            input_ports: RtPublish::new(Vec::new()),
-            publish_lock: Mutex::new(()),
+            input_ports: RtPublish::from_arc(Arc::clone(&slots)),
+            published: Mutex::new(Published {
+                slots,
+                next_generation: 0,
+            }),
             fifo_size,
             scratch: CycleScratch::new(),
         }
@@ -206,59 +280,157 @@ impl HardwareMidiInputs {
     /// Sets the [`SampleRate`] the arrival-timestamp → `frame_offset` conversion
     /// divides by.
     ///
-    /// Call before starting the audio stream. A stale rate does not drop events;
-    /// it places them at the wrong offset within the block, which reads as
-    /// timing jitter rather than as an error.
+    /// Safe to call from any thread at any time: the rate is an atomic the
+    /// drain reads once per block, so a change lands on the next block. A stale
+    /// rate does not drop events; it places them at the wrong offset within the
+    /// block, which reads as timing jitter rather than as an error.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
         self.scratch.set_sample_rate(sample_rate);
     }
 
-    /// Creates an input port named `name` and returns its index.
-    ///
-    /// The port starts **active**. Control-thread only: this clones the port vec
-    /// to append and publishes the copy, so it allocates, may free the set it
-    /// replaces, and must not be called from the audio thread. Safe to call
-    /// from several control threads at once: each creator's port lands, at its
-    /// own index. The port owns its own name and active flag — there is no
-    /// parallel metadata to keep in sync.
-    pub fn create_input_port(&self, name: impl Into<String>) -> usize {
-        let port = Arc::new(HardwareMidiInput::new(name.into(), self.fifo_size));
-        // The lock holds no data: it makes read, append and publish one step.
-        // A poisoned lock guards nothing that could be inconsistent, since the
-        // published set is replaced whole or not at all.
-        let _publisher = self
-            .publish_lock
+    /// Runs `change` on a copy of the port set and publishes the copy, as one
+    /// step against every other control-side change.
+    fn republish<R>(&self, change: impl FnOnce(&mut PortSlots, &mut u64) -> R) -> R {
+        // A poisoned lock guards nothing inconsistent: the published set is
+        // replaced whole or not at all, and the generation only ever grows.
+        let mut published = self
+            .published
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut new_ports = (*self.input_ports.read()).clone();
-        let port_index = new_ports.len();
-        new_ports.push(port);
-        self.input_ports.publish(Arc::new(new_ports));
-        port_index
+        let published = &mut *published;
+        let mut slots = (*published.slots).clone();
+        let out = change(&mut slots, &mut published.next_generation);
+        published.slots = Arc::new(slots);
+        self.input_ports.publish(Arc::clone(&published.slots));
+        out
+    }
+
+    /// Creates an input port named `name` and returns the **only** producer
+    /// handle for its ring; [`InputProducerHandle::port_id`] is its identity.
+    ///
+    /// The port takes the lowest free slot (one a removed port left), or the
+    /// next one past the end, and a generation no port before it had. It
+    /// starts **active**. Control-thread only: this copies the port set and
+    /// publishes the copy, so it allocates, may free the set it replaces, and
+    /// must not be called from the audio thread. Safe to call from several
+    /// control threads at once: each creator's port lands in its own slot.
+    ///
+    /// There is no other way to reach a port's producer: give the handle to the
+    /// one thread that pushes. Dropping it leaves the port drainable but fed
+    /// by nothing; [`remove_input_port`](Self::remove_input_port) retires it.
+    #[must_use = "the handle is the port's only producer; dropping it leaves the port fed by nothing"]
+    pub fn create_input_port(&self, name: impl Into<String>) -> InputProducerHandle {
+        let name = name.into();
+        let fifo_size = self.fifo_size;
+        self.republish(move |slots, next_generation| {
+            let index = slots
+                .iter()
+                .position(Option::is_none)
+                .unwrap_or(slots.len());
+            let id = PortId {
+                index,
+                generation: *next_generation,
+            };
+            *next_generation += 1;
+            let (port, handle) = HardwareMidiInput::new(name, fifo_size, id);
+            let port = Some(Arc::new(port));
+            match slots.get_mut(index) {
+                Some(slot) => *slot = port,
+                None => slots.push(port),
+            }
+            handle
+        })
+    }
+
+    /// Retires the port `id` names, freeing its slot for the next
+    /// [`create_input_port`](Self::create_input_port). Returns `false`, and
+    /// changes nothing, when `id` names no live port: one already removed,
+    /// including one whose slot a newer port has taken.
+    ///
+    /// Events still in its ring are discarded with it. Control-thread only, as
+    /// `create_input_port` is. Close the port's driver connection first, so
+    /// nothing is still pushing into a ring nobody reads; a handle that
+    /// outlives the port is harmless, since it owns its half of the ring, but
+    /// whatever it pushes is lost.
+    ///
+    /// # When the memory goes
+    ///
+    /// The audio thread may be draining the port at that moment. The set it
+    /// borrowed is retired rather than freed, so the drain never frees, and
+    /// the port and its ring (once its producer is gone too) are freed on the
+    /// control side: by this call if no drain holds the old set, or else by
+    /// the next control-side change or [`collect`](Self::collect), whichever
+    /// comes first. With no further changes a removed port's ring can stay
+    /// allocated indefinitely; it is bounded (one retired set, a fixed number
+    /// of rings) and correct, and a host that wants it back sooner calls
+    /// `collect` from a periodic control-side task.
+    pub fn remove_input_port(&self, id: PortId) -> bool {
+        self.republish(|slots, _| {
+            let removed = match slots.get_mut(id.index) {
+                Some(slot) if slot.as_ref().is_some_and(|port| port.id() == id) => {
+                    *slot = None;
+                    true
+                }
+                _ => false,
+            };
+            // Trailing empty slots go too, so the set shrinks back once the
+            // last port is gone rather than keeping its high-water mark.
+            while slots.last().is_some_and(Option::is_none) {
+                slots.pop();
+            }
+            removed
+        })
+    }
+
+    /// Frees, on this thread, every retired port set no drain still holds, and
+    /// with it every removed port only those sets kept alive. Returns how many
+    /// retired sets are still held (by a drain in progress).
+    ///
+    /// Control-thread only. Cheap when there is nothing to do (a lock and a
+    /// load); otherwise it publishes the current set again, which takes the
+    /// same route every change does to free what no reader holds. A host that
+    /// removes ports and then makes no further change calls this from a
+    /// periodic control-side task to get the memory back.
+    pub fn collect(&self) -> usize {
+        let published = self
+            .published
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.input_ports.retired_len() > 0 {
+            self.input_ports.publish(Arc::clone(&published.slots));
+        }
+        self.input_ports.retired_len()
     }
 
     /// The port vec for `port_type`. Only [`PortType::Input`] is backed by an
     /// `HardwareMidiInput` ring — outbound MIDI rides the engine mailbox to a
     /// `MidiOut` sink, not a port ring — so `Output` returns `None` (lists as
     /// empty / no-op).
-    fn ports_of(&self, port_type: PortType) -> Option<&RtPublish<Vec<Arc<HardwareMidiInput>>>> {
+    fn ports_of(&self, port_type: PortType) -> Option<&RtPublish<PortSlots>> {
         match port_type {
             PortType::Input => Some(&self.input_ports),
             PortType::Output => None,
         }
     }
 
-    /// A snapshot of one port, or `None` when `port_index` names no port.
-    ///
-    /// Always `None` for [`PortType::Output`]: outputs are not backed here.
-    pub fn get_port_info(&self, port_type: PortType, port_index: usize) -> Option<PortInfo> {
+    /// The live port `id` names, if any: a stale id names none.
+    fn port(&self, port_type: PortType, id: PortId) -> Option<Arc<HardwareMidiInput>> {
         self.ports_of(port_type)?
             .read()
-            .get(port_index)
-            .map(|port| PortInfo::of(port, port_index, port_type))
+            .get(id.index)
+            .and_then(Option::clone)
+            .filter(|port| port.id() == id)
     }
 
-    /// Every input port, in index order. Allocates — control thread only.
+    /// A snapshot of one port, or `None` when `id` names no live port.
+    ///
+    /// Always `None` for [`PortType::Output`]: outputs are not backed here.
+    pub fn get_port_info(&self, port_type: PortType, id: PortId) -> Option<PortInfo> {
+        self.port(port_type, id)
+            .map(|port| PortInfo::of(&port, port_type))
+    }
+
+    /// Every input port, in slot order. Allocates — control thread only.
     pub fn list_input_ports(&self) -> Vec<PortInfo> {
         self.list_ports(PortType::Input)
     }
@@ -270,22 +442,27 @@ impl HardwareMidiInputs {
         ports
             .read()
             .iter()
-            .enumerate()
-            .map(|(index, port)| PortInfo::of(port, index, port_type))
+            .flatten()
+            .map(|port| PortInfo::of(port, port_type))
             .collect()
     }
 
-    /// Sets whether the drain reads this port. Returns `false` when
-    /// `port_index` names no port (always so for [`PortType::Output`]).
+    /// How many slots the published set holds, live or free: the length the
+    /// drain walks each block. Bounded by the most ports ever open at once.
+    #[cfg(test)]
+    pub(crate) fn slot_count(&self) -> usize {
+        self.input_ports.read().len()
+    }
+
+    /// Sets whether the drain reads the port `id` names. Returns `false`, and
+    /// changes nothing, when `id` names no live port (always so for
+    /// [`PortType::Output`]).
     ///
     /// Deactivating does not drain or clear the ring: a driver keeps pushing and
     /// the events sit there until the port is active again, so a long pause is
     /// followed by a burst rather than by silence.
-    pub fn set_port_active(&self, port_type: PortType, port_index: usize, active: bool) -> bool {
-        match self
-            .ports_of(port_type)
-            .and_then(|p| p.read().get(port_index).cloned())
-        {
+    pub fn set_port_active(&self, port_type: PortType, id: PortId, active: bool) -> bool {
+        match self.port(port_type, id) {
             Some(port) => {
                 port.set_active(active);
                 true
@@ -294,27 +471,30 @@ impl HardwareMidiInputs {
         }
     }
 
-    /// Whether the drain currently reads this port. `false` for an unknown
-    /// index and for every [`PortType::Output`] query.
-    pub fn is_port_active(&self, port_type: PortType, port_index: usize) -> bool {
-        self.ports_of(port_type)
-            .and_then(|p| p.read().get(port_index).map(|port| port.is_active()))
-            .unwrap_or(false)
+    /// Whether the drain currently reads the port `id` names. `false` for a
+    /// stale id and for every [`PortType::Output`] query.
+    pub fn is_port_active(&self, port_type: PortType, id: PortId) -> bool {
+        self.port(port_type, id)
+            .is_some_and(|port| port.is_active())
     }
 
     /// Drains all active input port rings for this block, converting arrival
     /// timestamps to sample-accurate `frame_offset`s, and hand each event to
-    /// `visit` as `(port_index, event)`. Returns how many were visited.
+    /// `visit` with the [`PortId`] of the port it came from. Returns how many
+    /// were visited.
     ///
-    /// RT-safe (lock-free, no heap allocation). A visitor rather than a
-    /// returned slice: the events live in audio-thread-only scratch, and
+    /// RT-safe (lock-free, no heap allocation, no free). A visitor rather than
+    /// a returned slice: the events live in audio-thread-only scratch, and
     /// lending a borrow into it out of a `&self` method is the one shape that
-    /// would need an `UnsafeCell`. `visit` is free to touch this manager —
-    /// `drain_each` releases its borrow around each call.
+    /// would need an `UnsafeCell`. `visit` is free to touch this manager — no
+    /// borrow of the scratch is held while it runs — but a drain started from
+    /// inside `visit` drains nothing and returns 0: the outer drain still has
+    /// events to hand out from the same scratch, and the next block takes
+    /// whatever arrived meanwhile. Audio thread only: one drain at a time.
     pub fn cycle_start_read_all_inputs(
         &self,
         nframes: usize,
-        visit: impl FnMut(usize, MidiEvent),
+        visit: impl FnMut(PortId, MidiEvent),
     ) -> usize {
         self.cycle_start_read_all_inputs_at(nframes, Instant::now(), visit)
     }
@@ -343,8 +523,16 @@ impl HardwareMidiInputs {
         &self,
         nframes: usize,
         buffer_start: Instant,
-        mut visit: impl FnMut(usize, MidiEvent),
+        mut visit: impl FnMut(PortId, MidiEvent),
     ) -> usize {
+        if self.scratch.draining.swap(true, Ordering::Relaxed) {
+            // Re-entered from the visitor of a drain in progress: refilling
+            // the scratch would drop the events the outer drain has yet to
+            // hand out.
+            return 0;
+        }
+        let _draining = Draining(&self.scratch.draining);
+
         // One borrow of the port set for the drain, so a hotplug publishing a
         // new set mid-read leaves this one intact; the borrow cannot free it
         // when it drops, whatever was published meanwhile. Events are copied
@@ -353,48 +541,18 @@ impl HardwareMidiInputs {
         let input_ports = self.input_ports.read();
         self.scratch
             .read_inputs(&input_ports, nframes, buffer_start);
-        let mut n = 0;
-        self.scratch.event_buffer.drain_each(|(port_index, event)| {
-            visit(port_index, event);
-            n += 1;
-        });
-        n
-    }
-
-    /// The producer end of `port_index`'s ring, for a driver callback to push
-    /// into. `None` when no such port exists.
-    ///
-    /// Take **one** handle per port and keep it on the one thread that pushes:
-    /// every handle for a port aliases the same producer, and two threads
-    /// pushing through them breaks the single-producer invariant the ring's
-    /// soundness rests on.
-    pub fn get_input_producer_handle(
-        &self,
-        port_index: usize,
-    ) -> Option<super::async_port::InputProducerHandle> {
-        let input_ports = self.input_ports.read();
-        input_ports
-            .get(port_index)
-            .map(|port| port.input_producer_handle())
-    }
-
-    /// Pushes one event into `port_index`'s ring, timestamped `Instant::now()`.
-    ///
-    /// Returns `false` when the ring is full (the event is dropped) or when
-    /// `port_index` names no port — a caller wanting to tell those apart should
-    /// hold an [`InputProducerHandle`](super::InputProducerHandle) instead.
-    ///
-    /// RT-safe (lock-free). Convenience for tests and for a producer that has
-    /// the manager but no handle; a real backend takes a handle once at connect
-    /// rather than re-resolving the port per event.
-    pub fn push_input_event(&self, port_index: usize, event: MidiEvent) -> bool {
-        let input_ports = self.input_ports.read();
-        if let Some(port) = input_ports.get(port_index) {
-            let handle = port.input_producer_handle();
-            handle.push(event, Instant::now())
-        } else {
-            false
+        let mut visited = 0;
+        loop {
+            // Re-borrow per event rather than across the visitor, so `visit`
+            // may reach back into this manager. Stop at the scratch's end
+            // rather than at a count taken before the visits.
+            let Some(&(port, event)) = self.scratch.events.borrow().get(visited) else {
+                break;
+            };
+            visit(port, event);
+            visited += 1;
         }
+        visited
     }
 }
 
@@ -430,7 +588,10 @@ impl core::fmt::Debug for HardwareMidiInputs {
         let input_ports = self.input_ports.read();
 
         f.debug_struct("HardwareMidiInputs")
-            .field("num_input_ports", &input_ports.len())
+            .field(
+                "num_input_ports",
+                &input_ports.iter().filter(|p| p.is_some()).count(),
+            )
             .field("fifo_size", &self.fifo_size)
             .finish()
     }
@@ -443,7 +604,7 @@ mod tests {
 
     /// Test helper: collect one cycle's visits into a `Vec`, so the assertions
     /// below can index and count without threading a closure through each.
-    fn drain_cycle(manager: &HardwareMidiInputs, nframes: usize) -> Vec<(usize, MidiEvent)> {
+    fn drain_cycle(manager: &HardwareMidiInputs, nframes: usize) -> Vec<(PortId, MidiEvent)> {
         let mut out = Vec::new();
         manager.cycle_start_read_all_inputs(nframes, |port, event| out.push((port, event)));
         out
@@ -457,8 +618,8 @@ mod tests {
     fn test_create_ports() {
         let manager = HardwareMidiInputs::new(256);
 
-        let input_id = manager.create_input_port("Test Input");
-        assert_eq!(input_id, 0);
+        let input_id = manager.create_input_port("Test Input").port_id();
+        assert_eq!(input_id.index(), 0);
 
         let input_ports = manager.list_input_ports();
         assert_eq!(input_ports.len(), 1);
@@ -469,7 +630,7 @@ mod tests {
 
         // Output is not a port-manager concern: it has no backing store, so it
         // always lists empty (outbound MIDI rides the mailbox → OutputThread).
-        assert!(manager.get_port_info(PortType::Output, 0).is_none());
+        assert!(manager.get_port_info(PortType::Output, input_id).is_none());
     }
 
     /// A multi-port sweep must not push either scratch buffer past its reserved
@@ -480,9 +641,9 @@ mod tests {
     fn cycle_read_is_capped_across_ports() {
         let manager = HardwareMidiInputs::new(256);
         for port in 0..4 {
-            let index = manager.create_input_port(format!("Input {port}"));
+            let mut handle = manager.create_input_port(format!("Input {port}"));
             for _ in 0..256 {
-                assert!(manager.push_input_event(index, MidiEvent::noop()));
+                assert!(handle.push(MidiEvent::noop(), now()));
             }
         }
 
@@ -506,20 +667,20 @@ mod tests {
     fn test_list_ports() {
         let manager = HardwareMidiInputs::new(256);
 
-        let id1 = manager.create_input_port("Input 1");
-        let id2 = manager.create_input_port("Input 2");
+        let id1 = manager.create_input_port("Input 1").port_id();
+        let id2 = manager.create_input_port("Input 2").port_id();
 
         let inputs = manager.list_input_ports();
         assert_eq!(inputs.len(), 2);
-        assert!(inputs.iter().any(|p| p.index == id1));
-        assert!(inputs.iter().any(|p| p.index == id2));
+        assert!(inputs.iter().any(|p| p.id == id1));
+        assert!(inputs.iter().any(|p| p.id == id2));
     }
 
     #[test]
     fn test_port_active_state() {
         let manager = HardwareMidiInputs::new(256);
 
-        let port_id = manager.create_input_port("Test");
+        let port_id = manager.create_input_port("Test").port_id();
         assert!(manager.is_port_active(PortType::Input, port_id));
 
         manager.set_port_active(PortType::Input, port_id, false);
@@ -536,12 +697,11 @@ mod tests {
     /// `-E 'test(name)'` ambiguous. What is unique here is `events[0].0` — the
     /// port attribution the single-port drain cannot assert.
     #[test]
-    fn manager_tags_drained_events_with_their_port_index() {
+    fn manager_tags_drained_events_with_their_port_id() {
         let manager = HardwareMidiInputs::new(256);
 
-        let input_id = manager.create_input_port("Input");
-
-        let producer_handle = manager.get_input_producer_handle(input_id).unwrap();
+        let mut producer_handle = manager.create_input_port("Input");
+        let input_id = producer_handle.port_id();
         // Upconvert 7-bit 127 so the downconverted velocity_u7 round-trips.
         let event = MidiEvent::note_on(
             MidiGroup::FIRST,
@@ -563,8 +723,8 @@ mod tests {
     fn test_inactive_ports_ignored() {
         let manager = HardwareMidiInputs::new(256);
 
-        let input_id = manager.create_input_port("Input");
-        let producer_handle = manager.get_input_producer_handle(input_id).unwrap();
+        let mut producer_handle = manager.create_input_port("Input");
+        let input_id = producer_handle.port_id();
 
         let event = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 0x3C, 0x7F);
         assert!(producer_handle.push(event, now()));
@@ -579,11 +739,9 @@ mod tests {
     fn test_multiple_input_ports() {
         let manager = HardwareMidiInputs::new(256);
 
-        let id1 = manager.create_input_port("Input 1");
-        let id2 = manager.create_input_port("Input 2");
-
-        let handle1 = manager.get_input_producer_handle(id1).unwrap();
-        let handle2 = manager.get_input_producer_handle(id2).unwrap();
+        let mut handle1 = manager.create_input_port("Input 1");
+        let mut handle2 = manager.create_input_port("Input 2");
+        let (id1, id2) = (handle1.port_id(), handle2.port_id());
 
         handle1.push(
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
@@ -610,9 +768,9 @@ mod tests {
     /// and publishing is not one atomic step, so two creators that interleave
     /// would each publish a copy missing the other's port.
     ///
-    /// Mutation: dropping `create_input_port`'s `publish_lock` guard (the
-    /// read, append and publish then run unserialized) fails this with fewer
-    /// than 8 x 200 ports listed and repeated indices.
+    /// Mutation: releasing `republish`'s `published` lock between the copy
+    /// and the publish (the read, append and publish then run unserialized)
+    /// fails this with fewer than 8 x 200 ports listed and repeated indices.
     #[test]
     #[cfg_attr(miri, ignore = "threaded stress test; too slow under miri")]
     fn concurrent_creators_all_land() {
@@ -631,7 +789,16 @@ mod tests {
                 std::thread::spawn(move || {
                     start.wait();
                     (0..PER_THREAD)
-                        .map(|i| (manager.create_input_port(format!("{t}/{i}")), t, i))
+                        .map(|i| {
+                            (
+                                manager
+                                    .create_input_port(format!("{t}/{i}"))
+                                    .port_id()
+                                    .index(),
+                                t,
+                                i,
+                            )
+                        })
                         .collect::<Vec<_>>()
                 })
             })
@@ -673,8 +840,7 @@ mod tests {
     fn offset_for(sample_rate: f64, nframes: usize, age: core::time::Duration) -> u32 {
         let manager = HardwareMidiInputs::new(256);
         manager.set_sample_rate(sample_rate);
-        let input_id = manager.create_input_port("Input");
-        let handle = manager.get_input_producer_handle(input_id).unwrap();
+        let mut handle = manager.create_input_port("Input");
 
         // A fixed block start, and an arrival a known age before it. Neither is
         // read from the clock during the conversion.
@@ -770,8 +936,7 @@ mod tests {
         use core::time::Duration;
 
         let manager = HardwareMidiInputs::new(256);
-        let port = manager.create_input_port("Input");
-        let handle = manager.get_input_producer_handle(port).unwrap();
+        let mut handle = manager.create_input_port("Input");
         let block_start = Instant::now();
         let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
 
@@ -793,6 +958,278 @@ mod tests {
             seen[0].frame_offset, 976,
             "at 48 kHz the same event belongs 4 frames earlier -- the 8.8% the \
              placeholder was off by"
+        );
+    }
+
+    /// Hot-plug cycles reuse the slot a removed port left, so the set the
+    /// drain walks stays as large as what is connected.
+    ///
+    /// An anchor port at index 1 stays plugged while a port below it (index 0)
+    /// and one above it (index 2) are each cycled 100 times, so both shapes of
+    /// reuse run: an interior slot, and the trailing one (trimmed, then
+    /// re-appended).
+    ///
+    /// Mutations: `remove_input_port` only deactivating the port → the list
+    /// grows by one per cycle and fails the length check. `create_input_port`
+    /// always appending → the interior cycle lands at 2, 3, 4 … and fails the
+    /// index check and the slot bound.
+    #[test]
+    fn hot_plug_cycles_reuse_freed_slots() {
+        let manager = HardwareMidiInputs::new(16);
+        let mut interior = manager.create_input_port("Interior").port_id();
+        let anchor = manager.create_input_port("Anchor").port_id();
+        assert_eq!((interior.index(), anchor.index()), (0, 1));
+
+        let mut trailing_gone = None;
+        for cycle in 0..100 {
+            // An interior slot: index 0 is below the live anchor at 1.
+            assert!(
+                manager.remove_input_port(interior),
+                "cycle {cycle}: the interior port is there"
+            );
+            let reused = manager.create_input_port("Interior").port_id();
+            assert_eq!(reused.index(), 0, "cycle {cycle}: the freed slot is reused");
+            assert_ne!(reused, interior, "cycle {cycle}: by a new port");
+            interior = reused;
+
+            // A trailing slot: index 2 is past every live port.
+            let trailing = manager.create_input_port("Trailing").port_id();
+            assert_eq!(trailing.index(), 2, "cycle {cycle}");
+            assert!(manager.remove_input_port(trailing));
+            trailing_gone = Some(trailing);
+
+            assert_eq!(manager.list_input_ports().len(), 2, "cycle {cycle}");
+            assert_eq!(
+                manager.slot_count(),
+                2,
+                "cycle {cycle}: the set does not grow"
+            );
+        }
+        let trailing_gone = trailing_gone.expect("the loop ran");
+        assert!(
+            !manager.remove_input_port(trailing_gone),
+            "a removed port is gone"
+        );
+        assert!(manager
+            .get_port_info(PortType::Input, trailing_gone)
+            .is_none());
+    }
+
+    /// A removed port, and the ring its producer no longer holds, are freed by
+    /// the control side's publish: nothing is left for the audio thread.
+    ///
+    /// Mutation: `remove_input_port` deactivating the port instead of taking
+    /// it out of the set → the published set keeps it alive and the weak
+    /// reference still upgrades.
+    #[test]
+    fn a_removed_port_is_freed_by_the_publish_that_removes_it() {
+        let manager = HardwareMidiInputs::new(16);
+        let mut handle = manager.create_input_port("Gone");
+        let id = handle.port_id();
+        assert!(handle.push(MidiEvent::noop(), now()));
+        let port = {
+            let slots = manager.input_ports.read();
+            Arc::downgrade(slots[0].as_ref().expect("the port is live"))
+        };
+        drop(handle);
+
+        assert!(manager.remove_input_port(id));
+        assert!(
+            port.upgrade().is_none(),
+            "no reader held the set, so the publish freed the port"
+        );
+        assert_eq!(drain_cycle(&manager, 512).len(), 0);
+    }
+
+    /// A producer that outlives its port, and the whole manager, still pushes
+    /// into memory it owns.
+    ///
+    /// This is the shape that was a use-after-free: the handle was a raw
+    /// pointer into a ring the manager owned, so a driver thread pushing while
+    /// its session tore down wrote into freed memory. Now the handle owns its
+    /// half of the ring, so the ring lives exactly as long as someone holds it.
+    /// There is no mutation to record: the old shape cannot be rebuilt without
+    /// `unsafe`, and without it the compiler refuses a handle that borrows the
+    /// manager. Run it under miri to check the claim directly.
+    #[test]
+    fn a_producer_outliving_its_manager_pushes_into_its_own_ring() {
+        let manager = HardwareMidiInputs::new(4);
+        let mut handle = manager.create_input_port("Orphan");
+        assert!(manager.remove_input_port(handle.port_id()));
+        drop(manager);
+
+        for i in 0..4 {
+            assert!(
+                handle.push(MidiEvent::noop(), now()),
+                "slot {i} of 4 is free"
+            );
+        }
+        assert!(
+            !handle.push(MidiEvent::noop(), now()),
+            "nothing drains it, so it fills at its capacity"
+        );
+    }
+
+    /// A drain re-entered from its own visitor hands out nothing, and the
+    /// outer drain still hands out every event, in order. The visitor may also
+    /// touch the rest of the manager (list, toggle, read the rate).
+    ///
+    /// Ported from `RtEventBuf`'s `drain_each_callback_may_reborrow_the_buffer`.
+    ///
+    /// Mutations (run): dropping the `draining` guard → the nested drain clears
+    /// the scratch, the outer one stops after its first event, and this fails
+    /// on the count; dropping the guard *and* indexing `events[i]` for a count
+    /// taken before the visits (the shape the review found) → it panics with
+    /// "index out of bounds".
+    #[test]
+    fn a_drain_re_entered_from_its_visitor_hands_out_every_event() {
+        let manager = HardwareMidiInputs::new(16);
+        let mut a = manager.create_input_port("A");
+        let mut b = manager.create_input_port("B");
+        for i in 0..2 {
+            assert!(a.push(MidiEvent::noop(), now()));
+            assert!(b.push(MidiEvent::noop(), now()), "event {i}");
+        }
+
+        let mut outer = Vec::new();
+        let mut nested = 0;
+        let mut nested_visits = 0;
+        let visited = manager.cycle_start_read_all_inputs(512, |port, _| {
+            outer.push(port);
+            // Push one more so a nested drain would have something to take.
+            assert!(a.push(MidiEvent::noop(), now()));
+            nested += manager.cycle_start_read_all_inputs(512, |_, _| nested_visits += 1);
+            assert_eq!(manager.list_input_ports().len(), 2);
+            assert!(manager.set_port_active(PortType::Input, b.port_id(), true));
+            manager.set_sample_rate(48_000.0);
+        });
+
+        assert_eq!(visited, 4, "every event of the outer drain was visited");
+        assert_eq!(
+            outer,
+            vec![a.port_id(), a.port_id(), b.port_id(), b.port_id()]
+        );
+        assert_eq!(nested, 0, "each nested drain returned 0");
+        assert_eq!(nested_visits, 0, "and visited nothing");
+        assert_eq!(
+            drain_cycle(&manager, 512).len(),
+            4,
+            "what arrived during the visits waits for the next block"
+        );
+    }
+
+    /// A stale `PortId` cannot reach the port that took its slot.
+    ///
+    /// Port A is removed and port B created in the same slot. A's id must not
+    /// remove, toggle or describe B, and B's events carry B's id, not A's.
+    ///
+    /// Mutation (run): `PortId`'s generation ignored (the lookup and the
+    /// removal compare `index` only, as keys did before) → A's id removes B →
+    /// fails.
+    #[test]
+    fn a_stale_port_id_cannot_reach_the_port_that_reused_its_slot() {
+        let manager = HardwareMidiInputs::new(16);
+        let a = manager.create_input_port("A").port_id();
+        assert!(manager.remove_input_port(a));
+        let mut b = manager.create_input_port("B");
+        let b_id = b.port_id();
+        assert_eq!(b_id.index(), a.index(), "B reuses A's slot");
+        assert_ne!(b_id, a);
+
+        assert!(!manager.set_port_active(PortType::Input, a, false));
+        assert!(!manager.is_port_active(PortType::Input, a));
+        assert!(manager.get_port_info(PortType::Input, a).is_none());
+        assert!(!manager.remove_input_port(a), "a stale id removes nothing");
+
+        let info = manager
+            .get_port_info(PortType::Input, b_id)
+            .expect("B is still there");
+        assert_eq!((info.name.as_str(), info.active), ("B", true));
+        assert!(b.push(MidiEvent::noop(), now()));
+        let events = drain_cycle(&manager, 512);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, b_id, "B's event carries B's id");
+    }
+
+    /// The sample rate may be set from a control thread while the audio thread
+    /// drains: no shared borrow, no torn value, and the rate a drain uses is
+    /// one of those set.
+    ///
+    /// Mutation (run): the rate back in an `AudioThreadCell` written with
+    /// `borrow_mut` (the old shape) → in a debug build the two threads trip the
+    /// cell's in-use flag and the test panics. In a release build that is a
+    /// data race, which this test cannot observe.
+    #[test]
+    #[cfg_attr(miri, ignore = "threaded stress test; too slow under miri")]
+    fn the_sample_rate_can_be_set_while_a_drain_runs() {
+        use core::time::Duration;
+        use std::sync::atomic::AtomicBool;
+
+        let manager = Arc::new(HardwareMidiInputs::new(64));
+        manager.set_sample_rate(48_000.0);
+        let mut handle = manager.create_input_port("Input");
+        let stop = Arc::new(AtomicBool::new(false));
+        let setter = {
+            let manager = Arc::clone(&manager);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut flip = false;
+                while !stop.load(Ordering::Relaxed) {
+                    manager.set_sample_rate(if flip { 48_000.0 } else { 96_000.0 });
+                    flip = !flip;
+                }
+            })
+        };
+
+        let block_start = Instant::now();
+        for _ in 0..20_000 {
+            assert!(handle.push(MidiEvent::noop(), block_start - Duration::from_millis(1)));
+            manager.cycle_start_read_all_inputs_at(1024, block_start, |_, e| {
+                // 1 ms at 48 kHz or at 96 kHz, never anything else.
+                assert!(
+                    e.frame_offset == 1024 - 48 || e.frame_offset == 1024 - 96,
+                    "offset {} is from neither rate",
+                    e.frame_offset
+                );
+            });
+        }
+        stop.store(true, Ordering::Relaxed);
+        setter.join().expect("setter thread");
+    }
+
+    /// A port removed while a drain holds the set is not freed by the drain;
+    /// `collect` frees it on the control side once the drain is done, with no
+    /// further change needed.
+    ///
+    /// Mutation (run): `collect` not publishing (returning `retired_len` only)
+    /// → the port stays alive → fails.
+    #[test]
+    fn collect_frees_a_port_removed_during_a_drain() {
+        let manager = HardwareMidiInputs::new(16);
+        let mut handle = manager.create_input_port("Gone");
+        let id = handle.port_id();
+        assert!(handle.push(MidiEvent::noop(), now()));
+        drop(handle);
+        let port = Arc::downgrade(
+            manager.input_ports.read()[0]
+                .as_ref()
+                .expect("the port is live"),
+        );
+
+        manager.cycle_start_read_all_inputs(512, |_, _| {
+            assert!(manager.remove_input_port(id));
+        });
+        assert!(
+            port.upgrade().is_some(),
+            "the drain held the set when the port was removed"
+        );
+
+        assert_eq!(manager.collect(), 0, "nothing is still held");
+        assert!(port.upgrade().is_none(), "collect freed the port");
+        assert_eq!(
+            manager.collect(),
+            0,
+            "and a second collect has nothing to do"
         );
     }
 }

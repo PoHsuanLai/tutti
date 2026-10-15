@@ -163,7 +163,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
     fn open_input(
         &self,
         id: EndpointId,
-        producer: InputProducerHandle,
+        mut producer: InputProducerHandle,
     ) -> Result<Box<dyn InputConnection>> {
         let client = self.client()?;
         let source = Self::find_source(id)

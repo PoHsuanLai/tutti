@@ -58,6 +58,11 @@ pub struct ClockMaster {
     enabled: AtomicBool,
     /// Whether to also emit MTC quarter-frames.
     send_mtc: AtomicBool,
+    /// Events a [`ClockNode`](crate::ClockNode) could not send because one
+    /// block produced more than its
+    /// [`CLOCK_EVENT_CAPACITY`](crate::CLOCK_EVENT_CAPACITY). Counted, never
+    /// logged: the count is bumped on the audio thread.
+    dropped: AtomicU64,
     /// SMPTE frame rate for MTC, as [`SmpteFrameRate`] discriminant.
     mtc_fps: AtomicU8,
 
@@ -101,6 +106,7 @@ impl ClockMaster {
             group: MidiGroup::FIRST,
             enabled: AtomicBool::new(false),
             send_mtc: AtomicBool::new(false),
+            dropped: AtomicU64::new(0),
             mtc_fps: AtomicU8::new(SmpteFrameRate::Fps25 as u8),
             prev_playing: AtomicBool::new(false),
             prev_beat: AtomicF64::new(0.0),
@@ -127,6 +133,22 @@ impl ClockMaster {
     /// Whether clock generation is on.
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
+    }
+
+    /// How many events the [`ClockNode`](crate::ClockNode) ticking this master
+    /// has dropped, since it was created, because a single block produced
+    /// more than [`CLOCK_EVENT_CAPACITY`](crate::CLOCK_EVENT_CAPACITY) of
+    /// them (a very long block at a very high tempo with MTC on). A host polls
+    /// it; nonzero means the receiver missed ticks and should be resynced.
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Adds `n` to [`dropped_events`](Self::dropped_events). Audio thread.
+    pub(crate) fn count_dropped(&self, n: u64) {
+        if n > 0 {
+            self.dropped.fetch_add(n, Ordering::Relaxed);
+        }
     }
 
     /// Move the master to a device running at `sample_rate`: what a device

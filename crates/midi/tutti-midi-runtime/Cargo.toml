@@ -24,8 +24,6 @@ tutti-graph = { version = "0.0.1", path = "../../core/tutti-graph" }
 # Lock-free / concurrent
 atomic_float = "1.1"
 crossbeam-queue = "0.3"
-dashmap = "6.1"
-parking_lot = "0.12"
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

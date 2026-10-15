@@ -110,8 +110,11 @@ impl ParamValueQueueImpl {
         // order (the spec's "jump" idiom: old value then new value), and an
         // allocation-free one (`PointBuf::sort_by_offset`): std's stable
         // sort allocates a scratch buffer past 256 points, and a queue holds
-        // up to a chunk's room (273 at 512 frames). Linear on points already
-        // in order, the common case.
+        // up to a chunk's room, past 256 at every chunk size
+        // (`ParameterQueue::chunk_room` is `ceil(chunk / 32) + 1 + 256`).
+        // Linear on points already in order, the common case; quadratic in
+        // the overlap of the runs when sources interleave (up to n1 * n2
+        // moves), bounded by the queue's room.
         points.sort_by_offset();
         left_out
     }
@@ -240,6 +243,32 @@ mod tests {
             vec![(0, 0.25), (128, 0.5), (384, 0.75)],
             "points must be ascending by sample offset"
         );
+    }
+
+    /// **An unsorted queue past 256 points refills without allocating**: a
+    /// queue's room is a chunk's (`ParameterQueue::chunk_room`, past 256 at
+    /// every chunk size), and std's stable sort allocates its scratch past
+    /// 256 points. Two interleaved runs, each in order.
+    ///
+    /// Mutation (run): the sort back to `points.sort_by_key(|p|
+    /// p.sample_offset)` aborts in the gate.
+    #[test]
+    fn refilling_an_unsorted_queue_past_256_points_does_not_allocate() {
+        const RUN: i32 = 150;
+        let mut source =
+            ParameterQueue::with_capacity(ParamAddress::Opaque(7u32.into()), 2 * RUN as usize);
+        for i in 0..RUN {
+            source.add_point(2 * i, 0.25);
+        }
+        for i in 0..RUN {
+            source.add_point(2 * i + 1, 0.75);
+        }
+        let queue = ParamValueQueueImpl::with_room(0, 2 * RUN as usize);
+        let left_out = assert_no_alloc::assert_no_alloc(|| queue.refill_from_queue(&source));
+        assert_eq!(left_out, 0);
+        let mut got = Vec::new();
+        queue.for_each_point(|p| got.push(p.sample_offset));
+        assert_eq!(got, (0..2 * RUN).collect::<Vec<_>>());
     }
 
     /// Two points at the same offset keep insertion order — the spec's "jump"

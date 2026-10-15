@@ -1328,6 +1328,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The VST3 host no longer allocates on the audio thread for a block of
+  more than 73 events** (tutti-vst3-host). The input event list was sorted
+  with std's stable sort, which heap-allocates its scratch past 4 KiB (73
+  events). The list also grew past its 256 reserved events, and the
+  plugin's `addEvent` grew the output list.
+  - **Sort.** Both lists are sorted by `tutti_plugin_types::StableOrder`
+    (reserved scratch, `n log n`, stable: events on one frame keep source
+    order).
+  - **Cap.** Both lists hold 528 events (256 MIDI, 256 per-note
+    expressions, four of each harmony kind). Past that, events are
+    dropped and counted: `Vst3Active::events_dropped` and
+    `output_events_dropped` (new). A note-off past the room replaces the
+    latest-staged event that is not a note-off, so no note hangs (unless
+    the list is full of note-offs). Per-note expression values have their
+    own budget of 256, so a dense expression block cannot spend the room
+    the harmony kinds were given.
+  - **Plugin-visible:** a plugin's `addEvent` past the output list's room
+    now returns `kResultFalse` (it used to grow the list).
+  - **New API.** `tutti_plugin_types::{insertion_sort_by_key, StableOrder}`
+    are the shared allocation-free stable sorts. `PointBuf::sort_by_offset`
+    (the VST3 parameter queues' refill and the `IMidiMapping` merge, whose
+    room is past 256 points at every chunk size) delegates to
+    `insertion_sort_by_key`, which now carries its binary-search insertion,
+    so there is one insertion sort. The CLAP input list's `sort_by_time`
+    and `tutti-plugin`'s three copies of the MIDI insertion sort use them
+    too. Nothing is removed, so there is no migration.
+
 - **A MIDI input driver can no longer push into a freed ring**
   (tutti-midi-hardware). The producer handle was a raw pointer into a ring
   the port manager owned, so an ALSA pump thread still running while a

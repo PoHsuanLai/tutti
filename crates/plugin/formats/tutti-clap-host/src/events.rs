@@ -33,7 +33,7 @@ use clap_sys::events::{
 };
 use std::ptr;
 use tutti_plugin_types::{
-    note_id_for, note_id_to_channel_note, Normalized, ParamAddress, RtMidiEvents,
+    note_id_for, note_id_to_channel_note, Normalized, ParamAddress, RtMidiEvents, StableOrder,
 };
 
 use crate::types::RtNoteExpressions;
@@ -673,9 +673,9 @@ pub trait EventList {
 pub struct InputEventList {
     pub(crate) list: clap_input_events,
     pub(crate) events: Vec<ClapEvent>,
-    /// [`sort_by_time`](Self::sort_by_time)'s scratch: one `(time, index)`
-    /// key per event, reserved with the events so the sort never allocates.
-    order: Vec<u64>,
+    /// [`sort_by_time`](Self::sort_by_time)'s scratch, reserved with the
+    /// events so the sort never allocates.
+    order: StableOrder,
     /// The parameter events one [`add_param_changes`](Self::add_param_changes)
     /// may push: the room reserved for them at activation
     /// ([`set_param_point_room`](Self::set_param_point_room)). Unbounded
@@ -696,7 +696,7 @@ impl InputEventList {
                 get: Some(input_events_get),
             },
             events: Vec::new(),
-            order: Vec::new(),
+            order: StableOrder::default(),
             param_room: usize::MAX,
             param_points_dropped: 0,
         }
@@ -710,8 +710,10 @@ impl InputEventList {
                 size: Some(input_events_size),
                 get: Some(input_events_get),
             },
+            // Reserved for the list's whole capacity, as `reserve` does, so
+            // `sort_by_time` stays `n log n` (`flush_params` sorts one).
+            order: StableOrder::with_capacity(events.capacity()),
             events,
-            order: Vec::new(),
             param_room: usize::MAX,
             param_points_dropped: 0,
         }
@@ -722,8 +724,7 @@ impl InputEventList {
     /// touch the allocator. `clear()` keeps the reserved capacity.
     pub fn reserve(&mut self, n: usize) {
         self.events.reserve(n);
-        let room = self.events.capacity();
-        self.order.reserve(room.saturating_sub(self.order.len()));
+        self.order.reserve(self.events.capacity());
     }
 
     /// Bound the parameter events one
@@ -921,49 +922,15 @@ impl InputEventList {
     /// order they were added in (a note-off before the note-on that reuses
     /// its key, a parameter's points).
     ///
-    /// **Allocation-free within the reserved room.** A block can carry a
-    /// point for every parameter many times over, and std's stable sort
-    /// allocates a scratch buffer past a small input. So the order is
-    /// computed on `(time, index)` keys in a scratch reserved with the list
-    /// ([`reserve`](Self::reserve)), with an unstable sort (which never
-    /// allocates; the index makes every key distinct, so the result is the
-    /// stable order), and the events are then moved into it in place, one
-    /// permutation cycle at a time. A list already in order (the common
-    /// case) is left as it is.
+    /// **Allocation-free.** A block can carry a point for every parameter
+    /// many times over, and std's stable sort allocates a scratch buffer
+    /// past a small input. So the sort is a [`StableOrder`], whose scratch
+    /// is reserved with the list ([`reserve`](Self::reserve)): `n log n`
+    /// within that room, and past it an insertion sort rather than a grown
+    /// scratch. A list already in order (the common case) is left as it is.
     pub fn sort_by_time(&mut self) -> &mut Self {
-        if self.events.is_sorted_by_key(|e| e.header().time) {
-            return self;
-        }
-        self.order.clear();
-        self.order.extend(
-            self.events
-                .iter()
-                .enumerate()
-                .map(|(i, e)| (u64::from(e.header().time) << 32) | i as u64),
-        );
-        self.order.sort_unstable();
-        // `order[i]` is now the index of the event that belongs at `i`.
-        for o in &mut self.order {
-            *o &= u64::from(u32::MAX);
-        }
-        // Apply the permutation in place: walk each cycle once, marking each
-        // position done by pointing it at itself.
-        for start in 0..self.order.len() {
-            let mut at = start;
-            loop {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "masked to an event index, which is below the list's length"
-                )]
-                let from = self.order[at] as usize;
-                self.order[at] = at as u64;
-                if from == start || from == at {
-                    break;
-                }
-                self.events.swap(at, from);
-                at = from;
-            }
-        }
+        self.order
+            .sort_by_key(&mut self.events, |e| e.header().time);
         self
     }
 

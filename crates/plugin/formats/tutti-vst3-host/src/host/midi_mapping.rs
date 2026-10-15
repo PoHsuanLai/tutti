@@ -242,10 +242,12 @@ pub(crate) fn route_cc_events(
 ///
 /// It must also **not allocate**: it runs on the audio thread, and std's
 /// stable `sort_by_key` allocates a scratch buffer past 256 points, which a
-/// queue at a chunk's room (`ParameterQueue::chunk_room`, 273 at 512 frames)
-/// exceeds. `PointBuf::sort_by_offset` is a stable insertion sort in place:
-/// linear on a queue already in order (every queue with one source), and
-/// cheap on the few CC points appended out of place.
+/// queue at a chunk's room exceeds at every chunk size
+/// (`ParameterQueue::chunk_room` is `ceil(chunk / 32) + 1 + 256`).
+/// `PointBuf::sort_by_offset` is a stable insertion sort in place: linear on
+/// a queue already in order (every queue with one source), and quadratic in
+/// the overlap of the runs otherwise (up to n1 * n2 moves for the host's run
+/// and the CCs' interleaved), bounded by the queue's room.
 pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
     for queue in params.queues.iter_mut() {
         queue.points.sort_by_offset();

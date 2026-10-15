@@ -3827,6 +3827,36 @@ all three into fresh `Vec`s to keep only the restart flags.
   processor (a feature, not this fix), and the GUI-only instance in
   `tutti-plugin` still ignores `kParamValuesChanged`.
 
+#### The VST3 event list sorts and caps without allocating (landed)
+
+**Status: landed** (2026-10-15).
+
+- **The VST3 input event list allocated on the audio thread past 73
+  events.** It was sorted with std's stable sort, which takes a scratch as
+  long as the list: 4 KiB on the stack (73 events of 56 bytes), and heap
+  past that. It also grew past its reserved 256 events, and the plugin's
+  `addEvent` grew the output list without bound.
+- **Sort.** `tutti_plugin_types::StableOrder` now sorts it. It is the CLAP
+  host's `(time, index)` keyed unstable sort and in-place permutation, moved
+  to `tutti-plugin-types` with a scratch reserved with the list, so the
+  CLAP list uses it too. Equal offsets keep source order.
+- **Cap.** The list holds `EVENT_CAPACITY` (528) events: 256 MIDI, 256
+  per-note expressions (nothing upstream caps them) and four of each
+  harmony kind. The expressions' 256 is a budget enforced at staging, so a
+  dense expression block cannot spend the harmony kinds' room. Past that
+  room, events are dropped and counted
+  (`Vst3Active::events_dropped`, `output_events_dropped`), except a
+  note-off, which takes the place of the latest-staged event that is not a
+  note-off, so no note is left hanging.
+- **One insertion sort.** `tutti_plugin_types::insertion_sort_by_key`
+  (binary-search insertion, stable, allocation-free) is the only one:
+  `PointBuf::sort_by_offset` (the VST3 parameter queues and the CC route,
+  whose room is past 256 points at every chunk size) delegates to it, and
+  the three copies of the MIDI insertion sort in `tutti-plugin` are gone.
+- Not changed: `ParameterQueue::normalize` still uses std's stable sort,
+  because it runs only inside the wire decode, which allocates the points
+  anyway.
+
 ## Per-node rewrite plan
 
 The question: if the graph had been native from the start, would the nodes

@@ -260,3 +260,80 @@ fn process_with_midi_does_not_allocate() {
         }
     });
 }
+
+/// **A block of 512 events from two sources goes through `process` without
+/// allocating, none dropped**: 256 MIDI notes on frames ascending and 256
+/// per-note expressions on frames descending, interleaved by the sort across
+/// the whole list. Std's stable sort, which the input list used before, kept
+/// 73 events on the stack and heap-allocated for the 74th. Then a block past
+/// the expressions' budget: the rest is dropped and counted, still without
+/// allocating.
+///
+/// Mutation (run): the input list's sort back to std's
+/// `events.sort_by_key(|e| e.sample_offset())` aborts in the first gate.
+#[test]
+#[ignore]
+fn process_with_hundreds_of_events_does_not_allocate() {
+    use tutti_vst3_host::{NoteExpressionType, NoteExpressionValue};
+
+    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
+    let Some(mut inst) = load_or_skip() else {
+        return;
+    };
+    let transport = TransportInfo::default()
+        .with_tempo(120.0)
+        .with_playing(true);
+
+    // Built off the audio thread. Four events a frame across the 64-frame
+    // block, alternating on and off so no note is left sounding.
+    let midi: Vec<MidiEvent> = (0..256u32)
+        .map(|i| {
+            let note = (i / 2 % 128) as u8;
+            let e = if i % 2 == 0 {
+                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x8000)
+            } else {
+                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
+            };
+            e.with_frame_offset(i / 4)
+        })
+        .collect();
+    let expressions: Vec<NoteExpressionValue> = (0..256i32)
+        .map(|j| NoteExpressionValue {
+            sample_offset: 63 - j / 4,
+            note_id: j % 128,
+            expression_type: NoteExpressionType::Tuning,
+            value: 0.5,
+        })
+        .collect();
+    let too_many: Vec<NoteExpressionValue> = expressions
+        .iter()
+        .chain(expressions.iter())
+        .copied()
+        .collect();
+
+    let mut out_l = [0.0f32; 64];
+    let mut out_r = [0.0f32; 64];
+    let mut drive = |inst: &mut Vst3Active, exprs: &[NoteExpressionValue], iters: usize| {
+        for _ in 0..iters {
+            let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
+            let ins: &[&[f32]] = &[];
+            let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
+            let events = Vst3InputEvents {
+                midi: &midi,
+                note_expressions: exprs,
+                ..Default::default()
+            };
+            let _ = inst.process(&mut buffer, &events, None, &transport);
+        }
+    };
+
+    // Warm the plugin's own voice handling, then gate.
+    drive(&mut inst, &expressions, 8);
+    assert_no_alloc::assert_no_alloc(|| drive(&mut inst, &expressions, 64));
+    assert_eq!(inst.events_dropped(), 0, "512 events fit the input list");
+
+    assert_no_alloc::assert_no_alloc(|| drive(&mut inst, &too_many, 4));
+    // 512 per-note expressions offered a block, 256 held (their own
+    // budget, a MIDI block's worth), so 256 dropped in each of four.
+    assert_eq!(inst.events_dropped(), 4 * 256, "past the budget, counted");
+}

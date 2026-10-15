@@ -97,23 +97,15 @@ impl PointBuf {
 
     /// Sorts the points into ascending `sample_offset` order, **stably**
     /// (points sharing an offset keep their order), in place and without
-    /// allocating: an insertion sort, linear on points already in order and
-    /// cheap on a few out of place, as when one source's points are appended
-    /// to another's. `slice::sort_by_key` is stable too, but it allocates a
-    /// scratch buffer past a few hundred points (a 4 KB stack buffer: 256
-    /// points), which a chunk's room exceeds (`ParameterQueue::chunk_room`
-    /// is 273 at 512 frames).
+    /// allocating: [`insertion_sort_by_key`](crate::insertion_sort_by_key),
+    /// linear on points already in order and quadratic in the overlap of the
+    /// runs when one source's points are appended to another's.
+    /// `slice::sort_by_key` is stable too, but it allocates a scratch buffer
+    /// past a few hundred points (a 4 KB stack buffer: 256 points), which a
+    /// chunk's room exceeds at every chunk size (`ParameterQueue::chunk_room`
+    /// is `ceil(chunk / 32) + 1 + 256`).
     pub fn sort_by_offset(&mut self) {
-        let points = &mut self.slots[..self.len];
-        for i in 1..points.len() {
-            let offset = points[i].sample_offset;
-            if points[i - 1].sample_offset <= offset {
-                continue;
-            }
-            // After every earlier point at or before `offset`: stable.
-            let at = points[..i].partition_point(|p| p.sample_offset <= offset);
-            points[at..=i].rotate_right(1);
-        }
+        crate::insertion_sort_by_key(&mut self.slots[..self.len], |p| p.sample_offset);
     }
 
     /// Drops every point, keeping the capacity.
@@ -423,7 +415,8 @@ mod tests {
     /// Mutations (run), each fails: `sort_by_offset` as
     /// `self.sort_by_key(|p| p.sample_offset)` → the gate aborts (std's
     /// stable sort allocates its scratch past 256 points); the insertion
-    /// point before equal offsets (`<` for `<=` in the `partition_point`) →
+    /// point before equal offsets (`<` for `<=` in
+    /// `insertion_sort_by_key`'s `partition_point`) →
     /// a shared frame's points swap, unlike std's.
     #[test]
     fn sort_by_offset_is_stable_and_allocation_free_at_full_room() {

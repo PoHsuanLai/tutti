@@ -815,6 +815,18 @@ parameter events), so its per-queue point room is mostly wasted: about
 400 KB per node at 200 parameters and a 4096-frame block; one point per
 queue would do there.
 
+**PR 2b raises every one of these figures by about 2.9×.** Requirement 6
+moves the room from `ceil(chunk / 32) + 4` (132 points at 4096 frames) to
+`ceil(chunk / 32) + 1 + 256` (385), and every reservation above uses that
+one formula (`ParameterQueue::chunk_room`). At a 4096-frame chunk: the
+node's buffers about 118 MB at 2000 parameters and about 940 MB at 16k;
+the CLAP input list about 56 MB and 455 MB; the VST3 input queues about
+101 MB at 16k; the CLAP output side about 62 MB and 508 MB; the in-process
+VST2 node about 1.2 MB at 200 parameters. The 256 corners a queue reserves
+are idle in almost every chunk, which makes the shared arena (or a small
+per-queue room with a counted shared overflow) the first thing to do
+after PR 2.
+
 ### PR 2: the control lane node
 
 **Split in two (coordinator's decision).** **PR 2a, the floor: landed**

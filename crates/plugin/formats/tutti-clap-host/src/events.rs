@@ -1658,7 +1658,7 @@ mod tests {
 
     /// **A dense block sorts without allocating, and ties keep their
     /// insertion order.** 200 parameters each carrying a chunk's room of
-    /// points (`ParameterQueue::chunk_room(512)`, 20), plus a note-off and a
+    /// points (`ParameterQueue::chunk_room(512)`, 273), plus a note-off and a
     /// note-on for one key on frames the points also land on: sorted inside
     /// the no-alloc gate, the result is exactly std's stable sort of the
     /// same list (computed outside the gate), so a note-off stays before the

@@ -85,11 +85,14 @@ impl PluginEditor for Vst3GuiInstance {
 
     fn poll_gui_param_changes(&mut self) -> Vec<(ParamAddress, f32)> {
         // Drain through the unified notification poll, which also forwards
-        // pending MIDI-learn CCs. The GUI path forwards `PerformEdit`s up; the
-        // returned `RestartOutcome` is not acted on here (this editor-only
-        // instance never processes audio, and the audio instance in the plugin
-        // server polls its own restarts). Progress / unit notifications are not
-        // surfaced through the GUI param path.
+        // pending MIDI-learn CCs. The GUI path forwards `PerformEdit`s up.
+        //
+        // NOT HANDLED: the returned `RestartOutcome`. In particular a
+        // `kParamValuesChanged` (or `notifications_overflowed`) from this
+        // editor instance is dropped, so a preset loaded inside the plugin's
+        // own UI does not refresh the host's parameter values. Known gap,
+        // older than the bounded queue. Progress / unit notifications are not
+        // surfaced through the GUI param path either.
         use tutti_vst3_host::{ParameterEditEvent, PluginNotification};
         let mut edits = Vec::new();
         let _restart = self.inner.poll_plugin_notifications(|n| {

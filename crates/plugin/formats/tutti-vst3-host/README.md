@@ -217,11 +217,13 @@ All discoverable by the plugin through `IComponentHandler::queryInterface`:
 
 Everything a plugin sends through these arrives at the one
 [`poll_plugin_notifications`][`Vst3Loaded::poll_plugin_notifications`] drain.
-None of the callbacks allocates (bar `IProgress::start`'s description), since
-plugins call some of them from their process thread: restart requests are one
-atomic flag word, and the rest go on a bounded queue whose overflow is counted
-in `Vst3Loaded::dropped_notifications`. A caller on an audio thread that needs
-only the restarts reads them with `Vst3Loaded::take_restart`.
+None of the callbacks allocates, since plugins call some of them from their
+process thread: restart requests are one atomic flag word, and the rest go on a
+bounded queue of inline values whose overflow is counted in
+`Vst3Loaded::dropped_notifications` and reported once by the next poll. A caller
+on an audio thread that needs only the restarts reads them with
+`Vst3Loaded::take_restart`, and drops the rest with
+`Vst3Loaded::discard_notifications`.
 
 ## Features
 

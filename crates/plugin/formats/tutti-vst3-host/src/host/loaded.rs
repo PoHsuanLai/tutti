@@ -156,6 +156,14 @@ pub struct RestartOutcome {
     // The signal *exists* here, where a consumer can reach it, and
     // `every_decoded_restart_flag_reaches_the_outcome` keeps it that way.
     // Plumbing follows a consumer, not the other way round.
+    /// Not a restart flag: the plugin sent more notifications than the queue
+    /// holds since the last poll, and the newest were dropped (see
+    /// [`NOTIFICATION_CAPACITY`](crate::NOTIFICATION_CAPACITY)). An edit
+    /// gesture may have lost its last `PerformEdit`, so the host's copy of any
+    /// parameter may be stale: re-read every value, as for
+    /// `param_values_changed`. Set only by
+    /// [`Vst3Loaded::poll_plugin_notifications`], once per overflow episode.
+    pub notifications_overflowed: bool,
 }
 
 impl RestartOutcome {
@@ -1167,13 +1175,16 @@ impl Vst3Loaded {
     ///   program-list / unit-by-bus changes.
     ///
     /// Restart requests carry no position among the events: they are cumulative
-    /// and stored as one flag word, so an edit and a restart from the same
-    /// gesture arrive in the same poll, not in a guaranteed order.
+    /// and stored as one flag word, taken before the queue is drained, so an
+    /// edit and a restart from the same gesture arrive in the same poll or the
+    /// next, in no guaranteed order.
     ///
     /// Collects nothing: a caller that keeps events supplies its own storage.
     /// Notifications past [`NOTIFICATION_CAPACITY`](crate::NOTIFICATION_CAPACITY)
     /// unread are dropped and counted in
-    /// [`dropped_notifications`](Self::dropped_notifications).
+    /// [`dropped_notifications`](Self::dropped_notifications), and the next
+    /// poll reports
+    /// [`notifications_overflowed`](RestartOutcome::notifications_overflowed).
     ///
     /// Also forwards any MIDI-learn CCs the audio thread captured to the
     /// plugin's `IMidiLearn`, which the SDK requires on this thread.
@@ -1200,10 +1211,13 @@ impl Vst3Loaded {
         // caller polls on a live active instance, so the re-enumeration would
         // run mid-activation. The owner calls
         // `Vst3Active::restart_bus_configuration`.
-        let restart = self.take_restart();
+        let mut restart = self.take_restart();
         while let Some(event) = self.host.handler.pop_notification() {
             on_event(event);
         }
+        // After the drain, so a drop made before it is reported now rather
+        // than one poll late.
+        restart.notifications_overflowed = self.host.handler.take_overflowed();
         // Forward any live CCs the audio thread captured for MIDI-learn to the
         // plugin's IMidiLearn on this (main) thread, as the SDK requires. No-op
         // unless learn is armed and the plugin implements IMidiLearn.
@@ -1223,6 +1237,27 @@ impl Vst3Loaded {
         RestartOutcome::from_flags(RestartFlags::from_bits(
             self.host.handler.take_restart_bits(),
         ))
+    }
+
+    /// Drops every queued notification unread, and clears the overflow flag
+    /// with them, returning how many there were. Lock-free and
+    /// allocation-free (no notification owns heap memory), so a caller on an
+    /// audio thread that has no use for edits, progress or unit news — the
+    /// plugin server — keeps the queue from filling with a backlog.
+    ///
+    /// Leaves the restart flags and pending MIDI-learn CCs alone.
+    pub fn discard_notifications(&self) -> usize {
+        let mut n = 0;
+        while self.host.handler.pop_notification().is_some() {
+            n += 1;
+        }
+        self.host.handler.take_overflowed();
+        n
+    }
+
+    /// How many notifications are queued, unread.
+    pub fn pending_notifications(&self) -> usize {
+        self.host.handler.pending_notifications()
     }
 
     /// Notifications the plugin sent that were dropped because

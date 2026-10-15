@@ -21,8 +21,8 @@ pub use types::{
 };
 
 pub use com::{
-    ParameterEditEvent, PluginNotification, ProgressEvent, RestartFlags, UnitEvent,
-    NOTIFICATION_CAPACITY,
+    ParameterEditEvent, PluginNotification, ProgressDescription, ProgressEvent, RestartFlags,
+    UnitEvent, NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY,
 };
 
 #[cfg(feature = "conformance")]

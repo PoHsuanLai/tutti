@@ -342,13 +342,16 @@ impl Vst3Instance {
     /// Polled between audio blocks by [`Plugin::poll_async_events`]; it must
     /// not be called concurrently with [`process`](Self::process).
     ///
-    /// Reads only the restart flag word (`Vst3Loaded::take_restart`), so with
-    /// nothing requested it allocates nothing — it runs in the server's audio
-    /// phase. The plugin's edits, progress and unit news stay in the host's
-    /// bounded queue: the server has never forwarded them, and draining them
-    /// here would free their payloads on this thread for nothing. Past
-    /// `NOTIFICATION_CAPACITY` unread, further ones are counted and dropped.
+    /// It runs in the server's audio phase, so with nothing requested it
+    /// allocates nothing. It reads the restart flag word
+    /// (`Vst3Loaded::take_restart`) and discards every other queued
+    /// notification (`Vst3Loaded::discard_notifications`: lock-free pops, and
+    /// no notification owns heap memory). The server has never forwarded a
+    /// VST3 plugin's edits, progress or unit news; discarding them each poll
+    /// keeps the host's bounded queue from holding a stale backlog and its
+    /// overflow count from climbing for events nobody reads.
     pub fn poll_restart(&mut self) -> RestartChanges {
+        vst_dispatch!(self, inner => inner.discard_notifications());
         let restart = vst_dispatch!(self, inner => inner.take_restart());
         if restart.is_empty() {
             return RestartChanges::default();
@@ -1106,11 +1109,15 @@ mod tests {
     /// The server's restart poll runs in its audio phase, so it must not
     /// allocate — even with a plugin's edits waiting in the host's queue,
     /// which is the common case while a user drags a knob in the server-side
-    /// editor (the server never forwards those edits).
+    /// editor — and it discards those edits (the server never forwards them),
+    /// so no backlog builds up.
     ///
-    /// Mutation: `poll_restart` reading through the main-thread drain
+    /// Mutations: `poll_restart` reading through the main-thread drain
     /// (`poll_plugin_notifications`) and collecting the queued edits into a
-    /// `Vec`, as it did before, aborts inside the gate.
+    /// `Vec`, as it did before, aborts inside the gate — and does so even
+    /// with `conformance::plugin_perform_edit` made a no-op, because the
+    /// "64 queued" assertion then fails first. Dropping the
+    /// `discard_notifications` call fails the "queue is empty" assertion.
     #[test]
     fn the_restart_poll_does_not_allocate_with_edits_pending() {
         use tutti_vst3_host::host::conformance::{plugin_perform_edit, plugin_restart_component};
@@ -1135,8 +1142,18 @@ mod tests {
             plugin_restart_component(inner, K_PARAM_VALUES_CHANGED);
             plugin_restart_component(inner, K_PARAM_VALUES_CHANGED);
         });
+        // The gate below is only meaningful if the edits are really there.
+        vst_dispatch!(instance, inner => {
+            assert_eq!(inner.dropped_notifications(), 0);
+            assert_eq!(inner.pending_notifications(), 64, "the edits are queued");
+        });
 
         let changes = assert_no_alloc::assert_no_alloc(|| instance.poll_restart());
+        vst_dispatch!(instance, inner => assert_eq!(
+            inner.pending_notifications(),
+            0,
+            "the poll discards what the server never forwards"
+        ));
         assert!(
             changes.param_values_changed,
             "the coalesced restart reaches the server"

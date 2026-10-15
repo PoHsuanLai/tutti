@@ -18,18 +18,20 @@
 //!   [`ArrayQueue`] of [`PluginNotification`], preallocated at construction.
 //!   A push past [`NOTIFICATION_CAPACITY`] is dropped and counted
 //!   ([`ComponentHandler::dropped_notifications`]), never logged and never
-//!   grown.
+//!   grown, and it raises a sticky flag
+//!   ([`ComponentHandler::take_overflowed`]) so the host knows to re-read.
 //!
 //! A restart therefore carries no position relative to the queued events. No
 //! consumer relied on one: the only reader always folded every restart into a
 //! single coalesced outcome, whatever edits surrounded it.
 //!
-//! The one allocation left on these paths is `IProgress::start`'s description
-//! `String`. It is the plugin's long-operation notice (sample loading, offline
-//! render), raised from its UI or worker thread, not per block.
+//! `IProgress::start`'s description is inline too ([`ProgressDescription`],
+//! truncated at [`PROGRESS_DESCRIPTION_CAPACITY`] bytes), so no callback
+//! allocates, and dropping a queued notification frees nothing.
 
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
+use arrayvec::ArrayString;
 use crossbeam_queue::ArrayQueue;
 use vst3::Steinberg::{
     kResultOk, tresult, FIDString, IPlugView, TBool,
@@ -59,8 +61,9 @@ pub enum ProgressEvent {
         id: u64,
         /// The raw VST3 `ProgressType` value.
         progress_type: u32,
-        /// Human-readable label supplied by the plugin.
-        description: String,
+        /// Human-readable label supplied by the plugin, truncated to
+        /// [`PROGRESS_DESCRIPTION_CAPACITY`] bytes.
+        description: ProgressDescription,
     },
     /// Progress update, normalized to `0.0..=1.0`.
     Updated {
@@ -74,6 +77,69 @@ pub enum ProgressEvent {
         /// The operation that ended. No further events carry this id.
         id: u64,
     },
+}
+
+/// How many UTF-8 bytes of an `IProgress::start` description are kept.
+/// Longer descriptions are cut at the last whole character that fits.
+pub const PROGRESS_DESCRIPTION_CAPACITY: usize = 128;
+
+/// The label a plugin gave an `IProgress` operation, held inline so that
+/// `IProgress::start` allocates nothing on the plugin's thread and dropping
+/// the event frees nothing on the host's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProgressDescription(ArrayString<PROGRESS_DESCRIPTION_CAPACITY>);
+
+impl ProgressDescription {
+    /// The description as text.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    /// Decodes a NUL-terminated UTF-16 string, replacing unpaired surrogates
+    /// with U+FFFD and stopping at the first character that does not fit.
+    /// Reads no further than the terminator or the first character past the
+    /// capacity.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is null or points at a NUL-terminated UTF-16 string.
+    unsafe fn from_utf16_nul(ptr: *const u16) -> Self {
+        let mut out = ArrayString::new();
+        if ptr.is_null() {
+            return Self(out);
+        }
+        let mut cursor = ptr;
+        let units = std::iter::from_fn(|| {
+            // SAFETY: the caller guarantees a terminator; reading stops at it.
+            let unit = unsafe { *cursor };
+            (unit != 0).then(|| {
+                cursor = unsafe { cursor.add(1) };
+                unit
+            })
+        });
+        for c in char::decode_utf16(units) {
+            if out
+                .try_push(c.unwrap_or(char::REPLACEMENT_CHARACTER))
+                .is_err()
+            {
+                break;
+            }
+        }
+        Self(out)
+    }
+}
+
+impl std::ops::Deref for ProgressDescription {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for ProgressDescription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Unit / program-list change notifications from the plugin. Delivered via
@@ -100,8 +166,6 @@ pub enum UnitEvent {
     /// The unit ↔ bus mapping has changed (IUnitHandler2).
     UnitByBusChanged,
 }
-
-use crate::helpers::utf16_to_string;
 
 use vst3::Steinberg::Vst::RestartFlags_;
 
@@ -233,9 +297,17 @@ pub enum PluginNotification {
 /// How many [`PluginNotification`]s the handler holds between two polls.
 ///
 /// A UI that polls once a frame drains a few dozen at most, even mid-gesture.
-/// The bound exists for the poller that stops (a closed UI, a server that
-/// never reads edits): the queue then stays at this size and later pushes are
-/// counted instead of growing memory.
+/// The bound exists for the poller that stalls: the queue then stays at this
+/// size instead of growing memory.
+///
+/// **Overflow drops the newest notification**, and counts it. Keeping the
+/// oldest means a gesture can lose its last `PerformEdit` and its `EndEdit`,
+/// so the host's view of a parameter may be stale. Each drop also raises a
+/// sticky flag, reported once by the next poll as
+/// [`RestartOutcome::notifications_overflowed`](crate::RestartOutcome::notifications_overflowed):
+/// a host seeing it re-reads every parameter value, as for
+/// `kParamValuesChanged`. (Dropping the oldest instead would lose the
+/// `BeginEdit` and break a gesture just the same; there is no order-safe drop.)
 pub const NOTIFICATION_CAPACITY: usize = 512;
 
 /// The host's `IComponentHandler` (and friends). See the module docs for where
@@ -245,6 +317,8 @@ pub struct ComponentHandler {
     notifications: ArrayQueue<PluginNotification>,
     /// Pushes refused because `notifications` was full.
     dropped: AtomicU64,
+    /// Set by every refused push, cleared by `take_overflowed`.
+    overflowed: AtomicBool,
     /// The union of every `restartComponent` flag word since the last take.
     restart_bits: AtomicI32,
     next_progress_id: AtomicU64,
@@ -268,6 +342,7 @@ impl ComponentHandler {
         ComWrapper::new(Self {
             notifications: ArrayQueue::new(NOTIFICATION_CAPACITY),
             dropped: AtomicU64::new(0),
+            overflowed: AtomicBool::new(false),
             restart_bits: AtomicI32::new(0),
             next_progress_id: AtomicU64::new(1),
         })
@@ -283,10 +358,21 @@ impl ComponentHandler {
         self.restart_bits.swap(0, Ordering::Acquire)
     }
 
-    /// The oldest queued notification, if any. Lock-free and allocation-free;
-    /// dropping a `ProgressEvent::Started` it returns frees its description.
+    /// The oldest queued notification, if any. Lock-free and allocation-free,
+    /// and dropping what it returns frees nothing.
     pub fn pop_notification(&self) -> Option<PluginNotification> {
         self.notifications.pop()
+    }
+
+    /// How many notifications are queued, unread.
+    pub fn pending_notifications(&self) -> usize {
+        self.notifications.len()
+    }
+
+    /// Whether any notification was dropped since the last take, clearing the
+    /// flag. See [`NOTIFICATION_CAPACITY`] for what a caller does about it.
+    pub fn take_overflowed(&self) -> bool {
+        self.overflowed.swap(false, Ordering::Relaxed)
     }
 
     /// Notifications refused because the queue held
@@ -301,6 +387,7 @@ impl ComponentHandler {
     fn push(&self, n: PluginNotification) {
         if self.notifications.push(n).is_err() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.overflowed.store(true, Ordering::Relaxed);
         }
     }
 
@@ -404,17 +491,8 @@ impl IProgressTrait for ComponentHandler {
         out_id: *mut ID,
     ) -> tresult {
         let id = self.next_progress_id.fetch_add(1, Ordering::SeqCst);
-        let desc = if optional_description.is_null() {
-            String::new()
-        } else {
-            let mut len = 0;
-            let mut ptr = optional_description;
-            while *ptr != 0 {
-                len += 1;
-                ptr = ptr.add(1);
-            }
-            utf16_to_string(std::slice::from_raw_parts(optional_description, len))
-        };
+        // SAFETY: the interface passes null or a NUL-terminated string.
+        let desc = unsafe { ProgressDescription::from_utf16_nul(optional_description) };
         self.push(PluginNotification::Progress(ProgressEvent::Started {
             id,
             progress_type: r#type,
@@ -558,10 +636,13 @@ mod tests {
     }
 
     /// A full queue drops the newest notification and counts it; it neither
-    /// grows nor evicts what is already queued.
+    /// grows nor evicts what is already queued. The drop raises the sticky
+    /// overflow flag, which one take reports and clears.
     ///
-    /// Mutation: removing the `fetch_add` in `push` leaves the count at 0 and
-    /// fails the first assertion.
+    /// Mutations: removing the `fetch_add` in `push` leaves the count at 0 and
+    /// fails the first assertion; removing the `overflowed.store` fails the
+    /// flag assertion; `take_overflowed` as a `load` (never cleared) fails
+    /// the "reported once" assertion.
     #[test]
     fn overflow_is_counted_and_keeps_the_queued_events() {
         let handler = ComponentHandler::new();
@@ -575,6 +656,9 @@ mod tests {
         }
 
         assert_eq!(handler.dropped_notifications(), extra as u64);
+        assert_eq!(handler.pending_notifications(), NOTIFICATION_CAPACITY);
+        assert!(handler.take_overflowed(), "a drop raises the flag");
+        assert!(!handler.take_overflowed(), "a take reports it once");
         let got = drain(&handler);
         assert_eq!(got.len(), NOTIFICATION_CAPACITY);
         assert!(
@@ -585,24 +669,27 @@ mod tests {
             "the oldest event is kept; the overflow is the newest"
         );
 
-        // Room again once drained; the count is cumulative.
+        // Room again once drained; the count is cumulative, and a push that
+        // fits does not raise the flag.
         unsafe { ptr.endEdit(7) };
         assert_eq!(drain(&handler).len(), 1);
         assert_eq!(handler.dropped_notifications(), extra as u64);
+        assert!(!handler.take_overflowed());
     }
 
     /// The point of this module: a plugin calling the handler from its
-    /// process thread must not allocate there. Every non-progress callback
-    /// runs inside `assert_no_alloc`, including a push into a full queue, and
-    /// so does the host's side (`take_restart_bits`, `pop_notification`) —
-    /// which is what the plugin-server's restart poll calls.
+    /// process thread must not allocate there. Every callback runs inside
+    /// `assert_no_alloc`, `IProgress::start` with a description past the
+    /// inline capacity included, as does a push into a full queue, and so
+    /// does the host's side (`take_restart_bits`, `pop_notification`, and
+    /// dropping what it pops) — which is what the plugin server's restart
+    /// poll calls.
     ///
-    /// `IProgress::start` is left out on purpose: it builds the description
-    /// `String`, the one documented allocation (module docs).
-    ///
-    /// Mutation: the queue swapped for `crossbeam_queue::SegQueue` (unbounded,
+    /// Mutations: the queue swapped for `crossbeam_queue::SegQueue` (unbounded,
     /// allocating a block per 31 pushes — the growth the original
-    /// `crossbeam_channel::unbounded` sender had) aborts inside the gate.
+    /// `crossbeam_channel::unbounded` sender had) aborts inside the gate, and
+    /// so does `ProgressDescription` holding a `String` (the old
+    /// `utf16_to_string` decode).
     #[test]
     fn callbacks_and_the_host_drain_do_not_allocate() {
         let handler = ComponentHandler::new();
@@ -614,8 +701,14 @@ mod tests {
         let progress = handler.to_com_ptr::<IProgress>().unwrap();
         let unit = handler.to_com_ptr::<IUnitHandler>().unwrap();
         let unit2 = handler.to_com_ptr::<IUnitHandler2>().unwrap();
+        // Longer than the inline capacity, so `start` also truncates.
+        let long: Vec<u16> = std::iter::repeat_n(u16::from(b'x'), 300)
+            .chain([0])
+            .collect();
 
         assert_no_alloc::assert_no_alloc(|| unsafe {
+            let mut id: ID = 0;
+            progress.start(0, long.as_ptr(), &mut id);
             // Three edits per pass: two thirds of them meet a full queue.
             for i in 0..NOTIFICATION_CAPACITY as u32 {
                 edit.beginEdit(i);
@@ -712,7 +805,7 @@ mod tests {
             })) => {
                 assert_eq!(id, out_id);
                 assert_eq!(progress_type, 1);
-                assert_eq!(description, "Test");
+                assert_eq!(description.as_str(), "Test");
             }
             other => panic!("expected Started, got {other:?}"),
         }
@@ -729,6 +822,33 @@ mod tests {
         ));
     }
 
+    /// A description longer than the inline capacity is cut at the last whole
+    /// character that fits, never mid-character; unpaired surrogates become
+    /// U+FFFD rather than ending the decode.
+    ///
+    /// Mutations: `break` → `continue` on a character that does not fit
+    /// (packing a later, smaller one into the gap) fails the length
+    /// assertion; skipping an unpaired surrogate instead of replacing it
+    /// fails the prefix assertion.
+    #[test]
+    fn a_long_progress_description_is_truncated_at_a_char_boundary() {
+        // An unpaired high surrogate, then 'é' (2 bytes) and '€' (3 bytes)
+        // repeated well past the capacity.
+        let mut utf16: Vec<u16> = vec![0xD800, u16::from(b'a')];
+        for _ in 0..100 {
+            utf16.push(0x00E9);
+            utf16.push(0x20AC);
+        }
+        utf16.push(0);
+        let d = unsafe { ProgressDescription::from_utf16_nul(utf16.as_ptr()) };
+        assert!(d.as_str().starts_with("\u{FFFD}a\u{e9}\u{20ac}"));
+        assert!(d.len() <= PROGRESS_DESCRIPTION_CAPACITY);
+        // Byte budget 128: "\u{FFFD}a" is 4, then 5-byte pairs. 4 + 24*5 = 124,
+        // and the next 'é' (2) fits at 126 while '€' (3) would reach 129.
+        assert_eq!(d.len(), 126, "filled to the last whole character");
+        assert!(d.as_str().ends_with('\u{e9}'));
+    }
+
     /// A null description is legal per the interface (`optionalDescription`);
     /// the handler must read it as empty rather than dereferencing it.
     #[test]
@@ -743,7 +863,7 @@ mod tests {
 
         match handler.pop_notification() {
             Some(PluginNotification::Progress(ProgressEvent::Started { description, .. })) => {
-                assert_eq!(description, "")
+                assert_eq!(description.as_str(), "")
             }
             other => panic!("expected Started, got {other:?}"),
         }

@@ -84,7 +84,6 @@ use crate::exec::{
 };
 use crate::history::TransportHistory;
 use crate::node::{Env, MaxBlock, MAX_PORTS};
-use crate::param::MAX_PARAM_SOURCES;
 use crate::plan::{Op, Plan, Span};
 use crate::slots::{ArenaView, EventSlots, EventsView, SharedFlags};
 
@@ -192,9 +191,10 @@ impl Par {
             span.len += 1;
             n_inject += 1;
         }
-        // What one op's views can hold at once: a node's audio ports and
-        // every param source it reads, or an event merge's inputs and output.
-        let held = 2 * MAX_PORTS + crate::param::MAX_PARAM_PORTS * MAX_PARAM_SOURCES + 1;
+        // What one op's views can hold at once: a node's ports and the
+        // event source of each param it declares, or an event merge's
+        // inputs and output.
+        let held = 2 * MAX_PORTS + crate::param::MAX_PARAM_PORTS + 1;
         Self {
             wake,
             from,

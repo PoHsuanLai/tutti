@@ -1,5 +1,6 @@
-//! Parameter delivery to a hosted plugin, end to end: a `PluginAutomation`
-//! node on the plugin node's event input, the node's per-parameter queues,
+//! Parameter delivery to a hosted plugin, end to end: foreign control lanes
+//! (`ControlLaneNode::for_foreign`, one per parameter) on the plugin node's
+//! event input, the node's per-parameter queues,
 //! the bridge, a real `plugin-server` and a real format host (the reference
 //! VST2 plugin, which takes its parameter count from the environment), and
 //! the values read back from the plugin.
@@ -25,10 +26,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap_probe::{exclusive, load_probe, render, ProbeEnv, Rig};
-use param_probe::{knobs, load_vst2_probe, until, Knob};
+use param_probe::{knob, knobs, load_vst2_probe, until};
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
 use tutti_graph::{ForkMode, ForkTarget, Prepare, Transport};
-use tutti_plugin::handles::{ParamAddress, ParamId, PluginHandle, TimedParam};
+use tutti_nodes::automation::{ControlLaneNode, LaneControls};
+use tutti_plugin::handles::{ParamAddress, ParamId, PluginHandle};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -51,13 +53,10 @@ fn read(handle: &PluginHandle, i: usize) -> Option<f32> {
         .parameter_value(ParamAddress::Index(i32::try_from(i).expect("small")))
 }
 
-/// A rolling graph with the plugin fed by `automation`.
-fn rig(
-    client: tutti_plugin::handles::PluginClient,
-    automation: tutti_plugin::handles::PluginAutomation,
-) -> Rig {
+/// A rolling graph with the plugin fed by `lanes`.
+fn rig(client: tutti_plugin::handles::PluginClient, lanes: Vec<ControlLaneNode>) -> Rig {
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
-    let mut rig = Rig::prepared_with(client.bind(), prepare, Some(automation));
+    let mut rig = Rig::prepared_with(client.bind(), prepare, lanes);
     rig.renderer()
         .set_transport(Transport::new(true, Bpm(120.0), Beat(0.0), None));
     rig
@@ -75,9 +74,8 @@ fn rig(
 fn two_hundred_parameters_changing_in_one_block_all_arrive() {
     let _lock = exclusive();
     let (client, handle) = load_vst2_probe(PARAMS, SAMPLE_RATE);
-    let (_knobs, params) = knobs(PARAMS, value);
-    let automation = client.automation(params);
-    let mut rig = rig(client, automation);
+    let (_knobs, lanes) = knobs(PARAMS, value);
+    let mut rig = rig(client, lanes);
 
     let arrived = until(
         SETTLE,
@@ -95,10 +93,16 @@ fn two_hundred_parameters_changing_in_one_block_all_arrive() {
 }
 
 /// **An unchanged value is sent once.** Two hundred parameters held still
-/// for many blocks: the automation node samples every lane at every stride
-/// point of every block, and the node passes on one point per parameter in
-/// all, then nothing, however many more blocks run. A value that moves is
-/// one more point.
+/// for many blocks, every lane asked to re-send its value before every
+/// block (`resync`, as a host does after re-wiring one, and as a fork's
+/// fresh lane sends): the node passes on one point per parameter in all,
+/// then nothing, however many more blocks run. A value that moves is one
+/// more point.
+///
+/// Ported in doc 014 PR 5: the source was the deleted `PluginAutomation`
+/// node, which sampled every parameter at every stride point of every
+/// block; a lane sends only when something moves, so the re-sends are asked
+/// for, to keep the node's own dedupe under test.
 ///
 /// Mutation (run): no dedupe against the delivered value (`slot.sent ==
 /// Some(value)` replaced by `false` in `ParamDelivery::place`) → every
@@ -107,13 +111,14 @@ fn two_hundred_parameters_changing_in_one_block_all_arrive() {
 fn an_unchanged_value_is_not_sent_again() {
     let _lock = exclusive();
     let (client, handle) = load_vst2_probe(PARAMS, SAMPLE_RATE);
-    let (knobs, params) = knobs(PARAMS, value);
-    let automation = client.automation(params);
-    let mut rig = rig(client, automation);
+    let (knobs, lanes) = knobs(PARAMS, value);
+    let mut rig = rig(client, lanes);
+    let resend = |knobs: &[LaneControls]| knobs.iter().for_each(LaneControls::resync);
 
     assert!(until(
         SETTLE,
         || {
+            resend(&knobs);
             rig.run(BLOCK, |_, _| 0.0);
         },
         || (0..PARAMS).all(|i| read(&handle, i) == Some(value(i))),
@@ -121,6 +126,7 @@ fn an_unchanged_value_is_not_sent_again() {
     let settled = rig.controls.param_delivery().points_sent;
     assert_eq!(settled, PARAMS as u64, "one point per parameter");
     for _ in 0..50 {
+        resend(&knobs);
         rig.run(BLOCK, |_, _| 0.0);
     }
     assert_eq!(
@@ -129,7 +135,7 @@ fn an_unchanged_value_is_not_sent_again() {
         "a value held still was sent again"
     );
 
-    knobs[3].set(0.875);
+    assert!(knobs[3].set_knob(0.875));
     assert!(until(
         SETTLE,
         || {
@@ -145,8 +151,9 @@ fn an_unchanged_value_is_not_sent_again() {
 /// parameter to 0.25; the plugin's own value is then set to 0.75 behind the
 /// host's back (through the plugin handle, which reaches the plugin as an
 /// edit in its editor would, without passing the node); the host keeps
-/// sending 0.25 for many blocks and the plugin keeps 0.75; then the host
-/// moves to 0.5 and the plugin takes it.
+/// sending 0.25 for many blocks (its lane re-sent before every block,
+/// `resync`) and the plugin keeps 0.75; then the host moves to 0.5 and the
+/// plugin takes it.
 ///
 /// Mutations (run), each fails: the node forgetting what it sent
 /// (`slot.sent = None` for `Some(slot.staged)` in `settle`) → the next
@@ -157,9 +164,8 @@ fn an_unchanged_value_is_not_sent_again() {
 fn an_edit_on_the_plugin_survives_a_held_host_value() {
     let _lock = exclusive();
     let (client, handle) = load_vst2_probe(8, SAMPLE_RATE);
-    let (knobs, params) = knobs(8, |_| 0.25);
-    let automation = client.automation(params);
-    let mut rig = rig(client, automation);
+    let (knobs, lanes) = knobs(8, |_| 0.25);
+    let mut rig = rig(client, lanes);
     let p = 2;
 
     assert!(until(
@@ -178,6 +184,7 @@ fn an_edit_on_the_plugin_survives_a_held_host_value() {
         "the edit reached the plugin"
     );
     for _ in 0..100 {
+        knobs[p].resync();
         rig.run(BLOCK, |_, _| 0.0);
     }
     // Long enough for any resend to have crossed the server: a block takes
@@ -190,7 +197,7 @@ fn an_edit_on_the_plugin_survives_a_held_host_value() {
         "a held host value overwrote the plugin-side edit"
     );
 
-    knobs[p].set(0.5);
+    assert!(knobs[p].set_knob(0.5));
     assert!(
         until(
             SETTLE,
@@ -205,6 +212,8 @@ fn an_edit_on_the_plugin_survives_a_held_host_value() {
 
 /// The reference CLAP plugin's gain parameter, and its plain range in dB.
 const GAIN: ParamAddress = ParamAddress::Opaque(ParamId::new(77));
+/// [`GAIN`]'s number, as a lane carries it.
+const GAIN_ID: u32 = 77;
 const GAIN_DB: (f64, f64) = (-60.0, 12.0);
 
 /// The normalized gain for `db` (exact for whole dB: 72ths).
@@ -224,8 +233,9 @@ fn amplitude(db: f64) -> f32 {
 /// be. Live, the held -6 dB is never re-sent, so the plugin plays -15 dB.
 /// The graph is then forked offline (an export): the fork is loaded with
 /// the live state (-15 dB) and its delivery is seeded with what the live
-/// node had delivered (-6 dB), so the frozen lane's -6 dB is not sent to
-/// it either, and the export plays -15 dB too.
+/// node had delivered (-6 dB), so the fork's fresh lane, which sends its
+/// -6 dB on its first block (doc 014 §10's fork requirement), is not
+/// passed on, and the export plays -15 dB too.
 ///
 /// Mutation (run): the fork's delivery not seeded (no
 /// `fork.state.params.seed(..)` in `fork.rs`) → the fork sends the lane's
@@ -238,13 +248,9 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         .render_mode(render::TAG_ONLY)
         .gain_enabled(true);
     let probe = load_probe(SAMPLE_RATE);
-    let held = Knob::new(gain_at(-6.0));
-    let automation = probe.client.automation([TimedParam {
-        param_id: GAIN,
-        curve: held as Arc<dyn tutti_nodes::automation::Curve>,
-    }]);
+    let held = knob(GAIN_ID, gain_at(-6.0));
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(FORK_BLOCK));
-    let mut live = Rig::prepared_with(probe.client.bind(), prepare, Some(automation));
+    let mut live = Rig::prepared_with(probe.client.bind(), prepare, vec![held]);
     live.renderer()
         .set_transport(Transport::new(true, Bpm(120.0), Beat(0.0), None));
     let near = |out: &[Vec<f32>], db: f64| {
@@ -296,7 +302,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         .renderer()
         .editor()
         .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
-        .expect("the automation node and the plugin fork");
+        .expect("the lane and the plugin fork");
     let silence = vec![0.0f32; FORK_BLOCK];
     let inputs: Vec<&[f32]> = (0..live.inputs()).map(|_| &silence[..]).collect();
     let mut out = vec![vec![0.0f32; FORK_BLOCK]; live.outputs()];

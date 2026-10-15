@@ -123,16 +123,31 @@ impl UnisonEngine {
         self.spread.as_atomic()
     }
 
-    /// Folds any control-rate change to the detune/spread atomics back into
+    /// Folds any change to the detune/spread atomics back into
     /// `config` and recompute per-voice params. Called once per block. Cheap
     /// when nothing moved (compares against the current config first).
-    pub fn sync_from_atomics(&mut self) {
-        let detune = self.detune.load();
-        let spread = Spread::new_clamped(self.spread.load().get());
+    ///
+    /// `driven` is the block's detune and spread from the synth's param
+    /// ports where a lane drives them; `None` reads the atomic.
+    /// A detune in cents as [`set_detune`](Self::set_detune) stores it:
+    /// floored at 0. Shared by the setter and the block's read.
+    #[inline]
+    fn clamp_detune(cents: f32) -> f32 {
+        cents.max(0.0)
+    }
+
+    pub fn sync_from_atomics(&mut self, [detune, spread]: [Option<f32>; 2]) {
+        // `set_detune`'s floor at the point of use, driven or not: a
+        // negative detune is no detune, and comparing it unfloored against
+        // the stored config would recompute every block.
+        let detune = Cents(Self::clamp_detune(
+            detune.unwrap_or_else(|| self.detune.load().get()),
+        ));
+        let spread = Spread::new_clamped(spread.unwrap_or_else(|| self.spread.load().get()));
         let changed = (detune.get() - self.config.detune_cents.get()).abs() > f32::EPSILON
             || (spread.get() - self.config.stereo_spread.get()).abs() > f32::EPSILON;
         if changed {
-            self.config.detune_cents = Cents(detune.get().max(0.0));
+            self.config.detune_cents = detune;
             self.config.stereo_spread = spread;
             self.recompute_params();
         }
@@ -234,7 +249,7 @@ impl UnisonEngine {
     }
 
     pub fn set_detune(&mut self, cents: impl Into<Cents>) {
-        self.config.detune_cents = Cents(cents.into().get().max(0.0));
+        self.config.detune_cents = Cents(Self::clamp_detune(cents.into().get()));
         self.detune.store(self.config.detune_cents);
         self.recompute_params();
     }
@@ -256,6 +271,32 @@ impl UnisonEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A driven detune gets `set_detune`'s floor**: driven to −10 cents
+    /// the engine detunes by 0, as `set_detune(-10)` leaves it, and does not
+    /// recompute again for the same drive.
+    ///
+    /// Mutation (run, PR 5 review): `sync_from_atomics` without
+    /// `clamp_detune` (the driven value as is) → the config holds −10 → fails.
+    #[test]
+    fn a_driven_detune_is_floored_as_the_setter_floors_it() {
+        let mut engine = UnisonEngine::new(UnisonConfig {
+            voice_count: 3,
+            detune_cents: Cents(12.0),
+            ..UnisonConfig::default()
+        });
+        engine.sync_from_atomics([Some(-10.0), None]);
+        assert_eq!(engine.config().detune_cents, Cents(0.0));
+        let mut by_setter = UnisonEngine::new(UnisonConfig {
+            voice_count: 3,
+            ..UnisonConfig::default()
+        });
+        by_setter.set_detune(Cents(-10.0));
+        assert_eq!(
+            engine.config().detune_cents,
+            by_setter.config().detune_cents
+        );
+    }
 
     #[test]
     fn test_single_voice() {

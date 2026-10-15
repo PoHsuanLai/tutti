@@ -64,14 +64,12 @@
 //! LAST Arc drops. Main-thread editor / state / parameter access is on
 //! [`crate::host::handles::PluginHandle`].
 
-mod automation_node;
 mod batcher;
 mod capability_view;
 mod controls;
 mod fork;
 mod graph_node;
 mod meter;
-mod param_automation_source;
 mod param_delivery;
 // `pub(crate)` for the in-process VST2 node, which reads its event input's
 // parameter events through the same walk (see `param_delivery` below).
@@ -102,14 +100,10 @@ mod tests;
 // re-exported here so `crate::host::node::...` paths resolve.
 pub use crate::util::node::ParameterChangeSink;
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
-pub use automation_node::{AutomationControls, PluginAutomation, AUTOMATION_EVENT_CAPACITY};
 pub(crate) use capability_view::is_declined;
 pub use capability_view::TransportView;
 pub use controls::PluginControls;
 pub use meter::PluginMeter;
-pub use param_automation_source::{
-    LfoCurve, LfoOffset, OffsetCurve, PluginParamTarget, TimedParam,
-};
 pub use param_delivery::ParamDeliveryStats;
 // The in-process VST2 node (`crate::format::vst2_in_process`) delivers its
 // parameters through the same slots, segments and event walk as this node:
@@ -657,71 +651,8 @@ impl<S> PluginClient<S> {
         self.controls.set_meter(meter);
     }
 
-    /// Creates an automation node that samples one curve per parameter, to
-    /// wire to this plugin node's event input.
-    ///
-    /// See [`PluginControls::automation`].
-    pub fn automation(&self, params: impl IntoIterator<Item = TimedParam>) -> PluginAutomation {
-        self.controls.automation(params)
-    }
-
-    /// Creates a [`PluginParamTarget`] for one of this plugin's parameters.
-    ///
-    /// The target is a [`ModTarget`](tutti_nodes::ModTarget) a modulation
-    /// router accumulates into; the plugin receives its value as a per-block
-    /// parameter change.
-    ///
-    /// The returned `Arc` is usable as BOTH a `ModTarget` (route to it) and a
-    /// [`Curve`](tutti_nodes::automation::Curve) (a `TimedParam`'s, for
-    /// [`automation`](Self::automation));
-    /// keep the same `Arc` for both so accumulation is visible to the per-block
-    /// read.
-    ///
-    /// `[min, max]` is the param's range (plugins are normalized `0..1`; the
-    /// caller supplies it, e.g. from `ParameterInfo::to_range`).
-    pub fn param_target(
-        &self,
-        param_id: u32,
-        base: f32,
-        min: f32,
-        max: f32,
-    ) -> std::sync::Arc<PluginParamTarget> {
-        // param_id is carried by the caller into the `TimedParam` at install
-        // time; the target itself only accumulates a value.
-        self.controls.param_target(param_id, base, min, max)
-    }
-
     /// Used by `PluginHandle`.
     pub(crate) fn bridge(&self) -> Arc<PluginBridge> {
         Arc::clone(&self.bridge)
-    }
-}
-
-/// A hosted plugin implements the same `ModParams` trait as a native node.
-/// A plugin speaks the opaque-id vocabulary, so
-/// it answers on [`ParamAddr::Id`](tutti_core::ParamAddr::Id) (its numeric param
-/// id) and returns `None` for a native [`Unit`](tutti_core::ParamAddr::Unit)
-/// param it does not have.
-///
-/// The returned target is a [`PluginParamTarget`] — a keyed accumulator whose
-/// value the plugin receives over the per-block `ParameterChanges` path (vs a
-/// native node's target, which mirrors into an atomic). The caller hands it
-/// to the plugin's automation node (as a `TimedParam`, through
-/// `PluginControls::automation`) after routing.
-impl<S: Send + Sync> tutti_nodes::ModParams for PluginClient<S> {
-    fn mod_target(
-        &self,
-        param: tutti_core::ParamAddr,
-        base: f32,
-        min: f32,
-        max: f32,
-    ) -> Option<Arc<dyn tutti_nodes::ModTarget>> {
-        match param {
-            tutti_core::ParamAddr::Id(param_id) => {
-                Some(self.param_target(param_id, base, min, max))
-            }
-            // A native `UnitParam` is not a hosted plugin's vocabulary.
-            tutti_core::ParamAddr::Unit(_) => None,
-        }
     }
 }

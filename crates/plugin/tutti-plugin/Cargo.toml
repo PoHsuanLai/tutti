@@ -43,14 +43,6 @@ tutti-types = { path = "../../core/tutti-types" }
 # transfer). No cycle: `tutti-graph` names only `tutti-types`.
 tutti-graph = { path = "../../core/tutti-graph" }
 
-# Parameter range/scaling
-audio-automation = { workspace = true }
-
-# The `Curve` trait (+ its `AutomationEnvelope` impl), which the plugin
-# parameter-automation source evaluates. default-features = false so bevy does
-# not re-leak.
-tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false }
-
 # Lock-free f64 cursor for the harmony source
 atomic_float = "1.1"
 
@@ -129,9 +121,13 @@ tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
 # mid-render fails the export by name. Acyclic: tutti-export does not depend on
 # tutti-plugin. No codecs: the test renders to buffers.
 tutti-export = { path = "../../core/tutti-export", default-features = false }
-# `tutti_nodes::testing` stimulus nodes for tests, examples and doctests. The
-# feature is dev-only, so the production dependency above stays without it.
+# `tutti_nodes::testing` stimulus nodes for tests, examples and doctests, and
+# the control lane (`ControlLaneNode::for_foreign`) that drives a plugin's
+# parameters through its event input: what replaced the crate's own
+# automation node (doc 014 PR 5). Dev-only: the node itself names no lane.
 tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["testing"] }
+# The lane's `ControlProgram`, for the tests and the example that build one.
+tutti-mod = { path = "../../core/tutti-mod", default-features = false }
 criterion.workspace = true
 # The shared resolver; see its docs for the newest-wins rule.
 tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }

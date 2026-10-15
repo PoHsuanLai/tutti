@@ -13,6 +13,23 @@
 //! Ending exactly on the target is what makes a block of one agree with a
 //! per-sample read: a one-sample ramp *is* the new value.
 
+/// The block's value of declared param port `k` when the graph drives it
+/// (a control lane on the port): the value on the block's **last** frame,
+/// which a block-rate control ramps to exactly as it does to a new cell
+/// value. `None`: nothing drives it, so the node reads its own cell.
+///
+/// For a control the node reads once per block (an LFO rate, a time
+/// constant, a wet/dry mix ramped across the block); a kernel that reads a
+/// param per sample takes `io.param(k).frames()` itself.
+///
+/// Last frame rather than first is not pinned by a test: a lane's control
+/// rate is one value per block, so every test drive reads the same at every
+/// frame. It is the choice that agrees with the cell's own ramp.
+#[inline]
+pub(crate) fn block_driven(io: &tutti_graph::Io<'_>, k: usize) -> Option<f32> {
+    io.param(k).frames().and_then(|v| v.last().copied())
+}
+
 /// Samples between coefficient solves on a parameter that moves inside a block.
 ///
 /// A filter whose cutoff is swept (by a block ramp or an audio-rate param port)
@@ -120,6 +137,18 @@ impl LastGood {
             self.0 = value;
         }
         self.0
+    }
+}
+
+/// A driven value through its setter's `clamp`, a non-finite one left as it
+/// is for the [`LastGood`] read that follows (a floor written with `f32::max`
+/// would turn a NaN into the floor and hide it from that read).
+#[inline]
+pub(crate) fn clamp_finite(value: f32, clamp: impl FnOnce(f32) -> f32) -> f32 {
+    if value.is_finite() {
+        clamp(value)
+    } else {
+        value
     }
 }
 

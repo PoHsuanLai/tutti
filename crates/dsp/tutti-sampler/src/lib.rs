@@ -104,7 +104,7 @@ pub mod stretch;
 pub use voice::{
     Direction, DiskVoice, DiskVoiceControls, LoopSetting, MemorySource, MemorySourceConfig,
     Playback, PoolDrops, PoolTooWide, SlotId, Voice, VoiceCommand, VoiceNode, VoiceNodeHandle,
-    VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow,
+    VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow, VOICE_PARAMS,
 };
 // Entity-as-node markers for the voice pool. The asset loader and the playback
 // plugin are bevy-tutti's; what lives here is the pair of marker components,

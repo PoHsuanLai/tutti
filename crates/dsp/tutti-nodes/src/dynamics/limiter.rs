@@ -15,6 +15,7 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepar
 use super::envelope::EnvelopeFollower;
 use super::utils::{amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope};
 use crate::buffer::{CircularBuffer, MonotonicMinDeque};
+use crate::ramp::LastGood;
 use tutti_core::{Db, Param, SampleRate, Samples, Seconds, Tail};
 use tutti_types::Latency;
 use tutti_types::UnitParam;
@@ -124,6 +125,10 @@ pub struct LimiterNode {
     threshold_db: Param<Db>,
     ceiling_db: Param<Db>,
     release: Param<Seconds>,
+    /// The last finite release, driven or written: a NaN release would
+    /// make the envelope's coefficient NaN, and the envelope NaN for good
+    /// (see [`LastGood`]).
+    good_release: LastGood,
 
     ring: LookaheadRing,
     /// The lookahead window **as requested**, which is the only form a rate
@@ -167,7 +172,11 @@ pub struct LimiterNode {
 }
 
 /// The params a [`LimiterNode`] lets the graph modulate, in port order.
-pub const LIMITER_PARAMS: [UnitParam; 2] = [UnitParam::Ceiling, UnitParam::Threshold];
+/// The ceiling and threshold are read per sample; the release is
+/// block-rate in the node, so a driven port is read once per block
+/// (`block_driven`).
+pub const LIMITER_PARAMS: [UnitParam; 3] =
+    [UnitParam::Ceiling, UnitParam::Threshold, UnitParam::Release];
 
 /// The params a [`BrickwallLimiterNode`] lets the graph modulate.
 pub const BRICKWALL_PARAMS: [UnitParam; 1] = [UnitParam::Ceiling];
@@ -220,6 +229,7 @@ impl LimiterNode {
             threshold_db: Param::new(threshold_db.into()),
             ceiling_db: Param::new(ceiling_db.into()),
             release: Param::new(Seconds(0.1)),
+            good_release: LastGood::new(0.1),
             ring: LookaheadRing::new(n, lookahead_samples),
             lookahead: lookahead_secs,
             layout,
@@ -266,7 +276,7 @@ impl LimiterNode {
     /// ones sound transparent and hold reduction through a passage.
     pub fn with_release(self, release_secs: impl Into<Seconds>) -> Self {
         self.release
-            .store(Seconds(release_secs.into().get().max(0.001)));
+            .store(Seconds(Self::clamp_release(release_secs.into().get())));
         self
     }
 
@@ -309,7 +319,17 @@ impl LimiterNode {
 
     /// Sets the release time in [`Seconds`], floored at 1 ms.
     pub fn set_release(&self, secs: impl Into<Seconds>) {
-        self.release.store(Seconds(secs.into().get().max(0.001)));
+        self.release
+            .store(Seconds(Self::clamp_release(secs.into().get())));
+    }
+
+    /// A release time as the setters store it: floored at 1 ms. Shared by
+    /// the setters and a driven port's value. Below it the follower's
+    /// coefficient reaches 1.0 (`time_to_coeff` at `<= 0`), the envelope
+    /// freezes and the gain reduction it holds never releases.
+    #[inline]
+    fn clamp_release(secs: f32) -> f32 {
+        secs.max(0.001)
     }
 
     /// The gain reduction currently applied, in [`Db`] — a **measurement**, for
@@ -323,9 +343,18 @@ impl LimiterNode {
     }
 
     #[inline]
-    fn update_coefficients(&mut self) {
+    /// `driven` is the block's release from the node's param port when a
+    /// lane drives it; `None` reads the cell.
+    fn update_coefficients(&mut self, driven: Option<f32>) {
+        // The setter's floor at the point of use, so a driven value (or a
+        // raw `ParamSet` write) gets it too; after the `LastGood` read,
+        // which needs to see a NaN that `max` would hide.
+        let release = Self::clamp_release(
+            self.good_release
+                .read(driven.unwrap_or_else(|| self.release.load().get())),
+        );
         self.follower
-            .update_coefficients(Seconds(0.0), self.release.load());
+            .update_coefficients(Seconds(0.0), Seconds(release));
     }
 
     #[inline]
@@ -385,7 +414,7 @@ impl LimiterNode {
 }
 
 impl Node for LimiterNode {
-    /// `channels` in and out, ceiling then threshold modulatable
+    /// `channels` in and out, ceiling, threshold and release modulatable
     /// ([`LIMITER_PARAMS`]). Its latency is the lookahead ring's, at the
     /// prepared rate: the audio is delayed by the window.
     ///
@@ -420,7 +449,7 @@ impl Node for LimiterNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        self.update_coefficients();
+        self.update_coefficients(crate::ramp::block_driven(&io, 2));
         let (ceiling_fed, threshold_fed) = (io.param(0).frames(), io.param(1).frames());
         let base_threshold = self.threshold_db.load();
         let base_ceiling = self.ceiling_db.load();
@@ -456,6 +485,7 @@ impl Node for LimiterNode {
         match k {
             0 => Some(self.ceiling_db.load().get()),
             1 => Some(self.threshold_db.load().get()),
+            2 => Some(self.release.load().get()),
             _ => None,
         }
     }
@@ -501,6 +531,7 @@ impl Clone for LimiterNode {
             threshold_db: self.threshold_db.handle(),
             ceiling_db: self.ceiling_db.handle(),
             release: self.release.handle(),
+            good_release: self.good_release,
             ring: self.ring.clone(),
             // Carried, not re-derived: a clone may be prepared at a different
             // rate, so a clone that lost the request would re-derive its
@@ -946,18 +977,20 @@ mod tests {
 
     // ── Modulated params (the graph's param feed) ───────────────────────────
 
-    /// The shapes declare ceiling then threshold (and the brickwall its
-    /// ceiling), and never change the arity: a modulatable limiter is as
-    /// wide as it was built.
+    /// The shapes declare ceiling, threshold and release (and the brickwall
+    /// its ceiling), and never change the arity: a modulatable limiter is as
+    /// wide as it was built. (Doc 014 PR 5 widened the list: a route onto
+    /// any of these was refused once the frame-rate driver went.)
     ///
     /// Mutation (run): swap `LIMITER_PARAMS`' order → the first assertion
-    /// fails.
+    /// fails. Mutation (run, PR 5): `param_base(2)` answering the threshold
+    /// cell → fails.
     #[test]
-    fn the_shapes_declare_ceiling_then_threshold() {
+    fn the_shapes_declare_ceiling_threshold_and_release() {
         let l = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
         assert_eq!(
             l.shape().params.as_slice(),
-            &[UnitParam::Ceiling, UnitParam::Threshold][..]
+            &[UnitParam::Ceiling, UnitParam::Threshold, UnitParam::Release][..]
         );
         assert_eq!(
             (l.shape().audio_in.count(), l.shape().audio_out.count()),
@@ -965,6 +998,11 @@ mod tests {
         );
         assert_eq!(l.param_base(0), Some(-0.3), "the ceiling's base");
         assert_eq!(l.param_base(1), Some(-6.0), "the threshold's base");
+        assert_eq!(
+            l.param_base(2),
+            Some(l.release_time().load(std::sync::atomic::Ordering::Acquire)),
+            "the release's base"
+        );
         let b = BrickwallLimiterNode::new(-1.0);
         assert_eq!(b.shape().params.as_slice(), &[UnitParam::Ceiling][..]);
         assert_eq!(

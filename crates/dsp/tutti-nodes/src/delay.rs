@@ -15,7 +15,7 @@ use tutti_core::{ChannelLayout, Feedback, Mix, Param, SampleRate, Seconds, Tail}
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::UnitParam;
 
-use crate::ramp::{finite_or, LastGood, Ramp};
+use crate::ramp::{block_driven, finite_or, LastGood, Ramp};
 
 /// How a fractional delay position is turned into a sample.
 ///
@@ -271,7 +271,11 @@ pub struct DelayLineNode {
 }
 
 /// The params a [`DelayLineNode`] lets the graph modulate, in port order.
-pub const DELAY_PARAMS: [UnitParam; 2] = [UnitParam::Feedback, UnitParam::DelayTime];
+/// Feedback and delay time are read per sample; the mix is block-rate in
+/// the node (ramped across the block), so a driven port is read once per
+/// block (`block_driven`).
+pub const DELAY_PARAMS: [UnitParam; 3] =
+    [UnitParam::Feedback, UnitParam::DelayTime, UnitParam::Wet];
 
 impl DelayLineNode {
     /// A mono delay (1 in, 1 out): a line sized for `max_delay_secs`, an
@@ -537,6 +541,7 @@ impl DelayLineNode {
     /// Every control atomic is read once, here. `fb_port` / `dt_port` are the
     /// graph's per-frame feedback and delay time for the block when it
     /// modulates them (the node's param ports); they are read per sample.
+    /// `mix_port` is the block's driven mix (clamped as `set_mix` clamps).
     /// Everything else ramps from where the previous block ended (see
     /// [`ramp`](crate::ramp)).
     fn render(
@@ -546,6 +551,7 @@ impl DelayLineNode {
         y: impl FnMut(usize, usize, f32),
         fb_port: Option<&[f32]>,
         dt_port: Option<&[f32]>,
+        mix_port: Option<f32>,
     ) {
         let width = self.width();
         let interp = self.interpolation;
@@ -559,7 +565,10 @@ impl DelayLineNode {
             } else {
                 0.0
             },
-            mix: self.good[2].read(self.mix.load().get()),
+            mix: self.good[2].read(mix_port.map_or_else(
+                || self.mix.load().get(),
+                |m| tutti_core::Mix::new_clamped(m).get(),
+            )),
         };
         let from = self.last.unwrap_or(target);
         let fb_r = Ramp::new(from.fb, target.fb, size);
@@ -718,7 +727,7 @@ fn delay_step(
 }
 
 impl Node for DelayLineNode {
-    /// `N` in, `N` out, feedback and delay time as param ports.
+    /// `N` in, `N` out, feedback, delay time and mix as param ports.
     ///
     /// Zero latency, whatever the delay time: the echo is the *effect*, not
     /// processing latency. PDC compensates whatever a node declares by
@@ -749,7 +758,11 @@ impl Node for DelayLineNode {
         if size == 0 {
             return Status::Modified;
         }
-        let (fb, dt) = (io.param(0).frames(), io.param(1).frames());
+        let (fb, dt, mix) = (
+            io.param(0).frames(),
+            io.param(1).frames(),
+            block_driven(&io, 2),
+        );
         let (inputs, mut outputs) = io.split();
         self.render(
             size,
@@ -757,6 +770,7 @@ impl Node for DelayLineNode {
             |c, i, v| outputs.get(c)[i] = v,
             fb,
             dt,
+            mix,
         );
         Status::Modified
     }
@@ -774,6 +788,7 @@ impl Node for DelayLineNode {
         match k {
             0 => Some(self.feedback.load().get()),
             1 => Some(self.delay_time[0].load().get()),
+            2 => Some(self.mix.load().get()),
             _ => None,
         }
     }
@@ -1088,19 +1103,20 @@ mod tests {
         (out.pop().expect("two outputs"), r)
     }
 
-    /// The node declares feedback then delay time as its params, and never
-    /// changes the arity: a modulatable delay is as wide as it was built, in
-    /// and out.
+    /// The node declares feedback, delay time and mix as its params, and
+    /// never changes the arity: a modulatable delay is as wide as it was
+    /// built, in and out. (Doc 014 PR 5 widened the list: a route onto any of these was
+    /// refused once the frame-rate driver went.)
     ///
     /// Mutation (run): swap `DELAY_PARAMS`' order → the first assertion
     /// fails (and `feedback_feed_modulates` reads a delay time as feedback).
     #[test]
-    fn the_feed_declares_feedback_then_delay_time() {
+    fn the_feed_declares_feedback_delay_time_and_mix() {
         let d = DelayLineNode::stereo(1.0, 0.01, 0.01, 0.5);
         let shape = d.shape();
         assert_eq!(
             shape.params.as_slice(),
-            &[UnitParam::Feedback, UnitParam::DelayTime][..]
+            &[UnitParam::Feedback, UnitParam::DelayTime, UnitParam::Wet][..]
         );
         assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (2, 2));
         let wide = DelayLineNode::with_channels(6usize, 1.0, 0.01, 0.5).shape();
@@ -1111,6 +1127,8 @@ mod tests {
             Some(0.01),
             "delay time's base is channel 0's"
         );
+        d.set_mix(0.25);
+        assert_eq!(d.param_base(2), Some(0.25), "the mix's base is its control");
     }
 
     #[test]

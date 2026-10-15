@@ -31,11 +31,10 @@
 //!    ops say, record by record — checked against each op directly, not by
 //!    re-running the lowering — so rules 1–6 are about what runs.
 //!
-//! 9. **Params**: each node op's modulated params are in strict port order,
-//!    each a param its unit declares, and their sources are reads of the
-//!    op (rules 2–4 cover them like inputs; an input aliased in place is
-//!    never also a param source). A port reads at most one event source,
-//!    unshaped: its value replaces the base (doc 014 §5.6).
+//! 9. **Params**: each node op's driven params are in strict port order,
+//!    each a param its unit declares, and each port's event source is a
+//!    read of the op (rules 2–4 cover it like an input). A port has one
+//!    source by construction: its value replaces the base (doc 014 §5.6).
 //!
 //! 8. **Fades** ([`verify_fades`], on a plan *and the delta that installs
 //!    it*): a crossfade's outgoing unit runs on the node op's own input slots
@@ -54,7 +53,7 @@
 
 use crate::io::PortKind;
 use crate::node::InPlaceMask;
-use crate::plan::{Delta, EventSlotCapacity, Op, ParamSlot, Plan, EMPTY_SLOT, ZERO_SLOT};
+use crate::plan::{Delta, EventSlotCapacity, Op, Plan, EMPTY_SLOT, ZERO_SLOT};
 
 use super::colour::Reach;
 
@@ -122,10 +121,7 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
                     .iter()
                     .map(|&s| e(s, true)),
             )
-            .chain(param_reads(plan, params).map(|slot| match slot {
-                ParamSlot::Audio(s) => a(s, false),
-                ParamSlot::Event(s) => e(s, false),
-            }))
+            .chain(param_reads(plan, params).map(|s| e(s, false)))
             .collect(),
         Op::Output { src, .. } => vec![a(src, false)],
         // A capture feeds a delay's state, not a slot.
@@ -134,23 +130,17 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
     }
 }
 
-/// Every slot a node op's modulated params read. Out-of-range spans read
+/// Every event slot a node op's driven params read. Out-of-range spans read
 /// nothing here; [`verify_params`] reports them.
-fn param_reads(plan: &Plan, params: crate::plan::Span) -> impl Iterator<Item = ParamSlot> + '_ {
+fn param_reads(plan: &Plan, params: crate::plan::Span) -> impl Iterator<Item = u32> + '_ {
     plan.param_ports
         .get(params.range())
         .unwrap_or(&[])
         .iter()
-        .flat_map(|p| {
-            plan.param_sources
-                .get(p.sources.range())
-                .unwrap_or(&[])
-                .iter()
-                .map(|s| s.slot)
-        })
+        .map(|p| p.slot)
 }
 
-/// Rule 9: each node op's modulated params.
+/// Rule 9: each node op's driven params.
 fn verify_params(plan: &Plan) -> Result<(), VerifyError> {
     let mut covered = 0usize;
     for op in &plan.ops {
@@ -180,28 +170,6 @@ fn verify_params(plan: &Plan) -> Result<(), VerifyError> {
                     "modulate {:?} at port {}, which the unit does not declare there",
                     p.param, p.port
                 )));
-            }
-            let Some(sources) = plan
-                .param_sources
-                .get(p.sources.range())
-                .filter(|s| !s.is_empty())
-            else {
-                return Err(bad(format!("give port {} no sources", p.port)));
-            };
-            // The port rule: an event source replaces the base, so a port
-            // has at most one, and it is unshaped.
-            let mut events = 0usize;
-            for s in sources {
-                if !matches!(s.slot, crate::plan::ParamSlot::Event(_)) {
-                    continue;
-                }
-                events += 1;
-                if s.shaping != crate::param::ParamShaping::Identity {
-                    return Err(bad(format!("shape port {}'s event source", p.port)));
-                }
-            }
-            if events > 1 {
-                return Err(bad(format!("give port {} {events} event sources", p.port)));
             }
         }
     }
@@ -271,7 +239,6 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
                     audio_in,
                     audio_out,
                     in_place,
-                    params,
                     ..
                 } if x.kind == PortKind::Audio => {
                     let ins = &plan.audio_list[audio_in.range()];
@@ -281,7 +248,6 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
                             && in_place.get(c)
                             && ins.get(c) == Some(&s)
                             && ins.iter().filter(|&&t| t == s).count() == 1
-                            && !param_reads(plan, params).any(|p| p == ParamSlot::Audio(s))
                     })
                 }
                 _ => false,
@@ -942,20 +908,23 @@ mod tests {
         .0
     }
 
-    /// A modulated graph: generator 1 feeds node 2 (mono in, mono out, in
-    /// place, declaring `Cutoff`), whose `Cutoff` generator 3 modulates;
-    /// generator 4 feeds a second output on its own, unordered with node 2.
-    /// Returns the plan and node 2's op index.
+    /// A driven graph: generator 1 feeds node 2 (mono in, mono out, in
+    /// place, declaring `Cutoff`), whose `Cutoff` node 3's event output
+    /// drives; generator 4 feeds a second output on its own and sends
+    /// events nothing reads, unordered with node 2. Returns the plan and
+    /// node 2's op index.
     fn modulated_plan() -> (Plan, usize) {
-        use crate::param::{ParamFrom, ParamIn, ParamShaping};
+        use crate::param::ParamIn;
+        use crate::spec::EventOut;
         use tutti_types::UnitParam;
         let gen = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
+        let sender = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(0, 1);
         let thru = Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
             .with_in_place()
             .with_params(&[UnitParam::Cutoff]);
         let mut t = Topology::default();
         let mut shapes = Shapes::new();
-        for (k, s) in [(1, gen), (2, thru), (3, gen), (4, gen)] {
+        for (k, s) in [(1, gen), (2, thru), (3, sender), (4, sender)] {
             t.nodes
                 .insert(NodeKey(k), NodeSpec::new("n", s.audio_in, s.audio_out));
             shapes.insert(NodeKey(k), s);
@@ -981,16 +950,15 @@ mod tests {
             }),
         ];
         let mut spec = GraphSpec::new(t);
-        spec.connect_param(
+        let _ = spec.connect_param(
             ParamIn {
                 node: NodeKey(2),
                 param: UnitParam::Cutoff,
             },
-            ParamFrom::Audio(OutPort {
+            EventOut {
                 node: NodeKey(3),
                 port: 0,
-            }),
-            ParamShaping::Identity,
+            },
         );
         let valid = spec.validate().expect("valid");
         let plan = compile(
@@ -1011,42 +979,24 @@ mod tests {
     }
 
     /// Rule 9, and the param reads the other rules see, each reject their
-    /// own corruption of a modulated plan.
+    /// own corruption of a driven plan.
     ///
     /// Mutations (run), one per group, each failed this test: delete the
-    /// `verify_params(plan)?` call (the three table corruptions pass); drop
-    /// the param reads from `accesses` (the unordered read passes); drop the
-    /// `!param_reads(..)` clause from the in-place check (the param read of
-    /// the in-place slot passes); drop the event-source count check, or the
-    /// shaping check, from `verify_params` (that corruption passes).
+    /// `verify_params(plan)?` call (the two table corruptions pass); drop
+    /// the param reads from `accesses` (the unordered read passes).
+    /// (Doc 014 PR 5 removed the in-place, event-count and shaping groups
+    /// with what they checked: a param reads only an event slot, and a port
+    /// holds one unshaped source by construction.)
     #[test]
     fn the_verifier_rejects_each_param_corruption() {
-        use crate::plan::ParamSlot;
-        let (good, op) = modulated_plan();
+        let (good, _) = modulated_plan();
         verify(&good).expect("sound");
-        let Op::Node {
-            audio_in,
-            audio_out,
-            in_place,
-            ..
-        } = good.ops[op]
-        else {
-            unreachable!()
-        };
-        assert!(in_place.get(0), "node 2 runs in place");
-        let own = good.audio_list[audio_out.start as usize];
-        assert_eq!(own, good.audio_list[audio_in.start as usize]);
         let err = |p: &Plan| verify(p).expect_err("corrupt").0;
 
         // A port the unit does not declare there.
         let mut bad = good.clone();
         bad.param_ports[0].param = tutti_types::UnitParam::Q;
         assert!(err(&bad).contains("does not declare"), "{}", err(&bad));
-
-        // A port with no sources.
-        let mut bad = good.clone();
-        bad.param_ports[0].sources.len = 0;
-        assert!(err(&bad).contains("no sources"), "{}", err(&bad));
 
         // A port no node op names.
         let mut bad = good.clone();
@@ -1065,43 +1015,23 @@ mod tests {
             err(&bad)
         );
 
-        // A param read of generator 4's slot, which nothing orders before
+        // A param read of node 4's event slot, which nothing orders before
         // node 2: a read of a value that may not be written yet.
-        let other = match good.ops.iter().find_map(|o| match *o {
-            Op::Output {
-                channel: 1, src, ..
-            } => Some(src),
-            _ => None,
-        }) {
-            Some(s) => s,
-            None => unreachable!("output 1 reads generator 4"),
-        };
+        let u4 = good.units.iter().position(|u| u.key == NodeKey(4)).unwrap() as u32;
+        let other = good
+            .ops
+            .iter()
+            .find_map(|o| match *o {
+                Op::Node {
+                    unit, event_out, ..
+                } if unit == u4 => Some(good.event_list[event_out.start as usize]),
+                _ => None,
+            })
+            .expect("node 4 sends events");
+        assert_ne!(other, good.param_ports[0].slot);
         let mut bad = good.clone();
-        bad.param_sources[0].slot = ParamSlot::Audio(other);
+        bad.param_ports[0].slot = other;
         assert!(verify(&bad).is_err(), "an unordered param read passed");
-
-        // A param read of the slot node 2 overwrites in place.
-        let mut bad = good.clone();
-        bad.param_sources[0].slot = ParamSlot::Audio(own);
-        assert!(err(&bad).contains("in place"), "{}", err(&bad));
-
-        // The port rule, checked by rule 9 itself (an event slot invented
-        // here would trip the read rules first): a shaped event source, and
-        // two event sources on one port.
-        let rule9 = |p: &Plan| verify_params(p).expect_err("corrupt").0;
-        let mut bad = good.clone();
-        bad.param_sources[0].slot = ParamSlot::Event(0);
-        bad.param_sources[0].shaping =
-            crate::param::ParamShaping::Lut(crate::param::ShapeLut::from_fn(|x| 2.0 * x));
-        assert!(rule9(&bad).contains("shape port"), "{}", rule9(&bad));
-        let mut bad = good.clone();
-        bad.param_sources[0].slot = ParamSlot::Event(0);
-        let mut second = bad.param_sources[0].clone();
-        second.slot = ParamSlot::Event(1);
-        let at = bad.param_ports[0].sources.start as usize + 1;
-        bad.param_sources.insert(at, second);
-        bad.param_ports[0].sources.len += 1;
-        assert!(rule9(&bad).contains("2 event sources"), "{}", rule9(&bad));
     }
 
     /// The verifier is not a rubber stamp: forcing two concurrent values into

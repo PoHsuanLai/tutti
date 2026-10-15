@@ -781,7 +781,7 @@ mod param_mod_wire {
     use bevy_tutti::AudioEngineState;
     use tutti_core::AudioNode;
     use tutti_core::Hz;
-    use tutti_graph::{ParamRange, ParamShaping};
+    use tutti_graph::{EventOut, ParamRange};
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{DistortionNode, ShapeKind};
     use tutti_types::UnitParam;
@@ -808,6 +808,33 @@ mod param_mod_wire {
         *app.world().get::<AudioNode>(entity).expect("AudioNode")
     }
 
+    /// A param source: one event output, sending nothing (a control lane's
+    /// shape, which is all a param port's wiring needs).
+    struct Sends;
+
+    impl tutti_graph::Node for Sends {
+        fn shape(&self) -> tutti_graph::Shape {
+            tutti_graph::Shape::audio(
+                tutti_core::ChannelLayout::EMPTY,
+                tutti_core::ChannelLayout::EMPTY,
+            )
+            .with_events(0, 1)
+        }
+        fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+        fn process(
+            &mut self,
+            _: &tutti_graph::Cx<'_>,
+            _: tutti_graph::Io<'_>,
+        ) -> tutti_graph::Status {
+            tutti_graph::Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+
+    fn lane() -> tutti_graph::Unforkable<Sends> {
+        tutti_graph::Unforkable(Sends)
+    }
+
     /// Audio ports declared, and the drive modulated: both reach the graph,
     /// and the node's arity is its audio width — the param is no port.
     #[test]
@@ -815,7 +842,7 @@ mod param_mod_wire {
         let mut app = app();
         let target = spawn_node(&mut app, DistortionNode::new(ShapeKind::Tanh, 5.0));
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-        let lfo = spawn_node(&mut app, Osc::sine(Hz(2.0)));
+        let lfo = spawn_node(&mut app, lane());
         let (target_id, osc_id, lfo_id) = (
             node_id(&app, target),
             node_id(&app, osc),
@@ -834,7 +861,7 @@ mod param_mod_wire {
             .set_param_mod(
                 target_id,
                 UnitParam::Drive,
-                &[(lfo_id, ParamShaping::Identity)],
+                Some(lfo_id),
                 ParamRange::new(0.0, 10.0),
             )
             .expect("a well-formed modulation");
@@ -849,9 +876,11 @@ mod param_mod_wire {
             graph
                 .param_mod(target_id, UnitParam::Drive)
                 .expect("the modulation")
-                .sources
-                .len(),
-            1,
+                .source,
+            Some(EventOut {
+                node: lfo_id.key(),
+                port: 0,
+            }),
             "the drive is modulated beside the audio"
         );
     }
@@ -870,7 +899,7 @@ mod param_mod_wire {
         let target = spawn_node(&mut app, DistortionNode::new(ShapeKind::Tanh, 5.0));
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let other = spawn_node(&mut app, Osc::sine(Hz(220.0)));
-        let lfo = spawn_node(&mut app, Osc::sine(Hz(2.0)));
+        let lfo = spawn_node(&mut app, lane());
         let (target_id, lfo_id) = (node_id(&app, target), node_id(&app, lfo));
 
         app.world_mut()
@@ -887,7 +916,7 @@ mod param_mod_wire {
             .set_param_mod(
                 target_id,
                 UnitParam::Drive,
-                &[(lfo_id, ParamShaping::Identity)],
+                Some(lfo_id),
                 ParamRange::new(0.0, 10.0),
             )
             .expect("a well-formed modulation");

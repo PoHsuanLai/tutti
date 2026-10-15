@@ -15,7 +15,7 @@ use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, TimeModMix};
 use crate::delay::{DelayLine, InterpolationMode};
-use crate::ramp::Ramp;
+use crate::ramp::{block_driven, Ramp};
 
 /// Everything that distinguishes one modulated-delay effect from another: the
 /// delay it sweeps around, how the channels' sweeps are staggered, and the
@@ -52,6 +52,19 @@ pub struct ModDelayConfig {
 }
 
 impl ModDelayConfig {
+    /// A sweep depth in seconds as [`ModDelayNode::set_depth`] stores it:
+    /// clamped to `depth_min..=depth_max`. Shared by the setter and the
+    /// block's read, so a driven depth (or a raw `ParamSet` write) cannot
+    /// sweep past the line.
+    #[inline]
+    ///
+    /// `max` then `min` rather than `f32::clamp`, which panics on a config
+    /// whose `depth_min` exceeds its `depth_max`; this is read on the audio
+    /// thread. For a well-formed config the two agree.
+    pub fn clamp_depth(&self, secs: f32) -> f32 {
+        secs.max(self.depth_min.get()).min(self.depth_max.get())
+    }
+
     /// Chorus: 10 ms base delay, a quarter-cycle stagger between channels, 1 Hz
     /// rate, 5 ms sweep depth (clamped to `0..=40 ms`), 0.3 feedback, 50/50
     /// mix. The long base delay is what separates chorus from flanger — the copy
@@ -242,16 +255,17 @@ impl ModDelayNode {
 
     /// Sets the LFO rate in [`Hz`], floored at 0.01 Hz.
     pub fn set_rate(&self, hz: impl Into<Hz>) {
-        self.lfo.rate.store(Hz(hz.into().get().max(0.01)));
+        self.lfo
+            .rate
+            .store(Hz(LfoDrive::clamp_rate(hz.into().get())));
     }
 
     /// Sets the sweep depth in [`Seconds`], clamped to the configuration's
     /// `depth_min..=depth_max`.
     pub fn set_depth(&self, secs: impl Into<Seconds>) {
-        let (lo, hi) = (self.config.depth_min.get(), self.config.depth_max.get());
         self.controls
             .depth
-            .store(Seconds(secs.into().get().clamp(lo, hi)));
+            .store(Seconds(self.config.clamp_depth(secs.into().get())));
     }
 
     /// Sets the [`Feedback`], clamped to the stable range.
@@ -268,17 +282,23 @@ impl ModDelayNode {
 
     /// The render kernel behind `process`, over `size` frames. `size` is at
     /// most the phase scratch's length.
+    ///
+    /// `driven` is the block's rate, depth, feedback and mix from the
+    /// node's param ports ([`MOD_DELAY_PARAMS`] order), each `None` where
+    /// nothing drives it.
     fn render(
         &mut self,
         size: usize,
+        driven: [Option<f32>; 4],
         x: impl Fn(usize, usize) -> f32,
         y: impl FnMut(usize, usize, f32),
     ) {
         debug_assert!(size <= self.phases.len());
         // Every control is read here, once, for the whole block.
-        let (depth, fb, mix) = self.controls.load();
+        let [rate, depth, fb, mix] = driven;
+        let (depth, fb, mix) = self.controls.load([depth, fb, mix]);
         let target = ModDelayControls {
-            depth,
+            depth: self.config.clamp_depth(depth),
             fb,
             mix: mix.get(),
         };
@@ -290,7 +310,7 @@ impl ModDelayNode {
         // The LFO as a block buffer: the rate is read once and every channel
         // reads the same phases.
         self.lfo
-            .fill_block(self.sample_rate, &mut self.phases[..size]);
+            .fill_block(self.sample_rate, &mut self.phases[..size], rate);
 
         let lines = SweptLines {
             delays: &mut self.delays,
@@ -353,12 +373,24 @@ impl SweptLines<'_> {
     }
 }
 
+/// The params a [`ModDelayNode`] lets the graph modulate, in port order:
+/// all four of its controls. Each is block-rate in the node (read once per
+/// block and ramped across it), so a driven port is read the same way
+/// (`block_driven`).
+pub const MOD_DELAY_PARAMS: [UnitParam; 4] = [
+    UnitParam::Rate,
+    UnitParam::Depth,
+    UnitParam::Feedback,
+    UnitParam::Wet,
+];
+
 impl Node for ModDelayNode {
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.delays.len() as u16);
         Shape::audio(width, width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unknown)
+            .with_params(&MOD_DELAY_PARAMS)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -371,6 +403,7 @@ impl Node for ModDelayNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
+        let driven = [0, 1, 2, 3].map(|k| block_driven(&io, k));
         let (inputs, mut outputs) = io.split();
         // A graph never hands a block past its `MaxBlock`, which the scratch
         // is sized for, so this is one call; a node driven by hand with a
@@ -381,6 +414,7 @@ impl Node for ModDelayNode {
             let n = step.min(size - at);
             self.render(
                 n,
+                driven,
                 |c, i| inputs.get(c)[at + i],
                 |c, i, v| outputs.get(c)[at + i] = v,
             );
@@ -395,6 +429,16 @@ impl Node for ModDelayNode {
         }
         self.lfo.reset_phase();
         self.last = None;
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        match k {
+            0 => Some(self.lfo.rate.load().get()),
+            1 => Some(self.controls.depth.load().get()),
+            2 => Some(self.controls.feedback.load().get()),
+            3 => Some(self.controls.mix.load().get()),
+            _ => None,
+        }
     }
 }
 

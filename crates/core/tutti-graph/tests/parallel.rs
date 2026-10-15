@@ -1,7 +1,7 @@
 //! The parallel executor renders **bit for bit** what the serial one does
 //! (doc 013 Phase 6): on a graph with fan-out, fan-in, PDC rings, event
-//! fan-in, compiler-owned param modulation (an audio source behind a latent
-//! sibling, and ramp events), a feedback loop and scheduled commands, for
+//! fan-in, compiler-owned param ports (ramp and segment events, one source
+//! behind its own latency), a feedback loop and scheduled commands, for
 //! every worker count in `common::WORKERS` and block schedules from one frame
 //! to the prepared maximum, ragged ones included — and the same on an
 //! offline fork of it (the graph export renders).
@@ -15,11 +15,13 @@ mod common;
 use common::{bits, test_pool, Kind, TestNode, WORKERS};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode, ForkSource,
-    ForkTarget, Forked, IntoNode, Io, Node, NodeParts, ParamFrom, ParamIn, ParamRamp, ParamRange,
-    ParamSegment, ParamShaping, Prepare, Schedule, SegmentShape, Shape, Status, Transport, Ump,
+    ForkTarget, Forked, IntoNode, Io, Node, NodeParts, ParamIn, ParamRamp, ParamRange,
+    ParamSegment, Prepare, Schedule, SegmentShape, Shape, Status, Transport, Ump,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, NodeKey, SampleRate, Samples};
+use tutti_types::{
+    At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, UnitParam,
+};
 
 const MAX_BLOCK: usize = 128;
 
@@ -73,17 +75,38 @@ impl Node for ParamSink {
     }
 }
 
-/// A ramp or a curve segment on `Cutoff` every 37 frames of absolute time
-/// (every shape class, a resumed one, each segment interrupted by the next
-/// event).
+/// A ramp or a curve segment on `param` (`Cutoff` or `Q`) every 37 frames
+/// of absolute time (every shape class, a resumed one, each segment
+/// interrupted by the next event), from behind `latency` declared frames.
 #[derive(Clone)]
-struct RampEvery;
+struct RampEvery {
+    param: UnitParam,
+    latency: usize,
+}
+
+impl RampEvery {
+    fn ramp(&self, v: f32) -> ParamRamp {
+        match self.param {
+            UnitParam::Cutoff => ParamRamp::new(
+                tutti_types::ParamKey::<tutti_types::Hz>::CUTOFF,
+                tutti_types::Hz(v),
+                Samples(20),
+            ),
+            _ => ParamRamp::new(
+                tutti_types::ParamKey::<tutti_types::Q>::Q,
+                tutti_types::Q(v),
+                Samples(20),
+            ),
+        }
+    }
+}
 
 impl Node for RampEvery {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
             .with_events(0, 1)
             .with_event_capacity(16)
+            .with_latency(Latency::new(Samples(self.latency)))
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -94,14 +117,7 @@ impl Node for RampEvery {
                 let o = io.offset(i).expect("inside");
                 let event = match (f / 37) % 3 {
                     // A linear ramp, from wherever the source is.
-                    0 => tutti_graph::Event::ramp(
-                        o,
-                        ParamRamp::new(
-                            tutti_types::ParamKey::<tutti_types::Hz>::CUTOFF,
-                            tutti_types::Hz((f % 5) as f32),
-                            Samples(20),
-                        ),
-                    ),
+                    0 => tutti_graph::Event::ramp(o, self.ramp((f % 5) as f32)),
                     // A curve segment spanning the next event: interrupted.
                     k => {
                         let shape = [
@@ -110,10 +126,10 @@ impl Node for RampEvery {
                             SegmentShape::PowerInOut(1.5),
                             SegmentShape::Hold,
                         ][(f / 111) as usize % 4];
-                        let seg = ParamSegment::new(
-                            tutti_types::ParamKey::<tutti_types::Hz>::CUTOFF,
-                            tutti_types::Hz((f % 3) as f32),
-                            tutti_types::Hz((f % 7) as f32),
+                        let seg = ParamSegment::unit(
+                            self.param,
+                            (f % 3) as f32,
+                            (f % 7) as f32,
                             Samples(50),
                             shape,
                         );
@@ -179,7 +195,7 @@ fn consumer_in(port: u16) -> EventIn {
 /// Emitter [20] ─┬─ EventLag 9 [22] ─┐
 /// Emitter [21] ─┴───────────────────┴─ Consumer [40] (fan-in on port 0) ─ out 1
 ///                                    Mixed [41] ◀── events [21] ─ out 2
-/// in ─ ParamSink [30] (Cutoff ← Gain [4] audio, ← RampEvery [31]; Q ← Lag 17) ─ out 3
+/// in ─ ParamSink [30] (Cutoff ← RampEvery [31]; Q ← RampEvery [32], 17 frames latent) ─ out 3
 /// Sum [50] ← in, ← feedback of Smooth [51] (256 frames) ; Smooth [51] ← [50] ─ out 4
 /// ```
 fn build(ed: &mut Editor) {
@@ -225,7 +241,22 @@ fn build(ed: &mut Editor) {
         }),
     );
     ed.insert(NodeKey(30), "psink", tutti_graph::ForkByClone(ParamSink));
-    ed.insert(NodeKey(31), "ramps", tutti_graph::ForkByClone(RampEvery));
+    ed.insert(
+        NodeKey(31),
+        "ramps",
+        tutti_graph::ForkByClone(RampEvery {
+            param: UnitParam::Cutoff,
+            latency: 0,
+        }),
+    );
+    ed.insert(
+        NodeKey(32),
+        "ramps",
+        tutti_graph::ForkByClone(RampEvery {
+            param: UnitParam::Q,
+            latency: 17,
+        }),
+    );
     ed.insert(NodeKey(50), "fbsum", Forkable(Kind::Sum { inputs: 2 }));
     ed.insert(NodeKey(51), "fbsmooth", Forkable(Kind::Smooth));
     let spec = ed.spec_mut();
@@ -284,9 +315,8 @@ fn build(ed: &mut Editor) {
         node: NodeKey(30),
         param: tutti_types::UnitParam::Q,
     };
-    spec.connect_param(cut, ParamFrom::Audio(out(4, 0)), ParamShaping::Identity);
-    spec.connect_param(cut, ParamFrom::Events(ev_out(31)), ParamShaping::Identity);
-    spec.connect_param(q, ParamFrom::Audio(out(3, 0)), ParamShaping::Identity);
+    spec.connect_param(cut, ev_out(31));
+    spec.connect_param(q, ev_out(32));
     ed.commit().expect("the graph commits");
 }
 

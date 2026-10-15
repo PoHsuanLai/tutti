@@ -1,21 +1,22 @@
 //! Capturing a node's controls on the way into the graph.
 //!
 //! Some of what a host does to a node is not audio routing and not a scalar
-//! param: minting a modulation accumulator over a filter's cutoff, binding a
-//! hosted plugin's meter. (MIDI is neither: it travels on event edges.) Each
-//! needs the *concrete* node, and the graph holds only boxed nodes it owns
-//! outright.
+//! param: binding a hosted plugin's meter, polling its latency. (MIDI is
+//! neither: it travels on event edges.) Each needs the *concrete* node, and
+//! the graph holds only boxed nodes it owns outright.
 //!
 //! So the question is asked **once, of the owned node, before it is
 //! inserted**, and the answer is kept on the entity:
 //!
 //! | Component | Captured from | Read by |
 //! |---|---|---|
-//! | `ModParamsHandle` (`modulation`) | a node's `ParamSet` ([`CapturedControls::for_params`]), or a host-supplied target (`modulation::legacy::ModTargetRegistry::insert_target`) | the legacy driver (`LegacyModulationPlugin`, unscheduled by default); modulation lanes read the graph's `ParamSet` instead |
 //! | `PluginShadow` (`plugin`) | a loaded `PluginClient` (`CapturedControls::for_plugin`), or an in-process VST2 plugin's meter (`CapturedControls::for_plugin_meter`) | plugin meter bind and latency poll |
 //!
-//! Every one holds only state the node shares with the graph's copy (its
-//! `Param` cells, the plugin's controls), so the component reaches the
+//! (A node's params need no capture: its controls are its `ParamSet`, which
+//! the insert addresses by key, [`GraphNode::params`](crate::graph::GraphNode::params).)
+//!
+//! Every one holds only state the node shares with the graph's copy (the
+//! plugin's controls), so the component reaches the
 //! running node without the graph. Each also records the node's `AudioNode`
 //! key it was captured for, and its reader ignores it when that is not the entity's
 //! current [`AudioNode`] — a leftover from a node that was replaced by hand is
@@ -50,13 +51,10 @@ use tutti_core::{AudioNode, NodeKey};
 
 /// The controls captured from one node, before it moved into the graph.
 ///
-/// Empty for a node with no params and no plugin (an oscillator, a sum, a
-/// width adapter).
+/// Empty for every node but a hosted plugin.
 #[must_use = "captured controls do nothing until they are bound to the entity"]
 #[derive(Default)]
 pub struct CapturedControls {
-    #[cfg(feature = "modulation")]
-    params: Option<std::sync::Arc<dyn tutti_mod::ModParams + Send + Sync>>,
     #[cfg(feature = "plugin")]
     plugin: Option<tutti_plugin::handles::PluginControls>,
     /// An in-process VST2 plugin's meter cell, its one control (a plugin with
@@ -76,8 +74,6 @@ impl CapturedControls {
     #[cfg(feature = "plugin")]
     pub fn for_plugin(client: &tutti_plugin::handles::PluginClient) -> Self {
         Self {
-            #[cfg(feature = "modulation")]
-            params: None,
             plugin: Some(client.controls()),
             plugin_meter: None,
         }
@@ -91,32 +87,8 @@ impl CapturedControls {
     #[cfg(feature = "plugin")]
     pub fn for_plugin_meter(meter: tutti_plugin::handles::PluginMeter) -> Self {
         Self {
-            #[cfg(feature = "modulation")]
-            params: None,
             plugin: None,
             plugin_meter: Some(meter),
-        }
-    }
-
-    /// Captures the controls of a node whose params are a
-    /// [`ParamSet`](tutti_graph::ParamSet).
-    ///
-    /// With the `modulation` feature this is a `ModParamsHandle` over the
-    /// set's cells, so a modulation route resolves on any of its params;
-    /// without it, it captures nothing. What a
-    /// [`GraphNode`](crate::graph::GraphNode) with params returns from
-    /// [`captured`](crate::graph::GraphNode::captured).
-    pub fn for_params(params: &tutti_graph::ParamSet) -> Self {
-        let _ = params;
-        Self {
-            #[cfg(feature = "modulation")]
-            params: Some(std::sync::Arc::new(
-                crate::modulation::legacy::ParamSetTargets(params.clone()),
-            )),
-            #[cfg(feature = "plugin")]
-            plugin: None,
-            #[cfg(feature = "plugin")]
-            plugin_meter: None,
         }
     }
 
@@ -133,32 +105,19 @@ impl CapturedControls {
     /// [`AudioNode`] — the crossfade case, where the node changes under a
     /// surviving handle.
     ///
-    /// A control this node does not have is **removed**: the old node's
-    /// params would otherwise stay reachable under the new node's id.
+    /// A control this node does not have is **removed**: the old plugin's
+    /// would otherwise stay reachable under the new node's id.
     ///
-    /// The plugin binding latches are cleared too. `PluginMeterBound` and
-    /// `PluginParamsBound` say "*this* plugin has its meter and automation
-    /// installed", and the incoming `PluginClient` has neither: left in place
-    /// they would stop the binding systems from ever installing them.
+    /// The plugin binding latch is cleared too. `PluginMeterBound` says
+    /// "*this* plugin has its meter installed", and the incoming
+    /// `PluginClient` has none: left in place it would stop the binding
+    /// system from ever installing it.
     pub(crate) fn replace(self, entity: &mut EntityWorldMut, node: AudioNode) {
         let node: NodeKey = node.0;
         let _ = (&entity, node);
         #[cfg(feature = "plugin")]
         {
             entity.remove::<crate::plugin_host::PluginMeterBound>();
-            #[cfg(feature = "modulation")]
-            entity.remove::<crate::plugin_host::PluginParamsBound>();
-        }
-        #[cfg(feature = "modulation")]
-        match self.params {
-            Some(params) => {
-                entity.insert(crate::modulation::legacy::ModParamsHandle::new(
-                    node, params,
-                ));
-            }
-            None => {
-                entity.remove::<crate::modulation::legacy::ModParamsHandle>();
-            }
         }
         #[cfg(feature = "plugin")]
         match (self.plugin, self.plugin_meter) {
@@ -187,8 +146,6 @@ pub(crate) fn drop_captured(commands: &mut Commands, entity: Entity) {
         return;
     };
     let _ = &mut e;
-    #[cfg(feature = "modulation")]
-    e.try_remove::<crate::modulation::legacy::ModParamsHandle>();
     #[cfg(feature = "plugin")]
     e.try_remove::<crate::plugin_host::PluginShadow>();
 }

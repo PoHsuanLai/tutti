@@ -64,11 +64,10 @@ use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
 
 use crate::node::{InPlaceMask, Prepare, Resolution, Shape, MAX_PORTS};
-use crate::param::{signature, ParamFrom, ParamIn, ParamShaping};
+use crate::param::ParamIn;
 use crate::plan::{
     Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, NodeTables, Op,
-    ParamPortOp, ParamSlot, ParamSourceOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value,
-    EMPTY_SLOT, ZERO_SLOT,
+    ParamPortOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
 };
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 
@@ -91,12 +90,12 @@ pub enum CycleEdge {
         from: EventOut,
     },
     /// A param edge from `from` into `at`. Param edges are always direct: a
-    /// node cannot modulate itself, or anything upstream of it.
+    /// node cannot drive itself, or anything upstream of it.
     Param {
         /// The param port.
         at: ParamIn,
-        /// The source.
-        from: ParamFrom,
+        /// The event output that drives it.
+        from: EventOut,
     },
 }
 
@@ -182,12 +181,12 @@ pub enum CompileError {
         /// The param port.
         at: ParamIn,
     },
-    /// A param source names an output its node does not have.
+    /// A param source names an event output its node does not have.
     ParamSourceOutOfRange {
         /// The param port.
         at: ParamIn,
         /// The source.
-        from: ParamFrom,
+        from: EventOut,
     },
     /// A cycle that no feedback edge breaks. Every direct edge inside the
     /// cycle's strongly connected component is listed, in key order.
@@ -341,19 +340,13 @@ enum Pre {
     },
 }
 
-/// A modulated param port before colouring.
+/// A driven param port before colouring: its event source, and the event
+/// value it reads.
 struct PPort {
     port: u16,
     param: tutti_types::UnitParam,
-    sig: u64,
-    sources: Vec<(PRef, ParamShaping, ParamFrom)>,
-}
-
-/// Where a param source reads from, before colouring.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PRef {
-    Audio(u32),
-    Event(u32),
+    from: EventOut,
+    value: u32,
 }
 
 /// A value under construction.
@@ -523,14 +516,9 @@ pub fn compile(
         {
             return Err(CompileError::UnknownParam { at });
         }
-        for s in &m.sources {
-            let shape = node_shapes[dense[&s.from.node()]];
-            let ok = match s.from {
-                ParamFrom::Audio(p) => p.port < shape.audio_out.count(),
-                ParamFrom::Events(e) => e.port < shape.event_out,
-            };
-            if !ok {
-                return Err(CompileError::ParamSourceOutOfRange { at, from: s.from });
+        if let Some(from) = m.source {
+            if from.port >= node_shapes[dense[&from.node]].event_out {
+                return Err(CompileError::ParamSourceOutOfRange { at, from });
             }
         }
     }
@@ -598,10 +586,10 @@ pub fn compile(
         }
     }
     for (&at, m) in graph.params() {
-        for s in &m.sources {
-            let (src, d) = (dense[&s.from.node()], dense[&at.node]);
+        if let Some(from) = m.source {
+            let (src, d) = (dense[&from.node], dense[&at.node]);
             preds[d].push(src);
-            labelled.push((src, d, CycleEdge::Param { at, from: s.from }));
+            labelled.push((src, d, CycleEdge::Param { at, from }));
         }
     }
     let mut succ: Vec<Vec<usize>> = vec![Vec::new(); keys.len()];
@@ -825,79 +813,45 @@ pub fn compile(
             ein.push(merge_tree(&mut em, refs));
         }
 
-        // Modulated params, in port order: each source through its PDC
-        // delay when it needs one, exactly as an input is (see the `param`
-        // module docs).
+        // Driven params, in port order: each source through its PDC delay
+        // when it needs one, exactly as an input is (see the `param` module
+        // docs).
         let mut params: Vec<PPort> = Vec::new();
         for (k, &param) in shape.params.as_slice().iter().enumerate() {
             let at = ParamIn { node: key, param };
-            let Some(m) = graph.params().get(&at) else {
+            let Some(e) = graph.params().get(&at).and_then(|m| m.source) else {
                 continue;
             };
-            let mut sources = Vec::with_capacity(m.sources.len());
-            for s in &m.sources {
-                let d = departure(dense[&s.from.node()]).gap_to(arrival[n]);
-                let r = match s.from {
-                    ParamFrom::Audio(p) => {
-                        let v = audio_out_val[&p];
-                        if d.is_zero() {
-                            PRef::Audio(v)
-                        } else {
-                            let delay = em.delays.len() as u32;
-                            em.delays.push(DelaySpec {
-                                key: DelayKey::ParamAudio { at, from: p },
-                                len: d,
-                            });
-                            let op = em.push(Pre::Delay {
-                                delay,
-                                src: v,
-                                dst: 0,
-                            });
-                            em.read_audio(v, op);
-                            let dv = em.audio_value(op);
-                            if let Pre::Delay { dst, .. } = &mut em.pre[op as usize] {
-                                *dst = dv;
-                            }
-                            PRef::Audio(dv)
-                        }
-                    }
-                    ParamFrom::Events(e) => {
-                        let v = event_out_val[&e];
-                        if d.is_zero() {
-                            PRef::Event(v)
-                        } else {
-                            let delay = em.delays.len() as u32;
-                            em.delays.push(DelaySpec {
-                                key: DelayKey::ParamEvent { at, from: e },
-                                len: d,
-                            });
-                            let op = em.push(Pre::EventDelay {
-                                delay,
-                                src: v,
-                                dst: 0,
-                            });
-                            em.read_event(v, op);
-                            let dv = em.event_value(op);
-                            if let Pre::EventDelay { dst, .. } = &mut em.pre[op as usize] {
-                                *dst = dv;
-                            }
-                            PRef::Event(dv)
-                        }
-                    }
-                };
-                sources.push((r, s.shaping.clone(), s.from));
-            }
+            let d = departure(dense[&e.node]).gap_to(arrival[n]);
+            let v = event_out_val[&e];
+            let value = if d.is_zero() {
+                v
+            } else {
+                let delay = em.delays.len() as u32;
+                em.delays.push(DelaySpec {
+                    key: DelayKey::ParamEvent { at, from: e },
+                    len: d,
+                });
+                let op = em.push(Pre::EventDelay {
+                    delay,
+                    src: v,
+                    dst: 0,
+                });
+                em.read_event(v, op);
+                let dv = em.event_value(op);
+                if let Pre::EventDelay { dst, .. } = &mut em.pre[op as usize] {
+                    *dst = dv;
+                }
+                dv
+            };
             params.push(PPort {
                 port: k as u16,
                 param,
-                sig: signature(&m.sources),
-                sources,
+                from: e,
+                value,
             });
         }
-        let reads: Vec<PRef> = params
-            .iter()
-            .flat_map(|p| p.sources.iter().map(|&(r, _, _)| r))
-            .collect();
+        let reads: Vec<u32> = params.iter().map(|p| p.value).collect();
 
         let op = em.push(Pre::Node {
             unit: n as u32,
@@ -913,11 +867,8 @@ pub fn compile(
         for &r in &ein {
             em.read_eref(r, op);
         }
-        for r in reads {
-            match r {
-                PRef::Audio(v) => em.read_audio(v, op),
-                PRef::Event(v) => em.read_event(v, op),
-            }
+        for v in reads {
+            em.read_event(v, op);
         }
         let aout: Vec<u32> = (0..shape.audio_out.count())
             .map(|port| {
@@ -1016,24 +967,13 @@ pub fn compile(
                 in_place.insert(*dst, *src);
             }
             Pre::Node {
-                unit,
-                ain,
-                aout,
-                params,
-                ..
+                unit, ain, aout, ..
             } if node_shapes[*unit as usize].in_place => {
                 for (&r, &out) in ain.iter().zip(aout) {
                     let ARef::Val(u) = r else { continue };
                     // Read by this node on exactly one port, or the other
                     // port would see the output instead of the input.
                     if ain.iter().filter(|&&x| x == r).count() != 1 {
-                        continue;
-                    }
-                    // Nor as a param source: the op reads it there too.
-                    if params
-                        .iter()
-                        .any(|p| p.sources.iter().any(|&(s, _, _)| s == PRef::Audio(u)))
-                    {
                         continue;
                     }
                     in_place.insert(out, u);
@@ -1120,7 +1060,6 @@ pub fn compile(
     let mut audio_list: Vec<u32> = Vec::new();
     let mut event_list: Vec<u32> = Vec::new();
     let mut param_ports: Vec<ParamPortOp> = Vec::new();
-    let mut param_sources: Vec<ParamSourceOp> = Vec::new();
     let span_of = |list: &mut Vec<u32>, items: &mut dyn Iterator<Item = u32>| {
         let start = list.len() as u32;
         list.extend(items);
@@ -1160,25 +1099,11 @@ pub fn compile(
             } => {
                 let pstart = param_ports.len() as u32;
                 for p in params {
-                    let sstart = param_sources.len() as u32;
-                    for (r, shaping, from) in &p.sources {
-                        param_sources.push(ParamSourceOp {
-                            from: *from,
-                            slot: match *r {
-                                PRef::Audio(v) => ParamSlot::Audio(aslot(v)),
-                                PRef::Event(v) => ParamSlot::Event(eslot(v)),
-                            },
-                            shaping: shaping.clone(),
-                        });
-                    }
                     param_ports.push(ParamPortOp {
                         port: p.port,
                         param: p.param,
-                        sig: p.sig,
-                        sources: Span {
-                            start: sstart,
-                            len: param_sources.len() as u32 - sstart,
-                        },
+                        from: p.from,
+                        slot: eslot(p.value),
                     });
                 }
                 let params = Span {
@@ -1369,7 +1294,6 @@ pub fn compile(
         event_values,
         value_readers,
         param_ports,
-        param_sources,
         nodes,
     };
 

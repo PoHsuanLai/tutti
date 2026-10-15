@@ -1,7 +1,7 @@
 //! Parameter automation reaches a hosted plugin through the graph: a
-//! `PluginAutomation` node on the plugin node's event input, a curve
-//! segment scheduled into it, and an automation lane sending segments,
-//! against the reference CLAP plugin's gain parameter.
+//! foreign control lane on the plugin node's event input, a curve segment
+//! scheduled into it, and a lane sending an envelope's segments, against
+//! the reference CLAP plugin's gain parameter.
 //!
 //! Needs `cargo build -p tutti-plugin-server` first (see `CLAUDE.md`).
 
@@ -19,10 +19,10 @@ use tutti_graph::{
     Editor, EventEdge, EventIn, EventKind, EventOut, ForkMode, ForkTarget, ParamRamp, ParamSegment,
     Prepare, SegmentShape,
 };
+use tutti_mod::ControlProgram;
 use tutti_nodes::automation::{
-    AutomationEnvelope, AutomationLaneNode, AutomationPoint, ControlLaneNode, Curve, CurveType,
+    AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, CurveType,
 };
-use tutti_plugin::handles::{ParamAddress, ParamId, TimedParam};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{At, Frame, NodeKey};
 
@@ -50,16 +50,21 @@ fn gained(v: f64) -> f32 {
 }
 
 /// **Automation reaches the plugin.** The probe renders its tag (1.0 on
-/// channel 0) scaled by its gain parameter; an automation node holding the
-/// gain at normalized 0.75 (-6 dB) feeds the plugin's event input. Rendered
-/// in an export (an offline fork of both, rolling), so the pipeline answers
-/// every chunk: once the first chunk has passed, the output is 10^(-6/20).
+/// channel 0) scaled by its gain parameter; a lane of automation alone
+/// holding the gain at normalized 0.75 (-6 dB) feeds the plugin's event
+/// input. Rendered in an export (an offline fork of both, rolling), so the
+/// pipeline answers every chunk: once the first chunk has passed, the
+/// output is 10^(-6/20).
 ///
-/// Mutation: the plugin ignoring ramp events in `take` → the gain stays at
-/// its default (0 dB) → fails. Mutation: decode the ramp's number in the
-/// other address model (`address(id, !indexed)`) → the loader finds no
-/// parameter `Index(77)` → the gain stays → fails. Mutation: no fork source
-/// on the automation node → the fork is refused → fails.
+/// Ported in doc 014 PR 5 from the deleted `PluginAutomation` node.
+///
+/// Mutations (run, PR 5), each fails with the gain left at 0 dB: the
+/// plugin node ignoring segment events (the lane's) in its event walk;
+/// decoding a segment's number in the other address model
+/// (`address(id, !indexed)`), so the loader finds no parameter `Index(77)`.
+/// The ramp path (the deleted node's) is pinned by
+/// `an_interrupting_ramp_stops_a_segment_on_a_plugin`: ignoring ramp events
+/// there fails (run, PR 5); here it survives, as a lane sends segments.
 #[test]
 fn automation_reaches_the_plugin_through_its_event_input() {
     let _lock = exclusive();
@@ -67,10 +72,12 @@ fn automation_reaches_the_plugin_through_its_event_input() {
         .render_mode(render::TAG_ONLY)
         .gain_enabled(true);
     let probe = load_probe(SAMPLE_RATE);
-    let automation = probe.client.automation([TimedParam {
-        param_id: ParamAddress::Opaque(ParamId::new(GAIN)),
-        curve: Arc::new(Constant(0.75)),
-    }]);
+    let automation = ControlLaneNode::for_foreign(
+        GAIN,
+        ControlProgram::from_automation(Arc::new(Constant(0.75))),
+        None,
+        (0.0, 1.0),
+    );
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
     let (mut live, _exec) = Editor::new(prepare);
     let (auto_key, key) = (NodeKey(1), NodeKey(9));
@@ -91,7 +98,7 @@ fn automation_reaches_the_plugin_through_its_event_input() {
     let offline = OfflineTransport::new(timeline.clone());
     let (_fork_ed, mut fork_exec) = live
         .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
-        .expect("the automation node and the plugin fork");
+        .expect("the lane and the plugin fork");
 
     let mut block = vec![0.0f32; BLOCK];
     for _ in 0..8 {
@@ -277,7 +284,9 @@ fn a_scheduled_segment_drives_a_plugin_parameter_to_its_end() {
 ///
 /// Mutation (run): the plugin node not interrupting a segment on a ramp
 /// (`SegmentPoints::interrupt` not called) → the next stride point pulls
-/// the gain back onto the segment → fails.
+/// the gain back onto the segment → fails. Mutation (run, doc 014 PR 5):
+/// the plugin ignoring ramp events (`params.point` not called) → the
+/// segment's value is left → fails.
 #[test]
 fn an_interrupting_ramp_stops_a_segment_on_a_plugin() {
     const AT: u64 = 300;
@@ -319,7 +328,12 @@ fn a_lane_drives_a_plugin_parameter_along_its_curve() {
     ));
     // 120 BPM at 48 kHz: 24 000 frames a beat, so frame 1500.
     env.add_point(AutomationPoint::new(0.0625, 0.75));
-    let lane = AutomationLaneNode::for_foreign(env.clone(), GAIN);
+    let lane = ControlLaneNode::for_foreign(
+        GAIN,
+        ControlProgram::from_automation(Arc::new(env.clone())),
+        None,
+        (0.0, 1.0),
+    );
     let (out, latency) = render_gain(Some(lane), &[], 10);
     let beat = |f: usize| Beat(f as f64 / 24_000.0);
     follows(

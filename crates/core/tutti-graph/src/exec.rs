@@ -166,11 +166,8 @@ use crate::node::{
     TransportChanges, MAX_PORTS,
 };
 use crate::par::{Block, Par, Pool};
-use crate::param::MAX_PARAM_SOURCES;
-use crate::param::{ParamFrom, ParamInput, ParamShaping, ParamState, SourceIn};
-use crate::plan::{
-    DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, ParamSlot, Plan, UnitIdx,
-};
+use crate::param::{ParamInput, ParamState};
+use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
 use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{borrow_events, event_pair, AudioSlots, EventSlots, SlotFlags};
 use crate::spec::{EventIn, EventOut};
@@ -320,7 +317,7 @@ impl Drop for Commit {
 
 impl Commit {
     /// `params` builds each incoming unit's param state from its key and
-    /// declared port count (the editor's taps and a fork's seeds).
+    /// declared port count (the editor's range cells).
     pub(crate) fn build(
         seq: u64,
         plan: Arc<Plan>,
@@ -1050,27 +1047,6 @@ impl Executor {
                     }
                     (DelayKey::Event { from, .. } | DelayKey::ParamEvent { from, .. }, _) => {
                         Ring::Event(EventFifo::sized(d.len, rate(from), max_block))
-                    }
-                    // A param source's delay holds the source's last value
-                    // rather than 0 where it appears or grows (the `param`
-                    // module docs): the port would otherwise drop to its
-                    // base for the delay's length.
-                    (DelayKey::ParamAudio { at, from }, carried) => {
-                        let last = plan
-                            .unit(at.node)
-                            .and_then(|u| {
-                                let k = u.shape.params.index_of(at.param)?;
-                                let unit = self.store.get(u.idx.0 as usize)?.as_ref()?;
-                                unit.params.last_raw(k, ParamFrom::Audio(from))
-                            })
-                            .unwrap_or(0.0);
-                        Ring::Audio(match carried {
-                            Some(Ring::Audio(mut r)) => {
-                                r.retune_padded(d.len, last);
-                                r
-                            }
-                            _ => AudioRing::filled(d.len, last),
-                        })
                     }
                     (_, Some(Ring::Audio(mut r))) => {
                         r.retune(d.len);
@@ -2018,8 +1994,8 @@ fn node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
 }
 
 /// Run a unit's fused param step (see the `param` module docs,
-/// `src/param.rs`): each declared param, from its sources this plan, into
-/// the unit's param buffers. Off the hot path: only a unit with a modulated
+/// `src/param.rs`): each declared param, from its source this plan, into
+/// the unit's param buffers. Off the hot path: only a unit with a driven
 /// param, or one mid-declick, gets here.
 #[inline(never)]
 fn run_params<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
@@ -2027,12 +2003,6 @@ fn run_params<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     h: &Head<'_, '_>,
     st: &OpState<'_, A, F, E>,
 ) {
-    static IDENTITY: ParamShaping = ParamShaping::Identity;
-    // Fills the unused tail of the source array; never read.
-    const NO_SOURCE: ParamFrom = ParamFrom::Events(EventOut {
-        node: NodeKey(0),
-        port: 0,
-    });
     let (rec, frames, plan) = (h.rec, h.frames, h.plan);
     let Unit { node, params, .. } = u;
     params.begin();
@@ -2046,20 +2016,8 @@ fn run_params<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
         let base = node.param_base(k);
         match next.next_if(|p| p.port as usize == k) {
             Some(p) => {
-                let mut srcs: [(SourceIn<'_>, &ParamShaping, ParamFrom); MAX_PARAM_SOURCES] =
-                    [(SourceIn::Audio(&[]), &IDENTITY, NO_SOURCE); MAX_PARAM_SOURCES];
-                let list = &plan.param_sources[p.sources.range()];
-                for (d, s) in srcs.iter_mut().zip(list) {
-                    *d = (
-                        match s.slot {
-                            ParamSlot::Audio(slot) => SourceIn::Audio(st.arena.slot(slot, frames)),
-                            ParamSlot::Event(slot) => SourceIn::Events(st.events.ev(slot)),
-                        },
-                        &s.shaping,
-                        s.from,
-                    );
-                }
-                params.port(k, param, frames, Some((p.sig, &srcs[..list.len()])), base);
+                let events = st.events.ev(p.slot);
+                params.port(k, param, frames, Some((p.from, events)), base);
             }
             None => params.port(k, param, frames, None, base),
         }

@@ -1,10 +1,10 @@
 # Modulation is a noun of the API, not of the engine
 
-Status: **in progress** (proposed 2026-10-14). Supersedes the
+Status: **done** (proposed 2026-10-14). Supersedes the
 param-modulation design of [doc 013](013-native-graph.md) ("Item 6 landed:
 compiler-owned param modulation" and the control-rate tier it sits beside).
-PRs 1, 2a, 2b, 3, 3b and 4a have landed; the [campaign](#12-the-campaign)
-lists them and the PRs still to come.
+Every PR of the [campaign](#12-the-campaign) has landed, PR 5 (the
+deletion) last.
 
 All file references are to `main` at `8ae55f4b`.
 
@@ -1035,8 +1035,11 @@ The rules, as designed:
 
 **One writer per knob** (it fixes M9): `write_param` loses its modulated
 branch and `set_param_snapshot`; `ParamSet` loses `set_authored`. (As
-landed: `ParamSet::authored` stays, the value a fork of the node starts
-from, which `set` writes with the live cell; nothing else writes either.)
+landed in PR 4b, `ParamSet::authored` stayed, as the value a fork of the
+node started from, which `set` wrote with the live cell. PR 5 deleted it:
+the cell is that value, a fork's template shares it
+(`ParamFork::fork_node` is the template's `fork_fresh`), and `get` reads
+it. One cell per param, one writer.)
 
 **A plugin's GUI** edit reaches the host through `ParameterChangeSink`; for
 a parameter with a lane, it is written into the lane's knob. (As landed:
@@ -1337,6 +1340,99 @@ compiler's tests); `param_set_routes.rs` is ported; `bevy-tutti`'s
 `mod_value_path.rs`, `mod_audio_rate.rs`, `graph_value_modulation.rs` are
 ported to lanes; `tutti-polysynth`'s `AtomicTarget` route tests become
 `ParamSet` writes.
+
+**As landed (PR 5).** Every item in the table is deleted, with these
+differences from it:
+
+- **`tutti-graph`:** `ParamFrom` is gone as a type, not collapsed to one
+  variant: `connect_param(at, from: EventOut) -> Option<EventOut>`
+  replaces the port's source and returns the one it had, and
+  `ParamMod { range, source: Option<EventOut> }` holds it. The plan's
+  `ParamSourceOp` and `ParamSlot` went with the source list; a
+  `ParamPortOp` names its one `from` and `slot`. `set_authored` went in
+  PR 4b and `ParamSet::authored` here (§8.2): a fork's template shares the
+  node's cells, so a fork starts from the knob. The compiler's arrival and
+  `tutti_types::latency::plan` both count a param port's source as a
+  predecessor (`a_param_source_counts_toward_arrival_in_both_solves`).
+- **`tutti-mod`:** its runtime copies of `Lfo`, `Modulator`,
+  `RandomState` and `SampleHold` went too (not in the table): `tutti-nodes`
+  holds the ones its nodes run (since PR 3), and `tutti-mod` has no
+  runtime.
+- **`tutti-plugin`:** `MAX_POINTS`'s one remaining role, the room a
+  delivery has before `prepare`, is `param_delivery`'s private
+  `UNPREPARED_POINTS` (10, kept small for a plugin of thousands of
+  parameters). The plugin node reads a foreign lane's `u32` in its own
+  address model (a VST2 index, or an opaque id); an address of the other
+  model is no longer refused, since a lane carries a bare `u32`.
+- **`bevy-tutti`:** `CapturedControls::for_params` is deleted outright, not
+  only its modulation role: a node's params are addressed at insert by
+  `GraphNode::params`, and `captured` is a hosted plugin's only.
+  `AudioGraphRes::set_param_mod` takes `source: Option<AudioNode>` (the
+  node's event output 0). `write_param`'s modulated branch and
+  `set_param_snapshot` went in PR 4b.
+- **Params that were cells, not ports, became ports.** The driver
+  modulated any `ParamSet` cell by writing it; a lane drives a port, and
+  `Modulation::apply` binds only a param the node declares
+  (`reconcile.rs`, `NoSuchParam`). So every param a node addressed but did
+  not declare would have lost its modulation. Each is declared now and read
+  where the node read its cell, once per block, as the port's last frame
+  (`block_driven` in `tutti-nodes`' `src/ramp.rs`; the synth's and the sampler's own
+  one-liners), the setter's clamp applied to a driven value as to a
+  written one: `ModDelayNode` (chorus and flanger: rate, depth, feedback,
+  mix, `MOD_DELAY_PARAMS`), `PhaserNode` (the same four), the convolver's
+  mix, `PolySynth`'s volume and, with a unison engine, detune and spread
+  (`SYNTH_PARAMS`), a `VoiceNode`'s and a standalone `MemorySource`'s gain
+  (`VOICE_PARAMS`), `LfoNode`'s depth and, free-running, rate
+  (`LFO_PARAMS`; a beat-synced LFO's rate cell holds beats, which its
+  `ParamSet` does not address either); and the rest of the compressor
+  (ratio, attack, release, makeup), the gate (attack, release), the
+  limiter (release), the delay (mix) and the SVF (gain). An LFO node's
+  rate as a port is not §11's "LFO rate by LFO": that is a compiled
+  layer's rate, which still needs an integrating layer; the node
+  integrates its own phase.
+- **A driven value gets its setter's clamp at the point of use**, through
+  one function the setter and the block's read share, so the two cannot
+  drift: `AttackRelease::clamp_time` (compressor and gate, floored at 0),
+  the limiter's `clamp_release` (1 ms: below it the follower freezes and
+  gain reduction never releases), `LfoDrive::clamp_rate` (0.01 Hz),
+  `ModDelayConfig::clamp_depth`, `Depth::new_clamped` (phaser and LFO
+  depth), `CompressionRatio`, `Feedback` and `Mix`'s `new_clamped`, and
+  the synth's `clamp_volume` and `clamp_detune` (floored at 0). None
+  hides a NaN from the node's `LastGood` read (a `max` floor comes after
+  it), so a NaN from a lane reads as the last good value; the limiter
+  gained one here, and the LFO node, which has none, reads its cell for a
+  non-finite drive. Where a clamp also applies to the cell's value, it
+  changes nothing a setter wrote (only a raw `ParamSet::set`). The rate
+  floor is the exception, driven-only: a negative rate written straight to
+  the effects' LFO cell runs it backwards, which their tests pin. A param
+  whose setter does not clamp (the SVF's gain, the compressor's makeup,
+  the LFO node's rate) is driven unclamped too, beyond the port's range.
+  The phaser's all-pass also holds its sweep inside `1 Hz..0.49 sr`,
+  which a negative depth (`set_depth` allows −1) could leave: its
+  coefficient then exceeds 1 in magnitude and the stages diverge, a
+  defect older than the ports.
+- **Kept knob-only:** `BusStripNode`'s `Mute`, a toggle (`>= 0.5` is
+  muted) the strip folds in as a factor it never modulates. A route onto it
+  is refused with `NoSuchParam`. Nothing else in the table is kept;
+  `AutomationLaneNode::new` (the audio lane) and `LfoNode` stay, as the
+  table and §11 say.
+
+**The fork-requirement audit** (every `connect_param` and every event
+source into a param port outside the lane, at PR 5): the one production
+`connect_param` is `tutti_nodes::Modulation`'s, wiring a control lane,
+which sends on a fresh instance's first block and is re-wired with
+`LaneControls::resync`. `EnvelopeFollowerNode` and `NoteEnvelopeNode` feed
+a lane's event inputs, not param ports; the note envelope answers
+`EventKind::Resync`, and the follower renders from its input, which a fork
+renders too. The contract kit's `ParamPulse` (`param_row`) is a function of
+the absolute frame and sends from its first block. `bevy-tutti`'s
+`AudioGraphRes::set_param_mod` is the host's hand-wiring API, and states
+the requirement. No other source writes a param port. Pinned by
+`a_lane_fed_fork_reads_its_value_at_frame_0` twice: in `tutti-graph`'s
+`param_mod.rs` (a hand-wired source that sends on its first block, the
+requirement as a host meets it) and in `tutti-nodes`' `control_lane.rs`
+(the lane); and by `graph_param_mod.rs`'s
+`a_fork_modulates_as_the_live_graph_does`.
 
 **`EventKind::Resync` is how a hand-wired event source meets the fork
 requirement above** (as landed in PR 4a, §6). A `ForkByClone` fork of a
@@ -1812,6 +1908,61 @@ canonical-paths gate are green; every ported suite stays green.
 
 **Exit.** `grep` finds none of §10; a param port holds at most one event
 source; `tutti-mod` has no runtime.
+
+**PR 5: landed** (branch `claude/mod-delete-old`). **The campaign is done.**
+Every item of §10's table is deleted, crate by crate, with the corrections
+recorded under §10's "As landed (PR 5)": tutti-graph's param port is
+`ParamMod { range, source: Option<EventOut> }` and its fused step is
+`clamp(held, range)` (`ParamFrom`, `ParamShaping`, the shape LUT, `ParamTap`
+and the fork seeds gone; `ParamSet::authored` with them); tutti-mod keeps
+only the compiler (§7) and its vocabulary, the runtime copies of `Lfo`,
+`Modulator`, `RandomState` and `SampleHold` being `tutti-nodes`'; tutti-nodes
+drops `ParamModShaping`; tutti-plugin drops `PluginAutomation` and its
+source, a plugin parameter being a `ControlLaneNode::for_foreign`;
+bevy-tutti drops `modulation::legacy`, `LegacyModulationPlugin`,
+`plugin_bind_params` and its kin, and `CapturedControls::for_params` (a
+node's params are addressed at insert by `GraphNode::params`).
+`AudioGraphRes::set_param_mod` takes an `Option<AudioNode>` event source
+and a range. Every param a node addresses is a port a lane can drive,
+except the bus strip's `Mute` (§10 "As landed"). Audio-rate modulation (`ParamFrom::Audio`) went with nothing
+in its place but §11's: a node's own audio input.
+
+Tests went with what they tested. Ported: bevy-tutti's
+`capture_controls` → `params_at_insert` (four tests, the param set
+addressed by every insert path and a crossfade), four of the driver's
+suites' properties → `mod_lanes` (two routes summing and a disabled one
+adding nothing, a host's own source kind, a route declared before its
+target's node, a bus strip's volume and pan), `graph_wire`'s param-mod
+wire to an event source; tutti-nodes' `param_set_routes` and
+`graph_param_mod` to lanes; tutti-plugin's CLAP and VST2 delivery,
+no-alloc and parameter suites to lanes on the plugin's event input;
+tutti-graph's `param_mod` suite and polysynth's three modulation tests to
+the collapsed port; tutti-sampler's
+`a_fork_starts_from_the_gain_last_set_and_shares_nothing` loses its half
+that stored a driver's composite into the live cell (the cell is the gain
+last set now) and gains a sharing mutation. New with the ports that
+replaced written cells: `param_set_routes`'
+`a_lane_modulates_a_chorus_rate_around_its_own_cell` (the claim the old
+`chorus_rate_route_moves_the_nodes_own_cell` made, on a lane) and
+`a_lane_drives_an_lfo_nodes_depth_and_rate`, `graph_param_mod`'s
+block-rate cases, `tutti-polysynth`'s `param_lanes` (volume, detune,
+spread), the sampler's lane tests on a voice's and a memory source's gain,
+and `mod_lanes`' `a_chorus_rate_and_a_phaser_mix_take_lanes`; and
+`removing_the_last_route_returns_the_param_to_its_knob`, the counterpart
+of `mod_value_path`'s `removing_a_route_returns_the_param_to_its_base`.
+Deleted with their subject: tutti-mod's runtime suites
+(`curve_source`, `driver`, `id`, `layered`, `lfo`, `matrix`, `modulator`,
+`param`, `router`, `routing`, `matrix_public_api`, the fold tests in
+`shape.rs`), tutti-plugin's `automation_node` and
+`param_automation_source`, tutti-nodes' `param_mod_oracle` (its convention
+is the shape tests'), tutti-graph's `ParamTap` ring and LUT tests and
+`a_fork_carries_an_in_flight_segment` (a fork carries no seed), and
+bevy-tutti's `mod_value_path`, `mod_audio_rate` and
+`graph_value_modulation` where no lane counterpart applies: the LFO-rate
+cascade (§11), host-supplied sinks and curve delivery (gone with
+`ModTargetRegistry`; a lane is sample-accurate), reflection and kind
+registration, and the claim set. Every ported or new test carries its
+mutation record, run in this PR. The fork-requirement audit is under §10.
 
 ## 13. Decided questions
 

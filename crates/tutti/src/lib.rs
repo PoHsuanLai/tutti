@@ -79,7 +79,8 @@ pub use tutti_spatial as spatial;
 #[cfg(feature = "analysis")]
 pub use tutti_analysis as analysis;
 
-/// Modulation (`tutti-mod`): sources, targets and the mod matrix. Feature
+/// Modulation (`tutti-mod`): sources, routes and the compiler that turns
+/// them into one control program per param. Feature
 /// `modulation`.
 #[cfg(feature = "modulation")]
 pub use tutti_mod as modulation;

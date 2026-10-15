@@ -28,6 +28,13 @@ impl AttackRelease {
         self.attack.detach();
         self.release.detach();
     }
+
+    /// An attack or release time as the setters store it: floored at 0.
+    /// Shared by the setters and a driven port's value.
+    #[inline]
+    pub(crate) fn clamp_time(secs: f32) -> f32 {
+        secs.max(0.0)
+    }
 }
 
 /// Threshold + optional knee width (both in dB). Gates and limiters omit

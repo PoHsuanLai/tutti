@@ -296,7 +296,7 @@ mod tests {
     /// frame it arrives; nothing else, and nothing after.
     ///
     /// Changed in doc 014 PR 2b: the points between were every 8th chunk
-    /// frame (`stride_for(64)`), a grid that moved with the chunk; they are
+    /// frame (the automation node's stride), a grid that moved with the chunk; they are
     /// now the play clock's 32-frame grid (doc 014 §5.3).
     ///
     /// Mutations (run), each fails: no point on the arrival frame (only the
@@ -379,7 +379,7 @@ mod tests {
     /// a chunk or more late.)
     ///
     /// Mutations (run), each fails: the delivery's chunk sized at 16 queues
-    /// (`ParameterChanges::reserved_bridged(16, MAX_POINTS)` in `ParamDelivery::new`) →
+    /// (`ParameterChanges::reserved_bridged(16, UNPREPARED_POINTS)` in `ParamDelivery::new`) →
     /// 184 parameters get no points in the first chunk; a track dropped before its arrival
     /// point is placed (`return false` ahead of the `point` call) → the end
     /// values never land.

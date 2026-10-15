@@ -2,7 +2,7 @@
 name = "tutti-mod"
 version = "0.0.1"
 edition = "2021"
-description = "Modulation for the Tutti engine — pure `phase -> value` sources (LFO/combinators), a keyed-accumulator target, and a MIDI-coherent mod-matrix router"
+description = "Modulation for the Tutti engine: a pure compiler from sources and routes to one control program per target"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "modulation", "lfo"]
@@ -12,57 +12,33 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [features]
-# The PURE FLOOR — the `Modulator` source trait, `Lfo`/combinators, and the
-# `shape`/`fold` math — needs no features at all.
+# Everything (the compiler, the program, the shaping vocabulary) builds with
+# no features.
 default = []
-# Unlocks the routing layer (needs std for Arc/Mutex/Vec).
-std = []
-# The mod-matrix routing subsystem: keyed accumulator, id→sink bus, routing
-# snapshot + table, and the per-frame driver.
-routing = ["std", "dep:dashmap", "dep:atomic_float"]
-# ECS surface: `Component`/`Reflect` derives on `ModTargetId`, `LayerKey`, and
 # `Reflect` on the `LfoShape`/`Polarity` vocabulary a Bevy component carries.
-# Implies `routing` (the ids/targets are only useful with it) and std.
 #
 # Enables the reflection features of the crates whose types ride inside the
-# reflected ones: an unreflectable `Depth` inside a reflected `ModEdge`, or a
-# `CurveType` inside a `ModRoute`, does not compile. These are
-# reflection-completeness edges rather than the transitive Bevy leak the
-# feature-hygiene rule guards against — `audio-automation/bevy_reflect` pulls
-# `bevy_reflect` alone, no ECS and no runtime.
+# reflected ones (a `CurveType` inside a reflected route does not compile
+# otherwise). These are reflection-completeness edges rather than the
+# transitive Bevy leak the feature-hygiene rule guards against:
+# `audio-automation/bevy_reflect` pulls `bevy_reflect` alone, no ECS and no
+# runtime.
 bevy = [
-    "routing",
     "tutti-types/bevy",
     "audio-automation/bevy_reflect",
-    "dep:bevy_ecs",
     "dep:bevy_reflect",
 ]
 
 [dependencies]
-# `CurveType` only for the pure floor — the project's established response-curve
-# vocabulary. Keeps a `Modulator` able to drive something non-audio.
+# `CurveType`, the project's response-curve vocabulary, and the automation
+# envelope that is a `Curve`.
 audio-automation = { workspace = true }
 
-# The measurement vocabulary. `Phase`/`PhaseIncrement` (a modulator's position
-# and its step) and `Depth` (a bipolar modulation amount) reach into the pure
-# floor itself, so this is not routing-gated; `ParamAddr` — the key the
-# `ModParams` trait addresses — comes from here too.
-#
-# Unconditional despite the floor's no-dependencies instinct, because `Phase`
-# is what makes a sign-wrong hand-rolled wrap (a reverse-rate modulator walking
-# off a shape table) unrepresentable. tutti-types is a leaf crate — Bevy-free,
-# pulling only arrayvec / atomic_float.
+# The value vocabulary: `Depth`, `Beat`, `PhaseIncrement`, `ParamAddr` (a
+# target's param), `PlayReading`. A leaf crate: Bevy-free.
 tutti-types = { path = "../tutti-types", default-features = false }
 
-# Routing layer — literal pins matching the tutti crates (these are NOT in
-# [workspace.dependencies]).
-dashmap = { version = "6.1", optional = true }
-# `AtomicTarget` mirrors its final value into a shared `AtomicF32` the consumer
-# reads directly. Pin matches tutti-types.
-atomic_float = { version = "1.1", optional = true }
-
-# Bevy derives — workspace deps, gated on the `bevy` feature.
-bevy_ecs = { workspace = true, optional = true }
+# Bevy derives, gated on the `bevy` feature.
 bevy_reflect = { workspace = true, optional = true }
 
 # docs.rs renders with every feature on. `default = []` keeps the engine

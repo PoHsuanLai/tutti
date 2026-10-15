@@ -308,7 +308,8 @@ impl ControlLaneNode {
     }
 
     /// A lane for built-in parameter `key`, wired to its param port with
-    /// `ParamFrom::Events`: `program`'s values are `key`'s raw values.
+    /// `GraphSpec::connect_param`: `program`'s values are `key`'s raw
+    /// values.
     ///
     /// `knob` is the target node's own `Param` cell (`ParamSet::cell`), the
     /// base where the program has no automation value; `None` sends nothing

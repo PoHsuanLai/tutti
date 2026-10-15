@@ -28,10 +28,10 @@
 //!   control lane's event input: [`EnvelopeFollowerNode`] and
 //!   [`NoteEnvelopeNode`].
 //! - Mixing: [`ChannelSumNode`], [`DownmixNode`], [`BusStripNode`].
-//! - Param modulation: each node's `*_PARAMS` port list (for example
-//!   [`SVF_PARAMS`]) and [`ParamModShaping`].
-//! - Modules: [`automation`] (lanes and recording), [`buffer`] (ring buffers),
-//!   [`param_mod`].
+//! - Param ports: each node's `*_PARAMS` port list (for example
+//!   [`SVF_PARAMS`]), which a control lane drives
+//!   ([`ControlLaneNode`](automation::ControlLaneNode)).
+//! - Modules: [`automation`] (lanes and recording), [`buffer`] (ring buffers).
 //!
 //! [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
 
@@ -60,14 +60,13 @@ pub use tutti_core::{
 pub mod buffer;
 
 mod lfo;
-// The pure modulators, copied from tutti-mod (doc 014 §7): its copies serve
-// its `routing` driver until doc 014's PR 5 deletes it; these serve the
-// nodes here.
+// The pure modulators the nodes here run (doc 014 §7: tutti-mod is a
+// compiler and holds none).
 mod modulator;
 // `LfoNode` is `ModulatorNode<Lfo>` — the graph node over a pure
 // `Modulator`. `LfoShape` is re-exported from `tutti-mod` through `lfo`, so
 // `use tutti_nodes::LfoShape` works.
-pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode};
+pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, LFO_PARAMS};
 pub use modulator::{Lfo, Modulator, RandomState, SampleHold};
 
 mod delay;
@@ -89,21 +88,6 @@ pub use dynamics::{
     COMPRESSOR_PARAMS, GATE_PARAMS, LIMITER_PARAMS,
 };
 
-// The shaping an audio-rate modulation edge authors; the edge itself is the
-// graph's.
-pub mod param_mod;
-pub use param_mod::ParamModShaping;
-
-// A node's control-rate modulation surface is its `ParamSet` (a host
-// resolves a route on its cells). Re-export the `ModParams` trait +
-// modulation *target* surface from tutti-mod so
-// downstream crates (e.g. tutti-plugin implementing `ModParams`) reach it here
-// alongside `Lfo`, without a separate tutti-mod dep. The routing feature is on
-// (tutti-nodes deps tutti-mod with `features = ["routing"]`).
-pub use tutti_mod::{
-    AtomicTarget, BeatLfo, CurveModulator, LayerKey, LayeredCurve, ModParams, ModTarget,
-};
-
 // The fan-in every mixer needs: `K` sources × `N` channels summed into one
 // `N`-wide output. Ungated on purpose — it is arity arithmetic, not geometry.
 // `tutti-spatial`'s `build_vbap_mix` is one consumer, not the only one.
@@ -122,7 +106,7 @@ pub use strip::{BusStripNode, STRIP_PARAMS};
 // this crate; nothing here names it.
 
 mod modulation;
-pub use modulation::{ModDelayConfig, ModDelayNode, PhaserNode};
+pub use modulation::{ModDelayConfig, ModDelayNode, PhaserNode, MOD_DELAY_PARAMS, PHASER_PARAMS};
 
 // The signal-driven sources a `tutti_mod::compile` declaration describes
 // (`SourceNode`): nodes that send a raw value into control lanes.
@@ -143,7 +127,7 @@ mod convolution;
 #[cfg(feature = "convolution")]
 pub use convolution::{
     generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into, Convolver,
-    ConvolverNode, IrChannelConfig, IrSpectra, WetDry,
+    ConvolverNode, IrChannelConfig, IrSpectra, WetDry, CONVOLVER_PARAMS,
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a

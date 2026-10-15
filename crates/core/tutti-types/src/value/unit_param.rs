@@ -153,9 +153,10 @@ impl From<UnitParam> for u16 {
 /// [`UnitParam`] is a *closed* set: the params tutti's own units define. A unit
 /// with params tutti does not model — a hosted plugin, a WASM unit, a scripted
 /// node — has an *open* space of its own numeric ids that no fixed enum can
-/// enumerate. `ParamAddr` unifies both so one API (e.g. `ModParams::mod_target`)
-/// addresses either: a native node answers on [`Unit`](ParamAddr::Unit) and
-/// ignores [`Id`](ParamAddr::Id); a foreign unit does the reverse.
+/// enumerate. `ParamAddr` unifies both so one API (e.g. a modulation
+/// target's `TargetKey`) addresses either: a native node answers on
+/// [`Unit`](ParamAddr::Unit) and ignores [`Id`](ParamAddr::Id); a foreign
+/// unit does the reverse.
 ///
 /// Deliberately not "plugin"-named — the [`Id`](ParamAddr::Id) arm is any
 /// externally-numbered param, not a plugin concept.

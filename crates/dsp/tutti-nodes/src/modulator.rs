@@ -1,13 +1,11 @@
-//! The pure modulators the audio-rate adapter drives: the [`Modulator`]
-//! trait, [`Lfo`], [`SampleHold`] and the [`RandomState`] stepper they share.
+//! The pure modulators the audio-rate nodes run: the [`Modulator`] trait,
+//! [`Lfo`], [`SampleHold`] and the [`RandomState`] stepper they share.
 //!
-//! **A copy** of `tutti-mod`'s (doc 014 §3, §7): stateful per-sample sources
-//! are a runtime, and `tutti-mod` becomes a pure compiler. Its own copies
-//! stay for its `routing` feature (the frame-rate driver `bevy-tutti` still
-//! runs) and go with it in doc 014's PR 5; this crate's nodes
-//! ([`ModulatorNode`](crate::ModulatorNode), [`LfoNode`](crate::LfoNode))
-//! use these. The waveform vocabulary ([`LfoShape`]) is not copied: it is
-//! `tutti-mod`'s floor, which stays.
+//! Stateful per-sample sources are a runtime, so they live here and not in
+//! `tutti-mod`, which is a pure compiler (doc 014 §3, §7). This crate's
+//! nodes ([`ModulatorNode`](crate::ModulatorNode),
+//! [`LfoNode`](crate::LfoNode)) use them. The waveform vocabulary
+//! ([`LfoShape`]) is `tutti-mod`'s.
 
 use tutti_core::{Depth, Phase, PhaseIncrement};
 use tutti_mod::LfoShape;

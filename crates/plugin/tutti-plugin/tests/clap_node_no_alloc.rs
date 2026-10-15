@@ -1,11 +1,11 @@
 //! RT-safety regression: a bound out-of-process plugin, run by the
 //! graph's executor, does not allocate on the audio thread in steady state —
 //! the FIFO and ring, the transport snapshot from `Env` (with a meter
-//! installed), the per-chunk payload (MIDI from the live inbox, parameter
-//! automation from an LFO through an automation node on the plugin's event
-//! input, and curve segments from an automation lane followed along by the
-//! node's `SegmentPoints`), the IPC submit and collect, and the executor
-//! around them.
+//! installed), the per-chunk payload (MIDI from the live inbox, and curve
+//! segments from two foreign control lanes on the plugin's event input, an
+//! LFO and an automation envelope, followed along by the node's
+//! `SegmentPoints`), the IPC submit and collect, and the executor around
+//! them, the lanes included.
 //!
 //! What this can cover is the calling thread's code path; the audio thread
 //! is this test's thread. The bridge thread and the `plugin-server` process
@@ -33,8 +33,8 @@ use tutti_graph::{Offset, Transport, TransportChanges};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_nodes::automation::{AutomationEnvelope, AutomationLaneNode, AutomationPoint, CurveType};
-use tutti_plugin::handles::{LfoCurve, LfoShape, ParamAddress, ParamId, TimedParam};
+use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
+use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, ControlLaneNode, CurveType};
 use tutti_types::{Beat, Bpm, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -53,8 +53,8 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// points), the plugin echoing the transport it is sent, and real time
 /// between callbacks so chunks are collected as well as submitted. Shaped as
 /// the engine renders a 512-frame device callback: eight 64-frame passes,
-/// the FIFO carrying the chunk across all eight, the automation's points
-/// spaced for a 512-frame block.
+/// the FIFO carrying the chunk across all eight, the lanes' points on the
+/// play clock's 32-frame grid across it.
 ///
 /// Mutation: allocate in the node's chunk walk (a `Vec` of the chunk's
 /// input slices in place of the stack array in `graph_node.rs`) → the
@@ -65,28 +65,41 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// Mutation: let a chunk's parameter queue grow past its point room (no
 /// `has_room` check in `ParamDelivery::place`) → eight blocks of points
 /// outgrow the queue's reserved storage → aborts.
-/// Mutation: allocate where the node starts following a segment (a `Vec`
-/// per `SegmentPoints::start`) → aborts. (Growing the slots past what
-/// `prepare` reserved is not seen here: the lane re-sends one segment per
-/// block on one parameter, so a single slot is ever live; the overflow
+/// Mutation (run, doc 014 PR 5, on the lanes' segments): allocate where
+/// the node starts following a segment (a `Vec` per
+/// `SegmentPoints::start`) → aborts. (Growing the slots past what
+/// `prepare` reserved is not seen here: each lane has one segment in
+/// flight on its own parameter, so two slots are ever live; the overflow
 /// path's fallback is pinned by `segment_points`' unit tests.)
+///
+/// Ported in doc 014 PR 5: the LFO was an `LfoCurve` sampled by the deleted
+/// `PluginAutomation` node; it is a lane's LFO layer around its knob now.
 #[test]
 fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
     let probe = load_probe(SAMPLE_RATE);
-    let automation = probe.client.automation([TimedParam {
-        param_id: ParamAddress::Opaque(ParamId::new(77)),
-        curve: Arc::new(LfoCurve::new(
-            LfoShape::Sine,
-            BeatDuration(0.25),
-            Depth(1.0),
-            PhaseIncrement(0.0),
-            0.5,
-            0.0,
-            1.0,
-        )),
-    }]);
+    // A sine LFO a quarter beat long swinging parameter 77 across its
+    // whole range: a layer of depth 0.5 around a knob at 0.5.
+    let lfo = Layer {
+        id: LayerId(1),
+        clock: Clock::Beats {
+            per_cycle: BeatDuration(0.25),
+            phase: PhaseIncrement(0.0),
+        },
+        wave: Wave::Shape {
+            shape: LfoShape::Sine,
+            seed: 0,
+        },
+        amount: Amount {
+            depth: Depth(0.5),
+            polarity: Polarity::Bipolar,
+            curve: CurveType::Linear,
+        },
+        depth_by: None,
+    };
+    let program = ControlProgram::new(None, vec![lfo], vec![]).expect("a valid program");
+    let lfo = ControlLaneNode::for_foreign(77, program, Some(0.5), (0.0, 1.0));
     let prepare = tutti_graph::Prepare::new(tutti_types::SampleRate(SAMPLE_RATE), Samples(BLOCK))
         .with_quantum(Samples(QUANTUM));
     // Curve segments on another parameter: an exponential envelope, so
@@ -100,9 +113,13 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
             CurveType::Exponential,
         ));
     }
-    let lane = AutomationLaneNode::for_foreign(env, 78);
-    let (mut rig, sender) =
-        Rig::prepared_with_keys(probe.client.bind(), prepare, Some(automation), Some(lane));
+    let lane = ControlLaneNode::for_foreign(
+        78,
+        ControlProgram::from_automation(Arc::new(env)),
+        None,
+        (0.0, 1.0),
+    );
+    let (mut rig, sender) = Rig::prepared_with_keys(probe.client.bind(), prepare, vec![lfo, lane]);
     let meter = Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),

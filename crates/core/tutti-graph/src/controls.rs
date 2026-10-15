@@ -11,22 +11,14 @@
 //! on the next block without a ring and a fork reads the values it needs from
 //! the controls rather than from a shadow copy of the unit.
 //!
-//! # Live and authored
+//! # One value per param
 //!
-//! Each param carries two values:
-//!
-//! - **live** — the cell the node reads, once per block: the knob. A
-//!   modulation lane does not write it (it sends `knob + Σ offsets` into the
-//!   param's event port instead), so the host's [`set`](ParamSet::set) is its
-//!   one writer.
-//! - **authored** — what the host last set through [`set`](ParamSet::set),
-//!   which writes both. Control-thread only; nothing on the audio thread
-//!   reads it.
-//!
-//! A fork of the node starts from the **authored** values ([`ParamFork`]), so
-//! an export renders the knob the user set even where something outside the
-//! set has written the live cell. It costs a second number per param, not a
-//! second copy of the unit.
+//! Each param is one cell: the knob. The node reads it once per block, and
+//! the host's [`set`](ParamSet::set) is its one writer. A modulation lane
+//! does not write it (it sends `knob + Σ offsets` into the param's event
+//! port instead), so the cell holds what the user set, and a fork of the
+//! node starts from it ([`ParamFork`]) without a second, "authored" copy
+//! (doc 014 §10).
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -36,18 +28,14 @@ use tutti_types::{AtomicF32, UnitParam};
 use crate::fork::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
 use crate::node::{Node, NodeParts};
 
-/// One param: its address, the cell the node reads, and the authored value.
+/// One param: its address and the cell the node reads.
 struct Slot {
     param: UnitParam,
     live: Arc<AtomicF32>,
-    authored: AtomicF32,
 }
 
-/// A node's params by [`UnitParam`]: the cells the running node reads, and
-/// the values a fork of it starts from: each param's **live** value (the cell
-/// the node reads, once per block) and its **authored** value (what the host
-/// last set, which a fork starts from, so an export renders the knob the user
-/// set rather than whatever else wrote the cell).
+/// A node's params by [`UnitParam`]: the cells the running node reads, once
+/// per block, and a fork of it starts from.
 ///
 /// `Clone` shares: every clone addresses the same cells. Control-thread type;
 /// the node itself reads its own `Param<U>` fields, never this.
@@ -73,26 +61,20 @@ impl ParamSet {
         self.slots.iter().find(|s| s.param == param)
     }
 
-    /// Sets `param` to `value`: the live cell (the node reads it on its next
-    /// block) and the authored value (what a fork starts from). `false` if
-    /// the node has no such param; nothing is written then.
+    /// Sets `param` to `value`: the cell the node reads on its next block,
+    /// and a fork taken after this starts from. `false` if the node has no
+    /// such param; nothing is written then.
     pub fn set(&self, param: UnitParam, value: f32) -> bool {
         let Some(slot) = self.slot(param) else {
             return false;
         };
         slot.live.store(value, Ordering::Release);
-        slot.authored.store(value, Ordering::Relaxed);
         true
     }
 
     /// `param`'s live value: what the node reads on its next block.
     pub fn get(&self, param: UnitParam) -> Option<f32> {
         self.slot(param).map(|s| s.live.load(Ordering::Acquire))
-    }
-
-    /// `param`'s authored value: what a fork starts from.
-    pub fn authored(&self, param: UnitParam) -> Option<f32> {
-        self.slot(param).map(|s| s.authored.load(Ordering::Relaxed))
     }
 
     /// `param`'s live cell, for a reader or writer that holds it directly (a
@@ -105,14 +87,6 @@ impl ParamSet {
     /// The params, in the order they were added.
     pub fn params(&self) -> impl Iterator<Item = UnitParam> + '_ {
         self.slots.iter().map(|s| s.param)
-    }
-
-    /// Copy every authored value of `self` into `into`'s params of the same
-    /// address, live and authored — what a fork does to its fresh node.
-    fn apply_authored_to(&self, into: &ParamSet) {
-        for slot in self.slots.iter() {
-            into.set(slot.param, slot.authored.load(Ordering::Relaxed));
-        }
     }
 }
 
@@ -134,8 +108,7 @@ pub struct ParamSetBuilder {
 }
 
 impl ParamSetBuilder {
-    /// Address `cell` (a `Param<U>`'s, `Param::as_atomic`) as `param`. Its
-    /// authored value starts at what the cell holds now.
+    /// Address `cell` (a `Param<U>`'s, `Param::as_atomic`) as `param`.
     ///
     /// # Panics
     ///
@@ -146,12 +119,7 @@ impl ParamSetBuilder {
             self.slots.iter().all(|s| s.param != param),
             "{param:?} added to a ParamSet twice"
         );
-        let authored = AtomicF32::new(cell.load(Ordering::Acquire));
-        self.slots.push(Slot {
-            param,
-            live: cell,
-            authored,
-        });
+        self.slots.push(Slot { param, live: cell });
         self
     }
 
@@ -165,7 +133,7 @@ impl ParamSetBuilder {
 
 /// A node whose controls are its `Param<U>` cells, addressed by a
 /// [`ParamSet`]: what [`param_parts`] inserts, with a fork that shares
-/// nothing and starts from the authored values.
+/// nothing and starts from the values its cells hold.
 ///
 /// A graph node reads time from its block's [`Env`](crate::Env), so a fork
 /// has nothing to rebind: [`fork_fresh`](Self::fork_fresh) is the whole
@@ -182,7 +150,8 @@ pub trait ParamNode: Node + Sized {
 }
 
 /// The fork source [`param_parts`] hands the editor: a template of the node
-/// that shares its cells, and its [`ParamSet`] for the authored values.
+/// that shares its cells (so a fork reads them as they are when it is
+/// taken), and its [`ParamSet`].
 pub struct ParamFork<N> {
     template: N,
     params: ParamSet,
@@ -200,18 +169,17 @@ impl<N: ParamNode> ParamFork<N> {
         }
     }
 
-    /// The set whose authored values a fork starts from: the controls
+    /// The set over the cells a fork starts from: the controls
     /// [`param_parts`] hands the caller.
     pub fn params(&self) -> &ParamSet {
         &self.params
     }
 
     /// The fork of the node as it stands, as a value: what
-    /// [`ForkSource::fork`] boxes. Its params are at their authored values.
+    /// [`ForkSource::fork`] boxes. Its params are at the values the shared
+    /// cells hold now ([`ParamNode::fork_fresh`] copies them).
     pub fn fork_node(&self) -> N {
-        let fork = self.template.fork_fresh();
-        self.params.apply_authored_to(&fork.param_set());
-        fork
+        self.template.fork_fresh()
     }
 }
 
@@ -220,7 +188,7 @@ impl<N: ParamNode> ForkSource for ParamFork<N> {
         Ok(Forked::new(Box::new(self.fork_node())))
     }
 
-    /// The authored values are read here, at the gather: a param set after
+    /// The cells are read here, at the gather: a param set after
     /// it does not reach the fork. The fork's cells are its own, so it can
     /// be prepared on any thread.
     fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
@@ -268,16 +236,16 @@ mod tests {
         (cutoff, q, set)
     }
 
-    /// `set` reaches the node's own cell, and the authored value with it.
+    /// `set` reaches the node's own cell, and `get` reads it back.
     ///
-    /// Mutation (run): `set` stores into `authored` only → the cell reads
-    /// 1000 → fails.
+    /// Mutation (run): `set` returns `true` without storing → the cell
+    /// reads 1000 → fails.
     #[test]
     fn set_writes_the_cell_the_node_reads() {
         let (cutoff, _q, set) = set();
         assert!(set.set(UnitParam::Cutoff, 250.0));
         assert_eq!(cutoff.load(), Hz(250.0));
-        assert_eq!(set.authored(UnitParam::Cutoff), Some(250.0));
+        assert_eq!(set.get(UnitParam::Cutoff), Some(250.0));
     }
 
     /// An address the node does not have is refused, and writes nothing.

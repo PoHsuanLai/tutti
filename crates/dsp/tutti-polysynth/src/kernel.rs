@@ -5,8 +5,8 @@
 //! state these functions advance lives in `crate::bank`, which is the only
 //! caller.
 //!
-//! These are *audio-rate* generators. `tutti-mod`'s `Lfo` shapes are
-//! control-rate and not band-limited, which is why the synth does not reuse
+//! These are *audio-rate* generators. `tutti-mod`'s `LfoShape` waves are
+//! control-rate (a control lane evaluates them) and not band-limited, which is why the synth does not reuse
 //! them: a naive saw at 4 kHz folds most of its energy back below Nyquist as
 //! inharmonic partials.
 

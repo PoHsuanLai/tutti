@@ -19,17 +19,21 @@ change the running node without a lock.
   `ModDelayConfig` presets) and `PhaserNode`, both any width.
 - **Distortion** — `DistortionNode` and its `ShapeKind` waveshapers.
 - **Modulation sources** — `ModulatorNode<M>` (aliased `LfoNode`), the per-sample
-  adapter over a pure `tutti_mod::Modulator`.
+  adapter over a pure `Modulator`: an audio generator, whose output feeds a
+  node's audio input.
 - **Mixing** — `ChannelSumNode` (K sources × N channels → one N-wide output),
   `DownmixNode`, `BusStripNode` (volume / balance / mute).
-- **Param modulation** — each modulatable node declares its params (its
-  `*_PARAMS` list: `SVF_PARAMS`, `DELAY_PARAMS`, …) as param ports the
-  graph's compiler-owned modulation fills per frame (read through
-  `Io::param`), and `ParamModShaping` turns a route's depth / polarity /
-  curve into the shaping the graph applies.
+- **Param ports** — each modulatable node declares its params (its
+  `*_PARAMS` list: `SVF_PARAMS`, `DELAY_PARAMS`, …) as param ports, filled per
+  frame from one event source each (read through `Io::param`).
+- **Modulation** — the `automation` module's `ControlLaneNode`, which
+  evaluates a `tutti_mod::ControlProgram` into a param port (design doc 014),
+  the signal sources that feed a lane (`EnvelopeFollowerNode`,
+  `NoteEnvelopeNode`), and `Modulation`, the reconciler that builds them from
+  `tutti_mod` declarations.
 - **Automation / convolution** — the `automation` module's `AutomationLaneNode`
-  and recording units, and `ConvolverNode` with its IR generators (behind a
-  feature).
+  (a curve as audio) and recording units, and `ConvolverNode` with its IR
+  generators (behind a feature).
 
 A `*Node` is the graph-facing node; the inner DSP objects some are built
 from — `DelayLine`, `Lfo`, `Modulator`, `BandState` — carry no suffix, because
@@ -111,10 +115,8 @@ unchanged, so it never reaches their state.
 
 The `tutti` crate re-exports this one as `tutti::nodes`; `bevy-tutti`,
 `tutti-spatial`, `tutti-polysynth`, `tutti-export` and `tutti-plugin` build on
-it. It re-exports `ModParams`, `ModTarget`, `AtomicTarget`, `LayeredCurve` and
-related items from `tutti-mod`, so a crate implementing `ModParams` needs no
-separate `tutti-mod` dependency, and the unit types (`Hz`, `Db`, `Seconds`, …)
-and `Param` from `tutti-core`.
+it. It re-exports the unit types (`Hz`, `Db`, `Seconds`, …) and `Param` from
+`tutti-core`.
 
 ## Features
 

@@ -16,7 +16,6 @@ use tutti_types::{NodeKey, OfflineTransport};
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
 use crate::node::{IntoNode, Node, NodeParts, Prepare};
-use crate::param::{ParamFrom, ParamIn, Ramp};
 use crate::spec::{EventIn, GraphSpec};
 
 /// Produces a fresh unit for a fork of the graph its node was inserted into:
@@ -45,7 +44,7 @@ pub trait ForkSource: Send {
     ///
     /// Called on the control thread at the moment of the fork. Whatever the
     /// unit depends on that the host can still change afterwards (a shared
-    /// cell's value, a param's authored value, a plugin's state) is read
+    /// cell's value, a param's value, a plugin's state) is read
     /// here, so a later edit does not reach the fork however long the build
     /// waits.
     ///
@@ -88,7 +87,7 @@ impl ForkBuild {
     }
 
     /// A unit built on the gathering thread (a template's clone, a
-    /// `ParamNode` at its authored values) that the build prepares on
+    /// `ParamNode` at the values its cells hold) that the build prepares on
     /// whichever thread runs it.
     pub fn ready(forked: Forked) -> Self {
         Self(Build::Ready(forked))
@@ -191,8 +190,8 @@ enum Unit {
 }
 
 /// A fork gathered on the control thread and not yet built
-/// ([`Editor::fork_gather`]): the spec as the live graph held it, the param
-/// ramps it had published, and each node's unit or the build that makes it.
+/// ([`Editor::fork_gather`]): the spec as the live graph held it, and each
+/// node's unit or the build that makes it.
 ///
 /// `Send`, and holds nothing of the live graph: build it on a worker
 /// ([`build`](Self::build)) while the control thread goes on, and later edits
@@ -204,7 +203,6 @@ pub struct PendingFork {
     /// The fork's spec, but for what the inserts write (each node's shape
     /// figures, generations).
     spec: GraphSpec,
-    seeds: BTreeMap<ParamIn, Vec<(ParamFrom, Ramp)>>,
     units: Vec<(NodeKey, Unit)>,
 }
 
@@ -270,7 +268,6 @@ impl PendingFork {
             prepare,
             event_capacity,
             spec,
-            seeds,
             units,
         } = self;
         // Every deferred build first, so a failure installs nothing.
@@ -320,7 +317,6 @@ impl PendingFork {
         for (key, node) in fork.topology.nodes.iter_mut() {
             node.params = spec.topology.nodes[key].params.clone();
         }
-        editor.seed_params(seeds);
         if let Err(e) = editor.commit() {
             let remains = ForkRemains {
                 units: Vec::new(),
@@ -633,7 +629,7 @@ impl<N: Node + Clone + Send + 'static> ForkSource for CloneFork<N> {
     /// it), so a value set on that cell later reaches the fork, as it did
     /// before the fork was split. A node whose controls must be frozen at
     /// the fork is a `ParamNode` ([`ParamFork`](crate::ParamFork) reads the
-    /// authored values here and detaches its cells) or brings its own source.
+    /// cells here and detaches its own) or brings its own source.
     fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
         self.fork(mode).map(ForkBuild::ready)
     }
@@ -761,17 +757,21 @@ impl Editor {
     ///
     /// - **The graph value** as this editor holds it — its
     ///   [`spec`](Self::spec), including edits not yet committed. Wiring,
-    ///   event edges, resolution marks, param modulation and parameter values
-    ///   are copied; generations start again at 0. A modulated param starts
-    ///   at its modulated value on the fork's first frame (no declick), and
-    ///   an event source driving one starts at the ramp value the live unit
-    ///   holds, a ramp under way carrying on from where it is.
+    ///   event edges, resolution marks, param edges and parameter values
+    ///   are copied; generations start again at 0. A driven param reads its
+    ///   base until its (forked) event source first sends, with no declick:
+    ///   **a fresh source sends its current value on its first block** (doc
+    ///   014 §10). A control lane does (it has nothing in flight); a
+    ///   hand-wired source either answers
+    ///   [`EventKind::Resync`](crate::EventKind::Resync), which a host
+    ///   schedules into the fork's executor as into the live one, or drives
+    ///   the param's knob instead, which a fork copies.
     /// - **Fresh units** from each node's fork source, prepared for
     ///   `prepare` (a render may run at a different rate or block size from
     ///   the device). Latency and tail are probed again at that `Prepare`, so
     ///   a figure set with [`set_latency`](Self::set_latency) is not carried
     ///   over.
-    /// - **No state** but those ramps. Delay rings, feedback edges' captured
+    /// - **No state.** Delay rings, feedback edges' captured
     ///   blocks and event FIFOs start silent, so a feedback loop in a fork
     ///   does not carry the live loop's circulating signal. The executor's
     ///   clock starts at frame 0, and no scheduled command is copied.
@@ -846,7 +846,7 @@ impl Editor {
     /// build waits, and nor does anything a source reads in its gather — a
     /// param set through a [`ParamNode`](crate::ParamNode)'s
     /// [`ParamSet`](crate::ParamSet) ([`ParamFork`](crate::ParamFork) reads
-    /// the authored values here and detaches its cells), a hosted plugin's
+    /// the values here and detaches its cells), a hosted plugin's
     /// state. A source's unit can only be as detached as the source makes
     /// it: a [`ForkByClone`] node whose clone shares a live `Param` cell
     /// shares it with the fork too (the promise `ForkByClone` asks of its
@@ -854,8 +854,7 @@ impl Editor {
     ///
     /// # What runs here, and what runs in the build
     ///
-    /// Here, on this thread: the spec and the param ramps the running units
-    /// last published are copied, and each node's [`ForkSource::gather`]
+    /// Here, on this thread: the spec is copied, and each node's [`ForkSource::gather`]
     /// runs, in key order. What a source does there is its own declaration
     /// ([`ForkBuild`]):
     ///
@@ -869,10 +868,8 @@ impl Editor {
     ///   (a hosted plugin's saved state) and the build makes the unit (a
     ///   `plugin-server` launch), on whichever thread calls it.
     ///
-    /// The live executor is not touched: nothing is sent, and the only state
-    /// the audio thread writes that is read here (the ramps an event source
-    /// drives a param with) is read through the wait-free taps the running
-    /// units publish into.
+    /// The live executor is not touched: nothing is sent, and nothing the
+    /// audio thread writes is read here.
     ///
     /// Call on the control thread, as [`fork`](Self::fork). Drop what it
     /// returns, and what a failed build hands back, where a pinned unit's own
@@ -955,9 +952,8 @@ impl Editor {
         // kinds and param values), and every edge into a forked node. An
         // edge into a forked node comes from a forked node, a global input
         // or silence: `upstream` closed the set over every edge kind. A
-        // modulated param's sources are upstream of its node too
-        // (`upstream` walks them), so the fork modulates it as the live
-        // graph does, riding on the forked unit's own control.
+        // driven param's source is upstream of its node too (`upstream`
+        // walks it), so the fork drives it as the live graph does.
         let spec = GraphSpec {
             topology: Topology {
                 nodes: keys
@@ -992,17 +988,9 @@ impl Editor {
                 .params
                 .iter()
                 .filter(|(at, _)| keys.contains(&at.node))
-                .map(|(at, m)| (*at, m.clone()))
+                .map(|(at, m)| (*at, *m))
                 .collect(),
         };
-        // The event sources' ramps as the live units hold them, so a held
-        // automation value is where the live graph has it from the fork's
-        // first frame (a ramp under way carries on from where it is).
-        let seeds = keys
-            .iter()
-            .flat_map(|&key| self.param_ramps(key))
-            .filter(|(_, ramps)| !ramps.is_empty())
-            .collect();
 
         let mut units = Vec::with_capacity(sources.len());
         for (key, source) in sources {
@@ -1025,7 +1013,6 @@ impl Editor {
             prepare,
             event_capacity: self.event_capacity(),
             spec,
-            seeds,
             units,
         })
     }
@@ -1093,7 +1080,7 @@ impl Editor {
                 .params
                 .iter()
                 .filter(|(at, _)| at.node == node)
-                .flat_map(|(_, m)| m.sources.iter().map(|s| s.from.node()));
+                .filter_map(|(_, m)| m.source.map(|s| s.node));
             for from in audio.chain(events).chain(params).collect::<Vec<_>>() {
                 if seen.insert(from) {
                     stack.push(from);

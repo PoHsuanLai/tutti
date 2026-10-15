@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use tutti_core::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
-    ForkTarget, Io, Node, Offset, ParamFrom, ParamIn, ParamSegment, ParamShaping, Prepare,
-    ScheduleError, Shape, Status, Transport, TransportChanges,
+    ForkTarget, Io, Node, Offset, ParamIn, ParamSegment, Prepare, ScheduleError, Shape, Status,
+    Transport, TransportChanges,
 };
 use tutti_mod::{
     Adsr, Clock, CurveType, Declarations, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
@@ -1096,11 +1096,10 @@ fn a_port_with_another_event_source_is_refused() {
             node: key(3),
             param: UnitParam::Cutoff,
         },
-        ParamFrom::Events(EventOut {
+        EventOut {
             node: key(30),
             port: 0,
-        }),
-        ParamShaping::Identity,
+        },
     );
     r.ed.commit().expect("commits");
     render(&mut r.ed, &mut r.exec, 128, 128);

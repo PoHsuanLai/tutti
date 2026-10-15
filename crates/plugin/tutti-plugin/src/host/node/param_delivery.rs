@@ -121,7 +121,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use super::param_automation_source::MAX_POINTS;
 use crate::protocol::{Normalized, ParamAddress, ParameterChanges, ParameterQueue};
 
 /// A slot with no queue in the chunk being filled.
@@ -129,6 +128,11 @@ const NO_QUEUE: u32 = u32::MAX;
 
 /// A slot with no entry in the [`DeliveredRecord`] (a learned address).
 const NO_MIRROR: u32 = u32::MAX;
+
+/// A queue's point room before [`ParamDelivery::prepare`] sizes it for a
+/// chunk ([`points_for`]): small, so a plugin with thousands of parameters
+/// reserves little at bind, which `prepare` replaces before the node runs.
+const UNPREPARED_POINTS: usize = 10;
 
 /// The points one parameter can carry in a chunk of `chunk` frames:
 /// [`ParameterQueue::chunk_room`] (`ceil(chunk / 32) + 1 + 256`, design doc
@@ -508,12 +512,12 @@ impl ParamDelivery {
         Self {
             slots,
             staged: Vec::with_capacity(room),
-            changes: ParameterChanges::reserved_bridged(room, MAX_POINTS),
+            changes: ParameterChanges::reserved_bridged(room, UNPREPARED_POINTS),
             owed: 0,
             room,
             chunk_points: 0,
-            points: MAX_POINTS,
-            grid: GridBits::new(room, MAX_POINTS),
+            points: UNPREPARED_POINTS,
+            grid: GridBits::new(room, UNPREPARED_POINTS),
             counters,
             record,
         }
@@ -885,7 +889,7 @@ mod tests {
     /// each, none dropped, and nothing past the reserved room.
     ///
     /// Mutation (run): the chunk sized at 16 queues (the old cap,
-    /// `ParameterChanges::reserved_bridged(16, MAX_POINTS)` in `new`) → 184 points
+    /// `ParameterChanges::reserved_bridged(16, UNPREPARED_POINTS)` in `new`) → 184 points
     /// refused → fails.
     #[test]
     fn two_hundred_parameters_fit_one_chunk() {
@@ -1069,7 +1073,7 @@ mod tests {
     /// latest value, and each replacement is counted.
     ///
     /// Mutations (run), each fails: `points_for` ignoring the chunk (the old
-    /// ten, `MAX_POINTS`) → 58 points a queue merged; pushing past the budget
+    /// ten, the automation node's per-block budget) → 58 points a queue merged; pushing past the budget
     /// (no `has_room` check in `place`) → the queue allocates inside the
     /// gate → aborts; the replacement not counted → `points_merged` is 0.
     #[test]

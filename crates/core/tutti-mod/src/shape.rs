@@ -1,8 +1,9 @@
-//! Value vocabulary + the pure shaping / folding math.
+//! Value vocabulary + the pure shaping math.
 //!
-//! [`Polarity`] and [`LfoShape`] are the small enums a modulator needs;
-//! [`curve_apply`], [`shape`], and [`fold`] are the pure functions the audio-rate
-//! node's LUT bake and the control-rate path share — ONE copy each.
+//! [`Polarity`] and [`LfoShape`] are the small enums a route needs;
+//! [`curve_apply`] and [`shape`] are the pure functions a
+//! [`ControlProgram`](crate::ControlProgram) shapes every offset with — one
+//! copy each.
 
 pub use audio_automation::CurveType;
 
@@ -188,15 +189,6 @@ pub fn shape(x: f32, depth: Depth, polarity: Polarity, curve: CurveType) -> f32 
     }
 }
 
-/// Fold a base value plus a sequence of modulation offsets into one clamped
-/// result: `(base + Σ offsets).clamp(min, max)`. The additive, order-
-/// independent model the layered-param system relies on.
-#[inline]
-pub fn fold(base: f32, offsets: impl Iterator<Item = f32>, min: f32, max: f32) -> f32 {
-    let acc = base + offsets.sum::<f32>();
-    acc.clamp(min, max)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,33 +270,5 @@ mod tests {
         let lin = shape(0.25, Depth::FULL, Polarity::Bipolar, CurveType::Linear);
         let scv = shape(0.25, Depth::FULL, Polarity::Bipolar, CurveType::SCurve);
         assert!(scv < lin);
-    }
-
-    // ── fold() (ported from param_mod ParamSumNode tests) ──
-
-    #[test]
-    fn fold_no_mods_passes_base_clamped() {
-        assert!((fold(1.3, core::iter::empty(), 0.0, 2.0) - 1.3).abs() < 1e-6);
-        // Clamp high.
-        assert!((fold(5.0, core::iter::empty(), 0.0, 2.0) - 2.0).abs() < 1e-6);
-        // Clamp low.
-        assert!(fold(-1.0, core::iter::empty(), 0.0, 2.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn fold_adds_offsets_and_clamps() {
-        // base 1.0 + 0.2 + (-0.5) = 0.7
-        let v = fold(1.0, [0.2, -0.5].into_iter(), 0.0, 2.0);
-        assert!((v - 0.7).abs() < 1e-6, "got {v}");
-        // base 1.0 + 1.0 + 0.5 = 2.5 → clamps to 2.0
-        let v = fold(1.0, [1.0, 0.5].into_iter(), 0.0, 2.0);
-        assert!((v - 2.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn fold_is_order_independent() {
-        let a = fold(1.0, [0.3, -0.7].into_iter(), -10.0, 10.0);
-        let b = fold(1.0, [-0.7, 0.3].into_iter(), -10.0, 10.0);
-        assert!((a - b).abs() < 1e-6);
     }
 }

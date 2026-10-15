@@ -55,7 +55,7 @@ pub use disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig, DiskVoiceControls};
 /// configuration. Documented on [`memory_source`].
 pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, VoiceWindow};
 /// One voice as a standalone graph node. Documented on [`node`].
-pub use node::VoiceNode;
+pub use node::{VoiceNode, VOICE_PARAMS};
 /// The per-track multi-voice mixer. Documented on [`pool`].
 pub use pool::{PoolDrops, PoolTooWide, VoicePool};
 /// ECS components that seat a pool on a track entity. Documented on [`pool`].

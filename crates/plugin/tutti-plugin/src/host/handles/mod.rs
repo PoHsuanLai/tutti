@@ -19,22 +19,15 @@ pub(crate) mod control_handle;
 // (structural). `ResyncKind` stays exported as the underlying wire signal.
 pub use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh, ResyncKind};
 pub use crate::host::node::{
-    AutomationControls, LfoCurve, LfoOffset, OffsetCurve, PluginAutomation, PluginParamTarget,
-    TimedParam, AUTOMATION_EVENT_CAPACITY,
-};
-pub use crate::host::node::{
     Bound, ParamDeliveryStats, PluginClient, PluginControls, PluginMeter, Unbound,
 };
 // The per-block installer, reachable only when the plugin can receive that
 // input. Named here because a caller matching on the `Option` a
 // `PluginClient` accessor returns has to be able to name what is inside it.
 pub use crate::host::node::TransportView;
-// The LFO shape vocabulary + the modulation-target surface (from `tutti-mod`,
-// via `tutti-nodes`), so the app can build an [`LfoCurve`] / route to a
-// [`PluginParamTarget`] without naming `tutti-nodes` directly.
-// `ParamAddress` alongside them because `TimedParam::param_id` is one: a
-// caller that can construct a `TimedParam` through this module must be able to
-// name its field's type without reaching into the private `protocol` module.
+// `ParamAddress` because a plugin's parameters are addressed by one
+// (`HostParams::parameter_value`, `set_parameter_value`): a caller of those must be
+// able to name it without reaching into the private `protocol` module.
 // `ParamId` for the same reason one step further in — every `ParamAddress`
 // variant wraps one, so naming the address without it builds nothing.
 // `Normalized` for the same rule applied to values rather than addresses:
@@ -46,7 +39,6 @@ pub use crate::protocol::{
 };
 pub use crate::util::window::{EditorCapabilities, EditorSize};
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
-pub use tutti_nodes::{LfoShape, ModParams, ModTarget};
 
 /// In-process VST2 graph node, and the controls inserting it hands back. Used
 /// when a host loads VST2 plugins directly in the host process (via

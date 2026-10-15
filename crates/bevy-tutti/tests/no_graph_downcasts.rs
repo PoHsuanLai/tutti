@@ -151,7 +151,7 @@ fn no_graph_node_downcasts_outside_the_allow_list() {
     assert!(
         violations.is_empty(),
         "graph downcasts found:\n  {}\n\nRead the node's controls from the entity \
-         instead — `ModParamsHandle`, `PluginShadow`, or a handle \
+         instead — `NodeControls`, `PluginShadow`, or a handle \
          taken from the unit before it was inserted. See `bevy_tutti::graph::capture`.",
         violations.join("\n  ")
     );

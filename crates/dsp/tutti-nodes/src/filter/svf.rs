@@ -267,9 +267,10 @@ fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
 ///
 /// # Modulated params
 ///
-/// `N` audio inputs, `N` outputs. Cutoff (in [`Hz`]) and [`Q`] are
-/// modulatable by the graph, in that port order
-/// ([`SVF_PARAMS`]): a per-frame value on the param port
+/// `N` audio inputs, `N` outputs. Cutoff (in [`Hz`]), [`Q`] and the gain
+/// (in [`Db`]) are modulatable by the graph, in that port order
+/// ([`SVF_PARAMS`]). The gain is read once per block, as its cell is. For
+/// cutoff and Q, a per-frame value on the param port
 /// ([`Io::param`](tutti_graph::Io::param)) **overrides** the corresponding
 /// cell. It is sampled at the solve points — every 16 samples and at the
 /// block's last sample — with the coefficients interpolated between them,
@@ -301,7 +302,10 @@ pub struct SvfFilterNode<F: Real = f64> {
 }
 
 /// The params an [`SvfFilterNode`] lets the graph modulate, in port order.
-pub const SVF_PARAMS: [UnitParam; 2] = [UnitParam::Cutoff, UnitParam::Q];
+/// Cutoff and Q are read per sample; the gain (a shelf's or a bell's) is
+/// block-rate in the node (ramped across the block), so a driven port is
+/// read once per block (`block_driven`).
+pub const SVF_PARAMS: [UnitParam; 3] = [UnitParam::Cutoff, UnitParam::Q, UnitParam::GainDb];
 
 impl<F: Real> SvfFilterNode<F> {
     /// A mono filter (1 in, 1 out) of `filter_type` at `frequency` cutoff and
@@ -448,12 +452,14 @@ impl<F: Real> SvfFilterNode<F> {
     }
 
     /// Read the three control cells, once, with non-finite values held off.
+    /// `gain_driven` is the block's gain from the node's param port when a
+    /// lane drives it; `None` reads the cell.
     #[inline]
-    fn read_controls(&mut self) -> (Hz, Q, Db) {
+    fn read_controls(&mut self, gain_driven: Option<f32>) -> (Hz, Q, Db) {
         (
             Hz(self.good[0].read(self.frequency.load().get())),
             Q(self.good[1].read(self.q.load().get())),
-            Db(self.good[2].read(self.gain_db.load().get())),
+            Db(self.good[2].read(gain_driven.unwrap_or_else(|| self.gain_db.load().get()))),
         )
     }
 
@@ -591,7 +597,7 @@ impl<F: Real + 'static> Node for SvfFilterNode<F> {
         // Every control is read here, once, for the whole block. A modulated
         // value's `max` floor maps a NaN sample to the floor, and ±∞ is
         // clamped by the solve, so only the cells need holding off.
-        let (base_freq, base_q, gain_db) = self.read_controls();
+        let (base_freq, base_q, gain_db) = self.read_controls(crate::ramp::block_driven(&io, 2));
         let (cutoff, res) = (io.param(0).frames(), io.param(1).frames());
         let (inputs, mut outputs) = io.split();
         if cutoff.is_none() && res.is_none() {
@@ -637,6 +643,7 @@ impl<F: Real + 'static> Node for SvfFilterNode<F> {
         match k {
             0 => Some(self.frequency.load().get()),
             1 => Some(self.q.load().get()),
+            2 => Some(self.gain_db.load().get()),
             _ => None,
         }
     }
@@ -1021,20 +1028,22 @@ mod tests {
     }
 
     /// The shape is as wide as the filter was built, in and out, declares
-    /// cutoff then Q as its modulatable params, and reports
-    /// `Tail::Unknown`.
+    /// cutoff, Q and gain as its modulatable params, and reports
+    /// `Tail::Unknown`. (Doc 014 PR 5 added the gain port: a route onto an
+    /// SVF's gain was refused once the frame-rate driver went.)
     ///
     /// Mutation (run): swap `SVF_PARAMS`' order → the params assertion fails.
     /// Mutation (run): drop `.with_tail(Tail::Unknown)` → the shape's default
-    /// `Tail::None` → the tail assertion fails.
+    /// `Tail::None` → the tail assertion fails. Mutation (run, PR 5):
+    /// `param_base(2)` answering the Q cell → fails.
     #[test]
-    fn the_shape_is_the_width_and_declares_cutoff_then_q() {
+    fn the_shape_is_the_width_and_declares_cutoff_q_and_gain() {
         let f = SvfFilterNode::<f64>::with_channels(6usize, SvfType::LowPass, 1000.0, 0.7);
         let shape = f.shape();
         assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (6, 6));
         assert_eq!(
             shape.params.as_slice(),
-            &[UnitParam::Cutoff, UnitParam::Q][..]
+            &[UnitParam::Cutoff, UnitParam::Q, UnitParam::GainDb][..]
         );
         assert_eq!(
             f.param_base(0),
@@ -1042,6 +1051,7 @@ mod tests {
             "cutoff's base is its control"
         );
         assert_eq!(f.param_base(1), Some(0.7), "Q's base is its control");
+        assert_eq!(f.param_base(2), Some(0.0), "gain's base is its control");
         assert_eq!(shape.tail, Tail::Unknown, "a resonant filter rings on");
     }
 

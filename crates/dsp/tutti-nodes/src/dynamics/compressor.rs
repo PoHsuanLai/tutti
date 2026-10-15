@@ -13,7 +13,7 @@ use super::utils::{
 };
 use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
-use crate::ramp::LastGood;
+use crate::ramp::{block_driven, LastGood};
 
 /// Shared compressor state used by the per-sample gain computation.
 #[derive(Clone)]
@@ -123,39 +123,53 @@ impl CompressorCore {
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_core::SampleRate>) {
-        let (attack, release) = self.times();
+        let (attack, release) = self.times([None, None]);
         self.follower.set_sample_rate(sample_rate, attack, release);
     }
 
+    /// `driven` is the block's attack and release from the node's param
+    /// ports where a lane drives them; `None` reads the cell.
     #[inline]
-    pub fn update_coefficients(&mut self) {
-        let (attack, release) = self.times();
+    pub fn update_coefficients(&mut self, driven: [Option<f32>; 2]) {
+        let (attack, release) = self.times(driven);
         self.follower.update_coefficients(attack, release);
     }
 
-    /// Attack and release, with non-finite writes held off.
+    /// Attack and release, with non-finite writes held off, floored as
+    /// the setters floor them ([`AttackRelease::clamp_time`]), driven or
+    /// not.
     #[inline]
-    fn times(&mut self) -> (Seconds, Seconds) {
+    fn times(&mut self, [attack, release]: [Option<f32>; 2]) -> (Seconds, Seconds) {
         (
-            Seconds(self.good[4].read(self.timing.attack.load().get())),
-            Seconds(self.good[5].read(self.timing.release.load().get())),
+            Seconds(AttackRelease::clamp_time(self.good[4].read(
+                attack.unwrap_or_else(|| self.timing.attack.load().get()),
+            ))),
+            Seconds(AttackRelease::clamp_time(self.good[5].read(
+                release.unwrap_or_else(|| self.timing.release.load().get()),
+            ))),
         )
     }
 
     /// Reads every block-rate control once, and moves the makeup ramp's start
-    /// to this block's end.
+    /// to this block's end. `driven` is the block's ratio and makeup from
+    /// the node's param ports where a lane drives them (a driven ratio
+    /// clamped as the setter clamps); `None` reads the cell.
     #[inline]
-    pub fn begin_block(&mut self) -> CompressorBlock {
+    pub fn begin_block(&mut self, [ratio, makeup]: [Option<f32>; 2]) -> CompressorBlock {
         let (threshold, knee) = self.threshold.load();
         let threshold = Db(self.good[0].read(threshold.get()));
         let knee = Db(self.good[1].read(knee.get()));
-        let makeup_to = Db(self.good[3].read(self.makeup_db.load().get()));
+        let makeup_to =
+            Db(self.good[3].read(makeup.unwrap_or_else(|| self.makeup_db.load().get())));
         let makeup_from = self.last_makeup.unwrap_or(makeup_to);
         self.last_makeup = Some(makeup_to);
         CompressorBlock {
             threshold,
             knee,
-            ratio: CompressionRatio(self.good[2].read(self.ratio.load().get())),
+            ratio: CompressionRatio(self.good[2].read(ratio.map_or_else(
+                || self.ratio.load().get(),
+                |r| CompressionRatio::new_clamped(r).get(),
+            ))),
             makeup_from,
             makeup_to,
         }
@@ -222,8 +236,18 @@ pub struct CompressorNode {
     gains: Vec<f32>,
 }
 
-/// The params a [`CompressorNode`] lets the graph modulate, in port order.
-pub const COMPRESSOR_PARAMS: [UnitParam; 1] = [UnitParam::Threshold];
+/// The params a [`CompressorNode`] lets the graph modulate, in port order:
+/// every param in its set. The threshold is read per sample; the ratio,
+/// the times and the makeup are block-rate in the node (read once per
+/// block, the makeup ramped across it), so a driven port is read the same
+/// way (`block_driven`).
+pub const COMPRESSOR_PARAMS: [UnitParam; 5] = [
+    UnitParam::Threshold,
+    UnitParam::Ratio,
+    UnitParam::Attack,
+    UnitParam::Release,
+    UnitParam::GainDb,
+];
 
 impl CompressorNode {
     /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
@@ -388,7 +412,7 @@ impl CompressorNode {
         self.core
             .timing
             .attack
-            .store(Seconds(seconds.into().get().max(0.0)));
+            .store(Seconds(AttackRelease::clamp_time(seconds.into().get())));
     }
 
     /// Sets the release time in [`Seconds`], floored at 0.
@@ -396,7 +420,7 @@ impl CompressorNode {
         self.core
             .timing
             .release
-            .store(Seconds(seconds.into().get().max(0.0)));
+            .store(Seconds(AttackRelease::clamp_time(seconds.into().get())));
     }
 
     /// Sets the makeup gain in [`Db`], applied after reduction.
@@ -426,8 +450,8 @@ impl CompressorNode {
 }
 
 impl Node for CompressorNode {
-    /// `2 * channels` in (audio, then sidechain), `channels` out, the
-    /// threshold modulatable ([`COMPRESSOR_PARAMS`]).
+    /// `2 * channels` in (audio, then sidechain), `channels` out, every
+    /// param modulatable ([`COMPRESSOR_PARAMS`]).
     ///
     /// No tail: the release envelope decays after the input goes silent,
     /// but it only scales (`output = input * gain`), so a silent input is a
@@ -447,8 +471,11 @@ impl Node for CompressorNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        self.core.update_coefficients();
-        let block = self.core.begin_block();
+        self.core
+            .update_coefficients([block_driven(&io, 2), block_driven(&io, 3)]);
+        let block = self
+            .core
+            .begin_block([block_driven(&io, 1), block_driven(&io, 4)]);
         let ch = self.channels.count() as usize;
         // A modulated threshold overrides the cell per sample; the cell is
         // the base the graph's modulation rides on.
@@ -474,7 +501,14 @@ impl Node for CompressorNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        (k == 0).then(|| self.core.threshold.threshold.load().get())
+        match k {
+            0 => Some(self.core.threshold.threshold.load().get()),
+            1 => Some(self.core.ratio.load().get()),
+            2 => Some(self.core.timing.attack.load().get()),
+            3 => Some(self.core.timing.release.load().get()),
+            4 => Some(self.core.makeup_db.load().get()),
+            _ => None,
+        }
     }
 }
 
@@ -686,21 +720,37 @@ mod tests {
 
     // ── Modulated threshold (the graph's param feed) ────────────────────────
 
-    /// The shape declares the threshold, and it never changes the arity:
-    /// audio plus sidechain, at every width.
+    /// The shape declares every param (threshold, ratio, attack, release,
+    /// makeup), and it never changes the arity: audio plus sidechain, at
+    /// every width. (Doc 014 PR 5 widened the list: a route onto any of
+    /// these was refused once the frame-rate driver went.)
     ///
     /// Mutation (run): declare no params in `shape` → the first assertion
-    /// fails.
+    /// fails. Mutation (run, PR 5): `param_base(4)` answering the ratio
+    /// cell → fails.
     #[test]
-    fn compressor_declares_its_threshold_param() {
+    fn compressor_declares_its_params() {
         let m = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
-        assert_eq!(m.shape().params.as_slice(), &[UnitParam::Threshold][..]);
+        assert_eq!(
+            m.shape().params.as_slice(),
+            &[
+                UnitParam::Threshold,
+                UnitParam::Ratio,
+                UnitParam::Attack,
+                UnitParam::Release,
+                UnitParam::GainDb
+            ][..]
+        );
         assert_eq!(m.shape().audio_in.count(), 2);
         assert_eq!(
             m.param_base(0),
             Some(-20.0),
             "the base is the threshold control"
         );
+        assert_eq!(m.param_base(1), Some(4.0), "the ratio's base");
+        assert_eq!(m.param_base(2), Some(0.0001), "the attack's base");
+        assert_eq!(m.param_base(3), Some(0.1), "the release's base");
+        assert_eq!(m.param_base(4), Some(0.0), "the makeup's base");
         let s = CompressorNode::stereo(-20.0, 4.0, 0.0001, 0.1);
         assert_eq!(s.shape().audio_in.count(), 4);
     }

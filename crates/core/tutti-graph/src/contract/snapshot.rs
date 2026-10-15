@@ -11,7 +11,7 @@
 //! For each control, on a freshly made node:
 //!
 //! 1. fork it as [`param_parts`](crate::param_parts) does
-//!    ([`ParamFork::fork_node`]: `fork_fresh`, then the authored values)
+//!    ([`ParamFork::fork_node`]: `fork_fresh`, at the values the cells hold)
 //!    and render a copy of the fork (the *before*);
 //! 2. move the control on the **live** node, through `&N` only: a write
 //!    that has to go through a shared reference can only reach a shared

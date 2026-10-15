@@ -95,8 +95,7 @@ pub struct RateAnchor {
 pub enum Wave {
     /// A closed-form shape. `Random` and `RandomSmooth` derive their steps
     /// from a hash of the cycle index and `seed`, so they replay after a
-    /// seek and in a fork (seed 0 is the routing feature's `BeatLfo`
-    /// sequence).
+    /// seek and in a fork.
     Shape {
         /// The shape.
         shape: LfoShape,

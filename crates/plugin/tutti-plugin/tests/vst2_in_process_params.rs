@@ -29,8 +29,9 @@ use tutti_graph::contract::Direct;
 use tutti_graph::{
     Event, ForkMode, ForkTarget, GraphBuilder, Offset, ParamRamp, Prepare, Transport,
 };
-use tutti_nodes::automation::Curve;
-use tutti_plugin::handles::{Normalized, ParamAddress, PluginHandle, TimedParam};
+use tutti_mod::ControlProgram;
+use tutti_nodes::automation::ControlLaneNode;
+use tutti_plugin::handles::{Normalized, ParamAddress, PluginHandle};
 use tutti_plugin::{in_process_vst2_client, InProcessVst2Client};
 
 #[path = "support/probe_path.rs"]
@@ -208,25 +209,17 @@ fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
     drop(handle);
 }
 
-/// A curve holding one value: a host's automation lane that never moves.
-struct Held(f32);
-
-impl Curve for Held {
-    fn value_at(&self, _beat: Beat) -> Option<f32> {
-        Some(self.0)
-    }
-}
-
 /// **An export renders an edit made in the plugin's own editor, as live
-/// playback does.** A `PluginAutomation` node holds parameter 0 at 0.25 and
+/// playback does.** A foreign control lane holds parameter 0 at 0.25 and
 /// feeds the plugin node's event input; the probe plays `1000 · param0` as a
 /// DC on top of its channel tag (1 on channel 0), so live renders 251. The
 /// plugin's parameter 0 is then set to 0.5 behind the node's back, through
 /// the plugin handle: live, the held 0.25 is never re-sent, so it renders
 /// 501. The graph is then forked offline (an export): the fork is loaded
 /// with the live state (param0 = 0.5) and its delivery is seeded with what
-/// the live node delivered (0.25), so the lane's 0.25 is not sent to it
-/// either, and the export renders 501 too.
+/// the live node delivered (0.25), so the fork's fresh lane, which sends its
+/// 0.25 on its first block (doc 014 §10's fork requirement), is not passed
+/// on, and the export renders 501 too.
 ///
 /// Mutation (run): the fork's delivery not seeded (no
 /// `fork.params.seed(&delivered)` in `vst2_in_process/fork.rs`) → the fork
@@ -237,14 +230,12 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     let _lock = lock_probe();
     let _env = ProbeEnv::new().params(4).state_dc();
     let (client, handle) = load();
-    let automation = client.automation([TimedParam {
-        param_id: ParamAddress::Index(0),
-        curve: Arc::new(Held(0.25)) as Arc<dyn Curve>,
-    }]);
+    // A host's knob for VST2 parameter 0, held still.
+    let held = ControlLaneNode::for_foreign(0, ControlProgram::default(), Some(0.25), (0.0, 1.0));
 
     let stereo = ChannelLayout::from_count(2);
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, stereo);
-    let (lane, _) = g.add_with_controls(automation);
+    let (lane, _) = g.add_with_controls(held);
     let (plugin, controls) = g.add_with_controls(client);
     g.event_connect(lane, 0, plugin, 0);
     g.pipe_output(plugin);
@@ -277,7 +268,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     let (_fork_ed, mut fork_exec) = live
         .editor()
         .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
-        .expect("the automation node and the plugin fork");
+        .expect("the lane and the plugin fork");
     let mut out = vec![vec![0.0f32; BLOCK]; 2];
     for _ in 0..8 {
         let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();

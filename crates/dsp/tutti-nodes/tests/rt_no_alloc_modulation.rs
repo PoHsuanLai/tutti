@@ -6,7 +6,7 @@
 //! driven alone in a graph by `tutti_graph::contract::BlockRig`: its `prepare`
 //! (which sizes the delay lines and the block scratch) runs when the rig is
 //! built, outside the gate; the gate walks only `process`. And control
-//! lanes (`ControlLaneNode`, `AutomationLaneNode::for_param`'s too) driving
+//! lanes (`ControlLaneNode`, automation-only ones too) driving
 //! param ports through a graph, serial and on a pool: four automation
 //! lanes, and 200 lanes of every layer kind with republishes, knob writes
 //! and range edits between blocks.
@@ -212,9 +212,11 @@ impl tutti_nodes::automation::Curve for SineCurve {
 /// 0..4): exponential, cubic-out and S-curve pieces, an `Elastic` piece
 /// (the linear fallback), and a curve with no pieces.
 fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
-    use tutti_graph::{EventOut, ParamFrom, ParamIn, ParamShaping, Prepare, Unforkable};
+    use std::sync::Arc;
+    use tutti_graph::{EventOut, ParamIn, Prepare, Unforkable};
+    use tutti_mod::ControlProgram;
     use tutti_nodes::automation::{
-        AutomationEnvelope, AutomationLaneNode, AutomationPoint, CurveType,
+        AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, CurveType,
     };
     use tutti_types::graph::{OutPort, Source};
     use tutti_types::{Hz, NodeKey, ParamKey, Samples, UnitParam};
@@ -231,11 +233,14 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     elastic.add_point(AutomationPoint::with_curve(0.1, 0.0, CurveType::Elastic));
     elastic.add_point(AutomationPoint::new(0.45, 1.0));
     let key = ParamKey::<Hz>::CUTOFF;
+    let lane = |curve: Arc<dyn Curve>| {
+        ControlLaneNode::for_param(key, ControlProgram::from_automation(curve), None, None)
+    };
     let lanes = [
-        AutomationLaneNode::for_param(shaped.clone(), key),
-        AutomationLaneNode::for_param(elastic, key),
-        AutomationLaneNode::for_param(SineCurve, key),
-        AutomationLaneNode::for_param(shaped, key),
+        lane(Arc::new(shaped.clone())),
+        lane(Arc::new(elastic)),
+        lane(Arc::new(SineCurve)),
+        lane(Arc::new(shaped)),
     ];
     let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
     let mut outputs = Vec::new();
@@ -248,8 +253,7 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
                 node: p,
                 param: UnitParam::Cutoff,
             },
-            ParamFrom::Events(EventOut { node: l, port: 0 }),
-            ParamShaping::Identity,
+            EventOut { node: l, port: 0 },
         );
         outputs.push(Source::Node(OutPort { node: p, port: 0 }));
     }
@@ -311,7 +315,7 @@ impl tutti_core::Pool for GatedPool {
     }
 }
 
-/// An automation lane's event output (`AutomationLaneNode::for_param`)
+/// An automation lane's event output (a `ControlLaneNode` of automation alone)
 /// wired to a param port never allocates on the audio thread: curve
 /// segments at breakpoints, loop wraps inside blocks, the linear fallback
 /// for an `Elastic` piece and for a curve with no pieces, ragged blocks;
@@ -545,9 +549,7 @@ fn lanes_200(
     tutti_graph::Executor,
     Vec<tutti_nodes::automation::LaneControls>,
 ) {
-    use tutti_graph::{
-        EventOut, ParamFrom, ParamIn, ParamRange, ParamShaping, Prepare, Unforkable,
-    };
+    use tutti_graph::{EventOut, ParamIn, ParamRange, Prepare, Unforkable};
     use tutti_types::graph::{OutPort, Source};
     use tutti_types::{NodeKey, Samples};
     let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
@@ -574,11 +576,8 @@ fn lanes_200(
         let lane = lane_for(k, ed.param_range_cell(at(k)).expect("committed"));
         let key = NodeKey(2000 + k as u64);
         controls.push(ed.insert(key, "lane", lane));
-        ed.spec_mut().connect_param(
-            at(k),
-            ParamFrom::Events(EventOut { node: key, port: 0 }),
-            ParamShaping::Identity,
-        );
+        ed.spec_mut()
+            .connect_param(at(k), EventOut { node: key, port: 0 });
     }
     ed.commit().expect("commits");
     (ed, exec, controls)
@@ -819,10 +818,7 @@ const CHAINS: usize = 12;
 
 fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     use std::sync::Arc;
-    use tutti_graph::{
-        EventEdge, EventIn, EventOut, ForkByClone, ParamFrom, ParamIn, ParamRange, ParamShaping,
-        Prepare,
-    };
+    use tutti_graph::{EventEdge, EventIn, EventOut, ForkByClone, ParamIn, ParamRange, Prepare};
     use tutti_mod::{
         Adsr, Amount, ControlProgram, CurveType, InputLayer, LayerId, Polarity, SourceId,
     };
@@ -923,11 +919,10 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
         );
         ed.spec_mut().connect_param(
             cutoff(k),
-            ParamFrom::Events(EventOut {
+            EventOut {
                 node: lane_key,
                 port: 0,
-            }),
-            ParamShaping::Identity,
+            },
         );
     }
     ed.commit().expect("commits");

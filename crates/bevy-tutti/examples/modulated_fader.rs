@@ -45,12 +45,12 @@ type CutoffParam = AudioParam<Hz, { UnitParam::Cutoff as u16 }>;
 /// Everything a fader widget needs for one parameter.
 ///
 /// The shape this example exists to pin down: what a widget actually reads, and
-/// from where. `authored` comes from the ECS component the UI writes; `live`
+/// from where. `knob` comes from the ECS component the UI writes; `live`
 /// and `range` come from the param's modulation lane. An unmodulated param has
-/// no lane, so `live` falls back to `authored` and `range` to the declared
+/// no lane, so `live` falls back to `knob` and `range` to the declared
 /// range — the widget needs no branch of its own.
 struct FaderView {
-    authored: f32,
+    knob: f32,
     live: f32,
     range: (f32, f32),
     modulated: bool,
@@ -61,11 +61,11 @@ impl FaderView {
     fn read<U: Unit<Raw = f32>>(
         state: &ModulationState,
         param: ParamRef,
-        authored: U,
+        knob: U,
         declared_range: (f32, f32),
         play: u64,
     ) -> Self {
-        let authored = authored.to_raw();
+        let knob = knob.to_raw();
         match state.lane(param) {
             // The lane's program is a pure function of the play clock: the
             // value it sends at `play` is this (`knob + Σ offsets`, clamped).
@@ -83,17 +83,17 @@ impl FaderView {
                 let live = lane
                     .program()
                     .value_at(lane.knob(), &at, f64::from(max - min), &[])
-                    .map_or(authored, |v| v.clamp(min, max));
+                    .map_or(knob, |v| v.clamp(min, max));
                 Self {
-                    authored,
+                    knob,
                     live,
                     range: (min, max),
                     modulated: true,
                 }
             }
             None => Self {
-                authored,
-                live: authored,
+                knob,
+                live: knob,
                 range: declared_range,
                 modulated: false,
             },
@@ -113,7 +113,7 @@ impl FaderView {
     /// A fader drawn in text: `|` is the handle, `:` the modulated ghost.
     fn draw(&self) -> String {
         const WIDTH: usize = 32;
-        let handle = (self.normalized(self.authored) * WIDTH as f32) as usize;
+        let handle = (self.normalized(self.knob) * WIDTH as f32) as usize;
         let ghost = (self.normalized(self.live) * WIDTH as f32) as usize;
 
         (0..WIDTH)
@@ -186,11 +186,11 @@ fn main() {
 
         let world = app.world();
         let state = world.resource::<ModulationState>();
-        let authored = world.get::<DriveParam>(strip).unwrap().value;
+        let knob = world.get::<DriveParam>(strip).unwrap().value;
         let play = tick as u64 * FRAMES_PER_TICK;
-        let view = FaderView::read(state, drive, authored, (0.0, 10.0), play);
+        let view = FaderView::read(state, drive, knob, (0.0, 10.0), play);
 
-        println!("{} {:>7.2} {:>8.2}", view.draw(), view.authored, view.live);
+        println!("{} {:>7.2} {:>8.2}", view.draw(), view.knob, view.live);
     }
 
     // The same widget code on a param nobody modulates: handle and ghost
@@ -201,6 +201,6 @@ fn main() {
     let view = FaderView::read(state, cutoff, value, (20.0, 20_000.0), 0);
     println!(
         "\ncutoff (unmodulated): modulated={} handle={:.0}Hz live={:.0}Hz",
-        view.modulated, view.authored, view.live
+        view.modulated, view.knob, view.live
     );
 }

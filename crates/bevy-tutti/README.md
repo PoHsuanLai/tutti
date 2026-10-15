@@ -166,7 +166,7 @@ metering, device handling and `AudioPump`.
 | `sampler` | Clip playback, disk streaming and the `.wav` asset loader (implies `wav`) |
 | `audio-io` | Microphone capture, WAV writing and recording |
 | `wav` / `flac` / `mp3` / `ogg` | Audio file decoders |
-| `modulation` | LFOs and a modulation matrix as ECS entities |
+| `modulation` | LFOs, macros and routes as ECS entities, compiled to a control lane per modulated param |
 | `spatial` | VBAP panning and surround mixing |
 | `hrtf` | The HRTF binaural panner (implies `spatial`) |
 | `convolution` | The FFT convolution reverb node |

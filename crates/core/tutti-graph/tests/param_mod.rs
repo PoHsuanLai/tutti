@@ -1,40 +1,39 @@
-//! Compiler-owned param modulation:
-//! a node declares modulatable params in its `Shape`, a spec drives them from
-//! audio or event outputs, and the compiler fuses base + shaped offsets +
-//! clamp into one step of the node's op.
+//! Compiler-owned param ports:
+//! a node declares its params in its `Shape`, a spec drives each from at
+//! most one event output (a control lane's, doc 014), and the compiler fuses
+//! the source's ramps and segments, the base and the clamp into one step of
+//! the node's op.
 //!
 //! What is pinned here, each with the mutation it was seen to fail under:
 //!
 //! - an unconnected param reads its base, never 0;
-//! - one and several audio modulators ride on the base, summed in source
-//!   order and clamped once;
+//! - an event source's value is clamped to the port's range, frame by frame;
 //! - an event source replaces the base from its first event (a first ramp
-//!   from the base), audio offsets add to it, and a second event source or
-//!   a shaped one is refused, by name;
-//! - a base move under modulation ramps across the block;
+//!   from the base); connecting a second one replaces the first;
+//! - a base move under a source that has not spoken ramps across the block;
 //! - connecting and disconnecting a source at runtime crossfades instead of
 //!   stepping;
-//! - a modulation step — an audio step or a `ParamRamp` — lands on its frame;
-//! - a node that cannot say its base is never modulated;
+//! - a step or a `ParamRamp` lands on its frame;
+//! - a node that cannot say its base is never driven;
 //! - a unit's first block (an insert, a replace, a fork) is not declicked;
-//! - an event source's held ramp survives another source joining the port;
-//! - a PDC delay appearing on (or growing on) a param source holds the
-//!   source's last value rather than dropping to 0;
-//! - a fork starts its event sources where the live graph holds them;
+//! - an event source's held value survives an edit to its node's other
+//!   ports, and a PDC delay appearing on (or growing on) its path;
+//! - a fork whose source sends its value on its first block (as a control
+//!   lane does) reads that value from frame 0;
 //! - a curve segment (`ParamSegment`) hits its analytic value at every
 //!   frame across blocks of any length, hands over on its frame when
-//!   interrupted, is clamped by a range without being rewritten, sums
-//!   through its source's shaping, and carries on in a fork;
-//! - a NaN range is refused; removing a modulated node leaves the graph
+//!   interrupted, and is clamped by a range without being rewritten;
+//! - a NaN range is refused; removing a driven node leaves the graph
 //!   committable;
 //! - the executor and the reference interpreter agree bit for bit on random
-//!   modulated graphs (ramps and curve segments among their sources), across recompiles, base moves, latency changes and
-//!   regenerations.
+//!   driven graphs (steps, ramps and curve segments among their sources),
+//!   across recompiles, base moves, latency changes and regenerations.
 //!
-//! The per-curve shaping against the old `ParamShaperNode` lives in
-//! `tutti-nodes` (`tests/param_mod_oracle.rs`), where `tutti_mod`'s curves
-//! are; the sample-accuracy contract row is `tests/contract.rs`'s
-//! `param_echo`, and the allocation gate `tests/rt_no_alloc.rs`'s
+//! Audio-rate param sources, several sources summed on one port and their
+//! shaping LUTs are gone (doc 014 §10, §11): a lane sums and shapes before it
+//! sends, and audio-rate modulation is a node's own audio input. The
+//! sample-accuracy contract row is `tests/contract.rs`'s `param_echo`, and
+//! the allocation gate `tests/rt_no_alloc.rs`'s
 //! `modulated_params_are_allocation_free`.
 
 use std::collections::BTreeMap;
@@ -44,9 +43,8 @@ use std::sync::Arc;
 use proptest::prelude::*;
 use tutti_graph::{
     CommitError, Cx, Editor, Event, EventOut, Executor, ForkByClone, ForkMode, ForkTarget,
-    GraphInvalid, Io, Node, ParamFrom, ParamIn, ParamInput, ParamRamp, ParamRange, ParamSegment,
-    ParamShaping, Prepare, Reference, SegmentShape, Shape, ShapeLut, Status, Transport, Unforkable,
-    PARAM_DECLICK,
+    GraphInvalid, Io, Node, ParamIn, ParamInput, ParamRamp, ParamRange, ParamSegment, Prepare,
+    Reference, SegmentShape, Shape, Status, Transport, Unforkable, PARAM_DECLICK,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{
@@ -84,7 +82,7 @@ impl Cell {
 #[derive(Clone)]
 struct Probe {
     bases: [Cell; 2],
-    /// Answer `param_base` (a node that cannot say is never modulated).
+    /// Answer `param_base` (a node that cannot say is never driven).
     answers: bool,
     /// The params it declares, in port order (`Cutoff, Q` unless
     /// [`reversed`](Self::reversed)).
@@ -140,54 +138,72 @@ impl Node for Probe {
     }
 }
 
-/// A modulator: a deterministic signal in `[-1, 1]` of the absolute frame,
-/// stepping every frame (so a mistimed read shows).
-struct Signal {
-    seed: u64,
+/// A step of `param` to `value` (a zero-length ramp) at `offset`.
+fn step(offset: tutti_graph::Offset, param: UnitParam, value: f32) -> Event {
+    let ramp = match param {
+        UnitParam::Q => ParamRamp::new(ParamKey::<Q>::Q, Q(value), Samples(0)),
+        _ => ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(value), Samples(0)),
+    };
+    Event::ramp(offset, ramp)
 }
 
+/// A deterministic signal in `[-1, 1]` of the absolute frame, stepping
+/// every frame (so a mistimed read shows).
 fn signal_at(seed: u64, frame: u64) -> f32 {
     let h = frame.wrapping_add(1).wrapping_mul(seed | 1).rotate_left(17) ^ seed;
     (h % 201) as f32 / 100.0 - 1.0
 }
 
+/// A source stepping `Cutoff` and `Q` to `signal_at(seed, frame)` on every
+/// frame, and writing the same signal to its one audio output (what a PDC
+/// sibling is fed).
+#[derive(Clone)]
+struct Signal {
+    seed: u64,
+}
+
 impl Node for Signal {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+            .with_events(0, 1)
+            .with_event_capacity(256)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let start = cx.env.frame.get();
-        for (i, o) in io.output(0).iter_mut().enumerate() {
-            *o = signal_at(self.seed, start + i as u64);
+        for i in 0..io.frames() {
+            let v = signal_at(self.seed, start + i as u64);
+            io.output(0)[i] = v;
+            let o = io.offset(i).expect("inside");
+            for p in [UnitParam::Cutoff, UnitParam::Q] {
+                let _ = io.event_out(0).push(step(o, p, v));
+            }
         }
         Status::Modified
     }
     fn reset(&mut self) {}
 }
 
-/// A step: 0 before absolute frame `at`, `height` from it on.
+/// A source stepping `Cutoff` and `Q` to `value` at the start of every block
+/// (a constant a port hears whenever it starts listening).
 #[derive(Clone)]
-struct Step {
-    at: u64,
-    height: f32,
+struct Hold {
+    value: f32,
 }
 
-impl Node for Step {
+impl Node for Hold {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_event_capacity(4)
     }
     fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let start = cx.env.frame.get();
-        for (i, o) in io.output(0).iter_mut().enumerate() {
-            *o = if start + i as u64 >= self.at {
-                self.height
-            } else {
-                0.0
-            };
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let o = io.offset(0).expect("a block has a frame");
+        for p in [UnitParam::Cutoff, UnitParam::Q] {
+            let _ = io.event_out(0).push(step(o, p, self.value));
         }
-        Status::Modified
+        Status::Silent
     }
     fn reset(&mut self) {}
 }
@@ -246,6 +262,16 @@ struct Ramps {
     segs: Vec<(u64, ParamSegment)>,
 }
 
+impl Ramps {
+    /// Steps (zero-length ramps) only.
+    fn steps(steps: &[(u64, UnitParam, f32)]) -> Self {
+        Self {
+            plan: steps.iter().map(|&(at, p, v)| (at, p, v, 0)).collect(),
+            segs: Vec::new(),
+        }
+    }
+}
+
 impl Node for Ramps {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
@@ -289,6 +315,14 @@ fn port(node: u64, port: u16) -> OutPort {
     OutPort {
         node: NodeKey(node),
         port,
+    }
+}
+
+/// Event output 0 of `node`.
+fn ev(node: u64) -> EventOut {
+    EventOut {
+        node: NodeKey(node),
+        port: 0,
     }
 }
 
@@ -354,65 +388,48 @@ fn an_unconnected_param_reads_its_base_never_zero() {
     assert!(out[2].iter().all(|&x| x == 0.0), "no param read frames");
 }
 
-/// One modulator rides on the base, sample for sample; several sum in
-/// source order, each through its own shaping, and are clamped once to the
-/// range. Checked after the connection's declick.
+/// An event source's value reaches the param sample for sample, from the
+/// port's first frame, and is clamped to the port's range: an unbounded
+/// port reads the source exactly, a bounded one reads it clamped.
 ///
-/// Mutation (run): in `ParamState::port`, clamp each offset rather than the
-/// sum → the two-source case differs → fails. Drop the base from the sum →
-/// fails the first assertion. Apply the LUT to the identity source too →
-/// fails.
+/// Ported in doc 014 PR 5 from `modulators_sum_on_the_base_then_clamp`:
+/// the base, several audio sources summed in source order and a shaping LUT
+/// are gone (§10, §11: one event source per port replaces the base; a lane
+/// sums and shapes before it sends). The clamp and the per-frame timing are
+/// the properties kept.
+///
+/// Mutation (run): in `ParamState::port`, skip the clamp → the Q port reads
+/// past 0.5 → fails. Write the source one frame late (`render_ramps` starts
+/// events at `offset < i`) → frame 0 reads the base → fails.
 #[test]
-fn modulators_sum_on_the_base_then_clamp() {
+fn an_event_sources_value_is_clamped_to_the_range() {
     let (cutoff, q) = (Cell::new(100.0), Cell::new(1.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
     ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: 7 }));
-    ed.insert(NodeKey(2), "sig", Unforkable(Signal { seed: 11 }));
-    let cube = ShapeLut::from_fn(|x| 0.5 * x * x * x);
     {
         let s = ed.spec_mut();
-        s.connect_param(
-            param(PROBE, UnitParam::Cutoff),
-            ParamFrom::Audio(port(1, 0)),
-            ParamShaping::Identity,
-        );
-        s.connect_param(
-            param(PROBE, UnitParam::Q),
-            ParamFrom::Audio(port(1, 0)),
-            ParamShaping::Identity,
-        );
-        s.connect_param(
-            param(PROBE, UnitParam::Q),
-            ParamFrom::Audio(port(2, 0)),
-            ParamShaping::Lut(cube.clone()),
-        );
-        s.set_param_range(param(PROBE, UnitParam::Q), ParamRange::new(0.5, 1.5));
+        s.connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
+        s.connect_param(param(PROBE, UnitParam::Q), ev(1));
+        s.set_param_range(param(PROBE, UnitParam::Q), ParamRange::new(-0.5, 0.5));
     }
     ed.commit().expect("commits");
-    let skip = PARAM_DECLICK.get();
-    let out = render(&mut exec, &mut ed, skip + 500, 64);
+    let out = render(&mut exec, &mut ed, 500, 64);
     #[allow(clippy::needless_range_loop, reason = "three outputs at one frame")]
-    for i in skip..skip + 500 {
-        let f = i as u64;
-        let (a, b) = (signal_at(7, f), signal_at(11, f));
-        assert_eq!(
-            out[0][i],
-            100.0 + a,
-            "frame {i}: base + one identity source"
-        );
-        let sum: f32 = [a, cube.eval(b)].iter().sum();
-        let want = (1.0 + sum).clamp(0.5, 1.5);
-        assert_eq!(out[1][i], want, "frame {i}: base + both, clamped once");
+    for i in 0..500 {
+        let a = signal_at(7, i as u64);
+        assert_eq!(out[0][i], a, "frame {i}: the source, unbounded");
+        assert_eq!(out[1][i], a.clamp(-0.5, 0.5), "frame {i}: clamped");
         assert_eq!(out[2][i], 3.0, "both params read frames");
     }
     assert!(
-        out[1][skip..].contains(&1.5) && out[1][skip..].contains(&0.5),
+        out[1].contains(&0.5) && out[1].contains(&-0.5),
         "the clamp was exercised at both ends"
     );
 }
 
-/// A base moved under modulation ramps linearly across the next block,
-/// landing exactly on the new base at its last frame — no zipper step.
+/// A base moved under a source that has not spoken yet ramps linearly
+/// across the next block, landing exactly on the new base at its last
+/// frame — no zipper step.
 ///
 /// Mutation (run): in `ParamState::port`, ramp from the new base (`from =
 /// b1`) → the block starts at the new base → fails.
@@ -420,19 +437,9 @@ fn modulators_sum_on_the_base_then_clamp() {
 fn a_base_move_under_modulation_ramps_across_the_block() {
     let (cutoff, q) = (Cell::new(100.0), Cell::new(1.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(
-        NodeKey(1),
-        "zero",
-        Unforkable(Step {
-            at: u64::MAX,
-            height: 0.0,
-        }),
-    );
-    ed.spec_mut().connect_param(
-        param(PROBE, UnitParam::Cutoff),
-        ParamFrom::Audio(port(1, 0)),
-        ParamShaping::Identity,
-    );
+    ed.insert(NodeKey(1), "quiet", Unforkable(Ramps::steps(&[])));
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
     ed.commit().expect("commits");
     let _ = render(&mut exec, &mut ed, 512, 64);
     cutoff.set(200.0);
@@ -447,32 +454,30 @@ fn a_base_move_under_modulation_ramps_across_the_block() {
     }
 }
 
-/// Connecting a modulator at full swing, and disconnecting it, crossfade
-/// over `PARAM_DECLICK` frames: no frame-to-frame step larger than the
-/// fade's slope, and a disconnected param is back on its base (`Base`) once
-/// the fade is over.
+/// Connecting a source at full swing, and disconnecting it, crossfade over
+/// `PARAM_DECLICK` frames: no frame-to-frame step larger than the fade's
+/// slope, and a disconnected param is back on its base (`Base`) once the
+/// fade is over.
 ///
 /// Mutation (run): in `ParamState::port`, skip the declick (`fading =
 /// false`) → a step of 1.0 on connect → fails. Hold nothing on disconnect
-/// (return `Base` at once when `sig == 0`) → a step of 1.0 back → fails.
+/// (return at once when `source.is_none()`) → a step of 1.0 back → fails.
 #[test]
 fn connecting_and_disconnecting_at_runtime_does_not_click() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
+    ed.insert(NodeKey(1), "one", Unforkable(Hold { value: 1.0 }));
     ed.commit().expect("commits");
     let mut all = render(&mut exec, &mut ed, 128, 64)[0].clone();
 
     let at = param(PROBE, UnitParam::Cutoff);
-    ed.spec_mut()
-        .connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
+    ed.spec_mut().connect_param(at, ev(1));
     ed.commit().expect("connects");
     let on = render(&mut exec, &mut ed, 1024, 64);
-    assert_eq!(*on[0].last().expect("rendered"), 1.0, "fully modulated");
+    assert_eq!(*on[0].last().expect("rendered"), 1.0, "fully driven");
     all.extend(&on[0]);
 
-    ed.spec_mut()
-        .disconnect_param(at, ParamFrom::Audio(port(1, 0)));
+    assert!(ed.spec_mut().disconnect_param(at, ev(1)));
     ed.commit().expect("disconnects");
     let off = render(&mut exec, &mut ed, 1024, 64);
     assert_eq!(*off[0].last().expect("rendered"), 0.0, "back on the base");
@@ -490,53 +495,44 @@ fn connecting_and_disconnecting_at_runtime_does_not_click() {
     }
 }
 
-/// A modulation step lands on its frame: an audio step at frame `k`, and a
-/// zero-length `ParamRamp` at frame `k`, reach the param at `k` exactly,
-/// under block sizes that put `k` anywhere in its block; a ramp of `len`
-/// frames lands on its target at `k + len - 1`.
+/// A step lands on its frame: a zero-length `ParamRamp` at frame `k`
+/// reaches the param at `k` exactly, under block sizes that put `k`
+/// anywhere in its block; a ramp of `len` frames lands on its target at
+/// `k + len - 1`.
 ///
 /// Mutation (run): in `render_ramps`, start a ramp on the frame after its
-/// event (`offset < i`) → the ramp cases fail. In `Ramp::step`,
+/// event (`offset < i`) → the step cases fail. In `Ramp::step`,
 /// interpolate one frame behind (`(done - 1) / len`) → the ramp's first
-/// step fails. In `ParamState::port`, write the audio source one frame late
-/// (`out.iter_mut().skip(1)`) → the step case fails.
+/// step fails.
 #[test]
 fn a_modulation_step_lands_on_its_frame() {
     for block in [1usize, 7, 63, 64, 65, 128] {
         for k in [300u64, 301, 383, 384, 400] {
             let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
             let (mut ed, mut exec) = probe_graph(128, &cutoff, &q);
-            ed.insert(NodeKey(1), "step", Unforkable(Step { at: k, height: 2.0 }));
             ed.insert(
                 NodeKey(2),
                 "ramps",
                 Unforkable(Ramps {
-                    plan: vec![(k, UnitParam::Q, 3.0, 0), (k + 20, UnitParam::Q, 5.0, 8)],
+                    plan: vec![
+                        (k, UnitParam::Cutoff, 2.0, 0),
+                        (k, UnitParam::Q, 3.0, 0),
+                        (k + 20, UnitParam::Q, 5.0, 8),
+                    ],
                     segs: Vec::new(),
                 }),
             );
             {
                 let s = ed.spec_mut();
-                s.connect_param(
-                    param(PROBE, UnitParam::Cutoff),
-                    ParamFrom::Audio(port(1, 0)),
-                    ParamShaping::Identity,
-                );
-                s.connect_param(
-                    param(PROBE, UnitParam::Q),
-                    ParamFrom::Events(EventOut {
-                        node: NodeKey(2),
-                        port: 0,
-                    }),
-                    ParamShaping::Identity,
-                );
+                s.connect_param(param(PROBE, UnitParam::Cutoff), ev(2));
+                s.connect_param(param(PROBE, UnitParam::Q), ev(2));
             }
             ed.commit().expect("commits");
             let out = render(&mut exec, &mut ed, 512, block);
             let k = k as usize;
             let ctx = format!("block {block}, step at {k}");
             assert_eq!(out[0][k - 1], 0.0, "{ctx}: before the step");
-            assert_eq!(out[0][k], 2.0, "{ctx}: the audio step on its frame");
+            assert_eq!(out[0][k], 2.0, "{ctx}: the step on its frame");
             assert_eq!(out[1][k - 1], 0.0, "{ctx}: before the ramp");
             assert_eq!(out[1][k], 3.0, "{ctx}: a zero-length ramp on its frame");
             assert_eq!(
@@ -550,9 +546,8 @@ fn a_modulation_step_lands_on_its_frame() {
     }
 }
 
-/// A node that cannot say its base is never modulated, whatever is
-/// connected: it keeps reading `Base`, so a param is never driven from a
-/// base of 0.
+/// A node that cannot say its base is never driven, whatever is connected:
+/// it keeps reading `Base`, so a param is never driven from a base of 0.
 ///
 /// Mutation (run): in `ParamState::port`, treat a `None` base as 0 → the
 /// probe reads frames → fails.
@@ -564,82 +559,92 @@ fn a_node_without_a_base_is_never_modulated() {
     probe.answers = false;
     ed.insert(NodeKey(PROBE), "probe", Unforkable(probe));
     ed.spec_mut().topology.outputs = (0..3).map(|c| Source::Node(port(PROBE, c))).collect();
-    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
-    ed.spec_mut().connect_param(
-        param(PROBE, UnitParam::Cutoff),
-        ParamFrom::Audio(port(1, 0)),
-        ParamShaping::Identity,
-    );
+    ed.insert(NodeKey(1), "one", Unforkable(Hold { value: 1.0 }));
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
     ed.commit().expect("commits");
     let out = render(&mut exec, &mut ed, 256, 64);
     assert!(out[0].iter().all(|&x| x == 440.0));
     assert!(out[2].iter().all(|&x| x == 0.0));
 }
 
-/// A param the node does not declare, or a source that is not an output,
-/// is refused at compile, naming it.
+/// A param the node does not declare, or a source port the node does not
+/// have, is refused at compile, naming it.
+///
+/// Mutation (run): drop the `from.port >= shape.event_out` check from
+/// `compile` → the second commit is accepted → fails.
 #[test]
 fn undeclared_params_and_missing_sources_are_refused() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, _exec) = probe_graph(64, &cutoff, &q);
     ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: 1 }));
-    ed.spec_mut().connect_param(
-        param(PROBE, UnitParam::Drive),
-        ParamFrom::Audio(port(1, 0)),
-        ParamShaping::Identity,
-    );
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Drive), ev(1));
     let err = ed.commit().expect_err("Drive is not declared");
     assert!(format!("{err}").contains("Drive"), "{err}");
     ed.spec_mut().params.clear();
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Cutoff),
-        ParamFrom::Audio(port(1, 3)),
-        ParamShaping::Identity,
+        EventOut {
+            node: NodeKey(1),
+            port: 3,
+        },
     );
-    assert!(ed.commit().is_err(), "the signal has no output 3");
+    assert!(
+        matches!(
+            ed.commit(),
+            Err(CommitError::Compile(
+                tutti_graph::CompileError::ParamSourceOutOfRange { .. }
+            ))
+        ),
+        "the signal has no event output 3"
+    );
 }
 
 /// Removing a node drops every param edge that names it: the ports it
-/// modulated, and its outputs as a source of anyone else's — so the value
-/// never names a node the graph no longer holds, and the other sources of a
-/// port keep modulating it.
+/// drove lose their source, and the ports other nodes drive keep theirs —
+/// so the value never names a node the graph no longer holds.
 ///
 /// Mutation (run): in `Editor::remove`, keep sources from the removed key
-/// (drop the `m.sources.retain`) → the commit is refused as naming an unknown
-/// node → fails.
+/// (drop the `m.source = None`) → the commit is refused as naming an
+/// unknown node → fails.
 #[test]
 fn removing_a_node_drops_its_param_edges() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
     ed.insert(NodeKey(1), "a", Unforkable(Signal { seed: 3 }));
     ed.insert(NodeKey(2), "b", Unforkable(Signal { seed: 5 }));
-    for k in [1, 2] {
-        ed.spec_mut().connect_param(
-            param(PROBE, UnitParam::Cutoff),
-            ParamFrom::Audio(port(k, 0)),
-            ParamShaping::Identity,
-        );
-    }
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Q), ev(2));
     ed.commit().expect("commits");
     let _ = render(&mut exec, &mut ed, 64, 64);
 
     ed.remove(NodeKey(1));
-    let m = &ed.spec().params[&param(PROBE, UnitParam::Cutoff)];
+    let params = &ed.spec().params;
     assert_eq!(
-        m.sources.iter().map(|s| s.from).collect::<Vec<_>>(),
-        vec![ParamFrom::Audio(port(2, 0))],
-        "the removed node's source is gone, the other stays"
+        params[&param(PROBE, UnitParam::Cutoff)].source,
+        None,
+        "the removed node's source is gone"
+    );
+    assert_eq!(
+        params[&param(PROBE, UnitParam::Q)].source,
+        Some(ev(2)),
+        "the other stays"
     );
     ed.commit().expect("the value names no removed node");
-    let out = render(&mut exec, &mut ed, 64, 64);
-    assert_eq!(out[2][63], 1.0, "the param is still modulated");
+    // Past the cutoff's declick back to its base.
+    let out = render(&mut exec, &mut ed, PARAM_DECLICK.get() + 64, 64);
+    assert_eq!(*out[2].last().expect("rendered"), 2.0, "Q is still driven");
 }
 
 /// A crossfade keeps its key's param state: the two units must declare the
 /// same params, and one that declares others is refused (`FadeShape`), as a
 /// fade between other ports is. A fade between two that agree keeps the
-/// modulation running through it, with no declick (the sources did not
-/// change).
+/// held value through it, with no declick (the source did not change): the
+/// source spoke once, at frame 0, so a unit that faded in with fresh state
+/// would read its base.
 ///
 /// Mutation (run): drop `shape.params == running.params` from
 /// `Editor::replace`'s check → the replace is accepted (and the fade's
@@ -661,12 +666,13 @@ fn a_fade_keeps_the_params_it_declares() {
 
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
-    ed.spec_mut().connect_param(
-        param(PROBE, UnitParam::Cutoff),
-        ParamFrom::Audio(port(1, 0)),
-        ParamShaping::Identity,
+    ed.insert(
+        NodeKey(1),
+        "once",
+        Unforkable(Ramps::steps(&[(0, UnitParam::Cutoff, 1.0)])),
     );
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
     ed.commit().expect("commits");
     let _ = render(&mut exec, &mut ed, 512, 64);
 
@@ -685,14 +691,14 @@ fn a_fade_keeps_the_params_it_declares() {
     let out = render(&mut exec, &mut ed, 256, 64);
     assert!(
         out[0].iter().all(|&x| x == 1.0),
-        "modulated all through the fade, no declick: {:?}",
+        "held all through the fade, no declick: {:?}",
         &out[0][..8]
     );
 }
 
 /// A unit's first block is not a change of sources: a probe inserted with a
-/// modulator already connected, and one hard-replaced at its key, read the
-/// modulated value from their first frame — no fade in from the base.
+/// source already connected, and one hard-replaced at its key, read the
+/// source's value from their first frame — no fade in from the base.
 ///
 /// Mutation (run): in `ParamState::port`, treat a fresh port as a change
 /// (drop the `st.fresh` branch) → the first frames fade in from the base →
@@ -701,17 +707,14 @@ fn a_fade_keeps_the_params_it_declares() {
 fn a_units_first_block_is_not_declicked() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
-    ed.spec_mut().connect_param(
-        param(PROBE, UnitParam::Cutoff),
-        ParamFrom::Audio(port(1, 0)),
-        ParamShaping::Identity,
-    );
+    ed.insert(NodeKey(1), "one", Unforkable(Hold { value: 1.0 }));
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
     ed.commit().expect("commits");
     let out = render(&mut exec, &mut ed, 128, 64);
     assert!(
         out[0].iter().all(|&x| x == 1.0),
-        "modulated from the first frame: {:?}",
+        "driven from the first frame: {:?}",
         &out[0][..4]
     );
     // A new generation at the key: a new unit, so a first block again.
@@ -721,78 +724,49 @@ fn a_units_first_block_is_not_declicked() {
     assert!(out[0].iter().all(|&x| x == 1.0), "{:?}", &out[0][..4]);
 }
 
-/// An event source's held value belongs to the source, not to its slot in
-/// the port: holding +500 from a `ParamRamp`, the port stays at 500 when
-/// another source (a zero) joins it. Reshaping it is refused (doc 014
-/// §5.6: an event source is unshaped), naming the port, and the port holds.
+/// An event source's held value belongs to the port, not to the plan: a
+/// port holding +500 from a one-off step stays at 500 through a commit that
+/// changes its node's other port (Q gains a source), and through one that
+/// changes nothing of it (a range on Q).
 ///
-/// Changed in doc 014 PR 2a: this test reshaped the event source and
-/// asserted the declick into the reshaped value; an event source now
-/// replaces the base and takes no shaping, so the reshape is refused.
+/// Ported in doc 014 PR 5 from
+/// `an_event_sources_held_value_survives_another_source_joining`: a second
+/// source can no longer join a port (one source, replacing the base), and
+/// shaping is gone (§10), so the reshape refusal went with it. The edit
+/// now changes the node's port list instead.
 ///
-/// Mutation (run): in `PortState::rekey`, start every source at rest (the
-/// old reset of all ramps on a signature change) → the port drops to the
-/// base (0) → fails. Mutation (run): drop the shaping check from
-/// `GraphSpec::validate` → the reshape commits → fails.
+/// Mutation (run): in `ParamState::port`, reset every port's ramp when
+/// any one port's source changes (a port-wide reset where only the
+/// changed port's is due) → the cutoff drops to its base (0) → fails.
 #[test]
-fn an_event_sources_held_value_survives_another_source_joining() {
+fn an_event_sources_held_value_survives_an_edit_to_its_node() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
     ed.insert(
         NodeKey(2),
-        "ramps",
-        Unforkable(Ramps {
-            plan: vec![(10, UnitParam::Cutoff, 500.0, 0)],
-            segs: Vec::new(),
-        }),
+        "once",
+        Unforkable(Ramps::steps(&[(10, UnitParam::Cutoff, 500.0)])),
     );
-    ed.insert(
-        NodeKey(1),
-        "zero",
-        Unforkable(Step {
-            at: u64::MAX,
-            height: 0.0,
-        }),
-    );
+    ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: 9 }));
     let at = param(PROBE, UnitParam::Cutoff);
-    let events = ParamFrom::Events(EventOut {
-        node: NodeKey(2),
-        port: 0,
-    });
-    ed.spec_mut()
-        .connect_param(at, events, ParamShaping::Identity);
+    ed.spec_mut().connect_param(at, ev(2));
     ed.commit().expect("commits");
     let out = render(&mut exec, &mut ed, 512, 64);
-    assert_eq!(out[0][511], 500.0, "holding the ramp's target");
+    assert_eq!(out[0][511], 500.0, "holding the step's value");
 
     ed.spec_mut()
-        .connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
-    ed.commit().expect("a second source joins");
+        .connect_param(param(PROBE, UnitParam::Q), ev(1));
+    ed.commit().expect("Q gains a source");
     let out = render(&mut exec, &mut ed, 512, 64);
     assert!(
         out[0].iter().all(|&x| x == 500.0),
-        "still 500 with a zero beside it: {:?}",
+        "still 500 with Q driven beside it: {:?}",
         out[0].iter().find(|&&x| x != 500.0)
     );
 
-    ed.spec_mut().connect_param(
-        at,
-        events,
-        ParamShaping::Lut(ShapeLut::from_fn(|x| 1000.0 * x)),
-    );
-    match ed.commit() {
-        Err(CommitError::Invalid(errs)) => assert!(
-            errs.iter().any(|e| matches!(
-                e,
-                GraphInvalid::ShapedEventParamSource { at: a, from }
-                    if *a == at && *from == EventOut { node: NodeKey(2), port: 0 }
-            )),
-            "{errs:?}"
-        ),
-        other => panic!("a shaped event source was accepted: {other:?}"),
-    }
     ed.spec_mut()
-        .connect_param(at, events, ParamShaping::Identity);
+        .set_param_range(param(PROBE, UnitParam::Q), ParamRange::new(-0.5, 0.5));
+    ed.commit().expect("a range on Q");
     let out = render(&mut exec, &mut ed, 512, 64);
     assert!(out[0].iter().all(|&x| x == 500.0), "the port holds");
 }
@@ -805,9 +779,9 @@ fn an_event_sources_held_value_survives_another_source_joining() {
 /// declick.
 ///
 /// Mutation (run): in `ParamState::port`, add the base under a started
-/// event source (`h + b + Σ`, the old offset rule) → frame 10 reads 1500 →
-/// fails. Mutation (run): in `render_ramps`, write 0 before the first event
-/// instead of the base → frame 0 reads 0 → fails. Mutation (run): in
+/// event source (`out[i] + b1`, the old offset rule) → frame 10 reads 1500
+/// → fails. Mutation (run): in `render_ramps`, write 0 before the first
+/// event instead of the base → frame 0 reads 0 → fails. Mutation (run): in
 /// `render_ramps`, leave a first ramp's start at 0 (skip `ramp.value =
 /// base(i)`) → the Q ramp's first frame reads 9.99 → fails.
 #[test]
@@ -827,13 +801,8 @@ fn an_event_source_replaces_the_base_from_its_first_event() {
             segs: Vec::new(),
         }),
     );
-    let events = ParamFrom::Events(EventOut {
-        node: NodeKey(2),
-        port: 0,
-    });
     for p in [UnitParam::Cutoff, UnitParam::Q] {
-        ed.spec_mut()
-            .connect_param(param(PROBE, p), events, ParamShaping::Identity);
+        ed.spec_mut().connect_param(param(PROBE, p), ev(2));
     }
     ed.commit().expect("commits");
     let out = render(&mut exec, &mut ed, 128, 64);
@@ -856,8 +825,9 @@ fn an_event_source_replaces_the_base_from_its_first_event() {
         "a knob move is overridden"
     );
 
-    ed.spec_mut()
-        .disconnect_param(param(PROBE, UnitParam::Cutoff), events);
+    assert!(ed
+        .spec_mut()
+        .disconnect_param(param(PROBE, UnitParam::Cutoff), ev(2)));
     ed.commit().expect("disconnects");
     let d = PARAM_DECLICK.get();
     let out = render(&mut exec, &mut ed, 2 * d, 64);
@@ -868,83 +838,69 @@ fn an_event_source_replaces_the_base_from_its_first_event() {
     assert!(out[0][d..].iter().all(|&x| x == 3000.0), "back on the knob");
 }
 
-/// A port takes one event source: a second is refused by name, whatever
-/// audio sources it also has.
+/// A port takes one event source: connecting a second replaces the first
+/// (and hands it back), the port follows the new one after the declick,
+/// and disconnecting the one no longer there is a no-op.
 ///
-/// Mutation (run): drop the event-source count check from
-/// `GraphSpec::validate` → the commit is accepted → fails.
+/// Ported in doc 014 PR 5 from `a_second_event_source_is_refused`: the
+/// refusal (`TooManyEventParamSources`) is gone because a port's source is
+/// one `Option<EventOut>`, so two cannot be represented (§10).
+///
+/// Mutation (run): `GraphSpec::connect_param` keeping the first source
+/// (`get_or_insert`) → the port still follows node 2 → fails.
 #[test]
-fn a_second_event_source_is_refused() {
+fn a_second_event_source_replaces_the_first() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
-    let (mut ed, _exec) = probe_graph(64, &cutoff, &q);
-    for k in [2, 3] {
-        ed.insert(
-            NodeKey(k),
-            "ramps",
-            Unforkable(Ramps {
-                plan: Vec::new(),
-                segs: Vec::new(),
-            }),
-        );
-    }
-    ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: 1 }));
+    let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
+    ed.insert(NodeKey(2), "two", Unforkable(Hold { value: 2.0 }));
+    ed.insert(NodeKey(3), "three", Unforkable(Hold { value: 3.0 }));
     let at = param(PROBE, UnitParam::Cutoff);
-    {
-        let s = ed.spec_mut();
-        s.connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
-        for k in [2, 3] {
-            s.connect_param(
-                at,
-                ParamFrom::Events(EventOut {
-                    node: NodeKey(k),
-                    port: 0,
-                }),
-                ParamShaping::Identity,
-            );
-        }
-    }
-    match ed.commit() {
-        Err(CommitError::Invalid(errs)) => assert!(
-            errs.iter().any(|e| matches!(
-                e,
-                GraphInvalid::TooManyEventParamSources { at: a, sources }
-                    if *a == at
-                        && sources.iter().map(|e| e.node).collect::<Vec<_>>()
-                            == [NodeKey(2), NodeKey(3)]
-            )),
-            "{errs:?}"
-        ),
-        other => panic!("two event sources were accepted: {other:?}"),
-    }
-    ed.spec_mut().disconnect_param(
-        at,
-        ParamFrom::Events(EventOut {
-            node: NodeKey(3),
-            port: 0,
-        }),
+    assert_eq!(ed.spec_mut().connect_param(at, ev(2)), None);
+    ed.commit().expect("commits");
+    let out = render(&mut exec, &mut ed, 64, 64);
+    assert!(out[0].iter().all(|&x| x == 2.0));
+
+    assert_eq!(
+        ed.spec_mut().connect_param(at, ev(3)),
+        Some(ev(2)),
+        "the first is handed back"
     );
-    ed.commit().expect("one event source and an audio one");
+    assert!(
+        !ed.spec_mut().disconnect_param(at, ev(2)),
+        "node 2 no longer drives the port"
+    );
+    assert_eq!(ed.spec().params[&at].source, Some(ev(3)));
+    ed.commit().expect("one source");
+    let out = render(&mut exec, &mut ed, PARAM_DECLICK.get() + 64, 64);
+    assert_eq!(*out[0].last().expect("rendered"), 3.0, "the new source");
 }
 
-/// A PDC delay that appears on a param source holds the source's last
-/// value for its length, and one that grows is padded with it, so the port
-/// never drops to its base: a probe modulated by a constant +1 stays at +1
-/// when a 100-frame sibling moves its arrival (a new delay on the source),
-/// and again when the sibling grows to 150 (the delay retuned longer).
+/// A PDC delay that appears on a param source's path, or grows, never
+/// drops the port to its base: a probe held at +1 by a one-off step stays
+/// at +1 when a 100-frame sibling moves its arrival (a new delay on the
+/// source's events), and again when the sibling grows to 150 (the delay
+/// retuned longer). The held value is the port's, not the delay line's.
 ///
-/// Mutation (run): in `Executor::rebuild`, start a new param delay silent
-/// (`AudioRing::new`) → 100 frames at the base (0) → fails. Pad a grown one
-/// with 0 (`retune`) → 50 frames at 0 → fails.
+/// Ported in doc 014 PR 5: the source was an audio step whose delay ring
+/// had to be filled with its last value; audio sources are gone (§10), and
+/// an event delay carries only events, so the property is now that the
+/// port keeps what it holds.
+///
+/// Mutation (run): in `compile`, never lower a param source's delay
+/// (`if d.is_zero()` → `if true`: no `ParamEvent` delay) → the delay
+/// assertion fails.
 #[test]
 fn a_delay_appearing_on_a_param_source_holds_its_last_value() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
-    ed.spec_mut().connect_param(
-        param(PROBE, UnitParam::Cutoff),
-        ParamFrom::Audio(port(1, 0)),
-        ParamShaping::Identity,
+    ed.insert(
+        NodeKey(1),
+        "once",
+        Unforkable(Ramps::steps(&[(0, UnitParam::Cutoff, 1.0)])),
     );
+    ed.insert(NodeKey(4), "feed", Unforkable(Signal { seed: 2 }));
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
     ed.commit().expect("commits");
     let _ = render(&mut exec, &mut ed, 256, 64);
 
@@ -955,7 +911,7 @@ fn a_delay_appearing_on_a_param_source_holds_its_last_value() {
                 node: NodeKey(3),
                 port: 0,
             },
-            Edge::Direct(Source::Node(port(1, 0))),
+            Edge::Direct(Source::Node(port(4, 0))),
         );
         ed.spec_mut().topology.edges.insert(
             InPort {
@@ -970,7 +926,7 @@ fn a_delay_appearing_on_a_param_source_holds_its_last_value() {
             .expect("a plan")
             .delays()
             .iter()
-            .find(|d| matches!(d.key, tutti_graph::DelayKey::ParamAudio { .. }))
+            .find(|d| matches!(d.key, tutti_graph::DelayKey::ParamEvent { .. }))
             .map(|d| d.len);
         assert_eq!(delay, Some(Samples(lag)), "the param source is delayed");
         let out = render(&mut exec, &mut ed, 512, 64);
@@ -982,17 +938,125 @@ fn a_delay_appearing_on_a_param_source_holds_its_last_value() {
     }
 }
 
-/// A fork starts each event source where the live graph holds it: a
-/// `ParamRamp` held at 500, and one under way, carry on in the fork from
-/// its first frame instead of starting at 0. (The forked ramp source
-/// replays its own plan from the fork's frame 0, so only the frames before
-/// its first event say what was carried.)
+/// A source of [`Hold`]'s steps that declares processing latency: its
+/// events are about frames `latency` earlier than the block's.
+struct LatentHold {
+    value: f32,
+    latency: usize,
+}
+
+impl Node for LatentHold {
+    fn shape(&self) -> Shape {
+        Hold { value: self.value }
+            .shape()
+            .with_latency(Latency::new(Samples(self.latency)))
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
+        Hold { value: self.value }.process(cx, io)
+    }
+    fn reset(&mut self) {}
+}
+
+/// A param source counts toward its target's arrival in both solves: a
+/// latent source holds its target back by its latency, so the compiler's
+/// total latency is the source's and the source's events are not delayed,
+/// and `latency::plan` over the whole spec (`GraphSpec`'s `LatencyGraph`,
+/// what a latency readout folds) reports the same total.
 ///
-/// Mutation (run): in `Editor::fork`, seed nothing (`seed_params` with an
-/// empty map) → the fork's first frames read 0 → fails. In `TapPort::write`,
-/// publish no source (`n` stays 0) → fails the same way.
+/// Added in doc 014 PR 5: the differential's reference shares the
+/// compiler's arrival, so nothing pinned the spec's fold of param sources
+/// (`compile_passes.rs` pins its event sources).
+///
+/// Mutation (run): in `GraphSpec`'s `other_sources`, leave param sources
+/// out → the spec's plan totals 0 against the compiler's 37 → fails. In
+/// `compile`, leave a param source out of its target's `preds` → the
+/// compiler's total is 0 → fails.
 #[test]
-fn a_fork_carries_its_event_sources_ramps() {
+fn a_param_source_counts_toward_arrival_in_both_solves() {
+    let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
+    let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
+    ed.insert(
+        NodeKey(1),
+        "latent",
+        Unforkable(LatentHold {
+            value: 2.0,
+            latency: 37,
+        }),
+    );
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
+    ed.commit().expect("commits");
+    let plan = ed.base().expect("a plan");
+    assert_eq!(plan.total_latency(), Latency::new(Samples(37)));
+    assert_eq!(
+        tutti_types::latency::plan(ed.spec()).total(),
+        Samples(37),
+        "the spec's own fold agrees"
+    );
+    assert!(
+        !plan
+            .delays()
+            .iter()
+            .any(|d| matches!(d.key, tutti_graph::DelayKey::ParamEvent { .. })),
+        "the target waits for the source; the source is not delayed"
+    );
+    let out = render(&mut exec, &mut ed, 128, 64);
+    assert_eq!(out[0][127], 2.0, "the source drives the port");
+}
+
+/// A stand-in for a control lane: a source that sends its value (a step on
+/// `Cutoff` and on `Q`) on its first block after `prepare`, and on no other.
+/// A fork prepares its copy, so a forked one speaks at the fork's frame 0:
+/// the fork requirement (doc 014 §10).
+#[derive(Clone)]
+struct OnFirstBlock {
+    cutoff: f32,
+    q: f32,
+    pending: bool,
+}
+
+impl Node for OnFirstBlock {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_event_capacity(4)
+    }
+    fn prepare(&mut self, _: &Prepare) {
+        self.pending = true;
+    }
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        if std::mem::take(&mut self.pending) {
+            let o = io.offset(0).expect("a block has a frame");
+            let _ = io
+                .event_out(0)
+                .push(step(o, UnitParam::Cutoff, self.cutoff));
+            let _ = io.event_out(0).push(step(o, UnitParam::Q, self.q));
+        }
+        Status::Silent
+    }
+    fn reset(&mut self) {
+        self.pending = true;
+    }
+}
+
+/// A lane-fed fork reads its value at frame 0: the live graph's ports hold
+/// what their source sent once, long ago; the fork's source is a fresh,
+/// prepared copy that sends its value on its first block, and the fork's
+/// ports (fresh too) take it from their first frame, undeclicked.
+///
+/// Ported in doc 014 PR 5 from `a_fork_carries_its_event_sources_ramps`:
+/// the fork no longer seeds its ports from a tap of the live ones (the
+/// seeds are gone, §10); a fresh source speaks instead. The lane itself is
+/// held to this in `tutti-nodes` (`ControlLaneNode`'s fork test).
+///
+/// Mutations (run): in `ParamState::port`, treat a fresh port as a change
+/// (drop the `st.fresh` branch) → the fork's first frames fade in from the
+/// base → fails. A source that does not speak on the fork's first block
+/// (`OnFirstBlock` cloned with `pending: false`, re-armed by neither
+/// `prepare` nor `reset`) → the fork's ports read their bases (0) → fails.
+#[test]
+fn a_lane_fed_fork_reads_its_value_at_frame_0() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = Editor::new(prepare(64));
     ed.insert(
@@ -1003,43 +1067,28 @@ fn a_fork_carries_its_event_sources_ramps() {
     ed.spec_mut().topology.outputs = (0..3).map(|c| Source::Node(port(PROBE, c))).collect();
     ed.insert(
         NodeKey(2),
-        "ramps",
-        ForkByClone(Ramps {
-            plan: vec![
-                (10, UnitParam::Cutoff, 500.0, 0),
-                (20, UnitParam::Q, 3.0, 0),
-                (400, UnitParam::Q, 7.0, 1000),
-            ],
-            segs: Vec::new(),
+        "lane",
+        ForkByClone(OnFirstBlock {
+            cutoff: 500.0,
+            q: 3.0,
+            pending: true,
         }),
     );
-    let events = ParamFrom::Events(EventOut {
-        node: NodeKey(2),
-        port: 0,
-    });
     for p in [UnitParam::Cutoff, UnitParam::Q] {
-        ed.spec_mut()
-            .connect_param(param(PROBE, p), events, ParamShaping::Identity);
+        ed.spec_mut().connect_param(param(PROBE, p), ev(2));
     }
     ed.commit().expect("commits");
     let live = render(&mut exec, &mut ed, 600, 64);
-    assert_eq!(live[0][599], 500.0);
+    assert_eq!((live[0][599], live[1][599]), (500.0, 3.0), "live, held");
 
     let (mut fed, mut fexec) = ed
         .fork(ForkTarget::Master, ForkMode::Live, prepare(64))
         .expect("forks");
     let out = render(&mut fexec, &mut fed, 10, 10);
-    // The Q ramp started at frame 400 and ran 200 of its 1000 frames live.
-    let ramp = |done: u32| 3.0f32 + (7.0 - 3.0) * (done as f32 / 1000.0);
-    assert_eq!(live[1][599], ramp(200), "live, mid-ramp");
     #[allow(clippy::needless_range_loop, reason = "two outputs at one frame")]
     for i in 0..10 {
-        assert_eq!(out[0][i], 500.0, "frame {i}: the held value, carried");
-        assert_eq!(
-            out[1][i],
-            ramp(201 + i as u32),
-            "frame {i}: the ramp, carried on"
-        );
+        assert_eq!(out[0][i], 500.0, "frame {i}: the cutoff, from frame 0");
+        assert_eq!(out[1][i], 3.0, "frame {i}: the Q, from frame 0");
     }
 }
 
@@ -1054,8 +1103,7 @@ fn a_nan_range_is_refused() {
     let (mut ed, _exec) = probe_graph(64, &cutoff, &q);
     ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: 1 }));
     let at = param(PROBE, UnitParam::Cutoff);
-    ed.spec_mut()
-        .connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
+    ed.spec_mut().connect_param(at, ev(1));
     for range in [
         ParamRange::new(f32::NAN, 1.0),
         ParamRange::new(0.0, f32::NAN),
@@ -1075,9 +1123,9 @@ fn a_nan_range_is_refused() {
     ed.commit().expect("an infinite bound is no bound");
 }
 
-/// Removing a modulated node — the target of a param edge — takes its
-/// ports' entries with it, so the next commit (and every one after) goes
-/// through instead of naming a node that is gone; and the executor hands the
+/// Removing a driven node — the target of a param edge — takes its ports'
+/// entries with it, so the next commit (and every one after) goes through
+/// instead of naming a node that is gone; and the executor hands the
 /// retired unit's param state back rather than freeing it on the audio
 /// thread.
 ///
@@ -1091,11 +1139,8 @@ fn removing_a_modulated_target_leaves_the_graph_committable() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
     ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: 3 }));
-    ed.spec_mut().connect_param(
-        param(PROBE, UnitParam::Cutoff),
-        ParamFrom::Audio(port(1, 0)),
-        ParamShaping::Identity,
-    );
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
     ed.spec_mut()
         .set_param_range(param(PROBE, UnitParam::Q), ParamRange::new(0.0, 1.0));
     ed.commit().expect("commits");
@@ -1112,9 +1157,9 @@ fn removing_a_modulated_target_leaves_the_graph_committable() {
     ed.commit().expect("and so does the next edit");
 }
 
-/// A re-prepare checks every unit out; a modulated unit's param state
-/// comes back with it in the box, freed on the control side, and the
-/// resumed unit is modulated again from its first block.
+/// A re-prepare checks every unit out; a driven unit's param state comes
+/// back with it in the box, freed on the control side, and the resumed
+/// unit is driven again from its first block.
 ///
 /// Mutation (run): in `Executor::apply`'s suspend, drop the checked-out
 /// unit's param state instead of pushing it to `spare_params` →
@@ -1123,12 +1168,9 @@ fn removing_a_modulated_target_leaves_the_graph_committable() {
 fn a_reprepare_hands_param_state_back() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
-    ed.spec_mut().connect_param(
-        param(PROBE, UnitParam::Cutoff),
-        ParamFrom::Audio(port(1, 0)),
-        ParamShaping::Identity,
-    );
+    ed.insert(NodeKey(1), "one", Unforkable(Hold { value: 1.0 }));
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
     ed.commit().expect("commits");
     let _ = render(&mut exec, &mut ed, 128, 64);
     ed.reprepare(prepare(128)).expect("reprepares");
@@ -1175,11 +1217,10 @@ fn render_segments(
     ed.insert(NodeKey(1), "ramps", Unforkable(Ramps { plan, segs }));
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Cutoff),
-        ParamFrom::Events(EventOut {
+        EventOut {
             node: NodeKey(1),
             port: 0,
-        }),
-        ParamShaping::Identity,
+        },
     );
     ed.commit().expect("commits");
     let mut out = Vec::new();
@@ -1368,11 +1409,10 @@ fn a_range_clamps_a_segment_without_rewriting_it() {
     let at = param(PROBE, UnitParam::Cutoff);
     ed.spec_mut().connect_param(
         at,
-        ParamFrom::Events(EventOut {
+        EventOut {
             node: NodeKey(1),
             port: 0,
-        }),
-        ParamShaping::Identity,
+        },
     );
     ed.commit().expect("commits");
     let curve = |f: u64| analytic(0.0, 2.0, shape, 1.0, 640.0, f);
@@ -1408,21 +1448,22 @@ fn a_range_clamps_a_segment_without_rewriting_it() {
     check(&out[0], unbounded, "widened");
 }
 
-/// A segment replaces the base, and an audio modulator on the same param
-/// adds to it, frame by frame, the sum clamped once: before the segment's
-/// first event the port is the base plus the modulator, from it on the
-/// segment plus the modulator.
+/// A segment replaces the base, frame by frame: before the segment's first
+/// event the port is the base, from it on the segment, never both.
 ///
 /// Changed in doc 014 PR 2a (was `a_segment_sums_with_other_modulators_through_its_shaping`):
 /// the segment went through a `-2x` LUT and summed with the base; an event
-/// source now replaces the base and takes no shaping.
+/// source now replaces the base and takes no shaping. Changed in doc 014
+/// PR 5 (was `a_segment_replaces_the_base_and_audio_offsets_add`): the audio
+/// modulator added beside it is gone with audio-rate param sources (§10,
+/// §11).
 ///
 /// Mutation (run): in `ParamState::port`, add the base under the event
 /// source (the old offset rule) → every frame from 10 on is 0.5 high →
 /// fails. Mutation (run): in `render_ramps`, write 0 before the first event
 /// instead of the base → frames 0..10 read 0.5 low → fails.
 #[test]
-fn a_segment_replaces_the_base_and_audio_offsets_add() {
+fn a_segment_replaces_the_base() {
     const TOL: f64 = 1e-5;
     let (cutoff, q) = (Cell::new(0.5), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
@@ -1442,93 +1483,17 @@ fn a_segment_replaces_the_base_and_audio_offsets_add() {
             segs: vec![(10, seg)],
         }),
     );
-    ed.insert(NodeKey(2), "sig", Unforkable(Signal { seed: 7 }));
-    let at = param(PROBE, UnitParam::Cutoff);
-    {
-        let s = ed.spec_mut();
-        s.connect_param(
-            at,
-            ParamFrom::Events(EventOut {
-                node: NodeKey(1),
-                port: 0,
-            }),
-            ParamShaping::Identity,
-        );
-        s.connect_param(at, ParamFrom::Audio(port(2, 0)), ParamShaping::Identity);
-        s.set_param_range(at, ParamRange::new(-1.5, 1.5));
-    }
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
     ed.commit().expect("commits");
     let out = render(&mut exec, &mut ed, 300, 37);
     for (f, &v) in out[0].iter().enumerate() {
-        // The base (0.5) until the segment's first event, the segment from
-        // it on: never both.
-        let held = if f < 10 {
+        let w = if f < 10 {
             0.5
         } else {
             analytic(0.0, 0.5, shape, 1.0, 200.0, f as u64 - 10)
         };
-        let w = (held + f64::from(signal_at(7, f as u64))).clamp(-1.5, 1.5);
         assert!((f64::from(v) - w).abs() <= TOL, "frame {f}: {v} vs {w}");
-    }
-}
-
-/// A fork starts an event source mid-segment where the live graph has it:
-/// the segment carries on in the fork, shape and all, from its first
-/// frame.
-///
-/// Mutation (run): in `TapPort::write`, publish no curve (`curved` stored
-/// `false`) → the fork reads a finished linear ramp and holds the target →
-/// fails.
-#[test]
-fn a_fork_carries_an_in_flight_segment() {
-    let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
-    let (mut ed, mut exec) = Editor::new(prepare(64));
-    ed.insert(
-        NodeKey(PROBE),
-        "probe",
-        ForkByClone(Probe::new(&cutoff, &q)),
-    );
-    ed.spec_mut().topology.outputs = (0..3).map(|c| Source::Node(port(PROBE, c))).collect();
-    let seg = ParamSegment::new(
-        ParamKey::<Q>::Q,
-        Q(3.0),
-        Q(7.0),
-        Samples(1000),
-        SegmentShape::PowerIn(2.0),
-    );
-    ed.insert(
-        NodeKey(2),
-        "ramps",
-        ForkByClone(Ramps {
-            plan: Vec::new(),
-            segs: vec![(400, seg)],
-        }),
-    );
-    ed.spec_mut().connect_param(
-        param(PROBE, UnitParam::Q),
-        ParamFrom::Events(EventOut {
-            node: NodeKey(2),
-            port: 0,
-        }),
-        ParamShaping::Identity,
-    );
-    ed.commit().expect("commits");
-    let live = render(&mut exec, &mut ed, 600, 64);
-    assert_eq!(
-        live[1][599],
-        seg.raw_value_after(Samples(199)),
-        "live, mid-segment"
-    );
-    let (mut fed, mut fexec) = ed
-        .fork(ForkTarget::Master, ForkMode::Live, prepare(64))
-        .expect("forks");
-    let out = render(&mut fexec, &mut fed, 10, 10);
-    for (i, &v) in out[1].iter().enumerate() {
-        assert_eq!(
-            v,
-            seg.raw_value_after(Samples(200 + i)),
-            "frame {i}: the segment, carried on"
-        );
     }
 }
 
@@ -1539,11 +1504,11 @@ fn block(exec: &mut Executor, ed: &mut Editor, n: usize) -> [Vec<f32>; 3] {
     render(exec, ed, n, n)
 }
 
-/// The fused step's value with a constant base `b`, one identity source
-/// `x`, and range `(lo, hi)`: `clamp(b + (-0.0 + x))`, the step's own
-/// arithmetic, so the figure is exact.
-fn stepped(b: f32, x: f32, (lo, hi): (f32, f32)) -> f32 {
-    (b + (-0.0 + x)).clamp(lo, hi)
+/// The fused step's value for a source that stepped to `x`, under range
+/// `(lo, hi)`: `clamp(x)`, the step's own arithmetic, so the figure is
+/// exact.
+fn stepped(x: f32, (lo, hi): (f32, f32)) -> f32 {
+    x.clamp(lo, hi)
 }
 
 /// A range moved with `Editor::set_param_range` sends no commit — the plan
@@ -1568,8 +1533,7 @@ fn a_range_move_lands_on_the_next_block_without_a_commit() {
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
     ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: SEED }));
     let at = param(PROBE, UnitParam::Cutoff);
-    ed.spec_mut()
-        .connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
+    ed.spec_mut().connect_param(at, ev(1));
     ed.spec_mut()
         .set_param_range(at, ParamRange::new(-2.0, 2.0));
     ed.commit().expect("commits");
@@ -1577,7 +1541,7 @@ fn a_range_move_lands_on_the_next_block_without_a_commit() {
     let mut frame = 0u64;
     let check = |out: &[Vec<f32>; 3], frame: &mut u64, range: (f32, f32), what: &str| {
         for (i, &v) in out[0].iter().enumerate() {
-            let want = stepped(0.0, signal_at(SEED, *frame + i as u64), range);
+            let want = stepped(signal_at(SEED, *frame + i as u64), range);
             assert_eq!(
                 v.to_bits(),
                 want.to_bits(),
@@ -1669,10 +1633,14 @@ fn a_range_move_lands_on_the_next_block_without_a_commit() {
 fn a_range_move_reaches_a_unit_that_faded_in() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
+    // Once, at frame 0: the fade keeps the port state that holds it.
+    ed.insert(
+        NodeKey(1),
+        "once",
+        Unforkable(Ramps::steps(&[(0, UnitParam::Cutoff, 1.0)])),
+    );
     let at = param(PROBE, UnitParam::Cutoff);
-    ed.spec_mut()
-        .connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
+    ed.spec_mut().connect_param(at, ev(1));
     ed.commit().expect("commits");
     let _ = render(&mut exec, &mut ed, 128, 64);
 
@@ -1710,11 +1678,11 @@ fn a_range_move_reaches_a_unit_that_faded_in() {
 fn a_reordered_param_list_clamps_each_port_to_its_own_range() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
+    // Every block: the hard swap's fresh ports hear it from their first.
+    ed.insert(NodeKey(1), "one", Unforkable(Hold { value: 1.0 }));
     let (cut_at, q_at) = (param(PROBE, UnitParam::Cutoff), param(PROBE, UnitParam::Q));
     for at in [cut_at, q_at] {
-        ed.spec_mut()
-            .connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
+        ed.spec_mut().connect_param(at, ev(1));
     }
     ed.set_param_range(cut_at, ParamRange::new(-1.0, 0.25))
         .expect("a range");
@@ -1810,11 +1778,10 @@ fn a_shrinking_range_rewrites_neither_the_base_nor_a_ramp() {
     let at = param(PROBE, UnitParam::Cutoff);
     ed.spec_mut().connect_param(
         at,
-        ParamFrom::Events(EventOut {
+        EventOut {
             node: NodeKey(1),
             port: 0,
-        }),
-        ParamShaping::Identity,
+        },
     );
     ed.commit().expect("commits");
     // The ramp's value at absolute frame `f`: `Ramp::step`'s arithmetic,
@@ -1870,8 +1837,9 @@ fn a_shrinking_range_rewrites_neither_the_base_nor_a_ramp() {
 
 // ---- differential: the executor against the reference ----------------------
 
-/// One generated graph: signals and ramp sources modulating probes, some
-/// behind a latent sibling (so their param sources are delayed by PDC).
+/// One generated graph: per-frame signals and ramp sources driving probes,
+/// some behind a latent sibling (so their param sources are delayed by
+/// PDC).
 #[derive(Clone, Debug)]
 struct Gen {
     signals: Vec<u64>,
@@ -1881,8 +1849,9 @@ struct Gen {
     segs: Vec<Vec<(u64, ParamSegment)>>,
     /// Per probe: the latency of the sibling on its audio input (0: none).
     probes: Vec<usize>,
-    /// `(probe, param, source, shaping, range)` connections, applied at
-    /// step `when` and removed at `until`.
+    /// `(probe, param, source, range)` connections, applied at step `when`
+    /// (replacing the port's source) and removed at `until` (if still the
+    /// port's).
     edges: Vec<GenEdge>,
     /// `(step, probe, param, new base)`.
     moves: Vec<(usize, usize, usize, f32)>,
@@ -1904,7 +1873,6 @@ struct GenEdge {
     param: usize,
     /// `Ok(signal)` or `Err(ramp source)`.
     source: Result<usize, usize>,
-    shaping: u8,
     range: Option<(f32, f32)>,
     when: usize,
     until: usize,
@@ -1912,15 +1880,6 @@ struct GenEdge {
 
 const PARAMS: [UnitParam; 2] = [UnitParam::Cutoff, UnitParam::Q];
 const MAX_BLOCK: usize = 96;
-
-fn shaping(k: u8) -> ParamShaping {
-    match k % 4 {
-        0 => ParamShaping::Identity,
-        1 => ParamShaping::Lut(ShapeLut::from_fn(|x| x * x * x)),
-        2 => ParamShaping::Lut(ShapeLut::from_fn(|x| 0.25 * x.abs())),
-        _ => ParamShaping::Lut(ShapeLut::from_fn(|x| -2.0 * x)),
-    }
-}
 
 /// A segment shape for generator code `k`: every variant, the libm ones
 /// (a non-integer power, both signs of `Exp`) included.
@@ -1991,22 +1950,18 @@ fn gen() -> impl Strategy<Value = Gen> {
                 (0..ns).prop_map(Ok),
                 (0..nr.max(1)).prop_map(move |r| if nr == 0 { Ok(0) } else { Err(r) })
             ],
-            any::<u8>(),
             prop::option::of((-2.0f32..0.0, 0.0f32..2.0)),
             0..steps,
             0..steps + 1,
         )
-            .prop_map(
-                |(probe, param, source, shaping, range, when, until)| GenEdge {
-                    probe,
-                    param,
-                    source,
-                    shaping,
-                    range,
-                    when,
-                    until,
-                },
-            );
+            .prop_map(|(probe, param, source, range, when, until)| GenEdge {
+                probe,
+                param,
+                source,
+                range,
+                when,
+                until,
+            });
         (
             signals,
             (ramps, segs),
@@ -2125,45 +2080,19 @@ fn run_differential(g: &Gen) {
     let width = outputs.len();
     for (step, &n) in g.blocks.iter().enumerate() {
         // This step's edits, to both.
-        for (i, e) in g.edges.iter().enumerate() {
+        for e in &g.edges {
             let at = ParamIn {
                 node: NodeKey(300 + e.probe as u64),
                 param: PARAMS[e.param],
             };
             let from = match e.source {
-                Ok(s) => ParamFrom::Audio(OutPort {
-                    node: NodeKey(100 + s as u64),
-                    port: 0,
-                }),
-                Err(r) => ParamFrom::Events(EventOut {
-                    node: NodeKey(200 + r as u64),
-                    port: 0,
-                }),
+                Ok(s) => ev(100 + s as u64),
+                Err(r) => ev(200 + r as u64),
             };
             if e.when == step {
-                // A later edge on the same pair replaces the shaping; the
-                // index keeps shapings apart. An event source is unshaped
-                // and a port's only one (doc 014 §5.6): a new one replaces
-                // whichever the port had.
-                let shaped = match from {
-                    ParamFrom::Audio(_) => shaping(e.shaping.wrapping_add(i as u8)),
-                    ParamFrom::Events(_) => {
-                        let others: Vec<ParamFrom> = ed
-                            .spec()
-                            .params
-                            .get(&at)
-                            .into_iter()
-                            .flat_map(|m| &m.sources)
-                            .map(|s| s.from)
-                            .filter(|f| matches!(f, ParamFrom::Events(_)) && *f != from)
-                            .collect();
-                        for o in others {
-                            ed.spec_mut().disconnect_param(at, o);
-                        }
-                        ParamShaping::Identity
-                    }
-                };
-                ed.spec_mut().connect_param(at, from, shaped);
+                // One source per port (doc 014 §5.6): a later edge on the
+                // port replaces whichever it had.
+                ed.spec_mut().connect_param(at, from);
                 if let Some((lo, hi)) = e.range {
                     ed.spec_mut().set_param_range(at, ParamRange::new(lo, hi));
                 }
@@ -2239,32 +2168,24 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
 
     /// The executor's fused param step and the reference's own derivation
-    /// agree bit for bit on random modulated graphs — audio sources, ramp
-    /// sources and curve segments (every shape, some resumed part-way,
-    /// interrupting each other and ramps; at most one per port, replacing
-    /// its base, and replaced by the next one connected there), identity
-    /// and LUT shapings of audio sources, ranges, PDC-delayed sources,
-    /// connections made and broken mid-stream (declicks), base moves,
-    /// latency changes (param delays appearing, growing, shrinking),
-    /// regenerated probes and ranges moved without a commit — and on every
-    /// param source's PDC delay.
+    /// agree bit for bit on random driven graphs — per-frame step sources,
+    /// ramp sources and curve segments (every shape, some resumed part-way,
+    /// interrupting each other and ramps; one source per port, replacing
+    /// its base, and replaced by the next one connected there), ranges,
+    /// PDC-delayed sources, connections made and broken mid-stream
+    /// (declicks), base moves, latency changes (param delays appearing,
+    /// growing, shrinking), regenerated probes and ranges moved without a
+    /// commit — and on every param source's PDC delay.
     ///
-    /// Mutations (run), each diverges: in the reference, compare sources by
-    /// their `from` only (a shaping change does not declick); in the
-    /// executor, reset the ramps of a port whose sources did not change; in
-    /// `compile`, leave a param source out of the node's arrival; in the
-    /// reference, keep a regenerated probe's param state; in the reference,
-    /// fill a new param delay line with 0; in the reference, declick a
-    /// port's first block; in the reference, reset every source's state
-    /// when the port's sources change; in the executor, ignore the live
-    /// range (clamp to the unbounded range); in the reference, ignore a
-    /// moved range (the graph's alone); in `Ramp::step`, evaluate a
-    /// segment one frame behind (`done - 1`); in `render_ramps`, start a
-    /// segment from the value it interrupts (`from: ramp.value`); in
-    /// `ParamState::port`, add the base under a started event source (the
-    /// old offset rule); in `render_ramps`, start a first ramp from 0 rather
-    /// than the base; in the reference, read the base before an event
-    /// source's first event as 0.
+    /// Mutations (run in doc 014 PR 5, after the collapse to one event
+    /// source per port), each diverges: in the executor, reset the ramp of
+    /// a port whose source did not change; in the reference, keep a
+    /// regenerated probe's param state; in the reference, declick a port's
+    /// first block; in the executor, ignore the live range (clamp to the
+    /// unbounded range); in the reference, read the base before an event
+    /// source's first event as 0. Leaving a param source out of the node's
+    /// arrival does not diverge (the reference reads the compiler's
+    /// arrival); `a_param_source_counts_toward_arrival_in_both_solves` pins it.
     #[test]
     fn modulated_graphs_match_the_reference(g in gen()) {
         run_differential(&g);
@@ -2299,8 +2220,7 @@ fn a_range_cell_handle_is_the_ports_own() {
     let q_at = param(PROBE, UnitParam::Q);
     assert!(ed.param_range_cell(at).is_none(), "no commit has placed it");
     for p in [at, q_at] {
-        ed.spec_mut()
-            .connect_param(p, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
+        ed.spec_mut().connect_param(p, ev(1));
     }
     ed.commit().expect("commits");
     assert!(ed.param_range_cell(param(PROBE, UnitParam::Wet)).is_none());
@@ -2329,7 +2249,7 @@ fn a_range_cell_handle_is_the_ports_own() {
     let out = block(&mut exec, &mut ed, 64);
     assert!(out[0].contains(&0.25) && out[0].contains(&-0.25));
     for (i, &v) in out[0].iter().enumerate() {
-        let want = (0.0 + (-0.0 + signal_at(SEED, frame + i as u64))).clamp(-0.25, 0.25);
+        let want = signal_at(SEED, frame + i as u64).clamp(-0.25, 0.25);
         assert_eq!(v.to_bits(), want.to_bits(), "cutoff, frame {i}");
     }
     // Q's port keeps its own (unbounded) range.

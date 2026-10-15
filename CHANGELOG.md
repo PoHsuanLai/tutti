@@ -93,6 +93,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The old modulation system is deleted** (design doc 014, PR 5).
+  Control lanes are the one modulation path: a param port has at most one
+  source, an event output, and the fused step is `clamp(held, range)`;
+  `tutti-mod` is the pure compiler and holds no runtime. Audio-rate
+  modulation through a param port goes (FM, ring and the like are a node's
+  own audio input, doc 014 §11; `LfoNode` stays an audio generator for it).
+  The fork seeds go with `ParamTap`: a fresh (forked) source sends its
+  current value on its first block, which a control lane does. **Breaking**
+  for every user of the items below.
+
+  | Was | Now |
+  |---|---|
+  | `tutti_mod`'s `routing` feature: `ModMatrix`, `AtomicTarget`, `ModRouter`, `ModBus`, `ModEdge`, `ModRoutingTable`, `ModRoutingSnapshot`, `ModPreFrame`, `ErasedModulator`, `Sourced`, `SourceRate`, `Rate`, `SourceClock`, `Route`, `RouteTo`, `TargetHandle`, `LayeredCurve`, `ShapedCurve`, `EdgeShape`, `CurveModulator`, `BeatLfo` | declare sources, routes and targets and call `tutti_mod::compile` (headless: `tutti_nodes::Modulation` applies the result to an `Editor`), or declare them in Bevy (`bevy_tutti::modulation`'s `Mods`, `ModRoute`, `ModRange`); a `ControlLaneNode` per target runs its program |
+  | `tutti_mod::{ModParams, ModTarget, LayerKey, ModTargetId, fold}`; the `std` and `routing` features (`bevy` implied `routing`) | gone: a node's params are its `ParamSet`, a lane's knob one of its cells; `tutti-mod` has `default = []` and `bevy` |
+  | `tutti_mod::{Lfo, Modulator, RandomState, SampleHold}` | `tutti_nodes::{Lfo, Modulator, RandomState, SampleHold}` (the copies the nodes run since PR 3) |
+  | `spec.connect_param(at, ParamFrom::Events(out), ParamShaping::Identity)` | `spec.connect_param(at, out)`, which replaces the port's source and returns the one it had; `disconnect_param(at, out)` |
+  | `ParamFrom` (`Audio`, `Events`), `ParamShaping`, `ShapeLut`, `SHAPE_LUT_LEN`, `ParamSource`, `MAX_PARAM_SOURCES`, `GraphInvalid::{TooManyParamSources, UnsortedParamSources}`, `DelayKey::ParamAudio`; `ParamMod { range, sources }` | `ParamMod { range, source: Option<EventOut> }`; a port with no source reads its base under the range |
+  | `Plan::param_sources()`, `ParamSourceOp`, `ParamSlot`; `ParamPortOp { sig, sources, .. }` | `ParamPortOp { port, param, from: EventOut, slot }`, the port's one source |
+  | `Editor::param_seeds`, `seed_params`, a fork's param seeds | none: a fork's fresh source sends its value on its first block (doc 014 §10). **A hand-wired event source must too**, and one driven by live input it cannot replay (a MIDI CC or OSC bridge) either writes the target's `Param` cell (the knob, which a fork reads) or answers `EventKind::Resync` by re-sending where it stands |
+  | re-wiring a steady source to a port | a new source starts at rest: a control lane whose knob is still must be asked to resend once wired (`LaneControls::resync`) |
+  | `ParamSet::set_authored(p, v)`, `ParamSet::authored(p)` | `ParamSet::set(p, v)`, `ParamSet::get(p)`: the knob is the node's one cell, which a fork starts from |
+  | `tutti_nodes::{param_mod, ParamModShaping}`; `tutti_nodes::{AtomicTarget, BeatLfo, CurveModulator, LayerKey, LayeredCurve, ModParams, ModTarget}` | gone; `tutti_mod::shape` is the one shaping function |
+  | `AutomationLaneNode::for_param(key, curve)`, `AutomationLaneNode::for_foreign(curve, id)` | `ControlLaneNode::for_param(key, ControlProgram::from_automation(curve), knob, range)`, `ControlLaneNode::for_foreign(id, program, knob, (min, max))` |
+  | `tutti_plugin`: `PluginControls::automation(params)` (and `PluginClient::automation`, `Plugin::automation`, the in-process VST2 client's), `PluginAutomation`, `AutomationControls`, `AUTOMATION_EVENT_CAPACITY`, `TimedParam`, `PluginParamTarget`, `LfoCurve`, `LfoOffset`, `OffsetCurve`, `stride_for`, `MAX_POINTS`, `PluginControls::param_target`, `impl ModParams for PluginClient`, `handles::{LfoShape, ModParams, ModTarget}` | a `ControlLaneNode::for_foreign(id, program, knob, (0.0, 1.0))` per parameter, event-wired into the plugin node's event input 0; the plugin reads the lane's `u32` in its own model (a VST2 index, or an opaque id). An id of the other model is no longer refused: a lane carries a bare `u32` |
+  | `bevy_tutti::modulation::legacy` (the frame-rate driver: `ModulationMatrix`, `ModTargetRegistry`, `ModTargetResolver`, `ModBusRes`, `ModParamsHandle`, `ModRateCell`, `CollectedModSources`, `ModSourceSystems`, `ModSourceAppExt`, `AudioRateRoutes`, `ModDelivery`, `ModParamRange`, `ModClock`, `ParamKey`, `drive`, `rebuild`), `LegacyModulationPlugin` | `TuttiModulationPlugin` and its declarations (`Mods`, `ModSource`, `ModRoute`, `ModRange`, `Automation`, `ParamRef`) |
+  | `bevy_tutti::plugin_host::{plugin_bind_params, PluginParamsBound, PluginAutomationNode, remove_plugin_automation}` | a lane on the plugin's event input: `ParamRef::plugin(entity, id)` |
+  | `CapturedControls::for_params`; `param_graph_node!` and the sampler's nodes capturing their `ParamSet` | gone: a node's params are addressed by `GraphNode::params` at insert, and `captured` is a hosted plugin's only |
+  | `AudioGraphRes::set_param_mod(node, param, &[(AudioNode, ParamShaping)], range)` | `set_param_mod(node, param, source: Option<AudioNode>, range)`: the source node's event output 0, or none |
+  | a param a node addresses in its `ParamSet` but did not declare as a port, which the frame-rate driver modulated by writing its cell (a lane needs the port, so a route onto one would be refused with `NoSuchParam`) | declared as ports, each read once per block (a driven port's last frame) where the node reads its cell: new `MOD_DELAY_PARAMS` (chorus and flanger rate, depth, feedback, mix), `PHASER_PARAMS` (the same four), `CONVOLVER_PARAMS` (mix), `tutti_polysynth::SYNTH_PARAMS` (volume; detune and spread with a unison engine), `tutti_sampler::VOICE_PARAMS` (a `VoiceNode`'s gain, and a standalone `MemorySource`'s), `LFO_PARAMS` (depth; rate while free-running); and widened: `COMPRESSOR_PARAMS` (threshold, now also ratio, attack, release and makeup `GainDb`), `GATE_PARAMS` (threshold, now also attack and release), `LIMITER_PARAMS` (ceiling and threshold, now also release), `DELAY_PARAMS` (feedback and delay time, now also mix), `SVF_PARAMS` (cutoff and Q, now also gain). **Breaking** for code that matches a const's length or a shape's param list |
+  | `BusStripNode`'s `Mute`, modulated by the driver like any cell | knob-only: a toggle, not a continuous control, and the strip folds it in unmodulated. A route onto it is refused with `NoSuchParam`; write it with `ParamSet::set` or `set_muted` |
+
 - **`bevy-tutti` modulation runs on control lanes** (design doc 014, PR
   4b). Sources, routes, ranges and automation are declarations on
   entities; `TuttiModulationPlugin` applies them every frame through
@@ -103,8 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parameters alike (on `main` a plugin's modulated gain exported at its
   authored value). A depth, range, curve or automation edit is a store,
   never a new plan, and an LFO keeps its phase across one. **Breaking**
-  for every user of `bevy_tutti::modulation`; the old frame-rate driver is
-  kept, unscheduled, in `modulation::legacy` until PR 5 deletes it.
+  for every user of `bevy_tutti::modulation`; the old frame-rate driver was
+  kept, unscheduled, in `modulation::legacy` until PR 5 deleted it (above).
 
   | Was | Now |
   |---|---|
@@ -1437,6 +1468,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     CoreMIDI type. It now takes an erased sink, so every backend gets it.
 
 ### Fixed
+
+- **A phaser at a negative depth no longer diverges** (`tutti-nodes`).
+  `PhaserNode::set_depth` allows down to −1, which swept the all-pass
+  below 0 Hz, past where its coefficient stays inside `-1..=1`; the stages
+  grew without bound. The sweep is now held inside `1 Hz..0.49 sr`, which
+  every depth in `0..=1` already was.
 
 - **A VST2 plugin's echo of a host write is no longer reported as its own
   edit** (`tutti-vst2-host`). A plugin that calls `audioMasterAutomate`

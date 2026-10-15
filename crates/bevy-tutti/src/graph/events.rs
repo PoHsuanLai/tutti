@@ -213,12 +213,6 @@ pub trait GraphNode: IntoNode + Send + 'static {
 macro_rules! param_graph_node {
     ($($ty:ty),* $(,)?) => {$(
         impl $crate::graph::GraphNode for $ty {
-            fn captured(&self) -> $crate::graph::CapturedControls {
-                $crate::graph::CapturedControls::for_params(
-                    &$crate::__private::ParamNode::param_set(self),
-                )
-            }
-
             fn params(
                 controls: &$crate::__private::ParamSet,
             ) -> ::core::option::Option<$crate::__private::ParamSet> {

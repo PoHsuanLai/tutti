@@ -39,7 +39,8 @@ const QUANTUM: usize = 1024;
 const PASSES: usize = QUANTUM / BLOCK;
 const PARAMS: usize = 200;
 
-/// Two hundred parameters, each set to a new value before every block, so
+/// Two hundred parameters, each a foreign control lane whose knob is set to
+/// a new value before every block (the lanes run inside the gate too), so
 /// every chunk carries a queue for each of them with a point from each of
 /// its sixteen blocks (more than a queue's ten inline points, fewer than its
 /// reserved room of 1024 / 32 + 4). Rolling transport, real time between
@@ -59,11 +60,10 @@ const PARAMS: usize = 200;
 fn two_hundred_moving_parameters_do_not_allocate_on_the_audio_thread() {
     let _lock = exclusive();
     let (client, handle) = load_vst2_probe(PARAMS, SAMPLE_RATE);
-    let (knobs, params) = knobs(PARAMS, |_| 0.5);
-    let automation = client.automation(params);
+    let (knobs, lanes) = knobs(PARAMS, |_| 0.5);
     let prepare =
         Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)).with_quantum(Samples(QUANTUM));
-    let mut rig = Rig::prepared_with(client.bind(), prepare, Some(automation));
+    let mut rig = Rig::prepared_with(client.bind(), prepare, lanes);
 
     let silence = vec![0.0f32; BLOCK];
     let inputs: Vec<&[f32]> = (0..rig.inputs()).map(|_| &silence[..]).collect();
@@ -74,7 +74,7 @@ fn two_hundred_moving_parameters_do_not_allocate_on_the_audio_thread() {
         for (i, k) in knobs.iter().enumerate() {
             // A new value for every parameter every block: sixteenths,
             // stepping by one each block.
-            k.set(((b + i) % 16) as f32 / 16.0);
+            k.set_knob(((b + i) % 16) as f32 / 16.0);
         }
         let t = Transport::new(true, Bpm(120.0), Beat(b as f64), None);
         rig.renderer().executor_mut().process_with_changes(

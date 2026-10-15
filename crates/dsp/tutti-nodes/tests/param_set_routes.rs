@@ -1,39 +1,50 @@
-//! A control-rate modulation route onto a node's param resolves on the
-//! node's [`ParamSet`](tutti_graph::ParamSet): the host takes the set's cell
-//! for the param and mirrors it through an [`AtomicTarget`] (bevy-tutti's
-//! `ParamSetTargets`), so a route writes exactly the cell the node reads.
+//! A node's [`ParamSet`](tutti_graph::ParamSet) is the address a modulation
+//! host resolves a param on: `ParamSet::cell(p)` is the very cell the node
+//! reads, which an engine hands a control lane as its knob (doc 014 §4.2:
+//! one writer per knob, the host's `set`), so a write through the set moves
+//! the node's own control and the lane's offsets ride on it.
 //!
 //! The `ParamSet` is each node's one address: a set is addressed by
 //! `UnitParam` alone, and each cell has one address (the compressor's makeup
 //! is `GainDb`).
 //!
+//! Ported in doc 014 PR 5 from routes through a `ModMatrix` onto an
+//! `AtomicTarget` mirroring the cell (both deleted, §10): the address checks
+//! now write through `ParamSet::set`, and the end-to-end check drives a
+//! control lane whose knob is the filter's cell.
+//!
 //! Mutation (run): `ParamSet::cell` answering every param with the set's
 //! first cell → every test asking for a param the set lacks, or one that is
-//! not its first, fails (5 of 7); the two that route the SVF's cutoff, its
-//! first param, pass, as they must.
+//! not its first, fails (5 of 7, with `convolution`); the two that address
+//! the SVF's cutoff, its first param, pass, as they must.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use audio_automation::CurveType;
 use tutti_core::{ChannelLayout, UnitParam};
-use tutti_graph::ParamNode;
-use tutti_mod::{AtomicTarget, LayerKey, ModTarget};
-use tutti_nodes::{
-    CompressorNode, LadderFilterNode, LadderType, ModDelayNode, SvfFilterNode, SvfType,
+use tutti_graph::{
+    Cx, Editor, EventOut, GraphBuilder, Io, Node, ParamIn, ParamNode, ParamRange, ParamSet,
+    Prepare, Renderer, Shape, Status, Unforkable,
 };
+use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
+use tutti_nodes::automation::ControlLaneNode;
+use tutti_nodes::{
+    CompressorNode, LadderFilterNode, LadderType, LfoNode, LimiterNode, ModDelayNode, PhaserNode,
+    SvfFilterNode, SvfType,
+};
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::{BeatDuration, Depth, Hz, NodeKey, PhaseIncrement, SampleRate, Samples};
 
-/// The route a host resolves for `p` on `node`: its `ParamSet` cell behind
-/// an `AtomicTarget` over `[min, max]`, or `None` for a param it lacks.
-fn route<N: ParamNode>(
-    node: &N,
-    p: UnitParam,
-    base: f32,
-    min: f32,
-    max: f32,
-) -> Option<Arc<dyn ModTarget>> {
-    node.param_set()
-        .cell(p)
-        .map(|cell| Arc::new(AtomicTarget::with_mirror(base, min, max, cell)) as Arc<dyn ModTarget>)
+/// Writes `value` to `p` through `node`'s set, as a host does; `false` for
+/// a param the set lacks.
+fn set<N: ParamNode>(node: &N, p: UnitParam, value: f32) -> bool {
+    node.param_set().set(p, value)
+}
+
+/// Whether `node`'s set addresses `p` (has a cell a lane could take).
+fn addresses<N: ParamNode>(node: &N, p: UnitParam) -> bool {
+    node.param_set().cell(p).is_some()
 }
 
 fn svf() -> SvfFilterNode<f32> {
@@ -41,110 +52,273 @@ fn svf() -> SvfFilterNode<f32> {
 }
 
 #[test]
-fn filter_cutoff_route_moves_the_nodes_own_cell() {
+fn filter_cutoff_write_moves_the_nodes_own_cell() {
     let node = svf();
     let atomic = node.frequency(); // the node reads this per block
-    let target =
-        route(&node, UnitParam::Cutoff, 1000.0, 20.0, 20000.0).expect("cutoff is modulatable");
-
-    // Accumulating an offset moves the node's OWN cell.
-    target.accumulate(LayerKey(1), 500.0);
-    assert!(
-        (atomic.load(Ordering::Acquire) - 1500.0).abs() < 1e-3,
-        "the node's frequency cell reflects the modulation"
-    );
-    target.clear(LayerKey(1));
-    assert!((atomic.load(Ordering::Acquire) - 1000.0).abs() < 1e-3);
+    assert!(set(&node, UnitParam::Cutoff, 1500.0), "cutoff is addressed");
+    assert_eq!(atomic.load(Ordering::Acquire), 1500.0);
+    // The cell a lane takes as its knob is that same cell.
+    let cell = node.param_set().cell(UnitParam::Cutoff).expect("addressed");
+    assert!(Arc::ptr_eq(&cell, &atomic));
 }
 
 #[test]
-fn a_param_the_set_lacks_has_no_route() {
+fn a_param_the_set_lacks_has_no_address() {
     // The SVF has no Drive param.
-    assert!(route(&svf(), UnitParam::Drive, 0.0, 0.0, 1.0).is_none());
+    assert!(!addresses(&svf(), UnitParam::Drive));
+    assert!(!set(&svf(), UnitParam::Drive, 1.0));
 }
 
 #[test]
-fn ladder_routes_q_and_drive_but_not_feedback() {
+fn ladder_addresses_q_and_drive_but_not_feedback() {
     let node =
         LadderFilterNode::<f32>::with_channels(ChannelLayout::STEREO, LadderType::LP24, 800.0, 0.5);
-    assert!(route(&node, UnitParam::Cutoff, 800.0, 20.0, 20000.0).is_some());
-    assert!(route(&node, UnitParam::Q, 0.5, 0.0, 1.0).is_some());
-    assert!(route(&node, UnitParam::Drive, 1.0, 0.0, 4.0).is_some());
-    assert!(route(&node, UnitParam::Feedback, 0.0, 0.0, 1.0).is_none());
+    assert!(addresses(&node, UnitParam::Cutoff));
+    assert!(addresses(&node, UnitParam::Q));
+    assert!(addresses(&node, UnitParam::Drive));
+    assert!(!addresses(&node, UnitParam::Feedback));
 }
 
-// ── End-to-end: modulate a REAL audio node through the ModMatrix ──
+// ── End-to-end: a lane whose knob is a REAL filter's cell ──
 
-#[test]
-fn lfo_sweeps_a_real_filter_cutoff_through_the_matrix() {
-    use tutti_core::{Beat, BeatDuration, Seconds};
-    use tutti_mod::{Lfo, LfoShape, ModMatrix, SourceRate};
+/// Writes its cutoff port's value per frame on its one output.
+struct Probe;
 
-    // A real filter node. The node reads `frequency()` per block.
-    let filter = svf();
-    let cutoff_atomic = filter.frequency();
-
-    // Resolve the node's cutoff route and hand it to the matrix.
-    let target =
-        route(&filter, UnitParam::Cutoff, 1000.0, 20.0, 20000.0).expect("cutoff is modulatable");
-
-    let mut m = ModMatrix::new();
-    let cutoff = m.add_target(target); // register the node's OWN cell
-                                       // Beat-synced at 1 cycle/beat → phase == beat, so passing beat = i/16
-                                       // walks a full sine cycle.
-    m.route(
-        Lfo::new(LfoShape::Sine),
-        SourceRate::beat_synced(BeatDuration(1.0), 0.0),
-    )
-    .to(&cutoff)
-    .depth(0.5);
-    let mut driver = m.build();
-
-    // Drive the matrix each frame → the filter's real cutoff cell sweeps.
-    let mut moved_up = false;
-    let mut moved_down = false;
-    for i in 0..16 {
-        driver.run(Beat(i as f64 / 16.0), Seconds(0.0));
-        let hz = cutoff_atomic.load(Ordering::Acquire);
-        assert!(
-            (20.0..=20000.0).contains(&hz),
-            "cutoff left its range: {hz}"
-        );
-        if hz > 1000.5 {
-            moved_up = true;
+impl Node for Probe {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_params(&[UnitParam::Cutoff])
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let v: Option<Vec<f32>> = io.param(0).frames().map(<[f32]>::to_vec);
+        match v {
+            Some(v) => io.output(0).copy_from_slice(&v),
+            None => io.output(0).fill(0.0),
         }
-        if hz < 999.5 {
-            moved_down = true;
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+    fn param_base(&self, _: usize) -> Option<f32> {
+        Some(0.0)
+    }
+}
+
+/// A sine LFO lane, its knob the filter's own cutoff cell, sweeps a cutoff
+/// port around that cell's value, both ways and inside the range; a write
+/// through the filter's set moves the centre of the sweep on the next
+/// block, so the knob the lane reads is the node's cell, not a copy.
+///
+/// Mutation (run): build the lane's knob from a snapshot of the cell
+/// (`Arc::new(AtomicF32::new(cell.load(..)))`) → the second sweep stays
+/// centred on 1000 → fails.
+#[test]
+fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
+    let filter = svf();
+    let (lo, hi) = (500.0, 1500.0);
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+    let probe = NodeKey(1);
+    ed.insert(probe, "probe", Unforkable(Probe));
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: probe,
+        port: 0,
+    })];
+    let at = ParamIn {
+        node: probe,
+        param: UnitParam::Cutoff,
+    };
+    ed.set_param_range(at, ParamRange::new(lo, hi))
+        .expect("a probe");
+    ed.commit().expect("commits");
+    let layer = Layer {
+        id: LayerId(1),
+        // 10 cycles a second: a cycle every 4800 frames.
+        clock: Clock::Seconds {
+            rate: Hz(10.0),
+            phase: PhaseIncrement(0.0),
+            anchor: None,
+        },
+        wave: Wave::Shape {
+            shape: LfoShape::Sine,
+            seed: 0,
+        },
+        amount: Amount {
+            depth: Depth(0.25),
+            polarity: Polarity::Bipolar,
+            curve: CurveType::Linear,
+        },
+        depth_by: None,
+    };
+    let program = ControlProgram::new(None, vec![layer], vec![]).expect("valid");
+    let knob = filter
+        .param_set()
+        .cell(UnitParam::Cutoff)
+        .expect("addressed");
+    let range = ed.param_range_cell(at).expect("committed");
+    let lane = ControlLaneNode::for_unit(UnitParam::Cutoff, program, Some(knob), Some(range));
+    ed.insert(NodeKey(2), "lane", lane);
+    ed.spec_mut().connect_param(
+        at,
+        EventOut {
+            node: NodeKey(2),
+            port: 0,
+        },
+    );
+    ed.commit().expect("the lane commits");
+
+    let mut r = Renderer::new(ed, exec);
+    r.set_block(Samples(64));
+    // One cycle and a block.
+    let mut sweep = || r.render(4800 + 64).swap_remove(0);
+    let first = sweep();
+    let (min, max) = first
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+    assert!(
+        (lo..=hi).contains(&min) && (lo..=hi).contains(&max),
+        "{min}..{max}"
+    );
+    assert!(
+        max > 1200.0 && min < 800.0,
+        "sweeps both ways: {min}..{max}"
+    );
+
+    assert!(set(&filter, UnitParam::Cutoff, 1200.0));
+    let second = sweep();
+    let max = second.iter().copied().fold(f32::MIN, f32::max);
+    assert!(
+        max > 1400.0,
+        "the sweep follows the filter's cell: max {max}"
+    );
+}
+
+/// A chorus, its input noise on both channels, rendered for `frames`;
+/// when `lane` is `Some(depth)`, its rate is driven by a control lane
+/// whose knob is the chorus's own rate cell and whose one layer is a
+/// constant `depth` of the rate port's 0..10 Hz span.
+fn render_chorus(
+    node: ModDelayNode,
+    lane: Option<f32>,
+    frames: usize,
+) -> (Vec<Vec<f32>>, ParamSet) {
+    let mut g = GraphBuilder::new(ChannelLayout::STEREO, ChannelLayout::STEREO);
+    let (n, params) = g.add_with_controls(node);
+    g.connect_input(0, n, 0)
+        .connect_input(1, n, 1)
+        .connect_output(n, 0, 0)
+        .connect_output(n, 1, 1);
+    let at = ParamIn {
+        node: n,
+        param: UnitParam::Rate,
+    };
+    g.spec_mut().set_param_range(at, ParamRange::new(0.0, 10.0));
+    let mut r = g
+        .renderer(Prepare::new(SampleRate(48_000.0), Samples(128)))
+        .expect("builds");
+    if let Some(depth) = lane {
+        let ed = r.editor_mut();
+        let layer = Layer {
+            id: LayerId(1),
+            clock: Clock::Beats {
+                per_cycle: BeatDuration(1.0),
+                phase: PhaseIncrement(0.0),
+            },
+            wave: Wave::Const(1.0),
+            amount: Amount {
+                depth: Depth(depth),
+                polarity: Polarity::Bipolar,
+                curve: CurveType::Linear,
+            },
+            depth_by: None,
+        };
+        let program = ControlProgram::new(None, vec![layer], vec![]).expect("valid");
+        let knob = params.cell(UnitParam::Rate).expect("the chorus has a rate");
+        let range = ed.param_range_cell(at).expect("committed");
+        let lane = ControlLaneNode::for_unit(UnitParam::Rate, program, Some(knob), Some(range));
+        ed.insert(NodeKey(9_000), "lane", lane);
+        ed.spec_mut().connect_param(
+            at,
+            EventOut {
+                node: NodeKey(9_000),
+                port: 0,
+            },
+        );
+        ed.commit().expect("the lane commits");
+    }
+    let mut state = 0x1234_5678_u32;
+    let noise: Vec<f32> = (0..frames)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            0.8 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
+        })
+        .collect();
+    (r.render_input(&[&noise, &noise]), params)
+}
+
+/// **A control lane modulates a chorus's rate**, around the chorus's own
+/// rate cell: a +2 Hz offset on the 1 Hz knob renders the chorus as it
+/// renders at 3 Hz, and not as it does at 1 Hz, and the cell still holds
+/// the knob (the lane sends to the port and never writes it, doc 014
+/// §4.2). The rate is a port since doc 014 PR 5 ([`MOD_DELAY_PARAMS`]);
+/// before, a route onto it was refused with `NoSuchParam` once the
+/// frame-rate driver (which wrote the cell) went. The claim the old
+/// `chorus_rate_route_moves_the_nodes_own_cell` made, on the lane.
+///
+/// Mutation (run, PR 5): `ModDelayNode` not declaring its ports (the
+/// `.with_params(&MOD_DELAY_PARAMS)` dropped) → the lane's port does not
+/// exist and the connect is refused at commit → fails. Mutation (run, PR
+/// 5): `LfoDrive::fill_block` ignoring the driven rate → the chorus runs at
+/// 1 Hz → fails.
+///
+/// [`MOD_DELAY_PARAMS`]: tutti_nodes::MOD_DELAY_PARAMS
+#[test]
+fn a_lane_modulates_a_chorus_rate_around_its_own_cell() {
+    const FRAMES: usize = 24_000;
+    let chorus = || ModDelayNode::chorus(ChannelLayout::STEREO);
+    let (driven, params) = render_chorus(chorus(), Some(0.2), FRAMES);
+    let at_3hz = {
+        let n = chorus();
+        n.set_rate(3.0);
+        render_chorus(n, None, FRAMES).0
+    };
+    let at_1hz = render_chorus(chorus(), None, FRAMES).0;
+    for c in 0..2 {
+        for i in 0..FRAMES {
+            assert!(
+                (driven[c][i] - at_3hz[c][i]).abs() < 1e-4,
+                "channel {c} frame {i}: driven {} vs 3 Hz {}",
+                driven[c][i],
+                at_3hz[c][i]
+            );
         }
     }
     assert!(
-        moved_up && moved_down,
-        "a sine LFO should sweep the cutoff both ways"
+        (0..FRAMES).any(|i| (driven[0][i] - at_1hz[0][i]).abs() > 1e-2),
+        "the lane's offset is heard"
+    );
+    assert_eq!(
+        params.get(UnitParam::Rate),
+        Some(1.0),
+        "the knob is untouched"
     );
 }
 
 #[test]
-fn chorus_rate_route_moves_the_nodes_own_cell() {
+fn chorus_rate_write_moves_the_nodes_own_cell() {
     let node = ModDelayNode::chorus(ChannelLayout::STEREO);
     let rate_atomic = node.rate();
     let base = rate_atomic.load(Ordering::Acquire);
-    let target =
-        route(&node, UnitParam::Rate, base, 0.01, 10.0).expect("chorus rate is modulatable");
-
-    target.accumulate(LayerKey(1), 2.0);
     assert!(
-        (rate_atomic.load(Ordering::Acquire) - (base + 2.0)).abs() < 1e-3,
-        "chorus rate cell reflects the modulation"
+        set(&node, UnitParam::Rate, base + 2.0),
+        "chorus rate is addressed"
     );
-    target.clear(LayerKey(1));
-    assert!((rate_atomic.load(Ordering::Acquire) - base).abs() < 1e-3);
+    assert_eq!(rate_atomic.load(Ordering::Acquire), base + 2.0);
 
-    // A param it doesn't expose has no route.
-    assert!(route(&node, UnitParam::Cutoff, 0.0, 0.0, 1.0).is_none());
+    // A param it doesn't expose has no address.
+    assert!(!addresses(&node, UnitParam::Cutoff));
 }
 
-/// The compressor's makeup has one address, `GainDb`; `Makeup` (what its
-/// `ModParams` impl answered for the same cell) is not in its set.
+/// The compressor's makeup has one address, `GainDb`; `Makeup` is not in
+/// its set.
 #[test]
 fn compressor_makeup_is_addressed_as_gain_db() {
     let node = CompressorNode::with_channels(
@@ -155,19 +329,315 @@ fn compressor_makeup_is_addressed_as_gain_db() {
         2,
     );
     let makeup = node.makeup_gain();
-    let target = route(&node, UnitParam::GainDb, 0.0, -24.0, 24.0).expect("makeup is GainDb");
-    target.accumulate(LayerKey(1), 6.0);
-    assert!((makeup.load(Ordering::Acquire) - 6.0).abs() < 1e-3);
-    assert!(route(&node, UnitParam::Makeup, 0.0, -24.0, 24.0).is_none());
+    assert!(set(&node, UnitParam::GainDb, 6.0), "makeup is GainDb");
+    assert_eq!(makeup.load(Ordering::Acquire), 6.0);
+    assert!(!addresses(&node, UnitParam::Makeup));
 }
 
 #[cfg(feature = "convolution")]
 #[test]
-fn convolver_only_routes_wet() {
-    // Room size is baked into the IR; only Wet is control-rate modulatable.
+fn convolver_only_addresses_wet() {
+    // Room size is baked into the IR; only Wet is a control.
     // A minimal unit IR is fine — only the param surface is probed.
     let node = tutti_nodes::ConvolverNode::shared_ir(2usize, &[1.0], 64);
-    assert!(route(&node, UnitParam::Wet, 0.5, 0.0, 1.0).is_some());
-    assert!(route(&node, UnitParam::RoomSize, 0.5, 0.0, 1.0).is_none());
-    assert!(route(&node, UnitParam::Cutoff, 0.5, 0.0, 1.0).is_none());
+    assert!(addresses(&node, UnitParam::Wet));
+    assert!(!addresses(&node, UnitParam::RoomSize));
+    assert!(!addresses(&node, UnitParam::Cutoff));
+}
+
+/// One second of a free-running 1 Hz sine `LfoNode` at depth 0.25, with a
+/// control lane on `param` (knob: the LFO's own cell) adding a constant
+/// `depth` of `range`, and the cell's value after the render.
+fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32) {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let lfo = LfoNode::new(LfoShape::Sine)
+        .with_frequency(Hz(1.0))
+        .with_depth(Depth(0.25));
+    let (n, params) = g.add_with_controls(lfo);
+    g.connect_output(n, 0, 0);
+    let at = ParamIn { node: n, param };
+    g.spec_mut().set_param_range(at, range);
+    let mut r = g
+        .renderer(Prepare::new(SampleRate(48_000.0), Samples(128)))
+        .expect("builds");
+    let knob = params.cell(param).expect("the LFO addresses it");
+    let ed = r.editor_mut();
+    let layer = Layer {
+        id: LayerId(1),
+        clock: Clock::Beats {
+            per_cycle: BeatDuration(1.0),
+            phase: PhaseIncrement(0.0),
+        },
+        wave: Wave::Const(1.0),
+        amount: Amount {
+            depth: Depth(depth),
+            polarity: Polarity::Bipolar,
+            curve: CurveType::Linear,
+        },
+        depth_by: None,
+    };
+    let program = ControlProgram::new(None, vec![layer], vec![]).expect("valid");
+    let range = ed
+        .param_range_cell(at)
+        .expect("the LFO declares it as a port");
+    let lane = ControlLaneNode::for_unit(param, program, Some(knob.clone()), Some(range));
+    ed.insert(NodeKey(9_000), "lane", lane);
+    ed.spec_mut().connect_param(
+        at,
+        EventOut {
+            node: NodeKey(9_000),
+            port: 0,
+        },
+    );
+    ed.commit().expect("the lane commits");
+    let out = r.render(48_000).swap_remove(0);
+    (out, knob.load(Ordering::Acquire))
+}
+
+/// **A lane drives an `LfoNode`'s depth and rate** (doc 014 PR 5,
+/// [`LFO_PARAMS`]), each around the LFO's own cell. The depth knob at 0.25
+/// plus half of a 0..1 range swings the 1 Hz sine to ±0.75; the 1 Hz rate
+/// knob plus a fifth of a 0..10 Hz range runs it at 3 Hz, three rising
+/// zero crossings in a second where 1 Hz has one. Neither cell moves.
+///
+/// Mutation (run, PR 5): the LFO reading its depth cell, not the driven
+/// port (`block_driven(&io, 0)` replaced by `None`) → it peaks at 0.25 →
+/// fails. Mutation (run, PR 5): reading its rate cell (`block_driven(&io,
+/// 1)` replaced by `None`) → one crossing → fails.
+///
+/// [`LFO_PARAMS`]: tutti_nodes::LFO_PARAMS
+#[test]
+fn a_lane_drives_an_lfo_nodes_depth_and_rate() {
+    let (out, knob) = render_lfo(UnitParam::Depth, ParamRange::new(0.0, 1.0), 0.5);
+    let peak = out.iter().copied().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!((peak - 0.75).abs() < 1e-3, "peaks at 0.75, not {peak}");
+    assert_eq!(knob, 0.25, "the lane never writes the depth cell");
+
+    let (out, knob) = render_lfo(UnitParam::Rate, ParamRange::new(0.0, 10.0), 0.2);
+    let rising = out.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+    assert_eq!(rising, 3, "3 Hz: three rising crossings in a second");
+    assert_eq!(knob, 1.0, "the lane never writes the rate cell");
+}
+
+/// `input` (mono) through `node` at 48 kHz in 128-frame blocks, with a
+/// control lane on `param` whose knob is the node's own cell, the port's
+/// range `range`, and whose one layer adds a constant `depth` of that range
+/// (negative: below the knob). The lane is wired before the first block.
+fn render_driven<N>(
+    node: N,
+    param: UnitParam,
+    range: ParamRange,
+    depth: f32,
+    input: &[f32],
+) -> Vec<f32>
+where
+    N: tutti_graph::IntoNode<Controls = ParamSet>,
+{
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let (n, params) = g.add_with_controls(node);
+    g.connect_input(0, n, 0).connect_output(n, 0, 0);
+    let at = ParamIn { node: n, param };
+    g.spec_mut().set_param_range(at, range);
+    let mut r = g
+        .renderer(Prepare::new(SampleRate(48_000.0), Samples(128)))
+        .expect("builds");
+    let ed = r.editor_mut();
+    let layer = Layer {
+        id: LayerId(1),
+        clock: Clock::Beats {
+            per_cycle: BeatDuration(1.0),
+            phase: PhaseIncrement(0.0),
+        },
+        wave: Wave::Const(1.0),
+        amount: Amount {
+            depth: Depth(depth),
+            polarity: Polarity::Bipolar,
+            curve: CurveType::Linear,
+        },
+        depth_by: None,
+    };
+    let program = ControlProgram::new(None, vec![layer], vec![]).expect("valid");
+    let knob = params.cell(param).expect("the node addresses it");
+    let range = ed
+        .param_range_cell(at)
+        .expect("the node declares it as a port");
+    let lane = ControlLaneNode::for_unit(param, program, Some(knob), Some(range));
+    ed.insert(NodeKey(9_000), "lane", lane);
+    ed.spec_mut().connect_param(
+        at,
+        EventOut {
+            node: NodeKey(9_000),
+            port: 0,
+        },
+    );
+    ed.commit().expect("the lane commits");
+    r.render_input(&[input]).swap_remove(0)
+}
+
+/// Peak magnitude of `x`.
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+}
+
+/// **A limiter driven to a release below its floor still releases.** A lane
+/// on the release port, ranged `-1..=1` s, drives it to −0.4 s, below the
+/// 1 ms `set_release` floors at. A full-scale burst into a −12 dB limiter,
+/// then a quiet tone under the threshold: the output is finite, and the
+/// quiet tone comes back at its own level (the gain reduction released),
+/// not held down at the burst's.
+///
+/// Mutation (run, PR 5 review): `update_coefficients` without
+/// `clamp_release` (the driven value as is) → the follower's coefficient
+/// is 1.0 (`time_to_coeff` at `<= 0`), the envelope freezes at the burst's
+/// reduction and the tone stays about 12 dB down → fails.
+#[test]
+fn a_limiter_driven_below_its_release_floor_still_releases() {
+    const SR: f32 = 48_000.0;
+    let tone = |amp: f32, frames: usize| -> Vec<f32> {
+        (0..frames)
+            .map(|i| amp * (std::f32::consts::TAU * 440.0 * i as f32 / SR).sin())
+            .collect()
+    };
+    let mut input = tone(1.0, 12_000);
+    input.extend(tone(0.05, 36_000));
+    let out = render_driven(
+        LimiterNode::with_channels(ChannelLayout::MONO, -12.0, -12.0),
+        UnitParam::Release,
+        ParamRange::new(-1.0, 1.0),
+        -0.25,
+        &input,
+    );
+    assert!(out.iter().all(|v| v.is_finite()), "finite throughout");
+    let tail = peak(&out[out.len() - 12_000..]);
+    assert!(
+        (tail - 0.05).abs() < 0.005,
+        "the quiet tone comes back at 0.05, not held down: {tail}"
+    );
+}
+
+/// **A phaser driven past its depth range stays stable.** A lane on the
+/// depth port, ranged `-8..=8`, drives it to 8 and, separately, to −7.5. Past
+/// 1 the sweep would cross Nyquist and below 0 it would go below 0 Hz;
+/// either puts the all-pass coefficient outside `-1..=1`, where the stages
+/// diverge. Clamped (`Depth::new_clamped` on the depth, the sweep held
+/// inside `1 Hz..0.49 sr`) the output stays bounded by what the input and a
+/// 0.5 feedback can make.
+///
+/// And the depth gets `set_depth`'s clamp: driven to 8 it sounds as it
+/// does driven to exactly 1 (the knob at 1, nothing added).
+///
+/// Mutation (run, PR 5 review): `LinearModMix::load` without
+/// `Depth::new_clamped` → the sweep hold keeps the +8 drive bounded, but it
+/// sweeps unlike depth 1 → the last assertion fails. Mutation (run, PR 5
+/// review): `allpass_coeff` without the sweep hold → the −7.5 drive
+/// diverges → fails. (A depth of −1 reaches the second through `set_depth` itself, so
+/// the hold also fixes a divergence that predates the port.)
+#[test]
+fn a_phaser_driven_past_its_depth_range_stays_stable() {
+    let mut state = 0x9e37_79b9_u32;
+    let noise: Vec<f32> = (0..48_000)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            0.5 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
+        })
+        .collect();
+    for depth in [0.5, -0.5] {
+        // Knob 0.5 plus `depth` of the 16-wide range: 8.5 (held at the
+        // range's 8) and -7.5.
+        let out = render_driven(
+            PhaserNode::with_channels(ChannelLayout::MONO, 4),
+            UnitParam::Depth,
+            ParamRange::new(-8.0, 8.0),
+            depth,
+            &noise,
+        );
+        let p = peak(&out);
+        assert!(
+            p.is_finite() && p < 4.0,
+            "driven at {depth} of the range: bounded, peak {p}"
+        );
+    }
+    let phaser_at = |knob: f32, depth: f32| {
+        let n = PhaserNode::with_channels(ChannelLayout::MONO, 4);
+        n.set_depth(knob);
+        render_driven(
+            n,
+            UnitParam::Depth,
+            ParamRange::new(-8.0, 8.0),
+            depth,
+            &noise,
+        )
+    };
+    let (past, full) = (phaser_at(1.0, 0.4375), phaser_at(1.0, 0.0));
+    for (i, (a, b)) in past.iter().zip(&full).enumerate() {
+        assert!(
+            (a - b).abs() < 1e-5,
+            "frame {i}: driven to 8 {a} vs depth 1 {b}"
+        );
+    }
+}
+
+/// **A chorus's driven depth and rate get their setters' clamps.** Driven
+/// to 0.5 s of depth (range `0..=1`), past the chorus's 40 ms
+/// `depth_max`, it sounds as it does at a 40 ms knob; driven to −5 Hz
+/// (range `-10..=10`), below `set_rate`'s 0.01 Hz floor, as it does at a
+/// 0.01 Hz knob.
+///
+/// Mutation (run, PR 5 review): the block's depth without
+/// `ModDelayConfig::clamp_depth` → a 0.5 s sweep reads past the line's
+/// capacity, unlike 40 ms → fails. Mutation (run, PR 5 review):
+/// `LfoDrive::fill_block` taking a driven rate unclamped → the LFO runs
+/// backwards at 5 Hz → fails.
+#[test]
+fn a_chorus_driven_past_its_depth_and_rate_gets_the_setters_clamps() {
+    let mut state = 0x2545_f491_u32;
+    let noise: Vec<f32> = (0..24_000)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            0.5 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
+        })
+        .collect();
+    let chorus = |depth: f32, rate: f32| {
+        let n = ModDelayNode::chorus(ChannelLayout::MONO);
+        n.set_depth(depth);
+        n.set_rate(rate);
+        n
+    };
+    let close = |a: &[f32], b: &[f32], what: &str| {
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert!((x - y).abs() < 1e-5, "{what}: frame {i}: {x} vs {y}");
+        }
+    };
+    // Knob 5 ms plus 0.495 of a 1 s range: 0.5 s.
+    let past = render_driven(
+        chorus(0.005, 1.0),
+        UnitParam::Depth,
+        ParamRange::new(0.0, 1.0),
+        0.495,
+        &noise,
+    );
+    let at_max = render_driven(
+        chorus(0.04, 1.0),
+        UnitParam::Depth,
+        ParamRange::new(0.0, 1.0),
+        0.0,
+        &noise,
+    );
+    close(&past, &at_max, "depth past 40 ms");
+    // Knob 1 Hz minus 0.3 of a 20 Hz range: -5 Hz.
+    let below = render_driven(
+        chorus(0.005, 1.0),
+        UnitParam::Rate,
+        ParamRange::new(-10.0, 10.0),
+        -0.3,
+        &noise,
+    );
+    let at_floor = render_driven(
+        chorus(0.005, 0.01),
+        UnitParam::Rate,
+        ParamRange::new(-10.0, 10.0),
+        0.0,
+        &noise,
+    );
+    close(&below, &at_floor, "rate below 0.01 Hz");
 }

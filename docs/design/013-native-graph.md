@@ -1672,7 +1672,9 @@ runs its own modulation — **live modulation offsets are the exception, by
 design**. A sampler clip's **placement** rides `VoiceNode`'s command queue,
 which `isolate` severs from a copy, so `VoiceNodeHandle` records each
 placement it queues in a control-thread cell the node shares with its
-clones, and `isolate` applies the latest to the copy (review of #32). A unit
+clones, and `isolate` applies the latest to the copy (review of #32; the
+queue and the record are now one `RtPublish` cell the fork reads, see
+"Sampler real-time fixes" under Phase 6). A unit
 test forks the native graph and checks each path (`graph::native::tests`);
 the placement is pinned in `tutti-sampler`'s `voice_node_commands`. Known
 export limits, each a cell a `Setting` cannot reach:
@@ -3577,6 +3579,83 @@ most plugins map nothing. The VST3
 event list's text arena reserves its room once and refuses (and counts) a
 text past it, since the plugin holds pointers into it for the block.
 
+#### Sampler real-time fixes
+
+**Status: landed** (2026-10-15). The audit's findings in `tutti-sampler`
+(collections and channels more complex, or less real-time, than they
+need to be), and what review of the fix turned up:
+
+- **The butler send from `process` no longer blocks.** A `VoicePool`'s
+  drain forwards a streaming voice's loop to the butler (`Command::Loop`)
+  from inside `process`, and `Commands::send` used `send_blocking` on the
+  butler's bounded (256) queue: a stalled butler held the callback. That
+  forward is the only butler send reachable from `process` (a `Seek` is
+  sent only by control code), and it is now `Commands::try_send`: a full
+  or closed queue refuses the command, the intent stays unrecorded, and
+  the refusal is counted. `Commands::send` stays blocking for the control
+  thread, waiting while the queue is full.
+- **The butler's queue takes no lock and allocates nothing** (lock-free,
+  not wait-free; below). It was a
+  `smol` channel, whose successful send woke the butler through a listener
+  list behind a `Mutex`, allocated on the channel's first notify. It is
+  now a crate-private `ButlerQueue`: a `crossbeam_queue::ArrayQueue`, the
+  butler's `Thread` (registered by the thread before its first cycle) and
+  a `closed` flag. A send is a push then an `unpark`; the
+  butler parks with a timeout between cycles (1 ms idle, 3 ms healthy) and
+  yields when a ring needs a refill, and a push between its drain and its
+  park leaves the token set, so no wake is lost. A control-thread send on
+  a full queue retries every 100 µs, waking the butler each time, and
+  stops when the queue closes. `smol` and `futures-lite` are no longer
+  dependencies.
+- **The audio thread's send is lock-free, not wait-free.** crossbeam's
+  `ArrayQueue::pop` moves `head` and only then frees the slot's stamp; a
+  push into a full queue whose tail lands on that slot sees `head` moved
+  and spins until the stamp is stored, rather than report `Full`. The
+  wait is the butler's two-instruction window, long only if the butler is
+  preempted inside it, and only on a full queue; senders also retry
+  against each other's tail claims. **Deferred:** the wait-free design is
+  a single-producer ring (`rtrb`) per sender, which the butler polls. The
+  parallel executor makes the send multi-producer (pools rendering on
+  several workers), so that is a ring per producer and a registry of
+  them.
+- **Closing cannot strand a command.** The thread closes the queue on
+  exit, however it exits (and `stop` closes it too, for a controller that
+  never started): it sets `closed`, then a `SeqCst` fence, then drains and
+  drops what is queued. A sender checks `closed`, pushes, then a `SeqCst`
+  fence, then checks `closed` again and reports `ButlerGone` if it is set.
+  That is the store-buffering pattern: either the drain sees the push or
+  the sender sees the flag, so an `Ok` command is always popped (run, or
+  dropped by the final drain) and every send that starts after the close
+  reports `ButlerGone`. A `ButlerGone` command may still have run, if the
+  butler's last cycle popped it while the sender was descheduled. This
+  handshake is an ordering argument the queue owns, which CLAUDE.md would
+  put in `tutti-types` under a loom model; crossbeam has no loom build, so
+  a model could check only a stand-in, and the exception and its argument
+  are in `docs/engineering-notes.md` ("The butler queue's close
+  handshake").
+- **A loop the butler refuses is not recorded on an add either.** An
+  `AddVoice` for a streaming voice whose `play.loop_` is `On` takes the
+  loop out of the voice (`Off` left behind) before the slot is built, and
+  records it only when the forward lands. A control-thread `insert_voice`
+  waits for room rather than refuse; the drain refuses.
+- **Drops are counted, not logged.** The pool's `tracing::warn!`s are
+  gone; `VoicePoolHandle::drops` returns a `PoolDrops` (loops refused by a
+  full or a gone butler, `On` loops lost for want of one, `ReplaceWave`s ignored on a streaming
+  voice, voices refused at the cap, values freed in the callback because
+  the retirement channel was full).
+- **The voice vector never grows on the audio thread.** It was reserved to
+  64 slots and pushed past them in the drain. An `AddVoice` for a new slot
+  in a full pool is now refused and handed back whole (box and filter)
+  through the retirement channel, as `Retired::Refused`; only a
+  control-thread `insert_voice` grows the vector.
+- **`VoiceNode`'s placement is one `RtPublish<Option<VoiceWindow>>`.** It
+  was a bounded (64) channel plus a `Mutex` copy for the fork. Applying a
+  window is a plain overwrite and nothing else rides with it, so latest
+  wins loses nothing; the node reads the cell once per block and applies
+  it when it changed, and the fork source reads the same cell.
+  `VoiceNodeHandle::set_placement` returns `()`: it can no longer be full.
+- `ringbuf` was an unused dependency of `tutti-sampler` and is removed.
+
 #### Hardware MIDI input ring
 
 **Status: landed** (2026-10-15). From the collections audit of `9f397d3d`.
@@ -5018,7 +5097,10 @@ fork would still need `PlacementRecord`'s read-at-isolate to see a clip moved
 after insert. Gain already arrives through the settings ring
 (`UnitParam::Volume` → `VoiceNode::set`), which a `Param` would duplicate.
 It lands with a native `Node` impl for the voice (`IntoNode::Controls`, a
-real `Fork`, the transport from `Env`): items 4 and 9.
+real `Fork`, the transport from `Env`): items 4 and 9. (Landed in two
+steps: the typed handle with item 4, its placement still on a queue; the
+`RtPublish` placement cell, which deletes the queue and `PlacementRecord`,
+with "Sampler real-time fixes" under Phase 6.)
 
 **Found by the review, fixed.** `VoiceCommand::AddVoice` carried its filter
 as `Option<Box<stretch::Unit>>`, and the drain unboxed both it and the
@@ -5151,7 +5233,8 @@ reference):
   branch (`tutti-spatial/src/fork.rs`).
 - **tutti-sampler** — `DiskSource`, `DiskVoice`, `VoicePool`, `VoiceNode`
   (item 7's leftover: typed controls, placement on the node's own queue,
-  gain a `Param`) and `MemorySource`. The clip readers read the transport
+  gain a `Param`; the placement is now a published cell, "Sampler
+  real-time fixes") and `MemorySource`. The clip readers read the transport
   from `Env` and are **frame-exact**: entry, exit, seek, stop and loop wrap
   land on their frame. They then still rendered in 64-frame pieces from
   each block's start, re-seated per piece, which kept the steady-state bits

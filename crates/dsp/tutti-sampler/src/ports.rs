@@ -15,9 +15,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use smol::channel::Sender;
 
-use crate::butler::{ButlerCommand, ButlerGone, ChannelPlan, SessionRate, TakeVoiceError};
+use crate::butler::{
+    ButlerCommand, ButlerGone, ButlerSender, ChannelPlan, SessionRate, TakeVoiceError, TrySendError,
+};
 use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
 use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate};
 use tutti_io::Wave;
@@ -134,22 +135,88 @@ pub enum Command {
     },
 }
 
-/// WRITE port onto the butler: a cloneable wrapper over the command channel
-/// that dispatches a public [`Command`] to the butler.
+impl Command {
+    /// The one `ButlerCommand` this maps to: the single place the public
+    /// variants meet the butler's, so the blocking and the non-blocking send
+    /// cannot disagree about one.
+    fn into_butler(self) -> ButlerCommand {
+        match self {
+            Command::Stream {
+                channel_index,
+                file_path,
+                offset,
+            } => ButlerCommand::StreamAudioFile {
+                channel_index,
+                file_path,
+                offset_samples: offset.get().max(0.0) as usize,
+            },
+            Command::Seek {
+                channel_index,
+                file_position,
+            } => ButlerCommand::SeekStream {
+                channel_index,
+                file_position: file_position.get().max(0.0) as u64,
+            },
+            Command::SetSpeed {
+                channel_index,
+                speed,
+                direction,
+            } => ButlerCommand::SetVarispeed {
+                channel_index,
+                direction,
+                speed,
+            },
+            Command::Loop {
+                channel_index,
+                setting:
+                    LoopSetting::On {
+                        start,
+                        end,
+                        crossfade_frames,
+                    },
+            } => ButlerCommand::SetStreamLoop {
+                channel_index,
+                range: (start.get().max(0.0) as u64, end.get().max(0.0) as u64),
+                crossfade_frames,
+            },
+            Command::Loop {
+                channel_index,
+                setting: LoopSetting::Off,
+            } => ButlerCommand::ClearStreamLoop { channel_index },
+            Command::Stop { channel_index } => ButlerCommand::StopStreaming { channel_index },
+        }
+    }
+}
+
+/// Why [`Commands::try_send`] refused a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ButlerRefused {
+    /// The butler's queue was full: it is stalled. Transient.
+    Full,
+    /// The butler thread has exited ([`ButlerGone`]). Permanent.
+    Gone,
+}
+
+/// WRITE port onto the butler: a cloneable wrapper over the butler's
+/// command queue that dispatches a public [`Command`] to the butler.
 ///
 /// Mirrors [`VoicePoolHandle`](crate::VoicePoolHandle) — a thin,
-/// `Clone` handle over a `Sender` with a single [`send`](Self::send) method.
+/// `Clone` handle over a sender with a single [`send`](Self::send) method.
 #[derive(Clone, Debug)]
 pub struct Commands {
-    tx: Sender<ButlerCommand>,
+    tx: ButlerSender,
 }
 
 impl Commands {
-    pub(crate) fn new(tx: Sender<ButlerCommand>) -> Self {
+    pub(crate) fn new(tx: ButlerSender) -> Self {
         Self { tx }
     }
 
-    /// Dispatches a single command to the butler.
+    /// Dispatches a single command to the butler. **Control thread**: while
+    /// the butler's bounded queue is full it waits, waking the butler and
+    /// retrying every 100 µs, so nothing reachable from a graph node's
+    /// `process` calls it (the audio thread's one send, a voice pool
+    /// forwarding a streaming loop, uses `try_send`).
     ///
     /// `Ok` means the command was *queued* — the butler applies it on its own
     /// thread, and that outcome is not available synchronously.
@@ -165,57 +232,35 @@ impl Commands {
     /// forever is indistinguishable from working playback.
     #[must_use = "a discarded command is a stream that never starts, seeks, or stops"]
     pub fn send(&self, cmd: Command) -> Result<(), ButlerGone> {
-        match cmd {
-            Command::Stream {
-                channel_index,
-                file_path,
-                offset,
-            } => crate::butler::control::stream(
-                &self.tx,
-                channel_index,
-                file_path,
-                offset.get().max(0.0) as usize,
-            ),
-            Command::Seek {
-                channel_index,
-                file_position,
-            } => self
-                .tx
-                .send_blocking(ButlerCommand::SeekStream {
-                    channel_index,
-                    file_position: file_position.get().max(0.0) as u64,
-                })
-                .map_err(|_| ButlerGone),
-            Command::SetSpeed {
-                channel_index,
-                speed,
-                direction,
-            } => crate::butler::control::set_varispeed(&self.tx, channel_index, speed, direction),
-            Command::Loop {
-                channel_index,
-                setting,
-            } => match setting {
-                LoopSetting::On {
-                    start,
-                    end,
-                    crossfade_frames,
-                } => self
-                    .tx
-                    .send_blocking(ButlerCommand::SetStreamLoop {
-                        channel_index,
-                        range: (start.get().max(0.0) as u64, end.get().max(0.0) as u64),
-                        crossfade_frames,
-                    })
-                    .map_err(|_| ButlerGone),
-                LoopSetting::Off => self
-                    .tx
-                    .send_blocking(ButlerCommand::ClearStreamLoop { channel_index })
-                    .map_err(|_| ButlerGone),
-            },
-            Command::Stop { channel_index } => {
-                crate::butler::control::stop_stream(&self.tx, channel_index)
-            }
-        }
+        self.tx
+            .send_blocking(cmd.into_butler())
+            .map_err(|_| ButlerGone)
+    }
+
+    /// Dispatches a command without blocking: the audio thread's send.
+    ///
+    /// A full queue (the butler is stalled, on I/O or descheduled) refuses
+    /// the command rather than holding the callback until the butler drains
+    /// it. The caller decides what a refusal means; the voice pool counts it
+    /// and does not record the intent.
+    ///
+    /// Takes no lock and allocates nothing, on the queue's first send as on
+    /// any other: a push into a fixed-capacity lock-free queue and an
+    /// `unpark` of the butler thread (`butler::queue`). It frees nothing on
+    /// refusal either (no variant the audio thread sends owns heap data).
+    ///
+    /// Lock-free, not wait-free: on a full queue the push can spin briefly
+    /// behind a pop the butler has begun on the same slot, and senders
+    /// retry against each other's claims. The wait-free alternative (a
+    /// single-producer ring per sender) is deferred; see `butler::queue`.
+    ///
+    /// `Gone` means the butler has exited or is exiting. A command sent as
+    /// it exits may still have run, or been dropped by its final drain.
+    pub(crate) fn try_send(&self, cmd: Command) -> Result<(), ButlerRefused> {
+        self.tx.try_send(cmd.into_butler()).map_err(|e| match e {
+            TrySendError::Full(_) => ButlerRefused::Full,
+            TrySendError::Closed => ButlerRefused::Gone,
+        })
     }
 
     /// Dispatches a batch of commands, in order.
@@ -343,12 +388,12 @@ impl Status {
 mod tests {
     use super::*;
 
-    /// A `Commands` whose butler receiver is already gone — the state a real
-    /// handle reaches once `ButlerThread::stop` has run.
+    /// A `Commands` whose butler is already gone — the state a real handle
+    /// reaches once `ButlerThread::stop` has run.
     fn dead_butler() -> Commands {
-        let (tx, rx) = smol::channel::unbounded();
-        drop(rx);
-        Commands::new(tx)
+        let queue = crate::butler::ButlerQueue::new(8);
+        queue.close();
+        Commands::new(ButlerSender::new(queue))
     }
 
     /// Every command variant reports a dead butler.
@@ -391,7 +436,7 @@ mod tests {
                 setting: LoopSetting::Off,
             }),
             Err(ButlerGone),
-            "the Loop/Off arm sends through its own `send_blocking` call"
+            "the Loop/Off arm maps to its own butler command"
         );
         assert_eq!(
             cmds.send(Command::Loop {
@@ -429,8 +474,8 @@ mod tests {
     /// With a live receiver everything queues, and the batch count matches.
     #[test]
     fn send_all_counts_what_it_queued() {
-        let (tx, rx) = smol::channel::unbounded();
-        let cmds = Commands::new(tx);
+        let queue = crate::butler::ButlerQueue::new(8);
+        let cmds = Commands::new(ButlerSender::new(std::sync::Arc::clone(&queue)));
 
         let queued = cmds.send_all([
             Command::Stop { channel_index: 0 },
@@ -438,6 +483,6 @@ mod tests {
         ]);
 
         assert_eq!(queued, 2);
-        assert_eq!(rx.len(), 2, "both reached the channel");
+        assert_eq!(queue.len(), 2, "both reached the queue");
     }
 }

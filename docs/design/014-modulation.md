@@ -913,19 +913,30 @@ open:
 ### 8.1 The API
 
 ```rust
-fn setup(mut mods: Mods, filter: Single<SvfRef>, pad: Single<GainRef>, kick_bus: Single<BusRef>) {
+fn setup(mut mods: Mods, scene: Res<Scene>) {
+    let cutoff = ParamRef::unit(scene.filter, UnitParam::Cutoff);
+    let gain = ParamRef::unit(scene.pad, UnitParam::Volume);
+    mods.range(cutoff, 0.0, 1_000.0);
+    mods.range(gain, 0.0, 1.0);
     let wobble = mods.lfo(Lfo::sine().rate(BeatDuration(0.5)));
-    mods.route(wobble, filter.cutoff(), Depth(0.3));
-    let kick = mods.follower(*kick_bus);
-    mods.route(kick, pad.gain(), Depth(-0.6)); // sidechain
+    mods.route(wobble, cutoff, Depth(0.3));
+    let kick = mods.follower(scene.kick_bus);
+    mods.route(kick, gain, Depth(-0.6)); // sidechain
 }
 ```
 
+(As landed in PR 4b: there are no typed node refs such as
+`filter.cutoff()`; a `ParamRef` is built from the entity and the param.
+A route needs a `ModRange` on its target. The example is
+`tests/mod_lanes.rs`'s `the_8_1_example_renders_its_analytic_values`.)
+
 - **`Mods` is a `SystemParam`** over `Commands`: `lfo`, `macro_`,
-  `follower`, `note_envelope` spawn a `ModSource` and return its `Entity`;
-  `route` spawns a `ModRoute`.
-- **`filter.cutoff()` is a `ParamRef`** `(Entity, ParamAddr)`;
-  `ParamRef::plugin(entity, id)` names a plugin parameter.
+  `follower`, `note_envelope` and `source` spawn a `ModSource` and return
+  its `Entity`; `route`, `range` and `automate` spawn a `ModRoute`, a
+  `ModRange` and an `Automation`.
+- **A `ParamRef` is `{ entity, param: ParamAddr }`**:
+  `ParamRef::unit(entity, UnitParam)` names a native param,
+  `ParamRef::plugin(entity, id)` a plugin parameter.
 - **Components:** `ModSource { kind }`; `ModRoute { source, target:
   ParamRef, depth, polarity, curve, enabled }`; `ModRange { param, min, max }`
   (no `base`); `Automation { target: ParamRef, curve: Arc<dyn Curve> }`.
@@ -968,17 +979,42 @@ and each records its generation: a key a host later takes (a replace or a
 removal) is followed, the wiring around it undone and the node rebuilt at
 a fresh key.
 `bevy-tutti`'s system (PR 4b) collects the declarations, implements
-`ModHost` over its entities and calls it:
+`ModHost` over its entities and calls it.
 
-`modulation::reconcile`, in `GraphReconcileSystems::Spawn`: collect the
-declarations (keys are entities), compile, diff against the `CompiledMods`
-resource, then apply:
+**As landed (PR 4b).** `modulation::reconcile`, in
+`ModulationSystems::Apply` (after `GraphReconcileSystems::Spawn`, before
+`Params`), collects the declarations, keyed by entity
+(`Entity::to_bits`: `SourceKey`, `RouteKey`, `TargetKey::node`), and
+calls `Modulation::apply` on the graph's editor
+(`AudioGraphRes::modulate`), whose `ModHost` maps an entity to its
+`AudioNode`. The `ModulationState` resource holds the `Modulation`, the
+standing refusal and what is unresolved. A staged commit goes with the
+frame's `commit_graph`; `after_commit` (`ModulationSystems::AfterCommit`)
+re-applies and commits again while a target is unresolved (a node new or
+rebound this frame resolves only from a committed plan, so the lane plays
+from the node's first frame), commits a host's own staged insert for the
+same reason, and sends the resyncs owed. Every `ReconcileError` is
+surfaced: logged, sent once as a `ModulationRefused` message (with the
+route or target entity it names) and held in
+`ModulationState::refusal`. A target takes one `ModRange` and one
+`Automation`: a second of either on the same `ParamRef` is refused as
+`DuplicateTarget`, never merged (which one won would be query order). A
+target still unresolved after 240 applies is logged once. A follower's feed is `Feed::Audio` (its input
+entity's node); a note envelope's is `Feed::Events` (its MIDI entity's
+`EventOut`). A plugin target is `Target::Foreign` on the plugin node's
+event input port 0, its knob seeded from `PluginParamValues` (the
+plugin's values, read off the frame thread at load; the target waits
+unresolved until they land). The old driver is in
+`modulation::legacy`, unscheduled (`LegacyModulationPlugin`), and
+`plugin_bind_params` is no longer scheduled.
+
+The rules, as designed:
 
 - **A new target** gets a `ControlLaneNode` through `AudioGraphRes`. A
   native one takes its node's `Param` cell (`GraphNode::params`) as its
   knob and is wired with `connect_param`; a plugin one gets its own knob
   cell, seeded from the mirrored plugin value, and is wired into the plugin
-  node's event input (`EventFeeds`).
+  node's event input (port 0).
 - **A changed program** is republished: no commit.
 - **A target without a program** loses its lane; its port crossfades back
   to the node's control.
@@ -998,18 +1034,47 @@ resource, then apply:
 | Automation curve | republish |
 
 **One writer per knob** (it fixes M9): `write_param` loses its modulated
-branch and `set_param_snapshot`; `ParamSet` loses `set_authored` and
-`authored`.
+branch and `set_param_snapshot`; `ParamSet` loses `set_authored`. (As
+landed: `ParamSet::authored` stays, the value a fork of the node starts
+from, which `set` writes with the live cell; nothing else writes either.)
 
 **A plugin's GUI** edit reaches the host through `ParameterChangeSink`; for
-a parameter with a lane, the reconcile writes it into the lane's knob. Under
-automation it is overridden when the curve next moves (automation read).
+a parameter with a lane, it is written into the lane's knob. (As landed:
+`PluginParamValues::read` installs the handle's `on_parameter_changed`
+callback, which queues each report; `plugin_param_edits`, in
+`GraphReconcileSystems::Spawn`, writes them into the mirror and the lane's
+knob, `ModulationState::set_knob`. Under automation the curve decides the
+base, so the knob shows again when the automation or its take goes.)
+
+**As landed (PR 4b): VST2 only.** Only VST2 reports a value the plugin
+moves itself (`audioMasterAutomate`, in process and through the
+plugin-server's `ParameterChanged`). CLAP, VST3 and AU emit no
+`ParameterChanged` through the server (`tutti-plugin-server`'s
+`Plugin::poll_async_events`, `src/plugin.rs:290-355`, sends only latency,
+tail and list or value invalidations for them), so a GUI edit on one of
+them moves the plugin's own value, the lane's next delivery replaces it,
+and the knob does not move. That gap is open: closing it needs a
+per-value report from each of those formats through the server.
+
+**An echo is not an edit.** A plugin that reports the value the host just
+set, from inside `setParameter`, would make the lane's modulated value
+(`knob + Σ offsets`) the knob, and the next delivery would add the offsets
+again, ratcheting the knob to the clamp. The VST2 host drops a report made
+on the thread inside its own `setParameter` call (`tutti-vst2-host`'s
+`host_write`, a thread-local mark), so an echo never reaches the
+parameter callback; an edit from the plugin's editor thread during the
+call is still reported. A format that gains per-value reports needs the
+same filter.
+
 With values only (no CLAP `PARAM_MOD`), the GUI shows base + modulation, so
 a drag during modulation sets the knob to the dragged value.
 
 **Recording.** While a touch or latch take is open, the reconcile
 republishes with `automation: None`, so the knob (the gesture) drives the
-param; on release it republishes with the finished envelope.
+param; on release it republishes with the finished envelope. (As landed:
+an `AutomationTake` component on the `Automation`'s entity, holding a
+`Recorder`; `close_takes`, before the reconcile, swaps a finished take's
+envelope into the `Automation` and removes the take.)
 
 ## 9. Plugin delivery: requirements
 
@@ -1685,6 +1750,52 @@ stronger (divide its depth by the span).
 
 **Exit.** `bevy-tutti` modulation runs on lanes only; M1–M3, M6, M7, M9,
 M10, M12 closed there.
+
+**PR 4b: landed** (branch `claude/mod-bevy-adapter`):
+
+- `bevy_tutti::modulation`: `Mods`, `ModSource` (`Lfo`, `Macro`,
+  `Follower`, `NoteEnvelope`, or a host's `ModSourceKind::declare`),
+  `ModRoute`, `ModRange::new(param, min, max)`, `Automation`,
+  `AutomationTake`, `ParamRef` (`unit`, `plugin`), `ModulationState`,
+  `ModulationRefused` and `TuttiModulationPlugin`, whose systems are
+  `ModulationSystems::Apply` and `AfterCommit` (§8.2 "As landed (PR 4b)").
+- Plugin targets are lanes on the plugin's event input
+  (`Target::Foreign`, port 0), their knobs seeded from
+  `PluginParamValues` and moved by the plugin's GUI
+  (`plugin_param_edits`). `plugin_bind_params` and the frame-rate driver
+  (`modulation::legacy`, `LegacyModulationPlugin`) are no longer
+  scheduled; PR 5 deletes them.
+- `ParamSet::set_authored` is gone; `AudioGraphRes::contains` answers
+  for every node in the graph's spec (a lane included), and
+  `event_sources` lists every edge on the port (a lane's included).
+- **Properties, each a test in an app** (`bevy-tutti/tests/mod_lanes.rs`,
+  `tests/mod_plugin.rs`, and `src/modulation/tests.rs` for the ones that
+  read the plan sent): the §8.1 example's analytic cutoff and the pad's
+  analytic dip; a depth slider keeps phase at render level with no plan
+  (M2); range and depth edits send no plan, a follower route exactly one;
+  export == live bit for bit on a native param (ragged live blocks) and
+  on the reference CLAP plugin's gain at the pinned 1024-frame chunk
+  (M3: on `main` 7bc1d6f3 the export rendered the authored gain, 0.0631,
+  against live's modulated 0.5012); a despawned source leaves no node and
+  no layer (M10); a knob written after a route edit is the knob (M9); an
+  authored write to a modulated param moves the knob; a held note
+  envelope newly routed reads its level at once; a plugin GUI edit
+  becomes the knob (the in-process VST2 probe); a take suspends the
+  automation, then its envelope plays; a follower downstream of its
+  target is refused by route and surfaced once; an entity rebound to a
+  node with another param list is modulated from the node's first frame;
+  a crossfaded plugin keeps its lane. Each records the mutations run
+  against it.
+- **Breaking** (CHANGELOG): the declarations above replace
+  `ModParamRange`, `ModDelivery` and `per_block`/`per_sample`; depth is
+  span-scaled everywhere (divide an old `PerSample` route's depth by the
+  span); `set_authored` and `set_param_snapshot` go; the old types live
+  in `modulation::legacy`.
+- **Left for PR 5:** deleting `modulation::legacy`, `plugin_bind_params`
+  and the legacy suites that run against them; `crossfade_plugin_node`
+  does not re-read `PluginParamValues` or refresh `PluginEmitter` for the
+  incoming plugin (its lanes keep their knobs and stay wired, but the
+  incoming plugin's GUI edits are not reported).
 
 ### PR 5: delete the old system
 

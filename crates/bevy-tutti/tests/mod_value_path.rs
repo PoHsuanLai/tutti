@@ -1,5 +1,10 @@
 //! Frame-rate ("value path") modulation: the adapter driven end to end.
 //!
+//! **Legacy.** This suite drives the modulation driver that control lanes
+//! replaced (`bevy_tutti::modulation::legacy`, unscheduled by default and
+//! added here as `LegacyModulationPlugin`). It keeps that code honest until
+//! PR 5 deletes both; the lane path's own properties are in `mod_lanes.rs`.
+//!
 //! Everything here delivers a route as a scalar written once per frame, as
 //! opposed to the per-sample graph chain in `mod_audio_rate.rs`. One module per
 //! scenario:
@@ -32,9 +37,9 @@ mod modulation {
 
     use crate::common::drive_unit::DriveUnit;
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
-    use bevy_tutti::modulation::{
-        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModulationMatrix,
-        TuttiModulationPlugin,
+    use bevy_tutti::modulation::legacy::{
+        LegacyModulationPlugin, LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate,
+        ModulationMatrix,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -59,7 +64,7 @@ mod modulation {
         // The systems are gated on a running engine; nothing here opens a device,
         // so the state stands in for one.
         app.insert_resource(AudioEngineState::Running);
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
 
         let target = bind_drive_node(&mut app, drive_node());
         (app, target)
@@ -177,7 +182,7 @@ mod modulation {
         app.insert_resource(AudioGraphRes::headless(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
 
         let target = bind_uncaptured(&mut app, drive_node());
         declare_drive_range(&mut app, target, 5.0);
@@ -496,9 +501,9 @@ mod mod_cascade {
 
     use crate::common::drive_unit::DriveUnit;
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
-    use bevy_tutti::modulation::{
-        LfoShape, ModParamRange, ModRateCell, ModRoute, ModSource, ModSourceRate, ModulationMatrix,
-        TuttiModulationPlugin,
+    use bevy_tutti::modulation::legacy::{
+        LegacyModulationPlugin, LfoShape, ModParamRange, ModRateCell, ModRoute, ModSource,
+        ModSourceRate, ModulationMatrix,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -514,7 +519,7 @@ mod mod_cascade {
         app.insert_resource(AudioGraphRes::headless(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
 
         let target = bind_drive_node(&mut app, DriveUnit::new(1.0));
         (app, target)
@@ -857,8 +862,8 @@ mod mod_curve_delivery {
     use bevy_app::prelude::*;
 
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
-    use bevy_tutti::modulation::{
-        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
+    use bevy_tutti::modulation::legacy::{
+        LegacyModulationPlugin, LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -925,7 +930,7 @@ mod mod_curve_delivery {
         app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
         app
     }
 
@@ -943,7 +948,7 @@ mod mod_curve_delivery {
             .spawn(ModParamRange::default().with(param, BASE, 0.0, 10.0))
             .id();
         app.world_mut()
-            .resource_mut::<bevy_tutti::modulation::ModTargetRegistry>()
+            .resource_mut::<bevy_tutti::modulation::legacy::ModTargetRegistry>()
             .insert_target(target, param, Arc::clone(&sink) as Arc<dyn ModTarget>);
 
         // Beat-synced: a curve is clocked by the beat, so only a beat-synced rate
@@ -1097,9 +1102,9 @@ mod mod_source {
 
     use crate::common::drive_unit::DriveUnit;
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
-    use bevy_tutti::modulation::{
-        ModParamRange, ModRoute, ModSource, ModSourceAppExt, ModSourceKind, ModSourceRate,
-        ModulationMatrix, TuttiModulationPlugin,
+    use bevy_tutti::modulation::legacy::{
+        LegacyModulationPlugin, ModParamRange, ModRoute, ModSource, ModSourceAppExt, ModSourceKind,
+        ModSourceRate, ModulationMatrix,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -1159,7 +1164,7 @@ mod mod_source {
         app.insert_resource(AudioGraphRes::headless(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
 
         let target = bind_drive_node(&mut app, DriveUnit::new(1.0));
         app.world_mut()
@@ -1309,7 +1314,7 @@ mod mod_source {
         let lfo = app
             .world_mut()
             .spawn((
-                ModSource::new(bevy_tutti::modulation::LfoShape::Sine),
+                ModSource::new(bevy_tutti::modulation::legacy::LfoShape::Sine),
                 ModSourceRate::free_running(Hz(10.0)),
             ))
             .id();
@@ -1377,7 +1382,7 @@ mod mod_source {
         app.world_mut().run_schedule(bevy_app::Update);
         let collected = app
             .world()
-            .resource::<bevy_tutti::modulation::CollectedModSources>();
+            .resource::<bevy_tutti::modulation::legacy::CollectedModSources>();
         assert!(
             collected.len() <= 1,
             "one registration's worth of sources, not {}",

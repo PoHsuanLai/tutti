@@ -281,8 +281,13 @@ Non-scalar state handed to the audio thread goes through
 - Params are `AudioParam<U, const P: u16>`, registered with
   `App::add_audio_param::<U, P>()`. They reach a node through its
   `ParamSet` (`GraphNode::params`): a node without the param takes nothing.
-  Control-rate modulation resolves on the same set; a sink no node owns (a
-  plugin's per-block target) is supplied with `ModTargetRegistry::insert_target`.
+  Modulation is declared too (`Mods`, `ModRoute`, `ModRange` naming a
+  `ParamRef`): each modulated param gets a control lane on its port, whose
+  knob is the node's own cell (a plugin parameter's lane, its own knob on
+  the plugin's event input). One writer per knob: `write_param` for a
+  native one, the plugin's GUI or `ModulationState::set_knob` for a plugin's.
+  `ModulationSystems::Apply` runs between `GraphReconcileSystems::Spawn` and
+  `Params`; `ModulationSystems::AfterCommit` runs after `Commit`.
 
 ## Testing policy
 

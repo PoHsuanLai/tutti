@@ -36,10 +36,6 @@
 //! app.insert_resource(graph);
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins(GraphReconcilePlugin);
-//! // Under the `modulation` feature the reconciler asks the matrix whether a
-//! // param has a second writer, so the plugin that owns it must be present.
-//! #[cfg(feature = "modulation")]
-//! app.add_plugins(bevy_tutti::modulation::TuttiModulationPlugin);
 //! app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 //!
 //! let entity = app.world_mut().spawn((node, DriveParam::new(Drive(4.0)))).id();
@@ -61,20 +57,15 @@
 //!
 //! # Modulated params
 //!
-//! A param the control-rate modulation driver owns is not written directly:
-//! the driver writes `base + Σ layers` into the same cell every frame, so a
-//! plain write would snap back. The reconciler routes the authored value to
-//! the accumulator's *base* instead (see [`write_param`]).
+//! A modulated param has one writer too (doc 014 §8.2, M9): the write is its
+//! **knob**. Its control lane reads the same cell as its base and adds the
+//! modulation in the lane's own events, so nothing else writes the cell and
+//! the knob is never snapped back.
 
 use bevy_app::{App, Update};
 use bevy_ecs::prelude::*;
 
 use tutti_core::AudioNode;
-// `ParamAddr` only appears in the modulation-gated arm of the reconciler, which
-// is where an authored value is handed to the accumulator's base instead of
-// being written straight to the node.
-#[cfg(feature = "modulation")]
-use tutti_types::ParamAddr;
 use tutti_types::{Unit, UnitParam};
 
 use crate::graph::{engine_ready, AudioGraphRes, GraphReconcileSystems};
@@ -92,8 +83,8 @@ use crate::graph::{engine_ready, AudioGraphRes, GraphReconcileSystems};
 /// another. Either alone would let one of those through.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct AudioParam<U: Unit<Raw = f32>, const P: u16> {
-    /// The authored value, in `U`. Written by the host; read by the reconciler,
-    /// which decides where it lands (see [`write_param`]).
+    /// The value, in `U`: the param's knob. Written by the host; the
+    /// reconciler writes it to the node ([`write_param`]).
     pub value: U,
 }
 
@@ -120,56 +111,26 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
     }
 }
 
-/// Writes one authored scalar to `param` on `node`, respecting modulation.
+/// Writes one scalar to `param` on `node`: the param's knob.
 ///
-/// The one path by which an authored value reaches the graph. It is public for
+/// The one path by which a value reaches a node's param. It is public for
 /// params whose address is known only at runtime, which an [`AudioParam`]
-/// cannot carry; the [`AudioParam`] reconciler calls it too. The value goes:
-///
-/// 1. for a param **modulated at control rate**, to the modulation
-///    accumulator's *base*, where it rides under the modulation. The driver
-///    writes `clamp(base + Σ layers)` into the node's cell every frame, so a
-///    direct write would snap back on the next frame. A fork of the node (an
-///    export) starts from the base too;
-/// 2. for any other param, including one **modulated at audio rate**, straight
-///    to the node's own control ([`AudioGraphRes::set_param`]). The graph's
-///    audio-rate modulation rides on that control as its base.
+/// cannot carry; the [`AudioParam`] reconciler calls it too. The value goes
+/// to the node's own control ([`AudioGraphRes::set_param`]), and a fork of the
+/// node starts from it. A modulated param is no different: its control lane
+/// reads that control as its knob and adds the modulation to it (doc 014
+/// §8.2, "one writer per knob").
 ///
 /// Call it on the main thread (from a system); the node reads the value at the
-/// start of its next block. The `matrix` argument exists only with the
-/// `modulation` feature.
+/// start of its next block.
 ///
 /// Hosted plugin parameters do not go through here: they are
-/// runtime-discovered `u32` ids with a transport of their own.
-// Ordering against `modulation::drive` does not matter: `set_base` and the
-// driver's `accumulate` touch different fields of the same mutex-guarded
-// `LayeredCurve` and each recomputes the composite, so the writes commute.
-pub fn write_param(
-    graph: &mut AudioGraphRes,
-    #[cfg(feature = "modulation")] matrix: &crate::modulation::ModulationMatrix,
-    entity: Entity,
-    node: &AudioNode,
-    param: UnitParam,
-    value: f32,
-) {
-    // 1. Control rate: the driver owns the atomic, so the value rides the base.
-    // The node's fork snapshot gets the base too: the driver's live composite
-    // never reaches a fork (an export runs its own modulation), and without
-    // this the fork would start from the value the node was built with.
-    #[cfg(feature = "modulation")]
-    if matrix.set_base(entity, ParamAddr::Unit(param), value) {
-        graph.set_param_snapshot(*node, param, value);
-        return;
-    }
-    #[cfg(not(feature = "modulation"))]
-    let _ = entity;
-
-    // 2. Unmodulated, or modulated at audio rate (the graph's modulation rides
-    // on this control): the node's own atomic is the value. Through the graph's
-    // settings path — the node's ring, which is also
-    // what its shadow (and so any fork of it) records. Never through a handle
-    // captured from the unit: that would move the live unit and leave a fork
-    // at the value it was built with.
+/// runtime-discovered `u32` ids, and a modulated one's knob is its lane's
+/// (`ModulationState::set_knob`).
+pub fn write_param(graph: &mut AudioGraphRes, node: &AudioNode, param: UnitParam, value: f32) {
+    // Through the node's `ParamSet`, never a handle captured from the unit:
+    // that would move the live unit and leave a fork at the value it was
+    // built with.
     graph.set_param(*node, param, value);
 }
 
@@ -184,22 +145,13 @@ pub fn write_param(
 )]
 pub fn reconcile_audio_param<U: Unit<Raw = f32> + Send + Sync + 'static, const P: u16>(
     mut graph: ResMut<AudioGraphRes>,
-    #[cfg(feature = "modulation")] matrix: Res<crate::modulation::ModulationMatrix>,
-    changed: Query<(Entity, &AudioNode, &AudioParam<U, P>), Changed<AudioParam<U, P>>>,
+    changed: Query<(&AudioNode, &AudioParam<U, P>), Changed<AudioParam<U, P>>>,
 ) {
     let Ok(param) = UnitParam::try_from(P) else {
         return;
     };
-    for (entity, node, value) in &changed {
-        write_param(
-            &mut graph,
-            #[cfg(feature = "modulation")]
-            &matrix,
-            entity,
-            node,
-            param,
-            value.value.to_raw(),
-        );
+    for (node, value) in &changed {
+        write_param(&mut graph, node, param, value.value.to_raw());
     }
 }
 

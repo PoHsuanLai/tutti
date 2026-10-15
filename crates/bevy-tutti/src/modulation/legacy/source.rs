@@ -9,12 +9,12 @@
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
-//! use bevy_tutti::modulation::{ModSource, ModSourceAppExt, TuttiModulationPlugin};
+//! use bevy_tutti::modulation::legacy::{ModSource, ModSourceAppExt, LegacyModulationPlugin};
 //!
 //! let mut app = App::new();
-//! // `TuttiModulationPlugin` registers the built-in `ModSource` kind already;
+//! // `LegacyModulationPlugin` registers the built-in `ModSource` kind already;
 //! // a host adds its own the same way, and the call is idempotent.
-//! app.add_plugins(TuttiModulationPlugin);
+//! app.add_plugins(LegacyModulationPlugin);
 //! app.add_mod_source::<ModSource>();
 //! ```
 //!
@@ -40,7 +40,7 @@ use std::sync::Arc;
 use tutti_mod::{Curve, EdgeShape, ErasedModulator, Modulator, SourceRate};
 use tutti_types::{BeatDuration, Hz, Param, ParamAddr, UnitParam};
 
-use crate::modulation::components::{ModClock, ModRoute, ModSourceRate};
+use crate::modulation::legacy::components::{ModClock, ModRoute, ModSourceRate};
 
 /// A component that describes how to build one kind of modulator.
 ///
@@ -313,12 +313,12 @@ pub(crate) fn mark_dirty_on_route_change(
         Entity,
         Or<(
             Changed<ModRoute>,
-            Changed<crate::modulation::components::ModParamRange>,
+            Changed<crate::modulation::legacy::components::ModParamRange>,
             // A crossfade re-captures the target's params: the accumulators
             // built from the old handle mirror into the *outgoing* unit's
             // atomics, which nothing renders. Raising `dirty` rebuilds them
             // against the new handle, with the sources collected.
-            Changed<crate::modulation::ModParamsHandle>,
+            Changed<crate::modulation::legacy::ModParamsHandle>,
         )>,
     >,
     mut removed: RemovedComponents<ModRoute>,

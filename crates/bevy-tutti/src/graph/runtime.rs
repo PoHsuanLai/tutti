@@ -493,16 +493,26 @@ impl GraphRuntime {
             .collect();
         want.sort();
         want.dedup();
+        // Only the edges from nodes this runtime holds are the caller's: an
+        // edge from any other node (a modulation lane on a plugin's event
+        // input, `modulate`) belongs to whoever built that node, and stays.
+        let nodes = &self.nodes;
         let spec = self.editor.spec_mut();
-        let have: Vec<EventOut> = spec
+        let (have, others): (Vec<EventEdge>, Vec<EventEdge>) = spec
             .events
             .get(&at)
-            .map(|v| v.iter().map(|e| e.from()).collect())
-            .unwrap_or_default();
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .partition(|e| nodes.contains_key(&e.from().node));
+        let have: Vec<EventOut> = have.iter().map(|e| e.from()).collect();
         if have == want {
             return;
         }
         spec.events.remove(&at);
+        for edge in others {
+            spec.connect_events(at, edge);
+        }
         for from in want {
             spec.connect_events(at, EventEdge::Direct(from));
         }
@@ -510,7 +520,7 @@ impl GraphRuntime {
     }
 
     /// The event outputs feeding `sink`'s event input `port`, in the graph's
-    /// order.
+    /// order: every edge the spec holds, a modulation lane's included.
     pub(crate) fn event_sources(
         &self,
         sink: AudioNode,
@@ -526,11 +536,9 @@ impl GraphRuntime {
             .get(&at)
             .into_iter()
             .flatten()
-            .filter_map(|e| {
+            .map(|e| {
                 let from = e.from();
-                self.nodes
-                    .get(&from.node)
-                    .map(|n| crate::graph::EventSource::new(n.node, from.port))
+                crate::graph::EventSource::new(AudioNode(from.node), from.port)
             })
             .collect()
     }
@@ -544,8 +552,45 @@ impl GraphRuntime {
         true
     }
 
+    /// Whether the graph's spec holds `node`: every node inserted here, and
+    /// the modulation reconciler's lanes and signal nodes, which it inserts
+    /// into the editor itself.
     pub(crate) fn contains(&self, node: AudioNode) -> bool {
-        self.nodes.contains_key(&key(node))
+        self.editor.spec().topology.nodes.contains_key(&key(node))
+    }
+
+    /// Applies `decl` to the editor through `m` (doc 014 §8.2), resolving
+    /// its entity keys through `entities`. A native target's knob is its
+    /// node's own `Param` cell, from the node's [`ParamSet`]. Marks the graph
+    /// edited when the apply asks for a commit.
+    #[cfg(feature = "modulation")]
+    pub(crate) fn modulate(
+        &mut self,
+        m: &mut tutti_nodes::Modulation,
+        decl: &tutti_mod::Declarations<'_>,
+        entities: &dyn crate::modulation::ModEntities,
+    ) -> Result<tutti_nodes::Applied, tutti_nodes::ReconcileError> {
+        let host = ModHostOver {
+            nodes: &self.nodes,
+            entities,
+        };
+        let applied = m.apply(decl, &mut self.editor, &host)?;
+        if applied.commit {
+            self.edited = true;
+        }
+        Ok(applied)
+    }
+
+    /// Schedules the note-envelope resyncs `m` owes, after the commit that
+    /// sent their nodes (`Modulation::send_resyncs`).
+    #[cfg(feature = "modulation")]
+    pub(crate) fn send_mod_resyncs(&mut self, m: &mut tutti_nodes::Modulation) {
+        // A resync refused for now stays owed (the next frame retries); one
+        // refused for good is counted (`Modulation::resyncs_dropped`).
+        if let Err(e) = m.send_resyncs(&mut self.editor) {
+            bevy_log::debug!("modulation: a resync waits: {e}");
+        }
+        self.pump_local();
     }
 
     /// Write `param` through `node`'s [`ParamSet`]: the cell the node reads
@@ -555,21 +600,6 @@ impl GraphRuntime {
     pub(crate) fn set_param(&mut self, node: AudioNode, param: UnitParam, value: f32) {
         if let Some(params) = self.nodes.get(&key(node)).and_then(|e| e.params.as_ref()) {
             params.set(param, value);
-        }
-    }
-
-    /// Write `param`'s **authored** value only — what a fork of the node
-    /// starts from — leaving the live cell to whoever drives it.
-    ///
-    /// For a param the modulation driver owns: live, the driver writes
-    /// `clamp(base + Σ layers)` into the node's own cell every frame, and a
-    /// live write of the bare base would fight it for a block. A fork (an
-    /// export) is not modulated by this driver — it gets its modulation from
-    /// its own offline one — so what it must carry is the authored base.
-    #[cfg(feature = "modulation")]
-    pub(crate) fn set_param_snapshot(&mut self, node: AudioNode, param: UnitParam, value: f32) {
-        if let Some(params) = self.nodes.get(&key(node)).and_then(|e| e.params.as_ref()) {
-            params.set_authored(param, value);
         }
     }
 
@@ -856,7 +886,7 @@ impl GraphRuntime {
 
     /// Whether an edit waits for a commit (what a local render commits
     /// first).
-    #[cfg(all(test, feature = "modulation"))]
+    #[cfg(feature = "modulation")]
     pub(crate) fn has_uncommitted_edit(&self) -> bool {
         self.edited
     }
@@ -973,6 +1003,46 @@ fn render(
     exec.process(1, transport, &inputs, &mut outputs);
     for (c, o) in output.iter_mut().enumerate() {
         *o = scratch.get(c).map_or(0.0, |s| s[0]);
+    }
+}
+
+/// `tutti_nodes::ModHost` over the runtime's nodes and the app's entities:
+/// a target's entity names its node, a native target's knob is that node's
+/// `Param` cell, a plugin target feeds the node's event input 0 and starts at
+/// the plugin's mirrored value.
+#[cfg(feature = "modulation")]
+struct ModHostOver<'a> {
+    nodes: &'a BTreeMap<NodeKey, Entry>,
+    entities: &'a dyn crate::modulation::ModEntities,
+}
+
+#[cfg(feature = "modulation")]
+impl tutti_nodes::ModHost for ModHostOver<'_> {
+    fn target(&self, target: tutti_mod::TargetKey) -> Option<tutti_nodes::Target> {
+        let entity = bevy_ecs::entity::Entity::try_from_bits(target.node)?;
+        let node = key(self.entities.node(entity)?);
+        Some(match target.param {
+            tutti_types::ParamAddr::Unit(param) => tutti_nodes::Target::Native {
+                node,
+                knob: self
+                    .nodes
+                    .get(&node)
+                    .and_then(|e| e.params.as_ref())
+                    .and_then(|p| p.cell(param)),
+            },
+            // A plugin target waits for its mirror: a lane built without
+            // a knob could not take one later.
+            tutti_types::ParamAddr::Id(id) => tutti_nodes::Target::Foreign {
+                node,
+                port: 0,
+                knob: self.entities.plugin_value(entity, id)?,
+            },
+        })
+    }
+
+    fn feed(&self, source: tutti_mod::SourceKey) -> Option<tutti_nodes::Feed> {
+        let entity = bevy_ecs::entity::Entity::try_from_bits(source.0)?;
+        self.entities.feed(entity)
     }
 }
 
@@ -1138,6 +1208,7 @@ mod tests {
     impl tutti_graph::Node for Knob {
         fn shape(&self) -> tutti_graph::Shape {
             tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+                .with_params(&[UnitParam::Drive])
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(
@@ -1145,10 +1216,21 @@ mod tests {
             _: &tutti_graph::Cx<'_>,
             mut io: tutti_graph::Io<'_>,
         ) -> tutti_graph::Status {
-            io.output(0).fill(self.drive.load().get());
+            // The drive's port under modulation (a lane's values), else
+            // its cell.
+            match io.param(0).frames() {
+                Some(v) => {
+                    let v: Vec<f32> = v.to_vec();
+                    io.output(0).copy_from_slice(&v);
+                }
+                None => io.output(0).fill(self.drive.load().get()),
+            }
             tutti_graph::Status::Modified
         }
         fn reset(&mut self) {}
+        fn param_base(&self, port: usize) -> Option<f32> {
+            (port == 0).then(|| self.drive.load().get())
+        }
     }
 
     impl tutti_graph::ParamNode for Knob {
@@ -1181,30 +1263,27 @@ mod tests {
     }
 
     /// **Every param write path reaches a fork of a node** — the constraint
-    /// export by `Editor::fork` rests on — through the
-    /// node's `ParamSet`: `AudioParam` and `set_param` write the live cell and the authored
-    /// value, a param the control-rate driver owns gets its base as the
-    /// authored value only (the live cell is the driver's), and a fork
-    /// starts from the authored values. Under `modulation` the set addresses
-    /// the cells as control-rate targets (`CapturedControls::for_params`).
+    /// export by `Editor::fork` rests on — through the node's `ParamSet`:
+    /// `AudioParam` and `set_param` write the live cell and the authored
+    /// value, and a fork starts from the authored values. A modulated param
+    /// is written the same way (its cell is its lane's knob: one writer,
+    /// doc 014 §8.2), and its lane is a graph node, so the fork renders the
+    /// same modulation as live (M3).
     ///
     /// The paths, one knob each, rendered on one global output each:
     /// `AudioParam` on an unmodulated param (`write_param` → `set_param`);
-    /// `AudioGraphRes::set_param` directly; `AudioParam` on a param the
-    /// control-rate driver owns (`write_param` → `ModulationMatrix::set_base`:
-    /// the fork carries the authored **base**); and a param the driver owns
-    /// with no write at all (the base its rebuild seeded from
-    /// `ModParamRange`). The driver's live offset is the exception — a fork
-    /// (an export) runs its own modulation — and the live render shows it is
-    /// there, so the fork's plain base is not the driver doing nothing.
+    /// `AudioGraphRes::set_param` directly; `AudioParam` on a modulated param
+    /// (the knob under a macro's `+2`); and a modulated param with no write
+    /// (the knob it was built with, under the same `+2`).
     ///
     /// Mutations (run; each fails its channel):
     /// - `GraphRuntime::set_param` skipping a node's `ParamSet` → channels 0
     ///   and 1 stay at 1;
-    /// - `set_param_snapshot` skipping it → channel 2 forks at the live
-    ///   composite, not 6 (and channel 3 not at 2.5);
     /// - `insert_and_bind` not addressing the params
-    ///   (`set_node_params`) → channels 0 and 1 stay at 1.
+    ///   (`set_node_params`) → channels 0 and 1 stay at 1 (and under
+    ///   `modulation` channels 2 and 3 have no knob: refused);
+    /// - (`modulation`) `ModHostOver::target` giving a native lane no knob
+    ///   (`knob: None`) → channel 2 renders the offset alone, not 8.
     #[test]
     fn every_param_write_path_reaches_a_fork() {
         let mut graph = AudioGraphRes::headless(0, 4);
@@ -1243,26 +1322,16 @@ mod tests {
             .set_param(node, UnitParam::Drive, 5.0);
         #[cfg(feature = "modulation")]
         {
-            use crate::modulation::{LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate};
-            use tutti_types::{Depth, Hz, ParamAddr};
-            let drive = ParamAddr::Unit(UnitParam::Drive);
-            app.world_mut()
-                .entity_mut(knobs[2])
-                .insert(ModParamRange::default().with(drive, 1.0, 0.0, 10.0));
-            let lfo = app
-                .world_mut()
-                .spawn((
-                    ModSource::new(LfoShape::Square),
-                    ModSourceRate::free_running(Hz(0.0)),
-                ))
-                .id();
-            app.world_mut()
-                .spawn(ModRoute::new(lfo, knobs[2], drive).with_depth(Depth(0.2)));
-            app.world_mut()
-                .entity_mut(knobs[3])
-                .insert(ModParamRange::default().with(drive, 2.5, 0.0, 10.0));
-            app.world_mut()
-                .spawn(ModRoute::new(lfo, knobs[3], drive).with_depth(Depth(0.2)));
+            use crate::modulation::{Macro, ModRange, ModRoute, ModSource, ParamRef};
+            use tutti_types::Depth;
+            // A macro at 1 by a fifth of `0..10`: `+2` on the knob.
+            let world = app.world_mut();
+            let offset = world.spawn(ModSource::new(Macro(1.0))).id();
+            for &knob in &knobs[2..] {
+                let drive = ParamRef::unit(knob, UnitParam::Drive);
+                world.spawn(ModRange::new(drive, 0.0, 10.0));
+                world.spawn(ModRoute::new(offset, drive).with_depth(Depth(0.2)));
+            }
             app.update();
             app.world_mut()
                 .entity_mut(knobs[2])
@@ -1271,10 +1340,13 @@ mod tests {
         app.update();
         app.update();
 
+        // Past the lanes' connect declick (256 frames).
         let mut live = [0.0f32; 4];
-        app.world_mut()
-            .resource_mut::<AudioGraphRes>()
-            .render_frame(&mut live);
+        for _ in 0..512 {
+            app.world_mut()
+                .resource_mut::<AudioGraphRes>()
+                .render_frame(&mut live);
+        }
         assert_eq!(live[0], 4.0, "an AudioParam write reaches the live node");
         assert_eq!(live[1], 5.0, "a set_param write reaches the live node");
         let graph = app.world().resource::<AudioGraphRes>();
@@ -1285,17 +1357,14 @@ mod tests {
         assert_eq!(forked[1], 5.0, "a set_param write reaches the fork");
         #[cfg(feature = "modulation")]
         {
-            assert_eq!(forked[2], 6.0, "a modulated param's base reaches the fork");
+            assert_eq!(live[2], 8.0, "the knob written under its modulation, live");
+            assert_eq!(forked[2], 8.0, "and in the fork");
             assert_eq!(
-                forked[3], 2.5,
-                "the base a modulation rebuild seeds from the range reaches the fork"
+                live[3],
+                Knob::BUILT_WITH + 2.0,
+                "the knob built under its modulation, live"
             );
-            assert!(
-                (live[2] - 6.0).abs() > 0.5,
-                "the live knob is modulated off its base (got {}), so the fork's \
-                 plain base is the exception at work, not a driver that did nothing",
-                live[2]
-            );
+            assert_eq!(forked[3], Knob::BUILT_WITH + 2.0, "and in the fork");
         }
     }
 
@@ -1472,7 +1541,7 @@ mod tests {
     fn handle_ptr(app: &App, entity: bevy_ecs::entity::Entity) -> *const () {
         let handle = app
             .world()
-            .get::<crate::modulation::ModParamsHandle>(entity)
+            .get::<crate::modulation::legacy::ModParamsHandle>(entity)
             .expect("a knob's params are captured");
         std::ptr::from_ref(handle.params()).cast()
     }
@@ -1483,7 +1552,7 @@ mod tests {
     fn seed(app: &App, entity: bevy_ecs::entity::Entity, value: f32) {
         let handle = app
             .world()
-            .get::<crate::modulation::ModParamsHandle>(entity)
+            .get::<crate::modulation::legacy::ModParamsHandle>(entity)
             .expect("a knob's params are captured");
         handle
             .params()

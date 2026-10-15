@@ -283,9 +283,8 @@ mod graph_reconcile {
 /// `AudioParam` reconciled into a real graph, asserted on the node's own value.
 ///
 /// The interesting cases are the seams: a param reaching the node at all, a
-/// steady frame doing nothing, and — the reason the claim set exists — an
-/// authored write on a *modulated* param going to the accumulator base instead
-/// of the atomic.
+/// steady frame doing nothing, and an authored write on a *modulated* param
+/// moving the knob its modulation rides on.
 mod audio_param {
     // The plain-reconcile tests below run in every configuration; the ones that
     // need a modulation driver are gated individually. Gating the whole file would
@@ -298,7 +297,7 @@ mod audio_param {
     };
     #[cfg(feature = "modulation")]
     use bevy_tutti::modulation::{
-        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
+        Macro, ModRange, ModRoute, ModSource, ModulationState, ParamRef, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -306,7 +305,7 @@ mod audio_param {
     // Only the modulation tests below use these.
     use tutti_nodes::DistortionNode;
     #[cfg(feature = "modulation")]
-    use tutti_types::{Depth, ParamAddr};
+    use tutti_types::Depth;
 
     /// The drive a freshly built node carries.
     const INITIAL_DRIVE: f32 = 1.0;
@@ -467,51 +466,54 @@ mod audio_param {
         assert_eq!(node_drive(&mut app, entity), 4.0);
     }
 
-    /// The single-writer rule, which is the reason the claim set exists.
+    /// The single-writer rule (doc 014 §8.2, M9): a modulated param's knob
+    /// is the node's own cell, and an authored write lands there. A
+    /// modulation lane sends `knob + Σ offsets` into the param's port and
+    /// never writes the cell, so the authored value is not reverted within a
+    /// frame (the fader moving on screen and not in the sound) and nothing
+    /// else holds a base: the lane's knob is the written value.
     ///
-    /// Modulation flushes `base + Σ offsets` into the node atomic every frame. A
-    /// plain param write to the same atomic would be reverted within a frame — the
-    /// fader would move on screen and not in the sound. The reconciler must instead
-    /// move the accumulator's *base*, so the authored value rides under the
-    /// modulation.
+    /// Mutation (run): `write_param` dropping the write on a param that has a
+    /// lane (the old modulated branch writing a base nowhere the lane reads)
+    /// → the cell and the lane's knob stay at 5 → fails.
     #[cfg(feature = "modulation")]
     #[test]
-    fn an_authored_write_to_a_modulated_param_moves_the_base() {
+    fn an_authored_write_to_a_modulated_param_moves_the_knob() {
         // `app_with_node` captures the node's `ParamSet` before it binds the
         // node — the capture is read once, before insertion.
         let (mut app, entity) = app_with_node();
+        let drive = ParamRef::unit(entity, UnitParam::Drive);
 
-        app.world_mut().entity_mut(entity).insert((
-            DriveParam::new(Drive(5.0)),
-            ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
-        ));
-        // A square at zero rate holds a constant offset, so the base shift stays
-        // legible against it.
-        let lfo = app
-            .world_mut()
-            .spawn((
-                ModSource::new(LfoShape::Square),
-                ModSourceRate::free_running(Hz(0.0)),
-            ))
-            .id();
-        app.world_mut().spawn(
-            ModRoute::new(lfo, entity, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.1)),
-        );
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(DriveParam::new(Drive(5.0)));
+        app.world_mut().spawn(ModRange::new(drive, 0.0, 10.0));
+        // A macro holds a constant offset, so the knob stays legible.
+        let offset = app.world_mut().spawn(ModSource::new(Macro(1.0))).id();
+        app.world_mut()
+            .spawn(ModRoute::new(offset, drive).with_depth(Depth(0.1)));
+        for _ in 0..3 {
+            app.update();
+        }
+        let knob = |app: &App| {
+            app.world()
+                .resource::<ModulationState>()
+                .lane(drive)
+                .expect("the drive has a lane")
+                .1
+                .knob()
+        };
+        assert_eq!(knob(&app), Some(5.0));
+        assert_eq!(node_drive(&mut app, entity), 5.0, "the cell is the knob");
 
-        app.update();
-        let modulated = node_drive(&mut app, entity);
-
-        // Author a new value while modulation owns the param.
+        // Author a new value while modulation rides on the param.
         app.world_mut()
             .entity_mut(entity)
             .insert(DriveParam::new(Drive(8.0)));
         app.update();
-        let after = node_drive(&mut app, entity);
 
-        assert!(
-            (after - modulated - 3.0).abs() < 0.2,
-            "base 5 -> 8 should carry through the modulation: {modulated} -> {after}"
-        );
+        assert_eq!(node_drive(&mut app, entity), 8.0, "the write lands");
+        assert_eq!(knob(&app), Some(8.0), "and is the lane's knob");
     }
 }
 

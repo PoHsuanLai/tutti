@@ -1,5 +1,10 @@
 //! Audio-rate modulation: the per-sample tier, end to end.
 //!
+//! **Legacy.** This suite drives the modulation driver that control lanes
+//! replaced (`bevy_tutti::modulation::legacy`, unscheduled by default and
+//! added here as `LegacyModulationPlugin`). It keeps that code honest until
+//! PR 5 deletes both; the lane path's own properties are in `mod_lanes.rs`.
+//!
 //! Two scenarios, one per module below. The reconciler half asserts what a
 //! `ModRoute` marked `per_sample` *declares* — the source's node through the
 //! route's shaping into the target's param, in the graph's own value — and
@@ -31,9 +36,9 @@ mod mod_audio_rate_reconcile {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::graph::{AudioGraphRes, GraphNode, GraphReconcilePlugin, GraphSource};
-    use bevy_tutti::modulation::audio_rate::{AudioRateRoutes, ModSourceNode};
-    use bevy_tutti::modulation::{
-        ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
+    use bevy_tutti::modulation::legacy::audio_rate::{AudioRateRoutes, ModSourceNode};
+    use bevy_tutti::modulation::legacy::{
+        LegacyModulationPlugin, ModParamRange, ModRoute, ModSource, ModSourceRate,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::AudioNode;
@@ -48,7 +53,7 @@ mod mod_audio_rate_reconcile {
         let mut app = App::new();
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
 
         // Any distortion: its drive is modulatable by the graph whatever it
         // was built with, so there is no port to be born with any more.
@@ -153,7 +158,7 @@ mod mod_audio_rate_reconcile {
             let mut app = App::new();
             app.insert_resource(AudioGraphRes::headless(0, 2));
             app.insert_resource(AudioEngineState::Running);
-            app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+            app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
 
             let strip =
                 tutti_nodes::BusStripNode::with_channels(tutti_types::ChannelLayout::STEREO);
@@ -382,7 +387,7 @@ mod mod_audio_rate_reconcile {
         // ...and the frame-rate driver has NOT claimed the same param.
         assert!(
             !app.world()
-                .resource::<bevy_tutti::modulation::ModulationMatrix>()
+                .resource::<bevy_tutti::modulation::legacy::ModulationMatrix>()
                 .is_modulated(target, ParamAddr::Unit(UnitParam::Drive)),
             "the driver must not also own a param delivered per sample — that is \
              two writers on one atomic"
@@ -405,7 +410,7 @@ mod mod_audio_rate_reconcile {
 
         assert!(
             app.world()
-                .resource::<bevy_tutti::modulation::ModulationMatrix>()
+                .resource::<bevy_tutti::modulation::legacy::ModulationMatrix>()
                 .is_modulated(target, ParamAddr::Unit(UnitParam::Drive)),
             "the driver owns a per-frame param"
         );
@@ -430,7 +435,7 @@ mod mod_audio_rate_reconcile {
         let mut app = App::new();
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
 
         // The sink exists as an entity with its declared range, but carries **no**
         // `AudioNode` yet — exactly what a projection produces before the spawner
@@ -500,7 +505,7 @@ mod mod_audio_rate_reconcile {
         app.update();
         assert!(
             app.world()
-                .resource::<bevy_tutti::modulation::ModulationMatrix>()
+                .resource::<bevy_tutti::modulation::legacy::ModulationMatrix>()
                 .is_modulated(target, ParamAddr::Unit(UnitParam::Drive)),
             "the route must bind first, or the assertion below is vacuous"
         );
@@ -519,7 +524,7 @@ mod mod_audio_rate_reconcile {
 
         assert!(
             app.world()
-                .resource::<bevy_tutti::modulation::ModulationMatrix>()
+                .resource::<bevy_tutti::modulation::legacy::ModulationMatrix>()
                 .is_modulated(target, ParamAddr::Unit(UnitParam::Drive)),
             "the route must survive a range edit — a rebuild that drains its source \
              registry without refilling it drops every route it cannot resolve"
@@ -556,16 +561,8 @@ mod mod_audio_rate_reconcile {
         // so the reconciler cannot be what delivers it.
         let node = *app.world().get::<AudioNode>(target).unwrap();
         app.world_mut()
-            .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
-                let matrix = w.resource::<bevy_tutti::modulation::ModulationMatrix>();
-                bevy_tutti::graph::write_param(
-                    &mut graph,
-                    matrix,
-                    target,
-                    &node,
-                    UnitParam::Drive,
-                    9.0,
-                );
+            .resource_scope(|_, mut graph: Mut<AudioGraphRes>| {
+                bevy_tutti::graph::write_param(&mut graph, &node, UnitParam::Drive, 9.0);
             });
 
         assert_eq!(
@@ -798,7 +795,7 @@ mod mod_audio_rate_reconcile {
 mod mod_tier_parity {
     use bevy_ecs::prelude::*;
 
-    use bevy_tutti::modulation::ModRoute;
+    use bevy_tutti::modulation::legacy::ModRoute;
     use tutti_graph::{
         Cx, GraphBuilder, Io, Node, ParamFrom, ParamIn, ParamInput, ParamRange, Prepare, Shape,
         Status, PARAM_DECLICK,

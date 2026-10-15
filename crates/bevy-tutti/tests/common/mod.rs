@@ -11,3 +11,10 @@ pub mod plugin;
 /// suite uses it.
 #[allow(dead_code)]
 pub mod drive_unit;
+
+/// Nodes that show what a modulation lane delivers, for the modulation
+/// suites. Not every suite uses them.
+#[allow(dead_code)]
+pub mod probe;
+
+bevy_tutti::param_graph_node!(probe::ProbeUnit);

@@ -31,7 +31,7 @@ pub fn commit_graph(
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
     table: Option<Res<ChannelCompensation>>,
-    total: Option<ResMut<GraphLatency>>,
+    mut total: Option<ResMut<GraphLatency>>,
 ) {
     // Both come from different plugins than each other (`build_into` and
     // `GraphReconcilePlugin`), and `engine_ready` guarantees neither — it reads
@@ -52,11 +52,29 @@ pub fn commit_graph(
     // A commit can be refused for now (commits still in flight, or a
     // re-prepare between its halves): the flag stays set and the whole frame's
     // edits go out on a later frame, together.
-    let committed = dirty.0 && graph.commit();
+    let committed = dirty.0 && commit_and_publish(&mut graph, table.as_deref(), total.as_mut());
     if committed {
         dirty.0 = false;
+    } else if resumed {
+        crate::graph::latency::publish(&graph, table.as_deref(), total.map(ResMut::into_inner));
     }
-    if committed || resumed {
-        crate::graph::latency::publish(&graph, table.as_deref(), total.map(|t| t.into_inner()));
+}
+
+/// Commits `graph` and, when the plan went out, publishes its PDC figures
+/// into `table` and `total` ([`commit_graph`]'s commit). Every commit made
+/// outside `commit_graph` goes through here, so the figures always describe
+/// the plan the audio thread runs. Returns whether the commit went out.
+///
+/// `total` is reached through its `ResMut` only when the commit went out, so
+/// a frame that commits nothing does not mark [`GraphLatency`] changed.
+pub(crate) fn commit_and_publish(
+    graph: &mut AudioGraphRes,
+    table: Option<&ChannelCompensation>,
+    total: Option<&mut ResMut<'_, GraphLatency>>,
+) -> bool {
+    let committed = graph.commit();
+    if committed {
+        crate::graph::latency::publish(graph, table, total.map(|t| &mut **t));
     }
+    committed
 }

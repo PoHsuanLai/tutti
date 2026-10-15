@@ -13,42 +13,42 @@
 //!
 //! Two params are wired so the read path has to handle both cases: `Drive` is
 //! modulated by an LFO, `Cutoff` is not. The same widget code covers both.
+//!
+//! The handle is the param's knob, the node's own cell, which the
+//! `AudioParam` writes; the ghost is the lane's program evaluated at the
+//! play clock, which is what the lane sends into the param's port. One
+//! writer per knob: modulation never moves the handle.
 
 use bevy_app::prelude::*;
-use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{
-    AudioGraphRes, AudioParam, AudioParamAppExt, GraphNode, GraphReconcilePlugin, TransportRes,
+    AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin, SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::modulation::{
-    LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModulationMatrix,
-    TuttiModulationPlugin,
+    Lfo, ModRange, ModRoute, ModSource, ModulationState, ParamRef, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::transport::Transport;
 use tutti_core::SampleRate;
+use tutti_mod::ProgramTime;
 use tutti_nodes::{DistortionNode, ShapeKind};
-use tutti_types::{Depth, Drive, Hz, ParamAddr, Unit, UnitParam};
+use tutti_types::{Beat, Depth, Drive, Hz, SamplePosition, Unit, UnitParam};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// Frames advanced per update — 10ms, roughly a UI frame.
-const FRAMES_PER_TICK: i64 = 480;
+const FRAMES_PER_TICK: u64 = 480;
 const TICKS: usize = 24;
 
 type DriveParam = AudioParam<Drive, { UnitParam::Drive as u16 }>;
 type CutoffParam = AudioParam<Hz, { UnitParam::Cutoff as u16 }>;
 
-/// Marks the node whose params the "UI" draws.
-#[derive(Component)]
-struct Strip;
-
 /// Everything a fader widget needs for one parameter.
 ///
 /// The shape this example exists to pin down: what a widget actually reads, and
 /// from where. `authored` comes from the ECS component the UI writes; `live`
-/// and `range` come from the modulation accumulator. An unmodulated param has
-/// no accumulator, so `live` falls back to `authored` and `range` to the
-/// declared range — the widget needs no branch of its own.
+/// and `range` come from the param's modulation lane. An unmodulated param has
+/// no lane, so `live` falls back to `authored` and `range` to the declared
+/// range — the widget needs no branch of its own.
 struct FaderView {
     authored: f32,
     live: f32,
@@ -57,26 +57,40 @@ struct FaderView {
 }
 
 impl FaderView {
-    /// Read one param the way a widget would.
+    /// Read one param the way a widget would, at play-clock frame `play`.
     fn read<U: Unit<Raw = f32>>(
-        matrix: &ModulationMatrix,
-        entity: Entity,
-        addr: ParamAddr,
+        state: &ModulationState,
+        param: ParamRef,
         authored: U,
         declared_range: (f32, f32),
+        play: u64,
     ) -> Self {
         let authored = authored.to_raw();
-        match matrix.target(entity, addr) {
-            // `final_value` is the collapsed accumulator: base + Σ offsets. It
-            // is sampled here at UI rate; the audio thread samples the same
-            // accumulator at frame rate. Same state, different collapse rate —
-            // neither has to know about the other.
-            Some(target) => Self {
-                authored,
-                live: target.final_value(),
-                range: target.range(),
-                modulated: true,
-            },
+        match state.lane(param) {
+            // The lane's program is a pure function of the play clock: the
+            // value it sends at `play` is this (`knob + Σ offsets`, clamped).
+            // The audio thread evaluates the same program on a 32-frame grid;
+            // same program, different rate — neither has to know about the
+            // other.
+            Some((_, lane)) => {
+                let (min, max) = lane.range();
+                let at = ProgramTime {
+                    beat: Beat(0.0),
+                    play: SamplePosition(play as f64),
+                    play_epoch: 0,
+                    rate: SampleRate(SAMPLE_RATE),
+                };
+                let live = lane
+                    .program()
+                    .value_at(lane.knob(), &at, f64::from(max - min), &[])
+                    .map_or(authored, |v| v.clamp(min, max));
+                Self {
+                    authored,
+                    live,
+                    range: (min, max),
+                    modulated: true,
+                }
+            }
             None => Self {
                 authored,
                 live: authored,
@@ -128,53 +142,39 @@ fn main() {
     app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>()
         .add_audio_param::<Hz, { UnitParam::Cutoff as u16 }>();
 
-    // Captured here: a `ParamNode`'s controls are its `ParamSet`, taken once,
-    // before it moves into the graph, and bound with its `AudioNode`; the set
-    // is addressed on the node, so an `AudioParam` writes through it (what
-    // `spawn_audio_node` does in one call).
-    let unit = DistortionNode::new(ShapeKind::Tanh, 1.0);
-    let controls = unit.captured();
-    let node = {
-        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (node, params) = graph.insert(unit);
-        graph.set_node_params(node, DistortionNode::params(&params));
-        graph.set_outputs_from(node);
-        node
-    };
+    // The node's params are captured on the way in (`spawn_audio_node`), so
+    // an `AudioParam` writes the node's own cells: the knobs.
+    let strip = app
+        .world_mut()
+        .commands()
+        .spawn_audio_node(DistortionNode::new(ShapeKind::Tanh, 1.0))
+        .insert((DriveParam::new(Drive(5.0)), CutoffParam::new(Hz(2_000.0))))
+        .id();
+    app.world_mut().flush();
 
-    let mut strip = app.world_mut().spawn((
-        Strip,
-        DriveParam::new(Drive(5.0)),
-        CutoffParam::new(Hz(2_000.0)),
-        // Declaring the range is what makes a param modulatable at all.
-        // Only `Drive` gets one here — `Cutoff` stays unmodulated.
-        ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
-    ));
-    controls.bind(&mut strip, node);
-    let strip = strip.id();
-
+    // Declaring the range is what makes a param modulatable at all. Only
+    // `Drive` gets one here — `Cutoff` stays unmodulated.
+    let drive = ParamRef::unit(strip, UnitParam::Drive);
+    let cutoff = ParamRef::unit(strip, UnitParam::Cutoff);
+    app.world_mut().spawn(ModRange::new(drive, 0.0, 10.0));
     let lfo = app
         .world_mut()
-        .spawn((
-            ModSource::new(LfoShape::Sine),
-            ModSourceRate::free_running(Hz(2.0)),
-        ))
+        .spawn(ModSource::new(Lfo::sine().hz(Hz(2.0))))
         .id();
     // Depth scales the raw [-1, 1] LFO by the target's *span*, so 0.2 over a
     // 0..10 range swings ±2. Much more and the swing clips against the range
     // ends and the ghost simply parks there — correct, but it stops showing
     // the mechanism.
     app.world_mut()
-        .spawn(ModRoute::new(lfo, strip, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.2)));
+        .spawn(ModRoute::new(lfo, drive).with_depth(Depth(0.2)));
 
     println!("A modulated fader (|) and its LFO ghost (:), 10ms per line.\n");
     println!("{:<34} {:<8} {:<8}", "drive  0..10", "handle", "live");
 
     for tick in 0..TICKS {
         // Halfway through, the "user" drags the fader. The handle jumps and the
-        // ghost follows it — modulation rides *on top of* the authored value
-        // rather than replacing it, which is the whole point of routing an
-        // authored write to the accumulator's base.
+        // ghost follows it — modulation rides *on top of* the knob rather than
+        // replacing it, because the knob is what the lane adds its offsets to.
         if tick == TICKS / 2 {
             app.world_mut()
                 .entity_mut(strip)
@@ -182,19 +182,13 @@ fn main() {
             println!("{:-<52}  user drags fader to 3.0", "");
         }
 
-        advance_transport(&mut app, FRAMES_PER_TICK);
         app.update();
 
         let world = app.world();
-        let matrix = world.resource::<ModulationMatrix>();
+        let state = world.resource::<ModulationState>();
         let authored = world.get::<DriveParam>(strip).unwrap().value;
-        let view = FaderView::read(
-            matrix,
-            strip,
-            ParamAddr::Unit(UnitParam::Drive),
-            authored,
-            (0.0, 10.0),
-        );
+        let play = tick as u64 * FRAMES_PER_TICK;
+        let view = FaderView::read(state, drive, authored, (0.0, 10.0), play);
 
         println!("{} {:>7.2} {:>8.2}", view.draw(), view.authored, view.live);
     }
@@ -202,27 +196,11 @@ fn main() {
     // The same widget code on a param nobody modulates: handle and ghost
     // coincide, and the view reports it so a UI can skip the ghost entirely.
     let world = app.world();
-    let matrix = world.resource::<ModulationMatrix>();
-    let cutoff = world.get::<CutoffParam>(strip).unwrap().value;
-    let view = FaderView::read(
-        matrix,
-        strip,
-        ParamAddr::Unit(UnitParam::Cutoff),
-        cutoff,
-        (20.0, 20_000.0),
-    );
+    let state = world.resource::<ModulationState>();
+    let value = world.get::<CutoffParam>(strip).unwrap().value;
+    let view = FaderView::read(state, cutoff, value, (20.0, 20_000.0), 0);
     println!(
         "\ncutoff (unmodulated): modulated={} handle={:.0}Hz live={:.0}Hz",
         view.modulated, view.authored, view.live
     );
-}
-
-/// Advance the transport as the audio clock would.
-fn advance_transport(app: &mut App, frames: i64) {
-    let transport = app.world().resource::<TransportRes>().clone();
-    let now = transport.settings.steady_time();
-    transport
-        .settings
-        .steady_time
-        .store(now + frames, std::sync::atomic::Ordering::Relaxed);
 }

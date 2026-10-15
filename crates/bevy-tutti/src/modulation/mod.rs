@@ -1,296 +1,149 @@
-//! Control-rate modulation as an ECS surface (feature `modulation`).
+//! Modulation as declarations (feature `modulation`; doc 014 §8).
 //!
-//! An LFO is a [`ModSource`] entity; an edge from one to a parameter is a
-//! [`ModRoute`] entity. Two systems keep the engine in step: one recompiles the
-//! matrix when that declaration changes, the other advances every source once a
-//! frame. Add [`TuttiModulationPlugin`] yourself: `TuttiPlugin` does not.
+//! A source is a [`ModSource`] entity ([`Lfo`], [`Macro`], [`Follower`],
+//! [`NoteEnvelope`], or a host's own [`ModSourceKind`]); a [`ModRoute`]
+//! entity sends it into a param ([`ParamRef`]) by a depth of the param's
+//! [`ModRange`]; an [`Automation`] gives a param a curve. [`Mods`] spawns
+//! each in one call. Add [`TuttiModulationPlugin`] yourself: `TuttiPlugin`
+//! does not.
+//!
+//! Every frame [`reconcile`] collects them and applies them to the graph
+//! through `tutti_nodes::Modulation`: each modulated param gets one control
+//! lane, a graph node sending its value (`clamp((automation else knob) + Σ
+//! offsets, range)`) into the param's port, sample-accurately on a 32-frame
+//! grid; a follower or a note envelope is a node of its own. The lanes and
+//! signal nodes are graph nodes, so an export forks them with the graph and
+//! renders the same modulation as live.
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode, TransportRes};
-//! use bevy_tutti::modulation::*;
+//! use bevy_tutti::modulation::{Lfo, ModulationState, Mods, ParamRef, TuttiModulationPlugin};
 //! use bevy_tutti::AudioEngineState;
 //! use tutti_core::transport::Transport;
 //! use tutti_core::SampleRate;
-//! use tutti_types::{BeatDuration, Depth, ParamAddr, UnitParam};
-//! use tutti_nodes::{DistortionNode, ShapeKind};
+//! use tutti_nodes::{SvfFilterNode, SvfType};
+//! use tutti_types::{BeatDuration, Depth, Hz, UnitParam, Q};
 //!
 //! let mut graph = AudioGraphRes::headless(0, 1);
 //! graph.set_sample_rate(SampleRate(48_000.0));
-//!
 //! let mut app = App::new();
 //! app.insert_resource(graph);
 //! app.insert_resource(TransportRes(Transport::new(48_000.0)));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
 //!
-//! let lfo = app.world_mut().spawn((
-//!     ModSource::new(LfoShape::Sine),
-//!     ModSourceRate::beat_synced(BeatDuration(1.0)),
-//! )).id();
-//!
-//! // The target: a `ParamNode`, whose params its `ParamSet` addresses (no
-//! // registration: see the last section), declaring what is modulatable and
-//! // over what range — the engine does not invent a param's sensible bounds.
-//! let drive = app
+//! let filter = app
 //!     .world_mut()
 //!     .commands()
-//!     .spawn_audio_node(DistortionNode::new(ShapeKind::Tanh, 5.0))
-//!     .insert(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0))
+//!     .spawn_audio_node(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)))
 //!     .id();
 //! app.world_mut().flush();
 //!
-//! app.world_mut().spawn(
-//!     ModRoute::new(lfo, drive, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.5)),
-//! );
-//! app.update();
-//!
-//! // The route bound to a live accumulator over the node's drive cell.
-//! let matrix = app.world().resource::<ModulationMatrix>();
-//! assert!(matrix.is_modulated(drive, ParamAddr::Unit(UnitParam::Drive)));
-//! ```
-//!
-//! # The single-writer rule
-//!
-//! Modulation writes a node's own atomic, and so does a plain param reconciler.
-//! Both writing means whichever runs last wins, which is a scheduling accident
-//! rather than a decision. [`ModulationMatrix::is_modulated`] settles it: a
-//! reconciler asks before writing, and routes an authored change through
-//! `set_base` when the answer is yes, so the value
-//! lands *under* the modulation instead of fighting it.
-//!
-//! # Cascading — modulating a source's own rate
-//!
-//! A [`ModSource`] entity is itself routable. Declare its
-//! [`UnitParam::Rate`](tutti_types::UnitParam::Rate) modulatable and route to
-//! it like any other param:
-//!
-//! ```rust
-//! use bevy_app::prelude::*;
-//! use bevy_ecs::prelude::*;
-//! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
-//! use bevy_tutti::modulation::*;
-//! use bevy_tutti::AudioEngineState;
-//! use tutti_core::transport::Transport;
-//! use tutti_types::{Hz, ParamAddr, UnitParam};
-//!
-//! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes::headless(0, 1));
-//! app.insert_resource(TransportRes(Transport::new(48_000.0)));
-//! app.insert_resource(AudioEngineState::Running);
-//! app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-//!
-//! let slow_lfo = app.world_mut().spawn((
-//!     ModSource::new(LfoShape::Sine),
-//!     ModSourceRate::free_running(Hz(0.2)),
-//! )).id();
-//!
-//! let carrier = app.world_mut().spawn((
-//!     ModSource::new(LfoShape::Sine),
-//!     ModSourceRate::free_running(Hz(2.0)),
-//!     ModParamRange::default().with(ParamAddr::Unit(UnitParam::Rate), 2.0, 2.0, 10.0),
-//! )).id();
-//!
-//! app.world_mut().spawn(ModRoute::new(slow_lfo, carrier, ParamAddr::Unit(UnitParam::Rate)));
-//! app.update();
-//!
-//! // No `register` was needed: a source carries no `AudioNode`, so the resolver
-//! // tries its rate first and adds the `ModRateCell` the modulator reads from.
-//! assert!(app.world().get::<ModRateCell>(carrier).is_some());
-//! ```
-//!
-//! A source carries no `AudioNode`, so the registry's capture path cannot
-//! serve this; the resolver tries a source's rate first and hands back an
-//! accumulator mirroring into that entity's [`ModRateCell`] — the same cell the
-//! running modulator reads its frequency from. `ModRateCell` is added
-//! automatically when a route asks for one, and is a *component* precisely so it
-//! outlives the rebuilds that reconstruct every source.
-//!
-//! Read the live rate with [`ModRateCell::frequency`]; [`ModSourceRate`]'s own clock
-//! stays what the user authored. Only [`ModClock::Free`] gets a cell — the cell
-//! is a `Param<Hz>`, and a synced span is neither an `Hz` nor an f32.
-//!
-//! # Delivery: per-frame scalar, or beat-evaluated curve
-//!
-//! By default the driver samples each source once a frame and writes a scalar.
-//! A route can instead ask for its source to be installed as a `Curve` the
-//! *sink* evaluates:
-//!
-//! ```rust
-//! use bevy_ecs::prelude::*;
-//! use bevy_tutti::modulation::{ModDelivery, ModRoute};
-//! use tutti_types::{ParamAddr, UnitParam};
-//!
-//! # let mut world = World::new();
-//! # let lfo = world.spawn_empty().id();
-//! # let plugin_param = world.spawn_empty().id();
-//! # let addr = ParamAddr::Unit(UnitParam::Cutoff);
-//! let route = ModRoute::new(lfo, plugin_param, addr).per_block();
-//! // A **request**, not a guarantee: honoured only if the source kind has a
-//! // curve form and the sink accepts one, else it falls back to a scalar.
-//! assert_eq!(route.delivery, ModDelivery::PerBlock);
-//! ```
-//!
-//! Worth asking for only when the sink reads faster than the frame rate — a
-//! plugin's per-block parameter producer traces a smooth ramp where a frame
-//! scalar gives a staircase. It is a **request**: honoured only if the source
-//! kind has a curve form (see
-//! [`ModSourceKind::build_curve`]) *and* the sink accepts one. Anything else
-//! falls back to scalar delivery, which is always correct.
-//!
-//! Native params always fall back — [`AtomicTarget`](tutti_mod::AtomicTarget)
-//! collapses at a fixed beat, so a curve stored there would never move. Reaching
-//! a sink that does accept curves means supplying it with
-//! [`ModTargetRegistry::insert_target`].
-//!
-//! # The per-sample path is a different route entirely
-//!
-//! Both deliveries above are this matrix's, and neither is sample-accurate: the
-//! scalar is written once a frame, and a curve is only as fine as the sink that
-//! samples it. For a genuinely per-sample modulator, don't route at all — spawn
-//! `tutti_nodes::LfoNode` in beat-synced mode as a graph node. It reads the
-//! beat of every frame from its block's `Env`, so there is nothing to wire:
-//!
-//! ```rust
-//! use bevy_app::prelude::*;
-//! use bevy_ecs::prelude::*;
-//! use bevy_tutti::prelude::*;
-//! use tutti_types::BeatDuration;
-//! use tutti_nodes::{LfoNode, LfoShape};
-//!
-//! fn spawn_lfo(mut commands: Commands) {
-//!     commands.spawn_audio_node(LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration(1.0)));
+//! fn wobble(mut mods: Mods, filter: Single<Entity, With<tutti_core::AudioNode>>) {
+//!     let cutoff = ParamRef::unit(*filter, UnitParam::Cutoff);
+//!     mods.range(cutoff, 200.0, 4_000.0);
+//!     let lfo = mods.lfo(Lfo::sine().rate(BeatDuration(0.5)));
+//!     mods.route(lfo, cutoff, Depth(0.3));
 //! }
-//!
-//! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes::headless(0, 2));
-//! app.insert_resource(AudioEngineState::Running);
-//! app.add_plugins(GraphReconcilePlugin);
-//! app.add_systems(Startup, spawn_lfo);
+//! app.world_mut().run_system_cached(wobble).unwrap();
 //! app.update();
 //!
-//! let lfo = *app
-//!     .world_mut()
-//!     .query::<&AudioNode>()
-//!     .single(app.world())
-//!     .unwrap();
-//! let graph = app.world().resource::<AudioGraphRes>();
-//! assert_eq!(graph.node_inputs(lfo), 0, "no beat ports to wire");
+//! // The cutoff has its lane, its knob the node's own cutoff cell.
+//! let state = app.world().resource::<ModulationState>();
+//! let (_, lane) = state.lane(ParamRef::unit(filter, UnitParam::Cutoff)).unwrap();
+//! assert_eq!(lane.knob(), Some(1_000.0));
 //! ```
 //!
-//! That is the same `tutti_mod::Lfo` this matrix drives, under an audio-rate
-//! adapter instead of a frame-rate driver — one modulator, a different tier.
-//! What it gives up is the matrix: depth/polarity/range shaping, layered
-//! accumulation onto one param, and runtime re-routing are all this module's,
-//! and a hand-wired node participates in none of them. Reach for it when the
-//! staircase is audible; stay here otherwise.
+//! # Knobs
 //!
-//! # What the host must supply
+//! A modulated param's base is its **knob** where it has no automation: a
+//! native param's knob is its node's own `Param` cell, written as any param
+//! is ([`AudioParam`](crate::graph::AudioParam),
+//! [`write_param`](crate::graph::write_param)); a plugin parameter's is its
+//! lane's, started at the plugin's value and moved by an edit in the
+//! plugin's GUI or by [`ModulationState::set_knob`]. Nothing else writes it
+//! (doc 014 §8.2, "one writer per knob").
 //!
-//! For a node whose controls are a `tutti_graph::ParamSet` — every node in
-//! `tutti-nodes`, the synth, and a host's own `ParamNode` registered with
-//! [`param_graph_node!`](crate::param_graph_node) — nothing:
-//! `spawn_audio_node` captures its params by address, and a route on any of
-//! them resolves. A sink no node owns (a plugin's per-block target) the host
-//! supplies with [`ModTargetRegistry::insert_target`] (see [`target`]).
+//! # Takes
+//!
+//! An [`AutomationTake`] on an [`Automation`]'s entity suspends the
+//! automation, so the knob (the gesture) plays, and on release its
+//! envelope becomes the automation.
+//!
+//! # Errors
+//!
+//! A declaration the reconciler refuses (a follower whose input is
+//! downstream of its own target, a route to a param with no range, a
+//! target its node does not have) changes nothing; it is logged, sent as a
+//! [`ModulationRefused`] message and held in [`ModulationState::refusal`]
+//! until the declarations apply again.
+//!
+//! The frame-rate driver this replaced is [`legacy`], unscheduled.
 
-pub mod audio_rate;
-pub mod components;
-pub mod driver;
-pub mod source;
-pub mod target;
+mod declare;
+pub mod legacy;
+mod reconcile;
+#[cfg(test)]
+mod tests;
 
-pub use components::{
-    CurveType, LfoShape, ModClock, ModDelivery, ModParamRange, ModRoute, ModSource, ModSourceRate,
-    ParamRange, Polarity,
+pub use declare::{
+    close_takes, Automation, AutomationTake, Follower, Lfo, LfoRate, Macro, ModFeed, ModRange,
+    ModRoute, ModSource, ModSourceKind, Mods, NoteEnvelope, ParamRef,
 };
-pub use driver::{drive, rebuild, ModulationMatrix, ParamKey};
-pub use source::{
-    CollectedModSources, ModRateCell, ModSourceAppExt, ModSourceKind, ModSourceSystems,
-};
-pub(crate) use target::ParamSetTargets;
-pub use target::{ModBusRes, ModParamsHandle, ModTargetRegistry, ModTargetResolver};
+pub(crate) use reconcile::ModEntities;
+pub use reconcile::{after_commit, reconcile, Declared, ModulationRefused, ModulationState};
+pub use tutti_mod::{Adsr, CurveType, LfoShape, Polarity};
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
 use crate::graph::{engine_ready, GraphReconcileSystems};
 
-/// Adds control-rate modulation: the [`ModulationMatrix`], the
-/// [`ModTargetRegistry`], the built-in [`ModSource`] kind, and the systems that
-/// drive them, plus the audio-rate route reconciler.
+/// Where the modulation systems run, for a host's own to order against.
+#[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum ModulationSystems {
+    /// [`close_takes`] then [`reconcile`]: after
+    /// [`GraphReconcileSystems::Spawn`], before
+    /// [`GraphReconcileSystems::Params`].
+    Apply,
+    /// [`after_commit`]: after [`GraphReconcileSystems::Commit`].
+    AfterCommit,
+}
+
+/// Adds modulation on control lanes: the [`ModulationState`], the
+/// [`ModulationRefused`] message, and the systems that apply the
+/// declarations ([`ModulationSystems`]).
 ///
 /// Not added by [`TuttiPlugin`](crate::TuttiPlugin); add it after it. Its
 /// systems are gated on [`engine_ready`] and need
-/// [`TransportRes`](crate::graph::TransportRes) and
 /// [`AudioGraphRes`](crate::graph::AudioGraphRes).
-///
-/// [`rebuild`] runs before [`GraphReconcileSystems::Params`], so the frame's
-/// routing is current before anything reads it. [`drive`] runs in `Params`,
-/// flushing `base + Σ layers` into the node atomics; a param reconciler in the
-/// same set writes an authored value to the accumulator's base instead of the
-/// atomic (see [`write_param`](crate::graph::write_param)), so the two never
-/// contend.
 pub struct TuttiModulationPlugin;
 
 impl Plugin for TuttiModulationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<audio_rate::AudioRateRoutes>();
-        app.init_resource::<ModulationMatrix>()
-            .init_resource::<ModTargetRegistry>()
-            .init_resource::<CollectedModSources>()
-            .init_resource::<ModBusRes>();
-
-        app.register_type::<ModSource>()
-            .register_type::<ModSourceRate>()
-            .register_type::<ModClock>()
-            .register_type::<ModRoute>()
-            .register_type::<ModDelivery>()
-            .register_type::<ModParamRange>();
-
-        // `Collect` builds only when `MarkDirty` said something moved, so the
-        // answer must exist before it is read — without this the two sets are
-        // unordered and the build could run a frame early against a stale flag.
+        app.init_resource::<ModulationState>()
+            .init_resource::<crate::graph::GraphDirty>()
+            .add_message::<ModulationRefused>();
         app.configure_sets(
             Update,
-            ModSourceSystems::MarkDirty.before(ModSourceSystems::Collect),
+            (
+                ModulationSystems::Apply
+                    .after(GraphReconcileSystems::Spawn)
+                    .before(GraphReconcileSystems::Params),
+                ModulationSystems::AfterCommit.after(GraphReconcileSystems::Commit),
+            ),
         );
-
         app.add_systems(
             Update,
             (
-                source::clear_collected.before(ModSourceSystems::MarkDirty),
-                // Before `MarkDirty` so that inserting a cell is itself seen as
-                // a change this frame, and before `Collect` so the source is
-                // built already reading it.
-                source::ensure_rate_cells.before(ModSourceSystems::MarkDirty),
-                // A route or range change also triggers `rebuild`, which drains
-                // the collected sources — so it must raise the same flag, or
-                // the rebuild resolves against an empty registry and drops
-                // every route. Registered once, not per kind.
-                source::mark_dirty_on_route_change.in_set(ModSourceSystems::MarkDirty),
-                rebuild
-                    .after(ModSourceSystems::Collect)
-                    .before(GraphReconcileSystems::Params),
-                drive.in_set(GraphReconcileSystems::Params),
-                // Audio-rate delivery declares *graph* modulation, so it runs
-                // in the graph reconcile phase rather than beside `rebuild`.
-                // Source nodes first: a modulation cannot name a node that
-                // does not exist yet.
-                audio_rate::ensure_source_nodes
-                    .before(audio_rate::reconcile_audio_rate)
-                    .in_set(GraphReconcileSystems::Spawn),
-                audio_rate::reconcile_audio_rate.in_set(GraphReconcileSystems::Spawn),
+                (close_takes, reconcile)
+                    .chain()
+                    .in_set(ModulationSystems::Apply),
+                after_commit.in_set(ModulationSystems::AfterCommit),
             )
-                // All reach into the audio graph — `rebuild` to resolve a node,
-                // `drive` to write its atomics — so none means anything
-                // without a running engine.
                 .run_if(engine_ready),
         );
-
-        // The built-in kind. An app adds its own with `add_mod_source::<K>()`;
-        // registering here means the common case needs no setup at all.
-        app.add_mod_source::<ModSource>();
     }
 }

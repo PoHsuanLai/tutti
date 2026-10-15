@@ -208,6 +208,36 @@ impl HostState {
     }
 }
 
+thread_local! {
+    /// Set while this thread is inside the host's own `setParameter` call
+    /// ([`host_write`]). `const`-initialized: reading it on the audio thread
+    /// neither allocates nor registers a destructor.
+    static IN_HOST_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `write` (the host's `setParameter` dispatch) marked as a host write:
+/// an `audioMasterAutomate` the plugin calls from inside it, on this thread,
+/// is the plugin echoing the value the host just set, not an edit of its
+/// own, and [`HostState::automate`] does not report it.
+///
+/// Without this an echoing plugin turns every host write into a reported
+/// edit: a host that takes reported edits as the user's (a modulation lane's
+/// knob, doc 014 §8.2) adopts the modulated value as the new base, and the
+/// next write adds the offsets again, ratcheting the base to the clamp.
+/// An edit made on another thread (the editor) while a write runs is still
+/// reported: the mark is this thread's.
+pub(crate) fn host_write<R>(write: impl FnOnce() -> R) -> R {
+    /// Restores the mark even if `write` unwinds.
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            IN_HOST_WRITE.with(|w| w.set(self.0));
+        }
+    }
+    let _restore = Restore(IN_HOST_WRITE.with(|w| w.replace(true)));
+    write()
+}
+
 impl Host for HostState {
     /// Called from inside the plugin's `processReplacing` — the audio thread.
     ///
@@ -215,7 +245,13 @@ impl Host for HostState {
     /// is the policy, and the counter is what keeps that visible. `Relaxed` is
     /// enough: nothing is published *through* the counter, and a reader only
     /// wants the tally eventually.
+    ///
+    /// A report made from inside the host's own `setParameter` is an echo of
+    /// the host's value and is not queued ([`host_write`]).
     fn automate(&self, index: i32, value: f32) {
+        if IN_HOST_WRITE.with(std::cell::Cell::get) {
+            return;
+        }
         if self.param_tx.push((index, value)).is_err() {
             self.dropped_param_changes.fetch_add(1, Ordering::Relaxed);
         }

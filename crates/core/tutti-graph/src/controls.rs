@@ -15,17 +15,18 @@
 //!
 //! Each param carries two values:
 //!
-//! - **live** — the cell the node reads, once per block. A control-rate
-//!   modulation driver writes here too: `base + Σ layers`, every frame.
-//! - **authored** — what the host last set as the param's value
-//!   ([`set`](ParamSet::set) writes both; [`set_authored`](ParamSet::set_authored)
-//!   only this one). Control-thread only; nothing on the audio thread reads it.
+//! - **live** — the cell the node reads, once per block: the knob. A
+//!   modulation lane does not write it (it sends `knob + Σ offsets` into the
+//!   param's event port instead), so the host's [`set`](ParamSet::set) is its
+//!   one writer.
+//! - **authored** — what the host last set through [`set`](ParamSet::set),
+//!   which writes both. Control-thread only; nothing on the audio thread
+//!   reads it.
 //!
 //! A fork of the node starts from the **authored** values ([`ParamFork`]), so
-//! an export renders the knob the user set, not whatever a modulation source
-//! had added to it at the instant of the fork (the export runs its own
-//! modulation). It costs a second number per param, not a second copy of the
-//! unit.
+//! an export renders the knob the user set even where something outside the
+//! set has written the live cell. It costs a second number per param, not a
+//! second copy of the unit.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -44,10 +45,9 @@ struct Slot {
 
 /// A node's params by [`UnitParam`]: the cells the running node reads, and
 /// the values a fork of it starts from: each param's **live** value (the cell
-/// the node reads, once per block; a control-rate modulation driver writes
-/// its composite there too) and its **authored** value (what the host last
-/// set, which a fork starts from, so an export renders the knob the user set
-/// rather than a modulation composite caught mid-sweep).
+/// the node reads, once per block) and its **authored** value (what the host
+/// last set, which a fork starts from, so an export renders the knob the user
+/// set rather than whatever else wrote the cell).
 ///
 /// `Clone` shares: every clone addresses the same cells. Control-thread type;
 /// the node itself reads its own `Param<U>` fields, never this.
@@ -85,18 +85,6 @@ impl ParamSet {
         true
     }
 
-    /// Sets only `param`'s authored value, leaving the live cell to whoever
-    /// drives it (a modulation driver writing `base + Σ layers` there every
-    /// frame: a write of the bare base would fight it for a block). `false`
-    /// if the node has no such param.
-    pub fn set_authored(&self, param: UnitParam, value: f32) -> bool {
-        let Some(slot) = self.slot(param) else {
-            return false;
-        };
-        slot.authored.store(value, Ordering::Relaxed);
-        true
-    }
-
     /// `param`'s live value: what the node reads on its next block.
     pub fn get(&self, param: UnitParam) -> Option<f32> {
         self.slot(param).map(|s| s.live.load(Ordering::Acquire))
@@ -107,8 +95,8 @@ impl ParamSet {
         self.slot(param).map(|s| s.authored.load(Ordering::Relaxed))
     }
 
-    /// `param`'s live cell, for a writer that drives it directly (a
-    /// modulation target mirroring into it). Clones the `Arc`: control
+    /// `param`'s live cell, for a reader or writer that holds it directly (a
+    /// modulation lane, whose knob it is). Clones the `Arc`: control
     /// thread only.
     pub fn cell(&self, param: UnitParam) -> Option<Arc<AtomicF32>> {
         self.slot(param).map(|s| Arc::clone(&s.live))
@@ -297,23 +285,8 @@ mod tests {
     fn an_unknown_param_is_refused() {
         let (cutoff, q, set) = set();
         assert!(!set.set(UnitParam::GainDb, 3.0));
-        assert!(!set.set_authored(UnitParam::GainDb, 3.0));
         assert_eq!(set.get(UnitParam::GainDb), None);
         assert_eq!((cutoff.load(), q.load()), (Hz(1000.0), Q(0.7)));
-    }
-
-    /// `set_authored` leaves the live cell to its driver.
-    ///
-    /// Mutation (run): `set_authored` also stores into `live` → the cell
-    /// reads 440 → fails.
-    #[test]
-    fn set_authored_leaves_the_live_cell() {
-        let (cutoff, _q, set) = set();
-        cutoff.store(Hz(1234.0)); // a modulation driver's composite
-        assert!(set.set_authored(UnitParam::Cutoff, 440.0));
-        assert_eq!(cutoff.load(), Hz(1234.0));
-        assert_eq!(set.get(UnitParam::Cutoff), Some(1234.0));
-        assert_eq!(set.authored(UnitParam::Cutoff), Some(440.0));
     }
 
     /// Adding one address twice is a bug in the node, caught at build.

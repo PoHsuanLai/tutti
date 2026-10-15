@@ -15,7 +15,7 @@ use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, PhaseIncrement};
 ///
 /// One of possibly several *kinds* of source (see
 /// [`ModSourceKind`](super::ModSourceKind)); it is the built-in one, and the
-/// only kind [`TuttiModulationPlugin`](super::TuttiModulationPlugin) registers
+/// only kind [`LegacyModulationPlugin`](super::LegacyModulationPlugin) registers
 /// on its own. A source entity carries exactly one kind component plus a
 /// [`ModSourceRate`].
 #[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]

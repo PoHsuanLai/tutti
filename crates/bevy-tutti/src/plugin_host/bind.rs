@@ -167,7 +167,7 @@ pub fn plugin_bind_meter(
 
 /// "This plugin's declared params have accumulators registered."
 ///
-/// Rebuilt whenever the [`ModParamRange`](crate::modulation::ModParamRange)
+/// Rebuilt whenever the [`ModParamRange`](crate::modulation::legacy::ModParamRange)
 /// declaration changes, so the targets never describe an older param set.
 #[cfg(feature = "modulation")]
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -223,7 +223,7 @@ type ParamBindItem = (
     Entity,
     &'static AudioNode,
     &'static PluginShadow,
-    &'static crate::modulation::ModParamRange,
+    &'static crate::modulation::legacy::ModParamRange,
 );
 
 /// Query filter for param binding: a loaded plugin that has either never been
@@ -237,14 +237,20 @@ type ParamsNeedRebind = (
     With<PluginEmitter>,
     Or<(
         Without<PluginParamsBound>,
-        Changed<crate::modulation::ModParamRange>,
+        Changed<crate::modulation::legacy::ModParamRange>,
     )>,
 );
 
 /// Gives every param a plugin declares modulatable a per-block accumulator, and
 /// feeds those accumulators to the plugin as its automation source.
 ///
-/// A host declares which params are modulatable with [`ModParamRange`](crate::modulation::ModParamRange), the same
+/// **Legacy, not scheduled.** [`TuttiHostingPlugin`](crate::plugin_host::TuttiHostingPlugin)
+/// no longer adds it: a plugin parameter is modulated by a lane on the
+/// plugin's event input ([`ParamRef::plugin`](crate::modulation::ParamRef::plugin),
+/// doc 014 §8.2), which an export forks. Kept for a host still on
+/// [`modulation::legacy`](crate::modulation::legacy); such a host schedules it itself.
+///
+/// A host declares which params are modulatable with [`ModParamRange`](crate::modulation::legacy::ModParamRange), the same
 /// component a native node uses — the difference is only that a plugin's entries
 /// carry [`ParamAddr::Id`](tutti_types::ParamAddr::Id) (its own numeric id) where a native node's carry
 /// `ParamAddr::Unit`. Ranges come from the host because reading them from the
@@ -270,7 +276,7 @@ type ParamsNeedRebind = (
 /// `AtomicF32`*, which the node keeps reading. The `Arc` is new; the cell it
 /// writes through is the same one. That is a narrower guarantee than it looks,
 /// and it has one real consequence: see
-/// [`rebuild`](crate::modulation::rebuild)'s note on a rebuild re-seeding the
+/// [`rebuild`](crate::modulation::legacy::rebuild)'s note on a rebuild re-seeding the
 /// base from `ModParamRange`.
 ///
 /// So the target is built **once, here**, and supplied to the registry with
@@ -294,7 +300,7 @@ type ParamsNeedRebind = (
 #[cfg(feature = "modulation")]
 pub fn plugin_bind_params(
     mut commands: Commands,
-    registry: Option<ResMut<crate::modulation::ModTargetRegistry>>,
+    registry: Option<ResMut<crate::modulation::legacy::ModTargetRegistry>>,
     graph: Option<ResMut<crate::graph::AudioGraphRes>>,
     mut feeds: ResMut<crate::graph::EventFeeds>,
     mut dirty: ResMut<crate::graph::GraphDirty>,

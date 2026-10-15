@@ -1,5 +1,10 @@
 //! The audio-rate modulation, asserted as a **value**.
 //!
+//! **Legacy.** This suite drives the modulation driver that control lanes
+//! replaced (`bevy_tutti::modulation::legacy`, unscheduled by default and
+//! added here as `LegacyModulationPlugin`). It keeps that code honest until
+//! PR 5 deletes both; the lane path's own properties are in `mod_lanes.rs`.
+//!
 //! `mod_audio_rate.rs` asserts what the reconciler *declares* and what the
 //! graph *computes* against the frame-rate path. This file asserts what
 //! neither says without the whole value in hand: which sources, with which
@@ -18,9 +23,9 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{AudioGraphRes, GraphNode, GraphReconcilePlugin};
-use bevy_tutti::modulation::audio_rate::ModSourceNode;
-use bevy_tutti::modulation::{
-    ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
+use bevy_tutti::modulation::legacy::audio_rate::ModSourceNode;
+use bevy_tutti::modulation::legacy::{
+    LegacyModulationPlugin, ModParamRange, ModRoute, ModSource, ModSourceRate,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::AudioNode;
@@ -37,7 +42,7 @@ fn app_with_target() -> (App, Entity) {
     let mut app = App::new();
     app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(AudioEngineState::Running);
-    app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+    app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
 
     let dist = DistortionNode::new(ShapeKind::Tanh, 5.0);
     // Its controls, captured from the node before it moves — the step every
@@ -283,7 +288,7 @@ fn an_unchanged_route_is_not_redeclared() {
     app.init_resource::<SeenDirty>().add_systems(
         Update,
         record
-            .after(bevy_tutti::modulation::audio_rate::reconcile_audio_rate)
+            .after(bevy_tutti::modulation::legacy::audio_rate::reconcile_audio_rate)
             .in_set(bevy_tutti::graph::GraphReconcileSystems::Spawn),
     );
 

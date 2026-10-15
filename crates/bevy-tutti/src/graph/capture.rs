@@ -11,7 +11,7 @@
 //!
 //! | Component | Captured from | Read by |
 //! |---|---|---|
-//! | `ModParamsHandle` (`modulation`) | a node's `ParamSet` ([`CapturedControls::for_params`]), or a host-supplied target (`ModTargetRegistry::insert_target`) | the modulation resolver |
+//! | `ModParamsHandle` (`modulation`) | a node's `ParamSet` ([`CapturedControls::for_params`]), or a host-supplied target (`modulation::legacy::ModTargetRegistry::insert_target`) | the legacy driver (`LegacyModulationPlugin`, unscheduled by default); modulation lanes read the graph's `ParamSet` instead |
 //! | `PluginShadow` (`plugin`) | a loaded `PluginClient` (`CapturedControls::for_plugin`), or an in-process VST2 plugin's meter (`CapturedControls::for_plugin_meter`) | plugin meter bind and latency poll |
 //!
 //! Every one holds only state the node shares with the graph's copy (its
@@ -110,9 +110,9 @@ impl CapturedControls {
         let _ = params;
         Self {
             #[cfg(feature = "modulation")]
-            params: Some(std::sync::Arc::new(crate::modulation::ParamSetTargets(
-                params.clone(),
-            ))),
+            params: Some(std::sync::Arc::new(
+                crate::modulation::legacy::ParamSetTargets(params.clone()),
+            )),
             #[cfg(feature = "plugin")]
             plugin: None,
             #[cfg(feature = "plugin")]
@@ -152,10 +152,12 @@ impl CapturedControls {
         #[cfg(feature = "modulation")]
         match self.params {
             Some(params) => {
-                entity.insert(crate::modulation::ModParamsHandle::new(node, params));
+                entity.insert(crate::modulation::legacy::ModParamsHandle::new(
+                    node, params,
+                ));
             }
             None => {
-                entity.remove::<crate::modulation::ModParamsHandle>();
+                entity.remove::<crate::modulation::legacy::ModParamsHandle>();
             }
         }
         #[cfg(feature = "plugin")]
@@ -186,7 +188,7 @@ pub(crate) fn drop_captured(commands: &mut Commands, entity: Entity) {
     };
     let _ = &mut e;
     #[cfg(feature = "modulation")]
-    e.try_remove::<crate::modulation::ModParamsHandle>();
+    e.try_remove::<crate::modulation::legacy::ModParamsHandle>();
     #[cfg(feature = "plugin")]
     e.try_remove::<crate::plugin_host::PluginShadow>();
 }

@@ -13,9 +13,9 @@ use tutti_mod::{ModEdge, ModPreFrame, ModRoutingTable, ModTarget, ModTargetId};
 use tutti_types::{ParamAddr, Samples, Seconds};
 
 use crate::graph::TransportRes;
-use crate::modulation::components::{ModDelivery, ModParamRange, ModRoute};
-use crate::modulation::source::CollectedModSources;
-use crate::modulation::target::ModTargetResolver;
+use crate::modulation::legacy::components::{ModDelivery, ModParamRange, ModRoute};
+use crate::modulation::legacy::source::CollectedModSources;
+use crate::modulation::legacy::target::ModTargetResolver;
 
 /// The address of one modulated parameter: which entity, which param.
 ///
@@ -70,6 +70,11 @@ impl ModulationMatrix {
     /// control works until someone deletes its LFO. Owning both halves is what
     /// [`AudioParam`](crate::graph::AudioParam) is for, and inserting one is
     /// the public way to author a param value.
+    ///
+    /// Nothing calls it now: `write_param` no longer reaches the driver
+    /// (doc 014 §8.2, one writer per knob). It stays, with its tests, until
+    /// PR 5 deletes this module.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_base(&self, entity: Entity, param: ParamAddr, base: f32) -> bool {
         match self.targets.get(&(entity, param)) {
             Some(target) => {
@@ -138,10 +143,6 @@ pub fn rebuild(
     // must see it anyway so the rebuild has sources to bind.
     changed: Query<Entity, Or<(Changed<ModRoute>, Changed<ModParamRange>)>>,
     mut removed: RemovedComponents<ModRoute>,
-    // The re-seeded base also goes to the node's fork snapshot (below). Both
-    // optional: a host can run modulation over sinks that are not graph nodes.
-    mut graph: Option<ResMut<crate::graph::AudioGraphRes>>,
-    graph_nodes: Query<&tutti_core::AudioNode>,
 ) {
     // Source changes arrive as `collected.dirty` rather than a `Changed<K>`
     // filter: a kind's component type cannot be named here, so each kind
@@ -207,16 +208,6 @@ pub fn rebuild(
                 let Some(target) = resolver.resolve(route.target, route.param, range) else {
                     continue;
                 };
-                // The resolve re-seeds the live base from `range.base` (the
-                // target mirrors it into the node's cell as it is built). A
-                // fork of the node — an export — starts from its shadow, which
-                // that cell write does not reach, so the base goes there too,
-                // as `write_param` sends an authored one.
-                if let (ParamAddr::Unit(param), Some(graph), Ok(node)) =
-                    (route.param, graph.as_mut(), graph_nodes.get(route.target))
-                {
-                    graph.set_param_snapshot(*node, param, range.base);
-                }
                 let id = ModTargetId::next();
                 bus.insert(id, Arc::clone(&target));
                 targets.insert(key, target);
@@ -337,12 +328,11 @@ mod tests {
     use bevy_app::prelude::*;
 
     use crate::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
-    use crate::modulation::{
-        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
+    use crate::modulation::legacy::{
+        LegacyModulationPlugin, LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate,
     };
     use crate::AudioEngineState;
     use tutti_core::transport::Transport;
-    use tutti_core::AudioNode;
     use tutti_nodes::DistortionNode;
     use tutti_types::{Depth, Hz, UnitParam};
 
@@ -356,7 +346,7 @@ mod tests {
         app.insert_resource(AudioGraphRes::headless(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
-        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.add_plugins((GraphReconcilePlugin, LegacyModulationPlugin));
 
         // Captured, then pushed: the capture is what makes the node
         // modulatable, and it only runs on the node before insertion. A
@@ -452,120 +442,6 @@ mod tests {
         assert!(
             !matrix.set_base(target, ParamAddr::Unit(UnitParam::Drive), 8.0),
             "nothing routes here, so the caller owns the write"
-        );
-    }
-
-    /// An authored write through [`write_param`](crate::graph::write_param)
-    /// survives on a **modulated** param — the branch that routes it to the
-    /// accumulator's base rather than the node's atomic.
-    ///
-    /// This is the guard that was missing. `set_base_moves_a_modulated_param…`
-    /// above calls `set_base` directly, so it passes even when `write_param`
-    /// stops calling it; this one goes through the real front door.
-    ///
-    /// **The loss it catches is deterministic, not a race.** Measured by
-    /// neutering the branch: 200/200 trials lost the write, 0/200 with it
-    /// restored. `drive` re-mirrors `clamp(base + Σ layers)` into the node
-    /// atomic every frame, so a direct write there is overwritten by the next
-    /// flush regardless of system order — the two writers touch different
-    /// fields of a mutex-guarded `LayeredCurve` and never contend.
-    #[test]
-    fn an_authored_write_through_write_param_survives_modulation() {
-        let (mut app, target) = app_with_graph();
-        let lfo = app
-            .world_mut()
-            // Zero-rate square: a constant offset, so the base shift stays
-            // legible against it rather than sweeping.
-            .spawn((
-                ModSource::new(LfoShape::Square),
-                ModSourceRate::free_running(Hz(0.0)),
-            ))
-            .id();
-        app.world_mut().spawn(
-            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.1)),
-        );
-        app.update();
-
-        let node = *app.world().get::<AudioNode>(target).unwrap();
-        app.world_mut()
-            .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
-                let matrix = w.resource::<ModulationMatrix>();
-                crate::graph::write_param(&mut graph, matrix, target, &node, UnitParam::Drive, 8.0);
-            });
-
-        advance_transport(&mut app, 480);
-        app.update();
-
-        let after = node_drive(&app, target);
-        assert!(
-            after > 7.0,
-            "base moved {BASE_DRIVE} -> 8 through write_param, so the flushed \
-             value should carry it; got {after}. A value near {BASE_DRIVE} means \
-             the write went to the node atomic and the driver overwrote it."
-        );
-    }
-
-    /// **A rebuild re-seeds the base from `ModParamRange`, discarding a
-    /// `write_param` base.**
-    ///
-    /// Pins the ownership rule `rebuild`'s doc states. Not a bug report: it is
-    /// benign in this workspace, because the only producer of `ModParamRange`
-    /// reads the same authored document the `write_param` call sites do. It is
-    /// pinned so that stops being an accident — a future writer that can move a
-    /// base *without* the document moving (MIDI learn, a plugin writing back)
-    /// changes this test, which is the signal to route that writer through
-    /// `ModParamRange` too.
-    #[test]
-    fn a_rebuild_reseeds_the_base_from_the_declared_range() {
-        let (mut app, target) = app_with_graph();
-        let lfo = app
-            .world_mut()
-            .spawn((
-                ModSource::new(LfoShape::Square),
-                ModSourceRate::free_running(Hz(0.0)),
-            ))
-            .id();
-        app.world_mut().spawn(
-            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.1)),
-        );
-        app.update();
-
-        // An authored write the declared range does not know about.
-        let node = *app.world().get::<AudioNode>(target).unwrap();
-        app.world_mut()
-            .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
-                let matrix = w.resource::<ModulationMatrix>();
-                crate::graph::write_param(&mut graph, matrix, target, &node, UnitParam::Drive, 8.0);
-            });
-        advance_transport(&mut app, 480);
-        app.update();
-
-        let carried = node_drive(&app, target);
-        assert!(
-            carried > 7.0,
-            "between rebuilds the write_param base is authoritative; got {carried}"
-        );
-
-        // Force a rebuild without touching the base: mark the route `Changed`
-        // by rewriting it with the value it already has.
-        {
-            let mut routes = app.world_mut().query::<&mut ModRoute>();
-            let mut route = routes.single_mut(app.world_mut()).unwrap();
-            route.depth = Depth(0.1);
-        }
-        advance_transport(&mut app, 480);
-        app.update();
-        // A second frame, so the driver re-applies its offset over the
-        // freshly-seeded base rather than being read mid-flush.
-        advance_transport(&mut app, 480);
-        app.update();
-
-        let reseeded = node_drive(&app, target);
-        assert!(
-            (reseeded - (BASE_DRIVE + 1.0)).abs() < 0.2,
-            "the rebuild must re-seed from ModParamRange's base ({BASE_DRIVE}) \
-             plus the modulator's +1.0 offset, discarding the 8.0 written \
-             through write_param; got {reseeded} (was {carried} before)"
         );
     }
 }

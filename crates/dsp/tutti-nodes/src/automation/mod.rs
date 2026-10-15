@@ -5,9 +5,10 @@
 //!
 //! Two pieces, one domain — the two directions of a [`Curve`]:
 //! - the playback-side [`AutomationLaneNode`] graph node, reading a curve at
-//!   the transport's beat position (`beat -> value`), sent as audio or as
-//!   curve-segment events for a param port ([`segment_shape`] maps the
-//!   curve kinds);
+//!   the transport's beat position (`beat -> value`) as audio, and the
+//!   [`ControlLaneNode`], which sends a target's whole `ControlProgram`
+//!   (automation and modulation) as curve-segment events for a param port
+//!   ([`segment_shape`] maps the curve kinds);
 //! - the capture-side [`Recorder`], fed `(beat, value)` samples during a write /
 //!   touch / latch take and handing back an envelope.
 //!
@@ -18,13 +19,15 @@
 //! writes `Volume`/`Pan`/`PluginParam` DAW components, which are not the
 //! engine's vocabulary.
 
+mod control_lane;
 mod lane;
 mod recording;
 
 // The `Curve` trait (beat → value) lives in tutti-mod — modulation depends on it
 // and tutti-nodes already depends on tutti-mod, so the trait is homed there and
 // re-exported here for the automation consumers.
-pub use lane::{segment_shape, AutomationLaneNode, LiveAutomationLane, LANE_EVENT_CAPACITY};
+pub use control_lane::{ControlLaneNode, LaneControls, CONTROL_STEP, LANE_EVENT_CAPACITY};
+pub use lane::{segment_shape, AutomationLaneNode, LiveAutomationLane};
 pub use recording::{RecordMode, Recorder, RecordingConfig};
 pub use tutti_mod::Curve;
 

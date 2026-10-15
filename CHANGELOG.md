@@ -93,6 +93,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The control lane** (design doc 014, PR 2b): one node per target that
+  evaluates the target's `ControlProgram` (automation or the knob, plus
+  every modulation offset) on a 32-frame grid of the play clock and every
+  corner, and sends it as segments, equal live and in an export, serial
+  and parallel. Plugin parameter delivery makes room for it. **Breaking**
+  for `AutomationLaneNode::for_param` / `for_foreign` callers (they get a
+  `ControlLaneNode`), code naming `LANE_EVENT_CAPACITY` (now 256, in
+  `ControlLaneNode`'s module), and a plugin host's memory (below).
+
+  | Was | Now |
+  |---|---|
+  | — | `tutti_mod::ControlProgram` (automation, `Layer`s on a `Clock::{Beats, Seconds}` with an optional `RateAnchor`, `InputLayer`s; `Wave`, `Amount`, `PeriodPoint`, `ProgramTime`, `Corners`, `ProgramError`, `MAX_LANE_LAYERS` = 16, `MAX_LANE_INPUTS` = 8). `Curve` and `CurveSegment` no longer need the `routing` feature |
+  | — | `tutti_nodes::automation::{ControlLaneNode, LaneControls, CONTROL_STEP}`: `ControlLaneNode::for_param(key, program, knob, range)` and `for_foreign(id, program, knob, (min, max))`; `LaneControls::{publish, publish_arc, program, resync, set_knob, knob, set_range, range, thinned, truncated, unranged}`. Declared `Cost::Moderate` (measured) |
+  | `AutomationLaneNode::for_param(curve, key)` / `for_foreign(curve, id)` returned an `AutomationLaneNode` with an event output | they return a `ControlLaneNode` of the curve alone; `AutomationLaneNode` is the audio-output lane only |
+  | `LANE_EVENT_CAPACITY` = 128 (`AutomationLaneNode`'s) | 256, the control lane's: a 4096-frame block's grid and as many corners; past it a lane thins its grid (`thinned()`), then drops its last points (`truncated()`) |
+  | a piece no `SegmentShape` carries (`Elastic`, a curve without pieces) was sampled at block edges, so it moved with the block size | it is linear between grid points of the play clock and the breakpoints: the same frames at any block size |
+  | `ParameterQueue::chunk_room(chunk)` = `max(ceil(chunk / 32) + 4, 10)`; a full queue replaced its last point (`points_merged`) | `ceil(chunk / 32) + 1 + CORNER_POINTS` (256). A queue is full at its room, or at its floor with the chunk's pool spent (more than 256 parameters past their floor in one chunk); then a grid point (a frame whose play count is a multiple of 32) is dropped, or a corner evicts the queue's earliest grid point, both counted in `ParamDeliveryStats::grid_points_dropped`; only a queue of corners keeps its latest value in place of its latest point (`points_merged`) |
+  | `ParameterQueue::MIN_POINTS` (10), the floor of `chunk_room` | removed: `chunk_room` is never under 258 for a chunk of at least one frame (`chunk_room(0)` is 257). Use a literal room where a test wanted a small one |
+  | — | `PointBuf::remove(index)` and `PointBuf::sort_by_offset()`, a stable in-place sort that never allocates (std's stable sort allocates past 256 points, under a chunk's room); the VST3 host's `IMidiMapping` merge and its input queue refill sort with it |
+  | `SegmentPoints` sent a point every stride frames of each chunk | it sends a segment's start, its value on each 32-frame play-grid frame, each chunk's last frame and its arrival; the lane's pieces are the points |
+  | a plugin node's and plugin-server's parameter buffers reserved each queue's room of 132 points at a 4096-frame chunk (20 at 512) | the logical room is 385 (273 at 512); the storage stays the shared pool (below): a floor of 3 a queue and 256 blocks of `room + 1`, so only the pool term grows. Per instance at 2000 parameters (the node's buffers, its host's lists and the plugin-server's output together): a CLAP plugin about 34.2 MB at 4096 frames and 25.2 MB at 512 (14.0 MB and 5.0 MB at the old room), a VST3 plugin about 19.8 MB and 14.8 MB (8.4 MB and 3.35 MB). These totals first left out the server's output (1.81 / 1.35 MB). Doc 014 §9 lists every figure; with every queue at the full room the node's buffers and the CLAP lists alone would have been about 235 MB and 168 MB. The bridge's pool now drops a returning buffer of another point room as well as of fewer queues (`PayloadPool::return_params`), so a re-prepare never hands the node a buffer laid out for another chunk |
+
+  Migration:
+  - Wire `AutomationLaneNode::for_param(curve, key)`'s result as before: it is a `ControlLaneNode`, inserted the same way. For a knob under the automation, or modulation, build `ControlLaneNode::for_param` with a `ControlProgram` and the target's `Param` cell and `Editor::param_range_cell`.
+  - Read `LaneControls::thinned()` / `truncated()` where a block over 4096 frames may carry more than 256 points; render exports in blocks of at most 4096 frames.
+  - Replace `ParameterQueue::MIN_POINTS` with the room the code meant (it was 10).
+  - Expect a CLAP parameter under automation to step every 32 frames or less, at play-clock grid frames.
+  - `AutomationLaneNode::for_param` / `for_foreign` now freeze the curve when they build (`ControlProgram::from_automation` takes `Curve::frozen`). A curve that reads state written later (a `LayeredCurve`, whose layers a router writes) no longer sees those writes: publish a new program through the lane's `LaneControls` when it changes, or express the modulation as program layers.
+  - After re-wiring a lane's output or replacing its target, call `LaneControls::resync()`: a steady lane does not re-send at block edges, so a new target hears nothing until something moves.
 - **`tutti_io::MicRing` is a plain consumer, not a shared one.** It owns
   its ring's `HeapCons` instead of an `Arc<AudioThreadCell<_>>`, and is no
   longer `Clone` (nothing cloned it: the ring has one consumer, the

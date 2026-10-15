@@ -20,7 +20,7 @@ use tutti_graph::{
     Prepare, SegmentShape,
 };
 use tutti_nodes::automation::{
-    AutomationEnvelope, AutomationLaneNode, AutomationPoint, Curve, CurveType,
+    AutomationEnvelope, AutomationLaneNode, AutomationPoint, ControlLaneNode, Curve, CurveType,
 };
 use tutti_plugin::handles::{ParamAddress, ParamId, TimedParam};
 use tutti_types::graph::{OutPort, Source};
@@ -117,7 +117,7 @@ fn automation_reaches_the_plugin_through_its_event_input() {
 /// declared latency is not rendered in `TAG_ONLY` mode, so the figure is
 /// the chunk, not `declared_latency`.
 fn render_gain(
-    feeder: Option<AutomationLaneNode>,
+    feeder: Option<ControlLaneNode>,
     schedule: &[(u64, EventKind)],
     blocks: usize,
 ) -> (Vec<f32>, usize) {
@@ -185,23 +185,39 @@ fn is_gain(got: f32, v: f32) -> bool {
 
 /// The output frames `L + start .. L + end` (input frames `start..end`)
 /// follow `curve` — each frame's gain lies between the curve's value one
-/// point spacing earlier and its value there, rising — and from input
-/// frame `end` on it is exactly `to`'s gain, which it is not one frame
-/// earlier.
+/// point spacing earlier and its value at the end of the `piece`-frame
+/// span holding the frame, rising — and from input frame `end` on it is
+/// exactly `to`'s gain, which it is not one frame earlier.
+///
+/// `piece` is 1 where every point is the curve's own value at its frame
+/// (a scheduled segment), so a frame's gain is at most the curve's there.
+/// A control lane sends the curve as `Linear` pieces between its 32-frame
+/// grid frames (doc 014 §5.3), and a chunk's last frame carries the piece's
+/// value there: a point on the chord from `curve(g)` to `curve(g + 32)`,
+/// which on a convex rising curve lies above the curve but, the curve
+/// being monotone, never above `curve(g + 32)`. So for a lane `piece` is
+/// 32 and the upper bound is the curve at the next grid frame.
+///
+/// Changed in doc 014 PR 2b: the upper bound was `curve(f)` for both
+/// tests; the lane's chunk-edge point at frame 255 (on its 224..256 piece)
+/// is the chord's value, 2.9e-5 relative above `curve(255)` and below
+/// `curve(256)`.
 fn follows(
     out: &[f32],
     latency: usize,
     start: usize,
     end: usize,
+    piece: usize,
     curve: impl Fn(usize) -> f32,
     to: f32,
 ) {
-    // `stride_for(256)`: the points' spacing, plus the chunk's last frame.
+    // The play clock's grid (doc 014 §5.3): a point at least every 32
+    // frames, plus the chunk's last frame.
     const SPACING: usize = 32;
     let mut distinct = 0;
     for f in start..end {
         let got = out[f + latency];
-        let hi = gained(f64::from(curve(f)));
+        let hi = gained(f64::from(curve(f.next_multiple_of(piece).min(end))));
         let lo = gained(f64::from(curve(f.saturating_sub(SPACING).max(start))));
         assert!(
             got <= hi * (1.0 + 1e-5) && got >= lo * (1.0 - 1e-5),
@@ -235,7 +251,10 @@ fn follows(
 /// Mutations (run), each fails: the plugin node sending only the segment's
 /// first point (no `SegmentPoints` tracking) → the gain stays near the
 /// start; no point on the arrival frame → the end gain lands late, on the
-/// next stride point.
+/// next stride point. Doc 014 PR 2b: the play-grid points dropped
+/// (`on_grid` false in `SegmentPoints::points`) → the gain holds the start
+/// until the chunk's last frame, "input frame 334" below the curve 32
+/// frames earlier → fails.
 #[test]
 fn a_scheduled_segment_drives_a_plugin_parameter_to_its_end() {
     const AT: u64 = 300;
@@ -247,6 +266,7 @@ fn a_scheduled_segment_drives_a_plugin_parameter_to_its_end() {
         latency,
         AT as usize,
         end,
+        1,
         |f| seg.raw_value_after(Samples(f - AT as usize)),
         0.75,
     );
@@ -286,7 +306,9 @@ fn an_interrupting_ramp_stops_a_segment_on_a_plugin() {
 ///
 /// Mutation (run): the plugin node sending only each segment's first point
 /// → the gain moves only at the lane's block-edge re-sends, more than one
-/// spacing behind the curve → fails.
+/// spacing behind the curve → fails. Doc 014 PR 2b (run): each piece's end
+/// value read one grid step late (`d + 32.0` in the lane's piece end) →
+/// the chunk edge at frame 255 lies above `curve(256)` → fails.
 #[test]
 fn a_lane_drives_a_plugin_parameter_along_its_curve() {
     let mut env = AutomationEnvelope::new(());
@@ -305,6 +327,7 @@ fn a_lane_drives_a_plugin_parameter_along_its_curve() {
         latency,
         0,
         1500,
+        32,
         |f| env.value_at(beat(f)).expect("a value"),
         0.75,
     );

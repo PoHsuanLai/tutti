@@ -1587,7 +1587,7 @@ mod tests {
 
         // `fill_param_changes` fills within the room the set was reserved
         // with (an unreserved set has none); one queue is all this needs.
-        let mut changes = ParameterChanges::reserved(1, ParameterQueue::MIN_POINTS);
+        let mut changes = ParameterChanges::reserved(1, 10);
         assert_eq!(
             list.fill_param_changes(&mut changes),
             0,
@@ -1655,7 +1655,7 @@ mod tests {
 
     /// **A dense block sorts without allocating, and ties keep their
     /// insertion order.** 200 parameters each carrying a chunk's room of
-    /// points (`ParameterQueue::chunk_room(512)`, 20), plus a note-off and a
+    /// points (`ParameterQueue::chunk_room(512)`, 273), plus a note-off and a
     /// note-on for one key on frames the points also land on: sorted inside
     /// the no-alloc gate, the result is exactly std's stable sort of the
     /// same list (computed outside the gate), so a note-off stays before the
@@ -2463,7 +2463,7 @@ mod tests {
         // Reserved: `fill_param_changes` fills within the set's room, and an
         // unreserved set has none. Two queues, so a gesture or mod event
         // wrongly queued would show as a second one.
-        let mut changes = ParameterChanges::reserved(2, ParameterQueue::MIN_POINTS);
+        let mut changes = ParameterChanges::reserved(2, 10);
         assert_eq!(
             output.fill_param_changes(&mut changes),
             0,
@@ -2676,7 +2676,7 @@ mod tests {
     /// `ParameterChanges::POOLED_QUEUES` at full room and every other one at
     /// its floor, points for different parameters arriving interleaved in
     /// time (frame by frame, every parameter), as the host's node fills it.
-    /// Point `k` of parameter `id` is on frame `3k` (every parameter on the
+    /// Point `k` of parameter `id` is on frame `k` (every parameter on the
     /// same frames: many ties) with value `(id + k) % 7 / 8`.
     fn pooled_chunk(params: u32, room: usize) -> ParameterChanges {
         let mut changes = ParameterChanges::reserved(params as usize, room);
@@ -2690,7 +2690,10 @@ mod tests {
                     continue;
                 }
                 assert!(changes.make_room(i), "within the budget");
-                changes.queues[i].add_point(3 * k as i32, pooled_value(id, k));
+                // A frame a point: a full room (273 at 512 frames) fits the
+                // block. (Changed in doc 014 PR 2b: every third frame, which
+                // put a 273-point room's points past a 512-frame block.)
+                changes.queues[i].add_point(k as i32, pooled_value(id, k));
             }
         }
         changes
@@ -2713,7 +2716,7 @@ mod tests {
 
     /// **A chunk at the pool budget reaches the plugin whole, time-sorted,
     /// without allocating; one point past it is counted.** 2 000 parameters
-    /// at a 512-frame block (a room of 20): the input list is reserved at the
+    /// at a 512-frame block (a room of 273): the input list is reserved at the
     /// chunk's pool budget (`ParameterChanges::point_budget`, as activation
     /// reserves it), and the host's pooled chunk, its
     /// points arriving interleaved, is flattened and sorted inside the

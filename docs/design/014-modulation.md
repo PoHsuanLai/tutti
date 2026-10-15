@@ -175,7 +175,7 @@ pub enum Wave {
 }
 
 #[derive(Clone, Copy)]
-pub struct PeriodPoint { pub at: f32, pub value: f32, pub curve: CurveType }
+pub struct PeriodPoint { pub at: Phase, pub value: f32, pub curve: CurveType }
 
 /// offset = shape(raw, depth, polarity, curve) × span. Depth is a fraction
 /// of the range; the span is not here: the lane reads it from the live range
@@ -262,6 +262,14 @@ non-finite span sends the base alone and counts it.
 not a step: the piece in flight is cut there and the next piece runs from
 the in-flight value to the new value at the next point. That is a declick of
 at most `CONTROL_STEP` frames with no extra state.
+
+**As landed (PR 2b).** Two refinements keep the glide from depending on
+where blocks fall. A glide that would send the piece already in flight
+again (the same end value to the bit and the same next point; in exact
+mode also the same start, shape and length) sends nothing, so a republish
+that moves nothing changes no frame. And in exact mode a changed program
+**jumps** at the block's first frame rather than gliding: an exact piece
+is the curve's own segment, which has no in-flight start to glide from.
 
 ### 4.3 The play clock, and phase
 
@@ -390,8 +398,8 @@ the 32-byte event are unchanged.
 | Event capacity | `LANE_EVENT_CAPACITY` = **256** (today 128) |
 | Tail | `Tail::Unbounded` |
 | Latency | none; modulation lag is musical delay (§6) |
-| Cost | `Cost::Light` (§5.3's estimate), confirmed by PR 2's measurement |
-| Controls | `LaneControls`: `publish`, the knob (a native `Param` cell, or `set_knob`), `set_range` for a plugin lane, `thinned()` |
+| Cost | `Cost::Moderate`, measured (§5.3, "As landed"); `Light` was the estimate |
+| Controls | `LaneControls`: `publish`, the knob (a native `Param` cell, or `set_knob`), `set_range` for a plugin lane, `thinned()`, `truncated()`, `unranged()` |
 | Fork | the last published program (`Arc`), knob and range values at the gather, the address; fresh state (§5.6) |
 
 **Arrival.** With an input behind a latent path, the lane's arrival can be
@@ -421,10 +429,23 @@ its output to the target, so each value lands on its own frame.
    0); `p'` may lie in a later block (beats extrapolated at the block's
    tempo; inputs extended from their current segment, held past its end).
    Clamp only on a plugin lane, and only at the split points of step 3.
-5. **A piece in flight at frame 0 with nothing changed** is re-sent resumed
-   at its position, not recomputed: the lane keeps `(from, to, start, end)`
-   across blocks, so a piece is the same whatever the block boundaries. A
-   segment is absolute, so the re-send changes nothing at the port.
+5. **A piece in flight at frame 0 with nothing changed** is left alone,
+   not recomputed: the lane keeps the piece and its next point across
+   blocks, so a piece is the same whatever the block boundaries.
+   **As landed (PR 2b):** it is not re-sent either. A re-send would be
+   bit-exact at a native port only while the segment's `f32` position
+   rounds alike in every block, and a plugin's delivery would see an extra
+   point at each block edge; sending nothing is exact by construction. A
+   seek or a play start between blocks is detected (the transport rolled
+   one frame from the last block's last frame, the play clock one frame
+   on, and the frame count, against this block's first frame) and is a
+   point.
+   **The cost of not re-sending:** a target the lane is newly wired to (a
+   re-wire, or its target node replaced) hears nothing while the lane is
+   steady, and holds its own base until something moves.
+   `LaneControls::resync()` sets a flag the next block reads: it sends a
+   point (not a glide) at frame 0. **PR 4's reconcile must call it after
+   it re-wires a lane or replaces its target.**
 
 ### 5.3 Control resolution: `CONTROL_STEP = 32` frames on the play clock
 
@@ -489,6 +510,13 @@ point to the chunk's end). That needs at least
 so **plugin export == live holds at the same chunk size**, and PR 4's test
 pins the chunk.
 
+*As landed (PR 2b):* `SegmentPoints` also sends a segment's value on each
+frame in flight whose play count is a multiple of 32, as a grid point. A
+lane's pieces run grid frame to grid frame, so it adds nothing to a lane;
+it keeps a segment scheduled by hand (`ParamSegment` on the event input,
+which no lane cuts into pieces) within 32 frames of its curve, as the old
+stride did, on a grid that does not move with the chunk.
+
 **CPU.** At 48 kHz the grid is 1,500 points a second per lane; each point
 evaluates each layer once (the left limit at `p'` is the value at `p'`
 except at a jump). 200 lanes × 2 layers is about 600k layer evaluations a
@@ -496,6 +524,19 @@ second, roughly a sine and a `shape()` each: tens of nanoseconds, so on the
 order of 1–3 % of one core in all, and about a microsecond per lane per
 512-frame block. That is `Light`; PR 2 measures it and declares from the
 measurement, as Phase 6 (b) did.
+
+**As landed (PR 2b): `Moderate`.** Measured on the 4-core container, 200
+lanes of one moving layer each (every layer kind in turn) into 25 eight-param
+probes at 512-frame blocks: about 2.3–3.3 ms a block in all, of which
+the lanes' own `process` is about a third (callgrind), about 3.7 µs per
+lane per block, about 7 ns a frame. The time goes to a point's transport
+roll (`Cx::transport_at`, a `FrameClock` advance) and the program's
+evaluation at both ends of each piece and its next corner, about 2 300
+instructions a point. The ports that render the pieces per frame are most
+of the rest, and are the executor's. `Moderate` (200 + 8 a frame) matches
+the measurement; `Light` (100 + 1 a frame) would under-price a lane
+fivefold and pack hundreds into one task. With no layers (a held value)
+the whole 200-lane graph took about 0.74 ms a block.
 
 **Overload.** Points exceed 256 only past 4096-frame blocks or past 128
 corners in one block. The lane then keeps every corner, thins the grid
@@ -555,9 +596,18 @@ reference interpreter and the differential proptest take the same rule.
 `LaneControls` (§4.5), the knob and range values, and the address, and
 builds a fresh lane with its own cell, so a later live republish does not
 reach the fork. Fresh state: no piece in flight, inputs at 0
-until their (also forked) sources send. With a lane re-sending at frame 0
-of every block and replace semantics, the fork needs nothing from the
+until their (also forked) sources send. With a fresh lane sending at its
+first frame and replace semantics, the fork needs nothing from the
 audio thread, which is why `ParamTap` and the fork seeds go in PR 5 (§10).
+**As landed (PR 2b):** a fresh lane has nothing in flight, so it sends on
+its first frame (the lane never re-sends at a block edge, §5.2); the fork
+reads its value at frame 0 that way. A live lane re-wired to another
+target is not fresh, and sends nothing until something moves: its owner
+calls `LaneControls::resync()` (§5.2 step 5). **For PR 4:** `fork_fresh`
+gives a native lane's knob a fresh cell, a copy of the live `Param` cell's
+value at the gather, so the fork's knob is not the forked node's own
+`Param` cell; a reconcile that writes a fork's knob writes it through the
+fork lane's `LaneControls`, not the node's `ParamSet`.
 
 ## 6. Signal-driven sources
 
@@ -746,6 +796,31 @@ implementation here. Requirements 1–5 are PR 1's; 6 lands with PR 2.
    carries, not the parameter count. Past a queue's room (more corners than
    `C` in one chunk), or past the pool, surplus grid points are dropped
    before corners, and every drop is counted in the delivery statistics.
+   **When the pool is spent.** The room is logical and per queue; the
+   storage behind it is shared: every queue owns a floor of
+   `FLOOR_POINTS` (2) points (and one kept for the bridge's carried value),
+   and a queue past its floor borrows one of the pool's `POOLED_QUEUES`
+   (256) blocks (`ParameterChanges::make_room`). With every block lent, a
+   queue past its floor keeps its floor, and the same rule applies within
+   it: a grid point offered to it is dropped, a corner evicts its earliest
+   grid point (both counted in `ParamDeliveryStats::grid_points_dropped`),
+   and once it holds only corners a corner takes the latest point's place,
+   the one full-queue policy (`PointBuf::replace_latest`), counted in
+   `points_merged`. A parameter's last point in a chunk is a corner (the
+   chunk's last frame, an arrival, a ramp, or a segment starting on the
+   last frame, which `SegmentPoints` sends as a corner even on a grid
+   frame), so every parameter still ends the chunk on its latest value.
+   The plugin node keeps a grid mark a point (`GridBits`), laid out as the
+   points are: a word for each queue's floor and its span (16 bytes a
+   queue) and a block's worth for each pool block, 2064 × 16 + 256 × 7 × 8
+   bytes = 47.4 KB at 2064 queues and a 4096-frame chunk. A buffer of
+   another room never reaches it: the bridge's pool drops one whose queues
+   or point room differ from its reservation (`PayloadPool::return_params`).
+   **As landed (PR 2b):** a point is a grid point by its frame alone (its
+   play count a multiple of 32, `param_input::take`), so a lane corner
+   that lands on a grid frame is dropped as a grid point. It loses nothing
+   a grid point would not: the lane's piece starting there carries the
+   same value. A ramp is always a corner.
 
 **Point storage (the arena follow-up, landed).** A queue's logical room
 (`ParameterQueue::chunk_room`, requirement 6) is decoupled from its storage,
@@ -849,8 +924,8 @@ sized at its activation) and an AU change; a VST3 `kParamTitlesChanged`
 without a reload keeps the instance's activation-time output and emitted
 queue counts, so the instance drops (and counts) points past them first.
 
-Per instance, at today's `chunk_room` (20 points at a 512-frame chunk, 132
-at 4096). The figures are point storage and queue headers (a queue 32
+Per instance, at requirement 6's `chunk_room` (273 points at a 512-frame
+chunk, 385 at 4096; PR 2b raised it from 20 and 132). The figures are point storage and queue headers (a queue 32
 bytes, a point 16, a spare slot 32): a set is
 `queues × 112 + 256 × 16 × (room + 1)` (112 = the queue, its spare slot and
 its 3-point floor). The IPC node holds `PARAM_BUFFERS + 1` sets with
@@ -865,14 +940,31 @@ and a byte a queue) are left out.
 
 | Site | 2000 @ 512 | 2000 @ 4096 | 16k @ 512 | 16k @ 4096 |
 |---|---|---|---|---|
-| IPC node: `PARAM_BUFFERS` + 1 sets | 2.85 MB | 6.98 MB | 17.35 MB | 21.48 MB |
-| CLAP input event list | 0.82 MB | 2.88 MB | 3.93 MB | 5.99 MB |
-| CLAP output list and queues | 1.04 MB | 3.33 MB | 5.41 MB | 7.70 MB |
-| VST3 input points | 0.19 MB | 0.64 MB | 0.88 MB | 1.33 MB |
-| VST3 `IMidiMapping` route (while mapped) | 0.32 MB | 0.78 MB | 1.93 MB | 2.39 MB |
-| plugin-server output (`ProcessOutput`) | 0.31 MB | 0.77 MB | 1.92 MB | 2.38 MB |
+| IPC node: `PARAM_BUFFERS` + 1 sets | 12.18 MB | 16.31 MB | 26.68 MB | 30.81 MB |
+| CLAP input event list | 5.48 MB | 7.55 MB | 8.59 MB | 10.65 MB |
+| CLAP output list and queues | 6.22 MB | 8.51 MB | 10.59 MB | 12.89 MB |
+| VST3 input points | 1.22 MB | 1.68 MB | 1.91 MB | 2.37 MB |
+| VST3 `IMidiMapping` route (while mapped) | 1.35 MB | 1.81 MB | 2.96 MB | 3.42 MB |
+| plugin-server output (`ProcessOutput`) | 1.35 MB | 1.81 MB | 2.96 MB | 3.42 MB |
 
-Every set has the one layout. The cost of that over a plain layout (a
+Only the pool term (`256 × 16 × (room + 1)` bytes a set: 1.12 MB at 512
+frames, 1.58 MB at 4096) grew with the room; the floor and headers did not.
+At the room before PR 2b (20 and 132) the rows were: the IPC node 2.85,
+6.98, 17.35 and 21.48 MB; the CLAP input list 0.82, 2.88, 3.93 and
+5.99 MB; the CLAP output 1.04, 3.33, 5.41 and 7.70 MB; the VST3 input
+0.19, 0.64, 0.88 and 1.33 MB; the route 0.32, 0.78, 1.93 and 2.39 MB; the
+server's output 0.31, 0.77, 1.92 and 2.38 MB. So a CLAP plugin of 2000
+parameters (the node's buffers, its host's lists and the plugin-server's
+output) costs about 25.2 MB at 512 frames and 34.2 MB at 4096 (5.0 MB and
+14.0 MB before PR 2b), a VST3 plugin (the node's buffers, the input points
+and the server's output; the route only while mapped) about 14.8 MB and
+19.8 MB (3.35 MB and 8.4 MB). The totals first given here, 23.9 / 32.4 MB
+for CLAP and 13.4 / 18.0 MB for VST3 (and 4.7 / 13.2 and 3.0 / 7.6 before),
+left out the server's output row. With every queue at the raised room, the
+node's buffers and the CLAP lists alone would be about 168 MB and 235 MB.
+
+Every set has the one layout. The figures in the rest of this paragraph
+are at the room before PR 2b. The cost of that over a plain layout (a
 2-point floor and blocks of `room`) on the sets that never carry a value,
 `16 × (queues + 256)` bytes a set: the CLAP output row was 0.86, 3.15,
 4.08 and 6.37 MB (its event room is the same budget, so it pays twice),
@@ -885,9 +977,9 @@ route rows grew by the 64 spare queues they now hold. The IPC row was
 first four were about 43 MB, 19 MB, 21.5 MB and 4.3 MB at 2000
 parameters, and about 340 MB, 157 MB, 172 MB and 35 MB at 16k. The 16k
 figures are mostly the per-parameter headers; the pool term is the same at
-any parameter count. With #96's room of `ceil(chunk/32) + 1 + 256` (385 at
-4096 frames) the pool term grows to about 1.6 MB a set, so the IPC node's
-buffers hold about 16.3 MB at 2000 parameters, against about 235 MB at
+any parameter count. At requirement 6's room the pool term is about
+1.6 MB a set at 4096 frames, so the IPC node's buffers hold about 16.3 MB
+at 2000 parameters (the table above), against about 118 MB at
 `params × room`.
 
 Nor does a queue *count* grow on the audio thread: the VST3 input list's
@@ -913,7 +1005,7 @@ point at its target value on its last frame, as today. Only lane pieces
 
 | Crate | Deleted |
 |---|---|
-| `tutti-graph` | `ParamFrom::Audio`, so **`ParamFrom` collapses to `EventOut`** and `connect_param(at, from: EventOut)` loses its shaping; `ParamShaping`, `ShapeLut`, `SHAPE_LUT_LEN`; `ParamSource`; `MAX_PARAM_SOURCES` and the per-source arrays; `signature`'s source hashing; `GraphInvalid::TooManyParamSources`, `UnsortedParamSources`; `DelayKey::ParamAudio`; the `Σ` of the fused step (`param.rs:11`). **`ParamTap` and its seqlock** (`param.rs:930-1060`) and **the fork seeds** (`PendingFork::seeds`, `fork.rs:207`; `Editor::param_seeds`, `seed_params`, `editor.rs:1539-1633`): a lane re-sends at frame 0 of every block, so a fork's port needs no seed. The one user outside the lane path is a host's hand-wired event source. The requirement after PR 5: **a fresh (forked) instance sends its current value on its first block**; re-sending every block is one simple way to meet it. Two classes need more: (1) **ramp-based sources**: re-sending a `ParamRamp` restarts it, so re-send the in-flight move as `ParamSegment::resumed`, or the held value as a step; (2) **sources driven by live input that cannot be replayed** (MIDI CC or OSC bridges, UI-driven event nodes): a `ForkByClone` fork does not know the held value, so either write the target's `Param` cell (the knob, which a fork reads) instead of an event source, or capture the current value in the node's `ForkSource::gather`. `ParamSet::set_authored`, `authored`. |
+| `tutti-graph` | `ParamFrom::Audio`, so **`ParamFrom` collapses to `EventOut`** and `connect_param(at, from: EventOut)` loses its shaping; `ParamShaping`, `ShapeLut`, `SHAPE_LUT_LEN`; `ParamSource`; `MAX_PARAM_SOURCES` and the per-source arrays; `signature`'s source hashing; `GraphInvalid::TooManyParamSources`, `UnsortedParamSources`; `DelayKey::ParamAudio`; the `Σ` of the fused step (`param.rs:11`). **`ParamTap` and its seqlock** (`param.rs:930-1060`) and **the fork seeds** (`PendingFork::seeds`, `fork.rs:207`; `Editor::param_seeds`, `seed_params`, `editor.rs:1539-1633`): a fresh lane (a fork's) has nothing in flight and sends at its first frame (§5.6, as landed in PR 2b: a lane never re-sends at a block edge), so a fork's port needs no seed. The one user outside the lane path is a host's hand-wired event source. The requirement after PR 5: **a fresh (forked) instance sends its current value on its first block**; the lane meets it by sending whenever nothing is in flight. Two classes need more: (1) **ramp-based sources**: re-sending a `ParamRamp` restarts it, so re-send the in-flight move as `ParamSegment::resumed`, or the held value as a step; (2) **sources driven by live input that cannot be replayed** (MIDI CC or OSC bridges, UI-driven event nodes): a `ForkByClone` fork does not know the held value, so either write the target's `Param` cell (the knob, which a fork reads) instead of an event source, or capture the current value in the node's `ForkSource::gather`. `ParamSet::set_authored`, `authored`. |
 | `tutti-mod` | The `routing` feature and its items: `AtomicTarget`, `LayeredCurve`, `ModBus`, `ModRouter`, `ModEdge`, `ModRoutingSnapshot`, `ModRoutingTable`, `ModPreFrame`, `ErasedModulator`, `Sourced`, `SourceRate`, `Rate`, `SourceClock`, `ModParams`, `ModMatrix`, `Route`, `RouteTo`, `TargetHandle`, `ShapedCurve`, `EdgeShape`, `CurveModulator`, `BeatLfo`. Also the ungated `ModTarget`, `LayerKey`, `ModTargetId` and `fold`; the `std` feature; the `bevy` feature's implied `routing`. The README and the lib doctest are rewritten for the compiler. |
 | `tutti-nodes` | `ParamModShaping`; the re-exports at `lib.rs:93-95`; `AutomationLaneNode::for_param`/`for_foreign` (now `ControlLaneNode`'s). `AutomationLaneNode::new` (the audio lane) stays. |
 | `tutti-polysynth` | The `ModParams` impl's `AtomicTarget::with_mirror` (`polysynth.rs:1221`); its params are reached through `ParamSet` |
@@ -979,6 +1071,20 @@ parameter events), so its per-queue point room is mostly wasted: about
 400 KB per node at 200 parameters and a 4096-frame block; one point per
 queue would do there.
 
+**PR 2b raised the room, and the pool absorbs it (landed together).**
+Requirement 6 moves the room from `ceil(chunk / 32) + 4` to
+`ceil(chunk / 32) + 1 + 256`, and every reservation uses that one formula
+(`ParameterQueue::chunk_room`): 132 points to 385 at a 4096-frame chunk,
+20 to 273 at 512. Reserved per queue, as PR 1 did, that would have been
+about 235 MB per CLAP instance of 2000 parameters at 4096 frames and
+168 MB at 512 (about 940 MB in the node's buffers alone at 16k). PR 2b
+landed on the shared pool instead, so only the pool's blocks grow with the
+room: per instance at 2000 parameters a CLAP plugin holds about 34.2 MB at
+4096 frames and 25.2 MB at 512, a VST3 plugin about 19.8 MB and 14.8 MB,
+the plugin-server's output included
+(§9's table has every site). The 256 corners a queue may take are now a
+block's, lent only to a queue that moves.
+
 ### PR 2: the control lane node
 
 **Split in two (coordinator's decision).** **PR 2a, the floor: landed**
@@ -995,6 +1101,72 @@ production path wires an event source into a param port (`bevy-tutti`'s
 breaks no live feature. **PR 2b** is the rest of the scope below:
 `ControlProgram`, the lane, the signal sources, `SegmentPoints`, the
 automation constructors and the campaign tests.
+
+**PR 2b: landed** (branch `claude/control-lane-node`), but for the signal
+sources:
+
+- `tutti_mod::ControlProgram` (§4.1) with layers, input layers, rate
+  anchors, `value_at` / `value_before` and `next_corner`; `Curve` and
+  `CurveSegment` are ungated (no `routing` feature needed).
+- `tutti_nodes::automation::ControlLaneNode` and `LaneControls` (§5),
+  `CONTROL_STEP` = 32 and `LANE_EVENT_CAPACITY` = 256: the grid of the
+  play clock, every corner, exact mode for a native target's pure
+  automation, the plugin lane's clamp and split, thinning and truncation
+  (counted), steady holds, the glide, the fork. Constructors:
+  `ControlLaneNode::for_param(key, program, knob, range)` (the knob a
+  node's `Param` cell, the range `Editor::param_range_cell`) and
+  `for_foreign(id, program, knob, (min, max))`.
+  `AutomationLaneNode::for_param` and `for_foreign` return a
+  `ControlLaneNode` of automation alone; `AutomationLaneNode` itself is
+  the audio-output lane only.
+- The plugin side (§9 requirement 6): `ParameterQueue::chunk_room` is
+  `ceil(chunk / 32) + 1 + 256` (`CORNER_POINTS`), on the input side and
+  #92's output side alike, as each queue's logical room over the shared
+  point pool (§9's point-storage note: a floor of 3 a queue, 256 blocks
+  of `room + 1`). A queue is full at its room, or at its floor with the
+  pool spent; a full queue drops a grid point offered to it and a corner
+  evicts the queue's earliest grid point, both counted in
+  `ParamDeliveryStats::grid_points_dropped`, and only a queue of corners
+  keeps its latest value in its latest point's place (`points_merged`).
+  The node writes through `ParameterChanges::make_room` and `push_point`,
+  and marks its grid points in `GridBits`, laid out as the points are. A
+  segment starting on a chunk's last frame is a corner. The VST3 host's
+  `IMidiMapping` merge and input refill sort a queue with
+  `PointBuf::sort_by_offset` (stable, in place, allocation-free): std's
+  stable sort allocates past 256 points, under the raised room. A point is a grid point when its frame's play count is a
+  multiple of 32 (`param_input::take`, through `Cx::play_at`).
+  `SegmentPoints` sends a segment's start, its value on each play-grid
+  frame in flight (a grid point), each chunk's last frame and its arrival,
+  never the chunk-relative stride points. A lane's pieces run grid frame
+  to grid frame, so they have no grid frame inside; a segment scheduled by
+  hand is held at most 32 frames.
+- Changed tests, each marked "Changed in doc 014 PR 2b" in place:
+  `clap_process_no_alloc.rs` (#92's room, refusal and flood figures follow
+  the new `chunk_room` in the one layout: 274 a queue with the set's one
+  more, 4384 for the output list; the flood is 2200 points a parameter,
+  8250 lost a block, so two parameters stay wholly past the room, as in
+  #92); `tutti-clap-host`'s `pooled_chunk` test helper (a point a frame,
+  so a 273-point room fits a 512-frame block);
+  `segment_points.rs`' `a_segment_sends_points_until_it_lands` (the play
+  grid replaces `stride_for(64)`); and `clap_automation.rs`' `follows`,
+  whose upper bound for a lane is the curve at the next grid frame, not at
+  the frame: a lane's chunk-edge point is its `Linear` piece's value there,
+  on the chord from `curve(g)` to `curve(g + 32)`, which on a convex
+  rising curve is above `curve(f)` (2.9e-5 relative at frame 255) and, the
+  curve being monotone, never above `curve(g + 32)`.
+- Deviations from the text above, each recorded where it applies: no
+  re-send at a block edge (§5.2 step 5); an unchanged glide is skipped and
+  exact mode jumps on a republish (§4.2); the lane is `Moderate`, measured
+  (§5.3); a fresh lane, a fork's included, sends at its first frame
+  (§5.6).
+- **Not in 2b, left for a follow-up:** `EnvelopeFollowerNode` and
+  `NoteEnvelopeNode` (§6), with their properties below (export == live for
+  a follower and a note envelope; the follower's one-step lag and
+  play-start restart); a sine within the bound for each bounded curve
+  other than `Linear`, and the unbounded curves' measured errors pinned;
+  a curved bipolar layer's zero-crossing points checked at the lane (the
+  program's own tests cover them as corners); and the plugin live ==
+  export points at one chunk size, which is PR 4's test.
 
 **Scope.** `ControlProgram` in `tutti-mod` with `Curve` in the floor;
 `RangeCell` in `tutti-types`; `Env::play: PlayClock`, `Env::play_at`,
@@ -1082,6 +1254,7 @@ Migration: remove knob-to-zero workarounds; sum two event sources in one
 lane or a node. Also: `LANE_EVENT_CAPACITY` 256, `CONTROL_STEP`, `Env::play`.
 
 **Exit.** M8 and M11 closed; the lane measured and declared `Light`.
+**As landed:** measured and declared `Moderate` (§5.3).
 
 ### PR 3: `tutti-mod` as a pure compiler
 

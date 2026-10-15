@@ -50,6 +50,7 @@ use std::sync::Arc;
 use tutti_types::{Beat, BeatDuration, Depth, Phase, PhaseIncrement};
 
 use crate::curve::Curve;
+use crate::program::hash_bipolar;
 use crate::shape::{shape, Polarity};
 use crate::{CurveType, Modulator};
 
@@ -87,24 +88,6 @@ pub trait CurveModulator: Modulator + Send + Sync + 'static {
         let seed = <Self as Modulator>::State::default();
         self.value(seed, Phase::wrapped(cycles)).1
     }
-}
-
-/// Map an integer index to a stable pseudo-random value in `[-1, 1]`
-/// (splitmix64 finalizer).
-///
-/// Addressable rather than sequential: the value for index `n` is computable
-/// without having produced `n-1`. That is the property that lets a stepped
-/// random shape be a [`Curve`] — and it is *stronger* than the threaded
-/// xorshift the scalar path uses, which only ever advances and so cannot replay
-/// a bar identically after a transport seek.
-#[inline]
-pub fn hash_bipolar(n: i64) -> f32 {
-    let mut z = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^= z >> 31;
-    // Top 24 bits → [0, 1) → [-1, 1].
-    ((z >> 40) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
 }
 
 /// How an edge shapes a raw modulator value into an offset.

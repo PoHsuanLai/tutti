@@ -239,9 +239,16 @@ pub(crate) fn route_cc_events(
 /// a jump up reads as a jump down. An unstable sort is free to swap equal
 /// keys, so it silently corrupts exactly the case the two-point form exists
 /// to express, and only when both sources land on the same frame.
+///
+/// It must also **not allocate**: it runs on the audio thread, and std's
+/// stable `sort_by_key` allocates a scratch buffer past 256 points, which a
+/// queue at a chunk's room (`ParameterQueue::chunk_room`, 273 at 512 frames)
+/// exceeds. `PointBuf::sort_by_offset` is a stable insertion sort in place:
+/// linear on a queue already in order (every queue with one source), and
+/// cheap on the few CC points appended out of place.
 pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
     for queue in params.queues.iter_mut() {
-        queue.points.sort_by_key(|point| point.sample_offset);
+        queue.points.sort_by_offset();
     }
 }
 
@@ -1033,6 +1040,77 @@ mod tests {
         assert_eq!(ends(&[cc(150, 127)]), Some((400, 0.75)));
         assert_eq!(ends(&[cc(450, 127)]), Some((450, 1.0)));
         assert_eq!(route.points_overflowed(), 2);
+    }
+
+    /// **The merge sorts a queue at a chunk's full room without
+    /// allocating, stably.** One parameter at a 4096-frame block's carried
+    /// room (`chunk_room(4096) + 1` = 386 points): the host's chunk fills
+    /// all but eight with points every 8 frames, and eight mapped CCs land
+    /// on frames among them (four on a host point's frame), so the merged
+    /// queue is out of order and must be sorted, inside the no-alloc gate.
+    /// The result is in time order, holds every point, and a CC that shares
+    /// a frame with a host point comes after it (the host's points are
+    /// seeded first).
+    ///
+    /// Mutation (run): `sort_param_points` back to `queue.points
+    /// .sort_by_key(|point| point.sample_offset)` → std's stable sort
+    /// allocates its scratch for 386 points → the gate aborts. (Before the
+    /// raised room this could not be seen: a queue held at most 133 points,
+    /// under std's 256-point stack buffer.)
+    #[test]
+    fn the_merge_sorts_a_full_room_queue_without_allocating() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        const MAPPED: u32 = 7;
+        const CCS: usize = 8;
+        let room = tutti_plugin_types::ParameterQueue::chunk_room(4096);
+        let full = room + 1;
+        assert_eq!(full, 386);
+        let mut host = ParameterChanges::reserved(1, room);
+        for k in 0..full - CCS {
+            assert!(host.add_change(ParamAddress::Opaque(MAPPED.into()), 8 * k as i32, 0.25));
+        }
+        let cc = |frame: u32, value: u8| {
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(value),
+            )
+            .with_frame_offset(frame)
+        };
+        // On host frames (multiples of 8) and between them.
+        let events: Vec<MidiEvent> = (0..CCS as u32)
+            .map(|k| cc(100 * k + if k % 2 == 0 { 0 } else { 3 }, 127))
+            .collect();
+        let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);
+        let sorted = assert_no_alloc::assert_no_alloc(|| {
+            let (_, params) = route.route(&events, Some(&host)).expect("mapped");
+            let q = params
+                .get_queue(ParamAddress::Opaque(MAPPED.into()))
+                .expect("queued");
+            q.points
+                .iter()
+                .map(|p| (p.sample_offset, p.value.get()))
+                .fold((0usize, true, i32::MIN), |(n, ok, last), (o, _)| {
+                    (n + 1, ok && last <= o, o)
+                })
+        });
+        assert_eq!(sorted, (full, true, 8 * (full - CCS - 1) as i32));
+        assert_eq!(route.points_overflowed(), 0);
+        let (_, params) = route.route(&events, Some(&host)).expect("mapped");
+        let q = params
+            .get_queue(ParamAddress::Opaque(MAPPED.into()))
+            .expect("queued");
+        // A shared frame: the host's point, then the CC's.
+        for k in (0..CCS as i32).step_by(2) {
+            let at: Vec<f64> = q
+                .points
+                .iter()
+                .filter(|p| p.sample_offset == 100 * k)
+                .map(|p| p.value.get())
+                .collect();
+            assert_eq!(at, [0.25, 1.0], "frame {}", 100 * k);
+        }
     }
 
     /// RT regression: once the scratch buffers are warmed, repeated routing

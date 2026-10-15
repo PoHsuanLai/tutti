@@ -1,6 +1,7 @@
-//! `AutomationLaneNode`'s event output: a curve sent to a param port as
-//! curve-segment events (doc 013, decision 7), rendered by the port per
-//! frame.
+//! `AutomationLaneNode::for_param`'s lane (a `ControlLaneNode` of
+//! automation alone, in exact mode): a curve sent to a param port as
+//! curve-segment events (doc 013, decision 7; doc 014 §5.4), rendered by the
+//! port per frame.
 //!
 //! What is pinned, each with the mutation it was seen to fail under:
 //!
@@ -10,7 +11,7 @@
 //! - a loop wrap, a seek and a tempo change inside a block, and a stop,
 //!   keep the port on the curve;
 //! - a piece no segment shape carries goes as linear pieces exact at every
-//!   block edge.
+//!   grid point of the play clock (doc 014 §5.4), whatever the blocks.
 //!
 //! The figures are `audio-automation`'s own `value_at` at each frame's beat,
 //! within a tolerance (the curve's `powf`, `sqrt` and the port's `f32`
@@ -24,7 +25,7 @@ use tutti_graph::{
     Shape, Status, Transport, TransportChanges, Unforkable,
 };
 use tutti_mod::Curve;
-use tutti_nodes::automation::AutomationLaneNode;
+use tutti_nodes::automation::{AutomationLaneNode, ControlLaneNode, CONTROL_STEP};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
     Beat, Bpm, ChannelLayout, FrameClock, Hz, LoopRange, NodeKey, ParamKey, SampleRate, Samples,
@@ -63,7 +64,7 @@ impl Node for Probe {
 }
 
 /// A lane sending `curve` to the probe's cutoff.
-fn graph(lane: AutomationLaneNode) -> (Editor, Executor) {
+fn graph(lane: ControlLaneNode) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(MAX)));
     ed.insert(NodeKey(1), "lane", lane);
     ed.insert(NodeKey(2), "probe", Unforkable(Probe));
@@ -118,7 +119,7 @@ fn ragged(total: usize) -> Vec<usize> {
 /// frame's beat. Returns the rendered values.
 fn check_rolling(
     curve: &AutomationEnvelope<()>,
-    lane: AutomationLaneNode,
+    lane: ControlLaneNode,
     blocks: &[usize],
     looping: Option<LoopRange>,
 ) -> Vec<f32> {
@@ -261,51 +262,72 @@ fn wraps_seeks_and_tempo_changes_stay_on_the_curve() {
     }
 }
 
+/// Renders `curve`'s lane rolling from beat 0 over `blocks` and checks it
+/// against the grid: the curve's value on every frame whose play count (the
+/// executor's frame count: it starts at 0 and the transport rolls from its
+/// first block) is a multiple of `CONTROL_STEP`, and a line between two
+/// such frames. Returns the rendered values.
+fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f32) -> Vec<f32> {
+    let (mut ed, mut exec) = graph(lane);
+    let mut clock = FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE));
+    let mut out = Vec::new();
+    for &n in blocks {
+        let t = Transport::counted(true, TEMPO, clock.origin(), None);
+        out.extend(block(&mut ed, &mut exec, &t, &TransportChanges::NONE, n));
+        clock.advance(Samples(n), None);
+    }
+    let step = CONTROL_STEP as usize;
+    let at = |f: usize| {
+        let mut c = FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE));
+        c.advance(Samples(f), None);
+        curve.value_at(c.beat()).expect("a value")
+    };
+    for (f, &v) in out.iter().enumerate() {
+        let g = f - f % step;
+        let (v0, v1) = (at(g), at(g + step));
+        let want = v0 + (v1 - v0) * ((f - g) as f32 / step as f32);
+        assert!((v - want).abs() <= tol, "frame {f}: {v} vs {want}");
+    }
+    out
+}
+
 /// A piece whose shape no segment carries (`Elastic` overshoots) goes as
-/// linear pieces between the curve's values at every block edge: exact on
-/// each block's first and last frame, and a line between them.
+/// linear pieces on the play-clock grid: exact on every grid frame, a line
+/// between, and the same frames whatever the blocks.
+///
+/// Changed in doc 014 PR 2b: this sampled the curve at block edges, which
+/// moved with block size (doc 014 §5.4); it is the grid now, and the two
+/// block schedules render the same bits.
 ///
 /// Mutations (run), each fails: the fallback sending nothing (the port
-/// holds its last value); the fallback's line ending one frame early
-/// (`e - i` as its length less one).
+/// holds its last value); the grid on block edges (`grid` measured from the
+/// block's first frame rather than the play count) → the two schedules
+/// differ and frames miss the line.
 #[test]
-fn an_unrepresentable_piece_is_linear_between_block_edges() {
+fn an_unrepresentable_piece_is_linear_on_the_grid() {
     let mut curve = AutomationEnvelope::new(());
     curve.add_point(AutomationPoint::with_curve(0.0, 0.0, CurveType::Elastic));
     curve.add_point(AutomationPoint::new(0.2, 1.0));
-    let (mut ed, mut exec) = graph(AutomationLaneNode::for_param(
-        curve.clone(),
-        ParamKey::<Hz>::CUTOFF,
-    ));
-    let mut clock = FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE));
-    for &n in &ragged((0.15 * frames_per_beat()) as usize) {
-        let t = Transport::counted(true, TEMPO, clock.origin(), None);
-        let out = block(&mut ed, &mut exec, &t, &TransportChanges::NONE, n);
-        let at = |i: usize| {
-            let mut c = clock;
-            c.advance(Samples(i), None);
-            curve.value_at(c.beat()).expect("a value")
-        };
-        let (v0, v1) = (at(0), at(n - 1));
-        for (i, &v) in out.iter().enumerate() {
-            let want = if n == 1 {
-                v0
-            } else {
-                v0 + (v1 - v0) * (i as f32 / (n - 1) as f32)
-            };
-            assert!((v - want).abs() <= 1e-4, "frame {i} of {n}: {v} vs {want}");
-        }
-        clock.advance(Samples(n), None);
-    }
+    let total = (0.15 * frames_per_beat()) as usize;
+    let lane = || AutomationLaneNode::for_param(curve.clone(), ParamKey::<Hz>::CUTOFF);
+    let a = check_grid(&curve, lane(), &ragged(total), 1e-4);
+    let b = check_grid(&curve, lane(), &vec![MAX; total.div_ceil(MAX)], 1e-4);
+    assert_eq!(
+        a[..],
+        b[..a.len()],
+        "the grid does not move with the blocks"
+    );
 }
 
 /// A curve that cannot say its pieces (`segment_at` is `None`: here a
-/// sine) takes the same fallback: exact on each block's first and last
-/// frame.
+/// sine) takes the same grid: exact on every grid frame, a line between.
+///
+/// Changed in doc 014 PR 2b: exact on each block's first and last frame
+/// before; on the grid now (doc 014 §5.4).
 ///
 /// Mutation (run): the fallback sending nothing → the port holds 0 → fails.
 #[test]
-fn a_curve_without_pieces_takes_the_fallback() {
+fn a_curve_without_pieces_takes_the_grid() {
     struct Sine;
     impl Curve for Sine {
         fn value_at(&self, beat: Beat) -> Option<f32> {
@@ -313,16 +335,11 @@ fn a_curve_without_pieces_takes_the_fallback() {
         }
     }
     let curve: Arc<dyn Curve> = Arc::new(Sine);
-    let (mut ed, mut exec) = graph(AutomationLaneNode::for_param(Sine, ParamKey::<Hz>::CUTOFF));
-    let mut clock = FrameClock::new(Beat(0.0), TEMPO, SampleRate(RATE));
-    for _ in 0..20 {
-        let t = Transport::counted(true, TEMPO, clock.origin(), None);
-        let out = block(&mut ed, &mut exec, &t, &TransportChanges::NONE, 64);
-        let want = curve.value_at(clock.beat()).expect("a value");
-        assert!((out[0] - want).abs() <= 1e-5, "{} vs {want}", out[0]);
-        clock.advance(Samples(63), None);
-        let want = curve.value_at(clock.beat()).expect("a value");
-        assert!((out[63] - want).abs() <= 1e-5, "{} vs {want}", out[63]);
-        clock.advance(Samples(1), None);
-    }
+    let out = check_grid(
+        &*curve,
+        AutomationLaneNode::for_param(Sine, ParamKey::<Hz>::CUTOFF),
+        &[64; 20],
+        1e-5,
+    );
+    assert_eq!(out.len(), 64 * 20);
 }

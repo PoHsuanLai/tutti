@@ -677,10 +677,10 @@ const OUTPUT_QUEUES: u32 = 16;
 
 /// **A burst of plugin parameter output, within the room reserved at
 /// activation, neither allocates nor frees.** Sixteen parameters with twelve
-/// points each, every block: more than `ParameterQueue::MIN_POINTS`, the
-/// least room a queue is reserved with, and a queue built per block would
+/// points each, every block: more than a floor queue's own storage
+/// (`ParameterChanges::FLOOR_POINTS` + 1), so a queue built per block would
 /// allocate, and one dropped per block would free. The host groups them into the queues it reserved at activation
-/// (16, each with `ParameterQueue::chunk_room(512)` + 1 = 21 points), takes each
+/// (16, each with `ParameterQueue::chunk_room(512)` + 1 = 274 points), takes each
 /// back with `open_queue` and returns it with `clear`. The gate covers many
 /// blocks, so the second and later reuse the queues the first returned.
 ///
@@ -711,7 +711,7 @@ fn param_output_burst_does_not_allocate() {
     // Within the room: 192 events fit the output event list's reservation,
     // and 12 points fit a queue's.
     assert!(POINTS as usize <= tutti_plugin_types::ParameterQueue::chunk_room(MAX_FRAMES as usize));
-    assert!(POINTS as usize > tutti_plugin_types::ParameterQueue::MIN_POINTS);
+    assert!(POINTS as usize > tutti_plugin_types::ParameterChanges::FLOOR_POINTS + 1);
     set_param_output(OUTPUT_QUEUES, POINTS);
 
     assert_no_alloc::assert_no_alloc(|| {
@@ -737,22 +737,26 @@ fn param_output_burst_does_not_allocate() {
 
 /// **Plugin parameter output past the reserved room is counted, not grown
 /// into.** Two bursts, each inside the gate and each within the output event
-/// list's own `PARAM_VALUE` room (16 queues × 21 points = 336 events), so
+/// list's own `PARAM_VALUE` room (16 queues × 274 points = 4384 events), so
 /// only the queues are under test:
 ///
 /// - seventeen parameters with twelve points each: one more parameter than
 ///   the sixteen queues reserved. The first sixteen are kept whole; the last
 ///   one's twelve points are lost, and counted.
-/// - four parameters with thirty points each: nine more than a queue's room
-///   (`chunk_room(512)` = 20, and the one more every set keeps). Each queue
-///   keeps 21 points and ends on its parameter's latest value (each point
-///   past the room replaced the last one); 4 × 9 points a block are counted.
-///   (Reworded with the one layout: a queue kept 20.)
+/// - four parameters with 283 points each: ten more than a queue's room
+///   (`chunk_room(512)` = 273, and the one more every set keeps). Each
+///   queue keeps 274 points and ends on its parameter's latest value (each
+///   point past the room replaced the last one); 4 × 9 points a block are
+///   counted. (Reworded with the one layout: a queue kept its room, 273.)
+///
+/// Changed in doc 014 PR 2b: the room per queue is `ceil(512 / 32) + 1 +
+/// 256` = 273 (it was 20; with the carried slot 274, it was 21), so the second burst is 283 points a parameter
+/// (it was 30); the property is the same.
 ///
 /// Mutation (run): `fill_param_changes` pushing without the `has_room`
 /// check → aborts in the second burst (a queue's points grow). Mutation
 /// (run): the overflow dropping the point instead of replacing the last one
-/// → each queue ends on point 20's value, not point 29's, and the value
+/// → each queue ends on point 273's value, not point 282's, and the value
 /// assertion fails. Mutation (run): `open_queue`'s refusal not counted → the
 /// first burst's count is 0, not 12 a block.
 #[test]
@@ -768,7 +772,7 @@ fn param_output_past_the_room_is_counted_not_grown() {
     };
     drive(&mut inst, &mut bufs, 32, &ctx).expect("warm-up blocks should succeed");
     let room = tutti_plugin_types::ParameterQueue::chunk_room(MAX_FRAMES as usize);
-    assert_eq!(room, 20, "the burst sizes below assume a 512-frame room");
+    assert_eq!(room, 273, "the burst sizes below assume a 512-frame room");
 
     // One parameter too many.
     const BLOCKS: u64 = 16;
@@ -787,8 +791,10 @@ fn param_output_past_the_room_is_counted_not_grown() {
     let after_first = inst.output_param_points_dropped();
     assert_eq!(after_first, (BLOCKS + 1) * 12);
 
-    // Nine points too many for each of four parameters.
-    set_param_output(4, 30);
+    // Ten points past the room (nine past a queue's storage) for each of
+    // four parameters.
+    let burst = room as u32 + 10;
+    set_param_output(4, burst);
     assert_no_alloc::assert_no_alloc(|| {
         drive(&mut inst, &mut bufs, BLOCKS as usize, &ctx).expect("process");
     });
@@ -802,7 +808,7 @@ fn param_output_past_the_room_is_counted_not_grown() {
         assert_eq!(points, room + 1, "a queue fills to its room and no further");
         assert_eq!(
             last,
-            29.0 / 30.0,
+            f64::from(burst - 1) / f64::from(burst),
             "a full queue ends on its parameter's latest value"
         );
     }
@@ -811,13 +817,17 @@ fn param_output_past_the_room_is_counted_not_grown() {
 /// **A plugin pushing more output events than the host reserved is refused,
 /// not grown into.** The host reserves its output event list at activation
 /// with room for every parameter's points (16 queues × `chunk_room(512)` +
-/// 1 = 21: 336 parameter events, `ParameterChanges::point_budget`), and 256
-/// more for everything else. A plugin pushing 40 parameters × 20 points =
-/// 800 parameter events a block, for ids that are not its own (so none has
-/// a latest-value slot), is told `false` for the last 464 of them each
-/// block, and the host counts each refusal
+/// 1 = 274: 4384 parameter events, `ParameterChanges::point_budget`), and
+/// 256 more for everything else. A plugin pushing 40 parameters × 120
+/// points = 4800 parameter events a block, for ids that are not its own (so
+/// none has a latest-value slot), is told `false` for the last 416 of them
+/// each block, and the host counts each refusal
 /// (`ClapActive::output_events_refused`) instead of growing its list in the
 /// plugin's `try_push` on the audio thread.
+///
+/// Changed in doc 014 PR 2b: the parameter room is 4384 (it was 336), so
+/// the plugin pushes 120 points a parameter (it was 20); the property is
+/// the same.
 ///
 /// Mutation (run): `output_events_try_push` without the parameter room check
 /// → aborts (the list grows past its reservation inside the gate). Mutation (run):
@@ -839,11 +849,11 @@ fn output_events_past_the_room_are_refused_not_grown() {
         OUTPUT_QUEUES as usize,
         tutti_plugin_types::ParameterQueue::chunk_room(MAX_FRAMES as usize),
     ) as u64;
-    assert_eq!(room, 336, "the parameter room");
+    assert_eq!(room, 4384, "the parameter room");
     assert_eq!(inst.output_events_refused(), 0);
 
     const PARAMS: u32 = 40;
-    const POINTS: u32 = 20;
+    const POINTS: u32 = 120;
     const BLOCKS: u64 = 16;
     set_param_output(PARAMS, POINTS);
     assert_no_alloc::assert_no_alloc(|| {
@@ -861,30 +871,40 @@ fn set_param_output_own(points: u32) {
 }
 
 /// **A parameter flood neither refuses a note-off nor loses a parameter's
-/// final value.** The plugin floods its own four parameters with 200 points
-/// each, every block (800 parameter events against a parameter room of 336),
+/// final value.** The plugin floods its own four parameters with 2200 points
+/// each, every block (8800 parameter events against a parameter room of
+/// 4384),
 /// and echoes a note-on and a note-off after the flood (the probe's note
 /// mode). Under one shared room the note events came after the room was full
 /// and were refused: a stuck note, since plugins rarely check `try_push`.
 /// With separate rooms the note-off arrives every block, inside the gate,
-/// and nothing is refused. The 464 parameter values past the room are
+/// and nothing is refused. The 4416 parameter values past the room are
 /// coalesced into a latest-value table, so every parameter still ends the
-/// block on its last value, 199/200; the points that cost is counted.
+/// block on its last value, 2199/2200; the points that cost is counted.
+/// Parameters 2 and 3 are wholly past the room: they exist only in the
+/// table, which must open their queues.
 ///
-/// Points lost a block: the list holds parameter 0's 200 points and 136 of
-/// parameter 1's, which their 21-point queues reduce by 179 and 115; the
-/// table keeps one value per parameter for the other 64 + 200 + 200 (461
-/// overwritten), and parameter 1's latest replaces its queue's last point
-/// (1 more). 756. (Reworded with the one layout: 20-point queues and a
-/// room of 320 lost 758.)
+/// Points lost a block: the list holds parameter 0's 2200 points and 2184
+/// of parameter 1's, which their 274-point queues reduce by 1926 and 1910;
+/// the table keeps one value per parameter for the other 16 + 2200 + 2200
+/// (15 + 2199 + 2199 overwritten), and parameter 1's latest replaces its
+/// queue's last point (1 more). 8250.
+///
+/// Changed in doc 014 PR 2b: the parameter room is 4384 and a queue's 274
+/// (they were 336 and 21), so the flood is 2200 points a parameter (it was
+/// 200) and the count 8250 a block (it was 756): as before, two parameters
+/// are table-only.
 ///
 /// Mutation (run): one shared room for every event (`try_push` refusing any
 /// push once the list holds `room + param_room`) → the note-off is refused
 /// and the note-off assertion fails. Mutation (run): no latest-value table
-/// (`coalesce_param` refusing every push) → the 464 values past the room
+/// (`coalesce_param` refusing every push) → the 4416 values past the room
 /// are refused (parameters 2 and 3 would end with no queue) and the refusal
 /// assertion fails. Mutation (run): the parameter room check removed → the
-/// flood grows the list inside the gate and aborts.
+/// flood grows the list inside the gate and aborts. Mutation (run, the PR
+/// 2b review's): the table never opening a queue (`None if ix < nl &&
+/// out.open_queue(addr)` in `fill_param_changes`) → parameters 2 and 3
+/// have no queue → fails.
 #[test]
 fn a_param_flood_keeps_note_offs_and_final_values() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -911,7 +931,7 @@ fn a_param_flood_keeps_note_offs_and_final_values() {
     );
     let before = inst.output_param_points_dropped();
 
-    const POINTS: u32 = 200;
+    const POINTS: u32 = 2200;
     const BLOCKS: u64 = 16;
     set_param_output_own(POINTS);
     assert_no_alloc::assert_no_alloc(|| {
@@ -944,7 +964,7 @@ fn a_param_flood_keeps_note_offs_and_final_values() {
     }
     assert_eq!(
         inst.output_param_points_dropped() - before,
-        (BLOCKS + 1) * 756
+        (BLOCKS + 1) * 8250
     );
 }
 

@@ -42,7 +42,7 @@ pub struct LayerId(pub u64);
 
 /// A signal source's identity on a lane's event input: its events are
 /// addressed `ParamAddr::Id(source.0)` and carry its raw value.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SourceId(pub u32);
 
 /// The clock a layer's phase runs on.

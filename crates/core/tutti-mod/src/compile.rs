@@ -302,6 +302,10 @@ pub struct Compiled {
     /// one LFO stays phase-coherent across its targets, and the next
     /// compile dates its rate edits from it.
     pub clocks: BTreeMap<SourceKey, Clock>,
+    /// The id the next new signal source takes: one past every id this
+    /// lineage of compiles has given, so no id is ever given twice (doc 014
+    /// §7). It wraps after `2^32` sources, skipping the ids still held.
+    pub next_source: SourceId,
 }
 
 /// A clock holds no NaN: `compile` refuses a rate, period or phase that is
@@ -530,33 +534,31 @@ pub fn compile(
         }
     }
 
-    // Signal sources' nodes: `prev`'s ids kept, new ones the lowest free.
-    // An id `prev` held is never given to a new source in this compile,
-    // even if its source is gone: a lane that read the old source still
-    // holds its last segment, and a new node on the same id, routed there
-    // in the same publish, would inherit it. Freed here, reusable next
-    // time; doc 014 §7 states the hazard that remains for PR 3b/4.
+    // Signal sources' nodes: `prev`'s ids kept, a new one the next never
+    // given (`prev.next_source` on). An id is never given twice, so a lane
+    // can never read a removed source's last segment as a new source's,
+    // however many programs it skips (doc 014 §7): a lane that adopts a
+    // program also forgets the inputs it does not read, so a removed
+    // source's slot is free at once.
     let mut nodes = BTreeMap::new();
     let kept = |k: &SourceKey| prev.and_then(|p| p.nodes.get(k)).map(|n| n.id);
-    let mut taken: BTreeSet<SourceId> = prev
-        .map(|p| p.nodes.values().map(|n| n.id).collect())
-        .unwrap_or_default();
     for (&key, source) in &sources {
         if let Some(kind) = signal_kind(source) {
             if let Some(id) = kept(&key) {
-                taken.insert(id);
                 nodes.insert(key, SourceNode { id, kind });
             }
         }
     }
-    let mut next = 0u32;
+    let mut taken: BTreeSet<SourceId> = nodes.values().map(|n| n.id).collect();
+    let mut next = prev.map_or(0, |p| p.next_source.0);
     for (&key, source) in &sources {
         if let Some(kind) = signal_kind(source) {
             if nodes.contains_key(&key) {
                 continue;
             }
+            // Past `u32::MAX` the ids wrap; one still held is skipped.
             while taken.contains(&SourceId(next)) {
-                next += 1;
+                next = next.wrapping_add(1);
             }
             taken.insert(SourceId(next));
             nodes.insert(
@@ -566,6 +568,7 @@ pub fn compile(
                     kind,
                 },
             );
+            next = next.wrapping_add(1);
         }
     }
 
@@ -656,6 +659,7 @@ pub fn compile(
         nodes,
         edges,
         clocks,
+        next_source: SourceId(next),
     })
 }
 

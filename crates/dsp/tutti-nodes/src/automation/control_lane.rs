@@ -831,9 +831,10 @@ impl Block<'_> {
 
     /// Records input `id`'s segment, received on frame `recv`, if the
     /// program reads that source (other events are ignored). Its slot is
-    /// the source's own, else a free one, else one whose source the program
-    /// no longer reads (a republish dropped it): a program reads at most
-    /// [`MAX_LANE_INPUTS`] sources, so a source it reads always finds one.
+    /// the source's own, else a free one: every slot holds a source the
+    /// program reads (`process` frees the rest when it takes a program),
+    /// and a program reads at most [`MAX_LANE_INPUTS`] sources, so a source
+    /// it reads always finds one.
     fn take_input(&self, walk: &mut Walk, id: u32, seg: ParamSegment, recv: Frame) {
         if !self.reads(id) {
             return;
@@ -842,11 +843,7 @@ impl Block<'_> {
             .inputs
             .iter()
             .position(|i| i.is_some_and(|i| i.source == id))
-            .or_else(|| {
-                walk.inputs
-                    .iter()
-                    .position(|i| i.is_none_or(|i| !self.reads(i.source)))
-            });
+            .or_else(|| walk.inputs.iter().position(Option::is_none));
         if let Some(k) = slot {
             walk.inputs[k] = Some(Input {
                 source: id,
@@ -917,6 +914,16 @@ impl Node for ControlLaneNode {
             s.unranged.fetch_add(1, Ordering::Relaxed);
         }
         let range_bits = (range.0.to_bits(), range.1.to_bits());
+        if generation != self.seen.generation {
+            // A new program: forget every input it does not read, so a
+            // source id a later program reuses starts from nothing (doc
+            // 014 §7), never from the segment a removed source left.
+            for slot in &mut self.walk.inputs {
+                if slot.is_some_and(|i| !program.inputs().iter().any(|l| l.source.0 == i.source)) {
+                    *slot = None;
+                }
+            }
+        }
         let changed = generation != self.seen.generation
             || knob.map(f32::to_bits) != self.seen.knob
             || range_bits != self.seen.range;

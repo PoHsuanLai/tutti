@@ -4623,6 +4623,15 @@ under both.
 > (014 §7, §12 "PR 3: landed"). `PlayReading` moved to `tutti-types`
 > (`tutti_graph::PlayReading` re-exports it), so the compiler can date a
 > rate edit's anchor without naming the graph.
+>
+> **Doc 014 PR 3b landed** the signal sources: `EnvelopeFollowerNode`
+> (an audio input's peak over channels, as linear pieces on the play-clock
+> grid, one step late) and `NoteEnvelopeNode` (an ADSR on a MIDI input, as
+> exact linear segments), both plain `tutti_graph::Node`s inserted
+> `ForkByClone`, resetting on the frame `Cx::play_at`'s epoch changes, and
+> built from the compiler's `SourceNode` with `from_decl` (014 §6, §12 "PR
+> 3b"). A lane frees the input slots its new program no longer reads, and
+> the compiler never gives a `SourceId` twice (014 §7).
 
 **What landed.**
 

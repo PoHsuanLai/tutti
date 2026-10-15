@@ -24,6 +24,9 @@
 //!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
 //! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over [`Lfo`],
 //!   [`SampleHold`] and [`Modulator`] (with [`RandomState`]).
+//! - Signal-driven modulation sources (design doc 014 §6), feeding a
+//!   control lane's event input: [`EnvelopeFollowerNode`] and
+//!   [`NoteEnvelopeNode`].
 //! - Mixing: [`ChannelSumNode`], [`DownmixNode`], [`BusStripNode`].
 //! - Param modulation: each node's `*_PARAMS` port list (for example
 //!   [`SVF_PARAMS`]) and [`ParamModShaping`].
@@ -118,6 +121,13 @@ pub use strip::{BusStripNode, STRIP_PARAMS};
 
 mod modulation;
 pub use modulation::{ModDelayConfig, ModDelayNode, PhaserNode};
+
+// The signal-driven sources a `tutti_mod::compile` declaration describes
+// (`SourceNode`): nodes that send a raw value into control lanes.
+mod signal;
+pub use signal::{
+    EnvelopeFollowerNode, NoteEnvelopeNode, FOLLOWER_EVENT_CAPACITY, NOTE_ENVELOPE_EVENT_CAPACITY,
+};
 
 #[cfg(feature = "convolution")]
 mod convolution;

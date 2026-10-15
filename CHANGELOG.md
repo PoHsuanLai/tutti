@@ -93,6 +93,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Signal-driven modulation sources** (design doc 014, PR 3b): an
+  envelope follower and a note envelope, graph nodes that send a raw value
+  in `[0, 1]` into the control lanes reading their `SourceId`, built from
+  the compiler's `SourceNode` descriptions. Both reset on the frame the
+  play clock restarts, so an export from beat X is the live render from
+  beat X, and both are inserted `ForkByClone`. Doc 014 §7's stale-slot
+  hazard is closed: a source id freed by a compile no longer brings a
+  removed source's last value back. **Breaking** only for code that builds
+  `tutti_mod::Compiled` with a struct literal (it has a new field), or that
+  relied on a new source taking the lowest free id.
+
+  | Was | Now |
+  |---|---|
+  | — | `tutti_nodes::EnvelopeFollowerNode::new(source, attack, release, input: ChannelLayout)`: the peak over its input's channels through a one-pole attack/release (in `f64`, so a long time constant decays at its own rate), sent as linear pieces on the play-clock grid (`CONTROL_STEP`), one step late; `Cost::Moderate`, `FOLLOWER_EVENT_CAPACITY` (256) |
+  | — | `tutti_nodes::NoteEnvelopeNode::new(source, adsr)`: an ADSR on one MIDI event input (MIDI 1.0 or 2.0 notes), its stages as exact linear segments at note-on, note-off and each stage boundary; mono, last-note priority, retrigger from the current level; `Cost::Light`, `NOTE_ENVELOPE_EVENT_CAPACITY` (256) |
+  | the host built a signal source's node from `Compiled::nodes` itself | `EnvelopeFollowerNode::from_decl(&SourceNode, ChannelLayout)` and `NoteEnvelopeNode::from_decl(&SourceNode)`, each `None` for the other kind; `source()` on both |
+  | a new signal source took the lowest free `SourceId`, so a later compile could give a removed source's id to a new one | ids are never given twice: `Compiled::next_source` (carried from `prev`) is the next one; after 2^32 the counter wraps, skipping ids still held. Migration: a struct literal of `Compiled` adds `next_source: SourceId::default()` (or carries the previous compile's) |
+  | a control lane kept a removed source's last segment in its input slot until another source needed the slot | a lane frees every input slot its newly adopted program does not read, so a source reading a reused id starts from 0, not the removed source's last value |
+  | — | `tutti_mod::SourceId` derives `Default` (id 0) |
+
 - **`tutti-mod` as a pure compiler** (design doc 014, PR 3): `compile`
   turns declared sources, routes and targets into a `ControlProgram` per
   target, a `SourceNode` per signal-driven source and the event edges

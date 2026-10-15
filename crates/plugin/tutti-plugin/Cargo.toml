@@ -159,7 +159,8 @@ tutti-clap-test-plugin = { path = "../../vendor/tutti-clap-test-plugin" }
 # `kill(pid, 0)`, so `real_plugin_pressure`'s leak check asks about the exact
 # `plugin-server` pids it launched rather than spawning `pgrep` to scan the
 # process table. The Windows half of the same probe uses the `windows` crate
-# this package already depends on.
+# this package already depends on. Also `getrusage(RUSAGE_THREAD)`, for the
+# voluntary context switches its step clock reads on Linux.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
 

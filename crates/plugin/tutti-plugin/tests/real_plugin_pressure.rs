@@ -1,5 +1,5 @@
 //! Pressure test: many real out-of-process plugins, driven at audio-callback
-//! timing, measured against the callback deadline.
+//! timing, some of them stalled, timed per step.
 //!
 //! # What this exists to catch
 //!
@@ -11,6 +11,12 @@
 //! subprocesses**,
 //! which the mock cannot model: real scheduling, real dlopen'd DSP, real
 //! shared-memory traffic, real socket round-trips.
+//!
+//! Only a **stalled** plugin can show a wait. The bridge is pipelined: a block
+//! collects the reply to the block before, which a plugin that keeps up has
+//! already published, so a design that waits for replies pays nothing while
+//! every plugin answers in time. The timing tests here therefore stall probes
+//! on purpose (see `load_stalled`) and assert on the steps that drive them.
 //!
 //! `EFFECTS` names macOS system paths, so on a bare checkout no installed
 //! plugin is found. `load_n` then falls back to the **reference CLAP probe**,
@@ -34,13 +40,17 @@
 //! 1 plugin 23 us median, 2 -> 60 us, 4 -> 135 us, 8 -> 303 us. That is
 //! ~23-38 us *per plugin*, against the 667 us per plugin the synchronous
 //! design could pay. Debug build, so release will be faster; the point is the
-//! order of magnitude, not the absolute number.
+//! order of magnitude, not the absolute number. Block costs and deadline
+//! misses are printed, not asserted: see
+//! `eight_real_plugins_half_stalled_never_wait_for_replies`.
 //!
-//! These figures depend on the plugin subprocess running at realtime priority
-//! (`plugin-server`'s `raise_to_realtime`). Without it the host's callback
-//! thread is realtime — the OS audio backend makes it so — but the subprocess
-//! it is waiting on is not, and the blocks that arrive in time swung between
-//! 29 and 492 of 500 across identical runs. With it: 491-498 of 500.
+//! How many blocks carry audio depends on the plugin subprocess running at
+//! realtime priority (`plugin-server`'s `raise_to_realtime`). Without it the
+//! host's callback thread is realtime — the OS audio backend makes it so — but
+//! the subprocess it is waiting on is not, and the blocks that arrive in time
+//! swung between 29 and 492 of 500 across identical runs. With it: 491-498 of
+//! 500. That figure is printed too, not asserted, so nothing here guards the
+//! call.
 //!
 //! # The timing constraint these tests must respect
 //!
@@ -411,13 +421,166 @@ fn peak(buf: &Planes, channels: usize) -> f32 {
         .fold(0.0f32, f32::max)
 }
 
-/// Drive `units` in series for `blocks` blocks at real callback pacing, and
-/// return the per-block wall time spent *inside* processing (excluding the
-/// pacing sleep).
+/// One plugin's step in one block, as [`StepClock`] measured it.
 #[cfg(any(feature = "clap", feature = "vst3"))]
-fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize) {
-    let mut costs = Vec::with_capacity(blocks);
-    let mut non_silent = 0usize;
+#[cfg_attr(
+    not(feature = "clap"),
+    allow(dead_code, reason = "only the clap-gated timing tests read a step")
+)]
+struct Step {
+    /// Wall time less runqueue time: see [`StepClock`].
+    took: Duration,
+    /// Whether the step gave up its core of its own accord: slept, or
+    /// blocked in the kernel. Always `false` where it cannot be read.
+    blocked: bool,
+}
+
+/// What [`drive_series`] measured: each plugin's step in each block, and
+/// whether each plugin's output carried audio.
+#[cfg(any(feature = "clap", feature = "vst3"))]
+#[cfg_attr(
+    not(feature = "clap"),
+    allow(dead_code, reason = "only the clap-gated timing tests read a run")
+)]
+struct Run {
+    /// Block-major: `steps[b * plugins + p]` is plugin `p`'s step in block `b`.
+    steps: Vec<Step>,
+    /// Block-major, as `steps`: whether that output carried audio.
+    audible: Vec<bool>,
+    plugins: usize,
+    /// From the start of the first block to the end of the last, pacing
+    /// included.
+    wall: Duration,
+}
+
+#[cfg(feature = "clap")]
+impl Run {
+    fn blocks(&self) -> usize {
+        self.steps.len() / self.plugins
+    }
+
+    fn took(&self) -> impl Iterator<Item = Duration> + '_ {
+        self.steps.iter().map(|s| s.took)
+    }
+
+    /// Each block's cost: its steps, summed. Reported only.
+    fn block_costs(&self) -> impl Iterator<Item = Duration> + '_ {
+        self.steps
+            .chunks(self.plugins)
+            .map(|b| b.iter().map(|s| s.took).sum::<Duration>())
+    }
+
+    /// How many blocks plugin `p`'s output carried audio in.
+    fn heard(&self, p: usize) -> usize {
+        self.audible
+            .iter()
+            .skip(p)
+            .step_by(self.plugins)
+            .filter(|&&a| a)
+            .count()
+    }
+}
+
+/// Measures one plugin step two ways, on the thread that runs it.
+///
+/// - **How long it took**, as wall time minus the time this thread spent
+///   runnable but not running: what the step itself cost, including any time
+///   it slept or blocked, but not the time the machine gave its core to
+///   someone else. Read from Linux's per-thread `schedstat` (its second
+///   field, `run_delay`, in ns), which the scheduler updates each time the
+///   thread gets a core, so a read while running counts every wait before
+///   it. What load still adds is the step's own work running slower on a
+///   contended core: 2-3x under the bursty load in [`assert_no_waiting`]'s
+///   notes.
+/// - **Whether it blocked**: whether the thread's voluntary context switches
+///   (`getrusage(RUSAGE_THREAD)`'s `ru_nvcsw`) moved across the step. A
+///   thread switches voluntarily when it sleeps or blocks in the kernel, and
+///   not when it is preempted.
+///
+/// Off Linux, or if either cannot be read, the time is wall time and no step
+/// counts as blocked.
+#[cfg(any(feature = "clap", feature = "vst3"))]
+struct StepClock {
+    #[cfg(target_os = "linux")]
+    schedstat: Option<std::fs::File>,
+}
+
+#[cfg(any(feature = "clap", feature = "vst3"))]
+impl StepClock {
+    /// For the calling thread: [`time`](Self::time) must be called on it too.
+    fn for_this_thread() -> Self {
+        Self {
+            #[cfg(target_os = "linux")]
+            schedstat: std::fs::File::open("/proc/thread-self/schedstat").ok(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_delay(&self) -> Option<Duration> {
+        use std::os::unix::fs::FileExt;
+        let mut buf = [0u8; 96];
+        let n = self.schedstat.as_ref()?.read_at(&mut buf, 0).ok()?;
+        let text = std::str::from_utf8(&buf[..n]).ok()?;
+        let ns: u64 = text.split_whitespace().nth(1)?.parse().ok()?;
+        Some(Duration::from_nanos(ns))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn run_delay(&self) -> Option<Duration> {
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn voluntary_switches() -> Option<i64> {
+        // SAFETY: `rusage` is a plain C struct of integers, for which all-zero
+        // bytes are a valid value.
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        // SAFETY: `getrusage` writes only the struct it is handed, which is
+        // live and exclusively borrowed for the call.
+        let ok = unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut usage) } == 0;
+        ok.then_some(usage.ru_nvcsw)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn voluntary_switches() -> Option<i64> {
+        None
+    }
+
+    /// Run `f` and measure it.
+    fn time(&self, f: impl FnOnce()) -> Step {
+        let switches = Self::voluntary_switches();
+        let start = Instant::now();
+        let before = self.run_delay();
+        f();
+        let after = self.run_delay();
+        let wall = start.elapsed();
+        let took = match (before, after) {
+            (Some(b), Some(a)) => wall.saturating_sub(a.saturating_sub(b)),
+            _ => wall,
+        };
+        let blocked = match (switches, Self::voluntary_switches()) {
+            (Some(b), Some(a)) => a > b,
+            _ => false,
+        };
+        Step { took, blocked }
+    }
+}
+
+/// The median of `samples`: the `n / 2`-th smallest.
+#[cfg(feature = "clap")]
+fn median(samples: impl Iterator<Item = Duration>) -> Duration {
+    let mut sorted: Vec<Duration> = samples.collect();
+    sorted.sort_unstable();
+    sorted[sorted.len() / 2]
+}
+
+/// Drive `units` in series for `blocks` blocks at real callback pacing, and
+/// time each plugin's step *inside* processing (excluding the pacing sleep).
+#[cfg(any(feature = "clap", feature = "vst3"))]
+fn drive_series(units: &mut [GraphUnit], blocks: usize) -> Run {
+    let mut steps = Vec::with_capacity(blocks * units.len());
+    let mut audible = Vec::with_capacity(blocks * units.len());
+    let clock = StepClock::for_this_thread();
 
     let max_ch = units
         .iter()
@@ -427,6 +590,7 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
     let mut input = Planes::new(max_ch);
     let mut output = Planes::new(max_ch);
 
+    let start = Instant::now();
     for block in 0..blocks {
         fill_sine(&mut input, max_ch, block);
 
@@ -442,25 +606,23 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
         // a chain that carries almost nothing while the timing numbers look
         // fine — timing empty work. Same input to each keeps every stage
         // genuinely processing audio, so the costs measured are real.
-        // Only the plugin path is timed: the copies into and out of each
-        // unit's planar buffers, and the editor's collect, are the harness's
-        // and happen outside the region.
+        //
+        // Only the plugin path is timed, one step per plugin, so a descheduling
+        // costs one sample rather than the whole block: the copies into and out
+        // of each unit's planar buffers, and the editor's collect, are the
+        // harness's and happen outside the region.
         for unit in units.iter_mut() {
             unit.stage(BLOCK, &input);
         }
-        let start = Instant::now();
+        let block_start = Instant::now();
         for unit in units.iter_mut() {
-            unit.run(BLOCK);
+            steps.push(clock.time(|| unit.run(BLOCK)));
         }
-        let cost = start.elapsed();
-        costs.push(cost);
+        let cost = block_start.elapsed();
         for unit in units.iter_mut() {
             output.clear();
             unit.read(BLOCK, &mut output);
-        }
-
-        if peak(&output, max_ch) > 0.0 {
-            non_silent += 1;
+            audible.push(peak(&output, max_ch) > 0.0);
         }
 
         // Pace to the real callback rate, minus what processing already took.
@@ -468,10 +630,16 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
             std::thread::sleep(rest);
         }
     }
-    (costs, non_silent)
+    Run {
+        steps,
+        audible,
+        plugins: units.len(),
+        wall: start.elapsed(),
+    }
 }
 
-/// Drive blocks until audio is actually flowing, then return.
+/// Drive blocks until audio is actually flowing out of the **last** unit,
+/// then return.
 ///
 /// A fixed warm-up block count is the wrong tool. Freshly spawned subprocesses
 /// need to `dlopen` the plugin, activate it, and fault in the shared pages, and
@@ -480,213 +648,351 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
 /// 500 blocks carried audio, because the run was still starting up).
 ///
 /// Waiting on the condition instead of a guess makes the test independent of
-/// both. Returns `false` if audio never appears, so callers can fail with that
-/// as the diagnosis rather than reporting meaningless timings.
-#[cfg(any(feature = "clap", feature = "vst3"))]
+/// both. Returns whether 12 of a run of 16 blocks carried audio before
+/// `deadline`.
+#[cfg(feature = "clap")]
 fn warm_up(units: &mut [GraphUnit], deadline: Duration) -> bool {
     let start = Instant::now();
+    let last = units.len() - 1;
     while start.elapsed() < deadline {
         // Short bursts: enough to make progress, short enough to re-check.
-        let (_, non_silent) = drive_series(units, 16);
-        if non_silent >= 12 {
+        if drive_series(units, 16).heard(last) >= 12 {
             return true;
         }
     }
     false
 }
 
-#[cfg(any(feature = "clap", feature = "vst3"))]
-fn report(label: &str, costs: &[Duration], non_silent: usize) -> Duration {
-    let n = costs.len();
-    let mut sorted: Vec<Duration> = costs.to_vec();
-    sorted.sort();
-    let total: Duration = costs.iter().sum();
-    let mean = total / n as u32;
-    let p50 = sorted[n / 2];
-    let p99 = sorted[(n * 99 / 100).min(n - 1)];
-    let worst = *sorted.last().unwrap();
-    let over = costs.iter().filter(|c| **c > PERIOD).count();
+/// Print the run: block cost percentiles and deadline misses (reported only:
+/// see `eight_real_plugins_half_stalled_never_wait_for_replies` for why), the
+/// median step and slowest step per block, how many steps blocked, and how
+/// many blocks the last unit's output carried audio in.
+#[cfg(feature = "clap")]
+fn report(label: &str, run: &Run) {
+    let n = run.blocks();
+    let mut blocks: Vec<Duration> = run.block_costs().collect();
+    blocks.sort_unstable();
+    let p50 = blocks[n / 2];
+    let p99 = blocks[(n * 99 / 100).min(n - 1)];
+    let worst = blocks[n - 1];
+    let over = blocks.iter().filter(|c| **c > PERIOD).count();
+    let step_p50 = median(run.took());
+    let slowest_p50 = median(
+        run.steps
+            .chunks(run.plugins)
+            .map(|b| b.iter().map(|s| s.took).max().unwrap_or_default()),
+    );
+    let blocked = run.steps.iter().filter(|s| s.blocked).count();
+    let heard = run.heard(run.plugins - 1);
 
     eprintln!(
-        "{label}: mean {mean:?}  p50 {p50:?}  p99 {p99:?}  worst {worst:?}  \
-         over-deadline {over}/{n}  non-silent {non_silent}/{n}"
+        "{label}: block p50 {p50:?}  p99 {p99:?}  worst {worst:?}  \
+         over-deadline {over}/{n}  step p50 {step_p50:?}  \
+         slowest-step p50 {slowest_p50:?}  blocked steps {blocked}/{}  \
+         last unit non-silent {heard}/{n}",
+        run.steps.len()
     );
-    worst
 }
 
-/// **The headline pressure test.** Eight real plugin subprocesses driven for
-/// 500 blocks at true callback pacing.
+/// What a synchronous design spent per plugin per block: half the block period
+/// at 64 frames / 48 kHz, waiting for a reply before giving up.
+#[cfg(feature = "clap")]
+const SYNC_WAIT_BUDGET: Duration = Duration::from_micros(667);
+
+/// Assert that `run` shows no step waiting for a stalled plugin's reply.
 ///
-/// A synchronous design makes this arrangement hopeless: eight plugins x 667 us
-/// of budget each = 5333 us against a 1333 us deadline, a 4x overrun on every
-/// block where the subprocesses are slow. Pipelined, the per-block cost is a
-/// memcpy plus a queue push, so eight sit far under the deadline.
+/// A step **looks like a wait** if it blocked, or took at least
+/// [`SYNC_WAIT_BUDGET`]. Each assertion is that fewer than half of a
+/// population look like one, over three populations in which a waiting design
+/// makes at least half:
 ///
-/// # What this test does and does not assert
+/// - **every step:** a design that waits on every stalled step, when at
+///   least half the plugins are stalled;
+/// - **each plugin's steps:** one plugin that waits on every block, such as a
+///   per-callback budget spent by whichever plugin runs first;
+/// - **each block** (does any of its steps look like one): waits spread
+///   thinly across plugins, at least one in most blocks, such as one on every
+///   3rd step.
 ///
-/// It asserts on **cost**, and only reports **throughput**. That split is
-/// forced by the machine, not chosen for convenience.
+/// "Fewer than half" is under `n - n / 2` of `n`, the count at which the
+/// median sample is one of them. A minority cannot reach it, so load that
+/// lands on a minority of steps cannot fail it.
 ///
-/// Eight subprocesses each needing to be scheduled inside a 1.33 ms window is
-/// more than a 12-core box reliably delivers under a test harness. Three
-/// consecutive runs of this exact code produced 29, 78, and 492 non-silent
-/// blocks out of 500 — the same code, the same machine, an order of magnitude
-/// apart. Asserting a throughput floor would therefore be asserting on the
-/// scheduler's mood.
+/// # Why both signals
 ///
-/// The cost figure survives that, and survives it *safely*: a starved block
-/// copies no audio, so starvation can only push the per-block cost DOWN. A run
-/// that starves cannot fake a passing time — it can only make a real pass look
-/// less impressive. So the assertion below is sound in both directions, while a
-/// throughput assertion would be sound in neither.
+/// **Blocking is the one load cannot hide.** A wait that sleeps, polls with
+/// sleeps, or blocks on the reply gives up its core at least once in a step
+/// whose reply is not there, however short the wait and however busy the
+/// machine. The correct path never does: 0 blocked steps in every run, idle
+/// and under bursty load (four busy-sleep spinners, 2 ms on and 0.3 ms off,
+/// pinned to the test's core, the test at nice 19).
 ///
-/// The genuinely load-bearing correctness property under starvation — that a
-/// starved block yields silence rather than the input echoed back — is asserted
-/// separately and deterministically in
-/// [`starving_the_subprocesses_yields_silence_not_input_echo`].
-#[cfg(any(feature = "clap", feature = "vst3"))]
-#[test]
-fn eight_real_plugins_stay_under_the_callback_deadline() {
-    let _machine = exclusive();
-    let Some((mut units, _handles)) = load_n(8) else {
-        return;
+/// **Time alone was not enough under that load.** A poll to a wall-clock
+/// deadline spends the deadline mostly runnable but not running there, which
+/// [`StepClock`] subtracts as load. The time-only version of these
+/// assertions passed every wait mutation tried under it (every call, every
+/// 3rd and every 8th on eight plugins, every call on one), 2 runs of 2 each.
+/// Wall time would not do either: the same load stretches correct steps by
+/// milliseconds.
+///
+/// **Time is still needed for a wait that never blocks** (a spin), which only
+/// its length shows: the limit is the budget itself, because a wait is a
+/// lower bound — a step that waits out its budget for a plugin stalled far
+/// longer is at or over it on any machine, unless load deschedules it for
+/// most of that budget. A correct step's median under the bursty load was at
+/// most ~320 us (the slowest step per block, 8 plugins), over 2x under it.
+///
+/// An earlier version asserted each count's *block* median against 200 us per
+/// plugin, of wall time, with plugins that always answered in time. That
+/// failed on unchanged code at a load average of 17 (239 us per plugin), and
+/// could not catch the regression it named: a plugin that answers in time is
+/// never waited for, so a waiting design paid nothing (a mutation that waits
+/// on every step passed it, at an 87 us median step).
+///
+/// **Not covered:** a wait on a minority of steps, of a plugin's steps and of
+/// blocks, such as one plugin in every 4th block; a spinning wait shorter
+/// than [`SYNC_WAIT_BUDGET`], or under load that deschedules it; and off
+/// Linux, any wait that load hides, since only wall time is read there.
+#[cfg(feature = "clap")]
+fn assert_no_waiting(label: &str, run: &Run) {
+    let waited: Vec<bool> = run
+        .steps
+        .iter()
+        .map(|s| s.blocked || s.took >= SYNC_WAIT_BUDGET)
+        .collect();
+    let blocked = run.steps.iter().filter(|s| s.blocked).count();
+    let slow = run
+        .steps
+        .iter()
+        .filter(|s| s.took >= SYNC_WAIT_BUDGET)
+        .count();
+    let steps = run.steps.len();
+    let shape =
+        format!("{blocked} of {steps} steps blocked, {slow} took {SYNC_WAIT_BUDGET:?} or more");
+    let regressed = "A step that waits for a stalled plugin's reply blocks, or \
+                     spends at least the synchronous design's budget, so this \
+                     looks like the audio thread is waiting for replies again.";
+    // At or over `n - n / 2` of `n`, the median sample is one of them.
+    let check = |what: &str, count: usize, n: usize| {
+        assert!(
+            count < n - n / 2,
+            "{label}: {count} of {n} {what} looked like a wait ({shape}). {regressed}"
+        );
     };
-    warm_up(&mut units, Duration::from_secs(5));
 
-    let (costs, non_silent) = drive_series(&mut units, 500);
-    report("8 plugins", &costs, non_silent);
-
-    // Now assertable, and only because the subprocess runs at realtime
-    // priority *where the OS grants it*. Before `raise_to_realtime` this check
-    // swung between 29 and 492 out of 500 on identical code and had to be a
-    // printed note; with it, three consecutive runs gave 498/495/495. So it
-    // doubles as the regression guard for that call going missing.
-    //
-    // It holds without realtime priority too, on a machine with cores to
-    // spare: a 32-thread box with `RLIMIT_RTPRIO` capped at 0 gives 498/500
-    // across 8 probe instances. Realtime priority buys the *guarantee*, not
-    // the throughput, so this is not gated on it — a floor that silently
-    // stopped being checked wherever the OS says no would stop being checked
-    // in most containers, CI included.
-    assert!(
-        non_silent > costs.len() * 9 / 10,
-        "only {non_silent}/{} blocks carried audio across 8 plugins. Either the \
-         subprocesses are not getting realtime priority (see \
-         `plugin-server`'s `raise_to_realtime`), this machine cannot schedule \
-         8 of them within a {PERIOD:?} block, or — if running on the reference \
-         probe — it is rendering `Inert`, which writes nothing.",
-        costs.len()
-    );
-
-    // Judge the TYPICAL block, not the worst.
-    //
-    // This is a wall-clock measurement on a non-realtime OS with no thread
-    // priority, sharing a machine with a compiler: individual blocks get
-    // descheduled and land in the milliseconds. Asserting on the max would make
-    // this a flake generator that tells us nothing about the design.
-    //
-    // The median is what distinguishes the two designs, and it does so by an
-    // order of magnitude. Eight plugins under a summing wait budget could not
-    // come in under 8 x 667 us = 5333 us by construction; pipelined, the per-
-    // block cost is memcpy plus a queue push. Measured across runs: 187-554 us
-    // median for eight, i.e. ~23-70 us each.
-    let mut sorted = costs.clone();
-    sorted.sort();
-    let median = sorted[sorted.len() / 2];
-    assert!(
-        median < PERIOD,
-        "median block cost {median:?} exceeds the {PERIOD:?} deadline across 8 \
-         plugins — under the pipelined design this should be dominated by memcpy \
-         (~75 us/plugin measured), so this looks like per-plugin waiting returned"
-    );
+    check("steps", waited.iter().filter(|&&w| w).count(), steps);
+    for p in 0..run.plugins {
+        let mine = waited.iter().skip(p).step_by(run.plugins);
+        check(
+            &format!("of plugin {p}'s steps"),
+            mine.filter(|&&w| w).count(),
+            run.blocks(),
+        );
+    }
+    let blocks = waited
+        .chunks(run.plugins)
+        .filter(|b| b.iter().any(|&w| w))
+        .count();
+    check("blocks", blocks, run.blocks());
 }
 
-/// **Per-plugin cost must stay an order of magnitude below a waiting budget.**
+/// How late a stalled probe answers every block: far beyond any reply budget
+/// (the bridge's is four block periods, 5.3 ms; the synchronous design's was
+/// [`SYNC_WAIT_BUDGET`]), so the plugin never publishes in time and a design
+/// that waits for it waits its whole budget. A missed budget costs the block,
+/// not the connection (see `dispatch`'s reply timeout), so the probe stays
+/// live throughout.
 ///
-/// Cost does grow with plugin count — each plugin is a real memcpy across a real
-/// shared-memory region, so it must. Growth is therefore the wrong thing to
-/// assert on: a bound like `8x < 1x * 4` fails on correct behaviour.
+/// Far beyond the *block* too, and by more than a little: a stalled plugin
+/// that publishes in time for the next block is not stalled for it. With
+/// 10 ms, bursty load on the test's core stretched the paced blocks enough
+/// that one stalled probe carried audio in 116 of 200, and a waiting design
+/// pays nothing on those.
+#[cfg(feature = "clap")]
+const STALL: Duration = Duration::from_millis(500);
+
+/// `count` instances of the reference CLAP probe, each stalled by [`STALL`]
+/// on every block: alive, answering, and always late.
 ///
-/// What distinguishes the two designs is the *per-plugin* figure:
+/// Stalled by a sleep (`stall_every_block`), not parked with `block_from`:
+/// a parked probe spins, `plugin-server` runs its audio thread at raised
+/// priority (nice -20 here), and eight spinning servers would take the host's
+/// cores, which is the time these tests measure.
 ///
-/// - summing budgets: each plugin costs up to its full wait budget, 667 us at
-///   64/48k, and that is the number that accumulates;
-/// - pipelined: each plugin costs a memcpy and a queue push.
+/// Probes rather than installed plugins even where those exist: a third-party
+/// plugin cannot be told to stall.
+#[cfg(feature = "clap")]
+fn load_stalled(count: usize) -> (Vec<GraphUnit>, Vec<tutti_plugin::handles::PluginHandle>) {
+    let _env = clap_probe::ProbeEnv::new()
+        .render_mode(clap_probe::render::TAG_PASSTHROUGH)
+        .stall_every_block(STALL);
+    let mut units: Vec<GraphUnit> = Vec::with_capacity(count);
+    let mut handles = Vec::with_capacity(count);
+    for _ in 0..count {
+        let probe = clap_probe::load_probe(SAMPLE_RATE);
+        let (ins, outs) = (probe.client.inputs(), probe.client.outputs());
+        units.push(GraphUnit::new(probe.client.bind(), ins, outs));
+        handles.push(probe.handle);
+    }
+    (units, handles)
+}
+
+/// Assert that the plugins at `stalled` really were stalled for `run`, so
+/// that [`assert_no_waiting`] measured what it claims to.
 ///
-/// Measured on this machine (12-core, debug build, TAL-Reverb-4 x N):
+/// A stalled probe sleeps [`STALL`] in every `process()` and its server
+/// handles one block at a time, so over the run's wall time it can publish at
+/// most `wall / STALL` blocks, plus one in flight at each end. The bound holds
+/// however slow the machine is, and bites wherever the run is short against
+/// the stall: 200 paced blocks take ~0.3 s idle, which allows 2.
+#[cfg(feature = "clap")]
+fn assert_stalled(label: &str, run: &Run, stalled: impl Iterator<Item = usize>) {
+    let most = (run.wall.as_nanos() / STALL.as_nanos()) as usize + 2;
+    for p in stalled {
+        let heard = run.heard(p);
+        assert!(
+            heard <= most,
+            "{label}: stalled plugin {p} carried audio in {heard} of {} blocks, \
+             more than a {STALL:?} stall allows in {:?} ({most}). The stall is \
+             not reaching the probe, so the timings above are of plugins that \
+             answer in time, which a waiting design never waits for.",
+            run.blocks(),
+            run.wall
+        );
+    }
+}
+
+/// **Eight real plugin subprocesses, four of them stalled, cost the audio
+/// thread no waiting**, over 500 blocks at true callback pacing.
 ///
-/// | plugins | median | per-plugin |
-/// |---------|--------|------------|
-/// | 1       |  51 us |    51 us   |
-/// | 2       | 101 us |    51 us   |
-/// | 4       | 250 us |    63 us   |
-/// | 8       | 610 us |    76 us   |
+/// Stalled and answering instances alternate, starting with a stalled one and
+/// ending with an answering one. The answering four are installed effects
+/// where present, else the reference probe; the stalled four are always the
+/// probe (see [`load_stalled`]).
 ///
-/// Roughly flat at ~50-75 us each — an order of magnitude under 667 us, and
-/// nothing like the flat-at-667 signature a regression would show. The 200 us
-/// bound below sits between the two regimes with wide margin on both sides.
-#[cfg(any(feature = "clap", feature = "vst3"))]
+/// # What this test asserts, and what it only reports
+///
+/// It asserts that each answering plugin carried audio in at least a tenth of
+/// the blocks, so that the run went through a working bridge, that the
+/// stalled ones were stalled ([`assert_stalled`]), and that no step waited
+/// for a stalled one ([`assert_no_waiting`]).
+///
+/// It only **reports** the block cost against the callback deadline, and how
+/// many blocks carried audio. Both used to be asserted (the median block
+/// under [`PERIOD`], and audio in over 90% of blocks), and neither could
+/// catch a waiting design: with every plugin answering in time, a mutation
+/// that waits on every step paid nothing and passed both, at a 1.27 ms median
+/// block. Under bursty load both failed on unchanged code, every run: the
+/// host's own work on a contended core sums past the period, and the servers
+/// answer in time in ~65-80% of blocks. They measure the machine. For the
+/// same reason [`warm_up`] is a best effort here, not an assertion: it wants
+/// 12 of 16 blocks, and under that load gave up after 10 s in 3 runs of 12.
+///
+/// A synchronous design makes this arrangement hopeless: four stalled plugins
+/// x 667 us of budget each = 2.7 ms against a 1.33 ms deadline, on every
+/// block.
+///
+/// Mutations, in `Batcher::collect` after `await_output`: poll
+/// `has_output(expect_seq)` every 50 us until a 667 us deadline, on calls
+/// chosen by a counter shared by every batcher in the process. Each failed
+/// 3 runs of 3 on a shared machine (load ~8), and the wait mutations 2 of 2
+/// under the bursty load in [`assert_no_waiting`]'s notes:
+/// - Every call: ~2000 of 4000 steps look like a wait (the stalled half) →
+///   fails at "steps". Idle, 1000-1600 of them also took 667 us or more;
+///   under the bursty load ~110, so the blocking is what catches it there.
+/// - Every 8th call (plugin 0 only): 492-500 of plugin 0's 500 → fails
+///   there.
+/// - Every 4th call (plugins 0 and 4): fails at plugin 0, 500 of 500.
+/// - Every 3rd call (spread across plugins, one or two stalled per block):
+///   ~670 of 4000 steps and no plugin's majority, but 499-500 of 500 blocks
+///   → fails at "blocks".
+/// - `stall_every_block` dropped from [`load_stalled`]: every plugin answers
+///   in time and carries audio in 474-499 of 500 blocks → fails
+///   [`assert_stalled`].
+/// - `TAG_PASSTHROUGH` dropped from [`load_n_from_probe`] (the probe renders
+///   `Inert`, nothing): the answering plugins carry audio in 0 of 500 blocks
+///   → fails the first assertion.
+///
+/// The starvation property, that a starved block yields silence rather than
+/// the input echoed back, is asserted separately in
+/// [`starving_the_subprocesses_yields_silence_not_input_echo`].
+#[cfg(feature = "clap")]
+#[test]
+fn eight_real_plugins_half_stalled_never_wait_for_replies() {
+    let _machine = exclusive();
+    let label = "8 plugins, 4 stalled";
+    let (stalled, _stalled_handles) = load_stalled(4);
+    let Some((answering, _answering_handles)) = load_n(4) else {
+        unreachable!("with `clap` on, `load_n` falls back to the probe");
+    };
+    let mut units: Vec<GraphUnit> = stalled
+        .into_iter()
+        .zip(answering)
+        .flat_map(|(s, a)| [s, a])
+        .collect();
+
+    if !warm_up(&mut units, Duration::from_secs(10)) {
+        eprintln!("{label}: still warming up after 10 s; measuring anyway");
+    }
+    let run = drive_series(&mut units, 500);
+    report(label, &run);
+
+    for p in (1..run.plugins).step_by(2) {
+        let heard = run.heard(p);
+        assert!(
+            heard >= run.blocks() / 10,
+            "{label}: answering plugin {p} carried audio in only {heard} of {} \
+             blocks. Either the bridge is not delivering, or, on the reference \
+             probe, it is rendering `Inert`, which writes nothing.",
+            run.blocks()
+        );
+    }
+    assert_stalled(label, &run, (0..run.plugins).step_by(2));
+    assert_no_waiting(label, &run);
+}
+
+/// **Stalled real plugins cost the audio thread no waiting**, at 1, 2, 4 and
+/// 8 instances, every one stalled.
+///
+/// The counts are what [`assert_no_waiting`]'s three populations need
+/// between them: with every plugin stalled, a wait on every step owns all
+/// three, one plugin's waits own that plugin's, and waits spread one or more
+/// to a block own the blocks. Fewer plugins also mean fewer servers, so a
+/// correct step is measured on a quieter machine.
+///
+/// Mutations, as in [`eight_real_plugins_half_stalled_never_wait_for_replies`],
+/// each failing 3 runs of 3 on a shared machine, and the first three 2 of 2
+/// under the bursty load:
+/// - Every call: fails at 1 instance, 200 of 200 steps.
+/// - Every 3rd call: at 2 instances two blocks in three hold a wait → fails
+///   at "blocks", 133 of 200.
+/// - Every 4th call: at 2 instances plugin 0 waits in every other block,
+///   100 of its 200 steps, which is `n - n / 2` → fails at plugin 0. A
+///   minority of other slow steps only adds to it (103-105 under load); one
+///   wait whose reply came in time would pass it.
+/// - Every 8th call: at 1 and 2 instances the wait lands on a minority of
+///   plugin 0's blocks and passes; at 4 it lands on 100 of 200 → fails there.
+/// - `stall_every_block` dropped: fails [`assert_stalled`] at 1 instance,
+///   audio in 198-199 of 200 blocks.
+#[cfg(feature = "clap")]
 #[test]
 fn per_plugin_cost_stays_far_below_the_old_wait_budget() {
     let _machine = exclusive();
-    /// A synchronous design's per-plugin wait at 64 frames / 48 kHz: half a
-    /// block period. The number the pipelined path exists to avoid paying N
-    /// times.
-    const OLD_BUDGET_PER_PLUGIN: Duration = Duration::from_micros(667);
-    /// Between the two regimes: ~2.5x headroom over the ~75 us measured, and
-    /// ~3.3x under the waiting budget. A regression to waiting misses it by far
-    /// more than the noise on this measurement.
-    const CEILING_PER_PLUGIN: Duration = Duration::from_micros(200);
 
     for count in [1usize, 2, 4, 8] {
-        let Some((mut units, _handles)) = load_n(count) else {
-            return;
-        };
+        let label = format!("{count} stalled plugin(s)");
+        let (mut units, _handles) = load_stalled(count);
         // Let the previous iteration's subprocesses finish exiting before
         // measuring this one; otherwise the two overlap and starve each other.
         std::thread::sleep(Duration::from_millis(300));
-        assert!(
-            warm_up(&mut units, Duration::from_secs(5)),
-            "{count} plugins never started passing audio within 5s"
-        );
-        let (costs, non_silent) = drive_series(&mut units, 200);
-        report(&format!("{count} plugin(s)"), &costs, non_silent);
+        // Nothing to wait for: a stalled plugin never warms up. This only
+        // gets past the first blocks' one-off costs.
+        drive_series(&mut units, 16);
+        let run = drive_series(&mut units, 200);
+        report(&label, &run);
 
-        // `non_silent` is REPORTED, not asserted, and the distinction matters.
-        //
-        // It is a property of the harness, not the design: how many blocks
-        // carry audio depends on whether the previous iteration's subprocesses
-        // have finished tearing down while this one starts. Measured across
-        // consecutive identical runs it swung 9/200, 116/200, 199/200 — pure
-        // machine contention. Asserting on it would make this a coin flip that
-        // fails for reasons having nothing to do with pipelining.
-        //
-        // The timing assertion below is the real one, and it stays valid
-        // regardless: a starved block is *cheap* (no audio copied), so
-        // starvation can only bias the per-plugin figure DOWNWARD. It cannot
-        // manufacture a pass — only make one less impressive.
-        if non_silent < costs.len() / 2 {
-            eprintln!(
-                "  note: {count} plugins only carried audio on {non_silent}/{} \
-                 blocks — subprocess contention, timings below are a lower bound",
-                costs.len()
-            );
-        }
-
-        // Median, not mean: one descheduled block on a shared machine drags a
-        // mean by milliseconds and says nothing about the design.
-        let mut sorted = costs.clone();
-        sorted.sort();
-        let median = sorted[sorted.len() / 2];
-        let per_plugin = median / count as u32;
-
-        assert!(
-            per_plugin < CEILING_PER_PLUGIN,
-            "{count} plugins: {per_plugin:?} per plugin (median block \
-             {median:?}) exceeds {CEILING_PER_PLUGIN:?}. The old synchronous \
-             design paid up to {OLD_BUDGET_PER_PLUGIN:?} per plugin and that is \
-             what this figure approaching would mean."
-        );
+        assert_stalled(&label, &run, 0..count);
+        assert_no_waiting(&label, &run);
     }
 }
 

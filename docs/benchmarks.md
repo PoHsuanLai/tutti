@@ -207,7 +207,10 @@ criterion**:
 
 - **`tutti-plugin/tests/real_plugin_pressure.rs`** — out-of-process plugin
   hosting, driven at true callback pacing, reporting **mean / p50 / p99 /
-  worst / over-deadline / non-silent** per run. `just pressure`.
+  worst / over-deadline / non-silent** per run. `just pressure`. Those
+  figures are printed, not asserted: the tests assert that no step waits for
+  a deliberately stalled plugin, which is the regression a block cost cannot
+  show (a plugin that answers in time is never waited for).
 
   It used to be `#[ignore]`d for needing third-party plugins *installed*, and
   `EFFECTS` names macOS system paths — so the only harness measuring the

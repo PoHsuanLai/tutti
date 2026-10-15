@@ -160,6 +160,12 @@ tutti-clap-test-plugin = { path = "../../vendor/tutti-clap-test-plugin" }
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
 
+# `real_plugin_pressure` asks for the same raise `plugin-server`'s
+# `raise_to_realtime` makes, on a scratch thread, to learn what the OS grants
+# before checking the server got it. The version `tutti-plugin-server` uses.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+thread-priority = "1.1"
+
 # NOTE: the `loom` model of this crate's shared-memory header protocol lives in
 # the sibling `tutti-shm-model` crate, not here. `--cfg loom` is a global
 # RUSTFLAG, and the model's target must not depend on whether every crate in

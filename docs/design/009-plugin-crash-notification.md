@@ -1,7 +1,15 @@
 # 009 — Telling a host its plugin died
 
-Status: **proposed, not built.** Scope and open questions for replacing the
-polled crash bool with a notification plus an honest status enum.
+Status: **landed** (option (a), latch the cause). The code lives in
+`tutti-plugin`: `BridgeEvent::Crashed { cause }` fires from the bridge
+thread's crash sites (`host/ipc_client/audio/thread.rs`), the cause is latched
+by `Lifecycle::mark_crashed` (`host/ipc_client/audio/lifecycle.rs`), a host
+hears it as `PluginInvalidation::Crashed` through `PluginHandle::on_invalidate`
+and asks `PluginHandle::status()` (`host/handles/control_handle.rs`). Two
+departures from the pieces below: the cause is a `String`, since `BridgeError`
+is not `Clone`, and `PluginStatus` is `Alive | Dead { cause }`, with the
+`Failing` debounce left in `bevy-tutti`'s `PluginLiveness`. The body below is
+the proposal as written, and its code references are as of then.
 
 ## The problem
 

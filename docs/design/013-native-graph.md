@@ -3595,8 +3595,10 @@ text past it, since the plugin holds pointers into it for the block.
   flood could evict a latency, tail or resync event and PDC never heard of
   it. In the buffer those are latest-wins slots nothing evicts; only
   parameter events queue, bounded and preallocated, and a dropped one is
-  counted (`PluginClient::dropped_parameter_events`) and raises a
-  `Resync(ParamValues)`, so the host re-reads. The drain hands over the
+  counted (`PluginClient::dropped_parameter_events`, and on the handle
+  through a required `HostParams::dropped_parameter_events`, which the
+  in-process VST2 backend answers with its refused `audioMasterAutomate`
+  reports) and raises a `Resync(ParamValues)`, so the host re-reads. The drain hands over the
   parameter events in arrival order, then latency, tail and resyncs.
 - **The in-process VST2 node copied each block twice each way** (the
   graph's buffers, a `ProcessScratch` of `Vec<Vec<f32>>`, `vst2-host`'s

@@ -133,7 +133,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   |---|---|
   | a flood of parameter events could evict latency, tail and resync events | they are latest-wins and never dropped; parameter events drop oldest-first, counted, with a `ParamValues` resync |
   | events in arrival order across kinds | parameter events in arrival order, then latency, tail, resyncs (`ParamValues`, `ParamTitles`, `Io`, `Reloaded`) |
-  | — | `PluginClient::dropped_parameter_events()` |
+  | — | `PluginClient::dropped_parameter_events()`, `PluginHandle::dropped_parameter_events()` |
+  | `HostParams` had no drop count | **Breaking** for a custom backend: `HostParams::dropped_parameter_events(&self) -> u64` is required. A backend that cannot lose a plugin's parameter reports returns `0`; the in-process VST2 backend returns the `audioMasterAutomate` reports its bounded queue refused (`Vst2Instance::dropped_param_changes`) |
 
 - **Sampler real-time fixes** (tutti-sampler; design doc 013, "Sampler
   real-time fixes"). A voice pool's drain no longer blocks on a stalled

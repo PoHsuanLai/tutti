@@ -18,8 +18,9 @@
 //! counter — an assertion that a number stayed at zero passes just as well
 //! against a probe that was never loaded.
 //!
-//! The last two tests read the render itself: what the node writes is what the
-//! plugin wrote, and silence past the channels it hands the plugin.
+//! Two tests read the render itself: what the node writes is what the
+//! plugin wrote, and silence past the channels it hands the plugin. The last
+//! counts the parameter reports a burst from `process` loses, on the handle.
 
 #![cfg(feature = "vst2")]
 
@@ -502,4 +503,49 @@ fn outputs_past_the_tables_are_silent() {
 
     drop(r);
     drop(handle);
+}
+
+/// A plugin's parameter reports the host lost are counted on its
+/// `PluginHandle`, through `HostParams`. The probe sends a burst of
+/// `audioMasterAutomate` reports from inside each `process` call, more than
+/// the instance's bounded queue holds, and nothing drains the queue between
+/// the two blocks: the first block overflows it, and every report of the
+/// second is refused.
+///
+/// The second block's count is the first's plus the whole burst, so the
+/// assertion does not depend on the queue's capacity.
+///
+/// Mutations (run): the in-process backend answering `0` → "a burst past
+/// the queue dropped nothing" → fails; `PluginHandle::dropped_parameter_events`
+/// answering `0` → the same.
+#[test]
+fn the_handle_counts_lost_parameter_reports() {
+    const BURST: u32 = 600;
+
+    let _guard = lock_probe();
+    let mut loaded = load();
+    assert_eq!(loaded.handle.dropped_parameter_events(), 0);
+
+    probe_call(
+        &loaded.path,
+        b"tutti_vst2_probe_set_automate_burst\0",
+        |sym| {
+            let f: extern "C" fn(u32) = unsafe { std::mem::transmute(*sym) };
+            f(BURST);
+        },
+    );
+    drive_block(&mut loaded.unit);
+    let first = loaded.handle.dropped_parameter_events();
+    assert!(first > 0, "a burst past the queue dropped nothing");
+    assert!(first < u64::from(BURST), "the queue held none of the burst");
+
+    drive_block(&mut loaded.unit);
+    assert_eq!(
+        loaded.handle.dropped_parameter_events(),
+        first + u64::from(BURST),
+        "a full queue refuses the whole second burst"
+    );
+
+    reset_probe(&loaded.path);
+    drop(loaded.handle);
 }

@@ -125,6 +125,19 @@ pub trait HostParams: Send + Sync {
     fn crash_cause(&self) -> Option<String> {
         None
     }
+
+    /// How many parameter-change events the plugin sent that the host lost,
+    /// over the backend's life. Monotonic.
+    ///
+    /// Required, not defaulted, because zero is a claim: a backend that can
+    /// lose a plugin's parameter reports says how many, and one that cannot
+    /// says so with `0` in its own impl. The subprocess backend counts the
+    /// bridge's drops (more reports during one command, such as a preset
+    /// load, than it holds; each also raises a
+    /// [`PluginRefresh::ParamValues`](crate::host::handles::PluginRefresh));
+    /// the in-process VST2 backend counts the `audioMasterAutomate` reports
+    /// its bounded queue refused.
+    fn dropped_parameter_events(&self) -> u64;
 }
 
 /// Saves and restores the plugin's state as an opaque byte blob.

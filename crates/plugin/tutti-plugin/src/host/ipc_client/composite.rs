@@ -522,6 +522,10 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
     fn crash_cause(&self) -> Option<String> {
         self.bridge.crash_cause()
     }
+
+    fn dropped_parameter_events(&self) -> u64 {
+        self.bridge.dropped_parameter_events()
+    }
 }
 
 impl crate::host::handles::capabilities::HostState for SubprocessBackend {

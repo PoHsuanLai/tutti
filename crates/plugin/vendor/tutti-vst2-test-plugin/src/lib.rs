@@ -300,6 +300,9 @@ impl ProbePlugin {
         });
         self.capture_time_info();
         self.capture_process_level();
+        for _ in 0..switches::automate_burst() {
+            self.host.automate(0, 0.5);
+        }
 
         // A refused resume renders silence — see
         // `tutti_vst2_probe_set_refuse_resume` for why in substance rather

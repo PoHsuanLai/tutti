@@ -388,7 +388,11 @@ mod tests {
         for phase in 1..=3 * PARAM_BUFFERS {
             load(&mut d, phase);
             let mut sent = pool.take_params().expect("a free buffer");
-            assert_eq!(sent.point_room(), points, "a free buffer of the node's room");
+            assert_eq!(
+                sent.point_room(),
+                points,
+                "a free buffer of the node's room"
+            );
             std::mem::swap(d.changes(), &mut sent);
             d.handed_off(true);
             assert_eq!(sent.len(), lanes as usize);

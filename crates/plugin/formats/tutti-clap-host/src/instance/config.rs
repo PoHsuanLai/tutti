@@ -49,7 +49,8 @@ pub struct ProcessScratch<T> {
     /// the caller supplied — distinct from `input_ptrs`/`output_ptrs`, which
     /// are the plugin-facing arrays after zero-padding to the port layout.
     ///
-    /// These were `SmallVec<[*mut T; 16]>` locals in `process`, which spilled to
+    /// These were small-vector locals in `process` (16 pointers inline, then
+    /// the heap), which spilled to
     /// the heap every block past 16 channels a side — reachable through
     /// supported layouts, since two 8-channel ports or a third-order ambisonic
     /// bus already sit at the inline bound. Pooled here instead, sized from the
@@ -263,8 +264,8 @@ mod port_layout_tests {
     #[test]
     fn a_mono_bus_is_not_widened_to_stereo() {
         let mut ports = PortLayout {
-            inputs: BusChannels::from_slice(&[ChannelLayout::MONO]),
-            outputs: BusChannels::from_slice(&[ChannelLayout::MONO]),
+            inputs: vec![ChannelLayout::MONO],
+            outputs: vec![ChannelLayout::MONO],
         };
         ports.default_empty_buses();
 
@@ -299,8 +300,8 @@ mod port_layout_tests {
     #[test]
     fn totals_sum_across_buses_and_survive_defaulting() {
         let mut ports = PortLayout {
-            inputs: BusChannels::from_slice(&[]),
-            outputs: BusChannels::from_slice(&[ChannelLayout::STEREO, ChannelLayout::from(6u16)]),
+            inputs: BusChannels::new(),
+            outputs: vec![ChannelLayout::STEREO, ChannelLayout::from(6u16)],
         };
         ports.default_empty_buses();
 

@@ -184,13 +184,16 @@ pub(crate) struct AudioPipeline {
     /// The plugin's non-audio outputs for the current block.
     ///
     /// Owned here, and handed to `PluginAudio::process` as an out-parameter,
-    /// so its `SmallVec` storage persists across blocks. A loader that copies
+    /// so its storage persists across blocks. A loader that copies
     /// out of a borrowing `ProcessOutputRef` copies into *this*, which is what
     /// makes the copy allocation-free once warm.
     ///
     /// Read back through [`midi_out`](Self::midi_out) after each
     /// [`process`](Self::process); it is cleared at the top of the next one.
     plugin_output: ProcessOutput,
+    /// The point room `plugin_output`'s parameter queues were reserved with
+    /// ([`reserve_params`](Self::reserve_params)).
+    param_room: usize,
 }
 
 impl AudioPipeline {
@@ -200,6 +203,7 @@ impl AudioPipeline {
         Self {
             buffers: AudioBuffers::new(format),
             plugin_output: ProcessOutput::default(),
+            param_room: 0,
         }
     }
 
@@ -210,6 +214,41 @@ impl AudioPipeline {
     /// `process`, which clears it.
     pub(crate) fn midi_out(&self) -> &MidiEventVec {
         &self.plugin_output.midi_events
+    }
+
+    /// The MIDI events the most recent [`process`](Self::process) dropped
+    /// past the list's cap.
+    pub(crate) fn midi_dropped(&self) -> usize {
+        self.plugin_output.midi_dropped()
+    }
+
+    /// Reserves the plugin's parameter output for `queues` parameters of up
+    /// to `points` points each ([`ProcessOutput::reserve_params`]), so the
+    /// loaders' copy into it never grows. Called by `Session` on plugin load,
+    /// **not on the audio thread**: it allocates.
+    pub(crate) fn reserve_params(&mut self, queues: usize, points: usize) {
+        self.param_room = points;
+        self.plugin_output.reserve_params(queues, points);
+    }
+
+    /// Re-reserves the plugin's parameter output for `queues` parameters,
+    /// at the room it was reserved with, when it holds fewer queues: a
+    /// plugin whose parameter list grew after load. Called by `Session`'s
+    /// `drain_async_events` when the plugin says its list changed, which runs
+    /// **on the server's realtime audio-phase thread, between blocks**: a
+    /// growth allocates there, once per change; an unchanged or smaller list
+    /// does not.
+    pub(crate) fn fit_params(&mut self, queues: usize) {
+        if queues > self.plugin_output.param_changes.capacity() {
+            self.plugin_output.reserve_params(queues, self.param_room);
+        }
+    }
+
+    /// The parameter queues the plugin's output holds, for the session's
+    /// tests of when it is re-reserved.
+    #[cfg(test)]
+    pub(crate) fn param_queues(&self) -> usize {
+        self.plugin_output.param_changes.capacity()
     }
 
     /// Reseat the scratch variant when the session's negotiated format changes.
@@ -338,6 +377,7 @@ impl AudioPipeline {
         let Self {
             buffers,
             plugin_output,
+            ..
         } = self;
         plugin_output.clear();
         match &mut *buffers {
@@ -740,8 +780,8 @@ mod tests {
             samples_per_channel: samples,
             format,
             slots: RING_SLOTS as u32,
-            inputs: inputs.iter().copied().collect(),
-            outputs: outputs.iter().copied().collect(),
+            inputs: inputs.to_vec(),
+            outputs: outputs.to_vec(),
         }
     }
 
@@ -1130,7 +1170,7 @@ mod tests {
     /// (`probeprocessor.cpp` calls `addEventInput` and never touches
     /// `outputEvents` or `outputParameterChanges`). So the plugin's output lists
     /// arrive empty every block, and an owning conversion over an empty
-    /// `SmallVec` allocates nothing — mutation-testing confirms that restoring
+    /// list allocates nothing — mutation-testing confirms that restoring
     /// `ProcessOutputRef::to_owned()` in `loaders::vst3::process_block` leaves
     /// this test green. Saying so is the point: a gate that names a property it
     /// cannot observe is the failure this whole class of test exists to avoid.
@@ -1213,27 +1253,38 @@ mod tests {
     /// true because `clear` empties the lists in place and, critically, clears
     /// each queue's `points` **before** dropping the queue list.
     ///
-    /// Two mutation checks, both verified:
+    /// The MIDI is past its cap ([`MIDI_STACK_CAPACITY`]), so the copy also
+    /// pins that the list drops the excess (counted) rather than growing.
+    ///
+    /// [`MIDI_STACK_CAPACITY`]: tutti_plugin::server::MIDI_STACK_CAPACITY
+    ///
+    /// Three mutation checks, all verified:
     /// - build a fresh `ProcessOutput` inside the loop instead of reusing one
     ///   (what `ProcessOutputRef::to_owned` did) and this aborts;
-    /// - drop the inner `queue.points.clear()` from `ProcessOutput::clear` and
-    ///   this aborts, because each block then reallocates every points buffer.
+    /// - `ProcessOutput::reserve_params` building `ParameterChanges::new()`
+    ///   (room for nothing) and the copy stores no queue → fails. (Reworded
+    ///   with `PointBuf`: the points storage is fixed, so dropping the inner
+    ///   `queue.points.clear()` from `ProcessOutput::clear`, which made each
+    ///   block reallocate every points buffer, can no longer allocate.)
+    /// - copy the MIDI with `midi_events.extend` rather than `emit_midi` and
+    ///   this panics at the cap.
     #[test]
     fn copying_emitted_events_into_a_warm_output_does_not_allocate() {
         use tutti_plugin::server::ParamAddress;
 
-        // Well past both inline capacities, so the buffers are genuinely on the
-        // heap and a lost capacity is a real reallocation rather than a no-op.
+        // Points well past any small reservation, so the buffers are genuinely
+        // on the heap and a lost capacity is a real reallocation rather than a
+        // no-op; MIDI past its cap, so the drop path runs inside the gate.
         const EVENTS: usize = 400;
         const PARAMS: usize = 32;
         const POINTS: usize = 40;
 
         // The event *values* are irrelevant here — only how many there are, and
-        // that `MidiEvent` is `Copy` so the extend is a memcpy.
+        // that `MidiEvent` is `Copy` so the copy is a memcpy.
         let emitted_midi: Vec<MidiEvent> = (0..EVENTS)
             .map(|i| MidiEvent::from_ump(i as u32, &[0x2090_3C40]))
             .collect();
-        let mut emitted_params = ParameterChanges::new();
+        let mut emitted_params = ParameterChanges::reserved(PARAMS, POINTS);
         for p in 0..PARAMS {
             for pt in 0..POINTS {
                 emitted_params.add_change(
@@ -1248,7 +1299,7 @@ mod tests {
         // code rather than two hand-kept-in-sync versions.
         let copy = |out: &mut ProcessOutput| {
             out.clear();
-            out.midi_events.extend(emitted_midi.iter().copied());
+            out.emit_midi(emitted_midi.iter().copied());
             for queue in &emitted_params.queues {
                 for point in &queue.points {
                     out.emit_param_point(queue.param_id, point.sample_offset, point.value.get());
@@ -1256,7 +1307,11 @@ mod tests {
             }
         };
 
+        // Reserved as `Session::handle_load` reserves the pipeline's output.
+        // (Reworded with `PointBuf`: the output grew to its steady storage
+        // during the warm-up before; it is now reserved up front.)
         let mut out = ProcessOutput::default();
+        out.reserve_params(PARAMS, POINTS);
         // Warm up outside the gate: this is where the buffers reach their
         // steady capacity, exactly as the first few real blocks do.
         for _ in 0..4 {
@@ -1264,8 +1319,12 @@ mod tests {
         }
         assert_eq!(
             out.midi_events.len(),
-            EVENTS,
+            tutti_plugin::server::MIDI_STACK_CAPACITY,
             "the fixture must actually fill the buffers"
+        );
+        assert_eq!(
+            out.midi_dropped(),
+            EVENTS - tutti_plugin::server::MIDI_STACK_CAPACITY
         );
         assert_eq!(out.param_changes.queues.len(), PARAMS);
 
@@ -1274,5 +1333,30 @@ mod tests {
                 copy(&mut out);
             }
         });
+    }
+
+    /// **A parameter list that grows after load gets its output reserved
+    /// again, at the load's room; one that shrinks keeps it.** A pipeline
+    /// reserved for 4 parameters at a room of 10, fitted to 8: it holds 8
+    /// queues and the budget for them at that room. Fitted to 2: unchanged.
+    ///
+    /// Mutations (run), each fails: `fit_params` doing nothing → 4 queues;
+    /// re-reserving at no room (`0` for `param_room`) → the storage is the
+    /// budget at a room of 0; re-reserving whatever the count (no
+    /// `capacity` check) → fitted to 2, it holds 2.
+    #[test]
+    fn a_grown_parameter_list_is_reserved_again_at_the_loads_room() {
+        let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
+        pipeline.reserve_params(4, 10);
+        assert_eq!(pipeline.plugin_output.param_changes.capacity(), 4);
+        pipeline.fit_params(8);
+        let changes = &pipeline.plugin_output.param_changes;
+        assert_eq!(changes.capacity(), 8);
+        assert_eq!(
+            changes.point_storage(),
+            ParameterChanges::point_budget(8, 10)
+        );
+        pipeline.fit_params(2);
+        assert_eq!(pipeline.plugin_output.param_changes.capacity(), 8);
     }
 }

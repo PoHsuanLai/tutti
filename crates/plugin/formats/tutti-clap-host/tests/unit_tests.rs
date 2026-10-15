@@ -373,12 +373,12 @@ fn test_output_event_list_push_param_value() {
 #[test]
 fn test_param_changes_through_input_list() {
     let mut changes = ParameterChanges::new();
-    let mut q1 = ParameterQueue::new(ParamAddress::Opaque(1u32.into()));
+    let mut q1 = ParameterQueue::with_capacity(ParamAddress::Opaque(1u32.into()), 2);
     q1.add_point(0, 0.0);
     q1.add_point(128, 1.0);
     changes.add_queue(q1);
 
-    let mut q2 = ParameterQueue::new(ParamAddress::Opaque(2u32.into()));
+    let mut q2 = ParameterQueue::with_capacity(ParamAddress::Opaque(2u32.into()), 1);
     q2.add_point(64, 0.5);
     changes.add_queue(q2);
 

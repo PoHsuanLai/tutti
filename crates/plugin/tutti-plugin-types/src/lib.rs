@@ -18,10 +18,17 @@ mod midi;
 mod note_expression;
 mod note_id;
 mod parameters;
+mod points;
 mod presets;
 mod process;
 mod render_mode;
 mod transport;
+
+// Test-only global allocator for the no-alloc gates: panics on any heap
+// allocation inside `assert_no_alloc::assert_no_alloc(..)` scopes.
+#[cfg(test)]
+#[global_allocator]
+static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 /// Re-exported so every format crate spells a sample count the same way
 /// without each taking its own `tutti-types` dependency — `ChannelLayout`
@@ -46,6 +53,7 @@ pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescrip
 pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
 };
+pub use points::{PointBuf, PointPool};
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a
 // glob import.
 pub use error::{Delivered, PluginError, Result as PluginResult, StateError};
@@ -56,14 +64,14 @@ pub use format_host::{
 };
 pub use harmony::{
     ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
-    NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
+    NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue, HARMONY_CAPACITY,
 };
 pub use load_stage::LoadStage;
 pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use metadata::{BusChannels, BusTopologies, LoadedPlugin, PluginTail};
 pub use midi::{MidiEventVec, RtMidiEvents, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
-// `NoteExpressionVec` is the SmallVec alias the change list is built from, so
-// a caller assembling one has to name it.
+// `NoteExpressionVec` is the alias the change list is built from, so a caller
+// assembling one has to name it.
 pub use note_expression::{
     NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, NoteExpressionVec,
 };

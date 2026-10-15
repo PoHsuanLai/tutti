@@ -341,8 +341,21 @@ impl Vst3Instance {
     ///
     /// Polled between audio blocks by [`Plugin::poll_async_events`]; it must
     /// not be called concurrently with [`process`](Self::process).
+    ///
+    /// It runs in the server's audio phase, so with nothing requested it
+    /// allocates nothing. It reads the restart flag word
+    /// (`Vst3Loaded::take_restart`) and discards every other queued
+    /// notification (`Vst3Loaded::discard_notifications`: lock-free pops, and
+    /// no notification owns heap memory). The server has never forwarded a
+    /// VST3 plugin's edits, progress or unit news; discarding them each poll
+    /// keeps the host's bounded queue from holding a stale backlog and its
+    /// overflow count from climbing for events nobody reads.
     pub fn poll_restart(&mut self) -> RestartChanges {
-        let restart = vst_dispatch_mut!(self, inner => inner.poll_plugin_notifications()).restart;
+        vst_dispatch!(self, inner => inner.discard_notifications());
+        let restart = vst_dispatch!(self, inner => inner.take_restart());
+        if restart.is_empty() {
+            return RestartChanges::default();
+        }
         let mut changes = RestartChanges::default();
 
         // `kIoChanged` and `kLatencyChanged` both require the same
@@ -482,10 +495,11 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
         ctx.param_changes,
         &vst3_transport,
     );
-    // `out` was cleared by the caller, so both of these extend into storage
+    // `out` was cleared by the caller, so both of these write into storage
     // that already has capacity — no `to_owned`, no `clone`, and in particular
-    // no fresh `SmallVec` per block for the MIDI.
-    out.midi_events.extend(output.midi_events.iter().copied());
+    // no fresh list per block for the MIDI (past its cap the rest are dropped
+    // and counted).
+    out.emit_midi(output.midi_events.iter().copied());
     for queue in &output.parameter_changes.queues {
         for point in &queue.points {
             // `emit_param_point`, not `ParameterChanges::add_change`: the
@@ -765,6 +779,10 @@ impl PluginParams for Vst3Instance {
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         Vst3Instance::get_parameter_list(self)
     }
+
+    fn parameter_count(&self) -> usize {
+        vst_dispatch!(self, inner => inner.parameter_count() as usize)
+    }
 }
 
 impl PluginEditorHost for Vst3Instance {
@@ -946,6 +964,16 @@ impl PluginState for Vst3Instance {
     }
 }
 
+#[cfg(test)]
+impl Vst3Instance {
+    /// Calls the host's `restartComponent(flags)` as the plugin would, so a
+    /// session test can raise a restart the probe never raises on its own.
+    pub(crate) fn plugin_restart_component(&self, flags: i32) {
+        use tutti_vst3_host::host::conformance::plugin_restart_component;
+        vst_dispatch!(self, inner => plugin_restart_component(inner, flags));
+    }
+}
+
 /// Sequencer-context conversion, exercised without a plugin binary.
 ///
 /// These are the only tests in this file that run anywhere: everything below
@@ -970,7 +998,7 @@ mod seq_scratch_tests {
     fn changes(items: &[ChordValue]) -> ChordChanges {
         let mut c = ChordChanges::new();
         for i in items {
-            c.add_change(i.clone());
+            assert!(c.add_change(i.clone()), "the fixture fits the cap");
         }
         c
     }
@@ -1048,12 +1076,12 @@ mod seq_scratch_tests {
     fn int_expressions_refill_without_nesting() {
         use tutti_plugin::server::{NoteExpressionIntChanges, NoteExpressionIntValue};
         let mut src = NoteExpressionIntChanges::new();
-        src.add_change(NoteExpressionIntValue {
+        assert!(src.add_change(NoteExpressionIntValue {
             sample_offset: 4,
             note_id: 7,
             type_id: 2,
             value: 41,
-        });
+        }));
 
         let mut out = Vec::new();
         convert_expr_ints_into(&src, &mut out);
@@ -1090,6 +1118,65 @@ mod tests {
     /// assert rather than skip.
     fn multi_program_sample() -> &'static str {
         crate::test_utils::vst3_program_sample_path()
+    }
+
+    /// The server's restart poll runs in its audio phase, so it must not
+    /// allocate — even with a plugin's edits waiting in the host's queue,
+    /// which is the common case while a user drags a knob in the server-side
+    /// editor — and it discards those edits (the server never forwards them),
+    /// so no backlog builds up.
+    ///
+    /// Mutations: `poll_restart` reading through the main-thread drain
+    /// (`poll_plugin_notifications`) and collecting the queued edits into a
+    /// `Vec`, as it did before, aborts inside the gate — and does so even
+    /// with `conformance::plugin_perform_edit` made a no-op, because the
+    /// "64 queued" assertion then fails first. Dropping the
+    /// `discard_notifications` call fails the "queue is empty" assertion.
+    #[test]
+    fn the_restart_poll_does_not_allocate_with_edits_pending() {
+        use tutti_vst3_host::host::conformance::{plugin_perform_edit, plugin_restart_component};
+        // `RestartFlags_::kParamValuesChanged` (`ivsteditcontroller.h`). The
+        // assertion on `param_values_changed` below pins that this is the bit.
+        const K_PARAM_VALUES_CHANGED: i32 = 1 << 2;
+
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+
+        // Nothing pending: the idle poll every block takes.
+        assert_no_alloc::assert_no_alloc(|| {
+            let changes = instance.poll_restart();
+            assert!(!changes.param_values_changed && changes.latency.is_none());
+        });
+
+        vst_dispatch!(instance, inner => {
+            for i in 0..64 {
+                plugin_perform_edit(inner, 100, f64::from(i) / 64.0);
+            }
+            plugin_restart_component(inner, K_PARAM_VALUES_CHANGED);
+            plugin_restart_component(inner, K_PARAM_VALUES_CHANGED);
+        });
+        // The gate below is only meaningful if the edits are really there.
+        vst_dispatch!(instance, inner => {
+            assert_eq!(inner.dropped_notifications(), 0);
+            assert_eq!(inner.pending_notifications(), 64, "the edits are queued");
+        });
+
+        let changes = assert_no_alloc::assert_no_alloc(|| instance.poll_restart());
+        vst_dispatch!(instance, inner => assert_eq!(
+            inner.pending_notifications(),
+            0,
+            "the poll discards what the server never forwards"
+        ));
+        assert!(
+            changes.param_values_changed,
+            "the coalesced restart reaches the server"
+        );
+        assert!(!changes.io_changed && !changes.reloaded && changes.latency.is_none());
+        assert!(
+            !instance.poll_restart().param_values_changed,
+            "a poll consumes the restart"
+        );
     }
 
     /// A VST3 program keeps both coordinates, and its list's name.

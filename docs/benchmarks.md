@@ -86,7 +86,7 @@ The master tap is opt-in and the cost matches: 2.81 µs closed, 3.43 µs open
 ## Synth voices — `tutti-polysynth/benches/polysynth.rs`
 
 **The 16-voice cap is gone.** `PolySynth::new` used to reject a `max_voices`
-above the inline capacity of a `SmallVec<[usize; 16]>`; that list is now a
+above the 16 indices its finished-voice list held inline; that list is now a
 `Vec` sized at construction, so there is no ceiling. The table below still
 stops at 16 because that is where these numbers were measured — scaling is
 linear at ~1.9 µs per voice, so extend the axis rather than extrapolating if
@@ -206,8 +206,15 @@ criterion**:
   spread reached 81× on identical work. `just profile-stretch`.
 
 - **`tutti-plugin/tests/real_plugin_pressure.rs`** — out-of-process plugin
-  hosting, driven at true callback pacing, reporting **mean / p50 / p99 /
-  worst / over-deadline / non-silent** per run. `just pressure`.
+  hosting, driven at true callback pacing, reporting per run the clock it
+  read, each block's **wall-time p50 / p99 / worst / over-deadline**, the
+  median step and slowest step per block (on-CPU time on Linux), blocked
+  steps, and **non-silent** blocks. `just pressure`. The block figures are
+  printed, not asserted. The tests assert that no step waits for a
+  deliberately stalled plugin, which is the regression a block cost cannot
+  show (a plugin that answers in time is never waited for); that a working
+  step's median on-CPU time stays under 200 µs; and that an answering plugin
+  carries audio in at least 70% of blocks among eight plugins.
 
   It used to be `#[ignore]`d for needing third-party plugins *installed*, and
   `EFFECTS` names macOS system paths — so the only harness measuring the
@@ -222,7 +229,8 @@ criterion**:
   out-of-process cost the audio thread" and the wrong one for "how many real
   plugins fit". Each run prints which of the two it drove.
 
-  Host-side cost per block, reference CLAP probe, 200 blocks each:
+  Host-side cost per block, reference CLAP probe, 200 blocks each (a dated
+  run, from when `report` also printed a mean, and every probe answered):
 
   | instances | mean | p50 | p99 | worst | over deadline |
   |---|---|---|---|---|---|

@@ -199,8 +199,11 @@ pub(crate) fn route_cc_events(
             Some((channel, controller, value)) => match mapping.lookup(channel, controller) {
                 Some(param_id) => {
                     // `IMidiMapping` answers with a `ParamID` — opaque, like
-                    // every VST3 parameter address.
-                    out_params.add_change(
+                    // every VST3 parameter address. Past the queue's room it
+                    // keeps the latest value in time, the host's or the CC's
+                    // (`PointBuf::push_or_replace_last`), counted in the
+                    // set's `points_overflowed`.
+                    let _ = out_params.add_change(
                         ParamAddress::Opaque(param_id.into()),
                         event.frame_offset as i32,
                         value,
@@ -227,8 +230,8 @@ pub(crate) fn route_cc_events(
 /// Sorts every queue's points into ascending `sample_offset` order, as VST3's
 /// `IParamValueQueue` requires. Host automation is seeded before CC-derived
 /// points are appended (in MIDI-arrival order), so a queue carrying both can be
-/// unsorted even when each source was individually ordered. In place — the
-/// `points` SmallVec reuses its capacity, so this is allocation-free.
+/// unsorted even when each source was individually ordered. In place — each
+/// queue's points keep their storage, so no queue grows.
 ///
 /// The sort must be **stable**. VST3 encodes a discontinuity as two points —
 /// the old value, then the new one — and permits them to share a
@@ -253,23 +256,88 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 /// reused across blocks to keep the routing pass allocation-free; `mapping` is
 /// rebuilt only when the plugin signals `kMidiCCAssignmentChanged` (see
 /// [`Vst3Active::rebuild_midi_cc_mapping`](crate::Vst3Active)).
+///
+/// **`param_changes` is reserved exactly while `mapping` is non-empty.** The
+/// reservation is the layout the host's chunk arrives in
+/// (`ParameterChanges::reserved`, `point_budget(queues, room)`: up to 16448
+/// queues of a few points each and a shared pool of a block's chunk room and
+/// one more, about a megabyte at a large block; past it a point gives way,
+/// counted, and nothing grows), and `route` never touches
+/// the scratch for an empty mapping, so a plugin with no CC mapping (most of
+/// them) holds none of it. `mapping` is private so that the only ways to
+/// change it, [`new`](Self::new) and [`set_mapping`](Self::set_mapping), both
+/// run off the audio thread and keep the two in step: `route` never sees a
+/// non-empty mapping over unreserved scratch.
 pub(crate) struct CcRoute {
-    pub(crate) mapping: MidiCcMapping,
+    mapping: MidiCcMapping,
     filtered_midi: RtMidiEvents,
     param_changes: ParameterChanges,
+    /// The parameter queues to reserve (the host's chunk's: the plugin's
+    /// parameter count and the spare ones).
+    queues: usize,
+    /// The chunk room the scratch is reserved for (the host input list's:
+    /// `ParameterQueue::chunk_room` at the activated block size).
+    room: usize,
+    /// Points the scratch's own count does not hold (see
+    /// [`points_overflowed`](Self::points_overflowed)): those of earlier
+    /// scratches, kept across a [`set_mapping`](Self::set_mapping) that replaces the
+    /// scratch, and the host's points the seed could not copy.
+    overflowed: u64,
 }
 
 impl CcRoute {
     /// Builds with `mapping` and empty scratch. The MIDI scratch is capped
-    /// and never grows; `param_changes` has room for `queues` parameter
-    /// queues (the plugin's parameter count), and past that grows once and
-    /// is reused thereafter.
-    pub(crate) fn new(mapping: MidiCcMapping, queues: usize) -> Self {
-        Self {
-            mapping,
+    /// and never grows. When `mapping` is non-empty, `param_changes` is
+    /// reserved with `queues` parameter queues (the host's chunk's) for a
+    /// chunk room of `room` (the host input list's) in the layout
+    /// (`ParameterChanges::reserved`: a floor of `FLOOR_POINTS + 1` each and
+    /// a shared pool of blocks of `room + 1`, as the host's chunk arrives,
+    /// carried values and all), and never grows:
+    /// past it a point gives way to its parameter's latest value, counted
+    /// ([`points_overflowed`](Self::points_overflowed)); when it is empty,
+    /// `param_changes` holds nothing until [`set_mapping`](Self::set_mapping)
+    /// installs a non-empty one. Allocates; call it off the audio thread.
+    pub(crate) fn new(mapping: MidiCcMapping, queues: usize, room: usize) -> Self {
+        let mut route = Self {
+            mapping: MidiCcMapping::empty(),
             filtered_midi: RtMidiEvents::new(),
-            param_changes: ParameterChanges::with_capacity(queues),
+            param_changes: ParameterChanges::new(),
+            queues,
+            room,
+            overflowed: 0,
+        };
+        route.set_mapping(mapping);
+        route
+    }
+
+    /// Points the merged host-automation and CC changes could not hold
+    /// whole since the route was built: past a queue's room with the
+    /// scratch's pool spent (the queue kept the parameter's latest value,
+    /// host or CC, whichever is later), or for a parameter past every
+    /// reserved queue (dropped). Zero while the host's chunk and the
+    /// mapped controllers stay within the reservation.
+    pub(crate) fn points_overflowed(&self) -> u64 {
+        self.overflowed + self.param_changes.points_overflowed()
+    }
+
+    /// Installs `mapping`, reserving the param scratch when it is non-empty
+    /// and the scratch is not reserved yet, and releasing it when `mapping`
+    /// is empty. A scratch already reserved is kept as it was reserved.
+    /// Allocates or frees; call it off the audio thread (the `&mut self`
+    /// already excludes a concurrent `route`).
+    pub(crate) fn set_mapping(&mut self, mapping: MidiCcMapping) {
+        let replaced = if mapping.is_empty() {
+            Some(ParameterChanges::new())
+        } else if self.mapping.is_empty() {
+            Some(ParameterChanges::reserved(self.queues, self.room))
+        } else {
+            None
+        };
+        if let Some(scratch) = replaced {
+            let old = core::mem::replace(&mut self.param_changes, scratch);
+            self.overflowed += old.points_overflowed();
         }
+        self.mapping = mapping;
     }
 
     /// Route `IMidiMapping`-mapped controllers into parameter changes, returning
@@ -298,22 +366,28 @@ impl CcRoute {
             return None;
         }
 
-        // Clear scratch in place (keep heap capacity).
+        // Clear scratch in place: the param queues go back to the set's
+        // spares with their point storage, so the next block reuses them.
         self.filtered_midi.clear();
-        for queue in self.param_changes.queues.iter_mut() {
-            queue.points.clear();
-        }
-        self.param_changes.queues.clear();
+        self.param_changes.clear();
 
-        // Seed the merged param changes with the host's automation.
+        // Seed the merged param changes with the host's automation, a
+        // queue opened for each of the host's (its addresses are distinct),
+        // so the copy is linear in the chunk. The layout fits a floor queue
+        // carrying the bridge's carried value in its own room, so the pool's
+        // blocks go to the queues at full room wherever they are in the
+        // chunk. A queue past the reservation is dropped, counted.
         if let Some(pc) = param_changes {
+            let changes = &mut self.param_changes;
             for queue in &pc.queues {
+                if !changes.open_queue(queue.param_id) {
+                    self.overflowed += queue.points.len() as u64;
+                    continue;
+                }
+                let i = changes.queues.len() - 1;
                 for point in &queue.points {
-                    self.param_changes.add_change(
-                        queue.param_id,
-                        point.sample_offset,
-                        point.value.get(),
-                    );
+                    let stored = changes.push_point(i, point.sample_offset, point.value.get());
+                    self.overflowed += u64::from(!stored);
                 }
             }
         }
@@ -465,7 +539,7 @@ mod tests {
         ];
 
         let mut filtered = RtMidiEvents::new();
-        let mut params = ParameterChanges::new();
+        let mut params = ParameterChanges::reserved(1, 1);
         route_cc_events(&mapping, &events, &mut filtered, &mut params);
 
         // Mod wheel went to params.
@@ -496,7 +570,7 @@ mod tests {
         .with_frame_offset(0)];
 
         let mut filtered = RtMidiEvents::new();
-        let mut params = ParameterChanges::new();
+        let mut params = ParameterChanges::reserved(2, 1);
         // Pre-seed with a host automation point (as the audio path does).
         params.add_change(ParamAddress::Opaque(42u32.into()), 0, 0.25);
         route_cc_events(&mapping, &events, &mut filtered, &mut params);
@@ -543,7 +617,7 @@ mod tests {
         ];
 
         let mut filtered = RtMidiEvents::new();
-        let mut params = ParameterChanges::new();
+        let mut params = ParameterChanges::reserved(2, 3);
         // Seed the SAME param (500) with host automation at a middle offset,
         // plus a separate param to prove per-queue sorting.
         params.add_change(ParamAddress::Opaque(500u32.into()), 50, 0.5);
@@ -597,7 +671,7 @@ mod tests {
     /// either sort and pin nothing.
     #[test]
     fn points_sharing_a_sample_offset_keep_their_insertion_order() {
-        let mut params = ParameterChanges::new();
+        let mut params = ParameterChanges::reserved(1, 80);
         let param = ParamAddress::Opaque(500u32.into());
 
         // 40 offsets arriving high-to-low, each carrying a two-point jump.
@@ -643,8 +717,334 @@ mod tests {
         );
     }
 
+    /// A route with no CC mapping reserves no param scratch, and the scratch
+    /// is reserved when [`CcRoute::set_mapping`] (what
+    /// `rebuild_midi_cc_mapping` calls on the control thread) installs a
+    /// non-empty mapping, and released when it installs an empty one. The
+    /// sizes are the production cap (16384 queues) and a 4096-frame block's
+    /// chunk room, where reserving regardless costs tens of megabytes per
+    /// instance. The first block after the rebuild is then routed inside
+    /// the no-alloc gate with no warm-up, which the reservation makes
+    /// allocation-free.
+    ///
+    /// Mutations (run): `new` reserving regardless of the mapping (the
+    /// previous code) → the empty route's `capacity()` is 16384 → fails;
+    /// `set_mapping` not reserving when the mapping becomes non-empty →
+    /// `capacity()` stays 0 → fails (and the next test, whose `new` goes
+    /// through `set_mapping`, aborts in its gate); `set_mapping` keeping the
+    /// scratch when the mapping empties → the last `capacity()` is 16384 →
+    /// fails.
+    #[test]
+    fn cc_route_reserves_only_while_mapped() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        const QUEUES: usize = 1 << 14;
+        let room = tutti_plugin_types::ParameterQueue::chunk_room(4096);
+
+        let mut route = CcRoute::new(MidiCcMapping::empty(), QUEUES, room);
+        assert_eq!(route.param_changes.capacity(), 0, "no mapping, no queues");
+        assert_eq!(route.param_changes.point_storage(), 0, "no spare queues");
+        assert!(route.route(&[], None).is_none());
+
+        route.set_mapping(mod_wheel_mapping(500));
+        assert_eq!(route.param_changes.capacity(), QUEUES);
+        assert_eq!(
+            route.param_changes.point_storage(),
+            ParameterChanges::point_budget(QUEUES, room)
+        );
+
+        let events = [MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::MOD_WHEEL,
+            midi1_cc_to_midi2(64),
+        )
+        .with_frame_offset(3)];
+        let mut host = ParameterChanges::reserved(1, 1);
+        host.add_change(ParamAddress::Opaque(7u32.into()), 0, 0.25);
+        assert_no_alloc::assert_no_alloc(|| {
+            let (midi, params) = route.route(&events, Some(&host)).expect("mapped");
+            assert!(midi.is_empty(), "the only event was a mapped CC");
+            assert_eq!(params.queues.len(), 2, "host automation + the CC");
+        });
+
+        route.set_mapping(MidiCcMapping::empty());
+        assert_eq!(route.param_changes.capacity(), 0, "released when unmapped");
+    }
+
+    /// The very first block is allocation-free with no warm-up: every queue
+    /// it opens is a reserved spare with room for `points` points, so the
+    /// host automation it seeds (several points on one parameter) and the
+    /// CC point it appends push into existing storage. This is what the
+    /// `points` argument buys; the warm-up test below cannot see it, because
+    /// its warm-up grows the queues before the gate.
+    ///
+    /// Mutation (run): `CcRoute::new(mapping, 4, 0)` (reserved queues with
+    /// no chunk room, only the carried value's point) → the host queue
+    /// keeps one point (its latest), not four, and the assertion inside the
+    /// gate aborts → fails. (Reworded with
+    /// `PointBuf`: the seeded points allocated inside the gate before.)
+    #[test]
+    fn cc_route_first_block_is_allocation_free_without_warmup() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        let events = [
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(64),
+            )
+            .with_frame_offset(16),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+        ];
+        let mut host = ParameterChanges::reserved(1, 4);
+        for (offset, value) in [(0, 0.1), (8, 0.2), (24, 0.3), (40, 0.4)] {
+            host.add_change(ParamAddress::Opaque(7u32.into()), offset, value);
+        }
+
+        let mut route = CcRoute::new(mod_wheel_mapping(500), 4, 4);
+        assert_no_alloc::assert_no_alloc(|| {
+            let (midi, params) = route.route(&events, Some(&host)).expect("mapped");
+            assert_eq!(midi.len(), 1, "the note passes through");
+            assert_eq!(params.queues.len(), 2, "host automation + the CC");
+            let host_queue = params
+                .get_queue(ParamAddress::Opaque(7u32.into()))
+                .expect("host queue");
+            assert_eq!(host_queue.points.len(), 4);
+        });
+    }
+
+    /// **Merged host automation and CC points never grow the reserved
+    /// scratch, past its pool too.** 1 000 parameters at a 512-frame block,
+    /// reserved as activation reserves the route. Warmed with one pattern
+    /// (the host's chunk moving parameters `0..256` at a full room, one CC
+    /// for the mapped parameter), then measured with another inside the
+    /// no-alloc gate (parameters `256..512`, so no warm-up left them storage,
+    /// and four CCs for the mapped parameter, whose fourth is past its floor
+    /// of `FLOOR_POINTS + 1` with the scratch's pool spent): nothing
+    /// allocates, the mapped parameter ends on its latest CC value, and one
+    /// point is counted. (Reworded with `PointBuf` and the carried layout:
+    /// three CCs, past a floor of `FLOOR_POINTS`, before.)
+    ///
+    /// Mutation (run): `PointBuf::replace_latest` dropping the point (the
+    /// queue keeping its earlier points) → the mapped parameter ends on its
+    /// third CC's value → fails.
+    #[test]
+    fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        const QUEUES: usize = 1_000;
+        const MAPPED: u32 = 999;
+        let room = tutti_plugin_types::ParameterQueue::chunk_room(512);
+        let pooled = ParameterChanges::POOLED_QUEUES as u32;
+        let chunk = |moving: core::ops::Range<u32>| {
+            let mut host = ParameterChanges::reserved(QUEUES, room);
+            for id in moving {
+                for k in 0..room {
+                    assert!(host.add_change(ParamAddress::Opaque(id.into()), k as i32, 0.5));
+                }
+            }
+            host
+        };
+        let cc = |frame: u32, value: u8| {
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(value),
+            )
+            .with_frame_offset(frame)
+        };
+        let (warm, measured) = (chunk(0..pooled), chunk(pooled..2 * pooled));
+        let one = [cc(0, 10)];
+        let four = [cc(0, 10), cc(8, 20), cc(16, 30), cc(24, 127)];
+        let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), QUEUES, room);
+        let _ = route.route(&one, Some(&warm)).expect("mapped");
+        assert_eq!(route.points_overflowed(), 0);
+        assert_no_alloc::assert_no_alloc(|| {
+            let _ = route.route(&four, Some(&measured)).expect("mapped");
+        });
+        assert_eq!(route.points_overflowed(), 1);
+        let (_, params) = route.route(&four, Some(&measured)).expect("mapped");
+        let q = params
+            .get_queue(ParamAddress::Opaque(MAPPED.into()))
+            .expect("the CC");
+        assert_eq!(q.points.len(), ParameterChanges::FLOOR_POINTS + 1);
+        assert_eq!(
+            q.points.last().map(|p| (p.sample_offset, p.value.get())),
+            Some((24, 1.0))
+        );
+        assert_eq!(route.points_overflowed(), 2);
+    }
+
+    /// **The host's chunk reaches the route whole, carried values and all,
+    /// wherever its full queues are.** 2 000 parameters at a 512-frame
+    /// block, the route reserved as activation reserves it. The host's
+    /// chunk as the bridge hands it on, moving every parameter but the
+    /// mapped one: every floor queue carrying three points (two of its own
+    /// and the skipped block's carried value) and the *last*
+    /// `POOLED_QUEUES` moved at their room and the carried value. The route
+    /// copies it in queue order; nothing is counted, with or without a CC
+    /// for the mapped parameter (which takes a spare queue), and nothing
+    /// allocates.
+    ///
+    /// Mutation (run): the seed pushing into each queue's own room only
+    /// (`try_push` on the queue, no block borrowed) → the full queues'
+    /// points past their floor are counted → fails. (Reworded with the one
+    /// layout: the mutation was the scratch in the plain layout, which no
+    /// longer exists.)
+    #[test]
+    fn a_bridged_chunk_reaches_the_route_whole() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        const QUEUES: usize = 2_000;
+        const MAPPED: u32 = QUEUES as u32 - 1;
+        let moved = QUEUES - 1;
+        let room = tutti_plugin_types::ParameterQueue::chunk_room(512);
+        let full = moved - ParameterChanges::POOLED_QUEUES..moved;
+        let mut host = ParameterChanges::reserved_bridged(QUEUES, room);
+        for id in 0..moved {
+            let points = if full.contains(&id) {
+                room
+            } else {
+                ParameterChanges::FLOOR_POINTS
+            };
+            for k in 0..points {
+                assert!(host.add_change(
+                    ParamAddress::Opaque((id as u32).into()),
+                    1 + k as i32,
+                    0.5
+                ));
+            }
+            assert!(host.prepend_carried(
+                id,
+                tutti_plugin_types::ParameterPoint {
+                    sample_offset: 0,
+                    value: tutti_plugin_types::Normalized::new(0.25),
+                },
+            ));
+        }
+        let mapped = MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::MOD_WHEEL,
+            midi1_cc_to_midi2(64),
+        );
+        for events in [&[][..], &[mapped][..]] {
+            let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), QUEUES, room);
+            assert_no_alloc::assert_no_alloc(|| {
+                let _ = route.route(events, Some(&host)).expect("mapped");
+            });
+            assert_eq!(route.points_overflowed(), 0, "{} CC events", events.len());
+            let (_, params) = route.route(events, Some(&host)).expect("mapped");
+            for (got, want) in params.queues.iter().zip(&host.queues) {
+                assert_eq!(got.param_id, want.param_id);
+                assert_eq!(got.points.len(), want.points.len());
+            }
+            let cc = params.get_queue(ParamAddress::Opaque(MAPPED.into()));
+            assert_eq!(
+                cc.map(|q| q.points.len()),
+                (!events.is_empty()).then_some(1)
+            );
+        }
+    }
+
+    /// **The seed copies the host's chunk queue by queue, and counts what
+    /// it cannot hold.** A route reserved for two queues of a room of two
+    /// (three points each), seeded inside the no-alloc gate from a chunk of
+    /// three queues: the first two are copied, the first's fourth point
+    /// keeping its latest value (one counted), and the third queue, past
+    /// the reservation, is dropped with its two points counted.
+    ///
+    /// Mutations (run), each fails: the seed not counting a point past a
+    /// queue's room → the count is 2; not counting a queue past the
+    /// reservation → the count is 1. Not covered: the seed's cost, linear in
+    /// the chunk (through `add_change`, as it was, it scanned the open
+    /// queues for every point); nothing but time observes it.
+    #[test]
+    fn the_seed_copies_the_host_chunk_and_counts_what_it_cannot_hold() {
+        let mut host = ParameterChanges::reserved(3, 4);
+        for (id, points) in [(1u32, 4), (2, 3), (3, 2)] {
+            for k in 0..points {
+                assert!(host.add_change(ParamAddress::Opaque(id.into()), 10 * k, 0.5));
+            }
+        }
+        let mut route = CcRoute::new(mod_wheel_mapping(500), 2, 2);
+        assert_no_alloc::assert_no_alloc(|| {
+            let _ = route.route(&[], Some(&host)).expect("mapped");
+        });
+        let got: Vec<(u32, Vec<i32>)> = route
+            .param_changes
+            .queues
+            .iter()
+            .map(|q| {
+                let id = q.param_id.opaque().map_or(0, |id| id.get());
+                (id, q.points.iter().map(|p| p.sample_offset).collect())
+            })
+            .collect();
+        assert_eq!(got, [(1, vec![0, 10, 30]), (2, vec![0, 10, 20])]);
+        assert_eq!(route.points_overflowed(), 3);
+    }
+
+    /// **A queue with two sources ends on its latest value.** The host's
+    /// chunk gives a parameter a full queue, its last point late in the
+    /// block; a mapped CC for it arrives earlier, with the scratch's room
+    /// spent. The CC is earlier than the host's latest point, so the host's
+    /// point stays and the queue ends on it; a CC later than every host
+    /// point takes the latest's place and the queue ends on the CC.
+    ///
+    /// Mutation (run): the merge replacing the queue's last point whatever
+    /// the new point's time (`PointBuf::replace_latest` without its `>=`
+    /// check, as the `pop` and push did) → the early CC evicts the host's
+    /// frame-400 point and the sorted queue ends on frame 300 → fails. (The
+    /// last point *added* rather than the latest in time, `.last()` in
+    /// `replace_latest`, survives here, since the host's points arrive in
+    /// order; `push_or_replace_last_keeps_the_latest_value` kills it.)
+    #[test]
+    fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        const MAPPED: u32 = 7;
+        // One queue, at the full carried room (`room + 1`), the host's chunk
+        // filling it.
+        let room = 4;
+        let mut host = ParameterChanges::reserved(1, room + 1);
+        for (offset, value) in [(0, 0.0), (100, 0.25), (200, 0.5), (300, 0.625), (400, 0.75)] {
+            assert!(host.add_change(ParamAddress::Opaque(MAPPED.into()), offset, value));
+        }
+        let cc = |frame: u32, value: u8| {
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                CCNumber::MOD_WHEEL,
+                midi1_cc_to_midi2(value),
+            )
+            .with_frame_offset(frame)
+        };
+        let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);
+        let mut ends = |events: &[MidiEvent]| {
+            let (_, params) = route.route(events, Some(&host)).expect("mapped");
+            let q = params
+                .get_queue(ParamAddress::Opaque(MAPPED.into()))
+                .expect("queued");
+            assert!(q
+                .points
+                .windows(2)
+                .all(|w| w[0].sample_offset <= w[1].sample_offset));
+            q.points.last().map(|p| (p.sample_offset, p.value.get()))
+        };
+        assert_eq!(ends(&[cc(150, 127)]), Some((400, 0.75)));
+        assert_eq!(ends(&[cc(450, 127)]), Some((450, 1.0)));
+        assert_eq!(route.points_overflowed(), 2);
+    }
+
     /// RT regression: once the scratch buffers are warmed, repeated routing
-    /// must not allocate. Mirrors the audio path's clear-in-place discipline.
+    /// must not allocate. Drives [`CcRoute::route`] itself, host automation
+    /// seeded and all, rather than a copy of its clear discipline: the
+    /// discipline is what changed when the queues stopped holding points
+    /// inline (a queue dropped by `queues.clear()` and rebuilt has no room,
+    /// so its first point allocates), and a copy would not have followed it.
+    ///
+    /// Mutation (run): `route` clearing with `queues.clear()` (dropping the
+    /// queues, the old discipline) instead of `ParameterChanges::clear` →
+    /// every block rebuilds its queues inside the gate → fails.
     #[test]
     fn route_cc_events_is_allocation_free_after_warmup() {
         use tutti_midi_types::convert::midi1_cc_to_midi2;
@@ -669,24 +1069,19 @@ mod tests {
             .with_frame_offset(32),
         ];
 
-        let mut filtered = RtMidiEvents::new();
-        let mut params = ParameterChanges::new();
+        let mut route = CcRoute::new(mapping, 4, 16);
+        let mut host = ParameterChanges::reserved(1, 2);
+        host.add_change(ParamAddress::Opaque(7u32.into()), 0, 0.25);
+        host.add_change(ParamAddress::Opaque(7u32.into()), 48, 0.75);
 
-        // Warm up: grow both buffers' capacity once.
-        let clear = |filtered: &mut RtMidiEvents, params: &mut ParameterChanges| {
-            filtered.clear();
-            for q in params.queues.iter_mut() {
-                q.points.clear();
-            }
-            params.queues.clear();
-        };
-        route_cc_events(&mapping, &events, &mut filtered, &mut params);
-        clear(&mut filtered, &mut params);
+        // Warm up once, outside the gate.
+        let _ = route.route(&events, Some(&host));
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..10_000 {
-                route_cc_events(&mapping, &events, &mut filtered, &mut params);
-                clear(&mut filtered, &mut params);
+                let (midi, params) = route.route(&events, Some(&host)).expect("mapped");
+                assert_eq!(midi.len(), 3, "the mapped CC is taken out");
+                assert_eq!(params.queues.len(), 2, "host automation + the CC");
             }
         });
     }

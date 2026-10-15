@@ -1143,7 +1143,7 @@ fn report_host_capability_score() {
     // as those arrive. Reading while still active cannot see anything `process`
     // observed.
     let mut inst = inst.deactivate();
-    let _ = inst.poll_plugin_notifications();
+    let _ = inst.poll_plugin_notifications(|_| {});
 
     let score = inst.get_parameter(K_SCORE_TAG);
     eprintln!(
@@ -1180,14 +1180,14 @@ fn restart_component_requests_reach_the_host() {
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
     // Drain anything latched during load so the assertion is about our trigger.
-    let _ = inst.poll_plugin_notifications();
+    let _ = inst.poll_plugin_notifications(|_| {});
 
     inst.set_parameter(K_RESTART_PARAM_VALUES_TAG, 1.0);
     inst.set_parameter(K_RESTART_PARAM_TITLES_TAG, 1.0);
-    let notifications = inst.poll_plugin_notifications();
+    let restart = inst.poll_plugin_notifications(|_| {});
 
     assert!(
-        notifications.restart.param_values_changed || notifications.restart.param_titles_changed,
+        restart.param_values_changed || restart.param_titles_changed,
         "plugin requested restartComponent(kParamValuesChanged / kParamTitlesChanged) \
          but neither reached the host through poll_plugin_notifications()"
     );
@@ -1214,18 +1214,23 @@ fn progress_reports_are_accepted() {
     let path = require_host_checker();
     let mut inst = Vst3Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
-    let _ = inst.poll_plugin_notifications();
+    let _ = inst.poll_plugin_notifications(|_| {});
 
     inst.set_parameter(K_TRIGGER_PROGRESS_TAG, 1.0);
-    let notifications = inst.poll_plugin_notifications();
+    let mut progress = 0;
+    let _ = inst.poll_plugin_notifications(|n| {
+        if matches!(n, tutti_vst3_host::PluginNotification::Progress(_)) {
+            progress += 1;
+        }
+    });
     eprintln!(
         "IProgress: {} event(s) observed (0 is expected headless — the plugin \
          drives progress from an editor timer)",
-        notifications.progress.len()
+        progress
     );
 
     inst.set_parameter(K_TRIGGER_PROGRESS_TAG, 0.0);
-    let _ = inst.poll_plugin_notifications();
+    let _ = inst.poll_plugin_notifications(|_| {});
 }
 
 /// `IPrefetchableSupport` must be queryable without upsetting the plugin.
@@ -1318,7 +1323,7 @@ fn midi_learn_forwards_from_the_main_thread() {
     );
 
     // The forward happens here, on this (main) thread.
-    let _ = inst.poll_plugin_notifications();
+    let _ = inst.poll_plugin_notifications(|_| {});
     inst.arm_midi_learn(false);
     assert!(!inst.is_midi_learn_armed());
 }
@@ -1764,7 +1769,7 @@ fn parameter_changes_are_spec_clean() {
         let Some(param_id) = first_parameter_id(&path) else {
             continue;
         };
-        let mut params = ParameterChanges::new();
+        let mut params = ParameterChanges::reserved(1, 3);
         let param_id = param_address(param_id);
         params.add_change(param_id, 384, 0.75);
         params.add_change(param_id, 0, 0.25);

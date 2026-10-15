@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use tutti_core::{ChannelLayout, SampleRate};
+use tutti_core::{ChannelLayout, RtVec, SampleRate};
 use tutti_graph::{
     Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
@@ -44,8 +44,10 @@ pub const CLOCK_EVENT_CAPACITY: usize = 256;
 /// ```
 pub struct ClockNode {
     master: Arc<ClockMaster>,
-    /// Where a block's events are gathered, to go out in offset order.
-    pending: Vec<MidiEvent>,
+    /// Where a block's events are gathered, to go out in offset order. Capped
+    /// at the port's capacity: past it an event is refused and counted on the
+    /// master ([`ClockMaster::dropped_events`]), never grown into.
+    pending: RtVec<MidiEvent, CLOCK_EVENT_CAPACITY>,
 }
 
 impl ClockNode {
@@ -53,7 +55,7 @@ impl ClockNode {
     pub fn new() -> Self {
         Self {
             master: Arc::new(ClockMaster::new(SampleRate(0.0))),
-            pending: Vec::with_capacity(CLOCK_EVENT_CAPACITY),
+            pending: RtVec::new(),
         }
     }
 }
@@ -83,18 +85,21 @@ impl Node for ClockNode {
         let block_len = cx.env.block_len;
         self.pending.clear();
         let pending = &mut self.pending;
+        let mut dropped = 0u64;
         for (start, seg) in cx.env.segments() {
             let base = start.get();
             self.master
                 .tick(&seg.transport, seg.block_len.get(), &mut |e: MidiEvent| {
                     // Never grows on the audio thread: past the capacity the
-                    // rest are dropped, as the port would refuse them.
-                    if pending.len() < pending.capacity() {
-                        pending.push(e.with_frame_offset(base + e.frame_offset));
+                    // rest are refused, as the port would refuse them, and
+                    // counted for the host.
+                    if !pending.push(e.with_frame_offset(base + e.frame_offset)) {
+                        dropped += 1;
                     }
                 });
         }
-        in_offset_order(&mut self.pending);
+        self.master.count_dropped(dropped);
+        in_offset_order(self.pending.as_mut_slice());
         let out = io.event_out(0);
         for e in &self.pending {
             let _ = out.push(Event::midi(offset_of(e, block_len), e.data));

@@ -14,7 +14,7 @@
 //! The plugin's parameter list is read once, when the client is loaded
 //! (`PluginClient::new`, which blocks on the plugin-server anyway), and
 //! [`ParamDelivery::new`] sizes everything from it on the control thread:
-//! one slot per parameter, plus [`SPARE_SLOTS`] for addresses the list did
+//! one slot per parameter, plus [`ParameterChanges::SPARE_QUEUES`] for addresses the list did
 //! not name (a plugin that grows a parameter later, or a list the server
 //! could not give). A chunk's [`ParameterChanges`] has room for a queue per
 //! slot, so every parameter can move in the same chunk; this replaces the 16
@@ -27,19 +27,29 @@
 //! and 256 more (a lane's corners in one block):
 //! [`ParameterQueue::chunk_room`], design doc 014 §9 requirement 6. It is
 //! sized in [`prepare`](ParamDelivery::prepare) once the chunk length is
-//! known (`ParameterChanges::reserved`, here and in the bridge's buffers).
-//! The queues are kept, emptied, from chunk to chunk, so their point storage
-//! is never freed or rebuilt on the audio thread.
+//! known (`ParameterChanges::reserved_bridged`, here and in the bridge's
+//! buffers). That room is logical: each queue owns
+//! `ParameterChanges::FLOOR_POINTS` points, and a queue that needs more
+//! takes a block of the full room from the chunk's shared pool
+//! (`ParameterChanges::make_room`), so the memory follows the points a
+//! chunk carries (any `ParameterChanges::POOLED_QUEUES` parameters at full
+//! density at once), not the parameter count. The queues and the pool are
+//! kept, emptied, from chunk to chunk, so their point storage is never
+//! freed or rebuilt on the audio thread.
 //!
-//! Past the room, **grid points go before corners**: a point is a grid
-//! point when the play clock's count on its frame is a multiple of 32 (the
-//! caller says so; the plugin node reads its own `Cx::play_at`). A grid
-//! point that finds its queue full is dropped; any other point evicts the
-//! queue's earliest grid point. Both are counted
+//! A queue is **full** when it is at its room, or at its floor with the
+//! pool spent (more than `POOLED_QUEUES` parameters past their floor in one
+//! chunk). Then **grid points go before corners**: a point is a grid point
+//! when the play clock's count on its frame is a multiple of 32 (the caller
+//! says so; the plugin node reads its own `Cx::play_at`). A grid point that
+//! finds its queue full is dropped; any other point evicts the queue's
+//! earliest grid point. Both are counted
 //! ([`ParamDeliveryStats::grid_points_dropped`]). Only a queue full of
-//! corners has its last point replaced, counted
+//! corners keeps its latest value in place of its latest point (the one
+//! full-queue policy, `PointBuf::replace_latest`), counted
 //! ([`ParamDeliveryStats::points_merged`]); the chunk still ends on the
-//! latest value.
+//! latest value, because a parameter's last point in a chunk is a corner
+//! (the chunk's last frame, an arrival or a ramp).
 //!
 //! An address past every slot is the one bound left. Its points are refused
 //! and counted ([`ParamDeliveryStats::points_dropped`]), never silently.
@@ -114,10 +124,6 @@ use std::sync::{Arc, OnceLock};
 use super::param_automation_source::MAX_POINTS;
 use crate::protocol::{Normalized, ParamAddress, ParameterChanges, ParameterQueue};
 
-/// Slots beyond the plugin's parameter list, for addresses it did not name:
-/// learned on the audio thread, within the reserved capacity.
-pub(crate) const SPARE_SLOTS: usize = 64;
-
 /// A slot with no queue in the chunk being filled.
 const NO_QUEUE: u32 = u32::MAX;
 
@@ -151,7 +157,10 @@ pub struct ParamDeliveryStats {
     /// the queue was full of corners: a chunk carries a point per 32 frames
     /// per parameter, its last frame and 256 corners, and a source with more
     /// corners than that loses the points between (the chunk still ends on
-    /// the latest value).
+    /// the latest value). A queue past its own few points draws on the
+    /// chunk's shared point pool (`ParameterChanges::POOLED_QUEUES`
+    /// parameters at full room); with the pool spent it is full at its
+    /// floor, and counted here the same way once it holds no grid point.
     pub points_merged: u64,
     /// Grid points (on a frame whose play count is a multiple of 32) dropped
     /// from a full queue, to make room for a corner or because the grid
@@ -266,6 +275,141 @@ impl Slot {
     }
 }
 
+/// Which points of each queue in the chunk being filled are grid points
+/// (design doc 014 §9 requirement 6), a bit a point, stored the way the
+/// chunk stores its points: each queue's own bits for its floor, and a
+/// block's bits for a queue that took one of the pool's blocks. So the bits
+/// follow the points a chunk carries, as the points do, not the parameter
+/// count times the room: about 12 bytes a queue and
+/// `POOLED_QUEUES × ceil((room + 1) / 64)` words besides (about 40 KB for
+/// 2 064 queues at a 4096-frame chunk). Reserved in
+/// [`ParamDelivery::prepare`]; allocation-free after.
+#[derive(Debug)]
+struct GridBits {
+    words: Vec<u64>,
+    /// Each queue's bits: its first word in `words`, and how many.
+    span: Vec<(u32, u32)>,
+    /// Words of a queue's own bits, and of a block's.
+    own: usize,
+    block: usize,
+    /// The blocks' bits, and the next one not yet taken this chunk.
+    blocks: usize,
+    next: usize,
+}
+
+impl GridBits {
+    /// Bits for `queues` queues of a chunk room of `room`, laid out as
+    /// `ParameterChanges::reserved_bridged(queues, room)` lays out its
+    /// points. Allocates.
+    fn new(queues: usize, room: usize) -> Self {
+        let (floor, blocks) = ParameterChanges::point_layout(queues, room);
+        let own = floor.div_ceil(64);
+        let block = room.saturating_add(1).div_ceil(64);
+        Self {
+            words: vec![0; queues * own + blocks * block],
+            span: vec![(0, 0); queues],
+            own,
+            block,
+            blocks,
+            next: 0,
+        }
+    }
+
+    /// Queue `q` was opened, empty: its own bits, cleared. The first queue
+    /// opened starts a chunk, and takes the blocks' bits back.
+    fn open(&mut self, q: usize) {
+        if q == 0 {
+            self.next = 0;
+        }
+        let Some(span) = self.span.get_mut(q) else {
+            return;
+        };
+        let start = q * self.own;
+        *span = (
+            u32::try_from(start).unwrap_or(u32::MAX),
+            u32::try_from(self.own).unwrap_or(0),
+        );
+        if let Some(w) = self.words.get_mut(start..start + self.own) {
+            w.fill(0);
+        }
+    }
+
+    /// Queue `q`'s points have storage for `capacity` now: when that
+    /// outgrew its bits (it took a pool block), its bits move to a block's.
+    /// Past the blocks' bits (a buffer of another layout swapped in), the
+    /// bits stay as they are, and a point past them reads as a corner.
+    fn fits(&mut self, q: usize, capacity: usize) {
+        let Some(&(start, words)) = self.span.get(q) else {
+            return;
+        };
+        let (start, words) = (start as usize, words as usize);
+        let need = capacity.div_ceil(64);
+        if need <= words || self.next >= self.blocks || need > self.block {
+            return;
+        }
+        let to = self.span.len() * self.own + self.next * self.block;
+        self.next += 1;
+        self.words.copy_within(start..start + words, to);
+        self.words[to + words..to + self.block].fill(0);
+        self.span[q] = (
+            u32::try_from(to).unwrap_or(u32::MAX),
+            u32::try_from(self.block).unwrap_or(0),
+        );
+    }
+
+    /// Queue `q`'s bits, if it has any.
+    fn of(&self, q: usize) -> &[u64] {
+        match self.span.get(q) {
+            Some(&(start, words)) => {
+                let start = start as usize;
+                self.words.get(start..start + words as usize).unwrap_or(&[])
+            }
+            None => &[],
+        }
+    }
+
+    fn of_mut(&mut self, q: usize) -> &mut [u64] {
+        match self.span.get(q) {
+            Some(&(start, words)) => {
+                let start = start as usize;
+                self.words
+                    .get_mut(start..start + words as usize)
+                    .unwrap_or(&mut [])
+            }
+            None => &mut [],
+        }
+    }
+
+    /// Marks point `k` of queue `q` a grid point or a corner.
+    fn set(&mut self, q: usize, k: usize, grid: bool) {
+        if let Some(w) = self.of_mut(q).get_mut(k / 64) {
+            *w = (*w & !(1 << (k % 64))) | (u64::from(grid) << (k % 64));
+        }
+    }
+
+    /// The earliest grid point among queue `q`'s first `len` points.
+    fn first(&self, q: usize, len: usize) -> Option<usize> {
+        let bits = self.of(q);
+        (0..len).find(|&k| bits.get(k / 64).is_some_and(|w| w >> (k % 64) & 1 == 1))
+    }
+
+    /// Point `k` of queue `q`'s `len` was removed: the bits after it move
+    /// down one, as the points did.
+    fn remove(&mut self, q: usize, k: usize, len: usize) {
+        let bits = self.of_mut(q);
+        let get = |bits: &[u64], j: usize| bits.get(j / 64).is_some_and(|w| w >> (j % 64) & 1 == 1);
+        for j in k..len.saturating_sub(1) {
+            let next = get(bits, j + 1);
+            if let Some(w) = bits.get_mut(j / 64) {
+                *w = (*w & !(1 << (j % 64))) | (u64::from(next) << (j % 64));
+            }
+        }
+        if let Some(w) = bits.get_mut(len.saturating_sub(1) / 64) {
+            *w &= !(1 << (len.saturating_sub(1) % 64));
+        }
+    }
+}
+
 /// A plugin node's per-parameter delivery. See the module docs.
 pub(crate) struct ParamDelivery {
     /// Sorted by address; capacity reserved in [`new`](Self::new).
@@ -284,9 +428,8 @@ pub(crate) struct ParamDelivery {
     /// Each queue's point room ([`prepare`](Self::prepare)).
     points: usize,
     /// Which points of each queue in the chunk being filled are grid
-    /// points: `words` bits-words per queue, by queue index.
-    grid: Vec<u64>,
-    words: usize,
+    /// points.
+    grid: GridBits,
     counters: Arc<DeliveryCounters>,
     /// The mirror of `sent` for the listed slots.
     record: Arc<DeliveredRecord>,
@@ -302,14 +445,14 @@ impl std::fmt::Debug for ParamDelivery {
 }
 
 impl ParamDelivery {
-    /// Slots for `params` (the plugin's parameter list) and [`SPARE_SLOTS`]
+    /// Slots for `params` (the plugin's parameter list) and [`ParameterChanges::SPARE_QUEUES`]
     /// more, and a chunk with room for a queue in each. Control thread:
     /// allocates.
     pub(crate) fn new(
         params: impl IntoIterator<Item = ParamAddress>,
         counters: Arc<DeliveryCounters>,
     ) -> Self {
-        Self::with_spares(params, counters, SPARE_SLOTS)
+        Self::with_spares(params, counters, ParameterChanges::SPARE_QUEUES)
     }
 
     /// Slots for `params` only: an address the list does not name is
@@ -345,13 +488,12 @@ impl ParamDelivery {
         Self {
             slots,
             staged: Vec::with_capacity(room),
-            changes: ParameterChanges::reserved(room, MAX_POINTS),
+            changes: ParameterChanges::reserved_bridged(room, MAX_POINTS),
             owed: 0,
             room,
             chunk_points: 0,
             points: MAX_POINTS,
-            grid: vec![0; room * MAX_POINTS.div_ceil(64)],
-            words: MAX_POINTS.div_ceil(64),
+            grid: GridBits::new(room, MAX_POINTS),
             counters,
             record,
         }
@@ -382,9 +524,8 @@ impl ParamDelivery {
     pub(crate) fn prepare(&mut self, chunk: usize) -> usize {
         self.abandon();
         self.points = points_for(chunk);
-        self.changes = ParameterChanges::reserved(self.room(), self.points);
-        self.words = self.points.div_ceil(64);
-        self.grid = vec![0; self.room() * self.words];
+        self.changes = ParameterChanges::reserved_bridged(self.room(), self.points);
+        self.grid = GridBits::new(self.room(), self.points);
         self.points
     }
 
@@ -455,9 +596,10 @@ impl ParamDelivery {
 
     /// A point for `address` at chunk frame `offset`, unless the value is
     /// the one the plugin already has from this node (see the module docs).
-    /// A corner: past the queue's room it evicts a grid point
+    /// A corner: when the queue is full (its room, or its floor with the
+    /// chunk's shared pool spent) it evicts a grid point
     /// ([`grid_point`](Self::grid_point)), and only a queue of corners has
-    /// its last point replaced, counted as merged: the latest value wins,
+    /// its latest point replaced, counted as merged: the latest value wins,
     /// so a chunk spanning several blocks ends exact.
     /// `false` when `address` has no slot (counted). Allocation-free.
     pub(crate) fn point(&mut self, address: ParamAddress, offset: i32, value: f32) -> bool {
@@ -477,12 +619,6 @@ impl ParamDelivery {
         };
         self.place(i, offset, Normalized::new(f64::from(value)).get(), grid);
         true
-    }
-
-    /// Queue `q`'s grid bits.
-    fn bits(&mut self, q: usize) -> &mut [u64] {
-        let w = self.words;
-        &mut self.grid[q * w..(q + 1) * w]
     }
 
     /// `value` (already normalized) for slot `i` at chunk frame `offset`,
@@ -505,7 +641,7 @@ impl ParamDelivery {
                 }
                 self.slots[i].queue = queue;
                 self.staged.push(u32::try_from(i).unwrap_or(u32::MAX));
-                self.bits(queue as usize).fill(0);
+                self.grid.open(queue as usize);
                 queue as usize
             }
             q => {
@@ -521,41 +657,38 @@ impl ParamDelivery {
                 q
             }
         };
-        if !self.changes.queues[q].has_room() {
-            // Full: grid points go first; the queue never grows (which
-            // would allocate).
+        // Room of its own, or a block from the chunk's shared pool
+        // (`make_room`); never grown, which would allocate.
+        if !self.changes.make_room(q) {
+            // Full: at its room, or at its floor with the pool spent. Grid
+            // points go first.
             if grid {
                 self.counters.grid_dropped.fetch_add(1, Ordering::Relaxed);
                 return;
             }
             let len = self.changes.queues[q].points.len();
-            let bits = self.bits(q);
-            match (0..len).find(|&k| bits[k / 64] >> (k % 64) & 1 == 1) {
+            match self.grid.first(q, len) {
                 Some(k) => {
-                    // Shift the bits after `k` down one, as the points.
-                    for j in k..len - 1 {
-                        let next = bits[(j + 1) / 64] >> ((j + 1) % 64) & 1;
-                        bits[j / 64] = (bits[j / 64] & !(1 << (j % 64))) | (next << (j % 64));
-                    }
                     self.changes.queues[q].points.remove(k);
+                    self.grid.remove(q, k, len);
                     self.counters.grid_dropped.fetch_add(1, Ordering::Relaxed);
                 }
                 None => {
                     // A queue of corners: the latest value replaces the
-                    // last point.
-                    self.changes.queues[q].points.pop();
+                    // latest point (`push_point`'s full-queue policy).
                     self.counters.merged.fetch_add(1, Ordering::Relaxed);
                 }
             }
         } else {
             self.chunk_points += 1;
         }
-        let queue = &mut self.changes.queues[q];
-        queue.add_point(offset, value);
-        let k = queue.points.len() - 1;
-        let bits = self.bits(q);
-        let (w, b) = (k / 64, k % 64);
-        bits[w] = (bits[w] & !(1 << b)) | (u64::from(grid) << b);
+        self.grid.fits(q, self.changes.queues[q].points.capacity());
+        // Room now (its own, a block, or a grid point's), or a queue of
+        // corners keeping its latest value (counted above).
+        if self.changes.push_point(q, offset, value) {
+            let k = self.changes.queues[q].points.len() - 1;
+            self.grid.set(q, k, grid);
+        }
         self.slots[i].staged = value;
     }
 
@@ -660,7 +793,7 @@ mod tests {
     /// Hand the chunk off as the bridge does: swapped for an empty buffer of
     /// the same room.
     fn hand_off(d: &mut ParamDelivery, delivered: bool) -> ParameterChanges {
-        let mut fresh = ParameterChanges::reserved(d.room(), d.points());
+        let mut fresh = ParameterChanges::reserved_bridged(d.room(), d.points());
         if delivered {
             std::mem::swap(d.changes(), &mut fresh);
         }
@@ -672,7 +805,7 @@ mod tests {
     /// each, none dropped, and nothing past the reserved room.
     ///
     /// Mutation (run): the chunk sized at 16 queues (the old cap,
-    /// `ParameterChanges::reserved(16, MAX_POINTS)` in `new`) → 184 points
+    /// `ParameterChanges::reserved_bridged(16, MAX_POINTS)` in `new`) → 184 points
     /// refused → fails.
     #[test]
     fn two_hundred_parameters_fit_one_chunk() {
@@ -792,7 +925,7 @@ mod tests {
         let (mut d, counters) = delivery(2);
         let room = d.slots.capacity();
         d.begin();
-        for id in 1000..1000 + SPARE_SLOTS as u32 {
+        for id in 1000..1000 + ParameterChanges::SPARE_QUEUES as u32 {
             assert!(d.point(op(id), 0, 0.5), "spare slot for {id}");
         }
         assert!(!d.point(op(5000), 0, 0.5));
@@ -814,7 +947,7 @@ mod tests {
     /// **A closed list learns nothing**: an index the VST2 plugin did not
     /// declare is refused and counted dropped, while a declared one goes.
     ///
-    /// Mutation (run): `closed` built with `SPARE_SLOTS` spares, as `new`
+    /// Mutation (run): `closed` built with `ParameterChanges::SPARE_QUEUES` spares, as `new`
     /// is → the undeclared index is learned and staged, nothing dropped →
     /// fails.
     #[cfg(feature = "vst2")]
@@ -865,7 +998,7 @@ mod tests {
         let budget = CHUNK / ParameterQueue::POINT_SPACING + 1 + ParameterQueue::CORNER_POINTS;
         let (mut d, counters) = delivery(200);
         assert_eq!(d.prepare(CHUNK), budget);
-        let mut spare = ParameterChanges::reserved(d.room(), d.points());
+        let mut spare = ParameterChanges::reserved_bridged(d.room(), d.points());
         let chunk = |d: &mut ParamDelivery, spare: &mut ParameterChanges| {
             d.begin();
             for k in 0..budget {
@@ -963,5 +1096,111 @@ mod tests {
         d.point(op(0), 3000, v(room + grids));
         assert_eq!(counters.snapshot().points_merged, 1);
         assert_eq!(offsets(&d).len(), room);
+    }
+
+    /// **The chunk's point storage is the pool budget, not parameters ×
+    /// room**: a delivery for 2 000 parameters (and its 64 spare slots)
+    /// prepared for 512- and 4096-frame chunks holds
+    /// `ParameterChanges::point_budget` points (a floor of
+    /// `FLOOR_POINTS + 1` a slot and a shared pool of `POOLED_QUEUES`
+    /// blocks of `room + 1`, the extra point kept for the bridge's carried
+    /// value), under a third of a full carried room per slot. (Reworded with
+    /// `PointBuf`: the chunk was `point_budget`, under a quarter of `room`,
+    /// and the carried value grew a queue on the bridge thread.)
+    ///
+    /// Mutation (run): `prepare` reserving the old layout (every slot a
+    /// full room: `ParameterChanges::point_layout` always `(full, 0)`) →
+    /// the storage is `slots × (room + 1)` → fails.
+    #[test]
+    fn the_chunk_holds_the_pool_budget_not_params_times_room() {
+        let (mut d, _) = delivery(2_000);
+        for chunk in [512usize, 4096] {
+            let room = d.prepare(chunk);
+            assert_eq!(room, points_for(chunk));
+            let slots = 2_000 + ParameterChanges::SPARE_QUEUES;
+            let budget = slots * (ParameterChanges::FLOOR_POINTS + 1)
+                + ParameterChanges::POOLED_QUEUES * (room + 1);
+            assert_eq!(ParameterChanges::point_budget(slots, room), budget);
+            assert_eq!(d.changes.point_storage(), budget, "at {chunk}");
+            assert!(3 * budget < slots * (room + 1), "at {chunk}");
+        }
+    }
+
+    /// **Up to the pool budget every point goes, without allocating; past
+    /// it each point is merged into its parameter's last, counted.** 1 000
+    /// parameters prepared for a 1024-frame chunk (a room of 289; 36 before
+    /// doc 014 PR 2b): the first `POOLED_QUEUES` carry their full room,
+    /// every other one its floor (a
+    /// step and a second value), points for different parameters arriving
+    /// interleaved, chunk after chunk inside the no-alloc gate, with nothing
+    /// merged. Then one more parameter needs a third point with the pool
+    /// spent: it replaces that parameter's last point (the chunk ends on the
+    /// latest value), counted once.
+    ///
+    /// Mutations (run), each fails: `push_point` without `make_room` (the
+    /// queue's own room only, `has_room`) → the moving parameters merge
+    /// past their floor; the merge not counted → `points_merged` is 0 after
+    /// the overflow; the host's chunk built without its carry slot
+    /// (`reserved`) → the floor queues take a third point, and the
+    /// moving parameters' per-chunk counts are off.
+    #[test]
+    fn up_to_the_pool_budget_nothing_merges_and_past_it_merges_counted() {
+        const PARAMS: u32 = 1_000;
+        const CHUNK: usize = 1024;
+        let (mut d, counters) = delivery(PARAMS);
+        let room = d.prepare(CHUNK);
+        let moving = ParameterChanges::POOLED_QUEUES as u32;
+        let mut spare = ParameterChanges::reserved_bridged(d.room(), d.points());
+        let chunk = |d: &mut ParamDelivery, spare: &mut ParameterChanges, phase: usize| {
+            d.begin();
+            for k in 0..room {
+                for id in 0..PARAMS {
+                    if k >= ParameterChanges::FLOOR_POINTS && id >= moving {
+                        continue;
+                    }
+                    // Distinct from point to point, and a chunk's first
+                    // from the last chunk's last (else it is unchanged and
+                    // not sent).
+                    let v = ((k + id as usize + 4 * phase) % 8) as f32 / 8.0;
+                    d.point(op(id), (k * 28) as i32, v);
+                }
+            }
+            for (i, q) in d.changes.queues.iter().enumerate() {
+                let want = if (i as u32) < moving {
+                    room
+                } else {
+                    ParameterChanges::FLOOR_POINTS
+                };
+                assert_eq!(q.points.len(), want);
+                assert!(q
+                    .points
+                    .windows(2)
+                    .all(|w| w[0].sample_offset < w[1].sample_offset));
+            }
+            std::mem::swap(d.changes(), spare);
+            d.handed_off(true);
+            spare.clear();
+        };
+        chunk(&mut d, &mut spare, 0);
+        assert_no_alloc::assert_no_alloc(|| {
+            for phase in 1..4 {
+                chunk(&mut d, &mut spare, phase);
+            }
+        });
+        assert_eq!(counters.snapshot().points_merged, 0);
+
+        // The pool spent, one more parameter takes a third point.
+        // Odd sixteenths: none was sent before, so every point goes.
+        d.begin();
+        for k in 0..3 {
+            for id in 0..=moving {
+                d.point(op(id), k, (2 * k + 1) as f32 / 16.0);
+            }
+        }
+        let last = d.changes.get_queue(op(moving)).expect("queued");
+        assert_eq!(last.points.len(), ParameterChanges::FLOOR_POINTS);
+        assert_eq!(last.points.last().map(|p| p.value.get()), Some(5.0 / 16.0));
+        assert_eq!(last.points.last().map(|p| p.sample_offset), Some(2));
+        assert_eq!(counters.snapshot().points_merged, 1);
     }
 }

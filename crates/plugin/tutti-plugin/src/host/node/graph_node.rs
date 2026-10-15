@@ -271,8 +271,8 @@ impl Chunks for PluginChunks<'_> {
     /// the node's delivery, which has a queue for every parameter and
     /// passes on changes only (`param_delivery`); the walk is `param_input`'s,
     /// which the in-process VST2 node shares. Past the MIDI and harmony
-    /// inline capacities events are dropped rather than spill (allocate) on
-    /// the audio thread.
+    /// caps events are dropped: the lists are inline and cannot grow, so
+    /// nothing allocates on the audio thread.
     fn take(&mut self, from: usize, n: usize, at: usize) {
         let Self {
             cx,
@@ -296,10 +296,11 @@ impl Chunks for PluginChunks<'_> {
             params,
             |e, frame| match e.kind {
                 EventKind::Midi(ump) => {
-                    let midi = &mut pending.midi;
-                    if midi.len() < midi.inline_size() {
-                        midi.push(MidiEvent::from_ump(frame as u32, &ump.0));
-                    }
+                    // Past the cap the event is dropped (`MidiEventVec` is
+                    // inline and cannot grow).
+                    let _ = pending
+                        .midi
+                        .try_push(MidiEvent::from_ump(frame as u32, &ump.0));
                 }
                 EventKind::Harmony(h) => {
                     push_harmony(&mut pending.harmony, features, h, frame);
@@ -334,10 +335,9 @@ impl Chunks for PluginChunks<'_> {
         if !self.features.contains(Features::MIDI_OUT) {
             return;
         }
-        if self.out_events.len() < self.out_events.inline_size() {
-            event.frame_offset = u32::try_from(frame).unwrap_or(u32::MAX);
-            self.out_events.push(event);
-        }
+        event.frame_offset = u32::try_from(frame).unwrap_or(u32::MAX);
+        // Past the cap the event is dropped.
+        let _ = self.out_events.try_push(event);
     }
 }
 
@@ -349,7 +349,8 @@ fn width(n: usize) -> ChannelLayout {
 
 /// A chord or scale into a chunk's harmony at chunk frame `frame`, for a
 /// plugin that takes sequencer context (`features`); nothing for one that
-/// does not. Past the inline capacity it is dropped rather than allocate.
+/// does not. Past the cap ([`HARMONY_CAPACITY`](tutti_plugin_types::HARMONY_CAPACITY))
+/// it is dropped.
 fn push_harmony(harmony: &mut HarmonyInputs, features: Features, h: Harmony, frame: usize) {
     if !features.contains(Features::SEQUENCER_CONTEXT) {
         return;
@@ -362,27 +363,21 @@ fn push_harmony(harmony: &mut HarmonyInputs, features: Features, h: Harmony, fra
     );
     match h.kind() {
         HarmonyKind::Chord => {
-            let chords = &mut harmony.chords.changes;
-            if chords.len() < chords.inline_size() {
-                chords.push(ChordValue {
-                    sample_offset,
-                    root,
-                    bass_note: bass,
-                    mask,
-                    text: String::new(),
-                });
-            }
+            let _ = harmony.chords.add_change(ChordValue {
+                sample_offset,
+                root,
+                bass_note: bass,
+                mask,
+                text: String::new(),
+            });
         }
         HarmonyKind::Scale => {
-            let scales = &mut harmony.scales.changes;
-            if scales.len() < scales.inline_size() {
-                scales.push(ScaleValue {
-                    sample_offset,
-                    root,
-                    mask,
-                    text: String::new(),
-                });
-            }
+            let _ = harmony.scales.add_change(ScaleValue {
+                sample_offset,
+                root,
+                mask,
+                text: String::new(),
+            });
         }
     }
 }
@@ -390,6 +385,7 @@ fn push_harmony(harmony: &mut HarmonyInputs, features: Features, h: Harmony, fra
 #[cfg(test)]
 mod harmony_tests {
     use super::*;
+    use tutti_plugin_types::HARMONY_CAPACITY;
 
     /// **A chord and a scale become the plugin's chord and scale changes**,
     /// at their chunk frames, for a plugin that takes sequencer context; a
@@ -398,8 +394,9 @@ mod harmony_tests {
     ///
     /// Mutation: drop the `SEQUENCER_CONTEXT` gate → the second plugin gets
     /// the chord → fails. Mutation: bass from the root (`i16::from(h.root())`)
-    /// → the slash chord's bass is wrong → fails. Mutation: push past the
-    /// inline capacity → the list spills → fails. (That `take` routes a
+    /// → the slash chord's bass is wrong → fails. Mutation: `push_harmony`
+    /// through `changes.push` rather than `add_change` → the fifth chord
+    /// panics past the cap → fails. (That `take` routes a
     /// harmony event here is not pinned end to end: the reference plugin is
     /// CLAP, which has no chord events; the VST3 conversion downstream is
     /// pinned by `tutti-vst3-host`'s event-list tests.)
@@ -427,6 +424,6 @@ mod harmony_tests {
         for i in 0..100 {
             push_harmony(&mut h, takes, Harmony::chord(60, 60, 1), i);
         }
-        assert!(!h.chords.changes.spilled());
+        assert_eq!(h.chords.changes.len(), HARMONY_CAPACITY, "kept to the cap");
     }
 }

@@ -11,34 +11,26 @@ use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
-    AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEventVec, Normalized,
-    SampleFormat, WindowHandle, MAX_STATE_BYTES, MIDI_STACK_CAPACITY,
+    midi_from_wire, AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec,
+    MidiEventVec, Normalized, ParameterQueue, SampleFormat, WindowHandle, MAX_STATE_BYTES,
 };
 use tutti_plugin::Result;
 
-/// Serialize a block's plugin MIDI-out for the wire, capped so the SmallVec
-/// stays inline (no heap on the RT-adjacent subprocess audio callback). A cap
-/// hit means a pathological >256-events/block plugin; log once and truncate.
-fn encode_midi_out(events: &MidiEventVec) -> IpcMidiEventVec {
-    if events.len() > MIDI_STACK_CAPACITY {
+/// Convert a block's plugin MIDI-out for the wire. Already capped at
+/// `MIDI_STACK_CAPACITY` (the pipeline's list cannot hold more), so the reply
+/// carries at most that many; `dropped` is what the cap cost this block, from
+/// a pathological plugin, and is logged.
+fn encode_midi_out(events: &MidiEventVec, dropped: usize) -> IpcMidiEventVec {
+    if dropped > 0 {
         tracing::warn!(
-            "plugin emitted {} MIDI events this block; capping at {}",
-            events.len(),
-            MIDI_STACK_CAPACITY
+            "plugin emitted {} MIDI events this block; dropped {dropped} past the cap",
+            events.len() + dropped,
         );
     }
-    events
-        .iter()
-        .take(MIDI_STACK_CAPACITY)
-        .map(IpcMidiEvent::from)
-        .collect()
+    events.iter().map(IpcMidiEvent::from).collect()
 }
 
 /// What [`Session::handle`] asks the transport loop to do.
-// `Reply` wraps `BridgeMessage`, whose `AudioProcessed` variant carries an
-// inline-256 MIDI-out vec (see `protocol::envelope`). Off-RT server-side; the
-// size gap is the deliberate inline-capacity tradeoff, not worth boxing.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum Reaction {
     /// Send this reply back to the host.
@@ -159,7 +151,7 @@ impl Session {
             }
 
             M::ProcessAudio(data) => {
-                let midi: MidiEventVec = data.midi_events.iter().map(|&e| e.into()).collect();
+                let midi = midi_from_wire(&data.midi_events);
                 let extras = ProcessExtras {
                     param_changes: &data.param_changes,
                     note_expression: &data.note_expression,
@@ -322,8 +314,26 @@ impl Session {
         let Some(plugin) = self.plugin.as_mut() else {
             return Vec::new();
         };
-        plugin
-            .poll_async_events()
+        let events = plugin.poll_async_events();
+        // A parameter list that changed may have grown past the output
+        // reserved at load. This runs on the audio-phase thread between
+        // blocks, so the count is a count query, not the descriptor list.
+        // What it helps: a VST3 `Reloaded` (the reload builds a new instance,
+        // whose output lists are sized at its activation) and an AU list
+        // change. A VST3 `kParamTitlesChanged` without a reload keeps the
+        // instance's activation-time output and emitted queue counts, so the
+        // instance drops (and counts) points past them before they reach
+        // this output. A CLAP plugin's `params.rescan` reaches no event here,
+        // so its output stays reserved for the load's count: points past it
+        // are dropped, counted.
+        if events
+            .iter()
+            .any(|e| matches!(e, AsyncEvent::ParamTitlesChanged | AsyncEvent::Reloaded))
+        {
+            let params = plugin.instance().parameter_count();
+            self.pipeline.fit_params(params);
+        }
+        events
             .into_iter()
             .map(|e| match e {
                 AsyncEvent::ParameterChanged { index, value } => {
@@ -379,6 +389,13 @@ impl Session {
             format: negotiated,
         };
         self.pipeline.set_format(negotiated);
+        // The plugin's own parameter output is held in fixed storage
+        // reserved here, off the audio thread: a queue per parameter, each
+        // within a block's chunk room (`ParameterChanges::reserved`).
+        self.pipeline.reserve_params(
+            plugin.instance().parameter_count(),
+            ParameterQueue::chunk_room(block_size),
+        );
         self.plugin = Some(plugin);
         Ok(BridgeMessage::PluginLoaded {
             descriptor: Box::new(descriptor),
@@ -428,7 +445,7 @@ impl Session {
             // out of the result: moving it would take the buffer's heap
             // capacity with it and put the reallocation back on the audio
             // thread. See [`AudioOutput`](crate::audio_pipeline::AudioOutput).
-            midi_out: encode_midi_out(self.pipeline.midi_out()),
+            midi_out: encode_midi_out(self.pipeline.midi_out(), self.pipeline.midi_dropped()),
         }
         .into())
     }
@@ -798,8 +815,8 @@ mod tests {
             samples_per_channel: 8192,
             format: preferred_format,
             slots: tutti_plugin::server::RING_SLOTS as u32,
-            inputs: smallvec::smallvec![tutti_plugin::server::ChannelLayout::STEREO],
-            outputs: smallvec::smallvec![tutti_plugin::server::ChannelLayout::STEREO],
+            inputs: vec![tutti_plugin::server::ChannelLayout::STEREO],
+            outputs: vec![tutti_plugin::server::ChannelLayout::STEREO],
         };
         let shm_guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
         s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());
@@ -1042,5 +1059,90 @@ mod tests {
             matches!(reply, BridgeMessage::AudioProcessed { .. }),
             "unexpected reply: {reply:?}"
         );
+    }
+
+    /// A plugin that says its parameter list changed gets its parameter
+    /// output re-reserved by `drain_async_events`, at the plugin's count.
+    ///
+    /// The probe's list never really grows, so the output is first shrunk
+    /// to one queue, standing in for a load-time count the plugin has since
+    /// outgrown; the probe's `restartComponent(kParamTitlesChanged)` is raised
+    /// through the host's own handler, as a plugin raises it.
+    ///
+    /// Mutations (run), each fails: deleting the `if events.iter().any(..)`
+    /// block in `drain_async_events` → 1 queue; matching only `Reloaded`
+    /// → 1 queue; refitting to a count of 0 → 1 queue.
+    #[test]
+    #[cfg(feature = "vst3")]
+    fn a_param_titles_change_reserves_the_parameter_output_again() {
+        // `RestartFlags_::kParamTitlesChanged` (`ivsteditcontroller.h`). The
+        // `PluginParamTitlesChanged` assertion below pins that this is the bit.
+        const K_PARAM_TITLES_CHANGED: i32 = 1 << 4;
+        let _lock = crate::test_utils::plugin_load_lock();
+        // `Plugin::load` picks the format by the `.vst3` bundle, not the
+        // module inside it that `vst3_probe_path` names.
+        let bundle = std::path::Path::new(crate::test_utils::vst3_probe_path())
+            .ancestors()
+            .find(|p| p.extension().is_some_and(|e| e == "vst3"))
+            .expect("the probe module is inside its bundle")
+            .to_path_buf();
+        let mut s = Session::new();
+        s.handle(HostMessage::LoadPlugin {
+            path: bundle,
+            sample_rate: 48_000.0,
+            block_size: 512,
+            preferred_format: SampleFormat::Float32,
+            shm_name: "refit_vst3".to_string(),
+        })
+        .unwrap();
+        let params = s.plugin.as_ref().unwrap().instance().parameter_count();
+        assert!(params > 1, "the probe has parameters to refit to");
+        assert_eq!(s.pipeline.param_queues(), params, "reserved at load");
+
+        s.pipeline
+            .reserve_params(1, ParameterQueue::chunk_room(512));
+        assert!(s.drain_async_events().is_empty(), "nothing raised yet");
+        assert_eq!(s.pipeline.param_queues(), 1);
+
+        match s.plugin.as_ref().unwrap() {
+            Plugin::Vst3(p) => p.plugin_restart_component(K_PARAM_TITLES_CHANGED),
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("the probe is a VST3"),
+        }
+        let messages = s.drain_async_events();
+        assert!(
+            messages
+                .iter()
+                .any(|m| matches!(m, BridgeMessage::PluginParamTitlesChanged)),
+            "the restart reaches the session: {messages:?}"
+        );
+        assert_eq!(s.pipeline.param_queues(), params);
+    }
+
+    /// The format's count query, which the load and the refit reserve by,
+    /// counts the parameters the list carries (the probes describe every
+    /// one, so the two agree exactly).
+    ///
+    /// Mutations (run), each fails: the CLAP override returning 0; the
+    /// VST3 override returning 0.
+    #[test]
+    #[cfg(all(feature = "clap", feature = "vst3"))]
+    fn the_parameter_count_agrees_with_the_list() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (s, _shm) = load_clap("count_clap", SampleFormat::Float32);
+        let clap = s.plugin.as_ref().unwrap().instance();
+        assert!(clap.parameter_count() > 0);
+        assert_eq!(clap.parameter_count(), clap.get_parameter_list().len());
+
+        let vst3 = crate::loaders::vst3::Vst3Instance::load(
+            std::path::Path::new(crate::test_utils::vst3_probe_path()),
+            48_000.0,
+            128,
+            false,
+        )
+        .expect("the vendored VST3 probe loads");
+        let vst3: &dyn tutti_plugin::server::PluginInstance = &vst3;
+        assert!(vst3.parameter_count() > 0);
+        assert_eq!(vst3.parameter_count(), vst3.get_parameter_list().len());
     }
 }

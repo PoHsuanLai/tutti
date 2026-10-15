@@ -881,6 +881,98 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
     assert_eq!(handle.collect_retired(), 0, "and only once");
 }
 
+/// **An `AddVoice` past the pool's 64 slots neither grows the slot vector
+/// nor frees the voice in the callback.**
+///
+/// The slot vector is reserved to `MAX_RESIDENT_VOICES` (64), and the drain
+/// runs inside `process`. A push past the reservation would reallocate the
+/// vector there, and dropping the voice instead would free its box, its
+/// source and the stretch filter the sender built for it. The drain refuses
+/// the add, hands the voice back through the retirement channel, and counts
+/// it; the control thread frees it in `collect_retired`.
+///
+/// The refused voice is a stretched one (it carries a filter, the largest
+/// thing a refusal could free) over a wave only it holds, so a `Weak` to
+/// the wave says where it was freed.
+///
+/// Mutation (run): the drain's capacity check removed (the 65th add pushed
+/// as before) → the vector grows → aborts in the guard. Mutation (run): the
+/// refusal dropping the voice instead of retiring it (`drop((voice,
+/// stretch))`) → aborts in the guard. Mutation (run): the
+/// `voices_refused` bump removed → fails on the count.
+#[test]
+fn an_add_past_the_voice_cap_is_refused_without_allocating() {
+    const CAP: usize = 64;
+    let wave = sine_wave(0.5, 48_000.0);
+    let (pool, handle) = VoicePool::new().with_handle();
+    let mut rig = Rig::new(pool, 64);
+
+    let voice_over = |wave: Arc<Wave>, play: Playback| {
+        let source = MemorySource::new(wave).placed_at(VoiceWindow {
+            start: Beat::new(0.0),
+            duration: None,
+        });
+        Box::new(Voice {
+            source: VoiceSource::Memory(source),
+            play,
+            channel_index: None,
+        })
+    };
+
+    // Fill the pool to its reservation, outside the guard, in batches the
+    // command queue holds.
+    for batch in 0..(CAP / 32) {
+        for i in 0..32 {
+            handle
+                .send(VoiceCommand::AddVoice {
+                    id: SlotId((batch * 32 + i) as u128),
+                    voice: voice_over(wave.clone(), Playback::default()),
+                    stretch: None,
+                })
+                .expect("the command queue has room in a test");
+        }
+        rig.block();
+    }
+    for _ in 0..4 {
+        rig.block();
+    }
+    assert_eq!(rig.node().voice_count(), CAP, "the pool is full");
+    assert_eq!(handle.drops().voices_refused, 0);
+
+    // One more, at a new id: stretched, so `send` builds it a filter here.
+    let extra = sine_wave(0.5, 48_000.0);
+    let extra_weak = Arc::downgrade(&extra);
+    handle
+        .send(VoiceCommand::AddVoice {
+            id: SlotId(CAP as u128),
+            voice: voice_over(
+                extra,
+                Playback {
+                    stretch: StretchFactor::new(2.0),
+                    ..Default::default()
+                },
+            ),
+            stretch: None,
+        })
+        .expect("the command queue has room in a test");
+
+    assert_no_alloc::assert_no_alloc(|| {
+        rig.block();
+    });
+
+    assert_eq!(rig.node().voice_count(), CAP, "the add was refused");
+    assert_eq!(handle.drops().voices_refused, 1, "and counted");
+    assert!(
+        extra_weak.upgrade().is_some(),
+        "the refused voice waits in the retirement channel"
+    );
+    assert_eq!(handle.collect_retired(), 1, "it is handed back");
+    assert!(
+        extra_weak.upgrade().is_none(),
+        "and freed here, on the control thread"
+    );
+}
+
 /// Changing a loop range mid-playback must not allocate in the drain.
 ///
 /// The loop crossfade holds no buffer: it reads its fade from the wave in
@@ -945,21 +1037,24 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
 // VoiceNode's command drain — the newest thing running inside the callback.
 // ---------------------------------------------------------------------------
 
-/// **Draining a placement command allocates nothing.**
+/// **Reading a published placement allocates nothing, and frees nothing.**
 ///
 /// `VoiceNode::drain_commands` runs at the top of every `process`, which
 /// is the audio callback. The pool's drain is careful for a reason its own
 /// `AddVoice` doc spells out — a command that carries a `Voice` or a stretch
 /// filter has to be *built* on the control thread, or the callback pays for it.
 ///
-/// A node's only command is two `Copy` scalars and applying it is a field write
-/// plus a gate re-arm, so this should be free. "Should be" is exactly the kind
-/// of claim this file exists to convert into a measurement: the queue is
-/// pre-allocated and `try_recv` on an empty one is the common case, but neither
-/// is obvious from the call site.
+/// A node's placement is a `Copy` window in an `RtPublish` cell, read once
+/// per block and applied as a field write when it changed, so this should be
+/// free. "Should be" is exactly the kind of claim this file exists to convert
+/// into a measurement.
 ///
-/// Both halves are covered — a drain with commands waiting, and the empty drain
-/// that runs on every other block.
+/// Both halves are covered — a block that applies a new window (the eight
+/// publishes before the gate leave the last one to apply), and the unchanged
+/// read that runs on every other block.
+///
+/// Mutation (run): `drain_commands` cloning the window into a fresh `Arc`
+/// each block (`let _keep = Arc::new(published)`) → aborts in the gate.
 #[test]
 fn voice_node_command_drain_does_not_allocate() {
     let source = MemorySource::new(sine_wave(1.0, 48_000.0)).placed_at(VoiceWindow {
@@ -988,9 +1083,7 @@ fn voice_node_command_drain_does_not_allocate() {
     // Queue more than one block's worth, so the drain loop runs repeatedly
     // rather than taking its empty fast path once.
     for i in 0..8u64 {
-        handle
-            .set_placement(Beat::new(i as f64 * 0.25), Some(BeatDuration(4.0)))
-            .expect("the command queue has room in a test");
+        handle.set_placement(Beat::new(i as f64 * 0.25), Some(BeatDuration(4.0)));
     }
 
     assert_no_alloc::assert_no_alloc(|| {

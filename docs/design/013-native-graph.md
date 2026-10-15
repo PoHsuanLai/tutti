@@ -222,9 +222,9 @@ the interpreter.
   `ArcSwap` reads remained after #15, each able to free on the audio thread
   (a store settles a held guard's debt into a strong count, and the guard's
   drop is then the last owner). The hardware MIDI port set
-  (`HardwareMidiInputs`) is an `RtPublish<Vec<_>>` whose read, append and
-  publish run under one publisher lock, which also fixes two concurrent
-  creators losing a port. The plugin nodes' meter slot (`PluginMeter`) is an
+  (`HardwareMidiInputs`) is an `RtPublish<Vec<_>>` whose read, change and
+  publish (a port created or removed) run under one publisher lock, which
+  also fixes two concurrent creators losing a port. The plugin nodes' meter slot (`PluginMeter`) is an
   `RtPublish<Option<Arc<RtPublish<MeterMap>>>>`: the node borrows the
   installed cell, so an install or clear mid-block retires it for the control
   side, whether or not the host kept a clone. Its read is nested, one slot in
@@ -283,7 +283,7 @@ the race. Every type below exists because the audit found the bug it prevents.
 |---|---|---|
 | **`Latency(Samples)`**, the only thing `Shape::latency` accepts; musical delay times stay `Seconds`/`Samples` | `route` → `Signal::Latency` carrying both "this node is late" and "this node echoes" | D1–D3: an echo compensated as if it were processing latency |
 | **`ParamKey<U>`**, typed by unit (`ParamKey::<Hz>::CUTOFF`) over the stable `UnitParam` `u16` wire id; `set<U>(ParamKey<U>, U)` | `Setting`/`unit_param` erasing `U` at `to_raw()` | Sending a `Db` to a `Hz` param compiles today; the units rule stops one layer too early |
-| **`Retire<T>`**: an owning box for deltas, retired units, old plans and arenas. It gives up its contents only through a return channel whose push cannot fail; in debug, `Drop` panics on the audio thread | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; `Retire` does it for hand-offs |
+| **The audio-thread marker on `Drop`**: the executor runs under `AudioThread::enter`, and what it hands back (units, crossfades, commits, a unit's param state) calls `AudioThread::check_not_current` in its `Drop`, so a free on the audio thread panics in debug. (Planned as an owning box, `Retire<T>`; it shipped, but nothing in production held one, since each hand-off type carries the check in its own `Drop`, and it was deleted; see "SmallVec removed" under Phase 6.) | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; the `Drop` check does it for hand-offs |
 | **`MaxBlock`**, obtainable only from `Prepare`; node scratch is built from it; `Io` is guaranteed to be at most that long | Five separate 64-frame assumptions: the polysynth clamp, SoundFont, the batcher, VST2, the disk-voice reserve | D4: silent truncation or audio-thread reallocation when the block grows |
 | **`SortedEvents<'a>`**, constructible only sorted by offset with every offset below the block length | A raw `&[Event]` that every sub-chunking node must trust or re-check | Events out of order, or past the block |
 | **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
@@ -318,7 +318,8 @@ the race. Every type below exists because the audit found the bug it prevents.
 
 - `AudioThreadCell`, `RtEventBuf`'s `&self` interior mutability and
   `reset_owner`. All three exist so `Arc`-shared state survives
-  clone-on-commit. Units owned once by the audio thread only need `&mut self`.
+  clone-on-commit. (`RtEventBuf` is deleted: see "Hardware MIDI input
+  ring".) Units owned once by the audio thread only need `&mut self`.
 - `Param<U>` as a way to survive the clone. `Param<U>` stays, as the control
   value handed out through `Controls`; the hand-written sharing `Clone` impls
   go.
@@ -1671,7 +1672,9 @@ runs its own modulation — **live modulation offsets are the exception, by
 design**. A sampler clip's **placement** rides `VoiceNode`'s command queue,
 which `isolate` severs from a copy, so `VoiceNodeHandle` records each
 placement it queues in a control-thread cell the node shares with its
-clones, and `isolate` applies the latest to the copy (review of #32). A unit
+clones, and `isolate` applies the latest to the copy (review of #32; the
+queue and the record are now one `RtPublish` cell the fork reads, see
+"Sampler real-time fixes" under Phase 6). A unit
 test forks the native graph and checks each path (`graph::native::tests`);
 the placement is pinned in `tutti-sampler`'s `voice_node_commands`. Known
 export limits, each a cell a `Setting` cannot reach:
@@ -3552,6 +3555,201 @@ What they show:
   tasks, and the review's callgrind count of the serial walk, this branch
   against `main`, differs by 0.009%.
 
+#### SmallVec removed
+
+**Status: landed** (2026-10-15). `smallvec` is out of the workspace. Where
+the inline storage bought nothing (built and read off the audio thread, or
+reserved once and reused), the type is a `Vec` or a boxed slice; where the
+inline storage was a hard cap (`RtVec`/`RtEventBuf`, the IPC MIDI block, the
+harmony containers) it is an `arrayvec::ArrayVec`, whose push past the cap
+is refused rather than spilling to the heap. `tutti-types` takes `arrayvec`
+for `Capped`. The `Retire<T>` box in §5 is deleted (no production user; the
+`Drop` check on the audio-thread marker does its job), and the graph's probe
+of it in `tests/executor.rs` uses that check directly.
+
+Two audio-thread paths depended on the inline room and are reserved now:
+a `ParameterQueue` built per block had ten points inline, and a `Vec` has
+none, so `ParameterChanges::add_change` takes a spare queue as `open_queue`
+does, and the VST3 host reserves its output and CC-routing sets
+(`ParameterChanges::reserved`) and empties them with `clear`. The CC-routing
+set is reserved only while the plugin has a CC mapping (`IMidiMapping`), at
+activation or when `rebuild_midi_cc_mapping` installs one on the control
+thread: at the parameter cap and a large block it is tens of megabytes, and
+most plugins map nothing. The VST3
+event list's text arena reserves its room once and refuses (and counts) a
+text past it, since the plugin holds pointers into it for the block.
+
+#### Sampler real-time fixes
+
+**Status: landed** (2026-10-15). The audit's findings in `tutti-sampler`
+(collections and channels more complex, or less real-time, than they
+need to be), and what review of the fix turned up:
+
+- **The butler send from `process` no longer blocks.** A `VoicePool`'s
+  drain forwards a streaming voice's loop to the butler (`Command::Loop`)
+  from inside `process`, and `Commands::send` used `send_blocking` on the
+  butler's bounded (256) queue: a stalled butler held the callback. That
+  forward is the only butler send reachable from `process` (a `Seek` is
+  sent only by control code), and it is now `Commands::try_send`: a full
+  or closed queue refuses the command, the intent stays unrecorded, and
+  the refusal is counted. `Commands::send` stays blocking for the control
+  thread, waiting while the queue is full.
+- **The butler's queue takes no lock and allocates nothing** (lock-free,
+  not wait-free; below). It was a
+  `smol` channel, whose successful send woke the butler through a listener
+  list behind a `Mutex`, allocated on the channel's first notify. It is
+  now a crate-private `ButlerQueue`: a `crossbeam_queue::ArrayQueue`, the
+  butler's `Thread` (registered by the thread before its first cycle) and
+  a `closed` flag. A send is a push then an `unpark`; the
+  butler parks with a timeout between cycles (1 ms idle, 3 ms healthy) and
+  yields when a ring needs a refill, and a push between its drain and its
+  park leaves the token set, so no wake is lost. A control-thread send on
+  a full queue retries every 100 µs, waking the butler each time, and
+  stops when the queue closes. `smol` and `futures-lite` are no longer
+  dependencies.
+- **The audio thread's send is lock-free, not wait-free.** crossbeam's
+  `ArrayQueue::pop` moves `head` and only then frees the slot's stamp; a
+  push into a full queue whose tail lands on that slot sees `head` moved
+  and spins until the stamp is stored, rather than report `Full`. The
+  wait is the butler's two-instruction window, long only if the butler is
+  preempted inside it, and only on a full queue; senders also retry
+  against each other's tail claims. **Deferred:** the wait-free design is
+  a single-producer ring (`rtrb`) per sender, which the butler polls. The
+  parallel executor makes the send multi-producer (pools rendering on
+  several workers), so that is a ring per producer and a registry of
+  them.
+- **Closing cannot strand a command.** The thread closes the queue on
+  exit, however it exits (and `stop` closes it too, for a controller that
+  never started): it sets `closed`, then a `SeqCst` fence, then drains and
+  drops what is queued. A sender checks `closed`, pushes, then a `SeqCst`
+  fence, then checks `closed` again and reports `ButlerGone` if it is set.
+  That is the store-buffering pattern: either the drain sees the push or
+  the sender sees the flag, so an `Ok` command is always popped (run, or
+  dropped by the final drain) and every send that starts after the close
+  reports `ButlerGone`. A `ButlerGone` command may still have run, if the
+  butler's last cycle popped it while the sender was descheduled. This
+  handshake is an ordering argument the queue owns, which CLAUDE.md would
+  put in `tutti-types` under a loom model; crossbeam has no loom build, so
+  a model could check only a stand-in, and the exception and its argument
+  are in `docs/engineering-notes.md` ("The butler queue's close
+  handshake").
+- **A loop the butler refuses is not recorded on an add either.** An
+  `AddVoice` for a streaming voice whose `play.loop_` is `On` takes the
+  loop out of the voice (`Off` left behind) before the slot is built, and
+  records it only when the forward lands. A control-thread `insert_voice`
+  waits for room rather than refuse; the drain refuses.
+- **Drops are counted, not logged.** The pool's `tracing::warn!`s are
+  gone; `VoicePoolHandle::drops` returns a `PoolDrops` (loops refused by a
+  full or a gone butler, `On` loops lost for want of one, `ReplaceWave`s ignored on a streaming
+  voice, voices refused at the cap, values freed in the callback because
+  the retirement channel was full).
+- **The voice vector never grows on the audio thread.** It was reserved to
+  64 slots and pushed past them in the drain. An `AddVoice` for a new slot
+  in a full pool is now refused and handed back whole (box and filter)
+  through the retirement channel, as `Retired::Refused`; only a
+  control-thread `insert_voice` grows the vector.
+- **`VoiceNode`'s placement is one `RtPublish<Option<VoiceWindow>>`.** It
+  was a bounded (64) channel plus a `Mutex` copy for the fork. Applying a
+  window is a plain overwrite and nothing else rides with it, so latest
+  wins loses nothing; the node reads the cell once per block and applies
+  it when it changed, and the fork source reads the same cell.
+  `VoiceNodeHandle::set_placement` returns `()`: it can no longer be full.
+- `ringbuf` was an unused dependency of `tutti-sampler` and is removed.
+
+#### Hardware MIDI input ring
+
+**Status: landed** (2026-10-15). From the collections audit of `9f397d3d`.
+`tutti-midi-hardware`'s input ring was an `unsafe` `SpscRing` holding both
+`ringbuf` halves in `UnsafeCell`s, with a cloneable `Send + Sync` raw-pointer
+producer: safe calls (`get_input_producer_handle`, `push_input_event`) made a
+second producer for one ring, and a session dropped its port manager before
+its connections, so an ALSA pump thread being joined could push through a
+dangling pointer. And a disconnect never retired its port: each hot-plug cycle
+added a 2048-slot ring the audio thread kept draining.
+
+- **One producer, by ownership.** A port's `HeapRb` is split once.
+  `create_input_port` returns the only `InputProducerHandle`, which owns the
+  producer half, is not `Clone` and pushes through `&mut self`; the port keeps
+  the consumer in an `AudioThreadCell`, the drain being its one reader. Both
+  halves hold the ring by `Arc`, so a handle that outlives its port (or the
+  manager) pushes into memory it owns. The file of `unsafe` is deleted; the
+  crate's port module has none.
+- **Ports are retired.** `remove_input_port` takes a port out of the
+  published set; the next port takes the lowest free slot, and trailing free
+  slots are trimmed. The set the drain borrows is retired, so the port and its
+  ring are freed on the control side: by the next publish, or by
+  `HardwareMidiInputs::collect` when no further change comes. `MidiSession`
+  closes a connection and then retires its port, on disconnect, on a failed
+  open, and in its own `Drop` (inputs first, then the output, the manager and
+  the backend, in a stated order). On ALSA, closing joins the pump thread, so
+  the handle is gone before the port is; CoreMIDI may release its callback
+  (and the handle in it) later, and a late push lands in a ring nothing
+  drains, which is harmless.
+- **Ports are named by `PortId`**, a slot and a generation no earlier port in
+  that slot had. Removal, activation and lookup take one, a stale id reaches
+  nothing, and each drained event carries its port's id, so a slot reused by
+  a hot-plug cannot be mistaken for the port that left it.
+- **One scratch.** The drain converts each event's arrival to a
+  `frame_offset` as it leaves its ring, into one `AudioThreadCell<RtVec<..>>`;
+  the second (timestamp) buffer is gone, and with it `RtEventBuf`, whose only
+  user this was. Its no-alloc gate is ported to `RtVec` behind a cell, and
+  its re-entrancy test to the drain: a drain started from inside a visitor
+  returns 0 (a flag on the scratch), and the outer one reads each event by
+  `get` and stops at the end, so it hands out every event.
+- **The sample rate is an atomic** (`f64` bits in an `AtomicU64`), set from
+  any thread and read once per block; it was an `AudioThreadCell` a control
+  thread wrote while the audio thread could be reading it.
+- **Counted, not silent.** `ClockNode`'s per-block events are an
+  `RtVec<MidiEvent, CLOCK_EVENT_CAPACITY>`; what a block produces past it is
+  counted on `ClockMaster::dropped_events`.
+- `tutti_midi_hardware::crossbeam_channel` and the dependency are gone, as
+  are `tutti-midi-runtime`'s unused `parking_lot` and `dashmap`.
+
+Gates: `unplug_during_a_drain_frees_nothing_on_the_audio_thread` beside the
+plug-in one (an owning snapshot of the port set aborts both), the session's
+`hot_plug_cycles_keep_the_port_set_bounded`, and the manager's
+`a_stale_port_id_cannot_reach_the_port_that_reused_its_slot`,
+`a_drain_re_entered_from_its_visitor_hands_out_every_event`,
+`the_sample_rate_can_be_set_while_a_drain_runs` and
+`collect_frees_a_port_removed_during_a_drain`.
+
+#### VST3 host callbacks bounded
+
+**Status: landed** (2026-10-15; the collections audit of `9f397d3d`).
+`tutti-vst3-host`'s `ComponentHandler` sent every plugin callback on one of
+three unbounded crossbeam channels, and a send on one allocates. Plugins call
+`performEdit`, `beginEdit`, `endEdit` and `restartComponent` from their
+process thread (non-conforming, and common), so that allocated there; and
+the plugin server's restart poll, which runs in its audio phase, collected
+all three into fresh `Vec`s to keep only the restart flags.
+
+- Restart flags are cumulative, so they are one `AtomicI32`: `fetch_or` on
+  the plugin's side, swapped to zero by `Vst3Loaded::take_restart`, which the
+  server's `poll_restart` now reads and nothing else (allocation-free,
+  gated with `assert_no_alloc` against the reference probe with edits queued).
+- Edits, progress and unit news share one preallocated
+  `crossbeam_queue::ArrayQueue<PluginNotification>` of 512; a push into a
+  full queue drops the newest and is counted
+  (`Vst3Loaded::dropped_notifications`), and raises a sticky flag the next
+  poll reports once as `RestartOutcome::notifications_overflowed`: a gesture
+  may have lost its final `PerformEdit`, so the host re-reads every value.
+- No notification owns heap memory: `IProgress::start`'s description is an
+  inline `ProgressDescription` (128 bytes, cut at a character boundary), so
+  no callback allocates and dropping a notification frees nothing.
+  `poll_plugin_notifications` hands them to a closure in arrival order and
+  returns the `RestartOutcome`; it collects nothing.
+- A restart has no position among the events. No consumer relied on one:
+  the only reader always folded every restart into one outcome.
+- `HostPlugFrame`'s resize channel, whose one reader kept the last size, is
+  a latest-wins `Mutex<Option<EditorSize>>` (both ends are the UI thread).
+- The server's `poll_restart` also empties the queue
+  (`Vst3Loaded::discard_notifications`, lock-free pops), since the server
+  forwards none of it: no stale backlog, and no overflow count climbing for
+  events nobody reads.
+- Not changed: the server-side editor's edits still never reach the
+  processor (a feature, not this fix), and the GUI-only instance in
+  `tutti-plugin` still ignores `kParamValuesChanged`.
+
 ## Per-node rewrite plan
 
 The question: if the graph had been native from the start, would the nodes
@@ -4657,7 +4855,7 @@ carried.
   chunk is gone. The plugin's parameter list is read once at
   `PluginClient::new` (which already blocks on the server; no protocol
   change), and the node's `ParamDelivery` (`host/node/param_delivery.rs`)
-  holds one slot per parameter plus `SPARE_SLOTS` (64) for addresses the
+  holds one slot per parameter plus `ParameterChanges::SPARE_QUEUES` (64) for addresses the
   list did not name. A chunk's `ParameterChanges` is a `Vec` (wire format
   unchanged) reserved at prepare with a queue per slot and, per queue,
   `points_for(chunk)` = one point per 32 frames plus 4 corners (never
@@ -4686,8 +4884,8 @@ carried.
   and a state load keep it, and a fork is seeded with it, so an export
   plays an edit made in the plugin's editor as live playback does. Not
   here: a ramp is still a step on a plugin, CLAP `PARAM_MOD`, and the
-  parameter-change buffers' memory scales with the parameter count (doc
-  014 §12's follow-up). (The in-process VST2 node had no parameter path
+  parameter-change buffers' memory scaled with the parameter count (doc
+  014 §12's follow-up; since landed, below). (The in-process VST2 node had no parameter path
   either; it has since landed, next.)
 - **In-process VST2 parameter delivery (landed, doc 014 §13 question 2).**
   The in-process VST2 node's event input took MIDI and dropped every
@@ -4726,6 +4924,34 @@ carried.
   renders the plugin-side edit, through the probe's state DC) and
   `vst2_in_process_no_alloc.rs` (200 parameters moving every block under
   `assert_no_alloc`).
+- **Parameter-change point pool (landed, doc 014 §12's follow-up).** The
+  parameter-change buffers' memory follows the points a chunk carries, not
+  the parameter count, and no point storage on the parameter path can
+  grow. A queue's points are a `PointBuf` (a boxed slice and a length, its
+  capacity fixed off the audio thread). `ParameterChanges::reserved(queues,
+  room)` gives each queue a 2-point floor of its own and the set a shared
+  `PointPool` of 256 full-room blocks; a queue past its floor takes one
+  (`ParameterChanges::make_room`), and `clear` gives them back. A queue is
+  still one contiguous, time-ordered slice, so CLAP's flattening and sort,
+  VST3's per-parameter queues and the wire bytes are unchanged (a
+  `PointBuf` serializes as the same sequence; the pool is not serialized).
+  Past a queue's room every site applies one policy,
+  `PointBuf::push_or_replace_last` (the latest-in-time point gives way, so
+  the parameter ends on its latest value), and counts it with its own
+  counter. Every set has one layout (a floor of 3 and blocks of
+  `room + 1`, `ParameterChanges::point_budget`); the host's sets are built
+  `reserved_bridged`, one point of each kept for the bridge's carried
+  value, so the carried value takes a real slot instead of growing a
+  queue, and everything that receives a bridged chunk (the CLAP input list,
+  the VST3 input list, VST3's `IMidiMapping` route) reserves the same
+  budget. No queue count grows on the audio thread either: past its queues
+  the VST3 input list drops a queue and the output list's
+  `addParameterData` returns null, both counted. At 2000 parameters and a
+  4096-frame chunk the IPC node's buffers went from about 43 MB to
+  6.98 MB, a CLAP instance's lists from about 40 MB to 6.2 MB; the
+  figures, the budget's derivation and what is left (a CLAP
+  `params.rescan` does not re-reserve the server's output) are in doc 014
+  §9.
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
   does not honour offsets sample-accurately, as it refuses a ramp.
 
@@ -4883,7 +5109,10 @@ fork would still need `PlacementRecord`'s read-at-isolate to see a clip moved
 after insert. Gain already arrives through the settings ring
 (`UnitParam::Volume` → `VoiceNode::set`), which a `Param` would duplicate.
 It lands with a native `Node` impl for the voice (`IntoNode::Controls`, a
-real `Fork`, the transport from `Env`): items 4 and 9.
+real `Fork`, the transport from `Env`): items 4 and 9. (Landed in two
+steps: the typed handle with item 4, its placement still on a queue; the
+`RtPublish` placement cell, which deletes the queue and `PlacementRecord`,
+with "Sampler real-time fixes" under Phase 6.)
 
 **Found by the review, fixed.** `VoiceCommand::AddVoice` carried its filter
 as `Option<Box<stretch::Unit>>`, and the drain unboxed both it and the
@@ -5016,7 +5245,8 @@ reference):
   branch (`tutti-spatial/src/fork.rs`).
 - **tutti-sampler** — `DiskSource`, `DiskVoice`, `VoicePool`, `VoiceNode`
   (item 7's leftover: typed controls, placement on the node's own queue,
-  gain a `Param`) and `MemorySource`. The clip readers read the transport
+  gain a `Param`; the placement is now a published cell, "Sampler
+  real-time fixes") and `MemorySource`. The clip readers read the transport
   from `Env` and are **frame-exact**: entry, exit, seek, stop and loop wrap
   land on their frame. They then still rendered in 64-frame pieces from
   each block's start, re-seated per piece, which kept the steady-state bits

@@ -270,7 +270,8 @@ impl AudioBridge {
     /// is settled by the slab's sequence numbers, not by a reply arriving.
     /// Draining rather than taking one: a reply for an abandoned block can
     /// still be sitting here, and leaving it would put the queue one behind
-    /// forever. Lock-free; `midi_out` stays inline (a full one drops the rest).
+    /// forever. Lock-free; `midi_out` is inline and capped (a full one drops
+    /// the rest).
     pub fn take_replies(&self, seq: u64, midi_out: &mut MidiEventVec) -> bool {
         let mut answered = false;
         while let Some(resp) = self.channels.pop_audio_response() {
@@ -281,13 +282,12 @@ impl AudioBridge {
                 } => {
                     answered |= s == seq;
                     for mut e in events {
-                        if midi_out.len() >= midi_out.inline_size() {
-                            break;
-                        }
                         if s != seq {
                             e.frame_offset = 0;
                         }
-                        midi_out.push(e);
+                        if midi_out.try_push(e).is_err() {
+                            break;
+                        }
                     }
                 }
                 AudioResponse::Error { seq: s } => answered |= s.is_none_or(|s| s == seq),

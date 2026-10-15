@@ -445,6 +445,16 @@ impl ProbeEnv {
         self
     }
 
+    /// Sleep `stall` at the start of every `process()` call: a live plugin
+    /// that answers every block, late. A sleep rather than
+    /// [`block_from`](Self::block_from)'s spin, so many stalled instances do
+    /// not take the host's cores.
+    pub fn stall_every_block(mut self, stall: std::time::Duration) -> Self {
+        let us = u32::try_from(stall.as_micros()).expect("a stall under an hour");
+        self.set("TUTTI_CLAP_PROBE_STALL_US", us.to_string());
+        self
+    }
+
     /// Make the plugin's `clap.state` save refuse.
     pub fn refuse_state_save(mut self, on: bool) -> Self {
         self.set(

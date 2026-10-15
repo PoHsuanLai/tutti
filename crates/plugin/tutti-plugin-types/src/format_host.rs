@@ -115,8 +115,8 @@ pub trait PluginAudio: Send {
     ///
     /// Returning `ProcessOutput` by value looks equivalent and is not: this
     /// runs on the realtime audio thread, and a fresh return value has no
-    /// capacity to reuse, so every block that emits more than the inline
-    /// `SmallVec` capacity allocates inside the audio callback. A borrowed
+    /// capacity to reuse, so every block that emits parameter changes or note
+    /// expression allocates inside the audio callback. A borrowed
     /// return would avoid that, but its lifetime would come from `&mut self`
     /// and hold the plugin borrowed across everything the caller does with the
     /// block.
@@ -289,6 +289,16 @@ pub trait PluginParams {
     /// not parameter id `n` for VST3, CLAP or AU. Address through each entry's
     /// [`ParameterInfo::id`].
     fn get_parameter_list(&self) -> Vec<ParameterInfo>;
+
+    /// Returns how many parameters the plugin advertises, without building
+    /// their descriptors.
+    ///
+    /// At least `get_parameter_list().len()`: a format whose list skips a
+    /// parameter the plugin declines to describe still counts it. The default
+    /// builds the list; a format with a count query overrides it.
+    fn parameter_count(&self) -> usize {
+        self.get_parameter_list().len()
+    }
 }
 
 /// Saves and restores a plugin's full state as an opaque chunk.

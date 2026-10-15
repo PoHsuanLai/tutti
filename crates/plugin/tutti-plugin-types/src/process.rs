@@ -9,9 +9,8 @@
 
 use crate::{
     ChordChanges, MidiEvent, MidiEventVec, NoteExpressionChanges, NoteExpressionTextChanges,
-    ParamAddress, ParameterChanges, ParameterQueue, ScaleChanges, TransportInfo,
+    ParamAddress, ParameterChanges, ScaleChanges, TransportInfo,
 };
-use smallvec::SmallVec;
 
 /// Sequencer-context inputs for one block: chords, scales, per-note text and
 /// integer per-note expression.
@@ -111,77 +110,115 @@ impl<'a> ProcessContext<'a> {
 pub struct ProcessOutput {
     /// MIDI the plugin emitted this block — a note effect's output, or an
     /// instrument echoing what it consumed.
+    ///
+    /// Capped at [`MIDI_STACK_CAPACITY`](crate::MIDI_STACK_CAPACITY): fill it
+    /// through [`emit_midi`](Self::emit_midi), which drops and counts what
+    /// does not fit. `MidiEventVec::extend` panics past the cap.
     pub midi_events: MidiEventVec,
     /// Parameter changes the plugin made itself, so the host can follow a knob
     /// the user turned in the plugin's own editor.
     ///
-    /// Fill it through [`emit_param_point`](Self::emit_param_point), not
-    /// `ParameterChanges::add_change`, when this value is being reused across
-    /// blocks — see that method for why the difference is an allocation.
+    /// Empty, with room for nothing, until
+    /// [`reserve_params`](Self::reserve_params) sizes it; fill it through
+    /// [`emit_param_point`](Self::emit_param_point), which never grows it.
     pub param_changes: ParameterChanges,
     /// Note expression the plugin emitted this block.
     pub note_expression: NoteExpressionChanges,
-    // Retired `ParameterQueue`s, kept only for the `points` buffers inside
-    // them: `clear` moves the block's queues here and `emit_param_point` takes
-    // one back when it needs a new queue. Private because it is storage rather
-    // than data.
-    retired: SmallVec<[ParameterQueue; 16]>,
+    // MIDI events `emit_midi` dropped this block for want of room.
+    midi_dropped: usize,
 }
 
 impl ProcessOutput {
     /// Empties every list, keeping the storage behind it.
     ///
-    /// Call at the top of each block. The block's [`ParameterQueue`]s are
-    /// moved into an internal pool rather than dropped, so their `points`
-    /// buffers survive for [`emit_param_point`](Self::emit_param_point) to
-    /// reuse; a reader of `param_changes` never sees last block's queues.
-    // Clearing `queues` directly would drop each queue and the `points` buffer
-    // it owns, so a plugin automating the same parameter every block would
-    // reallocate that buffer every block.
+    /// Call at the top of each block. The block's parameter queues go back
+    /// to `param_changes`' spares with their point storage
+    /// ([`ParameterChanges::clear`]), so a reader of `param_changes` never
+    /// sees last block's queues and the next block reuses their storage.
     pub fn clear(&mut self) {
         self.midi_events.clear();
-        // `drain` empties `queues` while leaving its own capacity intact, and
-        // each moved queue carries its `points` allocation into the pool.
-        for mut queue in self.param_changes.queues.drain(..) {
-            queue.points.clear();
-            self.retired.push(queue);
-        }
+        self.midi_dropped = 0;
+        self.param_changes.clear();
         self.note_expression.changes.clear();
     }
 
-    /// Appends one automation point, reusing a pooled queue when a new one is
-    /// needed.
-    ///
-    /// Behaves like [`ParameterChanges::add_change`] — same matching on the
-    /// full [`ParamAddress`], same clamping of `value` — but takes its queues
-    /// from [`clear`](Self::clear)'s pool rather than constructing them. That
-    /// is the whole difference, and it is the difference between a warm block
-    /// allocating nothing and allocating once per automated parameter.
-    ///
-    /// A pool miss (the first blocks, or a plugin that automates more
-    /// parameters than ever before) falls back to constructing a queue, which
-    /// is the warm-up cost this design accepts.
-    pub fn emit_param_point(&mut self, param_id: ParamAddress, sample_offset: i32, value: f64) {
-        if let Some(queue) = self
-            .param_changes
-            .queues
-            .iter_mut()
-            .find(|q| q.param_id == param_id)
-        {
-            queue.add_point(sample_offset, value);
-            return;
-        }
-        let mut queue = match self.retired.pop() {
-            Some(mut pooled) => {
-                // The pooled queue is another parameter's; only its `points`
-                // capacity is wanted, so re-address it.
-                pooled.param_id = param_id;
-                pooled.points.clear();
-                pooled
+    /// Sizes [`param_changes`](Self::param_changes) for `queues` parameter
+    /// queues (the plugin's parameter count) of up to `points` points each
+    /// ([`ParameterChanges::reserved`]), dropping what it held. Allocates;
+    /// call it off the audio thread, when the plugin is loaded.
+    pub fn reserve_params(&mut self, queues: usize, points: usize) {
+        self.param_changes = ParameterChanges::reserved(queues, points);
+    }
+
+    /// Appends `events` to [`midi_events`](Self::midi_events) until it is
+    /// full, and drops the rest. Returns how many were dropped, which also
+    /// adds to [`midi_dropped`](Self::midi_dropped). Allocation-free: the
+    /// list is inline and capped.
+    pub fn emit_midi(&mut self, events: impl IntoIterator<Item = MidiEvent>) -> usize {
+        let mut dropped = 0;
+        for e in events {
+            if self.midi_events.try_push(e).is_err() {
+                dropped += 1;
             }
-            None => ParameterQueue::new(param_id),
-        };
-        queue.add_point(sample_offset, value);
-        self.param_changes.queues.push(queue);
+        }
+        self.midi_dropped += dropped;
+        dropped
+    }
+
+    /// The MIDI events [`emit_midi`](Self::emit_midi) dropped since the last
+    /// [`clear`](Self::clear), for want of room: the plugin emitted more than
+    /// [`MIDI_STACK_CAPACITY`](crate::MIDI_STACK_CAPACITY) in one block.
+    pub fn midi_dropped(&self) -> usize {
+        self.midi_dropped
+    }
+
+    /// Appends one automation point within the room
+    /// [`reserve_params`](Self::reserve_params) gave
+    /// [`param_changes`](Self::param_changes)
+    /// ([`ParameterChanges::add_change`]: same matching on the full
+    /// [`ParamAddress`], same clamping of `value`). Never allocates: past the
+    /// room the parameter keeps its latest value, or a parameter past every
+    /// queue is dropped, and `false` is returned, counted in the set's
+    /// [`ParameterChanges::points_overflowed`].
+    pub fn emit_param_point(
+        &mut self,
+        param_id: ParamAddress,
+        sample_offset: i32,
+        value: f64,
+    ) -> bool {
+        self.param_changes
+            .add_change(param_id, sample_offset, value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MIDI_STACK_CAPACITY;
+
+    /// **`emit_midi` fills to the cap, drops and counts the rest, and never
+    /// panics**; `clear` resets the count with the list. What lets a loader
+    /// copy a plugin's MIDI-out whatever its size without growing (or, with
+    /// `extend`, panicking on) the inline list.
+    ///
+    /// Mutation (run): `emit_midi` through `extend` → panics past 256 →
+    /// fails; the count not added to `midi_dropped` → fails.
+    #[test]
+    fn emit_midi_caps_and_counts() {
+        let mut out = ProcessOutput::default();
+        let events =
+            (0..MIDI_STACK_CAPACITY as u32 + 44).map(|i| MidiEvent::from_ump(i, &[0x2090_3C40]));
+        assert_eq!(out.emit_midi(events), 44);
+        assert_eq!(out.midi_events.len(), MIDI_STACK_CAPACITY);
+        assert_eq!(
+            out.midi_events[MIDI_STACK_CAPACITY - 1].frame_offset,
+            255,
+            "the first kept"
+        );
+        assert_eq!(out.emit_midi([MidiEvent::from_ump(0, &[0x2090_3C40])]), 1);
+        assert_eq!(out.midi_dropped(), 45);
+        out.clear();
+        assert_eq!(out.midi_dropped(), 0);
+        assert!(out.midi_events.is_empty());
     }
 }

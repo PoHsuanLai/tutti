@@ -4,36 +4,29 @@
 //! refuses the write, latches an overflow flag, and never grows. It is not a
 //! public RT buffer on its own: it carries no access discipline, so nothing
 //! about it says who may touch it or how the filled run is read back. That is
-//! what the public types add, each contributing exactly one such discipline:
-//!
-//! - [`RtVec`](crate::RtVec) — owns one, reached through `&mut self`, lends
-//!   the filled run out as `&[T]`.
-//! - [`RtEventBuf`](crate::RtEventBuf) — owns one inside an
-//!   [`AudioThreadCell`](crate::AudioThreadCell), so it is reachable through
-//!   `&self` (behind an `Arc`, or from a COM object), and hides the storage
-//!   behind visitors rather than lending it.
-//!
-//! Keeping the policy in one place is what makes them agree by construction:
-//! separate copies of the refuse-at-`N` logic drift, and a copy that is subtly
-//! different is a buffer that grows on the audio thread.
+//! what [`RtVec`](crate::RtVec) adds: it owns one, is reached through
+//! `&mut self`, and lends the filled run out as `&[T]`. A caller that needs
+//! the same buffer through `&self` wraps an `RtVec` in an
+//! [`AudioThreadCell`](crate::AudioThreadCell).
 
-use smallvec::SmallVec;
+use arrayvec::ArrayVec;
 
-/// A `SmallVec` that refuses to exceed its inline capacity, plus the flag
-/// recording whether it has had to.
+/// `N` inline slots that refuse a write past them, plus the flag recording
+/// whether one has been refused.
 ///
 /// `N` is the hard ceiling: [`push`](Self::push) returns `false` rather than
-/// spilling to the heap, because a spill means a `malloc` inside the audio
-/// callback.
+/// growing. The storage is an [`ArrayVec`], which has no heap path at all, so
+/// there is no spill to guard against: a `malloc` inside the audio callback
+/// is not reachable from here.
 pub(crate) struct Capped<T, const N: usize> {
-    buf: SmallVec<[T; N]>,
+    buf: ArrayVec<T, N>,
     overflowed: bool,
 }
 
 impl<T, const N: usize> Capped<T, N> {
     pub(crate) fn new() -> Self {
         Self {
-            buf: SmallVec::new(),
+            buf: ArrayVec::new(),
             overflowed: false,
         }
     }
@@ -50,11 +43,10 @@ impl<T, const N: usize> Capped<T, N> {
     /// and report `false`.
     #[inline]
     pub(crate) fn push(&mut self, v: T) -> bool {
-        if self.buf.len() >= N {
+        if self.buf.try_push(v).is_err() {
             self.overflowed = true;
             return false;
         }
-        self.buf.push(v);
         true
     }
 
@@ -70,13 +62,6 @@ impl<T, const N: usize> Capped<T, N> {
             written += 1;
         }
         written
-    }
-
-    /// Replace the contents, capped at `N`.
-    #[inline]
-    pub(crate) fn refill(&mut self, it: impl IntoIterator<Item = T>) -> usize {
-        self.clear();
-        self.extend(it)
     }
 
     #[inline]
@@ -107,27 +92,17 @@ impl<T, const N: usize> Capped<T, N> {
 
     #[inline]
     pub(crate) fn is_full(&self) -> bool {
-        self.buf.len() >= N
+        self.buf.is_full()
     }
 
     #[inline]
     pub(crate) fn remaining(&self) -> usize {
-        N - self.buf.len()
-    }
-
-    #[inline]
-    pub(crate) fn get(&self, i: usize) -> Option<&T> {
-        self.buf.get(i)
+        self.buf.remaining_capacity()
     }
 
     #[inline]
     pub(crate) fn iter(&self) -> core::slice::Iter<'_, T> {
         self.buf.iter()
-    }
-
-    #[inline]
-    pub(crate) fn sort_by_key<K: Ord>(&mut self, f: impl FnMut(&T) -> K) {
-        self.buf.sort_by_key(f);
     }
 }
 
@@ -142,10 +117,11 @@ mod tests {
     extern crate std;
     use super::*;
 
-    // The policy is tested once, here. The public wrappers test only what they
-    // add on top (access discipline, lending, draining) rather than re-testing
-    // the cap through three different front doors.
+    // The policy is tested once, here. `RtVec` tests only what it adds on top
+    // (access discipline, lending) rather than re-testing the cap.
 
+    /// Mutation (run): `push` through `ArrayVec::push` instead of `try_push`
+    /// → the fourth push panics ("ArrayVec: capacity exceeded") → fails.
     #[test]
     fn push_refuses_at_the_cap_rather_than_growing() {
         let mut c: Capped<u32, 3> = Capped::new();
@@ -171,14 +147,11 @@ mod tests {
     }
 
     #[test]
-    fn extend_and_refill_report_what_they_wrote() {
+    fn extend_reports_what_it_wrote() {
         let mut c: Capped<u32, 4> = Capped::new();
         assert_eq!(c.extend(0..2), 2);
         assert_eq!(c.extend(10..20), 2, "only the remaining room");
         assert_eq!(c.as_slice(), &[0, 1, 10, 11]);
-
-        assert_eq!(c.refill(100..102), 2, "refill replaces, not appends");
-        assert_eq!(c.as_slice(), &[100, 101]);
     }
 
     #[test]

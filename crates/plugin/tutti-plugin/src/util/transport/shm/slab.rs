@@ -447,7 +447,6 @@ fn shm_path(name: &str) -> std::path::PathBuf {
 mod tests {
     use super::*;
     use crate::protocol::{ChannelLayout, SampleFormat};
-    use smallvec::SmallVec;
 
     /// A real two-bus-per-direction layout. Deliberately *asymmetric* (3 in, 2
     /// out): built at base 0 with equal widths, an offset error that swapped the
@@ -459,8 +458,8 @@ mod tests {
             samples_per_channel: samples,
             format,
             slots: RING_SLOTS as u32,
-            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO, ChannelLayout::MONO]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
+            inputs: vec![ChannelLayout::STEREO, ChannelLayout::MONO],
+            outputs: vec![ChannelLayout::STEREO],
         }
     }
 
@@ -469,8 +468,8 @@ mod tests {
             samples_per_channel: samples,
             format,
             slots: RING_SLOTS as u32,
-            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
+            inputs: vec![ChannelLayout::STEREO],
+            outputs: vec![ChannelLayout::STEREO],
         }
     }
 
@@ -686,7 +685,7 @@ mod tests {
     #[test]
     fn an_empty_bus_list_is_refused() {
         let mut l = stereo_layout(64, SampleFormat::Float32);
-        l.inputs = SmallVec::new();
+        l.inputs = Vec::new();
         assert!(AudioSlab::create(name("empty"), l).is_err());
     }
 

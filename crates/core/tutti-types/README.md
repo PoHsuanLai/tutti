@@ -15,8 +15,8 @@ umbrella, which re-export it. What is in it:
   trait, the measurement newtypes (`Hz`, `Seconds`, `Db`, `Beat`, `Bpm`,
   `Samples`, …), and the atomic `Param<U>` cell that holds one.
 - **RT primitives** — what the audio callback touches: `AudioThreadCell`
-  (one-borrow-at-a-time interior mutability), the capped `RtEventBuf` (reached
-  through `&self`) and `RtVec` (through `&mut self`), the fixed-capacity
+  (one-borrow-at-a-time interior mutability), the capped `RtVec` (through
+  `&mut self`; behind an `AudioThreadCell` for `&self`), the fixed-capacity
   `RtScratch` (own-and-slice, no push), the `ScopedNoDenormals` guard, and
   `RtPublish`/`RtRef` for handing non-scalar state to the audio thread.
 - **Channels** — `ChannelLayout` (`Mono`/`Stereo`/`Multi(n)`): the one answer to
@@ -54,7 +54,7 @@ are private for that reason; the ones that stay public do so because
 ## What this crate does not own
 
 Anything that renders, decodes, or opens a device. It is the **root leaf** —
-Bevy-free, engine-free, depending only on `smallvec` and `atomic_float` (plus
+Bevy-free, engine-free, depending only on `arrayvec` and `atomic_float` (plus
 `serde` and `bevy_reflect` behind their features). The graph runtime is
 `tutti-graph`'s, the engine `tutti-core`'s, the device `tutti-cpal`'s, the file
 codecs `tutti-io`'s and `tutti-export`'s. Two consequences make the split

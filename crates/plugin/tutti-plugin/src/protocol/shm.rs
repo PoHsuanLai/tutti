@@ -95,7 +95,6 @@ mod tests {
     use super::*;
     use crate::protocol::ChannelLayout;
     use crate::util::transport::shm::RING_SLOTS;
-    use smallvec::SmallVec;
 
     fn layout(inputs: &[ChannelLayout], outputs: &[ChannelLayout]) -> SlabLayout {
         SlabLayout {
@@ -105,8 +104,8 @@ mod tests {
             // `RING_SLOTS`, and a helper that hardcodes the depth would keep
             // passing if the ring ever grew.
             slots: RING_SLOTS as u32,
-            inputs: SmallVec::from_slice(inputs),
-            outputs: SmallVec::from_slice(outputs),
+            inputs: inputs.to_vec(),
+            outputs: outputs.to_vec(),
         }
     }
 
@@ -196,8 +195,8 @@ mod tests {
             channels: 2,
             samples_per_channel: 512,
             format: SampleFormat::Float32,
-            inputs: SmallVec::new(),
-            outputs: SmallVec::new(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
         };
         let bytes = bincode::serialize(&legacy).unwrap();
         // Either it fails outright, or it produces something that is not the

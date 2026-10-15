@@ -15,10 +15,12 @@ default = []
 # ParameterChanges, EditorSize, EditorCapabilities, WindowHandle). Required
 # by tutti-plugin's bincode IPC protocol; host crates that don't need IPC
 # don't pay for the serde dep.
-serde = ["dep:serde", "smallvec/serde", "bitflags/serde", "tutti-types/serde"]
+serde = ["dep:serde", "arrayvec/serde", "bitflags/serde", "tutti-types/serde"]
 
 [dependencies]
-smallvec = "1"
+# The capped per-block containers (`MidiEventVec`, the harmony changes): a
+# fixed run of slots that cannot grow, so the cap is the type's.
+arrayvec = "0.7"
 # Plugin capability flag set (`Features`) — wgpu-style bitflags.
 bitflags = "2"
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
@@ -31,6 +33,8 @@ serde = { version = "1", features = ["derive"], optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
+# The no-alloc gates on the point storage (`PointBuf`, `ParameterChanges`).
+assert_no_alloc = { version = "1", default-features = false }
 # Wire-format round-trip tests for the serde-gated metadata types.
 bincode = "1"
 # The plugin catalog is JSON, so its backward-compat test needs it too.

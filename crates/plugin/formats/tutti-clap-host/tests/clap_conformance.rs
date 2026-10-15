@@ -188,7 +188,7 @@ fn host_sorts_events_by_sample_offset() {
 #[test]
 fn host_delivers_param_points_with_offsets() {
     let mut inst = load_plugin();
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(1, 2);
     // Two points on one param, again out of order to confirm sorting + that
     // value/offset survive the trip across the FFI.
     params.add_change(REAL_PARAM_ID, 192, 0.75);
@@ -234,7 +234,7 @@ fn host_never_delivers_an_event_time_outside_the_block() {
     let mut inst = load_plugin();
     const FRAMES: u32 = 128;
 
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(1, 3);
     params.add_change(REAL_PARAM_ID, -1, 0.5); // negative → must not wrap
     params.add_change(REAL_PARAM_ID, 100_000, 0.9); // past the block → must clamp
     params.add_change(REAL_PARAM_ID, 64, 0.25); // in range → untouched

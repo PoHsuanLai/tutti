@@ -439,8 +439,8 @@ impl<T: ClapSample> ClapActive<T> {
         let ports_ptr: *const PortLayout = &self.loaded.ports;
         let scratch = &mut self.scratch.process;
 
-        // Pooled vectors rather than per-block `SmallVec<[*mut T; 16]>` locals,
-        // which spilled to the heap every block at 17+ channels a side. `clear`
+        // Pooled vectors rather than per-block small-vector locals (16 pointers
+        // inline, then the heap), which spilled to the heap every block at 17+ channels a side. `clear`
         // keeps the capacity `activate()` reserved.
         scratch.caller_input_ptrs.clear();
         scratch

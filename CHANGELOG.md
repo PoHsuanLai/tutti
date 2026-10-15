@@ -96,16 +96,187 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `AutomationLaneNode::for_param(curve, key)` / `for_foreign(curve, id)` returned an `AutomationLaneNode` with an event output | they return a `ControlLaneNode` of the curve alone; `AutomationLaneNode` is the audio-output lane only |
   | `LANE_EVENT_CAPACITY` = 128 (`AutomationLaneNode`'s) | 256, the control lane's: a 4096-frame block's grid and as many corners; past it a lane thins its grid (`thinned()`), then drops its last points (`truncated()`) |
   | a piece no `SegmentShape` carries (`Elastic`, a curve without pieces) was sampled at block edges, so it moved with the block size | it is linear between grid points of the play clock and the breakpoints: the same frames at any block size |
-  | `ParameterQueue::chunk_room(chunk)` = `max(ceil(chunk / 32) + 4, 10)`; a full queue replaced its last point (`points_merged`) | `ceil(chunk / 32) + 1 + CORNER_POINTS` (256); a full queue drops a grid point (a frame whose play count is a multiple of 32), or a corner evicts its earliest grid point, both counted in `ParamDeliveryStats::grid_points_dropped`; only a queue of corners is merged |
+  | `ParameterQueue::chunk_room(chunk)` = `max(ceil(chunk / 32) + 4, 10)`; a full queue replaced its last point (`points_merged`) | `ceil(chunk / 32) + 1 + CORNER_POINTS` (256). A queue is full at its room, or at its floor with the chunk's pool spent (more than 256 parameters past their floor in one chunk); then a grid point (a frame whose play count is a multiple of 32) is dropped, or a corner evicts the queue's earliest grid point, both counted in `ParamDeliveryStats::grid_points_dropped`; only a queue of corners keeps its latest value in place of its latest point (`points_merged`) |
+  | `ParameterQueue::MIN_POINTS` (10), the floor of `chunk_room` | removed: `chunk_room` is never under 258. Use a literal room where a test wanted a small one |
+  | — | `PointBuf::remove(index)` and `PointBuf::sort_by_offset()`, a stable in-place sort that never allocates (std's stable sort allocates past 256 points, under a chunk's room); the VST3 host's `IMidiMapping` merge and its input queue refill sort with it |
   | `SegmentPoints` sent a point every stride frames of each chunk | it sends a segment's start, its value on each 32-frame play-grid frame, each chunk's last frame and its arrival; the lane's pieces are the points |
-  | a plugin node's and plugin-server's parameter buffers reserved 132 points per parameter at a 4096-frame chunk | 385, and 273 at a 512-frame chunk (was 20): about 2.9× the memory at 4096 frames and about 9× (the node's buffers) to 13× (the CLAP lists) at 512. Per instance at 2000 parameters: a CLAP plugin about 235 MB at 4096 frames and 168 MB at 512, a VST3 plugin about 130 MB and 93 MB. Doc 014 §12 lists every figure and the arena that will replace them |
+  | a plugin node's and plugin-server's parameter buffers reserved each queue's room of 132 points at a 4096-frame chunk (20 at 512) | the logical room is 385 (273 at 512); the storage stays the shared pool (below): a floor of 3 a queue and 256 blocks of `room + 1`, so only the pool term grows. Per instance at 2000 parameters (the node's buffers and its host's lists together): a CLAP plugin about 32.4 MB at 4096 frames and 23.9 MB at 512 (13.2 MB and 4.7 MB at the old room), a VST3 plugin about 18.0 MB and 13.4 MB (7.6 MB and 3.0 MB). Doc 014 §9 lists every figure; with every queue at the full room it would have been about 235 MB and 168 MB for CLAP |
 
   Migration:
   - Wire `AutomationLaneNode::for_param(curve, key)`'s result as before: it is a `ControlLaneNode`, inserted the same way. For a knob under the automation, or modulation, build `ControlLaneNode::for_param` with a `ControlProgram` and the target's `Param` cell and `Editor::param_range_cell`.
   - Read `LaneControls::thinned()` / `truncated()` where a block over 4096 frames may carry more than 256 points; render exports in blocks of at most 4096 frames.
+  - Replace `ParameterQueue::MIN_POINTS` with the room the code meant (it was 10).
   - Expect a CLAP parameter under automation to step every 32 frames or less, at play-clock grid frames.
   - `AutomationLaneNode::for_param` / `for_foreign` now freeze the curve when they build (`ControlProgram::from_automation` takes `Curve::frozen`). A curve that reads state written later (a `LayeredCurve`, whose layers a router writes) no longer sees those writes: publish a new program through the lane's `LaneControls` when it changes, or express the modulation as program layers.
   - After re-wiring a lane's output or replacing its target, call `LaneControls::resync()`: a steady lane does not re-send at block edges, so a new target hears nothing until something moves.
+
+- **Plugin parameter changes draw their points from a shared pool, in
+  fixed-capacity storage** (design doc 014, §9's point-storage note; §12's
+  memory follow-up). A reserved `ParameterChanges` held every queue at its
+  full room, so a plugin's parameter-change memory grew with
+  `params × room`: about 43 MB in the IPC node's buffers and 40 MB in a
+  CLAP instance's lists at 2000 parameters and a 4096-frame chunk, ten
+  times that at 16k. Now each queue keeps a small floor and the set a pool
+  of 256 full-room blocks (6.98 MB and 6.2 MB at that size; the per-instance
+  figures are in doc 014 §9). A queue's points are a `PointBuf`, whose
+  capacity is fixed when it is built, so no point storage on the parameter
+  path can grow, on any thread. A queue's logical room
+  (`ParameterQueue::chunk_room`), the wire bytes and the delivery semantics
+  are unchanged. **Breaking**: `ParameterQueue::points` is a `PointBuf`,
+  not a `Vec`; nothing grows a set or a queue past the capacity it was
+  built with; `ParameterQueue::new` and `ParameterChanges::with_capacity`
+  are removed; `ParameterChanges::new()` has room for nothing.
+
+  | Was | Now |
+  |---|---|
+  | `ParameterQueue::points: Vec<ParameterPoint>` | `ParameterQueue::points: PointBuf` (`tutti_plugin_types::PointBuf`, re-exported where `ParameterQueue` is): a boxed slice and a length. It derefs to `[ParameterPoint]` (`len`, `iter`, indexing, `first`/`last`, `sort_by_key` and `&queue.points` in a `for` all compile as before); `try_push(p) -> Result<(), ParameterPoint>`, `try_push_front(p) -> Result<(), ParameterPoint>`, `clear`, `capacity`, `has_room`, `push_or_replace_last(p) -> bool`, `replace_latest(p) -> Option<usize>` (the slot it took). It serializes as the same sequence. `PointBuf` and `ParameterPoint` are `Default` |
+  | `ParameterQueue::new(id)` (an empty `Vec`) | removed: `ParameterQueue::with_capacity(id, points)`, or `ParameterQueue::from_points(id, vec)` (exactly the given points, off the audio thread) |
+  | `ParameterQueue::add_point(..)` grew the queue | `add_point(..) -> bool`: at its capacity the one full-queue policy, `PointBuf::push_or_replace_last` (the point replaces the queue's latest-in-time point if it is no earlier, so the queue ends on its latest value), and `false` for the caller to count |
+  | `ParameterChanges::new()` grew as points were added; `with_capacity(queues)` reserved queues | `new()` is the empty set with room for nothing (`add_change` on it stores nothing, counted); `with_capacity` removed: build `ParameterChanges::reserved(queues, points)` |
+  | `ParameterChanges::reserved(queues, points)`: every queue with room for `points` | one layout for every set: every queue with a floor of `ParameterChanges::FLOOR_POINTS + 1` (3), the set with a `PointPool` of `ParameterChanges::POOLED_QUEUES` (256) blocks of `points + 1`, where that at least halves the storage; otherwise every queue at `points + 1` (`ParameterChanges::point_layout(queues, points) -> (floor, blocks)`). The one more point is the bridge's carried value's, so a queue can reach `points + 1` |
+  | — | `ParameterChanges::reserved_bridged(queues, room)`: `reserved`, with one point of every queue and block kept back for `prepend_carried`, so its producers stop at `room`; `prepend_carried(i, point) -> bool` (with no slot the value is dropped, counted: it is older than the queue's points; past the queues, where no queue holds the parameter, it is dropped and counted too, and is its latest value: unreachable from the IPC bridge, whose buffers hold a queue for every slot of the delivery); `push_point(i, offset, value) -> bool`; `ParameterChanges::SPARE_QUEUES` (64), the queues a host's chunk holds past the parameter list; `PointPool::new(blocks, room, holders)` |
+  | a producer pushed while `queues[i].has_room()` | `ParameterChanges::make_room(i) -> bool`: `true` when the queue has room of its own or took a block from the pool |
+  | — | `PluginInstance::parameter_count() -> usize`: the parameter count without building the descriptors; the default is `get_parameter_list().len()`, and the VST3, CLAP and VST2 loaders answer from the format's count query. An existing implementation needs no change |
+  | `ParameterQueue::has_room()`: room in the queue's own storage | removed: a producer asks `ParameterChanges::make_room(i)` (the queue's room or a pool block), and a sizing check compares `point_storage()` with `point_budget`; the queue's own storage alone is `queue.points.has_room()` |
+  | `add_change(..)` returned nothing, and grew any set past its room | `add_change(..) -> bool`, never grows: past the queue's room the one full-queue policy, and an address past every queue is dropped; either returns `false` and is counted in `ParameterChanges::points_overflowed()`. It costs O(queues) a call (a linear scan; no allocation) |
+  | `add_change` on a set built `new` or `with_capacity` grew it (the unbounded path) | removed: there is no unbounded path. `add_queue` (off the audio thread) still pushes a prebuilt queue |
+  | `point_capacity()`: the smallest room among the spare queues | removed: compare `point_storage()` (the points a set holds now, in its queues, spares and pool) with `ParameterChanges::point_budget(queues, points)` (the points `reserved` holds) |
+  | the IPC bridge grew a floor queue by the carried value it prepends, and pushed a queue for a carried value with no spare queue | the node's delivery and the bridge's buffers are built `reserved_bridged`, so the value takes a real slot; with no spare queue it is dropped, counted in the buffer's `points_overflowed`, which loses the parameter's latest value but is unreachable: every buffer holds the delivery's slot count, the parameters + 64, and every carried id is one of those slots (only the empty placeholder of a block with no changes gets queues built). Their storage is `point_budget` (a floor of 3, not 2, and blocks of `room + 1`): 6.98 MB, not 6.65 MB, at 2000 parameters and 4096 frames |
+  | `ProcessOutput::emit_param_point(..)` grew queues from a private pool of retired ones | `ProcessOutput::reserve_params(queues, points)` sizes `param_changes` (the plugin-server does at load, and again at that room, sized by `PluginInstance::parameter_count`, when a VST3 or AU plugin says its parameter list changed and it grew (a VST3 `kParamTitlesChanged` without a reload still keeps the instance's activation-time output queues); a CLAP `params.rescan` reaches no event there, so its output stays at the load's count, counted past it); `emit_param_point(..) -> bool` is `add_change` within that room. The private `retired` pool is removed |
+  | the CLAP host's input list reserved and bounded at `params × (room + 1)` events | at `ParameterChanges::point_budget(params, room)`, so a chunk the host's pool bounded reaches the plugin whole. Past it, as before, a parameter's point replaces its previous event in the list, and a parameter with no event in the list yet when the room runs out loses its points; counted (`ClapActive::param_points_dropped`) |
+  | the CLAP host's output list's parameter room `queues × room` | `ParameterChanges::point_budget(queues, room)`, the output queues the same (the one layout: a queue and a block hold `room + 1`); past it the one full-queue policy, counted (`ClapActive::output_param_points_dropped`) |
+  | the VST3 host's input queues each reserved a full room; a queue past its room kept its first `room − 1` points and its last | the one layout, for the parameters and the 64 spare queues, lent from the same `PointPool` per block; past its room a queue keeps its latest value (the one policy) |
+  | the VST3 host's output queues grew past their room as the plugin called `addPoint` | fixed at their room: past it `addPoint` keeps the latest value, counted: a point no earlier than the queue's latest replaces it and returns `kResultOk` with that slot's index; an earlier one is dropped and returns `kResultFalse` |
+  | the VST3 host's input and output lists grew their queue count on the audio thread past the queues they were built with | fixed: a refill drops the queues past the list's, and `addParameterData` past them returns null (the failure the SDK's samples check for), both counted in `param_points_dropped` / `output_param_points_dropped`. `addParameterData` for an id already in the list returns that queue and its index, as the SDK's host does |
+  | the VST3 `IMidiMapping` route's scratch in the plain layout, seeded through `add_change` (a scan of the open queues a point); its merge replaced the last point *added* | the one layout (`reserved`) for the parameters and the 64 spare queues, so the host's chunk reaches it whole, seeded a queue opened for each of the chunk's, linear in it; the merge keeps the latest value in time, host or controller |
+  | — | `Vst3Active::param_points_dropped()`, `Vst3Active::output_param_points_dropped()`: read on the instance only; the plugin-server does not report them, as it does not report the CLAP host's |
+
+  Migrating: build a queue with `ParameterQueue::with_capacity(id, n)` (or
+  `from_points`) where it was `ParameterQueue::new(id)`, and a set with
+  `ParameterChanges::reserved(queues, points)` where it was `new()` or
+  `with_capacity(..)` and then filled. Code that pushed onto
+  `queue.points` calls `try_push` (or `add_point`) and decides what a full
+  queue means; code that read it needs no change. A producer that filled a
+  reserved set with `has_room` checks calls `make_room(i)` in their place.
+  A `ProcessOutput` the caller fills with `emit_param_point` is reserved
+  once with `reserve_params`. Code that relied on a set or a queue growing
+  past its room reserves the room it needs, or reads `points_overflowed`.
+
+- **Sampler real-time fixes** (tutti-sampler; design doc 013, "Sampler
+  real-time fixes"). A voice pool's drain no longer blocks on a stalled
+  butler, no longer grows its voice vector in the callback, and counts
+  what it drops instead of logging it. A standalone `VoiceNode`'s
+  placement is a published value rather than a queue. **Breaking** for
+  `VoiceNodeHandle::set_placement`, which returns `()`.
+
+  | Was | Now |
+  |---|---|
+  | a streaming voice's loop forward blocked `process` while the butler's queue was full | it is refused, counted (`PoolDrops::loops_butler_full`), and not recorded in the voice's `Playback`; a host re-sends it. `Commands::send` (control thread) still blocks |
+  | the drain's dropped loops and ignored `ReplaceWave`s went to `tracing::warn!` | `VoicePoolHandle::drops() -> PoolDrops` (`loops_butler_full`, `loops_butler_gone`, `loops_no_butler`, `wave_swaps_ignored`, `voices_refused`, `freed_in_callback`); `#[non_exhaustive]` |
+  | an `AddVoice` past 64 resident voices reallocated the voice vector in the callback | it is refused, counted (`voices_refused`), and the voice handed back for `collect_retired` to free |
+  | a value the full retirement channel could not take was freed in the callback silently | still freed there, now counted (`freed_in_callback`) |
+  | `VoiceNodeHandle::set_placement(..) -> Result<(), SendError>` (a 64-entry queue, `Full` when it filled) | `-> ()`: the window is published, latest wins, from the node's next block. **Migration:** drop the `?`/`.unwrap()`; two placements between blocks play the second |
+  | the butler's command queue was a `smol` channel, whose send locked a listener list (and allocated it on the first send) | a lock-free (not wait-free: on a full queue a send can spin briefly behind the butler's in-progress pop), allocation-free fixed queue whose send unparks the butler. A butler thread that exits, however it exits, closes it and drops what was queued, and every later `Commands::send` returns `ButlerGone`; a command sent as it exits either is popped (run, or dropped by that drain) or reports `ButlerGone` |
+  | an `AddVoice` whose voice carried a loop recorded it in `Playback` even when the butler refused the forward | the loop is recorded only once the butler takes it |
+  | a control-thread `insert_voice` of a streaming voice with a loop | waits for room in the butler's queue (retrying every 100 µs) instead of refusing, as `Commands::send` does; it returns early only when the butler is gone (counted as `loops_butler_gone`). It waits as long as a stalled butler stalls, and for good on an unstarted controller or a `DiskStreamer::manual` stepped on the calling thread: step or start it before inserting a looping voice into a full queue |
+  | `loops_no_butler` counted every loop change on a streaming voice with no butler, `Off` included | it counts only a lost `On`; an `Off` there has nothing to clear |
+  | `tutti-sampler` depended on `ringbuf`, `smol` and `futures-lite` | it depends on none of them (`crossbeam-queue` instead) |
+
+- **A hardware MIDI input ring has one producer, by ownership**
+  (tutti-midi-hardware; design doc 013, "Hardware MIDI input ring"). Each
+  port's ring is split once: `create_input_port` returns its only
+  `InputProducerHandle`, which owns the producer half, is not `Clone`, and
+  pushes through `&mut self`; the port keeps the consumer. The `unsafe`
+  `SpscRing` is deleted. A disconnect retires its port, and a new port takes
+  the lowest free slot, so the port set no longer grows with every hot-plug
+  cycle. A port is named by a `PortId` (its slot and a generation), so an
+  id kept past its port's removal reaches nothing, not the port that took
+  its slot. **Breaking:**
+
+  | Was | Now |
+  |---|---|
+  | `HardwareMidiInputs::create_input_port(name) -> usize` | `-> InputProducerHandle`; the port is `handle.port_id()`, a `PortId` |
+  | `HardwareMidiInputs::get_input_producer_handle(index)` | removed: keep the handle `create_input_port` returned. There is no second handle to a ring |
+  | `HardwareMidiInputs::push_input_event(index, event)` | removed: `handle.push(event, Instant::now())` |
+  | `InputProducerHandle: Clone`, `push(&self, ..)` | not `Clone`, `push(&mut self, ..)`: a driver callback owns its handle (`move` it into an `FnMut`, or the pump thread) |
+  | ports were only appended; a `PortInfo::index` was never reused | `HardwareMidiInputs::remove_input_port(id: PortId) -> bool`; a removed port's slot is reused by the next port, under a new generation. `MidiSession` retires a port on disconnect, on a failed open, and when the session drops |
+  | a port named by `usize` index: `PortInfo::index`, `get_port_info(type, index)`, `set_port_active(type, index, on)`, `is_port_active(type, index)` | by `PortId`: `PortInfo::id`, and each of those takes a `PortId`. A stale id (its port removed) is a no-op: `None` / `false`. `PortId::index()` is still the slot, for display |
+  | `cycle_start_read_all_inputs[_at]`'s visitor: `FnMut(usize, MidiEvent)` | `FnMut(PortId, MidiEvent)`. A drain started from inside a visitor returns 0 and visits nothing; the outer drain still hands out every event |
+  | `set_sample_rate` wrote an audio-thread cell (a concurrent drain could trip it) | an atomic, safe from any thread; a drain reads it once per block |
+  | — | `HardwareMidiInputs::collect() -> usize`: frees a removed port whose ring a drain still held when it was removed, without waiting for the next port change; returns how many retired sets are still held |
+  | `tutti_midi_hardware::crossbeam_channel` | removed (and the dependency): depend on `crossbeam-channel` directly |
+  | `tutti_types::RtEventBuf` / `tutti_core::RtEventBuf` | removed (its one user was this crate): `AudioThreadCell<RtVec<T, N>>` |
+  | `ClockNode` dropped events past `CLOCK_EVENT_CAPACITY` in a block silently | it still drops them, and counts them: `ClockMaster::dropped_events()` |
+
+  `tutti-midi-runtime` no longer depends on `parking_lot` or `dashmap`
+  (nothing used them).
+
+- **VST3 host callbacks are bounded and allocation-free** (design doc 013,
+  "VST3 host callbacks bounded"). Plugins call `performEdit` and
+  `restartComponent` from their process thread, where the host's unbounded
+  channels allocated; the plugin server's restart poll, in its audio phase,
+  collected every queued edit into a `Vec` to keep only the restart flags.
+  Restart flags are now one atomic word, and edits, progress and unit news
+  share one preallocated queue whose overflow is counted, and a progress
+  description is held inline, so no callback allocates. **Breaking** for
+  `tutti-vst3-host` callers of the notification poll.
+
+  | Was | Now |
+  |---|---|
+  | `Vst3Loaded::poll_plugin_notifications() -> PluginNotifications` (`param_edits`, `progress`, `units` as fresh `Vec`s, `restart`) | `poll_plugin_notifications(\|n: PluginNotification\| ..) -> RestartOutcome`: each event goes to the closure in arrival order across all three kinds; nothing is collected. `news.restart` → the return value; `news.param_edits` → match `PluginNotification::Edit(e)`, `news.progress` → `Progress(e)`, `news.units` → `Unit(e)` |
+  | `PluginNotifications` | removed; `tutti_vst3_host::PluginNotification` (`Edit`, `Progress`, `Unit`) is the queued item |
+  | `ParameterEditEvent::RestartComponent(i32)` (never surfaced: the poll folded it into `restart`) | removed; restart requests arrive only as the coalesced `RestartOutcome`, and carry no position among the events |
+  | — | `Vst3Loaded::take_restart() -> RestartOutcome`: the restart flags alone, wait-free and allocation-free (the plugin server's `poll_restart` reads only this) |
+  | unbounded queues | `NOTIFICATION_CAPACITY` (512) unread notifications; past it the newest is dropped, counted in `Vst3Loaded::dropped_notifications()`, and reported once by the next poll as `RestartOutcome::notifications_overflowed` (re-read every parameter value) |
+  | `RestartOutcome` had only restart flags | new field `notifications_overflowed`; a struct literal needs it (or `..Default::default()`) |
+  | `ProgressEvent::Started { description: String }` | `description: ProgressDescription`, inline, at most `PROGRESS_DESCRIPTION_CAPACITY` (128) UTF-8 bytes, cut at a character boundary. `description.as_str()`, or deref to `&str`; `.to_string()` for an owned copy |
+  | — | `Vst3Loaded::discard_notifications()` (drop every queued notification, lock-free; the plugin server's `poll_restart` calls it) and `Vst3Loaded::pending_notifications()` |
+  | `poll_editor_resize_request` drained a channel | the same method reads a latest-wins cell; behaviour unchanged (it returned the last size) |
+
+- **`smallvec` is gone from the workspace** (design doc 013, "SmallVec
+  removed"). A type whose inline storage bought nothing is a `Vec` (or a
+  boxed slice); a type whose inline storage was a hard cap is an
+  `arrayvec::ArrayVec`, which refuses a push past the cap instead of
+  spilling to the heap. **Breaking** for code that names the aliases or the
+  fields below. On the wire nothing changes: bincode writes each of these as
+  a sequence (a `u64` length, then the items), whichever container, and
+  tests pin those bytes.
+
+  | Was | Now |
+  |---|---|
+  | `tutti_plugin_types::BusChannels` / `BusTopologies`: `SmallVec<[_; 4]>` | `Vec<ChannelLayout>` / `Vec<Option<ChannelTopology>>`. `BusChannels::from_slice(s)` → `s.to_vec()`; `smallvec![..]` → `vec![..]` |
+  | `MidiEventVec` (`tutti_plugin_types`, re-exported by `tutti_plugin::protocol`): `SmallVec<[MidiEvent; 256]>`, spilling past 256 | one type, `ArrayVec<MidiEvent, MIDI_STACK_CAPACITY>` (256). `push`, `extend` and `collect` **panic** past the cap: use `try_push`, or `ProcessOutput::emit_midi` |
+  | `tutti_plugin::protocol::IpcMidiEventVec`: `SmallVec<[IpcMidiEvent; 256]>` | `Vec<IpcMidiEvent>` |
+  | — | `tutti_plugin::protocol::midi_from_wire(&[IpcMidiEvent]) -> MidiEventVec`: converts a wire list, keeping the first 256 events |
+  | `NoteExpressionVec`: `SmallVec<[_; 8]>` | `Vec<NoteExpressionValue>` |
+  | the harmony containers' fields (chords, scales, note-expression text and int changes): `SmallVec<[_; 4]>`, unbounded | `ArrayVec<_, HARMONY_CAPACITY>` (4, newly exported). `add_change` returns `bool` (`#[must_use]`): `false` when the container is full, and the change is not kept |
+  | `ProcessOutput.midi_events` filled with `extend` | `ProcessOutput::emit_midi(events) -> usize` keeps what fits and returns how many were dropped; `ProcessOutput::midi_dropped()` totals them for the block |
+  | `ProcessOutput.retired`: `SmallVec` | `Vec<ParameterQueue>` (private). **A server's first blocks allocate a little more:** the pool starts empty and a queue `emit_param_point` builds on a pool miss has no point room, so each parameter a plugin first emits allocates its pool slot and its points, where the inline rooms (16 queues, 10 points) did not. `queues` was already a `Vec`, so that first block allocated before too. Not reserved up front: the server's `AudioPipeline` is built before any plugin is loaded, knowing neither a parameter count nor a block size, and the pool is warm from the next block on |
+  | `ParameterQueue::INLINE_POINTS` (10) | `ParameterQueue::MIN_POINTS` (10), the floor of `chunk_room`. `ParameterQueue::new` has **no** point room (its first point allocates): reserve with `with_capacity` or `ParameterChanges::reserved`. `ParameterChanges::point_capacity()` is 0 for a set with no spares |
+  | `ParameterChanges::add_change` built a new queue for a new parameter | it takes a spare queue first, as `open_queue` does, so a reserved set cleared each block reuses its point storage |
+  | `tutti_vst2_host::MidiEventVec`: `SmallVec<[MidiEvent; 256]>` | `Vec<MidiEvent>`, reserved once (the drain into it is gated against allocating) |
+  | `tutti_vst3_host::ProcessOutput.midi_events`: `SmallVec<[MidiEvent; 64]>` | `Vec<MidiEvent>` |
+  | `tutti_vst3_host::{ChordValue, ScaleValue, NoteExpressionText}::to_vst3_event(&mut SmallVec<[u16; 256]>)`: `pub` | `pub(crate)`. The text arena they intern into is now a crate-private type with a fixed room, so the methods can no longer be named outside the crate. Pass the values in `Vst3InputEvents` (`chords`, `scales`, `expr_texts`) to `process`, which interns them into its event list's own arena |
+  | — | `Vst3Active::event_text_dropped()`: chord, scale and note-expression texts refused because a block's event-list text arena was full. The arena reserves its room (64 texts of 256 UTF-16 units) once and never grows, because the plugin holds pointers into it for the whole `process` call |
+  | `tutti_types::ChannelTopology`'s positions: `SmallVec<[Speaker; 8]>` (private) | `Vec<Speaker>` (private) |
+  | `tutti_types::Retire<T>` | removed. Nothing in production used it. A type that must not be freed on the audio thread calls `tutti_types::AudioThread::check_not_current("what")` in its `Drop` |
+
+  **Decoding past a cap.** `ArrayVec`'s serde rejects a sequence longer than
+  its capacity, where `SmallVec` accepted any length. The harmony containers
+  decode with a truncating visitor instead: the first four items are kept
+  and the rest are read and discarded, so the stream stays in step and one
+  over-long list does not fail the whole `ProcessAudio` message. MIDI crosses
+  the wire as `Vec<IpcMidiEvent>`, which decodes at any length, and is cut to
+  the first 256 events when it is converted (`midi_from_wire`, on both the
+  host and the server); the server logs how many plugin events it dropped.
+
+  Migration:
+  - Replace `SmallVec`/`smallvec![]` for these aliases with `Vec`/`vec![]`,
+    or with `try_push` for the `ArrayVec` ones.
+  - Rename `ParameterQueue::INLINE_POINTS` to `MIN_POINTS`.
+  - Check the `bool` from a harmony `add_change`.
+  - Replace a `Retire<T>` with a newtype whose `Drop` calls
+    `AudioThread::check_not_current`.
 
 - **The control-lane floor** (design doc 014, PR 2a): the port rule for
   event sources, the graph's play clock and a shareable range cell.
@@ -1095,6 +1266,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     CoreMIDI type. It now takes an erased sink, so every backend gets it.
 
 ### Fixed
+
+- **A MIDI input driver can no longer push into a freed ring**
+  (tutti-midi-hardware). The producer handle was a raw pointer into a ring
+  the port manager owned, so an ALSA pump thread still running while a
+  session dropped (the manager before the connections) could write through
+  a dangling pointer, and two handles to one port were two producers. The
+  handle now owns its half of the ring; the session closes its inputs before
+  the rest of its state, in a stated order.
 
 - **The sampler no longer frees a decoded wave on the audio thread**
   (tutti-sampler). A pool's `VoiceCommand::ReplaceWave` drain dropped the

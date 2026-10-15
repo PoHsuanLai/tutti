@@ -583,6 +583,10 @@ impl PluginParams for ClapInstance {
         // `ParameterInfo` at its own boundary, so the loader maps no flags here.
         clap_dispatch!(self, i => i.get_parameter_list())
     }
+
+    fn parameter_count(&self) -> usize {
+        clap_dispatch!(self, i => i.parameter_count())
+    }
 }
 
 impl PluginEditorHost for ClapInstance {
@@ -718,7 +722,7 @@ fn convert_transport(
 /// Copy one block's emitted events out of the CLAP host's pooled buffers into
 /// the caller's reusable [`ProcessOutput`].
 ///
-/// `out` arrives cleared, with its heap capacity intact, so every `extend` and
+/// `out` arrives cleared, with its heap capacity intact, so every copy and
 /// `add_change` below writes into storage that already exists. This is the
 /// point of taking `out` by reference: `ClapInstance::process` returns a
 /// **borrowing** `ProcessOutputRef` into its own pools, and building a fresh
@@ -729,7 +733,7 @@ fn copy_process_output(
     output: tutti_clap_host::instance::ProcessOutputRef<'_>,
     out: &mut ProcessOutput,
 ) {
-    out.midi_events.extend(output.midi_events.iter().copied());
+    out.emit_midi(output.midi_events.iter().copied());
 
     for queue in &output.param_changes.queues {
         for point in &queue.points {
@@ -1626,7 +1630,7 @@ mod tests {
         assert!(!params.is_empty());
 
         let mut changes = ParameterChanges::new();
-        let mut queue = ParameterQueue::new(params[0].id);
+        let mut queue = ParameterQueue::with_capacity(params[0].id, 1);
         queue.add_point(0, 0.5);
         changes.add_queue(queue);
 

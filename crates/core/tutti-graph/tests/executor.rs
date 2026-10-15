@@ -238,15 +238,25 @@ fn masked_status_reaches_the_next_nodes_mask() {
     assert_eq!(seen.load(Ordering::Relaxed), 0b01);
 }
 
-/// Dropping a `Retire` inside a node's `process` panics in a debug build —
-/// the executor marks the audio thread for the whole block.
+/// Freeing a value whose `Drop` checks the audio-thread marker inside a
+/// node's `process` panics in a debug build — the executor marks the audio
+/// thread for the whole block. The probe is the check every control-freed
+/// value in the graph makes (`NodeBox`, a crossfade, a commit):
+/// `AudioThread::check_not_current` from its `Drop`.
 ///
 /// Mutation: delete `let _rt = AudioThread::enter();` from
 /// `Executor::process` → the drop is silent → fails.
 #[test]
 #[cfg(debug_assertions)]
-fn freeing_a_retire_inside_process_panics_in_debug() {
-    struct Freer(Option<tutti_types::Retire<Vec<f32>>>);
+fn freeing_a_control_freed_value_inside_process_panics_in_debug() {
+    /// A buffer that must be freed on the control thread.
+    struct ControlFreed(#[allow(dead_code, reason = "held only to be freed")] Vec<f32>);
+    impl Drop for ControlFreed {
+        fn drop(&mut self) {
+            tutti_types::AudioThread::check_not_current("a probe buffer");
+        }
+    }
+    struct Freer(Option<ControlFreed>);
     impl Node for Freer {
         fn shape(&self) -> Shape {
             Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
@@ -263,7 +273,7 @@ fn freeing_a_retire_inside_process_panics_in_debug() {
     ed.insert(
         SRC,
         "freer",
-        Unforkable(Freer(Some(tutti_types::Retire::new(vec![0.0; 8])))),
+        Unforkable(Freer(Some(ControlFreed(vec![0.0; 8])))),
     );
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
     ed.commit().expect("commits");

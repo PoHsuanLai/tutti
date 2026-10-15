@@ -73,9 +73,9 @@ pub(crate) const PARAM_QUEUE_CAPACITY: usize = 512;
 /// queue absorbs a burst that spans several blocks and only refuses when
 /// nothing is draining it at all.
 ///
-/// Deliberately not matched to `MidiEventVec`'s 256-element inline capacity —
-/// that number bounds a *wire message*, and the two would drift apart for
-/// unrelated reasons.
+/// Deliberately not matched to `tutti-plugin-types`' `MIDI_STACK_CAPACITY`
+/// (also 256) — that number bounds a *wire message*, and the two would drift
+/// apart for unrelated reasons.
 pub(crate) const MIDI_OUT_QUEUE_CAPACITY: usize = 256;
 
 /// The endpoints of the plugin→host callback queues, plus the shared

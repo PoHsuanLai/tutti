@@ -149,3 +149,72 @@ fn process_with_midi_does_not_allocate() {
 
     drop(handle);
 }
+
+/// **Two hundred parameters moving in every block do not allocate.** The
+/// probe is loaded with 200 parameters, and every block carries two ramps
+/// for each of them (frames 0 and 32), every value new: the node's slots,
+/// its block's queues and their point room, and the segment slots are all
+/// reserved at load and prepare, and the plugin is set through
+/// `Vst2Instance::set_parameter`, which reads its bound without allocating.
+/// After the gate the plugin holds each parameter's last value, and nothing
+/// was dropped or merged for want of room.
+///
+/// Mutations (run), each fails (aborts inside the gate): the parameter
+/// bound read through `get_info()` again in `Vst2Instance::param_index`
+/// (it clones the plugin's name and vendor); the node's staged list rebuilt
+/// per block (`self.staged = Vec::new()` for `clear()` in
+/// `ParamDelivery::settle`).
+#[test]
+fn two_hundred_moving_parameters_do_not_allocate() {
+    use tutti_graph::ParamRamp;
+
+    const PARAMS: u32 = 200;
+    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
+    // SAFETY: the lock serializes the tests here, and nothing else in this
+    // process touches the environment. The probe reads it in its constructor.
+    unsafe { std::env::set_var("TUTTI_VST2_PROBE_PARAMS", PARAMS.to_string()) };
+    let loaded = tutti_plugin::in_process_vst2_client(probe_path::probe_path(), 48_000.0);
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("TUTTI_VST2_PROBE_PARAMS") };
+    let (unit, handle) = loaded.expect("load failed");
+    let controls = unit.controls();
+    let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
+
+    // Sixteenths, a different one for every parameter, frame and block.
+    let value = |b: u32, k: u32, id: u32| ((b * 2 + k + id) % 16) as f32 / 16.0;
+    let mut events: Vec<Event> = Vec::with_capacity(2 * PARAMS as usize);
+    let mut block = |unit: &mut Direct<tutti_plugin::InProcessVst2Client>, b: u32| {
+        events.clear();
+        for k in 0..2 {
+            let at = Offset::new(32 * k as usize, Samples(64)).expect("inside");
+            for id in 0..PARAMS {
+                let ramp = ParamRamp::foreign(id, value(b, k, id), Samples(0));
+                events.push(Event::ramp(at, ramp));
+            }
+        }
+        unit.events(0, &events);
+        unit.block();
+    };
+    for b in 0..8 {
+        block(&mut unit, b);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for b in 8..72 {
+            block(&mut unit, b);
+        }
+    });
+
+    for id in 0..PARAMS {
+        assert_eq!(
+            handle
+                .params()
+                .parameter_value(tutti_plugin::handles::ParamAddress::Index(id as i32)),
+            Some(value(71, 1, id)),
+            "parameter {id}"
+        );
+    }
+    let stats = controls.param_delivery();
+    assert_eq!(stats.points_dropped, 0, "{stats:?}");
+    assert_eq!(stats.points_merged, 0, "{stats:?}");
+    drop(handle);
+}

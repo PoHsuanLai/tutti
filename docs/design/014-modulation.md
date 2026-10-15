@@ -760,7 +760,8 @@ recording target. Each PR logs its own CHANGELOG entry under `[Unreleased]`
 in the "Was | Now" style. The `audio-automation` pin and the bevy 0.19 line
 are unaffected. PR 1 is §9's requirements 1–5. **PR 2 lands after PR 1**:
 it edits `segment_points.rs`, which PR 1 rewrites. A small PR between PR 1
-and PR 4 makes the in-process VST2 node deliver parameter events (§13).
+and PR 4 makes the in-process VST2 node deliver parameter events (§13;
+landed).
 
 **Follow-up to PR 1: parameter-change memory.** PR 1 reserves every
 parameter-change buffer at `params × points_for(chunk)` points, and the
@@ -772,7 +773,11 @@ at 2000 parameters and 157 MB at 16k, the VST3 host's input queues about
 35 MB at 16k (4096 frames). Replace both with a
 shared per-chunk point arena, or a small per-queue room with a counted,
 shared overflow, so the memory follows the points a chunk carries rather
-than the parameter count.
+than the parameter count. The in-process VST2 node reserves the same room
+and applies only each queue's last point (VST 2.4 has no sample-accurate
+parameter events), so its per-queue point room is mostly wasted: about
+400 KB per node at 200 parameters and a 4096-frame block; one point per
+queue would do there.
 
 ### PR 2: the control lane node
 
@@ -919,7 +924,12 @@ No questions remain open. These were open in review and are now decided:
    follow-up.
 2. **The in-process VST2 node drops parameter events**
    (`crates/plugin/tutti-plugin/src/format/vst2_in_process/node.rs:55-66`):
-   fixed in a separate small PR right after PR 1, before PR 4.
+   fixed in a separate small PR right after PR 1, before PR 4. **Landed**:
+   the node runs PR 1's delivery (requirements 1–5, with requirement 4 as
+   amended: its fork is seeded from the live record), with the block as
+   its chunk and each parameter's last point in the block set before the
+   plugin processes it, as the out-of-process VST2 loader does with a
+   chunk (doc 013, "In-process VST2 parameter delivery").
 3. **The largest block:** exports render in blocks of at most 4096 frames,
    through `Limits::max_block`, and `LANE_EVENT_CAPACITY` stays 256. A live
    block past 4096 frames thins and counts (§5.3).

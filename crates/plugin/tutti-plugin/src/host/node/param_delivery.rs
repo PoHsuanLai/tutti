@@ -1,6 +1,14 @@
 //! A plugin node's parameter changes: one slot per parameter, sized at bind,
 //! and **changes only**.
 //!
+//! Both plugin nodes deliver through it: the out-of-process node, whose
+//! chunk is the pipeline's and is handed to the bridge, and the in-process
+//! VST2 node (`format::vst2_in_process`), whose chunk is the block and is
+//! handed off by setting each queue's last point on the plugin before it
+//! processes the block. What follows says "the bridge"; for the VST2 node
+//! read "the plugin instance", and "no free buffer" as "the instance was
+//! locked".
+//!
 //! # Capacity
 //!
 //! The plugin's parameter list is read once, when the client is loaded
@@ -25,6 +33,12 @@
 //!
 //! An address past every slot is the one bound left. Its points are refused
 //! and counted ([`ParamDeliveryStats::points_dropped`]), never silently.
+//!
+//! **A closed list** ([`closed`](ParamDelivery::closed), the VST2 node's)
+//! has no spare slots: a VST2 plugin's parameters are the indices below the
+//! count it declared at load, and the host refuses any other index, so a
+//! spare slot learning one would only stage a point the plugin never takes.
+//! Such a point is refused here and counted dropped instead.
 //!
 //! # Changes only
 //!
@@ -60,11 +74,11 @@
 //!   host's value actually moves;
 //! - **a fork** starts from it: the live node's record is read just before
 //!   the live state is saved, and the fork's delivery is seeded with it
-//!   ([`seed`](ParamDelivery::seed), `fork.rs`), so a fork loaded with that
-//!   state sends what the live one would, and an export renders what live
-//!   playback plays (as a DAW's does). A value delivered between the read
-//!   and the save is in the state and is sent to the fork once more,
-//!   harmlessly.
+//!   ([`seed`](ParamDelivery::seed), `fork.rs` and
+//!   `vst2_in_process/fork.rs`), so a fork loaded with that state sends
+//!   what the live one would, and an export renders what live playback
+//!   plays (as a DAW's does). A value delivered between the read and the
+//!   save is in the state and is sent to the fork once more, harmlessly.
 //!
 //! Design doc 014 §9, requirement 4. (Doc 014's PR 4, which makes an editor
 //! edit write the lane's knob, may revisit this.)
@@ -128,7 +142,8 @@ pub struct ParamDeliveryStats {
     /// their values were sent on the next chunk's first frame instead.
     pub chunks_deferred: u64,
     /// Points for a parameter the node has no slot for (an address the
-    /// plugin's list did not name, once the spare slots are taken): dropped.
+    /// plugin's list did not name, once the spare slots are taken; on an
+    /// in-process VST2 node, any index past the count it declared): dropped.
     pub points_dropped: u64,
     /// Points that replaced the last point of a parameter's queue because
     /// the queue was full: a chunk carries up to one point per 32 frames per
@@ -254,6 +269,8 @@ pub(crate) struct ParamDelivery {
     changes: ParameterChanges,
     /// How many slots are `owed`.
     owed: usize,
+    /// The slots there is room for: the listed ones and the spares.
+    room: usize,
     /// Points added to the chunk being filled.
     chunk_points: u64,
     /// Each queue's point room ([`prepare`](Self::prepare)).
@@ -280,10 +297,29 @@ impl ParamDelivery {
         params: impl IntoIterator<Item = ParamAddress>,
         counters: Arc<DeliveryCounters>,
     ) -> Self {
+        Self::with_spares(params, counters, SPARE_SLOTS)
+    }
+
+    /// Slots for `params` only: an address the list does not name is
+    /// refused and counted dropped, never learned (module docs, "A closed
+    /// list"). Control thread: allocates.
+    #[cfg(feature = "vst2")]
+    pub(crate) fn closed(
+        params: impl IntoIterator<Item = ParamAddress>,
+        counters: Arc<DeliveryCounters>,
+    ) -> Self {
+        Self::with_spares(params, counters, 0)
+    }
+
+    fn with_spares(
+        params: impl IntoIterator<Item = ParamAddress>,
+        counters: Arc<DeliveryCounters>,
+        spares: usize,
+    ) -> Self {
         let mut addresses: Vec<ParamAddress> = params.into_iter().collect();
         addresses.sort_unstable();
         addresses.dedup();
-        let room = addresses.len() + SPARE_SLOTS;
+        let room = addresses.len() + spares;
         let record = Arc::new(DeliveredRecord::new(&addresses));
         // Once per controls: a client binds once. A second `new` on the same
         // counters (tests) keeps the first record for the controls' readers
@@ -299,6 +335,7 @@ impl ParamDelivery {
             staged: Vec::with_capacity(room),
             changes: ParameterChanges::reserved(room, MAX_POINTS),
             owed: 0,
+            room,
             chunk_points: 0,
             points: MAX_POINTS,
             counters,
@@ -335,6 +372,13 @@ impl ParamDelivery {
         self.points
     }
 
+    /// The counters and record this delivery writes, for the node's
+    /// controls.
+    #[cfg(feature = "vst2")]
+    pub(crate) fn counters(&self) -> Arc<DeliveryCounters> {
+        Arc::clone(&self.counters)
+    }
+
     /// Each queue's point room: what the bridge's buffers are reserved with.
     #[cfg(test)]
     pub(crate) fn points(&self) -> usize {
@@ -344,7 +388,23 @@ impl ParamDelivery {
     /// The parameter queues a chunk has room for: what the bridge's buffers
     /// are reserved with.
     pub(crate) fn room(&self) -> usize {
-        self.slots.capacity()
+        self.room
+    }
+
+    /// The chunk being filled, to read: the VST2 node sets it on the plugin
+    /// itself.
+    #[cfg(feature = "vst2")]
+    pub(crate) fn chunk(&self) -> &ParameterChanges {
+        &self.changes
+    }
+
+    /// `n` points of a chunk already handed off that the plugin refused:
+    /// counted dropped. Allocation-free.
+    #[cfg(feature = "vst2")]
+    pub(crate) fn refused(&self, n: u64) {
+        if n > 0 {
+            self.counters.dropped.fetch_add(n, Ordering::Relaxed);
+        }
     }
 
     /// The slot for `address`, learning it into a spare slot when it is new
@@ -353,7 +413,7 @@ impl ParamDelivery {
     fn slot(&mut self, address: ParamAddress) -> Option<usize> {
         match self.slots.binary_search_by(|s| s.address.cmp(&address)) {
             Ok(i) => Some(i),
-            Err(i) if self.slots.len() < self.slots.capacity() => {
+            Err(i) if self.slots.len() < self.room => {
                 self.slots.insert(i, Slot::new(address));
                 // The slots after it moved up one.
                 for s in &mut self.staged {
@@ -682,6 +742,25 @@ mod tests {
     ///
     /// Mutation (run): not shifting `staged` in `slot` → the commit marks
     /// the wrong slot sent, and 0.625 on id 50 is skipped as unchanged → fails.
+    /// **A closed list learns nothing**: an index the VST2 plugin did not
+    /// declare is refused and counted dropped, while a declared one goes.
+    ///
+    /// Mutation (run): `closed` built with `SPARE_SLOTS` spares, as `new`
+    /// is → the undeclared index is learned and staged, nothing dropped →
+    /// fails.
+    #[cfg(feature = "vst2")]
+    #[test]
+    fn a_closed_list_refuses_an_undeclared_index() {
+        let counters = Arc::new(DeliveryCounters::default());
+        let mut d = ParamDelivery::closed((0..4).map(ParamAddress::Index), Arc::clone(&counters));
+        d.begin();
+        assert!(!d.point(ParamAddress::Index(4), 0, 0.5));
+        assert!(!d.point(ParamAddress::Index(200), 0, 0.5));
+        assert!(d.point(ParamAddress::Index(3), 0, 0.5));
+        assert_eq!(chunk(&d), vec![(ParamAddress::Index(3), vec![(0, 0.5)])]);
+        assert_eq!(counters.snapshot().points_dropped, 2);
+    }
+
     #[test]
     fn learning_a_slot_keeps_staged_queues_in_place() {
         let counters = Arc::new(DeliveryCounters::default());

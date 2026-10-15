@@ -4150,7 +4150,9 @@ under both.
   edge, so PDC covers it (D9). `set_param_automation_source`,
   `clear_param_automation_source`, `has_param_automation_source`,
   `ParamAutomationSource` and its `InputSlot` are gone; `Plugin::automation`
-  answers `None` for the in-process VST2 node (no event input). bevy-tutti's
+  answered `None` for the in-process VST2 node (its event input took MIDI
+  only; since "In-process VST2 parameter delivery" below it answers for
+  both backends, without the `Option`). bevy-tutti's
   `plugin_bind_params` keeps one automation node per plugin entity
   (`PluginAutomationNode`), fed through `EventFeeds` (now keyed by feeder as
   well as sink), following a crossfade, removed with the entity. Pinned by
@@ -4659,9 +4661,47 @@ carried.
   is what the host last delivered to the instance: a reset, a re-prepare
   and a state load keep it, and a fork is seeded with it, so an export
   plays an edit made in the plugin's editor as live playback does. Not
-  here: a ramp is still a step on a plugin, the in-process VST2 node has
-  no parameter path, CLAP `PARAM_MOD`, and the parameter-change buffers'
-  memory scales with the parameter count (doc 014 §12's follow-up).
+  here: a ramp is still a step on a plugin, CLAP `PARAM_MOD`, and the
+  parameter-change buffers' memory scales with the parameter count (doc
+  014 §12's follow-up). (The in-process VST2 node had no parameter path
+  either; it has since landed, next.)
+- **In-process VST2 parameter delivery (landed, doc 014 §13 question 2).**
+  The in-process VST2 node's event input took MIDI and dropped every
+  parameter event. It now runs the out-of-process node's delivery, not a
+  copy: `ParamDelivery` with a slot per parameter the plugin declared at
+  load (`Vst2Instance::parameter_count`, read once by the loader) and no
+  spares (`ParamDelivery::closed`: an index past the count is refused and
+  counted in `points_dropped`, where a spare slot would have staged a point
+  `setParameter` refuses), its `SegmentPoints`, and the event walk the two nodes now share
+  (`host/node/param_input.rs`, which `PluginChunks::take` calls for each
+  piece of a chunk and the VST2 node for each block). **The block is the
+  chunk**, and before the plugin processes it each queue's last point is
+  set with `setParameter`, under the instance lock the block already
+  takes: what the out-of-process VST2 loader does with a chunk
+  (`loaders/vst2.rs`), so the two hosts differ only in whose chunk it is
+  (VST 2.4 has no sample-accurate parameter events; a point inside the
+  block lands on its first frame). A block the audio thread finds the
+  instance locked for (silence, `contention_count`) hands nothing off, and
+  its values are owed to the next. The node is not `Clone` (it was; a
+  clone shared one `AEffect` while each copy kept its own slots, so their
+  changes-only bookkeeping disagreed about the one instance): a second
+  node is a fork. The
+  fork (`vst2_in_process/fork.rs`) reads the live record before it saves
+  the live state and seeds the fork's delivery with it, as
+  `PluginForkSource::capture` does. Counters are on the node's controls,
+  now `InProcessVst2Controls` (its meter cell, as before, and
+  `param_delivery()`), and `Plugin::automation` builds a VST2 node's
+  `PluginAutomation` (index addresses). `Vst2Instance::{get_parameter,
+  set_parameter}` bound-checked through `get_info()`, which clones the
+  plugin's `Info` strings: they read the count from the load-time
+  snapshot now, so the audio thread can call them (this also reached the
+  plugin-server's per-chunk writes). Pinned by
+  `tests/vst2_in_process_params.rs` (a moving parameter read back through
+  the probe's `getParameter`; a held value sent once, so an edit on the
+  plugin survives it and a moving value replaces it; an export of a fork
+  renders the plugin-side edit, through the probe's state DC) and
+  `vst2_in_process_no_alloc.rs` (200 parameters moving every block under
+  `assert_no_alloc`).
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
   does not honour offsets sample-accurately, as it refuses a ramp.
 

@@ -4301,6 +4301,13 @@ under both.
 > changes the record): an event source replaces the base, one per port,
 > unshaped. It also landed the graph's play clock (`Env::play`,
 > `Cx::play_at`, `Editor::play_reading`) and `Editor::param_range_cell`.
+>
+> **Doc 014 PR 2b landed** the control lane: `ControlLaneNode` sends a
+> target's whole `ControlProgram` on a 32-frame grid of the play clock
+> plus every corner, and `AutomationLaneNode::for_param` / `for_foreign`
+> now build one (014 §12, "PR 2b: landed"). The producer and the plugin
+> delivery described under "Curve segments landed" below are superseded
+> where marked.
 
 **What landed.**
 
@@ -4602,7 +4609,12 @@ carried.
   segment's endpoints are never rewritten: a range that shrinks pins the
   value, and widening it releases the value onto the curve where the
   segment has run on to.
-- **The producer: `AutomationLaneNode::for_param` / `for_foreign`.** The
+- **The producer: `AutomationLaneNode::for_param` / `for_foreign`.**
+  **Superseded by doc 014 PR 2b:** these return a `ControlLaneNode`; a
+  piece with no segment shape goes on the play-clock grid, not at block
+  edges; the capacity is 256 and past it the lane thins its grid and
+  counts; a hosted plugin receives each piece's endpoints, not stride
+  points (014 §5.3, §5.4). The record as it landed: the
   lane, made with one of these, has one event output (no audio) and sends
   its curve as segments for one param. It is still a pure function of its
   block's `Env`: per transport piece (`Env::segments`) it walks the beat

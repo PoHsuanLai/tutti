@@ -263,6 +263,14 @@ not a step: the piece in flight is cut there and the next piece runs from
 the in-flight value to the new value at the next point. That is a declick of
 at most `CONTROL_STEP` frames with no extra state.
 
+**As landed (PR 2b).** Two refinements keep the glide from depending on
+where blocks fall. A glide that would send the piece already in flight
+again (the same end value to the bit and the same next point; in exact
+mode also the same start, shape and length) sends nothing, so a republish
+that moves nothing changes no frame. And in exact mode a changed program
+**jumps** at the block's first frame rather than gliding: an exact piece
+is the curve's own segment, which has no in-flight start to glide from.
+
 ### 4.3 The play clock, and phase
 
 **Beats.** `phase = frac(beat / per_cycle + offset)` from the transport's
@@ -390,8 +398,8 @@ the 32-byte event are unchanged.
 | Event capacity | `LANE_EVENT_CAPACITY` = **256** (today 128) |
 | Tail | `Tail::Unbounded` |
 | Latency | none; modulation lag is musical delay (§6) |
-| Cost | `Cost::Light` (§5.3's estimate), confirmed by PR 2's measurement |
-| Controls | `LaneControls`: `publish`, the knob (a native `Param` cell, or `set_knob`), `set_range` for a plugin lane, `thinned()` |
+| Cost | `Cost::Moderate`, measured (§5.3, "As landed"); `Light` was the estimate |
+| Controls | `LaneControls`: `publish`, the knob (a native `Param` cell, or `set_knob`), `set_range` for a plugin lane, `thinned()`, `truncated()`, `unranged()` |
 | Fork | the last published program (`Arc`), knob and range values at the gather, the address; fresh state (§5.6) |
 
 **Arrival.** With an input behind a latent path, the lane's arrival can be
@@ -421,10 +429,17 @@ its output to the target, so each value lands on its own frame.
    0); `p'` may lie in a later block (beats extrapolated at the block's
    tempo; inputs extended from their current segment, held past its end).
    Clamp only on a plugin lane, and only at the split points of step 3.
-5. **A piece in flight at frame 0 with nothing changed** is re-sent resumed
-   at its position, not recomputed: the lane keeps `(from, to, start, end)`
-   across blocks, so a piece is the same whatever the block boundaries. A
-   segment is absolute, so the re-send changes nothing at the port.
+5. **A piece in flight at frame 0 with nothing changed** is left alone,
+   not recomputed: the lane keeps the piece and its next point across
+   blocks, so a piece is the same whatever the block boundaries.
+   **As landed (PR 2b):** it is not re-sent either. A re-send would be
+   bit-exact at a native port only while the segment's `f32` position
+   rounds alike in every block, and a plugin's delivery would see an extra
+   point at each block edge; sending nothing is exact by construction. A
+   seek or a play start between blocks is detected (the transport rolled
+   one frame from the last block's last frame, the play clock one frame
+   on, and the frame count, against this block's first frame) and is a
+   point.
 
 ### 5.3 Control resolution: `CONTROL_STEP = 32` frames on the play clock
 
@@ -497,6 +512,19 @@ order of 1–3 % of one core in all, and about a microsecond per lane per
 512-frame block. That is `Light`; PR 2 measures it and declares from the
 measurement, as Phase 6 (b) did.
 
+**As landed (PR 2b): `Moderate`.** Measured on the 4-core container, 200
+lanes of one moving layer each (every layer kind in turn) into 25 eight-param
+probes at 512-frame blocks: about 2.3–3.3 ms a block in all, of which
+the lanes' own `process` is about a third (callgrind), about 3.7 µs per
+lane per block, about 7 ns a frame. The time goes to a point's transport
+roll (`Cx::transport_at`, a `FrameClock` advance) and the program's
+evaluation at both ends of each piece and its next corner, about 2 300
+instructions a point. The ports that render the pieces per frame are most
+of the rest, and are the executor's. `Moderate` (200 + 8 a frame) matches
+the measurement; `Light` (100 + 1 a frame) would under-price a lane
+fivefold and pack hundreds into one task. With no layers (a held value)
+the whole 200-lane graph took about 0.74 ms a block.
+
 **Overload.** Points exceed 256 only past 4096-frame blocks or past 128
 corners in one block. The lane then keeps every corner, thins the grid
 (every other point, then every fourth, …) and counts it
@@ -555,9 +583,12 @@ reference interpreter and the differential proptest take the same rule.
 `LaneControls` (§4.5), the knob and range values, and the address, and
 builds a fresh lane with its own cell, so a later live republish does not
 reach the fork. Fresh state: no piece in flight, inputs at 0
-until their (also forked) sources send. With a lane re-sending at frame 0
-of every block and replace semantics, the fork needs nothing from the
+until their (also forked) sources send. With a fresh lane sending at its
+first frame and replace semantics, the fork needs nothing from the
 audio thread, which is why `ParamTap` and the fork seeds go in PR 5 (§10).
+**As landed (PR 2b):** a fresh lane has nothing in flight, so it sends on
+its first frame (the lane never re-sends at a block edge, §5.2); the fork
+reads its value at frame 0 that way.
 
 ## 6. Signal-driven sources
 
@@ -844,6 +875,46 @@ breaks no live feature. **PR 2b** is the rest of the scope below:
 `ControlProgram`, the lane, the signal sources, `SegmentPoints`, the
 automation constructors and the campaign tests.
 
+**PR 2b: landed** (branch `claude/control-lane-node`), but for the signal
+sources:
+
+- `tutti_mod::ControlProgram` (§4.1) with layers, input layers, rate
+  anchors, `value_at` / `value_before` and `next_corner`; `Curve` and
+  `CurveSegment` are ungated (no `routing` feature needed).
+- `tutti_nodes::automation::ControlLaneNode` and `LaneControls` (§5),
+  `CONTROL_STEP` = 32 and `LANE_EVENT_CAPACITY` = 256: the grid of the
+  play clock, every corner, exact mode for a native target's pure
+  automation, the plugin lane's clamp and split, thinning and truncation
+  (counted), steady holds, the glide, the fork. Constructors:
+  `ControlLaneNode::for_param(key, program, knob, range)` (the knob a
+  node's `Param` cell, the range `Editor::param_range_cell`) and
+  `for_foreign(id, program, knob, (min, max))`.
+  `AutomationLaneNode::for_param` and `for_foreign` return a
+  `ControlLaneNode` of automation alone; `AutomationLaneNode` itself is
+  the audio-output lane only.
+- The plugin side (§9 requirement 6): `ParameterQueue::chunk_room` is
+  `ceil(chunk / 32) + 1 + 256` (`CORNER_POINTS`), on the input side and
+  #92's output side alike; a full queue drops a grid point offered to it
+  and a corner evicts the queue's earliest grid point, both counted in
+  `ParamDeliveryStats::grid_points_dropped`, and only a queue of corners
+  is merged. A point is a grid point when its frame's play count is a
+  multiple of 32 (`param_input::take`, through `Cx::play_at`).
+  `SegmentPoints` sends each segment's arrival and each chunk's last frame,
+  never stride points.
+- Deviations from the text above, each recorded where it applies: no
+  re-send at a block edge (§5.2 step 5); an unchanged glide is skipped and
+  exact mode jumps on a republish (§4.2); the lane is `Moderate`, measured
+  (§5.3); a fresh lane, a fork's included, sends at its first frame
+  (§5.6).
+- **Not in 2b, left for a follow-up:** `EnvelopeFollowerNode` and
+  `NoteEnvelopeNode` (§6), with their properties below (export == live for
+  a follower and a note envelope; the follower's one-step lag and
+  play-start restart); a sine within the bound for each bounded curve
+  other than `Linear`, and the unbounded curves' measured errors pinned;
+  a curved bipolar layer's zero-crossing points checked at the lane (the
+  program's own tests cover them as corners); and the plugin live ==
+  export points at one chunk size, which is PR 4's test.
+
 **Scope.** `ControlProgram` in `tutti-mod` with `Curve` in the floor;
 `RangeCell` in `tutti-types`; `Env::play: PlayClock`, `Env::play_at`,
 `Cx::play_at`, the play clock in `TransportHistory` and the published
@@ -930,6 +1001,7 @@ Migration: remove knob-to-zero workarounds; sum two event sources in one
 lane or a node. Also: `LANE_EVENT_CAPACITY` 256, `CONTROL_STEP`, `Env::play`.
 
 **Exit.** M8 and M11 closed; the lane measured and declared `Light`.
+**As landed:** measured and declared `Moderate` (§5.3).
 
 ### PR 3: `tutti-mod` as a pure compiler
 

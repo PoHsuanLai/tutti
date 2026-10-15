@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`tutti_types::SeqCell<W>`**, a sequence lock over `W` atomic words: one
+  writer overwrites them in place, any thread copies them whole, neither
+  side allocates or locks, and a read never mixes two writes (loom model
+  `tests/seq_cell_loom.rs`). For a value the audio thread writes each block;
+  the in-process and out-of-process VST2 transport snapshot is its first
+  user, replacing a hand-rolled `unsafe` seqlock in `tutti-vst2-host`.
+  `SEQ_CELL_READ_RETRIES` is how many overlapped copies a read retries
+  before it returns `None`.
+
 - **A cost model and coarsening for the parallel executor** (design doc
   013, "Phase 6, part (b)"). The compiler prices every op from what its
   node declares, packs sibling tasks too cheap to dispatch alone into
@@ -79,6 +88,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ramp.
 
 ### Changed
+
+- **`tutti_io::MicRing` is a plain consumer, not a shared one.** It owns
+  its ring's `HeapCons` instead of an `Arc<AudioThreadCell<_>>`, and is no
+  longer `Clone` (nothing cloned it: the ring has one consumer, the
+  `MicMonitorNode` that owns it). **Breaking** only for code that cloned a
+  `MicRing`: hand the one ring to the node instead. `share_mic_ring` keeps
+  its name and signature and no longer allocates.
+- **The in-process VST2 node copies each block once each way, not twice.**
+  The node's `ProcessScratch` staging is deleted; `process_f32` reads and
+  writes the graph's own buffers through stack channel tables. No API
+  change.
+- **tutti-plugin's bridge thread buffers unsolicited plugin events itself**
+  (a bounded, preallocated buffer it owns) instead of in a lock-free queue
+  shared with no other thread. Listener timing is unchanged: after each
+  command. Unused dependencies dropped: `ringbuf` (tutti-plugin),
+  `crossbeam-channel` and `parking_lot` (tutti-plugin-server).
 
 - **`smallvec` is gone from the workspace** (design doc 013, "SmallVec
   removed"). A type whose inline storage bought nothing is a `Vec` (or a

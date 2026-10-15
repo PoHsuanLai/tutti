@@ -52,10 +52,6 @@ bincode = "1"
 # Shared memory
 memmap2 = "0.9"
 
-# Lock-free channels and queues
-crossbeam-channel = "0.5"
-parking_lot = "0.12"
-
 # Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows)
 interprocess = { version = "2" }
 

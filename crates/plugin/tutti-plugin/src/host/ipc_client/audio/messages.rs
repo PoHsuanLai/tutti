@@ -202,6 +202,44 @@ pub enum BridgeEvent {
     },
 }
 
+/// How many unsolicited events [`Unsolicited`] holds between two drains.
+const UNSOLICITED_CAPACITY: usize = 128;
+
+/// The unsolicited events read off the control stream while a command waited
+/// for its reply, held until `pump` hands them to the listener.
+///
+/// A plain buffer, not a queue between threads: `recv_reply` fills it and
+/// `pump` drains it after each command, both on the bridge thread, so it is
+/// owned by `pump` and lent to `handle`. The listener runs after the drain
+/// rather than from `recv_reply` itself so a slow listener never delays the
+/// reply a blocked caller is waiting on.
+///
+/// Bounded and allocated once: a plugin flooding events during one command
+/// keeps the newest [`UNSOLICITED_CAPACITY`], dropping the oldest, as the
+/// lock-free queue this replaces did.
+pub(super) struct Unsolicited(std::collections::VecDeque<BridgeEvent>);
+
+impl Unsolicited {
+    pub(super) fn new() -> Self {
+        Self(std::collections::VecDeque::with_capacity(
+            UNSOLICITED_CAPACITY,
+        ))
+    }
+
+    /// Keep `ev`, dropping the oldest event when full.
+    pub(super) fn push(&mut self, ev: BridgeEvent) {
+        if self.0.len() == UNSOLICITED_CAPACITY {
+            self.0.pop_front();
+        }
+        self.0.push_back(ev);
+    }
+
+    /// The held events, oldest first, leaving the buffer empty.
+    pub(super) fn drain(&mut self) -> impl Iterator<Item = BridgeEvent> + '_ {
+        self.0.drain(..)
+    }
+}
+
 /// Which aspect of plugin state the plugin asked the host to re-read.
 ///
 /// Unlike a latency or parameter change, these carry no new value; they say
@@ -308,4 +346,58 @@ pub enum PluginInvalidation {
         /// Why the plugin died, latched at the detection site.
         cause: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn param(index: i32) -> BridgeEvent {
+        BridgeEvent::ParameterChanged { index, value: 0.0 }
+    }
+
+    fn indices(inbox: &mut Unsolicited) -> Vec<i32> {
+        inbox
+            .drain()
+            .map(|ev| match ev {
+                BridgeEvent::ParameterChanged { index, .. } => index,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect()
+    }
+
+    /// **The inbox hands events over in arrival order and empties.**
+    ///
+    /// Mutation (run): `push` uses `push_front` → the drain is reversed →
+    /// fails. `drain` iterates a copy without removing (`self.0.iter().cloned()`)
+    /// → the second drain is not empty → fails.
+    #[test]
+    fn the_inbox_keeps_arrival_order_and_empties() {
+        let mut inbox = Unsolicited::new();
+        for i in 0..3 {
+            inbox.push(param(i));
+        }
+        assert_eq!(indices(&mut inbox), [0, 1, 2]);
+        assert!(indices(&mut inbox).is_empty());
+    }
+
+    /// **A full inbox drops its oldest event and keeps its allocation.**
+    ///
+    /// Mutation (run): `push` without the `pop_front` → the inbox grows
+    /// past its capacity (and reallocates) → fails. `pop_back` in place of
+    /// `pop_front` → the newest held event is lost instead → fails.
+    #[test]
+    fn a_full_inbox_drops_the_oldest() {
+        let mut inbox = Unsolicited::new();
+        let cap = inbox.0.capacity();
+        let n = UNSOLICITED_CAPACITY as i32;
+        for i in 0..n + 2 {
+            inbox.push(param(i));
+        }
+        assert_eq!(inbox.0.capacity(), cap, "the inbox reallocated");
+        let kept = indices(&mut inbox);
+        assert_eq!(kept.len(), UNSOLICITED_CAPACITY);
+        assert_eq!(kept.first(), Some(&2));
+        assert_eq!(kept.last(), Some(&(n + 1)));
+    }
 }

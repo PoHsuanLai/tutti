@@ -20,6 +20,8 @@ parking_lot = "0.12"
 thiserror = "2"
 tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
+# `SeqCell`, the sequence lock the transport snapshot lives in.
+tutti-types = { path = "../../../core/tutti-types" }
 # Tutti fork of the `vst` crate: adds the host-side audioMaster callbacks
 # (get_sample_rate / size_window / io_changed / latency / process_level /
 # automation_state) that upstream vst-rs's host_dispatch swallowed.

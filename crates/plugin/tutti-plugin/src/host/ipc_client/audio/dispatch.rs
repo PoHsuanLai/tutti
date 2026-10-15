@@ -1,7 +1,7 @@
 //! Per-command IPC choreography for the bridge thread.
 
 use super::channels::Channels;
-use super::messages::{AudioResponse, BridgeEvent, Command, ResyncKind};
+use super::messages::{AudioResponse, BridgeEvent, Command, ResyncKind, Unsolicited};
 use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
@@ -229,12 +229,12 @@ impl Owed {
     /// yet", and that is the one this returns as still-owed.
     fn take_one(
         stream: &mut ControlStream,
-        channels: &Channels,
+        inbox: &mut Unsolicited,
         partial: &mut PartialFrame,
     ) -> Result<BridgeMessage> {
-        match recv_reply(stream, channels, DRAIN_PROBE, partial) {
+        match recv_reply(stream, inbox, DRAIN_PROBE, partial) {
             Err(BridgeError::Timeout { partial: true, .. }) => {
-                recv_reply(stream, channels, DRAIN_FINISH, partial)
+                recv_reply(stream, inbox, DRAIN_FINISH, partial)
             }
             other => other,
         }
@@ -271,11 +271,16 @@ impl Owed {
     /// is the only path it has. Dropping it silently loses notes from any block
     /// whose reply ran late, which is a hard defect to attribute later: the
     /// audio is fine and a few events are simply missing.
-    fn settle(&mut self, stream: &mut ControlStream, channels: &Channels) -> u32 {
+    fn settle(
+        &mut self,
+        stream: &mut ControlStream,
+        channels: &Channels,
+        inbox: &mut Unsolicited,
+    ) -> u32 {
         let mut taken = 0;
         while self.count > 0 {
             self.count -= 1;
-            match Self::take_one(stream, channels, &mut self.partial) {
+            match Self::take_one(stream, inbox, &mut self.partial) {
                 Ok(BridgeMessage::AudioProcessed { seq, midi_out, .. }) => {
                     let midi_out = midi_out.iter().map(|e| MidiEvent::from(*e)).collect();
                     channels.push_audio_response(AudioResponse::AudioProcessed { seq, midi_out });
@@ -316,6 +321,7 @@ pub(super) fn handle(
     channels: &Channels,
     payloads: &PayloadPool,
     owed: &mut Owed,
+    inbox: &mut Unsolicited,
 ) -> Result<()> {
     match cmd {
         Command::Process(mut payload) => {
@@ -354,7 +360,7 @@ pub(super) fn handle(
             let timeout = process_timeout(num_samples, channels.sample_rate());
             // Collect any reply an earlier block gave up on, so the frame read
             // below is this block's own rather than its predecessor's.
-            owed.settle(stream, channels);
+            owed.settle(stream, channels, inbox);
 
             let sent = ipc::send(stream, &msg);
             // The parameter-change buffer goes back to the audio thread's free
@@ -375,10 +381,10 @@ pub(super) fn handle(
             // would re-read a length prefix that is no longer at the front of
             // the stream, turning a recoverable late reply into a permanent
             // desync — the failure this shape exists to prevent.
-            let first = recv_reply(stream, channels, timeout, &mut owed.partial);
+            let first = recv_reply(stream, inbox, timeout, &mut owed.partial);
             let first = match first {
                 Err(BridgeError::Timeout { partial: true, .. }) => {
-                    recv_reply(stream, channels, DRAIN_FINISH, &mut owed.partial)
+                    recv_reply(stream, inbox, DRAIN_FINISH, &mut owed.partial)
                 }
                 other => other,
             };
@@ -473,7 +479,7 @@ pub(super) fn handle(
         }
         Command::SaveState { progress, reply } => {
             ipc::send(stream, &HostMessage::SaveState)?;
-            reply.send(recv_state(stream, channels, &progress, &mut owed.partial)?);
+            reply.send(recv_state(stream, inbox, &progress, &mut owed.partial)?);
         }
         Command::LoadState {
             data,
@@ -526,7 +532,7 @@ pub(super) fn handle(
             // Propagating would `crash()` it, and the caller would receive
             // `Stalled` (which says "the session is fine, retrying is
             // reasonable") against a session that had just been torn down.
-            let value = match recv_state_reply(stream, channels, &progress, &mut owed.partial)? {
+            let value = match recv_state_reply(stream, inbox, &progress, &mut owed.partial)? {
                 Some(BridgeMessage::StateLoaded { error }) => {
                     error.map(StateError::Rejected).map_or(Ok(()), Err)
                 }
@@ -539,7 +545,7 @@ pub(super) fn handle(
         }
         Command::GetParameterList { reply } => {
             ipc::send(stream, &HostMessage::GetParameterList)?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
+            let value = match recv_reply(stream, inbox, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::ParameterList { parameters } => Some(parameters),
                 _ => None,
             };
@@ -547,7 +553,7 @@ pub(super) fn handle(
         }
         Command::GetPresetList { reply } => {
             ipc::send(stream, &HostMessage::GetPresetList)?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
+            let value = match recv_reply(stream, inbox, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::PresetList { presets } => Some(presets),
                 _ => None,
             };
@@ -556,14 +562,14 @@ pub(super) fn handle(
         Command::LoadPreset { id, reply } => {
             ipc::send(stream, &HostMessage::LoadPreset { id })?;
             let ok = matches!(
-                recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)?,
+                recv_reply(stream, inbox, PARAM_TIMEOUT, &mut owed.partial)?,
                 BridgeMessage::PresetLoaded { ok: true }
             );
             reply.send(ok);
         }
         Command::GetCurrentPreset { reply } => {
             ipc::send(stream, &HostMessage::GetCurrentPreset)?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
+            let value = match recv_reply(stream, inbox, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::CurrentPreset { id } => id,
                 _ => None,
             };
@@ -571,7 +577,7 @@ pub(super) fn handle(
         }
         Command::GetParameter { param_id, reply } => {
             ipc::send(stream, &HostMessage::GetParameter { param_id })?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
+            let value = match recv_reply(stream, inbox, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::ParameterValue { value } => value,
                 _ => None,
             };
@@ -583,7 +589,7 @@ pub(super) fn handle(
             reply,
         } => {
             ipc::send(stream, &HostMessage::GetParameterText { param_id, value })?;
-            let text = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
+            let text = match recv_reply(stream, inbox, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::ParameterText { text } => text,
                 _ => None,
             };
@@ -598,7 +604,7 @@ pub(super) fn handle(
                 stream,
                 &HostMessage::GetParameterValueFromText { param_id, text },
             )?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
+            let value = match recv_reply(stream, inbox, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::ParameterValueFromText { value } => value,
                 _ => None,
             };
@@ -632,13 +638,13 @@ pub(super) fn handle(
 /// reply, and a fix to only one leaves the other as the effective ceiling.
 fn recv_state(
     stream: &mut ControlStream,
-    channels: &Channels,
+    inbox: &mut Unsolicited,
     progress: &StateProgress,
     partial: &mut PartialFrame,
 ) -> Result<std::result::Result<Vec<u8>, StateError>> {
     let mut acc = Reassembler::default();
     loop {
-        let Some(msg) = recv_state_reply(stream, channels, progress, partial)? else {
+        let Some(msg) = recv_state_reply(stream, inbox, progress, partial)? else {
             // Stalled, not disconnected. Answering the caller keeps the session
             // alive; see `recv_state_reply`.
             return Ok(Err(progress.stalled()));
@@ -693,14 +699,14 @@ fn recv_state(
 /// malformed frame — which is the one case where the stream really is unusable.
 fn recv_state_reply(
     stream: &mut ControlStream,
-    channels: &Channels,
+    inbox: &mut Unsolicited,
     progress: &StateProgress,
     partial: &mut PartialFrame,
 ) -> Result<Option<BridgeMessage>> {
     // Resumable for the same reason the audio path is: this returns `Ok(None)`
     // on a deadline and the caller goes on using the stream, so a frame the
     // deadline caught half-read has to be continued rather than restarted.
-    match recv_reply(stream, channels, progress.deadline(), partial) {
+    match recv_reply(stream, inbox, progress.deadline(), partial) {
         Ok(msg) => Ok(Some(msg)),
         // Matched on the variant, not on a string or an `io::ErrorKind`:
         // `recv_within` already normalises the socket's `TimedOut`/`WouldBlock`
@@ -711,35 +717,35 @@ fn recv_state_reply(
     }
 }
 
-/// Drain unsolicited events, returning the next reply-type message.
+/// Drain unsolicited events into `inbox`, returning the next reply-type message.
 fn recv_reply(
     stream: &mut ControlStream,
-    channels: &Channels,
+    inbox: &mut Unsolicited,
     timeout: Duration,
     partial: &mut PartialFrame,
 ) -> Result<BridgeMessage> {
     loop {
         match ipc::recv_resumable(stream, timeout, partial)? {
             BridgeMessage::LatencyChanged { samples } => {
-                channels.push_unsolicited(BridgeEvent::LatencyChanged { samples });
+                inbox.push(BridgeEvent::LatencyChanged { samples });
             }
             BridgeMessage::TailChanged { tail } => {
-                channels.push_unsolicited(BridgeEvent::TailChanged { tail });
+                inbox.push(BridgeEvent::TailChanged { tail });
             }
             BridgeMessage::ParameterChanged { index, value } => {
-                channels.push_unsolicited(BridgeEvent::ParameterChanged { index, value });
+                inbox.push(BridgeEvent::ParameterChanged { index, value });
             }
             BridgeMessage::PluginParamValuesChanged => {
-                channels.push_unsolicited(BridgeEvent::Resync(ResyncKind::ParamValues));
+                inbox.push(BridgeEvent::Resync(ResyncKind::ParamValues));
             }
             BridgeMessage::PluginParamTitlesChanged => {
-                channels.push_unsolicited(BridgeEvent::Resync(ResyncKind::ParamTitles));
+                inbox.push(BridgeEvent::Resync(ResyncKind::ParamTitles));
             }
             BridgeMessage::PluginIoChanged => {
-                channels.push_unsolicited(BridgeEvent::Resync(ResyncKind::Io));
+                inbox.push(BridgeEvent::Resync(ResyncKind::Io));
             }
             BridgeMessage::PluginReloaded => {
-                channels.push_unsolicited(BridgeEvent::Resync(ResyncKind::Reloaded));
+                inbox.push(BridgeEvent::Resync(ResyncKind::Reloaded));
             }
             msg => return Ok(msg),
         }

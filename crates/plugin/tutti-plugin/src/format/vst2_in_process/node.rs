@@ -26,6 +26,7 @@
 
 use std::sync::Arc;
 
+use arrayvec::ArrayVec;
 use tutti_core::{ChannelLayout, MeterMap, RtPublish, Samples};
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, SortedEvents,
@@ -40,7 +41,8 @@ use crate::host::node::{
 };
 use crate::protocol::Features;
 
-/// The most channels a block hands the plugin (`drive_f32`'s stack tables).
+/// The most channels a block hands the plugin (the stack tables `process`
+/// builds from its `Io`).
 const MAX_CHANNELS: usize = 16;
 
 impl Node for InProcessVst2Client {
@@ -113,50 +115,55 @@ impl Node for InProcessVst2Client {
                 EventKind::Harmony(_) | EventKind::Ramp(_) | EventKind::Segment(_) => {}
             },
         );
-        {
-            let (inputs, _) = io.split();
-            for ch in 0..n_in {
-                self.process_scratch.f32_in[ch][..size].copy_from_slice(&inputs.get(ch)[..size]);
-            }
-        }
         // Built before the plugin is entered: `drive_f32` publishes it to the
         // cell `audioMasterGetTime` reads, then calls `process`.
         let transport = self.transport.block(cx, size, self.features);
         let sends = self.features.contains(Features::MIDI_OUT) && io.event_output_count() > 0;
         let mut out_events = crate::protocol::MidiEventVec::new();
-        let processed = drive_f32(
-            &self.inner,
-            &self.contention_count,
-            &self.params,
-            &mut self.midi,
-            &mut |events| {
-                if sends {
-                    // Past the cap the rest are dropped.
-                    for e in events {
-                        if out_events.try_push(*e).is_err() {
-                            break;
+        // The graph's buffers go to the plugin as they are: `vst2-host`
+        // copies them into its render scratch and the plugin's output back
+        // out, the one copy each way its pointer tables need. Scoped so the
+        // tables release `io` before the event output is taken.
+        let processed = {
+            let (inputs, mut outputs) = io.split();
+            let ins: ArrayVec<&[f32], MAX_CHANNELS> =
+                (0..n_in).map(|ch| &inputs.get(ch)[..size]).collect();
+            let mut outs: ArrayVec<&mut [f32], MAX_CHANNELS> = outputs
+                .iter_mut()
+                .take(n_out)
+                .map(|out| &mut out[..size])
+                .collect();
+            let processed = drive_f32(
+                &self.inner,
+                &self.contention_count,
+                &self.params,
+                &mut self.midi,
+                &mut |events| {
+                    if sends {
+                        // Past the cap the rest are dropped.
+                        for e in events {
+                            if out_events.try_push(*e).is_err() {
+                                break;
+                            }
                         }
                     }
+                },
+                &transport,
+                &mut self.scratch,
+                &ins,
+                &mut outs,
+                size,
+                self.sample_rate,
+            );
+            if !processed {
+                for out in &mut outs {
+                    out.fill(0.0);
                 }
-            },
-            &transport,
-            &mut self.scratch,
-            &mut self.process_scratch,
-            n_in,
-            n_out,
-            size,
-            self.sample_rate,
-        );
+            }
+            processed
+        };
         // Set on the plugin with the block, or owed to the next one.
         self.params.handed_off(processed);
-        let (_, mut outputs) = io.split();
-        for (ch, out) in outputs.iter_mut().enumerate().take(n_out) {
-            if processed {
-                out[..size].copy_from_slice(&self.process_scratch.f32_out[ch][..size]);
-            } else {
-                out[..size].fill(0.0);
-            }
-        }
         if sends {
             sort_by_offset(&mut out_events);
             let writer = io.event_out(0);

@@ -10,7 +10,7 @@
 //! a separate primitive whose `acquire`/`recycle` names document the RT
 //! contract.
 
-use super::messages::{AudioResponse, BridgeEvent, Command};
+use super::messages::{AudioResponse, Command};
 use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,13 +22,11 @@ use std::thread::Thread;
 /// which is why [`super::payload_pool::PayloadPool`] sizes itself from it.
 pub(super) const COMMAND_QUEUE_SIZE: usize = 128;
 const RESPONSE_QUEUE_SIZE: usize = 128;
-const EVENT_QUEUE_SIZE: usize = 128;
 
 #[derive(Clone)]
 pub(super) struct Channels {
     commands: Arc<ArrayQueue<Command>>,
     audio_responses: Arc<ArrayQueue<AudioResponse>>,
-    unsolicited: Arc<ArrayQueue<BridgeEvent>>,
     /// The newest block sequence the audio thread has submitted. Owned here
     /// rather than on the batcher because the *bridge* thread is what reads it,
     /// to decide whether a dequeued block is still worth sending.
@@ -68,7 +66,6 @@ impl Channels {
         Self {
             commands: Arc::new(ArrayQueue::new(COMMAND_QUEUE_SIZE)),
             audio_responses: Arc::new(ArrayQueue::new(RESPONSE_QUEUE_SIZE)),
-            unsolicited: Arc::new(ArrayQueue::new(EVENT_QUEUE_SIZE)),
             newest_seq: Arc::new(AtomicU64::new(0)),
             worker: Arc::new(Mutex::new(None)),
             sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.to_bits())),
@@ -179,16 +176,5 @@ impl Channels {
 
     pub(super) fn pop_audio_response(&self) -> Option<AudioResponse> {
         self.audio_responses.pop()
-    }
-
-    /// Overflow drops the oldest event to keep the producer lock-free.
-    pub(super) fn push_unsolicited(&self, ev: BridgeEvent) {
-        if self.unsolicited.push(ev).is_err() {
-            let _ = self.unsolicited.pop();
-        }
-    }
-
-    pub(super) fn pop_unsolicited(&self) -> Option<BridgeEvent> {
-        self.unsolicited.pop()
     }
 }

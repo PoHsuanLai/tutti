@@ -3576,6 +3576,50 @@ most plugins map nothing. The VST3
 event list's text arena reserves its room once and refuses (and counts) a
 text past it, since the plugin holds pointers into it for the block.
 
+#### One-thread queues, a double copy and the VST2 seqlock (landed)
+
+**Status: landed** (2026-10-15), from the collections and channels audit of
+`9f397d3d`.
+
+- **tutti-plugin's unsolicited events** went through an `Arc<ArrayQueue>` on
+  the bridge's `Channels`, but its one producer (`recv_reply`) and its one
+  consumer (the drain after each command) are both the bridge thread. They
+  are a bounded, preallocated `VecDeque` owned by the bridge loop now
+  (`Unsolicited`), lent to `handle` beside `Owed`; the listener still runs
+  after each command, never from inside a read, so a slow listener never
+  delays a blocked caller's reply.
+- **The in-process VST2 node copied each block twice each way** (the
+  graph's buffers, a `ProcessScratch` of `Vec<Vec<f32>>`, `vst2-host`'s
+  `RenderScratch`, the plugin). The node hands `Vst2Instance::process_f32`
+  stack `ArrayVec`s of its `Io` slices now, and `ProcessScratch` is deleted:
+  one copy each way, the one the plugin's pointer tables need. The
+  `vst2-host` API did not change, and the out-of-process server is
+  untouched.
+- **`MicRing`** was an `Arc<AudioThreadCell<HeapCons>>` and `Clone`, though
+  nothing cloned it and its node is neither `Clone` nor forkable. It is a
+  plain newtype over `HeapCons` that pops through `&mut self`, as
+  `TapCons` is.
+- **The VST2 transport seqlock** (`TransportCell`, an `UnsafeCell` with
+  `unsafe impl Sync` and no loom model) is now `tutti_types::SeqCell<W>`:
+  `W` atomic words, so a read racing a write copies stale words rather than
+  racing on memory, with no `unsafe` anywhere, and a loom model
+  (`tests/seq_cell_loom.rs`) that runs the shipped code with a mutation
+  record. `TransportCell` only packs a `TimeInfo` into eleven words.
+  `RtPublish` does not fit: its writer is the control thread and it
+  allocates per publish, while this writer is the audio thread.
+- **Unused dependencies:** `ringbuf` in tutti-plugin, `crossbeam-channel`
+  and `parking_lot` in tutti-plugin-server.
+
+The audit's sixth finding, that CLAUDE.md still said the plugin meter cells
+and `Midi::out` stay on `ArcSwapOption`, was already fixed by #94 on `main`.
+
+A loom note for the next model: with a *spawned* thread whose first access
+is a load, loom 0.7 explored one interleaving (the main thread's load ran
+first and was never re-ordered after the spawned thread's store), so every
+mutation passed. `SeqCell`'s model puts the writer on the main thread and
+the reader on a spawned one, which explores tens of thousands; an
+iteration counter is how to tell.
+
 ## Per-node rewrite plan
 
 The question: if the graph had been native from the start, would the nodes

@@ -17,6 +17,9 @@
 //! flag, and each pairs its negative with a positive that moves the same
 //! counter — an assertion that a number stayed at zero passes just as well
 //! against a probe that was never loaded.
+//!
+//! The last test reads the render itself: what the node writes is what the
+//! plugin wrote.
 
 #![cfg(feature = "vst2")]
 
@@ -328,6 +331,66 @@ fn a_drain_with_nothing_parked_dispatches_nothing() {
         after.resume_count, before.resume_count,
         "an empty drain resumed the plugin"
     );
+
+    drop(loaded.handle);
+}
+
+/// What the node writes is what the plugin wrote, channel by channel and
+/// frame by frame: the graph's input reaches the plugin unshifted, and each
+/// output channel is the plugin's own (the probe's oracle, `in + tag(ch)`).
+///
+/// Two blocks with different inputs, the second shorter than the first, so
+/// a channel table left pointing at an earlier block's staging, an offset
+/// slice, or a swapped channel each shows as a wrong sample. Every value is
+/// a small integer, so the comparison is exact on every platform.
+///
+/// Mutations (run): the input table built from channel 0 for every channel
+/// (`inputs.get(0)`) → channel 1 reads channel 0's ramp → fails; the input
+/// slice offset by one frame (`&inputs.get(ch)[1..size]`) → fails; no
+/// output table handed to the plugin (`outs.clear()` before `drive_f32`) →
+/// the outputs stay silent → fails; the output table reversed
+/// (`outs.reverse()`) → channel 0 holds channel 1's tag → fails.
+#[test]
+fn the_output_is_what_the_plugin_wrote() {
+    use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
+    use tutti_vst2_test_plugin::channel_tag;
+
+    let _guard = lock_probe();
+    let mut loaded = load();
+    let rate = SampleRate(SAMPLE_RATE);
+    Node::prepare(
+        &mut loaded.unit,
+        &Prepare::new(rate, tutti_core::Samples(BLOCK)),
+    );
+    let channels = usize::from(Node::shape(&loaded.unit).audio_in.count());
+    assert_eq!(channels, 2, "the probe's default layout is stereo");
+
+    for (block, frames) in [(0usize, BLOCK), (1, BLOCK - 17)] {
+        // Channel `c`, frame `i`: `1000·c + 10·i + block`, distinct across
+        // channels, frames and blocks.
+        let input: Vec<Vec<f32>> = (0..channels)
+            .map(|c| {
+                (0..frames)
+                    .map(|i| (1_000 * c + 10 * i + block) as f32)
+                    .collect()
+            })
+            .collect();
+        let inputs: Vec<&[f32]> = input.iter().map(|c| &c[..]).collect();
+        let env = Env {
+            frame: tutti_core::Frame(0),
+            sample_rate: rate,
+            block_len: tutti_core::Samples(frames),
+            transport: Transport::default(),
+            changes: TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
+        };
+        let out = tutti_graph::contract::drive_in(&mut loaded.unit, &env, &inputs, &[], &[]);
+        assert_eq!(out.audio.len(), channels);
+        for (c, ch) in out.audio.iter().enumerate() {
+            let want: Vec<f32> = input[c].iter().map(|s| s + channel_tag(c)).collect();
+            assert_eq!(ch, &want, "block {block}, channel {c}");
+        }
+    }
 
     drop(loaded.handle);
 }

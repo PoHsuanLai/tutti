@@ -49,6 +49,9 @@
 //!   position the window it took holds.
 //! - [`RangeCell`] — a range's two `f32` bounds in one atomic word, so a
 //!   reader never pairs one write's `min` with another's `max`.
+//! - [`SeqCell`] — a few words one thread overwrites in place (the audio
+//!   thread, each block) and any thread copies whole: a sequence lock, for a
+//!   value whose writer may not allocate or free.
 //! - [`AudioThread`] — a per-thread "inside a block" marker, which a `Drop`
 //!   impl checks ([`AudioThread::check_not_current`]) so a value that must be
 //!   freed on the control thread panics, in debug builds, when it is not.
@@ -72,6 +75,7 @@ pub mod pos_ring;
 pub mod publish;
 pub mod range_cell;
 pub mod scratch;
+pub mod seq_cell;
 pub mod split;
 pub mod task_graph;
 pub mod vec;
@@ -87,6 +91,7 @@ pub use pos_ring::{
 pub use publish::{RtPublish, RtRef};
 pub use range_cell::RangeCell;
 pub use scratch::{RtScratch, RtScratchOverflow};
+pub use seq_cell::{SeqCell, SEQ_CELL_READ_RETRIES};
 pub use split::{ClaimConflict, ClaimTable, Claimed, ClaimedRun, Held, RwView, SplitMut, SplitRw};
 pub use task_graph::{Participant, TaskGraph};
 pub use vec::RtVec;

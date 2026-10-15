@@ -10,12 +10,10 @@
 //!
 //! # The ring handle
 //!
-//! The node holds its ring consumer behind [`MicRing`], an
-//! `Arc<AudioThreadCell<HeapCons<_>>>`: lock-free on the hot path
-//! ([`AudioThreadCell`] hands `&mut` access through `&self` with no `Mutex`;
-//! a debug-only in-use flag catches genuine concurrent borrows). The ring is
-//! single-consumer, so no lock is required — the same reasoning the
-//! streaming reader runs on.
+//! The node owns its ring consumer, wrapped in [`MicRing`]: a plain newtype
+//! over `HeapCons` that pops through `&mut self`, so the borrow checker, not
+//! a cell, is what keeps it to one popper. The ring is single-consumer, so no
+//! lock is required — the same reasoning the streaming reader runs on.
 //!
 //! # Single-consumer invariant
 //!
@@ -44,10 +42,8 @@
 //! The device callback only ever *pushes* (the producer half, holding
 //! `HeapProd` directly), never pops.
 
-use std::sync::Arc;
-
 use ringbuf::{traits::Consumer, HeapCons};
-use tutti_core::{Amplitude, AudioThreadCell, ChannelLayout, SampleRate, Tail};
+use tutti_core::{Amplitude, ChannelLayout, SampleRate, Tail};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 
 /// The consumer end of a stereo capture ring, as an opaque handle for
@@ -57,37 +53,35 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 /// [`HeapRb<[f32; 2]>`](ringbuf::HeapRb), keeps the producer to push captured
 /// frames from its input callback, and wraps the consumer here. Only the
 /// monitor node, on the audio thread, can pop from it, so the ring keeps
-/// exactly one consumer. `Clone` shares that one consumer; a device layer may
-/// hold a clone until it builds the node.
-#[derive(Clone)]
-pub struct MicRing(Arc<AudioThreadCell<HeapCons<[f32; 2]>>>);
+/// exactly one consumer. Not `Clone`: the handle *is* the one consumer, and
+/// the node that owns it pops through `&mut self`. (No test pins that: the
+/// `HeapCons` inside is not `Clone`, so a clone cannot be written.)
+// A newtype rather than a bare `ringbuf::HeapCons`, so `ringbuf` stays an
+// implementation detail, as `tutti-core`'s `TapCons` is for the tap ring.
+pub struct MicRing(HeapCons<[f32; 2]>);
 
 impl MicRing {
     /// Pop the next captured frame. Crate-internal so only `MicMonitorNode`'s
     /// audio-thread `process` can advance the SPSC read index.
     #[inline]
-    pub(crate) fn try_pop(&self) -> Option<[f32; 2]> {
-        self.0.borrow_mut().try_pop()
+    pub(crate) fn try_pop(&mut self) -> Option<[f32; 2]> {
+        self.0.try_pop()
     }
 }
 
 impl std::fmt::Debug for MicRing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The inner `HeapCons` isn't `Debug`, and its occupancy is a hot-path
-        // read this must not take; a shared-count summary is enough.
-        f.debug_struct("MicRing")
-            .field("shared", &Arc::strong_count(&self.0))
-            .finish_non_exhaustive()
+        // read this must not take.
+        f.debug_struct("MicRing").finish_non_exhaustive()
     }
 }
 
 /// Wraps a freshly split ring consumer into a [`MicRing`], ready to hand to
-/// [`MicMonitorNode::new`].
-///
-/// Allocates once; call it on the control thread.
+/// [`MicMonitorNode::new`]. Allocates nothing.
 #[must_use = "the returned MicRing is the only handle to the capture ring; drop it and the monitor node has nothing to drain"]
 pub fn share_mic_ring(consumer: HeapCons<[f32; 2]>) -> MicRing {
-    MicRing(Arc::new(AudioThreadCell::new(consumer)))
+    MicRing(consumer)
 }
 
 /// Live microphone monitoring as a graph node: no inputs, two outputs.
@@ -160,7 +154,7 @@ impl MicMonitorNode {
     /// Pop the next captured frame, or `(0.0, 0.0)` on underrun. Audio-thread
     /// only (see the single-consumer invariant in the module docs).
     #[inline]
-    fn next_frame(&self) -> (f32, f32) {
+    fn next_frame(&mut self) -> (f32, f32) {
         let g = self.gain.get();
         match self.ring.try_pop() {
             Some([l, r]) => (l * g, r * g),

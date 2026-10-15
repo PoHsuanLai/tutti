@@ -1048,6 +1048,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The sampler no longer frees a decoded wave on the audio thread**
+  (tutti-sampler). A pool's `VoiceCommand::ReplaceWave` drain dropped the
+  slot's old `Arc<Wave>` in the callback, which freed the whole decoded
+  buffer when the slot held its last reference; a `ReplaceWave` aimed at a
+  missing or streaming slot dropped its own wave the same way. The wave the
+  drain lets go of now leaves through the retirement channel and is freed
+  by `VoicePoolHandle::collect_retired`, which now counts it. As before, a
+  full retirement channel (a host that never collects) degrades to the free
+  in the callback. No API change.
+
+- **Breaking: `VoiceNodeHandle::send` is removed; a standalone `VoiceNode`
+  can no longer be sent a command it would free on the audio thread**
+  (tutti-sampler). `VoiceNodeHandle::send` accepted
+  any `VoiceCommand`, and the node's drain applied `UpdatePlacement` and
+  dropped every other one in the callback, freeing what it carried: an
+  `AddVoice`'s boxed `Voice`, a `ReplaceWave`'s wave (the last reference
+  frees the decoded buffer), an `UpdateStretch`'s filter. The node's queue
+  now carries placements only, by type, so such a send does not compile.
+  **Breaking:** `VoiceNodeHandle::send` is removed. **Migration:** a
+  placement is `VoiceNodeHandle::set_placement(start, duration)` (same
+  `SendError`, which still hands back the lost edit as
+  `VoiceCommand::UpdatePlacement`); gain is `set_gain`. The other commands
+  never took effect on a node: a host changing a node's wave, speed or
+  pitch respawns it, or uses a `VoicePool`.
+
+- **The CLAP host no longer drops and regrows the plugin's output
+  parameter queues on the audio thread** (tutti-clap-host).
+  `OutputEventList::fill_param_changes` emptied its set with
+  `queues.clear()`, dropping every queue each block, and built a new one
+  per parameter: a plugin emitting more than ten points for one parameter
+  in a block allocated and freed on the audio thread (and, before the
+  parameter-change rework, more than sixteen parameters did too). It now
+  empties the set with `ParameterChanges::clear` and takes each queue with
+  `open_queue`, so the queues keep their storage. Activation (and a
+  block-size grow) reserves the output set with
+  `ParameterChanges::reserved`: one queue per parameter, at least 16, each
+  with `ParameterQueue::chunk_room(max_frames)` points (about 0.3 KB per
+  parameter at 512 frames, 2 KB at 4096). Past that room nothing grows: a
+  point for a full queue replaces its last one, so the parameter still ends
+  the block on its latest value, a point for a parameter with no queue left
+  is lost, and both are counted.
+  - Added `ClapActive::output_param_points_dropped() -> u64`.
+    `OutputEventList::fill_param_changes` returns the points it dropped
+    (`u64`; it returned `()`).
+  - **Behaviour:** `fill_param_changes` fills only within the room its
+    `ParameterChanges` was reserved with, so a set built with `new()` or
+    `default()` now receives nothing. **Migration:** build it once, off the
+    audio thread, with `ParameterChanges::reserved(queues, points)`; or call
+    `to_param_changes()` off the audio thread, which still keeps every
+    point.
+  - Fixed: the `fill_midi_events` and `fill_note_expressions` docs called
+    their buffers pooled `SmallVec`s; they are fixed-capacity `RtVec`s.
+  - `fill_param_changes`' returned count is `#[must_use]`.
+
+- **The CLAP plugin's `try_push` no longer grows the output event list on
+  the audio thread, and a parameter flood no longer starves note events**
+  (tutti-clap-host). `try_push` pushed every event unconditionally into a
+  list reserved for 256, so a plugin pushing more in one block made the
+  host allocate inside the plugin's `process`. The list now has two
+  separate rooms, both reserved off the audio thread at activation:
+  - **Note, MIDI and other non-parameter events** get their own 256
+    (`OutputEventList::reserve(n)`). A parameter flood cannot use it, so
+    note-offs still arrive. Past it `try_push` returns `false` (CLAP lets
+    it fail; a plugin must handle that) and counts the refusal
+    (`OutputEventList::events_refused`, `ClapActive::output_events_refused`).
+  - **`PARAM_VALUE` events** get every parameter's
+    `ParameterQueue::chunk_room(max_frames)` points (at least 16
+    parameters), set with the new `OutputEventList::set_param_room(points,
+    ids)`. Past that room a point is folded into a preallocated
+    latest-value table keyed by the plugin's sorted parameter ids (a binary
+    search, no scan), so each parameter still ends the block on its latest
+    value; `fill_param_changes` counts the points that replaced in the
+    table as dropped. Only a point for an id the plugin never declared is
+    refused. The room is grow-only: a smaller block keeps the larger room.
+  - **Memory:** the output side is about 16.9 MB of event list plus about
+    4.6 MB of `out_param_changes`, about 21.5 MB, at 2 000 parameters and a
+    4096-frame block, and about 172 MB at 16 000 parameters, on the
+    plugin-server side, beside the input list's figure (design doc 014
+    §12). The arena follow-up there covers both sides.
+  - **Behaviour:** `reserve(n)` now bounds the non-parameter events to `n`
+    (it reserved `n` more); a list never reserved is unbounded, as before.
+    A list never given a parameter room is unbounded on that side too.
+
 - **Two audio-thread reads could free on the audio thread** (design doc
   013, "nothing the audio thread reads is an `ArcSwap`"). An `ArcSwap`
   guard held while a control thread stores is settled into a strong count,

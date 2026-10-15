@@ -770,10 +770,16 @@ bridge holds `PARAM_BUFFERS` of them: about 43 MB for 2000 parameters at a
 reserves for the same points again per instance: the CLAP host's input
 event list (64-byte events plus an 8-byte sort key, uncapped) about 19 MB
 at 2000 parameters and 157 MB at 16k, the VST3 host's input queues about
-35 MB at 16k (4096 frames). Replace both with a
-shared per-chunk point arena, or a small per-queue room with a counted,
-shared overflow, so the memory follows the points a chunk carries rather
-than the parameter count. The in-process VST2 node reserves the same room
+35 MB at 16k (4096 frames). The CLAP host's output side (PR #92) reserves
+the same again per instance, for the plugin's own parameter output: the
+output event list (64-byte events, a parameter room of `params × points`
+beside 256 for notes and MIDI) about 16.9 MB, plus the reserved output
+queues (`out_param_changes`) about 4.6 MB, so about 21.5 MB at 2000
+parameters and 4096 frames, and about 172 MB at 16k. Replace all of them
+with a shared per-chunk point arena, or a small per-queue room with a
+counted, shared overflow, so the memory follows the points a chunk carries
+rather than the parameter count; the follow-up covers the input and the
+output side alike. The in-process VST2 node reserves the same room
 and applies only each queue's last point (VST 2.4 has no sample-accurate
 parameter events), so its per-queue point room is mostly wasted: about
 400 KB per node at 200 parameters and a 4096-frame block; one point per

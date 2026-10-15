@@ -11,6 +11,8 @@
 //! | [`StatusMode::Error`]          | `format!`/`to_string` building a `ClapError`  |
 //! | [`crate::rt_probe::tutti_test_plugin_set_sysex_output_bytes`] | per-event `to_vec()` in `output_events_try_push` |
 //! | [`crate::rt_probe::tutti_test_plugin_set_audio_thread_log_lines`] | `String` + stderr lock + `Mutex` in `clap.log` |
+//! | [`crate::rt_probe::tutti_test_plugin_set_param_output`] | output parameter queues dropped and regrown per block |
+//! | [`crate::rt_probe::tutti_test_plugin_set_param_output_own`] | a parameter flood starving note events of output room |
 //! | [`WideLayout`]                 | `SmallVec<[*mut T; 16]>` spilling past its inline capacity |
 //!
 //! These are process-global switches because a `clap_process_status` is a
@@ -25,7 +27,10 @@
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use clap_sys::events::{clap_event_header, clap_event_midi_sysex, CLAP_EVENT_MIDI_SYSEX};
+use clap_sys::events::{
+    clap_event_header, clap_event_midi_sysex, clap_event_param_value, CLAP_EVENT_MIDI_SYSEX,
+    CLAP_EVENT_PARAM_VALUE,
+};
 use clap_sys::ext::log::{clap_host_log, CLAP_EXT_LOG, CLAP_LOG_WARNING};
 use clap_sys::host::clap_host;
 use clap_sys::process::{
@@ -369,6 +374,107 @@ pub(crate) fn wide_ports() -> Option<&'static [u32]> {
 }
 
 // ---------------------------------------------------------------------------
+// Parameter output
+// ---------------------------------------------------------------------------
+
+/// How many distinct parameters the parameter output writes per block.
+static PARAM_OUTPUT_PARAMS: AtomicU32 = AtomicU32::new(0);
+
+/// How many points each of those parameters gets per block.
+static PARAM_OUTPUT_POINTS: AtomicU32 = AtomicU32::new(0);
+
+/// Nonzero: [`emit_param_output`] writes the plugin's own parameters (its
+/// `clap.params` ids) instead of ids from [`PARAM_OUTPUT_FIRST_ID`].
+static PARAM_OUTPUT_OWN: AtomicU32 = AtomicU32::new(0);
+
+/// The id of the first parameter the parameter output writes; the rest
+/// follow it. Not one of the plugin's own ids: a host groups output points by
+/// id and does not check them against the plugin's list.
+pub const PARAM_OUTPUT_FIRST_ID: u32 = 10_000;
+
+/// Emit `points` `PARAM_VALUE` output events for each of `params` parameters
+/// (ids from [`PARAM_OUTPUT_FIRST_ID`]), on every block: a plugin reporting
+/// automation it generated, or a burst of edits in its own editor.
+///
+/// Either argument being 0 disables the output.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_set_param_output(params: u32, points: u32) {
+    PARAM_OUTPUT_OWN.store(0, Ordering::SeqCst);
+    PARAM_OUTPUT_PARAMS.store(params, Ordering::SeqCst);
+    PARAM_OUTPUT_POINTS.store(points, Ordering::SeqCst);
+}
+
+/// Emit `points` `PARAM_VALUE` output events for **each of the plugin's own
+/// parameters** (its `clap.params` ids, in its list order), on every block:
+/// what a plugin reporting a dense automation of its own controls sends.
+/// 0 disables the output.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_set_param_output_own(points: u32) {
+    PARAM_OUTPUT_OWN.store(1, Ordering::SeqCst);
+    PARAM_OUTPUT_PARAMS.store(
+        crate::params_state::probe_params().len() as u32,
+        Ordering::SeqCst,
+    );
+    PARAM_OUTPUT_POINTS.store(points, Ordering::SeqCst);
+}
+
+/// Push the configured parameter output events into the host's output event
+/// list, parameter by parameter, each parameter's points in ascending time
+/// across the block. Point `k` of a parameter carries the value `k / points`,
+/// so a reader can tell which point a queue ended on.
+///
+/// # Safety
+/// `p` must be the live `clap_process` the host passed to `process`.
+pub(crate) unsafe fn emit_param_output(p: &clap_process) {
+    let params = PARAM_OUTPUT_PARAMS.load(Ordering::SeqCst);
+    let points = PARAM_OUTPUT_POINTS.load(Ordering::SeqCst);
+    if params == 0 || points == 0 || p.out_events.is_null() {
+        return;
+    }
+    let Some(try_push) = (*p.out_events).try_push else {
+        return;
+    };
+    let frames = p.frames_count.max(1);
+    let own = PARAM_OUTPUT_OWN.load(Ordering::SeqCst) != 0;
+    let probe = crate::params_state::probe_params();
+    for param in 0..params {
+        let param_id = if own {
+            probe[param as usize % probe.len()].id
+        } else {
+            PARAM_OUTPUT_FIRST_ID + param
+        };
+        for k in 0..points {
+            let ev = clap_event_param_value {
+                header: clap_event_header {
+                    size: std::mem::size_of::<clap_event_param_value>() as u32,
+                    time: (u64::from(k) * u64::from(frames) / u64::from(points)) as u32,
+                    space_id: clap_sys::events::CLAP_CORE_EVENT_SPACE_ID,
+                    type_: CLAP_EVENT_PARAM_VALUE,
+                    flags: 0,
+                },
+                param_id,
+                cookie: std::ptr::null_mut(),
+                note_id: -1,
+                port_index: -1,
+                channel: -1,
+                key: -1,
+                value: f64::from(k) / f64::from(points),
+            };
+            try_push(
+                p.out_events,
+                &ev as *const clap_event_param_value as *const clap_event_header,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Reset
 // ---------------------------------------------------------------------------
 
@@ -388,4 +494,7 @@ pub unsafe extern "C" fn tutti_test_plugin_reset_rt_probe() {
     SYSEX_COUNT.store(0, Ordering::SeqCst);
     SYSEX_BYTES.store(0, Ordering::SeqCst);
     LOG_LINES_PER_BLOCK.store(0, Ordering::SeqCst);
+    PARAM_OUTPUT_PARAMS.store(0, Ordering::SeqCst);
+    PARAM_OUTPUT_POINTS.store(0, Ordering::SeqCst);
+    PARAM_OUTPUT_OWN.store(0, Ordering::SeqCst);
 }

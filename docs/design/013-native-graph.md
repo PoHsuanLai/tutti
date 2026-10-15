@@ -4505,7 +4505,10 @@ under both.
 > plus every corner, and `AutomationLaneNode::for_param` / `for_foreign`
 > now build one (014 §12, "PR 2b: landed"). The producer and the plugin
 > delivery described under "Curve segments landed" below are superseded
-> where marked.
+> where marked. It landed over the shared point pool (014 §9's
+> point-storage note): requirement 6's room is each queue's logical room,
+> and past the pool a queue keeps its floor, grid points dropped before
+> corners, counted.
 
 **What landed.**
 
@@ -4948,7 +4951,9 @@ carried.
   the VST3 input list drops a queue and the output list's
   `addParameterData` returns null, both counted. At 2000 parameters and a
   4096-frame chunk the IPC node's buffers went from about 43 MB to
-  6.98 MB, a CLAP instance's lists from about 40 MB to 6.2 MB; the
+  6.98 MB, a CLAP instance's lists from about 40 MB to 6.2 MB (at the room
+  of the time; with doc 014 PR 2b's raised room, 16.31 MB and 16.1 MB,
+  where per-queue storage would have been about 118 MB each); the
   figures, the budget's derivation and what is left (a CLAP
   `params.rescan` does not re-reserve the server's output) are in doc 014
   §9.

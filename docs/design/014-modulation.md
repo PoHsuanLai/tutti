@@ -796,6 +796,23 @@ implementation here. Requirements 1–5 are PR 1's; 6 lands with PR 2.
    carries, not the parameter count. Past a queue's room (more corners than
    `C` in one chunk), or past the pool, surplus grid points are dropped
    before corners, and every drop is counted in the delivery statistics.
+   **When the pool is spent.** The room is logical and per queue; the
+   storage behind it is shared: every queue owns a floor of
+   `FLOOR_POINTS` (2) points (and one kept for the bridge's carried value),
+   and a queue past its floor borrows one of the pool's `POOLED_QUEUES`
+   (256) blocks (`ParameterChanges::make_room`). With every block lent, a
+   queue past its floor keeps its floor, and the same rule applies within
+   it: a grid point offered to it is dropped, a corner evicts its earliest
+   grid point (both counted in `ParamDeliveryStats::grid_points_dropped`),
+   and once it holds only corners a corner takes the latest point's place,
+   the one full-queue policy (`PointBuf::replace_latest`), counted in
+   `points_merged`. A parameter's last point in a chunk is a corner (the
+   chunk's last frame, an arrival, a ramp, or a segment starting on the
+   last frame, which `SegmentPoints` sends as a corner even on a grid
+   frame), so every parameter still ends the chunk on its latest value.
+   The plugin node keeps a grid mark a point (`GridBits`), laid out as the
+   points are: a word for each queue's floor and a block's worth for each
+   pool block, about 40 KB at 2064 queues and a 4096-frame chunk.
    **As landed (PR 2b):** a point is a grid point by its frame alone (its
    play count a multiple of 32, `param_input::take`), so a lane corner
    that lands on a grid frame is dropped as a grid point. It loses nothing
@@ -904,8 +921,8 @@ sized at its activation) and an AU change; a VST3 `kParamTitlesChanged`
 without a reload keeps the instance's activation-time output and emitted
 queue counts, so the instance drops (and counts) points past them first.
 
-Per instance, at today's `chunk_room` (20 points at a 512-frame chunk, 132
-at 4096). The figures are point storage and queue headers (a queue 32
+Per instance, at requirement 6's `chunk_room` (273 points at a 512-frame
+chunk, 385 at 4096; PR 2b raised it from 20 and 132). The figures are point storage and queue headers (a queue 32
 bytes, a point 16, a spare slot 32): a set is
 `queues × 112 + 256 × 16 × (room + 1)` (112 = the queue, its spare slot and
 its 3-point floor). The IPC node holds `PARAM_BUFFERS + 1` sets with
@@ -920,14 +937,27 @@ and a byte a queue) are left out.
 
 | Site | 2000 @ 512 | 2000 @ 4096 | 16k @ 512 | 16k @ 4096 |
 |---|---|---|---|---|
-| IPC node: `PARAM_BUFFERS` + 1 sets | 2.85 MB | 6.98 MB | 17.35 MB | 21.48 MB |
-| CLAP input event list | 0.82 MB | 2.88 MB | 3.93 MB | 5.99 MB |
-| CLAP output list and queues | 1.04 MB | 3.33 MB | 5.41 MB | 7.70 MB |
-| VST3 input points | 0.19 MB | 0.64 MB | 0.88 MB | 1.33 MB |
-| VST3 `IMidiMapping` route (while mapped) | 0.32 MB | 0.78 MB | 1.93 MB | 2.39 MB |
-| plugin-server output (`ProcessOutput`) | 0.31 MB | 0.77 MB | 1.92 MB | 2.38 MB |
+| IPC node: `PARAM_BUFFERS` + 1 sets | 12.18 MB | 16.31 MB | 26.68 MB | 30.81 MB |
+| CLAP input event list | 5.48 MB | 7.55 MB | 8.59 MB | 10.65 MB |
+| CLAP output list and queues | 6.22 MB | 8.51 MB | 10.59 MB | 12.89 MB |
+| VST3 input points | 1.22 MB | 1.68 MB | 1.91 MB | 2.37 MB |
+| VST3 `IMidiMapping` route (while mapped) | 1.35 MB | 1.81 MB | 2.96 MB | 3.42 MB |
+| plugin-server output (`ProcessOutput`) | 1.35 MB | 1.81 MB | 2.96 MB | 3.42 MB |
 
-Every set has the one layout. The cost of that over a plain layout (a
+Only the pool term (`256 × 16 × (room + 1)` bytes a set: 1.12 MB at 512
+frames, 1.58 MB at 4096) grew with the room; the floor and headers did not.
+At the room before PR 2b (20 and 132) the rows were: the IPC node 2.85,
+6.98, 17.35 and 21.48 MB; the CLAP input list 0.82, 2.88, 3.93 and
+5.99 MB; the CLAP output 1.04, 3.33, 5.41 and 7.70 MB; the VST3 input
+0.19, 0.64, 0.88 and 1.33 MB; the route 0.32, 0.78, 1.93 and 2.39 MB; the
+server's output 0.31, 0.77, 1.92 and 2.38 MB. So a CLAP plugin of 2000
+parameters (the node's buffers and its host's lists) costs about 23.9 MB
+at 512 frames and 32.4 MB at 4096 (4.7 MB and 13.2 MB before PR 2b), a
+VST3 plugin about 13.4 MB and 18.0 MB (3.0 MB and 7.6 MB); with every
+queue at the raised room it would be about 168 MB and 235 MB for CLAP.
+
+Every set has the one layout. The figures in the rest of this paragraph
+are at the room before PR 2b. The cost of that over a plain layout (a
 2-point floor and blocks of `room`) on the sets that never carry a value,
 `16 × (queues + 256)` bytes a set: the CLAP output row was 0.86, 3.15,
 4.08 and 6.37 MB (its event room is the same budget, so it pays twice),
@@ -940,9 +970,9 @@ route rows grew by the 64 spare queues they now hold. The IPC row was
 first four were about 43 MB, 19 MB, 21.5 MB and 4.3 MB at 2000
 parameters, and about 340 MB, 157 MB, 172 MB and 35 MB at 16k. The 16k
 figures are mostly the per-parameter headers; the pool term is the same at
-any parameter count. With #96's room of `ceil(chunk/32) + 1 + 256` (385 at
-4096 frames) the pool term grows to about 1.6 MB a set, so the IPC node's
-buffers hold about 16.3 MB at 2000 parameters, against about 235 MB at
+any parameter count. At requirement 6's room the pool term is about
+1.6 MB a set at 4096 frames, so the IPC node's buffers hold about 16.3 MB
+at 2000 parameters (the table above), against about 118 MB at
 `params × room`.
 
 Nor does a queue *count* grow on the audio thread: the VST3 input list's
@@ -1034,22 +1064,18 @@ parameter events), so its per-queue point room is mostly wasted: about
 400 KB per node at 200 parameters and a 4096-frame block; one point per
 queue would do there.
 
-**PR 2b raises every one of these figures, most at small chunks.**
+**PR 2b raised the room, and the pool absorbs it (landed together).**
 Requirement 6 moves the room from `ceil(chunk / 32) + 4` to
-`ceil(chunk / 32) + 1 + 256`, and every reservation above uses that one
-formula (`ParameterQueue::chunk_room`). At a 4096-frame chunk that is 132
-points to 385, about 2.9×; at 512 frames it is 20 points to 273, about 9×
-on the node's buffers and about 13× in the CLAP lists. Per instance at
-2000 parameters (the node's buffers and its host's lists together): a
-CLAP plugin about 235 MB at 4096 frames and about 168 MB at 512, a VST3
-plugin about 130 MB and about 93 MB. At a 4096-frame chunk: the
-node's buffers about 118 MB at 2000 parameters and about 940 MB at 16k;
-the CLAP input list about 56 MB and 455 MB; the VST3 input queues about
-101 MB at 16k; the CLAP output side about 62 MB and 508 MB; the in-process
-VST2 node about 1.2 MB at 200 parameters. The 256 corners a queue reserves
-are idle in almost every chunk, which makes the shared arena (or a small
-per-queue room with a counted shared overflow) the first thing to do
-after PR 2.
+`ceil(chunk / 32) + 1 + 256`, and every reservation uses that one formula
+(`ParameterQueue::chunk_room`): 132 points to 385 at a 4096-frame chunk,
+20 to 273 at 512. Reserved per queue, as PR 1 did, that would have been
+about 235 MB per CLAP instance of 2000 parameters at 4096 frames and
+168 MB at 512 (about 940 MB in the node's buffers alone at 16k). PR 2b
+landed on the shared pool instead, so only the pool's blocks grow with the
+room: per instance at 2000 parameters a CLAP plugin holds about 32.4 MB at
+4096 frames and 23.9 MB at 512, a VST3 plugin about 18.0 MB and 13.4 MB
+(§9's table has every site). The 256 corners a queue may take are now a
+block's, lent only to a queue that moves.
 
 ### PR 2: the control lane node
 
@@ -1087,10 +1113,19 @@ sources:
   the audio-output lane only.
 - The plugin side (§9 requirement 6): `ParameterQueue::chunk_room` is
   `ceil(chunk / 32) + 1 + 256` (`CORNER_POINTS`), on the input side and
-  #92's output side alike; a full queue drops a grid point offered to it
-  and a corner evicts the queue's earliest grid point, both counted in
+  #92's output side alike, as each queue's logical room over the shared
+  point pool (§9's point-storage note: a floor of 3 a queue, 256 blocks
+  of `room + 1`). A queue is full at its room, or at its floor with the
+  pool spent; a full queue drops a grid point offered to it and a corner
+  evicts the queue's earliest grid point, both counted in
   `ParamDeliveryStats::grid_points_dropped`, and only a queue of corners
-  is merged. A point is a grid point when its frame's play count is a
+  keeps its latest value in its latest point's place (`points_merged`).
+  The node writes through `ParameterChanges::make_room` and `push_point`,
+  and marks its grid points in `GridBits`, laid out as the points are. A
+  segment starting on a chunk's last frame is a corner. The VST3 host's
+  `IMidiMapping` merge and input refill sort a queue with
+  `PointBuf::sort_by_offset` (stable, in place, allocation-free): std's
+  stable sort allocates past 256 points, under the raised room. A point is a grid point when its frame's play count is a
   multiple of 32 (`param_input::take`, through `Cx::play_at`).
   `SegmentPoints` sends a segment's start, its value on each play-grid
   frame in flight (a grid point), each chunk's last frame and its arrival,
@@ -1099,9 +1134,11 @@ sources:
   hand is held at most 32 frames.
 - Changed tests, each marked "Changed in doc 014 PR 2b" in place:
   `clap_process_no_alloc.rs` (#92's room, refusal and flood figures follow
-  the new `chunk_room`: 273 a queue, 4368 for the output list; the flood
-  is 2200 points a parameter, 8252 lost a block, so two parameters stay
-  wholly past the room, as in #92);
+  the new `chunk_room` in the one layout: 274 a queue with the set's one
+  more, 4384 for the output list; the flood is 2200 points a parameter,
+  8250 lost a block, so two parameters stay wholly past the room, as in
+  #92); `tutti-clap-host`'s `pooled_chunk` test helper (a point a frame,
+  so a 273-point room fits a 512-frame block);
   `segment_points.rs`' `a_segment_sends_points_until_it_lands` (the play
   grid replaces `stride_for(64)`); and `clap_automation.rs`' `follows`,
   whose upper bound for a lane is the curve at the next grid frame, not at

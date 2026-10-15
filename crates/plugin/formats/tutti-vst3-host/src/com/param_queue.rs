@@ -112,7 +112,9 @@ impl ParamValueQueueImpl {
         // points (4 KiB of them) and a queue holds up to a chunk's room
         // (`ParameterQueue::chunk_room`: past 256 from a block of 8 Ki
         // frames). The points arrive as runs each in order (host lanes,
-        // routed CCs), so the sort is near linear.
+        // routed CCs); its cost is quadratic in the overlap of those runs
+        // (up to n1 * n2 moves for two interleaved runs), bounded by the
+        // queue's room.
         if !points.is_sorted_by_key(|p| p.sample_offset) {
             tutti_plugin_types::insertion_sort_by_key(&mut points, |p| p.sample_offset);
         }

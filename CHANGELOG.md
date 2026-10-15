@@ -1311,8 +1311,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     expressions, four of each harmony kind). Past that, events are
     dropped and counted: `Vst3Active::events_dropped` and
     `output_events_dropped` (new). A note-off past the room replaces the
-    latest-staged event that is not a note-off, so no note hangs.
-    `addEvent` past the room answers `kResultFalse`.
+    latest-staged event that is not a note-off, so no note hangs (unless
+    the list is full of note-offs). Per-note expression values have their
+    own budget of 256, so a dense expression block cannot spend the room
+    the harmony kinds were given.
+  - **Plugin-visible:** a plugin's `addEvent` past the output list's room
+    now returns `kResultFalse` (it used to grow the list).
   - **Parameter queues.** The VST3 parameter queues' refill and the
     `IMidiMapping` route's point sort had the same std sort. It allocated
     past 256 points in one queue, which is reachable from an 8 Ki-frame

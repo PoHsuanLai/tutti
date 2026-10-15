@@ -760,8 +760,10 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// block staged more than the input event list's reserved room (MIDI,
     /// note expressions, chords, scales and per-note texts together). The
     /// list never grows on the audio thread; past its room a note-off still
-    /// takes the place of an earlier event, so no note is left hanging, and
-    /// every other event is dropped. Each lost event is counted once. Zero
+    /// takes the place of an earlier event, so no note is left hanging
+    /// unless the list is full of note-offs, and every other event is
+    /// dropped. Per-note expression values past their own budget (a MIDI
+    /// block's worth) are dropped and counted here too. Each lost event is counted once. Zero
     /// while a block stays within the room. Read on this instance only, like
     /// [`param_points_dropped`](Self::param_points_dropped).
     pub fn events_dropped(&self) -> u64 {

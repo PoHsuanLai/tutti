@@ -3842,7 +3842,9 @@ all three into fresh `Vec`s to keep only the restart flags.
   CLAP list uses it too. Equal offsets keep source order.
 - **Cap.** The list holds `EVENT_CAPACITY` (528) events: 256 MIDI, 256
   per-note expressions (nothing upstream caps them) and four of each
-  harmony kind. Past that room, events are dropped and counted
+  harmony kind. The expressions' 256 is a budget enforced at staging, so a
+  dense expression block cannot spend the harmony kinds' room. Past that
+  room, events are dropped and counted
   (`Vst3Active::events_dropped`, `output_events_dropped`), except a
   note-off, which takes the place of the latest-staged event that is not a
   note-off, so no note is left hanging.

@@ -244,7 +244,8 @@ pub(crate) fn route_cc_events(
 /// sort heap-allocates its scratch past 256 points while a queue holds up to a
 /// chunk's room and one more (`ParameterQueue::chunk_room`: past 256 from a
 /// block of 8 Ki frames). The points are two runs each in order (the host's,
-/// then the CCs'), so an insertion sort is near linear.
+/// then the CCs'), so an insertion sort costs quadratic in the overlap of the
+/// runs (up to n1 * n2 moves), bounded by the queue's room.
 pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
     for queue in params.queues.iter_mut() {
         tutti_plugin_types::insertion_sort_by_key(&mut queue.points, |point| point.sample_offset);
@@ -654,27 +655,6 @@ mod tests {
         );
     }
 
-    /// Points sharing a `sample_offset` keep the order they were added in.
-    ///
-    /// VST3 spells a discontinuity as two points — the old value, then the new
-    /// one — and lets them share an offset. Which comes first *is* the jump's
-    /// direction, so a sort that reorders equal keys turns a rise into a fall.
-    ///
-    /// The sibling test above cannot catch this: its offsets are all distinct
-    /// (50, 100, 10), and with no equal keys the two sorts are
-    /// indistinguishable. It asserts only that the result ascends, which stays
-    /// true either way.
-    ///
-    /// Size and shape here are deliberate, not padding. Rust's unstable sort is
-    /// a pattern-defeating quicksort that runs insertion sort on short slices
-    /// and detects already-ordered runs, so it happens to preserve order on
-    /// small or tidy inputs — measured: a handful of tied points, or ties in
-    /// ascending order, come out identical under both sorts at every size
-    /// tried. The two diverge from roughly 32 points when the offsets arrive
-    /// *descending*, which is what this builds. That is a reachable shape:
-    /// `add_point` has no cap, and a dense automation curve merged with CC
-    /// traffic on one param exceeds it. A smaller fixture would pass against
-    /// either sort and pin nothing.
     /// **The merged points sort without allocating, past 256 in one queue**
     /// (a chunk's room at a block of 8 Ki frames and more): std's stable
     /// sort allocates its scratch past 256 points. Two runs, each in order
@@ -704,6 +684,27 @@ mod tests {
         assert_eq!(offsets, (0..2 * RUN).collect::<Vec<_>>());
     }
 
+    /// Points sharing a `sample_offset` keep the order they were added in.
+    ///
+    /// VST3 spells a discontinuity as two points — the old value, then the new
+    /// one — and lets them share an offset. Which comes first *is* the jump's
+    /// direction, so a sort that reorders equal keys turns a rise into a fall.
+    ///
+    /// The sibling test above cannot catch this: its offsets are all distinct
+    /// (50, 100, 10), and with no equal keys the two sorts are
+    /// indistinguishable. It asserts only that the result ascends, which stays
+    /// true either way.
+    ///
+    /// Size and shape here are deliberate, not padding. Rust's unstable sort is
+    /// a pattern-defeating quicksort that runs insertion sort on short slices
+    /// and detects already-ordered runs, so it happens to preserve order on
+    /// small or tidy inputs — measured: a handful of tied points, or ties in
+    /// ascending order, come out identical under both sorts at every size
+    /// tried. The two diverge from roughly 32 points when the offsets arrive
+    /// *descending*, which is what this builds. That is a reachable shape:
+    /// `add_point` has no cap, and a dense automation curve merged with CC
+    /// traffic on one param exceeds it. A smaller fixture would pass against
+    /// either sort and pin nothing.
     #[test]
     fn points_sharing_a_sample_offset_keep_their_insertion_order() {
         let mut params = ParameterChanges::reserved(1, 80);

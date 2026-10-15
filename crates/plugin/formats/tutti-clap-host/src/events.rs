@@ -710,8 +710,10 @@ impl InputEventList {
                 size: Some(input_events_size),
                 get: Some(input_events_get),
             },
+            // Reserved for the list's whole capacity, as `reserve` does, so
+            // `sort_by_time` stays `n log n` (`flush_params` sorts one).
+            order: StableOrder::with_capacity(events.capacity()),
             events,
-            order: StableOrder::default(),
             param_room: usize::MAX,
             param_points_dropped: 0,
         }

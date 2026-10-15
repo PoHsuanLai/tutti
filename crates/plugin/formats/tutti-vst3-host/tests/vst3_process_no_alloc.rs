@@ -266,7 +266,7 @@ fn process_with_midi_does_not_allocate() {
 /// per-note expressions on frames descending, interleaved by the sort across
 /// the whole list. Std's stable sort, which the input list used before, kept
 /// 73 events on the stack and heap-allocated for the 74th. Then a block past
-/// the list's room: the rest is dropped and counted, still without
+/// the expressions' budget: the rest is dropped and counted, still without
 /// allocating.
 ///
 /// Mutation (run): the input list's sort back to std's
@@ -333,7 +333,7 @@ fn process_with_hundreds_of_events_does_not_allocate() {
     assert_eq!(inst.events_dropped(), 0, "512 events fit the input list");
 
     assert_no_alloc::assert_no_alloc(|| drive(&mut inst, &too_many, 4));
-    // 768 offered a block, 528 held (the list's room: two MIDI blocks'
-    // worth and four of each harmony kind), so 240 dropped in each of four.
-    assert_eq!(inst.events_dropped(), 4 * 240, "past the room, counted");
+    // 512 per-note expressions offered a block, 256 held (their own
+    // budget, a MIDI block's worth), so 256 dropped in each of four.
+    assert_eq!(inst.events_dropped(), 4 * 256, "past the budget, counted");
 }

@@ -44,17 +44,31 @@ use tutti_types::AudioThreadCell;
 ///   at most [`HARMONY_CAPACITY`] of each kind, by their containers' type.
 /// - **Per-note expression values**: nothing upstream caps them (the plugin
 ///   node sends none today; the wire carries a `Vec`). They get a MIDI
-///   block's worth, [`MIDI_STACK_CAPACITY`], as the room for one
-///   expression per MIDI event.
+///   block's worth, [`NOTE_EXPRESSION_ROOM`], as the room for one
+///   expression per MIDI event, and that budget is enforced at staging so a
+///   dense expression block cannot spend the room the harmony kinds were
+///   given.
 ///
 /// A plugin's output list (`addEvent`) is held to the same room.
-pub(crate) const EVENT_CAPACITY: usize = 2 * MIDI_STACK_CAPACITY + 4 * HARMONY_CAPACITY;
+pub(crate) const EVENT_CAPACITY: usize =
+    MIDI_STACK_CAPACITY + NOTE_EXPRESSION_ROOM + 4 * HARMONY_CAPACITY;
+
+/// The per-note expression values one input block stages; past it they are
+/// dropped and counted ([`EventList::dropped`]). See [`EVENT_CAPACITY`].
+pub(crate) const NOTE_EXPRESSION_ROOM: usize = MIDI_STACK_CAPACITY;
 
 /// Per-block event storage. Both members are written **only** while staging
 /// (`update_from_sources` / `addEvent`) and only *read* by `getEvent`, which is
 /// what makes the pointers `getEvent` hands the plugin — `DataEvent.bytes` into
 /// an event's own inline array, `text` into the arena — stable for the whole
 /// `process` call, as VST3 requires.
+///
+/// One exception, on the output list only: a note-off `addEvent`ed past the
+/// room evicts an earlier event (`Inner::push`), and `Vec::remove` shifts
+/// every event staged after it down one slot. The host is the only reader
+/// of the output list, and it reads after `process` returns, so no pointer
+/// into it is live; on the input list eviction happens while staging,
+/// before the plugin has any pointer.
 struct Inner {
     /// The staged events. `getEvent` borrows out of this Vec rather than
     /// copying, so `DataEvent.bytes` can point at the event's own inline
@@ -137,8 +151,10 @@ impl Inner {
     /// Put the staged events in frame order, stably. Never allocates.
     fn sort(&mut self) {
         // Order-preserving map of the signed offset onto `u32`: flipping the
-        // sign bit puts negative offsets (which a plugin may hand `addEvent`)
-        // below zero, as `i32` order does.
+        // sign bit puts negative offsets below zero, as `i32` order does. A
+        // negative offset reaches the input list through
+        // `NoteExpressionValue::sample_offset`, a wire `i32` nothing clamps
+        // (the output list is never sorted).
         self.order.sort_by_key(&mut self.events, |e| {
             e.sample_offset().cast_unsigned() ^ 0x8000_0000
         });
@@ -179,9 +195,10 @@ impl EventList {
     /// keep the order of the sources above, and each source's own order (a
     /// note-off before the note-on that reuses its key).
     ///
-    /// Never allocates. Past [`EVENT_CAPACITY`] events, the rest are dropped
-    /// and counted, except that a note-off takes the place of an event
-    /// staged before it (see [`dropped`](Self::dropped)).
+    /// Never allocates. Past [`NOTE_EXPRESSION_ROOM`] per-note expression
+    /// values, or [`EVENT_CAPACITY`] events in all, the rest are dropped and
+    /// counted, except that a note-off takes the place of an event staged
+    /// before it (see [`dropped`](Self::dropped)).
     pub fn update_from_sources(&self, src: &Vst3InputEvents) {
         let mut inner = self.inner.borrow_mut();
         inner.clear();
@@ -189,13 +206,22 @@ impl EventList {
             inner.push(event);
         }
         // `note_expression_to_vst3` returns `None` for a dimension VST3 can't
-        // encode (Pressure/Expression); those are skipped, not coerced.
+        // encode (Pressure/Expression); those are skipped, not coerced, and
+        // not counted. Past their own budget the rest are dropped, counted,
+        // so the harmony kinds staged after them keep the room they were
+        // given.
+        let mut expressions = 0;
         for event in src
             .note_expressions
             .iter()
             .filter_map(note_expression_to_vst3)
         {
-            inner.push(event);
+            if expressions < NOTE_EXPRESSION_ROOM {
+                expressions += 1;
+                inner.push(event);
+            } else {
+                inner.dropped += 1;
+            }
         }
         for expr in src.expr_ints {
             inner.push(expr.to_vst3_event());
@@ -227,7 +253,8 @@ impl EventList {
 
     /// Events this list dropped for want of room since it was made: staged
     /// past [`EVENT_CAPACITY`] in one block (by the host, or by the plugin
-    /// through `addEvent`), or given way to a later note-off.
+    /// through `addEvent`), per-note expression values past
+    /// [`NOTE_EXPRESSION_ROOM`], or given way to a later note-off.
     pub fn dropped(&self) -> u64 {
         self.inner.borrow().dropped
     }
@@ -978,6 +1005,95 @@ mod tests {
         assert!(
             list.inner.borrow().text_arena.is_empty(),
             "the refused chord spent no text"
+        );
+    }
+
+    /// **A dense expression block does not spend the harmony kinds' room.**
+    /// A full MIDI block, 300 per-note expressions (44 past their budget)
+    /// and four chords and scales: every chord and scale is staged, and the
+    /// 44 expressions past [`NOTE_EXPRESSION_ROOM`] are what is dropped,
+    /// counted.
+    ///
+    /// Mutation (run): the budget removed (every expression `push`ed) fails
+    /// here: the expressions fill the room and the chords and scales are
+    /// dropped instead.
+    #[test]
+    fn note_expressions_past_their_budget_leave_the_harmony_room() {
+        use tutti_plugin_types::{HARMONY_CAPACITY, MIDI_STACK_CAPACITY};
+        let midi: Vec<MidiEvent> = (0..MIDI_STACK_CAPACITY)
+            .map(|i| {
+                MidiEvent::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    (i % 128) as u8,
+                    0x8000,
+                )
+                .with_frame_offset(i as u32)
+            })
+            .collect();
+        let note_expressions: Vec<NoteExpressionValue> = (0..NOTE_EXPRESSION_ROOM as i32 + 44)
+            .map(|j| expr(j, j))
+            .collect();
+        let chords: Vec<ChordValue> = (0..HARMONY_CAPACITY as i16)
+            .map(|j| chord(j as i32, j))
+            .collect();
+        let scales: Vec<ScaleValue> = (0..HARMONY_CAPACITY as i16)
+            .map(|j| ScaleValue {
+                sample_offset: i32::from(j),
+                root: j,
+                mask: 0,
+                text: "D".encode_utf16().collect(),
+            })
+            .collect();
+
+        let list = EventList::new();
+        assert_no_alloc::assert_no_alloc(|| {
+            list.update_from_sources(&Vst3InputEvents {
+                midi: &midi,
+                note_expressions: &note_expressions,
+                chords: &chords,
+                scales: &scales,
+                ..Default::default()
+            })
+        });
+        assert_eq!(list.dropped(), 44, "only the expressions past their budget");
+        let events = staged(&list);
+        let count = |kind: &str| events.iter().filter(|(_, (k, _))| *k == kind).count();
+        assert_eq!(count("chord"), HARMONY_CAPACITY);
+        assert_eq!(count("scale"), HARMONY_CAPACITY);
+        assert_eq!(count("expr"), NOTE_EXPRESSION_ROOM);
+        // The first ones are kept: the budget takes them in source order.
+        let last_expr = events
+            .iter()
+            .filter(|(_, (k, _))| *k == "expr")
+            .map(|(_, (_, id))| *id)
+            .max();
+        assert_eq!(last_expr, Some(NOTE_EXPRESSION_ROOM as i32 - 1));
+    }
+
+    /// **A negative offset sorts before zero.** A per-note expression's
+    /// `sample_offset` is a wire `i32` nothing clamps, so a negative one
+    /// reaches the sort.
+    ///
+    /// Mutation (run): the sort key without the sign flip
+    /// (`e.sample_offset().cast_unsigned()`) puts -1 after every
+    /// non-negative offset and fails here.
+    #[test]
+    fn a_negative_offset_sorts_before_zero() {
+        let midi = [
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+        ];
+        let note_expressions = [expr(3, 1), expr(-1, 2)];
+        let list = EventList::new();
+        list.update_from_sources(&Vst3InputEvents {
+            midi: &midi,
+            note_expressions: &note_expressions,
+            ..Default::default()
+        });
+        assert_eq!(
+            staged(&list),
+            vec![(-1, ("expr", 2)), (0, ("on", 60)), (3, ("expr", 1))]
         );
     }
 }

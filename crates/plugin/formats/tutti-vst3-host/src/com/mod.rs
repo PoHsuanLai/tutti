@@ -44,5 +44,6 @@ pub use component_handler::{
 pub use event_list::{event_list_ptr, EventList};
 pub use host_application::HostApplication;
 pub use param_changes::{param_changes_ptr, ParameterChangesImpl};
+pub(crate) use param_queue::MIN_POINT_ROOM;
 pub(crate) use plug_frame::HostPlugFrame;
 pub use stream::BStream;

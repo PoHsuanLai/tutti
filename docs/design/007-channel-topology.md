@@ -86,7 +86,7 @@ pub enum Speaker {
 /// The speaker each channel of a bus feeds, in channel order.
 ///
 /// `positions[i]` is the speaker fed by channel `i`, so `len()` is the width.
-pub struct ChannelTopology { positions: SmallVec<[Speaker; 8]> }
+pub struct ChannelTopology { positions: Vec<Speaker> }
 
 impl ChannelTopology {
     pub fn layout(&self) -> ChannelLayout;   // the width — never stored twice
@@ -150,8 +150,9 @@ user-visible fix. Worth doing now *because* it is unreachable — the conversion
 can be corrected before anything depends on them.
 
 **Ceilings.** `MAX_ROOT_CHANNELS = 8` and `MAX_NET_CHANNELS = 12` bound what the
-engine can carry, so the `SmallVec<[Speaker; 8]>` inline capacity covers every
-layout that can reach the graph.
+engine can carry. (The positions were first held inline, eight speakers before
+the heap; they are a plain `Vec` now, because a topology is built and compared
+off the audio thread, where inline storage bought nothing.)
 
 **Wire.** `LoadedPlugin` gaining per-bus topology is a bincode field addition →
 `PROTOCOL_VERSION` bump. Note it is **15**, not 14: the presets branch (#196)

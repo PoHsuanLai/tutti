@@ -49,7 +49,8 @@ pub struct ProcessScratch<T> {
     /// the caller supplied — distinct from `input_ptrs`/`output_ptrs`, which
     /// are the plugin-facing arrays after zero-padding to the port layout.
     ///
-    /// These were `SmallVec<[*mut T; 16]>` locals in `process`, which spilled to
+    /// These were small-vector locals in `process` (16 pointers inline, then
+    /// the heap), which spilled to
     /// the heap every block past 16 channels a side — reachable through
     /// supported layouts, since two 8-channel ports or a third-order ambisonic
     /// bus already sit at the inline bound. Pooled here instead, sized from the
@@ -161,7 +162,14 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// would let a plugin provoke a `malloc` inside the audio callback. Events
     /// past the cap are dropped; `overflowed()` reports it.
     pub out_midi: RtMidiEvents,
+    /// Reserved at activation, one queue per parameter with a block's point
+    /// room, and filled within that room (`fill_param_changes`); points past
+    /// it are counted in `out_param_points_dropped`.
     pub out_param_changes: ParameterChanges,
+    /// Output parameter points `fill_param_changes` could not keep whole
+    /// since activation: see
+    /// [`ClapActive::output_param_points_dropped`](super::ClapActive::output_param_points_dropped).
+    pub out_param_points_dropped: u64,
     pub out_note_expressions: RtNoteExpressions,
     /// Monotonic sample counter fed to CLAP's `steady_time`. Init 0 at
     /// activate; advances by `frames_count` each processed block; reset to 0
@@ -188,6 +196,7 @@ impl<T: super::ClapSample> AudioScratch<T> {
             output_events: OutputEventList::new(),
             out_midi: RtMidiEvents::new(),
             out_param_changes: ParameterChanges::new(),
+            out_param_points_dropped: 0,
             out_note_expressions: RtNoteExpressions::new(),
             steady_time: 0,
             last_process_status: AtomicI32::new(CLAP_PROCESS_CONTINUE),
@@ -255,8 +264,8 @@ mod port_layout_tests {
     #[test]
     fn a_mono_bus_is_not_widened_to_stereo() {
         let mut ports = PortLayout {
-            inputs: BusChannels::from_slice(&[ChannelLayout::MONO]),
-            outputs: BusChannels::from_slice(&[ChannelLayout::MONO]),
+            inputs: vec![ChannelLayout::MONO],
+            outputs: vec![ChannelLayout::MONO],
         };
         ports.default_empty_buses();
 
@@ -291,8 +300,8 @@ mod port_layout_tests {
     #[test]
     fn totals_sum_across_buses_and_survive_defaulting() {
         let mut ports = PortLayout {
-            inputs: BusChannels::from_slice(&[]),
-            outputs: BusChannels::from_slice(&[ChannelLayout::STEREO, ChannelLayout::from(6u16)]),
+            inputs: BusChannels::new(),
+            outputs: vec![ChannelLayout::STEREO, ChannelLayout::from(6u16)],
         };
         ports.default_empty_buses();
 

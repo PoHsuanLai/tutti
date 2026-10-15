@@ -22,7 +22,6 @@ tutti-core = { version = "0.0.1", path = "../../core/tutti-core", default-featur
 tutti-graph = { version = "0.0.1", path = "../../core/tutti-graph" }
 
 # Lock-free / concurrent
-arc-swap = "1.7"
 atomic_float = "1.1"
 crossbeam-queue = "0.3"
 dashmap = "6.1"

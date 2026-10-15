@@ -80,6 +80,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`smallvec` is gone from the workspace** (design doc 013, "SmallVec
+  removed"). A type whose inline storage bought nothing is a `Vec` (or a
+  boxed slice); a type whose inline storage was a hard cap is an
+  `arrayvec::ArrayVec`, which refuses a push past the cap instead of
+  spilling to the heap. **Breaking** for code that names the aliases or the
+  fields below. On the wire nothing changes: bincode writes each of these as
+  a sequence (a `u64` length, then the items), whichever container, and
+  tests pin those bytes.
+
+  | Was | Now |
+  |---|---|
+  | `tutti_plugin_types::BusChannels` / `BusTopologies`: `SmallVec<[_; 4]>` | `Vec<ChannelLayout>` / `Vec<Option<ChannelTopology>>`. `BusChannels::from_slice(s)` → `s.to_vec()`; `smallvec![..]` → `vec![..]` |
+  | `MidiEventVec` (`tutti_plugin_types`, re-exported by `tutti_plugin::protocol`): `SmallVec<[MidiEvent; 256]>`, spilling past 256 | one type, `ArrayVec<MidiEvent, MIDI_STACK_CAPACITY>` (256). `push`, `extend` and `collect` **panic** past the cap: use `try_push`, or `ProcessOutput::emit_midi` |
+  | `tutti_plugin::protocol::IpcMidiEventVec`: `SmallVec<[IpcMidiEvent; 256]>` | `Vec<IpcMidiEvent>` |
+  | — | `tutti_plugin::protocol::midi_from_wire(&[IpcMidiEvent]) -> MidiEventVec`: converts a wire list, keeping the first 256 events |
+  | `NoteExpressionVec`: `SmallVec<[_; 8]>` | `Vec<NoteExpressionValue>` |
+  | the harmony containers' fields (chords, scales, note-expression text and int changes): `SmallVec<[_; 4]>`, unbounded | `ArrayVec<_, HARMONY_CAPACITY>` (4, newly exported). `add_change` returns `bool` (`#[must_use]`): `false` when the container is full, and the change is not kept |
+  | `ProcessOutput.midi_events` filled with `extend` | `ProcessOutput::emit_midi(events) -> usize` keeps what fits and returns how many were dropped; `ProcessOutput::midi_dropped()` totals them for the block |
+  | `ProcessOutput.retired`: `SmallVec` | `Vec<ParameterQueue>` (private). **A server's first blocks allocate a little more:** the pool starts empty and a queue `emit_param_point` builds on a pool miss has no point room, so each parameter a plugin first emits allocates its pool slot and its points, where the inline rooms (16 queues, 10 points) did not. `queues` was already a `Vec`, so that first block allocated before too. Not reserved up front: the server's `AudioPipeline` is built before any plugin is loaded, knowing neither a parameter count nor a block size, and the pool is warm from the next block on |
+  | `ParameterQueue::INLINE_POINTS` (10) | `ParameterQueue::MIN_POINTS` (10), the floor of `chunk_room`. `ParameterQueue::new` has **no** point room (its first point allocates): reserve with `with_capacity` or `ParameterChanges::reserved`. `ParameterChanges::point_capacity()` is 0 for a set with no spares |
+  | `ParameterChanges::add_change` built a new queue for a new parameter | it takes a spare queue first, as `open_queue` does, so a reserved set cleared each block reuses its point storage |
+  | `tutti_vst2_host::MidiEventVec`: `SmallVec<[MidiEvent; 256]>` | `Vec<MidiEvent>`, reserved once (the drain into it is gated against allocating) |
+  | `tutti_vst3_host::ProcessOutput.midi_events`: `SmallVec<[MidiEvent; 64]>` | `Vec<MidiEvent>` |
+  | `tutti_vst3_host::{ChordValue, ScaleValue, NoteExpressionText}::to_vst3_event(&mut SmallVec<[u16; 256]>)`: `pub` | `pub(crate)`. The text arena they intern into is now a crate-private type with a fixed room, so the methods can no longer be named outside the crate. Pass the values in `Vst3InputEvents` (`chords`, `scales`, `expr_texts`) to `process`, which interns them into its event list's own arena |
+  | — | `Vst3Active::event_text_dropped()`: chord, scale and note-expression texts refused because a block's event-list text arena was full. The arena reserves its room (64 texts of 256 UTF-16 units) once and never grows, because the plugin holds pointers into it for the whole `process` call |
+  | `tutti_types::ChannelTopology`'s positions: `SmallVec<[Speaker; 8]>` (private) | `Vec<Speaker>` (private) |
+  | `tutti_types::Retire<T>` | removed. Nothing in production used it. A type that must not be freed on the audio thread calls `tutti_types::AudioThread::check_not_current("what")` in its `Drop` |
+
+  **Decoding past a cap.** `ArrayVec`'s serde rejects a sequence longer than
+  its capacity, where `SmallVec` accepted any length. The harmony containers
+  decode with a truncating visitor instead: the first four items are kept
+  and the rest are read and discarded, so the stream stays in step and one
+  over-long list does not fail the whole `ProcessAudio` message. MIDI crosses
+  the wire as `Vec<IpcMidiEvent>`, which decodes at any length, and is cut to
+  the first 256 events when it is converted (`midi_from_wire`, on both the
+  host and the server); the server logs how many plugin events it dropped.
+
+  Migration:
+  - Replace `SmallVec`/`smallvec![]` for these aliases with `Vec`/`vec![]`,
+    or with `try_push` for the `ArrayVec` ones.
+  - Rename `ParameterQueue::INLINE_POINTS` to `MIN_POINTS`.
+  - Check the `bool` from a harmony `add_change`.
+  - Replace a `Retire<T>` with a newtype whose `Drop` calls
+    `AudioThread::check_not_current`.
+
+- **The control-lane floor** (design doc 014, PR 2a): the port rule for
+  event sources, the graph's play clock and a shareable range cell.
+  **Breaking** in three ways. A param port's event source *replaces* the
+  base instead of adding to it. A port refuses a second event source, or a
+  shaped one. And `tutti_graph::Env` has a new field, so a struct literal
+  must add `play`.
+
+  | Was | Now |
+  |---|---|
+  | an event-driven param port read `clamp(base + shape(event value) + Σ audio)`, its event value starting at 0 | it reads `clamp(held + Σ shape(audio))`: `held` is the event source's value from its first event on, and the base before it. A first `ParamRamp` starts from the base on its frame. Audio sources are still offsets, on whichever holds |
+  | any number of event sources per port, each with any `ParamShaping` | at most one, with `ParamShaping::Identity`; `GraphSpec::validate` and `Editor::commit` refuse a second (`GraphInvalid::TooManyEventParamSources`) or a shaped one (`GraphInvalid::ShapedEventParamSource`), and the plan verifier checks both (rule 9) |
+  | `Env { frame, sample_rate, block_len, transport, changes }` | adds `play: PlayClock`. An `Env` built by hand (a test, a node driven outside a graph) uses `PlayClock::ZERO` |
+  | — | the play clock (doc 014 §4.3): `Env::play_at(offset)`, `Cx::play_at(offset)` (at the input's time, through `TransportHistory`), `tutti_graph::{PlayClock, PlayReading}`, `Editor::play_reading()`, `Executor::play_reading()`. It counts one per frame, rolling or stopped, and restarts at 0 in a new epoch on every play start. Every executor, a fork's included, starts it at 0 |
+  | — | `tutti_types::RangeCell`: a `(min, max)` pair in one atomic word that is never torn, with a loom model. The param ports' live ranges sit on it, and `Editor::param_range_cell(at)` hands out a read-only view of the cell a port clamps to (`tutti_graph::ParamRangeReader`; writes go through `Editor::set_param_range`) |
+
+  Migration:
+  - Remove any knob-to-zero workaround that kept the base from adding to automation.
+  - Wire two event streams to one param by summing them in one node (or one lane) first.
+  - Shape an event stream before it reaches the port, in the node that sends it.
+  - Add `play: PlayClock::ZERO` to every hand-built `Env`.
+
+- **The in-process VST2 node delivers parameter events** (design doc 014
+  §13, decided question 2; doc 013, "Plugin parameter delivery"). Its
+  event input took MIDI only and dropped every parameter ramp and curve
+  segment. It now delivers them through the out-of-process node's
+  delivery (`host/node/param_delivery.rs`, and the event walk both nodes
+  now share, `param_input.rs`): a slot per parameter the plugin declared
+  at load (no spares: an index past them is refused and counted in
+  `points_dropped`), **changes only** against the value last
+  delivered to the instance, a curve segment as points along it. The block
+  is the chunk: before the plugin processes a block, each parameter that
+  moved in it is set to its last value there with `setParameter`, under
+  the instance lock, as the out-of-process VST2 loader sets a chunk's (VST
+  2.4 has no sample-accurate parameter events, so a point inside the block
+  lands on its first frame). A block the audio thread finds the instance
+  locked for owes its values to the next. Nothing allocates on the audio
+  thread with 200 parameters moving every block. A fork (an export) is
+  seeded with what the live node delivered, read before the live state is
+  saved, so an export plays an edit made in the plugin's editor as live
+  playback does. `Vst2Instance::{get_parameter, set_parameter}` no longer
+  allocate (their bounds check cloned the plugin's `Info`, name and vendor
+  strings included, on every call; this reached the out-of-process VST2
+  loader's per-chunk parameter writes too). **Breaking:**
+
+  | Was | Now |
+  |---|---|
+  | `IntoNode for InProcessVst2Client`: `type Controls = PluginMeter` | `type Controls = InProcessVst2Controls` (`tutti_plugin::InProcessVst2Controls`, also in `tutti_plugin::handles`): `set_meter`, `clear_meter`, `has_meter`, `meter()` as before, plus `param_delivery() -> ParamDeliveryStats` and `automation(params)` |
+  | — | `InProcessVst2Client::{controls, param_delivery, automation}` |
+  | `Plugin::automation(params) -> Option<PluginAutomation>`, `None` for an in-process VST2 plugin | `-> PluginAutomation`, for either backend (a VST2 plugin's addresses are `ParamAddress::Index`) |
+  | `InProcessVst2Client: Clone` (a clone drove the same `AEffect`) | not `Clone`: its delivery bookkeeping describes the one instance, so two copies would disagree about what it holds. A second node on the plugin is a fork (`IntoNode`'s fork, or `fork_instance`) |
+
+  **Migration.** Code that used the inserted node's controls as a
+  `PluginMeter` calls the same methods on `InProcessVst2Controls`, or
+  `.meter()` for the cell itself. Drop the `Option` from
+  `Plugin::automation`'s result. A host that drove an in-process VST2
+  plugin's parameters through its handle only can wire a
+  `PluginAutomation` (or any parameter event source) to the node's event
+  input instead; values set through the handle still reach the plugin and
+  are not overwritten by a host value held still. Code that cloned an
+  `InProcessVst2Client` forks it instead, or loads the plugin again.
+
 - **Plugin parameters are delivered as changes only, with no 16-queue
   cap** (modulation PR 1; design doc 013, "Plugin parameter delivery").
   The hosted plugin node reads the plugin's parameter list once, at
@@ -1007,6 +1113,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     CoreMIDI type. It now takes an erased sink, so every backend gets it.
 
 ### Fixed
+
+- **The sampler no longer frees a decoded wave on the audio thread**
+  (tutti-sampler). A pool's `VoiceCommand::ReplaceWave` drain dropped the
+  slot's old `Arc<Wave>` in the callback, which freed the whole decoded
+  buffer when the slot held its last reference; a `ReplaceWave` aimed at a
+  missing or streaming slot dropped its own wave the same way. The wave the
+  drain lets go of now leaves through the retirement channel and is freed
+  by `VoicePoolHandle::collect_retired`, which now counts it. As before, a
+  full retirement channel (a host that never collects) degrades to the free
+  in the callback. No API change.
+
+- **Breaking: `VoiceNodeHandle::send` is removed; a standalone `VoiceNode`
+  can no longer be sent a command it would free on the audio thread**
+  (tutti-sampler). `VoiceNodeHandle::send` accepted
+  any `VoiceCommand`, and the node's drain applied `UpdatePlacement` and
+  dropped every other one in the callback, freeing what it carried: an
+  `AddVoice`'s boxed `Voice`, a `ReplaceWave`'s wave (the last reference
+  frees the decoded buffer), an `UpdateStretch`'s filter. The node's queue
+  now carries placements only, by type, so such a send does not compile.
+  **Breaking:** `VoiceNodeHandle::send` is removed. **Migration:** a
+  placement is `VoiceNodeHandle::set_placement(start, duration)` (same
+  `SendError`, which still hands back the lost edit as
+  `VoiceCommand::UpdatePlacement`); gain is `set_gain`. The other commands
+  never took effect on a node: a host changing a node's wave, speed or
+  pitch respawns it, or uses a `VoicePool`.
+
+- **The CLAP host no longer drops and regrows the plugin's output
+  parameter queues on the audio thread** (tutti-clap-host).
+  `OutputEventList::fill_param_changes` emptied its set with
+  `queues.clear()`, dropping every queue each block, and built a new one
+  per parameter: a plugin emitting more than ten points for one parameter
+  in a block allocated and freed on the audio thread (and, before the
+  parameter-change rework, more than sixteen parameters did too). It now
+  empties the set with `ParameterChanges::clear` and takes each queue with
+  `open_queue`, so the queues keep their storage. Activation (and a
+  block-size grow) reserves the output set with
+  `ParameterChanges::reserved`: one queue per parameter, at least 16, each
+  with `ParameterQueue::chunk_room(max_frames)` points (about 0.3 KB per
+  parameter at 512 frames, 2 KB at 4096). Past that room nothing grows: a
+  point for a full queue replaces its last one, so the parameter still ends
+  the block on its latest value, a point for a parameter with no queue left
+  is lost, and both are counted.
+  - Added `ClapActive::output_param_points_dropped() -> u64`.
+    `OutputEventList::fill_param_changes` returns the points it dropped
+    (`u64`; it returned `()`).
+  - **Behaviour:** `fill_param_changes` fills only within the room its
+    `ParameterChanges` was reserved with, so a set built with `new()` or
+    `default()` now receives nothing. **Migration:** build it once, off the
+    audio thread, with `ParameterChanges::reserved(queues, points)`; or call
+    `to_param_changes()` off the audio thread, which still keeps every
+    point.
+  - Fixed: the `fill_midi_events` and `fill_note_expressions` docs called
+    their buffers pooled `SmallVec`s; they are fixed-capacity `RtVec`s.
+  - `fill_param_changes`' returned count is `#[must_use]`.
+
+- **The CLAP plugin's `try_push` no longer grows the output event list on
+  the audio thread, and a parameter flood no longer starves note events**
+  (tutti-clap-host). `try_push` pushed every event unconditionally into a
+  list reserved for 256, so a plugin pushing more in one block made the
+  host allocate inside the plugin's `process`. The list now has two
+  separate rooms, both reserved off the audio thread at activation:
+  - **Note, MIDI and other non-parameter events** get their own 256
+    (`OutputEventList::reserve(n)`). A parameter flood cannot use it, so
+    note-offs still arrive. Past it `try_push` returns `false` (CLAP lets
+    it fail; a plugin must handle that) and counts the refusal
+    (`OutputEventList::events_refused`, `ClapActive::output_events_refused`).
+  - **`PARAM_VALUE` events** get every parameter's
+    `ParameterQueue::chunk_room(max_frames)` points (at least 16
+    parameters), set with the new `OutputEventList::set_param_room(points,
+    ids)`. Past that room a point is folded into a preallocated
+    latest-value table keyed by the plugin's sorted parameter ids (a binary
+    search, no scan), so each parameter still ends the block on its latest
+    value; `fill_param_changes` counts the points that replaced in the
+    table as dropped. Only a point for an id the plugin never declared is
+    refused. The room is grow-only: a smaller block keeps the larger room.
+  - **Memory:** the output side is about 16.9 MB of event list plus about
+    4.6 MB of `out_param_changes`, about 21.5 MB, at 2 000 parameters and a
+    4096-frame block, and about 172 MB at 16 000 parameters, on the
+    plugin-server side, beside the input list's figure (design doc 014
+    §12). The arena follow-up there covers both sides.
+  - **Behaviour:** `reserve(n)` now bounds the non-parameter events to `n`
+    (it reserved `n` more); a list never reserved is unbounded, as before.
+    A list never given a parameter room is unbounded on that side too.
+
+- **Two audio-thread reads could free on the audio thread** (design doc
+  013, "nothing the audio thread reads is an `ArcSwap`"). An `ArcSwap`
+  guard held while a control thread stores is settled into a strong count,
+  and its drop can then be the last one. Both cells are now `RtPublish`,
+  whose read only borrows:
+  - `tutti-midi-hardware`'s `HardwareMidiInputs`: a hotplug
+    (`create_input_port`) during the per-block drain could free the old
+    port list in the callback. Two concurrent `create_input_port` calls
+    could also lose one of the ports (load, clone and store was not one
+    step); creation is now serialized, and each caller's port lands at the
+    index it is handed.
+  - `tutti-plugin`'s `PluginMeter`: a `set_meter` or `clear_meter` during
+    playback, replacing a meter cell the host did not keep, freed the whole
+    cell in the callback.
+
+  No public signature changed. `PluginControls::set_tail` and
+  `PluginClient::set_tail` take a short lock now (the tail is a `Mutex`; no
+  audio thread reads it), and their docs no longer claim they are RT-safe:
+  the old store allocated. `arc-swap` is no longer a dependency of any
+  engine crate (only `tutti-types`' bench baseline keeps it).
 
 - **A live in-process VST2 plugin behind a latent path was told the wrong
   playhead** (tutti-plugin; design doc 013, "In-process VST2 live transport

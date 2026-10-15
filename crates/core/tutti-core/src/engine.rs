@@ -341,6 +341,7 @@ impl Engine {
                 block_len: Samples(len),
                 transport: t,
                 changes: TransportChanges::NONE,
+                play: tutti_graph::PlayClock::ZERO,
             });
             g.clock.advance(len, &t);
             g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
@@ -427,6 +428,7 @@ impl Engine {
                 block_len: Samples(frames - cursor),
                 transport: t,
                 changes: TransportChanges::NONE,
+                play: tutti_graph::PlayClock::ZERO,
             };
             // The next declicked command ahead, within one fade of the end of
             // this block: the fade-out that ends on its frame may start here.
@@ -490,6 +492,7 @@ impl Engine {
             block_len: Samples(frames - cursor),
             transport: t,
             changes: TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
         });
         *playhead = base;
         pieces.run(cursor, frames, &t);

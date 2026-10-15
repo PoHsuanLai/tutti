@@ -11,7 +11,6 @@ use crate::{
     ChordChanges, MidiEvent, MidiEventVec, NoteExpressionChanges, NoteExpressionTextChanges,
     ParamAddress, ParameterChanges, ParameterQueue, ScaleChanges, TransportInfo,
 };
-use smallvec::SmallVec;
 
 /// Sequencer-context inputs for one block: chords, scales, per-note text and
 /// integer per-note expression.
@@ -111,6 +110,10 @@ impl<'a> ProcessContext<'a> {
 pub struct ProcessOutput {
     /// MIDI the plugin emitted this block — a note effect's output, or an
     /// instrument echoing what it consumed.
+    ///
+    /// Capped at [`MIDI_STACK_CAPACITY`](crate::MIDI_STACK_CAPACITY): fill it
+    /// through [`emit_midi`](Self::emit_midi), which drops and counts what
+    /// does not fit. `MidiEventVec::extend` panics past the cap.
     pub midi_events: MidiEventVec,
     /// Parameter changes the plugin made itself, so the host can follow a knob
     /// the user turned in the plugin's own editor.
@@ -124,8 +127,11 @@ pub struct ProcessOutput {
     // Retired `ParameterQueue`s, kept only for the `points` buffers inside
     // them: `clear` moves the block's queues here and `emit_param_point` takes
     // one back when it needs a new queue. Private because it is storage rather
-    // than data.
-    retired: SmallVec<[ParameterQueue; 16]>,
+    // than data. A plain `Vec`: it keeps its capacity across `clear`, so it
+    // grows only while the plugin automates more parameters than ever before.
+    retired: Vec<ParameterQueue>,
+    // MIDI events `emit_midi` dropped this block for want of room.
+    midi_dropped: usize,
 }
 
 impl ProcessOutput {
@@ -140,6 +146,7 @@ impl ProcessOutput {
     // reallocate that buffer every block.
     pub fn clear(&mut self) {
         self.midi_events.clear();
+        self.midi_dropped = 0;
         // `drain` empties `queues` while leaving its own capacity intact, and
         // each moved queue carries its `points` allocation into the pool.
         for mut queue in self.param_changes.queues.drain(..) {
@@ -147,6 +154,28 @@ impl ProcessOutput {
             self.retired.push(queue);
         }
         self.note_expression.changes.clear();
+    }
+
+    /// Appends `events` to [`midi_events`](Self::midi_events) until it is
+    /// full, and drops the rest. Returns how many were dropped, which also
+    /// adds to [`midi_dropped`](Self::midi_dropped). Allocation-free: the
+    /// list is inline and capped.
+    pub fn emit_midi(&mut self, events: impl IntoIterator<Item = MidiEvent>) -> usize {
+        let mut dropped = 0;
+        for e in events {
+            if self.midi_events.try_push(e).is_err() {
+                dropped += 1;
+            }
+        }
+        self.midi_dropped += dropped;
+        dropped
+    }
+
+    /// The MIDI events [`emit_midi`](Self::emit_midi) dropped since the last
+    /// [`clear`](Self::clear), for want of room: the plugin emitted more than
+    /// [`MIDI_STACK_CAPACITY`](crate::MIDI_STACK_CAPACITY) in one block.
+    pub fn midi_dropped(&self) -> usize {
+        self.midi_dropped
     }
 
     /// Appends one automation point, reusing a pooled queue when a new one is
@@ -183,5 +212,37 @@ impl ProcessOutput {
         };
         queue.add_point(sample_offset, value);
         self.param_changes.queues.push(queue);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MIDI_STACK_CAPACITY;
+
+    /// **`emit_midi` fills to the cap, drops and counts the rest, and never
+    /// panics**; `clear` resets the count with the list. What lets a loader
+    /// copy a plugin's MIDI-out whatever its size without growing (or, with
+    /// `extend`, panicking on) the inline list.
+    ///
+    /// Mutation (run): `emit_midi` through `extend` → panics past 256 →
+    /// fails; the count not added to `midi_dropped` → fails.
+    #[test]
+    fn emit_midi_caps_and_counts() {
+        let mut out = ProcessOutput::default();
+        let events =
+            (0..MIDI_STACK_CAPACITY as u32 + 44).map(|i| MidiEvent::from_ump(i, &[0x2090_3C40]));
+        assert_eq!(out.emit_midi(events), 44);
+        assert_eq!(out.midi_events.len(), MIDI_STACK_CAPACITY);
+        assert_eq!(
+            out.midi_events[MIDI_STACK_CAPACITY - 1].frame_offset,
+            255,
+            "the first kept"
+        );
+        assert_eq!(out.emit_midi([MidiEvent::from_ump(0, &[0x2090_3C40])]), 1);
+        assert_eq!(out.midi_dropped(), 45);
+        out.clear();
+        assert_eq!(out.midi_dropped(), 0);
+        assert!(out.midi_events.is_empty());
     }
 }

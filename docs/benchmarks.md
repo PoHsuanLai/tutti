@@ -86,7 +86,7 @@ The master tap is opt-in and the cost matches: 2.81 µs closed, 3.43 µs open
 ## Synth voices — `tutti-polysynth/benches/polysynth.rs`
 
 **The 16-voice cap is gone.** `PolySynth::new` used to reject a `max_voices`
-above the inline capacity of a `SmallVec<[usize; 16]>`; that list is now a
+above the 16 indices its finished-voice list held inline; that list is now a
 `Vec` sized at construction, so there is no ceiling. The table below still
 stops at 16 because that is where these numbers were measured — scaling is
 linear at ~1.9 µs per voice, so extend the axis rather than extrapolating if

@@ -159,6 +159,7 @@ mod tests {
             block_len: Samples(len),
             transport,
             changes,
+            play: tutti_graph::PlayClock::ZERO,
         }
     }
 

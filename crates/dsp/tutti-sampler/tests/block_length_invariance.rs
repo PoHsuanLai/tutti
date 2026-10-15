@@ -109,6 +109,7 @@ fn env_at(frame: usize, len: usize) -> Env {
         block_len: Samples(len),
         transport: Transport::new(true, Bpm::new(BPM), Beat::new(beat), None),
         changes: TransportChanges::NONE,
+        play: tutti_graph::PlayClock::ZERO,
     }
 }
 

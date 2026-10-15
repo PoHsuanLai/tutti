@@ -111,7 +111,7 @@ pub enum MidiDeviceEvent {
 /// What the last poll saw, so a change can be spotted.
 ///
 /// `seen` is **not** a record of what is connected — `MidiIo` already keeps
-/// that, in an `ArcSwap` it updates itself, and a second copy here could only
+/// that, in a connection map it updates itself, and a second copy here could only
 /// disagree with it. It is the previous frame's snapshot, kept solely to diff
 /// against the current one and turn "the set changed" into per-device messages.
 /// Nothing but the poll writes it — a connect system inserting into it by hand

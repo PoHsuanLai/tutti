@@ -19,7 +19,7 @@ default = []
 std = []
 # The mod-matrix routing subsystem: keyed accumulator, id→sink bus, routing
 # snapshot + table, and the per-frame driver.
-routing = ["std", "dep:dashmap", "dep:arc-swap", "dep:atomic_float"]
+routing = ["std", "dep:dashmap", "dep:atomic_float"]
 # ECS surface: `Component`/`Reflect` derives on `ModTargetId`, `LayerKey`, and
 # `Reflect` on the `LfoShape`/`Polarity` vocabulary a Bevy component carries.
 # Implies `routing` (the ids/targets are only useful with it) and std.
@@ -51,12 +51,11 @@ audio-automation = { workspace = true }
 # Unconditional despite the floor's no-dependencies instinct, because `Phase`
 # is what makes a sign-wrong hand-rolled wrap (a reverse-rate modulator walking
 # off a shape table) unrepresentable. tutti-types is a leaf crate — Bevy-free,
-# pulling only smallvec / atomic_float / arc-swap.
+# pulling only arrayvec / atomic_float.
 tutti-types = { path = "../tutti-types", default-features = false }
 
 # Routing layer — literal pins matching the tutti crates (these are NOT in
 # [workspace.dependencies]).
-arc-swap = { version = "1.7", optional = true }
 dashmap = { version = "6.1", optional = true }
 # `AtomicTarget` mirrors its final value into a shared `AtomicF32` the consumer
 # reads directly. Pin matches tutti-types.

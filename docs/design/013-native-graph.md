@@ -119,7 +119,7 @@ Changes:
 
 ```rust
 pub trait Node: Send + 'static {
-    /// Handles the control side keeps: Param<U> atomics, ArcSwapOption slots.
+    /// Handles the control side keeps: Param<U> atomics, RtPublish cells.
     /// Replaces `as_any` + `node_as::<T>` downcasts with a typed return.
     type Controls: Send + Sync + 'static;
 
@@ -217,7 +217,19 @@ the interpreter.
   shipped code (exhaustively under `just loom-full`). The read costs the same as the `ArcSwap::load` it
   replaced uncontended (~3 ns) and less under a hammering publisher (~25 ns vs
   ~41 ns), per `tutti-types/benches/rt_publish_read.rs`. `arc-swap` left
-  `tutti-types`; the nullable slots elsewhere stay on `ArcSwapOption`.
+  `tutti-types`.
+- **Done: nothing the audio thread reads is an `ArcSwap`.** Two audio-thread
+  `ArcSwap` reads remained after #15, each able to free on the audio thread
+  (a store settles a held guard's debt into a strong count, and the guard's
+  drop is then the last owner). The hardware MIDI port set
+  (`HardwareMidiInputs`) is an `RtPublish<Vec<_>>` whose read, append and
+  publish run under one publisher lock, which also fixes two concurrent
+  creators losing a port. The plugin nodes' meter slot (`PluginMeter`) is an
+  `RtPublish<Option<Arc<RtPublish<MeterMap>>>>`: the node borrows the
+  installed cell, so an install or clear mid-block retires it for the control
+  side, whether or not the host kept a clone. Its read is nested, one slot in
+  each of two cells. The plugin tail, which no audio thread reads, is a
+  `Mutex`. `arc-swap` is now only `tutti-types`' bench baseline.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
   tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is
@@ -271,7 +283,7 @@ the race. Every type below exists because the audit found the bug it prevents.
 |---|---|---|
 | **`Latency(Samples)`**, the only thing `Shape::latency` accepts; musical delay times stay `Seconds`/`Samples` | `route` → `Signal::Latency` carrying both "this node is late" and "this node echoes" | D1–D3: an echo compensated as if it were processing latency |
 | **`ParamKey<U>`**, typed by unit (`ParamKey::<Hz>::CUTOFF`) over the stable `UnitParam` `u16` wire id; `set<U>(ParamKey<U>, U)` | `Setting`/`unit_param` erasing `U` at `to_raw()` | Sending a `Db` to a `Hz` param compiles today; the units rule stops one layer too early |
-| **`Retire<T>`**: an owning box for deltas, retired units, old plans and arenas. It gives up its contents only through a return channel whose push cannot fail; in debug, `Drop` panics on the audio thread | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; `Retire` does it for hand-offs |
+| **The audio-thread marker on `Drop`**: the executor runs under `AudioThread::enter`, and what it hands back (units, crossfades, commits, a unit's param state) calls `AudioThread::check_not_current` in its `Drop`, so a free on the audio thread panics in debug. (Planned as an owning box, `Retire<T>`; it shipped, but nothing in production held one, since each hand-off type carries the check in its own `Drop`, and it was deleted; see "SmallVec removed" under Phase 6.) | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; the `Drop` check does it for hand-offs |
 | **`MaxBlock`**, obtainable only from `Prepare`; node scratch is built from it; `Io` is guaranteed to be at most that long | Five separate 64-frame assumptions: the polysynth clamp, SoundFont, the batcher, VST2, the disk-voice reserve | D4: silent truncation or audio-thread reallocation when the block grows |
 | **`SortedEvents<'a>`**, constructible only sorted by offset with every offset below the block length | A raw `&[Event]` that every sub-chunking node must trust or re-check | Events out of order, or past the block |
 | **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
@@ -3540,6 +3552,30 @@ What they show:
   tasks, and the review's callgrind count of the serial walk, this branch
   against `main`, differs by 0.009%.
 
+#### SmallVec removed
+
+**Status: landed** (2026-10-15). `smallvec` is out of the workspace. Where
+the inline storage bought nothing (built and read off the audio thread, or
+reserved once and reused), the type is a `Vec` or a boxed slice; where the
+inline storage was a hard cap (`RtVec`/`RtEventBuf`, the IPC MIDI block, the
+harmony containers) it is an `arrayvec::ArrayVec`, whose push past the cap
+is refused rather than spilling to the heap. `tutti-types` takes `arrayvec`
+for `Capped`. The `Retire<T>` box in §5 is deleted (no production user; the
+`Drop` check on the audio-thread marker does its job), and the graph's probe
+of it in `tests/executor.rs` uses that check directly.
+
+Two audio-thread paths depended on the inline room and are reserved now:
+a `ParameterQueue` built per block had ten points inline, and a `Vec` has
+none, so `ParameterChanges::add_change` takes a spare queue as `open_queue`
+does, and the VST3 host reserves its output and CC-routing sets
+(`ParameterChanges::reserved`) and empties them with `clear`. The CC-routing
+set is reserved only while the plugin has a CC mapping (`IMidiMapping`), at
+activation or when `rebuild_midi_cc_mapping` installs one on the control
+thread: at the parameter cap and a large block it is tens of megabytes, and
+most plugins map nothing. The VST3
+event list's text arena reserves its room once and refuses (and counts) a
+text past it, since the plugin holds pointers into it for the block.
+
 ## Per-node rewrite plan
 
 The question: if the graph had been native from the start, would the nodes
@@ -3822,7 +3858,8 @@ latent sibling was off by the upstream latency.
   **Not a closed-form rewind** from the current block, which is wrong across
   a discontinuity and cannot tell a wrap from a start.
 - **Size: fixed, whatever the latency.** `JUMPS` = 256 pieces inline,
-  about 96 bytes each (some 24 KiB, no heap), in the executor from the
+  about 104 bytes each (some 26 KiB, no heap; 96 before doc 014 added the
+  play clock to each piece), in the executor from the
   start. Nothing is sized from the plan, so a recompile touches nothing
   here, and the audio thread never allocates or frees. 256 is at least one
   block's pieces plus the one before (`MAX_TRANSPORT_CHANGES + 2`), and with
@@ -4138,7 +4175,9 @@ under both.
   edge, so PDC covers it (D9). `set_param_automation_source`,
   `clear_param_automation_source`, `has_param_automation_source`,
   `ParamAutomationSource` and its `InputSlot` are gone; `Plugin::automation`
-  answers `None` for the in-process VST2 node (no event input). bevy-tutti's
+  answered `None` for the in-process VST2 node (its event input took MIDI
+  only; since "In-process VST2 parameter delivery" below it answers for
+  both backends, without the `Option`). bevy-tutti's
   `plugin_bind_params` keeps one automation node per plugin entity
   (`PluginAutomationNode`), fed through `EventFeeds` (now keyed by feeder as
   well as sink), following a crossfade, removed with the entity. Pinned by
@@ -4281,6 +4320,11 @@ under both.
 > event sources and a per-lane control program, not an engine mechanism.
 > Read doc 014 before extending what follows; this section is kept as the
 > record of what landed.
+>
+> **Doc 014 PR 2a landed** the port rule (014 §5.6, marked below where it
+> changes the record): an event source replaces the base, one per port,
+> unshaped. It also landed the graph's play clock (`Env::play`,
+> `Cx::play_at`, `Editor::play_reading`) and `Editor::param_range_cell`.
 
 **What landed.**
 
@@ -4326,7 +4370,13 @@ under both.
     starts a linear ramp of that source's value on its frame, landing on
     the target on its last frame (a zero-length ramp is a step; a
     `ParamSegment` moves it along its shape instead, see "Curve segments
-    landed"); the value starts at 0 and is an offset like an audio source's. A source's state
+    landed"); the value starts at 0 and is an offset like an audio source's.
+  **Superseded by doc 014 §5.6 (PR 2a):** an event source's value now
+  *replaces* the base from its first event on (a first ramp starts from
+  the base on its frame), audio sources stay offsets on whichever holds,
+  and a port takes at most one event source, unshaped
+  (`GraphInvalid::TooManyEventParamSources`, `ShapedEventParamSource`).
+  The step is `clamp(held[i] + Σ shape_j(audio_j[i]))`. A source's state
     (its ramp, its last value) is kept by `ParamFrom`, not by its slot, so
     another source joining or leaving the port, or this one being
     reshaped, does not reset a held value. A fork starts each event source
@@ -4647,9 +4697,47 @@ carried.
   is what the host last delivered to the instance: a reset, a re-prepare
   and a state load keep it, and a fork is seeded with it, so an export
   plays an edit made in the plugin's editor as live playback does. Not
-  here: a ramp is still a step on a plugin, the in-process VST2 node has
-  no parameter path, CLAP `PARAM_MOD`, and the parameter-change buffers'
-  memory scales with the parameter count (doc 014 §12's follow-up).
+  here: a ramp is still a step on a plugin, CLAP `PARAM_MOD`, and the
+  parameter-change buffers' memory scales with the parameter count (doc
+  014 §12's follow-up). (The in-process VST2 node had no parameter path
+  either; it has since landed, next.)
+- **In-process VST2 parameter delivery (landed, doc 014 §13 question 2).**
+  The in-process VST2 node's event input took MIDI and dropped every
+  parameter event. It now runs the out-of-process node's delivery, not a
+  copy: `ParamDelivery` with a slot per parameter the plugin declared at
+  load (`Vst2Instance::parameter_count`, read once by the loader) and no
+  spares (`ParamDelivery::closed`: an index past the count is refused and
+  counted in `points_dropped`, where a spare slot would have staged a point
+  `setParameter` refuses), its `SegmentPoints`, and the event walk the two nodes now share
+  (`host/node/param_input.rs`, which `PluginChunks::take` calls for each
+  piece of a chunk and the VST2 node for each block). **The block is the
+  chunk**, and before the plugin processes it each queue's last point is
+  set with `setParameter`, under the instance lock the block already
+  takes: what the out-of-process VST2 loader does with a chunk
+  (`loaders/vst2.rs`), so the two hosts differ only in whose chunk it is
+  (VST 2.4 has no sample-accurate parameter events; a point inside the
+  block lands on its first frame). A block the audio thread finds the
+  instance locked for (silence, `contention_count`) hands nothing off, and
+  its values are owed to the next. The node is not `Clone` (it was; a
+  clone shared one `AEffect` while each copy kept its own slots, so their
+  changes-only bookkeeping disagreed about the one instance): a second
+  node is a fork. The
+  fork (`vst2_in_process/fork.rs`) reads the live record before it saves
+  the live state and seeds the fork's delivery with it, as
+  `PluginForkSource::capture` does. Counters are on the node's controls,
+  now `InProcessVst2Controls` (its meter cell, as before, and
+  `param_delivery()`), and `Plugin::automation` builds a VST2 node's
+  `PluginAutomation` (index addresses). `Vst2Instance::{get_parameter,
+  set_parameter}` bound-checked through `get_info()`, which clones the
+  plugin's `Info` strings: they read the count from the load-time
+  snapshot now, so the audio thread can call them (this also reached the
+  plugin-server's per-chunk writes). Pinned by
+  `tests/vst2_in_process_params.rs` (a moving parameter read back through
+  the probe's `getParameter`; a held value sent once, so an edit on the
+  plugin survives it and a moving value replaces it; an export of a fork
+  renders the plugin-side edit, through the probe's state DC) and
+  `vst2_in_process_no_alloc.rs` (200 parameters moving every block under
+  `assert_no_alloc`).
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
   does not honour offsets sample-accurately, as it refuses a ramp.
 
@@ -5367,10 +5455,11 @@ the seqlock the callback reads before entering the plugin.
   (the out-of-process node's mapping), with the meter and the node's
   `SteadyTime`. A plugin that does not declare `Features::TRANSPORT` is
   handed the default snapshot, as before, and an empty block repeats the
-  last snapshot. Per block: two lock-free loads (the meter's
-  `ArcSwapOption`, then its `RtPublish`), no allocation, no new lock.
+  last snapshot. Per block: two wait-free borrows (the meter slot, then
+  the meter cell it holds), no allocation, no new lock.
 - **The meter** is a `PluginMeter` (`tutti_plugin::handles`): one
-  `ArcSwapOption<RtPublish<MeterMap>>` cell shared across the node's
+  `RtPublish<Option<Arc<RtPublish<MeterMap>>>>` cell (an `ArcSwapOption`
+  when this landed) shared across the node's
   clones, and the out-of-process node's `PluginControls::meter` too.
   Installed with `InProcessVst2Client::set_meter` (`clear_meter`,
   `has_meter`), through the `PluginMeter` inserting the node hands back as

@@ -115,8 +115,8 @@ pub trait PluginAudio: Send {
     ///
     /// Returning `ProcessOutput` by value looks equivalent and is not: this
     /// runs on the realtime audio thread, and a fresh return value has no
-    /// capacity to reuse, so every block that emits more than the inline
-    /// `SmallVec` capacity allocates inside the audio callback. A borrowed
+    /// capacity to reuse, so every block that emits parameter changes or note
+    /// expression allocates inside the audio callback. A borrowed
     /// return would avoid that, but its lifetime would come from `&mut self`
     /// and hold the plugin borrowed across everything the caller does with the
     /// block.

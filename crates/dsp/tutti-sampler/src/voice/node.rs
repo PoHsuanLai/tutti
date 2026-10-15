@@ -15,7 +15,7 @@ use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::clock::{BlockClock, Clock};
-use super::command::{PlacementRecord, VoiceCommand, VoiceNodeHandle, COMMAND_CAPACITY};
+use super::command::{NodePlacement, PlacementRecord, VoiceNodeHandle, COMMAND_CAPACITY};
 use super::disk_voice::VoiceHealth;
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice};
@@ -68,7 +68,7 @@ pub struct VoiceNode {
     /// **A dead channel until a handle exists**, not an `Option`: the drain
     /// is one `try_recv` that immediately answers `Empty` rather than a
     /// branch on every block.
-    pub(crate) rx: Receiver<VoiceCommand>,
+    pub(crate) rx: Receiver<NodePlacement>,
     /// The gain the handle writes; read once per block.
     gain: Param<Amplitude>,
     /// The last placement the handle queued, for the fork source.
@@ -151,37 +151,29 @@ impl VoiceNode {
             .build()
     }
 
-    /// Apply every queued command, and the gain. Runs at the top of each
+    /// Apply every queued placement, and the gain. Runs at the top of each
     /// block.
     ///
-    /// Allocation-free by construction: the only command a node accepts carries
-    /// two `Copy` scalars, and applying it is a field write. The pool's drain
-    /// has to be more careful because `AddVoice` moves a whole `Voice` — which
-    /// is why its handle builds the stretch filter on the *control* thread
-    /// before sending.
-    ///
-    /// Commands a node has no meaning for are ignored rather than rejected: the
-    /// wire format is shared with the pool, and a host that reaches for
-    /// `AddVoice` on a single-voice node is asking for something that does not
-    /// exist. Silently is the right register here — the alternative is a panic
-    /// in an audio callback.
+    /// Allocation- and free-free by construction: the queue carries only
+    /// [`NodePlacement`]s, two `Copy` scalars, and applying one is a field
+    /// write. The pool's drain has to be more careful because its commands
+    /// carry owned payloads (a `Voice`, a wave, a stretch filter), which is
+    /// why it retires what it lets go of. A node's queue is typed so that no
+    /// such payload can reach it: there is nothing for it to drop.
     #[inline]
     fn drain_commands(&mut self) {
-        while let Ok(cmd) = self.rx.try_recv() {
-            if let VoiceCommand::UpdatePlacement {
-                start_beat,
-                duration_beats,
-                ..
-            } = cmd
-            {
-                // Placement is the source's alone: `Playback` has no placement
-                // field (two copies kept in sync by hand is how a fork reaches
-                // the wrong one), so there is exactly one write.
-                self.slot
-                    .voice
-                    .source
-                    .apply_placement(start_beat, duration_beats);
-            }
+        while let Ok(NodePlacement {
+            start_beat,
+            duration_beats,
+        }) = self.rx.try_recv()
+        {
+            // Placement is the source's alone: `Playback` has no placement
+            // field (two copies kept in sync by hand is how a fork reaches
+            // the wrong one), so there is exactly one write.
+            self.slot
+                .voice
+                .source
+                .apply_placement(start_beat, duration_beats);
         }
         // Both halves of the gain: `Playback` is what the memory tier's read
         // scales by, the source's own cell what the disk tier's does.

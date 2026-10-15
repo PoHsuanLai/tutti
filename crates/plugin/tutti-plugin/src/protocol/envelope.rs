@@ -186,15 +186,9 @@ pub enum HostMessage {
     },
 }
 
-// `AudioProcessed` carries an inline-256 `IpcMidiEventVec` (~5 KB), dwarfing the
-// other variants. This is deliberate: the inline capacity keeps the common
-// (0–handful of events) case heap-free. `BridgeMessage` is only ever
-// (de)serialized on the off-RT bridge thread, so its stack size is not an RT
-// concern, and boxing would just add an off-RT allocation.
 /// A reply or notification travelling subprocess → host.
 ///
 /// Variant order is wire-significant; see the module docs.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BridgeMessage {
     /// The plugin was probed or loaded successfully.
@@ -217,8 +211,8 @@ pub enum BridgeMessage {
     /// in the shared `AudioSlab`'s output ring, published there before this
     /// message is sent; the measured latency and any MIDI the plugin emitted
     /// travel here. (Parameter / note-expression output is not routed back.)
-    /// `midi_out` is capped at `MIDI_STACK_CAPACITY` server-side so it stays
-    /// inline (no heap on the RT-adjacent path).
+    /// `midi_out` is capped at `MIDI_STACK_CAPACITY` server-side, and the host
+    /// keeps at most that many of a longer one.
     ///
     /// **This message is not what makes the audio readable.** The slab carries a
     /// per-slot generation counter and answers that itself, so the host emits

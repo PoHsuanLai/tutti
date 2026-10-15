@@ -85,13 +85,13 @@ pub(crate) struct SegmentPoints {
 impl SegmentPoints {
     /// Size the slots for `slots` segments and drop any in flight. Control
     /// thread: allocates (once; a later call with the same size reuses).
-    pub(super) fn prepare(&mut self, slots: usize) {
+    pub(crate) fn prepare(&mut self, slots: usize) {
         self.tracks.clear();
         self.tracks.reserve_exact(slots);
     }
 
     /// Drop every segment in flight (a reset). Allocation-free.
-    pub(super) fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.tracks.clear();
     }
 

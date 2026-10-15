@@ -37,7 +37,5 @@ pub(crate) struct Meta {
     allow(dead_code)
 )]
 pub(crate) fn single_bus(layout: impl Into<ChannelLayout>) -> BusChannels {
-    let mut v = BusChannels::new();
-    v.push(layout.into());
-    v
+    vec![layout.into()]
 }

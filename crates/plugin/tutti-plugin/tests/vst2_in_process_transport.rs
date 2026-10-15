@@ -222,6 +222,7 @@ fn render_scenes(r: &mut Renderer, blocks: usize) -> Vec<(Env, Told)> {
             block_len: Samples(BLOCK),
             transport,
             changes,
+            play: tutti_graph::PlayClock::ZERO,
         };
         let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
         r.executor_mut()
@@ -317,13 +318,14 @@ fn seven_eight() -> Arc<RtPublish<MeterMap>> {
 
 /// **The live node's meter** reaches the plugin: a 7/8 meter installed with
 /// `set_meter` on the client before it went in; cleared, after it went in,
-/// through the meter handle inserting it handed back (4/4); and installed
-/// again through that handle.
+/// through the controls inserting it handed back (4/4); and installed
+/// again through them.
 ///
 /// Mutation (run): drop the meter source (`TransportFeed::block` reading
 /// `self.default_meter` always) → 4 → fails. Mutation (run): hand back a
-/// fresh `PluginMeter::default()` as the node's controls in its `IntoNode`
-/// → the handle is not the node's cell → fails.
+/// fresh `PluginMeter::default()` as the controls' meter in the node's
+/// `IntoNode` (`InProcessVst2Client::controls`) → the handle is not the
+/// node's cell → fails.
 #[test]
 fn the_live_node_tells_the_plugin_its_meter() {
     let _lock = lock_probe();

@@ -105,6 +105,7 @@ impl MockTransport {
             block_len: Samples(frames),
             transport: self.transport(),
             changes: TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
         }
     }
 }

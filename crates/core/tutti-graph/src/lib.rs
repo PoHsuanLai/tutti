@@ -228,6 +228,7 @@ mod node;
 mod par;
 mod param;
 mod plan;
+mod play;
 mod reference;
 mod slots;
 mod spec;
@@ -259,14 +260,15 @@ pub use node::{
 pub use par::Pool;
 pub use param::{
     ParamFrom, ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError, ParamRange,
-    ParamShaping, ParamSource, ShapeLut, MAX_PARAM_PORTS, MAX_PARAM_SOURCES, PARAM_DECLICK,
-    SHAPE_LUT_LEN,
+    ParamRangeReader, ParamShaping, ParamSource, ShapeLut, MAX_PARAM_PORTS, MAX_PARAM_SOURCES,
+    PARAM_DECLICK, SHAPE_LUT_LEN,
 };
 pub use plan::{
     Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, Op, ParamPortOp,
     ParamSlot, ParamSourceOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT,
     ZERO_SLOT,
 };
+pub use play::{PlayClock, PlayReading};
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 pub use time::{Due, Offset, Playhead};

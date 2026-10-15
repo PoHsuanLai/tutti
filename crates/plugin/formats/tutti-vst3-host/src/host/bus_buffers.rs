@@ -8,8 +8,6 @@
 
 use std::marker::PhantomData;
 
-use smallvec::SmallVec;
-
 use tutti_types::ChannelLayout;
 
 use crate::types::Vst3Sample;
@@ -103,9 +101,10 @@ fn make_audio_bus(num_channels: ChannelLayout) -> vst3::Steinberg::Vst::AudioBus
 /// the realtime `process` path is allocation-free. The flat caller buffer
 /// (bus 0) is mapped onto bus 0; every other bus is backed by `aux`.
 pub(super) struct BusBuffers<T: Vst3Sample> {
-    bus_channels: SmallVec<[usize; 4]>,
-    bus_arrays: SmallVec<[vst3::Steinberg::Vst::AudioBusBuffers; 4]>,
-    ptr_tables: SmallVec<[Vec<*mut std::ffi::c_void>; 4]>,
+    // Sized once here, never resized: boxed slices, since nothing pushes.
+    bus_channels: Box<[usize]>,
+    bus_arrays: Box<[vst3::Steinberg::Vst::AudioBusBuffers]>,
+    ptr_tables: Box<[Vec<*mut std::ffi::c_void>]>,
     aux: Vec<f64>,
     /// `T` governs the union member written but is not stored in any field.
     _format: PhantomData<T>,
@@ -129,13 +128,13 @@ impl<T: Vst3Sample> BusBuffers<T> {
         fallback_channels: ChannelLayout,
         block_size: usize,
     ) -> Self {
-        let bus_channels: SmallVec<[usize; 4]> = if bus_channels.is_empty() {
-            SmallVec::from_slice(&[fallback_channels.count() as usize])
+        let bus_channels: Box<[usize]> = if bus_channels.is_empty() {
+            Box::new([fallback_channels.count() as usize])
         } else {
-            SmallVec::from_slice(bus_channels)
+            bus_channels.into()
         };
-        let mut bus_arrays = SmallVec::new();
-        let mut ptr_tables: SmallVec<[Vec<*mut std::ffi::c_void>; 4]> = SmallVec::new();
+        let mut bus_arrays = Vec::with_capacity(bus_channels.len());
+        let mut ptr_tables = Vec::with_capacity(bus_channels.len());
         for &ch in &bus_channels {
             let table = vec![std::ptr::null_mut::<std::ffi::c_void>(); ch.max(MIN_PTR_COUNT)];
             // channelBuffers pointer is left null (zeroed) and refreshed every
@@ -145,8 +144,8 @@ impl<T: Vst3Sample> BusBuffers<T> {
         }
         Self {
             bus_channels,
-            bus_arrays,
-            ptr_tables,
+            bus_arrays: bus_arrays.into_boxed_slice(),
+            ptr_tables: ptr_tables.into_boxed_slice(),
             aux: vec![0.0f64; block_size.max(1)],
             _format: PhantomData,
         }

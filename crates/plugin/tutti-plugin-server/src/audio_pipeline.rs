@@ -184,7 +184,7 @@ pub(crate) struct AudioPipeline {
     /// The plugin's non-audio outputs for the current block.
     ///
     /// Owned here, and handed to `PluginAudio::process` as an out-parameter,
-    /// so its `SmallVec` storage persists across blocks. A loader that copies
+    /// so its storage persists across blocks. A loader that copies
     /// out of a borrowing `ProcessOutputRef` copies into *this*, which is what
     /// makes the copy allocation-free once warm.
     ///
@@ -210,6 +210,12 @@ impl AudioPipeline {
     /// `process`, which clears it.
     pub(crate) fn midi_out(&self) -> &MidiEventVec {
         &self.plugin_output.midi_events
+    }
+
+    /// The MIDI events the most recent [`process`](Self::process) dropped
+    /// past the list's cap.
+    pub(crate) fn midi_dropped(&self) -> usize {
+        self.plugin_output.midi_dropped()
     }
 
     /// Reseat the scratch variant when the session's negotiated format changes.
@@ -740,8 +746,8 @@ mod tests {
             samples_per_channel: samples,
             format,
             slots: RING_SLOTS as u32,
-            inputs: inputs.iter().copied().collect(),
-            outputs: outputs.iter().copied().collect(),
+            inputs: inputs.to_vec(),
+            outputs: outputs.to_vec(),
         }
     }
 
@@ -1130,7 +1136,7 @@ mod tests {
     /// (`probeprocessor.cpp` calls `addEventInput` and never touches
     /// `outputEvents` or `outputParameterChanges`). So the plugin's output lists
     /// arrive empty every block, and an owning conversion over an empty
-    /// `SmallVec` allocates nothing — mutation-testing confirms that restoring
+    /// list allocates nothing — mutation-testing confirms that restoring
     /// `ProcessOutputRef::to_owned()` in `loaders::vst3::process_block` leaves
     /// this test green. Saying so is the point: a gate that names a property it
     /// cannot observe is the failure this whole class of test exists to avoid.
@@ -1213,23 +1219,31 @@ mod tests {
     /// true because `clear` empties the lists in place and, critically, clears
     /// each queue's `points` **before** dropping the queue list.
     ///
-    /// Two mutation checks, both verified:
+    /// The MIDI is past its cap ([`MIDI_STACK_CAPACITY`]), so the copy also
+    /// pins that the list drops the excess (counted) rather than growing.
+    ///
+    /// [`MIDI_STACK_CAPACITY`]: tutti_plugin::server::MIDI_STACK_CAPACITY
+    ///
+    /// Three mutation checks, all verified:
     /// - build a fresh `ProcessOutput` inside the loop instead of reusing one
     ///   (what `ProcessOutputRef::to_owned` did) and this aborts;
     /// - drop the inner `queue.points.clear()` from `ProcessOutput::clear` and
-    ///   this aborts, because each block then reallocates every points buffer.
+    ///   this aborts, because each block then reallocates every points buffer;
+    /// - copy the MIDI with `midi_events.extend` rather than `emit_midi` and
+    ///   this panics at the cap.
     #[test]
     fn copying_emitted_events_into_a_warm_output_does_not_allocate() {
         use tutti_plugin::server::ParamAddress;
 
-        // Well past both inline capacities, so the buffers are genuinely on the
-        // heap and a lost capacity is a real reallocation rather than a no-op.
+        // Points well past any small reservation, so the buffers are genuinely
+        // on the heap and a lost capacity is a real reallocation rather than a
+        // no-op; MIDI past its cap, so the drop path runs inside the gate.
         const EVENTS: usize = 400;
         const PARAMS: usize = 32;
         const POINTS: usize = 40;
 
         // The event *values* are irrelevant here — only how many there are, and
-        // that `MidiEvent` is `Copy` so the extend is a memcpy.
+        // that `MidiEvent` is `Copy` so the copy is a memcpy.
         let emitted_midi: Vec<MidiEvent> = (0..EVENTS)
             .map(|i| MidiEvent::from_ump(i as u32, &[0x2090_3C40]))
             .collect();
@@ -1248,7 +1262,7 @@ mod tests {
         // code rather than two hand-kept-in-sync versions.
         let copy = |out: &mut ProcessOutput| {
             out.clear();
-            out.midi_events.extend(emitted_midi.iter().copied());
+            out.emit_midi(emitted_midi.iter().copied());
             for queue in &emitted_params.queues {
                 for point in &queue.points {
                     out.emit_param_point(queue.param_id, point.sample_offset, point.value.get());
@@ -1264,8 +1278,12 @@ mod tests {
         }
         assert_eq!(
             out.midi_events.len(),
-            EVENTS,
+            tutti_plugin::server::MIDI_STACK_CAPACITY,
             "the fixture must actually fill the buffers"
+        );
+        assert_eq!(
+            out.midi_dropped(),
+            EVENTS - tutti_plugin::server::MIDI_STACK_CAPACITY
         );
         assert_eq!(out.param_changes.queues.len(), PARAMS);
 

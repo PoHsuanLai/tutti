@@ -6,6 +6,7 @@ use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{Frame, Latency, SampleRate, Samples};
 
 use crate::node::{Env, Transport, MAX_TRANSPORT_CHANGES};
+use crate::play::PlayReading;
 use crate::time::Offset;
 
 /// From `frame` on, the transport was `transport`, counted at `rate`.
@@ -14,6 +15,10 @@ struct Piece {
     frame: Frame,
     rate: SampleRate,
     transport: Transport,
+    /// The play clock at `frame`. A play start changes `transport.playing`,
+    /// so it is always a piece of its own, and between pieces the clock
+    /// advances one per frame: the piece's reading rolled forward is exact.
+    play: PlayReading,
 }
 
 /// An unused slot.
@@ -21,6 +26,10 @@ const EMPTY: Piece = Piece {
     frame: Frame::ZERO,
     rate: SampleRate(0.0),
     transport: Transport::new(false, tutti_types::Bpm(120.0), tutti_types::Beat(0.0), None),
+    play: PlayReading {
+        epoch: 0,
+        play: Frame::ZERO,
+    },
 };
 
 /// Pieces a history keeps: see [`TransportHistory`], "Size".
@@ -82,7 +91,7 @@ const _: () = assert!((JUMPS - 1) * CHECKPOINT >= 4 * MAX_NODE_LATENCY.get());
 /// # Size, and the cost of a query
 ///
 /// Fixed, whatever the reach: [`JUMPS`](Self::JUMPS) = 256 pieces inline,
-/// about 96 bytes each (some 24 KiB, no heap). Nothing is sized from the
+/// about 104 bytes each (some 26 KiB, no heap). Nothing is sized from the
 /// plan, so a recompile changes nothing here, and the audio thread never
 /// allocates or frees.
 ///
@@ -189,6 +198,7 @@ impl TransportHistory {
                     frame: piece.frame,
                     rate: env.sample_rate,
                     transport: t,
+                    play: piece.play.start,
                 });
             }
         }
@@ -217,6 +227,20 @@ impl TransportHistory {
     /// The transport `back` frames before frame `start`, when a piece kept
     /// covers that frame; `None` when it is older than every piece.
     fn before(&self, start: Frame, back: Samples) -> Option<Transport> {
+        self.piece_before(start, back)
+            .map(|(p, into)| roll(p.transport, p.rate, into))
+    }
+
+    /// The play clock `back` frames before frame `start`, as
+    /// [`before`](Self::before) answers for the transport.
+    fn play_before(&self, start: Frame, back: Samples) -> Option<PlayReading> {
+        self.piece_before(start, back)
+            .map(|(p, into)| p.play.after(into))
+    }
+
+    /// The newest piece at or before the frame `back` before `start`, and
+    /// how far past it that frame is.
+    fn piece_before(&self, start: Frame, back: Samples) -> Option<(&Piece, Samples)> {
         // In frame order, so "starts at or before the frame" holds for a
         // prefix: binary search for its end. A piece too far back for
         // `since` to count (a 32-bit target, a day of audio) is before it.
@@ -232,12 +256,12 @@ impl TransportHistory {
         }
         let p = self.get(lo.checked_sub(1)?);
         let into = start.since(p.frame)?.checked_sub(back)?;
-        Some(roll(p.transport, p.rate, into))
+        Some((p, into))
     }
 
-    /// The oldest piece's transport, at its own frame.
-    fn oldest(&self) -> Option<Transport> {
-        (self.len > 0).then(|| self.get(0).transport)
+    /// The oldest piece, at its own frame.
+    fn oldest(&self) -> Option<&Piece> {
+        (self.len > 0).then(|| self.get(0))
     }
 }
 
@@ -288,8 +312,36 @@ impl Env {
                 let before = back.checked_sub(here).unwrap_or(Samples::ZERO);
                 history
                     .before(self.frame, before)
-                    .or_else(|| history.oldest())
+                    .or_else(|| history.oldest().map(|p| p.transport))
                     .unwrap_or(self.transport)
+            }
+        }
+    }
+
+    /// The play clock `back` frames before frame `offset` of this block:
+    /// what a node with arrival latency `back` reads at `offset`
+    /// ([`Cx::play_at`](crate::Cx::play_at)). Inside the block it is
+    /// [`play_at`](Self::play_at) of the earlier offset; before it, read
+    /// from `history` as [`transport_before`](Self::transport_before) reads
+    /// the transport, with the same reach. A frame older than anything kept
+    /// reads the oldest piece's clock, unmoved, or with nothing kept the
+    /// block's first frame's.
+    pub fn play_before(
+        &self,
+        offset: Offset,
+        back: Latency,
+        history: &TransportHistory,
+    ) -> PlayReading {
+        let back = back.samples();
+        let here = Samples(offset.index());
+        match here.checked_sub(back) {
+            Some(earlier) => self.play_at(Offset::raw(earlier.get() as u32)),
+            None => {
+                let before = back.checked_sub(here).unwrap_or(Samples::ZERO);
+                history
+                    .play_before(self.frame, before)
+                    .or_else(|| history.oldest().map(|p| p.play))
+                    .unwrap_or(self.play.start)
             }
         }
     }
@@ -312,6 +364,7 @@ mod tests {
             block_len: Samples(len),
             transport,
             changes,
+            play: crate::PlayClock::ZERO,
         }
     }
 
@@ -566,9 +619,10 @@ mod tests {
             std::mem::size_of::<TransportHistory>(),
             std::mem::size_of::<[Piece; JUMPS]>() + 2 * std::mem::size_of::<usize>()
         );
-        // The documented figure: about 96 bytes a piece, some 24 KiB.
+        // The documented figure: about 104 bytes a piece (the transport and
+        // the play clock), some 26 KiB.
         let size = std::mem::size_of::<TransportHistory>();
-        assert!((22 * 1024..=26 * 1024).contains(&size), "{size} bytes");
+        assert!((24 * 1024..=28 * 1024).contains(&size), "{size} bytes");
     }
 
     /// A burst of more than `JUMPS` seeks, one per one-frame block: the ring

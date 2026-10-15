@@ -10,7 +10,6 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 workspace = true
 
 [dependencies]
-arc-swap = "1"
 # The two plugin→host callback queues. `ArrayQueue`, not `crossbeam-channel`:
 # `automate` and `process_events` are invoked from inside the plugin's
 # `processReplacing`, so their push runs on the audio thread. An unbounded
@@ -18,7 +17,6 @@ arc-swap = "1"
 # back-pressure; a bounded lock-free queue does neither.
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 parking_lot = "0.12"
-smallvec = "1"
 thiserror = "2"
 tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }

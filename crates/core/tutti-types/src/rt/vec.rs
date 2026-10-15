@@ -17,7 +17,7 @@ use super::capped::Capped;
 /// # The cap is the point
 ///
 /// `push` **refuses** at `N` and returns `false`; it never grows. A bare
-/// `Vec`/`SmallVec` in this position grows instead, which means a `malloc`
+/// `Vec` in this position grows instead, which means a `malloc`
 /// inside the audio callback (and, if drained with `mem::take`, a `free` there
 /// too). The storage is inline, so the collection itself never touches the
 /// heap.

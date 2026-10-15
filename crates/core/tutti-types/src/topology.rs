@@ -37,16 +37,7 @@
 //! deliberately **not** modelled here as four invented [`Speaker`]s — that
 //! would recreate the exact ambiguity described above, one step further in.
 
-use smallvec::SmallVec;
-
 use crate::ChannelLayout;
-
-/// Inline capacity for [`ChannelTopology`]. Eight covers every layout that can
-/// reach the graph: `tutti_core::MAX_ROOT_CHANNELS` is 8, and the
-/// offline renderer's own ceiling is 12 — a 12-channel bed spills to the heap
-/// rather than being rejected, which is the right trade for a control-thread
-/// type.
-const INLINE_CHANNELS: usize = 8;
 
 /// Which speaker one channel of a bus feeds.
 ///
@@ -164,7 +155,9 @@ impl Speaker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChannelTopology {
-    positions: SmallVec<[Speaker; INLINE_CHANNELS]>,
+    // A plain `Vec`: a topology is built and read on the control thread (and
+    // rides the plugin-load reply), so storage inline buys nothing.
+    positions: Vec<Speaker>,
 }
 
 impl ChannelTopology {

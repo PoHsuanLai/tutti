@@ -484,6 +484,7 @@ unsafe extern "C" fn plugin_process(
     // `out_events.try_push` — and it is the host's audio thread, which is the
     // whole point.
     rt_probe::emit_sysex_output(p);
+    rt_probe::emit_param_output(p);
     echo_notes(p);
 
     // RT-HAZARD: log through `clap.log` from inside the host's `process`. CLAP

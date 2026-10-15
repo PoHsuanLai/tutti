@@ -61,6 +61,7 @@ fn drive_in_plays_events_under_the_env() {
         block_len: Samples(64),
         transport: Transport::new(true, Bpm(120.0), Beat(4.0), None),
         changes: TransportChanges::NONE,
+        play: tutti_graph::PlayClock::ZERO,
     };
     let events = [
         Event::midi(at(3, 64), [0x2090_3c64, 0, 0, 0]),

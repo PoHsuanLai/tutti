@@ -20,10 +20,7 @@ default = []
 # (which rides the same reply once the format hosts report placement), the meter
 # vocabulary (which round-trips through the host's document), and the unit
 # newtypes the latter is built from.
-#
-# `smallvec/serde` because `ChannelTopology` stores its positions inline; the
-# same edge `tutti-plugin-types` already carries for `BusChannels`.
-serde = ["dep:serde", "smallvec/serde"]
+serde = ["dep:serde"]
 # Enables `Reflect` on the unit newtypes and the param vocabulary, so a Bevy
 # component built from them can be inspected and scene-serialized. Reflection
 # only — no `Component`/`Resource` derives: an app stores a `Volume`, never a
@@ -31,9 +28,10 @@ serde = ["dep:serde", "smallvec/serde"]
 bevy = ["dep:bevy_reflect"]
 
 [dependencies]
-# `const_generics` provides the blanket `Array for [T; N]` impl so RtEventBuf
-# can be generic over its inline capacity `N`.
-smallvec = { version = "1", default-features = false, features = ["const_generics"] }
+# The fixed inline storage behind `RtVec` and `RtEventBuf` (`rt/capped.rs`):
+# a run of `N` slots that cannot grow, so the cap is the type's, not a check
+# beside it.
+arrayvec = "0.7"
 # `Param<U>` wraps an `AtomicF32`; `AtomicSamplePosition` an `AtomicF64`.
 atomic_float = { version = "1.1", default-features = false, features = ["atomic_f64"] }
 serde = { version = "1", optional = true, features = ["derive"] }
@@ -41,8 +39,8 @@ serde = { version = "1", optional = true, features = ["derive"] }
 # defines vocabulary, not ECS surface.
 bevy_reflect = { workspace = true, optional = true }
 
-# `RtPublish`'s and `PosRing`'s atomics become loom's under `--cfg loom`, so the
-# models in `tests/rt_publish_loom.rs` and `tests/pos_ring_loom.rs` check the
+# `RtPublish`'s, `PosRing`'s and `RangeCell`'s atomics become loom's under
+# `--cfg loom`, so the models in `tests/*_loom.rs` check the
 # shipped protocols rather than replicas.
 # Only that flag pulls this in; a normal build never sees loom.
 #

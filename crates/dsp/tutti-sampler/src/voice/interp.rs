@@ -862,6 +862,7 @@ mod tests {
             block_len: Samples(len),
             transport,
             changes: c,
+            play: tutti_graph::PlayClock::ZERO,
         }
     }
 

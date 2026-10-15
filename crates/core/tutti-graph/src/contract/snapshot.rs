@@ -180,6 +180,13 @@ impl<N: ParamNode + Clone> IsolateRow<N> {
                 block_len: tutti_types::Samples(size),
                 transport: crate::node::Transport::default(),
                 changes: crate::node::TransportChanges::NONE,
+                play: crate::PlayClock {
+                    start: crate::PlayReading {
+                        epoch: 0,
+                        play: tutti_types::Frame(done as u64),
+                    },
+                    next_epoch: 0,
+                },
             };
             let block = super::drive_in(&mut node, &env, &refs, &[], &[]).audio;
             for (out, b) in rendered.iter_mut().zip(block) {

@@ -25,11 +25,9 @@ default = []
 clap-extras = []
 
 [dependencies]
-arc-swap = "1.7"
 bitflags = "2"
 clap-sys = "0.5"
 libloading = "0.8"
-smallvec = "1"
 thiserror = "2"
 tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }

@@ -1,7 +1,8 @@
 //! Build a `vst::api::TimeInfo` snapshot from [`TransportInfo`].
 //!
-//! The snapshot is stored into the host-state `time_info` arc-swap before
-//! each process call and served back to the plugin via the
+//! The snapshot is stored into the host-state `time_info` seqlock
+//! ([`TransportCell`](crate::transport_cell::TransportCell)) before each
+//! process call and served back to the plugin via the
 //! `audioMasterGetTime` callback in [`crate::host::HostState`].
 //!
 //! Flag bits come straight from `vst::api::TimeInfoFlags` (the vst-rs

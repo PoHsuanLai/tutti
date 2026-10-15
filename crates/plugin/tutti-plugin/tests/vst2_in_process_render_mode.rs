@@ -146,6 +146,7 @@ fn drive_blocks(unit: &mut InProcessVst2Client, max: usize, frames: usize) {
         block_len: tutti_core::Samples(frames),
         transport: Transport::default(),
         changes: TransportChanges::NONE,
+        play: tutti_graph::PlayClock::ZERO,
     };
     let _ = tutti_graph::contract::drive_in(unit, &env, &inputs, &[], &[]);
 }

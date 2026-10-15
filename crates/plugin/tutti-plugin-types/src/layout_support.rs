@@ -83,8 +83,6 @@ impl LayoutSupport {
 
 #[cfg(test)]
 mod tests {
-    use smallvec::SmallVec;
-
     use super::*;
     use crate::{ChannelLayout, ChannelTopology};
 
@@ -97,10 +95,10 @@ mod tests {
         output: Option<ChannelTopology>,
     ) -> LoadedPlugin {
         LoadedPlugin {
-            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
-            input_topology: SmallVec::from_vec(vec![input]),
-            output_topology: SmallVec::from_vec(vec![output]),
+            inputs: vec![ChannelLayout::STEREO],
+            outputs: vec![ChannelLayout::STEREO],
+            input_topology: vec![input],
+            output_topology: vec![output],
             ..Default::default()
         }
     }
@@ -148,8 +146,8 @@ mod tests {
     #[test]
     fn a_format_that_reports_no_topology_at_all_is_none() {
         let loaded = LoadedPlugin {
-            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
+            inputs: vec![ChannelLayout::STEREO],
+            outputs: vec![ChannelLayout::STEREO],
             ..Default::default()
         };
         assert_eq!(LayoutSupport::of(&loaded), LayoutSupport::None);

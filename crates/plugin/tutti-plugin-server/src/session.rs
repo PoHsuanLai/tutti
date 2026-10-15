@@ -11,34 +11,26 @@ use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
-    AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEventVec, Normalized,
-    SampleFormat, WindowHandle, MAX_STATE_BYTES, MIDI_STACK_CAPACITY,
+    midi_from_wire, AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec,
+    MidiEventVec, Normalized, SampleFormat, WindowHandle, MAX_STATE_BYTES,
 };
 use tutti_plugin::Result;
 
-/// Serialize a block's plugin MIDI-out for the wire, capped so the SmallVec
-/// stays inline (no heap on the RT-adjacent subprocess audio callback). A cap
-/// hit means a pathological >256-events/block plugin; log once and truncate.
-fn encode_midi_out(events: &MidiEventVec) -> IpcMidiEventVec {
-    if events.len() > MIDI_STACK_CAPACITY {
+/// Convert a block's plugin MIDI-out for the wire. Already capped at
+/// `MIDI_STACK_CAPACITY` (the pipeline's list cannot hold more), so the reply
+/// carries at most that many; `dropped` is what the cap cost this block, from
+/// a pathological plugin, and is logged.
+fn encode_midi_out(events: &MidiEventVec, dropped: usize) -> IpcMidiEventVec {
+    if dropped > 0 {
         tracing::warn!(
-            "plugin emitted {} MIDI events this block; capping at {}",
-            events.len(),
-            MIDI_STACK_CAPACITY
+            "plugin emitted {} MIDI events this block; dropped {dropped} past the cap",
+            events.len() + dropped,
         );
     }
-    events
-        .iter()
-        .take(MIDI_STACK_CAPACITY)
-        .map(IpcMidiEvent::from)
-        .collect()
+    events.iter().map(IpcMidiEvent::from).collect()
 }
 
 /// What [`Session::handle`] asks the transport loop to do.
-// `Reply` wraps `BridgeMessage`, whose `AudioProcessed` variant carries an
-// inline-256 MIDI-out vec (see `protocol::envelope`). Off-RT server-side; the
-// size gap is the deliberate inline-capacity tradeoff, not worth boxing.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum Reaction {
     /// Send this reply back to the host.
@@ -159,7 +151,7 @@ impl Session {
             }
 
             M::ProcessAudio(data) => {
-                let midi: MidiEventVec = data.midi_events.iter().map(|&e| e.into()).collect();
+                let midi = midi_from_wire(&data.midi_events);
                 let extras = ProcessExtras {
                     param_changes: &data.param_changes,
                     note_expression: &data.note_expression,
@@ -428,7 +420,7 @@ impl Session {
             // out of the result: moving it would take the buffer's heap
             // capacity with it and put the reallocation back on the audio
             // thread. See [`AudioOutput`](crate::audio_pipeline::AudioOutput).
-            midi_out: encode_midi_out(self.pipeline.midi_out()),
+            midi_out: encode_midi_out(self.pipeline.midi_out(), self.pipeline.midi_dropped()),
         }
         .into())
     }
@@ -798,8 +790,8 @@ mod tests {
             samples_per_channel: 8192,
             format: preferred_format,
             slots: tutti_plugin::server::RING_SLOTS as u32,
-            inputs: smallvec::smallvec![tutti_plugin::server::ChannelLayout::STEREO],
-            outputs: smallvec::smallvec![tutti_plugin::server::ChannelLayout::STEREO],
+            inputs: vec![tutti_plugin::server::ChannelLayout::STEREO],
+            outputs: vec![tutti_plugin::server::ChannelLayout::STEREO],
         };
         let shm_guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
         s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());

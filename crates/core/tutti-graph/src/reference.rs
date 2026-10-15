@@ -93,6 +93,7 @@ use crate::node::{
 };
 use crate::param::{ParamFrom, ParamIn, ParamInput, ParamRange, ParamSource, PARAM_DECLICK};
 use crate::plan::DelayKey;
+use crate::play::{PlayClock, PlayReading};
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 use crate::time::Offset;
 
@@ -135,6 +136,9 @@ struct RefRamp {
     curve: Option<(f32, f32, crate::event::SegmentShape)>,
     /// Its value on the last frame evaluated.
     value: f32,
+    /// Whether the source has sent an event yet: until it has, the port
+    /// reads its base.
+    started: bool,
 }
 
 struct RefFifo {
@@ -201,9 +205,60 @@ pub struct Reference {
     /// (Its answers are checked against the blocks themselves in
     /// `history.rs`'s tests, not against this.)
     history: TransportHistory,
+    /// The play clock at the next block's first frame (before a start
+    /// there), and whether the last block ended playing: written from the
+    /// rules in `src/play.rs`'s module docs, not through its `PlayState`.
+    play: PlayReading,
+    play_playing: bool,
 }
 
 impl Reference {
+    /// This block's play clock, and the reading the next block starts from:
+    /// a start at the first frame restarts it in a fresh epoch, each start
+    /// inside the block takes one reserved epoch from that frame on, and it
+    /// otherwise counts one per frame.
+    fn play_clock(
+        &mut self,
+        transport: &Transport,
+        changes: &TransportChanges,
+        frames: usize,
+    ) -> PlayClock {
+        if transport.playing && !self.play_playing {
+            self.play = PlayReading {
+                epoch: crate::play::fresh_epochs(1),
+                play: Frame::ZERO,
+            };
+        }
+        let mut playing = transport.playing;
+        let mut starts = Vec::new();
+        for c in changes.as_slice() {
+            if !playing && c.to.playing {
+                starts.push(c.at.index());
+            }
+            playing = c.to.playing;
+        }
+        let clock = PlayClock {
+            start: self.play,
+            next_epoch: if starts.is_empty() {
+                0
+            } else {
+                crate::play::fresh_epochs(starts.len() as u32)
+            },
+        };
+        self.play = match starts.last() {
+            Some(&at) => PlayReading {
+                epoch: (clock.next_epoch + starts.len() as u32 - 1) % PlayReading::EPOCHS,
+                play: Frame((frames - at) as u64),
+            },
+            None => PlayReading {
+                epoch: self.play.epoch,
+                play: self.play.play + Samples(frames),
+            },
+        };
+        self.play_playing = playing;
+        clock
+    }
+
     /// An interpreter with no graph.
     pub fn new(prepare: Prepare) -> Self {
         Self {
@@ -232,6 +287,11 @@ impl Reference {
             reset_time: false,
             history: TransportHistory::new(),
             frame: Frame::ZERO,
+            play: PlayReading {
+                epoch: crate::play::fresh_epochs(1),
+                play: Frame::ZERO,
+            },
+            play_playing: false,
         }
     }
 
@@ -291,6 +351,7 @@ impl Reference {
             self.history.clear();
             let ratio = new / old;
             self.frame = Frame((self.frame.get() as f64 * ratio).round() as u64);
+            self.play.play = Frame((self.play.play.get() as f64 * ratio).round() as u64);
             for c in &mut self.scheduled {
                 if let At::Frame(_) = c.at {
                     // Rounded for landing; the unrounded position keeps the
@@ -791,22 +852,26 @@ impl Reference {
             for &(_, len, t) in &pieces {
                 self.playhead.observe(&t, next.sample_rate().get(), len);
             }
+            let play = self.play_clock(transport, changes, frames);
             self.history.observe(&Env {
                 frame: self.frame,
                 sample_rate: next.sample_rate(),
                 block_len: Samples(frames),
                 transport: *transport,
                 changes: *changes,
+                play,
             });
             self.frame += Samples(frames);
             return;
         }
+        let play = self.play_clock(transport, changes, frames);
         let env = Env {
             frame: self.frame,
             sample_rate: self.prepare.sample_rate(),
             block_len: Samples(frames),
             transport: *transport,
             changes: *changes,
+            play,
         };
         self.history.observe(&env);
         let Some(graph) = self.graph.clone() else {
@@ -1241,7 +1306,18 @@ impl Reference {
                 out.push(None);
                 continue;
             }
-            // Event sources: each ramp's value at every frame.
+            // The base at frame `i`: ramped from the last block's to this
+            // block's, landing on it at the last frame.
+            let from = if st.modulated { st.last_base } else { b1 };
+            let base = |i: usize| {
+                if i == frames - 1 {
+                    b1
+                } else {
+                    from + (b1 - from) * ((i + 1) as f32 / frames as f32)
+                }
+            };
+            // Event sources: each ramp's value at every frame, the base
+            // before its first event.
             for (j, s) in sources.iter().enumerate() {
                 let src = st.srcs.entry(s.from).or_default();
                 if let ParamFrom::Events(_) = s.from {
@@ -1253,7 +1329,12 @@ impl Reference {
                         while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
                             match e.kind {
                                 EventKind::Ramp(r) if r.addr() == want => {
-                                    let cur = src.ramp.value;
+                                    // A first ramp starts from the base.
+                                    let cur = if src.ramp.started {
+                                        src.ramp.value
+                                    } else {
+                                        base(i)
+                                    };
                                     src.ramp = RefRamp {
                                         from: cur,
                                         target: r.raw_target(),
@@ -1261,6 +1342,7 @@ impl Reference {
                                         len: r.duration().get() as u64,
                                         curve: None,
                                         value: cur,
+                                        started: true,
                                     };
                                 }
                                 EventKind::Segment(s) if s.addr() == want => {
@@ -1272,13 +1354,16 @@ impl Reference {
                                         len: 0,
                                         curve: Some((position, length, s.shape())),
                                         value: src.ramp.value,
+                                        started: true,
                                     };
                                 }
                                 _ => {}
                             }
                         }
                         let r = &src.ramp;
-                        let value = if now < r.at {
+                        let value = if !r.started {
+                            base(i)
+                        } else if now < r.at {
                             r.value
                         } else if let Some((position, length, shape)) = r.curve {
                             // Frames since its event, `0` on the event's own.
@@ -1301,28 +1386,30 @@ impl Reference {
                 }
                 src.last_raw = raw[j][frames - 1];
             }
-            let from = if st.modulated { st.last_base } else { b1 };
             let (lo, hi) = if range.min <= range.max {
                 (range.min, range.max)
             } else {
                 (range.max, range.min)
             };
+            // The event source, if any (one at most: `validate`).
+            let held_by = sources
+                .iter()
+                .position(|s| matches!(s.from, ParamFrom::Events(_)));
             let mut vals = Vec::with_capacity(frames);
             for i in 0..frames {
-                let base = if i == frames - 1 {
-                    b1
-                } else {
-                    from + (b1 - from) * ((i + 1) as f32 / frames as f32)
-                };
                 let mut v = if sources.is_empty() {
-                    base
+                    base(i)
                 } else {
+                    // The event source's value replaces the base; audio
+                    // sources are offsets on whichever holds.
+                    let held = held_by.map_or_else(|| base(i), |j| raw[j][i]);
                     let sum: f32 = sources
                         .iter()
                         .zip(&raw)
+                        .filter(|(s, _)| matches!(s.from, ParamFrom::Audio(_)))
                         .map(|(s, r)| s.shaping.apply(r[i]))
                         .sum();
-                    (base + sum).clamp(lo, hi)
+                    (held + sum).clamp(lo, hi)
                 };
                 if st.fading > 0 && i < st.fading {
                     let j = decl - st.fading + i;

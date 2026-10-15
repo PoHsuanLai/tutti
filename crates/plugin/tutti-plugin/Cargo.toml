@@ -69,14 +69,10 @@ bincode = "1"
 memmap2 = "0.9"
 
 # Lock-free channels and queues
-arc-swap = "1"
 crossbeam-channel = "0.5"
 crossbeam = "0.8"
 parking_lot = "0.12"
 ringbuf = "0.4"
-
-# Stack-first vectors for MIDI events (zero-alloc for typical case)
-smallvec = { version = "1.13", features = ["serde"] }
 
 # Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows)
 interprocess = { version = "2" }

@@ -64,11 +64,13 @@ pub struct PluginInfo {
 /// [`PluginInfo::category`].
 pub use tutti_plugin_types::Vst2Category;
 
-/// The MIDI events a process call returns, stored inline for up to 256 events.
+/// The MIDI events a process call returns.
 ///
-/// The inline capacity matches `tutti-plugin`'s `MidiEventVec`, so the value
-/// passes between the two without re-allocating.
-pub type MidiEventVec = smallvec::SmallVec<[MidiEvent; 256]>;
+/// A `Vec`, reserved once when the instance is built for everything the
+/// plugin's MIDI-out queue can hold (`MidiIo::new`), so draining a full queue
+/// into it on the audio thread never grows it. A process call returns it
+/// borrowed; a caller copies out what it keeps.
+pub type MidiEventVec = Vec<MidiEvent>;
 
 /// Per-block inputs to [`Vst2Instance::process_f32`] and
 /// [`Vst2Instance::process_f64`] beyond the audio buffers.

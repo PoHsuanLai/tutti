@@ -112,13 +112,10 @@ impl Vst2Instance {
         &self.midi.out
     }
 
-    /// Drains the plugin's MIDI-out queue into the pooled `midi_out`
-    /// SmallVec. Steady-state allocation-free: the `SmallVec` is pre-reserved
-    /// past the queue's own capacity, so a full drain cannot grow it.
+    /// Drains the plugin's MIDI-out queue into the pooled `midi_out` list
+    /// ([`MidiIo::drain`](crate::midi::MidiIo::drain)).
     fn drain_midi_out(&mut self) {
-        while let Some(ev) = self.midi.out_rx.pop() {
-            self.midi.out.push(ev);
-        }
+        self.midi.drain();
     }
 
     /// Refreshes the snapshot the plugin reads back via `audioMasterGetTime`.

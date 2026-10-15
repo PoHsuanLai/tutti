@@ -29,6 +29,7 @@ use crate::fork::ForkSource;
 use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::param::ParamPorts;
+use crate::play::{PlayClock, PlayReading};
 use crate::time::Offset;
 
 /// Most audio channels, or event ports, on one side of one node.
@@ -843,6 +844,13 @@ pub struct Env {
     /// the transport at a frame with [`transport_at`](Self::transport_at), or
     /// walk [`segments`](Self::segments).
     pub changes: TransportChanges,
+    /// The graph's **play clock** at the block's first frame (a count of
+    /// frames since the last play start, and its epoch), and the epochs the
+    /// block's own play starts take. Read it at a frame with
+    /// [`play_at`](Self::play_at), or at a node's input time with
+    /// [`Cx::play_at`]; the rules are in the `play` module docs
+    /// (`src/play.rs`). [`PlayClock::ZERO`] for an `Env` built by hand.
+    pub play: PlayClock,
 }
 
 /// What a node is told about *this* call besides its buffers.
@@ -875,6 +883,16 @@ impl Cx<'_> {
     pub fn transport_at(&self, offset: Offset) -> Transport {
         self.env
             .transport_before(offset, self.arrival, self.history)
+    }
+
+    /// The play clock at frame `offset` of this node's **input**: the clock
+    /// [`arrival`](Self::arrival) frames before `offset`
+    /// ([`Env::play_before`]), as [`transport_at`](Self::transport_at)
+    /// answers for the transport. With no arrival it is [`Env::play_at`].
+    /// Every lane and signal source reads the clock this way, so one free
+    /// LFO routed to several targets stays phase-coherent across them.
+    pub fn play_at(&self, offset: Offset) -> PlayReading {
+        self.env.play_before(offset, self.arrival, self.history)
     }
 }
 

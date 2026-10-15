@@ -115,7 +115,7 @@ pub fn check_protocol_version(got: u32) -> crate::error::Result<()> {
 }
 
 pub use envelope::{BridgeMessage, HostMessage};
-pub use midi::{IpcMidiEvent, IpcMidiEventVec, MidiEventVec, MIDI_STACK_CAPACITY};
+pub use midi::{midi_from_wire, IpcMidiEvent, IpcMidiEventVec, MidiEventVec, MIDI_STACK_CAPACITY};
 pub use process::ProcessAudioData;
 pub use sample::SampleFormat;
 pub use shm::SlabLayout;
@@ -624,31 +624,31 @@ mod tests {
             num_samples: 256,
             ..Default::default()
         };
-        data.chords.add_change(ChordValue {
+        assert!(data.chords.add_change(ChordValue {
             sample_offset: 0,
             root: 60,
             bass_note: 48,
             mask: 0b1001,
             text: "Cmaj7".to_string(),
-        });
-        data.scales.add_change(ScaleValue {
+        }));
+        assert!(data.scales.add_change(ScaleValue {
             sample_offset: 0,
             root: 62,
             mask: 0x5ab5,
             text: "D Dorian".to_string(),
-        });
-        data.expr_texts.add_change(NoteExpressionTextValue {
+        }));
+        assert!(data.expr_texts.add_change(NoteExpressionTextValue {
             sample_offset: 4,
             note_id: 7,
             type_id: 1,
             text: "staccato".to_string(),
-        });
-        data.expr_ints.add_change(NoteExpressionIntValue {
+        }));
+        assert!(data.expr_ints.add_change(NoteExpressionIntValue {
             sample_offset: 8,
             note_id: 7,
             type_id: 2,
             value: -42,
-        });
+        }));
 
         let bytes = bincode::serialize(&data).unwrap();
         let back: ProcessAudioData = bincode::deserialize(&bytes).unwrap();

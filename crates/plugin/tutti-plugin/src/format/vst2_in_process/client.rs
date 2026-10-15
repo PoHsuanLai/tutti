@@ -22,8 +22,8 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
 use crate::host::node::transport_source::{self, SteadyTime};
-use crate::host::node::PluginMeter;
-use crate::protocol::{Features, MidiEventVec, TransportInfo};
+use crate::host::node::{DeliveryCounters, ParamDelivery, PluginMeter, SegmentPoints};
+use crate::protocol::{Features, MidiEventVec, ParamAddress, TransportInfo};
 
 /// Per-channel f32 staging buffers.
 ///
@@ -76,9 +76,9 @@ pub struct InProcessVst2Client {
     /// read against. Stored rather than passed in per block so the node's
     /// declared capability and its delivered behaviour read from one value.
     pub(super) features: Features,
-    /// Per-clone audio scratch handed to `vst::AudioBuffer::from_raw`.
+    /// Audio scratch handed to `vst::AudioBuffer::from_raw`.
     pub(super) scratch: RenderScratch,
-    /// Per-clone f32 staging arrays (sized in `prepare`, reused).
+    /// f32 staging arrays (sized in `prepare`, reused).
     pub(super) process_scratch: ProcessScratch,
     /// The block length `scratch` and `process_scratch` are sized for: the
     /// largest block the node was prepared for (zero before it is).
@@ -96,16 +96,30 @@ pub struct InProcessVst2Client {
     /// the same deferral the out-of-process client gets from its command
     /// queue.
     ///
-    /// Shared across clones, so a rate reaching any clone is visible to
-    /// whichever one the backend drains.
+    /// Shared with the control backend, which drains it.
     pending_sample_rate: Arc<AtomicU64>,
-    /// Bumped on every audio-thread `try_lock` failure. Shared across
-    /// clones so the handle can read the global count.
+    /// Bumped on every audio-thread `try_lock` failure. Shared with the
+    /// loader's handle side.
     pub(super) contention_count: Arc<AtomicU64>,
     /// The file the plugin was loaded from: what a fork loads again.
     pub(super) origin: Arc<Path>,
     /// Who tells the plugin the rate the node is prepared at.
     pub(super) rate_delivery: RateDelivery,
+    /// The parameter events on the event input, as changes only: a slot per
+    /// parameter the plugin declared at load and no spares (`closed`: VST2
+    /// addresses only its declared indices), the value last
+    /// delivered to the instance in each (`host::node`'s `param_delivery`,
+    /// the out-of-process node's own). The block is its chunk.
+    ///
+    /// The node is not `Clone`: a clone would drive the same `AEffect`, so
+    /// two of them in one graph write it in an unordered order (the
+    /// parallel executor), each with its own record of what it sent, and a
+    /// `ForkByClone` of it would render an export through the live
+    /// instance. A fork is a second instance (`fork.rs`).
+    pub(super) params: ParamDelivery,
+    /// The curve segments in flight on the event input, sent as points until
+    /// each lands. Slots sized at construction, one per parameter slot.
+    pub(super) segments: SegmentPoints,
 }
 
 /// Who tells the plugin the rate the node is prepared at.
@@ -136,9 +150,9 @@ pub(super) enum RateDelivery {
 /// callback reads, then calls the plugin.
 #[derive(Clone)]
 pub(super) struct TransportFeed {
-    /// The project meter, read once per block. The cell is shared across the
-    /// live node's clones, so a [`set_meter`](InProcessVst2Client::set_meter)
-    /// on any clone reaches the one the audio thread runs; a fork has a cell
+    /// The project meter, read once per block. The cell is shared with the
+    /// node's controls ([`InProcessVst2Client::meter`]), so a meter installed
+    /// through them reaches the node the audio thread runs; a fork has a cell
     /// of its own ([`forked`](Self::forked)).
     meter: PluginMeter,
     /// The meter read when none is installed (4/4 from bar 0), held so a
@@ -167,7 +181,7 @@ impl TransportFeed {
     /// the out-of-process node's fork), and a counter from zero.
     pub(super) fn forked(&self) -> Self {
         Self {
-            meter: PluginMeter::holding(self.meter.load_full()),
+            meter: PluginMeter::holding(self.meter.installed()),
             default_meter: MeterMap::default(),
             steady: SteadyTime::default(),
             last: TransportInfo::default(),
@@ -177,8 +191,9 @@ impl TransportFeed {
     /// The snapshot for a block of `frames`, then count them. A plugin that
     /// did not declare [`Features::TRANSPORT`] is handed the default
     /// (stopped) snapshot; an empty block, which has no frame to read the
-    /// transport at, repeats the last one. Audio thread: two lock-free loads
-    /// (the meter's cell, then its value), no allocation.
+    /// transport at, repeats the last one. Audio thread: two wait-free
+    /// borrows (the meter slot, then the meter cell it holds), no allocation
+    /// and no free.
     pub(super) fn block(
         &mut self,
         cx: &Cx<'_>,
@@ -192,7 +207,7 @@ impl TransportFeed {
         let Some(at) = Offset::new(0, Samples(frames)) else {
             return self.last;
         };
-        let slot = self.meter.load();
+        let slot = self.meter.read();
         let meter = slot.as_ref().map(|m| m.read());
         self.last = transport_source::from_cx(
             cx,
@@ -259,7 +274,16 @@ impl InProcessVst2Client {
         pending_sample_rate: Arc<AtomicU64>,
         contention_count: Arc<AtomicU64>,
         origin: Arc<Path>,
+        param_count: i32,
     ) -> Self {
+        // A slot per declared parameter, by index: every parameter can move
+        // in one block. Its point room is sized in `prepare`.
+        let params = ParamDelivery::closed(
+            (0..param_count.max(0)).map(ParamAddress::Index),
+            Arc::new(DeliveryCounters::default()),
+        );
+        let mut segments = SegmentPoints::default();
+        segments.prepare(params.room());
         // Empty until the node is prepared: `prepare` sizes both to the
         // graph's largest block.
         let scratch = RenderScratch::new(metadata.num_inputs, metadata.num_outputs, 0);
@@ -282,14 +306,15 @@ impl InProcessVst2Client {
             contention_count,
             origin,
             rate_delivery: RateDelivery::Parked,
+            params,
+            segments,
         }
     }
 
     /// Gives the plugin the project meter, for the time signature and bar
     /// its `audioMasterGetTime` snapshot carries. Pass the cell the host
     /// publishes meter edits into, and an edit reaches the running plugin
-    /// with nothing re-installed. Replaces any meter installed before, on
-    /// every clone of this node.
+    /// with nothing re-installed. Replaces any meter installed before.
     ///
     /// The transport itself needs no install: each block reads it from the
     /// graph (the transport the block's input was rendered at). The snapshot
@@ -335,46 +360,9 @@ impl InProcessVst2Client {
     /// Returns how many times the audio thread found the instance locked and
     /// output silence instead, since construction.
     ///
-    /// Shared across clones; intended for diagnostics.
+    /// Intended for diagnostics.
     pub fn contention_count(&self) -> u64 {
         self.contention_count.load(Ordering::Relaxed)
-    }
-}
-
-impl Clone for InProcessVst2Client {
-    fn clone(&self) -> Self {
-        // Arc-clone the live plugin; allocate fresh scratch for this clone
-        // (matches Batcher::clone in the subprocess client), at the frames
-        // this one is sized for. Done at clone time, not on the audio thread.
-        let scratch = RenderScratch::new(
-            self.metadata.num_inputs,
-            self.metadata.num_outputs,
-            self.frames,
-        );
-        let process_scratch = ProcessScratch::new(
-            self.metadata.num_inputs.count() as usize,
-            self.metadata.num_outputs.count() as usize,
-            self.frames,
-        );
-        Self {
-            inner: Arc::clone(&self.inner),
-            metadata: self.metadata.clone(),
-            midi: MidiEventVec::new(),
-            // Shares the meter cell, so a `set_meter` on any clone reaches
-            // the one the graph runs.
-            transport: self.transport.clone(),
-            features: self.features,
-            scratch,
-            process_scratch,
-            frames: self.frames,
-            sample_rate: self.sample_rate,
-            // Shared, not copied: a rate parked on one clone must be drainable
-            // through another.
-            pending_sample_rate: Arc::clone(&self.pending_sample_rate),
-            contention_count: Arc::clone(&self.contention_count),
-            origin: Arc::clone(&self.origin),
-            rate_delivery: self.rate_delivery,
-        }
     }
 }
 
@@ -450,6 +438,7 @@ pub(super) fn block_context<'a>(
 pub(super) fn drive_f32(
     inner: &Arc<Mutex<Vst2Instance>>,
     contention: &AtomicU64,
+    params: &ParamDelivery,
     midi: &mut MidiEventVec,
     midi_out: &mut dyn FnMut(&[MidiEvent]),
     transport: &TransportInfo,
@@ -467,6 +456,7 @@ pub(super) fn drive_f32(
     sort_midi(&mut midi_events);
     match inner.try_lock() {
         Some(mut instance) => {
+            apply_params(&instance, params);
             // Build slice-of-slices on the stack via scratch arrays we
             // own — Vec<&[f32]>/Vec<&mut[f32]> would allocate, so drop
             // into stack arrays bounded by MAX_CHANNELS. 16 covers any
@@ -506,6 +496,35 @@ pub(super) fn drive_f32(
             false
         }
     }
+}
+
+/// The block's parameter changes, before the plugin processes it: each
+/// queue's **last** point, set with `setParameter`, as the out-of-process
+/// VST2 loader does with a chunk's (`tutti-plugin-server`'s `loaders/vst2.rs`).
+/// VST 2.4 has no sample-accurate parameter events, so a point inside the
+/// block lands on its first frame, and only the latest one counts.
+///
+/// An opaque address addresses nothing on a VST2 plugin and is skipped. An
+/// index the plugin did not declare has no slot (the delivery is closed), so
+/// none reaches here; a write `Vst2Instance` refuses anyway is counted
+/// dropped. (No test reaches that count: both bounds are the count the
+/// plugin declared at load, so a refusal cannot be provoked through the
+/// node.) Under the instance lock, on the audio thread:
+/// `setParameter` is the call a VST2 host automates through, and
+/// `Vst2Instance::set_parameter` does not allocate.
+fn apply_params(instance: &Vst2Instance, params: &ParamDelivery) {
+    let mut refused = 0;
+    for queue in &params.chunk().queues {
+        let (Some(point), Some(index)) = (queue.points.last(), queue.param_id.index()) else {
+            continue;
+        };
+        // Already on the unit interval: `Normalized` cannot be built
+        // otherwise. `f32` is the VST2 ABI's parameter type.
+        if !instance.set_parameter(index, point.value.get() as f32) {
+            refused += 1;
+        }
+    }
+    params.refused(refused);
 }
 
 /// Recursively peel one `&mut [f32]` of length `size` off `channels`
@@ -587,6 +606,7 @@ mod transport_tests {
             block_len: Samples(64),
             transport: Transport::new(true, Bpm(132.0), Beat(4.0), None),
             changes: TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
         }
     }
 
@@ -654,9 +674,9 @@ mod transport_tests {
         assert_eq!(got.position.quarters, default.position.quarters);
     }
 
-    /// A meter installed through one clone reaches the clone the graph runs
-    /// (a host installs through whichever clone it holds), and the snapshot
-    /// carries its signature.
+    /// A meter installed through one handle on the feed's cell reaches the
+    /// feed the node runs (a host installs through the node's controls), and
+    /// the snapshot carries its signature.
     ///
     /// Mutation (run): read `self.default_meter` always in
     /// `TransportFeed::block` (drop the meter source) → 4/4 → fails. A

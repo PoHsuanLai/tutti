@@ -311,6 +311,31 @@ impl<T: ClapSample> ClapActive<T> {
         self.scratch.input_events.param_points_dropped()
     }
 
+    /// Parameter points the plugin emitted past the room this instance was
+    /// activated for (one queue per parameter, each with room for a block of
+    /// [`block_size`](super::ClapLoaded::block_size)'s points): each replaced
+    /// its parameter's previous point in the block, or was lost when no queue
+    /// was left for its parameter. Counted over this instance's life; zero
+    /// while the plugin stays within it.
+    pub fn output_param_points_dropped(&self) -> u64 {
+        self.scratch.out_param_points_dropped
+    }
+
+    /// Output events the plugin pushed past their room, each refused: the
+    /// plugin's `try_push` returned `false` rather than the host growing its
+    /// list on the audio thread. The rooms are separate: 256 events other
+    /// than parameter values (notes, MIDI, expressions), so a parameter flood
+    /// never refuses a note-off, and every parameter's points for a block of
+    /// [`block_size`](super::ClapLoaded::block_size). Past the parameter room
+    /// a value for one of the plugin's own parameters is not refused but kept
+    /// as that parameter's latest (the points it displaces are counted in
+    /// [`output_param_points_dropped`](Self::output_param_points_dropped));
+    /// one for an unknown id is refused. Counted over this instance's life;
+    /// zero while the plugin stays within its rooms.
+    pub fn output_events_refused(&self) -> u64 {
+        self.scratch.output_events.events_refused()
+    }
+
     /// The raw `clap_process_status` the plugin returned on the most recent
     /// block, or `CLAP_PROCESS_CONTINUE` if none has run yet.
     ///
@@ -414,8 +439,8 @@ impl<T: ClapSample> ClapActive<T> {
         let ports_ptr: *const PortLayout = &self.loaded.ports;
         let scratch = &mut self.scratch.process;
 
-        // Pooled vectors rather than per-block `SmallVec<[*mut T; 16]>` locals,
-        // which spilled to the heap every block at 17+ channels a side. `clear`
+        // Pooled vectors rather than per-block small-vector locals (16 pointers
+        // inline, then the heap), which spilled to the heap every block at 17+ channels a side. `clear`
         // keeps the capacity `activate()` reserved.
         scratch.caller_input_ptrs.clear();
         scratch
@@ -557,18 +582,20 @@ impl<T: ClapSample> ClapActive<T> {
         }
 
         // Drain the plugin's output events into the pooled return buffers.
-        // Each `fill_*` clears its destination first; SmallVec/ParameterChanges
-        // keep their heap capacity reserved in `activate()`. Destructure the
+        // Each `fill_*` clears its destination first. The `RtVec`s have fixed
+        // inline capacity; `out_param_changes` keeps the queues reserved in
+        // `activate()` and is filled within them, never grown. Destructure the
         // scratch so `output_events` and each return pool are disjoint borrows.
         let AudioScratch {
             output_events,
             out_midi,
             out_param_changes,
+            out_param_points_dropped,
             out_note_expressions,
             ..
         } = &mut self.scratch;
         output_events.fill_midi_events(out_midi);
-        output_events.fill_param_changes(out_param_changes);
+        *out_param_points_dropped += output_events.fill_param_changes(out_param_changes);
         output_events.fill_note_expressions(out_note_expressions);
 
         Ok(ProcessOutputRef {

@@ -1003,3 +1003,82 @@ fn voice_node_command_drain_does_not_allocate() {
         }
     });
 }
+
+/// **A `ReplaceWave` drain frees no wave on the audio thread**: the wave it
+/// lets go of leaves through the retirement channel and is freed by
+/// `collect_retired`, on the control side.
+///
+/// Both waves this sheds are the last reference to their buffer, so dropping
+/// either in the drain would free a decoded `Wave` inside the guard: the old
+/// wave a memory slot swaps out (its only owner is the source), and the new
+/// wave of a `ReplaceWave` aimed at a slot that does not exist (its only owner
+/// is the command). A `Weak` to each tells where it was freed: alive after
+/// the drain, gone after `collect_retired`.
+///
+/// Mutation (run): the drain calling `sampler.set_wave(wave)` (the direct
+/// drop) in place of `replace_wave` and retiring nothing → aborts in the
+/// first guard. Mutation (run): the missing-slot arm dropping `wave` instead
+/// of retiring it → aborts in the second guard.
+#[test]
+fn replacing_a_wave_retires_the_old_one_rather_than_freeing_it_in_the_drain() {
+    let (pool, handle) = VoicePool::new().with_handle();
+    let mut rig = Rig::new(pool, 64);
+
+    let old = sine_wave(0.5, 48_000.0);
+    let old_weak = Arc::downgrade(&old);
+    // `old` moves into the voice: the source holds its only reference.
+    let voice = {
+        let v = placed_voice(&old, 1.0);
+        drop(old);
+        v
+    };
+    handle
+        .send(VoiceCommand::AddVoice {
+            id: SlotId(1),
+            voice: Box::new(voice),
+            stretch: None,
+        })
+        .expect("the command queue has room in a test");
+    rig.block();
+    assert_eq!(rig.node().voice_count(), 1, "the add must have landed");
+    assert_eq!(
+        old_weak.strong_count(),
+        1,
+        "the source must hold the old wave's only reference"
+    );
+
+    // Swap it out inside the guard.
+    let new = sine_wave(0.5, 48_000.0);
+    handle
+        .send(VoiceCommand::ReplaceWave {
+            id: SlotId(1),
+            wave: new,
+        })
+        .expect("the command queue has room in a test");
+    assert_no_alloc::assert_no_alloc(|| rig.block());
+    assert_eq!(
+        old_weak.strong_count(),
+        1,
+        "the old wave must still be alive after the drain: retired, not freed"
+    );
+    assert_eq!(handle.collect_retired(), 1, "the old wave must be retired");
+    assert_eq!(
+        old_weak.strong_count(),
+        0,
+        "collect_retired must free the old wave, on the control side"
+    );
+
+    // A `ReplaceWave` for a slot that does not exist sheds its own wave.
+    let orphan = sine_wave(0.5, 48_000.0);
+    let orphan_weak = Arc::downgrade(&orphan);
+    handle
+        .send(VoiceCommand::ReplaceWave {
+            id: SlotId(99),
+            wave: orphan,
+        })
+        .expect("the command queue has room in a test");
+    assert_no_alloc::assert_no_alloc(|| rig.block());
+    assert_eq!(orphan_weak.strong_count(), 1, "retired, not freed");
+    assert_eq!(handle.collect_retired(), 1);
+    assert_eq!(orphan_weak.strong_count(), 0);
+}

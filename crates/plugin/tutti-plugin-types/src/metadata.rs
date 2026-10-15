@@ -4,8 +4,6 @@
 //! instantiated (bus widths, latency, tail, capability flags). It rides the
 //! plugin-load IPC reply, so it is serializable under the `serde` feature.
 
-use smallvec::SmallVec;
-
 use tutti_types::Samples;
 
 use crate::{ChannelLayout, ChannelTopology, FeatureReport, Features};
@@ -19,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// carry. A populated list
 /// is `[main, aux/sidechain, …]`, so summing the counts gives the total channel
 /// width the host must supply flat (see `tutti-vst3-host`'s bus buffers).
-pub type BusChannels = SmallVec<[ChannelLayout; 4]>;
+pub type BusChannels = Vec<ChannelLayout>;
 
 /// Per-bus channel *topology* for one process direction, in bus-index order.
 ///
@@ -32,7 +30,7 @@ pub type BusChannels = SmallVec<[ChannelLayout; 4]>;
 ///
 /// An empty *list* carries no claim about any bus, which is what a host that
 /// never asked reports.
-pub type BusTopologies = SmallVec<[Option<ChannelTopology>; 4]>;
+pub type BusTopologies = Vec<Option<ChannelTopology>>;
 
 /// How long a plugin keeps producing audio after its input goes silent.
 ///
@@ -209,8 +207,8 @@ mod tests {
     fn multi_bus_round_trips() {
         let loaded = LoadedPlugin {
             // stereo main + mono sidechain
-            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO, ChannelLayout::MONO]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
+            inputs: vec![ChannelLayout::STEREO, ChannelLayout::MONO],
+            outputs: vec![ChannelLayout::STEREO],
             latency_samples: Samples(128),
             tail: PluginTail::Finite(Samples(48_000)),
             features: Features::F64_AUDIO | Features::MIDI_IN,
@@ -233,6 +231,95 @@ mod tests {
         assert!(back.latency()); // 128 samples
     }
 
+    /// **The bus lists' wire format is unchanged**: each encodes as a
+    /// sequence (a length, then the buses), which is what the inline lists
+    /// they replaced encoded as, so a server and host built on either side
+    /// of the change still read each other's load reply.
+    ///
+    /// No change to the list type that keeps it a list changes these bytes
+    /// (every serde sequence encodes so); the layout is written out instead.
+    /// Mutation (run): the expected bytes without the length prefix → fails.
+    #[test]
+    fn the_bus_lists_encode_as_sequences() {
+        fn seq<T: Serialize>(items: &[T]) -> Vec<u8> {
+            let mut out = (items.len() as u64).to_le_bytes().to_vec();
+            for item in items {
+                out.extend(bincode::serialize(item).unwrap());
+            }
+            out
+        }
+        let stereo = ChannelTopology::smpte(ChannelLayout::STEREO).expect("stereo has an order");
+        let inputs: BusChannels = vec![ChannelLayout::STEREO, ChannelLayout::MONO];
+        let topology: BusTopologies = vec![Some(stereo), None];
+        assert_eq!(bincode::serialize(&inputs).unwrap(), seq(&inputs));
+        assert_eq!(bincode::serialize(&topology).unwrap(), seq(&topology));
+    }
+
+    /// The [`LoadedPlugin`] behind [`GOLDEN_LOADED_PLUGIN`]: two input buses
+    /// (a six-speaker 5.1 bed and a mono bus with no topology) and a stereo
+    /// output, so the bus lists and `ChannelTopology`'s positions are both
+    /// on the wire.
+    fn golden_loaded_plugin() -> LoadedPlugin {
+        use tutti_types::Speaker;
+        let five_one = ChannelTopology::new([
+            Speaker::FrontLeft,
+            Speaker::FrontRight,
+            Speaker::FrontCenter,
+            Speaker::LowFrequency,
+            Speaker::BackLeft,
+            Speaker::BackRight,
+        ]);
+        LoadedPlugin {
+            inputs: [ChannelLayout::from_count(6), ChannelLayout::MONO]
+                .into_iter()
+                .collect(),
+            outputs: [ChannelLayout::STEREO].into_iter().collect(),
+            latency_samples: Samples::new(64),
+            tail: PluginTail::Finite(Samples::new(4800)),
+            features: Features::MIDI_IN | Features::TRANSPORT,
+            probed: Features::MIDI_IN | Features::TRANSPORT | Features::EDITOR,
+            input_topology: [Some(five_one), None].into_iter().collect(),
+            output_topology: [ChannelTopology::smpte(ChannelLayout::STEREO)]
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// `golden_loaded_plugin()` encoded by origin/main at `f07984d6`, the code
+    /// before `smallvec` was removed (bus lists and topology positions were
+    /// `SmallVec`s then). Recorded by running the same fixture there.
+    const GOLDEN_LOADED_PLUGIN: [u8; 113] = [
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00, 0xc0, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00, 0x2a,
+        0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x06, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    ];
+
+    /// **A load reply encodes to the bytes the code before this change
+    /// produced, and decodes from them.** Unlike the sequence-shape test
+    /// above, these bytes were recorded from the old code rather than
+    /// restated from the layout, so a host and a server built on either side
+    /// of the change are shown to exchange the same reply, topology positions
+    /// included.
+    ///
+    /// Mutation (run): `input_topology` and `output_topology` swapped in
+    /// `LoadedPlugin`'s declaration → the encoding differs → fails.
+    #[test]
+    fn a_load_reply_encodes_as_before_smallvec_was_removed() {
+        let value = golden_loaded_plugin();
+        assert_eq!(bincode::serialize(&value).unwrap(), GOLDEN_LOADED_PLUGIN);
+        let back: LoadedPlugin = bincode::deserialize(&GOLDEN_LOADED_PLUGIN).unwrap();
+        assert_eq!(back, value);
+        assert_eq!(
+            back.input_topology[0].as_ref().map(|t| t.positions().len()),
+            Some(6)
+        );
+    }
+
     /// Per-bus topology survives the real bincode wire, `None` entries included.
     ///
     /// The `None` is the load-bearing part: it means "this bus's placement is
@@ -244,11 +331,11 @@ mod tests {
     fn per_bus_topology_round_trips_including_the_unknown_entries() {
         let stereo = ChannelTopology::smpte(ChannelLayout::STEREO).expect("stereo has an order");
         let loaded = LoadedPlugin {
-            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO, ChannelLayout::MONO]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
+            inputs: vec![ChannelLayout::STEREO, ChannelLayout::MONO],
+            outputs: vec![ChannelLayout::STEREO],
             // The main input is named; the sidechain's placement is not known.
-            input_topology: SmallVec::from_vec(vec![Some(stereo.clone()), None]),
-            output_topology: SmallVec::from_vec(vec![Some(stereo.clone())]),
+            input_topology: vec![Some(stereo.clone()), None],
+            output_topology: vec![Some(stereo.clone())],
             ..Default::default()
         };
 
@@ -284,16 +371,16 @@ mod tests {
         let mono = ChannelTopology::smpte(ChannelLayout::MONO).expect("mono has an order");
 
         let full = LoadedPlugin {
-            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
-            input_topology: SmallVec::from_vec(vec![Some(stereo.clone())]),
-            output_topology: SmallVec::from_vec(vec![Some(stereo.clone())]),
+            inputs: vec![ChannelLayout::STEREO],
+            outputs: vec![ChannelLayout::STEREO],
+            input_topology: vec![Some(stereo.clone())],
+            output_topology: vec![Some(stereo.clone())],
             ..Default::default()
         };
         assert!(full.topology_is_complete());
 
         let missing = LoadedPlugin {
-            input_topology: SmallVec::from_vec(vec![None]),
+            input_topology: vec![None],
             ..full.clone()
         };
         assert!(
@@ -305,7 +392,7 @@ mod tests {
         // acted on: the count sizes the buffer, so the two must describe the
         // same channels.
         let disagreeing = LoadedPlugin {
-            input_topology: SmallVec::from_vec(vec![Some(mono)]),
+            input_topology: vec![Some(mono)],
             ..full.clone()
         };
         assert!(
@@ -315,8 +402,8 @@ mod tests {
 
         // A host that never asked reports nothing, which is also not complete.
         let never_asked = LoadedPlugin {
-            input_topology: SmallVec::new(),
-            output_topology: SmallVec::new(),
+            input_topology: Vec::new(),
+            output_topology: Vec::new(),
             ..full
         };
         assert!(!never_asked.topology_is_complete());

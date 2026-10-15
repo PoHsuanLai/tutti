@@ -108,7 +108,7 @@ Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
 | The compiler (`tutti_mod::compile`) | `tutti-mod`, ungated | Pure: no Bevy, no runtime |
 | `Lfo`, `SampleHold`, `RandomState`, `Modulator` | **`tutti-nodes`**: copied there in PR 3; `tutti-mod`'s copies go in PR 5 | Stateful per-sample sources are a runtime. `routing` (`driver.rs`, `matrix.rs`, `curve_source.rs`, `routing.rs`) and `bevy-tutti` use `tutti-mod`'s until PR 5, and `tutti-mod` cannot name `tutti-nodes`, so the new nodes use the copies while the old system keeps its own. |
 | `ControlLaneNode`, `LaneControls`, `EnvelopeFollowerNode`, `NoteEnvelopeNode`, `CONTROL_STEP` | `tutti-nodes` (re-exported at the root) | Graph nodes; `tutti-nodes` owns the lane |
-| The play clock (`Env::play`, `play_epoch`, `Cx::play_at`) | `tutti-graph` | Transport plumbing every lane reads the same (§4.3) |
+| The play clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`) | `tutti-graph` | Transport plumbing every lane reads the same (§4.3) |
 | A port's event source replaces its base | `tutti-graph` | The engine's one rule |
 | `RangeCell` (packed `AtomicU64`) | `tutti-types`, beside `AtomicF32` | A plugin lane's own range; `ParamRanges` reuses it |
 | Plugin delivery | `tutti-plugin{,-types,-server}` | Where `ParameterChanges` is built, carried, applied |
@@ -240,6 +240,17 @@ pub struct Corners { pub beat: Option<Beat>, pub play: Option<Frame> }
 | Range | **The port's range cell** (`Editor::set_param_range`, already a store with no commit, `editor.rs:904`). The port clamps per frame. The lane holds a read handle to the same cell (`ParamRanges` moves onto `RangeCell`; PR 2 adds a public accessor) and loads it once per block for the span only. | A lane-owned `RangeCell`, loaded once per block for the span and for the clamp, which splits pieces at crossings (§2) |
 | Program | `RtPublish<ControlProgram>` (`LaneControls::publish`) | same |
 
+**As landed (PR 2a).** `Editor::param_range_cell(at)` hands out a
+read-only view of the port's cell (`ParamRangeReader`, `load` only). The
+spec is the range's one writer: `set_param_range` stores into the spec and
+the cell together, and every commit rewrites the cells from the spec, so a
+store into the cell alone would be undone by the next commit. The cells are
+kept per key while the units placed there declare the same params; a
+commit that places a unit with another list gives the key fresh cells. So
+**PR 4's reconcile fetches the view again after it rebinds a target**
+(`Changed<AudioNode>`, or a re-declaration of the key's params), or the
+lane reads a range nothing writes.
+
 There is no mirror to reconcile ("derive at the point of use"). A range
 edit is a store in both columns; a shrink pins the value and a widen
 releases it at the next block, and the span every route scales by follows
@@ -272,6 +283,20 @@ a `Frame` the executor keeps:
 - every executor, a fork's included, starts it at 0; epochs come from one
   process-wide counter, so no fork's epoch equals a live one;
 - nothing else resets it.
+
+**As landed (PR 2a).** `Env::play` is a `PlayClock`, not a bare `Frame`
+plus `Env::play_epoch`: `{ start: PlayReading, next_epoch }`, the reading
+at the block's first frame and the epoch the block's first in-block start
+takes (the `k`-th takes `next_epoch + k`, reserved by the executor before
+the block runs). `Env::play_at(offset)` answers at any frame of the block
+through the starts in `Env::changes`, as `Env::transport_at` does, so no
+node walks the changes itself. A `PlayReading { epoch, play }` packs into
+one `u64` as 24 bits of epoch and 40 of play (`2^40` frames is 265 days at
+48 kHz); epochs are compared for equality only and wrap after `2^24` play
+starts. The control side reads `Editor::play_reading()` (and
+`Executor::play_reading()`), the next block's first reading. An `Env` built
+by hand uses `PlayClock::ZERO` (epoch 0, which no executor takes: the
+counter starts at 1). The reference interpreter keeps its own clock.
 
 **Read at the input's time.** A node reads it through **`Cx::play_at(offset)`**,
 which answers at the input's arrival time, as `Cx::transport_at` does
@@ -518,7 +543,12 @@ ignores it and a plugin's changes-only filter drops it.
 event source (`GraphInvalid` refuses a second, by name); its value replaces
 the base from its first event, and before that the port reads the base;
 its shaping must be `Identity`; connect and disconnect crossfade over
-`PARAM_DECLICK`. Audio sources stay offsets until PR 5 deletes them. The
+`PARAM_DECLICK`. **As landed (PR 2a):** the crossfade covers the block of
+the connect; a first event that lands in a later block is not declicked (a
+first `ParamSegment` jumps from the base on its frame; a first `ParamRamp`
+starts from the base). PR 2b's lane sends on its first block, at frame 0,
+so a lane wired with its target never meets this; a hand-wired source
+that waits does. Audio sources stay offsets until PR 5 deletes them. The
 reference interpreter and the differential proptest take the same rule.
 
 **Fork.** The lane's `ForkSource` gathers the last published program from
@@ -760,7 +790,8 @@ recording target. Each PR logs its own CHANGELOG entry under `[Unreleased]`
 in the "Was | Now" style. The `audio-automation` pin and the bevy 0.19 line
 are unaffected. PR 1 is §9's requirements 1–5. **PR 2 lands after PR 1**:
 it edits `segment_points.rs`, which PR 1 rewrites. A small PR between PR 1
-and PR 4 makes the in-process VST2 node deliver parameter events (§13).
+and PR 4 makes the in-process VST2 node deliver parameter events (§13;
+landed).
 
 **Follow-up to PR 1: parameter-change memory.** PR 1 reserves every
 parameter-change buffer at `params × points_for(chunk)` points, and the
@@ -769,15 +800,40 @@ bridge holds `PARAM_BUFFERS` of them: about 43 MB for 2000 parameters at a
 reserves for the same points again per instance: the CLAP host's input
 event list (64-byte events plus an 8-byte sort key, uncapped) about 19 MB
 at 2000 parameters and 157 MB at 16k, the VST3 host's input queues about
-35 MB at 16k (4096 frames). Replace both with a
-shared per-chunk point arena, or a small per-queue room with a counted,
-shared overflow, so the memory follows the points a chunk carries rather
-than the parameter count.
+35 MB at 16k (4096 frames). The CLAP host's output side (PR #92) reserves
+the same again per instance, for the plugin's own parameter output: the
+output event list (64-byte events, a parameter room of `params × points`
+beside 256 for notes and MIDI) about 16.9 MB, plus the reserved output
+queues (`out_param_changes`) about 4.6 MB, so about 21.5 MB at 2000
+parameters and 4096 frames, and about 172 MB at 16k. Replace all of them
+with a shared per-chunk point arena, or a small per-queue room with a
+counted, shared overflow, so the memory follows the points a chunk carries
+rather than the parameter count; the follow-up covers the input and the
+output side alike. The in-process VST2 node reserves the same room
+and applies only each queue's last point (VST 2.4 has no sample-accurate
+parameter events), so its per-queue point room is mostly wasted: about
+400 KB per node at 200 parameters and a 4096-frame block; one point per
+queue would do there.
 
 ### PR 2: the control lane node
 
+**Split in two (coordinator's decision).** **PR 2a, the floor: landed**
+(branch `claude/control-lane-floor`): `RangeCell` in `tutti-types` with a
+loom model, `ParamRanges` on it and `Editor::param_range_cell`; the play
+clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`,
+`TransportHistory` carrying it, `Editor::play_reading`, forks at 0, see
+§4.3 "As landed"); and the port rule (§5.6) in the executor, the
+reference, `GraphSpec::validate` (`GraphInvalid::TooManyEventParamSources`,
+`ShapedEventParamSource`), the verifier's rule 9 and the differential
+proptest. The rule was checked against main before it changed: no
+production path wires an event source into a param port (`bevy-tutti`'s
+`set_param_mod` connects audio sources only, which stay offsets), so it
+breaks no live feature. **PR 2b** is the rest of the scope below:
+`ControlProgram`, the lane, the signal sources, `SegmentPoints`, the
+automation constructors and the campaign tests.
+
 **Scope.** `ControlProgram` in `tutti-mod` with `Curve` in the floor;
-`RangeCell` in `tutti-types`; `Env::play`, `Env::play_epoch`,
+`RangeCell` in `tutti-types`; `Env::play: PlayClock`, `Env::play_at`,
 `Cx::play_at`, the play clock in `TransportHistory` and the published
 `PlayReading` in `tutti-graph`; rate anchors; `ControlLaneNode`
 and `LaneControls` (§5), exact mode on the grid, thinning, the fork;
@@ -825,24 +881,36 @@ pointer gets a "landed" note.
 
 **Existing tests whose assertions change, with the reason:**
 
-- `crates/core/tutti-graph/tests/param_mod.rs`, the event-source cases
-  (e.g. `an_event_sources_held_value_survives_another_source_joining`,
-  `a_fork_carries_its_event_sources_ramps`, the differential proptest): they
-  assert base + event, now the event replaces the base, and a second event
-  source is refused; regenerate the proptest's regressions.
-- `crates/core/tutti-graph/tests/parallel.rs:288`: the rig puts an audio and
-  an event source on `cut`; still legal, but its rendered values move to
-  replace semantics (the serial == parallel assertion stands).
-- `crates/core/tutti-graph/tests/rt_no_alloc.rs:712`: the same port shape;
-  the no-alloc gate stands, and its connect/disconnect step now also crosses
-  the base ↔ event handover.
-- `crates/dsp/tutti-nodes/tests/automation_segments.rs`:
+- PR 2a, `crates/core/tutti-graph/tests/param_mod.rs` (each marked
+  "Changed in doc 014 PR 2a"):
+  - `an_event_sources_held_value_survives_another_source_joining`:
+    reshaping the event source is now refused
+    (`ShapedEventParamSource`); it asserts the refusal, then reconnects
+    `Identity` and checks the held value survives.
+  - `a_segment_sums_with_other_modulators_through_its_shaping`, **renamed**
+    `a_segment_replaces_the_base_and_audio_offsets_add`: the segment
+    replaces the base, audio sources still add.
+  - `a_shrinking_range_rewrites_neither_the_base_nor_a_ramp`: the ramp now
+    starts from the base, so the analytic figure moves; the property (the
+    clamp rewrites neither) stands.
+  - the differential proptest (`modulated_graphs_match_the_reference`): the
+    generator follows the rule; one regression seed recorded.
+  - `crates/core/tutti-graph/src/history.rs`,
+    `a_counting_host_keeps_only_the_jumps_whatever_the_reach`: the size
+    bound moves to 24..=28 KiB (a history piece carries the play reading).
+- **Unchanged** though listed when this was planned: `a_fork_carries_its_event_sources_ramps`,
+  `crates/core/tutti-graph/tests/parallel.rs:288` and
+  `crates/core/tutti-graph/tests/rt_no_alloc.rs:712`. Their ports' base is
+  0, so base + event and event alone render the same; the fork test is
+  still ported in PR 2b (below), when `ParamTap`'s seed stops being its
+  mechanism.
+- PR 2b, `crates/dsp/tutti-nodes/tests/automation_segments.rs`:
   `an_unrepresentable_piece_is_linear_between_block_edges` and
   `a_curve_without_pieces_takes_the_fallback` assert block-edge sampling,
   which moves to the play-clock grid (§5.4).
-- `crates/dsp/tutti-nodes/tests/rt_no_alloc_modulation.rs:248`: its lanes
-  become `ControlLaneNode`s and its elastic and sine lanes emit grid points;
-  the no-alloc property stands.
+- PR 2b, `crates/dsp/tutti-nodes/tests/rt_no_alloc_modulation.rs:248`: its
+  lanes become `ControlLaneNode`s and its elastic and sine lanes emit grid
+  points; the no-alloc property stands.
 
 **Breaking (CHANGELOG):** an event-driven port reads the stream's value,
 not base + value; at most one event source per port, `Identity` shaping.
@@ -919,7 +987,12 @@ No questions remain open. These were open in review and are now decided:
    follow-up.
 2. **The in-process VST2 node drops parameter events**
    (`crates/plugin/tutti-plugin/src/format/vst2_in_process/node.rs:55-66`):
-   fixed in a separate small PR right after PR 1, before PR 4.
+   fixed in a separate small PR right after PR 1, before PR 4. **Landed**:
+   the node runs PR 1's delivery (requirements 1–5, with requirement 4 as
+   amended: its fork is seeded from the live record), with the block as
+   its chunk and each parameter's last point in the block set before the
+   plugin processes it, as the out-of-process VST2 loader does with a
+   chunk (doc 013, "In-process VST2 parameter delivery").
 3. **The largest block:** exports render in blocks of at most 4096 frames,
    through `Limits::max_block`, and `LANE_EVENT_CAPACITY` stays 256. A live
    block past 4096 frames thins and counts (§5.3).

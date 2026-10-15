@@ -218,8 +218,8 @@ Non-scalar state handed to the audio thread goes through
   publisher touches),
   and the loom model `tutti-types/tests/rt_publish_loom.rs` checks it.
 - Read once per block, never per sample. Never park an `RtRef` across blocks
-  (a parked one delays the free of what it holds). Avoid nested reads: past
-  the cell's slot count they stay safe but pin every value current during
+  (a parked one delays the free of what it holds). Avoid nested reads of one
+  cell: past the cell's slot count they stay safe but pin every value current during
   their overflow epoch, not just the one they hold.
 - **The design's limit:** once parked overflow `RtRef`s occupy every overflow
   epoch, each publish's retired value stays pinned and memory grows until they
@@ -228,10 +228,12 @@ Non-scalar state handed to the audio thread goes through
 - Never `publish` from the audio thread.
 - Do not try to prove the race with a no-alloc test. The loom model and miri
   cover it; a single-threaded gate can only pin the reader's code path.
-- Nullable hot-swap slots (the plugin nodes' meter cells, `Midi::out`) stay on
-  `ArcSwapOption`. Control-thread-only cells stay plain. (The sampler's
-  `SharedReader` is a plain `Arc` of a position-indexed ring of atomics;
-  nothing swaps it.)
+- Nullable hot-swap slots go through `RtPublish` too, as
+  `RtPublish<Option<Arc<_>>>` (the plugin nodes' `PluginMeter`). Nothing the
+  audio thread reads is an `ArcSwap`: a store settles a held guard's debt
+  into a strong count, and the guard's drop can then free on the audio thread.
+  Control-thread-only cells stay plain. (The sampler's `SharedReader` is a
+  plain `Arc` of a position-indexed ring of atomics; nothing swaps it.)
 
 ## Buffers: edges vs graph nodes
 

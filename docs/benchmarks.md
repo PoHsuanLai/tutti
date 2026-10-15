@@ -214,7 +214,7 @@ criterion**:
   deliberately stalled plugin, which is the regression a block cost cannot
   show (a plugin that answers in time is never waited for); that a working
   step's median on-CPU time stays under 200 µs; and that an answering plugin
-  carries audio in at least 70% of blocks.
+  carries audio in at least 70% of blocks among eight plugins.
 
   It used to be `#[ignore]`d for needing third-party plugins *installed*, and
   `EFFECTS` names macOS system paths — so the only harness measuring the

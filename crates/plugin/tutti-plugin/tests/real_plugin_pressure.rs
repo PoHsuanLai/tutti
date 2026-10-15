@@ -892,8 +892,10 @@ const CEILING_PER_PLUGIN: Duration = Duration::from_micros(200);
 /// [`assert_no_waiting`] judges against a far larger budget.
 ///
 /// Measured, idle and under the bursty load in [`assert_no_waiting`]'s notes:
-/// a working step's median was 31-96 us idle and 34-65 us under load, so
-/// 200 us leaves 2x over the worst. An earlier version bounded the *block*
+/// over 10 runs each, a working step's median was 43-47 us idle and
+/// 95-106 us under load in the eight-plugin test, and 46-69 us idle and
+/// 66-148 us under load in [`working_plugins_cost_under_the_old_ceiling`].
+/// A spin of 300 us per collect puts it at 352-364 us idle. An earlier version bounded the *block*
 /// median at 200 us per plugin of wall time, and failed on unchanged code at
 /// a load average of 17 (239 us per plugin): on-CPU time takes out what load
 /// took, which is what lets the old ceiling stand.
@@ -926,27 +928,39 @@ fn assert_working_steps_cheap(label: &str, run: &Run, working: &[usize]) {
     );
 }
 
-/// Assert that each plugin at `working` carried audio in at least 70% of
-/// the blocks: `heard * 10 >= blocks * 7`.
+/// The audio floor for a bridge that delivers most blocks, in percent: see
+/// [`assert_heard`].
+#[cfg(feature = "clap")]
+const DELIVERS: usize = 70;
+
+/// The audio floor for a bridge that works at all, in percent: see
+/// [`assert_heard`].
+#[cfg(feature = "clap")]
+const WORKS: usize = 50;
+
+/// Assert that each plugin at `working` carried audio in at least `floor`
+/// of the blocks: `heard >= blocks * floor`, floor given in percent.
 ///
-/// So that the run went through a working bridge, and one that delivers most
-/// blocks: a bridge that drops one block in three carries audio in at most
-/// two thirds, 333 of 500, and fails. Half would not catch that, so the floor
-/// sits between it and what correct code measured: 496-500 of 500 idle, and
-/// 411-451 of 500 (82-90%) under the bursty load, with 175-193 of 200 in
-/// [`working_plugins_cost_under_the_old_ceiling`].
+/// [`DELIVERS`] (70%) asserts a bridge that delivers most blocks: one that
+/// drops one block in three carries audio in at most two thirds, 333 of
+/// 500, and fails. Half would not catch that, so the floor sits between it
+/// and what correct code measured over 10 runs in the eight-plugin test:
+/// 493-500 of 500 idle, 413-451 (83-90%) under the bursty load.
+/// [`WORKS`] (half) asserts only that the steps were working transfers, for
+/// [`working_plugins_cost_under_the_old_ceiling`], whose answering plugins
+/// carried audio in 146-174 of 200 under that load, too close to 70%.
 ///
 /// `warmed` is what [`warm_up`] returned. A broken bridge never warms up, so
 /// it spends the whole warm-up deadline first, and the message says so.
 #[cfg(feature = "clap")]
-fn assert_heard(label: &str, run: &Run, working: &[usize], warmed: bool) {
+fn assert_heard(label: &str, run: &Run, working: &[usize], warmed: bool, floor: usize) {
     let n = run.blocks();
     for &p in working {
         let heard = run.heard(p);
         assert!(
-            heard * 10 >= n * 7,
+            heard * 100 >= n * floor,
             "{label}: answering plugin {p} carried audio in only {heard} of {n} \
-             blocks, under 70%. {}Either the bridge is not delivering (it \
+             blocks, under {floor}%. {}Either the bridge is not delivering (it \
              drops blocks, or the server is starved), or, on the reference \
              probe, it is rendering `Inert`, which writes nothing.",
             if warmed {
@@ -1079,18 +1093,24 @@ fn assert_stalled(label: &str, run: &Run, stalled: impl Iterator<Item = usize>) 
 /// Mutations. The waits go in `Batcher::collect`, after `await_output`:
 /// poll `has_output(expect_seq)` every 50 us until a 667 us deadline, on
 /// calls chosen by a counter shared by every batcher in the process. Each
-/// failed 2 runs of 2 idle; the bursty-load runs are noted where made.
+/// failed 2 runs of 2 idle, and the four marked *load* 1 run of 1 under the
+/// bursty load in [`assert_no_waiting`]'s notes.
 /// - Wait on every call: 2000 of 4000 steps blocked (the stalled half) →
-///   fails the blocked bound (20).
+///   fails the blocked bound (20). *Load:* fails first at the working-step
+///   bound, a 208 us median (the waits hand the shared core to the servers),
+///   and at 1 stalled instance 199 of 200 blocked, of which only 5 took the
+///   budget: blocking is what shows the wait there.
 /// - Every 3rd: 666 blocked; every 4th: 1000; every 8th: 499-500; every
 ///   16th: 250; every 32nd (one stalled plugin, every 4th block): 125 →
 ///   each fails the blocked bound. Before the bound, a wait on a minority
-///   like the every-32nd one passed.
+///   like the every-32nd one passed. *Load,* every 32nd: 124 blocked, of
+///   which 50 took the budget.
 /// - Spin 300 us in every collect, no wait: the answering steps' median is
 ///   352-355 us of on-CPU time → fails [`assert_working_steps_cheap`].
+///   *Load:* 379 us.
 /// - Drop every 3rd collected block (count only the collectable ones, render
-///   silence): answering plugin 1 carries audio in 328-333 of 500 → fails
-///   [`assert_heard`].
+///   silence): answering plugin 1 carries audio in 328-334 of 500 → fails
+///   [`assert_heard`]. *Load:* 309 of 500.
 /// - `stall_every_block` dropped from [`load_stalled`]: every plugin answers
 ///   in time and carries audio in 474-499 of 500 blocks → fails
 ///   [`assert_stalled`] (recorded before this revision; that path is
@@ -1117,7 +1137,7 @@ fn eight_real_plugins_half_stalled_never_wait_for_replies() {
     report(label, &run);
 
     let answering: Vec<usize> = (1..run.plugins).step_by(2).collect();
-    assert_heard(label, &run, &answering, warmed);
+    assert_heard(label, &run, &answering, warmed, DELIVERS);
     assert_stalled(label, &run, (0..run.plugins).step_by(2));
     assert_working_steps_cheap(label, &run, &answering);
     assert_no_waiting(label, &run);
@@ -1173,7 +1193,7 @@ fn stalled_plugins_cost_no_waiting_at_any_count() {
 /// The bound the stalled-only test cannot give: what driving a plugin that
 /// answers costs the audio thread, as on-CPU time
 /// ([`assert_working_steps_cheap`]), with each answering plugin carrying
-/// audio in at least 70% of the blocks ([`assert_heard`]) so the steps
+/// audio in at least half the blocks ([`assert_heard`]) so the steps
 /// measured are working transfers and not a bridge that returns early with
 /// silence.
 ///
@@ -1183,16 +1203,16 @@ fn stalled_plugins_cost_no_waiting_at_any_count() {
 /// and that step pays for it in cache and switches, though not in runqueue
 /// time. With every plugin answering, every step is such a next step: under
 /// the load, a working step's median was 204-213 us at 1, 2 and 4 instances
-/// (100, 75 and 65 us idle), against 108-127 us when each follows a stalled
-/// probe, whose server sleeps through the block. That is the machine, not
+/// (100, 75 and 65 us idle), against 66-148 us over 10 runs when each
+/// follows a stalled probe, whose server sleeps through the block. That is the machine, not
 /// the bridge, so the arrangement keeps it out of the figure.
 ///
-/// Mutations, 2 runs of 2 idle, each failing at 1 pair: spin 300 us in
-/// every collect gives a working median of 362-364 us
-/// ([`assert_working_steps_cheap`]); dropping every 3rd collected block
-/// gives audio in 133-134 of 200 ([`assert_heard`]). The wait mutations pass
-/// here, as they should: they wait only for a stalled plugin, whose steps
-/// this test does not bound.
+/// Mutation: spin 300 us in every collect gives a working median of
+/// 362-364 us at 1 pair → fails [`assert_working_steps_cheap`], 2 runs of 2
+/// idle. Dropping every 3rd collected block (133-134 of 200) passes this
+/// floor and fails the eight-plugin test's; the wait mutations pass here
+/// too, since they wait only for a stalled plugin, whose steps this test
+/// does not bound.
 #[cfg(feature = "clap")]
 #[test]
 fn working_plugins_cost_under_the_old_ceiling() {
@@ -1208,7 +1228,7 @@ fn working_plugins_cost_under_the_old_ceiling() {
         report(&label, &run);
 
         let answering: Vec<usize> = (1..run.plugins).step_by(2).collect();
-        assert_heard(&label, &run, &answering, warmed);
+        assert_heard(&label, &run, &answering, warmed, WORKS);
         assert_stalled(&label, &run, (0..run.plugins).step_by(2));
         assert_working_steps_cheap(&label, &run, &answering);
     }

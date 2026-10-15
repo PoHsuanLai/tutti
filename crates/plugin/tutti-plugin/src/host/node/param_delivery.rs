@@ -926,7 +926,7 @@ mod tests {
         assert_eq!(room, 2 + 1 + 256);
         let grids = 100;
         // Alternating values, so changes-only keeps every point.
-        let v = |k: usize| if k % 2 == 0 { 0.25 } else { 0.75 };
+        let v = |k: usize| if k.is_multiple_of(2) { 0.25 } else { 0.75 };
         d.begin();
         for k in 0..room {
             if k < grids {

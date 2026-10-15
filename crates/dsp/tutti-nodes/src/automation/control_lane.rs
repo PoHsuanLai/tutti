@@ -711,7 +711,7 @@ impl Block<'_> {
     /// A plugin lane's clamp; a native port clamps for itself.
     fn clamp(&self, v: f32) -> f32 {
         let (lo, hi) = self.range;
-        if self.native || !(lo <= hi) {
+        if self.native || lo.is_nan() || hi.is_nan() || lo > hi {
             v
         } else {
             v.clamp(lo, hi)
@@ -926,7 +926,6 @@ impl Node for ControlLaneNode {
         if thinned {
             s.thinned.fetch_add(1, Ordering::Relaxed);
         }
-        drop(block);
         drop(program);
         let out = io.event_out(0);
         for e in &self.scratch {

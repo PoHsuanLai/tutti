@@ -448,7 +448,7 @@ fn lane_program(k: usize, gen: u32) -> tutti_mod::ControlProgram {
     let amount = Amount {
         depth: Depth(depth),
         polarity: Polarity::Bipolar,
-        curve: if k % 3 == 0 {
+        curve: if k.is_multiple_of(3) {
             CurveType::Exponential
         } else {
             CurveType::Linear

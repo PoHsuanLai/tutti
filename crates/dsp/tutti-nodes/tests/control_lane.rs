@@ -647,13 +647,13 @@ fn one_lfo_on_two_targets_is_phase_coherent() {
     for &n in &blocks[1..] {
         host.roll(&mut ed, &mut exec, n, &mut all);
     }
-    for f in from..all[0].len() {
+    for (f, (a, b)) in all[0].iter().zip(&all[1]).enumerate().skip(from) {
         assert_eq!(
-            all[0][f].to_bits(),
-            all[1][f].to_bits(),
+            a.to_bits(),
+            b.to_bits(),
             "frame {f}: {} vs {}, joined {joined}, from {from}",
-            all[0][f],
-            all[1][f]
+            a,
+            b
         );
     }
 }
@@ -784,8 +784,7 @@ fn a_range_edit_rescales_on_the_next_block() {
         all[0][edit], 600.0,
         "the glide starts from the value in flight"
     );
-    for f in edit + 1..grid {
-        let v = all[0][f];
+    for (f, &v) in all[0].iter().enumerate().take(grid).skip(edit + 1) {
         assert!(v < 600.0 && v > 575.0, "frame {f}: {v}, gliding");
     }
     for (f, &v) in all[0].iter().enumerate().skip(grid) {
@@ -916,11 +915,11 @@ fn a_triangle_is_exact_and_a_sine_within_the_bound() {
         host.roll(&mut ed, &mut exec, n, &mut all);
     }
     let bound = (std::f64::consts::TAU * 10.0 * STEP as f64 / RATE).powi(2) / 8.0 * 500.0;
-    for f in 0..all[0].len() {
+    for (f, (&t, &s)) in all[0].iter().zip(&all[1]).enumerate() {
         let c = 10.0 * f as f64 / RATE;
         let tri = 1000.0 + 500.0 * triangle(c);
         let sine = 1000.0 + 500.0 * (std::f64::consts::TAU * c).sin();
-        let (t, s) = (f64::from(all[0][f]), f64::from(all[1][f]));
+        let (t, s) = (f64::from(t), f64::from(s));
         assert!((t - tri).abs() <= 2e-4, "triangle, frame {f}: {t} vs {tri}");
         assert!(
             (s - sine).abs() <= bound + 2e-4,

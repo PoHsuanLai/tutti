@@ -5,7 +5,7 @@
 use super::channels::Channels;
 use super::dispatch::{handle, Owed};
 use super::lifecycle::Lifecycle;
-use super::messages::{AudioResponse, BridgeEvent, Command};
+use super::messages::{AudioResponse, BridgeEvent, Command, Unsolicited};
 use super::payload_pool::PayloadPool;
 use super::ListenerSlot;
 use crate::util::transport::control::{self as ipc, ControlStream};
@@ -138,6 +138,9 @@ fn pump(
     // the connection, because that is the scope over which the stream's pairing
     // has to stay straight; see `dispatch::Owed`.
     let mut owed = Owed::default();
+    // Unsolicited events read while a command waited for its reply. One
+    // buffer for the connection, handed to the listener after each command.
+    let mut inbox = Unsolicited::new();
     while lifecycle.is_running() {
         let Some(cmd) = channels.pop_command() else {
             // Park rather than sleep: `push_command` unparks us the instant a
@@ -152,8 +155,8 @@ fn pump(
             continue;
         };
 
-        let result = handle(cmd, stream, channels, payloads, &mut owed);
-        drain_unsolicited(channels, listener);
+        let result = handle(cmd, stream, channels, payloads, &mut owed, &mut inbox);
+        drain_unsolicited(&mut inbox, channels, listener);
 
         if let Err(e) = result {
             // The error is stringified here, at the only place it exists.
@@ -191,9 +194,10 @@ fn crash(lifecycle: &Lifecycle, listener: &ListenerSlot, cause: String) {
     }
 }
 
-fn drain_unsolicited(channels: &Channels, listener: &ListenerSlot) {
+fn drain_unsolicited(inbox: &mut Unsolicited, channels: &Channels, listener: &ListenerSlot) {
+    channels.note_dropped_param_events(inbox.take_dropped());
     let cb = listener.lock().clone();
-    while let Some(ev) = channels.pop_unsolicited() {
+    for ev in inbox.drain() {
         if let Some(f) = cb.as_ref() {
             f(ev);
         }
@@ -203,5 +207,50 @@ fn drain_unsolicited(channels: &Channels, listener: &ListenerSlot) {
 fn drain_with_errors(channels: &Channels) {
     while channels.pop_command().is_some() {
         channels.push_audio_response(AudioResponse::Error { seq: None });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::ipc_client::audio::messages::{ResyncKind, UNSOLICITED_PARAMS};
+    use std::sync::Arc;
+
+    /// **A drain hands every held event to the listener and publishes the
+    /// drop count to the bridge's counter, cumulatively.** The inbox's own
+    /// test pins what it keeps; this pins that `pump`'s drain reports it.
+    ///
+    /// Mutations (run): the `note_dropped_param_events` call deleted → the
+    /// counter stays 0 → fails. `note_dropped_param_events` storing instead of
+    /// adding → the second drain's count replaces the first → fails.
+    #[test]
+    fn a_drain_reports_the_drops() {
+        let channels = Channels::new(48_000.0);
+        let heard = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let listener: ListenerSlot = {
+            let heard = Arc::clone(&heard);
+            Arc::new(parking_lot::Mutex::new(Some(Arc::new(move |ev| {
+                heard.lock().push(format!("{ev:?}"));
+            }))))
+        };
+        let mut inbox = Unsolicited::new();
+        let over = 72;
+        for round in 1..=2u64 {
+            for i in 0..(UNSOLICITED_PARAMS + over) as i32 {
+                inbox.param(i, 0.0);
+            }
+            drain_unsolicited(&mut inbox, &channels, &listener);
+            assert_eq!(channels.dropped_param_events(), round * over as u64);
+        }
+        let heard = heard.lock();
+        assert_eq!(
+            heard.len(),
+            2 * (UNSOLICITED_PARAMS + 1),
+            "each drain: the kept params and one resync"
+        );
+        assert_eq!(
+            heard.last().map(String::as_str),
+            Some(format!("{:?}", BridgeEvent::Resync(ResyncKind::ParamValues)).as_str())
+        );
     }
 }

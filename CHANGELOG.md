@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`tutti_types::{SeqWriter<W>, SeqReader<W>}`**, a sequence lock over
+  `W` atomic words: the one writer overwrites them in place, any thread
+  copies them whole, neither side allocates or locks, and a read never mixes
+  two writes (loom model `tests/seq_cell_loom.rs`). The writer is not
+  `Clone` and writes through `&mut self`, so a second writer cannot exist
+  (two writers would let a reader accept words of two writes);
+  `SeqWriter::reader` hands out `Clone` read sides, and `SeqWriter::last` is
+  the writer's own copy of its last write. For a value the audio thread
+  writes each block; the in-process and out-of-process VST2 transport
+  snapshot is its first user, replacing a hand-rolled `unsafe` seqlock in
+  `tutti-vst2-host`. `SEQ_CELL_READ_RETRIES` is how many overlapped copies a
+  read retries before it returns `None`.
+
 - **A cost model and coarsening for the parallel executor** (design doc
   013, "Phase 6, part (b)"). The compiler prices every op from what its
   node declares, packs sibling tasks too cheap to dispatch alone into
@@ -79,6 +92,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ramp.
 
 ### Changed
+
+- **`tutti_io::MicRing` is a plain consumer, not a shared one.** It owns
+  its ring's `HeapCons` instead of an `Arc<AudioThreadCell<_>>`, and is no
+  longer `Clone` (nothing cloned it: the ring has one consumer, the
+  `MicMonitorNode` that owns it). **Breaking** only for code that cloned a
+  `MicRing`: hand the one ring to the node instead. Its constructor is
+  `MicRing::new(consumer)`, which allocates nothing.
+
+  | Was | Now |
+  |---|---|
+  | `tutti_io::share_mic_ring(consumer) -> MicRing` (allocated an `Arc`) | `MicRing::new(consumer)` |
+  | `MicRing: Clone` | not `Clone`: one ring, one consumer |
+- **The in-process VST2 node copies each block once each way, not twice.**
+  The node's `ProcessScratch` staging is deleted; `process_f32` reads and
+  writes the graph's own buffers through stack channel tables. No API
+  change. **Fixed** with it: a plugin wider than the tables (sixteen
+  channels) left the graph's outputs past them holding whatever their
+  buffers last held (another node's audio); they are silent now.
+- **tutti-plugin's bridge thread buffers unsolicited plugin events itself**
+  (a preallocated buffer it owns) instead of in a lock-free queue shared
+  with no other thread. Listener timing is unchanged: after each command.
+  Unused dependencies dropped: `ringbuf` (tutti-plugin),
+  `crossbeam-channel` and `parking_lot` (tutti-plugin-server).
+
+  **Behaviour change: state events are never dropped.** The old queue held
+  128 events of every kind and, when full, refused the incoming event and
+  then dropped the oldest (two lost per overflow), so more than 128
+  parameter changes inside one command (a `LoadState` or a preset load)
+  could evict a latency, tail or resync event, and PDC never heard of the
+  new latency. Now a latency, a tail and each resync kind is a latest-wins
+  slot nothing evicts; only parameter events queue (128), the oldest is
+  dropped when full, each drop is counted and raises a
+  `Resync(ParamValues)` (delivered as `PluginRefresh::ParamValues`) so the
+  host re-reads them all. Two latency reports in one command arrive as
+  one, with the second value. A listener hears, per command:
+  `Resync(Reloaded)` and `Resync(Io)` first, since a plugin that rebuilds
+  itself or its buses and then reports parameters reports them against the
+  new table; then the parameter events in arrival order; then the latency
+  and the tail; then `Resync(ParamTitles)` and `Resync(ParamValues)` last,
+  so a re-read (including the one a drop raises) wins over every queued
+  value. A parameter event sent *before* a structural change in the same
+  command is delivered after it; the `Reloaded` re-read covers it.
+
+  | Was | Now |
+  |---|---|
+  | a flood of parameter events could evict latency, tail and resync events | they are latest-wins and never dropped; parameter events drop oldest-first, counted, with a `ParamValues` resync |
+  | events in arrival order across kinds | `Reloaded`, `Io`, the parameter events in arrival order, latency, tail, `ParamTitles`, `ParamValues` |
+  | — | `PluginClient::dropped_parameter_events()`, `PluginHandle::dropped_parameter_events()` |
+  | `HostParams` had no drop count | **Breaking** for a custom backend: `HostParams::dropped_parameter_events(&self) -> u64` is required. A backend that cannot lose a plugin's parameter reports returns `0`; the in-process VST2 backend returns the `audioMasterAutomate` reports its bounded queue refused (`Vst2Instance::dropped_param_changes`) |
 
 - **Plugin parameter changes draw their points from a shared pool, in
   fixed-capacity storage** (design doc 014, §9's point-storage note; §12's

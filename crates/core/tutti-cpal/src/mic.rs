@@ -39,7 +39,7 @@ use tutti_core::ChannelLayout;
 use tutti_core::SampleRate;
 use tutti_core::Samples;
 use tutti_core::MAX_ROOT_CHANNELS;
-use tutti_io::{share_mic_ring, MicMonitorNode, MicRing, WavOut};
+use tutti_io::{MicMonitorNode, MicRing, WavOut};
 
 use crate::error::{Error, Result};
 use crate::host::{AudioHost, DeviceHost, DeviceSelector, Direction};
@@ -162,7 +162,7 @@ impl MicIn {
         let (mon_prod, monitor) = if with_monitor {
             let mon_rb = HeapRb::<[f32; 2]>::new(MONITOR_RING_FRAMES);
             let (mon_prod, mon_cons) = mon_rb.split();
-            let ring: MicRing = share_mic_ring(mon_cons);
+            let ring = MicRing::new(mon_cons);
             // `new_at`, not `new`: the node then carries the rate it was
             // opened at, and its `prepare` debug-asserts the graph
             // agrees. That assertion is the unchecked half of the same

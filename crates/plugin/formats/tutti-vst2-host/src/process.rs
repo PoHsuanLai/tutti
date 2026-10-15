@@ -120,24 +120,26 @@ impl Vst2Instance {
 
     /// Refreshes the snapshot the plugin reads back via `audioMasterGetTime`.
     ///
-    /// The previously stored snapshot is loaded and handed to the builder:
+    /// The previously stored snapshot (the writer's own copy) is handed to the
+    /// builder:
     /// `kVstTransportChanged` is an *edge*, so the only way to know whether the
     /// transport state moved is to compare against what this plugin was last
     /// told. When `ctx.transport` is `None` the last snapshot is left in place,
     /// so the next real update still sees the correct predecessor.
     ///
     /// Runs on the audio thread, so it must not allocate — hence
-    /// [`TransportCell`](crate::transport_cell::TransportCell), which overwrites
+    /// [`TransportWriter`](crate::transport_cell::TransportWriter), which overwrites
     /// in place, rather than an `ArcSwap` store that would allocate and free a
     /// snapshot per block inside the callback.
     ///
     /// Must complete *before* the plugin is entered: the plugin issues
     /// `audioMasterGetTime` re-entrantly from inside `process`, and a seqlock
     /// reader cannot make progress against a write in flight on its own thread.
-    /// The cell debug-asserts that order.
-    fn update_transport(&self, ctx: &Vst2ProcessContext) {
+    /// `&mut self` makes the write the only one, and it returns before the
+    /// plugin is called.
+    fn update_transport(&mut self, ctx: &Vst2ProcessContext) {
         if let Some(t) = ctx.transport {
-            let previous = self.host_link.time_info.read();
+            let previous = self.host_link.time_info.last();
             let next = build_vst2_time_info(t, ctx.sample_rate, previous.as_ref());
             self.host_link.time_info.write(next);
         }

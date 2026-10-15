@@ -30,7 +30,7 @@ au = ["dep:tutti-au-host"]
 # editor and audio processor into one instance, so the editor cannot live
 # in a different process from the audio. There is no subprocess VST2 path
 # here.
-vst2 = ["dep:tutti-vst2-host"]
+vst2 = ["dep:tutti-vst2-host", "dep:arrayvec"]
 
 [dependencies]
 # Core types (units, transport, metering)
@@ -68,11 +68,13 @@ bincode = "1"
 # Shared memory
 memmap2 = "0.9"
 
+# The in-process VST2 node's stack channel tables.
+arrayvec = { version = "0.7", optional = true }
+
 # Lock-free channels and queues
 crossbeam-channel = "0.5"
 crossbeam = "0.8"
 parking_lot = "0.12"
-ringbuf = "0.4"
 
 # Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows)
 interprocess = { version = "2" }

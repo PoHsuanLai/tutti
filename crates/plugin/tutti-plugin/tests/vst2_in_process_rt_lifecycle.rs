@@ -17,6 +17,10 @@
 //! flag, and each pairs its negative with a positive that moves the same
 //! counter — an assertion that a number stayed at zero passes just as well
 //! against a probe that was never loaded.
+//!
+//! Two tests read the render itself: what the node writes is what the
+//! plugin wrote, and silence past the channels it hands the plugin. The last
+//! counts the parameter reports a burst from `process` loses, on the handle.
 
 #![cfg(feature = "vst2")]
 
@@ -329,5 +333,219 @@ fn a_drain_with_nothing_parked_dispatches_nothing() {
         "an empty drain resumed the plugin"
     );
 
+    drop(loaded.handle);
+}
+
+/// What the node writes is what the plugin wrote, channel by channel and
+/// frame by frame: the graph's input reaches the plugin unshifted, and each
+/// output channel is the plugin's own (the probe's oracle, `in + tag(ch)`).
+///
+/// Two blocks with different inputs, the second shorter than the first, so
+/// a channel table left pointing at an earlier block's staging, an offset
+/// slice, or a swapped channel each shows as a wrong sample. Every value is
+/// a small integer, so the comparison is exact on every platform.
+///
+/// Mutations (run): the input table built from channel 0 for every channel
+/// (`inputs.get(0)`) → channel 1 reads channel 0's ramp → fails; the input
+/// slice offset by one frame (`&inputs.get(ch)[1..size]`) → fails; no
+/// output table handed to the plugin (`outs.clear()` before `drive_f32`) →
+/// the outputs stay silent → fails; the output table reversed
+/// (`outs.reverse()`) → channel 0 holds channel 1's tag → fails.
+#[test]
+fn the_output_is_what_the_plugin_wrote() {
+    use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
+    use tutti_vst2_test_plugin::channel_tag;
+
+    let _guard = lock_probe();
+    let mut loaded = load();
+    let rate = SampleRate(SAMPLE_RATE);
+    Node::prepare(
+        &mut loaded.unit,
+        &Prepare::new(rate, tutti_core::Samples(BLOCK)),
+    );
+    let channels = usize::from(Node::shape(&loaded.unit).audio_in.count());
+    assert_eq!(channels, 2, "the probe's default layout is stereo");
+
+    for (block, frames) in [(0usize, BLOCK), (1, BLOCK - 17)] {
+        // Channel `c`, frame `i`: `1000·c + 10·i + block`, distinct across
+        // channels, frames and blocks.
+        let input: Vec<Vec<f32>> = (0..channels)
+            .map(|c| {
+                (0..frames)
+                    .map(|i| (1_000 * c + 10 * i + block) as f32)
+                    .collect()
+            })
+            .collect();
+        let inputs: Vec<&[f32]> = input.iter().map(|c| &c[..]).collect();
+        let env = Env {
+            frame: tutti_core::Frame(0),
+            sample_rate: rate,
+            block_len: tutti_core::Samples(frames),
+            transport: Transport::default(),
+            changes: TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
+        };
+        let out = tutti_graph::contract::drive_in(&mut loaded.unit, &env, &inputs, &[], &[]);
+        assert_eq!(out.audio.len(), channels);
+        for (c, ch) in out.audio.iter().enumerate() {
+            let want: Vec<f32> = input[c].iter().map(|s| s + channel_tag(c)).collect();
+            assert_eq!(ch, &want, "block {block}, channel {c}");
+        }
+    }
+
+    drop(loaded.handle);
+}
+
+/// A node of `WIDE` channels in and out writing `value` to every output,
+/// whatever its input: what leaves a non-zero buffer behind for a later node
+/// to be handed.
+struct Fill {
+    width: tutti_core::ChannelLayout,
+    inputs: tutti_core::ChannelLayout,
+    value: f32,
+}
+
+impl tutti_graph::Node for Fill {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(self.inputs, self.width)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        _: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        for c in 0..io.output_count() {
+            io.output(c).fill(self.value);
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// A plugin wider than the node's channel tables (sixteen) has the outputs
+/// past them silenced, not left holding whatever the graph's buffer held.
+///
+/// The probe is loaded with eighteen inputs and outputs, behind two fill
+/// nodes (the first writes a stale value, the second, fed by it, the
+/// plugin's input), so the slots the first one wrote are free by the time
+/// the plugin's outputs are placed, and an output the node leaves unwritten
+/// shows what the first one left there. Channels within the tables are the
+/// plugin's (`in + tag(ch)`); the two past them are zero.
+///
+/// Mutation (run): the silencing loop deleted → channels 16 and 17 hold
+/// the stale value → fails.
+#[test]
+fn outputs_past_the_tables_are_silent() {
+    use tutti_core::{ChannelLayout, Samples};
+    use tutti_graph::{GraphBuilder, Prepare, Transport, Unforkable};
+    use tutti_vst2_test_plugin::channel_tag;
+
+    const WIDE: usize = 18;
+    const TABLE: usize = 16;
+    const STALE: f32 = -7.0;
+    const INPUT: f32 = 3.0;
+
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_probe(&path);
+    // SAFETY: `PROBE_LOCK` is held, so no other test thread touches the
+    // environment; the variables are cleared once the AEffect is built.
+    unsafe {
+        std::env::set_var("TUTTI_VST2_PROBE_INPUTS", WIDE.to_string());
+        std::env::set_var("TUTTI_VST2_PROBE_OUTPUTS", WIDE.to_string());
+    }
+    let loaded = in_process_vst2_client(&path, SAMPLE_RATE);
+    unsafe {
+        std::env::remove_var("TUTTI_VST2_PROBE_INPUTS");
+        std::env::remove_var("TUTTI_VST2_PROBE_OUTPUTS");
+    }
+    let (unit, handle) = loaded.unwrap_or_else(|e| panic!("in-process load: {e:?}"));
+
+    let wide = ChannelLayout::from_count(WIDE as u16);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, wide);
+    let stale = g.add(Unforkable(Fill {
+        width: wide,
+        inputs: ChannelLayout::EMPTY,
+        value: STALE,
+    }));
+    let feed = g.add(Unforkable(Fill {
+        width: wide,
+        inputs: wide,
+        value: INPUT,
+    }));
+    let key = g.add(Unforkable(unit));
+    g.pipe(stale, feed);
+    g.pipe(feed, key);
+    g.pipe_output(key);
+    let mut r = g
+        .renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
+        .expect("the graph compiles");
+
+    for block in 0..3usize {
+        let mut out = vec![vec![0.0f32; BLOCK]; WIDE];
+        let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+        r.executor_mut()
+            .process(BLOCK, &Transport::default(), &[], &mut outs);
+        for (c, ch) in out.iter().enumerate() {
+            let want = if c < TABLE {
+                INPUT + channel_tag(c)
+            } else {
+                0.0
+            };
+            assert!(
+                ch.iter().all(|&s| s == want),
+                "block {block}, channel {c}: want {want}, got {:?}",
+                &ch[..4]
+            );
+        }
+    }
+
+    drop(r);
+    drop(handle);
+}
+
+/// A plugin's parameter reports the host lost are counted on its
+/// `PluginHandle`, through `HostParams`. The probe sends a burst of
+/// `audioMasterAutomate` reports from inside each `process` call, more than
+/// the instance's bounded queue holds, and nothing drains the queue between
+/// the two blocks: the first block overflows it, and every report of the
+/// second is refused.
+///
+/// The second block's count is the first's plus the whole burst, so the
+/// assertion does not depend on the queue's capacity.
+///
+/// Mutations (run): the in-process backend answering `0` → "a burst past
+/// the queue dropped nothing" → fails; `PluginHandle::dropped_parameter_events`
+/// answering `0` → the same.
+#[test]
+fn the_handle_counts_lost_parameter_reports() {
+    const BURST: u32 = 600;
+
+    let _guard = lock_probe();
+    let mut loaded = load();
+    assert_eq!(loaded.handle.dropped_parameter_events(), 0);
+
+    probe_call(
+        &loaded.path,
+        b"tutti_vst2_probe_set_automate_burst\0",
+        |sym| {
+            let f: extern "C" fn(u32) = unsafe { std::mem::transmute(*sym) };
+            f(BURST);
+        },
+    );
+    drive_block(&mut loaded.unit);
+    let first = loaded.handle.dropped_parameter_events();
+    assert!(first > 0, "a burst past the queue dropped nothing");
+    assert!(first < u64::from(BURST), "the queue held none of the burst");
+
+    drive_block(&mut loaded.unit);
+    assert_eq!(
+        loaded.handle.dropped_parameter_events(),
+        first + u64::from(BURST),
+        "a full queue refuses the whole second burst"
+    );
+
+    reset_probe(&loaded.path);
     drop(loaded.handle);
 }

@@ -13,7 +13,7 @@ mod wav_out;
 mod wave;
 
 pub use error::{Error, Result};
-pub use mic::{share_mic_ring, MicMonitorNode, MicRing};
+pub use mic::{MicMonitorNode, MicRing};
 pub use recorder::{
     FinalizeStatus, ManualDriver, ManualPump, PumpDriver, PumpLoop, PumpPass, Recorder,
     RunningPump, ThreadDriver,

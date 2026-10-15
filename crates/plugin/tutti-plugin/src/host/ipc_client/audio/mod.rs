@@ -2,9 +2,9 @@
 //! plugin-server subprocess.
 //!
 //! Composition:
-//! - [`Channels`] — the three lock-free queues (commands, audio responses,
-//!   unsolicited events) plus the shared newest-sequence and sample-rate
-//!   cells. Payload recycling lives in [`PayloadPool`]; the buffer-id counter
+//! - [`Channels`] — the two lock-free queues (commands, audio responses)
+//!   plus the shared newest-sequence and sample-rate cells. Unsolicited
+//!   events never cross threads: the bridge thread buffers them itself. Payload recycling lives in [`PayloadPool`]; the buffer-id counter
 //!   is gone, the batcher owns the block sequence.
 //! - [`Lifecycle`] — running/crashed flags.
 //! - [`AudioSlab`] — bulk audio transport (created elsewhere; held as Arc).
@@ -73,8 +73,8 @@ pub use thread::BridgeThread;
 const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Listener for plugin-originated unsolicited events. Invoked on the
-/// bridge thread (a tokio current-thread runtime) — blocking is OK, but
-/// prefer posting to a channel and returning promptly.
+/// bridge thread (a plain OS thread) — blocking is OK, but prefer posting
+/// to a channel and returning promptly.
 pub type BridgeListener = Arc<dyn Fn(BridgeEvent) + Send + Sync>;
 
 pub(super) type ListenerSlot = Arc<Mutex<Option<BridgeListener>>>;
@@ -195,6 +195,17 @@ impl AudioBridge {
     #[cfg(test)]
     pub fn abandoned_replies(&self) -> u64 {
         self.channels.abandoned()
+    }
+
+    /// How many plugin-originated parameter-change events the bridge
+    /// dropped, over its life, because more arrived during one command (a
+    /// preset or state load) than it holds between two listener calls.
+    ///
+    /// Each drop also delivers a `Resync(ParamValues)`, so a listener that
+    /// re-reads on it loses nothing; this says how often that happened.
+    /// Latency, tail and resync events are never dropped.
+    pub fn dropped_parameter_events(&self) -> u64 {
+        self.channels.dropped_param_events()
     }
 
     pub fn audio_buffer(&self) -> &Arc<AudioSlab> {

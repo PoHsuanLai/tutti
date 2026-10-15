@@ -202,6 +202,145 @@ pub enum BridgeEvent {
     },
 }
 
+/// How many parameter events [`Unsolicited`] holds between two drains.
+pub(super) const UNSOLICITED_PARAMS: usize = 128;
+
+/// The unsolicited events read off the control stream while a command waited
+/// for its reply, held until `pump` hands them to the listener.
+///
+/// A plain buffer, not a queue between threads: `recv_reply` fills it and
+/// `pump` drains it after each command, both on the bridge thread, so it is
+/// owned by `pump` and lent to `handle`. The listener runs after the drain
+/// rather than from `recv_reply` itself so a slow listener never delays the
+/// reply a blocked caller is waiting on.
+///
+/// **State events cannot be lost.** A latency, a tail and each resync kind is
+/// a latest-wins slot: a plugin reporting its latency twice during one
+/// command is heard once, with the second figure, and no flood of anything
+/// else can evict it (PDC would never hear of it). Only parameter events
+/// queue, bounded and allocated once: past [`UNSOLICITED_PARAMS`] the oldest
+/// is dropped, counted ([`take_dropped`](Self::take_dropped)), and a
+/// `Resync(ParamValues)` is raised in its place, so a host that lost a
+/// parameter value is told to re-read them all.
+///
+/// **Delivery order** ([`drain`](Self::drain)), per command:
+///
+/// 1. `Resync(Reloaded)`, then `Resync(Io)`: structural changes first. A
+///    plugin that rebuilds itself or its buses and then reports parameters
+///    reports them against the new table, so the host must rebuild before
+///    it applies them.
+/// 2. The parameter events, in arrival order.
+/// 3. The latency, then the tail: values the host takes as they stand.
+/// 4. `Resync(ParamTitles)`, then `Resync(ParamValues)` last: a re-read
+///    reads the plugin as it is now, so it must win over any queued value,
+///    and a drop's `ParamValues` must follow the values that survived it.
+///
+/// What is lost is the order of a parameter event *before* a structural
+/// change in the same command: it is delivered after it, against the
+/// rebuilt table. A `Reloaded` asks the host to re-read everything, which
+/// covers it.
+///
+/// Filled one kind at a time ([`param`](Self::param),
+/// [`latency`](Self::latency), [`tail`](Self::tail), [`resync`](Self::resync)),
+/// so [`Crashed`](BridgeEvent::Crashed), which the bridge sends from the site
+/// that noticed, cannot come through here.
+pub(super) struct Unsolicited {
+    params: std::collections::VecDeque<(i32, f32)>,
+    latency: Option<Samples>,
+    tail: Option<PluginTail>,
+    reloaded: bool,
+    io: bool,
+    param_titles: bool,
+    param_values: bool,
+    /// Parameter events dropped since the last [`take_dropped`](Self::take_dropped).
+    dropped: u64,
+}
+
+impl Unsolicited {
+    pub(super) fn new() -> Self {
+        Self {
+            params: std::collections::VecDeque::with_capacity(UNSOLICITED_PARAMS),
+            latency: None,
+            tail: None,
+            reloaded: false,
+            io: false,
+            param_titles: false,
+            param_values: false,
+            dropped: 0,
+        }
+    }
+
+    /// Queue a parameter event, dropping (and counting) the oldest when full.
+    pub(super) fn param(&mut self, index: i32, value: f32) {
+        if self.params.len() == UNSOLICITED_PARAMS {
+            self.params.pop_front();
+            self.dropped += 1;
+            self.resync(ResyncKind::ParamValues);
+        }
+        self.params.push_back((index, value));
+    }
+
+    /// The plugin's new latency, replacing one already held.
+    pub(super) fn latency(&mut self, samples: Samples) {
+        self.latency = Some(samples);
+    }
+
+    /// The plugin's new tail, replacing one already held.
+    pub(super) fn tail(&mut self, tail: PluginTail) {
+        self.tail = Some(tail);
+    }
+
+    /// A resync request; a second of the same kind adds nothing.
+    pub(super) fn resync(&mut self, kind: ResyncKind) {
+        *match kind {
+            ResyncKind::Reloaded => &mut self.reloaded,
+            ResyncKind::Io => &mut self.io,
+            ResyncKind::ParamTitles => &mut self.param_titles,
+            ResyncKind::ParamValues => &mut self.param_values,
+        } = true;
+    }
+
+    /// The held events, leaving the buffer empty, in the order the type
+    /// documents: structural resyncs, parameters, latency, tail, refresh
+    /// resyncs.
+    pub(super) fn drain(&mut self) -> impl Iterator<Item = BridgeEvent> + '_ {
+        let raised =
+            |flag: &mut bool, kind| std::mem::take(flag).then_some(BridgeEvent::Resync(kind));
+        let structural = [
+            raised(&mut self.reloaded, ResyncKind::Reloaded),
+            raised(&mut self.io, ResyncKind::Io),
+        ];
+        let refresh = [
+            raised(&mut self.param_titles, ResyncKind::ParamTitles),
+            raised(&mut self.param_values, ResyncKind::ParamValues),
+        ];
+        let params = self
+            .params
+            .drain(..)
+            .map(|(index, value)| BridgeEvent::ParameterChanged { index, value });
+        let latency = self
+            .latency
+            .take()
+            .map(|samples| BridgeEvent::LatencyChanged { samples });
+        let tail = self
+            .tail
+            .take()
+            .map(|tail| BridgeEvent::TailChanged { tail });
+        structural
+            .into_iter()
+            .flatten()
+            .chain(params)
+            .chain(latency)
+            .chain(tail)
+            .chain(refresh.into_iter().flatten())
+    }
+
+    /// How many parameter events were dropped since the last call.
+    pub(super) fn take_dropped(&mut self) -> u64 {
+        std::mem::take(&mut self.dropped)
+    }
+}
+
 /// Which aspect of plugin state the plugin asked the host to re-read.
 ///
 /// Unlike a latency or parameter change, these carry no new value; they say
@@ -308,4 +447,120 @@ pub enum PluginInvalidation {
         /// Why the plugin died, latched at the detection site.
         cause: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each drained event as a short label, for whole-sequence asserts.
+    fn labels(inbox: &mut Unsolicited) -> Vec<String> {
+        inbox
+            .drain()
+            .map(|ev| match ev {
+                BridgeEvent::ParameterChanged { index, .. } => format!("p{index}"),
+                BridgeEvent::LatencyChanged { samples } => format!("latency {}", samples.get()),
+                BridgeEvent::TailChanged { .. } => "tail".to_owned(),
+                BridgeEvent::Resync(kind) => format!("{kind:?}"),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect()
+    }
+
+    /// **The inbox hands parameter events over in arrival order and
+    /// empties.**
+    ///
+    /// Mutation (run): `param` uses `push_front` → the parameters come out
+    /// reversed → fails. `drain` leaves the latency slot set (`clone` for
+    /// `take`) → the second drain is not empty → fails.
+    #[test]
+    fn the_inbox_keeps_arrival_order_and_empties() {
+        let mut inbox = Unsolicited::new();
+        for i in 0..3 {
+            inbox.param(i, 0.0);
+        }
+        inbox.latency(Samples::new(64));
+        assert_eq!(labels(&mut inbox), ["p0", "p1", "p2", "latency 64"]);
+        assert!(labels(&mut inbox).is_empty());
+        assert_eq!(inbox.take_dropped(), 0);
+    }
+
+    /// **A flood of parameter events cannot evict a state event.** Latency,
+    /// tail and resync arrive first, then more parameter events than the
+    /// inbox holds (a preset load inside one `LoadState`): every state event
+    /// is still delivered, latest-wins, the oldest parameter events are the
+    /// ones dropped, the drops are counted, a `ParamValues` resync stands in
+    /// for them, and the inbox never reallocates.
+    ///
+    /// Mutations (run): the latency back in the bounded queue (`latency`
+    /// queuing itself as a parameter event, so the flood evicts it) → no
+    /// `latency` label → fails. `param` without the
+    /// `pop_front` → the inbox grows past its capacity (and reallocates) →
+    /// fails. `pop_back` for `pop_front` → the newest held event is lost
+    /// instead → fails. The drop not counted → `take_dropped` is 0 → fails.
+    /// The drop not raising `ParamValues` → that label is missing → fails.
+    #[test]
+    fn a_parameter_flood_drops_only_parameters() {
+        let mut inbox = Unsolicited::new();
+        let cap = inbox.params.capacity();
+        inbox.latency(Samples::new(32));
+        inbox.tail(PluginTail::default());
+        inbox.resync(ResyncKind::Reloaded);
+        inbox.latency(Samples::new(64));
+        let n = UNSOLICITED_PARAMS as i32;
+        for i in 0..n + 2 {
+            inbox.param(i, 0.0);
+        }
+        assert_eq!(inbox.params.capacity(), cap, "the inbox reallocated");
+        assert_eq!(inbox.take_dropped(), 2);
+        assert_eq!(inbox.take_dropped(), 0, "taking the count resets it");
+
+        let got = labels(&mut inbox);
+        let (reloaded, rest) = got.split_at(1);
+        let (params, state) = rest.split_at(UNSOLICITED_PARAMS);
+        assert_eq!(reloaded, ["Reloaded"]);
+        assert_eq!(params.first().map(String::as_str), Some("p2"));
+        assert_eq!(params.last(), Some(&format!("p{}", n + 1)));
+        assert_eq!(state, ["latency 64", "tail", "ParamValues"]);
+    }
+
+    /// **Structural resyncs come before the parameter events, refresh
+    /// resyncs after them.** A plugin that reloads (or rebuilds its buses)
+    /// and then reports parameters reports them against its new table, so
+    /// the host must hear `Reloaded` and `Io` first; a `ParamValues` re-read
+    /// must win over every queued value, so it comes last. Every kind is
+    /// raised, in the reverse of the delivery order, around the parameters.
+    ///
+    /// Mutations (run): structural resyncs chained after the parameters
+    /// (`params.chain(structural…)`) → `p0` first → fails. `Io` before
+    /// `Reloaded` in `structural` → fails. `ParamValues` before
+    /// `ParamTitles` in `refresh` → fails. `refresh` chained before the
+    /// latency → fails.
+    #[test]
+    fn structural_resyncs_lead_and_refreshes_trail() {
+        let mut inbox = Unsolicited::new();
+        inbox.resync(ResyncKind::ParamValues);
+        inbox.resync(ResyncKind::ParamTitles);
+        inbox.tail(PluginTail::default());
+        inbox.latency(Samples::new(16));
+        inbox.resync(ResyncKind::Io);
+        inbox.resync(ResyncKind::Reloaded);
+        inbox.param(0, 0.0);
+        inbox.param(1, 0.0);
+        inbox.resync(ResyncKind::Reloaded);
+        assert_eq!(
+            labels(&mut inbox),
+            [
+                "Reloaded",
+                "Io",
+                "p0",
+                "p1",
+                "latency 16",
+                "tail",
+                "ParamTitles",
+                "ParamValues"
+            ]
+        );
+        assert!(labels(&mut inbox).is_empty(), "every slot was taken");
+    }
 }

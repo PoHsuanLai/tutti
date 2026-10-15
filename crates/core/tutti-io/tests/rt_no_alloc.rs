@@ -28,12 +28,12 @@ fn mic_monitor_process_is_allocation_free() {
         traits::{Producer, Split},
         HeapRb,
     };
-    use tutti_io::{share_mic_ring, MicMonitorNode};
+    use tutti_io::{MicMonitorNode, MicRing};
 
     let rb = HeapRb::<[f32; 2]>::new(4096);
     let (mut prod, cons) = rb.split();
     let mut node = Direct::new(
-        MicMonitorNode::new(share_mic_ring(cons)),
+        MicMonitorNode::new(MicRing::new(cons)),
         SampleRate(48_000.0),
         64,
     );

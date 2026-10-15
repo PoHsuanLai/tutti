@@ -54,8 +54,30 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 /// frames from its input callback, and wraps the consumer here. Only the
 /// monitor node, on the audio thread, can pop from it, so the ring keeps
 /// exactly one consumer. Not `Clone`: the handle *is* the one consumer, and
-/// the node that owns it pops through `&mut self`. (No test pins that: the
-/// `HeapCons` inside is not `Clone`, so a clone cannot be written.)
+/// the node that owns it pops through `&mut self`.
+///
+/// ```
+/// use ringbuf::{traits::Split, HeapRb};
+/// use tutti_io::MicRing;
+///
+/// let (_device_side, consumer) = HeapRb::<[f32; 2]>::new(64).split();
+/// let ring = MicRing::new(consumer);
+/// # let _ = ring;
+/// ```
+///
+/// A second consumer cannot be made:
+///
+/// ```compile_fail
+/// use ringbuf::{traits::Split, HeapRb};
+/// use tutti_io::MicRing;
+///
+/// let (_device_side, consumer) = HeapRb::<[f32; 2]>::new(64).split();
+/// let ring = MicRing::new(consumer);
+/// let second = ring.clone();
+/// ```
+// Mutation (run) for the `compile_fail` doctest: a `Clone` impl on
+// `MicRing` (`unimplemented!()` in its body, since `HeapCons` has none) →
+// the doctest compiles → fails.
 // A newtype rather than a bare `ringbuf::HeapCons`, so `ringbuf` stays an
 // implementation detail, as `tutti-core`'s `TapCons` is for the tap ring.
 pub struct MicRing(HeapCons<[f32; 2]>);

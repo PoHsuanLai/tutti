@@ -42,7 +42,8 @@ use crate::host::node::{
 use crate::protocol::Features;
 
 /// The most channels a block hands the plugin (the stack tables `process`
-/// builds from its `Io`).
+/// builds from its `Io`). A wider plugin's channels past it read silence and
+/// its graph outputs past it are silent.
 const MAX_CHANNELS: usize = 16;
 
 impl Node for InProcessVst2Client {
@@ -126,6 +127,12 @@ impl Node for InProcessVst2Client {
         // tables release `io` before the event output is taken.
         let processed = {
             let (inputs, mut outputs) = io.split();
+            // A plugin wider than the tables is handed their first
+            // `MAX_CHANNELS` channels; the graph's outputs past them would
+            // keep whatever their buffers last held, so they are silenced.
+            for out in outputs.iter_mut().skip(n_out) {
+                out[..size].fill(0.0);
+            }
             let ins: ArrayVec<&[f32], MAX_CHANNELS> =
                 (0..n_in).map(|ch| &inputs.get(ch)[..size]).collect();
             let mut outs: ArrayVec<&mut [f32], MAX_CHANNELS> = outputs

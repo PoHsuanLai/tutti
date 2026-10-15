@@ -3587,21 +3587,31 @@ text past it, since the plugin holds pointers into it for the block.
 - **tutti-plugin's unsolicited events** went through an `Arc<ArrayQueue>` on
   the bridge's `Channels`, but its one producer (`recv_reply`) and its one
   consumer (the drain after each command) are both the bridge thread. They
-  are a bounded, preallocated `VecDeque` owned by the bridge loop now
-  (`Unsolicited`), lent to `handle` beside `Owed`; the listener still runs
-  after each command, never from inside a read, so a slow listener never
-  delays a blocked caller's reply.
+  are a buffer owned by the bridge loop now (`Unsolicited`), lent to
+  `handle` beside `Owed`; the listener still runs after each command, never
+  from inside a read, so a slow listener never delays a blocked caller's
+  reply. The old queue held 128 events of every kind and lost two per
+  overflow (the incoming one and the oldest), so a preset load's parameter
+  flood could evict a latency, tail or resync event and PDC never heard of
+  it. In the buffer those are latest-wins slots nothing evicts; only
+  parameter events queue, bounded and preallocated, and a dropped one is
+  counted (`PluginClient::dropped_parameter_events`) and raises a
+  `Resync(ParamValues)`, so the host re-reads. The drain hands over the
+  parameter events in arrival order, then latency, tail and resyncs.
 - **The in-process VST2 node copied each block twice each way** (the
   graph's buffers, a `ProcessScratch` of `Vec<Vec<f32>>`, `vst2-host`'s
   `RenderScratch`, the plugin). The node hands `Vst2Instance::process_f32`
   stack `ArrayVec`s of its `Io` slices now, and `ProcessScratch` is deleted:
   one copy each way, the one the plugin's pointer tables need. The
   `vst2-host` API did not change, and the out-of-process server is
-  untouched.
+  untouched. A plugin wider than the tables (sixteen channels) gets its
+  first sixteen; the graph outputs past them are silenced, where they had
+  been left holding their buffers' last contents.
 - **`MicRing`** was an `Arc<AudioThreadCell<HeapCons>>` and `Clone`, though
   nothing cloned it and its node is neither `Clone` nor forkable. It is a
   plain newtype over `HeapCons` that pops through `&mut self`, as
-  `TapCons` is, built with `MicRing::new` (`share_mic_ring` is gone).
+  `TapCons` is, built with `MicRing::new` (`share_mic_ring` is gone); a
+  `compile_fail` doctest pins that it cannot be cloned.
 - **The VST2 transport seqlock** (`TransportCell`, an `UnsafeCell` with
   `unsafe impl Sync` and no loom model) is now `tutti_types::SeqWriter<W>`
   and `SeqReader<W>`: `W` atomic words, so a read racing a write copies

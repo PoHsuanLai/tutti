@@ -59,6 +59,10 @@ pub(super) struct Channels {
     /// owed back, so a test can bound what the drain took by what was owed
     /// instead of by how many budgets a loaded machine happened to miss.
     abandoned: Arc<AtomicU64>,
+    /// How many unsolicited parameter events the bridge thread dropped
+    /// because more arrived during one command than its inbox holds, ever.
+    /// Each drop also raises a `Resync(ParamValues)`, so the host re-reads.
+    dropped_param_events: Arc<AtomicU64>,
 }
 
 impl Channels {
@@ -71,6 +75,7 @@ impl Channels {
             sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.to_bits())),
             settled: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(AtomicU64::new(0)),
+            dropped_param_events: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -136,6 +141,20 @@ impl Channels {
     #[cfg(test)]
     pub(super) fn abandoned(&self) -> u64 {
         self.abandoned.load(Ordering::Relaxed)
+    }
+
+    /// Record `n` dropped unsolicited parameter events. Bridge thread only;
+    /// `Relaxed`: a count nothing branches on.
+    pub(super) fn note_dropped_param_events(&self, n: u64) {
+        if n > 0 {
+            self.dropped_param_events.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// How many unsolicited parameter events were dropped, over the life of
+    /// the bridge.
+    pub(super) fn dropped_param_events(&self) -> u64 {
+        self.dropped_param_events.load(Ordering::Relaxed)
     }
 
     /// Pushes, then wakes the bridge thread. `Thread::unpark` is a non-blocking

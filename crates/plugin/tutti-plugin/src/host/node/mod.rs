@@ -603,6 +603,17 @@ impl<S> PluginClient<S> {
         self.bridge.is_crashed()
     }
 
+    /// How many parameter-change events the plugin sent that the bridge
+    /// dropped, over the client's life: more arrived during one command (a
+    /// preset or state load) than the bridge holds between two listener
+    /// calls, and the oldest went. Each drop also delivers a
+    /// [`PluginRefresh::ParamValues`](crate::host::handles::PluginRefresh), so a
+    /// host that re-reads on it loses nothing; latency, tail and resync events
+    /// are never dropped.
+    pub fn dropped_parameter_events(&self) -> u64 {
+        self.bridge.dropped_parameter_events()
+    }
+
     /// Queues a parameter change for the plugin. RT-safe, fire-and-forget.
     ///
     /// Main-thread parameter reads and writes are on

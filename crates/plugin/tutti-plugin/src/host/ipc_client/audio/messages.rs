@@ -202,8 +202,16 @@ pub enum BridgeEvent {
     },
 }
 
-/// How many unsolicited events [`Unsolicited`] holds between two drains.
-const UNSOLICITED_CAPACITY: usize = 128;
+/// How many parameter events [`Unsolicited`] holds between two drains.
+pub(super) const UNSOLICITED_PARAMS: usize = 128;
+
+/// Every [`ResyncKind`], in the order [`Unsolicited::drain`] hands them over.
+const RESYNC_KINDS: [ResyncKind; 4] = [
+    ResyncKind::ParamValues,
+    ResyncKind::ParamTitles,
+    ResyncKind::Io,
+    ResyncKind::Reloaded,
+];
 
 /// The unsolicited events read off the control stream while a command waited
 /// for its reply, held until `pump` hands them to the listener.
@@ -214,29 +222,97 @@ const UNSOLICITED_CAPACITY: usize = 128;
 /// rather than from `recv_reply` itself so a slow listener never delays the
 /// reply a blocked caller is waiting on.
 ///
-/// Bounded and allocated once: a plugin flooding events during one command
-/// keeps the newest [`UNSOLICITED_CAPACITY`], dropping the oldest, as the
-/// lock-free queue this replaces did.
-pub(super) struct Unsolicited(std::collections::VecDeque<BridgeEvent>);
+/// **State events cannot be lost.** A latency, a tail and each resync kind is
+/// a latest-wins slot: a plugin reporting its latency twice during one
+/// command is heard once, with the second figure, and no flood of anything
+/// else can evict it (PDC would never hear of it). Only parameter events
+/// queue, bounded and allocated once: past [`UNSOLICITED_PARAMS`] the oldest
+/// is dropped, counted ([`take_dropped`](Self::take_dropped)), and a
+/// `Resync(ParamValues)` is raised in its place, so a host that lost a
+/// parameter value is told to re-read them all.
+///
+/// Filled one kind at a time ([`param`](Self::param),
+/// [`latency`](Self::latency), [`tail`](Self::tail), [`resync`](Self::resync)),
+/// so [`Crashed`](BridgeEvent::Crashed), which the bridge sends from the site
+/// that noticed, cannot come through here.
+pub(super) struct Unsolicited {
+    params: std::collections::VecDeque<(i32, f32)>,
+    latency: Option<Samples>,
+    tail: Option<PluginTail>,
+    /// One flag per [`RESYNC_KINDS`] entry.
+    resync: [bool; RESYNC_KINDS.len()],
+    /// Parameter events dropped since the last [`take_dropped`](Self::take_dropped).
+    dropped: u64,
+}
 
 impl Unsolicited {
     pub(super) fn new() -> Self {
-        Self(std::collections::VecDeque::with_capacity(
-            UNSOLICITED_CAPACITY,
-        ))
-    }
-
-    /// Keep `ev`, dropping the oldest event when full.
-    pub(super) fn push(&mut self, ev: BridgeEvent) {
-        if self.0.len() == UNSOLICITED_CAPACITY {
-            self.0.pop_front();
+        Self {
+            params: std::collections::VecDeque::with_capacity(UNSOLICITED_PARAMS),
+            latency: None,
+            tail: None,
+            resync: [false; RESYNC_KINDS.len()],
+            dropped: 0,
         }
-        self.0.push_back(ev);
     }
 
-    /// The held events, oldest first, leaving the buffer empty.
+    /// Queue a parameter event, dropping (and counting) the oldest when full.
+    pub(super) fn param(&mut self, index: i32, value: f32) {
+        if self.params.len() == UNSOLICITED_PARAMS {
+            self.params.pop_front();
+            self.dropped += 1;
+            self.resync(ResyncKind::ParamValues);
+        }
+        self.params.push_back((index, value));
+    }
+
+    /// The plugin's new latency, replacing one already held.
+    pub(super) fn latency(&mut self, samples: Samples) {
+        self.latency = Some(samples);
+    }
+
+    /// The plugin's new tail, replacing one already held.
+    pub(super) fn tail(&mut self, tail: PluginTail) {
+        self.tail = Some(tail);
+    }
+
+    /// A resync request; a second of the same kind adds nothing.
+    pub(super) fn resync(&mut self, kind: ResyncKind) {
+        let i = RESYNC_KINDS
+            .iter()
+            .position(|k| *k == kind)
+            .expect("RESYNC_KINDS lists every kind");
+        self.resync[i] = true;
+    }
+
+    /// The held events, leaving the buffer empty: the parameter events in
+    /// arrival order, then the latency, the tail and the resyncs (in
+    /// [`RESYNC_KINDS`] order). State after parameters, so a host that
+    /// re-reads on a resync reads past every parameter event it was handed.
     pub(super) fn drain(&mut self) -> impl Iterator<Item = BridgeEvent> + '_ {
-        self.0.drain(..)
+        let params = self
+            .params
+            .drain(..)
+            .map(|(index, value)| BridgeEvent::ParameterChanged { index, value });
+        let latency = self
+            .latency
+            .take()
+            .map(|samples| BridgeEvent::LatencyChanged { samples });
+        let tail = self
+            .tail
+            .take()
+            .map(|tail| BridgeEvent::TailChanged { tail });
+        let resync = std::mem::take(&mut self.resync);
+        let resyncs = RESYNC_KINDS
+            .into_iter()
+            .zip(resync)
+            .filter_map(|(kind, raised)| raised.then_some(BridgeEvent::Resync(kind)));
+        params.chain(latency).chain(tail).chain(resyncs)
+    }
+
+    /// How many parameter events were dropped since the last call.
+    pub(super) fn take_dropped(&mut self) -> u64 {
+        std::mem::take(&mut self.dropped)
     }
 }
 
@@ -352,52 +428,73 @@ pub enum PluginInvalidation {
 mod tests {
     use super::*;
 
-    fn param(index: i32) -> BridgeEvent {
-        BridgeEvent::ParameterChanged { index, value: 0.0 }
-    }
-
-    fn indices(inbox: &mut Unsolicited) -> Vec<i32> {
+    /// Each drained event as a short label, for whole-sequence asserts.
+    fn labels(inbox: &mut Unsolicited) -> Vec<String> {
         inbox
             .drain()
             .map(|ev| match ev {
-                BridgeEvent::ParameterChanged { index, .. } => index,
+                BridgeEvent::ParameterChanged { index, .. } => format!("p{index}"),
+                BridgeEvent::LatencyChanged { samples } => format!("latency {}", samples.get()),
+                BridgeEvent::TailChanged { .. } => "tail".to_owned(),
+                BridgeEvent::Resync(kind) => format!("{kind:?}"),
                 other => panic!("unexpected {other:?}"),
             })
             .collect()
     }
 
-    /// **The inbox hands events over in arrival order and empties.**
+    /// **The inbox hands parameter events over in arrival order, state after
+    /// them, and empties.**
     ///
-    /// Mutation (run): `push` uses `push_front` → the drain is reversed →
-    /// fails. `drain` iterates a copy without removing (`self.0.iter().cloned()`)
-    /// → the second drain is not empty → fails.
+    /// Mutation (run): `param` uses `push_front` → the parameters come out
+    /// reversed → fails. `drain` leaves the latency slot set (`clone` for
+    /// `take`) → the second drain is not empty → fails.
     #[test]
     fn the_inbox_keeps_arrival_order_and_empties() {
         let mut inbox = Unsolicited::new();
+        inbox.resync(ResyncKind::Io);
         for i in 0..3 {
-            inbox.push(param(i));
+            inbox.param(i, 0.0);
         }
-        assert_eq!(indices(&mut inbox), [0, 1, 2]);
-        assert!(indices(&mut inbox).is_empty());
+        inbox.latency(Samples::new(64));
+        assert_eq!(labels(&mut inbox), ["p0", "p1", "p2", "latency 64", "Io"]);
+        assert!(labels(&mut inbox).is_empty());
+        assert_eq!(inbox.take_dropped(), 0);
     }
 
-    /// **A full inbox drops its oldest event and keeps its allocation.**
+    /// **A flood of parameter events cannot evict a state event.** Latency,
+    /// tail and resync arrive first, then more parameter events than the
+    /// inbox holds (a preset load inside one `LoadState`): every state event
+    /// is still delivered, latest-wins, the oldest parameter events are the
+    /// ones dropped, the drops are counted, a `ParamValues` resync stands in
+    /// for them, and the inbox never reallocates.
     ///
-    /// Mutation (run): `push` without the `pop_front` → the inbox grows
-    /// past its capacity (and reallocates) → fails. `pop_back` in place of
-    /// `pop_front` → the newest held event is lost instead → fails.
+    /// Mutations (run): the latency back in the bounded queue (`latency`
+    /// queuing itself as a parameter event, so the flood evicts it) → no
+    /// `latency` label → fails. `param` without the
+    /// `pop_front` → the inbox grows past its capacity (and reallocates) →
+    /// fails. `pop_back` for `pop_front` → the newest held event is lost
+    /// instead → fails. The drop not counted → `take_dropped` is 0 → fails.
+    /// The drop not raising `ParamValues` → that label is missing → fails.
     #[test]
-    fn a_full_inbox_drops_the_oldest() {
+    fn a_parameter_flood_drops_only_parameters() {
         let mut inbox = Unsolicited::new();
-        let cap = inbox.0.capacity();
-        let n = UNSOLICITED_CAPACITY as i32;
+        let cap = inbox.params.capacity();
+        inbox.latency(Samples::new(32));
+        inbox.tail(PluginTail::default());
+        inbox.resync(ResyncKind::Reloaded);
+        inbox.latency(Samples::new(64));
+        let n = UNSOLICITED_PARAMS as i32;
         for i in 0..n + 2 {
-            inbox.push(param(i));
+            inbox.param(i, 0.0);
         }
-        assert_eq!(inbox.0.capacity(), cap, "the inbox reallocated");
-        let kept = indices(&mut inbox);
-        assert_eq!(kept.len(), UNSOLICITED_CAPACITY);
-        assert_eq!(kept.first(), Some(&2));
-        assert_eq!(kept.last(), Some(&(n + 1)));
+        assert_eq!(inbox.params.capacity(), cap, "the inbox reallocated");
+        assert_eq!(inbox.take_dropped(), 2);
+        assert_eq!(inbox.take_dropped(), 0, "taking the count resets it");
+
+        let got = labels(&mut inbox);
+        let (params, state) = got.split_at(UNSOLICITED_PARAMS);
+        assert_eq!(params.first().map(String::as_str), Some("p2"));
+        assert_eq!(params.last(), Some(&format!("p{}", n + 1)));
+        assert_eq!(state, ["latency 64", "tail", "ParamValues", "Reloaded"]);
     }
 }

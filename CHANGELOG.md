@@ -107,12 +107,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The in-process VST2 node copies each block once each way, not twice.**
   The node's `ProcessScratch` staging is deleted; `process_f32` reads and
   writes the graph's own buffers through stack channel tables. No API
-  change.
+  change. **Fixed** with it: a plugin wider than the tables (sixteen
+  channels) left the graph's outputs past them holding whatever their
+  buffers last held (another node's audio); they are silent now.
 - **tutti-plugin's bridge thread buffers unsolicited plugin events itself**
-  (a bounded, preallocated buffer it owns) instead of in a lock-free queue
-  shared with no other thread. Listener timing is unchanged: after each
-  command. Unused dependencies dropped: `ringbuf` (tutti-plugin),
+  (a preallocated buffer it owns) instead of in a lock-free queue shared
+  with no other thread. Listener timing is unchanged: after each command.
+  Unused dependencies dropped: `ringbuf` (tutti-plugin),
   `crossbeam-channel` and `parking_lot` (tutti-plugin-server).
+
+  **Behaviour change: state events are never dropped.** The old queue held
+  128 events of every kind and, when full, refused the incoming event and
+  then dropped the oldest (two lost per overflow), so more than 128
+  parameter changes inside one command (a `LoadState` or a preset load)
+  could evict a latency, tail or resync event, and PDC never heard of the
+  new latency. Now a latency, a tail and each resync kind is a latest-wins
+  slot nothing evicts; only parameter events queue (128), the oldest is
+  dropped when full, each drop is counted and raises a
+  `Resync(ParamValues)` (delivered as `PluginRefresh::ParamValues`) so the
+  host re-reads them all. A listener hears, per command, the parameter
+  events in arrival order, then the latency, the tail and the resyncs; two
+  latency reports in one command arrive as one, with the second value.
+
+  | Was | Now |
+  |---|---|
+  | a flood of parameter events could evict latency, tail and resync events | they are latest-wins and never dropped; parameter events drop oldest-first, counted, with a `ParamValues` resync |
+  | events in arrival order across kinds | parameter events in arrival order, then latency, tail, resyncs (`ParamValues`, `ParamTitles`, `Io`, `Reloaded`) |
+  | — | `PluginClient::dropped_parameter_events()` |
 
 - **Sampler real-time fixes** (tutti-sampler; design doc 013, "Sampler
   real-time fixes"). A voice pool's drain no longer blocks on a stalled

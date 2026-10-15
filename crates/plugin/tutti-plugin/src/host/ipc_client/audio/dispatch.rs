@@ -1,7 +1,7 @@
 //! Per-command IPC choreography for the bridge thread.
 
 use super::channels::Channels;
-use super::messages::{AudioResponse, BridgeEvent, Command, ResyncKind, Unsolicited};
+use super::messages::{AudioResponse, Command, ResyncKind, Unsolicited};
 use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
@@ -727,25 +727,25 @@ fn recv_reply(
     loop {
         match ipc::recv_resumable(stream, timeout, partial)? {
             BridgeMessage::LatencyChanged { samples } => {
-                inbox.push(BridgeEvent::LatencyChanged { samples });
+                inbox.latency(samples);
             }
             BridgeMessage::TailChanged { tail } => {
-                inbox.push(BridgeEvent::TailChanged { tail });
+                inbox.tail(tail);
             }
             BridgeMessage::ParameterChanged { index, value } => {
-                inbox.push(BridgeEvent::ParameterChanged { index, value });
+                inbox.param(index, value);
             }
             BridgeMessage::PluginParamValuesChanged => {
-                inbox.push(BridgeEvent::Resync(ResyncKind::ParamValues));
+                inbox.resync(ResyncKind::ParamValues);
             }
             BridgeMessage::PluginParamTitlesChanged => {
-                inbox.push(BridgeEvent::Resync(ResyncKind::ParamTitles));
+                inbox.resync(ResyncKind::ParamTitles);
             }
             BridgeMessage::PluginIoChanged => {
-                inbox.push(BridgeEvent::Resync(ResyncKind::Io));
+                inbox.resync(ResyncKind::Io);
             }
             BridgeMessage::PluginReloaded => {
-                inbox.push(BridgeEvent::Resync(ResyncKind::Reloaded));
+                inbox.resync(ResyncKind::Reloaded);
             }
             msg => return Ok(msg),
         }

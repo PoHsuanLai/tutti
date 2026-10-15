@@ -18,8 +18,8 @@
 //! counter — an assertion that a number stayed at zero passes just as well
 //! against a probe that was never loaded.
 //!
-//! The last test reads the render itself: what the node writes is what the
-//! plugin wrote.
+//! The last two tests read the render itself: what the node writes is what the
+//! plugin wrote, and silence past the channels it hands the plugin.
 
 #![cfg(feature = "vst2")]
 
@@ -393,4 +393,113 @@ fn the_output_is_what_the_plugin_wrote() {
     }
 
     drop(loaded.handle);
+}
+
+/// A node of `WIDE` channels in and out writing `value` to every output,
+/// whatever its input: what leaves a non-zero buffer behind for a later node
+/// to be handed.
+struct Fill {
+    width: tutti_core::ChannelLayout,
+    inputs: tutti_core::ChannelLayout,
+    value: f32,
+}
+
+impl tutti_graph::Node for Fill {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(self.inputs, self.width)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        _: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        for c in 0..io.output_count() {
+            io.output(c).fill(self.value);
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// A plugin wider than the node's channel tables (sixteen) has the outputs
+/// past them silenced, not left holding whatever the graph's buffer held.
+///
+/// The probe is loaded with eighteen inputs and outputs, behind two fill
+/// nodes (the first writes a stale value, the second, fed by it, the
+/// plugin's input), so the slots the first one wrote are free by the time
+/// the plugin's outputs are placed, and an output the node leaves unwritten
+/// shows what the first one left there. Channels within the tables are the
+/// plugin's (`in + tag(ch)`); the two past them are zero.
+///
+/// Mutation (run): the silencing loop deleted → channels 16 and 17 hold
+/// the stale value → fails.
+#[test]
+fn outputs_past_the_tables_are_silent() {
+    use tutti_core::{ChannelLayout, Samples};
+    use tutti_graph::{GraphBuilder, Prepare, Transport, Unforkable};
+    use tutti_vst2_test_plugin::channel_tag;
+
+    const WIDE: usize = 18;
+    const TABLE: usize = 16;
+    const STALE: f32 = -7.0;
+    const INPUT: f32 = 3.0;
+
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_probe(&path);
+    // SAFETY: `PROBE_LOCK` is held, so no other test thread touches the
+    // environment; the variables are cleared once the AEffect is built.
+    unsafe {
+        std::env::set_var("TUTTI_VST2_PROBE_INPUTS", WIDE.to_string());
+        std::env::set_var("TUTTI_VST2_PROBE_OUTPUTS", WIDE.to_string());
+    }
+    let loaded = in_process_vst2_client(&path, SAMPLE_RATE);
+    unsafe {
+        std::env::remove_var("TUTTI_VST2_PROBE_INPUTS");
+        std::env::remove_var("TUTTI_VST2_PROBE_OUTPUTS");
+    }
+    let (unit, handle) = loaded.unwrap_or_else(|e| panic!("in-process load: {e:?}"));
+
+    let wide = ChannelLayout::from_count(WIDE as u16);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, wide);
+    let stale = g.add(Unforkable(Fill {
+        width: wide,
+        inputs: ChannelLayout::EMPTY,
+        value: STALE,
+    }));
+    let feed = g.add(Unforkable(Fill {
+        width: wide,
+        inputs: wide,
+        value: INPUT,
+    }));
+    let key = g.add(Unforkable(unit));
+    g.pipe(stale, feed);
+    g.pipe(feed, key);
+    g.pipe_output(key);
+    let mut r = g
+        .renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
+        .expect("the graph compiles");
+
+    for block in 0..3usize {
+        let mut out = vec![vec![0.0f32; BLOCK]; WIDE];
+        let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+        r.executor_mut()
+            .process(BLOCK, &Transport::default(), &[], &mut outs);
+        for (c, ch) in out.iter().enumerate() {
+            let want = if c < TABLE {
+                INPUT + channel_tag(c)
+            } else {
+                0.0
+            };
+            assert!(
+                ch.iter().all(|&s| s == want),
+                "block {block}, channel {c}: want {want}, got {:?}",
+                &ch[..4]
+            );
+        }
+    }
+
+    drop(r);
+    drop(handle);
 }

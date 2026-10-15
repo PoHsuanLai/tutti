@@ -197,6 +197,17 @@ impl AudioBridge {
         self.channels.abandoned()
     }
 
+    /// How many plugin-originated parameter-change events the bridge
+    /// dropped, over its life, because more arrived during one command (a
+    /// preset or state load) than it holds between two listener calls.
+    ///
+    /// Each drop also delivers a `Resync(ParamValues)`, so a listener that
+    /// re-reads on it loses nothing; this says how often that happened.
+    /// Latency, tail and resync events are never dropped.
+    pub fn dropped_parameter_events(&self) -> u64 {
+        self.channels.dropped_param_events()
+    }
+
     pub fn audio_buffer(&self) -> &Arc<AudioSlab> {
         &self.audio_buffer
     }

@@ -27,9 +27,16 @@
 
 use std::sync::Arc;
 
-use tutti_core::{Amplitude, Beat, Bpm, ChannelLayout, Frame, SampleRate, Samples, UnitParam};
-use tutti_graph::{ForkMode, ForkTarget, Prepare, Solo, Transport};
+use std::sync::atomic::Ordering;
+
+use tutti_core::{
+    Amplitude, AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, NodeKey,
+    PhaseIncrement, SampleRate, Samples, UnitParam,
+};
+use tutti_graph::{EventOut, ForkMode, ForkTarget, ParamIn, ParamRange, Prepare, Solo, Transport};
 use tutti_io::Wave;
+use tutti_mod::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId, Polarity};
+use tutti_nodes::automation::ControlLaneNode;
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceNodeHandle, VoiceSource};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -187,4 +194,151 @@ fn an_unowned_param_is_ignored() {
         all_at(&block(&mut s), 1.0),
         "a Pan write must leave a voice's gain alone"
     );
+}
+
+/// **A control lane drives the voice's gain around its own cell** (doc
+/// 014 §4.2): the knob at 0.25 plus a constant half of a 0..1 range renders
+/// every sample of the flat wave at 0.75, the cell still holds 0.25 (the
+/// lane sends to the port and never writes it), and a knob write rides
+/// under the lane's offset (0.5 + 0.5 = 1.0). The gain is a port since doc
+/// 014 PR 5 ([`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)); before, a route
+/// onto it was refused with `NoSuchParam` once the frame-rate driver (which
+/// wrote the cell) went.
+///
+/// Mutation (run, PR 5): `VoiceNode::process` passing `None` to
+/// `drain_commands` (the port ignored) → the block renders at 0.25 →
+/// fails. Mutation (run, PR 5): `VOICE_PARAMS` not declared in the shape →
+/// `param_range_cell` is `None` → fails.
+#[test]
+fn a_lane_drives_the_voice_gain_around_its_cell() {
+    let mut s = solo_voice();
+    s.controls().params().set(UnitParam::Volume, 0.25);
+    let knob = s
+        .controls()
+        .params()
+        .cell(UnitParam::Volume)
+        .expect("the gain");
+    let at = ParamIn {
+        node: s.key(),
+        param: UnitParam::Volume,
+    };
+    drive_volume(s.renderer_mut().editor_mut(), at, knob.clone(), 0.5);
+
+    let out = block(&mut s);
+    assert!(
+        all_at(&out, 0.75),
+        "the knob plus the lane's offset; got {:?}",
+        &out[..4]
+    );
+    assert_eq!(
+        knob.load(Ordering::Acquire),
+        0.25,
+        "the lane never writes the knob"
+    );
+    s.controls().params().set(UnitParam::Volume, 0.5);
+    let out = block(&mut s);
+    assert!(
+        all_at(&out, 1.0),
+        "a knob write rides under the offset; got {:?}",
+        &out[..4]
+    );
+}
+
+/// Wires a control lane onto `at` (a `Volume` port) whose knob is `knob`
+/// and whose one layer adds a constant `depth` of a 0..1 range, and
+/// commits it.
+fn drive_volume(ed: &mut tutti_graph::Editor, at: ParamIn, knob: Arc<AtomicF32>, depth: f32) {
+    ed.set_param_range(at, ParamRange::new(0.0, 1.0))
+        .expect("the node is placed");
+    let range = ed
+        .param_range_cell(at)
+        .expect("the node declares its gain as a port");
+    let layer = Layer {
+        id: LayerId(1),
+        clock: Clock::Beats {
+            per_cycle: BeatDuration(1.0),
+            phase: PhaseIncrement(0.0),
+        },
+        wave: tutti_mod::Wave::Const(1.0),
+        amount: Amount {
+            depth: Depth(depth),
+            polarity: Polarity::Bipolar,
+            curve: CurveType::Linear,
+        },
+        depth_by: None,
+    };
+    let program = ControlProgram::new(None, vec![layer], vec![]).expect("valid");
+    let lane = ControlLaneNode::for_unit(UnitParam::Volume, program, Some(knob), Some(range));
+    ed.insert(NodeKey(9_000), "lane", lane);
+    ed.spec_mut().connect_param(
+        at,
+        EventOut {
+            node: NodeKey(9_000),
+            port: 0,
+        },
+    );
+    ed.commit().expect("the lane commits");
+}
+
+/// **A control lane drives a standalone memory source's gain too**: a
+/// `MemorySource` inserted as its own node addresses its gain as `Volume`
+/// and declares it as a port (doc 014 PR 5), so the knob at 0.25 plus a
+/// constant half of a 0..1 range renders the flat wave at 0.75, and the
+/// cell still holds 0.25.
+///
+/// Mutation (run, PR 5): `MemorySource::process` leaving `driven_gain` at
+/// `None` (the port ignored) → 0.25 → fails. Mutation (run, PR 5): its
+/// shape not declaring `VOICE_PARAMS` → `param_range_cell` is `None` →
+/// fails.
+#[test]
+fn a_lane_drives_a_memory_sources_gain_around_its_cell() {
+    let mut s = Solo::new(
+        MemorySource::with_channels(flat_wave(48_000), ChannelLayout::MONO),
+        Prepare::new(RATE, Samples(BLOCK)),
+    );
+    s.renderer_mut().set_transport_fn(rolling);
+    assert!(s.controls().set(UnitParam::Volume, 0.25));
+    let knob = s.controls().cell(UnitParam::Volume).expect("the gain");
+    let at = ParamIn {
+        node: s.key(),
+        param: UnitParam::Volume,
+    };
+    drive_volume(s.renderer_mut().editor_mut(), at, knob.clone(), 0.5);
+    let out = s.render(BLOCK).swap_remove(0);
+    assert!(
+        all_at(&out, 0.75),
+        "the knob plus the lane's offset; got {:?}",
+        &out[..4]
+    );
+    assert_eq!(
+        knob.load(Ordering::Acquire),
+        0.25,
+        "the lane never writes the knob"
+    );
+}
+
+/// **A voice's gain is a port, its base the cell** (doc 014 PR 5,
+/// [`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)): the value a driven port
+/// starts its connect crossfade from.
+///
+/// Mutation (run, PR 5): `VoiceNode::param_base` answering unity → fails.
+#[test]
+fn a_voices_gain_port_reads_its_cell_as_its_base() {
+    use tutti_graph::Node;
+
+    let voice = Voice {
+        source: VoiceSource::Memory(MemorySource::placed(flat_wave(64), Beat(0.0), None)),
+        play: Playback {
+            gain: Amplitude::new(0.25),
+            ..Playback::default()
+        },
+        channel_index: None,
+    };
+    let node = VoiceNode::with_channels(voice, ChannelLayout::MONO);
+    assert_eq!(
+        node.shape().params.as_slice(),
+        &tutti_sampler::VOICE_PARAMS[..]
+    );
+    assert_eq!(node.param_base(0), Some(0.25));
+    assert_eq!(node.param_base(1), None);
 }

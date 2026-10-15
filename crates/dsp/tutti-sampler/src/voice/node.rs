@@ -156,8 +156,11 @@ impl VoiceNode {
     /// more careful because its commands carry owned payloads (a `Voice`, a
     /// wave, a stretch filter), which is why it retires what it lets go of.
     /// A node takes no such payload: there is nothing for it to drop.
+    ///
+    /// `driven` is the block's gain from the node's param port when a lane
+    /// drives it (its last frame, [`VOICE_PARAMS`]); `None` reads the cell.
     #[inline]
-    fn drain_commands(&mut self) {
+    fn drain_commands(&mut self, driven: Option<f32>) {
         let published = *self.placement.read();
         if published != self.applied {
             if let Some(window) = published {
@@ -173,7 +176,7 @@ impl VoiceNode {
         }
         // Both halves of the gain: `Playback` is what the memory tier's read
         // scales by, the source's own cell what the disk tier's does.
-        let gain = self.gain.load();
+        let gain = driven.map_or_else(|| self.gain.load(), |v| Amplitude(v.max(0.0)));
         if gain != self.slot.voice.play.gain {
             self.slot.voice.play.gain = gain;
             self.slot.voice.source.apply_gain(gain);
@@ -259,6 +262,12 @@ impl From<Voice> for VoiceNode {
     }
 }
 
+/// The param a [`VoiceNode`] lets the graph modulate: its gain, as
+/// [`UnitParam::Volume`]. Block-rate in the voice (read once per block, as
+/// its cell is), so a driven port is read the same way: its value on the
+/// block's last frame.
+pub const VOICE_PARAMS: [UnitParam; 1] = [UnitParam::Volume];
+
 impl Node for VoiceNode {
     /// No inputs, [`channels`](Self::channels) outputs; a generator, never
     /// skipped.
@@ -266,6 +275,7 @@ impl Node for VoiceNode {
         Shape::audio(ChannelLayout::EMPTY, self.channels)
             .with_tail(Tail::Unbounded)
             .with_cost(self.cost())
+            .with_params(&VOICE_PARAMS)
     }
 
     /// The rate the voice's source and its stretch filter run at, and the
@@ -283,7 +293,7 @@ impl Node for VoiceNode {
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        self.drain_commands();
+        self.drain_commands(io.param(0).frames().and_then(|v| v.last().copied()));
         let clock = self.clock.observe(cx.env);
         let frames = io.frames();
         let (_, mut outs) = io.split();
@@ -317,6 +327,10 @@ impl Node for VoiceNode {
     fn reset(&mut self) {
         self.slot.flush_playhead_state();
         self.clock.reset();
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        (k == 0).then(|| self.gain.load().get())
     }
 }
 

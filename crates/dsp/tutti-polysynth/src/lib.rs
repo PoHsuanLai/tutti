@@ -43,7 +43,7 @@ mod polysynth;
 // `PolySynth::fork_instance`: the synth in a fork of the
 // graph (an export), with its clip.
 mod fork;
-pub use polysynth::PolySynth;
+pub use polysynth::{PolySynth, SYNTH_PARAMS};
 
 mod synth_voice;
 

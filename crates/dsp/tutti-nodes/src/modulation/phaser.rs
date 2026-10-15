@@ -9,7 +9,7 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepar
 use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, LinearModMix};
-use crate::ramp::{self, Ramp};
+use crate::ramp::{self, block_driven, Ramp};
 use tutti_core::{ChannelLayout, Depth, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate};
 
 const MAX_STAGES: usize = 12;
@@ -269,16 +269,22 @@ impl PhaserNode {
 
     /// The render kernel behind `process`, over `size` frames. `size` is at
     /// most the scratch's length (the prepared maximum block).
+    ///
+    /// `driven` is the block's rate, depth, feedback and mix from the
+    /// node's param ports ([`PHASER_PARAMS`] order), each `None` where
+    /// nothing drives it.
     fn render(
         &mut self,
         size: usize,
+        driven: [Option<f32>; 4],
         x: impl Fn(usize, usize) -> f32,
         mut y: impl FnMut(usize, usize, f32),
     ) {
         debug_assert!(size <= self.phases.len());
         let w = self.width;
         // Every control is read here, once, for the whole block.
-        let (depth, fb, mix) = self.mix.load();
+        let [rate, depth, fb, mix] = driven;
+        let (depth, fb, mix) = self.mix.load([depth, fb, mix]);
         let target = PhaserControls {
             depth,
             fb,
@@ -291,7 +297,7 @@ impl PhaserNode {
         let mix_r = Ramp::new(from.mix, target.mix, size);
 
         self.lfo
-            .fill_block(self.sample_rate, &mut self.phases[..size]);
+            .fill_block(self.sample_rate, &mut self.phases[..size], rate);
         let phases = &self.phases;
 
         // Narrowed once for the all-pass coefficients below.
@@ -359,12 +365,24 @@ impl PhaserNode {
     }
 }
 
+/// The params a [`PhaserNode`] lets the graph modulate, in port order: all
+/// four of its controls. Each is block-rate in the node (read once per
+/// block and ramped across it), so a driven port is read the same way
+/// (`block_driven`).
+pub const PHASER_PARAMS: [UnitParam; 4] = [
+    UnitParam::Rate,
+    UnitParam::Depth,
+    UnitParam::Feedback,
+    UnitParam::Wet,
+];
+
 impl Node for PhaserNode {
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.width as u16);
         Shape::audio(width, width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unknown)
+            .with_params(&PHASER_PARAMS)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -381,6 +399,7 @@ impl Node for PhaserNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
+        let driven = [0, 1, 2, 3].map(|k| block_driven(&io, k));
         let (inputs, mut outputs) = io.split();
         // One call in a graph, whose blocks fit the scratch; a longer block
         // driven by hand renders in scratch-sized pieces.
@@ -390,6 +409,7 @@ impl Node for PhaserNode {
             let n = step.min(size - at);
             self.render(
                 n,
+                driven,
                 |c, i| inputs.get(c)[at + i],
                 |c, i, v| outputs.get(c)[at + i] = v,
             );
@@ -404,6 +424,16 @@ impl Node for PhaserNode {
         self.feedback_sample.fill(0.0);
         self.lfo.reset_phase();
         self.last = None;
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        match k {
+            0 => Some(self.lfo.rate.load().get()),
+            1 => Some(self.mix.depth.load().get()),
+            2 => Some(self.mix.feedback.load().get()),
+            3 => Some(self.mix.mix.load().get()),
+            _ => None,
+        }
     }
 }
 

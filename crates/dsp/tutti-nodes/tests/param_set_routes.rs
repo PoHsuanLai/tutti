@@ -24,16 +24,16 @@ use std::sync::Arc;
 use audio_automation::CurveType;
 use tutti_core::{ChannelLayout, UnitParam};
 use tutti_graph::{
-    Cx, Editor, EventOut, Io, Node, ParamIn, ParamNode, ParamRange, Prepare, Renderer, Shape,
-    Status, Unforkable,
+    Cx, Editor, EventOut, GraphBuilder, Io, Node, ParamIn, ParamNode, ParamRange, ParamSet,
+    Prepare, Renderer, Shape, Status, Unforkable,
 };
 use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
-    CompressorNode, LadderFilterNode, LadderType, ModDelayNode, SvfFilterNode, SvfType,
+    CompressorNode, LadderFilterNode, LadderType, LfoNode, ModDelayNode, SvfFilterNode, SvfType,
 };
 use tutti_types::graph::{OutPort, Source};
-use tutti_types::{Depth, Hz, NodeKey, PhaseIncrement, SampleRate, Samples};
+use tutti_types::{BeatDuration, Depth, Hz, NodeKey, PhaseIncrement, SampleRate, Samples};
 
 /// Writes `value` to `p` through `node`'s set, as a host does; `false` for
 /// a param the set lacks.
@@ -190,6 +190,117 @@ fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
     );
 }
 
+/// A chorus, its input noise on both channels, rendered for `frames`;
+/// when `lane` is `Some(depth)`, its rate is driven by a control lane
+/// whose knob is the chorus's own rate cell and whose one layer is a
+/// constant `depth` of the rate port's 0..10 Hz span.
+fn render_chorus(
+    node: ModDelayNode,
+    lane: Option<f32>,
+    frames: usize,
+) -> (Vec<Vec<f32>>, ParamSet) {
+    let mut g = GraphBuilder::new(ChannelLayout::STEREO, ChannelLayout::STEREO);
+    let (n, params) = g.add_with_controls(node);
+    g.connect_input(0, n, 0)
+        .connect_input(1, n, 1)
+        .connect_output(n, 0, 0)
+        .connect_output(n, 1, 1);
+    let at = ParamIn {
+        node: n,
+        param: UnitParam::Rate,
+    };
+    g.spec_mut().set_param_range(at, ParamRange::new(0.0, 10.0));
+    let mut r = g
+        .renderer(Prepare::new(SampleRate(48_000.0), Samples(128)))
+        .expect("builds");
+    if let Some(depth) = lane {
+        let ed = r.editor_mut();
+        let layer = Layer {
+            id: LayerId(1),
+            clock: Clock::Beats {
+                per_cycle: BeatDuration(1.0),
+                phase: PhaseIncrement(0.0),
+            },
+            wave: Wave::Const(1.0),
+            amount: Amount {
+                depth: Depth(depth),
+                polarity: Polarity::Bipolar,
+                curve: CurveType::Linear,
+            },
+            depth_by: None,
+        };
+        let program = ControlProgram::new(None, vec![layer], vec![]).expect("valid");
+        let knob = params.cell(UnitParam::Rate).expect("the chorus has a rate");
+        let range = ed.param_range_cell(at).expect("committed");
+        let lane = ControlLaneNode::for_unit(UnitParam::Rate, program, Some(knob), Some(range));
+        ed.insert(NodeKey(9_000), "lane", lane);
+        ed.spec_mut().connect_param(
+            at,
+            EventOut {
+                node: NodeKey(9_000),
+                port: 0,
+            },
+        );
+        ed.commit().expect("the lane commits");
+    }
+    let mut state = 0x1234_5678_u32;
+    let noise: Vec<f32> = (0..frames)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            0.8 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
+        })
+        .collect();
+    (r.render_input(&[&noise, &noise]), params)
+}
+
+/// **A control lane modulates a chorus's rate**, around the chorus's own
+/// rate cell: a +2 Hz offset on the 1 Hz knob renders the chorus as it
+/// renders at 3 Hz, and not as it does at 1 Hz, and the cell still holds
+/// the knob (the lane sends to the port and never writes it, doc 014
+/// §4.2). The rate is a port since doc 014 PR 5 ([`MOD_DELAY_PARAMS`]);
+/// before, a route onto it was refused with `NoSuchParam` once the
+/// frame-rate driver (which wrote the cell) went. The claim the old
+/// `chorus_rate_route_moves_the_nodes_own_cell` made, on the lane.
+///
+/// Mutation (run, PR 5): `ModDelayNode` not declaring its ports (the
+/// `.with_params(&MOD_DELAY_PARAMS)` dropped) → the lane's port does not
+/// exist and the connect is refused at commit → fails. Mutation (run, PR
+/// 5): `LfoDrive::fill_block` ignoring the driven rate → the chorus runs at
+/// 1 Hz → fails.
+///
+/// [`MOD_DELAY_PARAMS`]: tutti_nodes::MOD_DELAY_PARAMS
+#[test]
+fn a_lane_modulates_a_chorus_rate_around_its_own_cell() {
+    const FRAMES: usize = 24_000;
+    let chorus = || ModDelayNode::chorus(ChannelLayout::STEREO);
+    let (driven, params) = render_chorus(chorus(), Some(0.2), FRAMES);
+    let at_3hz = {
+        let n = chorus();
+        n.set_rate(3.0);
+        render_chorus(n, None, FRAMES).0
+    };
+    let at_1hz = render_chorus(chorus(), None, FRAMES).0;
+    for c in 0..2 {
+        for i in 0..FRAMES {
+            assert!(
+                (driven[c][i] - at_3hz[c][i]).abs() < 1e-4,
+                "channel {c} frame {i}: driven {} vs 3 Hz {}",
+                driven[c][i],
+                at_3hz[c][i]
+            );
+        }
+    }
+    assert!(
+        (0..FRAMES).any(|i| (driven[0][i] - at_1hz[0][i]).abs() > 1e-2),
+        "the lane's offset is heard"
+    );
+    assert_eq!(
+        params.get(UnitParam::Rate),
+        Some(1.0),
+        "the knob is untouched"
+    );
+}
+
 #[test]
 fn chorus_rate_write_moves_the_nodes_own_cell() {
     let node = ModDelayNode::chorus(ChannelLayout::STEREO);
@@ -231,4 +342,78 @@ fn convolver_only_addresses_wet() {
     assert!(addresses(&node, UnitParam::Wet));
     assert!(!addresses(&node, UnitParam::RoomSize));
     assert!(!addresses(&node, UnitParam::Cutoff));
+}
+
+/// One second of a free-running 1 Hz sine `LfoNode` at depth 0.25, with a
+/// control lane on `param` (knob: the LFO's own cell) adding a constant
+/// `depth` of `range`, and the cell's value after the render.
+fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32) {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let lfo = LfoNode::new(LfoShape::Sine)
+        .with_frequency(Hz(1.0))
+        .with_depth(Depth(0.25));
+    let (n, params) = g.add_with_controls(lfo);
+    g.connect_output(n, 0, 0);
+    let at = ParamIn { node: n, param };
+    g.spec_mut().set_param_range(at, range);
+    let mut r = g
+        .renderer(Prepare::new(SampleRate(48_000.0), Samples(128)))
+        .expect("builds");
+    let knob = params.cell(param).expect("the LFO addresses it");
+    let ed = r.editor_mut();
+    let layer = Layer {
+        id: LayerId(1),
+        clock: Clock::Beats {
+            per_cycle: BeatDuration(1.0),
+            phase: PhaseIncrement(0.0),
+        },
+        wave: Wave::Const(1.0),
+        amount: Amount {
+            depth: Depth(depth),
+            polarity: Polarity::Bipolar,
+            curve: CurveType::Linear,
+        },
+        depth_by: None,
+    };
+    let program = ControlProgram::new(None, vec![layer], vec![]).expect("valid");
+    let range = ed
+        .param_range_cell(at)
+        .expect("the LFO declares it as a port");
+    let lane = ControlLaneNode::for_unit(param, program, Some(knob.clone()), Some(range));
+    ed.insert(NodeKey(9_000), "lane", lane);
+    ed.spec_mut().connect_param(
+        at,
+        EventOut {
+            node: NodeKey(9_000),
+            port: 0,
+        },
+    );
+    ed.commit().expect("the lane commits");
+    let out = r.render(48_000).swap_remove(0);
+    (out, knob.load(Ordering::Acquire))
+}
+
+/// **A lane drives an `LfoNode`'s depth and rate** (doc 014 PR 5,
+/// [`LFO_PARAMS`]), each around the LFO's own cell. The depth knob at 0.25
+/// plus half of a 0..1 range swings the 1 Hz sine to ±0.75; the 1 Hz rate
+/// knob plus a fifth of a 0..10 Hz range runs it at 3 Hz, three rising
+/// zero crossings in a second where 1 Hz has one. Neither cell moves.
+///
+/// Mutation (run, PR 5): the LFO reading its depth cell, not the driven
+/// port (`block_driven(&io, 0)` replaced by `None`) → it peaks at 0.25 →
+/// fails. Mutation (run, PR 5): reading its rate cell (`block_driven(&io,
+/// 1)` replaced by `None`) → one crossing → fails.
+///
+/// [`LFO_PARAMS`]: tutti_nodes::LFO_PARAMS
+#[test]
+fn a_lane_drives_an_lfo_nodes_depth_and_rate() {
+    let (out, knob) = render_lfo(UnitParam::Depth, ParamRange::new(0.0, 1.0), 0.5);
+    let peak = out.iter().copied().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!((peak - 0.75).abs() < 1e-3, "peaks at 0.75, not {peak}");
+    assert_eq!(knob, 0.25, "the lane never writes the depth cell");
+
+    let (out, knob) = render_lfo(UnitParam::Rate, ParamRange::new(0.0, 10.0), 0.2);
+    let rising = out.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+    assert_eq!(rising, 3, "3 Hz: three rising crossings in a second");
+    assert_eq!(knob, 1.0, "the lane never writes the rate cell");
 }

@@ -27,7 +27,7 @@ use tutti_types::{Latency, Tail, UnitParam};
 use super::convolver::Convolver;
 use super::params::WetDry;
 use crate::buffer::CircularBuffer;
-use crate::ramp::{LastGood, Ramp};
+use crate::ramp::{block_driven, LastGood, Ramp};
 
 /// The dry path's alignment delay: holds the input for exactly the convolver's
 /// latency, so the blend adds the dry sample that arrived *with* the wet one.
@@ -364,8 +364,13 @@ impl ConvolverNode {
     /// ended. Both scale the output directly — a stepped wet gain or blend is a
     /// click — so a change between blocks glides across the next one and lands
     /// exactly on the new value (a block of one takes it at once).
-    fn begin_block(&mut self, size: usize) -> BlendRamp {
+    ///
+    /// `driven` is the block's mix from the node's param port when a lane
+    /// drives it (`block_driven`), clamped as `set_mix` clamps; `None`
+    /// reads the cell.
+    fn begin_block(&mut self, size: usize, driven: Option<f32>) -> BlendRamp {
         let (mix, gain) = self.params.load();
+        let mix = driven.map_or(mix, Mix::new_clamped);
         let mix = Mix(self.good[0].read(mix.get()));
         let gain = Amplitude(self.good[1].read(gain.get()));
         let (from_mix, from_gain) = self.last.unwrap_or((mix, gain));
@@ -404,9 +409,10 @@ impl ConvolverNode {
         size: usize,
         inputs: &Inputs<'_>,
         outputs: &mut Outputs<'_, '_>,
+        driven: Option<f32>,
     ) {
         let input = |c: usize| &inputs.get(c)[at..at + size];
-        let ramp = self.begin_block(size);
+        let ramp = self.begin_block(size, driven);
         let n = self.width();
         match self.config {
             IrChannelConfig::Mono | IrChannelConfig::Stereo => {
@@ -438,6 +444,12 @@ impl ConvolverNode {
     }
 }
 
+/// The param a [`ConvolverNode`] lets the graph modulate: its wet/dry mix.
+/// Block-rate in the node (read once per block and ramped across it), so a
+/// driven port is read the same way (`block_driven`). The IR is not a
+/// param (a new IR is a new node), and the wet gain has no `UnitParam`.
+pub const CONVOLVER_PARAMS: [UnitParam; 1] = [UnitParam::Wet];
+
 impl Node for ConvolverNode {
     /// `N` in, `N` out; one FFT block of latency for the whole output (the
     /// dry half is delayed by the same block inside the node), and the
@@ -454,6 +466,7 @@ impl Node for ConvolverNode {
                     .max()
                     .unwrap_or(0),
             ))
+            .with_params(&CONVOLVER_PARAMS)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -465,6 +478,7 @@ impl Node for ConvolverNode {
     /// whole block in partition-sized runs, then the blend runs over the block.
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
+        let driven = block_driven(&io, 0);
         let (inputs, mut outputs) = io.split();
         // One piece in a graph, whose blocks fit the scratch; a longer block
         // driven by hand renders in scratch-sized pieces.
@@ -472,7 +486,7 @@ impl Node for ConvolverNode {
         let mut at = 0;
         while at < size {
             let n = step.min(size - at);
-            self.render(at, n, &inputs, &mut outputs);
+            self.render(at, n, &inputs, &mut outputs, driven);
             at += n;
         }
         Status::Modified
@@ -486,6 +500,10 @@ impl Node for ConvolverNode {
             d.clear();
         }
         self.last = None;
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        (k == 0).then(|| self.params.load().0.get())
     }
 }
 

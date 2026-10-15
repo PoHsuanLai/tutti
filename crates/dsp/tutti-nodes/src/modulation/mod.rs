@@ -20,5 +20,5 @@ mod shared;
 mod mod_delay;
 mod phaser;
 
-pub use mod_delay::{ModDelayConfig, ModDelayNode};
-pub use phaser::PhaserNode;
+pub use mod_delay::{ModDelayConfig, ModDelayNode, MOD_DELAY_PARAMS};
+pub use phaser::{PhaserNode, PHASER_PARAMS};

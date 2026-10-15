@@ -10,7 +10,7 @@ use super::params::AttackRelease;
 use super::utils::{amplitude_to_db, apply_gain_lane, compute_gate_gain, ramp_db, sidechain_level};
 use tutti_core::{Db, Param, SampleRate, Seconds, Tail};
 
-use crate::ramp::LastGood;
+use crate::ramp::{block_driven, LastGood};
 
 /// Shared gate state used by the per-sample gain computation.
 #[derive(Clone)]
@@ -104,24 +104,26 @@ impl GateCore {
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_core::SampleRate>) {
-        let (attack, hold, release) = self.times();
+        let (attack, hold, release) = self.times([None, None]);
         self.follower
             .set_sample_rate(sample_rate, attack, hold, release);
     }
 
+    /// `driven` is the block's attack and release from the node's param
+    /// ports where a lane drives them; `None` reads the cell.
     #[inline]
-    pub fn update_coefficients(&mut self) {
-        let (attack, hold, release) = self.times();
+    pub fn update_coefficients(&mut self, driven: [Option<f32>; 2]) {
+        let (attack, hold, release) = self.times(driven);
         self.follower.update_coefficients(attack, hold, release);
     }
 
     /// Attack, hold and release, with non-finite writes held off.
     #[inline]
-    fn times(&mut self) -> (Seconds, Seconds, Seconds) {
+    fn times(&mut self, [attack, release]: [Option<f32>; 2]) -> (Seconds, Seconds, Seconds) {
         (
-            Seconds(self.good[2].read(self.timing.attack.load().get())),
+            Seconds(self.good[2].read(attack.unwrap_or_else(|| self.timing.attack.load().get()))),
             Seconds(self.good[3].read(self.hold.load().get())),
-            Seconds(self.good[4].read(self.timing.release.load().get())),
+            Seconds(self.good[4].read(release.unwrap_or_else(|| self.timing.release.load().get()))),
         )
     }
 
@@ -195,7 +197,8 @@ pub struct GateNode {
 }
 
 /// The params a [`GateNode`] lets the graph modulate, in port order.
-pub const GATE_PARAMS: [UnitParam; 1] = [UnitParam::Threshold];
+pub const GATE_PARAMS: [UnitParam; 3] =
+    [UnitParam::Threshold, UnitParam::Attack, UnitParam::Release];
 
 impl GateNode {
     /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
@@ -368,7 +371,7 @@ impl GateNode {
 
 impl Node for GateNode {
     /// `2 * channels` in (audio, then sidechain), `channels` out, the
-    /// threshold modulatable ([`GATE_PARAMS`]).
+    /// threshold, attack and release modulatable ([`GATE_PARAMS`]).
     ///
     /// No tail: the release envelope decays after the input goes silent,
     /// but it only scales (`output = input * gain`), so a silent input is a
@@ -388,7 +391,8 @@ impl Node for GateNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        self.core.update_coefficients();
+        self.core
+            .update_coefficients([block_driven(&io, 1), block_driven(&io, 2)]);
         let block = self.core.begin_block();
         let ch = self.channels.count() as usize;
         // A modulated threshold overrides the cell per sample; the cell is
@@ -413,7 +417,12 @@ impl Node for GateNode {
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        (k == 0).then(|| self.core.threshold_db.load().get())
+        match k {
+            0 => Some(self.core.threshold_db.load().get()),
+            1 => Some(self.core.timing.attack.load().get()),
+            2 => Some(self.core.timing.release.load().get()),
+            _ => None,
+        }
     }
 }
 
@@ -628,21 +637,29 @@ mod tests {
 
     // ── Modulated threshold (the graph's param feed) ────────────────────────
 
-    /// The shape declares the threshold, and it never changes the arity:
-    /// audio plus sidechain, at every width.
+    /// The shape declares the threshold, attack and release, and it never
+    /// changes the arity: audio plus sidechain, at every width. (Doc 014
+    /// PR 5 widened the list: a route onto any of these was refused once
+    /// the frame-rate driver went.)
     ///
     /// Mutation (run): declare no params in `shape` → the first assertion
-    /// fails.
+    /// fails. Mutation (run, PR 5): `param_base(2)` answering the attack
+    /// cell → fails.
     #[test]
-    fn gate_declares_its_threshold_param() {
+    fn gate_declares_its_params() {
         let m = GateNode::mono(-20.0, 0.0001, 0.01, 0.1);
-        assert_eq!(m.shape().params.as_slice(), &[UnitParam::Threshold][..]);
+        assert_eq!(
+            m.shape().params.as_slice(),
+            &[UnitParam::Threshold, UnitParam::Attack, UnitParam::Release][..]
+        );
         assert_eq!(m.shape().audio_in.count(), 2);
         assert_eq!(
             m.param_base(0),
             Some(-20.0),
             "the base is the threshold control"
         );
+        assert_eq!(m.param_base(1), Some(0.0001), "the attack's base");
+        assert_eq!(m.param_base(2), Some(0.1), "the release's base");
         let s = GateNode::stereo(-20.0, 0.0001, 0.01, 0.1);
         assert_eq!(s.shape().audio_in.count(), 4);
     }

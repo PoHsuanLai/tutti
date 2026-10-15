@@ -126,9 +126,12 @@ impl UnisonEngine {
     /// Folds any change to the detune/spread atomics back into
     /// `config` and recompute per-voice params. Called once per block. Cheap
     /// when nothing moved (compares against the current config first).
-    pub fn sync_from_atomics(&mut self) {
-        let detune = self.detune.load();
-        let spread = Spread::new_clamped(self.spread.load().get());
+    ///
+    /// `driven` is the block's detune and spread from the synth's param
+    /// ports where a lane drives them; `None` reads the atomic.
+    pub fn sync_from_atomics(&mut self, [detune, spread]: [Option<f32>; 2]) {
+        let detune = detune.map_or_else(|| self.detune.load(), Cents);
+        let spread = Spread::new_clamped(spread.unwrap_or_else(|| self.spread.load().get()));
         let changed = (detune.get() - self.config.detune_cents.get()).abs() > f32::EPSILON
             || (spread.get() - self.config.stereo_spread.get()).abs() > f32::EPSILON;
         if changed {

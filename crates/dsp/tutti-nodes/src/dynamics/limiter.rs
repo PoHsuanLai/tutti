@@ -167,7 +167,11 @@ pub struct LimiterNode {
 }
 
 /// The params a [`LimiterNode`] lets the graph modulate, in port order.
-pub const LIMITER_PARAMS: [UnitParam; 2] = [UnitParam::Ceiling, UnitParam::Threshold];
+/// The ceiling and threshold are read per sample; the release is
+/// block-rate in the node, so a driven port is read once per block
+/// (`block_driven`).
+pub const LIMITER_PARAMS: [UnitParam; 3] =
+    [UnitParam::Ceiling, UnitParam::Threshold, UnitParam::Release];
 
 /// The params a [`BrickwallLimiterNode`] lets the graph modulate.
 pub const BRICKWALL_PARAMS: [UnitParam; 1] = [UnitParam::Ceiling];
@@ -323,9 +327,11 @@ impl LimiterNode {
     }
 
     #[inline]
-    fn update_coefficients(&mut self) {
-        self.follower
-            .update_coefficients(Seconds(0.0), self.release.load());
+    /// `driven` is the block's release from the node's param port when a
+    /// lane drives it; `None` reads the cell.
+    fn update_coefficients(&mut self, driven: Option<f32>) {
+        let release = driven.map_or_else(|| self.release.load(), Seconds);
+        self.follower.update_coefficients(Seconds(0.0), release);
     }
 
     #[inline]
@@ -385,7 +391,7 @@ impl LimiterNode {
 }
 
 impl Node for LimiterNode {
-    /// `channels` in and out, ceiling then threshold modulatable
+    /// `channels` in and out, ceiling, threshold and release modulatable
     /// ([`LIMITER_PARAMS`]). Its latency is the lookahead ring's, at the
     /// prepared rate: the audio is delayed by the window.
     ///
@@ -420,7 +426,7 @@ impl Node for LimiterNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        self.update_coefficients();
+        self.update_coefficients(crate::ramp::block_driven(&io, 2));
         let (ceiling_fed, threshold_fed) = (io.param(0).frames(), io.param(1).frames());
         let base_threshold = self.threshold_db.load();
         let base_ceiling = self.ceiling_db.load();
@@ -456,6 +462,7 @@ impl Node for LimiterNode {
         match k {
             0 => Some(self.ceiling_db.load().get()),
             1 => Some(self.threshold_db.load().get()),
+            2 => Some(self.release.load().get()),
             _ => None,
         }
     }
@@ -946,18 +953,20 @@ mod tests {
 
     // ── Modulated params (the graph's param feed) ───────────────────────────
 
-    /// The shapes declare ceiling then threshold (and the brickwall its
-    /// ceiling), and never change the arity: a modulatable limiter is as
-    /// wide as it was built.
+    /// The shapes declare ceiling, threshold and release (and the brickwall
+    /// its ceiling), and never change the arity: a modulatable limiter is as
+    /// wide as it was built. (Doc 014 PR 5 widened the list: a route onto
+    /// any of these was refused once the frame-rate driver went.)
     ///
     /// Mutation (run): swap `LIMITER_PARAMS`' order → the first assertion
-    /// fails.
+    /// fails. Mutation (run, PR 5): `param_base(2)` answering the threshold
+    /// cell → fails.
     #[test]
-    fn the_shapes_declare_ceiling_then_threshold() {
+    fn the_shapes_declare_ceiling_threshold_and_release() {
         let l = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
         assert_eq!(
             l.shape().params.as_slice(),
-            &[UnitParam::Ceiling, UnitParam::Threshold][..]
+            &[UnitParam::Ceiling, UnitParam::Threshold, UnitParam::Release][..]
         );
         assert_eq!(
             (l.shape().audio_in.count(), l.shape().audio_out.count()),
@@ -965,6 +974,11 @@ mod tests {
         );
         assert_eq!(l.param_base(0), Some(-0.3), "the ceiling's base");
         assert_eq!(l.param_base(1), Some(-6.0), "the threshold's base");
+        assert_eq!(
+            l.param_base(2),
+            Some(l.release_time().load(std::sync::atomic::Ordering::Acquire)),
+            "the release's base"
+        );
         let b = BrickwallLimiterNode::new(-1.0);
         assert_eq!(b.shape().params.as_slice(), &[UnitParam::Ceiling][..]);
         assert_eq!(

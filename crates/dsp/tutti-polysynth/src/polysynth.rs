@@ -3459,3 +3459,4 @@ impl PolySynth {
 }
 
 mod node;
+pub use node::SYNTH_PARAMS;

@@ -66,7 +66,7 @@ mod modulator;
 // `LfoNode` is `ModulatorNode<Lfo>` — the graph node over a pure
 // `Modulator`. `LfoShape` is re-exported from `tutti-mod` through `lfo`, so
 // `use tutti_nodes::LfoShape` works.
-pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode};
+pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, LFO_PARAMS};
 pub use modulator::{Lfo, Modulator, RandomState, SampleHold};
 
 mod delay;
@@ -106,7 +106,7 @@ pub use strip::{BusStripNode, STRIP_PARAMS};
 // this crate; nothing here names it.
 
 mod modulation;
-pub use modulation::{ModDelayConfig, ModDelayNode, PhaserNode};
+pub use modulation::{ModDelayConfig, ModDelayNode, PhaserNode, MOD_DELAY_PARAMS, PHASER_PARAMS};
 
 // The signal-driven sources a `tutti_mod::compile` declaration describes
 // (`SourceNode`): nodes that send a raw value into control lanes.
@@ -127,7 +127,7 @@ mod convolution;
 #[cfg(feature = "convolution")]
 pub use convolution::{
     generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into, Convolver,
-    ConvolverNode, IrChannelConfig, IrSpectra, WetDry,
+    ConvolverNode, IrChannelConfig, IrSpectra, WetDry, CONVOLVER_PARAMS,
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a

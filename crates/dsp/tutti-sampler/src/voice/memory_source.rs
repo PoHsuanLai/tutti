@@ -259,6 +259,14 @@ pub struct MemorySource {
     /// ([`fork_fresh`](ParamNode::fork_fresh)).
     gain: Param<Amplitude>,
 
+    /// The block's gain from the node's param port while a control lane
+    /// drives it (its last frame), set by [`Node::process`] for that block;
+    /// `None` reads [`gain`](Self::gain). Never shared: a clone starts
+    /// undriven. Only a standalone node has a port: inside a
+    /// [`VoiceNode`](super::VoiceNode) the voice reads its own port and
+    /// hands the source its gain, and this stays `None`.
+    driven_gain: Option<Amplitude>,
+
     /// Varispeed — user intent, bounded by the type. Composes with
     /// [`src_ratio`](Self::src_ratio) through
     /// [`PlaybackRate::read_rate`](tutti_core::PlaybackRate::read_rate); never
@@ -337,6 +345,7 @@ impl Clone for MemorySource {
             position: AtomicSamplePosition::new(self.position.load(Ordering::Relaxed)),
             playing: AtomicBool::new(self.playing.load(Ordering::Relaxed)),
             gain: self.gain.handle(),
+            driven_gain: None,
             speed: self.speed,
             sample_rate: self.sample_rate,
             src_ratio: self.src_ratio,
@@ -366,6 +375,7 @@ impl MemorySource {
             position: AtomicSamplePosition::new(SamplePosition::new(0.0)),
             playing: AtomicBool::new(true),
             gain: Param::new(Amplitude::new(1.0)),
+            driven_gain: None,
             speed: PlaybackRate::UNITY,
             sample_rate,
             src_ratio: SrcRatio::UNITY,
@@ -998,7 +1008,7 @@ impl MemorySource {
     #[inline]
     pub fn get_sample_into(&self, position: f64, out: &mut [f32]) {
         self.get_sample_raw_into(position, out);
-        let gain = self.gain.load().get();
+        let gain = self.block_gain();
         for s in out.iter_mut() {
             *s *= gain;
         }
@@ -1188,10 +1198,16 @@ impl MemorySource {
         }
     }
 
+    /// The gain this block renders at: the driven port's, else the cell's.
+    #[inline]
+    fn block_gain(&self) -> f32 {
+        self.driven_gain.unwrap_or_else(|| self.gain.load()).get()
+    }
+
     /// Scale a frame by this unit's gain.
     #[inline]
     fn apply_gain(&self, out: &mut [f32]) {
-        let gain = self.gain.load().get();
+        let gain = self.block_gain();
         for s in out.iter_mut() {
             *s *= gain;
         }
@@ -1271,6 +1287,9 @@ impl Node for MemorySource {
             // placed or free-running, against `SvfFilterNode`'s 7.2 and
             // `Heavy`'s 256 (doc 013, "Phase 6, part (b)").
             .with_cost(tutti_graph::Cost::Moderate)
+            // Its gain, as a voice's ([`VOICE_PARAMS`](super::VOICE_PARAMS)):
+            // block-rate, read on the block's last frame.
+            .with_params(&super::VOICE_PARAMS)
     }
 
     /// The session rate: the conversion from the wave's rate is derived from
@@ -1286,6 +1305,11 @@ impl Node for MemorySource {
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        self.driven_gain = io
+            .param(0)
+            .frames()
+            .and_then(|v| v.last().copied())
+            .map(|v| Amplitude(v.max(0.0)));
         let clock = self.clock.observe(cx.env);
         let frames = io.frames();
         let (_, mut outs) = io.split();
@@ -1315,6 +1339,10 @@ impl Node for MemorySource {
     /// The free-running cursor rewound and stopped, the transport forgotten.
     fn reset(&mut self) {
         self.rewind();
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        (k == 0).then(|| self.gain.load().get())
     }
 }
 
@@ -2633,6 +2661,22 @@ mod tests {
     #[test]
     fn the_fork_shares_no_gain() {
         tutti_graph::contract::assert_param_fork(MemorySource::new(ramp_wave(48_000, 48_000.0)));
+    }
+
+    /// **Its gain is a port, its base the cell** (doc 014 PR 5,
+    /// [`VOICE_PARAMS`](super::super::VOICE_PARAMS)).
+    ///
+    /// Mutation (run, PR 5): `param_base` answering unity → fails.
+    #[test]
+    fn the_shape_declares_its_gain() {
+        let s = MemorySource::new(ramp_wave(64, 48_000.0));
+        s.set_gain(Amplitude::new(0.25));
+        assert_eq!(
+            Node::shape(&s).params.as_slice(),
+            &[tutti_core::UnitParam::Volume][..]
+        );
+        assert_eq!(Node::param_base(&s, 0), Some(0.25));
+        assert_eq!(Node::param_base(&s, 1), None);
     }
 
     /// **A fork plays from the render's transport**, with nothing rebound:

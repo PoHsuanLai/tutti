@@ -330,19 +330,31 @@ impl<M: Modulator> ModulatorNode<M> {
     /// `value`, store it back, and apply depth. `&mut self` here mutates only
     /// the node's own `mod_state`/params — the modulator stays `&self`.
     #[inline]
-    fn evaluate(&mut self, phase: Phase) -> f32 {
-        let depth = self.depth.load().get();
+    fn evaluate(&mut self, phase: Phase, depth: f32) -> f32 {
         let (next, v) = self.modulator.value(self.mod_state, phase);
         self.mod_state = next;
         v * depth
     }
 }
 
+/// The params a [`ModulatorNode`] lets the graph modulate, in port order:
+/// its depth and, while free-running, its rate (a beat-synced node declares
+/// only the depth, as its [`ParamSet`] addresses only the depth). Both are
+/// read once per block, so a driven port is read on the block's last frame.
+/// The mode is fixed once the node is live (`with_*` only), so its shape
+/// never changes.
+pub const LFO_PARAMS: [UnitParam; 2] = [UnitParam::Depth, UnitParam::Rate];
+
 impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
     fn shape(&self) -> Shape {
+        let ports = match self.mode {
+            LfoMode::FreeRunning => 2,
+            LfoMode::BeatSynced => 1,
+        };
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unbounded)
+            .with_params(&LFO_PARAMS[..ports])
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -356,17 +368,25 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
             "a node with no inputs arrives at zero"
         );
         let size = io.frames();
+        // A driven depth is clamped as `set_depth` clamps a written one.
+        let depth = crate::ramp::block_driven(&io, 0)
+            .map_or_else(|| self.depth.load(), Depth::new_clamped)
+            .get();
+        let driven_rate = match self.mode {
+            LfoMode::FreeRunning => crate::ramp::block_driven(&io, 1),
+            LfoMode::BeatSynced => None,
+        };
         let out = io.output(0);
         let phase_offset = self.phase_offset.load();
 
         match self.mode {
             LfoMode::FreeRunning => {
-                let freq = self.frequency.load().get();
+                let freq = driven_rate.unwrap_or_else(|| self.frequency.load().get());
                 let phase_increment = PhaseIncrement::per_sample(Hz(freq), self.sample_rate);
 
                 for o in &mut out[..size] {
                     let phase = self.phase.offset_by(phase_offset);
-                    *o = self.evaluate(phase);
+                    *o = self.evaluate(phase, depth);
                     self.phase = self.phase.advance(phase_increment);
                 }
             }
@@ -378,7 +398,7 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
                     // lives in `Beat::cycles_of`, which `beat_phase` goes
                     // through.
                     let phase = beat_phase(beat, beats_per_cycle).offset_by(phase_offset);
-                    out[i] = self.evaluate(phase);
+                    out[i] = self.evaluate(phase, depth);
                 });
             }
         }
@@ -391,6 +411,14 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
         // the seed — this is what reaches a stateful modulator's RNG.
         // Stateless modulators reset a `()`.
         self.mod_state = M::State::default();
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        match (k, self.mode) {
+            (0, _) => Some(self.depth.load().get()),
+            (1, LfoMode::FreeRunning) => Some(self.frequency.load().get()),
+            _ => None,
+        }
     }
 }
 
@@ -451,6 +479,31 @@ mod tests {
     use tutti_core::{Beat, Bpm, Samples};
     use tutti_graph::contract::{assert_param_fork, Direct};
     use tutti_graph::{Solo, Transport};
+
+    /// **The ports and their bases.** A free-running LFO declares its depth
+    /// and rate ([`LFO_PARAMS`]), each port's base its cell; a beat-synced
+    /// one declares only its depth, as its `ParamSet` addresses only that
+    /// (its rate cell holds beats per cycle, not `Hz`).
+    ///
+    /// Mutation (run, PR 5): `param_base(1)` answering in either mode (the
+    /// mode guard dropped) → the beat-synced node reports a rate base →
+    /// fails. Mutation (run, PR 5): `param_base(0)` answering the rate →
+    /// fails.
+    #[test]
+    fn the_shape_declares_depth_and_a_free_running_rate() {
+        let free = LfoNode::new(LfoShape::Sine)
+            .with_frequency(Hz(2.0))
+            .with_depth(Depth(0.25));
+        assert_eq!(free.shape().params.as_slice(), &LFO_PARAMS[..]);
+        assert_eq!(free.param_base(0), Some(0.25));
+        assert_eq!(free.param_base(1), Some(2.0));
+        let synced = LfoNode::new(LfoShape::Sine)
+            .with_beat_sync(BeatDuration(4.0))
+            .with_depth(Depth(0.5));
+        assert_eq!(synced.shape().params.as_slice(), &[UnitParam::Depth][..]);
+        assert_eq!(synced.param_base(0), Some(0.5));
+        assert_eq!(synced.param_base(1), None);
+    }
 
     // The waveform math is `tutti-mod`'s, and so are the tests that pin it.
     // What belongs here is the adapter around it: phase generation from

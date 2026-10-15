@@ -21,6 +21,24 @@ use tutti_midi_types::MidiEvent;
 
 use super::PolySynth;
 
+/// The params a [`PolySynth`] with a unison engine lets the graph
+/// modulate, in port order: master volume, unison detune and stereo
+/// spread. A synth without one declares only the volume (the first). Each
+/// is block-rate in the synth (read once per block), so a driven port is
+/// read the same way: its value on the block's last frame.
+pub const SYNTH_PARAMS: [UnitParam; 3] = [
+    UnitParam::Volume,
+    UnitParam::Detune,
+    UnitParam::StereoSpread,
+];
+
+/// The block's value of declared param port `k` when a lane drives it: its
+/// last frame. `None`: undriven, read the cell.
+#[inline]
+fn block_driven(io: &Io<'_>, k: usize) -> Option<f32> {
+    io.param(k).frames().and_then(|v| v.last().copied())
+}
+
 /// The synth's MIDI scratch, in events: a block's event input past it is
 /// dropped.
 pub(super) const MIDI_BUFFER: usize = 512;
@@ -76,10 +94,14 @@ impl Node for PolySynth {
     /// No audio in, stereo out, one MIDI event input; the release as its
     /// tail. Events land on their frame ([`Resolution::Sample`](tutti_graph::Resolution::Sample)).
     fn shape(&self) -> Shape {
+        // The unison engine is built with the synth or never (`&mut`
+        // setters only), so every read of the shape declares the same ports.
+        let ports = if self.unison.is_some() { 3 } else { 1 };
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
             .with_events(1, 0)
             .with_tail(self.release_tail())
             .with_cost(self.cost())
+            .with_params(&SYNTH_PARAMS[..ports])
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -94,7 +116,7 @@ impl Node for PolySynth {
             return Status::Modified;
         }
         if let Some(unison) = &mut self.unison {
-            unison.sync_from_atomics();
+            unison.sync_from_atomics([block_driven(&io, 1), block_driven(&io, 2)]);
         }
         let events = if io.event_input_count() > 0 {
             io.events(0)
@@ -102,7 +124,8 @@ impl Node for PolySynth {
             SortedEvents::EMPTY
         };
         let count = self.gather_events(events);
-        let volume = self.master_volume.load().get();
+        let volume =
+            block_driven(&io, 0).map_or_else(|| self.master_volume.load().get(), |v| v.max(0.0));
         let (_, mut outputs) = io.split();
         let mut channels = outputs.iter_mut();
         let (Some(left), right) = (channels.next(), channels.next()) else {
@@ -120,6 +143,19 @@ impl Node for PolySynth {
 
     fn reset(&mut self) {
         self.reset_voices();
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        match k {
+            0 => Some(self.master_volume.load().get()),
+            1 => self
+                .detune_atomic()
+                .map(|c| c.load(std::sync::atomic::Ordering::Acquire)),
+            2 => self
+                .spread_atomic()
+                .map(|c| c.load(std::sync::atomic::Ordering::Acquire)),
+            _ => None,
+        }
     }
 }
 
@@ -163,6 +199,39 @@ mod tests {
     use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 
     use crate::{PolySynth, SynthConfig};
+
+    /// **The ports and their bases.** A synth declares its volume, and with
+    /// a unison engine its detune and spread too ([`SYNTH_PARAMS`](super::SYNTH_PARAMS)),
+    /// each port's base its cell.
+    ///
+    /// Mutation (run, PR 5): `param_base(2)` answering the detune cell →
+    /// fails. Mutation (run, PR 5): the shape declaring all three without
+    /// unison → fails.
+    #[test]
+    fn the_shape_declares_volume_and_the_unison_params() {
+        use tutti_core::UnitParam;
+        use tutti_graph::Node;
+
+        let plain = PolySynth::new(SynthConfig::default()).expect("builds");
+        plain.set_volume(0.5);
+        assert_eq!(plain.shape().params.as_slice(), &[UnitParam::Volume][..]);
+        assert_eq!(plain.param_base(0), Some(0.5));
+        assert_eq!(plain.param_base(1), None);
+
+        let unison = PolySynth::new(SynthConfig {
+            unison: Some(crate::UnisonConfig {
+                voice_count: 3,
+                detune_cents: tutti_core::Cents(12.0),
+                stereo_spread: tutti_core::Spread::new_clamped(0.25),
+                phase_randomize: false,
+            }),
+            ..SynthConfig::default()
+        })
+        .expect("builds");
+        assert_eq!(unison.shape().params.as_slice(), &super::SYNTH_PARAMS[..]);
+        assert_eq!(unison.param_base(1), Some(12.0));
+        assert_eq!(unison.param_base(2), Some(0.25));
+    }
 
     fn note(n: u8) -> MidiEvent {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF)

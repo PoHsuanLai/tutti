@@ -48,9 +48,20 @@ impl LfoDrive {
     /// entirely (it writes the atomic through a caller-supplied min/max), so a
     /// negative rate would run the phase down without ever meeting the
     /// `>= 1.0` test.
+    ///
+    /// `driven` is the block's rate from the node's param port when a lane
+    /// drives it (`block_driven`); `None` reads
+    /// the cell.
     #[inline]
-    pub fn fill_block(&mut self, sample_rate: impl Into<SampleRate>, out: &mut [Phase]) {
-        let rate = Hz(self.good_rate.read(self.rate.load().get()));
+    pub fn fill_block(
+        &mut self,
+        sample_rate: impl Into<SampleRate>,
+        out: &mut [Phase],
+        driven: Option<f32>,
+    ) {
+        let rate = Hz(self
+            .good_rate
+            .read(driven.unwrap_or_else(|| self.rate.load().get())));
         let inc = PhaseIncrement::per_sample(rate, sample_rate);
         for p in out {
             *p = self.phase;
@@ -64,7 +75,7 @@ impl LfoDrive {
     #[inline]
     pub fn advance(&mut self, sample_rate: impl Into<SampleRate>) {
         let mut one = [Phase::START];
-        self.fill_block(sample_rate, &mut one);
+        self.fill_block(sample_rate, &mut one, None);
     }
 
     pub fn reset_phase(&mut self) {
@@ -118,14 +129,25 @@ impl LinearModMix {
     /// [`Mix::blend`] rather than by raw arithmetic; the other two feed
     /// per-sample math and unwrap here.
     #[inline]
-    pub fn load(&mut self) -> (f32, f32, Mix) {
+    ///
+    /// `driven` holds the block's depth, feedback and mix from the node's
+    /// param ports where a lane drives them
+    /// (`block_driven`); `None` reads the cell.
+    /// A driven feedback or mix is clamped as the setters clamp: a lane's
+    /// range is the host's, and an unstable feedback would blow up.
+    pub fn load(&mut self, driven: [Option<f32>; 3]) -> (f32, f32, Mix) {
         // Non-finite writes read as unchanged: all three feed recursive state
         // (the sweep, the recirculation) or the output every later block ramps
         // from.
+        let [depth, fb, mix] = driven;
         (
-            self.good[0].read(self.depth.load().get()),
-            self.good[1].read(self.feedback.load().get()),
-            Mix(self.good[2].read(self.mix.load().get())),
+            self.good[0].read(depth.unwrap_or_else(|| self.depth.load().get())),
+            self.good[1].read(fb.map_or_else(
+                || self.feedback.load().get(),
+                |v| Feedback::new_clamped(v).get(),
+            )),
+            Mix(self.good[2]
+                .read(mix.map_or_else(|| self.mix.load().get(), |v| Mix::new_clamped(v).get()))),
         )
     }
 
@@ -178,14 +200,25 @@ impl TimeModMix {
     /// semantically but unwraps to `f32` here for the per-sample math. `mix`
     /// stays typed: it is consumed by [`Mix::blend`], not by raw arithmetic.
     #[inline]
-    pub fn load(&mut self) -> (f32, f32, Mix) {
+    ///
+    /// `driven` holds the block's depth, feedback and mix from the node's
+    /// param ports where a lane drives them
+    /// (`block_driven`); `None` reads the cell.
+    /// A driven feedback or mix is clamped as the setters clamp: a lane's
+    /// range is the host's, and an unstable feedback would blow up.
+    pub fn load(&mut self, driven: [Option<f32>; 3]) -> (f32, f32, Mix) {
         // Non-finite writes read as unchanged: all three feed recursive state
         // (the sweep, the recirculation) or the output every later block ramps
         // from.
+        let [depth, fb, mix] = driven;
         (
-            self.good[0].read(self.depth.load().get()),
-            self.good[1].read(self.feedback.load().get()),
-            Mix(self.good[2].read(self.mix.load().get())),
+            self.good[0].read(depth.unwrap_or_else(|| self.depth.load().get())),
+            self.good[1].read(fb.map_or_else(
+                || self.feedback.load().get(),
+                |v| Feedback::new_clamped(v).get(),
+            )),
+            Mix(self.good[2]
+                .read(mix.map_or_else(|| self.mix.load().get(), |v| Mix::new_clamped(v).get()))),
         )
     }
 
@@ -267,7 +300,7 @@ mod tests {
         let mut block = LfoDrive::new(Hz(3.0));
         let mut stepped = block.clone();
         let mut phases = [Phase::START; 64];
-        block.fill_block(sr, &mut phases);
+        block.fill_block(sr, &mut phases, None);
         for (i, p) in phases.iter().enumerate() {
             assert_eq!(
                 p.get().to_bits(),

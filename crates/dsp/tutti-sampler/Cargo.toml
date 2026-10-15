@@ -109,6 +109,10 @@ tutti-sampler = { path = ".", features = ["test-support"] }
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # `contract` for the node harnesses (`drive_in`, `Direct`, `BlockRig`).
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
+# `ControlProgram`, for a control lane on a voice's gain port
+# (`voice_gain_survives_commit.rs`). No cycle: `tutti-mod` names no tutti
+# crate but `tutti-types`.
+tutti-mod = { path = "../../core/tutti-mod", default-features = false }
 
 tracing-subscriber = "0.3"
 insta = { version = "1.41", features = ["yaml"] }

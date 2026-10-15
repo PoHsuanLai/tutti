@@ -34,7 +34,8 @@ use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, GateNode,
-    LadderFilterNode, LadderType, LimiterNode, ShapeKind, SvfFilterNode, SvfType,
+    LadderFilterNode, LadderType, LimiterNode, ModDelayNode, PhaserNode, ShapeKind, SvfFilterNode,
+    SvfType,
 };
 use tutti_types::{
     Amplitude, AtomicF32, BeatDuration, ChannelLayout, Depth, NodeKey, PhaseIncrement, SampleRate,
@@ -170,7 +171,7 @@ fn cases() -> Vec<Case> {
     fn lim(w: usize) -> LimiterNode {
         LimiterNode::with_channels(w, -6.0, -0.3)
     }
-    vec![
+    let mut cases = vec![
         Case {
             name: "svf cutoff",
             param: UnitParam::Cutoff,
@@ -367,7 +368,282 @@ fn cases() -> Vec<Case> {
             lo: -1.0,
             hi: 1.0,
         },
-    ]
+    ];
+    // The block-rate params doc 014 PR 5 made ports: a route onto any of
+    // these was refused (`NoSuchParam`) once the frame-rate driver went.
+    cases.extend(block_rate_cases());
+    cases
+}
+
+/// Every param a node reads once per block, now a port read the same way
+/// (its last frame per block).
+fn block_rate_cases() -> Vec<Case> {
+    fn comp(w: usize) -> CompressorNode {
+        CompressorNode::with_channels(-20.0, 8.0, 0.001, 0.05, w as u8)
+    }
+    // Near the noise's peak, no hold: the gate opens and shuts all the
+    // time, so its times are heard.
+    fn gate(w: usize) -> GateNode {
+        GateNode::with_channels(-3.0, 0.001, 0.0, 0.02, w as u8)
+    }
+    fn chorus(w: usize) -> ModDelayNode {
+        ModDelayNode::chorus(ChannelLayout::from(w))
+    }
+    fn phaser(w: usize) -> PhaserNode {
+        PhaserNode::with_channels(ChannelLayout::from(w), 4)
+    }
+    #[allow(unused_mut)]
+    let mut cases = vec![
+        Case {
+            name: "delay mix",
+            param: UnitParam::Wet,
+            make: |w, v| {
+                let n = DelayLineNode::with_channels(w, 0.01, 0.0003, 0.5);
+                n.set_mix(v.unwrap_or(0.5));
+                parts_of(n)
+            },
+            lo: 0.1,
+            hi: 0.9,
+        },
+        Case {
+            name: "svf gain",
+            param: UnitParam::GainDb,
+            make: |w, v| {
+                let n = SvfFilterNode::<f64>::with_channels(w, SvfType::Bell, 1_000.0, 0.707);
+                if let Some(v) = v {
+                    n.set_gain_db(v);
+                }
+                parts_of(n)
+            },
+            lo: -12.0,
+            hi: 12.0,
+        },
+        Case {
+            name: "compressor ratio",
+            param: UnitParam::Ratio,
+            make: |w, v| {
+                let n = comp(w);
+                if let Some(v) = v {
+                    n.set_ratio(v);
+                }
+                parts_of(n)
+            },
+            lo: 1.5,
+            hi: 20.0,
+        },
+        Case {
+            name: "compressor attack",
+            param: UnitParam::Attack,
+            make: |w, v| {
+                let n = comp(w);
+                if let Some(v) = v {
+                    n.set_attack(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.0005,
+            hi: 0.05,
+        },
+        Case {
+            name: "compressor release",
+            param: UnitParam::Release,
+            make: |w, v| {
+                let n = comp(w);
+                if let Some(v) = v {
+                    n.set_release(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.005,
+            hi: 0.5,
+        },
+        Case {
+            name: "compressor makeup",
+            param: UnitParam::GainDb,
+            make: |w, v| {
+                let n = comp(w);
+                if let Some(v) = v {
+                    n.set_makeup(v);
+                }
+                parts_of(n)
+            },
+            lo: -6.0,
+            hi: 6.0,
+        },
+        Case {
+            name: "gate attack",
+            param: UnitParam::Attack,
+            make: |w, v| {
+                let n = gate(w);
+                if let Some(v) = v {
+                    n.set_attack(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.0005,
+            hi: 0.05,
+        },
+        Case {
+            name: "gate release",
+            param: UnitParam::Release,
+            make: |w, v| {
+                let n = gate(w);
+                if let Some(v) = v {
+                    n.set_release(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.002,
+            hi: 0.2,
+        },
+        Case {
+            name: "limiter release",
+            param: UnitParam::Release,
+            make: |w, v| {
+                // Threshold and ceiling near the noise's peak: the limiter
+                // lets go between peaks, so its release is heard.
+                let n = LimiterNode::with_channels(w, -3.0, -2.5);
+                if let Some(v) = v {
+                    n.set_release(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.005,
+            hi: 0.5,
+        },
+        Case {
+            name: "chorus rate",
+            param: UnitParam::Rate,
+            make: |w, v| {
+                let n = chorus(w);
+                if let Some(v) = v {
+                    n.set_rate(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.5,
+            hi: 5.0,
+        },
+        Case {
+            name: "chorus depth",
+            param: UnitParam::Depth,
+            make: |w, v| {
+                let n = chorus(w);
+                if let Some(v) = v {
+                    n.set_depth(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.001,
+            hi: 0.02,
+        },
+        Case {
+            name: "chorus feedback",
+            param: UnitParam::Feedback,
+            make: |w, v| {
+                let n = chorus(w);
+                if let Some(v) = v {
+                    n.set_feedback(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.0,
+            hi: 0.8,
+        },
+        Case {
+            name: "chorus mix",
+            param: UnitParam::Wet,
+            make: |w, v| {
+                let n = chorus(w);
+                if let Some(v) = v {
+                    n.set_mix(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.1,
+            hi: 0.9,
+        },
+        Case {
+            name: "flanger depth",
+            param: UnitParam::Depth,
+            make: |w, v| {
+                let n = ModDelayNode::flanger(ChannelLayout::from(w));
+                if let Some(v) = v {
+                    n.set_depth(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.0005,
+            hi: 0.008,
+        },
+        Case {
+            name: "phaser rate",
+            param: UnitParam::Rate,
+            make: |w, v| {
+                let n = phaser(w);
+                if let Some(v) = v {
+                    n.set_rate(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.5,
+            hi: 5.0,
+        },
+        Case {
+            name: "phaser depth",
+            param: UnitParam::Depth,
+            make: |w, v| {
+                let n = phaser(w);
+                if let Some(v) = v {
+                    n.set_depth(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.2,
+            hi: 1.0,
+        },
+        Case {
+            name: "phaser feedback",
+            param: UnitParam::Feedback,
+            make: |w, v| {
+                let n = phaser(w);
+                if let Some(v) = v {
+                    n.set_feedback(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.0,
+            hi: 0.8,
+        },
+        Case {
+            name: "phaser mix",
+            param: UnitParam::Wet,
+            make: |w, v| {
+                let n = phaser(w);
+                if let Some(v) = v {
+                    n.set_mix(v);
+                }
+                parts_of(n)
+            },
+            lo: 0.1,
+            hi: 0.9,
+        },
+    ];
+    #[cfg(feature = "convolution")]
+    cases.push(Case {
+        name: "convolver mix",
+        param: UnitParam::Wet,
+        make: |w, v| {
+            let n = tutti_nodes::ConvolverNode::shared_ir(w, &[0.0, 0.0, 1.0, -0.5], 64);
+            if let Some(v) = v {
+                n.set_mix(v);
+            }
+            parts_of(n)
+        },
+        lo: 0.1,
+        hi: 0.9,
+    });
+    cases
 }
 
 /// Frames past the connection's declick.
@@ -393,6 +669,14 @@ fn settled(out: &[Vec<f32>]) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
 /// fails. (A swapped `param_base` is not seen here, since the lane drives
 /// the value whatever the base: the nodes' own `the_feed_declares_*` /
 /// `the_shape_is_*` tests pin the bases.)
+///
+/// The block-rate cases (`block_rate_cases`, the params doc 014 PR 5 made
+/// ports) were each run with the node ignoring that driven port and reading
+/// its cell instead, and each failed: the LFO rate (chorus and phaser), the
+/// chorus depth and feedback, the phaser depth and mix, the compressor's
+/// ratio and makeup, its attack and release swapped, the gate's attack and
+/// release, the limiter's release, the delay's mix, the SVF's gain and the
+/// convolver's mix.
 #[test]
 fn each_fed_param_is_the_one_the_dsp_reads() {
     for w in [1usize, 2, 6] {

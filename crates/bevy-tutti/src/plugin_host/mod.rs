@@ -160,6 +160,12 @@ impl PluginsRes {
 /// Requires [`crate::graph::GraphReconcilePlugin`] (which configures the
 /// `GraphReconcileSystems` set) to be added before this plugin.
 ///
+/// With the `modulation` feature, each loaded plugin's
+/// [`PluginParamValues::read`] takes its handle's single
+/// `on_parameter_changed` slot (the GUI edits that move a lane's knob). A
+/// host installing its own callback on that handle replaces it, and the
+/// knobs stop following the plugin's GUI.
+///
 /// Also requires the host to have initialised Bevy's task pools — a
 /// `TaskPoolPlugin`, or the `DefaultPlugins`/`MinimalPlugins` that include one.
 /// Loading and scanning both run on `AsyncComputeTaskPool`; this plugin does not

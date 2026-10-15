@@ -996,7 +996,10 @@ from the node's first frame), commits a host's own staged insert for the
 same reason, and sends the resyncs owed. Every `ReconcileError` is
 surfaced: logged, sent once as a `ModulationRefused` message (with the
 route or target entity it names) and held in
-`ModulationState::refusal`. A follower's feed is `Feed::Audio` (its input
+`ModulationState::refusal`. A target takes one `ModRange` and one
+`Automation`: a second of either on the same `ParamRef` is refused as
+`DuplicateTarget`, never merged (which one won would be query order). A
+target still unresolved after 240 applies is logged once. A follower's feed is `Feed::Audio` (its input
 entity's node); a note envelope's is `Feed::Events` (its MIDI entity's
 `EventOut`). A plugin target is `Target::Foreign` on the plugin node's
 event input port 0, its knob seeded from `PluginParamValues` (the
@@ -1042,6 +1045,27 @@ callback, which queues each report; `plugin_param_edits`, in
 `GraphReconcileSystems::Spawn`, writes them into the mirror and the lane's
 knob, `ModulationState::set_knob`. Under automation the curve decides the
 base, so the knob shows again when the automation or its take goes.)
+
+**As landed (PR 4b): VST2 only.** Only VST2 reports a value the plugin
+moves itself (`audioMasterAutomate`, in process and through the
+plugin-server's `ParameterChanged`). CLAP, VST3 and AU emit no
+`ParameterChanged` through the server (`tutti-plugin-server`'s
+`Plugin::poll_async_events`, `src/plugin.rs:290-355`, sends only latency,
+tail and list or value invalidations for them), so a GUI edit on one of
+them moves the plugin's own value, the lane's next delivery replaces it,
+and the knob does not move. That gap is open: closing it needs a
+per-value report from each of those formats through the server.
+
+**An echo is not an edit.** A plugin that reports the value the host just
+set, from inside `setParameter`, would make the lane's modulated value
+(`knob + Σ offsets`) the knob, and the next delivery would add the offsets
+again, ratcheting the knob to the clamp. The VST2 host drops a report made
+on the thread inside its own `setParameter` call (`tutti-vst2-host`'s
+`host_write`, a thread-local mark), so an echo never reaches the
+parameter callback; an edit from the plugin's editor thread during the
+call is still reported. A format that gains per-value reports needs the
+same filter.
+
 With values only (no CLAP `PARAM_MOD`), the GUI shows base + modulation, so
 a drag during modulation sets the knob to the dragged value.
 

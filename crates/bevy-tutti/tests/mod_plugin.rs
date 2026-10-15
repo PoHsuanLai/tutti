@@ -329,3 +329,167 @@ fn a_plugin_gui_edit_becomes_the_knob() {
         "and the mirror"
     );
 }
+
+/// **A plugin's MIDI wiring changing keeps its parameter lanes.** The
+/// reference VST2 plugin (in process) has a lane on parameter 0 (a macro's
+/// `+0.25` on a knob of 0), on its one event input. A MIDI source is then
+/// declared on that input (`EventSources`) and taken away again: each
+/// rewrite of the port's declared sources leaves the lane's edge where it
+/// was (`GraphRuntime::set_event_sources` keeps the edges it did not
+/// make), so `event_sources` still lists the lane and the plugin still
+/// reads `0.25`.
+///
+/// Mutation (run): `set_event_sources` dropping the edges it did not make
+/// (the `others` re-add removed) → the lane is gone from the port after the
+/// first rewrite → fails.
+#[cfg(feature = "vst2")]
+#[test]
+fn a_plugins_midi_rewiring_keeps_its_lanes() {
+    use bevy_tutti::graph::{EventSources, SpawnAudioNode};
+    use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource};
+    use bevy_tutti::plugin_host::PluginEmitter;
+    use tutti_graph::ForkByClone;
+    use tutti_plugin::handles::ParamAddress;
+    use tutti_types::Depth;
+
+    let mut app = app();
+    let plugin = load(&mut app, common::plugin::vst2_probe());
+    let p0 = ParamRef::plugin(plugin, 0);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(p0, 0.0, 1.0));
+    let offset = world.spawn(ModSource::new(Macro(1.0))).id();
+    world.spawn(ModRoute::new(offset, p0).with_depth(Depth(0.25)));
+    knob_of(&mut app, p0);
+    let lane = AudioNode(
+        app.world()
+            .resource::<ModulationState>()
+            .lane(p0)
+            .expect("a lane")
+            .0,
+    );
+    let node = *app.world().get::<AudioNode>(plugin).expect("bound");
+    let clip = app
+        .world_mut()
+        .commands()
+        .spawn_audio_node(ForkByClone(common::probe::Held { on: u64::MAX }))
+        .id();
+    app.world_mut().flush();
+    app.update();
+    let clip_node = *app.world().get::<AudioNode>(clip).expect("bound");
+    let mut side = app
+        .world_mut()
+        .resource_mut::<AudioGraphRes>()
+        .take_audio_side();
+    let value = |app: &App| {
+        app.world()
+            .get::<PluginEmitter>(plugin)
+            .expect("the handle")
+            .handle
+            .params()
+            .parameter_value(ParamAddress::Index(0))
+            .expect("a value")
+    };
+    let mut out = vec![Vec::new(), Vec::new()];
+    let mut check = |app: &mut App, want: &[AudioNode], what: &str| {
+        let mut want: Vec<_> = want.iter().map(|n| n.0).collect();
+        want.sort();
+        for _ in 0..2 {
+            app.update();
+        }
+        side.render(1_024, 128, &mut out);
+        let mut sources: Vec<_> = app
+            .world()
+            .resource::<AudioGraphRes>()
+            .event_sources(node, 0)
+            .into_iter()
+            .map(|s| s.node.0)
+            .collect();
+        sources.sort();
+        assert_eq!(sources, want, "{what}: the port's sources");
+        assert_eq!(value(app), 0.25, "{what}: the lane reaches the plugin");
+    };
+    check(&mut app, &[lane], "before");
+    app.world_mut()
+        .entity_mut(plugin)
+        .insert(EventSources::from(clip));
+    check(&mut app, &[lane, clip_node], "a MIDI source added");
+    app.world_mut()
+        .entity_mut(plugin)
+        .insert(EventSources(Vec::new()));
+    check(&mut app, &[lane], "the MIDI source removed");
+}
+
+/// **A plugin echoing the lane's writes does not ratchet its knob.** The
+/// reference VST2 plugin (in process) with its echo on reports every value
+/// `setParameter` is given back through `audioMasterAutomate`, from inside
+/// the call. Its parameter 0 has a lane: a knob of 0 and a macro's `+0.25`,
+/// so the lane writes 0.25. Taken as a GUI edit, that echo would become the
+/// knob (0.25), the lane would then write 0.5, and so on to the clamp; the
+/// VST2 host drops a report made inside its own `setParameter` call
+/// (`tutti-vst2-host`'s `host_write`), so after four rounds of render,
+/// drain and frame the knob is still 0 and the plugin still reads 0.25.
+///
+/// Mutation (run): `HostState::automate` without the `IN_HOST_WRITE` check
+/// → the knob reads 0.25 after the first round → fails.
+#[cfg(feature = "vst2")]
+#[test]
+fn a_plugin_echoing_the_lane_keeps_its_knob() {
+    use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource};
+    use bevy_tutti::plugin_host::PluginEmitter;
+    use tutti_plugin::handles::ParamAddress;
+    use tutti_types::Depth;
+
+    let path = common::plugin::vst2_probe();
+    let echo = |on: bool| {
+        // SAFETY: the path is the cdylib this crate's dev-dependency built;
+        // the probe exports this as `extern "C" fn(bool)`.
+        let lib = unsafe { libloading::Library::new(&path) }.expect("re-open the probe");
+        {
+            let f: libloading::Symbol<extern "C" fn(bool)> =
+                unsafe { lib.get(b"tutti_vst2_probe_set_echo_set_parameter\0") }
+                    .expect("the echo switch");
+            f(on);
+        }
+        // Never unloaded: the host still runs the image.
+        std::mem::forget(lib);
+    };
+
+    let mut app = app();
+    let plugin = load(&mut app, path.clone());
+    let p0 = ParamRef::plugin(plugin, 0);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(p0, 0.0, 1.0));
+    let offset = world.spawn(ModSource::new(Macro(1.0))).id();
+    world.spawn(ModRoute::new(offset, p0).with_depth(Depth(0.25)));
+    assert_eq!(knob_of(&mut app, p0), 0.0);
+    echo(true);
+
+    let mut side = app
+        .world_mut()
+        .resource_mut::<AudioGraphRes>()
+        .take_audio_side();
+    let mut out = vec![Vec::new(), Vec::new()];
+    for round in 0..4 {
+        side.render(1_024, 128, &mut out);
+        let handle = app
+            .world()
+            .get::<PluginEmitter>(plugin)
+            .expect("the plugin's handle")
+            .handle
+            .clone();
+        handle.editor_idle();
+        app.update();
+        let state = app.world().resource::<ModulationState>();
+        assert_eq!(
+            state.lane(p0).expect("a lane").1.knob(),
+            Some(0.0),
+            "round {round}: the knob"
+        );
+        assert_eq!(
+            handle.params().parameter_value(ParamAddress::Index(0)),
+            Some(0.25),
+            "round {round}: the plugin reads the knob plus the offset"
+        );
+    }
+    echo(false);
+}

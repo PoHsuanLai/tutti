@@ -361,20 +361,26 @@ fn a_crossfaded_plugin_is_bound_again() {
     // exactly like this — the shadow goes with it, so a dead plugin's slots
     // are not kept alive by the entity. Mutation: dropping the
     // `drop_captured` call from `reconcile_node_despawn` fails this.
+    #[cfg(feature = "modulation")]
+    assert!(
+        app.world().resource::<AudioGraphRes>().contains(lane),
+        "the gain's lane is in the graph while its plugin is"
+    );
     app.world_mut().entity_mut(entity).remove::<AudioNode>();
     app.update();
     assert!(app.world().get::<PluginShadow>(entity).is_none());
 
-    // And the gain's lane leaves the graph with the entity. Mutation (run):
-    // `Modulation::apply` keeping a lane whose target no longer resolves
-    // (`binds.get(t).is_none_or(..)` as `is_some_and`) → the lane stays →
-    // fails.
+    // And the gain's lane leaves the graph with the node: its target no
+    // longer resolves. Mutation (run): `Modulation::apply` keeping a lane
+    // whose target no longer resolves (`binds.get(t).is_none_or(..)` as
+    // `is_some_and`) → the lane stays → fails.
     #[cfg(feature = "modulation")]
     {
-        app.world_mut().despawn(entity);
         app.update();
-        app.update();
-        assert!(!app.world().resource::<AudioGraphRes>().contains(lane));
+        assert!(
+            !app.world().resource::<AudioGraphRes>().contains(lane),
+            "the lane leaves with its plugin"
+        );
     }
 }
 

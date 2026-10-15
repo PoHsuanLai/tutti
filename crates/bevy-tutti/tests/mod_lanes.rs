@@ -510,9 +510,10 @@ fn a_knob_written_after_a_route_edit_is_the_knob() {
 /// reads `0.1 + 0.5 · 0.4`, not its knob until the next note.
 ///
 /// Mutation (run): `after_commit` not sending the resyncs owed
-/// (`send_mod_resyncs` skipped) fails: the resync stays owed. Not visible
-/// here: `reconcile` returning only `Applied::commit`, since a new route is
-/// a new edge, so the frame commits anyway.
+/// (`send_mod_resyncs` skipped) fails: the resync stays owed. Neutral, not
+/// a gap: `reconcile` asking for a commit on `Applied::resync` too (as it
+/// once did) changes nothing, since `after_commit` sends the resyncs owed
+/// whether or not the frame commits.
 #[test]
 fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
     let (mut app, mut side) = app(2);
@@ -688,6 +689,76 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
     assert_eq!(app.world().resource::<ModulationState>().refusal(), None);
 }
 
+/// **Two ranges, or two automations, on one param are refused by
+/// target.** A macro's `+100` on a cutoff probe (knob 500, range
+/// `0..=1000`). A second `ModRange` on the cutoff (`0..=2000`, which would
+/// make it `+200`) is refused as `DuplicateTarget` naming the cutoff, once,
+/// and nothing changes: the probe still plays 600. Without the refusal the
+/// two would merge, the winner being whichever the query met last. Dropping
+/// it applies again; then two `Automation`s on the cutoff are refused the
+/// same way.
+///
+/// Mutations (run), each fails with no message: `collect` merging a second
+/// range (`ranged.insert`'s answer ignored); merging a second automation
+/// (`automated.insert`'s answer ignored).
+#[test]
+fn two_ranges_or_automations_on_one_param_are_refused() {
+    let (mut app, mut side) = app(1);
+    let probe = spawn(&mut app, ProbeUnit::new(500.0));
+    master(&mut app, &[probe]);
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(cutoff, 0.0, 1_000.0));
+    let offset = world.spawn(ModSource::new(Macro(1.0))).id();
+    world.spawn(ModRoute::new(offset, cutoff).with_depth(Depth(0.1)));
+    settle(&mut app);
+    assert_eq!(*render(&mut side, 1_024, 128)[0].last().unwrap(), 600.0);
+
+    let read = |app: &mut App| {
+        app.world_mut()
+            .run_system_cached(|mut m: MessageReader<ModulationRefused>| {
+                m.read().cloned().collect::<Vec<_>>()
+            })
+            .expect("runs")
+    };
+    let refused_by_cutoff = |app: &mut App, what: &str| {
+        read(app);
+        app.update();
+        app.update();
+        let refused = read(app);
+        assert_eq!(refused.len(), 1, "{what}: one message: {refused:?}");
+        assert_eq!(refused[0].target(), Some(cutoff), "{what}: by target");
+        assert!(
+            matches!(
+                app.world().resource::<ModulationState>().refusal(),
+                Some(ReconcileError::Compile(
+                    tutti_mod::CompileError::DuplicateTarget(_)
+                ))
+            ),
+            "{what}: held"
+        );
+    };
+
+    let second = app
+        .world_mut()
+        .spawn(ModRange::new(cutoff, 0.0, 2_000.0))
+        .id();
+    refused_by_cutoff(&mut app, "two ranges");
+    assert_eq!(
+        *render(&mut side, 1_024, 128)[0].last().unwrap(),
+        600.0,
+        "nothing changed"
+    );
+    app.world_mut().despawn(second);
+    settle(&mut app);
+
+    let curve = || Arc::new(AutomationEnvelope::new(0.0).with_range(0.0, 1_000.0));
+    let world = app.world_mut();
+    world.spawn(Automation::new(cutoff, curve()));
+    world.spawn(Automation::new(cutoff, curve()));
+    refused_by_cutoff(&mut app, "two automations");
+}
+
 // ----------------------------------------------------------- rebind --
 
 /// **An entity rebound to a node with another param list keeps
@@ -742,4 +813,76 @@ fn an_entity_rebound_to_another_param_list_keeps_modulating() {
     app.update();
     let out = render(&mut side, 1_024, 128);
     assert_eq!(*out[0].last().unwrap(), 900.0, "a later range edit lands");
+}
+
+// ------------------------------------------------- a host's commit --
+
+/// A source declaring `LATE` frames of latency: a look-ahead's bookkeeping.
+#[derive(Clone)]
+struct Late;
+
+const LATE: usize = 100;
+
+impl tutti_graph::Node for Late {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(
+            tutti_core::ChannelLayout::EMPTY,
+            tutti_core::ChannelLayout::MONO,
+        )
+        .with_latency(tutti_types::Latency::new(tutti_types::Samples(LATE)))
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        _: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        io.output(0).fill(0.0);
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **A host's staged edit that `after_commit` commits publishes its PDC
+/// figures.** A host inserts, through `AudioGraphRes` and between frames, a
+/// latent node on the outputs and a probe it then modulates: the probe's
+/// target is unresolved, so the next frame's `after_commit` commits the
+/// host's edit early. That commit is a plan the audio thread runs, so
+/// [`GraphLatency`](bevy_tutti::GraphLatency) is its latency on that frame,
+/// as after any `commit_graph`.
+///
+/// Mutation (run): `after_commit` calling `graph.commit()` directly, not
+/// `commit_and_publish` → `GraphLatency` reads 0 on that frame → fails.
+#[test]
+fn a_host_edit_committed_for_a_target_publishes_its_latency() {
+    let (mut app, mut side) = app(1);
+    settle(&mut app);
+    let probe = {
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        let (late, ()) = graph.insert(ForkByClone(Late));
+        graph.set_outputs_from(late);
+        let (probe, params) = graph.insert(ProbeUnit::new(500.0));
+        graph.set_node_params(probe, Some(params));
+        probe
+    };
+    let entity = app.world_mut().spawn(probe).id();
+    let cutoff = ParamRef::unit(entity, UnitParam::Cutoff);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(cutoff, 0.0, 1_000.0));
+    let offset = world.spawn(ModSource::new(Macro(1.0))).id();
+    world.spawn(ModRoute::new(offset, cutoff).with_depth(Depth(0.1)));
+
+    app.update();
+    assert_eq!(
+        app.world().resource::<bevy_tutti::GraphLatency>().0,
+        tutti_types::Samples(LATE),
+        "the plan after_commit sent, published"
+    );
+    render(&mut side, 128, 128);
+    settle(&mut app);
+    assert!(app
+        .world()
+        .resource::<ModulationState>()
+        .lane(cutoff)
+        .is_some());
 }

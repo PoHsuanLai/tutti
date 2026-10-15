@@ -116,7 +116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `ModulationMatrix`, `ModTargetRegistry`, `ModClock`, `ModBusRes`, `drive`/`rebuild` | `ModulationState` (`lane(ParamRef)` with its `LaneControls`, `set_knob`, `source_node`, `refusal`, `unresolved_targets`, `unresolved_sources`) and `ModulationSystems::{Apply, AfterCommit}`; a refused declaration is a `ModulationRefused` message (`route()`, `target()`) and stays in `ModulationState::refusal` |
   | `write_param(graph, matrix, entity, node, param, value)` | `write_param(graph, node, param, value)`: one writer per knob, the node's cell, modulated or not |
   | `ParamSet::set_authored(param, value)` | gone: `ParamSet::set` writes the live cell and the authored value together |
-  | a plugin parameter was modulated per block through `plugin_bind_params` (`PluginControls::automation`), which an export did not fork | a lane on the plugin's event input; `PluginParamValues` (on a loaded plugin's entity) mirrors its values and seeds the knob; an edit in the plugin's GUI moves the knob (`plugin_param_edits`). `plugin_bind_params` is no longer scheduled |
+  | a plugin parameter was modulated per block through `plugin_bind_params` (`PluginControls::automation`), which an export did not fork | a lane on the plugin's event input; `PluginParamValues` (on a loaded plugin's entity) mirrors its values and seeds the knob; an edit in the plugin's GUI moves the knob (`plugin_param_edits`; VST2 only for now, since CLAP, VST3 and AU send no per-value report through the plugin-server). `plugin_bind_params` is no longer scheduled |
+  | — | a second `ModRange` (or `Automation`) on one `ParamRef` is refused, `ModulationRefused` with `CompileError::DuplicateTarget`, never merged |
   | the old types at `bevy_tutti::modulation::*` | at `bevy_tutti::modulation::legacy::*`, with `LegacyModulationPlugin` to schedule them |
   | `AudioGraphRes::contains(node)` saw only nodes inserted through it | every node in the graph's spec, a modulation lane or signal node included |
   | `AudioGraphRes::event_sources(sink, port)` listed only sources inserted through it | every edge on the port, a plugin parameter's lane included |
@@ -1436,6 +1437,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     CoreMIDI type. It now takes an erased sink, so every backend gets it.
 
 ### Fixed
+
+- **A VST2 plugin's echo of a host write is no longer reported as its own
+  edit** (`tutti-vst2-host`). A plugin that calls `audioMasterAutomate`
+  from inside `setParameter` with the value it was just given used to
+  reach `Vst2Instance::drain_param_changes` (and the plugin-server's
+  `ParameterChanged`) as an edit; a host taking reported values as the
+  user's, such as `bevy-tutti`'s modulation lanes, adopted each modulated
+  value as the knob and ratcheted it to the clamp. A report made on the
+  thread inside the host's own `setParameter` call is now dropped; one from
+  the plugin's editor thread meanwhile is still reported.
 
 - **The VST3 host no longer allocates on the audio thread for a block of
   more than 73 events** (tutti-vst3-host). The input event list was sorted

@@ -7,6 +7,21 @@
 //! when the lane is built, read from [`PluginParamValues`], and a value the
 //! plugin reports later (an edit in its GUI, through `ParameterChangeSink`)
 //! is written into the lane's knob ([`plugin_param_edits`]).
+//!
+//! **Reports are VST2's only, today.** Of the formats, only VST2's
+//! `audioMasterAutomate` reaches the parameter callback (in process, and
+//! through the plugin-server's `ParameterChanged`). CLAP, VST3 and AU emit no
+//! per-value report through the server (`tutti-plugin-server`'s
+//! `Plugin::poll_async_events`): a GUI edit on one of them changes the
+//! plugin's own value, which the lane's next delivery replaces, and the knob
+//! does not move.
+//!
+//! **An echo is not an edit.** A plugin that reports the value the lane just
+//! set (from inside `setParameter`) would make that modulated value the knob,
+//! and the next delivery would add the offsets again, ratcheting the knob to
+//! the clamp. The VST2 host drops a report made inside its own
+//! `setParameter` call (`tutti-vst2-host`'s `host_write`), so none reaches
+//! here; a format that reports values in future needs the same filter.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -41,8 +56,9 @@ impl PluginParamValues {
     /// round trips) and installs its parameter callback, which queues every
     /// value the plugin reports for [`plugin_param_edits`].
     ///
-    /// The callback is the handle's one slot (`on_parameter_changed`
-    /// replaces any other).
+    /// The callback takes the handle's single `on_parameter_changed` slot,
+    /// replacing any callback installed before, and one installed after
+    /// replaces it (the lane's knob then stops following the GUI).
     pub fn read(handle: &PluginHandle) -> Self {
         let edits: Edits = Arc::default();
         let queue = Arc::clone(&edits);
@@ -129,7 +145,13 @@ pub fn plugin_param_edits(
             }
         }
         // Edits wait for the read: one applied before it lands would be
-        // overwritten by a value read earlier.
+        // overwritten by a value read earlier. The other order has a window
+        // of its own: an edit reported while the read is running, before
+        // the read reaches its parameter, is applied after it and so
+        // replaces the value read, though the read is newer. Only a value
+        // changed again within that window without a report is affected
+        // (each change the plugin reports arrives here in order), and the
+        // next report corrects it.
         if mirror.values.is_none() {
             continue;
         }

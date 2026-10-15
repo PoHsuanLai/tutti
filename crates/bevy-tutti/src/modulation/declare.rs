@@ -382,8 +382,10 @@ impl ModRoute {
 /// base is the param's knob (its [`AudioParam`](crate::graph::AudioParam),
 /// `write_param`, a plugin's own value) or its [`Automation`].
 ///
-/// A route needs one on its target. Edit it in place: a range edit is a
-/// store into the lane, never a plan.
+/// A route needs one on its target, and a target takes one: a second
+/// `ModRange` on the same param is refused (`ModulationRefused`,
+/// `DuplicateTarget`). Edit it in place: a range edit is a store into the
+/// lane, never a plan.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct ModRange {
     /// The param.
@@ -405,7 +407,9 @@ impl ModRange {
 /// of the knob (doc 014 §2). The curve must be frozen (`Curve::frozen` is
 /// `None`: an envelope, not a cell something writes).
 ///
-/// A target with automation and no [`ModRange`] is unclamped.
+/// A target with automation and no [`ModRange`] is unclamped. A target
+/// takes one `Automation`: a second on the same param is refused
+/// (`ModulationRefused`, `DuplicateTarget`).
 #[derive(Component, Clone)]
 pub struct Automation {
     /// The param.

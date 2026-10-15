@@ -607,7 +607,7 @@ impl<S> PluginClient<S> {
     /// dropped, over the client's life: more arrived during one command (a
     /// preset or state load) than the bridge holds between two listener
     /// calls, and the oldest went. Each drop also delivers a
-    /// [`PluginRefresh::ParamValues`](crate::host::handles::PluginRefresh), so a
+    /// [`PluginRefresh::ParamValues`](crate::host::handles::PluginRefresh::ParamValues), so a
     /// host that re-reads on it loses nothing; latency, tail and resync events
     /// are never dropped.
     pub fn dropped_parameter_events(&self) -> u64 {

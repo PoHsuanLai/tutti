@@ -1,7 +1,8 @@
 //! The transport snapshot the plugin reads back via `audioMasterGetTime`: a
-//! sequence cell ([`SeqWriter`] / [`SeqReader`]) holding a `TimeInfo`'s fields as words. `TimeInfo` is 88 bytes
-//! of `Copy` POD and readers take it by value, so the cell is overwritten in
-//! place: wait-free reads, allocation-free writes.
+//! sequence cell ([`SeqWriter`] / [`SeqReader`]) holding a `TimeInfo`'s
+//! fields as words. `TimeInfo` is 88 bytes of `Copy` POD and readers take it
+//! by value, so the cell is overwritten in place: wait-free reads,
+//! allocation-free writes.
 //!
 //! Not an `ArcSwap`: the audio thread is the *writer* here (once per block),
 //! and `store` would allocate the new snapshot and free the retired one inside
@@ -169,9 +170,9 @@ mod tests {
     ///
     /// Mutations (run): `pair` sign-extending `lo` (`lo as i64 as u64` for
     /// `lo as u32`), so a negative low half overwrites the high one →
-    /// `time_sig_numerator` reads `-1` → fails; `unpack` reading `smpte_offset` and the frame rate from
-    /// swapped halves → fails; `pack` storing `ppq_pos` in `tempo`'s word →
-    /// fails.
+    /// `time_sig_numerator` reads `-1` → fails; `unpack` reading
+    /// `smpte_offset` and the frame rate from swapped halves → fails; `pack`
+    /// storing `ppq_pos` in `tempo`'s word → fails.
     #[test]
     fn every_field_round_trips() {
         let info = vst::api::TimeInfo {

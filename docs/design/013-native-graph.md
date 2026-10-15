@@ -3598,8 +3598,12 @@ text past it, since the plugin holds pointers into it for the block.
   counted (`PluginClient::dropped_parameter_events`, and on the handle
   through a required `HostParams::dropped_parameter_events`, which the
   in-process VST2 backend answers with its refused `audioMasterAutomate`
-  reports) and raises a `Resync(ParamValues)`, so the host re-reads. The drain hands over the
-  parameter events in arrival order, then latency, tail and resyncs.
+  reports) and raises a `Resync(ParamValues)`, so the host re-reads. The
+  drain hands over the structural resyncs (`Reloaded`, `Io`) first, since
+  parameters reported after a rebuild address the new table, then the
+  parameter events in arrival order, latency and tail, and the refresh
+  resyncs (`ParamTitles`, `ParamValues`) last, so a re-read wins over any
+  queued value.
 - **The in-process VST2 node copied each block twice each way** (the
   graph's buffers, a `ProcessScratch` of `Vec<Vec<f32>>`, `vst2-host`'s
   `RenderScratch`, the plugin). The node hands `Vst2Instance::process_f32`
@@ -3644,9 +3648,10 @@ thread doing one `load`, runs in one execution; with the roles swapped,
 six; a spawned thread that only loads, against a main thread that stores,
 explores fully. The first version of the writer loaded the sequence before
 storing it, and as the spawned thread it hid the reader's loads, so every
-mutation passed. The model puts the writer on main for that reason, not as
-a rule about writers: whichever thread loads then stores goes on main, or
-the model counts its executions. The same limit under-explores `job_gate`
+mutation passed. The writer now only stores (it keeps its own sequence), so
+its placement is arbitrary; the model runs both placements, so a writer that
+loads again cannot hide behind one of them, and every recorded mutation
+fails in each. The same limit under-explores `job_gate`
 (17% fewer executions), `rt_publish`'s `two_publishers_and_a_reader`
 (15.6%) and several `pos_ring` models (4 to 24%); mutation sweeps there
 found no hidden bug, and the fix is a separate follow-up.

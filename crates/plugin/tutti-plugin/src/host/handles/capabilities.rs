@@ -134,7 +134,7 @@ pub trait HostParams: Send + Sync {
     /// says so with `0` in its own impl. The subprocess backend counts the
     /// bridge's drops (more reports during one command, such as a preset
     /// load, than it holds; each also raises a
-    /// [`PluginRefresh::ParamValues`](crate::host::handles::PluginRefresh));
+    /// [`PluginRefresh::ParamValues`](crate::host::handles::PluginRefresh::ParamValues));
     /// the in-process VST2 backend counts the `audioMasterAutomate` reports
     /// its bounded queue refused.
     fn dropped_parameter_events(&self) -> u64;

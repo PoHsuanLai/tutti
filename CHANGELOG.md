@@ -125,14 +125,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slot nothing evicts; only parameter events queue (128), the oldest is
   dropped when full, each drop is counted and raises a
   `Resync(ParamValues)` (delivered as `PluginRefresh::ParamValues`) so the
-  host re-reads them all. A listener hears, per command, the parameter
-  events in arrival order, then the latency, the tail and the resyncs; two
-  latency reports in one command arrive as one, with the second value.
+  host re-reads them all. Two latency reports in one command arrive as
+  one, with the second value. A listener hears, per command:
+  `Resync(Reloaded)` and `Resync(Io)` first, since a plugin that rebuilds
+  itself or its buses and then reports parameters reports them against the
+  new table; then the parameter events in arrival order; then the latency
+  and the tail; then `Resync(ParamTitles)` and `Resync(ParamValues)` last,
+  so a re-read (including the one a drop raises) wins over every queued
+  value. A parameter event sent *before* a structural change in the same
+  command is delivered after it; the `Reloaded` re-read covers it.
 
   | Was | Now |
   |---|---|
   | a flood of parameter events could evict latency, tail and resync events | they are latest-wins and never dropped; parameter events drop oldest-first, counted, with a `ParamValues` resync |
-  | events in arrival order across kinds | parameter events in arrival order, then latency, tail, resyncs (`ParamValues`, `ParamTitles`, `Io`, `Reloaded`) |
+  | events in arrival order across kinds | `Reloaded`, `Io`, the parameter events in arrival order, latency, tail, `ParamTitles`, `ParamValues` |
   | — | `PluginClient::dropped_parameter_events()`, `PluginHandle::dropped_parameter_events()` |
   | `HostParams` had no drop count | **Breaking** for a custom backend: `HostParams::dropped_parameter_events(&self) -> u64` is required. A backend that cannot lose a plugin's parameter reports returns `0`; the in-process VST2 backend returns the `audioMasterAutomate` reports its bounded queue refused (`Vst2Instance::dropped_param_changes`) |
 

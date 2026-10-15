@@ -508,9 +508,9 @@ fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
     // Ask the plugin to request the restart, then drain the notification the
     // way a host's poll loop does.
     inst.set_parameter(PARAM_REQUEST_IO_CHANGED, 1.0);
-    let notifications = inst.poll_plugin_notifications();
+    let restart = inst.poll_plugin_notifications(|_| {});
     assert!(
-        notifications.restart.io_changed,
+        restart.io_changed,
         "the probe requested restartComponent(kIoChanged) but it did not reach \
          the host — the rest of this test would be vacuous"
     );
@@ -1276,5 +1276,52 @@ fn context_requirements_are_read_after_the_component_initializes() {
         loaded.wants_transport(),
         "kNeedTempo is a transport field, so the host must send a transport \
          snapshot each block"
+    );
+}
+
+/// A plugin that outruns the host's poll loses its newest notifications, and
+/// the next poll says so — once — so the host can re-read every parameter
+/// rather than trust a gesture that may have lost its final `PerformEdit`.
+///
+/// Driven through the real `IComponentHandler` the probe was handed, with the
+/// `conformance` seam playing the plugin's part (the probe never edits).
+///
+/// Mutations: dropping the `notifications_overflowed = take_overflowed()`
+/// line in `poll_plugin_notifications` fails the first assertion; taking the
+/// flag before the drain instead still passes here (the drops precede the
+/// poll) — that ordering is argued in the code, not pinned.
+#[test]
+fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
+    use tutti_vst3_host::host::conformance::plugin_perform_edit;
+    use tutti_vst3_host::{PluginNotification, NOTIFICATION_CAPACITY};
+
+    let _guard = plugin_guard();
+    let Some(mut inst) = load_probe(512) else {
+        return;
+    };
+    let _ = inst.poll_plugin_notifications(|_| {});
+
+    for i in 0..=NOTIFICATION_CAPACITY {
+        plugin_perform_edit(&inst, 100, i as f64 / NOTIFICATION_CAPACITY as f64);
+    }
+    assert_eq!(inst.dropped_notifications(), 1);
+
+    let mut edits = 0;
+    let outcome = inst.poll_plugin_notifications(|n| {
+        if let PluginNotification::Edit(_) = n {
+            edits += 1;
+        }
+    });
+    assert!(
+        outcome.notifications_overflowed,
+        "a dropped edit must be reported so the host re-reads parameters"
+    );
+    assert_eq!(edits, NOTIFICATION_CAPACITY, "the oldest are delivered");
+
+    plugin_perform_edit(&inst, 100, 0.5);
+    let outcome = inst.poll_plugin_notifications(|_| {});
+    assert!(
+        !outcome.notifications_overflowed,
+        "reported once, not on every later poll"
     );
 }

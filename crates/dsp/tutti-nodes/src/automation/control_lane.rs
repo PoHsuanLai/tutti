@@ -164,6 +164,9 @@ impl LaneControls {
 struct Flight {
     /// `None`: the lane had no value and sent nothing.
     seg: Option<ParamSegment>,
+    /// The segment's raw endpoints (0 with no segment).
+    from: f32,
+    to: f32,
     sent: Frame,
     /// The next point; `None` while the value is steady (no point is due
     /// until something changes).
@@ -523,10 +526,29 @@ impl Block<'_> {
         let pf = p as f64;
         let moving = self.inputs_moving(walk, pf);
         let make = self.make;
-        let flight = |seg: Option<ParamSegment>, next: Option<f64>| Flight {
-            seg,
+        let next_at = |d: Option<f64>| d.map(|d| abs + Samples(d.ceil().max(1.0) as usize));
+        let flight = |seg: Option<(ParamSegment, f32, f32)>, next: Option<f64>| Flight {
+            seg: seg.map(|s| s.0),
+            from: seg.map_or(0.0, |s| s.1),
+            to: seg.map_or(0.0, |s| s.2),
             sent: abs,
-            next: next.map(|d| abs + Samples(d.ceil().max(1.0) as usize)),
+            next: next_at(next),
+        };
+        // A glide that would re-send the piece in flight unchanged (same
+        // end, same next point) leaves it alone: a republish that moves
+        // nothing changes no frame.
+        let old = walk.flight.filter(|f| glide && f.seg.is_some());
+        let unchanged = |from: Option<f32>, to: f32, next: Option<f64>, seg: &ParamSegment| {
+            old.is_some_and(|o| {
+                o.to.to_bits() == to.to_bits()
+                    && from.is_none_or(|f| {
+                        f.to_bits() == o.from.to_bits()
+                            && o.seg.is_some_and(|s| {
+                                s.shape() == seg.shape() && s.length() == seg.length()
+                            })
+                    })
+                    && o.next == next_at(next)
+            })
         };
 
         // Exact mode: a native target's pure automation, rolling.
@@ -545,26 +567,32 @@ impl Block<'_> {
                             let (s, e) = (start.get(), end.get());
                             let seg = make(from, to, shape)
                                 .resumed(SamplePosition((beat - s) * f), SamplePosition((e - s) * f));
-                            (seg, Some((e - beat) * f))
+                            (seg, from, to, Some((e - beat) * f))
                         })
                     }
                     Some(CurveSegment::Hold { value, until }) if value.is_finite() => Some((
                         make(value, value, SegmentShape::Linear),
+                        value,
+                        value,
                         until.map(|u| (u.get() - beat) * f).filter(|d| *d > 0.0),
                     )),
                     None if curve.value_at(t.beat()).is_none() => {
                         // No value anywhere: the knob, held.
-                        self.knob.map(|k| (make(k, k, SegmentShape::Linear), None))
+                        self.knob
+                            .map(|k| (make(k, k, SegmentShape::Linear), k, k, None))
                     }
                     _ => None,
                 };
-                if let Some((seg, d)) = exact {
+                if let Some((seg, from, to, d)) = exact {
                     let d = match (d, wrap) {
                         (Some(a), Some(b)) => Some(a.min(b)),
                         (a, b) => a.or(b),
                     };
+                    if unchanged(Some(from), to, d, &seg) {
+                        return Ok(());
+                    }
                     self.send(out, p, seg)?;
-                    walk.flight = Some(flight(Some(seg), d));
+                    walk.flight = Some(flight(Some((seg, from, to)), d));
                     return Ok(());
                 }
             }
@@ -590,12 +618,25 @@ impl Block<'_> {
             walk.flight = Some(flight(None, (!steady).then_some(grid)));
             return Ok(());
         };
-        if steady && !glide {
-            let v = self.clamp(v0);
-            let seg = make(v, v, SegmentShape::Linear);
-            self.send(out, p, seg)?;
-            walk.flight = Some(flight(Some(seg), None));
-            return Ok(());
+        if steady {
+            let v = if glide {
+                self.program
+                    .value_at(self.knob, &time, self.span, &ins[..n_in])
+                    .map(|v| self.clamp(v))
+            } else {
+                Some(self.clamp(v0))
+            };
+            let seg = v.map(|v| make(v, v, SegmentShape::Linear));
+            if let (Some(v), Some(seg)) = (v, seg) {
+                if unchanged(None, v, None, &seg) {
+                    return Ok(());
+                }
+                if !glide {
+                    self.send(out, p, seg)?;
+                    walk.flight = Some(flight(Some((seg, v, v)), None));
+                    return Ok(());
+                }
+            }
         }
 
         // The next point: the grid, or a corner before it.
@@ -648,8 +689,11 @@ impl Block<'_> {
         let (v0, v1) = (self.clamp(v0), self.clamp(v1));
         let seg = make(v0, v1, SegmentShape::Linear)
             .resumed(SamplePosition(0.0), SamplePosition(d));
+        if unchanged(None, v1, Some(d), &seg) {
+            return Ok(());
+        }
         self.send(out, p, seg)?;
-        walk.flight = Some(flight(Some(seg), Some(d)));
+        walk.flight = Some(flight(Some((seg, v0, v1)), Some(d)));
         Ok(())
     }
 

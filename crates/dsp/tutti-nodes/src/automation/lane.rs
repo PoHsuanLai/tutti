@@ -6,27 +6,14 @@ use std::sync::Arc;
 use audio_automation::CurveType;
 use tutti_core::ChannelLayout;
 use tutti_graph::{
-    Cx, Env, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Offset,
-    ParamSegment, Prepare, SegmentShape, Shape, Status,
+    Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
+    SegmentShape, Shape, Status,
 };
-use tutti_mod::CurveSegment;
-use tutti_types::{Beat, Latency, ParamKey, SamplePosition, Samples, Tail, Unit};
+use tutti_mod::ControlProgram;
+use tutti_types::{Beat, Latency, ParamKey, Tail, Unit};
 
+use super::control_lane::ControlLaneNode;
 use super::Curve;
-
-/// Segments one event-output lane sends per block, at most: one where each
-/// transport piece starts, one per breakpoint and per loop wrap (and, in the
-/// fallback, one per linear piece). Fixed, because a node's event capacity
-/// is read from its shape at insert, before `prepare` names a block size.
-///
-/// **The density limit.** An envelope with more than about 127 breakpoints
-/// inside one block (one every frame at 128-frame blocks, one every 8 at
-/// 1024) loses the sends past the capacity: they are refused and counted
-/// (`Executor::dropped_events`), and the port stays on the last segment
-/// that got through until the next block re-sends where the curve is. Thin
-/// such an envelope (`AutomationEnvelope::simplify`) or use the audio
-/// lane ([`AutomationLaneNode::new`]), which has no limit.
-pub const LANE_EVENT_CAPACITY: u32 = 128;
 
 /// The [`SegmentShape`] an `audio-automation` [`CurveType`] is, or `None`
 /// for the shapes the closed set does not carry.
@@ -45,9 +32,8 @@ pub const LANE_EVENT_CAPACITY: u32 = 128;
 ///
 /// `Back`, `Elastic` and `Bounce` overshoot their endpoints and `Bezier`'s
 /// two control values would not fit an event; `Circular` is a quarter
-/// circle no power matches. A lane sends those pieces as a piecewise-linear
-/// approximation, sampled at the edges of each block (see
-/// [`AutomationLaneNode::for_param`]).
+/// circle no power matches. A lane sends those pieces as linear pieces on
+/// the play-clock grid (see [`ControlLaneNode`]).
 pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
     use CurveType as C;
     use SegmentShape as S;
@@ -70,10 +56,6 @@ pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
         C::Circular | C::Back | C::Elastic | C::Bounce | C::Bezier(..) => return None,
     })
 }
-
-/// How an event-output lane builds a segment for its parameter: the typed
-/// key (or foreign id) bound in, so the lane itself is not generic.
-type MakeSegment = dyn Fn(f32, f32, SegmentShape) -> ParamSegment + Send + Sync;
 
 /// An automation lane that evaluates a [`Curve`] against musical time.
 ///
@@ -98,9 +80,9 @@ type MakeSegment = dyn Fn(f32, f32, SegmentShape) -> ParamSegment + Send + Sync;
 /// **Two outputs to choose from.** [`new`](Self::new) renders the curve as
 /// audio, one value per frame, for anything that reads a signal (an audio
 /// param source, a meter). [`for_param`](Self::for_param) and
-/// [`for_foreign`](Self::for_foreign) send it as **curve-segment events**
-/// ([`ParamSegment`]) for a param port instead: one per breakpoint, which the
-/// port evaluates per frame — see [`for_param`](Self::for_param).
+/// [`for_foreign`](Self::for_foreign) build a [`ControlLaneNode`] instead,
+/// which sends it as curve-segment events
+/// ([`ParamSegment`](tutti_graph::ParamSegment)) for a param port.
 ///
 /// # In a graph
 ///
@@ -138,9 +120,6 @@ type MakeSegment = dyn Fn(f32, f32, SegmentShape) -> ParamSegment + Send + Sync;
 pub struct AutomationLaneNode {
     curve: Arc<dyn Curve>,
     last_value: f32,
-    /// `None`: one audio output. `Some`: one event output of segments,
-    /// built by this.
-    events: Option<Arc<MakeSegment>>,
 }
 
 /// Another name for [`AutomationLaneNode`], kept for consumers that spell
@@ -156,65 +135,44 @@ impl AutomationLaneNode {
         Self {
             curve: Arc::new(curve),
             last_value: 0.0,
-            events: None,
         }
     }
 
-    /// A lane that sends `curve` to built-in parameter `key` as
-    /// curve-segment events on one event output (no audio): wire it to a
+    /// A [`ControlLaneNode`] that sends `curve` to built-in parameter `key`
+    /// as curve-segment events on one event output (no audio): wire it to a
     /// param port with `ParamFrom::Events`. The curve's values are `key`'s
     /// raw values.
     ///
-    /// **What it sends.** It reads the transport per frame from its block's
-    /// `Env`, as the audio lane does, and sends a [`ParamSegment`] wherever
-    /// the curve's piece ([`Curve::segment_at`]) changes: at each block's
-    /// first frame and each transport change (a start, stop, seek or tempo
-    /// change), at each breakpoint, and at each loop wrap. A piece is sent
-    /// with its endpoints, its shape ([`segment_shape`]) and the fractional
-    /// position the frame is at along it (beats to frames at the piece's
-    /// tempo), so the port renders the curve's own value at every frame,
-    /// breakpoints that fall between frames included. Because a segment is
-    /// absolute, the re-send at every block edge changes nothing on a
-    /// continuing piece; it is what makes the lane a pure function of the
-    /// transport, as the audio lane is.
-    ///
-    /// **What it cannot send exactly.** A piece whose shape has no
-    /// [`segment_shape`], a curve that cannot say its pieces (`segment_at`
-    /// is `None`: an LFO, a sum of layers, an envelope with a `step_size` or
-    /// a clamp cutting into a piece) goes as linear segments between the
-    /// curve's values at the edges of each block (and at a breakpoint or loop
-    /// wrap inside it): the piecewise-linear fallback, exact at those edges.
-    /// While stopped it sends the value at its beat, held. Where the curve
-    /// has no value, or one that is not finite, it sends nothing and the
-    /// port keeps the value it has, as a plugin keeps its last parameter
-    /// value.
+    /// A program of automation alone
+    /// ([`ControlProgram::from_automation`]), with no knob and no range: the
+    /// lane sends the curve's own shaped pieces (exact mode), a piece with
+    /// no [`segment_shape`] as linear pieces on the play-clock grid, the
+    /// value at its beat held while stopped, and nothing where the curve has
+    /// no value (the port keeps the value it has). For a knob, a range or
+    /// layers, build the [`ControlLaneNode`] directly.
     pub fn for_param<U: Unit<Raw = f32> + 'static>(
         curve: impl Curve + 'static,
         key: ParamKey<U>,
-    ) -> Self {
-        Self::with_events(
-            curve,
-            Arc::new(move |from, to, shape| {
-                ParamSegment::new(key, U::from_raw(from), U::from_raw(to), Samples(0), shape)
-            }),
+    ) -> ControlLaneNode {
+        ControlLaneNode::for_param(
+            key,
+            ControlProgram::from_automation(Arc::new(curve)),
+            None,
+            None,
         )
     }
 
     /// As [`for_param`](Self::for_param), for a foreign unit's parameter
-    /// `id` (in its own normalisation).
-    pub fn for_foreign(curve: impl Curve + 'static, id: u32) -> Self {
-        Self::with_events(
-            curve,
-            Arc::new(move |from, to, shape| ParamSegment::foreign(id, from, to, Samples(0), shape)),
+    /// `id` in its own normalisation, clamped to `0..=1` (a hosted plugin's
+    /// normalised value). A plugin lane never uses exact mode: every piece
+    /// goes on the play-clock grid.
+    pub fn for_foreign(curve: impl Curve + 'static, id: u32) -> ControlLaneNode {
+        ControlLaneNode::for_foreign(
+            id,
+            ControlProgram::from_automation(Arc::new(curve)),
+            None,
+            (0.0, 1.0),
         )
-    }
-
-    fn with_events(curve: impl Curve + 'static, make: Arc<MakeSegment>) -> Self {
-        Self {
-            curve: Arc::new(curve),
-            last_value: 0.0,
-            events: Some(make),
-        }
     }
 
     /// Replaces the curve, allocating a new `Arc`.
@@ -262,170 +220,13 @@ impl AutomationLaneNode {
                 .frozen()
                 .unwrap_or_else(|| Arc::clone(&self.curve)),
             last_value: 0.0,
-            events: self.events.clone(),
-        }
-    }
-}
-
-/// Frames per beat at `tempo` and `rate`, when both are usable.
-fn frames_per_beat(rate: f64, tempo: f64) -> Option<f64> {
-    let usable = tempo.is_finite() && tempo > 0.0 && rate.is_finite() && rate > 0.0;
-    usable.then(|| rate * 60.0 / tempo)
-}
-
-/// What an event lane sent last, to tell when to send again.
-struct Sent {
-    /// Send again at this frame of the block whatever the beat does (the
-    /// end of a fallback piece).
-    until_frame: usize,
-    /// Send again once the beat reaches this (the piece's end).
-    until_beat: f64,
-}
-
-impl AutomationLaneNode {
-    /// The event lane's block: see [`for_param`](Self::for_param).
-    fn send_segments(&mut self, env: &Env, io: &mut Io<'_>, make: &MakeSegment) {
-        let frames = io.frames();
-        let out = io.event_out(0);
-        let curve = &*self.curve;
-        let rate = env.sample_rate.get();
-        // The segment sent last and its frame, for `last_value`.
-        let mut last: Option<(usize, ParamSegment)> = None;
-        let mut send = |i: usize, seg: ParamSegment| {
-            if let Some(at) = env.offset(i) {
-                // Refused past the capacity: counted by the executor.
-                let _ = out.push(Event::segment(at, seg));
-                last = Some((i, seg));
-            }
-        };
-        for (start, piece) in env.segments() {
-            let t = piece.transport;
-            let first = start.index();
-            let Some(fpb) = frames_per_beat(rate, t.tempo.get()).filter(|_| t.playing) else {
-                // Stopped (or no usable tempo): the value at its beat, held.
-                if let Some(v) = curve.value_at(t.beat()).filter(|v| v.is_finite()) {
-                    send(first, make(v, v, SegmentShape::Linear));
-                }
-                continue;
-            };
-            let piece_last = first + piece.block_len.get() - 1;
-            let loop_end = t.looping.map(|l| l.end.get());
-            let mut sent: Option<Sent> = None;
-            let mut prev = f64::NEG_INFINITY;
-            piece.for_each_piece_beat(start, |i, beat| {
-                let b = beat.get();
-                let wrapped = b < prev;
-                prev = b;
-                if let Some(s) = &sent {
-                    if !wrapped && i < s.until_frame && b < s.until_beat {
-                        return;
-                    }
-                }
-                // The last frame before beat `to` is reached from here.
-                let before = |to: f64| {
-                    let k = ((to - b) * fpb).ceil();
-                    if k >= 1.0 {
-                        i.saturating_add(k.min(usize::MAX as f64) as usize - 1)
-                    } else {
-                        i
-                    }
-                };
-                let here = curve.segment_at(beat);
-                let exact = match here {
-                    Some(CurveSegment::Hold { value, until }) if value.is_finite() => {
-                        send(i, make(value, value, SegmentShape::Linear));
-                        Some(until.map_or(f64::INFINITY, Beat::get))
-                    }
-                    Some(CurveSegment::Move {
-                        start,
-                        end,
-                        from,
-                        to,
-                        shape,
-                    }) if from.is_finite() && to.is_finite() => match segment_shape(shape) {
-                        Some(shape) => {
-                            let (s, e) = (start.get(), end.get());
-                            let seg = make(from, to, shape).resumed(
-                                SamplePosition((b - s) * fpb),
-                                SamplePosition((e - s) * fpb),
-                            );
-                            send(i, seg);
-                            Some(e)
-                        }
-                        None => None,
-                    },
-                    _ => None,
-                };
-                sent = Some(match exact {
-                    Some(until_beat) => Sent {
-                        until_frame: usize::MAX,
-                        until_beat,
-                    },
-                    None => {
-                        // The piecewise-linear fallback: a line to the
-                        // curve's value at the last frame before the next
-                        // edge — the piece's end, a loop wrap or the end of
-                        // this transport piece.
-                        let piece_end = match here {
-                            Some(CurveSegment::Move { end, .. }) => Some(end.get()),
-                            Some(CurveSegment::Hold { until, .. }) => until.map(Beat::get),
-                            None => None,
-                        };
-                        let mut e = piece_last;
-                        for to in [piece_end, loop_end].into_iter().flatten() {
-                            if to > b {
-                                e = e.min(before(to));
-                            }
-                        }
-                        let e = e.max(i);
-                        let v0 = curve.value_at(beat);
-                        let v1 = if e == i {
-                            v0
-                        } else {
-                            Offset::new(e - first, piece.block_len)
-                                .and_then(|o| curve.value_at(piece.transport_at(o).beat()))
-                        };
-                        let finite = |v: Option<f32>| v.filter(|v| v.is_finite());
-                        if let (Some(v0), Some(v1)) = (finite(v0), finite(v1)) {
-                            // From `v0` on this frame (position 0) to `v1`
-                            // on frame `e`.
-                            send(
-                                i,
-                                if e == i {
-                                    make(v0, v0, SegmentShape::Linear)
-                                } else {
-                                    make(v0, v1, SegmentShape::Linear).resumed(
-                                        SamplePosition(0.0),
-                                        SamplePosition((e - i) as f64),
-                                    )
-                                },
-                            );
-                        }
-                        Sent {
-                            until_frame: e + 1,
-                            until_beat: piece_end.unwrap_or(f64::INFINITY),
-                        }
-                    }
-                });
-            });
-        }
-        if let Some((i, seg)) = last {
-            self.last_value = seg.raw_value_after(Samples(frames - 1 - i));
         }
     }
 }
 
 impl Node for AutomationLaneNode {
-    /// One audio output ([`new`](Self::new)), or one event output
-    /// ([`for_param`](Self::for_param)).
+    /// One audio output.
     fn shape(&self) -> Shape {
-        if self.events.is_some() {
-            return Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
-                .with_events(0, 1)
-                .with_event_capacity(LANE_EVENT_CAPACITY)
-                .with_cost(tutti_graph::Cost::Moderate)
-                .with_tail(Tail::Unbounded);
-        }
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::Unbounded)
@@ -441,10 +242,6 @@ impl Node for AutomationLaneNode {
             Latency::ZERO,
             "a node with no inputs arrives at zero"
         );
-        if let Some(make) = self.events.clone() {
-            self.send_segments(cx.env, &mut io, &*make);
-            return Status::Modified;
-        }
         let out = io.output(0);
         let curve = &*self.curve;
         cx.env
@@ -489,7 +286,6 @@ impl Clone for AutomationLaneNode {
         Self {
             curve: Arc::clone(&self.curve),
             last_value: self.last_value,
-            events: self.events.clone(),
         }
     }
 }

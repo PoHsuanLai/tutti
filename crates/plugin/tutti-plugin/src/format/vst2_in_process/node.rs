@@ -96,7 +96,7 @@ impl Node for InProcessVst2Client {
             0,
             size,
             0,
-            cx.env.frame.get(),
+            cx,
             true,
             &mut self.segments,
             &mut self.params,

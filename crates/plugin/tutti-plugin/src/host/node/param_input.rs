@@ -9,8 +9,10 @@
 //! VST2 node for each block (`format::vst2_in_process`), so the two read a
 //! ramp, a segment and an address the same way.
 
-use tutti_graph::{Event, EventKind};
+use tutti_graph::{Cx, Event, EventKind, Offset};
 use tutti_types::ParamAddr;
+
+use crate::protocol::ParameterQueue;
 
 use super::automation_node;
 use super::param_delivery::ParamDelivery;
@@ -21,13 +23,17 @@ use super::segment_points::SegmentPoints;
 ///
 /// - A ramp is one point, its target on its frame, and stops a segment in
 ///   flight on its parameter.
-/// - A segment is its value on its frame, then points along it until it
-///   lands ([`SegmentPoints`]), which this walk emits on the frames between
-///   events and up to the end of the piece.
+/// - A segment is its value on its frame, then the chunk edges and its
+///   arrival ([`SegmentPoints`]), which this walk emits on the frames
+///   between events and up to the end of the piece. Its first point is a
+///   grid point when the play clock at its frame (`cx.play_at`) is a
+///   multiple of 32: past a queue's room grid points go first (design doc
+///   014 §9 requirement 6).
 /// - Any other event (MIDI, harmony) goes to `other` with its chunk frame.
 ///
-/// `base` is the node's absolute frame of block frame 0 (`Env::frame`): where
-/// a segment in flight is along itself. `indexed` says how a parameter
+/// `cx` is the node's call: its `Env::frame` is the absolute frame of block
+/// frame 0 (where a segment in flight is along itself), and its play clock
+/// classifies a segment's first point. `indexed` says how a parameter
 /// event's number is read: a VST2 index, or an opaque handle. A parameter
 /// event with an address of the other kind, or with no value for this
 /// plugin, is skipped. Allocation-free.
@@ -41,7 +47,7 @@ pub(crate) fn take(
     from: usize,
     n: usize,
     at: usize,
-    base: u64,
+    cx: &Cx<'_>,
     indexed: bool,
     segments: &mut SegmentPoints,
     params: &mut ParamDelivery,
@@ -49,6 +55,7 @@ pub(crate) fn take(
 ) {
     let first = events.partition_point(|e| e.offset.index() < from);
     // This call's frame `i` as the node's absolute frame.
+    let base = cx.env.frame.get();
     let abs = |i: usize| base + i as u64;
     // The frames whose segment points are sent: up to each event's, then
     // the rest of the piece.
@@ -86,7 +93,13 @@ pub(crate) fn take(
                 let Some(address) = automation_node::address(id, indexed) else {
                     continue;
                 };
-                segments.start(params, address, seg, abs(o), frame);
+                let grid = Offset::new(o, cx.env.block_len).is_some_and(|off| {
+                    cx.play_at(off)
+                        .play
+                        .get()
+                        .is_multiple_of(ParameterQueue::POINT_SPACING as u64)
+                });
+                segments.start(params, address, seg, abs(o), frame, grid);
             }
             EventKind::Midi(_) | EventKind::Harmony(_) => other(e, frame),
         }

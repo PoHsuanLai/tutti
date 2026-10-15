@@ -68,28 +68,32 @@ impl ParameterQueue {
     pub const INLINE_POINTS: usize = 10;
 
     /// The spacing, in frames, a chunk's point room is sized for: a
+    /// control lane's grid step (`tutti-nodes`' `CONTROL_STEP`), so a
     /// parameter can carry a point every this many frames of a chunk.
     pub const POINT_SPACING: usize = 32;
 
     /// Points a queue has room for beyond one per
-    /// [`POINT_SPACING`](Self::POINT_SPACING): a segment's corners (its
-    /// start and its arrival) and the chunk's last frame.
-    pub const CORNER_POINTS: usize = 4;
+    /// [`POINT_SPACING`](Self::POINT_SPACING) and the chunk's last frame:
+    /// the corners a control lane can send in one block (`tutti-nodes`'
+    /// `LANE_EVENT_CAPACITY`).
+    pub const CORNER_POINTS: usize = 256;
 
-    /// The points one parameter can carry in a chunk of `chunk` frames: one
-    /// per [`POINT_SPACING`](Self::POINT_SPACING) frames and
-    /// [`CORNER_POINTS`](Self::CORNER_POINTS) more, and never fewer than the
-    /// [inline room](Self::INLINE_POINTS). The host's plugin node reserves
+    /// The points one parameter can carry in a chunk of `chunk` frames:
+    /// one per [`POINT_SPACING`](Self::POINT_SPACING) frames, one for the
+    /// chunk's last frame, and [`CORNER_POINTS`](Self::CORNER_POINTS) more
+    /// (design doc 014 §9 requirement 6). The host's plugin node reserves
     /// each queue with this room, and a format host that hands the points
     /// on reserves for it at activation with its largest block, so neither
-    /// side allocates for a chunk's points.
+    /// side allocates for a chunk's points. Past it the plugin node drops
+    /// grid points before corners, and counts them.
     ///
-    /// This is not yet design doc 014 §9 requirement 6
-    /// (`ceil(chunk / CONTROL_STEP) + 1 + C` with `C = 256`, and past the
-    /// room grid points dropped before corners); a full queue has its last
-    /// point replaced instead. Doc 014's PR 2 brings both.
+    /// ```
+    /// use tutti_plugin_types::ParameterQueue;
+    /// assert_eq!(ParameterQueue::chunk_room(4096), 128 + 1 + 256);
+    /// assert_eq!(ParameterQueue::chunk_room(100), 4 + 1 + 256);
+    /// ```
     pub fn chunk_room(chunk: usize) -> usize {
-        (chunk.div_ceil(Self::POINT_SPACING) + Self::CORNER_POINTS).max(Self::INLINE_POINTS)
+        chunk.div_ceil(Self::POINT_SPACING) + 1 + Self::CORNER_POINTS
     }
 
     /// Builds an empty queue addressed to `param_id`.

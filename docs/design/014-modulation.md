@@ -811,8 +811,11 @@ implementation here. Requirements 1–5 are PR 1's; 6 lands with PR 2.
    last frame, which `SegmentPoints` sends as a corner even on a grid
    frame), so every parameter still ends the chunk on its latest value.
    The plugin node keeps a grid mark a point (`GridBits`), laid out as the
-   points are: a word for each queue's floor and a block's worth for each
-   pool block, about 40 KB at 2064 queues and a 4096-frame chunk.
+   points are: a word for each queue's floor and its span (16 bytes a
+   queue) and a block's worth for each pool block, 2064 × 16 + 256 × 7 × 8
+   bytes = 47.4 KB at 2064 queues and a 4096-frame chunk. A buffer of
+   another room never reaches it: the bridge's pool drops one whose queues
+   or point room differ from its reservation (`PayloadPool::return_params`).
    **As landed (PR 2b):** a point is a grid point by its frame alone (its
    play count a multiple of 32, `param_input::take`), so a lane corner
    that lands on a grid frame is dropped as a grid point. It loses nothing
@@ -951,10 +954,14 @@ At the room before PR 2b (20 and 132) the rows were: the IPC node 2.85,
 5.99 MB; the CLAP output 1.04, 3.33, 5.41 and 7.70 MB; the VST3 input
 0.19, 0.64, 0.88 and 1.33 MB; the route 0.32, 0.78, 1.93 and 2.39 MB; the
 server's output 0.31, 0.77, 1.92 and 2.38 MB. So a CLAP plugin of 2000
-parameters (the node's buffers and its host's lists) costs about 23.9 MB
-at 512 frames and 32.4 MB at 4096 (4.7 MB and 13.2 MB before PR 2b), a
-VST3 plugin about 13.4 MB and 18.0 MB (3.0 MB and 7.6 MB); with every
-queue at the raised room it would be about 168 MB and 235 MB for CLAP.
+parameters (the node's buffers, its host's lists and the plugin-server's
+output) costs about 25.2 MB at 512 frames and 34.2 MB at 4096 (5.0 MB and
+14.0 MB before PR 2b), a VST3 plugin (the node's buffers, the input points
+and the server's output; the route only while mapped) about 14.8 MB and
+19.8 MB (3.35 MB and 8.4 MB). The totals first given here, 23.9 / 32.4 MB
+for CLAP and 13.4 / 18.0 MB for VST3 (and 4.7 / 13.2 and 3.0 / 7.6 before),
+left out the server's output row. With every queue at the raised room, the
+node's buffers and the CLAP lists alone would be about 168 MB and 235 MB.
 
 Every set has the one layout. The figures in the rest of this paragraph
 are at the room before PR 2b. The cost of that over a plain layout (a
@@ -1072,8 +1079,9 @@ Requirement 6 moves the room from `ceil(chunk / 32) + 4` to
 about 235 MB per CLAP instance of 2000 parameters at 4096 frames and
 168 MB at 512 (about 940 MB in the node's buffers alone at 16k). PR 2b
 landed on the shared pool instead, so only the pool's blocks grow with the
-room: per instance at 2000 parameters a CLAP plugin holds about 32.4 MB at
-4096 frames and 23.9 MB at 512, a VST3 plugin about 18.0 MB and 13.4 MB
+room: per instance at 2000 parameters a CLAP plugin holds about 34.2 MB at
+4096 frames and 25.2 MB at 512, a VST3 plugin about 19.8 MB and 14.8 MB,
+the plugin-server's output included
 (§9's table has every site). The 256 corners a queue may take are now a
 block's, lent only to a queue that moves.
 

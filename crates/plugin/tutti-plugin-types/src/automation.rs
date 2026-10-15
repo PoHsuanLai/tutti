@@ -299,6 +299,9 @@ pub struct ParameterChanges {
     /// [`reserved_bridged`](Self::reserved_bridged), otherwise 0.
     #[cfg_attr(feature = "serde", serde(skip))]
     carry_slot: usize,
+    /// See [`point_room`](Self::point_room).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    room: usize,
     /// See [`points_overflowed`](Self::points_overflowed).
     #[cfg_attr(feature = "serde", serde(skip))]
     overflowed: u64,
@@ -402,6 +405,7 @@ impl ParameterChanges {
                 .collect(),
             pool: PointPool::new(blocks, room.saturating_add(1), queues),
             carry_slot: 0,
+            room,
             overflowed: 0,
         }
     }
@@ -494,6 +498,16 @@ impl ParameterChanges {
         queue.param_id = param_id;
         self.queues.push(queue);
         true
+    }
+
+    /// The chunk room this set was reserved for
+    /// ([`reserved`](Self::reserved)'s `room`; 0 for a set built otherwise):
+    /// with [`capacity`](Self::capacity), what fixes its
+    /// [`point_layout`](Self::point_layout). A recycler that hands sets to a
+    /// producer laid out for one room checks it, since a set of another
+    /// room stores its points in another layout.
+    pub fn point_room(&self) -> usize {
+        self.room
     }
 
     /// Every point this set has storage for, in its queues, its spares and

@@ -280,9 +280,9 @@ impl Slot {
 /// chunk stores its points: each queue's own bits for its floor, and a
 /// block's bits for a queue that took one of the pool's blocks. So the bits
 /// follow the points a chunk carries, as the points do, not the parameter
-/// count times the room: about 12 bytes a queue and
-/// `POOLED_QUEUES × ceil((room + 1) / 64)` words besides (about 40 KB for
-/// 2 064 queues at a 4096-frame chunk). Reserved in
+/// count times the room: 16 bytes a queue (a floor word and its span) and
+/// `POOLED_QUEUES × ceil((room + 1) / 64)` words besides (2 064 × 16 +
+/// 256 × 7 × 8 bytes = 47.4 KB for 2 064 queues at a 4096-frame chunk). Reserved in
 /// [`ParamDelivery::prepare`]; allocation-free after.
 #[derive(Debug)]
 struct GridBits {
@@ -336,14 +336,21 @@ impl GridBits {
 
     /// Queue `q`'s points have storage for `capacity` now: when that
     /// outgrew its bits (it took a pool block), its bits move to a block's.
-    /// Past the blocks' bits (a buffer of another layout swapped in), the
-    /// bits stay as they are, and a point past them reads as a corner.
+    /// A block never outgrows a block's bits: every buffer this delivery
+    /// fills is of its own room (`prepare`, and the bridge's pool, which
+    /// drops a buffer of any other room: `PayloadPool::return_params`).
     fn fits(&mut self, q: usize, capacity: usize) {
         let Some(&(start, words)) = self.span.get(q) else {
             return;
         };
         let (start, words) = (start as usize, words as usize);
         let need = capacity.div_ceil(64);
+        debug_assert!(
+            need <= self.block,
+            "a buffer of another point room reached the delivery"
+        );
+        // Kept in release: a buffer of another room would leave its marks
+        // unmoved (misread as corners) rather than index past the words.
         if need <= words || self.next >= self.blocks || need > self.block {
             return;
         }
@@ -389,23 +396,36 @@ impl GridBits {
 
     /// The earliest grid point among queue `q`'s first `len` points.
     fn first(&self, q: usize, len: usize) -> Option<usize> {
-        let bits = self.of(q);
-        (0..len).find(|&k| bits.get(k / 64).is_some_and(|w| w >> (k % 64) & 1 == 1))
+        self.of(q)
+            .iter()
+            .enumerate()
+            .find(|(_, &w)| w != 0)
+            .map(|(i, w)| i * 64 + w.trailing_zeros() as usize)
+            .filter(|&k| k < len)
     }
 
     /// Point `k` of queue `q`'s `len` was removed: the bits after it move
     /// down one, as the points did.
+    /// Bits past `len` are always clear, so whole words shift.
     fn remove(&mut self, q: usize, k: usize, len: usize) {
         let bits = self.of_mut(q);
-        let get = |bits: &[u64], j: usize| bits.get(j / 64).is_some_and(|w| w >> (j % 64) & 1 == 1);
-        for j in k..len.saturating_sub(1) {
-            let next = get(bits, j + 1);
-            if let Some(w) = bits.get_mut(j / 64) {
-                *w = (*w & !(1 << (j % 64))) | (u64::from(next) << (j % 64));
-            }
+        let end = len.div_ceil(64).min(bits.len());
+        let first = k / 64;
+        if first >= end {
+            return;
         }
-        if let Some(w) = bits.get_mut(len.saturating_sub(1) / 64) {
-            *w &= !(1 << (len.saturating_sub(1) % 64));
+        // In the first word, the bits below `k` stay and those above it
+        // move down one; each later word moves down one, taking the next
+        // word's lowest bit into its top.
+        let below = (1u64 << (k % 64)) - 1;
+        let w = bits[first];
+        bits[first] = (w & below) | ((w >> 1) & !below);
+        for i in first..end {
+            if i > first {
+                bits[i] >>= 1;
+            }
+            let carry = bits.get(i + 1).map_or(0, |n| n & 1);
+            bits[i] |= carry << 63;
         }
     }
 }
@@ -659,6 +679,7 @@ impl ParamDelivery {
         };
         // Room of its own, or a block from the chunk's shared pool
         // (`make_room`); never grown, which would allocate.
+        let mut merged = false;
         if !self.changes.make_room(q) {
             // Full: at its room, or at its floor with the pool spent. Grid
             // points go first.
@@ -677,6 +698,7 @@ impl ParamDelivery {
                     // A queue of corners: the latest value replaces the
                     // latest point (`push_point`'s full-queue policy).
                     self.counters.merged.fetch_add(1, Ordering::Relaxed);
+                    merged = true;
                 }
             }
         } else {
@@ -685,11 +707,18 @@ impl ParamDelivery {
         self.grid.fits(q, self.changes.queues[q].points.capacity());
         // Room now (its own, a block, or a grid point's), or a queue of
         // corners keeping its latest value (counted above).
-        if self.changes.push_point(q, offset, value) {
+        let stored = self.changes.push_point(q, offset, value);
+        if stored {
             let k = self.changes.queues[q].points.len() - 1;
             self.grid.set(q, k, grid);
         }
-        self.slots[i].staged = value;
+        // Staged only where the chunk now ends on it: stored, or merged into
+        // the latest point. (A queue that freed a grid point's slot always
+        // stores; were it not to, the chunk would not carry the value, and
+        // it is not staged. Unreachable, so no test can pin it.)
+        if stored || merged {
+            self.slots[i].staged = value;
+        }
     }
 
     /// A chunk begins: what earlier chunks owe goes on its first frame.
@@ -763,6 +792,57 @@ mod tests {
 
     fn op(id: u32) -> ParamAddress {
         ParamAddress::Opaque(ParamId::new(id))
+    }
+
+    /// **`GridBits` finds and removes marks as a list of bits does,
+    /// across words.** One queue of a 4096-frame room (seven words): 300
+    /// points marked in a pattern, then removals at the start, inside a
+    /// word, on each side of a word edge and at the end, each checked
+    /// against a `Vec<bool>` after `first`. The marks past `len` must stay
+    /// clear, which `first` relies on.
+    ///
+    /// Mutations (run), each fails: `remove` without the carry from the
+    /// next word (`carry` always 0) → a mark at a word's first bit is lost
+    /// on its way into the word below; `remove` keeping the bit at `k`
+    /// (`below` as `(1 << (k % 64 + 1)) - 1`) → the removed mark stays;
+    /// `first` without `trailing_zeros` (the word's index × 64 alone) → the
+    /// earliest mark is read at its word's start.
+    #[test]
+    fn grid_bits_find_and_remove_as_a_bit_list_does() {
+        let room = ParameterQueue::chunk_room(4096);
+        let mut g = GridBits::new(1, room);
+        g.open(0);
+        assert_eq!(g.of(0).len(), 7);
+        let mut model: Vec<bool> = (0..300).map(|k| k % 5 == 3 || k % 64 == 0).collect();
+        for (k, &m) in model.iter().enumerate() {
+            g.set(0, k, m);
+        }
+        let check = |g: &GridBits, model: &[bool]| {
+            for (k, &m) in model.iter().enumerate() {
+                assert_eq!(g.of(0)[k / 64] >> (k % 64) & 1 == 1, m, "bit {k}");
+            }
+            for k in model.len()..g.of(0).len() * 64 {
+                assert_eq!(g.of(0)[k / 64] >> (k % 64) & 1, 0, "bit {k} past len");
+            }
+            assert_eq!(g.first(0, model.len()), model.iter().position(|&m| m));
+        };
+        check(&g, &model);
+        for k in [0, 1, 62, 63, 64, 65, 127, 128, 200, 250] {
+            let k = k.min(model.len() - 1);
+            g.remove(0, k, model.len());
+            model.remove(k);
+            check(&g, &model);
+        }
+        let len = model.len();
+        g.remove(0, len - 1, len);
+        model.pop();
+        check(&g, &model);
+        // Only marks at the end: `first` finds them past the first words.
+        for (k, m) in model.iter_mut().enumerate() {
+            *m = k >= 190;
+            g.set(0, k, *m);
+        }
+        check(&g, &model);
     }
 
     fn delivery(n: u32) -> (ParamDelivery, Arc<DeliveryCounters>) {

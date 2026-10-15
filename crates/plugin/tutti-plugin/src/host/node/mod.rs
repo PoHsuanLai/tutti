@@ -114,7 +114,8 @@ pub use param_delivery::ParamDeliveryStats;
 // The in-process VST2 node (`crate::format::vst2_in_process`) delivers its
 // parameters through the same slots, segments and event walk as this node:
 // one copy of each.
-#[cfg(feature = "vst2")]
+// (And for the bridge's pool test, which fills its buffers through one.)
+#[cfg(any(test, feature = "vst2"))]
 pub(crate) use param_delivery::{DeliveryCounters, ParamDelivery};
 pub(crate) use process::ProcessGuard;
 #[cfg(feature = "vst2")]

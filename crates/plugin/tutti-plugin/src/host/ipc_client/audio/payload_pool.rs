@@ -13,7 +13,7 @@
 use super::messages::ProcessPayload;
 use crate::protocol::ParameterChanges;
 use crossbeam::queue::ArrayQueue;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// One payload per command the audio thread can have queued.
@@ -96,18 +96,27 @@ pub(super) const PARAM_BUFFERS: usize = 8;
 /// [`PARAM_BUFFERS`] are free.
 const PARAM_SLOTS: usize = 2 * PARAM_BUFFERS;
 
+/// A reservation's queues and point room as one word, each saturated at
+/// `u32::MAX` (past any plugin's parameter count or a chunk's room).
+fn shape(queues: usize, points: usize) -> u64 {
+    let half = |n: usize| u64::from(u32::try_from(n).unwrap_or(u32::MAX));
+    half(queues) << 32 | half(points)
+}
+
 /// Bounded pool of recycled `ProcessPayload` boxes, and the parameter-change
 /// buffers that travel in them. Cheap to clone (one Arc each).
 #[derive(Clone)]
 pub(super) struct PayloadPool {
     recycle: Arc<ArrayQueue<Box<ProcessPayload>>>,
-    /// Free parameter-change buffers, each with room for `params_room`
-    /// queues. Empty until [`reserve_params`](Self::reserve_params).
+    /// Free parameter-change buffers, each of the reservation in
+    /// `params_shape`. Empty until [`reserve_params`](Self::reserve_params).
     params: Arc<ArrayQueue<ParameterChanges>>,
-    /// The queue capacity the buffers were reserved with: a buffer coming back
-    /// with less (one reserved before a larger re-reserve) is dropped rather
-    /// than recycled, on the bridge thread.
-    params_room: Arc<AtomicUsize>,
+    /// The queues and the point room the buffers were reserved with, one
+    /// word ([`shape`]) so the bridge thread never reads one reservation's
+    /// queues with another's room: a buffer coming back of any other shape
+    /// (one reserved before a re-reserve) is dropped rather than recycled,
+    /// on the bridge thread. 0 before a reservation.
+    params_shape: Arc<AtomicU64>,
 }
 
 impl PayloadPool {
@@ -127,7 +136,7 @@ impl PayloadPool {
         Self {
             recycle: Arc::new(recycle),
             params: Arc::new(ArrayQueue::new(PARAM_SLOTS)),
-            params_room: Arc::new(AtomicUsize::new(0)),
+            params_shape: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -136,11 +145,14 @@ impl PayloadPool {
     /// (the node's per-chunk point room, stored as a shared pool,
     /// `ParameterChanges::reserved`). Control
     /// thread: allocates. Buffers reserved before are dropped here, or on
-    /// the bridge thread when one with fewer queues comes back. (One with
-    /// fewer points per queue, in flight across a re-prepare, is reused: the
-    /// node then replaces a full queue's last point, counted, never grows it.)
+    /// the bridge thread when one comes back from flight. **Any other shape
+    /// is dropped, a different point room as much as fewer queues:** the
+    /// node marks its grid points (`GridBits`) in the layout of its own
+    /// room, so a buffer of another room in its hands would misread them,
+    /// and could hold more points than the server's lists reserve.
     pub(super) fn reserve_params(&self, queues: usize, points: usize) {
-        self.params_room.store(queues, Ordering::Release);
+        self.params_shape
+            .store(shape(queues, points), Ordering::Release);
         while self.params.pop().is_some() {}
         for _ in 0..PARAM_BUFFERS {
             // Cannot fail: drained above, and the list holds twice this many
@@ -160,16 +172,19 @@ impl PayloadPool {
 
     /// Bridge thread: return a parameter-change buffer, cleared, to the free
     /// list, once its contents are on the wire. **This is where a buffer is
-    /// freed**, never on the audio thread: one smaller than the current
-    /// reservation (the empty placeholder a payload carries when its chunk
-    /// had no changes, or a buffer reserved before a larger reservation), any
-    /// before a reservation, and any past [`PARAM_BUFFERS`] free ones (a
+    /// freed**, never on the audio thread: one not of the current
+    /// reservation's queues and point room (the empty placeholder a payload
+    /// carries when its chunk had no changes, or a buffer reserved before a
+    /// re-reservation), any before a reservation, and any past [`PARAM_BUFFERS`] free ones (a
     /// re-reservation refilled the list while older buffers were in flight)
     /// are dropped here.
     #[inline]
     pub(super) fn return_params(&self, mut changes: ParameterChanges) {
-        let room = self.params_room.load(Ordering::Acquire);
-        if room == 0 || changes.capacity() < room || self.params.len() >= PARAM_BUFFERS {
+        let reserved = self.params_shape.load(Ordering::Acquire);
+        if reserved == 0
+            || shape(changes.capacity(), changes.point_room()) != reserved
+            || self.params.len() >= PARAM_BUFFERS
+        {
             return;
         }
         changes.clear();
@@ -230,7 +245,8 @@ impl PayloadPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ParameterQueue;
+    use crate::host::node::{DeliveryCounters, ParamDelivery};
+    use crate::protocol::{ParamAddress, ParamId, ParameterQueue};
 
     /// **The bridge's buffers hold the pool budget, not parameters × room**:
     /// for 2 000 parameters (and the node's 64 spare slots) at 512- and
@@ -305,5 +321,85 @@ mod tests {
             PARAM_BUFFERS + 1,
             "the audio thread's buffer is kept, never dropped"
         );
+    }
+
+    /// **A buffer of the room before a re-prepare is dropped on its way
+    /// back, never handed to the node** (the sequence that broke it). A
+    /// 2 000-parameter node is prepared for 4096-frame chunks and its pool
+    /// reserved to match; a chunk goes, so a 4096-room buffer is in flight;
+    /// the node is re-prepared for 512 frames and the pool re-reserved; the
+    /// audio thread takes a buffer meanwhile, so the free list has a place
+    /// when the old one comes back. Then chunk after chunk, each swapped for
+    /// a free buffer as `submit` does and returned as the bridge does, with
+    /// 20 lanes offering a point on every frame (512 a queue, past the room
+    /// of 273). Every buffer the node fills must be of its own room: the
+    /// grid marks (`GridBits`) are laid out for it, and the server's lists
+    /// are reserved for it.
+    ///
+    /// Mutation (run), fails: `return_params` comparing the queues only
+    /// (`changes.point_room()` replaced by the reservation's own room,
+    /// `(reserved & 0xFFFF_FFFF) as usize`) → the 4096-room buffer is
+    /// recycled and reaches the node (the free-buffer assertion fails; past
+    /// it, `GridBits::fits`' debug assertion would fire, and in release a
+    /// queue would hold 385 points against the server's 273, with grid
+    /// points past the 64th read as corners).
+    #[test]
+    fn a_buffer_of_the_room_before_a_re_prepare_is_dropped_not_reused() {
+        let counters = Arc::new(DeliveryCounters::default());
+        let mut d = ParamDelivery::new(
+            (0..2000).map(|i| ParamAddress::Opaque(ParamId::new(i))),
+            counters,
+        );
+        let pool = PayloadPool::new();
+        let lanes = 20u32;
+        let load = |d: &mut ParamDelivery, phase: usize| {
+            d.begin();
+            for f in 0..512i32 {
+                for id in 0..lanes {
+                    let v = ((f as usize + id as usize + phase) % 7 + 1) as f32 / 8.0;
+                    let address = ParamAddress::Opaque(ParamId::new(id));
+                    if f % 32 == 0 {
+                        d.grid_point(address, f, v);
+                    } else {
+                        d.point(address, f, v);
+                    }
+                }
+            }
+        };
+        // One chunk at 4096 frames goes: its buffer is in flight.
+        let points = d.prepare(4096);
+        pool.reserve_params(d.room(), points);
+        load(&mut d, 0);
+        let mut in_flight = pool.take_params().expect("a free buffer");
+        std::mem::swap(d.changes(), &mut in_flight);
+        d.handed_off(true);
+        assert_eq!(in_flight.point_room(), points);
+
+        // Re-prepared for 512, and re-reserved.
+        let points = d.prepare(512);
+        assert_eq!(points, ParameterQueue::chunk_room(512));
+        pool.reserve_params(d.room(), points);
+        // The audio thread takes one, so the list has a place free...
+        let taken = pool.take_params().expect("a free buffer");
+        // ...when the 4096-room buffer reaches the bridge thread.
+        pool.return_params(in_flight);
+        pool.return_params(taken);
+
+        for phase in 1..=3 * PARAM_BUFFERS {
+            load(&mut d, phase);
+            let mut sent = pool.take_params().expect("a free buffer");
+            assert_eq!(sent.point_room(), points, "a free buffer of the node's room");
+            std::mem::swap(d.changes(), &mut sent);
+            d.handed_off(true);
+            assert_eq!(sent.len(), lanes as usize);
+            for q in &sent.queues {
+                assert!(
+                    q.points.len() <= points,
+                    "chunk {phase}: {} points, room {points}",
+                    q.points.len()
+                );
+            }
+            pool.return_params(sent);
+        }
     }
 }

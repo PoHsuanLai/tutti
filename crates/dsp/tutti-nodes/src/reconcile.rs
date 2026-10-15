@@ -42,9 +42,10 @@ pub trait ModHost {
     /// [`Applied::unresolved_targets`] lists it.
     fn target(&self, target: TargetKey) -> Option<Target>;
 
-    /// What feeds signal source `source`'s node. `None`: a follower gets no
-    /// node yet ([`Applied::unresolved_sources`]); a note envelope gets one
-    /// with nothing on its MIDI input.
+    /// What feeds signal source `source`'s node. `None`, or a feed naming a
+    /// node not in the graph (removed since): a follower gets no node yet
+    /// ([`Applied::unresolved_sources`]); a note envelope gets one with
+    /// nothing on its MIDI input.
     fn feed(&self, source: SourceKey) -> Option<Feed>;
 }
 
@@ -105,8 +106,13 @@ pub enum ReconcileError {
     NoSuchParam(TargetKey),
     /// A foreign target whose node has no event input at the port given.
     NoSuchEventInput(TargetKey),
-    /// A follower fed events, a note envelope fed audio, or a feed naming a
-    /// node not in the graph.
+    /// A native target whose param port already takes an event source that
+    /// is not this target's lane: the graph allows one per port.
+    PortTaken(TargetKey),
+    /// A follower fed events, a note envelope fed audio, or a note
+    /// envelope fed from an event output its node does not have. (A feed
+    /// naming a node not in the graph is no feed: the follower is
+    /// unresolved, the envelope gets none.)
     WrongFeed(SourceKey),
 }
 
@@ -122,6 +128,7 @@ impl fmt::Display for ReconcileError {
             Self::WrongTarget(t) => write!(f, "target {t:?}: resolved to the other kind"),
             Self::NoSuchParam(t) => write!(f, "target {t:?}: its node does not declare it"),
             Self::NoSuchEventInput(t) => write!(f, "target {t:?}: no such event input"),
+            Self::PortTaken(t) => write!(f, "target {t:?}: its port has another event source"),
             Self::WrongFeed(s) => write!(f, "source {}: a feed it cannot take", s.0),
         }
     }
@@ -147,11 +154,19 @@ pub struct Applied {
     /// (no commit).
     pub republished: Vec<TargetKey>,
     /// Targets with a program whose node the host did not resolve, or whose
-    /// node is not committed yet (its param port has no range cell): no lane
-    /// until a later `apply` resolves them.
+    /// node is not committed at its current generation (inserted or
+    /// replaced since the last commit: its param port's range cell is not
+    /// the one the next commit hands out). No lane until a later `apply`
+    /// resolves them, and a lane they had is removed. **A host re-applies
+    /// after each commit while this is not empty.**
     pub unresolved_targets: Vec<TargetKey>,
-    /// Followers with no feed: no node until a later `apply`.
+    /// Followers with no feed, or whose feed node is not in the graph: no
+    /// node until a later `apply`.
     pub unresolved_sources: Vec<SourceKey>,
+    /// Resyncs are owed ([`Modulation::resyncs_owed`]): call
+    /// [`Modulation::commit`] (or [`Modulation::send_resyncs`] after a
+    /// commit) even when [`commit`](Self::commit) is false.
+    pub resync: bool,
 }
 
 /// A target resolved and checked: what its lane is built from.
@@ -215,6 +230,9 @@ impl Bind {
 /// A target's lane as built.
 struct Lane {
     key: NodeKey,
+    /// The lane node's generation at its insert: another means a host
+    /// replaced (or removed) it at its key.
+    gen: u32,
     controls: LaneControls,
     bind: Bind,
     /// The program last published to it.
@@ -226,6 +244,8 @@ struct Lane {
 /// A signal source's node as built.
 struct SignalNode {
     key: NodeKey,
+    /// As [`Lane::gen`].
+    gen: u32,
     decl: SourceNode,
     feed: Option<Feed>,
     /// A follower's input width.
@@ -266,6 +286,16 @@ struct SourcePlan {
 /// envelope stays `ForkByClone`: a fork's executor has its own command
 /// ring and starts idle. A follower needs none: it sends on every grid
 /// point while it is not silent.
+///
+/// **Rebinds and re-applying.** A native target resolves only once its
+/// node's current generation is committed: a node inserted or replaced at
+/// a key since the last commit leaves the target unresolved, and the lane
+/// it had goes (its port reads the node's knob meanwhile). A host
+/// re-applies after each commit while [`Applied::unresolved_targets`] is
+/// not empty, and the lane is rebuilt on the cells that commit handed out.
+/// A node this reconciler built whose key the host has since taken (a
+/// replace or a removal) is forgotten, the wiring around it undone, and
+/// built again at a fresh key.
 ///
 /// **Cycles.** A route from a signal source whose input is downstream of
 /// the route's own target is refused by route ([`ReconcileError::Cycle`])
@@ -354,6 +384,9 @@ pub struct Modulation {
     edges: BTreeSet<(SourceKey, TargetKey)>,
     /// Note envelopes owed a resync at the next commit.
     resync: BTreeSet<SourceKey>,
+    /// Resyncs the editor refused for good (no such port, a resolution
+    /// too coarse, a poisoned executor) and that were dropped.
+    resyncs_dropped: u64,
 }
 
 impl Modulation {
@@ -384,11 +417,18 @@ impl Modulation {
         self.resync.len()
     }
 
+    /// Resyncs dropped because the editor refused them for good
+    /// ([`send_resyncs`](Self::send_resyncs)).
+    pub fn resyncs_dropped(&self) -> u64 {
+        self.resyncs_dropped
+    }
+
     /// Compiles `decl` and applies the difference to `editor`, resolving
     /// keys through `host`. Control thread; it may allocate. Commit
-    /// afterwards when [`Applied::commit`] says so, through
-    /// [`commit`](Self::commit), or through `editor.commit()` followed by
-    /// [`send_resyncs`](Self::send_resyncs).
+    /// afterwards when [`Applied::commit`] or [`Applied::resync`] says so,
+    /// through [`commit`](Self::commit), or through `editor.commit()`
+    /// followed by [`send_resyncs`](Self::send_resyncs); apply again after
+    /// that commit while [`Applied::unresolved_targets`] is not empty.
     ///
     /// # Errors
     ///
@@ -407,6 +447,21 @@ impl Modulation {
         )?;
         let mut applied = Applied::default();
 
+        // Nodes the reconciler built whose key a host has since replaced or
+        // removed (N2): their records go, and their wiring is undone.
+        let taken_lanes: BTreeSet<TargetKey> = self
+            .lanes
+            .iter()
+            .filter(|(_, l)| taken(editor, l.key, l.gen))
+            .map(|(&t, _)| t)
+            .collect();
+        let taken_sources: BTreeSet<SourceKey> = self
+            .sources
+            .iter()
+            .filter(|(_, n)| taken(editor, n.key, n.gen))
+            .map(|(&s, _)| s)
+            .collect();
+
         // Resolve and check, changing nothing.
         let mut binds = BTreeMap::new();
         for &target in compiled.programs.keys() {
@@ -419,7 +474,8 @@ impl Modulation {
         }
         let mut plans = BTreeMap::new();
         for (&source, &node) in &compiled.nodes {
-            match self.resolve_source(source, node, editor, host)? {
+            let kept = !taken_sources.contains(&source);
+            match self.resolve_source(source, node, kept, editor, host)? {
                 Some(plan) => {
                     plans.insert(source, plan);
                 }
@@ -432,10 +488,64 @@ impl Modulation {
             .copied()
             .filter(|(s, t)| plans.contains_key(s) && binds.contains_key(t))
             .collect();
-        self.check_cycles(decl, editor, &binds, &plans, &edges)?;
+        let taken_keys: BTreeSet<NodeKey> = taken_lanes
+            .iter()
+            .map(|t| self.lanes[t].key)
+            .chain(taken_sources.iter().map(|s| self.sources[s].key))
+            .collect();
+        self.check_cycles(decl, editor, &binds, &plans, &edges, &taken_keys)?;
 
         // Apply.
         let commit = &mut applied.commit;
+        // Undo what was wired around a taken node, leaving the host's node
+        // and its own wiring alone, then forget it.
+        for &(s, t) in &self.edges {
+            if !(taken_sources.contains(&s) || taken_lanes.contains(&t)) {
+                continue;
+            }
+            if let (Some(src), Some(lane)) = (self.sources.get(&s), self.lanes.get(&t)) {
+                editor.spec_mut().disconnect_events(
+                    EventIn {
+                        node: lane.key,
+                        port: 0,
+                    },
+                    EventOut {
+                        node: src.key,
+                        port: 0,
+                    },
+                );
+            }
+        }
+        for t in &taken_lanes {
+            let lane = self.lanes.remove(t).expect("listed");
+            let out = EventOut {
+                node: lane.key,
+                port: 0,
+            };
+            match lane.bind {
+                Bind::Native { at, .. } => {
+                    editor
+                        .spec_mut()
+                        .disconnect_param(at, ParamFrom::Events(out));
+                }
+                Bind::Foreign { to, .. } => {
+                    editor.spec_mut().disconnect_events(to, out);
+                }
+            }
+            *commit = true;
+        }
+        // Rebuilt at another key (their key was taken) or at their own (a
+        // declaration or width edit): the lanes that read one hold the old
+        // node's last value until the new one sends.
+        let mut rebuilt = BTreeSet::new();
+        for s in &taken_sources {
+            let node = self.sources.remove(s).expect("listed");
+            unwire_feed(editor, node.key, node.feed, node.width);
+            if plans.contains_key(s) {
+                rebuilt.insert(*s);
+            }
+            *commit = true;
+        }
         let gone: Vec<TargetKey> = self
             .lanes
             .iter()
@@ -457,9 +567,6 @@ impl Modulation {
             })
             .map(|(&s, _)| s)
             .collect();
-        // Rebuilt at their key (a declaration or width edit): the lanes that
-        // read one hold the old node's last value until the new one sends.
-        let mut rebuilt = BTreeSet::new();
         for s in gone {
             let node = self.sources.remove(&s).expect("listed");
             editor.remove(node.key);
@@ -529,6 +636,7 @@ impl Modulation {
                 source,
                 SignalNode {
                     key: plan.key,
+                    gen: editor.spec().generation(plan.key),
                     decl: plan.decl,
                     feed: plan.feed,
                     width: plan.width,
@@ -594,6 +702,7 @@ impl Modulation {
                 target,
                 Lane {
                     key,
+                    gen: editor.spec().generation(key),
                     controls: lane,
                     bind,
                     program: program.clone(),
@@ -625,18 +734,24 @@ impl Modulation {
                 .is_some_and(|n| matches!(n.decl.kind, SignalKind::NoteEnvelope { .. }))
         });
         self.prev = Some(compiled);
+        applied.resync = !self.resync.is_empty();
         Ok(applied)
     }
 
-    /// Commits `editor`, then [`send_resyncs`](Self::send_resyncs).
+    /// Commits `editor`, then [`send_resyncs`](Self::send_resyncs). Call it
+    /// when [`Applied::commit`] or [`Applied::resync`] is set (a commit with
+    /// nothing changed sends no plan).
     ///
     /// # Errors
     ///
-    /// The commit's [`CommitError`]; the resyncs then stay owed. A resync
-    /// the command ring refuses ([`ScheduleError::Backpressure`]) stays owed
-    /// too, for the next call, and is not an error here.
+    /// The commit's [`CommitError`]; the resyncs then stay owed. The
+    /// resyncs' own outcome is `send_resyncs`': one refused for now stays
+    /// owed ([`resyncs_owed`](Self::resyncs_owed) is then not 0: call
+    /// `send_resyncs` again on a later frame), one refused for good is
+    /// dropped and counted ([`resyncs_dropped`](Self::resyncs_dropped)).
     pub fn commit(&mut self, editor: &mut Editor) -> Result<(), CommitError> {
         editor.commit()?;
+        // Not an error of the commit: kept owed or counted, as documented.
         let _ = self.send_resyncs(editor);
         Ok(())
     }
@@ -648,7 +763,11 @@ impl Modulation {
     ///
     /// # Errors
     ///
-    /// The first [`ScheduleError`]; what was not scheduled stays owed.
+    /// The first [`ScheduleError`]. A resync refused for now
+    /// ([`ScheduleError::Backpressure`], or [`ScheduleError::NoPlan`]
+    /// before any commit) stays owed for the next call; one refused for good
+    /// (no such port, a resolution too coarse, a poisoned executor) is
+    /// dropped and counted in [`resyncs_dropped`](Self::resyncs_dropped).
     pub fn send_resyncs(&mut self, editor: &mut Editor) -> Result<(), ScheduleError> {
         let owed = std::mem::take(&mut self.resync);
         let mut first = Ok(());
@@ -661,7 +780,15 @@ impl Modulation {
                 port: 0,
             };
             if let Err(e) = editor.schedule(At::NextBlock, to, EventKind::Resync) {
-                self.resync.insert(s);
+                match e {
+                    ScheduleError::Backpressure | ScheduleError::NoPlan => {
+                        self.resync.insert(s);
+                    }
+                    ScheduleError::NoSuchPort { .. }
+                    | ScheduleError::ResolutionTooCoarse { .. }
+                    | ScheduleError::Poisoned
+                    | ScheduleError::UnknownCommand { .. } => self.resyncs_dropped += 1,
+                }
                 if first.is_ok() {
                     first = Err(e);
                 }
@@ -690,17 +817,33 @@ impl Modulation {
                     return Err(ReconcileError::NoSuchParam(target));
                 }
                 let at = ParamIn { node, param };
-                // A port's range cell exists once a commit has placed the
-                // node: before that the lane would read a cell nothing
-                // writes (doc 014 §4.2).
-                if editor.param_range_cell(at).is_none() {
+                // One event source per param port: another's (a host's
+                // own) would make the commit refuse the graph.
+                let own = self.lanes.get(&target).map(|l| l.key);
+                let other = editor.spec().params.get(&at).is_some_and(|m| {
+                    m.sources
+                        .iter()
+                        .any(|s| matches!(s.from, ParamFrom::Events(out) if Some(out.node) != own))
+                });
+                if other {
+                    return Err(ReconcileError::PortTaken(target));
+                }
+                // The port's range cell is the one a commit handed out for
+                // the node's unit: before the node's current generation is
+                // committed (a node inserted or replaced since), the cell is
+                // missing or the old unit's, which the commit may replace
+                // (a unit declaring another param list gets fresh cells), so
+                // a lane built on it would read a cell nothing writes (doc
+                // 014 §4.2).
+                let gen = editor.spec().generation(node);
+                let committed = editor
+                    .base()
+                    .and_then(|plan| plan.unit(node))
+                    .map(|u| u.gen);
+                if committed != Some(gen) || editor.param_range_cell(at).is_none() {
                     return Ok(None);
                 }
-                Ok(Some(Bind::Native {
-                    at,
-                    knob,
-                    gen: editor.spec().generation(node),
-                }))
+                Ok(Some(Bind::Native { at, knob, gen }))
             }
             (Target::Foreign { node, port, knob }, ParamAddr::Id(id)) => {
                 let Some(shape) = shape(node) else {
@@ -726,21 +869,26 @@ impl Modulation {
         &self,
         source: SourceKey,
         decl: SourceNode,
+        kept: bool,
         editor: &Editor,
         host: &dyn ModHost,
     ) -> Result<Option<SourcePlan>, ReconcileError> {
-        let feed = host.feed(source);
+        // A feed naming a node not in the graph (removed since) is no feed.
+        let feed = host.feed(source).filter(|f| {
+            let node = match f {
+                Feed::Audio(n) => *n,
+                Feed::Events(out) => out.node,
+            };
+            editor.shapes().contains_key(&node)
+        });
         let width = match (decl.kind, feed) {
             (SignalKind::Follower { .. }, None) => return Ok(None),
-            (SignalKind::Follower { .. }, Some(Feed::Audio(node))) => editor
-                .shapes()
-                .get(&node)
-                .map(|s| s.audio_out)
-                .ok_or(ReconcileError::WrongFeed(source))?,
+            (SignalKind::Follower { .. }, Some(Feed::Audio(node))) => {
+                editor.shapes()[&node].audio_out
+            }
             (SignalKind::NoteEnvelope { .. }, None) => ChannelLayout::EMPTY,
             (SignalKind::NoteEnvelope { .. }, Some(Feed::Events(from))) => {
-                let outs = editor.shapes().get(&from.node).map(|s| s.event_out);
-                if outs.is_none_or(|n| from.port >= n) {
+                if from.port >= editor.shapes()[&from.node].event_out {
                     return Err(ReconcileError::WrongFeed(source));
                 }
                 ChannelLayout::EMPTY
@@ -748,10 +896,12 @@ impl Modulation {
             _ => return Err(ReconcileError::WrongFeed(source)),
         };
         // Kept while its declaration and width hold; rebuilt at the same
-        // key otherwise (the old node is removed first).
+        // key otherwise (the old node is removed first), or at a new one
+        // when a host took its key (`kept` false).
         let key = self
             .sources
             .get(&source)
+            .filter(|_| kept)
             .map_or_else(|| unused_key(editor), |n| n.key);
         Ok(Some(SourcePlan {
             key,
@@ -773,15 +923,18 @@ impl Modulation {
         binds: &BTreeMap<TargetKey, Bind>,
         plans: &BTreeMap<SourceKey, SourcePlan>,
         edges: &BTreeSet<(SourceKey, TargetKey)>,
+        taken: &BTreeSet<NodeKey>,
     ) -> Result<(), ReconcileError> {
         if edges.is_empty() {
             return Ok(());
         }
+        // A key a host has taken holds the host's node now: its edges count.
         let ours: BTreeSet<NodeKey> = self
             .lanes
             .values()
             .map(|l| l.key)
             .chain(self.sources.values().map(|s| s.key))
+            .filter(|k| !taken.contains(k))
             .collect();
         let mut next: BTreeMap<NodeKey, BTreeSet<NodeKey>> = BTreeMap::new();
         let mut link = |from: NodeKey, to: NodeKey| {
@@ -919,10 +1072,16 @@ fn wire_feed(editor: &mut Editor, key: NodeKey, feed: Option<Feed>) {
 /// Undoes [`wire_feed`].
 fn unwire_feed(editor: &mut Editor, key: NodeKey, feed: Option<Feed>, width: ChannelLayout) {
     match feed {
-        Some(Feed::Audio(_)) => {
+        Some(Feed::Audio(from)) => {
+            // Only the edges it wired: a host that took the key may have
+            // wired the port itself since.
             let t = &mut editor.spec_mut().topology;
             for port in 0..width.count() {
-                t.edges.remove(&InPort { node: key, port });
+                let at = InPort { node: key, port };
+                let ours = Edge::Direct(Source::Node(OutPort { node: from, port }));
+                if t.edges.get(&at) == Some(&ours) {
+                    t.edges.remove(&at);
+                }
             }
         }
         Some(Feed::Events(from)) => {
@@ -945,4 +1104,11 @@ fn unused_key(editor: &Editor) -> NodeKey {
             return key;
         }
     }
+}
+
+/// Whether the node the reconciler built at `key` (generation `gen` at its
+/// insert) is gone from it: removed, or replaced by a host's insert.
+fn taken(editor: &Editor, key: NodeKey, gen: u32) -> bool {
+    let spec = editor.spec();
+    !spec.topology.nodes.contains_key(&key) || spec.generation(key) != gen
 }

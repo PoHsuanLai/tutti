@@ -944,12 +944,24 @@ The one thing it cannot derive is the host's seam, `ModHost`: which graph
 node a `TargetKey` names (`Target::Native { node, knob }`, the knob the
 node's `Param` cell, or `Target::Foreign { node, port, knob }`, a plugin
 node's event input) and what feeds a signal source (`Feed::Audio(node)`,
-`Feed::Events(out)`). A target whose node is not yet placed (no range
-cell) or a follower with no feed is reported unresolved and gets nothing
-yet. A rebind (another node, generation or knob cell) rebuilds the lane,
-which as a fresh lane fetches the range view again (§4.2) and sends at its
-first frame (§5.2), so no `LaneControls::resync` is needed. Built nodes
-get keys from `NodeKey::fresh`, past any the editor holds.
+`Feed::Events(out)`). A native target resolves only once its node's
+current generation is committed (`Editor::base`'s unit at the key has the
+spec's generation): before that its range cell is missing or the old
+unit's, which the commit replaces when the param list changes (§4.2), so
+the target is reported unresolved and loses its lane, and the host
+re-applies after the commit while `Applied::unresolved_targets` is not
+empty. The lane rebuilt then fetches the range view the commit handed
+out, and as a fresh lane sends at its first frame (§5.2), so no
+`LaneControls::resync` is needed. (A rebind applied between insert and
+commit used to bind the old cell for good: every later range edit was
+lost. Review of PR 4a.) A follower with no feed, or whose feed node is
+gone, is unresolved; a note envelope whose MIDI node is gone keeps its
+node, unfed. A native port another event source already drives is
+refused (`ReconcileError::PortTaken`): the graph allows one per port.
+Built nodes get keys from `NodeKey::fresh`, past any the editor holds,
+and each records its generation: a key a host later takes (a replace or a
+removal) is followed, the wiring around it undone and the node rebuilt at
+a fresh key.
 `bevy-tutti`'s system (PR 4b) collects the declarations, implements
 `ModHost` over its entities and calls it:
 
@@ -1594,10 +1606,13 @@ that need an app or a plugin.
   ReconcileError>`, `commit`, `send_resyncs`, `lane`, `source`,
   `compiled`. The seam is `ModHost` (`target`, `feed`) with `Target`
   and `Feed`. `ReconcileError` names `Compile`, `Cycle { route }`,
-  `WrongTarget`, `NoSuchParam`, `NoSuchEventInput` and `WrongFeed`, and
+  `WrongTarget`, `NoSuchParam`, `NoSuchEventInput`, `PortTaken` and
+  `WrongFeed`, and
   a refused `apply` changes neither the editor nor the reconciler.
-  `Applied` reports `commit`, the `republished` targets and the targets
-  and sources left unresolved.
+  `Applied` reports `commit`, `resync` (resyncs owed: commit even when
+  nothing else needs it), the `republished` targets and the targets and
+  sources left unresolved. A resync the editor refuses for now stays owed;
+  one refused for good is dropped and counted (`resyncs_dropped`).
 - `EventKind::Resync` and `Event::resync` (`tutti-graph`): every
   exhaustive match on `EventKind` names it (param ports, the plugin
   nodes, the reference). The note envelope answers it (§6 "As landed
@@ -1624,7 +1639,11 @@ that need an app or a plugin.
   `for_param::<Hz>` and `for_unit(Cutoff)` send the same segments, and a
   `Pan` lane reaches its port; a foreign target's lane delivers on its
   event input and takes a range edit as a store; a host's literal key is
-  never taken; and
+  never taken, and one it takes later is followed; a rebind to a node
+  with another param list waits for its commit, so a later range edit
+  lands (the review's repro); a removed feed node leaves its source
+  unresolved rather than every apply refused; a port another event source
+  drives is refused with nothing changed; and
   no allocation on the audio thread across an apply that republishes
   (`rt_no_alloc_modulation.rs`).
 - **Left for PR 4b:** export == live on the reference CLAP plugin's gain

@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use tutti_core::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
-    ForkTarget, Io, Node, Offset, ParamIn, ParamSegment, Prepare, ScheduleError, Shape, Status,
-    Transport, TransportChanges,
+    ForkTarget, Io, Node, Offset, ParamFrom, ParamIn, ParamSegment, ParamShaping, Prepare,
+    ScheduleError, Shape, Status, Transport, TransportChanges,
 };
 use tutti_mod::{
     Adsr, Clock, CurveType, Declarations, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
@@ -42,10 +42,12 @@ const fn key(n: u64) -> NodeKey {
 // ---------------------------------------------------------------- nodes --
 
 /// Declares one param (`Cutoff` unless told) whose base is `knob`, and
-/// writes the value its port reads to its one output.
+/// writes the value its port reads to its one output. `extra` declares a
+/// second param after it, which the probe does not read.
 #[derive(Clone)]
 struct Probe {
     param: UnitParam,
+    extra: Option<UnitParam>,
     knob: Arc<AtomicF32>,
 }
 
@@ -53,6 +55,7 @@ impl Probe {
     fn new(knob: f32) -> Self {
         Self {
             param: UnitParam::Cutoff,
+            extra: None,
             knob: Arc::new(AtomicF32::new(knob)),
         }
     }
@@ -60,7 +63,11 @@ impl Probe {
 
 impl Node for Probe {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_params(&[self.param])
+        let shape = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
+        match self.extra {
+            None => shape.with_params(&[self.param]),
+            Some(extra) => shape.with_params(&[self.param, extra]),
+        }
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -783,7 +790,8 @@ fn resync_rig() -> (Rig, SourceKey) {
 /// its knob until the next note.
 ///
 /// Mutations (run), each fails: `commit` without `send_resyncs` (probe 2
-/// reads 0.1); the note envelope's `Resync` arm dropped (the same).
+/// reads 0.1); the note envelope's `Resync` arm dropped (the same);
+/// `Applied::resync` never set.
 #[test]
 fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
     let (mut r, env) = resync_rig();
@@ -792,6 +800,7 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
         r.m.apply(&r.decl.get(), &mut r.ed, &r.host)
             .expect("applies");
     assert!(applied.commit, "a new edge");
+    assert!(applied.resync, "the apply says a resync is owed");
     assert_eq!(r.m.resyncs_owed(), 1);
     r.m.commit(&mut r.ed).expect("commits");
     assert_eq!(r.m.resyncs_owed(), 0, "scheduled");
@@ -974,6 +983,193 @@ fn a_foreign_target_takes_a_lane_on_its_event_input() {
     assert!(!applied.commit, "a range edit is a store");
     render(&mut ed, &mut exec, 128, 512);
     assert!((last(&log) - 0.675).abs() < 1e-6, "{}", last(&log));
+}
+
+/// **A rebind to a node with another param list waits for its commit.**
+/// Probe 1 declares `[Cutoff]`; a macro of 1 at depth 0.25 over `0..=1000`
+/// reads 250. The host replaces it at its key with a probe declaring
+/// `[Cutoff, Q]` (the same knob cell), then applies and commits, as a Bevy
+/// frame does (spawn, then commit). Until that commit the port's range
+/// cell is the old unit's, which the commit replaces (another list), so
+/// the target is unresolved and its lane goes; the host re-applies after
+/// the commit, and the lane is rebuilt on the new cell. A range edit to
+/// `0..=2000` is then a store the lane reads: 500.
+///
+/// Mutation (run): `resolve_target` without the committed-generation check
+/// → the target resolves before the commit → fails on
+/// `unresolved_targets`; with the asserts on the gap removed as well, the
+/// lane is rebuilt on the old cell and the range edit reaches nothing (the
+/// review's repro): 250 → fails on the last assert.
+#[test]
+fn a_rebind_to_another_param_list_waits_for_its_commit() {
+    let (mut ed, mut exec) = editor(128);
+    let mut host = Host::default();
+    probe(&mut ed, &mut host, 1, 0.0);
+    let mut decl = Decl::default();
+    decl.target(cutoff_of(1), 0.0, 1000.0);
+    let one = decl.source(1, ModSource::Macro { value: 1.0 });
+    decl.route(1, one, cutoff_of(1), 0.25);
+    let mut m = Modulation::new();
+    m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    m.commit(&mut ed).expect("commits");
+    let got = render(&mut ed, &mut exec, 128, 1_024);
+    assert_eq!(got[0][1_023], 250.0);
+
+    let knob = Arc::clone(&host.targets[&1].1);
+    ed.insert(
+        key(1),
+        "probe",
+        ForkByClone(Probe {
+            param: UnitParam::Cutoff,
+            extra: Some(UnitParam::Q),
+            knob,
+        }),
+    );
+    let applied = m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    assert_eq!(applied.unresolved_targets, vec![cutoff_of(1)]);
+    assert!(m.lane(cutoff_of(1)).is_none(), "the lane went");
+    m.commit(&mut ed).expect("commits");
+    render(&mut ed, &mut exec, 128, 128);
+    let applied = m.apply(&decl.get(), &mut ed, &host).expect("re-applies");
+    assert!(applied.unresolved_targets.is_empty());
+    assert!(applied.commit, "a lane on the new unit");
+    m.commit(&mut ed).expect("commits");
+    let got = render(&mut ed, &mut exec, 128, 1_024);
+    assert_eq!(got[0][1_023], 250.0);
+
+    decl.targets[0].1.max = 2_000.0;
+    let applied = m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    assert!(!applied.commit, "a range edit is a store");
+    let got = render(&mut ed, &mut exec, 128, 1_024);
+    assert_eq!(got[0][1_023], 500.0);
+}
+
+/// **A removed feed node leaves its source unresolved, not every apply
+/// refused.** The rig's pulse (the follower's feed) is removed, then the
+/// LFO's depth is edited: the apply succeeds, the follower is unresolved
+/// and its node goes, and the commit is accepted. A note envelope whose
+/// MIDI node is removed keeps its node, fed nothing.
+///
+/// Mutation (run): `resolve_source` without the filter on the feed's node
+/// (a missing node back to `WrongFeed`) → both applies refused → fails.
+#[test]
+fn a_removed_feed_node_leaves_its_source_unresolved() {
+    let mut r = rig(128);
+    render(&mut r.ed, &mut r.exec, 128, 128);
+    r.ed.remove(key(10));
+    r.decl.set_depth(r.lfo, 0.2);
+    let applied =
+        r.m.apply(&r.decl.get(), &mut r.ed, &r.host)
+            .expect("applies");
+    assert_eq!(applied.unresolved_sources, vec![SourceKey(2)]);
+    assert_eq!(applied.republished, vec![cutoff_of(1)]);
+    assert!(r.m.source(SourceKey(2)).is_none(), "the follower went");
+    r.m.commit(&mut r.ed).expect("commits");
+    render(&mut r.ed, &mut r.exec, 128, 512);
+
+    let (mut r, env) = resync_rig();
+    r.ed.remove(key(10));
+    let applied =
+        r.m.apply(&r.decl.get(), &mut r.ed, &r.host)
+            .expect("applies");
+    assert!(applied.unresolved_sources.is_empty());
+    assert!(r.m.source(env).is_some(), "the envelope stays, unfed");
+    r.m.commit(&mut r.ed).expect("commits");
+}
+
+/// **A port another event source drives is refused before anything
+/// changes.** The host drives probe 3's cutoff from an event node of its
+/// own; a route to that cutoff is `PortTaken`, with the editor and the
+/// reconciler as before, and the editor still commits.
+///
+/// Mutation (run): the `PortTaken` check removed → the apply succeeds,
+/// wiring a second event source into the port → fails.
+#[test]
+fn a_port_with_another_event_source_is_refused() {
+    let mut r = rig(128);
+    render(&mut r.ed, &mut r.exec, 128, 128);
+    probe(&mut r.ed, &mut r.host, 3, 0.5);
+    r.ed.insert(key(30), "clip", ForkByClone(Held { on: 10 }));
+    r.ed.spec_mut().connect_param(
+        ParamIn {
+            node: key(3),
+            param: UnitParam::Cutoff,
+        },
+        ParamFrom::Events(EventOut {
+            node: key(30),
+            port: 0,
+        }),
+        ParamShaping::Identity,
+    );
+    r.ed.commit().expect("commits");
+    render(&mut r.ed, &mut r.exec, 128, 128);
+    let targets = [cutoff_of(1), cutoff_of(2), cutoff_of(3)];
+    let sources = [SourceKey(1), SourceKey(2)];
+    let before = state(&r.ed, &r.m, &targets, &sources);
+    let mut decl = r.decl.clone();
+    decl.target(cutoff_of(3), 0.0, 1.0);
+    decl.route(9, SourceKey(1), cutoff_of(3), 0.1);
+    assert_eq!(
+        r.m.apply(&decl.get(), &mut r.ed, &r.host),
+        Err(ReconcileError::PortTaken(cutoff_of(3)))
+    );
+    assert_eq!(state(&r.ed, &r.m, &targets, &sources), before);
+    r.ed.commit().expect("the editor still commits");
+}
+
+/// **A key the host takes from a built node is followed.** The host
+/// inserts nodes of its own at the LFO lane's key and at the follower's:
+/// the next apply undoes the wiring around both, leaves the host's nodes
+/// and builds a new lane and follower at fresh keys. The render is the
+/// §8.1 figures again (the LFO past the new lane's declick).
+///
+/// Mutation (run): `taken` always false → the apply sees nothing to do
+/// (no commit, the records still name the host's nodes) → fails.
+#[test]
+fn a_key_the_host_takes_is_followed() {
+    let mut r = rig(128);
+    let mut all = render(&mut r.ed, &mut r.exec, 128, 128);
+    let lane = r.m.lane(cutoff_of(1)).expect("a lane").0;
+    let follower = r.m.source(SourceKey(2)).expect("a follower");
+    r.ed.insert(lane, "probe", ForkByClone(Probe::new(1.0)));
+    r.ed.insert(
+        follower,
+        "pulse",
+        ForkByClone(Pulse {
+            from: 0,
+            to: 0,
+            level: 0.0,
+        }),
+    );
+    let applied =
+        r.m.apply(&r.decl.get(), &mut r.ed, &r.host)
+            .expect("applies");
+    assert!(applied.commit);
+    let (new_lane, new_follower) = (
+        r.m.lane(cutoff_of(1)).expect("a lane").0,
+        r.m.source(SourceKey(2)).expect("a follower"),
+    );
+    assert!(new_lane != lane && new_follower != follower);
+    let nodes = &r.ed.spec().topology.nodes;
+    assert_eq!(nodes[&lane].kind, "probe");
+    assert_eq!(nodes[&follower].kind, "pulse");
+    r.m.commit(&mut r.ed).expect("commits");
+    append(&mut all, render(&mut r.ed, &mut r.exec, 128, 12_000 - 128));
+    let tol = lfo_tolerance(0.3, 2.0);
+    for (f, &v) in all[0].iter().enumerate().skip(128 + DECLICK + STEP) {
+        let want = lfo_value(0.3, 2.0, f);
+        assert!(
+            (f64::from(v) - want).abs() < tol,
+            "frame {f}: {v} vs {want}"
+        );
+    }
+    for (f, &v) in all[1].iter().enumerate() {
+        let want = ducked(f);
+        assert!(
+            (f64::from(v) - want).abs() < 1e-4,
+            "frame {f}: {v} vs {want}"
+        );
+    }
 }
 
 /// Snapshot of everything a refused `apply` must leave alone.
@@ -1208,6 +1404,7 @@ fn for_param_and_for_unit_send_the_same_segments() {
         5,
         Probe {
             param: UnitParam::Pan,
+            extra: None,
             knob: Arc::new(AtomicF32::new(0.0)),
         },
     );

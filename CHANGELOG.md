@@ -107,7 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   |---|---|
   | a host wired lanes, signal sources and their edges itself | `tutti_nodes::Modulation::{new, apply(&Declarations, &mut Editor, &dyn ModHost) -> Result<Applied, ReconcileError>, commit, send_resyncs, lane, source, compiled, resyncs_owed}`; a refused `apply` changes nothing |
   | — | `tutti_nodes::ModHost` (the host's seam: `target(TargetKey) -> Option<Target>`, `feed(SourceKey) -> Option<Feed>`), `Target::{Native { node, knob }, Foreign { node, port, knob }}`, `Feed::{Audio(NodeKey), Events(EventOut)}` |
-  | — | `tutti_nodes::Applied { commit, republished, unresolved_targets, unresolved_sources }`; `tutti_nodes::ReconcileError::{Compile, Cycle { route }, WrongTarget, NoSuchParam, NoSuchEventInput, WrongFeed}` |
+  | — | `tutti_nodes::Applied { commit, republished, unresolved_targets, unresolved_sources, resync }`; `tutti_nodes::ReconcileError::{Compile, Cycle { route }, WrongTarget, NoSuchParam, NoSuchEventInput, PortTaken, WrongFeed}`; `Modulation::resyncs_dropped`. A native target resolves once its node's current generation is committed: a host re-applies after each commit while `unresolved_targets` is not empty |
   | a note envelope newly read by a lane read 0 until its next note or stage boundary | `tutti_graph::EventKind::Resync` and `Event::resync(offset)`: a request to an event source to re-send where it stands. `NoteEnvelopeNode` answers it on its MIDI input (a resumed segment, or 0 when idle); `Modulation::commit` schedules one into each envelope a lane newly reads. Param ports, the plugin nodes and the other nodes ignore it |
   | a lane on a built-in param needed a typed `ParamKey<U>` | `tutti_graph::ParamSegment::unit(UnitParam, from, to, duration, shape)` and `ControlLaneNode::for_unit(UnitParam, program, knob, range)`, which also reach params with no `ParamKey` (`Pan`, `RoomSize`, …); `ControlLaneNode::for_param::<U>` is a wrapper over `for_unit` (its `'static` bound is gone) and `ParamSegment::new` over `unit`, bit for bit |
   | a follower rebuilt for the same `SourceId` stayed silent until its input was not | `EnvelopeFollowerNode::replacing()`: sends its first grid piece even while silent, so the lanes reading it drop the old node's last value |
@@ -115,8 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Migration.** A `match` on `EventKind` needs a `Resync` arm (a node
   that sends nothing a sink could miss ignores it). A headless host
   implements `ModHost` and calls `Modulation::apply`, then
-  `Modulation::commit` when `Applied::commit` says so (see
-  `tutti-nodes/examples/headless_modulation.rs`).
+  `Modulation::commit` when `Applied::commit` or `Applied::resync` says
+  so, re-applying after a commit while `Applied::unresolved_targets` is
+  not empty (see `tutti-nodes/examples/headless_modulation.rs`).
 
 - **Signal-driven modulation sources** (design doc 014, PR 3b): an
   envelope follower and a note envelope, graph nodes that send a raw value

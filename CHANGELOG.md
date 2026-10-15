@@ -109,6 +109,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tutti-midi-runtime` no longer depends on `parking_lot` or `dashmap`
   (nothing used them).
 
+- **VST3 host callbacks are bounded and allocation-free** (design doc 013,
+  "VST3 host callbacks bounded"). Plugins call `performEdit` and
+  `restartComponent` from their process thread, where the host's unbounded
+  channels allocated; the plugin server's restart poll, in its audio phase,
+  collected every queued edit into a `Vec` to keep only the restart flags.
+  Restart flags are now one atomic word, and edits, progress and unit news
+  share one preallocated queue whose overflow is counted, and a progress
+  description is held inline, so no callback allocates. **Breaking** for
+  `tutti-vst3-host` callers of the notification poll.
+
+  | Was | Now |
+  |---|---|
+  | `Vst3Loaded::poll_plugin_notifications() -> PluginNotifications` (`param_edits`, `progress`, `units` as fresh `Vec`s, `restart`) | `poll_plugin_notifications(\|n: PluginNotification\| ..) -> RestartOutcome`: each event goes to the closure in arrival order across all three kinds; nothing is collected. `news.restart` → the return value; `news.param_edits` → match `PluginNotification::Edit(e)`, `news.progress` → `Progress(e)`, `news.units` → `Unit(e)` |
+  | `PluginNotifications` | removed; `tutti_vst3_host::PluginNotification` (`Edit`, `Progress`, `Unit`) is the queued item |
+  | `ParameterEditEvent::RestartComponent(i32)` (never surfaced: the poll folded it into `restart`) | removed; restart requests arrive only as the coalesced `RestartOutcome`, and carry no position among the events |
+  | — | `Vst3Loaded::take_restart() -> RestartOutcome`: the restart flags alone, wait-free and allocation-free (the plugin server's `poll_restart` reads only this) |
+  | unbounded queues | `NOTIFICATION_CAPACITY` (512) unread notifications; past it the newest is dropped, counted in `Vst3Loaded::dropped_notifications()`, and reported once by the next poll as `RestartOutcome::notifications_overflowed` (re-read every parameter value) |
+  | `RestartOutcome` had only restart flags | new field `notifications_overflowed`; a struct literal needs it (or `..Default::default()`) |
+  | `ProgressEvent::Started { description: String }` | `description: ProgressDescription`, inline, at most `PROGRESS_DESCRIPTION_CAPACITY` (128) UTF-8 bytes, cut at a character boundary. `description.as_str()`, or deref to `&str`; `.to_string()` for an owned copy |
+  | — | `Vst3Loaded::discard_notifications()` (drop every queued notification, lock-free; the plugin server's `poll_restart` calls it) and `Vst3Loaded::pending_notifications()` |
+  | `poll_editor_resize_request` drained a channel | the same method reads a latest-wins cell; behaviour unchanged (it returned the last size) |
+
 - **`smallvec` is gone from the workspace** (design doc 013, "SmallVec
   removed"). A type whose inline storage bought nothing is a `Vec` (or a
   boxed slice); a type whose inline storage was a hard cap is an

@@ -1,6 +1,5 @@
 //! Internal state types held by [`super::loaded::Vst3Loaded`].
 
-use crossbeam_channel::Receiver;
 use vst3::Steinberg::{
     IPlugView,
     Vst::{
@@ -12,10 +11,7 @@ use vst3::Steinberg::{
 };
 use vst3::{ComPtr, ComWrapper};
 
-use crate::com::{
-    ComponentHandler, HostApplication, HostPlugFrame, ParameterEditEvent, ProgressEvent, UnitEvent,
-};
-use crate::types::EditorSize;
+use crate::com::{ComponentHandler, HostApplication, HostPlugFrame};
 
 pub(super) struct PluginInterfaces {
     pub component: ComPtr<IComponent>,
@@ -120,23 +116,21 @@ impl Controller {
 
 pub(super) struct HostContext {
     pub application: ComWrapper<HostApplication>,
+    /// Also the notification store: the plugin's callbacks land in its queue
+    /// and restart word, which `Vst3Loaded` reads through it.
     pub handler: ComWrapper<ComponentHandler>,
-    pub param_event_rx: Receiver<ParameterEditEvent>,
-    pub progress_event_rx: Receiver<ProgressEvent>,
-    pub unit_event_rx: Receiver<UnitEvent>,
 }
 
-/// Editor window state. `Open` owns the view and its associated host frame
-/// and resize channel — all three are created together at `open_editor` time
-/// and dropped together at `close_editor` time.
+/// Editor window state. `Open` owns the view and its host frame, which also
+/// holds the pending resize request — both are created together at
+/// `open_editor` time and dropped together at `close_editor` time.
 pub(super) enum EditorState {
     Closed,
     Open {
         view: ComPtr<IPlugView>,
-        /// Held for Drop — releases the IPlugFrame COM ref when the editor closes.
-        #[allow(dead_code)]
+        /// Releases the IPlugFrame COM ref when the editor closes, and holds
+        /// the latest `resizeView` request until it is taken.
         plug_frame: ComWrapper<HostPlugFrame>,
-        resize_rx: Receiver<EditorSize>,
     },
 }
 
@@ -159,7 +153,7 @@ pub(super) enum EditorState {
 // at both `close_editor_unchecked` and `Vst3Loaded::drop` — it is not
 // something this impl makes safe.
 //
-// The two non-COM fields are ordinary: `ComWrapper<HostPlugFrame>` wraps a
-// host-implemented object, and `Receiver<EditorSize>` is `Send` on its own.
+// The non-COM field is ordinary: `ComWrapper<HostPlugFrame>` wraps a
+// host-implemented object.
 unsafe impl Send for EditorState {}
 unsafe impl Sync for EditorState {}

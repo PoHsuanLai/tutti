@@ -665,8 +665,8 @@ fn has_editor_agrees_with_opening_one() {
 gui_test! {
 /// A closed editor must report no pending resize request.
 ///
-/// `poll_editor_resize_request` drains a channel the plugin's `IPlugFrame`
-/// pushes into. The `EditorState::Open` guard is what stops a stale request
+/// `poll_editor_resize_request` takes the latest size the plugin's `IPlugFrame`
+/// was asked for. The `EditorState::Open` guard is what stops a stale request
 /// surviving a close and being applied to the *next* editor — so the assertion
 /// is that closing clears it, not merely that a fresh instance returns `None`.
 fn a_closed_editor_reports_no_resize_request() {

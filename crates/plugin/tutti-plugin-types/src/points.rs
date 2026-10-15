@@ -83,6 +83,31 @@ impl PointBuf {
         Ok(())
     }
 
+    /// Removes the point at `index`, moving the points after it down one,
+    /// and returns it; `None` past the points. Allocation-free.
+    pub fn remove(&mut self, index: usize) -> Option<ParameterPoint> {
+        if index >= self.len {
+            return None;
+        }
+        let point = self.slots[index];
+        self.slots.copy_within(index + 1..self.len, index);
+        self.len -= 1;
+        Some(point)
+    }
+
+    /// Sorts the points into ascending `sample_offset` order, **stably**
+    /// (points sharing an offset keep their order), in place and without
+    /// allocating: [`insertion_sort_by_key`](crate::insertion_sort_by_key),
+    /// linear on points already in order and quadratic in the overlap of the
+    /// runs when one source's points are appended to another's.
+    /// `slice::sort_by_key` is stable too, but it allocates a scratch buffer
+    /// past a few hundred points (a 4 KB stack buffer: 256 points), which a
+    /// chunk's room exceeds at every chunk size (`ParameterQueue::chunk_room`
+    /// is `ceil(chunk / 32) + 1 + 256`).
+    pub fn sort_by_offset(&mut self) {
+        crate::insertion_sort_by_key(&mut self.slots[..self.len], |p| p.sample_offset);
+    }
+
     /// Drops every point, keeping the capacity.
     pub fn clear(&mut self) {
         self.len = 0;
@@ -359,6 +384,67 @@ mod tests {
         assert!(buf.try_push(at(0, 0.5)).is_ok());
         assert_eq!(buf.as_ptr(), storage);
         assert_eq!(points(&buf), vec![(0, 0.5)]);
+    }
+
+    /// **`remove` takes one point out and moves the later ones down**,
+    /// within the buffer, and refuses an index past the points.
+    ///
+    /// Mutation (run): `remove` without the `copy_within` (only the length
+    /// shortened) → the buffer keeps frame 10 and loses frame 20 → fails.
+    #[test]
+    fn remove_moves_the_later_points_down() {
+        let mut buf = PointBuf::with_capacity(4);
+        for (k, v) in [(0, 0.0), (10, 0.25), (20, 0.5)] {
+            assert!(buf.try_push(at(k, v)).is_ok());
+        }
+        let removed = assert_no_alloc::assert_no_alloc(|| buf.remove(1));
+        assert_eq!(removed.map(|p| p.sample_offset), Some(10));
+        assert_eq!(points(&buf), vec![(0, 0.0), (20, 0.5)]);
+        assert!(buf.remove(2).is_none());
+        assert_eq!(buf.capacity(), 4);
+    }
+
+    /// **`sort_by_offset` is a stable sort that never allocates, at a
+    /// chunk's full room.** 386 points (`chunk_room(4096) + 1`): a host's
+    /// points every 16 frames, then a second source's appended out of order,
+    /// some on the host's frames. Sorted inside the no-alloc gate, the
+    /// result is exactly std's stable sort of the same points (computed
+    /// outside the gate), so a point that shares a frame with an earlier
+    /// one stays after it (VST3's two-point jump encoding).
+    ///
+    /// Mutations (run), each fails: `sort_by_offset` as
+    /// `self.sort_by_key(|p| p.sample_offset)` → the gate aborts (std's
+    /// stable sort allocates its scratch past 256 points); the insertion
+    /// point before equal offsets (`<` for `<=` in
+    /// `insertion_sort_by_key`'s `partition_point`) →
+    /// a shared frame's points swap, unlike std's.
+    #[test]
+    fn sort_by_offset_is_stable_and_allocation_free_at_full_room() {
+        let room = crate::ParameterQueue::chunk_room(4096) + 1;
+        assert_eq!(room, 386);
+        let mut buf = PointBuf::with_capacity(room);
+        let host = 300;
+        for k in 0..host {
+            assert!(buf.try_push(at(k as i32 * 16, 0.25)).is_ok());
+        }
+        // The second source, appended in a scrambled order: every 7th of
+        // its points on a host frame, the rest between.
+        for k in 0..room - host {
+            let frame = ((k * 37) % (room - host)) as i32 * 48;
+            let frame = if k % 7 == 0 { frame } else { frame + 3 };
+            assert!(buf.try_push(at(frame, (k as f64 + 1.0) / 1024.0)).is_ok());
+        }
+        let mut reference: Vec<ParameterPoint> = buf.iter().copied().collect();
+        reference.sort_by_key(|p| p.sample_offset);
+        assert_no_alloc::assert_no_alloc(|| buf.sort_by_offset());
+        let want: Vec<(i32, f64)> = reference
+            .iter()
+            .map(|p| (p.sample_offset, p.value.get()))
+            .collect();
+        assert_eq!(points(&buf), want);
+        assert!(buf
+            .windows(2)
+            .all(|w| w[0].sample_offset <= w[1].sample_offset));
     }
 
     /// **`try_push_front` puts the point ahead of every point**, shifting

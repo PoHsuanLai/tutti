@@ -14,23 +14,24 @@
 /// Sort `items` by `key`, stably, in place: an insertion sort. Never
 /// allocates.
 ///
-/// Linear in the length plus the number of out-of-order pairs, so it is for
-/// lists that are short, or long and nearly sorted (runs that are each in
-/// order already). Each item is moved into place with one `rotate_right`
-/// over the items it passes. For a long list that may arrive in any order,
-/// use [`StableOrder`], which is `n log n` either way.
+/// An item already after its predecessor costs one comparison; one out of
+/// place is found its slot by binary search and moved there with one
+/// `rotate_right` over the items it passes. So the moves are the number of
+/// out-of-order pairs: linear on a list in order, quadratic in the overlap
+/// of the runs when several in-order runs are interleaved (up to `n1 * n2`
+/// for two). It is for lists that are short, or long and made of runs each
+/// in order already. For a long list that may arrive in any order, use
+/// [`StableOrder`], which is `n log n` either way.
 pub fn insertion_sort_by_key<T, K: Ord>(items: &mut [T], mut key: impl FnMut(&T) -> K) {
     for i in 1..items.len() {
         let k = key(&items[i]);
-        // The first slot, scanning back, whose item is not after `k`: the
-        // item goes just past it, behind every equal key already there.
-        let mut j = i;
-        while j > 0 && key(&items[j - 1]) > k {
-            j -= 1;
+        if key(&items[i - 1]) <= k {
+            continue;
         }
-        if j < i {
-            items[j..=i].rotate_right(1);
-        }
+        // After every earlier item at or before `k`: equal keys keep their
+        // order, so the sort is stable.
+        let at = items[..i].partition_point(|item| key(item) <= k);
+        items[at..=i].rotate_right(1);
     }
 }
 
@@ -156,8 +157,8 @@ mod tests {
     /// **Both sorts are stable, and sort.** Every key repeats several
     /// times, out of order.
     ///
-    /// Mutations (run): the insertion sort's `>` to `>=` (an equal key
-    /// moves ahead of the one before it), and `StableOrder`'s key word
+    /// Mutations (run): the insertion sort's `partition_point` with `<` for
+    /// `<=` (an equal key moves ahead of the one before it), and `StableOrder`'s key word
     /// without the index (`key << 32` alone, so equal words leave the
     /// unstable sort free and every index masks to 0): each fails here.
     #[test]

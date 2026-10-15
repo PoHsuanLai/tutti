@@ -76,23 +76,21 @@ pub struct ParameterQueue {
 }
 
 impl ParameterQueue {
-    /// The least point room [`chunk_room`](Self::chunk_room) gives a queue,
-    /// however short the chunk.
-    pub const MIN_POINTS: usize = 10;
-
     /// The spacing, in frames, a chunk's point room is sized for: a
+    /// control lane's grid step (`tutti-nodes`' `CONTROL_STEP`), so a
     /// parameter can carry a point every this many frames of a chunk.
     pub const POINT_SPACING: usize = 32;
 
     /// Points a queue has room for beyond one per
-    /// [`POINT_SPACING`](Self::POINT_SPACING): a segment's corners (its
-    /// start and its arrival) and the chunk's last frame.
-    pub const CORNER_POINTS: usize = 4;
+    /// [`POINT_SPACING`](Self::POINT_SPACING) and the chunk's last frame:
+    /// the corners a control lane can send in one block (`tutti-nodes`'
+    /// `LANE_EVENT_CAPACITY`).
+    pub const CORNER_POINTS: usize = 256;
 
-    /// The points one parameter can carry in a chunk of `chunk` frames: one
-    /// per [`POINT_SPACING`](Self::POINT_SPACING) frames and
-    /// [`CORNER_POINTS`](Self::CORNER_POINTS) more, and never fewer than
-    /// [`MIN_POINTS`](Self::MIN_POINTS). This is each queue's **logical**
+    /// The points one parameter can carry in a chunk of `chunk` frames:
+    /// one per [`POINT_SPACING`](Self::POINT_SPACING) frames, one for the
+    /// chunk's last frame, and [`CORNER_POINTS`](Self::CORNER_POINTS) more
+    /// (design doc 014 §9 requirement 6). This is each queue's **logical**
     /// room: the host's plugin node reserves its chunk with it
     /// ([`ParameterChanges::reserved_bridged`]), and a format host that hands
     /// the points on reserves for it at activation with its largest block, so
@@ -100,15 +98,18 @@ impl ParameterQueue {
     /// shared ([`ParameterChanges::point_budget`]): every queue holds
     /// [`ParameterChanges::FLOOR_POINTS`] of its own, and any
     /// [`ParameterChanges::POOLED_QUEUES`] of them at once can reach this
-    /// room.
+    /// room. Past a queue's room, or past its floor with the pool spent, the
+    /// plugin node drops grid points before corners and counts them; a queue
+    /// of corners keeps its latest value ([`PointBuf::replace_latest`]).
     ///
-    /// This is not yet design doc 014 §9 requirement 6
-    /// (`ceil(chunk / CONTROL_STEP) + 1 + C` with `C = 256`, and past the
-    /// room grid points dropped before corners); a full queue keeps its
-    /// latest value instead ([`PointBuf::push_or_replace_last`]). Doc 014's
-    /// PR 2 brings both.
+    /// ```
+    /// use tutti_plugin_types::ParameterQueue;
+    /// assert_eq!(ParameterQueue::chunk_room(4096), 128 + 1 + 256);
+    /// assert_eq!(ParameterQueue::chunk_room(512), 16 + 1 + 256);
+    /// assert_eq!(ParameterQueue::chunk_room(100), 4 + 1 + 256);
+    /// ```
     pub fn chunk_room(chunk: usize) -> usize {
-        (chunk.div_ceil(Self::POINT_SPACING) + Self::CORNER_POINTS).max(Self::MIN_POINTS)
+        chunk.div_ceil(Self::POINT_SPACING) + 1 + Self::CORNER_POINTS
     }
 
     /// Builds an empty queue addressed to `param_id` with room for exactly
@@ -298,6 +299,9 @@ pub struct ParameterChanges {
     /// [`reserved_bridged`](Self::reserved_bridged), otherwise 0.
     #[cfg_attr(feature = "serde", serde(skip))]
     carry_slot: usize,
+    /// See [`point_room`](Self::point_room).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    room: usize,
     /// See [`points_overflowed`](Self::points_overflowed).
     #[cfg_attr(feature = "serde", serde(skip))]
     overflowed: u64,
@@ -401,6 +405,7 @@ impl ParameterChanges {
                 .collect(),
             pool: PointPool::new(blocks, room.saturating_add(1), queues),
             carry_slot: 0,
+            room,
             overflowed: 0,
         }
     }
@@ -493,6 +498,16 @@ impl ParameterChanges {
         queue.param_id = param_id;
         self.queues.push(queue);
         true
+    }
+
+    /// The chunk room this set was reserved for
+    /// ([`reserved`](Self::reserved)'s `room`; 0 for a set built otherwise):
+    /// with [`capacity`](Self::capacity), what fixes its
+    /// [`point_layout`](Self::point_layout). A recycler that hands sets to a
+    /// producer laid out for one room checks it, since a set of another
+    /// room stores its points in another layout.
+    pub fn point_room(&self) -> usize {
+        self.room
     }
 
     /// Every point this set has storage for, in its queues, its spares and

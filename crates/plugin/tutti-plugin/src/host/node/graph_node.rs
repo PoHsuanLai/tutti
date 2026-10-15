@@ -290,7 +290,7 @@ impl Chunks for PluginChunks<'_> {
             from,
             n,
             at,
-            cx.env.frame.get(),
+            cx,
             *indexed,
             segments,
             params,

@@ -106,18 +106,16 @@ impl ParamValueQueueImpl {
         // MIDI CCs) and have no obligation to interleave them in order, so the
         // sort belongs here, at the boundary where the plugin's view is built.
         //
-        // Stable, so two points sharing an offset keep insertion order (the
-        // spec's "jump" idiom: old value then new value), and an insertion
-        // sort, because std's stable sort heap-allocates its scratch past 256
-        // points (4 KiB of them) and a queue holds up to a chunk's room
-        // (`ParameterQueue::chunk_room`: past 256 from a block of 8 Ki
-        // frames). The points arrive as runs each in order (host lanes,
-        // routed CCs); its cost is quadratic in the overlap of those runs
-        // (up to n1 * n2 moves for two interleaved runs), bounded by the
-        // queue's room.
-        if !points.is_sorted_by_key(|p| p.sample_offset) {
-            tutti_plugin_types::insertion_sort_by_key(&mut points, |p| p.sample_offset);
-        }
+        // A stable sort, so two points sharing an offset keep insertion
+        // order (the spec's "jump" idiom: old value then new value), and an
+        // allocation-free one (`PointBuf::sort_by_offset`): std's stable
+        // sort allocates a scratch buffer past 256 points, and a queue holds
+        // up to a chunk's room, past 256 at every chunk size
+        // (`ParameterQueue::chunk_room` is `ceil(chunk / 32) + 1 + 256`).
+        // Linear on points already in order, the common case; quadratic in
+        // the overlap of the runs when sources interleave (up to n1 * n2
+        // moves), bounded by the queue's room.
+        points.sort_by_offset();
         left_out
     }
 
@@ -248,9 +246,9 @@ mod tests {
     }
 
     /// **An unsorted queue past 256 points refills without allocating**: a
-    /// queue's room is a chunk's (`ParameterQueue::chunk_room`, past 256 from
-    /// a block of 8 Ki frames), and std's stable sort allocates its scratch
-    /// past 256 points. Two interleaved runs, each in order.
+    /// queue's room is a chunk's (`ParameterQueue::chunk_room`, past 256 at
+    /// every chunk size), and std's stable sort allocates its scratch past
+    /// 256 points. Two interleaved runs, each in order.
     ///
     /// Mutation (run): the sort back to `points.sort_by_key(|p|
     /// p.sample_offset)` aborts in the gate.

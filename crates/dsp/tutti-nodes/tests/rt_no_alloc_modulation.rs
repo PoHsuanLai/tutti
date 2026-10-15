@@ -5,9 +5,11 @@
 //! (chorus and flanger) and `PhaserNode`. They are graph nodes, each
 //! driven alone in a graph by `tutti_graph::contract::BlockRig`: its `prepare`
 //! (which sizes the delay lines and the block scratch) runs when the rig is
-//! built, outside the gate; the gate walks only `process`. And
-//! `AutomationLaneNode`'s event output driving param ports, through a
-//! graph, serial and on a pool.
+//! built, outside the gate; the gate walks only `process`. And control
+//! lanes (`ControlLaneNode`, `AutomationLaneNode::for_param`'s too) driving
+//! param ports through a graph, serial and on a pool: four automation
+//! lanes, and 200 lanes of every layer kind with republishes, knob writes
+//! and range edits between blocks.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{ChannelLayout, SampleRate};
@@ -314,8 +316,12 @@ impl tutti_core::Pool for GatedPool {
 /// for an `Elastic` piece and for a curve with no pieces, ragged blocks;
 /// serial, and on a pool whose helpers run under the gate too.
 ///
-/// Mutation (run): a `Vec::with_capacity(8)` per call in
-/// `AutomationLaneNode::send_segments` → both gates abort.
+/// Changed in doc 014 PR 2b: the lanes are `ControlLaneNode`s, and the
+/// `Elastic` and sine lanes send grid points of the play clock; the
+/// no-allocation property stands.
+///
+/// Mutation (run): a `Vec::with_capacity(8)` per block in
+/// `ControlLaneNode::process` → both gates abort (and the 200-lane gate's).
 #[test]
 fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
     use std::sync::Arc;
@@ -387,5 +393,346 @@ fn event_lanes_render_the_same_serial_and_parallel() {
     let serial = render(None);
     for w in [2, 3, 4, 8] {
         assert!(render(Some(w)) == serial, "{w} participants");
+    }
+}
+
+// ---- 200 control lanes ----------------------------------------------------
+
+/// The eight params a [`Probe8`] declares, one per lane of a group.
+const PROBE8: [tutti_types::UnitParam; 8] = {
+    use tutti_types::UnitParam::*;
+    [Cutoff, Q, GainDb, Wet, Feedback, Depth, Rate, Threshold]
+};
+
+/// Declares the eight [`PROBE8`] params (base 0) and writes each port's
+/// value to its own output, allocation-free.
+struct Probe8;
+
+impl tutti_graph::Node for Probe8 {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::from_count(8))
+            .with_params(&PROBE8)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        _: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        for p in 0..PROBE8.len() {
+            for i in 0..io.frames() {
+                let v = io.param(p).frames().map_or(0.0, |f| f[i]);
+                io.output(p)[i] = v;
+            }
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+    fn param_base(&self, port: usize) -> Option<f32> {
+        (port < PROBE8.len()).then_some(0.0)
+    }
+}
+
+/// Lane `k`'s program in generation `gen` (a republish moves its depths):
+/// five kinds in turn, beats, seconds, drawn, random, and automation under
+/// a layer.
+fn lane_program(k: usize, gen: u32) -> tutti_mod::ControlProgram {
+    use std::sync::Arc;
+    use tutti_mod::{
+        Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, PeriodPoint, Polarity,
+        Wave,
+    };
+    use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint};
+    use tutti_types::{BeatDuration, Depth, Hz, Phase, PhaseIncrement};
+    let depth = 0.05 + 0.01 * ((k as u32 + gen) % 7) as f32;
+    let amount = Amount {
+        depth: Depth(depth),
+        polarity: Polarity::Bipolar,
+        curve: if k.is_multiple_of(3) {
+            CurveType::Exponential
+        } else {
+            CurveType::Linear
+        },
+    };
+    let beats = Clock::Beats {
+        per_cycle: BeatDuration(0.25 + 0.125 * (k % 5) as f64),
+        phase: PhaseIncrement(0.0),
+    };
+    let seconds = Clock::Seconds {
+        rate: Hz(1.0 + (k % 11) as f32),
+        phase: PhaseIncrement(0.0),
+        anchor: None,
+    };
+    let shape = |shape| Wave::Shape {
+        shape,
+        seed: k as u64,
+    };
+    let layer = |clock, wave| Layer {
+        id: LayerId(1),
+        clock,
+        wave,
+        amount,
+        depth_by: None,
+    };
+    let (automation, layers) = match k % 5 {
+        0 => (None, vec![layer(beats, shape(LfoShape::Sine))]),
+        1 => (None, vec![layer(seconds, shape(LfoShape::Triangle))]),
+        2 => (
+            None,
+            vec![layer(
+                beats,
+                Wave::Drawn(Arc::from(vec![
+                    PeriodPoint {
+                        at: Phase(0.0),
+                        value: -0.5,
+                        curve: CurveType::Linear,
+                    },
+                    PeriodPoint {
+                        at: Phase(0.4),
+                        value: 1.0,
+                        curve: CurveType::SCurve,
+                    },
+                ])),
+            )],
+        ),
+        3 => (None, vec![layer(seconds, shape(LfoShape::RandomSmooth))]),
+        _ => {
+            let mut e = AutomationEnvelope::new(());
+            e.add_point(AutomationPoint::with_curve(
+                0.0,
+                200.0,
+                CurveType::Exponential,
+            ));
+            e.add_point(AutomationPoint::new(1.3, 800.0));
+            let curve: Arc<dyn tutti_mod::Curve> = Arc::new(e);
+            (Some(curve), vec![layer(seconds, shape(LfoShape::Sawtooth))])
+        }
+    };
+    ControlProgram::new(automation, layers, vec![]).expect("a valid program")
+}
+
+/// Lane `k` for param `k % 8` of its probe, built against that port's
+/// range cell, with a knob of its own.
+fn lane_for(
+    k: usize,
+    range: tutti_graph::ParamRangeReader,
+) -> tutti_nodes::automation::ControlLaneNode {
+    use std::sync::Arc;
+    use tutti_nodes::automation::ControlLaneNode as L;
+    use tutti_types::{AtomicF32, Db, Depth, Feedback, Hz, Mix, ParamKey, Q};
+    let p = lane_program(k, 0);
+    let knob = Some(Arc::new(AtomicF32::new(400.0 + k as f32)));
+    let r = Some(range);
+    match k % 8 {
+        0 => L::for_param(ParamKey::<Hz>::CUTOFF, p, knob, r),
+        1 => L::for_param(ParamKey::<Q>::Q, p, knob, r),
+        2 => L::for_param(ParamKey::<Db>::GAIN_DB, p, knob, r),
+        3 => L::for_param(ParamKey::<Mix>::WET, p, knob, r),
+        4 => L::for_param(ParamKey::<Feedback>::FEEDBACK, p, knob, r),
+        5 => L::for_param(ParamKey::<Depth>::DEPTH, p, knob, r),
+        6 => L::for_param(ParamKey::<Hz>::RATE, p, knob, r),
+        _ => L::for_param(ParamKey::<Db>::THRESHOLD, p, knob, r),
+    }
+}
+
+/// 200 lanes into the params of 25 [`Probe8`]s (one lane per port: a port
+/// takes one event source), ranged 0..1000; the 200 outputs in lane order.
+fn lanes_200(
+    max: usize,
+) -> (
+    tutti_graph::Editor,
+    tutti_graph::Executor,
+    Vec<tutti_nodes::automation::LaneControls>,
+) {
+    use tutti_graph::{
+        EventOut, ParamFrom, ParamIn, ParamRange, ParamShaping, Prepare, Unforkable,
+    };
+    use tutti_types::graph::{OutPort, Source};
+    use tutti_types::{NodeKey, Samples};
+    let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
+    let at = |k: usize| ParamIn {
+        node: NodeKey(1000 + (k / 8) as u64),
+        param: PROBE8[k % 8],
+    };
+    for j in 0..25u64 {
+        ed.insert(NodeKey(1000 + j), "probe", Unforkable(Probe8));
+        for p in 0..8 {
+            ed.spec_mut().topology.outputs.push(Source::Node(OutPort {
+                node: NodeKey(1000 + j),
+                port: p,
+            }));
+        }
+    }
+    for k in 0..200 {
+        ed.set_param_range(at(k), ParamRange::new(0.0, 1000.0))
+            .expect("a probe");
+    }
+    ed.commit().expect("commits");
+    let mut controls = Vec::new();
+    for k in 0..200 {
+        let lane = lane_for(k, ed.param_range_cell(at(k)).expect("committed"));
+        let key = NodeKey(2000 + k as u64);
+        controls.push(ed.insert(key, "lane", lane));
+        ed.spec_mut().connect_param(
+            at(k),
+            ParamFrom::Events(EventOut { node: key, port: 0 }),
+            ParamShaping::Identity,
+        );
+    }
+    ed.commit().expect("commits");
+    (ed, exec, controls)
+}
+
+/// The control-thread moves between blocks, the same in every render:
+/// every 10th block a republish of every program (new depths), every block
+/// a knob write on every 7th lane, every 15th block a range edit on every
+/// 9th port.
+fn lane_moves(
+    ed: &mut tutti_graph::Editor,
+    controls: &[tutti_nodes::automation::LaneControls],
+    block: usize,
+) {
+    use tutti_graph::{ParamIn, ParamRange};
+    use tutti_types::NodeKey;
+    if block % 10 == 9 {
+        for (k, c) in controls.iter().enumerate() {
+            c.publish(lane_program(k, block as u32));
+        }
+    }
+    for (k, c) in controls.iter().enumerate().skip(block % 7).step_by(7) {
+        c.set_knob(300.0 + ((k + block) % 13) as f32 * 20.0);
+    }
+    if block % 15 == 14 {
+        for k in (block % 9..200).step_by(9) {
+            let at = ParamIn {
+                node: NodeKey(1000 + (k / 8) as u64),
+                param: PROBE8[k % 8],
+            };
+            let hi = 800.0 + ((k + block) % 5) as f32 * 100.0;
+            ed.set_param_range(at, ParamRange::new(0.0, hi))
+                .expect("a probe");
+        }
+    }
+}
+
+/// The 120 BPM transport the 200-lane rigs roll, looping 0.5 to 1.7 beats
+/// (wraps inside blocks).
+fn lanes_transport(clock: &tutti_types::FrameClock) -> tutti_graph::Transport {
+    tutti_graph::Transport::counted(
+        true,
+        clock.tempo(),
+        clock.origin(),
+        Some(tutti_graph::LoopRange {
+            start: tutti_types::Beat(0.5),
+            end: tutti_types::Beat(1.7),
+        }),
+    )
+}
+
+fn lanes_loop() -> Option<tutti_types::LoopRange> {
+    tutti_types::LoopRange::new(tutti_types::Beat(0.5), tutti_types::Beat(1.7))
+}
+
+/// 200 control lanes (doc 014 §12) render bit for bit the same serial and
+/// on pools of 2, 3, 4 and 8 participants, under ragged blocks with loop
+/// wraps inside them, republishes of every program, knob writes and range
+/// edits between blocks.
+///
+/// Not mutation-tested against a property of the lane: each lane's state
+/// is its own (one node, one op, its cells read once per block), so nothing
+/// it does can differ between schedules. This pins that it stays so: two
+/// lanes sharing mutable state outside the graph (`CLAUDE.md` forbids it)
+/// would diverge here. Mutation (run): state shared across lanes (each
+/// lane's knob offset by 0.5 on the parity of one `static` counter every
+/// lane's `process` bumps) → the pools run the lanes in another order and
+/// render other bits than serial → fails.
+#[test]
+fn two_hundred_lanes_render_the_same_serial_and_parallel() {
+    use std::sync::Arc;
+    let render = |workers: Option<usize>| {
+        let (mut ed, mut exec, controls) = lanes_200(128);
+        if let Some(w) = workers {
+            exec.set_pool(Some(Arc::new(tutti_core::WorkerPool::builder(w).build())));
+        }
+        let mut clock = tutti_types::FrameClock::new(
+            tutti_types::Beat(0.0),
+            tutti_types::Bpm(120.0),
+            SampleRate(48_000.0),
+        );
+        let mut bufs = vec![vec![0.0f32; 128]; 200];
+        let mut all = vec![Vec::new(); 200];
+        for (b, n) in lane_blocks(12_000).into_iter().enumerate() {
+            lane_moves(&mut ed, &controls, b);
+            let t = lanes_transport(&clock);
+            {
+                let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| &mut b[..]).collect();
+                exec.process(n, &t, &[], &mut refs);
+            }
+            clock.advance(tutti_types::Samples(n), lanes_loop());
+            ed.collect();
+            for (a, b) in all.iter_mut().zip(&bufs) {
+                a.extend(b[..n].iter().map(|v| v.to_bits()));
+            }
+        }
+        assert_eq!(exec.is_parallel(), workers.is_some(), "{workers:?}");
+        all
+    };
+    let serial = render(None);
+    assert!(
+        serial.iter().all(|c| c.iter().any(|&v| v != c[0])),
+        "every lane moves its port"
+    );
+    for w in [2, 3, 4, 8] {
+        let par = render(Some(w));
+        for (k, (a, b)) in serial.iter().zip(&par).enumerate() {
+            assert!(a == b, "{w} participants, lane {k}");
+        }
+    }
+}
+
+/// 200 control lanes never allocate on the audio thread, serial and on a
+/// pool whose helpers run under the gate too, with a republish of every
+/// program, knob writes and range edits between gated blocks (on the
+/// control thread, outside the gate).
+///
+/// Mutation (run): a `Vec::with_capacity(8)` per block in
+/// `ControlLaneNode::process` → aborts.
+#[test]
+fn two_hundred_lanes_are_allocation_free_serial_and_on_a_pool() {
+    use std::sync::Arc;
+    for workers in [None, Some(4)] {
+        let (mut ed, mut exec, controls) = lanes_200(128);
+        if let Some(w) = workers {
+            let pool = tutti_core::WorkerPool::builder(w)
+                .spin(std::time::Duration::from_micros(1))
+                .idle(std::time::Duration::from_micros(1))
+                .build();
+            exec.set_pool(Some(Arc::new(GatedPool(pool))));
+        }
+        let mut clock = tutti_types::FrameClock::new(
+            tutti_types::Beat(0.0),
+            tutti_types::Bpm(120.0),
+            SampleRate(48_000.0),
+        );
+        let mut bufs = vec![vec![0.0f32; 128]; 200];
+        let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(|b| &mut b[..]).collect();
+        let blocks = lane_blocks(24_000);
+        for (b, &n) in blocks.iter().enumerate() {
+            lane_moves(&mut ed, &controls, b);
+            let t = lanes_transport(&clock);
+            if b < 40 {
+                exec.process(n, &t, &[], &mut refs);
+            } else {
+                assert_no_alloc::assert_no_alloc(|| exec.process(n, &t, &[], &mut refs));
+            }
+            clock.advance(tutti_types::Samples(n), lanes_loop());
+            ed.collect();
+        }
+        assert_eq!(exec.is_parallel(), workers.is_some(), "{workers:?}");
+        drop(refs);
+        assert!(
+            bufs.iter().all(|b| b.iter().any(|&v| v != 0.0)),
+            "every lane drove its port: the gate walked the lanes"
+        );
     }
 }

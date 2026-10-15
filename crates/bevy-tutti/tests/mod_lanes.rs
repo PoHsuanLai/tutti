@@ -950,6 +950,54 @@ fn two_routes_on_one_param_sum_and_a_disabled_one_adds_nothing() {
     assert_holds(&render(&mut side, 1_024, 128)[0], 800.0, "enabled again");
 }
 
+/// **Removing the last route returns the param to its knob.** A macro at
+/// depth 0.1 on a cutoff (knob 500 in `0..=1000`) adds 100: 600. With the
+/// route despawned the target has nothing left to drive it, so its lane is
+/// gone and the probe reads the knob, 500, past the disconnect's declick.
+/// Every other removal here leaves a route on the target; this is the one
+/// where nothing does.
+///
+/// Ported from `mod_value_path.rs`'s
+/// `removing_a_route_returns_the_param_to_its_base`.
+///
+/// Mutation (run, PR 5): `Modulation::apply`'s lane sweep keeping a lane
+/// whose target has no bind left (the `gone` filter's
+/// `binds.get(t).is_none_or(..)` as `is_some_and(..)`) → the lane stays on
+/// the port with its stale program → fails.
+#[test]
+fn removing_the_last_route_returns_the_param_to_its_knob() {
+    let (mut app, mut side) = app(1);
+    let probe = spawn(&mut app, ProbeUnit::new(500.0));
+    master(&mut app, &[probe]);
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(cutoff, 0.0, 1_000.0));
+    let offset = world.spawn(ModSource::new(Macro(1.0))).id();
+    let route = world
+        .spawn(ModRoute::new(offset, cutoff).with_depth(Depth(0.1)))
+        .id();
+    settle(&mut app);
+    assert_holds(&render(&mut side, 1_024, 128)[0], 600.0, "the route");
+    assert!(
+        app.world()
+            .resource::<ModulationState>()
+            .lane(cutoff)
+            .is_some(),
+        "the route has its lane"
+    );
+
+    app.world_mut().despawn(route);
+    settle(&mut app);
+    assert_holds(&render(&mut side, 1_024, 128)[0], 500.0, "no route left");
+    assert!(
+        app.world()
+            .resource::<ModulationState>()
+            .lane(cutoff)
+            .is_none(),
+        "and no lane"
+    );
+}
+
 /// A host's own source kind: a macro at half its setting.
 struct HalfMacro(f32);
 
@@ -1068,5 +1116,44 @@ fn a_bus_strips_volume_and_pan_take_lanes() {
             state.lane(ParamRef::unit(strip, param)).is_some(),
             "{param:?} has its lane"
         );
+    }
+}
+
+/// **A chorus's rate and a phaser's mix take lanes.** Their params were
+/// knobs the old frame-rate driver wrote; doc 014 PR 5 declares them as
+/// ports (`MOD_DELAY_PARAMS`, `PHASER_PARAMS`), so a route onto each resolves to a lane, with nothing
+/// refused. What a lane on them sounds like is pinned where the nodes live
+/// (`tutti-nodes`' `a_lane_modulates_a_chorus_rate_around_its_own_cell`
+/// and `each_fed_param_is_the_one_the_dsp_reads`, `tutti-polysynth`'s
+/// `param_lanes.rs`).
+///
+/// Mutation (run, PR 5): `ModDelayNode` not declaring its ports (the
+/// `.with_params(&MOD_DELAY_PARAMS)` dropped) → the chorus route is refused
+/// (`NoSuchParam`) → fails.
+#[test]
+fn a_chorus_rate_and_a_phaser_mix_take_lanes() {
+    let (mut app, _side) = app(2);
+    let chorus = spawn(
+        &mut app,
+        tutti_nodes::ModDelayNode::chorus(tutti_types::ChannelLayout::STEREO),
+    );
+    let phaser = spawn(
+        &mut app,
+        tutti_nodes::PhaserNode::with_channels(tutti_types::ChannelLayout::STEREO, 4),
+    );
+    let offset = app.world_mut().spawn(ModSource::new(Macro(0.5))).id();
+    let targets = [
+        ParamRef::unit(chorus, UnitParam::Rate),
+        ParamRef::unit(phaser, UnitParam::Wet),
+    ];
+    for at in targets {
+        let world = app.world_mut();
+        world.spawn(ModRange::new(at, 0.0, 1.0));
+        world.spawn(ModRoute::new(offset, at).with_depth(Depth(0.5)));
+    }
+    settle(&mut app);
+    let state = app.world().resource::<ModulationState>();
+    for at in targets {
+        assert!(state.lane(at).is_some(), "{at:?} has its lane");
     }
 }

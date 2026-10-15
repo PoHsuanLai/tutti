@@ -28,7 +28,7 @@ serde = ["dep:serde"]
 bevy = ["dep:bevy_reflect"]
 
 [dependencies]
-# The fixed inline storage behind `RtVec` and `RtEventBuf` (`rt/capped.rs`):
+# The fixed inline storage behind `RtVec` (`rt/capped.rs`):
 # a run of `N` slots that cannot grow, so the cap is the type's, not a check
 # beside it.
 arrayvec = "0.7"

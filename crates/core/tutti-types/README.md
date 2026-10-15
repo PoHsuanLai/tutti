@@ -15,8 +15,8 @@ umbrella, which re-export it. What is in it:
   trait, the measurement newtypes (`Hz`, `Seconds`, `Db`, `Beat`, `Bpm`,
   `Samples`, …), and the atomic `Param<U>` cell that holds one.
 - **RT primitives** — what the audio callback touches: `AudioThreadCell`
-  (one-borrow-at-a-time interior mutability), the capped `RtEventBuf` (reached
-  through `&self`) and `RtVec` (through `&mut self`), the fixed-capacity
+  (one-borrow-at-a-time interior mutability), the capped `RtVec` (through
+  `&mut self`; behind an `AudioThreadCell` for `&self`), the fixed-capacity
   `RtScratch` (own-and-slice, no push), the `ScopedNoDenormals` guard, and
   `RtPublish`/`RtRef` for handing non-scalar state to the audio thread.
 - **Channels** — `ChannelLayout` (`Mono`/`Stereo`/`Multi(n)`): the one answer to

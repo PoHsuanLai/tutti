@@ -80,6 +80,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A hardware MIDI input ring has one producer, by ownership**
+  (tutti-midi-hardware; design doc 013, "Hardware MIDI input ring"). Each
+  port's ring is split once: `create_input_port` returns its only
+  `InputProducerHandle`, which owns the producer half, is not `Clone`, and
+  pushes through `&mut self`; the port keeps the consumer. The `unsafe`
+  `SpscRing` is deleted. A disconnect retires its port, and a new port takes
+  the lowest free index, so the port set no longer grows with every hot-plug
+  cycle. **Breaking:**
+
+  | Was | Now |
+  |---|---|
+  | `HardwareMidiInputs::create_input_port(name) -> usize` | `-> InputProducerHandle`; the index is `handle.port_index()` |
+  | `HardwareMidiInputs::get_input_producer_handle(index)` | removed: keep the handle `create_input_port` returned. There is no second handle to a ring |
+  | `HardwareMidiInputs::push_input_event(index, event)` | removed: `handle.push(event, Instant::now())` |
+  | `InputProducerHandle: Clone`, `push(&self, ..)` | not `Clone`, `push(&mut self, ..)`: a driver callback owns its handle (`move` it into an `FnMut`, or the pump thread) |
+  | ports were only appended; a `PortInfo::index` was never reused | `HardwareMidiInputs::remove_input_port(index)`; a removed index is reused by the next port. `MidiSession` retires a port on disconnect, on a failed open, and when the session drops |
+  | `tutti_midi_hardware::crossbeam_channel` | removed (and the dependency): depend on `crossbeam-channel` directly |
+  | `tutti_types::RtEventBuf` / `tutti_core::RtEventBuf` | removed (its one user was this crate): `AudioThreadCell<RtVec<T, N>>` |
+  | `ClockNode` dropped events past `CLOCK_EVENT_CAPACITY` in a block silently | it still drops them, and counts them: `ClockMaster::dropped_events()` |
+
+  `tutti-midi-runtime` no longer depends on `parking_lot` or `dashmap`
+  (nothing used them).
+
 - **`smallvec` is gone from the workspace** (design doc 013, "SmallVec
   removed"). A type whose inline storage bought nothing is a `Vec` (or a
   boxed slice); a type whose inline storage was a hard cap is an
@@ -1113,6 +1136,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     CoreMIDI type. It now takes an erased sink, so every backend gets it.
 
 ### Fixed
+
+- **A MIDI input driver can no longer push into a freed ring**
+  (tutti-midi-hardware). The producer handle was a raw pointer into a ring
+  the port manager owned, so an ALSA pump thread still running while a
+  session dropped (the manager before the connections) could write through
+  a dangling pointer, and two handles to one port were two producers. The
+  handle now owns its half of the ring; the session closes its inputs before
+  the rest of its state, in a stated order.
 
 - **The sampler no longer frees a decoded wave on the audio thread**
   (tutti-sampler). A pool's `VoiceCommand::ReplaceWave` drain dropped the

@@ -222,9 +222,9 @@ the interpreter.
   `ArcSwap` reads remained after #15, each able to free on the audio thread
   (a store settles a held guard's debt into a strong count, and the guard's
   drop is then the last owner). The hardware MIDI port set
-  (`HardwareMidiInputs`) is an `RtPublish<Vec<_>>` whose read, append and
-  publish run under one publisher lock, which also fixes two concurrent
-  creators losing a port. The plugin nodes' meter slot (`PluginMeter`) is an
+  (`HardwareMidiInputs`) is an `RtPublish<Vec<_>>` whose read, change and
+  publish (a port created or removed) run under one publisher lock, which
+  also fixes two concurrent creators losing a port. The plugin nodes' meter slot (`PluginMeter`) is an
   `RtPublish<Option<Arc<RtPublish<MeterMap>>>>`: the node borrows the
   installed cell, so an install or clear mid-block retires it for the control
   side, whether or not the host kept a clone. Its read is nested, one slot in
@@ -318,7 +318,7 @@ the race. Every type below exists because the audit found the bug it prevents.
 
 - `AudioThreadCell`, `RtEventBuf`'s `&self` interior mutability and
   `reset_owner`. All three exist so `Arc`-shared state survives
-  clone-on-commit. Units owned once by the audio thread only need `&mut self`.
+  clone-on-commit. (`RtEventBuf` is deleted: see "Hardware MIDI input ring".) Units owned once by the audio thread only need `&mut self`.
 - `Param<U>` as a way to survive the clone. `Param<U>` stays, as the control
   value handed out through `Controls`; the hand-written sharing `Clone` impls
   go.
@@ -3575,6 +3575,45 @@ thread: at the parameter cap and a large block it is tens of megabytes, and
 most plugins map nothing. The VST3
 event list's text arena reserves its room once and refuses (and counts) a
 text past it, since the plugin holds pointers into it for the block.
+
+#### Hardware MIDI input ring
+
+**Status: landed** (2026-10-15). From the collections audit of `9f397d3d`.
+`tutti-midi-hardware`'s input ring was an `unsafe` `SpscRing` holding both
+`ringbuf` halves in `UnsafeCell`s, with a cloneable `Send + Sync` raw-pointer
+producer: safe calls (`get_input_producer_handle`, `push_input_event`) made a
+second producer for one ring, and a session dropped its port manager before
+its connections, so an ALSA pump thread being joined could push through a
+dangling pointer. And a disconnect never retired its port: each hot-plug cycle
+added a 2048-slot ring the audio thread kept draining.
+
+- **One producer, by ownership.** A port's `HeapRb` is split once.
+  `create_input_port` returns the only `InputProducerHandle`, which owns the
+  producer half, is not `Clone` and pushes through `&mut self`; the port keeps
+  the consumer in an `AudioThreadCell`, the drain being its one reader. Both
+  halves hold the ring by `Arc`, so a handle that outlives its port (or the
+  manager) pushes into memory it owns. The file of `unsafe` is deleted; the
+  crate's port module has none.
+- **Ports are retired.** `remove_input_port` takes a port out of the
+  published set; the next port takes the lowest free index, and trailing free
+  slots are trimmed. The set the drain borrows is retired, so the port and its
+  ring are freed on the control side. `MidiSession` closes a connection and
+  then retires its port, on disconnect, on a failed open, and in its own
+  `Drop` (inputs first, then the output, the manager and the backend, in a
+  stated order).
+- **One scratch.** The drain converts each event's arrival to a
+  `frame_offset` as it leaves its ring, into one `AudioThreadCell<RtVec<..>>`;
+  the second (timestamp) buffer is gone, and with it `RtEventBuf`, whose only
+  user this was. Its no-alloc gate is ported to `RtVec` behind a cell.
+- **Counted, not silent.** `ClockNode`'s per-block events are an
+  `RtVec<MidiEvent, CLOCK_EVENT_CAPACITY>`; what a block produces past it is
+  counted on `ClockMaster::dropped_events`.
+- `tutti_midi_hardware::crossbeam_channel` and the dependency are gone, as
+  are `tutti-midi-runtime`'s unused `parking_lot` and `dashmap`.
+
+Gates: `unplug_during_a_drain_frees_nothing_on_the_audio_thread` beside the
+plug-in one (an owning snapshot of the port set aborts both), and the session's
+`hot_plug_cycles_keep_the_port_set_bounded`.
 
 ## Per-node rewrite plan
 

@@ -13,8 +13,9 @@ Events reach the wire as UMP words, not MIDI 1.0 bytes, so MIDI-2-only messages
 [`MidiSession`] is the whole OS edge. Inbound events never pass *through* it:
 each opened input gets its own lock-free ring in [`HardwareMidiInputs`], which
 the audio thread drains through [`MidiIn::poll_block`] (usually from a
-[`MidiInputNode`] in the graph); the session only owns the connection, and
-dropping it closes the port.
+[`MidiInputNode`] in the graph); the session only owns the connection.
+Disconnecting closes the port and retires its ring, so hot-plug cycles do not
+accumulate rings.
 
 ```rust,no_run
 use std::sync::Arc;

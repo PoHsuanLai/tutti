@@ -181,10 +181,7 @@ mod midi_hardware_frame_offset {
         if let Some(rate) = sample_rate {
             inputs.set_sample_rate(rate);
         }
-        let port = inputs.create_input_port("test in");
-        let handle = inputs
-            .get_input_producer_handle(port)
-            .expect("the port we just created has a producer");
+        let mut handle = inputs.create_input_port("test in");
 
         let block_start = Instant::now();
         assert!(

@@ -79,8 +79,6 @@ pub use tutti_midi_runtime::{
     TimedMidiEvent,
 };
 
-pub use crossbeam_channel;
-
 // --- Standard MIDI File codec: NOT here ---
 //
 // The file codecs live in `tutti-midi-file` and are deliberately *not*

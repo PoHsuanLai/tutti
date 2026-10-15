@@ -24,7 +24,7 @@ use crate::handle::Vst2Handle;
 use crate::host::{HostLink, HostState, MIDI_OUT_QUEUE_CAPACITY, PARAM_QUEUE_CAPACITY};
 use crate::midi::MidiIo;
 use crate::parameters::SendParams;
-use crate::transport_cell::TransportCell;
+use crate::transport_cell::TransportWriter;
 use crate::types::{ChannelLayout, PluginInfo, PluginTail, Samples, Vst2Category};
 
 /// Maps the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
@@ -201,7 +201,7 @@ impl Vst2Instance {
         // sender/receiver pair.
         let param_q = Arc::new(crossbeam_queue::ArrayQueue::new(PARAM_QUEUE_CAPACITY));
         let midi_out_q = Arc::new(crossbeam_queue::ArrayQueue::new(MIDI_OUT_QUEUE_CAPACITY));
-        let time_info = Arc::new(TransportCell::new());
+        let time_info = TransportWriter::new();
         // A bare `Arc`, not `Arc<Mutex<_>>`: the plugin calls
         // `audioMasterGetTime` from inside `processReplacing` on the audio
         // thread and `audioMasterSizeWindow` / `audioMasterUpdateDisplay` from
@@ -211,7 +211,7 @@ impl Vst2Instance {
         let host = Arc::new(HostState::new(
             Arc::clone(&param_q),
             Arc::clone(&midi_out_q),
-            Arc::clone(&time_info),
+            time_info.reader(),
             block_size,
             sample_rate,
         ));

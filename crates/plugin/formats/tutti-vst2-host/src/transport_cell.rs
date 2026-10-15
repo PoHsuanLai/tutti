@@ -1,5 +1,5 @@
 //! The transport snapshot the plugin reads back via `audioMasterGetTime`: a
-//! [`SeqCell`] holding a `TimeInfo`'s fields as words. `TimeInfo` is 88 bytes
+//! sequence cell ([`SeqWriter`] / [`SeqReader`]) holding a `TimeInfo`'s fields as words. `TimeInfo` is 88 bytes
 //! of `Copy` POD and readers take it by value, so the cell is overwritten in
 //! place: wait-free reads, allocation-free writes.
 //!
@@ -8,15 +8,16 @@
 //! the callback, which the audio thread must never do.
 //! `RtPublish` is control-thread→audio-thread and also takes ownership of a
 //! fresh value, so it does not fit either. The sequence lock is
-//! `tutti-types`' [`SeqCell`], with its loom model there; this file only
+//! `tutti-types`' [`SeqWriter`] / [`SeqReader`], with its loom model there; this file only
 //! packs and unpacks, and holds no `unsafe`.
 //!
 //! Re-entrancy is the governing constraint: the plugin calls `audioMasterGetTime`
 //! from inside `processReplacing`, on the same thread that just wrote, and a
 //! seqlock reader cannot make progress against a write in flight on its own
 //! thread. [`Vst2Instance::process_f32`] runs `update_transport` to completion
-//! before entering the plugin, so the sequence is already even by then;
-//! [`SeqCell::write`]'s debug assert pins that writes never overlap. A reader on
+//! before entering the plugin, so the sequence is already even by then. Writes
+//! never overlap by construction: the one [`TransportWriter`] lives in the
+//! instance and writes through `&mut self`. A reader on
 //! another thread is the genuinely concurrent case, which is why the read gives
 //! up after a bounded number of retries
 //! ([`SEQ_CELL_READ_RETRIES`](tutti_types::SEQ_CELL_READ_RETRIES)) rather
@@ -26,32 +27,49 @@
 //!
 //! [`Vst2Instance::process_f32`]: crate::Vst2Instance::process_f32
 
-use tutti_types::SeqCell;
+use tutti_types::{SeqReader, SeqWriter};
 use vst::api::{SmpteFrameRate, TimeInfo};
 
 /// `TimeInfo` as words: its eight `f64`s, then its six `i32`s two to a word.
 const WORDS: usize = 11;
 
-/// A lock-free, allocation-free cell holding the latest transport snapshot.
-///
-/// One writer (the instance's `update_transport`, under whatever serialises
-/// `process_f32`: the single-threaded subprocess server, the in-process
-/// backend's `Mutex`); any number of readers (the plugin's
-/// `audioMasterGetTime`, from any thread).
-pub(crate) struct TransportCell(SeqCell<WORDS>);
+/// The one writer of the transport snapshot: the instance's
+/// `update_transport`, on the audio thread, once per block. Not `Clone`, and
+/// [`write`](Self::write) takes `&mut self`, so `process_f32`'s own `&mut`
+/// is what keeps writes from overlapping.
+pub(crate) struct TransportWriter(SeqWriter<WORDS>);
 
-impl TransportCell {
+impl TransportWriter {
     /// A cell holding no transport information yet.
     pub(crate) fn new() -> Self {
-        Self(SeqCell::new())
+        Self(SeqWriter::new())
+    }
+
+    /// A read side, for the plugin's `audioMasterGetTime`.
+    pub(crate) fn reader(&self) -> TransportReader {
+        TransportReader(self.0.reader())
     }
 
     /// Publishes a new snapshot, overwriting in place: nothing is allocated or
-    /// freed. Single-writer only; see the type docs.
-    pub(crate) fn write(&self, next: TimeInfo) {
+    /// freed.
+    pub(crate) fn write(&mut self, next: TimeInfo) {
         self.0.write(pack(&next));
     }
 
+    /// The snapshot the last [`write`](Self::write) published, or `None`
+    /// before the first: the writer's own copy, so it never retries and never
+    /// gives up, which a [`TransportReader::read`] may.
+    pub(crate) fn last(&self) -> Option<TimeInfo> {
+        self.0.last().map(|w| unpack(&w))
+    }
+}
+
+/// A read side of the transport snapshot: the plugin's `audioMasterGetTime`,
+/// from any thread.
+#[derive(Clone)]
+pub(crate) struct TransportReader(SeqReader<WORDS>);
+
+impl TransportReader {
     /// The current snapshot, or `None` if none has been published yet or the
     /// value could not be read cleanly within the cell's retries.
     ///
@@ -59,12 +77,6 @@ impl TransportCell {
     /// the audio thread inside the plugin's `process`.
     pub(crate) fn read(&self) -> Option<TimeInfo> {
         self.0.read().map(|w| unpack(&w))
-    }
-}
-
-impl Default for TransportCell {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -178,9 +190,14 @@ mod tests {
             samples_to_next_clock: 11,
             flags: -12,
         };
-        let cell = TransportCell::new();
-        cell.write(info);
-        let got = cell.read().expect("written");
+        let mut writer = TransportWriter::new();
+        writer.write(info);
+        let got = writer.reader().read().expect("written");
+        assert_eq!(
+            writer.last().map(|l| l.flags),
+            Some(-12),
+            "the writer's own copy is the same snapshot"
+        );
         assert_eq!(
             [
                 got.sample_pos,
@@ -209,24 +226,29 @@ mod tests {
 
     #[test]
     fn reads_none_before_any_write() {
-        assert!(TransportCell::new().read().is_none());
+        let writer = TransportWriter::new();
+        assert!(writer.reader().read().is_none());
+        assert!(writer.last().is_none());
     }
 
     #[test]
     fn read_returns_last_written_snapshot() {
-        let cell = TransportCell::new();
-        cell.write(info_with(128.0));
+        let mut writer = TransportWriter::new();
+        let cell = writer.reader();
+        writer.write(info_with(128.0));
         assert_eq!(cell.read().unwrap().sample_pos, 128.0);
-        cell.write(info_with(256.0));
+        writer.write(info_with(256.0));
         assert_eq!(cell.read().unwrap().sample_pos, 256.0);
+        assert_eq!(writer.last().unwrap().sample_pos, 256.0);
     }
 
     /// The re-entrant shape: a read from inside `process`, after the write
     /// completed on the same thread. Must return the fresh value, not spin.
     #[test]
     fn reentrant_same_thread_read_sees_completed_write() {
-        let cell = TransportCell::new();
-        cell.write(info_with(64.0));
+        let mut writer = TransportWriter::new();
+        let cell = writer.reader();
+        writer.write(info_with(64.0));
         // Nested reads, mimicking a plugin querying more than once per block.
         let outer = cell.read().unwrap();
         let inner = cell.read().unwrap();
@@ -243,11 +265,11 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
-        let cell = Arc::new(TransportCell::new());
+        let mut writer = TransportWriter::new();
         let stop = Arc::new(AtomicBool::new(false));
 
         let reader = {
-            let cell = Arc::clone(&cell);
+            let cell = writer.reader();
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
                 let mut torn = 0usize;
@@ -266,7 +288,7 @@ mod tests {
 
         for i in 0..200_000u32 {
             let v = f64::from(i);
-            cell.write(vst::api::TimeInfo {
+            writer.write(vst::api::TimeInfo {
                 sample_pos: v,
                 ppq_pos: v,
                 tempo: v,

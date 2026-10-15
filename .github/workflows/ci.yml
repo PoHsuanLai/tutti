@@ -551,7 +551,7 @@ jobs:
       # `RangeCell`'s one property (no torn `(min, max)`), against the
       # shipped code: one model, seconds.
       - run: cargo test -p tutti-types --release --test range_cell_loom
-      # `SeqCell`'s one property (no copy mixing two writes), against the
+      # `SeqWriter`/`SeqReader`'s one property (no copy mixing two writes), against the
       # shipped code: one model, unbounded, about two seconds.
       - run: cargo test -p tutti-types --release --test seq_cell_loom
       - run: cargo test -p tutti-shm-model --release

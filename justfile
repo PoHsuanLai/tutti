@@ -126,7 +126,7 @@ miri:
     MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test -p tutti-types --lib rt::publish
 
 # The loom models: `RtPublish`'s reclamation protocol, `PosRing`'s no-tear
-# protocol, `RangeCell`'s untorn pair and `SeqCell`'s unmixed copy (against the
+# protocol, `RangeCell`'s untorn pair and the sequence cell's unmixed copy (against the
 # shipped code) and the plugin shm header protocol (a replica). `--cfg loom` is
 # global, so each runs on its own target. This is what CI runs: the `RtPublish` models at a
 # preemption bound of 4, about a minute and a half, and the `PosRing` models at

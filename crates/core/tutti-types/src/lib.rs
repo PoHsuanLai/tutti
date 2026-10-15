@@ -39,8 +39,8 @@ pub use rt::{
     AudioThread, AudioThreadCell, AudioThreadGuard, BorrowGuard, BorrowRef, ClaimConflict,
     ClaimTable, Claimed, ClaimedRun, Held, JobGate, Participant, PosClaim, PosFrame, PosReader,
     PosRing, PosWriter, RangeCell, RingWindow, RtPublish, RtRef, RtScratch, RtScratchOverflow,
-    RtVec, RwView, ScopedNoDenormals, SeqCell, SplitMut, SplitRw, TaskGraph, MAX_POS_RING_FRAMES,
-    SEQ_CELL_READ_RETRIES,
+    RtVec, RwView, ScopedNoDenormals, SeqReader, SeqWriter, SplitMut, SplitRw, TaskGraph,
+    MAX_POS_RING_FRAMES, SEQ_CELL_READ_RETRIES,
 };
 
 // The cell a `Param` shares (`Param::as_atomic`), named here so a crate that

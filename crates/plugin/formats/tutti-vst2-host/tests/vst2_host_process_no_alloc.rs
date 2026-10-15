@@ -4,7 +4,7 @@
 //!
 //! 1. `update_transport` publishes the per-block transport snapshot without an
 //!    allocation *or* a free inside the callback (`src/transport_cell.rs`,
-//!    over `tutti-types`' `SeqCell`).
+//!    over `tutti-types`' `SeqWriter`).
 //! 2. `set_sample_rate` / `set_block_size` bracket the change with an
 //!    edge-triggered suspend/resume that tracks suspend state.
 //!
@@ -13,7 +13,7 @@
 //! race no sampling schedule exhausts. What stands in for it is structural —
 //! the value is overwritten in place, so nothing is retired for a reader to
 //! free. The concurrent-reader torture test lives in `transport_cell.rs`,
-//! where it can see the private internals, and the proof is `SeqCell`'s loom
+//! where it can see the private internals, and the proof is the sequence cell's loom
 //! model (`tutti-types/tests/seq_cell_loom.rs`).
 
 use std::path::PathBuf;

@@ -3603,25 +3603,41 @@ text past it, since the plugin holds pointers into it for the block.
   plain newtype over `HeapCons` that pops through `&mut self`, as
   `TapCons` is, built with `MicRing::new` (`share_mic_ring` is gone).
 - **The VST2 transport seqlock** (`TransportCell`, an `UnsafeCell` with
-  `unsafe impl Sync` and no loom model) is now `tutti_types::SeqCell<W>`:
-  `W` atomic words, so a read racing a write copies stale words rather than
-  racing on memory, with no `unsafe` anywhere, and a loom model
-  (`tests/seq_cell_loom.rs`) that runs the shipped code with a mutation
-  record. `TransportCell` only packs a `TimeInfo` into eleven words.
-  `RtPublish` does not fit: its writer is the control thread and it
-  allocates per publish, while this writer is the audio thread.
+  `unsafe impl Sync` and no loom model) is now `tutti_types::SeqWriter<W>`
+  and `SeqReader<W>`: `W` atomic words, so a read racing a write copies
+  stale words rather than racing on memory, with no `unsafe` anywhere, and a
+  loom model (`tests/seq_cell_loom.rs`) that runs the shipped code with a
+  mutation record. The single writer is structural: `SeqWriter` is not
+  `Clone` and writes through `&mut self` (two writers could take the
+  sequence 1, 2, 3, 2 and a reader would accept words of two writes; a
+  `compile_fail` doctest pins each). The VST2 host keeps the
+  `TransportWriter` in the instance, written by `update_transport(&mut
+  self)`, which takes the previous snapshot from the writer's own copy, and
+  a `TransportReader` in `HostState` for `audioMasterGetTime`; they only
+  pack a `TimeInfo` into eleven words. `RtPublish` does not fit: its writer
+  is the control thread and it allocates per publish, while this writer is
+  the audio thread.
 - **Unused dependencies:** `ringbuf` in tutti-plugin, `crossbeam-channel`
   and `parking_lot` in tutti-plugin-server.
 
 The audit's sixth finding, that CLAUDE.md still said the plugin meter cells
 and `Midi::out` stay on `ArcSwapOption`, was already fixed by #94 on `main`.
 
-A loom note for the next model: with a *spawned* thread whose first access
-is a load, loom 0.7 explored one interleaving (the main thread's load ran
-first and was never re-ordered after the spawned thread's store), so every
-mutation passed. `SeqCell`'s model puts the writer on the main thread and
-the reader on a spawned one, which explores tens of thousands; an
-iteration counter is how to tell.
+A loom note for the next model: loom 0.7 keeps one `last_access` per
+atomic, so when a thread loads an atomic and then stores to it (or RMWs
+it), its own load becomes the last access and another thread's earlier
+load of that atomic drops out of the race check; loom never schedules the
+other order. A spawned thread doing `load` then `store`, against a main
+thread doing one `load`, runs in one execution; with the roles swapped,
+six; a spawned thread that only loads, against a main thread that stores,
+explores fully. The first version of the writer loaded the sequence before
+storing it, and as the spawned thread it hid the reader's loads, so every
+mutation passed. The model puts the writer on main for that reason, not as
+a rule about writers: whichever thread loads then stores goes on main, or
+the model counts its executions. The same limit under-explores `job_gate`
+(17% fewer executions), `rt_publish`'s `two_publishers_and_a_reader`
+(15.6%) and several `pos_ring` models (4 to 24%); mutation sweeps there
+found no hidden bug, and the fix is a separate follow-up.
 
 #### Sampler real-time fixes
 

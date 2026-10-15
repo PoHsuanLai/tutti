@@ -9,14 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`tutti_types::SeqCell<W>`**, a sequence lock over `W` atomic words: one
-  writer overwrites them in place, any thread copies them whole, neither
-  side allocates or locks, and a read never mixes two writes (loom model
-  `tests/seq_cell_loom.rs`). For a value the audio thread writes each block;
-  the in-process and out-of-process VST2 transport snapshot is its first
-  user, replacing a hand-rolled `unsafe` seqlock in `tutti-vst2-host`.
-  `SEQ_CELL_READ_RETRIES` is how many overlapped copies a read retries
-  before it returns `None`.
+- **`tutti_types::{SeqWriter<W>, SeqReader<W>}`**, a sequence lock over
+  `W` atomic words: the one writer overwrites them in place, any thread
+  copies them whole, neither side allocates or locks, and a read never mixes
+  two writes (loom model `tests/seq_cell_loom.rs`). The writer is not
+  `Clone` and writes through `&mut self`, so a second writer cannot exist
+  (two writers would let a reader accept words of two writes);
+  `SeqWriter::reader` hands out `Clone` read sides, and `SeqWriter::last` is
+  the writer's own copy of its last write. For a value the audio thread
+  writes each block; the in-process and out-of-process VST2 transport
+  snapshot is its first user, replacing a hand-rolled `unsafe` seqlock in
+  `tutti-vst2-host`. `SEQ_CELL_READ_RETRIES` is how many overlapped copies a
+  read retries before it returns `None`.
 
 - **A cost model and coarsening for the parallel executor** (design doc
   013, "Phase 6, part (b)"). The compiler prices every op from what its

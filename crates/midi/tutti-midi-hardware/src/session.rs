@@ -34,7 +34,7 @@ use crate::backend;
 use crate::capability::{EndpointId, EndpointInfo};
 use crate::endpoints::{InputConnection, MidiEndpoints};
 use crate::error::{Error, Result};
-use crate::HardwareMidiInputs;
+use crate::{HardwareMidiInputs, PortId};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiOut;
 
@@ -55,11 +55,13 @@ pub struct MidiSession {
 /// (each connection, then its port), and only then do the fields drop, in
 /// declaration order: what is left open (the output), then the ring manager
 /// handle, then the backend whose client every connection was opened on.
-/// Closing a connection stops its driver thread or callback, which drops the
-/// producer handle it held, so by the time a port is retired nothing pushes
-/// into it. That order is about not losing events and not leaving ports
-/// behind; it is not what keeps the rings sound, since each handle owns its
-/// half of the ring and cannot outlive the memory it pushes into.
+/// Closing a connection stops its driver: the ALSA backend joins its pump
+/// thread, which drops the producer handle before the port is retired. On
+/// macOS the handle lives in the input callback, which CoreMIDI retains and
+/// may release (and so drop the handle) after the port is disposed; a push
+/// in that window lands in a ring nobody drains, which is harmless. The order
+/// is about not leaving ports behind, not about soundness: each handle owns
+/// its half of the ring and cannot outlive the memory it pushes into.
 struct Inner {
     open: Mutex<Open>,
     /// Ring manager the backend pushes inbound events into. Held so
@@ -96,7 +98,7 @@ struct OpenInput {
     /// held rather than discarded.
     connection: Box<dyn InputConnection>,
     /// The manager port this connection's producer handle feeds.
-    port: usize,
+    port: PortId,
     /// So a caller can report what is connected without re-enumerating (which
     /// would miss a device that has since gone).
     name: String,
@@ -105,11 +107,12 @@ struct OpenInput {
 impl OpenInput {
     /// Closes the connection, then retires its port.
     ///
-    /// In that order: dropping the connection stops the driver's thread or
-    /// callback and with it the producer handle, so the port is retired with
-    /// nothing still pushing into it. The port's index is then free for the
-    /// next connection, which is what keeps a hot-plug cycle from growing the
-    /// port set by one ring each time.
+    /// In that order: dropping the connection stops the driver (on ALSA it
+    /// joins the pump thread, which drops the producer handle; on macOS the
+    /// handle can outlive this, and anything it pushes is discarded with the
+    /// ring). The port's slot is then free for the next connection, which is
+    /// what keeps a hot-plug cycle from growing the port set by one ring each
+    /// time.
     fn close(self, ports: &HardwareMidiInputs) {
         drop(self.connection);
         ports.remove_input_port(self.port);
@@ -216,7 +219,7 @@ impl MidiSession {
 
         // One ring per connection, and its only producer goes to the backend.
         let producer = self.inner.ports.create_input_port(info.name.as_str());
-        let port = producer.port_index();
+        let port = producer.port_id();
         let connection = match self.inner.backend.open_input(id, producer) {
             Ok(connection) => connection,
             Err(e) => {

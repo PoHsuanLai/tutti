@@ -290,7 +290,7 @@ fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
     let mut warm = inputs.create_input_port("Warm");
     feed(&mut warm, 4);
     inputs.cycle_start_read_all_inputs(512, |_, _| {});
-    assert!(inputs.remove_input_port(warm.port_index()));
+    assert!(inputs.remove_input_port(warm.port_id()));
     drop(warm);
 
     const BLOCKS: usize = 32;
@@ -298,7 +298,7 @@ fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
     for block in 0..BLOCKS {
         let mut device = inputs.create_input_port(format!("Device {block}"));
         feed(&mut device, 4);
-        let index = device.port_index();
+        let id = device.port_id();
         // The connection closed: the published set now owns the ring alone.
         drop(device);
 
@@ -308,7 +308,7 @@ fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
                 if !unplugged {
                     unplugged = true;
                     assert_no_alloc::permit_alloc(|| {
-                        assert!(inputs.remove_input_port(index), "the port was there");
+                        assert!(inputs.remove_input_port(id), "the port was there");
                     });
                 }
             });

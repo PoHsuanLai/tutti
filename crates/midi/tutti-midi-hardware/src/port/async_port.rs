@@ -31,6 +31,8 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_core::AudioThreadCell;
 use tutti_midi_types::ump::MidiEvent;
 
+use super::PortId;
+
 /// The producer end of one port's input ring (timestamped events).
 ///
 /// Owns the ring's only producer half. It is `Send`, so it moves to the thread
@@ -55,13 +57,13 @@ use tutti_midi_types::ump::MidiEvent;
 /// [`create_input_port`](super::HardwareMidiInputs::create_input_port).
 pub struct InputProducerHandle {
     producer: HeapProd<(Instant, MidiEvent)>,
-    port_index: usize,
+    port: PortId,
 }
 
 impl core::fmt::Debug for InputProducerHandle {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("InputProducerHandle")
-            .field("port_index", &self.port_index)
+            .field("port", &self.port)
             .finish_non_exhaustive()
     }
 }
@@ -78,12 +80,12 @@ impl InputProducerHandle {
         self.producer.try_push((timestamp, event)).is_ok()
     }
 
-    /// The index of the port this handle feeds, as
-    /// [`HardwareMidiInputs`](super::HardwareMidiInputs) numbers it: the key
-    /// to pass to `set_port_active` or `remove_input_port`.
+    /// The identity of the port this handle feeds: the key to pass to
+    /// [`HardwareMidiInputs`](super::HardwareMidiInputs)' `set_port_active` or
+    /// `remove_input_port`, and the tag the drain puts on its events.
     #[must_use]
-    pub fn port_index(&self) -> usize {
-        self.port_index
+    pub fn port_id(&self) -> PortId {
+        self.port
     }
 }
 
@@ -96,6 +98,7 @@ impl InputProducerHandle {
 /// here: outbound MIDI rides the mailbox to a
 /// [`MidiOut`](tutti_midi_types::MidiOut) sink instead.
 pub(crate) struct HardwareMidiInput {
+    id: PortId,
     name: String,
     active: std::sync::atomic::AtomicBool,
     /// Reached only by the audio thread's drain, one borrow at a time.
@@ -104,24 +107,26 @@ pub(crate) struct HardwareMidiInput {
 
 impl HardwareMidiInput {
     /// A port named `name` whose ring holds `fifo_size` events, and the one
-    /// producer handle for it, numbered `port_index`.
+    /// producer handle for it, both named `port`.
     pub(crate) fn new(
         name: impl Into<String>,
         fifo_size: usize,
-        port_index: usize,
+        port: PortId,
     ) -> (Self, InputProducerHandle) {
         let (producer, consumer) = HeapRb::new(fifo_size).split();
         (
             Self {
+                id: port,
                 name: name.into(),
                 active: std::sync::atomic::AtomicBool::new(true),
                 input: AudioThreadCell::new(consumer),
             },
-            InputProducerHandle {
-                producer,
-                port_index,
-            },
+            InputProducerHandle { producer, port },
         )
+    }
+
+    pub(crate) fn id(&self) -> PortId {
+        self.id
     }
 
     pub(crate) fn name(&self) -> &str {
@@ -199,7 +204,7 @@ mod tests {
 
     #[test]
     fn drain_stops_at_limit_and_keeps_the_rest() {
-        let (port, mut handle) = HardwareMidiInput::new("Limited", 16, 0);
+        let (port, mut handle) = HardwareMidiInput::new("Limited", 16, PortId::TEST);
         for i in 0..8 {
             assert!(handle.push(note_on(0x3C, 0x7F).with_frame_offset(i), Instant::now()));
         }
@@ -216,7 +221,7 @@ mod tests {
 
     #[test]
     fn drain_of_zero_takes_nothing() {
-        let (port, mut handle) = HardwareMidiInput::new("Zero", 16, 0);
+        let (port, mut handle) = HardwareMidiInput::new("Zero", 16, PortId::TEST);
         assert!(handle.push(note_on(0x3C, 0x7F), Instant::now()));
 
         let mut buf = Vec::new();
@@ -227,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_input_flow() {
-        let (port, mut producer_handle) = HardwareMidiInput::new("Input", 256, 0);
+        let (port, mut producer_handle) = HardwareMidiInput::new("Input", 256, PortId::TEST);
 
         let event = note_on(0x3C, 0x7F);
         assert!(producer_handle.push(event, Instant::now()));
@@ -241,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_fifo_full() {
-        let (_port, mut input_handle) = HardwareMidiInput::new("Full", 4, 0);
+        let (_port, mut input_handle) = HardwareMidiInput::new("Full", 4, PortId::TEST);
 
         for i in 0..4 {
             let event = note_on(0x3C, 0x7F).with_frame_offset(i);
@@ -261,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_active_flag_toggle() {
-        let (port, _handle) = HardwareMidiInput::new("ActiveTest", 256, 0);
+        let (port, _handle) = HardwareMidiInput::new("ActiveTest", 256, PortId::TEST);
         assert!(port.is_active());
 
         port.set_active(false);
@@ -282,7 +287,7 @@ mod tests {
     #[test]
     fn a_driver_thread_and_the_drain_run_concurrently() {
         const EVENTS: u32 = 200;
-        let (port, mut handle) = HardwareMidiInput::new("Concurrent", 8, 0);
+        let (port, mut handle) = HardwareMidiInput::new("Concurrent", 8, PortId::TEST);
         let driver = std::thread::spawn(move || {
             for i in 0..EVENTS {
                 let event = MidiEvent::noop().with_frame_offset(i);

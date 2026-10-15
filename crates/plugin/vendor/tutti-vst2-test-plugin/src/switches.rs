@@ -63,6 +63,9 @@ static LAST_BYPASS: AtomicI32 = AtomicI32::new(-1);
 /// chunk makes only what comes later (a second instance restored from the
 /// first's state) refuse.
 static REFUSE_CHUNK_LOAD: AtomicBool = AtomicBool::new(false);
+/// How many `audioMasterAutomate` reports each `process` call sends. Zero
+/// (the default) sends none.
+static AUTOMATE_BURST: AtomicU32 = AtomicU32::new(0);
 
 /// Ordered log of preset-related opcodes the probe received, one bit-packed
 /// entry per call. Records *order*, not just arrival: an `effBeginSetProgram`
@@ -288,6 +291,18 @@ pub(crate) fn refuse_chunk_load() -> bool {
     REFUSE_CHUNK_LOAD.load(Ordering::SeqCst)
 }
 
+/// Send `count` `audioMasterAutomate` reports (parameter 0) from inside each
+/// `process` call, as a plugin applying a preset from its audio thread does:
+/// a burst the host must queue without allocating, and may have to drop.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_set_automate_burst(count: u32) {
+    AUTOMATE_BURST.store(count, Ordering::SeqCst);
+}
+
+pub(crate) fn automate_burst() -> u32 {
+    AUTOMATE_BURST.load(Ordering::SeqCst)
+}
+
 /// Restore every switch to its well-behaved default.
 ///
 /// Tests share one loaded image, so a switch left set contaminates every
@@ -306,6 +321,7 @@ pub extern "C" fn tutti_vst2_probe_reset_switches() {
     ACCEPT_SOFT_BYPASS.store(false, Ordering::SeqCst);
     LAST_BYPASS.store(-1, Ordering::SeqCst);
     REFUSE_CHUNK_LOAD.store(false, Ordering::SeqCst);
+    AUTOMATE_BURST.store(0, Ordering::SeqCst);
     PRESET_TRACE.store(0, Ordering::SeqCst);
     PRESET_TRACE_LEN.store(0, Ordering::SeqCst);
 }

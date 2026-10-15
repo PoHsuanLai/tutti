@@ -39,7 +39,7 @@
 //!   answer rather than falling through to vst-rs's swallowed 0.
 
 use crate::midi::to_midi;
-use crate::transport_cell::TransportCell;
+use crate::transport_cell::{TransportReader, TransportWriter};
 use crate::types::MidiEvent;
 use crossbeam_queue::ArrayQueue;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,11 +90,12 @@ pub(crate) struct HostLink {
     /// No `Mutex`: this is reached from the plugin's audio thread on every
     /// `audioMasterGetTime`, and every field it exposes is already lock-free.
     pub(crate) state: Arc<HostState>,
-    /// Transport snapshot the host pushes and the plugin reads via
-    /// `get_time_info`. A seqlock, not an `ArcSwap`: the push happens on the
-    /// audio thread every block, and `ArcSwap::store` would allocate the new
-    /// value and free the retired one there. See [`TransportCell`].
-    pub(crate) time_info: Arc<TransportCell>,
+    /// The one writer of the transport snapshot the plugin reads via
+    /// `get_time_info` ([`HostState`] holds the read side). A seqlock, not an
+    /// `ArcSwap`: the push happens on the audio thread every block, and
+    /// `ArcSwap::store` would allocate the new value and free the retired one
+    /// there. See [`TransportWriter`].
+    pub(crate) time_info: TransportWriter,
     /// Inbox for `audioMasterAutomate` parameter changes (editor knob moves).
     ///
     /// The same queue [`HostState`] pushes into — an `ArrayQueue` is MPMC, so
@@ -123,7 +124,7 @@ pub(crate) struct HostState {
     /// a stuck note, which is audible, whereas a dropped automation point is
     /// merely a stale readout.
     dropped_midi_out: AtomicU64,
-    time_info: Arc<TransportCell>,
+    time_info: TransportReader,
     /// Maximum block size the host will render, in samples. Served back
     /// through `audioMasterGetBlockSize` for plugins that poll it rather
     /// than caching the `effSetBlockSize` setter value.
@@ -153,7 +154,7 @@ impl HostState {
     pub(crate) fn new(
         param_tx: Arc<ArrayQueue<ParameterChange>>,
         midi_out_tx: Arc<ArrayQueue<MidiEvent>>,
-        time_info: Arc<TransportCell>,
+        time_info: TransportReader,
         block_size: usize,
         default_sample_rate: f64,
     ) -> Self {
@@ -356,7 +357,7 @@ mod tests {
     use super::*;
     use vst::host::Host;
 
-    fn make_host(time_info: Arc<TransportCell>, default_sample_rate: f64) -> HostState {
+    fn make_host(time_info: TransportReader, default_sample_rate: f64) -> HostState {
         HostState::new(
             Arc::new(ArrayQueue::new(PARAM_QUEUE_CAPACITY)),
             Arc::new(ArrayQueue::new(MIDI_OUT_QUEUE_CAPACITY)),
@@ -368,8 +369,8 @@ mod tests {
 
     #[test]
     fn get_sample_rate_reflects_time_info_snapshot() {
-        let time_info = Arc::new(TransportCell::new());
-        let host = make_host(Arc::clone(&time_info), 44_100.0);
+        let mut time_info = TransportWriter::new();
+        let host = make_host(time_info.reader(), 44_100.0);
 
         // Before any snapshot: falls back to the load-time rate.
         assert_eq!(host.get_sample_rate(), 44_100.0);
@@ -387,8 +388,7 @@ mod tests {
     /// silently produce the live-quality result.
     #[test]
     fn get_process_level_follows_the_render_mode() {
-        let time_info = Arc::new(TransportCell::new());
-        let host = make_host(time_info, 48_000.0);
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
 
         host.set_offline(true);
         assert_eq!(host.get_process_level(), 4); // kVstProcessLevelOffline
@@ -405,7 +405,7 @@ mod tests {
     /// refusal must be distinguishable from a plugin that never automated.
     #[test]
     fn a_full_param_queue_drops_and_counts() {
-        let host = make_host(Arc::new(TransportCell::new()), 48_000.0);
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
 
         // Nothing dropped before anything overflows — without this the
         // assertion below would also pass on a counter stuck at "always
@@ -440,7 +440,7 @@ mod tests {
     /// must not share a tally.
     #[test]
     fn midi_out_drops_are_counted_apart_from_param_drops() {
-        let host = make_host(Arc::new(TransportCell::new()), 48_000.0);
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
         let ev = MidiEvent::note_on(
             tutti_midi_types::MidiGroup::FIRST,
             tutti_midi_types::MidiChannel::FIRST,
@@ -492,7 +492,7 @@ mod tests {
     /// `crossbeam_channel::unbounded` sender and this fails on the first push.
     #[test]
     fn both_audio_thread_callbacks_are_allocation_free() {
-        let host = make_host(Arc::new(TransportCell::new()), 48_000.0);
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
         let ev = MidiEvent::note_on(
             tutti_midi_types::MidiGroup::FIRST,
             tutti_midi_types::MidiChannel::FIRST,

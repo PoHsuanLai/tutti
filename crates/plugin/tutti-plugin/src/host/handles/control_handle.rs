@@ -492,6 +492,16 @@ impl PluginHandle {
         self.params.is_crashed()
     }
 
+    /// How many parameter-change events the plugin sent that the host lost,
+    /// over the plugin's life. Monotonic; see
+    /// [`HostParams::dropped_parameter_events`]. A dropped event costs a
+    /// stale readout, not audio, and the subprocess backend follows each drop
+    /// with an [`on_refresh`](Self::on_refresh) of
+    /// [`PluginRefresh::ParamValues`] so a host that re-reads loses nothing.
+    pub fn dropped_parameter_events(&self) -> u64 {
+        self.params.dropped_parameter_events()
+    }
+
     // ---- Editor convenience (ergonomic wrappers over the editor slot) ------
 
     /// Embeds the plugin's editor into `parent` and returns the size the editor
@@ -724,6 +734,9 @@ mod tests {
             fn set_parameter_value(&self, _id: ParamAddress, _value: Normalized) {}
             fn is_crashed(&self) -> bool {
                 false
+            }
+            fn dropped_parameter_events(&self) -> u64 {
+                0
             }
         }
         impl HostState for Inert {

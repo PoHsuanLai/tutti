@@ -7,7 +7,9 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::{MidiEvent, RenderScratch, Samples, Vst2Instance, Vst2ProcessContext};
+use tutti_vst2_host::{
+    MidiEvent, RenderScratch, Samples, TransportInfo, Vst2Instance, Vst2ProcessContext,
+};
 // From the probe's rlib, not a hand-written mirror that can drift out of
 // layout agreement with the cdylib the host loads.
 use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -174,6 +176,43 @@ fn capture_round_trips_what_the_host_sent() {
         off[0] & 0xF0 == 0x80 || (off[0] & 0xF0 == 0x90 && off[2] == 0),
         "second event should be a note-off, got {off:?}"
     );
+}
+
+/// `kVstTransportChanged` (bit 0 of `VstTimeInfo::flags`).
+const TRANSPORT_CHANGED: i32 = 1;
+
+/// The transport-changed bit is an edge *across blocks*: the snapshot the
+/// plugin read last block is what this block is compared with. The builder's
+/// own test (`time_info.rs`) hands it the predecessor by hand; this pins that
+/// `process_f32` keeps it, through the writer's own copy, from one block to
+/// the next.
+///
+/// Mutation (run): `update_transport` handing the builder `None` instead of
+/// the writer's last snapshot → the start block reports no edge → fails.
+#[test]
+fn the_transport_changed_edge_spans_blocks() {
+    let _guard = lock_probe();
+    let (mut instance, path) = load_probe();
+
+    let meta = instance.metadata().clone();
+    let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
+    let inputs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0f32; BLOCK]).collect();
+    let mut outputs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0f32; BLOCK]).collect();
+    let in_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
+    let mut out_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+
+    let stopped = TransportInfo::new();
+    let playing = TransportInfo::new().with_playing(true);
+    let mut changed = Vec::new();
+    for transport in [&stopped, &playing, &playing, &stopped] {
+        let ctx = Vst2ProcessContext::new(SAMPLE_RATE).transport(transport);
+        instance.process_f32(&in_refs, &mut out_refs, BLOCK, &ctx, &mut scratch);
+        let cap = read_capture(&path);
+        assert!(cap.time_info_present, "the plugin read no transport");
+        changed.push(cap.time_flags & TRANSPORT_CHANGED != 0);
+    }
+    // The first block has no predecessor; start, steady, stop.
+    assert_eq!(changed, [false, true, false, true]);
 }
 
 #[test]

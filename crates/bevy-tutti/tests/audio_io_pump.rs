@@ -555,7 +555,7 @@ mod io_graph_composition {
     /// play the part of the capture callback without a device.
     fn monitor_with_feed(capacity: usize) -> (MicMonitorNode, ringbuf::HeapProd<[f32; 2]>) {
         let (prod, cons) = ringbuf::HeapRb::<[f32; 2]>::new(capacity).split();
-        let ring: MicRing = tutti_io::share_mic_ring(cons);
+        let ring = MicRing::new(cons);
         (MicMonitorNode::new(ring), prod)
     }
 

@@ -1,7 +1,7 @@
 //! Build a `vst::api::TimeInfo` snapshot from [`TransportInfo`].
 //!
 //! The snapshot is stored into the host-state `time_info` seqlock
-//! ([`TransportCell`](crate::transport_cell::TransportCell)) before each
+//! ([`TransportWriter`](crate::transport_cell::TransportWriter)) before each
 //! process call and served back to the plugin via the
 //! `audioMasterGetTime` callback in [`crate::host::HostState`].
 //!

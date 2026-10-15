@@ -338,6 +338,9 @@ mod tests {
         fn crash_cause(&self) -> Option<String> {
             self.cause.clone()
         }
+        fn dropped_parameter_events(&self) -> u64 {
+            0
+        }
     }
 
     impl tutti_plugin::backend::HostState for FakeBackend {

@@ -3579,6 +3579,83 @@ most plugins map nothing. The VST3
 event list's text arena reserves its room once and refuses (and counts) a
 text past it, since the plugin holds pointers into it for the block.
 
+#### One-thread queues, a double copy and the VST2 seqlock (landed)
+
+**Status: landed** (2026-10-15), from the collections and channels audit of
+`9f397d3d`.
+
+- **tutti-plugin's unsolicited events** went through an `Arc<ArrayQueue>` on
+  the bridge's `Channels`, but its one producer (`recv_reply`) and its one
+  consumer (the drain after each command) are both the bridge thread. They
+  are a buffer owned by the bridge loop now (`Unsolicited`), lent to
+  `handle` beside `Owed`; the listener still runs after each command, never
+  from inside a read, so a slow listener never delays a blocked caller's
+  reply. The old queue held 128 events of every kind and lost two per
+  overflow (the incoming one and the oldest), so a preset load's parameter
+  flood could evict a latency, tail or resync event and PDC never heard of
+  it. In the buffer those are latest-wins slots nothing evicts; only
+  parameter events queue, bounded and preallocated, and a dropped one is
+  counted (`PluginClient::dropped_parameter_events`, and on the handle
+  through a required `HostParams::dropped_parameter_events`, which the
+  in-process VST2 backend answers with its refused `audioMasterAutomate`
+  reports) and raises a `Resync(ParamValues)`, so the host re-reads. The
+  drain hands over the structural resyncs (`Reloaded`, `Io`) first, since
+  parameters reported after a rebuild address the new table, then the
+  parameter events in arrival order, latency and tail, and the refresh
+  resyncs (`ParamTitles`, `ParamValues`) last, so a re-read wins over any
+  queued value.
+- **The in-process VST2 node copied each block twice each way** (the
+  graph's buffers, a `ProcessScratch` of `Vec<Vec<f32>>`, `vst2-host`'s
+  `RenderScratch`, the plugin). The node hands `Vst2Instance::process_f32`
+  stack `ArrayVec`s of its `Io` slices now, and `ProcessScratch` is deleted:
+  one copy each way, the one the plugin's pointer tables need. The
+  `vst2-host` API did not change, and the out-of-process server is
+  untouched. A plugin wider than the tables (sixteen channels) gets its
+  first sixteen; the graph outputs past them are silenced, where they had
+  been left holding their buffers' last contents.
+- **`MicRing`** was an `Arc<AudioThreadCell<HeapCons>>` and `Clone`, though
+  nothing cloned it and its node is neither `Clone` nor forkable. It is a
+  plain newtype over `HeapCons` that pops through `&mut self`, as
+  `TapCons` is, built with `MicRing::new` (`share_mic_ring` is gone); a
+  `compile_fail` doctest pins that it cannot be cloned.
+- **The VST2 transport seqlock** (`TransportCell`, an `UnsafeCell` with
+  `unsafe impl Sync` and no loom model) is now `tutti_types::SeqWriter<W>`
+  and `SeqReader<W>`: `W` atomic words, so a read racing a write copies
+  stale words rather than racing on memory, with no `unsafe` anywhere, and a
+  loom model (`tests/seq_cell_loom.rs`) that runs the shipped code with a
+  mutation record. The single writer is structural: `SeqWriter` is not
+  `Clone` and writes through `&mut self` (two writers could take the
+  sequence 1, 2, 3, 2 and a reader would accept words of two writes; a
+  `compile_fail` doctest pins each). The VST2 host keeps the
+  `TransportWriter` in the instance, written by `update_transport(&mut
+  self)`, which takes the previous snapshot from the writer's own copy, and
+  a `TransportReader` in `HostState` for `audioMasterGetTime`; they only
+  pack a `TimeInfo` into eleven words. `RtPublish` does not fit: its writer
+  is the control thread and it allocates per publish, while this writer is
+  the audio thread.
+- **Unused dependencies:** `ringbuf` in tutti-plugin, `crossbeam-channel`
+  and `parking_lot` in tutti-plugin-server.
+
+The audit's sixth finding, that CLAUDE.md still said the plugin meter cells
+and `Midi::out` stay on `ArcSwapOption`, was already fixed by #94 on `main`.
+
+A loom note for the next model: loom 0.7 keeps one `last_access` per
+atomic, so when a thread loads an atomic and then stores to it (or RMWs
+it), its own load becomes the last access and another thread's earlier
+load of that atomic drops out of the race check; loom never schedules the
+other order. A spawned thread doing `load` then `store`, against a main
+thread doing one `load`, runs in one execution; with the roles swapped,
+six; a spawned thread that only loads, against a main thread that stores,
+explores fully. The first version of the writer loaded the sequence before
+storing it, and as the spawned thread it hid the reader's loads, so every
+mutation passed. The writer now only stores (it keeps its own sequence), so
+its placement is arbitrary; the model runs both placements, so a writer that
+loads again cannot hide behind one of them, and every recorded mutation
+fails in each. The same limit under-explores `job_gate`
+(17% fewer executions), `rt_publish`'s `two_publishers_and_a_reader`
+(15.6%) and several `pos_ring` models (4 to 24%); mutation sweeps there
+found no hidden bug, and the fix is a separate follow-up.
+
 #### Sampler real-time fixes
 
 **Status: landed** (2026-10-15). The audit's findings in `tutti-sampler`

@@ -105,6 +105,13 @@ impl HostParams for InProcessVst2Backend {
         // so a returning caller can never observe a crashed state.
         false
     }
+
+    /// The `audioMasterAutomate` reports the instance's bounded queue
+    /// refused. A blocking `lock`, like the other reads here: a count that
+    /// read `0` on contention would go backwards.
+    fn dropped_parameter_events(&self) -> u64 {
+        self.inner.lock().dropped_param_changes()
+    }
 }
 
 impl HostState for InProcessVst2Backend {

@@ -10,7 +10,7 @@
 //! a separate primitive whose `acquire`/`recycle` names document the RT
 //! contract.
 
-use super::messages::{AudioResponse, BridgeEvent, Command};
+use super::messages::{AudioResponse, Command};
 use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,13 +22,11 @@ use std::thread::Thread;
 /// which is why [`super::payload_pool::PayloadPool`] sizes itself from it.
 pub(super) const COMMAND_QUEUE_SIZE: usize = 128;
 const RESPONSE_QUEUE_SIZE: usize = 128;
-const EVENT_QUEUE_SIZE: usize = 128;
 
 #[derive(Clone)]
 pub(super) struct Channels {
     commands: Arc<ArrayQueue<Command>>,
     audio_responses: Arc<ArrayQueue<AudioResponse>>,
-    unsolicited: Arc<ArrayQueue<BridgeEvent>>,
     /// The newest block sequence the audio thread has submitted. Owned here
     /// rather than on the batcher because the *bridge* thread is what reads it,
     /// to decide whether a dequeued block is still worth sending.
@@ -61,6 +59,10 @@ pub(super) struct Channels {
     /// owed back, so a test can bound what the drain took by what was owed
     /// instead of by how many budgets a loaded machine happened to miss.
     abandoned: Arc<AtomicU64>,
+    /// How many unsolicited parameter events the bridge thread dropped
+    /// because more arrived during one command than its inbox holds, ever.
+    /// Each drop also raises a `Resync(ParamValues)`, so the host re-reads.
+    dropped_param_events: Arc<AtomicU64>,
 }
 
 impl Channels {
@@ -68,12 +70,12 @@ impl Channels {
         Self {
             commands: Arc::new(ArrayQueue::new(COMMAND_QUEUE_SIZE)),
             audio_responses: Arc::new(ArrayQueue::new(RESPONSE_QUEUE_SIZE)),
-            unsolicited: Arc::new(ArrayQueue::new(EVENT_QUEUE_SIZE)),
             newest_seq: Arc::new(AtomicU64::new(0)),
             worker: Arc::new(Mutex::new(None)),
             sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.to_bits())),
             settled: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(AtomicU64::new(0)),
+            dropped_param_events: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -141,6 +143,20 @@ impl Channels {
         self.abandoned.load(Ordering::Relaxed)
     }
 
+    /// Record `n` dropped unsolicited parameter events. Bridge thread only;
+    /// `Relaxed`: a count nothing branches on.
+    pub(super) fn note_dropped_param_events(&self, n: u64) {
+        if n > 0 {
+            self.dropped_param_events.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// How many unsolicited parameter events were dropped, over the life of
+    /// the bridge.
+    pub(super) fn dropped_param_events(&self) -> u64 {
+        self.dropped_param_events.load(Ordering::Relaxed)
+    }
+
     /// Pushes, then wakes the bridge thread. `Thread::unpark` is a non-blocking
     /// futex/semaphore post — no allocation, no waiting — so it is safe from
     /// the audio thread, and it starts the socket round-trip immediately rather
@@ -179,16 +195,5 @@ impl Channels {
 
     pub(super) fn pop_audio_response(&self) -> Option<AudioResponse> {
         self.audio_responses.pop()
-    }
-
-    /// Overflow drops the oldest event to keep the producer lock-free.
-    pub(super) fn push_unsolicited(&self, ev: BridgeEvent) {
-        if self.unsolicited.push(ev).is_err() {
-            let _ = self.unsolicited.pop();
-        }
-    }
-
-    pub(super) fn pop_unsolicited(&self) -> Option<BridgeEvent> {
-        self.unsolicited.pop()
     }
 }

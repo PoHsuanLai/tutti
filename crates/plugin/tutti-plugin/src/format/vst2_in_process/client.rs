@@ -6,8 +6,9 @@
 //! `try_lock`; on contention it falls back to silence and bumps
 //! [`InProcessVst2Client::contention_count`].
 //!
-//! All per-block scratch — channel buffers, ref-vector storage, MIDI
-//! drain — is sized in the node's `prepare`, to the graph's largest block.
+//! The plugin's render scratch is sized in the node's `prepare`, to the
+//! graph's largest block; the channel tables a block hands `vst2-host` are
+//! stack `ArrayVec`s of the graph's own buffers.
 //! A block is allocation-free in steady state (verified by the
 //! `assert_no_alloc` test in `tests/`).
 
@@ -24,27 +25,6 @@ use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContex
 use crate::host::node::transport_source::{self, SteadyTime};
 use crate::host::node::{DeliveryCounters, ParamDelivery, PluginMeter, SegmentPoints};
 use crate::protocol::{Features, MidiEventVec, ParamAddress, TransportInfo};
-
-/// Per-channel f32 staging buffers.
-///
-/// The `vst2-host` API takes `&[&[f32]]` / `&mut [&mut [f32]]`, so caller
-/// samples are staged into owned contiguous `Vec<f32>` arrays and
-/// reborrow them as slice-of-slices each call. Sized in the node's
-/// `prepare` to the graph's largest block (`frames`), never on the audio
-/// thread.
-pub(super) struct ProcessScratch {
-    pub(super) f32_in: Vec<Vec<f32>>,
-    pub(super) f32_out: Vec<Vec<f32>>,
-}
-
-impl ProcessScratch {
-    fn new(num_inputs: usize, num_outputs: usize, frames: usize) -> Self {
-        Self {
-            f32_in: (0..num_inputs).map(|_| vec![0.0; frames]).collect(),
-            f32_out: (0..num_outputs).map(|_| vec![0.0; frames]).collect(),
-        }
-    }
-}
 
 /// A VST2 plugin running inside the host process, as a graph node.
 ///
@@ -76,12 +56,11 @@ pub struct InProcessVst2Client {
     /// read against. Stored rather than passed in per block so the node's
     /// declared capability and its delivered behaviour read from one value.
     pub(super) features: Features,
-    /// Audio scratch handed to `vst::AudioBuffer::from_raw`.
+    /// Audio scratch handed to `vst::AudioBuffer::from_raw`: the one copy
+    /// each way between the graph's buffers and the plugin's.
     pub(super) scratch: RenderScratch,
-    /// f32 staging arrays (sized in `prepare`, reused).
-    pub(super) process_scratch: ProcessScratch,
-    /// The block length `scratch` and `process_scratch` are sized for: the
-    /// largest block the node was prepared for (zero before it is).
+    /// The block length `scratch` is sized for: the largest block the node
+    /// was prepared for (zero before it is).
     pub(super) frames: usize,
     pub(super) sample_rate: f64,
     /// A rate the graph handed this node that the plugin has not been told
@@ -284,14 +263,9 @@ impl InProcessVst2Client {
         );
         let mut segments = SegmentPoints::default();
         segments.prepare(params.room());
-        // Empty until the node is prepared: `prepare` sizes both to the
+        // Empty until the node is prepared: `prepare` sizes it to the
         // graph's largest block.
         let scratch = RenderScratch::new(metadata.num_inputs, metadata.num_outputs, 0);
-        let process_scratch = ProcessScratch::new(
-            metadata.num_inputs.count() as usize,
-            metadata.num_outputs.count() as usize,
-            0,
-        );
         Self {
             inner,
             metadata,
@@ -299,7 +273,6 @@ impl InProcessVst2Client {
             transport: TransportFeed::new(),
             features,
             scratch,
-            process_scratch,
             frames: 0,
             sample_rate,
             pending_sample_rate,
@@ -376,14 +349,6 @@ impl InProcessVst2Client {
         self.frames = frames;
         self.scratch =
             RenderScratch::new(self.metadata.num_inputs, self.metadata.num_outputs, frames);
-        for ch in self
-            .process_scratch
-            .f32_in
-            .iter_mut()
-            .chain(self.process_scratch.f32_out.iter_mut())
-        {
-            ch.resize(frames, 0.0);
-        }
     }
 
     /// Take `sample_rate` as the rate blocks run at, and hand it to the
@@ -432,9 +397,14 @@ pub(super) fn block_context<'a>(
         .transport(transport)
 }
 
-/// Reborrow the staging arrays as slice-of-slices and call into
-/// `vst2-host`. A free function so it can take disjoint borrows of the
-/// fields on the caller side without a self-borrow conflict.
+/// Render one block through the plugin, from `inputs` into `outputs`: the
+/// graph's own channel buffers, each `size` frames, which `vst2-host` copies
+/// into and out of its render scratch. A free function so it can take
+/// disjoint borrows of the fields on the caller side without a self-borrow
+/// conflict.
+///
+/// Returns whether the plugin ran. On `false` (the instance was locked)
+/// `outputs` is untouched: the caller writes the silence.
 pub(super) fn drive_f32(
     inner: &Arc<Mutex<Vst2Instance>>,
     contention: &AtomicU64,
@@ -443,9 +413,8 @@ pub(super) fn drive_f32(
     midi_out: &mut dyn FnMut(&[MidiEvent]),
     transport: &TransportInfo,
     scratch: &mut RenderScratch,
-    process_scratch: &mut ProcessScratch,
-    num_inputs: usize,
-    num_outputs: usize,
+    inputs: &[&[f32]],
+    outputs: &mut [&mut [f32]],
     size: usize,
     sample_rate: f64,
 ) -> bool {
@@ -457,38 +426,10 @@ pub(super) fn drive_f32(
     match inner.try_lock() {
         Some(mut instance) => {
             apply_params(&instance, params);
-            // Build slice-of-slices on the stack via scratch arrays we
-            // own — Vec<&[f32]>/Vec<&mut[f32]> would allocate, so drop
-            // into stack arrays bounded by MAX_CHANNELS. 16 covers any
-            // realistic VST2 (most are mono / stereo).
-            const MAX_CHANNELS: usize = 16;
-            debug_assert!(num_inputs <= MAX_CHANNELS, "VST2 input ch > 16");
-            debug_assert!(num_outputs <= MAX_CHANNELS, "VST2 output ch > 16");
-
-            let mut in_refs: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-            #[allow(
-                clippy::needless_range_loop,
-                reason = "`ch` indexes two parallel arrays; a zip would hide the \
-                          MAX_CHANNELS bound the debug_asserts above pin"
-            )]
-            for ch in 0..num_inputs.min(MAX_CHANNELS) {
-                in_refs[ch] = &process_scratch.f32_in[ch][..size];
-            }
-            let in_slice = &in_refs[..num_inputs.min(MAX_CHANNELS)];
-
-            // Splitting f32_out into N disjoint mutable slices via
-            // `split_first_mut` lets us hand `vst2-host` a slice-of-slices
-            // without per-call allocation.
-            run_with_mut_channels_f32(
-                &mut process_scratch.f32_out[..num_outputs.min(MAX_CHANNELS)],
-                size,
-                |out_slice| {
-                    let ctx = block_context(sample_rate, &midi_events, transport);
-                    let out = instance.process_f32(in_slice, out_slice, size, &ctx, scratch);
-                    // The plugin's MIDI-out, each on its frame_offset.
-                    midi_out(out);
-                },
-            );
+            let ctx = block_context(sample_rate, &midi_events, transport);
+            let out = instance.process_f32(inputs, outputs, size, &ctx, scratch);
+            // The plugin's MIDI-out, each on its frame_offset.
+            midi_out(out);
             true
         }
         None => {
@@ -525,55 +466,6 @@ fn apply_params(instance: &Vst2Instance, params: &ParamDelivery) {
         }
     }
     params.refused(refused);
-}
-
-/// Recursively peel one `&mut [f32]` of length `size` off `channels`
-/// at a time, building a slice-of-slices on the stack and invoking
-/// `f` once it's complete. Allocation-free — every reborrow lives in
-/// stack frames.
-fn run_with_mut_channels_f32<F: FnOnce(&mut [&mut [f32]])>(
-    channels: &mut [Vec<f32>],
-    size: usize,
-    f: F,
-) {
-    fn recurse<'a, F: FnOnce(&mut [&mut [f32]])>(
-        rest: &'a mut [Vec<f32>],
-        size: usize,
-        acc: &mut [&'a mut [f32]],
-        depth: usize,
-        f: F,
-    ) {
-        if depth == acc.len() {
-            f(acc);
-            return;
-        }
-        let (head, tail) = rest
-            .split_first_mut()
-            .expect("channel count mismatch (f32)");
-        acc[depth] = &mut head[..size];
-        recurse(tail, size, acc, depth + 1, f);
-    }
-    // Stack-allocated ref array, sized to actual channel count.
-    let mut acc: [&mut [f32]; 16] = [
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-    ];
-    let n = channels.len().min(16);
-    recurse(channels, size, &mut acc[..n], 0, f);
 }
 
 /// Sort `events` by frame offset, stably, in place: an insertion sort, for a

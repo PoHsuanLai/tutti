@@ -182,6 +182,12 @@ impl PluginBridge {
         self.audio.is_crashed()
     }
 
+    /// How many plugin parameter-change events the bridge dropped. See
+    /// [`AudioBridge::dropped_parameter_events`](super::audio::AudioBridge::dropped_parameter_events).
+    pub fn dropped_parameter_events(&self) -> u64 {
+        self.audio.dropped_parameter_events()
+    }
+
     /// How many abandoned replies the bridge thread has taken back off the
     /// socket. See
     /// [`AudioBridge::settled_replies`](super::audio::AudioBridge::settled_replies).
@@ -515,6 +521,10 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
 
     fn crash_cause(&self) -> Option<String> {
         self.bridge.crash_cause()
+    }
+
+    fn dropped_parameter_events(&self) -> u64 {
+        self.bridge.dropped_parameter_events()
     }
 }
 

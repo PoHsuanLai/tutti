@@ -1,29 +1,28 @@
-//! The single definition of the butler stream-control operations, expressed
-//! over the raw handles (command channel + channel-plan map).
+//! The butler's read-side operations over its channel-plan map, and the
+//! error a command send reports.
 //!
-//! The public ports ([`Commands`](crate::Commands) and
-//! [`Status`](crate::Status)) drive butler streaming through these functions,
-//! so "start a stream on a channel", "stop", "set varispeed", and "take the
-//! streaming consumer" each have exactly one implementation.
+//! The command side is [`Commands`](crate::Commands): one mapping from the
+//! public [`Command`](crate::Command) to the butler's own, sent blocking from
+//! the control thread or without waiting from the audio thread. The read
+//! side, "take the streaming consumer", is here, and
+//! [`Status`](crate::Status) drives it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use smol::channel::Sender;
-use tutti_core::{PlaybackRate, SampleRate};
+use tutti_core::SampleRate;
 
 use super::prefetch::TakeVoiceError;
-use super::{ButlerCommand, ChannelPlan, RtState};
+use super::{ChannelPlan, RtState};
 use crate::voice::disk_voice::DiskSource;
-use crate::voice::types::Direction;
 use crate::voice::LoopSetting;
 
 /// The butler thread is gone, so a stream-control command was discarded.
 ///
-/// There is one failure mode and it is **permanent**: `send_blocking` on an
-/// unbounded channel only fails once the receiver is dropped, which happens when
-/// the butler thread exits. Every later command fails the same way, so a caller
+/// There is one failure mode and it is **permanent**: a blocking send on the
+/// butler's bounded channel waits out a full queue and only fails once the
+/// receiver is dropped, which happens when the butler thread exits. Every later command fails the same way, so a caller
 /// that sees this should stop rather than retry.
 ///
 /// It is an error type rather than a silent `let _ =` because swallowing it
@@ -40,45 +39,6 @@ impl core::fmt::Display for ButlerGone {
 }
 
 impl std::error::Error for ButlerGone {}
-
-/// Start a disk stream on `channel_index` from `file_path` at `offset_samples`.
-pub(crate) fn stream(
-    tx: &Sender<ButlerCommand>,
-    channel_index: usize,
-    file_path: PathBuf,
-    offset_samples: usize,
-) -> Result<(), ButlerGone> {
-    tx.send_blocking(ButlerCommand::StreamAudioFile {
-        channel_index,
-        file_path,
-        offset_samples,
-    })
-    .map_err(|_| ButlerGone)
-}
-
-/// Stop the stream on `channel_index` — drops its ring + link.
-pub(crate) fn stop_stream(
-    tx: &Sender<ButlerCommand>,
-    channel_index: usize,
-) -> Result<(), ButlerGone> {
-    tx.send_blocking(ButlerCommand::StopStreaming { channel_index })
-        .map_err(|_| ButlerGone)
-}
-
-/// Set varispeed (speed + direction) on `channel_index`.
-pub(crate) fn set_varispeed(
-    tx: &Sender<ButlerCommand>,
-    channel_index: usize,
-    speed: PlaybackRate,
-    direction: Direction,
-) -> Result<(), ButlerGone> {
-    tx.send_blocking(ButlerCommand::SetVarispeed {
-        channel_index,
-        direction,
-        speed,
-    })
-    .map_err(|_| ButlerGone)
-}
 
 /// Build a bare `DiskSource` over a channel whose butler link is
 /// ready, alongside the channel's shared [`RtState`], the file's own rate and

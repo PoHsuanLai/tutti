@@ -4,34 +4,33 @@
 //! Placement is not a scalar param: a window is a [`Beat`] (`f64`) plus an
 //! optional duration, and truncating a beat position to `f32` re-introduces
 //! the ~2²⁴ cliff that `Sample.loop_start` was moved to `SamplePosition` (f64)
-//! to escape — so it takes the tier this crate reserves for multi-field state:
-//! a command queue the node owns and drains at the top of each block, whose
-//! sending end is in the `VoiceNodeHandle` its `IntoNode` hands back.
+//! to escape — so it takes the tier the engine reserves for multi-field
+//! state: an `RtPublish` cell the handle publishes to and the node reads once
+//! per block, latest wins. The cell sits in the `VoiceNodeHandle` its
+//! `IntoNode` hands back.
 //!
-//! `VoicePool` carries such a queue, and `VoiceNode` needs its own for the same
-//! reason: without one, moving a sample clip on a timeline cannot reach a
-//! playing standalone voice at all.
+//! # The hazards this file exists to pin
 //!
-//! # The three hazards this file exists to pin
+//! All are silent.
 //!
-//! All are silent, and all are the reason the channel is more than a field.
-//!
-//! 1. **The node the graph renders must hold the receiver.** The graph
+//! 1. **The node the graph renders must read the handle's cell.** The graph
 //!    renders the unit it was given, across commits and re-prepares (units
-//!    move, they are not cloned), so the receiver is the node's own.
+//!    move, they are not cloned), so the cell is the node's own.
 //!    [`a_command_reaches_a_node_across_a_commit`] fails if the rendering unit
 //!    stops hearing its handle.
 //!
-//! 2. **A fork must not drain it.** Crossbeam delivers each message to
-//!    exactly one receiver, so a fork sharing the live channel would *steal*
-//!    the user's edits from the audio thread — the live voice then misses a
-//!    move with nothing logged anywhere. [`a_fork_steals_no_commands`] fails
-//!    if that regresses.
+//! 2. **A fork must not take the live node's edits.** With the old command
+//!    queue a fork sharing the receiver would have *stolen* moves from the
+//!    audio thread. A read of a published cell consumes nothing, so this is
+//!    now structural; [`a_fork_steals_no_commands`] stays as the end-to-end
+//!    check.
 //!
-//! 3. **A fork must still play where the clip was last moved to**, though it
-//!    never drains the queue: the handle records each placement it queues,
-//!    and the node's fork source applies the latest.
+//! 3. **A fork must still play where the clip was last moved to**: the
+//!    node's fork source reads the same cell when the fork is taken.
 //!    [`a_placement_sent_after_the_insert_reaches_a_fork`] pins it.
+//!
+//! 4. **Only the latest window is heard.** Two moves between blocks play the
+//!    second; [`the_latest_placement_wins`] pins it.
 
 use std::sync::Arc;
 
@@ -117,13 +116,15 @@ fn the_probe_can_tell_inside_from_outside_a_window() {
     );
 }
 
-/// **A queued placement reaches the voice**, on its next block.
+/// **A published placement reaches the voice**, on its next block.
 ///
-/// The claim the channel exists to make, at its simplest: the window starts
-/// where the playhead is not, a command moves it, and the voice starts sounding.
+/// The claim the cell exists to make, at its simplest: the window starts
+/// where the playhead is not, a placement moves it, and the voice starts
+/// sounding.
 ///
-/// Mutation (run): `VoiceNode::drain_commands` ignoring `UpdatePlacement`
-/// (the `apply_placement` call removed) → silent after the move → fails.
+/// Mutation (run): `VoiceNode::drain_commands` not applying the published
+/// window (the `apply_placement` call removed) → silent after the move →
+/// fails.
 #[test]
 fn a_queued_placement_moves_a_live_voice() {
     // Window at beat 0, playhead at 10: silent.
@@ -133,9 +134,7 @@ fn a_queued_placement_moves_a_live_voice() {
         "silent before the move — the playhead is outside the window"
     );
 
-    handle
-        .set_placement(Beat(10.0), Some(BeatDuration(1.0)))
-        .expect("the queue is empty and the node is alive");
+    handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
 
     assert!(
         peak(&mut node, 10.0) > 0.5,
@@ -148,16 +147,16 @@ fn a_queued_placement_moves_a_live_voice() {
 ///
 /// The graph renders the unit it was given: a commit that adds a node
 /// leaves it in place, and a re-prepare (a rate change) checks the unit out,
-/// prepares it and sends it back — moved, never cloned. So the receiver is
-/// the node's own, and what this pins is that the node inserted through its
-/// `IntoNode` (as `bevy-tutti` inserts it) hears a placement sent after both,
+/// prepares it and sends it back — moved, never cloned. So the cell is the
+/// node's own, and what this pins is that the node inserted through its
+/// `IntoNode` (as `bevy-tutti` inserts it) hears a placement set after both,
 /// through the handle the insert handed back.
 ///
-/// Mutation (run): `VoiceNode::process` not draining its commands → the voice
-/// never moves → fails. Mutation (run): `into_parts` making the queue after
-/// the node is boxed (the handle's sender paired with a receiver the node
-/// never holds) → fails. (Rendering a clone taken at insert is not a
-/// possible mutation: nothing clones a graph node.)
+/// Mutation (run): `VoiceNode::process` not calling `drain_commands` → the
+/// voice never moves → fails. Mutation (run): `with_handle` handing the
+/// handle a fresh cell rather than the node's (`Arc::new(RtPublish::new(None))`
+/// in place of `Arc::clone(&self.placement)`) → fails. (Rendering a clone
+/// taken at insert is not a possible mutation: nothing clones a graph node.)
 #[test]
 fn a_command_reaches_a_node_across_a_commit() {
     let (mut ed, mut exec, handle) = graph_with(node_at(0.0));
@@ -183,31 +182,28 @@ fn a_command_reaches_a_node_across_a_commit() {
         "still silent: nothing was sent"
     );
 
-    handle
-        .set_placement(Beat(10.0), Some(BeatDuration(1.0)))
-        .expect("send");
+    handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
 
     assert!(
         render_peak(&mut exec, 10.0) > 0.5,
-        "a command must reach the node the graph renders. Silence means the \
-         unit rendering does not hold the receiver the handle sends to, or it \
-         no longer drains its channel."
+        "a placement must reach the node the graph renders. Silence means the \
+         unit rendering does not read the cell the handle publishes to, or it \
+         no longer reads it."
     );
 }
 
 /// **A fork steals nothing from the live node.**
 ///
 /// A fork renders on a worker *while the audio thread plays the original*.
-/// Crossbeam delivers each message to exactly one receiver, so a fork that
-/// drained the live channel would consume the user's edits and the live voice
-/// would silently miss them. The fork's node is built by the fork source with
-/// a dead channel of its own; this asserts it drains nothing, rendering first.
-///
-/// Mutation (run): `VoiceNodeFork` building the fork's node over the live
-/// receiver (a clone of it kept in the fork source and handed to the fork's
-/// node) → the fork drains the move → fails. The pool's
-/// `a_pools_fork_shares_nothing_with_the_live_pool` makes the same claim
-/// for `VoicePool`.
+/// When the placement rode a crossbeam queue, a fork draining the live
+/// receiver would have consumed the user's edits and the live voice would
+/// silently miss them. A placement is now a published value, and reading it
+/// consumes nothing, so no mutation of the fork source can make a fork take
+/// the live node's move: this property is structural and the test cannot
+/// fail for that reason any more. It stays as the end-to-end check that a
+/// fork rendering first leaves the live node moved. The pool's
+/// `a_pools_fork_shares_nothing_with_the_live_pool` makes the queue claim
+/// for `VoicePool`, which still has one.
 #[test]
 fn a_fork_steals_no_commands() {
     let (ed, mut exec, handle) = graph_with(node_at(0.0));
@@ -220,9 +216,7 @@ fn a_fork_steals_no_commands() {
         .expect("a memory voice forks");
     fork.apply_pending();
 
-    handle
-        .set_placement(Beat(10.0), Some(BeatDuration(1.0)))
-        .expect("send");
+    handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
 
     // The fork renders first, and must take nothing.
     let _ = render_peak(&mut fork, 10.0);
@@ -238,9 +232,13 @@ fn a_fork_steals_no_commands() {
 /// **A node no handle was taken for still works.**
 ///
 /// A node driven by hand (`with_channels`, never inserted, `with_handle`
-/// never called) has a dead `bounded(0)` receiver rather than an `Option`, so
-/// the drain is one `try_recv` that answers `Empty` — no branch on the block
-/// path.
+/// never called) has an empty placement cell, and must keep the window it
+/// was built with rather than lose it to the empty cell.
+///
+/// Mutation (run): `drain_commands` applying the cell every block with an
+/// empty cell read as a window far off (`if true { let window =
+/// published.unwrap_or(VoiceWindow::from(Beat(1e9))); … }`) → silent →
+/// fails.
 #[test]
 fn a_node_with_no_handle_renders_normally() {
     let mut node = node_at(0.0);
@@ -252,15 +250,14 @@ fn a_node_with_no_handle_renders_normally() {
 
 /// **A clip moved after the node was inserted reaches a fork of it.**
 ///
-/// The node's fork source keeps a copy of the voice as it was inserted and
-/// never drains the command queue (see `a_fork_steals_no_commands`), so a
-/// placement sent after the insert would never reach a fork: it would export
-/// the clip at its old position. The handle records each placement it queues,
-/// and the fork source applies the latest.
+/// The node's fork source keeps a copy of the voice as it was inserted, so a
+/// placement set after the insert reaches a fork only because the fork source
+/// reads the node's placement cell when the fork is taken; otherwise it would
+/// export the clip at its old position.
 ///
-/// Mutation (run): `VoiceNodeFork::fork` not applying the recorded placement
-/// → the fork keeps the window at beat 0, is silent at beat 10, and this
-/// fails.
+/// Mutation (run): `VoiceNodeFork::fork` not applying the published
+/// placement → the fork keeps the window at beat 0, is silent at beat 10,
+/// and this fails.
 #[test]
 fn a_placement_sent_after_the_insert_reaches_a_fork() {
     let (ed, _exec, handle) = graph_with(node_at(0.0));
@@ -271,9 +268,7 @@ fn a_placement_sent_after_the_insert_reaches_a_fork() {
         .expect("forks");
     before.apply_pending();
 
-    handle
-        .set_placement(Beat(10.0), Some(BeatDuration(1.0)))
-        .expect("send");
+    handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
 
     let (_after_ed, mut after) = ed
         .fork(ForkTarget::Master, ForkMode::Live, prepare)
@@ -286,5 +281,39 @@ fn a_placement_sent_after_the_insert_reaches_a_fork() {
     assert!(
         render_peak(&mut before, 10.0) < 1e-6,
         "a fork taken before the move is silent at beat 10"
+    );
+}
+
+/// **Only the latest placement is heard.** Two moves set between two blocks
+/// play the second: the node reads one published window per block, it does
+/// not replay a history.
+///
+/// Not vacuous: the first window alone sounds at beat 10 (asserted below on
+/// a second node), so a node that applied the first move and dropped the
+/// second would sound there.
+///
+/// Mutation (run): `set_placement` publishing only when the cell is empty
+/// (`if self.placement.read().is_none()`) → the first window sticks →
+/// fails.
+#[test]
+fn the_latest_placement_wins() {
+    let (mut first_only, first_handle) = node_at(0.0).with_handle();
+    first_handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
+    assert!(
+        peak(&mut first_only, 10.0) > 0.5,
+        "the first window alone sounds at beat 10"
+    );
+
+    let (mut node, handle) = node_at(0.0).with_handle();
+    handle.set_placement(Beat(10.0), Some(BeatDuration(1.0)));
+    handle.set_placement(Beat(20.0), Some(BeatDuration(1.0)));
+    assert!(
+        peak(&mut node, 10.0) < 1e-6,
+        "the first move was replaced before the block: beat 10 is outside the \
+         window the node plays"
+    );
+    assert!(
+        peak(&mut node, 20.0) > 0.5,
+        "the second move is the window the node plays"
     );
 }

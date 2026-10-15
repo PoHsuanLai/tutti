@@ -80,6 +80,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Sampler real-time fixes** (tutti-sampler; design doc 013, "Sampler
+  real-time fixes"). A voice pool's drain no longer blocks on a stalled
+  butler, no longer grows its voice vector in the callback, and counts
+  what it drops instead of logging it. A standalone `VoiceNode`'s
+  placement is a published value rather than a queue. **Breaking** for
+  `VoiceNodeHandle::set_placement`, which returns `()`.
+
+  | Was | Now |
+  |---|---|
+  | a streaming voice's loop forward blocked `process` while the butler's queue was full | it is refused, counted (`PoolDrops::loops_butler_full`), and not recorded in the voice's `Playback`; a host re-sends it. `Commands::send` (control thread) still blocks |
+  | the drain's dropped loops and ignored `ReplaceWave`s went to `tracing::warn!` | `VoicePoolHandle::drops() -> PoolDrops` (`loops_butler_full`, `loops_butler_gone`, `loops_no_butler`, `wave_swaps_ignored`, `voices_refused`, `freed_in_callback`); `#[non_exhaustive]` |
+  | an `AddVoice` past 64 resident voices reallocated the voice vector in the callback | it is refused, counted (`voices_refused`), and the voice handed back for `collect_retired` to free |
+  | a value the full retirement channel could not take was freed in the callback silently | still freed there, now counted (`freed_in_callback`) |
+  | `VoiceNodeHandle::set_placement(..) -> Result<(), SendError>` (a 64-entry queue, `Full` when it filled) | `-> ()`: the window is published, latest wins, from the node's next block. **Migration:** drop the `?`/`.unwrap()`; two placements between blocks play the second |
+  | `tutti-sampler` depended on `ringbuf` | it does not |
+
 - **`smallvec` is gone from the workspace** (design doc 013, "SmallVec
   removed"). A type whose inline storage bought nothing is a `Vec` (or a
   boxed slice); a type whose inline storage was a hard cap is an

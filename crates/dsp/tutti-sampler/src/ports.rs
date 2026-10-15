@@ -134,6 +134,68 @@ pub enum Command {
     },
 }
 
+impl Command {
+    /// The one `ButlerCommand` this maps to: the single place the public
+    /// variants meet the butler's, so the blocking and the non-blocking send
+    /// cannot disagree about one.
+    fn into_butler(self) -> ButlerCommand {
+        match self {
+            Command::Stream {
+                channel_index,
+                file_path,
+                offset,
+            } => ButlerCommand::StreamAudioFile {
+                channel_index,
+                file_path,
+                offset_samples: offset.get().max(0.0) as usize,
+            },
+            Command::Seek {
+                channel_index,
+                file_position,
+            } => ButlerCommand::SeekStream {
+                channel_index,
+                file_position: file_position.get().max(0.0) as u64,
+            },
+            Command::SetSpeed {
+                channel_index,
+                speed,
+                direction,
+            } => ButlerCommand::SetVarispeed {
+                channel_index,
+                direction,
+                speed,
+            },
+            Command::Loop {
+                channel_index,
+                setting:
+                    LoopSetting::On {
+                        start,
+                        end,
+                        crossfade_frames,
+                    },
+            } => ButlerCommand::SetStreamLoop {
+                channel_index,
+                range: (start.get().max(0.0) as u64, end.get().max(0.0) as u64),
+                crossfade_frames,
+            },
+            Command::Loop {
+                channel_index,
+                setting: LoopSetting::Off,
+            } => ButlerCommand::ClearStreamLoop { channel_index },
+            Command::Stop { channel_index } => ButlerCommand::StopStreaming { channel_index },
+        }
+    }
+}
+
+/// Why [`Commands::try_send`] refused a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ButlerRefused {
+    /// The butler's queue was full: it is stalled. Transient.
+    Full,
+    /// The butler thread has exited ([`ButlerGone`]). Permanent.
+    Gone,
+}
+
 /// WRITE port onto the butler: a cloneable wrapper over the command channel
 /// that dispatches a public [`Command`] to the butler.
 ///
@@ -149,7 +211,10 @@ impl Commands {
         Self { tx }
     }
 
-    /// Dispatches a single command to the butler.
+    /// Dispatches a single command to the butler. **Control thread**: it
+    /// blocks while the butler's bounded queue is full, so nothing reachable
+    /// from a graph node's `process` calls it (the audio thread's one send,
+    /// a voice pool forwarding a streaming loop, uses `try_send`).
     ///
     /// `Ok` means the command was *queued* — the butler applies it on its own
     /// thread, and that outcome is not available synchronously.
@@ -165,57 +230,30 @@ impl Commands {
     /// forever is indistinguishable from working playback.
     #[must_use = "a discarded command is a stream that never starts, seeks, or stops"]
     pub fn send(&self, cmd: Command) -> Result<(), ButlerGone> {
-        match cmd {
-            Command::Stream {
-                channel_index,
-                file_path,
-                offset,
-            } => crate::butler::control::stream(
-                &self.tx,
-                channel_index,
-                file_path,
-                offset.get().max(0.0) as usize,
-            ),
-            Command::Seek {
-                channel_index,
-                file_position,
-            } => self
-                .tx
-                .send_blocking(ButlerCommand::SeekStream {
-                    channel_index,
-                    file_position: file_position.get().max(0.0) as u64,
-                })
-                .map_err(|_| ButlerGone),
-            Command::SetSpeed {
-                channel_index,
-                speed,
-                direction,
-            } => crate::butler::control::set_varispeed(&self.tx, channel_index, speed, direction),
-            Command::Loop {
-                channel_index,
-                setting,
-            } => match setting {
-                LoopSetting::On {
-                    start,
-                    end,
-                    crossfade_frames,
-                } => self
-                    .tx
-                    .send_blocking(ButlerCommand::SetStreamLoop {
-                        channel_index,
-                        range: (start.get().max(0.0) as u64, end.get().max(0.0) as u64),
-                        crossfade_frames,
-                    })
-                    .map_err(|_| ButlerGone),
-                LoopSetting::Off => self
-                    .tx
-                    .send_blocking(ButlerCommand::ClearStreamLoop { channel_index })
-                    .map_err(|_| ButlerGone),
-            },
-            Command::Stop { channel_index } => {
-                crate::butler::control::stop_stream(&self.tx, channel_index)
-            }
-        }
+        self.tx
+            .send_blocking(cmd.into_butler())
+            .map_err(|_| ButlerGone)
+    }
+
+    /// Dispatches a command without waiting: the audio thread's send.
+    ///
+    /// A full queue (the butler is stalled, on I/O or descheduled) refuses
+    /// the command rather than blocking the callback until the butler drains
+    /// it. The caller decides what a refusal means; the voice pool counts it
+    /// and does not record the intent.
+    ///
+    /// Never blocks on a full queue, and frees nothing on refusal (no
+    /// variant the audio thread sends owns heap data). One residue is the
+    /// channel's: a successful send wakes the butler through `smol`'s
+    /// listener list, which takes that list's internal lock for a few
+    /// instructions (the butler holds it only while registering to wait),
+    /// and initialises the list on the channel's first send, which a
+    /// control-thread `Stream` always makes before a voice exists to loop.
+    pub(crate) fn try_send(&self, cmd: Command) -> Result<(), ButlerRefused> {
+        self.tx.try_send(cmd.into_butler()).map_err(|e| match e {
+            smol::channel::TrySendError::Full(_) => ButlerRefused::Full,
+            smol::channel::TrySendError::Closed(_) => ButlerRefused::Gone,
+        })
     }
 
     /// Dispatches a batch of commands, in order.
@@ -391,7 +429,7 @@ mod tests {
                 setting: LoopSetting::Off,
             }),
             Err(ButlerGone),
-            "the Loop/Off arm sends through its own `send_blocking` call"
+            "the Loop/Off arm maps to its own butler command"
         );
         assert_eq!(
             cmds.send(Command::Loop {

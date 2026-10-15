@@ -11,13 +11,14 @@ use std::sync::Arc;
 
 use crate::stretch;
 
-use super::pool::Retired;
+use super::memory_source::VoiceWindow;
+use super::pool::{DrainCounters, PoolDrops, Retired};
 use super::slot::{stretch_values_want_filter, stretch_wanted};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tutti_core::{
-    Amplitude, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate, SamplePosition,
-    SampleRate, StretchFactor,
+    Amplitude, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate, RtPublish,
+    SamplePosition, SampleRate, StretchFactor,
 };
 use tutti_graph::ParamSet;
 use tutti_io::Wave;
@@ -42,11 +43,13 @@ impl SharedRate {
     }
 }
 
-/// Voice slots a reader holds before its slot vector has to grow.
+/// Voice slots a pool reserves, and the most its `AddVoice` drain will hold.
 ///
-/// The `AddVoice` drain runs in the audio callback, so `voices.push` must not
-/// reallocate there. 64 covers any realistic per-track voice count; a track past
-/// it pays one grow on the next add and is then stable again.
+/// The drain runs in the audio callback, so `voices.push` must not reallocate
+/// there: an add for a new slot once the pool is full is refused, handed back
+/// through the retirement channel and counted
+/// ([`PoolDrops::voices_refused`]).
+/// 64 covers any realistic per-track voice count.
 pub(super) const MAX_RESIDENT_VOICES: usize = 64;
 
 /// Commands a reader's channel holds before a send starts failing with
@@ -62,10 +65,10 @@ pub(super) const COMMAND_CAPACITY: usize = 64;
 ///
 /// Drained inside the audio callback, so every variant must be built and
 /// allocated **control-side**: that is why the two stretch-carrying variants
-/// have the filter handed to them rather than constructing one. Which variants
-/// take effect depends on the receiver — a [`VoicePool`](super::pool::VoicePool)
-/// honours all of them, a [`VoiceNode`](super::node::VoiceNode) only
-/// [`UpdatePlacement`](Self::UpdatePlacement) and silently discards the rest.
+/// have the filter handed to them rather than constructing one. A
+/// [`VoicePool`](super::pool::VoicePool) is the one receiver, and honours all
+/// of them; a [`VoiceNode`](super::node::VoiceNode) takes none (its
+/// [`VoiceNodeHandle::set_placement`] is its `UpdatePlacement`).
 ///
 /// `#[non_exhaustive]`: the drain is a `match` inside the callback, and a new
 /// control must be addable without breaking a host's own `match`.
@@ -121,7 +124,9 @@ pub enum VoiceCommand {
     /// Point an **in-memory** slot at a different wave, keeping its placement,
     /// gain and loop.
     ///
-    /// Ignored (with a warning) for a streaming slot: swapping a disk source
+    /// Ignored, and counted
+    /// ([`PoolDrops::wave_swaps_ignored`]),
+    /// for a streaming slot: swapping a disk source
     /// means re-registering the butler stream on a different file, which is a
     /// control-thread operation issued as a fresh [`AddVoice`](Self::AddVoice).
     ///
@@ -138,8 +143,7 @@ pub enum VoiceCommand {
     /// Move the voice's timeline window: a [`Beat`] (`f64`) and an optional
     /// duration, so not a scalar param; see [`VoiceNodeHandle::set_placement`].
     UpdatePlacement {
-        /// The slot to move. `SlotId(0)` for a [`VoiceNode`](super::node::VoiceNode),
-        /// whose drain ignores the field.
+        /// The slot to move.
         id: SlotId,
         /// Where the voice starts on the timeline, in [`Beat`]s.
         start_beat: Beat,
@@ -169,9 +173,12 @@ pub enum VoiceCommand {
     ///
     /// Routed by tier: in-memory primes the range on the `MemorySource`,
     /// streaming forwards to the butler, which owns the loop-start fadein head
-    /// the reader cannot reach. A streaming voice with no butler channel drops
-    /// the command **and does not record the intent** — a `Playback` claiming a
-    /// loop the stream never set would be replayed as real on the next insert.
+    /// the reader cannot reach. A streaming voice whose forward fails (no
+    /// butler channel, a full butler queue, a butler that exited) drops the
+    /// command, counts it ([`PoolDrops`]), **and does
+    /// not record the intent** — a `Playback` claiming a loop the stream never
+    /// set would be replayed as real on the next insert. The forward never
+    /// waits: it runs in the callback.
     UpdateLoop {
         /// The slot to set.
         id: SlotId,
@@ -206,8 +213,8 @@ pub enum VoiceCommand {
     /// that change duration and pitch **independently**, unlike
     /// [`UpdateSpeed`](Self::UpdateSpeed).
     ///
-    /// Pool-only in practice: a [`VoiceNode`](super::node::VoiceNode)'s drain
-    /// discards it, so a node's pitch is fixed at construction and a host that
+    /// Pool-only: a [`VoiceNode`](super::node::VoiceNode) has no command to
+    /// take it, so a node's pitch is fixed at construction and a host that
     /// wants to change it respawns the voice.
     UpdateStretch {
         /// The slot to set.
@@ -376,8 +383,8 @@ impl std::error::Error for SendError {}
 
 /// The controls of a standalone [`VoiceNode`](super::node::VoiceNode): what
 /// its `IntoNode` hands back. Its gain, a scalar cell the node reads once per
-/// block, and its placement, sent over the node's command queue (a bounded
-/// lock-free queue the node drains at the top of each block).
+/// block, and its placement, a published window the node reads once per
+/// block.
 ///
 /// # Why a separate handle rather than reusing [`VoicePoolHandle`]
 ///
@@ -388,12 +395,12 @@ impl std::error::Error for SendError {}
 /// meaningless value for. The commands it accepts are also a strict subset —
 /// `AddVoice` / `Remove` have no meaning for a node that *is* its voice.
 ///
-/// So this carries the sender, the gain and the record a fork reads, and its
-/// methods name the voice implicitly. The wire format is **not** shared: the
-/// node's queue carries a placement and nothing else, because a node's drain
-/// has a meaning for no other command, and every other [`VoiceCommand`] it
-/// was once able to receive was dropped there, in the callback, freeing
-/// whatever it carried (a boxed `Voice`, a wave, a stretch filter).
+/// So this carries the placement cell and the gain, and its methods name the
+/// voice implicitly. There is no command queue at all: a placement is the
+/// node's one non-scalar control and only the latest one matters, so it is a
+/// value the handle publishes rather than a message the node must receive.
+/// Nothing a caller does here can hand the node a payload (a boxed `Voice`, a
+/// wave, a stretch filter) to drop on the audio thread.
 ///
 /// ```compile_fail
 /// # use tutti_sampler::{MemorySource, Playback, Voice, VoiceCommand, VoiceNode, VoiceSource};
@@ -410,7 +417,7 @@ impl std::error::Error for SendError {}
 /// let _ = handle.send(VoiceCommand::ReplaceWave { id: tutti_sampler::SlotId(0), wave });
 /// ```
 ///
-/// The same setup with the one command it does take compiles:
+/// The same setup with the one control it does take compiles:
 ///
 /// ```
 /// # use tutti_sampler::{MemorySource, Playback, Voice, VoiceCommand, VoiceNode, VoiceSource};
@@ -423,19 +430,13 @@ impl std::error::Error for SendError {}
 /// #     channel_index: None,
 /// # };
 /// let (_node, handle) = VoiceNode::new(voice).with_handle();
-/// handle.set_placement(tutti_core::Beat::new(1.0), None).unwrap();
+/// handle.set_placement(tutti_core::Beat::new(1.0), None);
 /// ```
 #[derive(Clone, Debug)]
 pub struct VoiceNodeHandle {
-    /// Sends into the node's bounded placement queue. Placements only, by
-    /// type: the queue carries no [`VoiceCommand`], so nothing a caller sends
-    /// can carry a payload the node's drain would have to drop (and free) on
-    /// the audio thread. No retirement receiver beside it, for the same
-    /// reason: nothing is ever handed back to be freed.
-    pub(crate) tx: Sender<NodePlacement>,
-    /// The last placement this handle queued, shared with the node's fork
-    /// source — see [`PlacementRecord`].
-    pub(crate) placement: PlacementRecord,
+    /// The node's placement, shared with the node (which reads it once per
+    /// block) and with its fork source (which reads it at fork time).
+    pub(crate) placement: PlacementCell,
     /// The voice's gain: the cell the node reads once per block.
     pub(crate) gain: Param<Amplitude>,
     /// The gain by address ([`UnitParam::Volume`](tutti_core::UnitParam)),
@@ -443,72 +444,40 @@ pub struct VoiceNodeHandle {
     pub(crate) params: ParamSet,
 }
 
-/// What a [`VoiceNodeHandle`] queues for its node: a new timeline window, the
-/// one command a standalone node has.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct NodePlacement {
-    pub(crate) start_beat: Beat,
-    pub(crate) duration_beats: Option<BeatDuration>,
-}
-
-/// The last placement a [`VoiceNodeHandle`] queued, for a **fork** of the node
-/// to start from.
+/// A [`VoiceNode`](super::node::VoiceNode)'s timeline window, latest wins:
+/// `None` until the handle first sets one, and the node keeps the window it
+/// was built with until then.
 ///
-/// A placement rides the command queue, which only the live node drains. So
-/// a fork — built by the node's fork source from a copy of the voice taken
-/// when the node was inserted — would otherwise export the clip at the
-/// position it had then. The handle records each move it queues here, and
-/// the fork applies the latest to its copy.
+/// One cell for the three readers. The handle publishes (control thread);
+/// the node reads it once per block, and applies it when it differs from the
+/// window it last applied; the fork source reads it when a fork is taken, so
+/// a clip moved after the insert exports where it was moved to.
 ///
-/// **Control thread only**: written by the handle, read by the fork source;
-/// the audio thread never touches it, so it is a plain lock (the engine's
-/// rule for control-thread-only cells).
-pub(crate) type PlacementRecord = Arc<std::sync::Mutex<Option<(Beat, Option<BeatDuration>)>>>;
+/// Latest-wins loses nothing a queue would have delivered: applying a
+/// window is a plain overwrite of the source's window (no seek, no re-arm),
+/// so applying every intermediate window in one block ends in the same
+/// state as applying the last, and nothing else rides with it to be ordered
+/// against.
+pub(crate) type PlacementCell = Arc<RtPublish<Option<VoiceWindow>>>;
 
 impl VoiceNodeHandle {
-    /// Moves the voice's timeline window.
+    /// Moves the voice's timeline window, from the node's next block on.
     ///
     /// A placement is a [`Beat`] (`f64`) plus an optional [`BeatDuration`] —
     /// two values, and a precision the transport cannot afford to lose, so it
     /// is no scalar param (an `f32` beat position loses whole frames past
-    /// ~2²⁴). It rides the node's command queue, and lands on the node's next
-    /// block. Lock-free and allocation-free; the placement is also recorded for
-    /// a fork of the node, once queued.
+    /// ~2²⁴). It is published to a cell the node reads once per block:
+    /// never lost and never queued, and only the latest window is heard (a
+    /// window set twice between two blocks plays the second). A fork of the
+    /// node taken after this call starts from it.
     ///
-    /// # Errors
-    ///
-    /// [`SendError::Full`] when the node's 64-entry queue is full (transient:
-    /// the node drains it every block),
-    /// [`SendError::Disconnected`] once the node has been dropped.
-    pub fn set_placement(
-        &self,
-        start_beat: Beat,
-        duration_beats: Option<BeatDuration>,
-    ) -> Result<(), SendError> {
-        // A refused placement comes back inside the error as the pool's
-        // command, so a caller sees *which* edit failed, as `SendError` says.
-        let lost = || VoiceCommand::UpdatePlacement {
-            id: SlotId(0),
-            start_beat,
-            duration_beats,
-        };
-        self.tx
-            .try_send(NodePlacement {
-                start_beat,
-                duration_beats,
-            })
-            .map_err(|e| match e {
-                TrySendError::Full(_) => SendError::Full(lost()),
-                TrySendError::Disconnected(_) => SendError::Disconnected(lost()),
-            })?;
-        // Recorded only once queued, so a fork never plays a move the live
-        // voice did not get.
-        *self
-            .placement
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some((start_beat, duration_beats));
-        Ok(())
+    /// **Control thread**: publishing allocates the new value and frees the
+    /// one it replaces, here, so the node never does either.
+    pub fn set_placement(&self, start_beat: Beat, duration_beats: Option<BeatDuration>) {
+        self.placement.publish(Arc::new(Some(VoiceWindow {
+            start: start_beat,
+            duration: duration_beats,
+        })));
     }
 
     /// Sets the voice's gain, from the node's next block on. A write to a
@@ -554,6 +523,9 @@ pub struct VoicePoolHandle {
     /// The reader's sample rate, as its `prepare` last stored it, for the
     /// same reason.
     pub(crate) rate: SharedRate,
+    /// What the pool's drain dropped or refused; read by
+    /// [`drops`](Self::drops).
+    pub(crate) counters: Arc<DrainCounters>,
 }
 
 impl VoicePoolHandle {
@@ -571,6 +543,13 @@ impl VoicePoolHandle {
             n += 1;
         }
         n
+    }
+
+    /// What the pool's drain has dropped, refused, or freed in the callback
+    /// since the pool was built. Poll it as often as convenient: the counts
+    /// only grow.
+    pub fn drops(&self) -> PoolDrops {
+        self.counters.snapshot()
     }
 
     /// Queues a command, doing any allocation it implies **here**, on the calling

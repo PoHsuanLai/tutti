@@ -863,6 +863,10 @@ resource, then apply:
   to the node's control.
 - **A new signal source** gets its node and edges; a gone one loses them
   (it fixes M10).
+- **Diff per target, not the whole `Compiled`** (as landed in PR 3): a rate
+  edit of an LFO no route reads changes `Compiled::clocks` and no program,
+  so the reconcile compares `programs`, `nodes` and `edges` entry by entry
+  and republishes only the programs that differ.
 
 | Edit | Cost |
 |---|---|

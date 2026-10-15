@@ -304,8 +304,11 @@ pub struct Compiled {
     pub clocks: BTreeMap<SourceKey, Clock>,
 }
 
-/// A clock holds no NaN: `compile` refuses a NaN rate or phase, and an
-/// anchor's phase is a finite `Clock::cycles` plus a finite phase jump.
+/// A clock holds no NaN: `compile` refuses a rate, period or phase that is
+/// not finite (an infinite phase would make a carried anchor's jump
+/// `inf − inf`), and an anchor's phase is a finite `Clock::cycles` plus
+/// phase jumps that are each a difference of two finite `f32`s, so their
+/// `f64` sum stays finite.
 impl Eq for Compiled {}
 
 /// Why [`compile`] refused, by name.
@@ -333,7 +336,7 @@ pub enum CompileError {
         route: RouteKey,
     },
     /// A source whose params are out of their domain: a NaN anywhere, a
-    /// constant that is not finite, a negative or infinite time, a sustain outside `[0, 1]`, a drawn wave
+    /// clock's rate, period or phase or a constant that is not finite, a negative or infinite time, a sustain outside `[0, 1]`, a drawn wave
     /// whose points do not ascend in `[0, 1)` with finite values.
     BadSource(SourceKey),
     /// An LFO declared with a rate anchor: anchors are the compiler's.
@@ -677,7 +680,7 @@ fn check_source(key: SourceKey, source: &Source) -> Result<(), CompileError> {
         Source::Lfo { wave, clock } => {
             let ok_clock = match *clock {
                 Clock::Beats { per_cycle, phase } => {
-                    !per_cycle.get().is_nan() && !phase.get().is_nan()
+                    per_cycle.get().is_finite() && phase.get().is_finite()
                 }
                 Clock::Seconds {
                     rate,
@@ -687,7 +690,7 @@ fn check_source(key: SourceKey, source: &Source) -> Result<(), CompileError> {
                     if anchor.is_some() {
                         return Err(CompileError::AnchorDeclared(key));
                     }
-                    !rate.get().is_nan() && !phase.get().is_nan()
+                    rate.get().is_finite() && phase.get().is_finite()
                 }
             };
             let ok_wave = match wave {

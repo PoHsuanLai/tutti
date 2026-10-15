@@ -1042,12 +1042,19 @@ fn a_second_rate_edit_near_its_anchor_reanchors() {
 }
 
 /// A value that is not finite is refused where it would reach the lane: an
-/// infinite route depth (`inf · 0` is a NaN in the value rule) and an
-/// infinite constant wave.
+/// infinite route depth (`inf · 0` is a NaN in the value rule), an
+/// infinite constant wave, and a clock's infinite rate, period or phase,
+/// on an LFO no route reads (so the source check refuses it, not a
+/// program). An infinite phase after a rate edit would otherwise carry the
+/// live anchor with a jump of `inf − inf`, a NaN in `Compiled::clocks`
+/// that breaks `Compiled: Eq`.
 ///
 /// Mutations (run), each fails: the depth check back to `is_nan` → the
 /// infinite depth compiles; the constant check back to `is_nan` → the
-/// infinite constant compiles.
+/// infinite constant compiles; the seconds clock's check back to `is_nan`
+/// → the infinite rate and phase compile (and the anchored LFO's clock
+/// holds a NaN phase); the beat clock's check back to `is_nan` → the
+/// infinite period and phase compile.
 #[test]
 fn a_value_that_is_not_finite_is_refused() {
     let t1 = [(target(1), ranged(0.0, 1.0))];
@@ -1073,4 +1080,90 @@ fn a_value_that_is_not_finite_is_refused() {
             "constant {v}"
         );
     }
+    let clock = |rate: f32, phase: f32| Clock::Seconds {
+        rate: Hz(rate),
+        phase: PhaseIncrement(phase),
+        anchor: None,
+    };
+    let beat = |per_cycle: f64, phase: f32| Clock::Beats {
+        per_cycle: BeatDuration(per_cycle),
+        phase: PhaseIncrement(phase),
+    };
+    for c in [
+        clock(f32::INFINITY, 0.0),
+        clock(1.0, f32::INFINITY),
+        clock(1.0, f32::NEG_INFINITY),
+        beat(f64::INFINITY, 0.0),
+        beat(1.0, f32::INFINITY),
+    ] {
+        let unrouted = [(SourceKey(1), lfo(LfoShape::Sine, c))];
+        assert_eq!(
+            run(&unrouted, &[], &t1),
+            Err(CompileError::BadSource(SourceKey(1))),
+            "{c:?}"
+        );
+    }
+    // The reviewer's sequence: a rate edit (a live anchor), then an
+    // infinite phase on the unrouted LFO.
+    let at = |rate, phase, prev: Option<&Compiled>, play| {
+        compile(
+            &Declarations {
+                sources: &[(SourceKey(10), lfo(LfoShape::Sine, clock(rate, phase)))],
+                routes: &[],
+                targets: &t1,
+            },
+            prev,
+            now(3, play),
+            SR,
+        )
+    };
+    let c0 = at(1.0, 0.0, None, 0).expect("compiles");
+    let c1 = at(2.0, 0.0, Some(&c0), 1000).expect("compiles");
+    assert!(anchor_of(c1.clocks[&SourceKey(10)]).is_some());
+    assert_eq!(
+        at(2.0, f32::INFINITY, Some(&c1), 2000),
+        Err(CompileError::BadSource(SourceKey(10)))
+    );
+}
+
+/// A depth route's scaler reads its own LFO's dated clock, not the scaled
+/// LFO's: with a seconds-LFO scaler at another rate than the scaled one,
+/// the layer's `DepthBy` clock is `clocks[scaler]`, before and after a
+/// rate edit of the scaler (which anchors it).
+///
+/// Mutation (run): the scaler's clock taken from the scaled route's source
+/// (`dated(route.source).0`, the wave still the scaler's) → the `DepthBy`
+/// clock is the 2 Hz LFO's → fails.
+#[test]
+fn a_depth_by_scaler_reads_its_own_lfos_clock() {
+    let mut rig = Rig::new();
+    rig.sources
+        .push((SourceKey(20), lfo(LfoShape::Sine, seconds(3.0))));
+    rig.routes.push((
+        RouteKey(201),
+        route(20, RouteTarget::Depth(RouteKey(100)), 1.0),
+    ));
+    let depth_clock = |c: &Compiled| {
+        let id = layer_id(RouteKey(100), Some(RouteKey(201)));
+        c.programs[&target(1)]
+            .layers()
+            .iter()
+            .find(|l| l.id == id)
+            .expect("the layer")
+            .depth_by
+            .as_ref()
+            .expect("scaled")
+            .clock
+    };
+    let c0 = rig.compile(None, now(7, 0));
+    assert_eq!(depth_clock(&c0), c0.clocks[&SourceKey(20)]);
+    assert_eq!(depth_clock(&c0), seconds(3.0));
+    *rig.source_mut(20) = lfo(LfoShape::Sine, seconds(7.0));
+    let c1 = rig.compile(Some(&c0), now(7, 10_000));
+    assert!(anchor_of(c1.clocks[&SourceKey(20)]).is_some(), "anchored");
+    assert_eq!(depth_clock(&c1), c1.clocks[&SourceKey(20)]);
+    assert_eq!(
+        layer_clock(&c1, target(1), 100, Some(201)),
+        c1.clocks[&SourceKey(10)]
+    );
 }

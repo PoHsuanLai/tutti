@@ -15,6 +15,10 @@
 //!
 //! Not compiled into normal builds: the hot path pays nothing, and no
 //! observer state exists in a release binary.
+//!
+//! It also lets a test play the plugin's side of `IComponentHandler`
+//! ([`plugin_perform_edit`], [`plugin_restart_component`]), for host paths the
+//! reference plugin never drives itself.
 
 use std::cell::RefCell;
 
@@ -54,4 +58,29 @@ pub(crate) fn observe(data: &ProcessData, setup: &ProcessSetup) {
             }
         }
     });
+}
+
+/// Calls the host's `IComponentHandler::performEdit` through its COM vtable,
+/// exactly as a plugin would — from whatever thread the caller is on.
+///
+/// The audio-probe plugin never reports edits on its own, so a test of what
+/// the host does with queued edits (the plugin server's restart poll must not
+/// drain or allocate for them) has no other way to queue some.
+pub fn plugin_perform_edit(loaded: &super::Vst3Loaded, id: u32, value: f64) {
+    use vst3::Steinberg::Vst::{IComponentHandler, IComponentHandlerTrait};
+    if let Some(handler) = loaded.host.handler.as_com_ref::<IComponentHandler>() {
+        // SAFETY: the handler is host-implemented and alive for `loaded`'s
+        // lifetime; `performEdit` reads only its two scalar arguments.
+        unsafe { handler.performEdit(id, value) };
+    }
+}
+
+/// Calls the host's `IComponentHandler::restartComponent(flags)` through its
+/// COM vtable, as a plugin would. See [`plugin_perform_edit`].
+pub fn plugin_restart_component(loaded: &super::Vst3Loaded, flags: i32) {
+    use vst3::Steinberg::Vst::{IComponentHandler, IComponentHandlerTrait};
+    if let Some(handler) = loaded.host.handler.as_com_ref::<IComponentHandler>() {
+        // SAFETY: as in `plugin_perform_edit`.
+        unsafe { handler.restartComponent(flags) };
+    }
 }

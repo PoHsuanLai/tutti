@@ -50,8 +50,7 @@ use vst3::Steinberg::kPlatformTypeNSView;
 use vst3::Steinberg::kPlatformTypeX11EmbedWindowID;
 
 use crate::com::{
-    BStream, ComponentHandler, HostApplication, HostPlugFrame, ParameterEditEvent, ProgressEvent,
-    RestartFlags, UnitEvent,
+    BStream, ComponentHandler, HostApplication, HostPlugFrame, PluginNotification, RestartFlags,
 };
 use tutti_plugin_types::{ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo};
 
@@ -157,6 +156,14 @@ pub struct RestartOutcome {
     // The signal *exists* here, where a consumer can reach it, and
     // `every_decoded_restart_flag_reaches_the_outcome` keeps it that way.
     // Plumbing follows a consumer, not the other way round.
+    /// Not a restart flag: the plugin sent more notifications than the queue
+    /// holds since the last poll, and the newest were dropped (see
+    /// [`NOTIFICATION_CAPACITY`](crate::NOTIFICATION_CAPACITY)). An edit
+    /// gesture may have lost its last `PerformEdit`, so the host's copy of any
+    /// parameter may be stale: re-read every value, as for
+    /// `param_values_changed`. Set only by
+    /// [`Vst3Loaded::poll_plugin_notifications`], once per overflow episode.
+    pub notifications_overflowed: bool,
 }
 
 impl RestartOutcome {
@@ -164,6 +171,14 @@ impl RestartOutcome {
     /// nothing to refresh.
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// The coalesced outcome of one `restartComponent` flag word — or of the
+    /// union of several, which is what the handler stores.
+    fn from_flags(flags: RestartFlags) -> Self {
+        let mut outcome = Self::default();
+        outcome.merge_flags(flags);
+        outcome
     }
 
     /// Fold one `restartComponent` bitmask into the coalesced outcome.
@@ -187,29 +202,6 @@ impl RestartOutcome {
         self.keyswitch_changed |= flags.keyswitch_changed;
         self.param_id_mapping_changed |= flags.param_id_mapping_changed;
     }
-}
-
-/// One batch of everything the plugin's editor pushed to the host since the
-/// last poll, returned by [`Vst3Loaded::poll_plugin_notifications`].
-///
-/// All four fields are independent; a typical idle tick has them all empty
-/// (`param_edits`/`progress`/`units` empty and `restart.is_empty()`).
-#[derive(Debug, Clone, Default)]
-pub struct PluginNotifications {
-    /// Non-restart parameter-edit events (`BeginEdit`/`PerformEdit`/`EndEdit`/
-    /// `SetDirty`/…) in arrival order. `RestartComponent` requests are folded
-    /// into `restart` instead of appearing here.
-    pub param_edits: Vec<ParameterEditEvent>,
-    /// Coalesced restart side-effects, all for the caller to act on — nothing
-    /// here has been handled in place. `io_changed` and `latency_changed` both
-    /// require a deactivate/reactivate cycle this type cannot perform.
-    pub restart: RestartOutcome,
-    /// `IProgress` reports for long plugin operations (sample loading, offline
-    /// rendering) — drive a host progress indicator.
-    pub progress: Vec<ProgressEvent>,
-    /// `IUnitHandler` notifications: the user changed a unit / program inside
-    /// the plugin's own UI, or the unit↔bus mapping changed.
-    pub units: Vec<UnitEvent>,
 }
 
 impl Vst3Loaded {
@@ -315,8 +307,7 @@ impl Vst3Loaded {
             #[cfg(target_os = "linux")]
             library.run_loop(),
         );
-        let (component_handler, param_event_rx, progress_event_rx, unit_event_rx) =
-            ComponentHandler::new();
+        let component_handler = ComponentHandler::new();
 
         let note_expression = controller
             .as_ref()
@@ -365,9 +356,6 @@ impl Vst3Loaded {
             host: HostContext {
                 application: host_application,
                 handler: component_handler,
-                param_event_rx,
-                progress_event_rx,
-                unit_event_rx,
             },
             editor: EditorState::Closed,
             info,
@@ -1169,23 +1157,37 @@ impl Vst3Loaded {
         }
     }
 
-    /// Drains every host-side notification channel the plugin's editor pushes
-    /// to and return them as one [`PluginNotifications`] batch.
+    /// Hands every queued plugin notification to `on_event`, oldest first,
+    /// and returns the restart requests received since the last look.
     ///
     /// This is the single polling entry point for everything the plugin reports
     /// asynchronously between process calls:
-    /// - **`param_edits`** — `BeginEdit`/`PerformEdit`/`EndEdit`/… in arrival
-    ///   order (the `RestartComponent` requests are stripped out and folded into
-    ///   `restart` instead).
-    /// - **`restart`** — coalesced [`RestartOutcome`]. `kIoChanged` is acted on
-    ///   in place (bus re-enumeration); `kLatencyChanged` and the rest are
-    ///   flagged for the caller (e.g. call
-    ///   [`read_latency_samples`](Self::read_latency_samples) on
-    ///   `restart.latency_changed`).
-    /// - **`progress`** — `IProgress` start/update/finish reports (long
-    ///   operations such as sample loading), for a host-drawn progress bar.
-    /// - **`units`** — `IUnitHandler` unit-selection / program-list / unit-by-bus
-    ///   changes the user made inside the plugin's own UI.
+    /// - **the return value** — the coalesced [`RestartOutcome`] of every
+    ///   `restartComponent` since the last poll (or
+    ///   [`take_restart`](Self::take_restart)). Nothing in it has been acted on:
+    ///   `kIoChanged` and `kLatencyChanged` both need a deactivate/reactivate
+    ///   cycle this `&mut Vst3Loaded` cannot run, so the caller does it (e.g.
+    ///   `Vst3Active::restart_bus_configuration`, then
+    ///   [`read_latency_samples`](Self::read_latency_samples)).
+    /// - **`on_event`** — each [`PluginNotification`] in arrival order across
+    ///   all three kinds: `BeginEdit`/`PerformEdit`/`EndEdit`/… edits, `IProgress`
+    ///   reports for a host-drawn progress bar, and `IUnitHandler` unit /
+    ///   program-list / unit-by-bus changes.
+    ///
+    /// Restart requests carry no position among the events: they are cumulative
+    /// and stored as one flag word, taken before the queue is drained, so an
+    /// edit and a restart from the same gesture arrive in the same poll or the
+    /// next, in no guaranteed order.
+    ///
+    /// Collects nothing: a caller that keeps events supplies its own storage.
+    /// Notifications past [`NOTIFICATION_CAPACITY`](crate::NOTIFICATION_CAPACITY)
+    /// unread are dropped and counted in
+    /// [`dropped_notifications`](Self::dropped_notifications), and the next
+    /// poll reports
+    /// [`notifications_overflowed`](RestartOutcome::notifications_overflowed).
+    ///
+    /// Also forwards any MIDI-learn CCs the audio thread captured to the
+    /// plugin's `IMidiLearn`, which the SDK requires on this thread.
     ///
     /// Must be called on the main thread; not while inside
     /// [`process`](Vst3Active::process).
@@ -1194,36 +1196,76 @@ impl Vst3Loaded {
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn poll_plugin_notifications(&mut self) -> PluginNotifications {
+    pub fn poll_plugin_notifications(
+        &mut self,
+        mut on_event: impl FnMut(PluginNotification),
+    ) -> RestartOutcome {
         tutti_plugin_types::assert_main_thread();
-        let mut notifications = PluginNotifications::default();
-        for event in self.host.param_event_rx.try_iter().collect::<Vec<_>>() {
-            match event {
-                ParameterEditEvent::RestartComponent(flags) => {
-                    let flags = RestartFlags::from_bits(flags);
-                    // `kIoChanged` is deliberately NOT acted on here. The spec
-                    // requires deactivate → re-ask → reactivate
-                    // (`ivsteditcontroller.h:125-127`), and this method holds a
-                    // `&mut Vst3Loaded`, which cannot deactivate anything — the
-                    // same constraint `reload_requested` is surfaced for.
-                    //
-                    // Do not call `reconcile_bus_counts()` from here. It reads
-                    // fine until you notice `Vst3Active` `DerefMut`s to this
-                    // type: the production caller polls on a live active
-                    // instance, so the re-enumeration would run mid-activation.
-                    // The owner calls `Vst3Active::restart_bus_configuration`.
-                    notifications.restart.merge_flags(flags);
-                }
-                other => notifications.param_edits.push(other),
-            }
+        // `kIoChanged` is deliberately NOT acted on here. The spec requires
+        // deactivate → re-ask → reactivate (`ivsteditcontroller.h:125-127`),
+        // and this method holds a `&mut Vst3Loaded`, which cannot deactivate
+        // anything — the same constraint `reload_requested` is surfaced for.
+        //
+        // Do not call `reconcile_bus_counts()` from here. It reads fine until
+        // you notice `Vst3Active` `DerefMut`s to this type: the production
+        // caller polls on a live active instance, so the re-enumeration would
+        // run mid-activation. The owner calls
+        // `Vst3Active::restart_bus_configuration`.
+        let mut restart = self.take_restart();
+        while let Some(event) = self.host.handler.pop_notification() {
+            on_event(event);
         }
-        notifications.progress = self.host.progress_event_rx.try_iter().collect();
-        notifications.units = self.host.unit_event_rx.try_iter().collect();
+        // After the drain, so a drop made before it is reported now rather
+        // than one poll late.
+        restart.notifications_overflowed = self.host.handler.take_overflowed();
         // Forward any live CCs the audio thread captured for MIDI-learn to the
         // plugin's IMidiLearn on this (main) thread, as the SDK requires. No-op
         // unless learn is armed and the plugin implements IMidiLearn.
         self.midi_learn.forward_pending();
-        notifications
+        restart
+    }
+
+    /// The coalesced [`RestartOutcome`] of every `restartComponent` since the
+    /// last take (or poll), leaving none pending. Reads one atomic word:
+    /// wait-free, allocation-free, and touches neither the notification queue
+    /// nor the plugin, so it is the restart poll for a caller on an audio
+    /// thread (the plugin server polls it between blocks).
+    ///
+    /// Queued edits, progress and unit news stay queued for
+    /// [`poll_plugin_notifications`](Self::poll_plugin_notifications).
+    pub fn take_restart(&self) -> RestartOutcome {
+        RestartOutcome::from_flags(RestartFlags::from_bits(
+            self.host.handler.take_restart_bits(),
+        ))
+    }
+
+    /// Drops every queued notification unread, and clears the overflow flag
+    /// with them, returning how many there were. Lock-free and
+    /// allocation-free (no notification owns heap memory), so a caller on an
+    /// audio thread that has no use for edits, progress or unit news — the
+    /// plugin server — keeps the queue from filling with a backlog.
+    ///
+    /// Leaves the restart flags and pending MIDI-learn CCs alone.
+    pub fn discard_notifications(&self) -> usize {
+        let mut n = 0;
+        while self.host.handler.pop_notification().is_some() {
+            n += 1;
+        }
+        self.host.handler.take_overflowed();
+        n
+    }
+
+    /// How many notifications are queued, unread.
+    pub fn pending_notifications(&self) -> usize {
+        self.host.handler.pending_notifications()
+    }
+
+    /// Notifications the plugin sent that were dropped because
+    /// [`NOTIFICATION_CAPACITY`](crate::NOTIFICATION_CAPACITY) were already
+    /// unread. Cumulative over the instance's life; a rising count means the
+    /// host polls too rarely (or not at all) for this plugin.
+    pub fn dropped_notifications(&self) -> u64 {
+        self.host.handler.dropped_notifications()
     }
 
     /// Arms or disarms VST3 MIDI learn (`IMidiLearn`).
@@ -1546,9 +1588,10 @@ impl Vst3Loaded {
             )));
         }
 
-        // Create a fresh frame/channel pair for this editor session.
+        // Create a fresh frame for this editor session, so no resize request
+        // from an earlier editor survives into this one.
         // setFrame must precede attached() per Steinberg spec.
-        let (plug_frame, resize_rx) = HostPlugFrame::new(
+        let plug_frame = HostPlugFrame::new(
             #[cfg(target_os = "linux")]
             self._library.run_loop(),
         );
@@ -1582,11 +1625,7 @@ impl Vst3Loaded {
         }
 
         let (width, height) = query_view_size(&view).unwrap_or(DEFAULT_EDITOR_SIZE);
-        self.editor = EditorState::Open {
-            view,
-            plug_frame,
-            resize_rx,
-        };
+        self.editor = EditorState::Open { view, plug_frame };
 
         Ok(EditorSize { width, height })
     }
@@ -1707,17 +1746,14 @@ impl Vst3Loaded {
         }
     }
 
-    /// Coalesces multiple `IPlugFrame::resizeView` requests received
-    /// since the last poll, returning only the latest.
+    /// The latest `IPlugFrame::resizeView` request since the last poll, if
+    /// any. Earlier requests in between are superseded, not queued: only the
+    /// size the plugin wants now matters.
     pub fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
-        let EditorState::Open { resize_rx, .. } = &self.editor else {
+        let EditorState::Open { plug_frame, .. } = &self.editor else {
             return None;
         };
-        let mut latest = None;
-        while let Ok(size) = resize_rx.try_recv() {
-            latest = Some(size);
-        }
-        latest
+        plug_frame.take_resize_request()
     }
 
     /// Asks the plugin what it would snap `requested` to, without applying it.

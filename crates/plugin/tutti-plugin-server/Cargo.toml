@@ -56,9 +56,6 @@ memmap2 = "0.9"
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
 
-# Stack-first vectors for MIDI events
-smallvec = { version = "1.13", features = ["serde"] }
-
 # Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows)
 interprocess = { version = "2" }
 

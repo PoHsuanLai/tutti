@@ -36,7 +36,6 @@ use crate::protocol::{
     PROTOCOL_VERSION,
 };
 use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
-use smallvec::smallvec;
 use std::sync::Arc;
 
 const CHANNELS: usize = 2;
@@ -54,7 +53,8 @@ impl super::batcher::Chunks for MidiEventVec {
 
     fn midi_out(&mut self, events: &MidiEventVec) {
         self.clear();
-        self.extend_from_slice(events);
+        self.try_extend_from_slice(events)
+            .expect("an emptied list holds a full one");
     }
 
     fn emit(&mut self, _frame: usize, _event: crate::protocol::MidiEvent) {}
@@ -146,8 +146,8 @@ fn stereo_layout() -> SlabLayout {
         samples_per_channel: BATCH_SIZE,
         format: SampleFormat::Float32,
         slots: RING_SLOTS as u32,
-        inputs: smallvec![ChannelLayout::STEREO],
-        outputs: smallvec![ChannelLayout::STEREO],
+        inputs: vec![ChannelLayout::STEREO],
+        outputs: vec![ChannelLayout::STEREO],
     }
 }
 
@@ -286,7 +286,7 @@ fn bridge_with_server(
 fn a_sidechain_port_reaches_the_plugin() {
     let _lock = exclusive();
     let layout = SlabLayout {
-        inputs: smallvec![ChannelLayout::STEREO, ChannelLayout::MONO],
+        inputs: vec![ChannelLayout::STEREO, ChannelLayout::MONO],
         ..stereo_layout()
     };
     let (bridge, _thread, _server) =
@@ -1440,11 +1440,10 @@ fn stamped_server(
                             }
                             server_slab.publish_output(seq);
                         }
-                        let mut midi_out = crate::protocol::IpcMidiEventVec::new();
-                        midi_out.push(crate::protocol::IpcMidiEvent {
+                        let midi_out = vec![crate::protocol::IpcMidiEvent {
                             frame_offset: 0,
                             data: [seq as u32, 0, 0, 0],
-                        });
+                        }];
                         BridgeMessage::AudioProcessed {
                             latency_us: 0,
                             seq,

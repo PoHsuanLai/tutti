@@ -422,8 +422,8 @@ impl Vst3Event {
 ///   which lives in the list's `events: Vec<Vst3Event>`. That Vec is filled
 ///   once per block by `update_from_sources` and only *read* by `getEvent`, so
 ///   the address is fixed for the block. (This deliberately replaced a
-///   push-per-`getEvent` `SmallVec` scratch: it spilled to the heap on the 9th
-///   push and moved the inline elements, dangling every pointer already handed
+///   push-per-`getEvent` inline-then-heap scratch: it spilled to the heap on the
+///   9th push and moved the inline elements, dangling every pointer already handed
 ///   to the plugin. Reserving capacity would not have fixed it — growth past
 ///   the reservation reallocates just the same. Borrowing the already-stable
 ///   event removes the copy, and with it the hazard.)
@@ -578,7 +578,7 @@ const MAX_EVENT_TEXT_LEN: usize = 256;
 )]
 pub(crate) unsafe fn from_c_event(
     event: &vst3::Steinberg::Vst::Event,
-    text_arena: &mut smallvec::SmallVec<[u16; 256]>,
+    text_arena: &mut TextArena,
 ) -> Option<Vst3Event> {
     let header = EventHeader {
         bus_index: event.busIndex,
@@ -589,25 +589,15 @@ pub(crate) unsafe fn from_c_event(
     };
 
     // Copy a plugin-supplied (ptr, len) UTF-16 string into the arena, returning
-    // the TextRef. Null pointer or zero length yields an empty ref.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "n is clamped to MAX_EVENT_TEXT_LEN and the arena holds at most \
-                  that many per event, so both fit u32"
-    )]
-    let intern =
-        |arena: &mut smallvec::SmallVec<[u16; 256]>, ptr: *const u16, len: usize| -> TextRef {
-            let n = len.min(MAX_EVENT_TEXT_LEN);
-            if ptr.is_null() || n == 0 {
-                return TextRef::default();
-            }
-            let start = arena.len() as u32;
-            arena.extend(std::slice::from_raw_parts(ptr, n).iter().copied());
-            TextRef {
-                start,
-                len: n as u32,
-            }
-        };
+    // the TextRef. Null pointer or zero length yields an empty ref; so does a
+    // text the arena has no reserved room left for (`TextArena::intern`).
+    let intern = |arena: &mut TextArena, ptr: *const u16, len: usize| -> TextRef {
+        let n = len.min(MAX_EVENT_TEXT_LEN);
+        if ptr.is_null() || n == 0 {
+            return TextRef::default();
+        }
+        arena.intern(std::slice::from_raw_parts(ptr, n))
+    };
 
     match event.r#type as u32 {
         t if t == EventTypes_::kNoteOnEvent as u32 => {
@@ -1305,27 +1295,86 @@ pub fn vst3_to_note_expression(event: &Vst3Event) -> Option<NoteExpressionValue>
     }
 }
 
-/// Owner-scratch alias for the UTF-16 text arena that backs chord / scale /
-/// note-expression-text events' borrowed `text` pointers.
-pub(crate) type TextArena = smallvec::SmallVec<[u16; 256]>;
+/// The UTF-16 owner behind chord / scale / note-expression-text events'
+/// borrowed `text` pointers, with a fixed room reserved once at construction.
+///
+/// The plugin keeps every `text` pointer `getEvent` hands it for the rest of
+/// `process`, and those pointers point into this buffer. A `Vec`'s elements
+/// live on the heap, so moving the owner does not move them, but *growing* it
+/// past its capacity reallocates and dangles every pointer already handed out
+/// (and allocates on the audio thread). So the arena never grows: a text that
+/// does not fit the room left is refused, interned as an empty [`TextRef`],
+/// and counted in [`TextArena::dropped`]. The event itself is still staged.
+pub(crate) struct TextArena {
+    buf: Vec<u16>,
+    dropped: usize,
+}
+
+impl TextArena {
+    /// UTF-16 units reserved per arena: room for this many maximum-length
+    /// texts in one block. Text-bearing events (chords, scales, per-note text)
+    /// are a handful per block in practice; past this, texts are refused.
+    pub(crate) const CAPACITY: usize = 64 * MAX_EVENT_TEXT_LEN;
+
+    pub(crate) fn new() -> Self {
+        Self {
+            buf: Vec::with_capacity(Self::CAPACITY),
+            dropped: 0,
+        }
+    }
+
+    /// Copy `text` (clamped to `MAX_EVENT_TEXT_LEN`) in and address it, or
+    /// refuse with an empty ref when the reserved room cannot hold it. Never
+    /// reallocates.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the arena never exceeds CAPACITY (16 Ki units) and n is at most \
+                  MAX_EVENT_TEXT_LEN, so both fit u32"
+    )]
+    pub(crate) fn intern(&mut self, text: &[u16]) -> TextRef {
+        let n = text.len().min(MAX_EVENT_TEXT_LEN);
+        if n == 0 {
+            return TextRef::default();
+        }
+        if self.buf.len() + n > Self::CAPACITY {
+            self.dropped += 1;
+            return TextRef::default();
+        }
+        let start = self.buf.len() as u32;
+        self.buf.extend_from_slice(&text[..n]);
+        TextRef {
+            start,
+            len: n as u32,
+        }
+    }
+
+    /// Empty the arena for the next block, keeping its reserved room.
+    pub(crate) fn clear(&mut self) {
+        self.buf.clear();
+    }
+
+    /// Texts refused for lack of room since this arena was made.
+    pub(crate) fn dropped(&self) -> usize {
+        self.dropped
+    }
+}
+
+impl Default for TextArena {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::ops::Deref for TextArena {
+    type Target = [u16];
+    fn deref(&self) -> &[u16] {
+        &self.buf
+    }
+}
 
 /// Intern `text` into `arena` and return a [`TextRef`] addressing it.
-/// As `to_c_event`: `MAX_EVENT_TEXT_LEN` bounds both the offset and the length.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "bounded by MAX_EVENT_TEXT_LEN"
-)]
 fn intern_utf16(arena: &mut TextArena, text: &[u16]) -> TextRef {
-    let n = text.len().min(MAX_EVENT_TEXT_LEN);
-    if n == 0 {
-        return TextRef::default();
-    }
-    let start = arena.len() as u32;
-    arena.extend_from_slice(&text[..n]);
-    TextRef {
-        start,
-        len: n as u32,
-    }
+    arena.intern(text)
 }
 
 fn text_header(sample_offset: i32, event_type: u16) -> EventHeader {
@@ -1354,7 +1403,7 @@ pub struct NoteExpressionText {
 
 impl NoteExpressionText {
     /// Stage into a [`Vst3Event`], interning the text into `arena`.
-    pub fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
+    pub(crate) fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
         Vst3Event::NoteExpressionText(NoteExpressionTextEvent {
             header: text_header(self.sample_offset, K_NOTE_EXPRESSION_TEXT_EVENT),
             type_id: self.type_id,
@@ -1381,7 +1430,7 @@ pub struct ChordValue {
 
 impl ChordValue {
     /// Stage into a [`Vst3Event`], interning the display name into `arena`.
-    pub fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
+    pub(crate) fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
         Vst3Event::Chord(ChordEvent {
             header: text_header(self.sample_offset, K_CHORD_EVENT),
             root: self.root,
@@ -1407,7 +1456,7 @@ pub struct ScaleValue {
 
 impl ScaleValue {
     /// Stage into a [`Vst3Event`], interning the display name into `arena`.
-    pub fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
+    pub(crate) fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
         Vst3Event::Scale(ScaleEvent {
             header: text_header(self.sample_offset, K_SCALE_EVENT),
             root: self.root,
@@ -2210,7 +2259,7 @@ mod tests {
         }
 
         // Decode back (plugin → host direction): re-interns into out_arena.
-        let mut out_arena = smallvec::SmallVec::new();
+        let mut out_arena = TextArena::new();
         let decoded = unsafe { from_c_event(&c, &mut out_arena) }.expect("decodes");
         let back = vst3_to_chord(&decoded, &out_arena).expect("is a chord");
         assert_eq!(back.root, 60);
@@ -2241,7 +2290,7 @@ mod tests {
         let scale_ev = scale.to_vst3_event(&mut in_arena);
         let text_ev = expr_text.to_vst3_event(&mut in_arena);
 
-        let mut out = smallvec::SmallVec::new();
+        let mut out = TextArena::new();
         for (ev, expect_scale) in [(scale_ev, true), (text_ev, false)] {
             let c = to_c_event(&ev, &in_arena);
             let decoded = unsafe { from_c_event(&c, &mut out) }.expect("decodes");
@@ -2270,7 +2319,7 @@ mod tests {
         let ev = host.to_vst3_event();
         assert_eq!(ev.header().event_type, K_NOTE_EXPRESSION_INT_VALUE_EVENT);
         let c = to_c_event(&ev, &[]);
-        let mut arena = smallvec::SmallVec::new();
+        let mut arena = TextArena::new();
         let decoded = unsafe { from_c_event(&c, &mut arena) }.expect("decodes");
         let back = vst3_to_note_expression_int(&decoded).expect("int expr");
         assert_eq!(back.value, -1234);

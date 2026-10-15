@@ -195,8 +195,8 @@ pub const FADE_CAPACITY: usize = 256;
 
 /// A unit, owned. Crate-private, so the only code that can replace or drop
 /// the box is this crate's; its drop is checked against the audio-thread
-/// marker. (`tutti_types::Retire` is the generic, move-only form; this crate
-/// must *run* its units, so it keeps a box it can hand `&mut` out of.)
+/// marker (`AudioThread::check_not_current`). This crate must *run* its
+/// units, so the box hands `&mut` out.
 pub(crate) struct NodeBox(Box<dyn Node>);
 
 impl NodeBox {

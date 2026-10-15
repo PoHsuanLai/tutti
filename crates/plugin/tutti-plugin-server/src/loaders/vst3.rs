@@ -482,10 +482,11 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
         ctx.param_changes,
         &vst3_transport,
     );
-    // `out` was cleared by the caller, so both of these extend into storage
+    // `out` was cleared by the caller, so both of these write into storage
     // that already has capacity — no `to_owned`, no `clone`, and in particular
-    // no fresh `SmallVec` per block for the MIDI.
-    out.midi_events.extend(output.midi_events.iter().copied());
+    // no fresh list per block for the MIDI (past its cap the rest are dropped
+    // and counted).
+    out.emit_midi(output.midi_events.iter().copied());
     for queue in &output.parameter_changes.queues {
         for point in &queue.points {
             // `emit_param_point`, not `ParameterChanges::add_change`: the
@@ -970,7 +971,7 @@ mod seq_scratch_tests {
     fn changes(items: &[ChordValue]) -> ChordChanges {
         let mut c = ChordChanges::new();
         for i in items {
-            c.add_change(i.clone());
+            assert!(c.add_change(i.clone()), "the fixture fits the cap");
         }
         c
     }
@@ -1048,12 +1049,12 @@ mod seq_scratch_tests {
     fn int_expressions_refill_without_nesting() {
         use tutti_plugin::server::{NoteExpressionIntChanges, NoteExpressionIntValue};
         let mut src = NoteExpressionIntChanges::new();
-        src.add_change(NoteExpressionIntValue {
+        assert!(src.add_change(NoteExpressionIntValue {
             sample_offset: 4,
             note_id: 7,
             type_id: 2,
             value: 41,
-        });
+        }));
 
         let mut out = Vec::new();
         convert_expr_ints_into(&src, &mut out);

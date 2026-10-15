@@ -24,7 +24,8 @@ thread_local! {
 /// lives. It does not pin one thread as "the" audio thread, because some hosts
 /// (CoreAudio) move their callback between threads. What it answers is the
 /// question a destructor needs: "am I about to free memory inside a block?"
-/// [`Retire`](crate::Retire) uses it for exactly that.
+/// [`check_not_current`](Self::check_not_current) is that question asked from
+/// a `Drop` impl.
 ///
 /// Cheap enough to set every block: entering is a `const`-initialised
 /// thread-local counter, so it neither allocates nor registers a destructor.

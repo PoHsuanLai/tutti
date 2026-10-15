@@ -9,10 +9,9 @@
 //!
 //! [`refill_from_queue`](ParamValueQueueImpl::refill_from_queue) lets
 //! callers recycle a single `ComWrapper<ParamValueQueueImpl>` across
-//! buffers; it keeps the inline `SmallVec` storage (16 points) and only
-//! spills to the heap for unusually dense automation.
+//! buffers; it keeps its point storage (at least [`MIN_POINT_ROOM`], reserved
+//! at construction) and only grows for unusually dense automation.
 
-use smallvec::SmallVec;
 use vst3::Steinberg::{
     kInvalidArgument, kResultOk, tresult,
     Vst::{IParamValueQueue, IParamValueQueueTrait},
@@ -25,14 +24,14 @@ use tutti_plugin_types::Normalized;
 use tutti_plugin_types::ParamAddress;
 use tutti_types::AudioThreadCell;
 
-/// Typical automation carries a handful of points per buffer. Values past
-/// the inline capacity spill to the heap — rare and not on the hot path
-/// once the caller has warmed up the queue off-RT.
-const INLINE_POINTS: usize = 16;
+/// The least point room a queue is built with. Typical automation carries a
+/// handful of points per buffer; a queue that receives more grows once (on the
+/// thread that fills it) and keeps the larger room.
+pub(crate) const MIN_POINT_ROOM: usize = 16;
 
 pub struct ParamValueQueueImpl {
     param_id: AudioThreadCell<u32>,
-    points: AudioThreadCell<SmallVec<[ParameterPoint; INLINE_POINTS]>>,
+    points: AudioThreadCell<Vec<ParameterPoint>>,
 }
 
 impl Class for ParamValueQueueImpl {
@@ -45,18 +44,18 @@ impl ParamValueQueueImpl {
     }
 
     /// An empty queue with room for `points` points before it allocates
-    /// (the inline 16 when `points` is fewer). Allocates; call it off the
+    /// ([`MIN_POINT_ROOM`] when `points` is fewer). Allocates; call it off the
     /// audio thread.
     pub fn with_room(param_id: u32, points: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             param_id: AudioThreadCell::new(param_id),
-            points: AudioThreadCell::new(SmallVec::with_capacity(points)),
+            points: AudioThreadCell::new(Vec::with_capacity(points.max(MIN_POINT_ROOM))),
         })
     }
 
     /// Replaces this queue's contents with `queue`'s points in place.
-    /// Allocation-free when `queue.points.len() <= capacity` (inline up to
-    /// 16, or whatever the current heap capacity is after prior reuse).
+    /// Allocation-free when `queue.points.len() <= capacity` (at least
+    /// [`MIN_POINT_ROOM`], or whatever it has grown to after prior reuse).
     ///
     /// VST3 `IParamValueQueue` values are **normalized `0..1`** (the plugin
     /// reads them via `getPoint` and un-normalizes internally), which matches
@@ -240,7 +239,7 @@ mod tests {
     }
 
     /// RT regression: `refill_from_queue` must not allocate when the
-    /// inline SmallVec capacity (16) is sufficient. Covers the hot
+    /// queue's reserved room ([`MIN_POINT_ROOM`]) is sufficient. Covers the hot
     /// automation path where a DAW streams per-buffer points.
     #[test]
     fn refill_from_queue_is_allocation_free() {
@@ -264,7 +263,7 @@ mod tests {
     #[test]
     fn refill_from_queue_steady_state_is_allocation_free_after_grow() {
         let queue = ParamValueQueueImpl::new_empty(0);
-        let big = queue_with_points(32); // > INLINE_POINTS
+        let big = queue_with_points(32); // > MIN_POINT_ROOM
                                          // Grow first (outside the no-alloc scope).
         queue.refill_from_queue(&big);
 

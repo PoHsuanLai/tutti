@@ -227,8 +227,8 @@ pub(crate) fn route_cc_events(
 /// Sorts every queue's points into ascending `sample_offset` order, as VST3's
 /// `IParamValueQueue` requires. Host automation is seeded before CC-derived
 /// points are appended (in MIDI-arrival order), so a queue carrying both can be
-/// unsorted even when each source was individually ordered. In place — the
-/// `points` SmallVec reuses its capacity, so this is allocation-free.
+/// unsorted even when each source was individually ordered. In place — each
+/// queue's points keep their storage, so no queue grows.
 ///
 /// The sort must be **stable**. VST3 encodes a discontinuity as two points —
 /// the old value, then the new one — and permits them to share a
@@ -261,14 +261,15 @@ pub(crate) struct CcRoute {
 
 impl CcRoute {
     /// Builds with `mapping` and empty scratch. The MIDI scratch is capped
-    /// and never grows; `param_changes` has room for `queues` parameter
-    /// queues (the plugin's parameter count), and past that grows once and
-    /// is reused thereafter.
-    pub(crate) fn new(mapping: MidiCcMapping, queues: usize) -> Self {
+    /// and never grows; `param_changes` is reserved with `queues` parameter
+    /// queues (the plugin's parameter count) of `points` points each (the
+    /// host input list's room), and past that grows once and is reused
+    /// thereafter.
+    pub(crate) fn new(mapping: MidiCcMapping, queues: usize, points: usize) -> Self {
         Self {
             mapping,
             filtered_midi: RtMidiEvents::new(),
-            param_changes: ParameterChanges::with_capacity(queues),
+            param_changes: ParameterChanges::reserved(queues, points),
         }
     }
 
@@ -298,12 +299,10 @@ impl CcRoute {
             return None;
         }
 
-        // Clear scratch in place (keep heap capacity).
+        // Clear scratch in place: the param queues go back to the set's
+        // spares with their point storage, so the next block reuses them.
         self.filtered_midi.clear();
-        for queue in self.param_changes.queues.iter_mut() {
-            queue.points.clear();
-        }
-        self.param_changes.queues.clear();
+        self.param_changes.clear();
 
         // Seed the merged param changes with the host's automation.
         if let Some(pc) = param_changes {
@@ -644,7 +643,15 @@ mod tests {
     }
 
     /// RT regression: once the scratch buffers are warmed, repeated routing
-    /// must not allocate. Mirrors the audio path's clear-in-place discipline.
+    /// must not allocate. Drives [`CcRoute::route`] itself, host automation
+    /// seeded and all, rather than a copy of its clear discipline: the
+    /// discipline is what changed when the queues stopped holding points
+    /// inline (a queue dropped by `queues.clear()` and rebuilt has no room,
+    /// so its first point allocates), and a copy would not have followed it.
+    ///
+    /// Mutation (run): `route` clearing with `queues.clear()` (dropping the
+    /// queues, the old discipline) instead of `ParameterChanges::clear` →
+    /// every block rebuilds its queues inside the gate → fails.
     #[test]
     fn route_cc_events_is_allocation_free_after_warmup() {
         use tutti_midi_types::convert::midi1_cc_to_midi2;
@@ -669,24 +676,19 @@ mod tests {
             .with_frame_offset(32),
         ];
 
-        let mut filtered = RtMidiEvents::new();
-        let mut params = ParameterChanges::new();
+        let mut route = CcRoute::new(mapping, 4, 16);
+        let mut host = ParameterChanges::new();
+        host.add_change(ParamAddress::Opaque(7u32.into()), 0, 0.25);
+        host.add_change(ParamAddress::Opaque(7u32.into()), 48, 0.75);
 
-        // Warm up: grow both buffers' capacity once.
-        let clear = |filtered: &mut RtMidiEvents, params: &mut ParameterChanges| {
-            filtered.clear();
-            for q in params.queues.iter_mut() {
-                q.points.clear();
-            }
-            params.queues.clear();
-        };
-        route_cc_events(&mapping, &events, &mut filtered, &mut params);
-        clear(&mut filtered, &mut params);
+        // Warm up once, outside the gate.
+        let _ = route.route(&events, Some(&host));
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..10_000 {
-                route_cc_events(&mapping, &events, &mut filtered, &mut params);
-                clear(&mut filtered, &mut params);
+                let (midi, params) = route.route(&events, Some(&host)).expect("mapped");
+                assert_eq!(midi.len(), 3, "the mapped CC is taken out");
+                assert_eq!(params.queues.len(), 2, "host automation + the CC");
             }
         });
     }

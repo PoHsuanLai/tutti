@@ -17,23 +17,24 @@
 //! separate copies of the refuse-at-`N` logic drift, and a copy that is subtly
 //! different is a buffer that grows on the audio thread.
 
-use smallvec::SmallVec;
+use arrayvec::ArrayVec;
 
-/// A `SmallVec` that refuses to exceed its inline capacity, plus the flag
-/// recording whether it has had to.
+/// `N` inline slots that refuse a write past them, plus the flag recording
+/// whether one has been refused.
 ///
 /// `N` is the hard ceiling: [`push`](Self::push) returns `false` rather than
-/// spilling to the heap, because a spill means a `malloc` inside the audio
-/// callback.
+/// growing. The storage is an [`ArrayVec`], which has no heap path at all, so
+/// there is no spill to guard against: a `malloc` inside the audio callback
+/// is not reachable from here.
 pub(crate) struct Capped<T, const N: usize> {
-    buf: SmallVec<[T; N]>,
+    buf: ArrayVec<T, N>,
     overflowed: bool,
 }
 
 impl<T, const N: usize> Capped<T, N> {
     pub(crate) fn new() -> Self {
         Self {
-            buf: SmallVec::new(),
+            buf: ArrayVec::new(),
             overflowed: false,
         }
     }
@@ -50,11 +51,10 @@ impl<T, const N: usize> Capped<T, N> {
     /// and report `false`.
     #[inline]
     pub(crate) fn push(&mut self, v: T) -> bool {
-        if self.buf.len() >= N {
+        if self.buf.try_push(v).is_err() {
             self.overflowed = true;
             return false;
         }
-        self.buf.push(v);
         true
     }
 
@@ -107,12 +107,12 @@ impl<T, const N: usize> Capped<T, N> {
 
     #[inline]
     pub(crate) fn is_full(&self) -> bool {
-        self.buf.len() >= N
+        self.buf.is_full()
     }
 
     #[inline]
     pub(crate) fn remaining(&self) -> usize {
-        N - self.buf.len()
+        self.buf.remaining_capacity()
     }
 
     #[inline]
@@ -146,6 +146,8 @@ mod tests {
     // add on top (access discipline, lending, draining) rather than re-testing
     // the cap through three different front doors.
 
+    /// Mutation (run): `push` through `ArrayVec::push` instead of `try_push`
+    /// → the fourth push panics ("ArrayVec: capacity exceeded") → fails.
     #[test]
     fn push_refuses_at_the_cap_rather_than_growing() {
         let mut c: Capped<u32, 3> = Capped::new();

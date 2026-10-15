@@ -373,10 +373,9 @@ pub unsafe fn schedule(
         // automation queue every block is the normal steady state.
         return Ok(());
     }
-    // One raw event per input, built on the stack. `SmallVec` would be the
-    // allocation-free general answer, but this crate has no such dependency and
-    // the loop below is called per block on the audio thread — so schedule in
-    // fixed-size chunks rather than allocating a Vec.
+    // One raw event per input, built on the stack. The loop below is called
+    // per block on the audio thread, so it schedules in fixed-size chunks
+    // rather than allocating a Vec.
     //
     // 16 covers a generous per-block automation load (a host writing 16 distinct
     // parameter events into one 512-frame block is already unusual); anything

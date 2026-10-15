@@ -283,7 +283,7 @@ the race. Every type below exists because the audit found the bug it prevents.
 |---|---|---|
 | **`Latency(Samples)`**, the only thing `Shape::latency` accepts; musical delay times stay `Seconds`/`Samples` | `route` → `Signal::Latency` carrying both "this node is late" and "this node echoes" | D1–D3: an echo compensated as if it were processing latency |
 | **`ParamKey<U>`**, typed by unit (`ParamKey::<Hz>::CUTOFF`) over the stable `UnitParam` `u16` wire id; `set<U>(ParamKey<U>, U)` | `Setting`/`unit_param` erasing `U` at `to_raw()` | Sending a `Db` to a `Hz` param compiles today; the units rule stops one layer too early |
-| **`Retire<T>`**: an owning box for deltas, retired units, old plans and arenas. It gives up its contents only through a return channel whose push cannot fail; in debug, `Drop` panics on the audio thread | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; `Retire` does it for hand-offs |
+| **The audio-thread marker on `Drop`**: the executor runs under `AudioThread::enter`, and what it hands back (units, crossfades, commits, a unit's param state) calls `AudioThread::check_not_current` in its `Drop`, so a free on the audio thread panics in debug. (Planned as an owning box, `Retire<T>`; it shipped, but nothing in production held one, since each hand-off type carries the check in its own `Drop`, and it was deleted; see "SmallVec removed" under Phase 6.) | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; the `Drop` check does it for hand-offs |
 | **`MaxBlock`**, obtainable only from `Prepare`; node scratch is built from it; `Io` is guaranteed to be at most that long | Five separate 64-frame assumptions: the polysynth clamp, SoundFont, the batcher, VST2, the disk-voice reserve | D4: silent truncation or audio-thread reallocation when the block grows |
 | **`SortedEvents<'a>`**, constructible only sorted by offset with every offset below the block length | A raw `&[Event]` that every sub-chunking node must trust or re-check | Events out of order, or past the block |
 | **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
@@ -3551,6 +3551,26 @@ What they show:
   rows' one-participant figures agree, as they must: the serial walk ignores
   tasks, and the review's callgrind count of the serial walk, this branch
   against `main`, differs by 0.009%.
+
+#### SmallVec removed
+
+**Status: landed** (2026-10-15). `smallvec` is out of the workspace. Where
+the inline storage bought nothing (built and read off the audio thread, or
+reserved once and reused), the type is a `Vec` or a boxed slice; where the
+inline storage was a hard cap (`RtVec`/`RtEventBuf`, the IPC MIDI block, the
+harmony containers) it is an `arrayvec::ArrayVec`, whose push past the cap
+is refused rather than spilling to the heap. `tutti-types` takes `arrayvec`
+for `Capped`. The `Retire<T>` box in §5 is deleted (no production user; the
+`Drop` check on the audio-thread marker does its job), and the graph's probe
+of it in `tests/executor.rs` uses that check directly.
+
+Two audio-thread paths depended on the inline room and are reserved now:
+a `ParameterQueue` built per block had ten points inline, and a `Vec` has
+none, so `ParameterChanges::add_change` takes a spare queue as `open_queue`
+does, and the VST3 host reserves its output and CC-routing sets
+(`ParameterChanges::reserved`) and empties them with `clear`. The VST3
+event list's text arena reserves its room once and refuses (and counts) a
+text past it, since the plugin holds pointers into it for the block.
 
 ## Per-node rewrite plan
 

@@ -38,7 +38,7 @@ pub mod tail;
 pub use rt::{
     AudioThread, AudioThreadCell, AudioThreadGuard, BorrowGuard, BorrowRef, ClaimConflict,
     ClaimTable, Claimed, ClaimedRun, Held, JobGate, Participant, PosClaim, PosFrame, PosReader,
-    PosRing, PosWriter, RangeCell, Retire, RingWindow, RtEventBuf, RtPublish, RtRef, RtScratch,
+    PosRing, PosWriter, RangeCell, RingWindow, RtEventBuf, RtPublish, RtRef, RtScratch,
     RtScratchOverflow, RtVec, RwView, ScopedNoDenormals, SplitMut, SplitRw, TaskGraph,
     MAX_POS_RING_FRAMES,
 };

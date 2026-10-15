@@ -1590,7 +1590,7 @@ mod tests {
 
         // `fill_param_changes` fills within the room the set was reserved
         // with (an unreserved set has none); one queue is all this needs.
-        let mut changes = ParameterChanges::reserved(1, ParameterQueue::INLINE_POINTS);
+        let mut changes = ParameterChanges::reserved(1, ParameterQueue::MIN_POINTS);
         assert_eq!(
             list.fill_param_changes(&mut changes),
             0,
@@ -2466,7 +2466,7 @@ mod tests {
         // Reserved: `fill_param_changes` fills within the set's room, and an
         // unreserved set has none. Two queues, so a gesture or mod event
         // wrongly queued would show as a second one.
-        let mut changes = ParameterChanges::reserved(2, ParameterQueue::INLINE_POINTS);
+        let mut changes = ParameterChanges::reserved(2, ParameterQueue::MIN_POINTS);
         assert_eq!(
             output.fill_param_changes(&mut changes),
             0,

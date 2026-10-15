@@ -16,7 +16,6 @@ use crate::host::node::ParameterChangeSink;
 use crate::protocol::{
     EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor, PluginTail,
 };
-use smallvec::SmallVec;
 
 /// Maximum block size we pre-size the plugin's render scratch for.
 /// Plugins are told this is the upper bound; per-call sizes may be
@@ -98,8 +97,8 @@ pub fn load_client(
 
     // VST2 is single-bus: one main input bus and one main output bus.
     let loaded = LoadedPlugin {
-        inputs: SmallVec::from_slice(&[host_meta.num_inputs]),
-        outputs: SmallVec::from_slice(&[host_meta.num_outputs]),
+        inputs: vec![host_meta.num_inputs],
+        outputs: vec![host_meta.num_outputs],
         latency_samples: host_meta.latency_samples,
         // `Unknown`, matching the out-of-process VST2 loader exactly — see the
         // comment there. VST2 encodes tail inversely to every other format

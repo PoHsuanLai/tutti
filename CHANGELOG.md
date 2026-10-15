@@ -80,6 +80,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`smallvec` is gone from the workspace** (design doc 013, "SmallVec
+  removed"). A type whose inline storage bought nothing is a `Vec` (or a
+  boxed slice); a type whose inline storage was a hard cap is an
+  `arrayvec::ArrayVec`, which refuses a push past the cap instead of
+  spilling to the heap. **Breaking** for code that names the aliases or the
+  fields below. On the wire nothing changes: bincode writes each of these as
+  a sequence (a `u64` length, then the items), whichever container, and
+  tests pin those bytes.
+
+  | Was | Now |
+  |---|---|
+  | `tutti_plugin_types::BusChannels` / `BusTopologies`: `SmallVec<[_; 4]>` | `Vec<ChannelLayout>` / `Vec<Option<ChannelTopology>>`. `BusChannels::from_slice(s)` → `s.to_vec()`; `smallvec![..]` → `vec![..]` |
+  | `MidiEventVec` (`tutti_plugin_types`, re-exported by `tutti_plugin::protocol`): `SmallVec<[MidiEvent; 256]>`, spilling past 256 | one type, `ArrayVec<MidiEvent, MIDI_STACK_CAPACITY>` (256). `push`, `extend` and `collect` **panic** past the cap: use `try_push`, or `ProcessOutput::emit_midi` |
+  | `tutti_plugin::protocol::IpcMidiEventVec`: `SmallVec<[IpcMidiEvent; 256]>` | `Vec<IpcMidiEvent>` |
+  | — | `tutti_plugin::protocol::midi_from_wire(&[IpcMidiEvent]) -> MidiEventVec`: converts a wire list, keeping the first 256 events |
+  | `NoteExpressionVec`: `SmallVec<[_; 8]>` | `Vec<NoteExpressionValue>` |
+  | the harmony containers' fields (chords, scales, note-expression text and int changes): `SmallVec<[_; 4]>`, unbounded | `ArrayVec<_, HARMONY_CAPACITY>` (4, newly exported). `add_change` returns `bool` (`#[must_use]`): `false` when the container is full, and the change is not kept |
+  | `ProcessOutput.midi_events` filled with `extend` | `ProcessOutput::emit_midi(events) -> usize` keeps what fits and returns how many were dropped; `ProcessOutput::midi_dropped()` totals them for the block |
+  | `ProcessOutput.retired`: `SmallVec` | `Vec<ParameterQueue>` (private) |
+  | `ParameterQueue::INLINE_POINTS` (10) | `ParameterQueue::MIN_POINTS` (10), the floor of `chunk_room`. `ParameterQueue::new` has **no** point room (its first point allocates): reserve with `with_capacity` or `ParameterChanges::reserved`. `ParameterChanges::point_capacity()` is 0 for a set with no spares |
+  | `ParameterChanges::add_change` built a new queue for a new parameter | it takes a spare queue first, as `open_queue` does, so a reserved set cleared each block reuses its point storage |
+  | `tutti_vst2_host::MidiEventVec`: `SmallVec<[MidiEvent; 256]>` | `Vec<MidiEvent>`, reserved once (the drain into it is gated against allocating) |
+  | `tutti_vst3_host::ProcessOutput.midi_events`: `SmallVec<[MidiEvent; 64]>` | `Vec<MidiEvent>` |
+  | — | `Vst3Active::event_text_dropped()`: chord, scale and note-expression texts refused because a block's event-list text arena was full. The arena reserves its room (64 texts of 256 UTF-16 units) once and never grows, because the plugin holds pointers into it for the whole `process` call |
+  | `tutti_types::ChannelTopology`'s positions: `SmallVec<[Speaker; 8]>` (private) | `Vec<Speaker>` (private) |
+  | `tutti_types::Retire<T>` | removed. Nothing in production used it. A type that must not be freed on the audio thread calls `tutti_types::AudioThread::check_not_current("what")` in its `Drop` |
+
+  **Decoding past a cap.** `ArrayVec`'s serde rejects a sequence longer than
+  its capacity, where `SmallVec` accepted any length. The harmony containers
+  decode with a truncating visitor instead: the first four items are kept
+  and the rest are read and discarded, so the stream stays in step and one
+  over-long list does not fail the whole `ProcessAudio` message. MIDI crosses
+  the wire as `Vec<IpcMidiEvent>`, which decodes at any length, and is cut to
+  the first 256 events when it is converted (`midi_from_wire`, on both the
+  host and the server); the server logs how many plugin events it dropped.
+
+  Migration:
+  - Replace `SmallVec`/`smallvec![]` for these aliases with `Vec`/`vec![]`,
+    or with `try_push` for the `ArrayVec` ones.
+  - Rename `ParameterQueue::INLINE_POINTS` to `MIN_POINTS`.
+  - Check the `bool` from a harmony `add_change`.
+  - Replace a `Retire<T>` with a newtype whose `Drop` calls
+    `AudioThread::check_not_current`.
+
 - **The control-lane floor** (design doc 014, PR 2a): the port rule for
   event sources, the graph's play clock and a shareable range cell.
   **Breaking** in three ways. A param port's event source *replaces* the

@@ -25,8 +25,9 @@ pub struct ProcessAudioData {
     /// Block length in **frames**, not samples — the slab's stride carries the
     /// channel count.
     pub num_samples: usize,
-    /// MIDI to deliver at the top of the block, inline up to
-    /// `MIDI_STACK_CAPACITY`.
+    /// MIDI to deliver at the top of the block: at most
+    /// `MIDI_STACK_CAPACITY` from the host, and the server keeps at most that
+    /// many of a longer one.
     pub midi_events: IpcMidiEventVec,
     /// Sample-accurate automation points to apply across the block.
     pub param_changes: ParameterChanges,

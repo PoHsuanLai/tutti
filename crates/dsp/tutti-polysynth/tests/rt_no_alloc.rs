@@ -147,7 +147,7 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
         .unwrap(),
     );
 
-    // Warm up the voice pool + finished-indices SmallVec at full size.
+    // Warm up the voice pool + finished-indices list at full size.
     synth.queue_midi(&[
         note_on(0, 48, 100),
         note_on(0, 60, 100),

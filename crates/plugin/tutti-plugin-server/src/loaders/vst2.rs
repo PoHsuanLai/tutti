@@ -197,10 +197,10 @@ impl PluginAudio for Vst2Instance {
             let transport = ctx.transport.cloned();
 
             // `process_f32` / `process_f64` return a borrow into the instance's
-            // own pooled MIDI-out buffer. Extending `out` — which the caller
-            // cleared and whose capacity survives the block — copies out of it
-            // without a fresh `SmallVec`, which is what `.collect()` built here
-            // every block and heap-spilled past its inline capacity.
+            // own pooled MIDI-out buffer. Emitting into `out` — which the caller
+            // cleared — copies out of it without a fresh list, which is what
+            // `.collect()` built here every block (past the cap the rest are
+            // dropped and counted).
             let emitted = match buffer {
                 AudioBufferMut::F32(buf) => {
                     let host_ctx = Vst2ProcessContext {
@@ -231,7 +231,7 @@ impl PluginAudio for Vst2Instance {
                     )
                 }
             };
-            out.midi_events.extend(emitted.iter().copied());
+            out.emit_midi(emitted.iter().copied());
 
             // VST2 reports parameter automation through the `audioMasterAutomate`
             // callback, not through a per-block output list, so there is nothing

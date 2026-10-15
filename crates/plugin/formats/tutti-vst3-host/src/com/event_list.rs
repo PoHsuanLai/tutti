@@ -12,14 +12,15 @@
 //! thread-identity assertion and compiles to a bare `UnsafeCell` in
 //! release; see [`tutti_types::AudioThreadCell`] for the wrapper.
 
-use smallvec::SmallVec;
 use vst3::Steinberg::{
     kInvalidArgument, kResultOk, tresult,
     Vst::{Event, IEventList, IEventListTrait},
 };
 use vst3::{Class, ComWrapper};
 
-use crate::types::{from_c_event, note_expression_to_vst3, to_c_event, Vst3Event, Vst3InputEvents};
+use crate::types::{
+    from_c_event, note_expression_to_vst3, to_c_event, TextArena, Vst3Event, Vst3InputEvents,
+};
 // Only the `#[cfg(test)]` staging helper names this directly; the RT fill path
 // goes through `RtMidiEvents`.
 #[cfg(test)]
@@ -40,14 +41,17 @@ struct Inner {
     /// UTF-16 owner for chord / scale / note-expression-text events' borrowed
     /// `text` pointers. Interned at stage time, read back at `getEvent` time,
     /// cleared in lockstep with `events` so no pointer outlives its block.
-    text_arena: SmallVec<[u16; 256]>,
+    /// Its room is reserved here and it never grows, so a pointer already
+    /// handed out is never moved; a text past the room is refused and
+    /// counted ([`TextArena`]).
+    text_arena: TextArena,
 }
 
 impl Default for Inner {
     fn default() -> Self {
         Self {
             events: Vec::with_capacity(256),
-            text_arena: SmallVec::new(),
+            text_arena: TextArena::new(),
         }
     }
 }
@@ -123,6 +127,13 @@ impl EventList {
 
     pub fn clear(&self) {
         self.inner.borrow_mut().clear();
+    }
+
+    /// Texts (chord / scale / note-expression-text) this list refused since
+    /// it was made because its arena's reserved room was spent for the block.
+    /// The event itself was still staged, with an empty text.
+    pub fn text_dropped(&self) -> usize {
+        self.inner.borrow().text_arena.dropped()
     }
 
     #[cfg(test)]
@@ -272,7 +283,7 @@ mod tests {
     /// A plugin's normal pattern is `getEventCount()` then `getEvent(i)` for
     /// every `i`, keeping each returned `Event` (and therefore each borrowed
     /// `bytes` pointer) live for the rest of `process`. Copying each event's
-    /// bytes into a `SmallVec<[[u8; 16]; 8]>` scratch cleared once per *block*
+    /// bytes into an inline-then-heap scratch of 8 cleared once per *block*
     /// breaks that: the 9th push spills the inline storage to the heap and moves
     /// it, dangling every pointer already handed out. This test stages well past
     /// the 8-element inline capacity and reads every pointer only *after* the
@@ -372,6 +383,75 @@ mod tests {
             let text = unsafe { std::slice::from_raw_parts(chord.text, chord.textLen as usize) };
             assert_eq!(text, names[i].as_slice(), "event {i} text");
         }
+    }
+
+    /// **The text arena never grows, so a text pointer already handed out
+    /// never moves.** One block stages more maximum-length chord names than
+    /// the arena's reserved room holds. Every event is fetched first and
+    /// read after, as a plugin does; the names that fit read back intact,
+    /// the ones past the room are staged with an empty text and counted, and
+    /// staging the block, the very first time included, allocates nothing.
+    ///
+    /// Mutations (run), each fails: interning without the room check (the
+    /// arena grows past its reservation) → the over-room texts arrive and the
+    /// drop count is 0; not counting the refusal → the drop count;
+    /// `TextArena::new` reserving nothing → the first staging allocates in
+    /// the gate.
+    #[test]
+    fn a_full_text_arena_refuses_rather_than_moving_its_pointers() {
+        use crate::types::TextArena;
+        const LONG: usize = 256;
+        let fits = TextArena::CAPACITY / LONG;
+        let over = 3;
+        let names: Vec<Vec<u16>> = (0..fits + over)
+            .map(|i| vec![b'a' as u16 + (i % 26) as u16; LONG])
+            .collect();
+        let chords: Vec<ChordValue> = names
+            .iter()
+            .enumerate()
+            .map(|(i, text)| ChordValue {
+                sample_offset: i as i32,
+                root: 0,
+                bass_note: 0,
+                mask: 0,
+                text: text.clone(),
+            })
+            .collect();
+        let sources = Vst3InputEvents {
+            chords: &chords,
+            ..Default::default()
+        };
+
+        let list = EventList::new();
+        assert_no_alloc::assert_no_alloc(|| {
+            list.update_from_sources(&sources);
+        });
+        assert_eq!(list.text_dropped(), over);
+
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        let count = unsafe { ptr.getEventCount() };
+        assert_eq!(count as usize, fits + over, "every event is staged");
+        let mut fetched: Vec<Event> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let mut out: Event = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { ptr.getEvent(i, &mut out) }, kResultOk);
+            fetched.push(out);
+        }
+        for (i, ev) in fetched.iter().enumerate() {
+            let chord = unsafe { ev.__field0.chord };
+            if i < fits {
+                let text =
+                    unsafe { std::slice::from_raw_parts(chord.text, chord.textLen as usize) };
+                assert_eq!(text, names[i].as_slice(), "event {i} text");
+            } else {
+                assert_eq!(chord.textLen, 0, "event {i} is past the room");
+            }
+        }
+
+        assert_no_alloc::assert_no_alloc(|| {
+            list.update_from_sources(&sources);
+        });
+        assert_eq!(list.text_dropped(), 2 * over);
     }
 
     /// `getEvent` must reject out-of-range and negative indices rather than

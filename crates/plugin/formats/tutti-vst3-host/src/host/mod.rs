@@ -33,7 +33,7 @@ mod speakers;
 
 pub use instance::Vst3Active;
 pub use library::{factory_flags, ClassInfo, FactoryInfo, Vst3Library};
-pub use loaded::{PluginNotifications, RestartOutcome, Vst3Loaded};
+pub use loaded::{RestartOutcome, Vst3Loaded};
 
 /// Editor-lifecycle internals, exposed for the conformance tests. Both are
 /// reached in production only through `open_editor`/`close_editor`, which need

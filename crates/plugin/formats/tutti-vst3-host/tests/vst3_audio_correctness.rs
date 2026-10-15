@@ -508,9 +508,9 @@ fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
     // Ask the plugin to request the restart, then drain the notification the
     // way a host's poll loop does.
     inst.set_parameter(PARAM_REQUEST_IO_CHANGED, 1.0);
-    let notifications = inst.poll_plugin_notifications();
+    let restart = inst.poll_plugin_notifications(|_| {});
     assert!(
-        notifications.restart.io_changed,
+        restart.io_changed,
         "the probe requested restartComponent(kIoChanged) but it did not reach \
          the host — the rest of this test would be vacuous"
     );

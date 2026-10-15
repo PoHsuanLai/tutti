@@ -37,6 +37,7 @@ libloading = "0.9"
 thiserror = "2"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
+crossbeam-queue = "0.3"
 tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
 tutti-types = { path = "../../../core/tutti-types" }

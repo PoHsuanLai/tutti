@@ -126,17 +126,19 @@ if let Some(info) = plugin.parameter_info(0) {
 let saved = plugin.get_state()?;
 plugin.set_state(&saved)?;
 
-// One drain, four kinds of news — not a poller per kind. `RestartComponent`
-// requests are folded into `restart` rather than appearing among the param
-// edits, because acting on one means a deactivate/reactivate cycle the loaded
-// type cannot perform itself.
-let news = plugin.poll_plugin_notifications();
-println!(
-    "{} param edits, {} progress reports, {} unit events",
-    news.param_edits.len(),
-    news.progress.len(),
-    news.units.len(),
-);
+// One drain, four kinds of news — not a poller per kind. Edits, progress and
+// unit news come to the closure in arrival order; `restartComponent` requests
+// are coalesced into the returned outcome, because acting on one means a
+// deactivate/reactivate cycle the loaded type cannot perform itself. Nothing is
+// collected for you, so the poll allocates nothing.
+use tutti_vst3_host::PluginNotification;
+let mut edits = 0;
+let restart = plugin.poll_plugin_notifications(|news| {
+    if let PluginNotification::Edit(_) = news {
+        edits += 1;
+    }
+});
+println!("{edits} param edits; latency changed: {}", restart.latency_changed);
 # Ok(()) }
 ```
 
@@ -215,6 +217,11 @@ All discoverable by the plugin through `IComponentHandler::queryInterface`:
 
 Everything a plugin sends through these arrives at the one
 [`poll_plugin_notifications`][`Vst3Loaded::poll_plugin_notifications`] drain.
+None of the callbacks allocates (bar `IProgress::start`'s description), since
+plugins call some of them from their process thread: restart requests are one
+atomic flag word, and the rest go on a bounded queue whose overflow is counted
+in `Vst3Loaded::dropped_notifications`. A caller on an audio thread that needs
+only the restarts reads them with `Vst3Loaded::take_restart`.
 
 ## Features
 

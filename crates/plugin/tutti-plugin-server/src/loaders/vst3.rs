@@ -341,8 +341,18 @@ impl Vst3Instance {
     ///
     /// Polled between audio blocks by [`Plugin::poll_async_events`]; it must
     /// not be called concurrently with [`process`](Self::process).
+    ///
+    /// Reads only the restart flag word (`Vst3Loaded::take_restart`), so with
+    /// nothing requested it allocates nothing — it runs in the server's audio
+    /// phase. The plugin's edits, progress and unit news stay in the host's
+    /// bounded queue: the server has never forwarded them, and draining them
+    /// here would free their payloads on this thread for nothing. Past
+    /// `NOTIFICATION_CAPACITY` unread, further ones are counted and dropped.
     pub fn poll_restart(&mut self) -> RestartChanges {
-        let restart = vst_dispatch_mut!(self, inner => inner.poll_plugin_notifications()).restart;
+        let restart = vst_dispatch!(self, inner => inner.take_restart());
+        if restart.is_empty() {
+            return RestartChanges::default();
+        }
         let mut changes = RestartChanges::default();
 
         // `kIoChanged` and `kLatencyChanged` both require the same
@@ -1091,6 +1101,51 @@ mod tests {
     /// assert rather than skip.
     fn multi_program_sample() -> &'static str {
         crate::test_utils::vst3_program_sample_path()
+    }
+
+    /// The server's restart poll runs in its audio phase, so it must not
+    /// allocate — even with a plugin's edits waiting in the host's queue,
+    /// which is the common case while a user drags a knob in the server-side
+    /// editor (the server never forwards those edits).
+    ///
+    /// Mutation: `poll_restart` reading through the main-thread drain
+    /// (`poll_plugin_notifications`) and collecting the queued edits into a
+    /// `Vec`, as it did before, aborts inside the gate.
+    #[test]
+    fn the_restart_poll_does_not_allocate_with_edits_pending() {
+        use tutti_vst3_host::host::conformance::{plugin_perform_edit, plugin_restart_component};
+        // `RestartFlags_::kParamValuesChanged` (`ivsteditcontroller.h`). The
+        // assertion on `param_values_changed` below pins that this is the bit.
+        const K_PARAM_VALUES_CHANGED: i32 = 1 << 2;
+
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+
+        // Nothing pending: the idle poll every block takes.
+        assert_no_alloc::assert_no_alloc(|| {
+            let changes = instance.poll_restart();
+            assert!(!changes.param_values_changed && changes.latency.is_none());
+        });
+
+        vst_dispatch!(instance, inner => {
+            for i in 0..64 {
+                plugin_perform_edit(inner, 100, f64::from(i) / 64.0);
+            }
+            plugin_restart_component(inner, K_PARAM_VALUES_CHANGED);
+            plugin_restart_component(inner, K_PARAM_VALUES_CHANGED);
+        });
+
+        let changes = assert_no_alloc::assert_no_alloc(|| instance.poll_restart());
+        assert!(
+            changes.param_values_changed,
+            "the coalesced restart reaches the server"
+        );
+        assert!(!changes.io_changed && !changes.reloaded && changes.latency.is_none());
+        assert!(
+            !instance.poll_restart().param_values_changed,
+            "a poll consumes the restart"
+        );
     }
 
     /// A VST3 program keeps both coordinates, and its list's name.

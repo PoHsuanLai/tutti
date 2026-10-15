@@ -1,10 +1,36 @@
 //! IComponentHandler (v1/v2/v3) + IComponentHandlerBusActivation + IProgress +
-//! IUnitHandler (v1/v2) — multi-vtable host-side dispatcher that forwards all
-//! plugin callbacks onto crossbeam channels.
+//! IUnitHandler (v1/v2) — multi-vtable host-side dispatcher for every plugin
+//! callback.
+//!
+//! # Where the callbacks go, and why nothing here allocates
+//!
+//! Plugins call `performEdit`, `beginEdit`, `endEdit` and `restartComponent`
+//! from their *process* thread. The spec says not to; many do anyway. So the
+//! receiving half must be safe to run on an audio thread, which an unbounded
+//! channel is not: its `send` allocates a block whenever the current one fills.
+//!
+//! - **Restart requests** are cumulative — the host only ever acts on the union
+//!   of the flags since its last look — so they live in one `AtomicI32`,
+//!   `fetch_or`'d by the plugin and swapped to zero by
+//!   [`ComponentHandler::take_restart_bits`]. No queue, no capacity, nothing to
+//!   lose.
+//! - **Everything else** (edits, progress, unit news) goes on one bounded
+//!   [`ArrayQueue`] of [`PluginNotification`], preallocated at construction.
+//!   A push past [`NOTIFICATION_CAPACITY`] is dropped and counted
+//!   ([`ComponentHandler::dropped_notifications`]), never logged and never
+//!   grown.
+//!
+//! A restart therefore carries no position relative to the queued events. No
+//! consumer relied on one: the only reader always folded every restart into a
+//! single coalesced outcome, whatever edits surrounded it.
+//!
+//! The one allocation left on these paths is `IProgress::start`'s description
+//! `String`. It is the plugin's long-operation notice (sample loading, offline
+//! render), raised from its UI or worker thread, not per block.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_queue::ArrayQueue;
 use vst3::Steinberg::{
     kResultOk, tresult, FIDString, IPlugView, TBool,
     Vst::{
@@ -147,6 +173,10 @@ impl RestartFlags {
 /// its v2/v3/bus-activation extensions, delivered via
 /// [`Vst3Loaded::poll_plugin_notifications`](crate::Vst3Loaded::poll_plugin_notifications).
 ///
+/// `restartComponent` is not among them: restart requests are cumulative, so
+/// they are coalesced into the [`RestartOutcome`](crate::RestartOutcome) that
+/// poll returns rather than queued one per call.
+///
 /// Typical usage: a user drags a knob in the plugin UI → the plugin calls
 /// `beginEdit` / `performEdit` / `endEdit` → the host receives the matching
 /// [`ParameterEditEvent`]s and updates its own automation state.
@@ -164,9 +194,6 @@ pub enum ParameterEditEvent {
     },
     /// Plugin has finished editing the parameter (mouse-up).
     EndEdit(u32),
-    /// Plugin requests that the host restart the component with the given
-    /// `RestartFlags` bitmask (e.g. reload parameter values, re-scan IO).
-    RestartComponent(i32),
     /// Plugin has marked itself dirty — the host should treat project state
     /// as modified.
     SetDirty(bool),
@@ -189,11 +216,38 @@ pub enum ParameterEditEvent {
     },
 }
 
+/// One queued plugin callback, as
+/// [`Vst3Loaded::poll_plugin_notifications`](crate::Vst3Loaded::poll_plugin_notifications)
+/// hands it over, in arrival order across all three kinds.
+#[derive(Debug, Clone)]
+pub enum PluginNotification {
+    /// An `IComponentHandler`(2/bus-activation) call: an edit gesture, dirty
+    /// state, an editor request.
+    Edit(ParameterEditEvent),
+    /// An `IProgress` report.
+    Progress(ProgressEvent),
+    /// An `IUnitHandler`(2) report.
+    Unit(UnitEvent),
+}
+
+/// How many [`PluginNotification`]s the handler holds between two polls.
+///
+/// A UI that polls once a frame drains a few dozen at most, even mid-gesture.
+/// The bound exists for the poller that stops (a closed UI, a server that
+/// never reads edits): the queue then stays at this size and later pushes are
+/// counted instead of growing memory.
+pub const NOTIFICATION_CAPACITY: usize = 512;
+
+/// The host's `IComponentHandler` (and friends). See the module docs for where
+/// each callback lands.
 pub struct ComponentHandler {
-    event_sender: Sender<ParameterEditEvent>,
+    /// Edits, progress and unit news, in arrival order.
+    notifications: ArrayQueue<PluginNotification>,
+    /// Pushes refused because `notifications` was full.
+    dropped: AtomicU64,
+    /// The union of every `restartComponent` flag word since the last take.
+    restart_bits: AtomicI32,
     next_progress_id: AtomicU64,
-    progress_sender: Sender<ProgressEvent>,
-    unit_sender: Sender<UnitEvent>,
 }
 
 impl Class for ComponentHandler {
@@ -209,33 +263,60 @@ impl Class for ComponentHandler {
 }
 
 impl ComponentHandler {
-    pub fn new() -> (
-        ComWrapper<Self>,
-        Receiver<ParameterEditEvent>,
-        Receiver<ProgressEvent>,
-        Receiver<UnitEvent>,
-    ) {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let (progress_tx, progress_rx) = crossbeam_channel::unbounded();
-        let (unit_tx, unit_rx) = crossbeam_channel::unbounded();
-        let wrapper = ComWrapper::new(Self {
-            event_sender: tx,
+    /// A handler with an empty, preallocated notification queue.
+    pub fn new() -> ComWrapper<Self> {
+        ComWrapper::new(Self {
+            notifications: ArrayQueue::new(NOTIFICATION_CAPACITY),
+            dropped: AtomicU64::new(0),
+            restart_bits: AtomicI32::new(0),
             next_progress_id: AtomicU64::new(1),
-            progress_sender: progress_tx,
-            unit_sender: unit_tx,
-        });
-        (wrapper, rx, progress_rx, unit_rx)
+        })
+    }
+
+    /// Takes the union of every `restartComponent` flag word received since
+    /// the last take, leaving zero behind. Wait-free and allocation-free, so
+    /// it may run on an audio thread.
+    pub fn take_restart_bits(&self) -> i32 {
+        // Acquire pairs with the plugin's Release `fetch_or`: whatever the
+        // plugin wrote before asking for the restart (a new latency, a new bus
+        // layout) is visible to the host once it sees the bit.
+        self.restart_bits.swap(0, Ordering::Acquire)
+    }
+
+    /// The oldest queued notification, if any. Lock-free and allocation-free;
+    /// dropping a `ProgressEvent::Started` it returns frees its description.
+    pub fn pop_notification(&self) -> Option<PluginNotification> {
+        self.notifications.pop()
+    }
+
+    /// Notifications refused because the queue held
+    /// [`NOTIFICATION_CAPACITY`] unread ones. Cumulative over the handler's
+    /// life; a host polls it to learn that it read too rarely.
+    pub fn dropped_notifications(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Queues `n`, or counts it if the queue is full. Never allocates and
+    /// never blocks: the plugin may be calling from its process thread.
+    fn push(&self, n: PluginNotification) {
+        if self.notifications.push(n).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn edit(&self, e: ParameterEditEvent) {
+        self.push(PluginNotification::Edit(e));
     }
 }
 
 impl IComponentHandlerTrait for ComponentHandler {
     unsafe fn beginEdit(&self, id: ParamID) -> tresult {
-        let _ = self.event_sender.send(ParameterEditEvent::BeginEdit(id));
+        self.edit(ParameterEditEvent::BeginEdit(id));
         kResultOk
     }
 
     unsafe fn performEdit(&self, id: ParamID, value_normalized: ParamValue) -> tresult {
-        let _ = self.event_sender.send(ParameterEditEvent::PerformEdit {
+        self.edit(ParameterEditEvent::PerformEdit {
             param_id: id,
             value: value_normalized,
         });
@@ -243,40 +324,35 @@ impl IComponentHandlerTrait for ComponentHandler {
     }
 
     unsafe fn endEdit(&self, id: ParamID) -> tresult {
-        let _ = self.event_sender.send(ParameterEditEvent::EndEdit(id));
+        self.edit(ParameterEditEvent::EndEdit(id));
         kResultOk
     }
 
     unsafe fn restartComponent(&self, flags: i32) -> tresult {
-        let _ = self
-            .event_sender
-            .send(ParameterEditEvent::RestartComponent(flags));
+        // Release pairs with `take_restart_bits`' Acquire; see there.
+        self.restart_bits.fetch_or(flags, Ordering::Release);
         kResultOk
     }
 }
 
 impl IComponentHandler2Trait for ComponentHandler {
     unsafe fn setDirty(&self, state: TBool) -> tresult {
-        let _ = self
-            .event_sender
-            .send(ParameterEditEvent::SetDirty(state != 0));
+        self.edit(ParameterEditEvent::SetDirty(state != 0));
         kResultOk
     }
 
     unsafe fn requestOpenEditor(&self, _name: FIDString) -> tresult {
-        let _ = self
-            .event_sender
-            .send(ParameterEditEvent::RequestOpenEditor);
+        self.edit(ParameterEditEvent::RequestOpenEditor);
         kResultOk
     }
 
     unsafe fn startGroupEdit(&self) -> tresult {
-        let _ = self.event_sender.send(ParameterEditEvent::StartGroupEdit);
+        self.edit(ParameterEditEvent::StartGroupEdit);
         kResultOk
     }
 
     unsafe fn finishGroupEdit(&self) -> tresult {
-        let _ = self.event_sender.send(ParameterEditEvent::FinishGroupEdit);
+        self.edit(ParameterEditEvent::FinishGroupEdit);
         kResultOk
     }
 }
@@ -310,14 +386,12 @@ impl IComponentHandlerBusActivationTrait for ComponentHandler {
         index: i32,
         state: TBool,
     ) -> tresult {
-        let _ = self
-            .event_sender
-            .send(ParameterEditEvent::RequestBusActivation {
-                media_type,
-                direction: dir,
-                index,
-                state: state != 0,
-            });
+        self.edit(ParameterEditEvent::RequestBusActivation {
+            media_type,
+            direction: dir,
+            index,
+            state: state != 0,
+        });
         kResultOk
     }
 }
@@ -341,11 +415,11 @@ impl IProgressTrait for ComponentHandler {
             }
             utf16_to_string(std::slice::from_raw_parts(optional_description, len))
         };
-        let _ = self.progress_sender.send(ProgressEvent::Started {
+        self.push(PluginNotification::Progress(ProgressEvent::Started {
             id,
             progress_type: r#type,
             description: desc,
-        });
+        }));
         if !out_id.is_null() {
             *out_id = id;
         }
@@ -353,22 +427,22 @@ impl IProgressTrait for ComponentHandler {
     }
 
     unsafe fn update(&self, id: ID, norm_value: ParamValue) -> tresult {
-        let _ = self.progress_sender.send(ProgressEvent::Updated {
+        self.push(PluginNotification::Progress(ProgressEvent::Updated {
             id,
             progress: norm_value,
-        });
+        }));
         kResultOk
     }
 
     unsafe fn finish(&self, id: ID) -> tresult {
-        let _ = self.progress_sender.send(ProgressEvent::Finished { id });
+        self.push(PluginNotification::Progress(ProgressEvent::Finished { id }));
         kResultOk
     }
 }
 
 impl IUnitHandlerTrait for ComponentHandler {
     unsafe fn notifyUnitSelection(&self, unit_id: UnitID) -> tresult {
-        let _ = self.unit_sender.send(UnitEvent::UnitSelected(unit_id));
+        self.push(PluginNotification::Unit(UnitEvent::UnitSelected(unit_id)));
         kResultOk
     }
 
@@ -377,34 +451,37 @@ impl IUnitHandlerTrait for ComponentHandler {
         list_id: ProgramListID,
         program_index: i32,
     ) -> tresult {
-        let _ = self.unit_sender.send(UnitEvent::ProgramListChanged {
+        self.push(PluginNotification::Unit(UnitEvent::ProgramListChanged {
             list_id,
             program_index,
-        });
+        }));
         kResultOk
     }
 }
 
 impl IUnitHandler2Trait for ComponentHandler {
     unsafe fn notifyUnitByBusChange(&self) -> tresult {
-        let _ = self.unit_sender.send(UnitEvent::UnitByBusChanged);
+        self.push(PluginNotification::Unit(UnitEvent::UnitByBusChanged));
         kResultOk
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use vst3::Steinberg::Vst::RestartFlags_;
+
+    /// Everything queued so far, oldest first.
+    fn drain(handler: &ComponentHandler) -> Vec<PluginNotification> {
+        std::iter::from_fn(|| handler.pop_notification()).collect()
+    }
 
     /// The plugin's edit gestures must reach the host in order and carry their
     /// operands: a DAW writes automation from `PerformEdit` and opens/closes an
     /// undo transaction on the surrounding `Begin`/`EndEdit`.
     #[test]
     fn edit_gestures_forward_in_order_with_their_operands() {
-        let (handler, rx, _prx, _urx) = ComponentHandler::new();
+        let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
 
         unsafe {
@@ -413,32 +490,158 @@ mod tests {
             assert_eq!(ptr.endEdit(42), kResultOk);
         }
 
-        let recv = || rx.recv_timeout(Duration::from_millis(100)).unwrap();
-        assert!(matches!(recv(), ParameterEditEvent::BeginEdit(42)));
+        let got = drain(&handler);
+        assert_eq!(got.len(), 3);
         assert!(matches!(
-            recv(),
-            ParameterEditEvent::PerformEdit { param_id: 42, value } if (value - 0.75).abs() < 1e-3
+            got[0],
+            PluginNotification::Edit(ParameterEditEvent::BeginEdit(42))
         ));
-        assert!(matches!(recv(), ParameterEditEvent::EndEdit(42)));
+        assert!(matches!(
+            got[1],
+            PluginNotification::Edit(ParameterEditEvent::PerformEdit { param_id: 42, value })
+                if (value - 0.75).abs() < 1e-3
+        ));
+        assert!(matches!(
+            got[2],
+            PluginNotification::Edit(ParameterEditEvent::EndEdit(42))
+        ));
     }
 
     /// `restartComponent` carries the raw flag word through unchanged — the
     /// host decodes it with [`RestartFlags::from_bits`], so swallowing or
-    /// masking bits here would silently drop a latency or I/O change.
+    /// masking bits here would silently drop a latency or I/O change. It does
+    /// not occupy the notification queue.
     #[test]
     fn restart_component_forwards_the_raw_flag_word() {
-        let (handler, rx, _prx, _urx) = ComponentHandler::new();
+        let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
 
         unsafe {
             assert_eq!(ptr.restartComponent(0b1010), kResultOk);
         }
 
-        let event = rx.recv_timeout(Duration::from_millis(100)).unwrap();
-        assert!(matches!(
-            event,
-            ParameterEditEvent::RestartComponent(0b1010)
-        ));
+        assert_eq!(handler.take_restart_bits(), 0b1010);
+        assert!(handler.pop_notification().is_none());
+    }
+
+    /// Restart flags are cumulative: several requests between two takes reach
+    /// the host as their union, and a take leaves nothing behind for the next.
+    ///
+    /// Mutation: `fetch_or` replaced by `store` in `restartComponent` (the
+    /// last request wins) fails the union assertion — the latency change is
+    /// lost under the later I/O change. `swap(0, ..)` replaced by `load` fails
+    /// the "second take is empty" assertion.
+    #[test]
+    fn restart_flags_merge_across_calls_and_reset_on_take() {
+        let handler = ComponentHandler::new();
+        let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
+
+        unsafe {
+            ptr.restartComponent(RestartFlags_::kLatencyChanged);
+            ptr.restartComponent(RestartFlags_::kIoChanged);
+            ptr.restartComponent(RestartFlags_::kLatencyChanged);
+        }
+
+        let flags = RestartFlags::from_bits(handler.take_restart_bits());
+        assert!(flags.latency_changed, "the earlier request survives");
+        assert!(flags.io_changed, "the later request lands too");
+        assert!(!flags.param_values_changed);
+
+        assert_eq!(handler.take_restart_bits(), 0, "a take consumes the flags");
+
+        unsafe { ptr.restartComponent(RestartFlags_::kParamValuesChanged) };
+        assert_eq!(
+            handler.take_restart_bits(),
+            RestartFlags_::kParamValuesChanged,
+            "a request after a take starts from zero"
+        );
+    }
+
+    /// A full queue drops the newest notification and counts it; it neither
+    /// grows nor evicts what is already queued.
+    ///
+    /// Mutation: removing the `fetch_add` in `push` leaves the count at 0 and
+    /// fails the first assertion.
+    #[test]
+    fn overflow_is_counted_and_keeps_the_queued_events() {
+        let handler = ComponentHandler::new();
+        let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
+
+        let extra = 3;
+        unsafe {
+            for i in 0..(NOTIFICATION_CAPACITY + extra) as u32 {
+                ptr.performEdit(i, 0.5);
+            }
+        }
+
+        assert_eq!(handler.dropped_notifications(), extra as u64);
+        let got = drain(&handler);
+        assert_eq!(got.len(), NOTIFICATION_CAPACITY);
+        assert!(
+            matches!(
+                got[0],
+                PluginNotification::Edit(ParameterEditEvent::PerformEdit { param_id: 0, .. })
+            ),
+            "the oldest event is kept; the overflow is the newest"
+        );
+
+        // Room again once drained; the count is cumulative.
+        unsafe { ptr.endEdit(7) };
+        assert_eq!(drain(&handler).len(), 1);
+        assert_eq!(handler.dropped_notifications(), extra as u64);
+    }
+
+    /// The point of this module: a plugin calling the handler from its
+    /// process thread must not allocate there. Every non-progress callback
+    /// runs inside `assert_no_alloc`, including a push into a full queue, and
+    /// so does the host's side (`take_restart_bits`, `pop_notification`) —
+    /// which is what the plugin-server's restart poll calls.
+    ///
+    /// `IProgress::start` is left out on purpose: it builds the description
+    /// `String`, the one documented allocation (module docs).
+    ///
+    /// Mutation: the queue swapped for `crossbeam_queue::SegQueue` (unbounded,
+    /// allocating a block per 31 pushes — the growth the original
+    /// `crossbeam_channel::unbounded` sender had) aborts inside the gate.
+    #[test]
+    fn callbacks_and_the_host_drain_do_not_allocate() {
+        let handler = ComponentHandler::new();
+        let edit = handler.to_com_ptr::<IComponentHandler>().unwrap();
+        let edit2 = handler.to_com_ptr::<IComponentHandler2>().unwrap();
+        let bus = handler
+            .to_com_ptr::<IComponentHandlerBusActivation>()
+            .unwrap();
+        let progress = handler.to_com_ptr::<IProgress>().unwrap();
+        let unit = handler.to_com_ptr::<IUnitHandler>().unwrap();
+        let unit2 = handler.to_com_ptr::<IUnitHandler2>().unwrap();
+
+        assert_no_alloc::assert_no_alloc(|| unsafe {
+            // Three edits per pass: two thirds of them meet a full queue.
+            for i in 0..NOTIFICATION_CAPACITY as u32 {
+                edit.beginEdit(i);
+                edit.performEdit(i, 0.25);
+                edit.endEdit(i);
+                edit.restartComponent(RestartFlags_::kLatencyChanged);
+            }
+            edit2.setDirty(1);
+            edit2.startGroupEdit();
+            edit2.finishGroupEdit();
+            edit2.requestOpenEditor(std::ptr::null());
+            bus.requestBusActivation(0, 0, 0, 1);
+            progress.update(1, 0.5);
+            progress.finish(1);
+            unit.notifyUnitSelection(1);
+            unit.notifyProgramListChange(2, -1);
+            unit2.notifyUnitByBusChange();
+
+            assert_eq!(handler.take_restart_bits(), RestartFlags_::kLatencyChanged);
+            let mut n = 0;
+            while handler.pop_notification().is_some() {
+                n += 1;
+            }
+            assert_eq!(n, NOTIFICATION_CAPACITY);
+        });
+        assert!(handler.dropped_notifications() > 0, "the full path ran");
     }
 
     #[test]
@@ -486,7 +689,7 @@ mod tests {
     /// progress bar to its completion.
     #[test]
     fn progress_start_mints_an_id_that_update_and_finish_quote_back() {
-        let (handler, _rx, prx, _urx) = ComponentHandler::new();
+        let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IProgress>().unwrap();
 
         let out_id = unsafe {
@@ -500,34 +703,37 @@ mod tests {
             out_id
         };
 
-        let recv = || prx.recv_timeout(Duration::from_millis(100)).unwrap();
-        match recv() {
-            ProgressEvent::Started {
+        let mut got = drain(&handler).into_iter();
+        match got.next() {
+            Some(PluginNotification::Progress(ProgressEvent::Started {
                 id,
                 progress_type,
                 description,
-            } => {
+            })) => {
                 assert_eq!(id, out_id);
                 assert_eq!(progress_type, 1);
                 assert_eq!(description, "Test");
             }
             other => panic!("expected Started, got {other:?}"),
         }
-        match recv() {
-            ProgressEvent::Updated { id, progress } => {
+        match got.next() {
+            Some(PluginNotification::Progress(ProgressEvent::Updated { id, progress })) => {
                 assert_eq!(id, out_id);
                 assert!((progress - 0.5).abs() < 1e-3);
             }
             other => panic!("expected Updated, got {other:?}"),
         }
-        assert!(matches!(recv(), ProgressEvent::Finished { id } if id == out_id));
+        assert!(matches!(
+            got.next(),
+            Some(PluginNotification::Progress(ProgressEvent::Finished { id })) if id == out_id
+        ));
     }
 
     /// A null description is legal per the interface (`optionalDescription`);
     /// the handler must read it as empty rather than dereferencing it.
     #[test]
     fn progress_start_accepts_a_null_description() {
-        let (handler, _rx, prx, _urx) = ComponentHandler::new();
+        let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IProgress>().unwrap();
 
         unsafe {
@@ -535,15 +741,17 @@ mod tests {
             assert_eq!(ptr.start(0, std::ptr::null(), &mut out_id), kResultOk);
         }
 
-        match prx.recv_timeout(Duration::from_millis(100)).unwrap() {
-            ProgressEvent::Started { description, .. } => assert_eq!(description, ""),
+        match handler.pop_notification() {
+            Some(PluginNotification::Progress(ProgressEvent::Started { description, .. })) => {
+                assert_eq!(description, "")
+            }
             other => panic!("expected Started, got {other:?}"),
         }
     }
 
     #[test]
     fn unit_selection_and_program_list_changes_forward_their_ids() {
-        let (handler, _rx, _prx, urx) = ComponentHandler::new();
+        let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IUnitHandler>().unwrap();
 
         unsafe {
@@ -551,26 +759,54 @@ mod tests {
             assert_eq!(ptr.notifyProgramListChange(10, 3), kResultOk);
         }
 
-        let recv = || urx.recv_timeout(Duration::from_millis(100)).unwrap();
-        assert!(matches!(recv(), UnitEvent::UnitSelected(5)));
-        match recv() {
-            UnitEvent::ProgramListChanged {
+        let got = drain(&handler);
+        assert!(matches!(
+            got[0],
+            PluginNotification::Unit(UnitEvent::UnitSelected(5))
+        ));
+        match got[1] {
+            PluginNotification::Unit(UnitEvent::ProgramListChanged {
                 list_id,
                 program_index,
-            } => {
+            }) => {
                 assert_eq!(list_id, 10);
                 assert_eq!(program_index, 3);
             }
-            other => panic!("expected ProgramListChanged, got {other:?}"),
+            ref other => panic!("expected ProgramListChanged, got {other:?}"),
         }
+    }
+
+    /// The three kinds share one queue, so their relative order survives: a
+    /// unit change the plugin made *before* an edit is read before it.
+    ///
+    /// Mutation: giving progress its own queue (drained after edits, as the
+    /// three separate channels were) puts `Progress` last and fails this.
+    #[test]
+    fn notifications_keep_their_order_across_kinds() {
+        let handler = ComponentHandler::new();
+        let edit = handler.to_com_ptr::<IComponentHandler>().unwrap();
+        let progress = handler.to_com_ptr::<IProgress>().unwrap();
+        let unit = handler.to_com_ptr::<IUnitHandler>().unwrap();
+
+        unsafe {
+            unit.notifyUnitSelection(1);
+            progress.update(9, 0.5);
+            edit.performEdit(3, 0.1);
+        }
+
+        let got = drain(&handler);
+        assert!(matches!(got[0], PluginNotification::Unit(_)));
+        assert!(matches!(got[1], PluginNotification::Progress(_)));
+        assert!(matches!(got[2], PluginNotification::Edit(_)));
     }
 
     /// The handler is shared with the plugin's GUI thread as a bare COM
     /// pointer, so concurrent `performEdit` calls must all land: an event
     /// dropped under contention is an automation write the DAW never sees.
     #[test]
+    #[cfg_attr(miri, ignore = "threaded stress test")]
     fn concurrent_edits_all_reach_the_host() {
-        let (handler, rx, _prx, _urx) = ComponentHandler::new();
+        let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
         let ptr_addr = ptr.as_ptr() as usize;
 
@@ -589,11 +825,8 @@ mod tests {
             h.join().unwrap();
         }
 
-        let mut count = 0;
-        while rx.recv_timeout(Duration::from_millis(100)).is_ok() {
-            count += 1;
-        }
-        assert_eq!(count, 40);
+        assert_eq!(drain(&handler).len(), 40);
+        assert_eq!(handler.dropped_notifications(), 0);
 
         drop(ptr);
         drop(handler);

@@ -3592,11 +3592,30 @@ need to be):
   sent only by control code), and it is now `Commands::try_send`: a full
   or closed queue refuses the command, the intent stays unrecorded, and
   the refusal is counted. `Commands::send` stays blocking for the control
-  thread. One residue is `smol`'s: a successful send wakes the butler
-  through its listener list, which takes that list's lock briefly.
+  thread, waiting while the queue is full.
+- **The butler's queue takes no lock and allocates nothing.** It was a
+  `smol` channel, whose successful send woke the butler through a listener
+  list behind a `Mutex`, allocated on the channel's first notify. It is
+  now a crate-private `ButlerQueue`: a `crossbeam_queue::ArrayQueue`, the
+  butler's `Thread` (registered by the thread before its first cycle) and
+  a `closed` flag the thread sets on exit, however it exits, so a send
+  after it reports `ButlerGone`. A send is a push then an `unpark`; the
+  butler parks with a timeout between cycles (1 ms idle, 3 ms healthy) and
+  yields when a ring needs a refill, and a push between its drain and its
+  park leaves the token set, so no wake is lost. A control-thread send on
+  a full queue retries every 100 µs, waking the butler each time, and
+  stops when the queue closes. It composes two existing primitives and a
+  flag, with no `unsafe` and no ordering argument of its own, so it lives
+  in `tutti-sampler` rather than as a `tutti-types` primitive with a loom
+  model. `smol` and `futures-lite` are no longer dependencies.
+- **A loop the butler refuses is not recorded on an add either.** An
+  `AddVoice` for a streaming voice whose `play.loop_` is `On` takes the
+  loop out of the voice (`Off` left behind) before the slot is built, and
+  records it only when the forward lands. A control-thread `insert_voice`
+  waits for room rather than refuse; the drain refuses.
 - **Drops are counted, not logged.** The pool's `tracing::warn!`s are
   gone; `VoicePoolHandle::drops` returns a `PoolDrops` (loops refused by a
-  full, a gone or a missing butler, `ReplaceWave`s ignored on a streaming
+  full or a gone butler, `On` loops lost for want of one, `ReplaceWave`s ignored on a streaming
   voice, voices refused at the cap, values freed in the callback because
   the retirement channel was full).
 - **The voice vector never grows on the audio thread.** It was reserved to

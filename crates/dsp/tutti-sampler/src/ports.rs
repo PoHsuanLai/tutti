@@ -15,9 +15,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use smol::channel::Sender;
 
-use crate::butler::{ButlerCommand, ButlerGone, ChannelPlan, SessionRate, TakeVoiceError};
+use crate::butler::{
+    ButlerCommand, ButlerGone, ButlerSender, ChannelPlan, SessionRate, TakeVoiceError, TrySendError,
+};
 use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
 use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate};
 use tutti_io::Wave;
@@ -196,25 +197,26 @@ pub(crate) enum ButlerRefused {
     Gone,
 }
 
-/// WRITE port onto the butler: a cloneable wrapper over the command channel
-/// that dispatches a public [`Command`] to the butler.
+/// WRITE port onto the butler: a cloneable wrapper over the butler's
+/// command queue that dispatches a public [`Command`] to the butler.
 ///
 /// Mirrors [`VoicePoolHandle`](crate::VoicePoolHandle) — a thin,
-/// `Clone` handle over a `Sender` with a single [`send`](Self::send) method.
+/// `Clone` handle over a sender with a single [`send`](Self::send) method.
 #[derive(Clone, Debug)]
 pub struct Commands {
-    tx: Sender<ButlerCommand>,
+    tx: ButlerSender,
 }
 
 impl Commands {
-    pub(crate) fn new(tx: Sender<ButlerCommand>) -> Self {
+    pub(crate) fn new(tx: ButlerSender) -> Self {
         Self { tx }
     }
 
-    /// Dispatches a single command to the butler. **Control thread**: it
-    /// blocks while the butler's bounded queue is full, so nothing reachable
-    /// from a graph node's `process` calls it (the audio thread's one send,
-    /// a voice pool forwarding a streaming loop, uses `try_send`).
+    /// Dispatches a single command to the butler. **Control thread**: while
+    /// the butler's bounded queue is full it waits, waking the butler and
+    /// retrying every 100 µs, so nothing reachable from a graph node's
+    /// `process` calls it (the audio thread's one send, a voice pool
+    /// forwarding a streaming loop, uses `try_send`).
     ///
     /// `Ok` means the command was *queued* — the butler applies it on its own
     /// thread, and that outcome is not available synchronously.
@@ -242,17 +244,14 @@ impl Commands {
     /// it. The caller decides what a refusal means; the voice pool counts it
     /// and does not record the intent.
     ///
-    /// Never blocks on a full queue, and frees nothing on refusal (no
-    /// variant the audio thread sends owns heap data). One residue is the
-    /// channel's: a successful send wakes the butler through `smol`'s
-    /// listener list, which takes that list's internal lock for a few
-    /// instructions (the butler holds it only while registering to wait),
-    /// and initialises the list on the channel's first send, which a
-    /// control-thread `Stream` always makes before a voice exists to loop.
+    /// Takes no lock and allocates nothing, on the queue's first send as on
+    /// any other: a push into a fixed-capacity lock-free queue and an
+    /// `unpark` of the butler thread (`butler::queue`). It frees nothing on
+    /// refusal either (no variant the audio thread sends owns heap data).
     pub(crate) fn try_send(&self, cmd: Command) -> Result<(), ButlerRefused> {
         self.tx.try_send(cmd.into_butler()).map_err(|e| match e {
-            smol::channel::TrySendError::Full(_) => ButlerRefused::Full,
-            smol::channel::TrySendError::Closed(_) => ButlerRefused::Gone,
+            TrySendError::Full(_) => ButlerRefused::Full,
+            TrySendError::Closed => ButlerRefused::Gone,
         })
     }
 
@@ -381,12 +380,12 @@ impl Status {
 mod tests {
     use super::*;
 
-    /// A `Commands` whose butler receiver is already gone — the state a real
-    /// handle reaches once `ButlerThread::stop` has run.
+    /// A `Commands` whose butler is already gone — the state a real handle
+    /// reaches once `ButlerThread::stop` has run.
     fn dead_butler() -> Commands {
-        let (tx, rx) = smol::channel::unbounded();
-        drop(rx);
-        Commands::new(tx)
+        let queue = crate::butler::ButlerQueue::new(8);
+        queue.close();
+        Commands::new(ButlerSender::new(queue))
     }
 
     /// Every command variant reports a dead butler.
@@ -467,8 +466,8 @@ mod tests {
     /// With a live receiver everything queues, and the batch count matches.
     #[test]
     fn send_all_counts_what_it_queued() {
-        let (tx, rx) = smol::channel::unbounded();
-        let cmds = Commands::new(tx);
+        let queue = crate::butler::ButlerQueue::new(8);
+        let cmds = Commands::new(ButlerSender::new(std::sync::Arc::clone(&queue)));
 
         let queued = cmds.send_all([
             Command::Stop { channel_index: 0 },
@@ -476,6 +475,6 @@ mod tests {
         ]);
 
         assert_eq!(queued, 2);
-        assert_eq!(rx.len(), 2, "both reached the channel");
+        assert_eq!(queue.len(), 2, "both reached the queue");
     }
 }

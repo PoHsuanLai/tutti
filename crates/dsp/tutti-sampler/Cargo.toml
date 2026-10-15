@@ -77,6 +77,9 @@ thiserror = "2"
 
 # Lock-free
 crossbeam-channel = "0.5"
+# The butler's command queue (`butler::queue`): fixed capacity, so a send from
+# the audio thread neither locks nor allocates.
+crossbeam-queue = "0.3"
 dashmap = "6.1"
 parking_lot = "0.12"
 
@@ -86,9 +89,6 @@ rayon = "1.10"
 # Thread priority
 thread-priority = "1.1"
 
-# Async butler loop
-smol = "2"
-futures-lite = "2"
 
 
 

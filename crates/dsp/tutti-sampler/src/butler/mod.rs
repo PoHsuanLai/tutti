@@ -16,6 +16,7 @@ mod metrics;
 mod plan;
 mod prefetch;
 mod preroll;
+mod queue;
 mod region_map;
 mod rt_state;
 mod step;
@@ -30,6 +31,9 @@ pub(crate) use loops::GUARD_FRAMES;
 pub(crate) use loops::{Arrangement, RingMap};
 pub(crate) use plan::ChannelPlan;
 pub(crate) use prefetch::SharedReader;
+#[cfg(test)]
+pub(crate) use queue::ButlerQueue;
+pub(crate) use queue::{ButlerSender, TrySendError};
 pub(crate) use rt_state::RtState;
 pub(crate) use thread::ButlerThread;
 

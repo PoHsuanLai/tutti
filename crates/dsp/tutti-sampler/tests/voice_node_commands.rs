@@ -201,7 +201,9 @@ fn a_command_reaches_a_node_across_a_commit() {
 /// consumes nothing, so no mutation of the fork source can make a fork take
 /// the live node's move: this property is structural and the test cannot
 /// fail for that reason any more. It stays as the end-to-end check that a
-/// fork rendering first leaves the live node moved. The pool's
+/// fork rendering first leaves the live node moved; the fork reading the
+/// shared cell is what `a_placement_sent_after_the_insert_reaches_a_fork`
+/// pins (its mutation: the fork applying nothing). The pool's
 /// `a_pools_fork_shares_nothing_with_the_live_pool` makes the queue claim
 /// for `VoicePool`, which still has one.
 #[test]

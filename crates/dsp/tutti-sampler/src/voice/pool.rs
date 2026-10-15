@@ -142,14 +142,15 @@ pub(crate) enum Retired {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct PoolDrops {
-    /// Streaming loop commands the butler's queue was full for (the butler
-    /// is stalled). The loop is not applied and not recorded in the voice's
+    /// Streaming loop commands the drain found the butler's queue full for
+    /// (the butler is stalled). The loop is not applied and not recorded in the voice's
     /// `Playback`; a host re-sends it.
     pub loops_butler_full: u64,
     /// Streaming loop commands sent after the butler thread exited.
     pub loops_butler_gone: u64,
-    /// Streaming loop commands for a voice with no butler to forward to: a
-    /// pool built without one, or a voice with no butler channel.
+    /// Streaming loops turned on (`LoopSetting::On`) for a voice with no
+    /// butler to forward to: a pool built without one, or a voice with no
+    /// butler channel. Clearing a loop there is a no-op, not a drop.
     pub loops_no_butler: u64,
     /// `ReplaceWave` commands aimed at a streaming voice, which changes
     /// source by a fresh `AddVoice` instead.
@@ -193,6 +194,15 @@ impl DrainCounters {
             freed_in_callback: load(&self.freed_in_callback),
         }
     }
+}
+
+/// How [`VoicePool`] forwards a streaming loop to the butler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Forward {
+    /// Refuse on a full queue (the audio-thread drain).
+    Refuse,
+    /// Wait for room (a control-thread insert).
+    Wait,
 }
 
 /// A [`VoicePool`] asked for more channels than the sampler reads
@@ -483,12 +493,19 @@ impl VoicePool {
     ///   is what lets a host speak one `VoiceCommand` for both tiers instead of
     ///   forking on the tier itself.
     ///
-    /// RT-safe: the forward is [`Commands::try_send`], which never waits on
-    /// a full butler queue. A stalled butler would otherwise hold the
-    /// callback until it drained. A refused forward is counted
-    /// ([`PoolDrops`]) and leaves the intent unrecorded. A control-thread
-    /// [`insert_voice`](Self::insert_voice) forwards the same way.
-    fn apply_loop(&mut self, id: SlotId, setting: LoopSetting) {
+    /// `forward` says how the streaming forward is sent. From the drain it is
+    /// [`Forward::Refuse`] ([`Commands::try_send`]), which never waits on a
+    /// full butler queue: a stalled butler would otherwise hold the callback
+    /// until it drained. A refused forward is counted ([`PoolDrops`]) and
+    /// leaves the intent unrecorded. A control-thread
+    /// [`insert_voice`](Self::insert_voice) sends [`Forward::Wait`]
+    /// ([`Commands::send`]), which waits for room as any control-thread send
+    /// does, so a loop it was handed is not lost to a momentarily full queue.
+    ///
+    /// A streaming voice with no butler cannot be told to clear a loop it
+    /// could never have been given, so `Off` there is a no-op and only a lost
+    /// `On` is counted.
+    fn apply_loop(&mut self, id: SlotId, setting: LoopSetting, forward: Forward) {
         let Some(slot) = self.voices.iter_mut().find(|s| s.id == id) else {
             return;
         };
@@ -508,7 +525,9 @@ impl VoicePool {
                     // a `play.loop_` that says "looping" while the stream is
                     // not would make `Playback` lie about the applied state —
                     // which `insert_voice` then replays as if it were real.
-                    DrainCounters::bump(&self.counters.loops_no_butler);
+                    if matches!(setting, LoopSetting::On { .. }) {
+                        DrainCounters::bump(&self.counters.loops_no_butler);
+                    }
                     return;
                 };
                 // Same rule as the guard above, now that the send can report:
@@ -516,10 +535,15 @@ impl VoicePool {
                 // `play.loop_` that says "looping" while the stream is not would
                 // make `Playback` lie about the applied state, and
                 // `insert_voice` replays that as if it were real.
-                if let Err(refused) = butler.try_send(Command::Loop {
+                let cmd = Command::Loop {
                     channel_index,
                     setting,
-                }) {
+                };
+                let sent = match forward {
+                    Forward::Refuse => butler.try_send(cmd),
+                    Forward::Wait => butler.send(cmd).map_err(|_| ButlerRefused::Gone),
+                };
+                if let Err(refused) = sent {
                     DrainCounters::bump(match refused {
                         ButlerRefused::Full => &self.counters.loops_butler_full,
                         ButlerRefused::Gone => &self.counters.loops_butler_gone,
@@ -545,7 +569,7 @@ impl VoicePool {
         voice: Voice,
         stretch: Option<stretch::Unit>,
     ) {
-        self.insert_voice_inner(id, Box::new(voice), stretch);
+        self.insert_voice_inner(id, Box::new(voice), stretch, Forward::Wait);
     }
 
     /// Inserts a fully-built [`Voice`] as a new slot and realises its full
@@ -584,25 +608,29 @@ impl VoicePool {
             unit.set_pitch_cents(voice.play.pitch);
             unit
         });
-        self.insert_voice_inner(id, Box::new(voice), stretch);
+        self.insert_voice_inner(id, Box::new(voice), stretch, Forward::Wait);
     }
 
     /// Allocation-free and free-free, so the drain can run it: the voice
     /// arrives boxed and the box moves into the slot, and a slot this one
     /// replaces goes to the retirement channel rather than being dropped here.
+    /// The drain passes [`Forward::Refuse`]; see [`apply_loop`](Self::apply_loop).
     fn insert_voice_inner(
         &mut self,
         id: SlotId,
-        voice: Box<Voice>,
+        mut voice: Box<Voice>,
         stretch: Option<stretch::Unit>,
+        forward: Forward,
     ) {
         if let Some(i) = self.voices.iter().position(|s| s.id == id) {
             let old = self.voices.swap_remove(i);
             self.retire(Retired::Slot(old));
         }
-        // Split the loop out: `apply_loop` needs the slot present to look it up,
-        // and `Playback` moves into the `Voice`. Take the rest by copy first.
-        let loop_ = voice.play.loop_;
+        // Take the loop out, leaving `Off` behind: `apply_loop` needs the slot
+        // present to look it up, and it records the loop only once it is
+        // applied. Leaving the voice's own `On` in place would record a loop
+        // a refused forward never set.
+        let loop_ = std::mem::replace(&mut voice.play.loop_, LoopSetting::Off);
         let gain = voice.play.gain;
         let speed = voice.play.speed;
         let direction = voice.play.direction;
@@ -630,7 +658,7 @@ impl VoicePool {
             slot.voice.play.direction = direction;
             slot.voice.source.apply_direction(direction);
         }
-        self.apply_loop(id, loop_);
+        self.apply_loop(id, loop_, forward);
     }
 
     /// Hands a value the drain let go of to the control thread.
@@ -667,7 +695,7 @@ impl VoicePool {
                     }
                     // The filter arrives prebuilt from `send` (control thread);
                     // this only moves it into the slot.
-                    self.insert_voice_inner(id, voice, stretch);
+                    self.insert_voice_inner(id, voice, stretch, Forward::Refuse);
                 }
                 VoiceCommand::Remove(id) => {
                     // `retain` would DROP the slot here, on the audio thread,
@@ -709,9 +737,9 @@ impl VoicePool {
                     duration_beats,
                 } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        // The source owns the gate; each backend's
-                        // `set_placement` re-arms its own (streaming re-seeks on
-                        // the next inside-frame).
+                        // The source owns the window: each backend's setter
+                        // overwrites it, and the next block's read places the
+                        // voice by it.
                         slot.voice
                             .source
                             .apply_placement(start_beat, duration_beats);
@@ -751,10 +779,10 @@ impl VoicePool {
                     } else {
                         LoopSetting::Off
                     };
-                    self.apply_loop(id, setting);
+                    self.apply_loop(id, setting, Forward::Refuse);
                 }
                 VoiceCommand::ClearLoop(id) => {
-                    self.apply_loop(id, LoopSetting::Off);
+                    self.apply_loop(id, LoopSetting::Off, Forward::Refuse);
                 }
                 VoiceCommand::UpdateReverse { id, direction } => {
                     if let Some(slot) = self.slot_mut(id) {

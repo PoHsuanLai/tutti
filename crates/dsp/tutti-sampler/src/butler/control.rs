@@ -20,10 +20,11 @@ use crate::voice::LoopSetting;
 
 /// The butler thread is gone, so a stream-control command was discarded.
 ///
-/// There is one failure mode and it is **permanent**: a blocking send on the
-/// butler's bounded channel waits out a full queue and only fails once the
-/// receiver is dropped, which happens when the butler thread exits. Every later command fails the same way, so a caller
-/// that sees this should stop rather than retry.
+/// There is one failure mode and it is **permanent**: a blocking send waits
+/// out a full queue and fails only once the queue is closed, which happens
+/// when the butler thread exits or its streamer is dropped. Every later
+/// command fails the same way, so a caller that sees this should stop rather
+/// than retry.
 ///
 /// It is an error type rather than a silent `let _ =` because swallowing it
 /// leaves a dead butler accepting `Stream`/`Seek`/`Loop`/`Stop` indefinitely and

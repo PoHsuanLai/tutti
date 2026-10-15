@@ -94,7 +94,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | an `AddVoice` past 64 resident voices reallocated the voice vector in the callback | it is refused, counted (`voices_refused`), and the voice handed back for `collect_retired` to free |
   | a value the full retirement channel could not take was freed in the callback silently | still freed there, now counted (`freed_in_callback`) |
   | `VoiceNodeHandle::set_placement(..) -> Result<(), SendError>` (a 64-entry queue, `Full` when it filled) | `-> ()`: the window is published, latest wins, from the node's next block. **Migration:** drop the `?`/`.unwrap()`; two placements between blocks play the second |
-  | `tutti-sampler` depended on `ringbuf` | it does not |
+  | the butler's command queue was a `smol` channel, whose send locked a listener list (and allocated it on the first send) | a lock-free, allocation-free fixed queue whose send unparks the butler; a butler thread that exits, however it exits, makes every later `Commands::send` return `ButlerGone` |
+  | an `AddVoice` whose voice carried a loop recorded it in `Playback` even when the butler refused the forward | the loop is recorded only once the butler takes it |
+  | a control-thread `insert_voice` of a streaming voice with a loop | waits for room in the butler's queue (retrying every 100 µs) instead of refusing, as `Commands::send` does; it returns early only when the butler is gone (counted as `loops_butler_gone`) |
+  | `loops_no_butler` counted every loop change on a streaming voice with no butler, `Off` included | it counts only a lost `On`; an `Off` there has nothing to clear |
+  | `tutti-sampler` depended on `ringbuf`, `smol` and `futures-lite` | it depends on none of them (`crossbeam-queue` instead) |
 
 - **`smallvec` is gone from the workspace** (design doc 013, "SmallVec
   removed"). A type whose inline storage bought nothing is a `Vec` (or a

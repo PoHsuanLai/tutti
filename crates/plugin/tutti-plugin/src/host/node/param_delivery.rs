@@ -1274,7 +1274,7 @@ mod tests {
         );
         let spent = LANES as usize - pooled;
         let mut spare = ParameterChanges::reserved_bridged(d.room(), d.points());
-        let mut check = |d: &mut ParamDelivery, latest: &[f32]| {
+        let check = |d: &mut ParamDelivery, latest: &[f32]| {
             for (id, &v) in latest.iter().enumerate() {
                 let q = &d.changes.queues[id];
                 assert_eq!(q.param_id, op(id as u32));

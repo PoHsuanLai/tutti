@@ -146,6 +146,7 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use ringbuf::traits::{Consumer, Producer, Split};
@@ -170,6 +171,7 @@ use crate::param::{ParamFrom, ParamInput, ParamShaping, ParamState, SourceIn};
 use crate::plan::{
     DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, ParamSlot, Plan, UnitIdx,
 };
+use crate::play::{PlayClock, PlayReader, PlayReading, PlayState};
 use crate::slots::{borrow_events, event_pair, AudioSlots, EventSlots, SlotFlags};
 use crate::spec::{EventIn, EventOut};
 
@@ -476,6 +478,8 @@ pub(crate) struct Channels {
     pub(crate) returned: HeapCons<Box<Commit>>,
     /// Crossfades coming back (see the module docs, "Crossfades").
     pub(crate) faded: HeapCons<Box<Crossfade>>,
+    /// The executor's play clock, as it last published it.
+    pub(crate) play: PlayReader,
 }
 
 /// The executor's ends of the rings.
@@ -483,6 +487,7 @@ pub(crate) struct ExecutorEnds {
     queue: HeapCons<Box<Commit>>,
     back: HeapProd<Box<Commit>>,
     fade_back: HeapProd<Box<Crossfade>>,
+    play: Arc<AtomicU64>,
 }
 
 /// Build the rings: the editor's ends and the executor's.
@@ -490,16 +495,19 @@ pub(crate) fn channels() -> (Channels, ExecutorEnds) {
     let (tx, rx) = HeapRb::<Box<Commit>>::new(QUEUE_CAPACITY).split();
     let (back_tx, back_rx) = HeapRb::<Box<Commit>>::new(QUEUE_CAPACITY + 1).split();
     let (fade_tx, fade_rx) = HeapRb::<Box<Crossfade>>::new(FADE_CAPACITY).split();
+    let play = Arc::new(AtomicU64::new(0));
     (
         Channels {
             to_executor: tx,
             returned: back_rx,
             faded: fade_rx,
+            play: PlayReader(Arc::clone(&play)),
         },
         ExecutorEnds {
             queue: rx,
             back: back_tx,
             fade_back: fade_tx,
+            play,
         },
     )
 }
@@ -645,6 +653,9 @@ pub struct Executor {
     /// The transport over the last frames, for nodes behind a latent path
     /// (`Cx::transport_at`). Fed every block, whatever it renders.
     history: TransportHistory,
+    /// The graph's play clock (`src/play.rs`): kept here, handed to every
+    /// node in its `Env`, published for the editor.
+    play: PlayState,
     /// The pool blocks run on, if any (see [`set_pool`](Self::set_pool)).
     pool: Option<Arc<dyn Pool>>,
 }
@@ -706,6 +717,7 @@ impl Executor {
             next_prepare: None,
             reset_time: false,
             history: TransportHistory::new(),
+            play: PlayState::new(ends.play),
             pool: None,
         }
     }
@@ -788,6 +800,13 @@ impl Executor {
     /// wall-clock time at the new rate, rounded to the nearest frame.
     pub fn frame(&self) -> Frame {
         self.frame
+    }
+
+    /// The play clock (`Env::play`) at the next block's first frame, before
+    /// a play start there: what the last block left it at. The control side
+    /// reads the same through [`Editor::play_reading`](crate::Editor::play_reading).
+    pub fn play_reading(&self) -> PlayReading {
+        self.play.reading()
     }
 
     /// Events refused so far: writer overflow, and delay or feedback FIFO
@@ -875,6 +894,7 @@ impl Executor {
                 self.history.clear();
                 let ratio = new / old;
                 self.frame = crate::command::rescale(self.frame, ratio);
+                self.play.rescale(ratio);
                 self.commands.rescale(ratio, c.seq);
             }
             self.next_prepare = Some(prepare);
@@ -1304,15 +1324,18 @@ impl Executor {
                 o[..frames].fill(0.0);
             }
             let rate = self.next_prepare.unwrap_or(self.prepare).sample_rate();
-            let env = Env {
+            let mut env = Env {
                 frame: self.frame,
                 sample_rate: rate,
                 block_len: Samples(frames),
                 transport: *transport,
                 changes: *changes,
+                play: PlayClock::ZERO,
             };
+            env.play = self.play.begin(transport.playing, env.play_starts());
             self.commands.observe(&env);
             self.history.observe(&env);
+            self.play.end(&env);
             self.frame += Samples(frames);
             return;
         }
@@ -1343,18 +1366,22 @@ impl Executor {
             next_prepare: _,
             reset_time: _,
             history,
+            play,
             pool,
         } = self;
-        let env = Env {
+        let mut env = Env {
             frame: *frame,
             sample_rate: prepare.sample_rate(),
             block_len: Samples(frames),
             transport: *transport,
             changes: *changes,
+            play: PlayClock::ZERO,
         };
+        env.play = play.begin(transport.playing, env.play_starts());
         // Before any node reads it, and also when there is nothing to render:
-        // the transport moved all the same.
+        // the transport moved all the same, and so did the play clock.
         history.observe(&env);
+        play.end(&env);
         let history: &TransportHistory = history;
         let Some(plan) = plan.as_ref() else {
             for o in outputs.iter_mut() {
@@ -2478,6 +2505,7 @@ mod tests {
             block_len: Samples(64),
             transport: Transport::default(),
             changes: TransportChanges::NONE,
+            play: crate::PlayClock::ZERO,
         };
         let mut has_due = vec![false; plan.units.len()];
         exec.commands

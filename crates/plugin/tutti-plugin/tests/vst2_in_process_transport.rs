@@ -222,6 +222,7 @@ fn render_scenes(r: &mut Renderer, blocks: usize) -> Vec<(Env, Told)> {
             block_len: Samples(BLOCK),
             transport,
             changes,
+            play: tutti_graph::PlayClock::ZERO,
         };
         let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
         r.executor_mut()

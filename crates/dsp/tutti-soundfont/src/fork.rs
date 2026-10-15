@@ -127,6 +127,7 @@ mod tests {
                 block_len: Samples(64),
                 transport: Transport::default(),
                 changes: TransportChanges::NONE,
+                play: tutti_graph::PlayClock::ZERO,
             };
             let events: &[Event] = if frame == 0 { &first } else { &[] };
             out.extend(
@@ -216,6 +217,7 @@ mod tests {
                 block_len: Samples(64),
                 transport: Transport::default(),
                 changes: TransportChanges::NONE,
+                play: tutti_graph::PlayClock::ZERO,
             };
             out.extend(
                 drive_in(&mut *node, &env, &[], &[], &[])

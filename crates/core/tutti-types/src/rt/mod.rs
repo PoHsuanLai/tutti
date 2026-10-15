@@ -47,6 +47,8 @@
 //!   indexed by position rather than consumed in order (a disk stream's ring):
 //!   one [`PosWriter`] and one [`PosReader`], whose [`PosClaim`] reads any
 //!   position the window it took holds.
+//! - [`RangeCell`] — a range's two `f32` bounds in one atomic word, so a
+//!   reader never pairs one write's `min` with another's `max`.
 //! - [`Retire`] — an owning box that must not be dropped on the audio thread,
 //!   checked in debug builds against the [`AudioThread`] marker.
 //! - [`SplitMut`] / [`SplitRw`] — one slice borrowed by several threads at
@@ -67,6 +69,7 @@ pub mod event_buf;
 pub mod job_gate;
 pub mod pos_ring;
 pub mod publish;
+pub mod range_cell;
 pub mod retire;
 pub mod scratch;
 pub mod split;
@@ -82,6 +85,7 @@ pub use pos_ring::{
     PosClaim, PosFrame, PosReader, PosRing, PosWriter, RingWindow, MAX_POS_RING_FRAMES,
 };
 pub use publish::{RtPublish, RtRef};
+pub use range_cell::RangeCell;
 pub use retire::Retire;
 pub use scratch::{RtScratch, RtScratchOverflow};
 pub use split::{ClaimConflict, ClaimTable, Claimed, ClaimedRun, Held, RwView, SplitMut, SplitRw};

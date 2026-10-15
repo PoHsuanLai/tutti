@@ -274,6 +274,7 @@ mod tests {
             block_len: tutti_core::Samples(frames),
             transport: tutti_graph::Transport::default(),
             changes: tutti_graph::TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
         };
         tutti_graph::contract::drive_in(node, &env, &[], &[], &[]).audio
     }

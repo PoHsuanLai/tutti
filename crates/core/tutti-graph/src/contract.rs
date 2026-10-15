@@ -1467,6 +1467,7 @@ pub fn drive(
         block_len: Samples(frames),
         transport: Transport::default(),
         changes: TransportChanges::NONE,
+        play: crate::PlayClock::ZERO,
     };
     drive_in(node, &env, inputs, params, &[]).audio
 }
@@ -1877,6 +1878,15 @@ impl<N: Node> Direct<N> {
             block_len: Samples(self.len),
             transport: self.transport,
             changes: TransportChanges::NONE,
+            // The driver's frame, as an executor's play clock would read
+            // with no play start since its first block.
+            play: crate::PlayClock {
+                start: crate::PlayReading {
+                    epoch: 0,
+                    play: self.frame,
+                },
+                next_epoch: 0,
+            },
         };
         let status = self.block_in(&env);
         self.frame = Frame(self.frame.0 + self.len as u64);

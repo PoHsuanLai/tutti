@@ -38,6 +38,7 @@ mod tests {
             block_len: Samples(len),
             transport: Transport::counted(true, host.tempo(), host.origin(), looping),
             changes: TransportChanges::NONE,
+            play: tutti_graph::PlayClock::ZERO,
         };
         let mut out = vec![Beat(f64::NAN); len];
         env.for_each_beat(|i, b| out[i] = b);

@@ -12,7 +12,6 @@
 //! is what the ABI alone says.
 
 use std::sync::Arc;
-use vst::plugin::Plugin as _;
 
 use tutti_plugin_types::{
     ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo as SharedParameterInfo,
@@ -52,8 +51,14 @@ impl Vst2Instance {
     ///
     /// One helper rather than a check per entry point, so that a site without the
     /// guard reads as an omission rather than a convention.
+    ///
+    /// Allocation-free, so the audio thread may call it (the in-process node
+    /// sets parameters there): the count is the length of `initial_values`,
+    /// read at load from the same `numParams` the plugin instance caches,
+    /// never a fresh `get_info()`, which clones the plugin's name and vendor
+    /// strings.
     fn param_index(&self, id: i32) -> Option<i32> {
-        let count = self.handle.instance.get_info().parameters;
+        let count = i32::try_from(self.initial_values.len()).unwrap_or(i32::MAX);
         (id >= 0 && id < count).then_some(id)
     }
 

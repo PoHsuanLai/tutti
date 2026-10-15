@@ -98,7 +98,7 @@ pub struct PluginAutomation {
 impl PluginAutomation {
     /// Automation for a plugin that addresses its parameters by VST2 index
     /// (`indexed`) or by opaque handle.
-    pub(super) fn new(params: impl IntoIterator<Item = TimedParam>, indexed: bool) -> Self {
+    pub(crate) fn new(params: impl IntoIterator<Item = TimedParam>, indexed: bool) -> Self {
         let mut shared = Shared {
             lanes: RtPublish::new(Box::default()),
             indexed,

@@ -48,7 +48,9 @@ pub use crate::util::window::{EditorCapabilities, EditorSize};
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 pub use tutti_nodes::{LfoShape, ModParams, ModTarget};
 
-/// In-process VST2 graph node. Used when a host loads VST2 plugins directly in
-/// the host process (via `in_process_vst2_client`); it takes MIDI on its event input.
+/// In-process VST2 graph node, and the controls inserting it hands back. Used
+/// when a host loads VST2 plugins directly in the host process (via
+/// `in_process_vst2_client`); it takes MIDI and parameter events on its event
+/// input.
 #[cfg(feature = "vst2")]
-pub use crate::format::vst2_in_process::InProcessVst2Client;
+pub use crate::format::vst2_in_process::{InProcessVst2Client, InProcessVst2Controls};

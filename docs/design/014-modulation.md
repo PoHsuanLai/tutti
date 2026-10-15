@@ -244,7 +244,8 @@ sorts by id and refuses past the caps, duplicate ids, a bad drawing and
   the scaling wave carries its route's `Amount`, and the offset is
   multiplied by `shape(raw, amount)`. `DepthBy::UNIT` (full depth,
   unipolar, linear) is the mapping PR 2b landed, `(raw + 1) / 2` in `f64`,
-  computed the same way to the bit; a curved bipolar amount kinks at the
+  computed the same way to the bit for raw in [-1, 1] (a drawn depth wave
+  beyond ±1 is now clamped to ±1, as `shape` clamps); a curved bipolar amount kinks at the
   scaling wave's zero crossings, which are corners as a layer's are.
   Without the amount, a depth route's own depth, polarity and curve
   (`RouteDecl`, §7) would have meant nothing.
@@ -361,6 +362,23 @@ program and the play clock; the lane keeps no phase state.
 - An anchor whose epoch is not the current `play_epoch` is ignored: phase is
   `frac(rate · play + phase)`, so a play start (or a fork) restarts it at the
   declared phase.
+- **As landed (PR 3): the anchor is the source's.** `Compiled::clocks`
+  holds each LFO's dated clock, and every layer and `depth_by` the LFO
+  drives uses it. So a route added after a rate edit, a route moved to
+  another LFO (which takes that LFO's own clock, not a continuation of the
+  first's phase) and a route whose `depth_by` changes (a new `LayerId`)
+  all read the anchor the LFO's other layers read, and one LFO stays
+  phase-coherent across its targets.
+- **As landed (PR 3): a second edit while an anchor is pending.** One anchor
+  holds one rate change, so R0 → R1 → R2 cannot be expressed exactly. If
+  the pending anchor `a` is still at least `2 × max_block` (8192 frames)
+  ahead, the second edit reuses its frame (the publish has room to land
+  before it). Nearer, the edit re-anchors at `now + margin`, past `a`, at
+  the old clock's exact phase there with `prev_rate` R1. That agrees with
+  the old clock from `a` on; a lane that switches to the new program at
+  frame `s < a` steps once by `(R1 − R0) · (a − s)`, under 8192 frames'
+  worth of the rate difference. Reusing a near `a` would instead step by
+  `(R2 − R1) · lag` for any lane the publish reaches late, unbounded.
 
 A beat layer is never anchored: it stays locked to the bar.
 
@@ -730,6 +748,9 @@ pub struct Compiled {
     pub nodes: BTreeMap<SourceKey, SourceNode>,
     /// Event edges, source node → target lane.
     pub edges: BTreeSet<(SourceKey, TargetKey)>,
+    /// Each LFO's dated clock (its rate anchor, §4.3): the anchor is the
+    /// source's, not a layer's.
+    pub clocks: BTreeMap<SourceKey, Clock>,
 }
 
 /// `prev`, `now` (the executor's next play reading) and `rate` are read
@@ -751,13 +772,27 @@ open:
   its grid; a constant layer has no corners and needs no clock, so a lane
   of constants is steady (§4.1).
 - **A rate edit** (a `Seconds` clock whose `hz` changed) anchors at
-  `now.after(RATE_ANCHOR_MARGIN)` (12 288 frames, past any block and the
-  lane's lookahead), with `phase` the old clock's cycles there and
-  `prev_rate` the old rate. A pending anchor is kept and shifted; a live
-  one (this epoch) is carried while the rate holds, and dropped at the next
-  play start.
+  `now.after(RATE_ANCHOR_MARGIN)` (12 288 frames: two of the largest block
+  plus publish slack), with `phase` the old clock's cycles there and
+  `prev_rate` the old rate. A pending anchor at least 8192 frames ahead is
+  kept and shifted; a nearer one is replaced (§4.3 states the step that
+  remains). A live anchor (this epoch) is carried while the rate holds,
+  and dropped at the next play start. Anchors are dated per LFO, from
+  `prev.clocks`, never per layer (§4.3).
 - **Signal sources' ids** come from `prev`: a source keeps its `SourceId`
   across compiles, and a new one takes the lowest free id, in key order.
+  An id `prev` held is not given to a new source in the compile that frees
+  it; a freed id is reusable from the next compile. **The hazard that
+  remains, for PR 3b/4:** a lane keeps a removed source's last segment in
+  its input slot (`take_input` overwrites a slot whose source is unread only
+  when another source needs it), so if a later compile gives the freed id
+  to a new source routed to that lane, the lane reads the stale segment
+  until the new node first sends: under one grid step for a follower, but
+  until the first note for a note envelope. PR 3b/4 closes it: the lane
+  clears a slot whose source its program no longer reads when it adopts a
+  program, and since a program can be replaced twice before a lane's next
+  block, the host lets a freed id rest until the lanes have run a block
+  (or the compiler stops reusing ids at all).
 - **`layer_id(route, depth_by)`** is a fixed 64-bit mix of the keys; two
   layers of one target that collide are refused.
 
@@ -1358,7 +1393,11 @@ source kind, polarity and curve the offset at raw ±1 is
 `shape(±1, …) × span` (it closes M1); a depth edit changes only its target's
 program and keeps its ids; each refusal fires by name; a macro move changes
 exactly the programs it reaches; a rate edit anchors continuously from the
-previous program. Not breaking: additive.
+previous program. **Breaking**, as landed (CHANGELOG): `Layer::depth_by`
+became `DepthBy` (a depth route has its own amount, §4.1);
+`ProgramError` gained `NotANumber` (a program refuses NaN so `Compiled` is
+`Eq`); and `tutti_nodes::{Lfo, Modulator}` became `tutti-nodes`' own
+copies (§3), so they are no longer `tutti-mod`'s types.
 
 **Exit.** Compiling anything `bevy-tutti` expresses needs no runtime; the
 crate builds with and without `--features bevy`.
@@ -1373,7 +1412,7 @@ crate builds with and without `--features bevy`.
 - `depth_by` became `DepthBy { clock, wave, amount }` (§4.1): a depth route
   carries its own depth, polarity and curve. The identity amount
   (`DepthBy::UNIT`) computes `(raw + 1) / 2` exactly as before, bit for
-  bit; the existing `depth_by` tests changed only their construction
+  bit for raw in [-1, 1] (a drawn depth wave beyond ±1 is now clamped); the existing `depth_by` tests changed only their construction
   syntax. A curved or bipolar amount adds its zero-crossing corners.
 - `Wave::Const` for macros, not a one-point drawn wave on a 0 Hz clock
   (§7). `ProgramError::NotANumber`: a program refuses a NaN, so it is `Eq`.

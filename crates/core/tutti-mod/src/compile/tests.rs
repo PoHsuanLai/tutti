@@ -499,16 +499,19 @@ fn a_rate_edit_anchors_continuously() {
 
 /// What follows a rate edit keeps it: a depth edit republished while the
 /// anchor is in force carries it unchanged (else the phase would jump back
-/// to `rate · play`); a second rate edit before the anchor lands keeps the
-/// anchor's frame; a play start (a new epoch) drops it; and a phase edit
-/// moves a carried anchor's phase by the edit.
+/// to `rate · play`); a second rate edit while the anchor is still
+/// `ANCHOR_REUSE_MIN` or more ahead keeps the anchor's frame (the near case
+/// is `a_second_rate_edit_near_its_anchor_reanchors`); a play start (a new
+/// epoch) drops it; and a phase edit moves a carried anchor's phase by the
+/// edit.
 ///
 /// Mutations (run), each fails: the same-rate path dropping the live
 /// anchor (`anchor: None`) → the depth edit's program has no anchor; the
 /// pending case re-anchoring at `now + margin` → the second edit's anchor
-/// moves; carrying an anchor across epochs (`live = old_anchor`) → the new
-/// epoch keeps it; the phase jump not applied to a carried anchor → its
-/// phase is unmoved.
+/// moves, and so does the reuse bound raised to the full margin (the
+/// 10 288 frames left then re-anchor); carrying an anchor across epochs
+/// (`live = old_anchor`) → the new epoch keeps it; the phase jump not
+/// applied to a carried anchor → its phase is unmoved.
 #[test]
 fn an_anchor_is_carried_until_a_play_start() {
     let id = layer_id(RouteKey(100), None);
@@ -566,10 +569,15 @@ fn an_anchor_is_carried_until_a_play_start() {
 
 /// A signal source keeps its `SourceId` across compiles: adding a follower
 /// with a lower key does not renumber the existing ones (the new one takes
-/// the lowest free id), and removing one frees its id for the next.
+/// the lowest free id). Removing one frees its id, but not in the compile
+/// that removes it (a lane that read the removed source still holds its
+/// last segment), so a source added in the same compile takes the next
+/// id, and only a later compile reuses the freed one.
 ///
-/// Mutation (run): `prev` ignored (`kept` always `None`) → the new
-/// follower takes id 0 and renumbers the others → fails.
+/// Mutations (run), each fails: `prev` ignored (`kept` always `None`) →
+/// the new follower takes id 0 and renumbers the others; `taken` starting
+/// empty (a freed id reused in the compile that frees it) → the follower
+/// added beside the removal takes id 0.
 #[test]
 fn a_signal_source_keeps_its_id() {
     let rig = Rig::new();
@@ -586,6 +594,20 @@ fn a_signal_source_keeps_its_id() {
         c1.nodes[&SourceKey(14)].kind,
         SignalKind::NoteEnvelope { adsr: adsr() }
     );
+
+    // Remove follower 13 (and its routes) and add follower 2 in one compile.
+    let mut swap = more;
+    swap.sources.retain(|(k, _)| k.0 != 13);
+    swap.routes.retain(|(_, r)| r.source != SourceKey(13));
+    swap.sources.push((SourceKey(2), follower()));
+    let c2 = swap.compile(Some(&c1), now(1, 0));
+    assert!(!c2.nodes.contains_key(&SourceKey(13)));
+    assert_eq!(c2.nodes[&SourceKey(2)].id, SourceId(3), "not 13's id yet");
+    // The next compile may reuse it.
+    swap.sources.push((SourceKey(3), follower()));
+    let c3 = swap.compile(Some(&c2), now(1, 0));
+    assert_eq!(c3.nodes[&SourceKey(2)].id, SourceId(3));
+    assert_eq!(c3.nodes[&SourceKey(3)].id, SourceId(0), "freed last time");
 }
 
 /// Each refusal fires, by name.
@@ -878,4 +900,177 @@ fn what_bevy_tutti_expresses_compiles_without_a_runtime() {
         c.programs[&target(1)].layers().len() + c.programs[&target(2)].layers().len(),
         LfoShape::all().len() * 2
     );
+}
+
+/// The clock of `route`'s layer in `target` (`depth_by` its scaler's id).
+fn layer_clock(c: &Compiled, t: TargetKey, route: u64, depth_by: Option<u64>) -> Clock {
+    let id = layer_id(RouteKey(route), depth_by.map(RouteKey));
+    c.programs[&t]
+        .layers()
+        .iter()
+        .find(|l| l.id == id)
+        .expect("the layer")
+        .clock
+}
+
+fn anchor_of(clock: Clock) -> Option<RateAnchor> {
+    match clock {
+        Clock::Seconds { anchor, .. } => anchor,
+        Clock::Beats { .. } => None,
+    }
+}
+
+/// One LFO is phase-coherent across its targets (doc 014 §4.3): a route
+/// added to an LFO after its rate edit reads the anchor the LFO's other
+/// layers read, so at any frame both targets are at one phase.
+///
+/// Mutation (run): anchors looked up by `(target, LayerId)` in the
+/// previous programs, not by source (the PR's first `anchor` closure) →
+/// the new route's layer has no anchor, so its clock differs from route
+/// 100's → fails.
+#[test]
+fn a_route_added_after_a_rate_edit_reads_the_lfos_anchor() {
+    let mut rig = Rig::new();
+    let c0 = rig.compile(None, now(3, 0));
+    *rig.source_mut(10) = lfo(LfoShape::Sine, seconds(4.0));
+    let c1 = rig.compile(Some(&c0), now(3, 480_000));
+    rig.routes.push((RouteKey(200), route(10, to(2), 0.5)));
+    let c2 = rig.compile(Some(&c1), now(3, 600_000));
+    let one = layer_clock(&c2, target(1), 100, None);
+    let two = layer_clock(&c2, target(2), 200, None);
+    assert!(anchor_of(one).is_some(), "the edit's anchor is carried");
+    assert_eq!(one, two, "both layers read the LFO's one clock");
+    assert_eq!(c2.clocks[&SourceKey(10)], one);
+    let t = time(0.0, 1e6, 3);
+    assert_eq!(one.cycles(&t), two.cycles(&t));
+}
+
+/// A route moved to another LFO takes that LFO's clock: it is not a rate
+/// edit of the route's layer, and does not continue the first LFO's phase
+/// at the second's rate.
+///
+/// Mutation (run): anchors looked up by `(target, LayerId)` → route 100's
+/// layer is taken for a rate edit (2 Hz to 3 Hz) and anchored at A's
+/// phase, so B's two layers part → fails.
+#[test]
+fn a_route_moved_to_another_lfo_takes_that_lfos_clock() {
+    let mut rig = Rig::new();
+    rig.sources
+        .push((SourceKey(20), lfo(LfoShape::Sine, seconds(3.0))));
+    rig.routes.push((RouteKey(200), route(20, to(2), 0.5)));
+    let c0 = rig.compile(None, now(3, 0));
+    rig.route_mut(100).source = SourceKey(20);
+    let c1 = rig.compile(Some(&c0), now(3, 480_000));
+    let moved = layer_clock(&c1, target(1), 100, None);
+    assert_eq!(moved, seconds(3.0), "B's own clock, no anchor");
+    assert_eq!(moved, layer_clock(&c1, target(2), 200, None));
+}
+
+/// Adding or removing a `depth_by` (which changes the layer's id) keeps the
+/// LFO's live anchor: the layer is the same LFO's, at the same phase.
+///
+/// Mutation (run): anchors looked up by `(target, LayerId)` → the scaled
+/// layer's new id finds no old layer, so its anchor is dropped (its phase
+/// jumps) → fails.
+#[test]
+fn a_depth_by_change_keeps_the_lfos_anchor() {
+    let mut rig = Rig::new();
+    let c0 = rig.compile(None, now(3, 0));
+    *rig.source_mut(10) = lfo(LfoShape::Sine, seconds(4.0));
+    let c1 = rig.compile(Some(&c0), now(3, 480_000));
+    let a1 = anchor_of(layer_clock(&c1, target(1), 100, None)).expect("anchored");
+    rig.routes.push((
+        RouteKey(201),
+        route(15, RouteTarget::Depth(RouteKey(100)), 1.0),
+    ));
+    let c2 = rig.compile(Some(&c1), now(3, 600_000));
+    let scaled = layer_clock(&c2, target(1), 100, Some(201));
+    assert_eq!(anchor_of(scaled), Some(a1), "adding a depth_by keeps it");
+    rig.routes.retain(|(k, _)| k.0 != 201);
+    let c3 = rig.compile(Some(&c2), now(3, 700_000));
+    let plain = layer_clock(&c3, target(1), 100, None);
+    assert_eq!(anchor_of(plain), Some(a1), "removing it keeps it");
+    let t = time(0.0, 1e6, 3);
+    assert_eq!(
+        plain.cycles(&t),
+        layer_clock(&c1, target(1), 100, None).cycles(&t)
+    );
+}
+
+/// A second rate edit while the first's anchor is pending but nearer than
+/// `ANCHOR_REUSE_MIN` re-anchors at `now + RATE_ANCHOR_MARGIN` rather than
+/// reuse a frame the publish may miss. The new clock agrees with the old
+/// one from the old anchor on; before it, the step a lane switching at `s`
+/// takes is exactly the documented `(R1 − R0) · (a − s)`. (The far branch,
+/// reusing the anchor's frame, is `an_anchor_is_carried_until_a_play_start`.)
+///
+/// Mutations (run), each fails: the reuse bound dropped (`a.at >
+/// now.play`, the PR's first rule) → the anchor stays at the old frame;
+/// `prev_rate` the old clock's `prev_rate` (R0) → the clocks part after
+/// the old anchor.
+#[test]
+fn a_second_rate_edit_near_its_anchor_reanchors() {
+    let mut rig = Rig::new();
+    let c0 = rig.compile(None, now(7, 0));
+    *rig.source_mut(10) = lfo(LfoShape::Sine, seconds(5.0));
+    let c1 = rig.compile(Some(&c0), now(7, 10_000));
+    let old = layer_clock(&c1, target(1), 100, None);
+    let a1 = anchor_of(old).expect("anchored");
+    *rig.source_mut(10) = lfo(LfoShape::Sine, seconds(3.0));
+    let edit = now(7, 20_000);
+    assert!(a1.at.since(edit.play).expect("ahead") < ANCHOR_REUSE_MIN);
+    let c2 = rig.compile(Some(&c1), edit);
+    let new = layer_clock(&c2, target(1), 100, None);
+    let a2 = anchor_of(new).expect("anchored");
+    assert_eq!(
+        (a2.at, a2.prev_rate),
+        (edit.after(RATE_ANCHOR_MARGIN).play, Hz(5.0))
+    );
+    let cyc = |c: Clock, p: f64| c.cycles(&time(0.0, p, 7)).expect("a phase");
+    let a = a1.at.get() as f64;
+    let b = a2.at.get() as f64;
+    for p in [a, a + 1000.0, b - 1.0, b] {
+        assert!((cyc(new, p) - cyc(old, p)).abs() < 1e-9, "agrees at {p}");
+    }
+    for p in [20_000.0, 21_000.0, a - 1.0] {
+        let step = (5.0 - 2.0) * (a - p) / SR.get();
+        assert!(
+            ((cyc(old, p) - cyc(new, p)) - step).abs() < 1e-9,
+            "the documented step at {p}"
+        );
+    }
+}
+
+/// A value that is not finite is refused where it would reach the lane: an
+/// infinite route depth (`inf · 0` is a NaN in the value rule) and an
+/// infinite constant wave.
+///
+/// Mutations (run), each fails: the depth check back to `is_nan` → the
+/// infinite depth compiles; the constant check back to `is_nan` → the
+/// infinite constant compiles.
+#[test]
+fn a_value_that_is_not_finite_is_refused() {
+    let t1 = [(target(1), ranged(0.0, 1.0))];
+    let one_lfo = [(SourceKey(1), lfo(LfoShape::Sine, beats(1.0)))];
+    for depth in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+        assert_eq!(
+            run(&one_lfo, &[(RouteKey(1), route(1, to(1), depth))], &t1),
+            Err(CompileError::BadRoute(RouteKey(1))),
+            "depth {depth}"
+        );
+    }
+    for v in [f32::INFINITY, f32::NAN] {
+        let constant = [(
+            SourceKey(1),
+            Source::Lfo {
+                wave: Wave::Const(v),
+                clock: beats(1.0),
+            },
+        )];
+        assert_eq!(
+            run(&constant, &[(RouteKey(1), route(1, to(1), 0.5))], &t1),
+            Err(CompileError::BadSource(SourceKey(1))),
+            "constant {v}"
+        );
+    }
 }

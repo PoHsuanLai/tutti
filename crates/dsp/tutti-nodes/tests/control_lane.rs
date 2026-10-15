@@ -1272,21 +1272,33 @@ fn lane_controls_reach_their_own_cells() {
 /// a beat-clocked wave would walk the grid) and stopped with the layer on
 /// a seconds clock (the play clock moves, so a seconds-clocked wave would
 /// walk it), and stopped beside a beat-clocked sine (which holds while
-/// stopped, at 0 on beat 0): a macro costs the lane one held value, not a
-/// piece every `CONTROL_STEP` frames.
+/// stopped, at 0 on beat 0), also when that sine's `depth_by` is a
+/// constant on a seconds clock: a macro costs the lane one held value, not
+/// a piece every `CONTROL_STEP` frames.
 ///
 /// Mutations (run), each fails: the lane's "what moves" counting every
 /// layer (`let layers = !self.program.layers().is_empty() || …`) → the
 /// rolling lane sends a piece on every grid frame; `has_seconds` counting
-/// a constant layer's clock → the stopped lane beside the sine does.
+/// a constant layer's clock → the stopped lane beside the sine does;
+/// `has_seconds` counting a constant `depth_by`'s clock → the stopped lane
+/// with the scaled sine does.
 #[test]
 fn a_constant_layer_is_one_held_value() {
     let konst = |clock| layer(1, clock, Wave::Const(1.0), amount(0.5));
     let sine = layer(2, beats(1.0), wave(LfoShape::Sine), amount(0.25));
+    let scaled = Layer {
+        depth_by: Some(DepthBy {
+            clock: seconds(3.0),
+            wave: Wave::Const(1.0),
+            amount: DepthBy::UNIT,
+        }),
+        ..sine.clone()
+    };
     let cases = [
         (vec![konst(beats(1.0))], true),
         (vec![konst(seconds(3.0))], false),
         (vec![konst(seconds(3.0)), sine], false),
+        (vec![konst(beats(1.0)), scaled], false),
     ];
     for (layers, rolling) in cases {
         let (mut ed, mut exec) = probes(128, &[], (0.0, 1.0));

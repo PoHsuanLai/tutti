@@ -44,6 +44,14 @@ use crate::shape::Polarity;
 /// frame. About a quarter of a second at 48 kHz.
 pub const RATE_ANCHOR_MARGIN: Samples = Samples(12_288);
 
+/// How far ahead of the play reading a pending anchor must still be for a
+/// second rate edit to reuse its frame: two of the largest block (4096
+/// frames), the margin less its publish slack. Nearer than that, a publish
+/// that lands late would reach the lanes after the anchor, and they would
+/// jump by the difference of the two new rates times the lag; the edit
+/// re-anchors at [`RATE_ANCHOR_MARGIN`] instead (see `anchored`).
+const ANCHOR_REUSE_MIN: Samples = Samples(8_192);
+
 /// A source's key: the host's identity for it (a Bevy host: the entity's
 /// bits). Only compared.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -280,7 +288,7 @@ impl PartialEq for SourceNode {
 impl Eq for SourceNode {}
 
 /// What [`compile`] produces.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Compiled {
     /// One program per target with a route or automation; absent: no lane.
     pub programs: BTreeMap<TargetKey, ControlProgram>,
@@ -289,7 +297,16 @@ pub struct Compiled {
     pub nodes: BTreeMap<SourceKey, SourceNode>,
     /// Event edges, a source's node → a target's lane.
     pub edges: BTreeSet<(SourceKey, TargetKey)>,
+    /// Each LFO's dated clock (its rate anchor, doc 014 §4.3), routed or
+    /// not: every layer and depth scaler it drives uses this one clock, so
+    /// one LFO stays phase-coherent across its targets, and the next
+    /// compile dates its rate edits from it.
+    pub clocks: BTreeMap<SourceKey, Clock>,
 }
+
+/// A clock holds no NaN: `compile` refuses a NaN rate or phase, and an
+/// anchor's phase is a finite `Clock::cycles` plus a finite phase jump.
+impl Eq for Compiled {}
 
 /// Why [`compile`] refused, by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,12 +333,13 @@ pub enum CompileError {
         route: RouteKey,
     },
     /// A source whose params are out of their domain: a NaN anywhere, a
-    /// negative or infinite time, a sustain outside `[0, 1]`, a drawn wave
+    /// constant that is not finite, a negative or infinite time, a sustain outside `[0, 1]`, a drawn wave
     /// whose points do not ascend in `[0, 1)` with finite values.
     BadSource(SourceKey),
     /// An LFO declared with a rate anchor: anchors are the compiler's.
     AnchorDeclared(SourceKey),
-    /// A route with a NaN depth.
+    /// A route with a depth that is not finite (an infinite depth makes
+    /// `inf · 0` a NaN in the value rule).
     BadRoute(RouteKey),
     /// A target range with a NaN bound.
     NanRange(TargetKey),
@@ -470,7 +488,7 @@ pub fn compile(
         if !sources.contains_key(&route.source) {
             return Err(CompileError::UnknownSource { route: key });
         }
-        if route.depth.get().is_nan() {
+        if !route.depth.get().is_finite() {
             return Err(CompileError::BadRoute(key));
         }
     }
@@ -510,9 +528,16 @@ pub fn compile(
     }
 
     // Signal sources' nodes: `prev`'s ids kept, new ones the lowest free.
+    // An id `prev` held is never given to a new source in this compile,
+    // even if its source is gone: a lane that read the old source still
+    // holds its last segment, and a new node on the same id, routed there
+    // in the same publish, would inherit it. Freed here, reusable next
+    // time; doc 014 §7 states the hazard that remains for PR 3b/4.
     let mut nodes = BTreeMap::new();
     let kept = |k: &SourceKey| prev.and_then(|p| p.nodes.get(k)).map(|n| n.id);
-    let mut taken: BTreeSet<SourceId> = BTreeSet::new();
+    let mut taken: BTreeSet<SourceId> = prev
+        .map(|p| p.nodes.values().map(|n| n.id).collect())
+        .unwrap_or_default();
     for (&key, source) in &sources {
         if let Some(kind) = signal_kind(source) {
             if let Some(id) = kept(&key) {
@@ -547,18 +572,18 @@ pub fn compile(
     // refuses.
     let mut origin: BTreeMap<LayerId, SourceKey> = BTreeMap::new();
     let mut edges = BTreeSet::new();
-    let anchor = |target: TargetKey, id: LayerId, clock: Clock, depth: bool| {
-        let old = prev
-            .and_then(|p| p.programs.get(&target))
-            .and_then(|p| p.layers().iter().find(|l| l.id == id))
-            .and_then(|l| {
-                if depth {
-                    l.depth_by.as_ref().map(|d| d.clock)
-                } else {
-                    Some(l.clock)
-                }
-            });
-        anchored(clock, old.as_ref(), now, rate)
+    // One dated clock per LFO, from its own clock in `prev`: every layer it
+    // drives reads the same anchor, whichever target, route or depth slot.
+    let mut clocks = BTreeMap::new();
+    for (&key, source) in &sources {
+        if let Source::Lfo { clock, .. } = source {
+            let old = prev.and_then(|p| p.clocks.get(&key));
+            clocks.insert(key, anchored(*clock, old, now, rate));
+        }
+    }
+    let dated = |key: SourceKey| {
+        let (clock, wave) = time_function(sources[&key]);
+        (clocks.get(&key).copied().unwrap_or(clock), wave)
     };
     for (&key, route) in &routes {
         let RouteTarget::Param(target) = route.to else {
@@ -580,20 +605,20 @@ pub fn compile(
                 });
                 edges.insert((route.source, target));
             }
-            source => {
-                let (clock, wave) = time_function(source);
+            Source::Lfo { .. } | Source::Macro { .. } => {
+                let (clock, wave) = dated(route.source);
                 let depth_by = scaler.map(|d| {
                     let by = &routes[&d];
-                    let (clock, wave) = time_function(sources[&by.source]);
+                    let (clock, wave) = dated(by.source);
                     DepthBy {
-                        clock: anchor(target, id, clock, true),
+                        clock,
                         wave,
                         amount: by.amount(),
                     }
                 });
                 entry.0.push(Layer {
                     id,
-                    clock: anchor(target, id, clock, false),
+                    clock,
                     wave,
                     amount: route.amount(),
                     depth_by,
@@ -627,6 +652,7 @@ pub fn compile(
         programs,
         nodes,
         edges,
+        clocks,
     })
 }
 
@@ -666,7 +692,7 @@ fn check_source(key: SourceKey, source: &Source) -> Result<(), CompileError> {
             };
             let ok_wave = match wave {
                 Wave::Shape { .. } => true,
-                Wave::Const(v) => !v.is_nan(),
+                Wave::Const(v) => v.is_finite(),
                 Wave::Drawn(points) => {
                     points
                         .iter()
@@ -725,17 +751,35 @@ fn time_function(source: &Source) -> (Clock, Wave) {
     }
 }
 
-/// `clock` (as declared: no anchor) dated against the layer's clock in the
-/// previous program, `old` (doc 014 §4.3).
+/// An LFO's `clock` (as declared: no anchor) dated against its own dated
+/// clock in the previous compile, `old` (doc 014 §4.3). Keyed by source,
+/// so a new route, a route moved to this source, or a route whose
+/// `depth_by` changed reads the anchor every other layer of it reads.
 ///
 /// - A beat clock, or no seconds clock before: as declared.
 /// - The same rate: the old anchor carried, if it is in the current epoch
 ///   (an anchor from another epoch is ignored by the lane, so it is
 ///   dropped).
 /// - A new rate: an anchor at `now + RATE_ANCHOR_MARGIN`, at the old
-///   program's phase there, moving at the old rate before it. If the old
-///   program's own anchor is still ahead of `now`, the edit takes effect on
-///   that frame instead, which is where the old rate takes over anyway.
+///   clock's phase there, moving at the old rate before it.
+/// - A new rate while the old clock's own anchor is still at least
+///   [`ANCHOR_REUSE_MIN`] ahead of `now`: the edit takes effect on that
+///   frame instead, which is where the old rate gives way anyway, and the
+///   publish has the room to land before it.
+///
+/// **The error that remains.** One anchor holds one rate change, so it
+/// cannot express R0 → R1 → R2. When a second edit (to R2) comes while an
+/// anchor (R0 → R1 at `a`) is pending but nearer than `ANCHOR_REUSE_MIN`,
+/// the new anchor goes at `now + margin`, past `a`, with the old clock's
+/// exact phase there and `prev_rate` R1; before it the new clock runs at R1
+/// back from that phase. That agrees with the old clock from `a` on, but
+/// between `now` and `a` the old clock ran at R0, so a lane that switches
+/// to the new program at frame `s < a` steps by `(R1 − R0) · (a − s)`
+/// (in cycles, with `a − s` in seconds: under `ANCHOR_REUSE_MIN` frames);
+/// one that switches at or after `a` does not step. Reusing `a` instead
+/// would step by `(R2 − R1) · lag` for any lane the publish reaches after
+/// `a`, unbounded by the margin; re-anchoring bounds the step by the
+/// frames that were left.
 ///
 /// A changed declared phase is a deliberate jump: it moves a carried or new
 /// anchor's phase by the same amount, as it moves an unanchored clock.
@@ -764,7 +808,13 @@ fn anchored(clock: Clock, old: Option<&Clock>, now: PlayReading, rate: SampleRat
         live.map(shifted)
     } else {
         match live {
-            Some(a) if a.at > now.play => Some(shifted(a)),
+            Some(a)
+                if a.at
+                    .since(now.play)
+                    .is_some_and(|left| left >= ANCHOR_REUSE_MIN) =>
+            {
+                Some(shifted(a))
+            }
             _ => {
                 let at = now.after(RATE_ANCHOR_MARGIN).play;
                 let t = ProgramTime {

@@ -11,7 +11,7 @@ use tutti_graph::{
     NodeParts, Offset, ParamRangeReader, ParamSegment, PlayReading, Prepare, SegmentShape, Shape,
     Status, Transport,
 };
-use tutti_mod::{Clock, ControlProgram, CurveSegment, ProgramTime, MAX_LANE_INPUTS};
+use tutti_mod::{Clock, ControlProgram, CurveSegment, ProgramTime, Wave, MAX_LANE_INPUTS};
 use tutti_types::{
     AtomicF32, Beat, Frame, ParamAddr, ParamKey, RangeCell, RtPublish, SamplePosition, Samples,
     Tail, Unit,
@@ -857,12 +857,16 @@ impl Block<'_> {
     }
 }
 
-/// Whether any of `program`'s moving layers runs on the play clock (a
-/// constant layer moves on no clock).
+/// Whether any of `program`'s moving waves runs on the play clock (a
+/// constant wave, a layer's or its `depth_by`'s, moves on no clock).
 fn has_seconds(program: &ControlProgram) -> bool {
-    let secs = |c: &Clock| matches!(c, Clock::Seconds { .. });
+    let moves =
+        |c: &Clock, w: &Wave| matches!(c, Clock::Seconds { .. }) && !matches!(w, Wave::Const(_));
     program.layers().iter().any(|l| {
-        !l.is_constant() && (secs(&l.clock) || l.depth_by.as_ref().is_some_and(|d| secs(&d.clock)))
+        moves(&l.clock, &l.wave)
+            || l.depth_by
+                .as_ref()
+                .is_some_and(|d| moves(&d.clock, &d.wave))
     })
 }
 

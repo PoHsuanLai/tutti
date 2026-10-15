@@ -56,7 +56,7 @@ use std::sync::Arc;
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{Latency, NodeKey, RangeCell};
+use tutti_types::{Latency, NodeKey};
 
 use tutti_types::At;
 
@@ -69,7 +69,9 @@ use crate::exec::{
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
-use crate::param::{ParamFrom, ParamIn, ParamRange, ParamRanges, ParamState, ParamTap, Ramp};
+use crate::param::{
+    ParamFrom, ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState, ParamTap, Ramp,
+};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
 
@@ -938,21 +940,22 @@ impl Editor {
         Ok(())
     }
 
-    /// The live range cell of `at`, the very cell its port clamps to and
-    /// [`set_param_range`](Self::set_param_range) stores into: a handle for
-    /// a reader outside the graph (a control lane loads it once per block,
-    /// doc 014 §4.2). Control side.
+    /// A read-only view of `at`'s live range cell, the very cell its port
+    /// clamps to and [`set_param_range`](Self::set_param_range) stores into:
+    /// for a reader outside the graph (a control lane loads it once per
+    /// block, doc 014 §4.2). Control side. Writes go through
+    /// `set_param_range`, which keeps the spec and the cell together (a
+    /// commit rewrites every cell from the spec).
     ///
     /// `None` until a commit has placed a unit declaring `at.param` at
-    /// `at.node`. The handle stays the port's while the units placed at the
+    /// `at.node`. The view stays the port's while the units placed at the
     /// key declare the same params; a commit that places one with another
-    /// list gives the key fresh cells, and an old handle then reads ranges
-    /// nothing writes. Ask again after such a commit.
-    pub fn param_range_cell(&self, at: ParamIn) -> Option<Arc<RangeCell>> {
+    /// list gives the key fresh cells, and an old view then reads ranges
+    /// nothing writes. Ask again after such a commit (a rebind).
+    pub fn param_range_cell(&self, at: ParamIn) -> Option<ParamRangeReader> {
         self.param_ranges
             .get(&at.node)
-            .and_then(|cells| cells.cell(at.param))
-            .map(Arc::clone)
+            .and_then(|cells| cells.reader(at.param))
     }
 
     /// Write every live range cell from the spec.

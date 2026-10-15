@@ -190,22 +190,18 @@ fn verify_params(plan: &Plan) -> Result<(), VerifyError> {
             };
             // The port rule: an event source replaces the base, so a port
             // has at most one, and it is unshaped.
-            let events: Vec<_> = sources
-                .iter()
-                .filter(|s| matches!(s.slot, crate::plan::ParamSlot::Event(_)))
-                .collect();
-            if events.len() > 1 {
-                return Err(bad(format!(
-                    "give port {} {} event sources",
-                    p.port,
-                    events.len()
-                )));
+            let mut events = 0usize;
+            for s in sources {
+                if !matches!(s.slot, crate::plan::ParamSlot::Event(_)) {
+                    continue;
+                }
+                events += 1;
+                if s.shaping != crate::param::ParamShaping::Identity {
+                    return Err(bad(format!("shape port {}'s event source", p.port)));
+                }
             }
-            if events
-                .iter()
-                .any(|s| s.shaping != crate::param::ParamShaping::Identity)
-            {
-                return Err(bad(format!("shape port {}'s event source", p.port)));
+            if events > 1 {
+                return Err(bad(format!("give port {} {events} event sources", p.port)));
             }
         }
     }

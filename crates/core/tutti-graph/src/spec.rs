@@ -420,19 +420,19 @@ impl GraphSpec {
             }
             // The port rule (doc 014 §5.6): one event source, unshaped, and
             // its value replaces the base.
-            let mut event_sources = 0;
+            let mut event_sources = Vec::new();
             for src in &m.sources {
                 if let ParamFrom::Events(from) = src.from {
-                    event_sources += 1;
+                    event_sources.push(from);
                     if src.shaping != ParamShaping::Identity {
                         errs.push(GraphInvalid::ShapedEventParamSource { at, from });
                     }
                 }
             }
-            if event_sources > 1 {
+            if event_sources.len() > 1 {
                 errs.push(GraphInvalid::TooManyEventParamSources {
                     at,
-                    count: event_sources,
+                    sources: event_sources,
                 });
             }
         }
@@ -528,8 +528,8 @@ pub enum GraphInvalid {
     TooManyEventParamSources {
         /// The param port.
         at: ParamIn,
-        /// How many event sources it has.
-        count: usize,
+        /// Its event sources, in the port's source order.
+        sources: Vec<EventOut>,
     },
     /// A param port's event source is shaped other than
     /// [`ParamShaping::Identity`]. Its value is the param's own value, which

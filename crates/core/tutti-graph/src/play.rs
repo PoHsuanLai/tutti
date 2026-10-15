@@ -213,11 +213,14 @@ impl PlayState {
     }
 
     /// Records the block `env` (whose clock [`begin`](Self::begin) made):
-    /// the next block starts where it ends. Publishes that reading.
+    /// the next block starts where it ends. Publishes that reading. A block
+    /// of no frames advances nothing: the next block starts at its reading.
     pub(crate) fn end(&mut self, env: &Env) {
         let len = env.block_len.get();
-        let last = Offset::raw(len.saturating_sub(1) as u32);
-        self.next = env.play_at(last).after(Samples(1));
+        self.next = match len.checked_sub(1) {
+            Some(last) => env.play_at(Offset::raw(last as u32)).after(Samples(1)),
+            None => env.play.start,
+        };
         self.playing = env.playing_at_end();
         self.published.store(self.next.pack(), Ordering::Release);
     }
@@ -386,5 +389,26 @@ mod tests {
         assert_eq!(e3.play.start, e2.play.start.after(Samples(64)));
         s.end(&e3);
         assert_eq!(reader.read(), e3.play.start.after(Samples(64)));
+    }
+
+    /// A block of no frames advances the clock by nothing.
+    ///
+    /// Mutation (run): `end` reading the last frame as
+    /// `len.saturating_sub(1)` and adding one (as it first did) → the empty
+    /// block advances the clock by 1 → fails.
+    #[test]
+    fn an_empty_block_advances_nothing() {
+        let published = Arc::new(AtomicU64::new(0));
+        let mut s = PlayState::new(Arc::clone(&published));
+        let e1 = env(false, &[], s.begin(false, 0));
+        s.end(&e1);
+        let before = s.reading();
+        for k in 0..2 {
+            let mut empty = env(false, &[], s.begin(false, 0));
+            empty.block_len = Samples(0);
+            s.end(&empty);
+            assert_eq!(s.reading(), before, "empty block {k}");
+            assert_eq!(PlayReader(Arc::clone(&published)).read(), before);
+        }
     }
 }

@@ -907,7 +907,10 @@ fn a_second_event_source_is_refused() {
         Err(CommitError::Invalid(errs)) => assert!(
             errs.iter().any(|e| matches!(
                 e,
-                GraphInvalid::TooManyEventParamSources { at: a, count: 2 } if *a == at
+                GraphInvalid::TooManyEventParamSources { at: a, sources }
+                    if *a == at
+                        && sources.iter().map(|e| e.node).collect::<Vec<_>>()
+                            == [NodeKey(2), NodeKey(3)]
             )),
             "{errs:?}"
         ),
@@ -2268,16 +2271,24 @@ proptest! {
     }
 }
 
-/// `Editor::param_range_cell` hands out the very cell the port clamps to:
-/// a store into it clamps the next block, as `set_param_range` would, and
-/// `set_param_range` is read back through it. A param the node does not
-/// declare, or a key no commit has placed, has no cell.
+/// `Editor::param_range_cell` hands out a read-only view of the very cell
+/// the port clamps to: `set_param_range` is read back through it on the
+/// spot, the next block clamps to it, and a later commit (which rewrites
+/// every cell from the spec) leaves it reading the same range. A param the
+/// node does not declare, or a key no commit has placed, has none.
 ///
-/// Mutations (run): `param_range_cell` returning a fresh cell holding the
-/// current range (`Arc::new(RangeCell::new(..))` of the stored bounds) → the
-/// store through it clamps nothing → fails. `ParamRanges::new` sharing one
-/// cell between all ports → the store on Cutoff clamps Q's port, which reads
-/// past its old bound → fails.
+/// Changed in review of doc 014 PR 2a: the handle was an `Arc<RangeCell>`
+/// and the test stored through it; a store there was undone by the next
+/// commit, so the handle is read-only and the test writes through the
+/// supported path, `set_param_range`, still asserting the handle sees it.
+///
+/// Mutations (run): `param_range_cell` returning a view of a fresh cell
+/// holding the current range (`RangeCell::new` of the stored bounds) → the
+/// handle misses the later `set_param_range` → fails. `ParamRanges::new`
+/// sharing one cell between all ports → the range set on Cutoff clamps Q's
+/// port, which reads past it → fails. `set_param_range` not updating the
+/// spec (cell only) → the commit that follows rewrites the cell to the old
+/// range → fails.
 #[test]
 fn a_range_cell_handle_is_the_ports_own() {
     const SEED: u64 = 29;
@@ -2295,15 +2306,26 @@ fn a_range_cell_handle_is_the_ports_own() {
     assert!(ed.param_range_cell(param(PROBE, UnitParam::Wet)).is_none());
     assert!(ed.param_range_cell(param(1, UnitParam::Cutoff)).is_none());
     let cell = ed.param_range_cell(at).expect("a declared, committed port");
-    assert_eq!(cell.load(), (f32::NEG_INFINITY, f32::INFINITY));
+    assert!(cell.same_cell(&ed.param_range_cell(at).expect("again")));
+    assert_eq!(cell.load(), ParamRange::UNBOUNDED);
 
     ed.set_param_range(at, ParamRange::new(-0.5, 0.5))
         .expect("a range");
-    assert_eq!(cell.load(), (-0.5, 0.5), "set_param_range stores into it");
+    assert_eq!(cell.load(), ParamRange::new(-0.5, 0.5), "read back at once");
 
     let frame = block(&mut exec, &mut ed, 64)[0].len() as u64;
-    // A store through the handle alone: the next block clamps to it.
-    cell.store(-0.25, 0.25);
+    ed.set_param_range(at, ParamRange::new(-0.25, 0.25))
+        .expect("a range");
+    assert_eq!(cell.load(), ParamRange::new(-0.25, 0.25));
+    // An unrelated commit (another node joins): the cell is rewritten from
+    // the spec, which holds the same range.
+    ed.insert(NodeKey(3), "other", Unforkable(Signal { seed: 1 }));
+    ed.commit().expect("commits");
+    assert_eq!(
+        cell.load(),
+        ParamRange::new(-0.25, 0.25),
+        "a commit keeps it"
+    );
     let out = block(&mut exec, &mut ed, 64);
     assert!(out[0].contains(&0.25) && out[0].contains(&-0.25));
     for (i, &v) in out[0].iter().enumerate() {

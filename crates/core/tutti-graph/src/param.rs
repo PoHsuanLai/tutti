@@ -576,8 +576,8 @@ pub(crate) struct SrcState {
 /// One [`RangeCell`] per port: both bounds in one word, so a reader never
 /// pairs one write's `min` with another's `max` (two `AtomicF32`s, as two
 /// `Param<U>`s would be, could). Each is an `Arc`, so a reader outside the
-/// graph (a control lane, doc 014 §4.2) can hold the very cell the port
-/// clamps to ([`Editor::param_range_cell`](crate::Editor::param_range_cell)).
+/// graph (a control lane, doc 014 §4.2) can read the very cell the port
+/// clamps to through a [`ParamRangeReader`].
 ///
 /// Kept by the editor per key, as [`ParamTap`] is, and shared with the
 /// state of each unit placed there that declares the same params: a
@@ -606,15 +606,22 @@ impl ParamRanges {
         self.declared
     }
 
-    /// `param`'s cell, if it is one of these ports. Control side.
-    pub(crate) fn cell(&self, param: UnitParam) -> Option<&Arc<RangeCell>> {
-        self.cells.get(self.declared.index_of(param)?)
+    /// A read-only view of `param`'s cell, if it is one of these ports.
+    /// Control side.
+    pub(crate) fn reader(&self, param: UnitParam) -> Option<ParamRangeReader> {
+        self.cells
+            .get(self.declared.index_of(param)?)
+            .map(|c| ParamRangeReader(Arc::clone(c)))
     }
 
     /// Set `param`'s range; `false` if it is not one of these ports.
     /// Control side.
     pub(crate) fn store(&self, param: UnitParam, range: ParamRange) -> bool {
-        let Some(cell) = self.cell(param) else {
+        let Some(cell) = self
+            .declared
+            .index_of(param)
+            .and_then(|k| self.cells.get(k))
+        else {
             return false;
         };
         cell.store(range.min, range.max);
@@ -628,6 +635,33 @@ impl ParamRanges {
             let (min, max) = c.load();
             ParamRange::new(min, max)
         })
+    }
+}
+
+/// A read-only view of one param port's live range: the very cell the port
+/// clamps to, for a reader outside the graph (a control lane, which loads it
+/// once per block for its span, doc 014 §4.2). Handed out by
+/// [`Editor::param_range_cell`](crate::Editor::param_range_cell).
+///
+/// Read-only on purpose: the spec is the range's one writer
+/// ([`Editor::set_param_range`](crate::Editor::set_param_range) stores into
+/// the spec and this cell together, and every commit rewrites the cell from
+/// the spec), so a store that went to the cell alone would be undone by the
+/// next commit.
+#[derive(Clone, Debug)]
+pub struct ParamRangeReader(Arc<RangeCell>);
+
+impl ParamRangeReader {
+    /// The range now: both bounds as one store left them. Wait-free.
+    #[inline]
+    pub fn load(&self) -> ParamRange {
+        let (min, max) = self.0.load();
+        ParamRange::new(min, max)
+    }
+
+    /// Whether `self` and `other` read the same cell.
+    pub fn same_cell(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 

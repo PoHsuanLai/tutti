@@ -97,7 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `LANE_EVENT_CAPACITY` = 128 (`AutomationLaneNode`'s) | 256, the control lane's: a 4096-frame block's grid and as many corners; past it a lane thins its grid (`thinned()`), then drops its last points (`truncated()`) |
   | a piece no `SegmentShape` carries (`Elastic`, a curve without pieces) was sampled at block edges, so it moved with the block size | it is linear between grid points of the play clock and the breakpoints: the same frames at any block size |
   | `ParameterQueue::chunk_room(chunk)` = `max(ceil(chunk / 32) + 4, 10)`; a full queue replaced its last point (`points_merged`) | `ceil(chunk / 32) + 1 + CORNER_POINTS` (256); a full queue drops a grid point (a frame whose play count is a multiple of 32), or a corner evicts its earliest grid point, both counted in `ParamDeliveryStats::grid_points_dropped`; only a queue of corners is merged |
-  | `SegmentPoints` sent a point every stride frames of each chunk | it sends a segment's arrival and each chunk's last frame; the lane's pieces are the points |
+  | `SegmentPoints` sent a point every stride frames of each chunk | it sends a segment's start, its value on each 32-frame play-grid frame, each chunk's last frame and its arrival; the lane's pieces are the points |
   | a plugin node's and plugin-server's parameter buffers reserved 132 points per parameter at a 4096-frame chunk | 385 (about 2.9× the memory: the node's buffers about 118 MB at 2000 parameters, the CLAP input list about 56 MB; doc 014 §12 lists every figure and the arena that will replace them) |
 
   Migration:

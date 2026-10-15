@@ -504,6 +504,13 @@ point to the chunk's end). That needs at least
 so **plugin export == live holds at the same chunk size**, and PR 4's test
 pins the chunk.
 
+*As landed (PR 2b):* `SegmentPoints` also sends a segment's value on each
+frame in flight whose play count is a multiple of 32, as a grid point. A
+lane's pieces run grid frame to grid frame, so it adds nothing to a lane;
+it keeps a segment scheduled by hand (`ParamSegment` on the event input,
+which no lane cuts into pieces) within 32 frames of its curve, as the old
+stride did, on a grid that does not move with the chunk.
+
 **CPU.** At 48 kHz the grid is 1,500 points a second per lane; each point
 evaluates each layer once (the left limit at `p'` is the value at `p'`
 except at a jump). 200 lanes × 2 layers is about 600k layer evaluations a
@@ -899,8 +906,21 @@ sources:
   `ParamDeliveryStats::grid_points_dropped`, and only a queue of corners
   is merged. A point is a grid point when its frame's play count is a
   multiple of 32 (`param_input::take`, through `Cx::play_at`).
-  `SegmentPoints` sends each segment's arrival and each chunk's last frame,
-  never stride points.
+  `SegmentPoints` sends a segment's start, its value on each play-grid
+  frame in flight (a grid point), each chunk's last frame and its arrival,
+  never the chunk-relative stride points. A lane's pieces run grid frame
+  to grid frame, so they have no grid frame inside; a segment scheduled by
+  hand is held at most 32 frames.
+- Changed tests, each marked "Changed in doc 014 PR 2b" in place:
+  `clap_process_no_alloc.rs` (#92's room, refusal and flood figures follow
+  the new `chunk_room`: 273 a queue, 4368 for the output list);
+  `segment_points.rs`' `a_segment_sends_points_until_it_lands` (the play
+  grid replaces `stride_for(64)`); and `clap_automation.rs`' `follows`,
+  whose upper bound for a lane is the curve at the next grid frame, not at
+  the frame: a lane's chunk-edge point is its `Linear` piece's value there,
+  on the chord from `curve(g)` to `curve(g + 32)`, which on a convex
+  rising curve is above `curve(f)` (2.9e-5 relative at frame 255) and, the
+  curve being monotone, never above `curve(g + 32)`.
 - Deviations from the text above, each recorded where it applies: no
   re-send at a block edge (§5.2 step 5); an unchanged glide is skipped and
   exact mode jumps on a republish (§4.2); the lane is `Moderate`, measured

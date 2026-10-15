@@ -9,17 +9,20 @@
 //!
 //! - its value on its event frame (a grid point when the play clock's count
 //!   there is a multiple of 32, a corner otherwise);
+//! - its value on every frame in flight whose play clock count is a
+//!   multiple of 32 (a grid point, dropped first past the queue's room);
 //! - its value on each chunk's last frame while it is in flight (the
 //!   formats hold the last point to the chunk's end);
 //! - its end value on the frame it arrives ([`ParamSegment::arrives_after`]),
 //!   after which it is dropped: the plugin holds the end value exactly.
 //!
-//! Never points along a segment between those (design doc 014 §5.3): a
-//! control lane's pieces end on its own 32-frame grid and its corners, so
-//! each piece's start is already a point, and what a plugin hears does not
-//! depend on the chunk except at the chunk's last frame. A shaped segment
-//! (a ramp's or a hand-built one) reaches the plugin as its start, the
-//! chunk edges and its arrival. The queue's room (`param_delivery::points_for`,
+//! The grid is the play clock's, not the chunk's (design doc 014 §5.3), so
+//! what a plugin hears does not depend on the chunk except at the chunk's
+//! last frame. A control lane's pieces run from one grid frame (or corner)
+//! to the next, so a lane's segment never has a grid frame inside it: it
+//! reaches the plugin as its start, the chunk edge and nothing else. A
+//! shaped segment scheduled by hand is held at most 32 frames between
+//! points, as the lane's grid holds. The queue's room (`param_delivery::points_for`,
 //! `ceil(chunk / 32) + 1 + 256`, doc 014 §9 requirement 6) holds a lane's
 //! grid, the chunk edge and 256 corners; past it grid points are dropped
 //! before corners, counted (`ParamDeliveryStats::grid_points_dropped`).
@@ -152,8 +155,16 @@ impl SegmentPoints {
     }
 
     /// The points the segments in flight put on absolute frames
-    /// `from..to`, the first of them at chunk frame `at`.
-    pub(super) fn points(&mut self, changes: &mut ParamDelivery, from: u64, to: u64, at: usize) {
+    /// `from..to`, the first of them at chunk frame `at`. `grid` says
+    /// whether an absolute frame's play clock count is a multiple of 32.
+    pub(super) fn points(
+        &mut self,
+        changes: &mut ParamDelivery,
+        from: u64,
+        to: u64,
+        at: usize,
+        grid: impl Fn(u64) -> bool,
+    ) {
         if from >= to {
             return;
         }
@@ -163,12 +174,19 @@ impl SegmentPoints {
             while f < to {
                 let c = at + (f - from) as usize;
                 let arrived = t.end == Some(f);
-                if arrived || c == last {
+                // The arrival and the chunk edge are corners: never dropped.
+                let on_grid = !arrived && c != last && grid(f);
+                if arrived || c == last || on_grid {
                     let j = f.saturating_sub(t.start);
                     let value = t
                         .segment
                         .raw_value_after(Samples(usize::try_from(j).unwrap_or(usize::MAX)));
-                    point(changes, t.address, c, value);
+                    if on_grid {
+                        let offset = i32::try_from(c).unwrap_or(i32::MAX);
+                        changes.grid_point(t.address, offset, value);
+                    } else {
+                        point(changes, t.address, c, value);
+                    }
                     if arrived {
                         // Done: the plugin holds its end value.
                         return false;
@@ -222,6 +240,11 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// No frame on the play grid (a test about something else).
+    fn no_grid(_: u64) -> bool {
+        false
+    }
+
     /// The chunk goes, as the bridge takes it: swapped for an empty buffer.
     fn hand_off(d: &mut ParamDelivery) -> ParameterChanges {
         let mut sent = ParameterChanges::reserved(d.room(), d.points());
@@ -230,23 +253,25 @@ mod tests {
         sent
     }
 
-    /// A segment spanning several chunks sends its start, each chunk's last
-    /// frame while it is in flight, and its end value exactly on the frame
-    /// it arrives; nothing between (doc 014 §5.3: a lane's pieces end on
-    /// its own grid), and nothing after.
+    /// A segment spanning several chunks sends its start, its value on each
+    /// play-grid frame (every 32nd absolute frame here) and each chunk's
+    /// last frame while it is in flight, and its end value exactly on the
+    /// frame it arrives; nothing else, and nothing after.
     ///
-    /// Changed in doc 014 PR 2b: chunk 0 also carried a point every 8
-    /// frames (`stride_for(64)`); a segment now sends only its endpoints and
-    /// the chunk edges.
+    /// Changed in doc 014 PR 2b: the points between were every 8th chunk
+    /// frame (`stride_for(64)`), a grid that moved with the chunk; they are
+    /// now the play clock's 32-frame grid (doc 014 §5.3).
     ///
     /// Mutations (run), each fails: no point on the arrival frame (only the
-    /// last frame) → the end value lands late; dropping a track after each
-    /// run of points (`false` for the `true` after `t.next = to`) → the next
-    /// chunk gets no points; the old stride kept (`c.is_multiple_of(8)`) →
-    /// chunk 0 has more than two points.
+    /// grid and the last frame) → the end value lands late; dropping a
+    /// track after each run of points (`false` for the `true` after
+    /// `t.next = to`) → the next chunk gets no points; the old stride kept
+    /// (`c.is_multiple_of(8)` for `grid(f)`) → chunk 0 has 9 points; the
+    /// grid ignored (`on_grid` false) → chunk 0 is `[10, 63]`.
     #[test]
     fn a_segment_sends_points_until_it_lands() {
         let seg = ParamSegment::foreign(7, 0.0, 1.0, Samples(150), SegmentShape::PowerIn(2.0));
+        let grid = |f: u64| f.is_multiple_of(32);
         let mut sp = SegmentPoints::default();
         let mut d = delivery([7]);
         sp.prepare(MAX_SEGMENTS);
@@ -258,11 +283,11 @@ mod tests {
             let base = k * chunk as u64;
             if k == 0 {
                 // The event on frame 10.
-                sp.points(&mut d, 0, 10, 0);
+                sp.points(&mut d, 0, 10, 0, grid);
                 sp.start(&mut d, A, seg, 10, 10, false);
-                sp.points(&mut d, 10, 64, 10);
+                sp.points(&mut d, 10, 64, 10, grid);
             } else {
-                sp.points(&mut d, base, base + 64, 0);
+                sp.points(&mut d, base, base + 64, 0, grid);
             }
             chunks.push(queue(&mut d, A));
             hand_off(&mut d);
@@ -274,10 +299,13 @@ mod tests {
                 assert_eq!(v, want, "chunk {k}, frame {c}");
             }
         }
-        // Chunk 0: the event and the last frame; chunk 1: its last frame.
+        // Chunk 0: the event, grid frame 32, the last frame; chunk 1: grid
+        // frames 64 and 96, its last frame; chunk 2: grid frame 128, then
+        // the arrival.
         let frames = |k: usize| chunks[k].iter().map(|p| p.0).collect::<Vec<i32>>();
-        assert_eq!(frames(0), [10, 63]);
-        assert_eq!(frames(1), [63]);
+        assert_eq!(frames(0), [10, 32, 63]);
+        assert_eq!(frames(1), [0, 32, 63]);
+        assert_eq!(frames(2), [0, 31]);
         // It arrives 149 frames after frame 10: frame 159, chunk 2 frame 31.
         assert_eq!(chunks[2].last(), Some(&(31, 1.0)), "lands on its frame");
         assert!(chunks[2].iter().all(|p| p.0 <= 31));
@@ -300,9 +328,9 @@ mod tests {
         sp.begin(64);
         sp.start(&mut d, A, seg, 0, 0, false);
         sp.start(&mut d, b, seg, 0, 0, false);
-        sp.points(&mut d, 1, 20, 1);
+        sp.points(&mut d, 1, 20, 1, no_grid);
         sp.interrupt(A);
-        sp.points(&mut d, 20, 64, 20);
+        sp.points(&mut d, 20, 64, 20, no_grid);
         assert!(queue(&mut d, A).iter().all(|p| p.0 < 20));
         assert_eq!(queue(&mut d, b).last().map(|p| p.0), Some(63));
     }
@@ -345,9 +373,9 @@ mod tests {
                 for k in 0..n {
                     sp.start(&mut d, addr(k), seg(k), 0, 0, false);
                 }
-                sp.points(&mut d, 1, 64, 1);
+                sp.points(&mut d, 1, 64, 1, no_grid);
             } else {
-                sp.points(&mut d, base, base + 64, 0);
+                sp.points(&mut d, base, base + 64, 0, no_grid);
             }
             for k in 0..n {
                 let points = queue(&mut d, addr(k));

@@ -79,7 +79,7 @@ impl Rig {
         client: PluginClient<Bound>,
         prepare: Prepare,
         automation: Option<tutti_plugin::handles::PluginAutomation>,
-        lane: Option<tutti_nodes::automation::AutomationLaneNode>,
+        lane: Option<tutti_nodes::automation::ControlLaneNode>,
     ) -> (Self, tutti_midi_runtime::MidiSender) {
         let (rig, keys) = Self::build(client, prepare, automation, lane, true);
         (rig, keys.expect("asked for keys"))
@@ -89,7 +89,7 @@ impl Rig {
         client: PluginClient<Bound>,
         prepare: Prepare,
         automation: Option<tutti_plugin::handles::PluginAutomation>,
-        lane: Option<tutti_nodes::automation::AutomationLaneNode>,
+        lane: Option<tutti_nodes::automation::ControlLaneNode>,
         keys: bool,
     ) -> (Self, Option<tutti_midi_runtime::MidiSender>) {
         let (inputs, outputs) = (client.inputs(), client.outputs());
@@ -102,7 +102,7 @@ impl Rig {
             g.event_connect(from, 0, key, 0);
         }
         if let Some(lane) = lane {
-            let (from, ()) = g.add_with_controls(lane);
+            let (from, _lane) = g.add_with_controls(lane);
             g.event_connect(from, 0, key, 0);
         }
         let sender = keys.then(|| {

@@ -23,12 +23,12 @@ use super::segment_points::SegmentPoints;
 ///
 /// - A ramp is one point, its target on its frame, and stops a segment in
 ///   flight on its parameter.
-/// - A segment is its value on its frame, then the chunk edges and its
-///   arrival ([`SegmentPoints`]), which this walk emits on the frames
-///   between events and up to the end of the piece. Its first point is a
-///   grid point when the play clock at its frame (`cx.play_at`) is a
-///   multiple of 32: past a queue's room grid points go first (design doc
-///   014 §9 requirement 6).
+/// - A segment is its value on its frame, then its value on the play-grid
+///   frames, the chunk edges and its arrival ([`SegmentPoints`]), which
+///   this walk emits on the frames between events and up to the end of the
+///   piece. A point is a grid point when the play clock at its frame
+///   (`cx.play_at`) is a multiple of 32: past a queue's room grid points go
+///   first (design doc 014 §9 requirement 6).
 /// - Any other event (MIDI, harmony) goes to `other` with its chunk frame.
 ///
 /// `cx` is the node's call: its `Env::frame` is the absolute frame of block
@@ -57,6 +57,19 @@ pub(crate) fn take(
     // This call's frame `i` as the node's absolute frame.
     let base = cx.env.frame.get();
     let abs = |i: usize| base + i as u64;
+    // Whether absolute frame `f` (in this call) is a play-grid frame: its
+    // play clock count a multiple of 32 (design doc 014 §5.3).
+    let grid = |f: u64| {
+        usize::try_from(f - base)
+            .ok()
+            .and_then(|i| Offset::new(i, cx.env.block_len))
+            .is_some_and(|off| {
+                cx.play_at(off)
+                    .play
+                    .get()
+                    .is_multiple_of(ParameterQueue::POINT_SPACING as u64)
+            })
+    };
     // The frames whose segment points are sent: up to each event's, then
     // the rest of the piece.
     let mut done = from;
@@ -66,7 +79,7 @@ pub(crate) fn take(
             break;
         }
         let frame = at + o - from;
-        segments.points(params, abs(done), abs(o), at + done - from);
+        segments.points(params, abs(done), abs(o), at + done - from, grid);
         done = o;
         match e.kind {
             EventKind::Ramp(ramp) => {
@@ -93,16 +106,10 @@ pub(crate) fn take(
                 let Some(address) = automation_node::address(id, indexed) else {
                     continue;
                 };
-                let grid = Offset::new(o, cx.env.block_len).is_some_and(|off| {
-                    cx.play_at(off)
-                        .play
-                        .get()
-                        .is_multiple_of(ParameterQueue::POINT_SPACING as u64)
-                });
-                segments.start(params, address, seg, abs(o), frame, grid);
+                segments.start(params, address, seg, abs(o), frame, grid(abs(o)));
             }
             EventKind::Midi(_) | EventKind::Harmony(_) => other(e, frame),
         }
     }
-    segments.points(params, abs(done), abs(from + n), at + done - from);
+    segments.points(params, abs(done), abs(from + n), at + done - from, grid);
 }

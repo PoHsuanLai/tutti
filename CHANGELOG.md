@@ -93,8 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its ring's `HeapCons` instead of an `Arc<AudioThreadCell<_>>`, and is no
   longer `Clone` (nothing cloned it: the ring has one consumer, the
   `MicMonitorNode` that owns it). **Breaking** only for code that cloned a
-  `MicRing`: hand the one ring to the node instead. `share_mic_ring` keeps
-  its name and signature and no longer allocates.
+  `MicRing`: hand the one ring to the node instead. Its constructor is
+  `MicRing::new(consumer)`, which allocates nothing.
+
+  | Was | Now |
+  |---|---|
+  | `tutti_io::share_mic_ring(consumer) -> MicRing` (allocated an `Arc`) | `MicRing::new(consumer)` |
+  | `MicRing: Clone` | not `Clone`: one ring, one consumer |
 - **The in-process VST2 node copies each block once each way, not twice.**
   The node's `ProcessScratch` staging is deleted; `process_f32` reads and
   writes the graph's own buffers through stack channel tables. No API

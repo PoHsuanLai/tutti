@@ -49,7 +49,7 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 /// The consumer end of a stereo capture ring, as an opaque handle for
 /// [`MicMonitorNode`].
 ///
-/// Built with [`share_mic_ring`]: the device layer splits a
+/// Built with [`MicRing::new`]: the device layer splits a
 /// [`HeapRb<[f32; 2]>`](ringbuf::HeapRb), keeps the producer to push captured
 /// frames from its input callback, and wraps the consumer here. Only the
 /// monitor node, on the audio thread, can pop from it, so the ring keeps
@@ -61,6 +61,13 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 pub struct MicRing(HeapCons<[f32; 2]>);
 
 impl MicRing {
+    /// Wraps a freshly split ring consumer, ready to hand to
+    /// [`MicMonitorNode::new`]. Allocates nothing.
+    #[must_use = "the returned MicRing is the only handle to the capture ring; drop it and the monitor node has nothing to drain"]
+    pub fn new(consumer: HeapCons<[f32; 2]>) -> Self {
+        Self(consumer)
+    }
+
     /// Pop the next captured frame. Crate-internal so only `MicMonitorNode`'s
     /// audio-thread `process` can advance the SPSC read index.
     #[inline]
@@ -75,13 +82,6 @@ impl std::fmt::Debug for MicRing {
         // read this must not take.
         f.debug_struct("MicRing").finish_non_exhaustive()
     }
-}
-
-/// Wraps a freshly split ring consumer into a [`MicRing`], ready to hand to
-/// [`MicMonitorNode::new`]. Allocates nothing.
-#[must_use = "the returned MicRing is the only handle to the capture ring; drop it and the monitor node has nothing to drain"]
-pub fn share_mic_ring(consumer: HeapCons<[f32; 2]>) -> MicRing {
-    MicRing(consumer)
 }
 
 /// Live microphone monitoring as a graph node: no inputs, two outputs.
@@ -253,7 +253,7 @@ mod tests {
         for &f in frames {
             let _ = prod.try_push(f);
         }
-        (share_mic_ring(cons), prod)
+        (MicRing::new(cons), prod)
     }
 
     const RATE: SampleRate = SampleRate(48_000.0);

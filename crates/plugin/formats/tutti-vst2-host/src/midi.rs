@@ -32,18 +32,28 @@ pub(crate) struct MidiIo {
 
 impl MidiIo {
     /// Constructs with the inbox queue; pre-sizes both reusable buffers so
-    /// the audio thread never allocates after warm-up.
+    /// the audio thread never allocates.
     pub(crate) fn new(out_rx: Arc<ArrayQueue<MidiEvent>>) -> Self {
-        let mut out = MidiEventVec::new();
         // Reserved from the queue's own capacity, not a constant that happens
         // to match it: `drain_midi_out` empties the queue into this buffer in
         // one pass, so anything smaller reallocates on the audio thread the
         // first time a full queue is drained.
-        out.reserve(out_rx.capacity());
+        let out = MidiEventVec::with_capacity(out_rx.capacity());
         Self {
             send: MidiSendBuffer::new(),
             out_rx,
             out,
+        }
+    }
+}
+
+impl MidiIo {
+    /// Moves everything in the plugin→host inbox into [`out`](Self::out), in
+    /// order. Allocation-free: `out` is reserved for the inbox's whole
+    /// capacity at construction, so draining a full inbox cannot grow it.
+    pub(crate) fn drain(&mut self) {
+        while let Some(ev) = self.out_rx.pop() {
+            self.out.push(ev);
         }
     }
 }
@@ -243,6 +253,29 @@ fn header_words(events: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Draining a full inbox does not allocate**: the out-list was reserved
+    /// for the inbox's whole capacity when it was built, and is cleared, not
+    /// rebuilt, between blocks.
+    ///
+    /// Mutation (run): `MidiIo::new` building `out` with `MidiEventVec::new()` → the first
+    /// drain grows the list inside the gate → aborts.
+    #[test]
+    fn draining_a_full_inbox_does_not_allocate() {
+        let inbox = Arc::new(ArrayQueue::new(256));
+        let mut io = MidiIo::new(Arc::clone(&inbox));
+        for _ in 0..3 {
+            io.out.clear();
+            for i in 0..inbox.capacity() as u32 {
+                inbox
+                    .push(MidiEvent::from_ump(i, &[0x2090_3C40]))
+                    .expect("room");
+            }
+            assert_no_alloc::assert_no_alloc(|| io.drain());
+            assert_eq!(io.out.len(), 256);
+            assert_eq!(io.out[255].frame_offset, 255, "in order");
+        }
+    }
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };

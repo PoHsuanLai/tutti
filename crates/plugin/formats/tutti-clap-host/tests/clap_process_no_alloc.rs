@@ -677,9 +677,9 @@ const OUTPUT_QUEUES: u32 = 16;
 
 /// **A burst of plugin parameter output, within the room reserved at
 /// activation, neither allocates nor frees.** Sixteen parameters with twelve
-/// points each, every block: more than the ten points a queue holds inline,
-/// so a queue built per block would allocate, and one dropped per block would
-/// free. The host groups them into the queues it reserved at activation
+/// points each, every block: more than `ParameterQueue::MIN_POINTS`, the
+/// least room a queue is reserved with, and a queue built per block would
+/// allocate, and one dropped per block would free. The host groups them into the queues it reserved at activation
 /// (16, each with `ParameterQueue::chunk_room(512)` = 20 points), takes each
 /// back with `open_queue` and returns it with `clear`. The gate covers many
 /// blocks, so the second and later reuse the queues the first returned.
@@ -711,7 +711,7 @@ fn param_output_burst_does_not_allocate() {
     // Within the room: 192 events fit the output event list's reservation,
     // and 12 points fit a queue's.
     assert!(POINTS as usize <= tutti_plugin_types::ParameterQueue::chunk_room(MAX_FRAMES as usize));
-    assert!(POINTS as usize > tutti_plugin_types::ParameterQueue::INLINE_POINTS);
+    assert!(POINTS as usize > tutti_plugin_types::ParameterQueue::MIN_POINTS);
     set_param_output(OUTPUT_QUEUES, POINTS);
 
     assert_no_alloc::assert_no_alloc(|| {
@@ -1079,8 +1079,8 @@ fn set_sysex_output_no_alloc(count: u32, bytes: u32) {
 // ===========================================================================
 // Wide channel layouts.
 //
-// The host collected the caller's channel pointers into `SmallVec<[*mut T; 16]>`
-// locals, one per side, which spill to the heap at 17+ channels a side — every
+// The host collected the caller's channel pointers into small-vector locals
+// (16 pointers inline, then the heap), one per side, which spill to the heap at 17+ channels a side — every
 // block, both sides. These layouts are supported configurations, not abuse: the
 // host advertises surround and ambisonic port types precisely so it can be
 // handed them. 7.1.4 Atmos is 12 channels; third-order ambisonic is 16.
@@ -1134,8 +1134,8 @@ fn drive_wide(inst: &mut ClapActive<f32>, channels: usize, iters: usize) {
     });
 }
 
-/// **The control case.** Exactly 16 channels a side is still inline in a
-/// `SmallVec<[T; 16]>`, so this passed even against the unfixed host.
+/// **The control case.** Exactly 16 channels a side still fit the old host's
+/// 16 inline pointers, so this passed even against the unfixed host.
 ///
 /// Without it, the 20-channel test below could be passing because of anything
 /// that scales with channel count. This pins the "just below the cliff" side.
@@ -1161,7 +1161,7 @@ fn exactly_sixteen_channels_per_side_does_not_allocate() {
 }
 
 /// 20 channels a side is past the inline bound, so the unfixed host
-/// heap-allocated two `SmallVec` backing buffers on every block.
+/// heap-allocated two small-vector backing buffers on every block.
 ///
 /// 20 is what a 7.1.4 bed plus a discrete stereo pair presents.
 #[test]

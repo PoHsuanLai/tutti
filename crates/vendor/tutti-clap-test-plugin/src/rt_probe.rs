@@ -13,7 +13,7 @@
 //! | [`crate::rt_probe::tutti_test_plugin_set_audio_thread_log_lines`] | `String` + stderr lock + `Mutex` in `clap.log` |
 //! | [`crate::rt_probe::tutti_test_plugin_set_param_output`] | output parameter queues dropped and regrown per block |
 //! | [`crate::rt_probe::tutti_test_plugin_set_param_output_own`] | a parameter flood starving note events of output room |
-//! | [`WideLayout`]                 | `SmallVec<[*mut T; 16]>` spilling past its inline capacity |
+//! | [`WideLayout`]                 | a 16-inline pointer vector spilling to the heap |
 //!
 //! These are process-global switches because a `clap_process_status` is a
 //! return value, not a parameter, and the port layout is read once at load.
@@ -308,13 +308,13 @@ pub(crate) unsafe fn emit_sysex_output(p: &clap_process) {
 // Wide channel layouts (H7)
 // ---------------------------------------------------------------------------
 
-/// A port layout wide enough to spill the host's per-side `SmallVec<[*mut T;
-/// 16]>` of caller channel pointers.
+/// A port layout wide enough to spill the host's per-side small vector of
+/// caller channel pointers (16 inline, then the heap).
 ///
 /// Not contrived widths: 7.1.4 Atmos is 12 channels, third-order ambisonic is
 /// 16, and the host advertises surround and ambisonic port types precisely so it
 /// can be handed these. The interesting boundary is **17**, not 16 — a
-/// `SmallVec<[T; 16]>` holding exactly 16 elements is still inline.
+/// 16-inline small vector holding exactly 16 elements has not spilled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum WideLayout {
@@ -325,7 +325,7 @@ pub enum WideLayout {
     /// boundary rather than the mere presence of many channels.
     Exactly16 = 1,
     /// One 20-channel port per side. Past the bound: an unfixed host heap-
-    /// allocates two `SmallVec` backing buffers every block.
+    /// allocates two small-vector backing buffers every block.
     Wide20 = 2,
     /// Two ports per side, 12 + 12. Reaches the same spill through *port count*
     /// rather than a single wide port, so a fix that only widens the

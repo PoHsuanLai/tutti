@@ -718,7 +718,7 @@ fn convert_transport(
 /// Copy one block's emitted events out of the CLAP host's pooled buffers into
 /// the caller's reusable [`ProcessOutput`].
 ///
-/// `out` arrives cleared, with its heap capacity intact, so every `extend` and
+/// `out` arrives cleared, with its heap capacity intact, so every copy and
 /// `add_change` below writes into storage that already exists. This is the
 /// point of taking `out` by reference: `ClapInstance::process` returns a
 /// **borrowing** `ProcessOutputRef` into its own pools, and building a fresh
@@ -729,7 +729,7 @@ fn copy_process_output(
     output: tutti_clap_host::instance::ProcessOutputRef<'_>,
     out: &mut ProcessOutput,
 ) {
-    out.midi_events.extend(output.midi_events.iter().copied());
+    out.emit_midi(output.midi_events.iter().copied());
 
     for queue in &output.param_changes.queues {
         for point in &queue.points {

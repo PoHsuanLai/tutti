@@ -94,7 +94,7 @@ impl HardwareMidiInput {
     /// Drains at most `limit` events from this port's input ring into `sink`,
     /// tagging each with `port_index`, and returns how many were taken.
     ///
-    /// Generic over the sink (`Vec`, `SmallVec`, …) so callers can use whatever
+    /// Generic over the sink (`Vec`, an `ArrayVec`, …) so callers can use whatever
     /// RT buffer they hold. `limit` is what keeps a fixed-capacity sink from
     /// reallocating: the audio thread passes its remaining headroom, and events
     /// past it stay in the ring for the next block.

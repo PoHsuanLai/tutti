@@ -79,8 +79,8 @@ impl Node for InProcessVst2Client {
         let n_out = (self.metadata.num_outputs.count() as usize).min(MAX_CHANNELS);
         // No clamp and no size check: `prepare` sized the scratch to the
         // prepared `MaxBlock`, and a block is never longer.
-        // The event input: its MIDI, in its (sorted) order, past the inline
-        // capacity dropped rather than spill (allocate); its parameter events
+        // The event input: its MIDI, in its (sorted) order, past the cap
+        // dropped (the list is inline and cannot grow); its parameter events
         // into the block's changes (`param_input`, the out-of-process node's
         // walk, with the block as the chunk).
         self.midi.clear();
@@ -102,12 +102,11 @@ impl Node for InProcessVst2Client {
             &mut self.params,
             |e, _| match e.kind {
                 EventKind::Midi(Ump(data)) => {
-                    if midi.len() < midi.inline_size() {
-                        midi.push(MidiEvent {
-                            frame_offset: e.offset.get(),
-                            data,
-                        });
-                    }
+                    // Past the cap the event is dropped.
+                    let _ = midi.try_push(MidiEvent {
+                        frame_offset: e.offset.get(),
+                        data,
+                    });
                 }
                 // VST 2.4 has no chord or scale event; the walk keeps the
                 // parameter events for itself.
@@ -132,9 +131,10 @@ impl Node for InProcessVst2Client {
             &mut self.midi,
             &mut |events| {
                 if sends {
+                    // Past the cap the rest are dropped.
                     for e in events {
-                        if out_events.len() < out_events.inline_size() {
-                            out_events.push(*e);
+                        if out_events.try_push(*e).is_err() {
+                            break;
                         }
                     }
                 }

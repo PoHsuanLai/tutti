@@ -29,7 +29,6 @@ use crate::protocol::{
     PROTOCOL_VERSION,
 };
 use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
-use smallvec::smallvec;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -101,8 +100,8 @@ fn stereo_layout() -> SlabLayout {
         slots: RING_SLOTS as u32,
         samples_per_channel: 512,
         format: SampleFormat::Float32,
-        inputs: smallvec![ChannelLayout::STEREO],
-        outputs: smallvec![ChannelLayout::STEREO],
+        inputs: vec![ChannelLayout::STEREO],
+        outputs: vec![ChannelLayout::STEREO],
     }
 }
 

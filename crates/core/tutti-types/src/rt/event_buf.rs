@@ -6,17 +6,17 @@ use super::cell::AudioThreadCell;
 /// A fixed-capacity event collector filled and read through `&self` on the
 /// audio thread.
 ///
-/// A `SmallVec` with `N` inline slots behind an
-/// [`AudioThreadCell`], so it can be filled and read through `&self` on the
-/// audio thread without a lock and without reallocating.
+/// `N` inline slots behind an [`AudioThreadCell`], so it can be filled and
+/// read through `&self` on the audio thread without a lock and without
+/// reallocating.
 ///
-/// Length is bundled with the data (it lives in the `SmallVec`), so producer
+/// Length is bundled with the data (it lives beside the slots), so producer
 /// and consumer never disagree about how many events are live.
 ///
-/// The collector is **capped at `N`**: [`push`](Self::push) refuses to grow
-/// past the inline capacity (returning `false`) rather than spilling to the
-/// heap — overflow on the audio thread is dropped, never allocated. Size the
-/// `N` to the worst case at construction.
+/// The collector is **capped at `N`**: [`push`](Self::push) refuses a write
+/// past the inline slots (returning `false`); the storage has no heap path to
+/// grow into, so overflow on the audio thread is dropped, never allocated.
+/// Size the `N` to the worst case at construction.
 pub struct RtEventBuf<T, const N: usize> {
     cell: AudioThreadCell<Capped<T, N>>,
 }
@@ -49,8 +49,7 @@ impl<T, const N: usize> RtEventBuf<T, N> {
 
     /// Replaces the contents with `it`, capped at `N`.
     ///
-    /// Items past the inline capacity are dropped (never spilled to the heap)
-    /// and latch [`overflowed`](Self::overflowed).
+    /// Items past the inline capacity are dropped and latch [`overflowed`](Self::overflowed).
     #[inline]
     pub fn refill(&self, it: impl IntoIterator<Item = T>) {
         self.cell.borrow_mut().refill(it);
@@ -96,10 +95,10 @@ impl<T, const N: usize> RtEventBuf<T, N> {
     /// whatever owns this collector — the "collect indices this block, then
     /// consume them while mutating the collection they index" pattern.
     ///
-    /// Prefer this over `core::mem::take` on a bare `SmallVec`: `take` swaps
-    /// in a fresh buffer and drops the outgoing one, which frees on the audio
-    /// thread if the collection ever spilled, and re-allocates the next block.
-    /// Here the buffer is retained and only its length is reset.
+    /// Prefer this over `core::mem::take` on a bare `Vec`: `take` swaps in a
+    /// fresh buffer and drops the outgoing one, which frees on the audio
+    /// thread, and re-allocates the next block. Here the buffer is retained
+    /// and only its length is reset.
     ///
     /// `f` is called at most `N` times, in push order, and the collector is
     /// empty when it returns.

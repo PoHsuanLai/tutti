@@ -133,10 +133,10 @@ pub(super) enum Command {
 ///
 /// What remains is the plugin's MIDI-out. The `IpcMidiEvent → MidiEvent`
 /// conversion happens on the bridge thread (off-RT, see `dispatch`), so the
-/// SmallVec moves through the queue already built; the RT thread only drains it
+/// list moves through the queue already built; the RT thread only drains it
 /// into caller storage.
 // `AudioProcessed` holds an inline-256 `MidiEventVec` (~5 KB) vs the zero-size
-// `Error`. Intentional: the SmallVec stays inline so popping + dropping it on the
+// `Error`. Intentional: the list is inline so popping + dropping it on the
 // RT audio thread never touches the heap (see `submit`). Boxing would defeat
 // that by moving the free onto the RT thread.
 #[allow(clippy::large_enum_variant)]

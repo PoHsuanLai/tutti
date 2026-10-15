@@ -292,8 +292,8 @@ pub struct SynthConfig {
     /// through a ladder filter is real work every block.
     ///
     /// It was capped at 16 until the per-block finished-voice list stopped
-    /// being a `SmallVec<[usize; 16]>`; that type's inline capacity had to
-    /// bound this, because a spill would have allocated in the audio
+    /// being a small vector with 16 indices inline; that inline capacity had
+    /// to bound this, because a spill would have allocated in the audio
     /// callback. A `Vec` sized here at construction gives the same guarantee
     /// with no bound.
     pub max_voices: usize,

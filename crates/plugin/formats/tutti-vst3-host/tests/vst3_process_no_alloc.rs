@@ -122,8 +122,8 @@ fn drive_silent(inst: &mut Vst3Active, iters: usize, transport: &TransportInfo) 
 /// covering the sort behind it — allocates in the callback, and only an
 /// unsorted input reaches that branch at all.
 ///
-/// Point count stays under `INLINE_POINTS` (16) per queue so a correct
-/// implementation has nothing to grow into.
+/// Point count stays under the 16 points every host queue is built with
+/// (`MIN_POINT_ROOM`), so a correct implementation has nothing to grow into.
 fn unsorted_automation() -> ParameterChanges {
     let mut changes = ParameterChanges::new();
     let lanes: [(u32, &[i32]); 2] = [(100, &[48, 0, 32, 16, 8]), (101, &[56, 24, 60, 4])];

@@ -270,7 +270,7 @@ fn slab_layout_for(
 /// list meant.
 fn default_if_empty(buses: &BusChannels) -> BusChannels {
     if buses.is_empty() {
-        BusChannels::from_slice(&[ChannelLayout::STEREO])
+        vec![ChannelLayout::STEREO]
     } else {
         buses.clone()
     }
@@ -308,7 +308,6 @@ fn next_shm_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use smallvec::SmallVec;
 
     /// A failed launch must not leave the subprocess running.
     ///
@@ -495,8 +494,8 @@ mod tests {
 
     fn loaded(inputs: &[ChannelLayout], outputs: &[ChannelLayout]) -> LoadedPlugin {
         LoadedPlugin {
-            inputs: SmallVec::from_slice(inputs),
-            outputs: SmallVec::from_slice(outputs),
+            inputs: inputs.to_vec(),
+            outputs: outputs.to_vec(),
             ..Default::default()
         }
     }

@@ -56,14 +56,14 @@ pub use format_host::{
 };
 pub use harmony::{
     ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
-    NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
+    NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue, HARMONY_CAPACITY,
 };
 pub use load_stage::LoadStage;
 pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use metadata::{BusChannels, BusTopologies, LoadedPlugin, PluginTail};
 pub use midi::{MidiEventVec, RtMidiEvents, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
-// `NoteExpressionVec` is the SmallVec alias the change list is built from, so
-// a caller assembling one has to name it.
+// `NoteExpressionVec` is the alias the change list is built from, so a caller
+// assembling one has to name it.
 pub use note_expression::{
     NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, NoteExpressionVec,
 };

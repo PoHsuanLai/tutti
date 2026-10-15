@@ -51,7 +51,9 @@ impl ParameterChangesImpl {
     /// the audio thread with the plugin's parameter count and, for the
     /// host's input list, the points a chunk carries for one parameter at
     /// the activated block size (`ParameterQueue::chunk_room`). The output
-    /// list, which the plugin fills, passes 0 (the inline room).
+    /// list, which the plugin fills, has no such figure and passes
+    /// [`MIN_POINT_ROOM`](super::MIN_POINT_ROOM), the least room any queue
+    /// is built with.
     pub fn with_queues(queues: usize, points: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             // Placeholder param ids: each queue is refilled before it is live.
@@ -91,16 +93,12 @@ impl ParameterChangesImpl {
     }
 
     /// Drains the plugin's emitted parameter changes into a caller-supplied
-    /// pooled [`ParameterChanges`]. Clears `out.queues` first; reuses any
-    /// per-queue inline `points` storage on the destination side, so it is
-    /// allocation-free after warmup.
+    /// pooled [`ParameterChanges`]. Clears `out` first with
+    /// [`ParameterChanges::clear`], which hands its queues back to its spares
+    /// with their point storage kept, so for an `out` built
+    /// [`ParameterChanges::reserved`] this is allocation-free after warmup.
     pub fn fill_changes(&self, out: &mut ParameterChanges) {
-        // Clear `out`'s queues — each individual queue's `points`
-        // SmallVec keeps its heap capacity (clear is len=0, no realloc).
-        for queue in out.queues.iter_mut() {
-            queue.points.clear();
-        }
-        out.queues.clear();
+        out.clear();
 
         let live = *self.live.borrow();
         for queue in self.queues.borrow().iter().take(live) {
@@ -260,9 +258,9 @@ mod tests {
     /// **A list presized for the chunk's points refills without allocating
     /// on first use**: every queue already has the room, so the first block
     /// that carries 140 points on each of 50 parameters reserves nothing
-    /// (it used to grow each queue past its inline 16 on the audio thread).
+    /// (it used to grow each queue past its 16 points on the audio thread).
     ///
-    /// Mutation (run): `with_room` ignoring `points` (`SmallVec::new()`) →
+    /// Mutation (run): `with_room` ignoring `points` (`Vec::new()`) →
     /// the first refill grows each queue inside the gate → fails.
     #[test]
     fn a_presized_list_takes_its_first_dense_block_without_allocating() {

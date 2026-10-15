@@ -35,7 +35,6 @@ conformance = []
 [dependencies]
 libloading = "0.9"
 thiserror = "2"
-smallvec = "1.13"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 tutti-midi-types = { path = "../../../midi/tutti-midi-types" }

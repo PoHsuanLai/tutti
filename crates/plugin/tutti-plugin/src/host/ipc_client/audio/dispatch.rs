@@ -6,8 +6,8 @@ use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
 use crate::protocol::{
-    BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParameterChanges, ParameterQueue,
-    ProcessAudioData,
+    midi_from_wire, BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParameterChanges,
+    ParameterQueue, ProcessAudioData,
 };
 use crate::util::transport::control::{self as ipc, ControlStream, PartialFrame};
 use crate::util::transport::shm::RING_SLOTS;
@@ -433,9 +433,10 @@ pub(super) fn handle(
                 BridgeMessage::AudioProcessed { seq, midi_out, .. } => {
                     // Convert IpcMidiEvent → MidiEvent HERE, on the bridge
                     // thread (off-RT). The RT thread only drains the built
-                    // SmallVec — no per-event conversion, no heap traffic on
-                    // the audio thread.
-                    let midi_out = midi_out.iter().map(|e| MidiEvent::from(*e)).collect();
+                    // list — no per-event conversion, no heap traffic on
+                    // the audio thread. Past the cap the server's list is
+                    // cut (`midi_from_wire`).
+                    let midi_out = midi_from_wire(&midi_out);
                     // The reply now carries MIDI only; whether the *audio* is
                     // there is settled by the slab's sequence numbers, which the
                     // server published before sending this. The echoed `seq` is

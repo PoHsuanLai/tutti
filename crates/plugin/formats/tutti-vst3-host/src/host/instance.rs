@@ -45,7 +45,9 @@ use vst3::Steinberg::{
 use tutti_plugin_types::RtMidiEvents;
 use tutti_types::{ChannelLayout, ChannelTopology};
 
-use crate::com::{event_list_ptr, param_changes_ptr, EventList, ParameterChangesImpl};
+use crate::com::{
+    event_list_ptr, param_changes_ptr, EventList, ParameterChangesImpl, MIN_POINT_ROOM,
+};
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::sdk_enum_i32;
 use crate::types::{
@@ -180,13 +182,11 @@ impl<T: Vst3Sample> OutputStaging<T> {
     /// Resets the emitted-event return pools so a borrow into them reads empty.
     /// Called at the top of every `process` block: the bail-out paths return
     /// `emitted_ref()` directly, and the steady-state path then drains the
-    /// plugin's fresh events in. Clears in place, keeping heap capacity.
+    /// plugin's fresh events in. Clears in place, keeping heap capacity: the
+    /// param queues go back to the set's spares with their point storage.
     fn clear_emitted(&mut self) {
         self.emitted_midi.clear();
-        for queue in self.emitted_param_changes.queues.iter_mut() {
-            queue.points.clear();
-        }
-        self.emitted_param_changes.queues.clear();
+        self.emitted_param_changes.clear();
     }
 
     /// Borrows the emitted-event return pools as a [`ProcessOutputRef`].
@@ -360,7 +360,10 @@ impl<T: Vst3Sample> Vst3Active<T> {
         const MAX_PRESIZED_QUEUES: u32 = 1 << 14;
         let param_queues = (loaded.parameter_count().min(MAX_PRESIZED_QUEUES) as usize)
             .max(OUTPUT_PARAM_QUEUE_RESERVE);
-        let emitted_param_changes = ParameterChanges::with_capacity(param_queues);
+        // The plugin's emitted changes are drained into reserved queues, each
+        // with the room the output COM queues start with, so a block whose
+        // emitted points fit it never allocates a queue or its points.
+        let emitted_param_changes = ParameterChanges::reserved(param_queues, MIN_POINT_ROOM);
         // Each input queue has room for the points one parameter can carry
         // in a block of `block_size` (what the host's plugin node reserves),
         // and one more a skipped block's carried value can prepend, so
@@ -390,14 +393,16 @@ impl<T: Vst3Sample> Vst3Active<T> {
                 buses: out_scratch.buses,
                 events: EventList::new(),
                 // The plugin fills this one: its points per queue are its
-                // own, so the queues start with the inline room.
-                param_changes: ParameterChangesImpl::with_queues(param_queues, 0),
+                // own, so the queues start with the least room,
+                // `MIN_POINT_ROOM`.
+                param_changes: ParameterChangesImpl::with_queues(param_queues, MIN_POINT_ROOM),
                 emitted_midi: RtMidiEvents::new(),
                 emitted_param_changes,
             },
             cc: CcRoute::new(
                 MidiCcMapping::query(loaded.interfaces.controller.as_ref()),
                 param_queues,
+                param_points,
             ),
             midi_learn: loaded.midi_learn.producer(),
         };
@@ -730,6 +735,15 @@ impl<T: Vst3Sample> Vst3Active<T> {
         }
     }
 
+    /// Texts (chord, scale or note-expression text) dropped since activation
+    /// because the block's event-list text arena was full, input and output
+    /// lists together. Each list reserves its arena once and never grows it,
+    /// because the plugin keeps pointers into it for the whole `process`
+    /// call; a text past the room is staged as an empty text and counted here.
+    pub fn event_text_dropped(&self) -> usize {
+        self.audio.input.events.text_dropped() + self.audio.output.events.text_dropped()
+    }
+
     /// Re-query the `IMidiMapping` CC→parameter table from the controller.
     /// Call this when
     /// [`RestartOutcome::midi_cc_assignment_changed`](crate::RestartOutcome::midi_cc_assignment_changed)
@@ -741,7 +755,11 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn rebuild_midi_cc_mapping(&mut self) {
         tutti_plugin_types::assert_main_thread();
-        self.audio.cc.mapping = MidiCcMapping::query(self.loaded.interfaces.controller.as_ref());
+        // Reserves the CC route's param scratch here, on the control thread,
+        // when the mapping becomes non-empty (and releases it when it empties).
+        self.audio.cc.set_mapping(MidiCcMapping::query(
+            self.loaded.interfaces.controller.as_ref(),
+        ));
     }
 
     /// Tells the plugin's audio processor to idle. Safe to call repeatedly;

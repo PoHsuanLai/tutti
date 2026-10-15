@@ -17,9 +17,6 @@
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
-
-const NOTE_EXPR_STACK_CAPACITY: usize = 8;
 
 /// A per-note expression dimension.
 ///
@@ -84,9 +81,12 @@ pub struct NoteExpressionValue {
     pub value: f64,
 }
 
-/// Inline-first storage for one block's note-expression samples, holding eight
-/// before it spills to the heap.
-pub type NoteExpressionVec = SmallVec<[NoteExpressionValue; NOTE_EXPR_STACK_CAPACITY]>;
+/// Storage for one block's note-expression samples.
+///
+/// A plain `Vec`. The producers reuse one value across blocks and clear it in
+/// place ([`ProcessOutput::clear`](crate::ProcessOutput::clear)), so its
+/// capacity survives and a warm block does not allocate.
+pub type NoteExpressionVec = Vec<NoteExpressionValue>;
 
 /// One block's note-expression samples.
 #[derive(Debug, Clone, Default)]

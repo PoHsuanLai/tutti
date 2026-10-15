@@ -3631,6 +3631,43 @@ need to be):
   `VoiceNodeHandle::set_placement` returns `()`: it can no longer be full.
 - `ringbuf` was an unused dependency of `tutti-sampler` and is removed.
 
+#### VST3 host callbacks bounded
+
+**Status: landed** (2026-10-15; the collections audit of `9f397d3d`).
+`tutti-vst3-host`'s `ComponentHandler` sent every plugin callback on one of
+three unbounded crossbeam channels, and a send on one allocates. Plugins call
+`performEdit`, `beginEdit`, `endEdit` and `restartComponent` from their
+process thread (non-conforming, and common), so that allocated there; and
+the plugin server's restart poll, which runs in its audio phase, collected
+all three into fresh `Vec`s to keep only the restart flags.
+
+- Restart flags are cumulative, so they are one `AtomicI32`: `fetch_or` on
+  the plugin's side, swapped to zero by `Vst3Loaded::take_restart`, which the
+  server's `poll_restart` now reads and nothing else (allocation-free,
+  gated with `assert_no_alloc` against the reference probe with edits queued).
+- Edits, progress and unit news share one preallocated
+  `crossbeam_queue::ArrayQueue<PluginNotification>` of 512; a push into a
+  full queue drops the newest and is counted
+  (`Vst3Loaded::dropped_notifications`), and raises a sticky flag the next
+  poll reports once as `RestartOutcome::notifications_overflowed`: a gesture
+  may have lost its final `PerformEdit`, so the host re-reads every value.
+- No notification owns heap memory: `IProgress::start`'s description is an
+  inline `ProgressDescription` (128 bytes, cut at a character boundary), so
+  no callback allocates and dropping a notification frees nothing.
+  `poll_plugin_notifications` hands them to a closure in arrival order and
+  returns the `RestartOutcome`; it collects nothing.
+- A restart has no position among the events. No consumer relied on one:
+  the only reader always folded every restart into one outcome.
+- `HostPlugFrame`'s resize channel, whose one reader kept the last size, is
+  a latest-wins `Mutex<Option<EditorSize>>` (both ends are the UI thread).
+- The server's `poll_restart` also empties the queue
+  (`Vst3Loaded::discard_notifications`, lock-free pops), since the server
+  forwards none of it: no stale backlog, and no overflow count climbing for
+  events nobody reads.
+- Not changed: the server-side editor's edits still never reach the
+  processor (a feature, not this fix), and the GUI-only instance in
+  `tutti-plugin` still ignores `kParamValuesChanged`.
+
 ## Per-node rewrite plan
 
 The question: if the graph had been native from the start, would the nodes

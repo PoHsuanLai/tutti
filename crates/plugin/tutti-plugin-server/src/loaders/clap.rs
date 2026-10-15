@@ -1626,7 +1626,7 @@ mod tests {
         assert!(!params.is_empty());
 
         let mut changes = ParameterChanges::new();
-        let mut queue = ParameterQueue::new(params[0].id);
+        let mut queue = ParameterQueue::with_capacity(params[0].id, 1);
         queue.add_point(0, 0.5);
         changes.add_queue(queue);
 

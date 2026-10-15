@@ -543,7 +543,7 @@ fn host_denormalizes_automation_against_the_parameter_range() {
         "this test's arithmetic oracle is written for the declared range"
     );
 
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(1, 2);
     // Deliberately out of offset order, so the sort is exercised too.
     params.add_change(ParamAddress::Opaque(p.id.into()), 192, 0.75);
     params.add_change(ParamAddress::Opaque(p.id.into()), 64, 0.25);
@@ -580,7 +580,7 @@ fn host_denormalizes_each_parameter_against_its_own_range() {
     let a = param(0); // 100 .. 1100
     let b = param(1); // -12 .. 12
 
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(2, 1);
     params.add_change(ParamAddress::Opaque(a.id.into()), 0, 0.5);
     params.add_change(ParamAddress::Opaque(b.id.into()), 0, 0.5);
     let ctx = ClapProcessContext {

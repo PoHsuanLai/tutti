@@ -218,6 +218,14 @@ impl AudioPipeline {
         self.plugin_output.midi_dropped()
     }
 
+    /// Reserves the plugin's parameter output for `queues` parameters of up
+    /// to `points` points each ([`ProcessOutput::reserve_params`]), so the
+    /// loaders' copy into it never grows. Called by `Session` on plugin load,
+    /// **not on the audio thread**: it allocates.
+    pub(crate) fn reserve_params(&mut self, queues: usize, points: usize) {
+        self.plugin_output.reserve_params(queues, points);
+    }
+
     /// Reseat the scratch variant when the session's negotiated format changes.
     ///
     /// Called by `Session` on plugin load, and **not on the audio thread**: a
@@ -1227,8 +1235,11 @@ mod tests {
     /// Three mutation checks, all verified:
     /// - build a fresh `ProcessOutput` inside the loop instead of reusing one
     ///   (what `ProcessOutputRef::to_owned` did) and this aborts;
-    /// - drop the inner `queue.points.clear()` from `ProcessOutput::clear` and
-    ///   this aborts, because each block then reallocates every points buffer;
+    /// - `ProcessOutput::reserve_params` building `ParameterChanges::new()`
+    ///   (room for nothing) and the copy stores no queue → fails. (Reworded
+    ///   with `PointBuf`: the points storage is fixed, so dropping the inner
+    ///   `queue.points.clear()` from `ProcessOutput::clear`, which made each
+    ///   block reallocate every points buffer, can no longer allocate.)
     /// - copy the MIDI with `midi_events.extend` rather than `emit_midi` and
     ///   this panics at the cap.
     #[test]
@@ -1247,7 +1258,7 @@ mod tests {
         let emitted_midi: Vec<MidiEvent> = (0..EVENTS)
             .map(|i| MidiEvent::from_ump(i as u32, &[0x2090_3C40]))
             .collect();
-        let mut emitted_params = ParameterChanges::new();
+        let mut emitted_params = ParameterChanges::reserved(PARAMS, POINTS);
         for p in 0..PARAMS {
             for pt in 0..POINTS {
                 emitted_params.add_change(
@@ -1270,7 +1281,11 @@ mod tests {
             }
         };
 
+        // Reserved as `Session::handle_load` reserves the pipeline's output.
+        // (Reworded with `PointBuf`: the output grew to its steady storage
+        // during the warm-up before; it is now reserved up front.)
         let mut out = ProcessOutput::default();
+        out.reserve_params(PARAMS, POINTS);
         // Warm up outside the gate: this is where the buffers reach their
         // steady capacity, exactly as the first few real blocks do.
         for _ in 0..4 {

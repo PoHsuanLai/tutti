@@ -53,18 +53,21 @@ const POOL_CAPACITY: usize = super::channels::COMMAND_QUEUE_SIZE;
 ///
 /// **What it costs.** Each buffer holds `queues` parameter queues (the
 /// plugin's parameter count plus the node's 64 spare slots) and stores their
-/// points as a pool (`ParameterChanges::reserved`): each queue owns
-/// `ParameterChanges::FLOOR_POINTS` (2) points of 16 bytes, and a shared pool
-/// holds `ParameterChanges::POOLED_QUEUES` (256) blocks of a queue's full
-/// room, `points_for(chunk)` points (`ceil(chunk / 32) + 4`, at least 10). A
-/// queue is about 64 bytes besides (its slot in the queue list and among the
+/// points in the carried layout (`ParameterChanges::reserved_bridged`): each
+/// queue owns `ParameterChanges::FLOOR_POINTS + 1` (3) points of 16 bytes,
+/// and a shared pool holds `ParameterChanges::POOLED_QUEUES` (256) blocks of
+/// a queue's full room and one more, `ParameterQueue::chunk_room(chunk) + 1`
+/// points; the one more point of each is kept for the carried value the
+/// bridge prepends (`ParameterChanges::prepend_carried`), so nothing grows.
+/// A queue is 64 bytes besides (its slot in the queue list and among the
 /// spares). With the node's own buffer that is `(PARAM_BUFFERS + 1) ×
-/// (queues × 96 + 256 × 16 × points)` bytes per plugin (plus about 14 KB a
-/// buffer of pool bookkeeping): about 6.65 MB for 2 000 parameters at a
-/// 4096-frame chunk (2.52 MB at 512), and about 19.08 MB for a VST3 listing
-/// 16 384 (14.95 MB at 512). The pool term does not grow with the parameter
-/// count; before the pool every queue held the full room, and the same
-/// figures were about 43 MB and 340 MB.
+/// (queues × 112 + 256 × 16 × (room + 1))` bytes per plugin
+/// (`ParameterChanges::carried_budget` points, plus about 14 KB a buffer of
+/// pool bookkeeping): about 6.98 MB for 2 000 parameters at a 4096-frame
+/// chunk (2.85 MB at 512), and about 21.48 MB for a VST3 listing 16 384
+/// (17.35 MB at 512). The pool term does not grow with the parameter count;
+/// before the pool every queue held the full room, and the same figures
+/// were about 43 MB and 340 MB.
 ///
 /// The plugin-server reserves for the same points again, per instance, at
 /// activation with its block size, for what such a buffer can arrive with
@@ -140,7 +143,9 @@ impl PayloadPool {
         for _ in 0..PARAM_BUFFERS {
             // Cannot fail: drained above, and the list holds twice this many
             // (a buffer the bridge thread returns meanwhile still fits).
-            let _ = self.params.push(ParameterChanges::reserved(queues, points));
+            let _ = self
+                .params
+                .push(ParameterChanges::reserved_bridged(queues, points));
         }
     }
 
@@ -225,15 +230,20 @@ mod tests {
     use super::*;
     use crate::protocol::ParameterQueue;
 
-    /// **The bridge's buffers hold the pool budget, not parameters × room**:
-    /// for 2 000 parameters (and the node's 64 spare slots) at 512- and
-    /// 4096-frame chunks, the [`PARAM_BUFFERS`] free buffers together hold
-    /// `PARAM_BUFFERS × ParameterChanges::point_budget` points, a few per
-    /// queue and the shared pools, under a quarter of a full room per queue.
+    /// **The bridge's buffers hold the carried pool budget, not parameters ×
+    /// room**: for 2 000 parameters (and the node's 64 spare slots) at 512-
+    /// and 4096-frame chunks, the [`PARAM_BUFFERS`] free buffers together
+    /// hold `PARAM_BUFFERS × ParameterChanges::carried_budget` points (a
+    /// floor of `FLOOR_POINTS + 1` a queue and the shared pool's blocks of
+    /// `room + 1`), under a third of a full carried room (`room + 1`) per
+    /// queue. (Reworded with `PointBuf`: the buffers were `point_budget`,
+    /// under a quarter of `room`, and the carried value's point grew a queue
+    /// on the bridge thread; it is reserved now.)
     ///
-    /// Mutation (run): `reserve_params` building each buffer with every
-    /// queue at full room (`ParameterChanges::point_layout` always
-    /// `(points, 0)`) → `queues × room` a buffer → fails.
+    /// Mutations (run), each fails: `reserve_params` building each buffer
+    /// with every queue at full room (`ParameterChanges::point_layout`
+    /// always `(points, 0)`) → `queues × (room + 1)` a buffer; building it
+    /// `reserved` (no carried point) → `point_budget` a buffer.
     #[test]
     fn the_buffers_hold_the_pool_budget_not_params_times_room() {
         let queues = 2_000 + 64;
@@ -245,10 +255,11 @@ mod tests {
             while let Some(buffer) = pool.take_params() {
                 storage += buffer.point_storage();
             }
-            let budget =
-                queues * ParameterChanges::FLOOR_POINTS + ParameterChanges::POOLED_QUEUES * room;
+            let budget = queues * (ParameterChanges::FLOOR_POINTS + 1)
+                + ParameterChanges::POOLED_QUEUES * (room + 1);
+            assert_eq!(ParameterChanges::carried_budget(queues, room), budget);
             assert_eq!(storage, PARAM_BUFFERS * budget, "at {chunk}");
-            assert!(4 * budget < queues * room, "at {chunk}");
+            assert!(3 * budget < queues * (room + 1), "at {chunk}");
         }
     }
 
@@ -273,7 +284,7 @@ mod tests {
         assert_eq!(pool.params.len(), PARAM_BUFFERS);
 
         // A surplus buffer reaches the bridge thread: dropped there.
-        pool.return_params(ParameterChanges::reserved(4, 10));
+        pool.return_params(ParameterChanges::reserved_bridged(4, 10));
         assert_eq!(
             pool.params.len(),
             PARAM_BUFFERS,
@@ -282,7 +293,7 @@ mod tests {
 
         // The audio thread takes one; the bridge returns another meanwhile.
         let taken = pool.take_params().expect("a free buffer");
-        pool.return_params(ParameterChanges::reserved(4, 10));
+        pool.return_params(ParameterChanges::reserved_bridged(4, 10));
         assert_eq!(pool.params.len(), PARAM_BUFFERS);
         // The block is refused: the audio thread hands its buffer back.
         pool.return_params_rt(taken);

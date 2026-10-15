@@ -20,22 +20,24 @@
 //! (`ParameterChanges::setMaxParameters`).
 //!
 //! **The host's input list pools its points**
-//! ([`with_pool`](ParameterChangesImpl::with_pool)), as the host's chunk
-//! does (`ParameterChanges::reserved`): each queue owns
-//! `ParameterChanges::FLOOR_POINTS` points and one more for the value a
-//! skipped block carries, and a queue refilled with more
-//! borrows a block of the full room from the list's shared pool for the
-//! block, so the list's memory follows the points a chunk carries rather
-//! than the parameter count. Past a block, or with the pool spent, the
-//! queue's last point gives way to the parameter's latest value, counted
+//! ([`with_pool`](ParameterChangesImpl::with_pool)) in the carried layout
+//! the host's chunk has (`ParameterChanges::reserved_carried`): each queue
+//! owns `ParameterChanges::FLOOR_POINTS` points and one more for the value
+//! a skipped block carries, and a queue refilled with more borrows a block
+//! of the full room (and that one more) from the list's shared
+//! [`PointPool`], the same pool type the host's sets use, so the list's
+//! memory follows the points a chunk carries rather than the parameter
+//! count. Every queue's points are a fixed-capacity [`PointBuf`]
+//! (`tutti_plugin_types::PointBuf`): past a block, or with the pool spent,
+//! the queue keeps the parameter's latest value, counted
 //! ([`points_dropped`](ParameterChangesImpl::points_dropped)); nothing grows.
 
 use vst3::Steinberg::Vst::{IParamValueQueue, IParameterChanges, IParameterChangesTrait};
 use vst3::{Class, ComWrapper};
 
 use super::param_queue::ParamValueQueueImpl;
-use crate::types::{ParameterChanges, ParameterPoint};
-use tutti_plugin_types::ParamAddress;
+use crate::types::ParameterChanges;
+use tutti_plugin_types::{ParamAddress, PointPool};
 use tutti_types::AudioThreadCell;
 
 pub struct ParameterChangesImpl {
@@ -43,15 +45,10 @@ pub struct ParameterChangesImpl {
     queues: AudioThreadCell<Vec<ComWrapper<ParamValueQueueImpl>>>,
     /// How many of `queues` hold this block's changes.
     live: AudioThreadCell<usize>,
-    /// The points pool's free blocks, each of `block_room` points (a
-    /// [`with_pool`](Self::with_pool) list; empty otherwise).
-    blocks: AudioThreadCell<Vec<Vec<ParameterPoint>>>,
-    /// Each lent block's queue, and the floor storage it swapped out:
-    /// reserved for every block, so a loan never grows it.
-    lent: AudioThreadCell<Vec<(usize, Vec<ParameterPoint>)>>,
-    /// The points a block holds, or 0 for a list with no pool.
-    block_room: usize,
-    /// Points a pooled list's refill could not hand on whole.
+    /// The shared point pool, lent to `queues` by index (a
+    /// [`with_pool`](Self::with_pool) list; no blocks otherwise).
+    pool: AudioThreadCell<PointPool>,
+    /// Points a refill could not hand on whole.
     dropped: AudioThreadCell<u64>,
 }
 
@@ -85,9 +82,7 @@ impl ParameterChangesImpl {
                     .collect(),
             ),
             live: AudioThreadCell::new(0),
-            blocks: AudioThreadCell::new(Vec::new()),
-            lent: AudioThreadCell::new(Vec::new()),
-            block_room: 0,
+            pool: AudioThreadCell::new(PointPool::default()),
             dropped: AudioThreadCell::new(0),
         })
     }
@@ -96,10 +91,11 @@ impl ParameterChangesImpl {
     /// up to `room` points each (`ParameterQueue::chunk_room` at the
     /// activated block size), stored as the host's chunk stores them, each
     /// with one more point for the value a skipped block carries
-    /// ([`ParameterChanges::carried_budget`]): each queue owns
+    /// ([`ParameterChanges::carried_budget`], the layout of
+    /// [`ParameterChanges::reserved_carried`]): each queue owns
     /// [`ParameterChanges::FLOOR_POINTS`] + 1, and any
     /// [`ParameterChanges::POOLED_QUEUES`] of them at once borrow a block of
-    /// `room + 1` from the list's shared pool. The extra floor point is what
+    /// `room + 1` from the list's shared [`PointPool`]. The extra floor point is what
     /// keeps a floor queue the bridge prepended a carried value to from
     /// borrowing a block a full queue needs. With few enough queues every
     /// queue has `room + 1` instead, as [`with_queues`](Self::with_queues)
@@ -111,8 +107,6 @@ impl ParameterChangesImpl {
         if blocks == 0 {
             return Self::with_queues(queues, points);
         }
-        let mut pool = Vec::with_capacity(blocks);
-        pool.extend((0..blocks).map(|_| Vec::with_capacity(points)));
         ComWrapper::new(Self {
             queues: AudioThreadCell::new(
                 (0..queues)
@@ -120,40 +114,47 @@ impl ParameterChangesImpl {
                     .collect(),
             ),
             live: AudioThreadCell::new(0),
-            blocks: AudioThreadCell::new(pool),
-            lent: AudioThreadCell::new(Vec::with_capacity(blocks)),
-            block_room: points,
+            pool: AudioThreadCell::new(PointPool::new(blocks, points)),
             dropped: AudioThreadCell::new(0),
         })
     }
 
-    /// Points a pooled list's refills could not hand on whole, since it was
-    /// built: past a queue's room, or past its own floor with the pool
-    /// spent, each point that gave way to its parameter's latest value.
-    /// Zero while the host stays within the room the list was built for.
+    /// Points the list could not hand on whole since it was built: a
+    /// refill's points past a queue's room, or past its own floor with the
+    /// pool spent, and the plugin's `addPoint` past a queue's room (the
+    /// output list), each point that gave way to its parameter's latest
+    /// value. Zero while the host (or the plugin) stays within the room the
+    /// list was built for.
     pub fn points_dropped(&self) -> u64 {
-        *self.dropped.borrow()
+        let added: u64 = self
+            .queues
+            .borrow()
+            .iter()
+            .map(|q| q.points_dropped())
+            .sum();
+        *self.dropped.borrow() + added
     }
 
     /// Every point the list has storage for, in its queues and its pool.
     #[cfg(test)]
     pub fn point_storage(&self) -> usize {
         let queues: usize = self.queues.borrow().iter().map(|q| q.capacity()).sum();
-        let pool: usize = self.blocks.borrow().iter().map(Vec::capacity).sum();
-        let lent: usize = self.lent.borrow().iter().map(|(_, f)| f.capacity()).sum();
-        queues + pool + lent
+        queues + self.pool.borrow().storage()
     }
 
     /// Takes back every block lent for the last block, giving each queue its
-    /// floor storage back. Allocation-free.
+    /// floor storage back ([`PointPool::give_back`]). Allocation-free.
     fn return_blocks(&self) {
         let queues = self.queues.borrow();
-        let mut blocks = self.blocks.borrow_mut();
-        for (i, mut floor) in self.lent.borrow_mut().drain(..) {
-            queues[i].swap_points(&mut floor);
-            // Was in `blocks` before it was lent: the push never grows it.
-            blocks.push(floor);
-        }
+        self.pool
+            .borrow_mut()
+            .give_back(|i, own| match queues.get(i) {
+                Some(q) => {
+                    q.swap_points(own);
+                    true
+                }
+                None => false,
+            });
     }
 
     /// Refill this changes list from `changes` in place, reusing the pool's
@@ -162,14 +163,14 @@ impl ParameterChangesImpl {
     /// # Real-time
     ///
     /// Allocation-free when the pool holds at least `changes.queues.len()`
-    /// queues (and each queue's points fit what it already holds). Past the
-    /// pool it grows once and keeps the larger size; it never shrinks.
+    /// queues. Past the pool it grows once (a queue, not its points) and
+    /// keeps the larger size; it never shrinks.
     ///
-    /// A [`with_pool`](Self::with_pool) list never grows a queue's points: a
-    /// queue that needs more than its floor borrows a block from the shared
-    /// pool until the next refill, and past the block (or with the pool
-    /// spent) its last point gives way to the parameter's latest value,
-    /// counted ([`points_dropped`](Self::points_dropped)).
+    /// No queue's points ever grow: a queue that needs more than its own
+    /// room borrows a block from a [`with_pool`](Self::with_pool) list's
+    /// shared pool until the next refill, and past the block (or with the
+    /// pool spent, or with no pool) the queue keeps the parameter's latest
+    /// value, counted ([`points_dropped`](Self::points_dropped)).
     pub fn refill_from_changes(&self, changes: &ParameterChanges) {
         self.return_blocks();
         {
@@ -180,29 +181,18 @@ impl ParameterChangesImpl {
             }
         }
         let queues = self.queues.borrow();
-        if self.block_room == 0 {
-            for (slot, q) in queues.iter().zip(changes.queues.iter()) {
-                slot.refill_from_queue(q);
+        let mut pool = self.pool.borrow_mut();
+        let mut dropped = 0;
+        for (i, (slot, q)) in queues.iter().zip(changes.queues.iter()).enumerate() {
+            if q.points.len() > slot.capacity() {
+                // A block for the block, when the list has one left; the
+                // queue's own storage (refilled below anyway) is kept to
+                // swap back.
+                let _ = slot.lend_from(&mut pool, i);
             }
-        } else {
-            let mut blocks = self.blocks.borrow_mut();
-            let mut lent = self.lent.borrow_mut();
-            let mut dropped = 0;
-            for (i, (slot, q)) in queues.iter().zip(changes.queues.iter()).enumerate() {
-                let room = slot.capacity();
-                if q.points.len() > room && room < self.block_room {
-                    if let Some(mut block) = blocks.pop() {
-                        // The block is empty; the queue's floor (refilled
-                        // below anyway) is kept to swap back.
-                        slot.swap_points(&mut block);
-                        block.clear();
-                        lent.push((i, block));
-                    }
-                }
-                dropped += slot.refill_within(q);
-            }
-            *self.dropped.borrow_mut() += dropped;
+            dropped += slot.refill_from_queue(q);
         }
+        *self.dropped.borrow_mut() += dropped;
         *self.live.borrow_mut() = changes.queues.len();
     }
 
@@ -218,9 +208,8 @@ impl ParameterChangesImpl {
     /// [`ParameterChanges::clear`], which hands its queues back to its spares
     /// with their point storage kept, so for an `out` built
     /// [`ParameterChanges::reserved`] this never allocates: past a queue's
-    /// room with `out`'s pool spent, a point replaces the queue's last one
-    /// (the parameter ends on its latest value), counted in
-    /// [`ParameterChanges::points_overflowed`].
+    /// room with `out`'s pool spent, the queue keeps the parameter's latest
+    /// value, counted in [`ParameterChanges::points_overflowed`].
     pub fn fill_changes(&self, out: &mut ParameterChanges) {
         out.clear();
 
@@ -312,7 +301,7 @@ mod tests {
     use super::*;
 
     fn changes_with(num_queues: usize, points_per: usize) -> ParameterChanges {
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(num_queues, points_per);
         for q in 0..num_queues {
             for p in 0..points_per {
                 changes.add_change(
@@ -384,8 +373,10 @@ mod tests {
     /// that carries 140 points on each of 50 parameters reserves nothing
     /// (it used to grow each queue past its 16 points on the audio thread).
     ///
-    /// Mutation (run): `with_room` ignoring `points` (`Vec::new()`) →
-    /// the first refill grows each queue inside the gate → fails.
+    /// Mutation (run): `with_room` ignoring `points` (a room of
+    /// `MIN_POINT_ROOM`) → each queue keeps its latest value past that
+    /// room, not its 140 points → fails. (Reworded with `PointBuf`: the
+    /// first refill grew each queue inside the gate before.)
     #[test]
     fn a_presized_list_takes_its_first_dense_block_without_allocating() {
         let wrapper = ParameterChangesImpl::with_queues(50, 140);
@@ -428,7 +419,8 @@ mod tests {
                 block(id);
             }
         });
-        let mut out = ParameterChanges::new();
+        // Reserved: `fill_changes` fills within the set's room.
+        let mut out = ParameterChanges::reserved(4, 1);
         changes.fill_changes(&mut out);
         assert_eq!(out.queues.len(), 1);
         assert_eq!(out.queues[0].points.len(), 1);
@@ -491,9 +483,11 @@ mod tests {
     /// parameter's third point takes its last point's place (it ends on its
     /// latest value), and one point is counted.
     ///
-    /// Mutation (run): `ParameterChanges::add_change` pushing past the room
-    /// on a reserved set (the unbounded path) → the third point grows a
-    /// floor inside the gate → aborts.
+    /// Mutation (run): `ParameterChanges::push_point` dropping the point
+    /// past the room (`try_push` only, no `replace_latest`) → the third
+    /// point is lost and the parameter ends on its second → fails.
+    /// (Reworded with `PointBuf`: the unbounded path, which grew a floor
+    /// inside the gate, is gone.)
     #[test]
     fn emitted_changes_drain_into_the_reserved_set_without_allocating() {
         use vst3::Steinberg::Vst::{IParamValueQueueTrait, IParameterChanges};
@@ -554,12 +548,13 @@ mod tests {
     /// The host's chunk at the pool budget: `params` parameters with a room
     /// of `room`, the first `POOLED_QUEUES` at full room and the rest at
     /// their floor, the points arriving interleaved (frame by frame, every
-    /// parameter) into a pooled set, as the host's node and the wire's
-    /// deserialize hand it on. The parameters moving at full room are
+    /// parameter) into a pooled set built as the host's node builds it
+    /// (`reserved_bridged`), as the host's node and the wire's deserialize
+    /// hand it on. The parameters moving at full room are
     /// `first..first + POOLED_QUEUES`. Point `k` of parameter `id` is on
     /// frame `2k` with value `(id + k) % 5 / 8`.
     fn pooled_chunk(params: u32, room: usize, first: u32) -> ParameterChanges {
-        let mut changes = ParameterChanges::reserved(params as usize, room);
+        let mut changes = ParameterChanges::reserved_bridged(params as usize, room);
         let moving = first..first + ParameterChanges::POOLED_QUEUES as u32;
         for k in 0..room {
             for id in 0..params {
@@ -650,14 +645,15 @@ mod tests {
             PARAMS - ParameterChanges::POOLED_QUEUES as u32,
         );
         for i in 0..PARAMS as usize {
-            let _ = chunk.make_room(i);
-            chunk.queues[i].points.insert(
-                0,
-                ParameterPoint {
+            // As the bridge's `merge_carried` does: a real slot, nothing
+            // grows.
+            assert!(chunk.prepend_carried(
+                i,
+                tutti_plugin_types::ParameterPoint {
                     sample_offset: 0,
                     value: tutti_plugin_types::Normalized::new(0.25),
                 },
-            );
+            ));
         }
         assert_no_alloc::assert_no_alloc(|| list.refill_from_changes(&chunk));
         assert_eq!(list.points_dropped(), 0);
@@ -689,9 +685,10 @@ mod tests {
     /// lend) → the moving parameters keep their floor, points counted;
     /// `return_blocks` skipped in the refill (or in the refill and
     /// `clear_in_place`) → the other 256 parameters find the pool spent,
-    /// points counted; `refill_within` keeping the room's last point rather
-    /// than the queue's last (no `last`) → the over-budget parameter ends on
-    /// its earlier value. Not covered: `return_blocks` skipped in
+    /// points counted; `refill_from_queue` dropping past the room
+    /// (`try_push`) rather than keeping the latest value
+    /// (`push_or_replace_last`) → the over-budget parameter ends on its
+    /// earlier value. Not covered: `return_blocks` skipped in
     /// `clear_in_place` alone, since every refill gives the blocks back
     /// first, so a cleared list is never refilled without it.
     #[test]
@@ -735,8 +732,14 @@ mod tests {
             over.add_queue(q.clone());
         }
         let last = over.queues.last_mut().expect("a queue");
-        last.add_point(200, 0.25);
-        last.add_point(300, 0.875);
+        let mut grown =
+            tutti_plugin_types::ParameterQueue::with_capacity(last.param_id, last.len() + 2);
+        for p in &last.points {
+            assert!(grown.points.try_push(*p).is_ok());
+        }
+        assert!(grown.add_point(200, 0.25));
+        assert!(grown.add_point(300, 0.875));
+        *last = grown;
         assert_no_alloc::assert_no_alloc(|| list.refill_from_changes(&over));
         assert_eq!(list.points_dropped(), 1);
         let (_, last) = plugin_view(&list).pop().expect("a queue");

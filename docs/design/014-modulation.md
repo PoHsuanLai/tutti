@@ -748,101 +748,130 @@ implementation here. Requirements 1–5 are PR 1's; 6 lands with PR 2.
    before corners, and every drop is counted in the delivery statistics.
 
 **Point storage (the arena follow-up, landed).** A queue's logical room
-(`ParameterQueue::chunk_room`, requirement 6) is decoupled from its storage.
-`ParameterChanges::reserved(queues, room)` gives every queue a floor of
-`FLOOR_POINTS` (2) points of its own, and the set a shared pool of
-`POOLED_QUEUES` (256) blocks of a full room each. A queue that spends its
-floor takes a block (`ParameterChanges::make_room`: its points move into
-the block, and its floor is kept aside); `clear` gives the blocks back for
-the next chunk. So the set holds `queues × 2 + 256 × room` points
+(`ParameterQueue::chunk_room`, requirement 6) is decoupled from its storage,
+and no storage on the parameter path can grow. A queue's points are a
+`PointBuf`: a boxed slice of points and a length, its capacity fixed when it
+is built (off the audio thread) and nothing on it able to grow (`try_push`
+hands a point back when it is full). `ParameterChanges::reserved(queues,
+room)` gives every queue a floor of `FLOOR_POINTS` (2) points of its own,
+and the set a shared pool (`PointPool`) of `POOLED_QUEUES` (256) blocks of a
+full room each. A queue that spends its floor takes a block
+(`ParameterChanges::make_room`: its points move into the block, and its own
+storage is kept aside); `clear` gives the blocks back for the next chunk,
+each from the queue that took it (the pool records the holders by index).
+So the set holds `queues × 2 + 256 × room` points
 (`ParameterChanges::point_budget`), not `queues × room`, and still carries
 any parameter's points as one contiguous, time-ordered queue. That is why
 this layout was chosen over a flat arena with per-queue ranges: every
-consumer reads the same per-queue `Vec` it read before, so CLAP's
+consumer reads the same per-queue slice it read before, so CLAP's
 flattening and time sort, VST3's per-parameter `IParamValueQueue`s and the
-IPC wire need no change (the pool and floors are not serialized; the bytes
-are the same sequence of queues, pinned by
+IPC wire need no change (a `PointBuf` serializes as the same sequence a
+`Vec` did; the pool is not serialized; the bytes are pinned by
 `a_block_encodes_as_before_smallvec_was_removed`). A set is pooled only
 where that at least halves its storage (`point_layout`); otherwise every
-queue keeps its full room, as before, since just past the break-even the
-pool would save little while letting only 256 queues reach their room.
-`clear` returns each block from the queue that took it (the set records
-the holders by index), so a queue that grew some other way keeps its own
-storage.
+queue keeps its full room, since just past the break-even the pool would
+save little while letting only 256 queues reach their room. The VST3
+host's input list lends from the same `PointPool` type, so there is one
+pool implementation.
 
 The budget: 256 queues moving at full density in one chunk (a point every
 `CONTROL_STEP` frames, plus the corners) is past any ordinary automation
 pass, a mixer's worth of lanes all drawn at once, while every other
 parameter still takes a value and a ramp end (its 2-point floor). The cost
-is `256 × room × 16` bytes a set, a fixed figure, beside `96` bytes a
-parameter (its queue, its spare slot and its floor). The pool is not
-configurable: the plugin-server reserves its own lists by the same layout
-for the room it is activated with, and a host-chosen budget would have to
-cross the wire to reach it. If one is ever needed, the route is a field on
-`LoadPlugin`, which the server already reads before it activates the
-plugin.
+is `256 × room × 16` bytes a set, a fixed figure, beside a few headers and
+the floor a parameter. The pool is not configurable: the plugin-server
+reserves its own lists by the same layout for the room it is activated
+with, and a host-chosen budget would have to cross the wire to reach it.
+If one is ever needed, the route is a field on `LoadPlugin`, which the
+server already reads before it activates the plugin.
 
-**Nothing grows on an audio thread.** Every producer that fills a reserved
-set asks for room first (`ParameterChanges::make_room`), and
-`ParameterChanges::add_change` on a reserved set does so itself: past the
-room it replaces the queue's last point, so the parameter still ends the
-chunk on its latest value, and counts it (`points_overflowed`); an address
-past every reserved queue is dropped and counted. A debug assertion fires
-if a point ever grows a reserved queue through it. The other sites keep
-their existing policies: the IPC node's delivery replaces the parameter's
-last point (`points_merged`), the CLAP output grouping replaces the queue's
-last point (`output_param_points_dropped`), and the VST3 host's route of
-`IMidiMapping` controllers and its drain of the plugin's emitted changes go
-through `add_change` (`Vst3Active::param_points_dropped`,
-`output_param_points_dropped`).
+**Nothing grows, and one policy for a full queue.** Every way of building a
+set or a queue states its capacity: `ParameterChanges::reserved`,
+`reserved_carried` and `reserved_bridged` (below), and
+`ParameterQueue::with_capacity`. `ParameterChanges::new()` is the empty set
+with room for nothing, what a block with no changes carries. Two builders
+size from data, both off the audio thread: wire decode allocates a queue
+exactly the decoded length (`ParameterQueue::from_points`), as the
+per-block decode always did, and `ParameterChanges::add_queue` pushes a
+prebuilt queue. Past a queue's room with the pool spent, every site applies
+the one policy, `PointBuf::push_or_replace_last`: the point replaces the
+queue's latest-in-time point if it is no earlier, so the parameter ends the
+chunk on its latest value whatever order its points arrived in, and the
+site counts it with its own counter. `add_change` counts in
+`points_overflowed` (an address past every queue is dropped and counted
+there too); the IPC node's delivery in `points_merged`; the CLAP output
+grouping in `output_param_points_dropped`; the VST3 host's input queues in
+`Vst3Active::param_points_dropped` (with the `IMidiMapping` route's merge
+of host automation and mapped controllers), and its output queues, where
+the plugin's `addPoint` past a queue's room returns `kResultFalse`, in
+`output_param_points_dropped`.
 
-**What the server receives.** The one producer that grows a reserved set is
-the IPC bridge: it prepends a skipped block's carried value to a queue, off
-the audio thread, growing a floor queue past its two points when the pool
-is spent. So a set reserved for `queues` queues of `room` points can
-arrive with one more point in every queue and every block,
-`ParameterChanges::carried_budget`. The server reserves that: the CLAP
-input event list's parameter room is `carried_budget`, and the VST3 input
-list gives each queue a floor of three points and blocks of `room + 1`.
-Within it, every point the host's chunk carries reaches the plugin, and the
-VST3 list's blocks go to the queues that need them (a floor queue with a
-carried value fits its own floor). Past it, which only a set nothing
-bounded reaches, the CLAP list keeps a parameter's latest value in place of
-its previous event once the room is spent, but a parameter with no event in
-the list yet when the room runs out loses its points; the VST3 list keeps a
-queue's first `room` points and its last. Both are counted
-(`param_points_dropped`, `Vst3Active::param_points_dropped`). These counters
-are read on the format host's instance; the plugin-server does not report
-them.
+**The carried value.** The IPC bridge prepends a skipped block's carried
+value to a queue (`ParameterChanges::prepend_carried`, on the bridge
+thread). It takes a real slot: the host's sets (the node's delivery and the
+bridge's buffers) are built `reserved_bridged`, the **carried layout**
+(a floor of `FLOOR_POINTS + 1` = 3 a queue and blocks of `room + 1`,
+`ParameterChanges::carried_budget`) with that one point of every queue and
+every block kept back from the producers, so they stop at the room
+`reserved` gives and the carried value always fits. (Before, the prepend
+grew a floor queue past its two points on the bridge thread.) A chunk can
+therefore arrive with `carried_budget` points, and everything that receives
+one reserves that: the CLAP input event list's parameter room, the VST3
+input list (`with_pool`, the carried layout), and the VST3 host's
+`IMidiMapping` route scratch (`reserved_carried`), which copies the chunk
+queue by queue, so a floor queue carrying the value fits its own floor and
+the blocks go to the queues at full room, wherever they are in the list.
+Within it, every point the host's chunk carries reaches the plugin. Past
+it, which only a set nothing bounded reaches, the CLAP list keeps a
+parameter's latest value in place of its previous event once the room is
+spent, but a parameter with no event in the list yet when the room runs out
+loses its points; the VST3 list keeps each queue's latest value. Both are
+counted (`param_points_dropped`, `Vst3Active::param_points_dropped`). These
+counters are read on the format host's instance; the plugin-server does not
+report them. The server's own copy of the plugin's parameter output
+(`ProcessOutput::reserve_params`) is reserved at load, `reserved` for the
+plugin's parameters at the activated block's `chunk_room`.
 
 Per instance, at today's `chunk_room` (20 points at a 512-frame chunk, 132
-at 4096). The figures are point storage and queue headers: the IPC node's
-`(PARAM_BUFFERS + 1) × (queues × 96 + 256 × 16 × room)` with `queues` the
-parameters plus 64 spare slots; the CLAP input list's parameter room at 72
-bytes an event; the CLAP output list's parameter room at 64 bytes and its
-queues; and the VST3 input list's points at 16 bytes. The non-parameter
-event scratch (256 events) and the pool's bookkeeping (about 14 KB a set)
-are left out.
+at 4096). The figures are point storage and queue headers (a queue 32
+bytes, a point 16, a spare slot 32): the IPC node's
+`(PARAM_BUFFERS + 1) × (queues × 112 + 256 × 16 × (room + 1))` with `queues`
+the parameters plus 64 spare slots (112 = the queue, its spare slot and its
+3-point floor); the CLAP input list's parameter room at 72 bytes an event;
+the CLAP output list's parameter room at 64 bytes and its queues; the VST3
+input list's points at 16 bytes; and the VST3 `IMidiMapping` route scratch,
+`queues × 112 + 256 × 16 × (room + 1)`, held only while a mapping is
+installed. The non-parameter event scratch (256 events) and the pool's
+bookkeeping (about 14 KB a set) are left out.
 
 | Site | 2000 @ 512 | 2000 @ 4096 | 16k @ 512 | 16k @ 4096 |
 |---|---|---|---|---|
-| IPC node: `PARAM_BUFFERS` + 1 sets | 2.52 MB | 6.65 MB | 14.95 MB | 19.08 MB |
+| IPC node: `PARAM_BUFFERS` + 1 sets (`carried_budget`) | 2.85 MB | 6.98 MB | 17.35 MB | 21.48 MB |
 | CLAP input event list (`carried_budget`) | 0.82 MB | 2.88 MB | 3.93 MB | 5.99 MB |
 | CLAP output list and queues | 0.86 MB | 3.15 MB | 4.08 MB | 6.37 MB |
 | VST3 input points (`carried_budget`) | 0.18 MB | 0.64 MB | 0.87 MB | 1.33 MB |
+| VST3 `IMidiMapping` route (while mapped) | 0.31 MB | 0.77 MB | 1.92 MB | 2.38 MB |
 
-Before, at 4096 frames, these were about 43 MB, 19 MB, 21.5 MB and 4.3 MB at
-2000 parameters, and about 340 MB, 157 MB, 172 MB and 35 MB at 16k. The 16k
+The IPC row was 2.52, 6.65, 14.95 and 19.08 MB with a 2-point floor and
+blocks of `room` (the reserved carried point costs `16 × (queues + 256)`
+bytes a set), and the route row 0.28, 0.74, 1.66 and 2.12 MB in the plain
+layout; the others are unchanged. Before the pool, at 4096 frames, the
+first four were about 43 MB, 19 MB, 21.5 MB and 4.3 MB at 2000
+parameters, and about 340 MB, 157 MB, 172 MB and 35 MB at 16k. The 16k
 figures are mostly the per-parameter headers; the pool term is the same at
 any parameter count. With #96's room of `ceil(chunk/32) + 1 + 256` (385 at
 4096 frames) the pool term grows to about 1.6 MB a set, so the IPC node's
-buffers hold about 16 MB at 2000 parameters, against about 235 MB at
+buffers hold about 16.3 MB at 2000 parameters, against about 235 MB at
 `params × room`.
 
-Not covered: the VST3 host's output queues (`IParamValueQueue`s the plugin
-writes into) keep a small per-queue room and grow past it, as before; the
-in-process VST2 node reserves through the same `ParameterChanges` and so
-gets the pool, though it applies only each queue's last point.
+Not covered: the VST3 host's lists grow their queue *count* (not any
+queue's points) past what they were built for: the input list's
+`refill_from_changes` adds a queue when a chunk lists more parameters than
+the list has queues, and the output list's `addParameterData` past its
+queues, as before. The bridge's placeholder for a block with no changes
+gets carried-value queues built on the bridge thread (dropped on return).
+The in-process VST2 node reserves through the same `ParameterChanges` and
+so gets the pool, though it applies only each queue's last point.
 
 A plugin **ignores a ramp's duration**: a `ParamRamp` reaches it as one
 point at its target value on its last frame, as today. Only lane pieces

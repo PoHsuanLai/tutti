@@ -1673,7 +1673,7 @@ mod tests {
             let mut changes = ParameterChanges::new();
             // The queue is keyed by the same `ParamAddress` the descriptor
             // carries, so nothing here has to restate that AU is opaque.
-            let mut queue = ParameterQueue::new(target.id);
+            let mut queue = ParameterQueue::with_capacity(target.id, 1);
             queue.add_point(0, normalized);
             changes.add_queue(queue);
 

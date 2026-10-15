@@ -626,11 +626,12 @@ mod tests {
     /// values and all.** 2 000 parameters at a 512-frame block, the input
     /// list reserved as activation reserves it. The host's chunk at its
     /// budget (`POOLED_QUEUES` parameters at full room, every other one at
-    /// its floor), then a skipped block's carried value prepended to every
-    /// queue, as the bridge does (`make_room`, then an insert at frame 0,
-    /// which grows a queue the pool cannot give room to: that is the bridge
-    /// thread): every point is handed on, none counted, each parameter's
-    /// points in order.
+    /// its floor, built `reserved_bridged` as the host builds it), then a
+    /// skipped block's carried value prepended to every queue, as the bridge
+    /// does (`prepend_carried`, into the slot the set kept, so nothing
+    /// grows): every point is handed on, none counted, each parameter's
+    /// points in order. (Reworded with `PointBuf`: the prepend was a `Vec`
+    /// insert that grew a queue the pool could not give room to.)
     ///
     /// Mutation (run): `reserve_input_events` sizing the room as the plain
     /// pool budget with one more point a block (`point_budget(params, room +
@@ -646,7 +647,7 @@ mod tests {
         scratch.param_ranges = (0..PARAMS).map(|id| (id, 0.0, 1.0)).collect();
         reserve_input_events(&mut scratch, FRAMES);
         let room = ParameterQueue::chunk_room(FRAMES);
-        let mut chunk = ParameterChanges::reserved(PARAMS as usize, room);
+        let mut chunk = ParameterChanges::reserved_bridged(PARAMS as usize, room);
         for id in 0..PARAMS {
             assert!(chunk.open_queue(ParamAddress::Opaque(id.into())));
         }
@@ -660,14 +661,13 @@ mod tests {
             }
         }
         for i in 0..PARAMS as usize {
-            let _ = chunk.make_room(i);
-            chunk.queues[i].points.insert(
-                0,
+            assert!(chunk.prepend_carried(
+                i,
                 ParameterPoint {
                     sample_offset: 0,
                     value: tutti_plugin_types::Normalized::new(0.25),
                 },
-            );
+            ));
         }
         let total: usize = chunk.queues.iter().map(|q| q.points.len()).sum();
         let list = &mut scratch.input_events;

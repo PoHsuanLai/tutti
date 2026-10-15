@@ -341,7 +341,7 @@ impl ParamDelivery {
         Self {
             slots,
             staged: Vec::with_capacity(room),
-            changes: ParameterChanges::reserved(room, MAX_POINTS),
+            changes: ParameterChanges::reserved_bridged(room, MAX_POINTS),
             owed: 0,
             room,
             chunk_points: 0,
@@ -376,7 +376,7 @@ impl ParamDelivery {
     pub(crate) fn prepare(&mut self, chunk: usize) -> usize {
         self.abandon();
         self.points = points_for(chunk);
-        self.changes = ParameterChanges::reserved(self.room(), self.points);
+        self.changes = ParameterChanges::reserved_bridged(self.room(), self.points);
         self.points
     }
 
@@ -487,19 +487,13 @@ impl ParamDelivery {
             return;
         }
         slot.staged = value;
-        let q = slot.queue as usize;
-        // Room of its own, or a block from the chunk's shared pool.
-        let room = self.changes.make_room(q);
-        let queue = &mut self.changes.queues[q];
-        if !room {
-            // Full: the latest value replaces the last point, never grows
-            // the queue (which would allocate).
-            queue.points.pop();
-            self.counters.merged.fetch_add(1, Ordering::Relaxed);
-        } else {
+        // Room of its own, or a block from the chunk's shared pool; past
+        // both the queue keeps its latest value (it cannot grow).
+        if self.changes.push_point(slot.queue as usize, offset, value) {
             self.chunk_points += 1;
+        } else {
+            self.counters.merged.fetch_add(1, Ordering::Relaxed);
         }
-        queue.add_point(offset, value);
     }
 
     /// A chunk begins: what earlier chunks owe goes on its first frame.
@@ -603,7 +597,7 @@ mod tests {
     /// Hand the chunk off as the bridge does: swapped for an empty buffer of
     /// the same room.
     fn hand_off(d: &mut ParamDelivery, delivered: bool) -> ParameterChanges {
-        let mut fresh = ParameterChanges::reserved(d.room(), d.points());
+        let mut fresh = ParameterChanges::reserved_bridged(d.room(), d.points());
         if delivered {
             std::mem::swap(d.changes(), &mut fresh);
         }
@@ -615,7 +609,7 @@ mod tests {
     /// each, none dropped, and nothing past the reserved room.
     ///
     /// Mutation (run): the chunk sized at 16 queues (the old cap,
-    /// `ParameterChanges::reserved(16, MAX_POINTS)` in `new`) → 184 points
+    /// `ParameterChanges::reserved_bridged(16, MAX_POINTS)` in `new`) → 184 points
     /// refused → fails.
     #[test]
     fn two_hundred_parameters_fit_one_chunk() {
@@ -807,7 +801,7 @@ mod tests {
         let budget = CHUNK / ParameterQueue::POINT_SPACING + ParameterQueue::CORNER_POINTS;
         let (mut d, counters) = delivery(200);
         assert_eq!(d.prepare(CHUNK), budget);
-        let mut spare = ParameterChanges::reserved(d.room(), d.points());
+        let mut spare = ParameterChanges::reserved_bridged(d.room(), d.points());
         let chunk = |d: &mut ParamDelivery, spare: &mut ParameterChanges| {
             d.begin();
             for k in 0..budget {
@@ -845,16 +839,19 @@ mod tests {
         assert_eq!(counters.snapshot().points_merged, 3);
     }
 
-    /// **The chunk's point storage is the pool budget, not parameters ×
-    /// room**: a delivery for 2 000 parameters (and its 64 spare slots)
-    /// prepared for 512- and 4096-frame chunks holds
-    /// `ParameterChanges::point_budget` points, a few per slot and a shared
-    /// pool of `POOLED_QUEUES` full rooms, under a quarter of a full room per
-    /// slot.
+    /// **The chunk's point storage is the carried pool budget, not
+    /// parameters × room**: a delivery for 2 000 parameters (and its 64
+    /// spare slots) prepared for 512- and 4096-frame chunks holds
+    /// `ParameterChanges::carried_budget` points (a floor of
+    /// `FLOOR_POINTS + 1` a slot and a shared pool of `POOLED_QUEUES`
+    /// blocks of `room + 1`, the extra point kept for the bridge's carried
+    /// value), under a third of a full carried room per slot. (Reworded with
+    /// `PointBuf`: the chunk was `point_budget`, under a quarter of `room`,
+    /// and the carried value grew a queue on the bridge thread.)
     ///
     /// Mutation (run): `prepare` reserving the old layout (every slot a
     /// full room: `ParameterChanges::point_layout` always `(points, 0)`) →
-    /// the storage is `slots × room` → fails.
+    /// the storage is `slots × (room + 1)` → fails.
     #[test]
     fn the_chunk_holds_the_pool_budget_not_params_times_room() {
         let (mut d, _) = delivery(2_000);
@@ -862,10 +859,11 @@ mod tests {
             let room = d.prepare(chunk);
             assert_eq!(room, points_for(chunk));
             let slots = 2_000 + SPARE_SLOTS;
-            let budget =
-                slots * ParameterChanges::FLOOR_POINTS + ParameterChanges::POOLED_QUEUES * room;
+            let budget = slots * (ParameterChanges::FLOOR_POINTS + 1)
+                + ParameterChanges::POOLED_QUEUES * (room + 1);
+            assert_eq!(ParameterChanges::carried_budget(slots, room), budget);
             assert_eq!(d.changes.point_storage(), budget, "at {chunk}");
-            assert!(4 * budget < slots * room, "at {chunk}");
+            assert!(3 * budget < slots * (room + 1), "at {chunk}");
         }
     }
 
@@ -879,10 +877,12 @@ mod tests {
     /// spent: it replaces that parameter's last point (the chunk ends on the
     /// latest value), counted once.
     ///
-    /// Mutations (run), each fails: `place` without `make_room` (the
+    /// Mutations (run), each fails: `push_point` without `make_room` (the
     /// queue's own room only, `has_room`) → the moving parameters merge
     /// past their floor; the merge not counted → `points_merged` is 0 after
-    /// the overflow.
+    /// the overflow; the host's chunk built without its carry slot
+    /// (`reserved_carried`) → the floor queues take a third point, and the
+    /// moving parameters' per-chunk counts are off.
     #[test]
     fn up_to_the_pool_budget_nothing_merges_and_past_it_merges_counted() {
         const PARAMS: u32 = 1_000;
@@ -890,7 +890,7 @@ mod tests {
         let (mut d, counters) = delivery(PARAMS);
         let room = d.prepare(CHUNK);
         let moving = ParameterChanges::POOLED_QUEUES as u32;
-        let mut spare = ParameterChanges::reserved(d.room(), d.points());
+        let mut spare = ParameterChanges::reserved_bridged(d.room(), d.points());
         let chunk = |d: &mut ParamDelivery, spare: &mut ParameterChanges, phase: usize| {
             d.begin();
             for k in 0..room {

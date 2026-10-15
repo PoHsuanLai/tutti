@@ -373,8 +373,10 @@ impl<T: Vst3Sample> Vst3Active<T> {
         // `ParameterChanges::carried_budget`), so the refill never grows a
         // queue on the audio thread and the list's memory follows the points
         // a chunk carries, not the parameter count.
+        // The `IMidiMapping` route copies the same chunk into a set laid out
+        // the same way (`ParameterChanges::reserved_carried`), so a floor
+        // queue carrying the bridge's value never takes a full queue's block.
         let chunk_room = tutti_plugin_types::ParameterQueue::chunk_room(block_size);
-        let param_points = chunk_room + 1;
 
         let audio = AudioIO {
             config: ProcessConfig {
@@ -408,7 +410,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
             cc: CcRoute::new(
                 MidiCcMapping::query(loaded.interfaces.controller.as_ref()),
                 param_queues,
-                param_points,
+                chunk_room,
             ),
             midi_learn: loaded.midi_learn.producer(),
         };
@@ -764,13 +766,15 @@ impl<T: Vst3Sample> Vst3Active<T> {
         self.audio.input.param_changes.points_dropped() + self.audio.cc.points_overflowed()
     }
 
-    /// Points the plugin emitted that the drained output set could not hold
-    /// whole since activation: past a queue's `MIN_POINT_ROOM` with the
-    /// set's pool spent, each replaced its queue's last point (the
-    /// parameter still ends on its latest value). Read on this instance
-    /// only, like [`param_points_dropped`](Self::param_points_dropped).
+    /// Points the plugin emitted that the host could not hold whole since
+    /// activation: past an output queue's `MIN_POINT_ROOM` as the plugin
+    /// added them (`addPoint`), or past it in the drained output set with
+    /// the set's pool spent. Each time the parameter kept its latest value.
+    /// Read on this instance only, like
+    /// [`param_points_dropped`](Self::param_points_dropped).
     pub fn output_param_points_dropped(&self) -> u64 {
         self.audio.output.emitted_param_changes.points_overflowed()
+            + self.audio.output.param_changes.points_dropped()
     }
 
     /// Re-query the `IMidiMapping` CC→parameter table from the controller.

@@ -1242,19 +1242,19 @@ impl OutputEventList {
     }
 
     /// Extracts parameter-value events into a [`ParameterChanges`] grouped
-    /// by parameter ID. Allocates as it needs to and keeps every point; off
-    /// the audio thread only.
+    /// by parameter ID. Allocates as it needs to and keeps every point, each
+    /// queue sized to its points; off the audio thread only.
     pub fn to_param_changes(&self) -> ParameterChanges {
-        let mut changes = ParameterChanges::new();
+        let mut grouped: Vec<(ParamAddress, Vec<ParameterPoint>)> = Vec::new();
         for (addr, point) in self.param_points() {
-            match changes.get_queue_mut(addr) {
-                Some(queue) => queue.points.push(point),
-                None => {
-                    let mut queue = ParameterQueue::new(addr);
-                    queue.points.push(point);
-                    changes.add_queue(queue);
-                }
+            match grouped.iter_mut().find(|(a, _)| *a == addr) {
+                Some((_, points)) => points.push(point),
+                None => grouped.push((addr, vec![point])),
             }
+        }
+        let mut changes = ParameterChanges::new();
+        for (addr, points) in grouped {
+            changes.add_queue(ParameterQueue::from_points(addr, points));
         }
         changes
     }
@@ -1300,18 +1300,10 @@ impl OutputEventList {
                     continue;
                 }
             };
-            // Room of its own, or a block from `out`'s shared point pool.
-            let room = out.make_room(i);
-            let queue = &mut out.queues[i];
-            if room {
-                queue.points.push(point);
-            } else {
-                // A full queue has a point (its room is never zero), so the
-                // last one gives way to the latest value.
+            // Room of its own, or a block from `out`'s shared point pool;
+            // past both the queue keeps its latest value.
+            if !out.push_point(i, point.sample_offset, point.value.get()) {
                 dropped += 1;
-                if let Some(last) = queue.points.last_mut() {
-                    *last = point;
-                }
             }
         }
         dropped
@@ -1645,7 +1637,7 @@ mod tests {
     #[test]
     fn add_param_changes_finds_each_range_in_a_sorted_list() {
         let ranges = [(1, 0.0, 1.0), (5, 0.0, 10.0), (9, 100.0, 1100.0)];
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(2, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.5);
         changes.add_change(ParamAddress::Opaque(5u32.into()), 1, 0.25);
         let mut list = InputEventList::new();
@@ -1676,7 +1668,7 @@ mod tests {
     fn a_dense_block_sorts_stably_without_allocating() {
         use tutti_plugin_types::ParameterQueue;
         let points = ParameterQueue::chunk_room(512);
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(200, points);
         for id in 0..200u32 {
             for k in 0..points {
                 // Every parameter on the same frames: many ties.
@@ -1747,7 +1739,7 @@ mod tests {
     /// point (dropped only) → the second parameter ends on 0.1.
     #[test]
     fn add_param_changes_stays_within_its_room() {
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(3, 4);
         for k in 0..4 {
             changes.add_change(ParamAddress::Opaque(1u32.into()), k, 0.5);
         }
@@ -1796,7 +1788,7 @@ mod tests {
         // emitted. Picking an index with no matching range would let the
         // existing `plugin_claims_params` arm drop it, and the test would pass
         // without the model check ever running.
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Index(0), 0, 0.25);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(0, 100.0, 1100.0)], true);
@@ -1807,7 +1799,7 @@ mod tests {
 
         // The same number as an opaque id is a real address, so the refusal is
         // about the model and not about the value being rejected outright.
-        let mut ok = ParameterChanges::new();
+        let mut ok = ParameterChanges::reserved(1, 1);
         ok.add_change(ParamAddress::Opaque(0u32.into()), 0, 0.25);
         let mut list2 = InputEventList::new();
         list2.add_param_changes(&ok, &[(0, 100.0, 1100.0)], true);
@@ -1817,7 +1809,7 @@ mod tests {
     #[test]
     fn add_param_changes_denormalizes_against_range() {
         // Param 9 has plain range [100, 1100]; a normalized 0.25 → 350.
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.25);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(9, 100.0, 1100.0)], true);
@@ -1827,7 +1819,7 @@ mod tests {
     #[test]
     fn add_param_changes_clamps_denormalized_value_into_range() {
         // A normalized 1.5 (over-range) must clamp to the plain max, not overshoot.
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 1.5);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(9, 0.0, 10.0)], true);
@@ -1839,7 +1831,7 @@ mod tests {
         // `f32::clamp` panics when `lo > hi`, and these bounds are whatever the
         // plugin reported. A malformed plugin must not take down the audio
         // thread — the value lands inside the range either way round.
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.5);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(9, 10.0, 0.0)], true);
@@ -1851,7 +1843,7 @@ mod tests {
     fn add_param_changes_passes_through_when_range_unknown() {
         // No range for this param id → value forwarded unchanged (safe fallback
         // for the common normalized-0..1 param).
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.42);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[], false);
@@ -1873,7 +1865,7 @@ mod tests {
     /// inside the plugin.
     #[test]
     fn negative_sample_offset_does_not_wrap_to_four_billion_h3() {
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), -1, 0.5);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[], false);
@@ -2781,17 +2773,24 @@ mod tests {
 
         // One point past the budget (a set the pool did not bound, built by
         // hand: the last parameter given the rest of the list's room, and
-        // one more).
+        // one more). The last queue is built with room for them all
+        // (`ParameterQueue::with_capacity`), as the host's pool never would.
+        // (Reworded with `PointBuf`: the cloned queue grew before.)
         let mut over = ParameterChanges::new();
         for q in &changes.queues {
             over.add_queue(q.clone());
         }
         let extra = budget - carried + 1;
         let last = over.queues.last_mut().expect("a queue");
-        for k in 0..extra {
-            last.add_point(70 + k as i32 % 300, 0.5);
+        let mut grown = ParameterQueue::with_capacity(last.param_id, last.len() + extra + 1);
+        for p in &last.points {
+            assert!(grown.points.try_push(*p).is_ok());
         }
-        last.add_point(400, 0.875);
+        for k in 0..extra {
+            assert!(grown.add_point(70 + k as i32 % 300, 0.5));
+        }
+        assert!(grown.add_point(400, 0.875));
+        *last = grown;
         assert_no_alloc::assert_no_alloc(|| fill(&mut list, &over));
         assert_eq!(list.len(), budget);
         assert_eq!(list.param_points_dropped(), 2);

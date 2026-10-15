@@ -1764,7 +1764,7 @@ fn parameter_changes_are_spec_clean() {
         let Some(param_id) = first_parameter_id(&path) else {
             continue;
         };
-        let mut params = ParameterChanges::new();
+        let mut params = ParameterChanges::reserved(1, 3);
         let param_id = param_address(param_id);
         params.add_change(param_id, 384, 0.75);
         params.add_change(param_id, 0, 0.25);

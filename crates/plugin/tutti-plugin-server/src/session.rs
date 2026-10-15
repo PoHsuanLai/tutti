@@ -12,7 +12,7 @@ use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
     midi_from_wire, AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec,
-    MidiEventVec, Normalized, SampleFormat, WindowHandle, MAX_STATE_BYTES,
+    MidiEventVec, Normalized, ParameterQueue, SampleFormat, WindowHandle, MAX_STATE_BYTES,
 };
 use tutti_plugin::Result;
 
@@ -371,6 +371,13 @@ impl Session {
             format: negotiated,
         };
         self.pipeline.set_format(negotiated);
+        // The plugin's own parameter output is held in fixed storage
+        // reserved here, off the audio thread: a queue per parameter, each
+        // within a block's chunk room (`ParameterChanges::reserved`).
+        self.pipeline.reserve_params(
+            plugin.instance().get_parameter_list().len(),
+            ParameterQueue::chunk_room(block_size),
+        );
         self.plugin = Some(plugin);
         Ok(BridgeMessage::PluginLoaded {
             descriptor: Box::new(descriptor),

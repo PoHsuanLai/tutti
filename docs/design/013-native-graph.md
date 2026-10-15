@@ -4740,23 +4740,28 @@ carried.
   `assert_no_alloc`).
 - **Parameter-change point pool (landed, doc 014 §12's follow-up).** The
   parameter-change buffers' memory follows the points a chunk carries, not
-  the parameter count. `ParameterChanges::reserved(queues, room)` gives
-  each queue a 2-point floor of its own and the set a shared pool of 256
-  full-room blocks; a queue past its floor takes one
+  the parameter count, and no point storage on the parameter path can
+  grow. A queue's points are a `PointBuf` (a boxed slice and a length, its
+  capacity fixed off the audio thread). `ParameterChanges::reserved(queues,
+  room)` gives each queue a 2-point floor of its own and the set a shared
+  `PointPool` of 256 full-room blocks; a queue past its floor takes one
   (`ParameterChanges::make_room`), and `clear` gives them back. A queue is
-  still one contiguous, time-ordered `Vec`, so CLAP's flattening and sort,
-  VST3's per-parameter queues and the wire bytes are unchanged (the pool is
-  not serialized). The node's delivery, the bridge's buffers and the CLAP
-  host's output side reserve `ParameterChanges::point_budget` points; the
-  CLAP host's input list and the VST3 host's input queues reserve
-  `ParameterChanges::carried_budget`, one more point a queue for the value
-  the bridge prepends from a skipped block. Nothing grows on an audio
-  thread: `add_change` on a reserved set replaces the queue's last point
-  past its room, counted (`points_overflowed`), and every site counts what
-  its room cannot hold. At 2000 parameters and a 4096-frame chunk the IPC node's buffers
-  went from about 43 MB to 6.65 MB, a CLAP instance's lists from about
-  40 MB to 6 MB; the figures, the budget's derivation and what is left
-  (the VST3 host's output queues) are in doc 014 §9.
+  still one contiguous, time-ordered slice, so CLAP's flattening and sort,
+  VST3's per-parameter queues and the wire bytes are unchanged (a
+  `PointBuf` serializes as the same sequence; the pool is not serialized).
+  Past a queue's room every site applies one policy,
+  `PointBuf::push_or_replace_last` (the latest-in-time point gives way, so
+  the parameter ends on its latest value), and counts it with its own
+  counter. The host's sets are built `reserved_bridged` (a floor of 3 and
+  blocks of `room + 1`, one point of each kept for the bridge's carried
+  value), so the carried value takes a real slot instead of growing a
+  queue; everything that receives a bridged chunk (the CLAP input list, the
+  VST3 input list, VST3's `IMidiMapping` route) reserves that,
+  `ParameterChanges::carried_budget`. At 2000 parameters and a 4096-frame
+  chunk the IPC node's buffers went from about 43 MB to 6.98 MB, a CLAP
+  instance's lists from about 40 MB to 6 MB; the figures, the budget's
+  derivation and what is left (the VST3 lists' queue count) are in doc 014
+  §9.
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
   does not honour offsets sample-accurately, as it refuses a ramp.
 

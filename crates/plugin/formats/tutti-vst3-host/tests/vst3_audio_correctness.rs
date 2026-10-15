@@ -201,7 +201,7 @@ fn load_probe(block_size: usize) -> Option<Vst3Active> {
 fn set_mode(inst: &mut Vst3Active, mode: f64) {
     inst.set_parameter(PARAM_MODE, mode);
 
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(1, 1);
     params.add_change(param_address(PARAM_MODE), 0, mode);
     // One throwaway block so the processor consumes the change. Its output is
     // rendered in the *old* mode and deliberately discarded.
@@ -385,7 +385,7 @@ fn automation_ramp_is_rendered_at_the_right_offsets() {
 
     const FRAMES: usize = 512;
     // Deliberately out of order: the host must sort before delivery.
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(1, 3);
     let ramp = param_address(PARAM_RAMP);
     params.add_change(ramp, 384, 1.0);
     params.add_change(ramp, 0, 0.0);
@@ -1208,7 +1208,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 
     let mut emitted = 0usize;
     for step in 0..16 {
-        let mut params = ParameterChanges::new();
+        let mut params = ParameterChanges::reserved(param_ids.len(), 1);
         for &id in &param_ids {
             params.add_change(param_address(id), 0, (step as f64 * 0.0625).min(1.0));
         }

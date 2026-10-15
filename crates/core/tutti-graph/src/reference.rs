@@ -93,9 +93,10 @@ use crate::node::{
 };
 use crate::param::{ParamFrom, ParamIn, ParamInput, ParamRange, ParamSource, PARAM_DECLICK};
 use crate::plan::DelayKey;
-use crate::play::{PlayClock, PlayReading};
+use crate::play::PlayClock;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 use crate::time::Offset;
+use tutti_types::PlayReading;
 
 /// One param port's state, as the reference keeps it.
 #[derive(Default)]

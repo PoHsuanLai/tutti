@@ -1,9 +1,10 @@
 # Modulation is a noun of the API, not of the engine
 
-Status: **proposed** (2026-10-14). Supersedes the param-modulation design of
-[doc 013](013-native-graph.md) ("Item 6 landed: compiler-owned param
-modulation" and the control-rate tier it sits beside). Nothing here has
-landed; the [campaign](#12-the-campaign) lists the PRs that land it.
+Status: **in progress** (proposed 2026-10-14). Supersedes the
+param-modulation design of [doc 013](013-native-graph.md) ("Item 6 landed:
+compiler-owned param modulation" and the control-rate tier it sits beside).
+PRs 1, 2a, 2b and 3 have landed; the [campaign](#12-the-campaign) lists
+them and the PRs still to come.
 
 All file references are to `main` at `8ae55f4b`.
 
@@ -106,7 +107,8 @@ Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
 | `ControlProgram` and its evaluation | `tutti-mod`, ungated | The compiler produces it; it holds `Arc<dyn Curve>`, which is `tutti-mod`'s; `tutti-mod` cannot name `tutti-nodes`; `tutti-graph` models no modulation and names only `tutti-types` |
 | `Curve`, `CurveSegment` | `tutti-mod`, moved out of `routing` into the floor | Automation needs them without routing |
 | The compiler (`tutti_mod::compile`) | `tutti-mod`, ungated | Pure: no Bevy, no runtime |
-| `Lfo`, `SampleHold`, `RandomState`, `Modulator` | **`tutti-nodes`**: copied there in PR 3; `tutti-mod`'s copies go in PR 5 | Stateful per-sample sources are a runtime. `routing` (`driver.rs`, `matrix.rs`, `curve_source.rs`, `routing.rs`) and `bevy-tutti` use `tutti-mod`'s until PR 5, and `tutti-mod` cannot name `tutti-nodes`, so the new nodes use the copies while the old system keeps its own. |
+| `PlayReading` | `tutti-types` (re-exported as `tutti_graph::PlayReading`) | A value type: the compiler takes one (§7) and names no graph. Moved there in PR 3 |
+| `Lfo`, `SampleHold`, `RandomState`, `Modulator` | **`tutti-nodes`**: copied there in PR 3 (landed; `ModulatorNode`/`LfoNode` use the copies); `tutti-mod`'s copies go in PR 5 | Stateful per-sample sources are a runtime. `routing` (`driver.rs`, `matrix.rs`, `curve_source.rs`, `routing.rs`) and `bevy-tutti` use `tutti-mod`'s until PR 5, and `tutti-mod` cannot name `tutti-nodes`, so the new nodes use the copies while the old system keeps its own. |
 | `ControlLaneNode`, `LaneControls`, `EnvelopeFollowerNode`, `NoteEnvelopeNode`, `CONTROL_STEP` | `tutti-nodes` (re-exported at the root) | Graph nodes; `tutti-nodes` owns the lane |
 | The play clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`) | `tutti-graph` | Transport plumbing every lane reads the same (§4.3) |
 | A port's event source replaces its base | `tutti-graph` | The engine's one rule |
@@ -229,6 +231,30 @@ pub struct Corners { pub beat: Option<Beat>, pub play: Option<Frame> }
   into a program ahead of the input's values.
 - **`depth_by`** costs one evaluation and one multiply per point; its
   corners join the layer's.
+
+**As landed (PRs 2b and 3).** The sketch above, as the code has it:
+`ControlProgram`'s fields are private behind `ControlProgram::new`, which
+sorts by id and refuses past the caps, duplicate ids, a bad drawing and
+(PR 3) a NaN anywhere in a layer, so a program is `Eq`. `value_at` and
+`value_before` take the knob as `Option<f32>`, the span, and inputs as
+`Option<f32>`s; `ProgramTime` carries the beat, the play clock as a
+`SamplePosition`, its epoch and the rate. PR 3 changed two types:
+
+- **`Layer::depth_by` is an `Option<DepthBy { clock, wave, amount }>`**:
+  the scaling wave carries its route's `Amount`, and the offset is
+  multiplied by `shape(raw, amount)`. `DepthBy::UNIT` (full depth,
+  unipolar, linear) is the mapping PR 2b landed, `(raw + 1) / 2` in `f64`,
+  computed the same way to the bit; a curved bipolar amount kinks at the
+  scaling wave's zero crossings, which are corners as a layer's are.
+  Without the amount, a depth route's own depth, polarity and curve
+  (`RouteDecl`, §7) would have meant nothing.
+- **`Wave::Const(f32)`**: one raw value at every time, whatever the clock
+  (a macro). It has no corners, and a layer of it (scaled by nothing or by
+  another constant, `Layer::is_constant`) does not move: the lane counts
+  only moving layers when it decides whether it is steady, so a target
+  whose layers are all macros sends one held value, not a grid piece every
+  32 frames. A one-point drawn wave on a 0 Hz clock would have kept a
+  stopped lane on the grid (a seconds clock moves) and a rolling one too.
 - **No response-curve LUT.** `shape()` runs at control points only (§5.3),
   so it is exact.
 
@@ -630,9 +656,18 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
   state, so a live play from beat X and an export from beat X agree. The
   follower's reset is an **intended retrigger**: on a sustained sidechain it
   is audible as a dip at play start, then the attack.
-- **A cycle is refused** (`CompileError::Cycle`), reported by route.
+- **A cycle is refused**, reported by route.
   Feedback through an event feedback edge would delay by `MaxBlock`, which
   differs live and offline, so feedback modulation is out of scope.
+  **As landed (PR 3):** the compiler sees no audio graph, so it cannot see
+  a follower downstream of its own target and has no `Cycle` refusal. PR 4
+  refuses that case by route when it adds the edges, and the graph refuses
+  any cycle at commit regardless.
+- **As landed (PR 3):** the compiler gives each signal source a
+  `SourceNode { id, kind }`: a pure description (`SignalKind::Follower
+  { attack, release }` or `SignalKind::NoteEnvelope { adsr }`) carrying
+  everything construction needs and nothing runtime. The nodes and their
+  `from_decl` constructors are PR 3b (§12).
 
 ## 7. `tutti-mod` as a pure compiler
 
@@ -645,13 +680,26 @@ pub struct Declarations<'a> {
     pub targets: &'a [(TargetKey, TargetDecl)],
 }
 
+/// Keys are the host's (an entity's bits, a hash): plain values, ordered.
+pub struct SourceKey(pub u64);
+pub struct RouteKey(pub u64);
+pub struct TargetKey { pub node: u64, pub param: ParamAddr } // ParamAddr: Ord
+
 pub enum Source {
+    /// The clock carries no anchor; anchors are the compiler's.
     Lfo { wave: Wave, clock: Clock },
     /// A constant the user moves; moving it republishes what it reaches.
     Macro { value: f32 },
     Follower { attack: Seconds, release: Seconds },
     NoteEnvelope { adsr: Adsr },
 }
+
+/// Existing units: sustain is a level, `Amplitude` (polysynth's
+/// `EnvelopeConfig` precedent).
+pub struct Adsr { pub attack: Seconds, pub decay: Seconds,
+                  pub sustain: Amplitude, pub release: Seconds }
+
+pub enum RouteTarget { Param(TargetKey), Depth(RouteKey) }
 
 /// Named so it cannot collide with `routing`'s `Route`/`RouteTo` root
 /// exports (`crates/core/tutti-mod/src/lib.rs:45`) while both exist (PRs 3–4).
@@ -664,6 +712,16 @@ pub struct RouteDecl {
     pub curve: CurveType,
 }
 
+/// The range is `min..=max`; the knob is a cell (§4.2). `automation` must
+/// be frozen (`Curve::frozen`), so the program can compare it by identity.
+pub struct TargetDecl { pub min: f32, pub max: f32,
+                        pub automation: Option<Arc<dyn Curve>> }
+
+/// What PR 3b builds a signal source's node from: no runtime state.
+pub struct SourceNode { pub id: SourceId, pub kind: SignalKind }
+pub enum SignalKind { Follower { attack: Seconds, release: Seconds },
+                      NoteEnvelope { adsr: Adsr } }
+
 pub struct Compiled {
     /// One program per target with a route or automation; absent: no lane.
     pub programs: BTreeMap<TargetKey, ControlProgram>,
@@ -674,27 +732,59 @@ pub struct Compiled {
     pub edges: BTreeSet<(SourceKey, TargetKey)>,
 }
 
-/// `prev` and `now` (the executor's last `(play_epoch, play)` reading) are
-/// used only to date rate-edit anchors (§4.3); the function stays pure.
-pub fn compile(decl: &Declarations<'_>, prev: Option<&Compiled>, now: PlayReading)
+/// `prev`, `now` (the executor's next play reading) and `rate` are read
+/// only to keep signal sources' ids and to date rate-edit anchors (§4.3);
+/// the function stays pure.
+pub fn compile(decl: &Declarations<'_>, prev: Option<&Compiled>,
+               now: PlayReading, rate: SampleRate)
     -> Result<Compiled, CompileError>;
 ```
+
+**As landed (PR 3)** in `compile.rs`, with these choices the sketch left
+open:
+
+- `compile` takes `rate: SampleRate`: a new anchor's phase is the old
+  clock's cycles at the anchor frame, and a `Seconds` clock needs the rate
+  to count them.
+- **A macro** compiles to a `Wave::Const(value)` layer on a fixed beat
+  clock. A one-point drawn wave on a 0 Hz clock would have kept the lane on
+  its grid; a constant layer has no corners and needs no clock, so a lane
+  of constants is steady (§4.1).
+- **A rate edit** (a `Seconds` clock whose `hz` changed) anchors at
+  `now.after(RATE_ANCHOR_MARGIN)` (12 288 frames, past any block and the
+  lane's lookahead), with `phase` the old clock's cycles there and
+  `prev_rate` the old rate. A pending anchor is kept and shifted; a live
+  one (this epoch) is carried while the rate holds, and dropped at the next
+  play start.
+- **Signal sources' ids** come from `prev`: a source keeps its `SourceId`
+  across compiles, and a new one takes the lowest free id, in key order.
+- **`layer_id(route, depth_by)`** is a fixed 64-bit mix of the keys; two
+  layers of one target that collide are refused.
 
 - **Pure**: no clock, no state, no `RtPublish`. Equal declarations compile
   equal; `Compiled` is `Eq`, so a host republishes only what changed.
 - **Stable `LayerId`s** from `(RouteKey, depth-by RouteKey)`: identity and
   sum order survive a republish (it fixes M11).
-- **Refusals, by name:** past `MAX_LANE_LAYERS` or `MAX_LANE_INPUTS`; a NaN
-  range bound; a `depth_by` chain deeper than one; an automation curve that
-  is not frozen.
+- **Refusals, by name** (`CompileError`): past `MAX_LANE_LAYERS`
+  (`TooManyLayers`) or `MAX_LANE_INPUTS` (`TooManyInputs`); a NaN range
+  bound (`NanRange`); a `depth_by` chain deeper than one (`DepthByChain`);
+  an automation curve that is not frozen (`LiveCurve`). As landed, also: a
+  duplicate key (`DuplicateSource`, `DuplicateRoute`, `DuplicateTarget`); a
+  route naming an undeclared source, route or target (`UnknownSource`,
+  `UnknownRoute`, `UndeclaredTarget`); a source or route outside its domain
+  (`BadSource`, `BadRoute`); an LFO declared with an anchor
+  (`AnchorDeclared`); a depth route from or to a signal source
+  (`DepthBySignal`); two depth routes to one route (`TwoDepthBy`); a
+  `LayerId` collision (`LayerIdCollision`). The cycle refusal is PR 4's
+  (§6).
 
 | Module (`crates/core/tutti-mod/src`) | Fate |
 |---|---|
 | `shape.rs` (`shape`, `curve_apply`, `LfoShape`, `Polarity`) | kept; `fold` deleted |
-| `curve.rs` | kept, moved into the floor |
-| `curve_source.rs` | `hash_bipolar` and the position-derived random move into `Wave`; the rest deleted |
-| `lfo.rs`, `modulator.rs` | **copied to `tutti-nodes`** in PR 3 for the new nodes; deleted from `tutti-mod` in PR 5 with `routing`, which uses them until then. `tutti-mod` then keeps no runtime. |
-| new `program.rs`, `compile.rs` | §4, §7 |
+| `curve.rs` | kept, moved into the floor (PR 2b, landed) |
+| `curve_source.rs` | `hash_bipolar` and the position-derived random moved into `Wave` (`program.rs`, PR 2b, landed); the rest deleted in PR 5 |
+| `lfo.rs`, `modulator.rs` | **copied to `tutti-nodes`** in PR 3 (landed: `tutti-nodes/src/modulator.rs`; `ModulatorNode` and `LfoNode` use the copies) for the new nodes; deleted from `tutti-mod` in PR 5 with `routing`, which uses them until then. `tutti-mod` then keeps no runtime. |
+| new `program.rs`, `compile.rs` | §4, §7: `program.rs` landed in PR 2b, `compile.rs` in PR 3 |
 | `driver.rs`, `layered.rs`, `matrix.rs`, `mod_params.rs`, `param.rs`, `router.rs`, `routing.rs`, `target.rs`, `id.rs` | deleted, with the `routing` and `std` features and `dashmap`, `arc-swap`, `atomic_float` |
 
 ## 8. `bevy-tutti`: declarations that compile to lanes
@@ -1272,6 +1362,35 @@ previous program. Not breaking: additive.
 
 **Exit.** Compiling anything `bevy-tutti` expresses needs no runtime; the
 crate builds with and without `--features bevy`.
+
+**As landed.**
+
+- `compile.rs` (ungated) holds the keys, `Source`, `RouteDecl`,
+  `RouteTarget`, `TargetDecl`, `Declarations`, `Adsr`, `SourceNode`,
+  `SignalKind`, `Compiled`, `CompileError`, `layer_id` and `compile`
+  (§7). Each property above is a test in `compile/tests.rs`, and
+  `what_bevy_tutti_expresses_compiles_without_a_runtime` is the exit.
+- `depth_by` became `DepthBy { clock, wave, amount }` (§4.1): a depth route
+  carries its own depth, polarity and curve. The identity amount
+  (`DepthBy::UNIT`) computes `(raw + 1) / 2` exactly as before, bit for
+  bit; the existing `depth_by` tests changed only their construction
+  syntax. A curved or bipolar amount adds its zero-crossing corners.
+- `Wave::Const` for macros, not a one-point drawn wave on a 0 Hz clock
+  (§7). `ProgramError::NotANumber`: a program refuses a NaN, so it is `Eq`.
+- `Adsr::sustain` is `Amplitude` (a 0..1 level, as polysynth's
+  `EnvelopeConfig`): `Mix` is a blend position, `Velocity` a strike and
+  `Depth` bipolar.
+- `PlayReading` moved to `tutti-types` (re-exported from `tutti_graph`), so
+  the compiler names no graph. `ParamAddr` derives `Ord`.
+- `Lfo`, `SampleHold`, `RandomState` and `Modulator` are copied into
+  `tutti-nodes`, and `ModulatorNode`/`LfoNode` were switched to the copies:
+  nothing in `routing` or `bevy-tutti` relies on them sharing `tutti-mod`'s
+  types.
+- No `Cycle` refusal: the compiler sees no audio graph (§6). PR 4 refuses
+  it by route.
+- EnvelopeFollowerNode / NoteEnvelopeNode and `from_decl`: PR 3b, before
+  PR 4, with §6's properties (one-step lag, play-start reset, export ==
+  live for a follower).
 
 ### PR 4: `bevy-tutti` to lanes and edges
 

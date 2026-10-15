@@ -268,10 +268,13 @@ pub use plan::{
     ParamSlot, ParamSourceOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT,
     ZERO_SLOT,
 };
-pub use play::{PlayClock, PlayReading};
+pub use play::PlayClock;
+// The reading is a value type, `tutti-types`' (the modulation compiler
+// carries one without naming the graph); the clock that keeps it is here.
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 pub use time::{Due, Offset, Playhead};
+pub use tutti_types::PlayReading;
 
 /// Checks `plan` against its op DAG: no slot shared by ops that may run
 /// concurrently, every read of the value it was meant to read, feedback read

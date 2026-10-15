@@ -4616,6 +4616,13 @@ under both.
 > point-storage note): requirement 6's room is each queue's logical room,
 > and past the pool a queue keeps its floor, grid points dropped before
 > corners, counted.
+>
+> **Doc 014 PR 3 landed** the compiler: `tutti_mod::compile` turns
+> declared sources, routes and targets into a `ControlProgram` per target,
+> a `SourceNode` description per signal source and the event edges, purely
+> (014 §7, §12 "PR 3: landed"). `PlayReading` moved to `tutti-types`
+> (`tutti_graph::PlayReading` re-exports it), so the compiler can date a
+> rate edit's anchor without naming the graph.
 
 **What landed.**
 

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![doc = include_str!("../README.md")]
 
+mod compile;
 mod curve;
 mod id;
 mod lfo;
@@ -27,13 +28,18 @@ mod router;
 mod routing;
 
 pub use audio_automation::CurveType;
+pub use compile::{
+    compile, layer_id, Adsr, CompileError, Compiled, Declarations, RouteDecl, RouteKey,
+    RouteTarget, SignalKind, Source, SourceKey, SourceNode, TargetDecl, TargetKey,
+    RATE_ANCHOR_MARGIN,
+};
 pub use curve::{Curve, CurveSegment};
 pub use id::{LayerKey, ModTargetId};
 pub use lfo::{Lfo, RandomState, SampleHold};
 pub use modulator::Modulator;
 pub use program::{
-    Amount, Clock, ControlProgram, Corners, InputLayer, Layer, LayerId, PeriodPoint, ProgramError,
-    ProgramTime, RateAnchor, SourceId, Wave, MAX_LANE_INPUTS, MAX_LANE_LAYERS,
+    Amount, Clock, ControlProgram, Corners, DepthBy, InputLayer, Layer, LayerId, PeriodPoint,
+    ProgramError, ProgramTime, RateAnchor, SourceId, Wave, MAX_LANE_INPUTS, MAX_LANE_LAYERS,
 };
 pub use shape::{curve_apply, fold, shape, LfoShape, Polarity};
 pub use target::ModTarget;

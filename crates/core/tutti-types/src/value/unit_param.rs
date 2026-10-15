@@ -159,8 +159,11 @@ impl From<UnitParam> for u16 {
 ///
 /// Deliberately not "plugin"-named — the [`Id`](ParamAddr::Id) arm is any
 /// externally-numbered param, not a plugin concept.
+///
+/// Ordered (every `Unit` before every `Id`, each in its own order) so a map
+/// can key on it: the modulation compiler's `TargetKey` is a node and one.
 #[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ParamAddr {
     /// A param from tutti's known vocabulary.
     Unit(UnitParam),

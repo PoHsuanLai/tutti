@@ -22,8 +22,8 @@
 //!   [`BrickwallLimiterNode`].
 //! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
 //!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
-//! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over [`Lfo`] and
-//!   [`Modulator`].
+//! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over [`Lfo`],
+//!   [`SampleHold`] and [`Modulator`] (with [`RandomState`]).
 //! - Mixing: [`ChannelSumNode`], [`DownmixNode`], [`BusStripNode`].
 //! - Param modulation: each node's `*_PARAMS` port list (for example
 //!   [`SVF_PARAMS`]) and [`ParamModShaping`].
@@ -55,10 +55,15 @@ pub use tutti_core::{
 pub mod buffer;
 
 mod lfo;
+// The pure modulators, copied from tutti-mod (doc 014 §7): its copies serve
+// its `routing` driver until doc 014's PR 5 deletes it; these serve the
+// nodes here.
+mod modulator;
 // `LfoNode` is `ModulatorNode<Lfo>` — the graph node over a pure
-// `tutti_mod::Modulator`. `LfoShape`/`Lfo`/`Modulator` are re-exported from
-// `tutti-mod` through `lfo`, so `use tutti_nodes::LfoShape` works.
-pub use lfo::{Lfo, LfoMode, LfoNode, LfoShape, Modulator, ModulatorNode};
+// `Modulator`. `LfoShape` is re-exported from `tutti-mod` through `lfo`, so
+// `use tutti_nodes::LfoShape` works.
+pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode};
+pub use modulator::{Lfo, Modulator, RandomState, SampleHold};
 
 mod delay;
 pub use delay::{DelayLine, DelayLineNode, InterpolationMode, DELAY_PARAMS};

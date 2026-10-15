@@ -135,21 +135,22 @@ fn a_gain_set_through_the_controls_reaches_the_running_voice() {
 /// the fader the user set. And the fork shares nothing: a live move after the
 /// fork does not reach it.
 ///
+/// Ported in doc 014 PR 5: this also pinned the fork reading the
+/// "authored" value rather than a modulation driver's composite left in the
+/// live cell. The driver and `ParamSet::authored` are deleted (§10): a lane
+/// sends its composite to the param port and never writes the cell, so the
+/// cell is the gain last set, and that half of the test (a store of 0.9
+/// into the cell standing in for the driver) went with its subject.
+///
 /// Mutation (run): `VoiceNodeFork::fork` leaving the copy's `play.gain` as
 /// inserted (the `voice.play.gain = gain` write removed) → the fork renders
-/// at unity → fails. Mutation (run): the fork reading the live cell rather
-/// than the authored value, with a modulation composite left in it → the
-/// fork renders at 0.9 → fails.
+/// at unity → fails. Mutation (run, PR 5): the forked node's gain `Param`
+/// set to a handle of the live node's (`node.gain = live_gain.handle()`)
+/// → the live move to 0.75 reaches the fork → fails.
 #[test]
 fn a_fork_starts_from_the_gain_last_set_and_shares_nothing() {
     let mut s = solo_voice();
     s.controls().params().set(UnitParam::Volume, 0.25);
-    // A modulation driver's composite, left in the live cell.
-    s.controls()
-        .params()
-        .cell(UnitParam::Volume)
-        .expect("the voice has a gain")
-        .store(0.9, std::sync::atomic::Ordering::Release);
     let (fork_editor, fork_exec) = s
         .renderer_mut()
         .editor()

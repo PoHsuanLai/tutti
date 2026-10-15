@@ -9,11 +9,10 @@
 //! loop-wrapped [`Beat`].
 //!
 //! A recorder is also a `Curve` in its own right, reading the take *in progress*
-//! (see the [`Curve`] impl). That is what makes latch-hold a plain layer on the
-//! app's `LayeredCurve` rather than a second, disagreeing accumulator: the
-//! in-flight take is installed under [`LayerKey::AUTOMATION`](tutti_mod::LayerKey)
-//! and outranks the saved envelope for the take's duration, using the same
-//! `base + Σ layers` rule as everything else.
+//! (see the [`Curve`] impl). That is what makes latch-hold a plain curve
+//! rather than a second, disagreeing accumulator: for the take's duration the
+//! host reads the in-flight take where it would read the saved envelope, and
+//! automation replaces the knob as it always does (doc 014 §2).
 //!
 //! ## What lives where
 //!
@@ -37,7 +36,7 @@ use tutti_types::{Beat, BeatDuration};
 /// [`Curve::value_at`] on the saved envelope. Both were states on
 /// `audio_automation::AutomationState`, whose extra arms this type deliberately
 /// drops — a recorder that also answered reads would be a second accumulator
-/// competing with `LayeredCurve`.
+/// competing with the saved envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecordMode {
     /// Capture continuously from the first sample, no touch required.
@@ -118,9 +117,8 @@ enum Take {
 /// Takes `&mut self` throughout. The previous incarnation held its envelope in
 /// an `Arc<RwLock<_>>` so a concurrent map could hand out `&self` recorders;
 /// with the map host-side that lock had no reader to protect, and the borrow
-/// checker does the job for free. (Contrast [`ModTarget`](tutti_mod::ModTarget),
-/// which *is* `&self` — a driver holds it as `Arc<dyn ModTarget>` and writes it
-/// once per frame. A recorder has no such driver.)
+/// checker does the job for free. A recorder has no concurrent reader to
+/// share it with.
 #[derive(Debug, Clone)]
 pub struct Recorder {
     envelope: AutomationEnvelope<f32>,
@@ -285,10 +283,9 @@ impl Recorder {
 
 /// The take **in progress** — not the saved lane.
 ///
-/// This is what makes latch-hold composable: the host installs the live recorder
-/// as the [`LayerKey::AUTOMATION`](tutti_mod::LayerKey) layer on the param's
-/// `LayeredCurve` for the take's duration, and it outranks the saved envelope
-/// under the ordinary keyed-upsert rule — no second summation path.
+/// This is what makes latch-hold composable: the host reads the live recorder
+/// in place of the saved envelope for the take's duration — no second
+/// summation path.
 ///
 /// `None` when no take is open, preserving the empty-vs-zero distinction
 /// [`Curve`] requires: between takes the recorder contributes *nothing* and the

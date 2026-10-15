@@ -327,8 +327,11 @@ read the `Cargo.toml`, grep for the type, run the probe.
 - **Dead crate names:** `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
   crates, `tutti-node` and `fundsp-tutti` → deleted (the node contract is
-  `tutti_graph::Node`; the filters' `Real` is `tutti-nodes`'). A comment or
-  doc that disagrees with the code is the bug.
+  `tutti_graph::Node`; the filters' `Real` is `tutti-nodes`'), and
+  tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
+  `modulation::legacy`) → deleted (doc 014 PR 5: `tutti_mod::compile` and
+  a `ControlLaneNode` per param). A comment or doc that disagrees with the
+  code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is
   gated off MSVC, because `sin` differs in the last ulp between CRTs.
 

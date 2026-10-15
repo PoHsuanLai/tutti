@@ -364,8 +364,9 @@ fn an_offline_fork_hands_its_sources_the_render_timeline() {
 /// after the fork does not reach it: the fork has no link back.
 ///
 /// Mutation (run): `ParamFork::new` keeping a template detached at insert
-/// (`node.fork_fresh()`) and `fork_node` not applying the authored values →
-/// the fork renders the constructed 0.5 → fails.
+/// (`node.fork_fresh()`) → the fork renders the constructed 0.5 → fails.
+/// (Re-run in doc 014 PR 5, with the authored copy gone: the fork reads
+/// the shared cells, so a detached template is all that can lose the set.)
 #[test]
 fn a_value_set_after_insert_reaches_the_fork() {
     let (mut ed, mut exec) = Editor::new(prepare(64));
@@ -778,18 +779,20 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
 /// clones share a cell with it (`Shared`), which its fork source severs, and
 /// a [`ParamNode`] whose fork is taken from its [`ParamSet`].
 ///
-/// Mutation (run): `ParamFork::fork_node` writing the authored values
-/// through the live set instead of the fork's → the live level is written
-/// back to its authored value, which a live-only write (a modulation
-/// driver's) had moved → the live output leaves the twin's → fails.
-/// Mutation (run): `SharedFork` handing the fork the live node's cell → the
-/// fork's rendering advances the live ramp → fails.
+/// Changed in doc 014 PR 5: a live-only write to the level's cell (a
+/// modulation driver's) is gone with the authored copy (§10); a fork reads
+/// the cells, and the test now moves the live level after the fork.
+///
+/// Mutation (run): `Level::fork_fresh` not detaching its cell (the fork
+/// shares the live cell, as a `fork_node` handing out the template would)
+/// → the fork follows the live move to 0.9 → fails. Mutation (run): `SharedFork` handing the fork
+/// the live node's cell → the fork's rendering advances the live ramp →
+/// fails.
 #[test]
 fn the_live_graph_is_unaffected_while_a_fork_renders() {
-    fn build() -> (Editor, tutti_graph::Executor, ParamSet, Param<Amplitude>) {
+    fn build() -> (Editor, tutti_graph::Executor, ParamSet) {
         let (mut ed, mut exec) = Editor::new(prepare(64));
         let level = Level::new(0.5);
-        let cell = level.0.clone();
         ed.insert(
             NodeKey(1),
             "ramp",
@@ -802,23 +805,23 @@ fn the_live_graph_is_unaffected_while_a_fork_renders() {
         ed.commit().expect("commits");
         exec.apply_pending();
         ed.collect();
-        (ed, exec, controls, cell)
+        (ed, exec, controls)
     }
-    let (ed, exec, controls, cell) = build();
-    let (twin_ed, twin_exec, twin_controls, twin_cell) = build();
+    let (ed, exec, controls) = build();
+    let (twin_ed, twin_exec, twin_controls) = build();
     let mut live = Renderer::new(ed, exec);
     let mut twin = Renderer::new(twin_ed, twin_exec);
     assert!(controls.set(UnitParam::Volume, 0.75));
     assert!(twin_controls.set(UnitParam::Volume, 0.75));
-    // A live-only move (what a modulation driver writes): not authored.
-    cell.store(Amplitude::new(0.6));
-    twin_cell.store(Amplitude::new(0.6));
     assert_eq!(bits(&live.render(640)), bits(&twin.render(640)));
 
     let (fe, fx) = live
         .editor()
         .fork(ForkTarget::Master, ForkMode::Live, prepare(64))
         .expect("forks");
+    // The live level moves after the fork: the fork keeps what it took.
+    assert!(controls.set(UnitParam::Volume, 0.9));
+    assert!(twin_controls.set(UnitParam::Volume, 0.9));
     let worker = std::thread::spawn(move || render(fe, fx, 48_000));
     let mut a = Vec::new();
     let mut b = Vec::new();
@@ -834,7 +837,7 @@ fn the_live_graph_is_unaffected_while_a_fork_renders() {
     assert_eq!(forked[0][47_999], 47_999.0, "and is its own");
     assert!(
         forked[1].iter().all(|&x| x == 0.75),
-        "the fork renders the authored level"
+        "the fork renders the level as it was forked"
     );
 }
 

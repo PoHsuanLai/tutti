@@ -20,8 +20,12 @@ use std::sync::Arc;
 
 use tutti_graph::Harmony;
 use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
+use tutti_mod::{
+    Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, Polarity, Wave,
+};
+use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::catalog::{Plugin, PluginRole};
-use tutti_plugin::handles::{LfoCurve, LfoShape, TimedParam};
+use tutti_plugin::handles::ParamAddress;
 use tutti_plugin::Result;
 
 use tutti_core::{Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, RtPublish, SampleRate};
@@ -63,31 +67,48 @@ fn main() -> Result<()> {
         TimedHarmony::new(Beat(0.0), Harmony::scale(60, 0b1010_1011_0101)),
     ]);
 
-    // Parameter automation is a node of its own, an event source to insert
-    // beside the plugin and wire to its event input, so the graph's delay
-    // compensation covers it. Ungated: every format carries it, and both
-    // backends take it on their event input. One slow LFO on the plugin's
-    // first parameter, addressed as the plugin lists it (an index on a VST2
-    // plugin, an opaque handle elsewhere): an address of the other model
-    // would be skipped. A plugin with no parameters gets no automation.
+    // Parameter automation is a node of its own, a control lane per
+    // parameter: an event source to insert beside the plugin and wire to its
+    // event input, so the graph's delay compensation covers it. Ungated:
+    // every format carries it, and both backends take it on their event
+    // input. One slow LFO on the plugin's first parameter, around a knob at
+    // 0.5, numbered as the plugin lists it (an index on a VST2 plugin, an
+    // opaque handle elsewhere; the plugin reads the number back in its own
+    // model). A plugin with no parameters gets no automation.
     let first_param = plugin
         .handle()
         .params()
         .parameter_descriptors()
         .and_then(|list| list.first().map(|p| p.id));
-    let _automation = first_param.map(|param_id| {
-        plugin.automation([TimedParam {
-            param_id,
-            curve: Arc::new(LfoCurve::new(
-                LfoShape::Sine,
-                BeatDuration(4.0),
-                Depth(1.0),
-                PhaseIncrement(0.0),
-                0.5, // base
-                0.0, // min
-                1.0, // max
-            )),
-        }])
+    let _automation = first_param.and_then(|address| {
+        let id = match address {
+            ParamAddress::Opaque(id) => id.get(),
+            ParamAddress::Index(i) => u32::try_from(i).ok()?,
+        };
+        let lfo = Layer {
+            id: LayerId(1),
+            clock: Clock::Beats {
+                per_cycle: BeatDuration(4.0),
+                phase: PhaseIncrement(0.0),
+            },
+            wave: Wave::Shape {
+                shape: LfoShape::Sine,
+                seed: 0,
+            },
+            amount: Amount {
+                depth: Depth(0.5),
+                polarity: Polarity::Bipolar,
+                curve: CurveType::Linear,
+            },
+            depth_by: None,
+        };
+        let program = ControlProgram::new(None, vec![lfo], vec![]).ok()?;
+        Some(ControlLaneNode::for_foreign(
+            id,
+            program,
+            Some(0.5),
+            (0.0, 1.0),
+        ))
     });
 
     // MIDI travels on the node's event ports: a clip node, a keyboard's

@@ -1,39 +1,49 @@
-//! A control-rate modulation route onto a node's param resolves on the
-//! node's [`ParamSet`](tutti_graph::ParamSet): the host takes the set's cell
-//! for the param and mirrors it through an [`AtomicTarget`] (bevy-tutti's
-//! `ParamSetTargets`), so a route writes exactly the cell the node reads.
+//! A node's [`ParamSet`](tutti_graph::ParamSet) is the address a modulation
+//! host resolves a param on: `ParamSet::cell(p)` is the very cell the node
+//! reads, which an engine hands a control lane as its knob (doc 014 §4.2:
+//! one writer per knob, the host's `set`), so a write through the set moves
+//! the node's own control and the lane's offsets ride on it.
 //!
 //! The `ParamSet` is each node's one address: a set is addressed by
 //! `UnitParam` alone, and each cell has one address (the compressor's makeup
 //! is `GainDb`).
 //!
+//! Ported in doc 014 PR 5 from routes through a `ModMatrix` onto an
+//! `AtomicTarget` mirroring the cell (both deleted, §10): the address checks
+//! now write through `ParamSet::set`, and the end-to-end check drives a
+//! control lane whose knob is the filter's cell.
+//!
 //! Mutation (run): `ParamSet::cell` answering every param with the set's
 //! first cell → every test asking for a param the set lacks, or one that is
-//! not its first, fails (5 of 7); the two that route the SVF's cutoff, its
-//! first param, pass, as they must.
+//! not its first, fails (5 of 7, with `convolution`); the two that address
+//! the SVF's cutoff, its first param, pass, as they must.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use audio_automation::CurveType;
 use tutti_core::{ChannelLayout, UnitParam};
-use tutti_graph::ParamNode;
-use tutti_mod::{AtomicTarget, LayerKey, ModTarget};
+use tutti_graph::{
+    Cx, Editor, EventOut, Io, Node, ParamIn, ParamNode, ParamRange, Prepare, Renderer, Shape,
+    Status, Unforkable,
+};
+use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
+use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
     CompressorNode, LadderFilterNode, LadderType, ModDelayNode, SvfFilterNode, SvfType,
 };
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::{Depth, Hz, NodeKey, PhaseIncrement, SampleRate, Samples};
 
-/// The route a host resolves for `p` on `node`: its `ParamSet` cell behind
-/// an `AtomicTarget` over `[min, max]`, or `None` for a param it lacks.
-fn route<N: ParamNode>(
-    node: &N,
-    p: UnitParam,
-    base: f32,
-    min: f32,
-    max: f32,
-) -> Option<Arc<dyn ModTarget>> {
-    node.param_set()
-        .cell(p)
-        .map(|cell| Arc::new(AtomicTarget::with_mirror(base, min, max, cell)) as Arc<dyn ModTarget>)
+/// Writes `value` to `p` through `node`'s set, as a host does; `false` for
+/// a param the set lacks.
+fn set<N: ParamNode>(node: &N, p: UnitParam, value: f32) -> bool {
+    node.param_set().set(p, value)
+}
+
+/// Whether `node`'s set addresses `p` (has a cell a lane could take).
+fn addresses<N: ParamNode>(node: &N, p: UnitParam) -> bool {
+    node.param_set().cell(p).is_some()
 }
 
 fn svf() -> SvfFilterNode<f32> {
@@ -41,110 +51,162 @@ fn svf() -> SvfFilterNode<f32> {
 }
 
 #[test]
-fn filter_cutoff_route_moves_the_nodes_own_cell() {
+fn filter_cutoff_write_moves_the_nodes_own_cell() {
     let node = svf();
     let atomic = node.frequency(); // the node reads this per block
-    let target =
-        route(&node, UnitParam::Cutoff, 1000.0, 20.0, 20000.0).expect("cutoff is modulatable");
-
-    // Accumulating an offset moves the node's OWN cell.
-    target.accumulate(LayerKey(1), 500.0);
-    assert!(
-        (atomic.load(Ordering::Acquire) - 1500.0).abs() < 1e-3,
-        "the node's frequency cell reflects the modulation"
-    );
-    target.clear(LayerKey(1));
-    assert!((atomic.load(Ordering::Acquire) - 1000.0).abs() < 1e-3);
+    assert!(set(&node, UnitParam::Cutoff, 1500.0), "cutoff is addressed");
+    assert_eq!(atomic.load(Ordering::Acquire), 1500.0);
+    // The cell a lane takes as its knob is that same cell.
+    let cell = node.param_set().cell(UnitParam::Cutoff).expect("addressed");
+    assert!(Arc::ptr_eq(&cell, &atomic));
 }
 
 #[test]
-fn a_param_the_set_lacks_has_no_route() {
+fn a_param_the_set_lacks_has_no_address() {
     // The SVF has no Drive param.
-    assert!(route(&svf(), UnitParam::Drive, 0.0, 0.0, 1.0).is_none());
+    assert!(!addresses(&svf(), UnitParam::Drive));
+    assert!(!set(&svf(), UnitParam::Drive, 1.0));
 }
 
 #[test]
-fn ladder_routes_q_and_drive_but_not_feedback() {
+fn ladder_addresses_q_and_drive_but_not_feedback() {
     let node =
         LadderFilterNode::<f32>::with_channels(ChannelLayout::STEREO, LadderType::LP24, 800.0, 0.5);
-    assert!(route(&node, UnitParam::Cutoff, 800.0, 20.0, 20000.0).is_some());
-    assert!(route(&node, UnitParam::Q, 0.5, 0.0, 1.0).is_some());
-    assert!(route(&node, UnitParam::Drive, 1.0, 0.0, 4.0).is_some());
-    assert!(route(&node, UnitParam::Feedback, 0.0, 0.0, 1.0).is_none());
+    assert!(addresses(&node, UnitParam::Cutoff));
+    assert!(addresses(&node, UnitParam::Q));
+    assert!(addresses(&node, UnitParam::Drive));
+    assert!(!addresses(&node, UnitParam::Feedback));
 }
 
-// ── End-to-end: modulate a REAL audio node through the ModMatrix ──
+// ── End-to-end: a lane whose knob is a REAL filter's cell ──
 
-#[test]
-fn lfo_sweeps_a_real_filter_cutoff_through_the_matrix() {
-    use tutti_core::{Beat, BeatDuration, Seconds};
-    use tutti_mod::{Lfo, LfoShape, ModMatrix, SourceRate};
+/// Writes its cutoff port's value per frame on its one output.
+struct Probe;
 
-    // A real filter node. The node reads `frequency()` per block.
-    let filter = svf();
-    let cutoff_atomic = filter.frequency();
-
-    // Resolve the node's cutoff route and hand it to the matrix.
-    let target =
-        route(&filter, UnitParam::Cutoff, 1000.0, 20.0, 20000.0).expect("cutoff is modulatable");
-
-    let mut m = ModMatrix::new();
-    let cutoff = m.add_target(target); // register the node's OWN cell
-                                       // Beat-synced at 1 cycle/beat → phase == beat, so passing beat = i/16
-                                       // walks a full sine cycle.
-    m.route(
-        Lfo::new(LfoShape::Sine),
-        SourceRate::beat_synced(BeatDuration(1.0), 0.0),
-    )
-    .to(&cutoff)
-    .depth(0.5);
-    let mut driver = m.build();
-
-    // Drive the matrix each frame → the filter's real cutoff cell sweeps.
-    let mut moved_up = false;
-    let mut moved_down = false;
-    for i in 0..16 {
-        driver.run(Beat(i as f64 / 16.0), Seconds(0.0));
-        let hz = cutoff_atomic.load(Ordering::Acquire);
-        assert!(
-            (20.0..=20000.0).contains(&hz),
-            "cutoff left its range: {hz}"
-        );
-        if hz > 1000.5 {
-            moved_up = true;
-        }
-        if hz < 999.5 {
-            moved_down = true;
-        }
+impl Node for Probe {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_params(&[UnitParam::Cutoff])
     }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let v: Option<Vec<f32>> = io.param(0).frames().map(<[f32]>::to_vec);
+        match v {
+            Some(v) => io.output(0).copy_from_slice(&v),
+            None => io.output(0).fill(0.0),
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+    fn param_base(&self, _: usize) -> Option<f32> {
+        Some(0.0)
+    }
+}
+
+/// A sine LFO lane, its knob the filter's own cutoff cell, sweeps a cutoff
+/// port around that cell's value, both ways and inside the range; a write
+/// through the filter's set moves the centre of the sweep on the next
+/// block, so the knob the lane reads is the node's cell, not a copy.
+///
+/// Mutation (run): build the lane's knob from a snapshot of the cell
+/// (`Arc::new(AtomicF32::new(cell.load(..)))`) → the second sweep stays
+/// centred on 1000 → fails.
+#[test]
+fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
+    let filter = svf();
+    let (lo, hi) = (500.0, 1500.0);
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+    let probe = NodeKey(1);
+    ed.insert(probe, "probe", Unforkable(Probe));
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: probe,
+        port: 0,
+    })];
+    let at = ParamIn {
+        node: probe,
+        param: UnitParam::Cutoff,
+    };
+    ed.set_param_range(at, ParamRange::new(lo, hi))
+        .expect("a probe");
+    ed.commit().expect("commits");
+    let layer = Layer {
+        id: LayerId(1),
+        // 10 cycles a second: a cycle every 4800 frames.
+        clock: Clock::Seconds {
+            rate: Hz(10.0),
+            phase: PhaseIncrement(0.0),
+            anchor: None,
+        },
+        wave: Wave::Shape {
+            shape: LfoShape::Sine,
+            seed: 0,
+        },
+        amount: Amount {
+            depth: Depth(0.25),
+            polarity: Polarity::Bipolar,
+            curve: CurveType::Linear,
+        },
+        depth_by: None,
+    };
+    let program = ControlProgram::new(None, vec![layer], vec![]).expect("valid");
+    let knob = filter
+        .param_set()
+        .cell(UnitParam::Cutoff)
+        .expect("addressed");
+    let range = ed.param_range_cell(at).expect("committed");
+    let lane = ControlLaneNode::for_unit(UnitParam::Cutoff, program, Some(knob), Some(range));
+    ed.insert(NodeKey(2), "lane", lane);
+    ed.spec_mut().connect_param(
+        at,
+        EventOut {
+            node: NodeKey(2),
+            port: 0,
+        },
+    );
+    ed.commit().expect("the lane commits");
+
+    let mut r = Renderer::new(ed, exec);
+    r.set_block(Samples(64));
+    // One cycle and a block.
+    let mut sweep = || r.render(4800 + 64).swap_remove(0);
+    let first = sweep();
+    let (min, max) = first
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
     assert!(
-        moved_up && moved_down,
-        "a sine LFO should sweep the cutoff both ways"
+        (lo..=hi).contains(&min) && (lo..=hi).contains(&max),
+        "{min}..{max}"
+    );
+    assert!(
+        max > 1200.0 && min < 800.0,
+        "sweeps both ways: {min}..{max}"
+    );
+
+    assert!(set(&filter, UnitParam::Cutoff, 1200.0));
+    let second = sweep();
+    let max = second.iter().copied().fold(f32::MIN, f32::max);
+    assert!(
+        max > 1400.0,
+        "the sweep follows the filter's cell: max {max}"
     );
 }
 
 #[test]
-fn chorus_rate_route_moves_the_nodes_own_cell() {
+fn chorus_rate_write_moves_the_nodes_own_cell() {
     let node = ModDelayNode::chorus(ChannelLayout::STEREO);
     let rate_atomic = node.rate();
     let base = rate_atomic.load(Ordering::Acquire);
-    let target =
-        route(&node, UnitParam::Rate, base, 0.01, 10.0).expect("chorus rate is modulatable");
-
-    target.accumulate(LayerKey(1), 2.0);
     assert!(
-        (rate_atomic.load(Ordering::Acquire) - (base + 2.0)).abs() < 1e-3,
-        "chorus rate cell reflects the modulation"
+        set(&node, UnitParam::Rate, base + 2.0),
+        "chorus rate is addressed"
     );
-    target.clear(LayerKey(1));
-    assert!((rate_atomic.load(Ordering::Acquire) - base).abs() < 1e-3);
+    assert_eq!(rate_atomic.load(Ordering::Acquire), base + 2.0);
 
-    // A param it doesn't expose has no route.
-    assert!(route(&node, UnitParam::Cutoff, 0.0, 0.0, 1.0).is_none());
+    // A param it doesn't expose has no address.
+    assert!(!addresses(&node, UnitParam::Cutoff));
 }
 
-/// The compressor's makeup has one address, `GainDb`; `Makeup` (what its
-/// `ModParams` impl answered for the same cell) is not in its set.
+/// The compressor's makeup has one address, `GainDb`; `Makeup` is not in
+/// its set.
 #[test]
 fn compressor_makeup_is_addressed_as_gain_db() {
     let node = CompressorNode::with_channels(
@@ -155,19 +217,18 @@ fn compressor_makeup_is_addressed_as_gain_db() {
         2,
     );
     let makeup = node.makeup_gain();
-    let target = route(&node, UnitParam::GainDb, 0.0, -24.0, 24.0).expect("makeup is GainDb");
-    target.accumulate(LayerKey(1), 6.0);
-    assert!((makeup.load(Ordering::Acquire) - 6.0).abs() < 1e-3);
-    assert!(route(&node, UnitParam::Makeup, 0.0, -24.0, 24.0).is_none());
+    assert!(set(&node, UnitParam::GainDb, 6.0), "makeup is GainDb");
+    assert_eq!(makeup.load(Ordering::Acquire), 6.0);
+    assert!(!addresses(&node, UnitParam::Makeup));
 }
 
 #[cfg(feature = "convolution")]
 #[test]
-fn convolver_only_routes_wet() {
-    // Room size is baked into the IR; only Wet is control-rate modulatable.
+fn convolver_only_addresses_wet() {
+    // Room size is baked into the IR; only Wet is a control.
     // A minimal unit IR is fine — only the param surface is probed.
     let node = tutti_nodes::ConvolverNode::shared_ir(2usize, &[1.0], 64);
-    assert!(route(&node, UnitParam::Wet, 0.5, 0.0, 1.0).is_some());
-    assert!(route(&node, UnitParam::RoomSize, 0.5, 0.0, 1.0).is_none());
-    assert!(route(&node, UnitParam::Cutoff, 0.5, 0.0, 1.0).is_none());
+    assert!(addresses(&node, UnitParam::Wet));
+    assert!(!addresses(&node, UnitParam::RoomSize));
+    assert!(!addresses(&node, UnitParam::Cutoff));
 }

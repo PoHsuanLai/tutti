@@ -69,9 +69,7 @@ use crate::exec::{
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
-use crate::param::{
-    ParamFrom, ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState, ParamTap, Ramp,
-};
+use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
 
@@ -360,19 +358,11 @@ pub struct Editor {
     /// On a **fork** only: the health probe each forked unit's source handed
     /// over, by key (see `src/fork.rs`, "When a forked unit fails").
     fork_health: Vec<(NodeKey, Arc<dyn ForkHealth>)>,
-    /// Per key with declared params: where its unit's param state publishes
-    /// its event sources' ramps, for a fork to carry (`src/param.rs`,
-    /// `ParamTap`). Shared with the running unit's state, and handed to the
-    /// next unit placed at the key.
-    param_taps: BTreeMap<NodeKey, Arc<ParamTap>>,
     /// Per key with declared params: its ports' live ranges
     /// (`src/param.rs`, `ParamRanges`), shared with the running unit's
     /// state. Written from the spec by every commit, and by
     /// [`set_param_range`](Self::set_param_range) at once.
     param_ranges: BTreeMap<NodeKey, Arc<ParamRanges>>,
-    /// On a **fork**, until its first commit: the ramps each param port's
-    /// event sources start from, read from the live graph's taps.
-    param_seeds: BTreeMap<ParamIn, Vec<(ParamFrom, Ramp)>>,
 }
 
 /// A panic payload as text.
@@ -438,9 +428,7 @@ impl Editor {
             forks: BTreeMap::new(),
             event_capacity: cap,
             fork_health: Vec::new(),
-            param_taps: BTreeMap::new(),
             param_ranges: BTreeMap::new(),
-            param_seeds: BTreeMap::new(),
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
     }
@@ -876,7 +864,7 @@ impl Editor {
         Ok(())
     }
 
-    /// Sets param port `at`'s range — what its modulated value is clamped
+    /// Sets param port `at`'s range — what its driven value is clamped
     /// to — **without a commit**: the spec records it, and the running unit
     /// clamps to it from its next block on, as it reads a base moved through
     /// its control. Nothing is compiled or sent, so a host may call this
@@ -886,10 +874,10 @@ impl Editor {
     ///   block, at the port's step: a range set between two blocks clamps
     ///   the whole of the next one, frame for frame. A range set while the
     ///   audio thread is inside a block lands on that block or the next.
-    /// - **What it clamps.** The modulated value only (the held value, an
-    ///   event source's or the base, plus audio offsets): a port nothing
-    ///   modulates reads its base, unclamped, as it always did.
-    /// - **What it never rewrites.** The node's base (its control) and each
+    /// - **What it clamps.** The driven value only (the event source's
+    ///   value, or the base before its first event): a port nothing drives
+    ///   reads its base, unclamped, as it always did.
+    /// - **What it never rewrites.** The node's base (its control) and the
     ///   event source's ramp run on unclamped; the clamp is applied as the
     ///   value is read. A range that shrinks around a held base or a ramp in
     ///   flight pins the value to its bound, and one that widens again lets
@@ -902,8 +890,8 @@ impl Editor {
     ///   ranges, sends nothing either.
     /// - **No declick.** The value steps to the new bound on the block's
     ///   first frame, as it did when a range change was a commit. A host
-    ///   that wants a range to glide moves it in steps, or modulates the
-    ///   param instead.
+    ///   that wants a range to glide moves it in steps, or drives the param
+    ///   instead.
     /// - **Cost.** Two stores and a map lookup on the control side; nothing
     ///   on the audio thread but the per-block load it always makes.
     /// - A port its node does not declare is recorded in the spec and
@@ -995,7 +983,9 @@ impl Editor {
             .retain(|(at, from), _| at.node != key && from.node != key);
         self.spec.params.retain(|at, _| at.node != key);
         for m in self.spec.params.values_mut() {
-            m.sources.retain(|s| s.from.node() != key);
+            if m.source.is_some_and(|s| s.node == key) {
+                m.source = None;
+            }
         }
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
@@ -1567,24 +1557,12 @@ impl Editor {
         self.fades_out += starting(&delta);
         debug_assert!(self.fades_out <= FADE_CAPACITY);
         let plan = Arc::new(plan);
-        let (taps, seeds) = (&mut self.param_taps, &mut self.param_seeds);
         let (ranges, spec) = (&mut self.param_ranges, &self.spec);
         let params = |key: NodeKey, ports: usize, max: usize| {
             if ports == 0 {
-                taps.remove(&key);
                 ranges.remove(&key);
                 return ParamState::default();
             }
-            // The key's tap, kept across a replace (a crossfade keeps the
-            // running state, which publishes to it).
-            let tap = taps
-                .entry(key)
-                .and_modify(|t| {
-                    if t.port_count() != ports {
-                        *t = ParamTap::new(ports);
-                    }
-                })
-                .or_insert_with(|| ParamTap::new(ports));
             let declared = plan.unit(key).map(|u| u.shape.params);
             // The key's range cells, kept for a unit declaring the same
             // params (a crossfade keeps the running state, which reads
@@ -1601,68 +1579,16 @@ impl Editor {
             for &param in list.as_slice() {
                 cells.store(param, range_of(spec, ParamIn { node: key, param }));
             }
-            let port_seeds: Vec<Vec<(ParamFrom, Ramp)>> = declared
-                .iter()
-                .flat_map(|d| d.as_slice().iter())
-                .map(|&param| {
-                    seeds
-                        .remove(&ParamIn { node: key, param })
-                        .unwrap_or_default()
-                })
-                .collect();
-            ParamState::new(
-                ports,
-                max,
-                Some(Arc::clone(tap)),
-                Some(Arc::clone(cells)),
-                &port_seeds,
-            )
+            ParamState::new(ports, max, Some(Arc::clone(cells)))
         };
         let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units, params);
-        self.param_taps.retain(|k, _| plan.unit(*k).is_some());
         self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
-        self.param_seeds.clear();
         if self.channels.to_executor.try_push(commit).is_err() {
             unreachable!("the queue has a free slot for every credit");
         }
         self.sent += 1;
         self.out += 1;
         self.plan = Some(plan);
-    }
-}
-
-impl Editor {
-    /// Each declared param of `key`, with its event sources' ramps as the
-    /// running unit last published them (for [`fork`](Self::fork)).
-    pub(crate) fn param_ramps(&self, key: NodeKey) -> Vec<(ParamIn, Vec<(ParamFrom, Ramp)>)> {
-        let (Some(tap), Some(shape)) = (self.param_taps.get(&key), self.shapes.get(&key)) else {
-            return Vec::new();
-        };
-        if tap.port_count() != shape.params.len() {
-            // The key holds a pending unit of another shape: nothing of the
-            // running one's applies to it.
-            return Vec::new();
-        }
-        shape
-            .params
-            .as_slice()
-            .iter()
-            .enumerate()
-            .map(|(k, &param)| {
-                let ramps = tap
-                    .read(k)
-                    .into_iter()
-                    .map(|(from, r)| (ParamFrom::Events(from), r))
-                    .collect();
-                (ParamIn { node: key, param }, ramps)
-            })
-            .collect()
-    }
-
-    /// Start the next commit's units' param ports from `seeds` (a fork's
-    /// first commit).
-    pub(crate) fn seed_params(&mut self, seeds: BTreeMap<ParamIn, Vec<(ParamFrom, Ramp)>>) {
-        self.param_seeds = seeds;
     }
 }
 

@@ -41,8 +41,7 @@ use std::sync::Arc;
 use tutti_core::{AudioNode, Compensation, CrossfadeCurve, Samples, Tail};
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
-    ParamFrom, ParamIn, ParamMod, ParamRange, ParamSet, ParamShaping, Prepare, Transport,
-    MAX_PARAM_SOURCES,
+    ParamIn, ParamMod, ParamRange, ParamSet, Prepare, Transport,
 };
 use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
 #[cfg(feature = "plugin")]
@@ -595,8 +594,8 @@ impl GraphRuntime {
 
     /// Write `param` through `node`'s [`ParamSet`]: the cell the node reads
     /// at the start of its next block (see "`set_param` lands on the next
-    /// block" in the module docs), and the authored value a fork starts
-    /// from. A node with no set, or no such param, takes nothing.
+    /// block" in the module docs), and the value a fork taken after it
+    /// starts from. A node with no set, or no such param, takes nothing.
     pub(crate) fn set_param(&mut self, node: AudioNode, param: UnitParam, value: f32) {
         if let Some(params) = self.nodes.get(&key(node)).and_then(|e| e.params.as_ref()) {
             params.set(param, value);
@@ -606,7 +605,7 @@ impl GraphRuntime {
     /// A live duplicate of the whole graph that shares no state with it
     /// (`Editor::fork`, `ForkMode::Live`), as an audio side to render. Each
     /// node is forked from its own fork source: a [`ParamNode`](tutti_graph::ParamNode)
-    /// from its set's authored values.
+    /// from the values its set's cells hold.
     #[cfg(test)]
     pub(crate) fn fork(&self) -> Result<AudioSide, tutti_graph::ForkError> {
         let (editor, exec) = self.editor.fork(
@@ -684,21 +683,20 @@ impl GraphRuntime {
             .is_some_and(|s| s.params.index_of(param).is_some())
     }
 
-    /// Drive `node`'s `param` from exactly `sources` (each a node's output 0,
-    /// shaped), clamped to `range`: replaces whatever modulated it. Refused,
-    /// touching nothing, with the error the commit would otherwise fail on
-    /// — every commit after it, since the same spec fails the same way — for
-    /// a NaN bound, more than `MAX_PARAM_SOURCES` sources, or one node listed
-    /// twice (which the spec could only keep once).
+    /// Drive `node`'s `param` from `source`'s event output 0 (`None`: from
+    /// nothing, so it reads its base), clamped to `range`: replaces whatever
+    /// drove it. Refused, touching nothing, for a NaN bound, with the error
+    /// the commit would otherwise fail on (every commit after it, since the
+    /// same spec fails the same way).
     ///
-    /// When the sources are the ones the graph already holds, only the range
+    /// When the source is the one the graph already holds, only the range
     /// moves: that goes through `Editor::set_param_range`, a store the
     /// running node reads on its next block, and marks nothing for commit.
     pub(crate) fn set_param_mod(
         &mut self,
         node: AudioNode,
         param: UnitParam,
-        sources: &[(AudioNode, ParamShaping)],
+        source: Option<AudioNode>,
         range: ParamRange,
     ) -> Result<(), GraphInvalid> {
         let at = ParamIn {
@@ -708,34 +706,12 @@ impl GraphRuntime {
         if range.min.is_nan() || range.max.is_nan() {
             return Err(GraphInvalid::BadParamRange { at, range });
         }
-        if sources.len() > MAX_PARAM_SOURCES {
-            return Err(GraphInvalid::TooManyParamSources {
-                at,
-                count: sources.len(),
-            });
-        }
-        if sources
-            .iter()
-            .enumerate()
-            .any(|(i, (n, _))| sources[..i].iter().any(|(m, _)| m == n))
-        {
-            return Err(GraphInvalid::UnsortedParamSources { at });
-        }
-        // The entry as the spec would hold it, built the spec's own way.
-        let mut want = tutti_graph::GraphSpec::default();
-        for (from, shaping) in sources {
-            want.connect_param(
-                at,
-                ParamFrom::Audio(OutPort {
-                    node: key(*from),
-                    port: 0,
-                }),
-                shaping.clone(),
-            );
-        }
-        let want = want.params.remove(&at).unwrap_or_default().sources;
-        let held = self.editor.spec().params.get(&at).map(|m| &m.sources);
-        if !want.is_empty() && held == Some(&want) {
+        let want = source.map(|from| EventOut {
+            node: key(from),
+            port: 0,
+        });
+        let held = self.editor.spec().params.get(&at).map(|m| m.source);
+        if want.is_some() && held == Some(want) {
             // A range move alone: a control, not a rewire.
             return self.editor.set_param_range(at, range);
         }
@@ -745,7 +721,7 @@ impl GraphRuntime {
             at,
             ParamMod {
                 range,
-                sources: want,
+                source: want,
             },
         );
         self.edited = true;
@@ -1184,8 +1160,8 @@ mod tests {
     /// A source whose one output is its `Drive` param — the shape of every
     /// node whose param a host drives (`DistortionNode`'s drive, a filter's
     /// cutoff): its drive a `Param` cell addressed by a `ParamSet`, inserted
-    /// through `param_parts` (so its fork starts from the set's authored
-    /// values) and spawned as a `GraphNode` with its params.
+    /// through `param_parts` (so its fork starts from the values its cells
+    /// hold) and spawned as a `GraphNode` with its params.
     #[derive(Clone)]
     struct Knob {
         drive: tutti_types::Param<Drive>,
@@ -1254,9 +1230,6 @@ mod tests {
     }
 
     impl crate::graph::GraphNode for Knob {
-        fn captured(&self) -> crate::graph::CapturedControls {
-            crate::graph::CapturedControls::for_params(&tutti_graph::ParamNode::param_set(self))
-        }
         fn params(controls: &ParamSet) -> Option<ParamSet> {
             Some(controls.clone())
         }
@@ -1264,8 +1237,8 @@ mod tests {
 
     /// **Every param write path reaches a fork of a node** — the constraint
     /// export by `Editor::fork` rests on — through the node's `ParamSet`:
-    /// `AudioParam` and `set_param` write the live cell and the authored
-    /// value, and a fork starts from the authored values. A modulated param
+    /// `AudioParam` and `set_param` write the node's cell, and a fork starts
+    /// from the values its cells hold. A modulated param
     /// is written the same way (its cell is its lane's knob: one writer,
     /// doc 014 §8.2), and its lane is a graph node, so the fork renders the
     /// same modulation as live (M3).
@@ -1381,11 +1354,11 @@ mod tests {
     /// Mutations (run):
     /// - `apply_crossfade` dropping the unit on `Busy` instead of parking it →
     ///   the old knob plays on, and the final value is 1, not 3;
-    /// - binding the captured controls on `Busy` (and parking the request
-    ///   without them) → while the crossfade waits the entity no longer
-    ///   steers the playing unit (its handle is the pending unit's, then
-    ///   gone), and the seeding fails (under `modulation`, which is what
-    ///   captures a handle).
+    /// - the swap not binding the incoming unit's `NodeControls` once it
+    ///   lands (`Swap::swap` dropping them) → the entity no longer steers
+    ///   the incoming unit, and this fails (re-run in doc 014 PR 5, where
+    ///   the controls became a plain `NodeControls<ParamSet>`, no longer
+    ///   captured under `modulation`).
     #[test]
     fn a_crossfade_during_a_re_prepare_lands_after_it() {
         let mut graph = AudioGraphRes::headless(0, 1);
@@ -1439,10 +1412,8 @@ mod tests {
         app.update();
         // Still the old unit's controls: seed its cell through the entity's
         // handle, and the resumed old knob plays the seed.
-        #[cfg(feature = "modulation")]
         seed(&app, knob, 7.0);
         side.tick(&[], &mut out);
-        #[cfg(feature = "modulation")]
         assert_eq!(out[0], 7.0, "the entity still steers the playing unit");
 
         app.update();
@@ -1457,12 +1428,9 @@ mod tests {
         }
         assert_eq!(out[0], 3.0, "the incoming knob is what sounds");
         // Its controls are the entity's now.
-        #[cfg(feature = "modulation")]
-        {
-            seed(&app, knob, 8.0);
-            side.tick(&[], &mut out);
-            assert_eq!(out[0], 8.0, "the entity steers the incoming unit");
-        }
+        seed(&app, knob, 8.0);
+        side.tick(&[], &mut out);
+        assert_eq!(out[0], 8.0, "the entity steers the incoming unit");
     }
 
     /// A node that cannot run above 90 kHz: its `prepare` panics there,
@@ -1492,8 +1460,9 @@ mod tests {
     /// as they were — the incoming unit's are not bound to a node it never
     /// reached.
     ///
-    /// Mutation (run): `GraphRuntime::replace` answering `Busy` on a poisoned
-    /// graph → the request is parked for good, and this fails.
+    /// Mutation (run, re-run in doc 014 PR 5): `GraphRuntime::replace`
+    /// answering `Busy` on a poisoned graph → the request is parked for
+    /// good, and this fails.
     #[test]
     fn a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls() {
         let mut graph = AudioGraphRes::headless(0, 1);
@@ -1519,7 +1488,6 @@ mod tests {
         app.world_mut()
             .resource_mut::<AudioGraphRes>()
             .set_sample_rate(tutti_core::SampleRate(96_000.0));
-        #[cfg(feature = "modulation")]
         let before = handle_ptr(&app, knob);
 
         crate::graph::crossfade_audio_node(&mut app.world_mut().commands(), knob, Knob::at(3.0));
@@ -1531,37 +1499,27 @@ mod tests {
                 .is_empty(),
             "a poisoned graph never takes it, so nothing waits"
         );
-        #[cfg(feature = "modulation")]
         assert_eq!(handle_ptr(&app, knob), before, "the controls stayed put");
     }
 
-    /// The address of `entity`'s captured params, to tell one capture from
-    /// another.
-    #[cfg(feature = "modulation")]
+    /// The address of `entity`'s `Drive` cell, through the controls bound
+    /// to it, to tell one node's controls from another's.
     fn handle_ptr(app: &App, entity: bevy_ecs::entity::Entity) -> *const () {
-        let handle = app
+        let controls = app
             .world()
-            .get::<crate::modulation::legacy::ModParamsHandle>(entity)
-            .expect("a knob's params are captured");
-        std::ptr::from_ref(handle.params()).cast()
+            .get::<crate::graph::NodeControls<ParamSet>>(entity)
+            .expect("a knob's controls are bound");
+        let cell = controls.0.cell(UnitParam::Drive).expect("a knob has Drive");
+        std::sync::Arc::as_ptr(&cell).cast()
     }
 
-    /// Seed `entity`'s `Drive` through its captured modulation handle: an
-    /// `AtomicTarget` writes its base into the unit's cell as it is built.
-    #[cfg(feature = "modulation")]
+    /// Write `entity`'s `Drive` through the controls bound to it: the cell
+    /// of whichever node they came from.
     fn seed(app: &App, entity: bevy_ecs::entity::Entity, value: f32) {
-        let handle = app
+        let controls = app
             .world()
-            .get::<crate::modulation::legacy::ModParamsHandle>(entity)
-            .expect("a knob's params are captured");
-        handle
-            .params()
-            .mod_target(
-                tutti_types::ParamAddr::Unit(UnitParam::Drive),
-                value,
-                0.0,
-                10.0,
-            )
-            .expect("a knob answers on Drive");
+            .get::<crate::graph::NodeControls<ParamSet>>(entity)
+            .expect("a knob's controls are bound");
+        assert!(controls.0.set(UnitParam::Drive, value), "a knob has Drive");
     }
 }

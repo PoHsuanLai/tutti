@@ -3,8 +3,9 @@
 //! on an event output (a plugin that declared `Features::MIDI_OUT`), each
 //! event on the frame the plugin gave it.
 //!
-//! **Parameters** arrive on the same event input: a ramp (a
-//! [`PluginAutomation`] node's) or a curve segment, addressed by VST2 index.
+//! **Parameters** arrive on the same event input: a ramp or a curve segment
+//! (a foreign control lane's, `ControlLaneNode::for_foreign`), addressed by
+//! VST2 index.
 //! They go through the out-of-process node's delivery (`host::node`'s
 //! `param_delivery` and `param_input`): a slot per parameter declared at
 //! load, **changes only** against the value last delivered to the instance,
@@ -36,9 +37,7 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
 
 use super::client::{drive_f32, InProcessVst2Client};
-use crate::host::node::{
-    param_input, DeliveryCounters, ParamDeliveryStats, PluginAutomation, PluginMeter, TimedParam,
-};
+use crate::host::node::{param_input, DeliveryCounters, ParamDeliveryStats, PluginMeter};
 use crate::protocol::Features;
 
 /// The most channels a block hands the plugin (the stack tables `process`
@@ -274,14 +273,6 @@ impl InProcessVst2Controls {
     pub fn param_delivery(&self) -> ParamDeliveryStats {
         self.delivery.snapshot()
     }
-
-    /// A [`PluginAutomation`] node for this plugin: wire its event output to
-    /// the node's event input. Addresses are VST2 indices
-    /// ([`ParamAddress::Index`](crate::handles::ParamAddress::Index)); an
-    /// opaque one is refused.
-    pub fn automation(&self, params: impl IntoIterator<Item = TimedParam>) -> PluginAutomation {
-        PluginAutomation::new(params, true)
-    }
 }
 
 impl InProcessVst2Client {
@@ -298,12 +289,6 @@ impl InProcessVst2Client {
     /// (see [`InProcessVst2Controls::param_delivery`]).
     pub fn param_delivery(&self) -> ParamDeliveryStats {
         self.params.counters().snapshot()
-    }
-
-    /// A [`PluginAutomation`] node for this plugin (see
-    /// [`InProcessVst2Controls::automation`]).
-    pub fn automation(&self, params: impl IntoIterator<Item = TimedParam>) -> PluginAutomation {
-        PluginAutomation::new(params, true)
     }
 }
 

@@ -1276,8 +1276,8 @@ mod synths {
     /// **An `AudioParam` on a spawned synth reaches it and its fork.** The
     /// synth is a `ParamNode` registered as a graph node, so an
     /// `AudioParam<Amplitude, Volume>` on its entity writes its master-volume
-    /// cell (the live synth reads it on its next block) and the authored
-    /// value an export's fork starts from: the exported note at a quarter
+    /// cell, which the live synth reads on its next block and an export's
+    /// fork starts from: the exported note at a quarter
     /// volume peaks at a quarter of the note at unity. Before the synth's
     /// params were a `ParamSet` (its controls were `()`), an `AudioParam` on
     /// the synth node reached nothing.

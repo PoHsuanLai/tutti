@@ -59,21 +59,18 @@
 //!   differently with a hint than without one diverges, which is the
 //!   point.
 //!
-//! - **Modulated params** (see the `param` module docs, `src/param.rs`):
+//! - **Driven params** (see the `param` module docs, `src/param.rs`):
 //!   each declared param's state is kept per [`ParamIn`], dropped when its
 //!   unit is swapped (a crossfade keeps it), and on a re-prepare. A port
-//!   whose source *list* differs from the one it last ran with starts its
-//!   declick — compared as values here, where the executor compares the
-//!   compiler's signatures — unless the port has no state yet (its unit's
-//!   first block). Each source's state is kept in a map by [`ParamFrom`],
-//!   where the executor re-keys an array. Ramps and curve segments are
-//!   evaluated from their start frame rather than stepped (a segment's
-//!   shape, `segment_value`, is shared with the executor, as the LUT is). A param source's new or longer delay
-//!   line is filled with the source's last value. Only the LUT lookup is
-//!   shared with the executor. A port's range is the graph's, unless
-//!   [`set_param_range`](Reference::set_param_range) moved it since the last
-//!   [`set_graph`](Reference::set_graph) — `Editor::set_param_range`'s
-//!   contract, taking effect on the next block, without a new graph.
+//!   whose event source differs from the one it last ran with starts its
+//!   declick and its new source from rest, unless the port has no state yet
+//!   (its unit's first block). Ramps and curve segments are evaluated from
+//!   their start frame rather than stepped (a segment's shape,
+//!   `segment_value`, is shared with the executor). A port's range is the
+//!   graph's, unless [`set_param_range`](Reference::set_param_range) moved
+//!   it since the last [`set_graph`](Reference::set_graph) —
+//!   `Editor::set_param_range`'s contract, taking effect on the next block,
+//!   without a new graph.
 //!
 //! [`FeedbackKey`]: crate::FeedbackKey
 
@@ -91,7 +88,7 @@ use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, Node, Prepare, SilenceMask, Status, Transport,
     TransportChanges,
 };
-use crate::param::{ParamFrom, ParamIn, ParamInput, ParamRange, ParamSource, PARAM_DECLICK};
+use crate::param::{ParamIn, ParamInput, ParamRange, PARAM_DECLICK};
 use crate::plan::DelayKey;
 use crate::play::PlayClock;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
@@ -101,26 +98,18 @@ use tutti_types::PlayReading;
 /// One param port's state, as the reference keeps it.
 #[derive(Default)]
 struct RefParam {
-    /// The sources it last ran with.
-    sources: Vec<ParamSource>,
+    /// The event source it last ran with.
+    source: Option<EventOut>,
     modulated: bool,
     last: f32,
     last_base: f32,
     hold: f32,
     /// Frames of the declick left to run.
     fading: usize,
-    /// Per source still listed: its ramp and last raw value.
-    srcs: BTreeMap<ParamFrom, RefSrc>,
+    /// Its event source's ramp.
+    ramp: RefRamp,
     /// Frames this port has run, to place its ramps.
     clock: u64,
-}
-
-/// One param source's state in the reference.
-#[derive(Default)]
-struct RefSrc {
-    ramp: RefRamp,
-    /// Its raw value on the last frame it ran.
-    last_raw: f32,
 }
 
 /// The move an event source is on: where it started, where it goes, and
@@ -606,8 +595,8 @@ impl Reference {
             }
             for (at, m) in g.params() {
                 if at.node == k {
-                    for s in &m.sources {
-                        let n = s.from.node();
+                    if let Some(from) = m.source {
+                        let n = from.node;
                         best = best.max(arrive(n, g, lat, memo) + lat(n));
                     }
                 }
@@ -653,17 +642,13 @@ impl Reference {
             }
         }
         for (&at, m) in graph.params() {
-            for s in &m.sources {
+            if let Some(from) = m.source {
                 let d = arrival[&at.node]
                     .samples()
-                    .checked_sub(departure(s.from.node()).samples())
+                    .checked_sub(departure(from.node).samples())
                     .unwrap_or_default();
                 if !d.is_zero() {
-                    let key = match s.from {
-                        ParamFrom::Audio(from) => DelayKey::ParamAudio { at, from },
-                        ParamFrom::Events(from) => DelayKey::ParamEvent { at, from },
-                    };
-                    delays.insert(key, d);
+                    delays.insert(DelayKey::ParamEvent { at, from }, d);
                 }
             }
         }
@@ -755,25 +740,15 @@ impl Reference {
                 });
                 f.len = d.get() as u64;
             } else {
-                // A param source's line holds the source's last value where
-                // it appears or grows; every other line, silence.
-                let pad = match key {
-                    DelayKey::ParamAudio { at, from } => self
-                        .params
-                        .get(&at)
-                        .and_then(|p| p.srcs.get(&ParamFrom::Audio(from)))
-                        .map_or(0.0, |s| s.last_raw),
-                    _ => 0.0,
-                };
                 let line = self
                     .audio_lines
                     .entry(key)
-                    .or_insert_with(|| VecDeque::from(vec![pad; d.get()]));
+                    .or_insert_with(|| VecDeque::from(vec![0.0; d.get()]));
                 while line.len() > d.get() {
                     line.pop_front();
                 }
                 while line.len() < d.get() {
-                    line.push_front(pad);
+                    line.push_front(0.0);
                 }
             }
         }
@@ -948,7 +923,7 @@ impl Reference {
             }
             for (at, m) in graph.params() {
                 if at.node == k {
-                    v.extend(m.sources.iter().map(|s| s.from.node()));
+                    v.extend(m.source.map(|s| s.node));
                 }
             }
             v
@@ -1109,7 +1084,7 @@ impl Reference {
             ev_ins.push(all);
         }
 
-        let param_values = self.run_params(key, graph, frames, audio, events);
+        let param_values = self.run_params(key, graph, frames, events);
         let param_table: Vec<ParamInput<'_>> = param_values
             .iter()
             .map(|v| match v {
@@ -1242,7 +1217,6 @@ impl Reference {
         key: NodeKey,
         graph: &ValidGraph,
         frames: usize,
-        audio: &BTreeMap<OutPort, Vec<f32>>,
         events: &BTreeMap<EventOut, Vec<Event>>,
     ) -> Vec<Option<Vec<f32>>> {
         let unit = &self.units[&key].1;
@@ -1256,53 +1230,37 @@ impl Reference {
                 out.push(None);
                 continue;
             };
-            let (range, sources) = graph
+            let (range, source) = graph
                 .params()
                 .get(&at)
-                .map(|m| (m.range, m.sources.clone()))
+                .map(|m| (m.range, m.source))
                 .unwrap_or_default();
             let range = self.ranges.get(&at).copied().unwrap_or(range);
-            // Each source's raw values this block, through its PDC delay.
-            let mut raw: Vec<Vec<f32>> = Vec::new();
-            let mut ramp_events: Vec<Vec<Event>> = Vec::new();
-            for s in &sources {
-                match s.from {
-                    ParamFrom::Audio(from) => {
-                        let mut buf = audio[&from].clone();
-                        if let Some(line) =
-                            self.audio_lines.get_mut(&DelayKey::ParamAudio { at, from })
-                        {
-                            delay_line(line, &mut buf);
-                        }
-                        raw.push(buf);
-                        ramp_events.push(Vec::new());
-                    }
-                    ParamFrom::Events(from) => {
-                        let src = events[&from].clone();
-                        let evs = match self.event_lines.get_mut(&DelayKey::ParamEvent { at, from })
-                        {
-                            Some(f) => fifo_run(f, &src, frames),
-                            None => src,
-                        };
-                        raw.push(Vec::new());
-                        ramp_events.push(evs);
+            // The source's events this block, through its PDC delay.
+            let evs: Vec<Event> = match source {
+                Some(from) => {
+                    let src = events[&from].clone();
+                    match self.event_lines.get_mut(&DelayKey::ParamEvent { at, from }) {
+                        Some(f) => fifo_run(f, &src, frames),
+                        None => src,
                     }
                 }
-            }
+                None => Vec::new(),
+            };
 
             let fresh = !self.params.contains_key(&at);
             let st = self.params.entry(at).or_default();
-            if fresh || st.sources != sources {
-                if !fresh {
-                    st.hold = if st.modulated { st.last } else { b1 };
-                    st.fading = decl;
-                }
-                st.sources = sources.clone();
-                st.srcs.retain(|f, _| sources.iter().any(|s| s.from == *f));
+            if fresh {
+                st.source = source;
+            } else if st.source != source {
+                st.hold = if st.modulated { st.last } else { b1 };
+                st.fading = decl;
+                st.source = source;
+                st.ramp = RefRamp::default();
             }
             let start = st.clock;
             st.clock += frames as u64;
-            if sources.is_empty() && st.fading == 0 {
+            if source.is_none() && st.fading == 0 {
                 st.modulated = false;
                 out.push(None);
                 continue;
@@ -1317,113 +1275,88 @@ impl Reference {
                     from + (b1 - from) * ((i + 1) as f32 / frames as f32)
                 }
             };
-            // Event sources: each ramp's value at every frame, the base
-            // before its first event.
-            for (j, s) in sources.iter().enumerate() {
-                let src = st.srcs.entry(s.from).or_default();
-                if let ParamFrom::Events(_) = s.from {
-                    let mut vals = vec![0.0f32; frames];
-                    let mut evs = ramp_events[j].iter().peekable();
-                    for (i, v) in vals.iter_mut().enumerate() {
-                        let now = start + i as u64;
-                        let want = tutti_types::ParamAddr::Unit(param);
-                        while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
-                            match e.kind {
-                                EventKind::Ramp(r) if r.addr() == want => {
-                                    // A first ramp starts from the base.
-                                    let cur = if src.ramp.started {
-                                        src.ramp.value
-                                    } else {
-                                        base(i)
-                                    };
-                                    src.ramp = RefRamp {
-                                        from: cur,
-                                        target: r.raw_target(),
-                                        at: now,
-                                        len: r.duration().get() as u64,
-                                        curve: None,
-                                        value: cur,
-                                        started: true,
-                                    };
-                                }
-                                EventKind::Segment(s) if s.addr() == want => {
-                                    let (from, to, position, length) = s.raw();
-                                    src.ramp = RefRamp {
-                                        from,
-                                        target: to,
-                                        at: now,
-                                        len: 0,
-                                        curve: Some((position, length, s.shape())),
-                                        value: src.ramp.value,
-                                        started: true,
-                                    };
-                                }
-                                // Another param's, MIDI, a chord, or a resync: a port re-sends
-                                // nothing.
-                                EventKind::Ramp(_)
-                                | EventKind::Segment(_)
-                                | EventKind::Midi(_)
-                                | EventKind::Harmony(_)
-                                | EventKind::Resync => {}
-                            }
-                        }
-                        let r = &src.ramp;
-                        let value = if !r.started {
-                            base(i)
-                        } else if now < r.at {
-                            r.value
-                        } else if let Some((position, length, shape)) = r.curve {
-                            // Frames since its event, `0` on the event's own.
-                            let j = u32::try_from(now - r.at).unwrap_or(u32::MAX);
-                            crate::event::segment_value(
-                                r.from, r.target, shape, position, length, j,
-                            )
-                        } else {
-                            let into = now - r.at + 1;
-                            if into >= r.len {
-                                r.target
-                            } else {
-                                r.from + (r.target - r.from) * (into as f32 / r.len as f32)
-                            }
-                        };
-                        src.ramp.value = value;
-                        *v = value;
-                    }
-                    raw[j] = vals;
-                }
-                src.last_raw = raw[j][frames - 1];
-            }
             let (lo, hi) = if range.min <= range.max {
                 (range.min, range.max)
             } else {
                 (range.max, range.min)
             };
-            // The event source, if any (one at most: `validate`).
-            let held_by = sources
-                .iter()
-                .position(|s| matches!(s.from, ParamFrom::Events(_)));
-            let mut vals = Vec::with_capacity(frames);
-            for i in 0..frames {
-                let mut v = if sources.is_empty() {
+            // The event source's value at every frame, the base before its
+            // first event; it replaces the base, clamped.
+            let mut vals = vec![0.0f32; frames];
+            let mut evs = evs.iter().peekable();
+            for (i, v) in vals.iter_mut().enumerate() {
+                if source.is_none() {
+                    *v = base(i);
+                    continue;
+                }
+                let now = start + i as u64;
+                let want = tutti_types::ParamAddr::Unit(param);
+                while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
+                    match e.kind {
+                        EventKind::Ramp(r) if r.addr() == want => {
+                            // A first ramp starts from the base.
+                            let cur = if st.ramp.started {
+                                st.ramp.value
+                            } else {
+                                base(i)
+                            };
+                            st.ramp = RefRamp {
+                                from: cur,
+                                target: r.raw_target(),
+                                at: now,
+                                len: r.duration().get() as u64,
+                                curve: None,
+                                value: cur,
+                                started: true,
+                            };
+                        }
+                        EventKind::Segment(s) if s.addr() == want => {
+                            let (from, to, position, length) = s.raw();
+                            st.ramp = RefRamp {
+                                from,
+                                target: to,
+                                at: now,
+                                len: 0,
+                                curve: Some((position, length, s.shape())),
+                                value: st.ramp.value,
+                                started: true,
+                            };
+                        }
+                        // Another param's, MIDI, a chord, or a resync: a port re-sends
+                        // nothing.
+                        EventKind::Ramp(_)
+                        | EventKind::Segment(_)
+                        | EventKind::Midi(_)
+                        | EventKind::Harmony(_)
+                        | EventKind::Resync => {}
+                    }
+                }
+                let r = &st.ramp;
+                let value = if !r.started {
                     base(i)
+                } else if now < r.at {
+                    r.value
+                } else if let Some((position, length, shape)) = r.curve {
+                    // Frames since its event, `0` on the event's own.
+                    let j = u32::try_from(now - r.at).unwrap_or(u32::MAX);
+                    crate::event::segment_value(r.from, r.target, shape, position, length, j)
                 } else {
-                    // The event source's value replaces the base; audio
-                    // sources are offsets on whichever holds.
-                    let held = held_by.map_or_else(|| base(i), |j| raw[j][i]);
-                    let sum: f32 = sources
-                        .iter()
-                        .zip(&raw)
-                        .filter(|(s, _)| matches!(s.from, ParamFrom::Audio(_)))
-                        .map(|(s, r)| s.shaping.apply(r[i]))
-                        .sum();
-                    (held + sum).clamp(lo, hi)
+                    let into = now - r.at + 1;
+                    if into >= r.len {
+                        r.target
+                    } else {
+                        r.from + (r.target - r.from) * (into as f32 / r.len as f32)
+                    }
                 };
+                st.ramp.value = value;
+                *v = value.clamp(lo, hi);
+            }
+            for (i, v) in vals.iter_mut().enumerate() {
                 if st.fading > 0 && i < st.fading {
                     let j = decl - st.fading + i;
                     let g = 1.0 - (j + 1) as f32 / decl as f32;
-                    v += (st.hold - v) * g;
+                    *v += (st.hold - *v) * g;
                 }
-                vals.push(v);
             }
             st.fading = st.fading.saturating_sub(frames);
             st.last = vals[frames - 1];

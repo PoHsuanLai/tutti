@@ -21,8 +21,7 @@ use tutti_types::latency::{Feed, LatencyGraph};
 use tutti_types::{NodeKey, Samples, Topology};
 
 use crate::node::Resolution;
-use crate::param::MAX_PARAM_SOURCES;
-use crate::param::{ParamFrom, ParamIn, ParamMod, ParamRange, ParamShaping, ParamSource};
+use crate::param::{ParamIn, ParamMod, ParamRange};
 
 /// An event **input** port of a node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -132,10 +131,10 @@ pub struct GraphSpec {
     /// finely, keyed `(sink, source)` — see
     /// [`require_resolution`](Self::require_resolution).
     pub required_resolution: BTreeMap<(EventIn, EventOut), Resolution>,
-    /// Modulated params, keyed on the param port (see
-    /// [`connect_param`](Self::connect_param)): each one's range and
-    /// sources, in source order. A port with no entry, or an entry with no
-    /// sources, reads its base.
+    /// Driven params, keyed on the param port (see
+    /// [`connect_param`](Self::connect_param)): each one's range and event
+    /// source. A port with no entry, or an entry with no source, reads its
+    /// base.
     pub params: BTreeMap<ParamIn, ParamMod>,
 }
 
@@ -204,115 +203,104 @@ impl GraphSpec {
         removed
     }
 
-    /// Drives param port `at` from `from` as well, shaped by `shaping`: an
-    /// audio source is one more offset in its sum, an event source what the
-    /// offsets sit on in place of the base. Kept in source order
-    /// ([`ParamFrom`]'s `Ord`), so two specs with the same wiring compare
-    /// equal whatever order it was made in. A source already listed at `at`
-    /// has its shaping replaced.
-    ///
-    /// A port takes **at most one event source, unshaped**
-    /// ([`ParamShaping::Identity`]); [`validate`](Self::validate) refuses a
-    /// second ([`GraphInvalid::TooManyEventParamSources`]) or a shaped one
-    /// ([`GraphInvalid::ShapedEventParamSource`]).
+    /// Drives param port `at` from event output `from`, in place of any
+    /// source it had (which is returned). A port has at most one event
+    /// source: its value is the param's value, and summing two is a node's
+    /// job (a control lane, doc 014).
     ///
     /// The port must be one its node declares
     /// ([`Shape::params`](crate::Shape::params)), or `compile` refuses it
     /// ([`CompileError::UnknownParam`](crate::CompileError::UnknownParam)).
     /// Until a range is set ([`set_param_range`](Self::set_param_range)) the
-    /// sum is not clamped.
+    /// value is not clamped.
     ///
-    /// # How a modulated param is computed
+    /// # How a driven param is computed
     ///
-    /// Each modulated param becomes one fused step of its node's op,
+    /// Each driven param becomes one fused step of its node's op,
     /// computing, per frame:
     ///
     /// ```text
-    ///   value[i] = clamp(held[i] + Σ shape_j(audio_j[i]), range)
+    ///   value[i] = clamp(held[i], range)
     ///   held[i]  = the event source's value, from its first event on
-    ///            = base_ramp[i], before that, or with no event source
+    ///            = base_ramp[i], before that
     /// ```
     ///
     /// - **The base** is the node's own control — a `Param<U>` it hands out in
     ///   its `Controls` — read once per block through
     ///   [`Node::param_base`](crate::Node::param_base) and ramped linearly
     ///   across the block, landing exactly on the new value at its last frame,
-    ///   so a fader move under modulation does not zipper.
-    /// - **An event source replaces the base** (doc 014 §5.6). Its
+    ///   so a fader move does not zipper.
+    /// - **The event source replaces the base** (doc 014 §5.6). Its
     ///   [`ParamRamp`](crate::ParamRamp)s and
-    ///   [`ParamSegment`](crate::ParamSegment)s ([`ParamFrom::Events`]) are
+    ///   [`ParamSegment`](crate::ParamSegment)s addressed to the param are
     ///   the param's own value, sample-accurate, from the source's first
     ///   event on (a first ramp starts from the base at its frame); before
     ///   it, the port reads its base. Automation replaces the knob, as in
-    ///   every DAW. A second event source, or a shaped one, is refused.
-    /// - **The offsets** come from audio outputs ([`ParamFrom::Audio`], one
-    ///   value per frame), each through its own [`ParamShaping`]: the
-    ///   identity, or a [`ShapeLut`](crate::ShapeLut) (the depth · polarity ·
-    ///   curve table `tutti_mod::shape` bakes). They are summed in source
-    ///   order onto the held value and clamped once to the port's
-    ///   [`ParamRange`].
-    /// - **An unconnected param resolves to its base, never to 0.** A port with
+    ///   every DAW. Other events are ignored.
+    /// - **An undriven param resolves to its base, never to 0.** A port with
     ///   no source this block reads
     ///   [`ParamInput::Base`](crate::ParamInput::Base), and the node uses its
-    ///   own control, exactly as if nothing could modulate it: the fast path
+    ///   own control, exactly as if nothing could drive it: the fast path
     ///   costs one branch, and nothing is copied. A port can be connected and
     ///   disconnected by any commit.
-    /// - **Connecting or disconnecting is declicked.** When a port's sources
-    ///   change (a new source, one gone, a new shaping), its output crossfades
-    ///   from where it was — the last value it delivered, or the base — to the
-    ///   new value over [`PARAM_DECLICK`](crate::PARAM_DECLICK) frames. Nothing
-    ///   else is smoothed: a step in a modulator lands on its frame (the
-    ///   sample-accuracy contract). A unit's **first** block is not a change: a
-    ///   unit placed by a commit (an insert, a hard replace, a fork, a
-    ///   re-prepare's resume) starts at its modulated value, as its audio
-    ///   starts at its first frame.
-    /// - **A source's state is the source's, not its slot's.** An event
-    ///   source's ramp (the value it holds, and a ramp under way) is kept by
-    ///   [`ParamFrom`], so adding or removing *another* source, or reshaping
-    ///   this one, does not reset it. A PDC delay that appears on an audio
-    ///   source (the node's arrival moved) starts full of the source's last
-    ///   value, and one that grows is padded with it, so the port holds rather
-    ///   than dropping to 0 for the delay's length.
+    /// - **Connecting or disconnecting is declicked.** When a port's source
+    ///   changes (a new one, or none), its output crossfades from where it
+    ///   was — the last value it delivered, or the base — to the new value
+    ///   over [`PARAM_DECLICK`](crate::PARAM_DECLICK) frames. Nothing else
+    ///   is smoothed: a step in a source lands on its frame (the
+    ///   sample-accuracy contract). A unit's **first** block is not a change:
+    ///   a unit placed by a commit (an insert, a hard replace, a fork, a
+    ///   re-prepare's resume) starts at its driven value, as its audio starts
+    ///   at its first frame.
+    /// - **A source's state is the source's, not its slot's.** The event
+    ///   source's ramp (the value it holds, and a ramp under way) is kept
+    ///   while the source stays, across commits that move its slot; a new
+    ///   source starts at rest, reading the base until its first event (a
+    ///   steady source re-wired to the port must send again: a control
+    ///   lane's `LaneControls::resync`).
+    /// - **A fresh unit hears nothing held.** A unit placed by a commit (a
+    ///   fork's included) starts with no ramp, so a source must send its
+    ///   current value on its first block for the port to read it (doc 014
+    ///   §10: a control lane does, having nothing in flight; a hand-wired
+    ///   source answers [`EventKind::Resync`](crate::EventKind::Resync) or
+    ///   drives the knob instead).
     /// - **A crossfade's base.** A [`replace`](crate::Editor::replace) with a
-    ///   fade keeps the key's param state, so both units hear one modulation;
+    ///   fade keeps the key's param state, so both units hear one source;
     ///   the base is the incoming unit's control, ramped over one block like
     ///   any control move, not over the fade. Ramping it over the fade would
     ///   hold the incoming unit off its own control for the fade's length, and
     ///   the audio crossfade already covers the swap.
     /// - **PDC.** A param source is aligned to the node's arrival like any of
     ///   its inputs: a source that arrives earlier is delayed
-    ///   ([`DelayKey::ParamAudio`](crate::DelayKey::ParamAudio),
-    ///   [`DelayKey::ParamEvent`](crate::DelayKey::ParamEvent)), and a later
+    ///   ([`DelayKey::ParamEvent`](crate::DelayKey::ParamEvent)), and a later
     ///   one raises the node's arrival.
-    pub fn connect_param(&mut self, at: ParamIn, from: ParamFrom, shaping: ParamShaping) {
-        let m = self.params.entry(at).or_default();
-        match m.sources.binary_search_by(|s| s.from.cmp(&from)) {
-            Ok(i) => m.sources[i].shaping = shaping,
-            Err(i) => m.sources.insert(i, ParamSource { from, shaping }),
-        }
+    pub fn connect_param(&mut self, at: ParamIn, from: EventOut) -> Option<EventOut> {
+        self.params.entry(at).or_default().source.replace(from)
     }
 
-    /// Stops driving param port `at` from `from`. Returns whether it was a
-    /// source. The port keeps its range; with no source left it reads its
+    /// Stops driving param port `at` from `from`. Returns whether `from`
+    /// was its source. The port keeps its range; with no source it reads its
     /// base.
-    pub fn disconnect_param(&mut self, at: ParamIn, from: ParamFrom) -> bool {
+    pub fn disconnect_param(&mut self, at: ParamIn, from: EventOut) -> bool {
         let Some(m) = self.params.get_mut(&at) else {
             return false;
         };
-        let before = m.sources.len();
-        m.sources.retain(|s| s.from != from);
-        before != m.sources.len()
+        if m.source == Some(from) {
+            m.source = None;
+            true
+        } else {
+            false
+        }
     }
 
-    /// Clamps param port `at`'s modulated value to `range` — the param's own
-    /// range, so no stack of modulators drives it past what the node
-    /// accepts. A NaN bound is refused by [`validate`](Self::validate)
+    /// Clamps param port `at`'s driven value to `range` — the param's own
+    /// range, so no source drives it past what the node accepts. A NaN bound is refused by [`validate`](Self::validate)
     /// ([`GraphInvalid::BadParamRange`]).
     ///
     /// A range is a control, not plan: the plan carries none, and a commit
     /// whose only change is a range compiles and sends nothing (it writes
     /// the range to the running unit, which clamps to it from its next
-    /// block). It does not restart the port's sources, and never rewrites
+    /// block). It does not restart the port's source, and never rewrites
     /// its base. [`Editor::set_param_range`](crate::Editor::set_param_range)
     /// does the same without waiting for a commit.
     pub fn set_param_range(&mut self, at: ParamIn, range: ParamRange) {
@@ -322,7 +310,7 @@ impl GraphSpec {
     /// Whether `self` and `other` compile to the same plan, by value: equal
     /// but for param ranges (a control, see
     /// [`set_param_range`](Self::set_param_range)), with a param entry that
-    /// has no sources the same as none (as [`validate`](Self::validate)
+    /// has no source the same as none (as [`validate`](Self::validate)
     /// treats it).
     pub(crate) fn same_but_ranges(&self, other: &Self) -> bool {
         // Destructured, so a field added later is compared or named here.
@@ -333,12 +321,8 @@ impl GraphSpec {
             required_resolution,
             params,
         } = self;
-        fn wired(
-            p: &BTreeMap<ParamIn, ParamMod>,
-        ) -> impl Iterator<Item = (&ParamIn, &Vec<ParamSource>)> {
-            p.iter()
-                .filter(|(_, m)| !m.sources.is_empty())
-                .map(|(at, m)| (at, &m.sources))
+        fn wired(p: &BTreeMap<ParamIn, ParamMod>) -> impl Iterator<Item = (&ParamIn, EventOut)> {
+            p.iter().filter_map(|(at, m)| Some((at, m.source?)))
         }
         *topology == other.topology
             && *events == other.events
@@ -401,39 +385,13 @@ impl GraphSpec {
             }
         }
         for (&at, m) in &self.params {
-            for node in std::iter::once(at.node).chain(m.sources.iter().map(|s| s.from.node())) {
+            for node in std::iter::once(at.node).chain(m.source.map(|s| s.node)) {
                 if !nodes.contains_key(&node) {
                     errs.push(GraphInvalid::UnknownParamNode { at, missing: node });
                 }
             }
-            if m.sources.windows(2).any(|w| w[0].from >= w[1].from) {
-                errs.push(GraphInvalid::UnsortedParamSources { at });
-            }
-            if m.sources.len() > MAX_PARAM_SOURCES {
-                errs.push(GraphInvalid::TooManyParamSources {
-                    at,
-                    count: m.sources.len(),
-                });
-            }
             if m.range.min.is_nan() || m.range.max.is_nan() {
                 errs.push(GraphInvalid::BadParamRange { at, range: m.range });
-            }
-            // The port rule (doc 014 §5.6): one event source, unshaped, and
-            // its value replaces the base.
-            let mut event_sources = Vec::new();
-            for src in &m.sources {
-                if let ParamFrom::Events(from) = src.from {
-                    event_sources.push(from);
-                    if src.shaping != ParamShaping::Identity {
-                        errs.push(GraphInvalid::ShapedEventParamSource { at, from });
-                    }
-                }
-            }
-            if event_sources.len() > 1 {
-                errs.push(GraphInvalid::TooManyEventParamSources {
-                    at,
-                    sources: event_sources,
-                });
             }
         }
         for &(at, from) in self.required_resolution.keys() {
@@ -455,8 +413,8 @@ impl GraphSpec {
                 params: self
                     .params
                     .iter()
-                    .filter(|(_, m)| !m.sources.is_empty())
-                    .map(|(&at, m)| (at, m.clone()))
+                    .filter(|(_, m)| m.source.is_some())
+                    .map(|(&at, &m)| (at, m))
                     .collect(),
             }),
             _ => Err(errs),
@@ -506,40 +464,6 @@ pub enum GraphInvalid {
         /// The key that is not there.
         missing: NodeKey,
     },
-    /// A param port's sources are not in strict source order: one is listed
-    /// twice, or the list was edited by hand out of order.
-    /// [`GraphSpec::connect_param`] keeps it right.
-    UnsortedParamSources {
-        /// The param port.
-        at: ParamIn,
-    },
-    /// A param port has more than [`MAX_PARAM_SOURCES`](crate::MAX_PARAM_SOURCES)
-    /// sources.
-    TooManyParamSources {
-        /// The param port.
-        at: ParamIn,
-        /// How many it has.
-        count: usize,
-    },
-    /// A param port has more than one event source
-    /// ([`ParamFrom::Events`]). An event source's value replaces the port's
-    /// base, so two would be two values for one param: sum them in one node
-    /// (a control lane) and send the sum.
-    TooManyEventParamSources {
-        /// The param port.
-        at: ParamIn,
-        /// Its event sources, in the port's source order.
-        sources: Vec<EventOut>,
-    },
-    /// A param port's event source is shaped other than
-    /// [`ParamShaping::Identity`]. Its value is the param's own value, which
-    /// replaces the base; shaping belongs to whoever computed it.
-    ShapedEventParamSource {
-        /// The param port.
-        at: ParamIn,
-        /// The event source.
-        from: EventOut,
-    },
     /// A param port's range has a NaN bound. Refused here rather than
     /// ordered where it is applied: a NaN bound clamps every value to NaN or
     /// to the other bound, and `f32::clamp` panics on it — on the audio
@@ -583,14 +507,14 @@ impl ValidGraph {
         &self.required_resolution
     }
 
-    /// The checked modulated params: only ports with at least one source.
+    /// The checked driven params: only ports with a source.
     pub fn params(&self) -> &BTreeMap<ParamIn, ParamMod> {
         &self.params
     }
 }
 
 /// The latency folds over the whole spec: the topology's audio ports, plus
-/// each node's event and param-modulation sources, which the compiler counts
+/// each node's event and param sources, which the compiler counts
 /// toward a node's arrival. So `tutti_types::latency::plan(&spec)` is the
 /// compensation `compile` gives the spec's plan (`tests/compile_passes.rs`
 /// pins it); over `spec.topology` alone, a node fed events by a latent node
@@ -611,7 +535,7 @@ impl LatencyGraph for GraphSpec {
     }
 
     /// Direct event sources (a feedback edge carries last block's events, so
-    /// nothing along this block's path) and param-modulation sources.
+    /// nothing along this block's path) and param sources.
     fn other_sources(&self, node: NodeKey) -> impl Iterator<Item = NodeKey> {
         let ports = EventIn { node, port: 0 }..=EventIn {
             node,
@@ -629,7 +553,7 @@ impl LatencyGraph for GraphSpec {
             .params
             .iter()
             .filter(move |(at, _)| at.node == node)
-            .flat_map(|(_, m)| m.sources.iter().map(|s| s.from.node()));
+            .filter_map(|(_, m)| m.source.map(|s| s.node));
         events.chain(params)
     }
 

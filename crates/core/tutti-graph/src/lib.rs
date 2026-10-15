@@ -59,7 +59,7 @@
 //! # How it fits together
 //!
 //! ```text
-//!  GraphSpec          Topology + event edges + param modulation    plain value, Eq + Hash
+//!  GraphSpec          Topology + event edges + param sources        plain value, Eq + Hash
 //!      │ validate()
 //!  ValidGraph         checked without the nodes' shapes
 //!      │ compile(&ValidGraph, &Shapes, &Prepare, prev) -> (Plan, Delta)
@@ -70,7 +70,7 @@
 //!
 //! - [`GraphSpec`] is the graph as data: a
 //!   [`Topology`](tutti_types::Topology) (nodes, audio edges, global inputs
-//!   and outputs) plus event edges and param modulation.
+//!   and outputs) plus event edges and each param port's event source.
 //! - [`Editor`] (control thread) holds the spec and the units not yet
 //!   shipped. [`Editor::insert`] adds a node and returns its typed controls;
 //!   [`Editor::commit`] validates, [`compile`]s against the plan sent last
@@ -161,10 +161,10 @@
 //!   plugin's pipeline changing).
 //! - [`Editor::reprepare`] changes the sample rate or maximum block,
 //!   re-preparing every unit on the control thread.
-//! - [`GraphSpec::connect_param`] modulates a node's declared params
-//!   ([`Shape::params`]) from other nodes' outputs or from ramp events; the
-//!   node reads the result through [`Io::param`], and an unconnected param
-//!   reads its own control, never 0.
+//! - [`GraphSpec::connect_param`] drives one of a node's declared params
+//!   ([`Shape::params`]) from another node's event output (a control
+//!   lane's value and ramp segments); the node reads the result through
+//!   [`Io::param`], and an unconnected param reads its own control, never 0.
 //! - [`Editor::fork`] builds an independent copy of the graph, or of the part
 //!   feeding one node, for an offline export or a live duplicate.
 //! - A feedback loop is an explicit edge with its own delay
@@ -259,14 +259,12 @@ pub use node::{
 };
 pub use par::Pool;
 pub use param::{
-    ParamFrom, ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError, ParamRange,
-    ParamRangeReader, ParamShaping, ParamSource, ShapeLut, MAX_PARAM_PORTS, MAX_PARAM_SOURCES,
-    PARAM_DECLICK, SHAPE_LUT_LEN,
+    ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError, ParamRange, ParamRangeReader,
+    MAX_PARAM_PORTS, PARAM_DECLICK,
 };
 pub use plan::{
     Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, Op, ParamPortOp,
-    ParamSlot, ParamSourceOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT,
-    ZERO_SLOT,
+    Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
 };
 pub use play::PlayClock;
 // The reading is a value type, `tutti-types`' (the modulation compiler

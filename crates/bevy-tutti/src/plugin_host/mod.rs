@@ -65,10 +65,6 @@ pub mod live_resize;
 pub use live_resize::{reap_orphaned_live_resize_observers, LiveResizeRegistry};
 
 pub use bind::{plugin_bind_meter, PluginMeterBound, PluginShadow};
-#[cfg(feature = "modulation")]
-pub use bind::{
-    plugin_bind_params, remove_plugin_automation, PluginAutomationNode, PluginParamsBound,
-};
 pub use catalog::{poll_probes, start_probe, InFlightProbes, PluginProbed, ProbePlugin};
 pub use editor::{
     editor_is_open, plugin_editor_attach_system, plugin_editor_idle_system,
@@ -339,9 +335,7 @@ impl Plugin for TuttiHostingPlugin {
         );
 
         // A plugin's parameter values, mirrored for modulation lanes' knobs,
-        // and its GUI edits written into them (doc 014 §8.2). The old
-        // automation binding (`plugin_bind_params`) is not scheduled: plugin
-        // targets are lanes (`TuttiModulationPlugin`).
+        // and its GUI edits written into them (doc 014 §8.2).
         #[cfg(feature = "modulation")]
         app.add_systems(
             Update,

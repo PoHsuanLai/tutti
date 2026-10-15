@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use tutti_core::ChannelLayout;
 use tutti_graph::{
-    CommitError, Editor, EventEdge, EventIn, EventKind, EventOut, ForkByClone, ParamFrom, ParamIn,
-    ParamRange, ParamShaping, ParamSource, ScheduleError,
+    CommitError, Editor, EventEdge, EventIn, EventKind, EventOut, ForkByClone, ParamIn, ParamRange,
+    ScheduleError,
 };
 use tutti_mod::{
     compile, CompileError, Compiled, ControlProgram, Declarations, RouteKey, RouteTarget,
@@ -569,14 +569,9 @@ impl Modulation {
             };
             match lane.bind {
                 Bind::Native { at, .. } => {
-                    // Only the source it wired: event sources are unshaped.
-                    let ours = ParamSource {
-                        from: ParamFrom::Events(out),
-                        shaping: ParamShaping::Identity,
-                    };
-                    if let Some(m) = editor.spec_mut().params.get_mut(&at) {
-                        m.sources.retain(|s| *s != ours);
-                    }
+                    // Only the source it wired: a port another source has
+                    // taken since is left alone.
+                    editor.spec_mut().disconnect_param(at, out);
                 }
                 Bind::Foreign { to, .. } => remove_event_edge(editor, to, out),
             }
@@ -729,11 +724,9 @@ impl Modulation {
                     let node =
                         ControlLaneNode::for_unit(at.param, program.clone(), knob.clone(), cell);
                     let controls = editor.insert(key, "control-lane", node);
-                    editor.spec_mut().connect_param(
-                        *at,
-                        ParamFrom::Events(EventOut { node: key, port: 0 }),
-                        ParamShaping::Identity,
-                    );
+                    editor
+                        .spec_mut()
+                        .connect_param(*at, EventOut { node: key, port: 0 });
                     controls
                 }
                 Bind::Foreign { to, id, knob, .. } => {
@@ -866,13 +859,14 @@ impl Modulation {
                     return Err(ReconcileError::NoSuchParam(target));
                 }
                 let at = ParamIn { node, param };
-                // One event source per param port: another's (a host's
-                // own) would make the commit refuse the graph.
-                let other = editor.spec().params.get(&at).is_some_and(|m| {
-                    m.sources.iter().any(
-                        |s| matches!(s.from, ParamFrom::Events(out) if !own.contains(&(at, out.node))),
-                    )
-                });
+                // One event source per param port: connecting a lane would
+                // replace another's (a host's own), silently.
+                let other = editor
+                    .spec()
+                    .params
+                    .get(&at)
+                    .and_then(|m| m.source)
+                    .is_some_and(|out| !own.contains(&(at, out.node)));
                 if other {
                     return Err(ReconcileError::PortTaken(target));
                 }
@@ -1009,8 +1003,8 @@ impl Modulation {
             }
         }
         for (at, m) in &spec.params {
-            for s in &m.sources {
-                link(s.from.node(), at.node);
+            if let Some(from) = m.source {
+                link(from.node, at.node);
             }
         }
         // What this apply wires, by plan: the feed into each source, and

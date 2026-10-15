@@ -211,7 +211,7 @@ pub use plugin::TuttiPlugin;
 // does not depend on `tutti-graph` itself. Not API.
 #[doc(hidden)]
 pub mod __private {
-    pub use tutti_graph::{ParamNode, ParamSet};
+    pub use tutti_graph::ParamSet;
 }
 
 // Latency (plugin delay) compensation figures, and the opt-in debug check of

@@ -152,8 +152,8 @@ mod plugins_without_engine {
     /// `TuttiPlugin` notably does *not* add `TuttiModulationPlugin`, so under
     /// `--features plugin,modulation` it schedules `plugin_param_edits`, which
     /// reads `ModulationState`, a resource only the modulation plugin inserts.
-    /// (Its predecessor, `plugin_bind_params`, required it, and that
-    /// combination panicked on frame one.)
+    /// (The frame-rate binding it replaced, deleted in doc 014 PR 5, required
+    /// it too, and that combination panicked on frame one.)
     #[test]
     fn the_umbrella_plugin_survives_without_a_device() {
         let mut app = App::new();

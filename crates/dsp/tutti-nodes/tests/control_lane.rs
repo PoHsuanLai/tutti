@@ -12,8 +12,8 @@ use audio_automation::{AutomationEnvelope, AutomationPoint};
 use tutti_core::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
-    ForkTarget, Io, Node, Offset, ParamFrom, ParamIn, ParamRange, ParamSegment, ParamShaping,
-    Prepare, SegmentShape, Shape, Status, Transport, TransportChanges, PARAM_DECLICK,
+    ForkTarget, Io, Node, Offset, ParamIn, ParamRange, ParamSegment, Prepare, SegmentShape, Shape,
+    Status, Transport, TransportChanges, PARAM_DECLICK,
 };
 use tutti_mod::{
     Amount, Clock, ControlProgram, Curve, CurveType, DepthBy, InputLayer, Layer, LayerId, LfoShape,
@@ -187,11 +187,10 @@ fn wire(ed: &mut Editor, key: u64, lane: ControlLaneNode, probe: u64) -> LaneCon
     let controls = ed.insert(NodeKey(key), "lane", lane);
     ed.spec_mut().connect_param(
         cutoff(probe),
-        ParamFrom::Events(EventOut {
+        EventOut {
             node: NodeKey(key),
             port: 0,
-        }),
-        ParamShaping::Identity,
+        },
     );
     controls
 }
@@ -1221,13 +1220,12 @@ fn a_resync_sends_a_steady_lane_to_its_new_target() {
     }
     let got = run(&mut ed, &mut exec);
     assert!(got[0].iter().all(|&v| v == 250.0), "probe 2 has it");
-    let from = ParamFrom::Events(EventOut {
+    let from = EventOut {
         node: NodeKey(1),
         port: 0,
-    });
+    };
     assert!(ed.spec_mut().disconnect_param(cutoff(2), from));
-    ed.spec_mut()
-        .connect_param(cutoff(3), from, ParamShaping::Identity);
+    ed.spec_mut().connect_param(cutoff(3), from);
     ed.commit().expect("commits");
     for _ in 0..3 {
         let got = run(&mut ed, &mut exec);

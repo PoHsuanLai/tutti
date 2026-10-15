@@ -12,8 +12,8 @@ use std::sync::Arc;
 use tutti_core::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
-    ForkTarget, Io, Node, Offset, ParamFrom, ParamIn, ParamRange, ParamSegment, ParamShaping,
-    Prepare, Shape, Status, Transport, TransportChanges,
+    ForkTarget, Io, Node, Offset, ParamIn, ParamRange, ParamSegment, Prepare, Shape, Status,
+    Transport, TransportChanges,
 };
 use tutti_mod::{
     Adsr, Amount, ControlProgram, CurveType, InputLayer, LayerId, Polarity, SignalKind, SourceId,
@@ -362,11 +362,10 @@ fn lane_to_probe(
     ed.insert(NodeKey(lane), "lane", node);
     ed.spec_mut().connect_param(
         cutoff(probe),
-        ParamFrom::Events(EventOut {
+        EventOut {
             node: NodeKey(lane),
             port: 0,
-        }),
-        ParamShaping::Identity,
+        },
     );
     wire_events(ed, from, lane);
 }

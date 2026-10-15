@@ -1,5 +1,6 @@
-//! Binding a loaded plugin to the rest of the engine: the meter, and
-//! parameter automation / modulation.
+//! Binding a loaded plugin to the rest of the engine: the meter. (Its
+//! parameters are modulated by control lanes on its event input,
+//! `modulation::ParamRef::plugin`; nothing is bound for them.)
 //!
 //! # What binding does not have to do
 //!
@@ -38,8 +39,6 @@
 //! node the audio thread runs, lock-free and with no commit.
 
 use bevy_ecs::prelude::*;
-#[cfg(feature = "modulation")]
-use bevy_log::warn;
 
 use tutti_core::{AudioNode, NodeKey};
 use tutti_plugin::handles::{PluginControls, PluginMeter};
@@ -54,9 +53,9 @@ use crate::plugin_host::editor::PluginEmitter;
 /// Inserted by the plugin load
 /// ([`CapturedControls::for_plugin`](crate::graph::CapturedControls::for_plugin),
 /// [`CapturedControls::for_plugin_meter`](crate::graph::CapturedControls::for_plugin_meter)).
-/// The meter binding installs through it (either backend); param binding and
-/// the latency poll read the [`PluginControls`] (out-of-process only); none of
-/// them touch the graph.
+/// The meter binding installs through it (either backend); the latency poll
+/// reads the [`PluginControls`] (out-of-process only); neither touches the
+/// graph.
 ///
 /// It records the node it came from, and [`controls_for`](Self::controls_for)
 /// and [`meter_for`](Self::meter_for) answer only while that is still the
@@ -162,206 +161,5 @@ pub fn plugin_bind_meter(
         };
         cell.set_meter(meter.clone());
         commands.entity(entity).insert(PluginMeterBound);
-    }
-}
-
-/// "This plugin's declared params have accumulators registered."
-///
-/// Rebuilt whenever the [`ModParamRange`](crate::modulation::legacy::ModParamRange)
-/// declaration changes, so the targets never describe an older param set.
-#[cfg(feature = "modulation")]
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PluginParamsBound;
-
-/// The automation node feeding a plugin entity's event input
-/// (`PluginControls::automation`), made by [`plugin_bind_params`]. Removing
-/// it (or despawning the entity) removes the node
-/// ([`remove_plugin_automation`]).
-#[cfg(feature = "modulation")]
-#[derive(Component)]
-pub struct PluginAutomationNode {
-    /// The automation node.
-    pub node: AudioNode,
-    /// Its curves.
-    pub controls: tutti_plugin::handles::AutomationControls,
-}
-
-/// The automation feeder's name among a plugin entity's
-/// [`EventFeeds`](crate::graph::EventFeeds).
-#[cfg(feature = "modulation")]
-const AUTOMATION: &str = "plugin automation";
-
-/// Takes a plugin entity's automation node out of the graph when its
-/// [`PluginAutomationNode`] goes (the entity despawned, or the component
-/// removed), and stop feeding it.
-#[cfg(feature = "modulation")]
-pub fn remove_plugin_automation(
-    remove: On<Remove, PluginAutomationNode>,
-    automation: Query<&PluginAutomationNode>,
-    graph: Option<ResMut<crate::graph::AudioGraphRes>>,
-    feeds: Option<ResMut<crate::graph::EventFeeds>>,
-    dirty: Option<ResMut<crate::graph::GraphDirty>>,
-) {
-    let entity = remove.event_target();
-    let Ok(automation) = automation.get(entity) else {
-        return;
-    };
-    if let Some(mut graph) = graph {
-        graph.remove(automation.node);
-    }
-    if let Some(mut feeds) = feeds {
-        feeds.remove(entity, AUTOMATION);
-    }
-    if let Some(mut dirty) = dirty {
-        dirty.0 = true;
-    }
-}
-
-/// What param binding reads off each entity.
-#[cfg(feature = "modulation")]
-type ParamBindItem = (
-    Entity,
-    &'static AudioNode,
-    &'static PluginShadow,
-    &'static crate::modulation::legacy::ModParamRange,
-);
-
-/// Query filter for param binding: a loaded plugin that has either never been
-/// bound, or whose declaration has changed since it was.
-///
-/// The `Changed` arm is what keeps the accumulators honest — a host that edits
-/// `ModParamRange` gets targets rebuilt for the new param set rather than
-/// keeping ones that describe the old.
-#[cfg(feature = "modulation")]
-type ParamsNeedRebind = (
-    With<PluginEmitter>,
-    Or<(
-        Without<PluginParamsBound>,
-        Changed<crate::modulation::legacy::ModParamRange>,
-    )>,
-);
-
-/// Gives every param a plugin declares modulatable a per-block accumulator, and
-/// feeds those accumulators to the plugin as its automation source.
-///
-/// **Legacy, not scheduled.** [`TuttiHostingPlugin`](crate::plugin_host::TuttiHostingPlugin)
-/// no longer adds it: a plugin parameter is modulated by a lane on the
-/// plugin's event input ([`ParamRef::plugin`](crate::modulation::ParamRef::plugin),
-/// doc 014 §8.2), which an export forks. Kept for a host still on
-/// [`modulation::legacy`](crate::modulation::legacy); such a host schedules it itself.
-///
-/// A host declares which params are modulatable with [`ModParamRange`](crate::modulation::legacy::ModParamRange), the same
-/// component a native node uses — the difference is only that a plugin's entries
-/// carry [`ParamAddr::Id`](tutti_types::ParamAddr::Id) (its own numeric id) where a native node's carry
-/// `ParamAddr::Unit`. Ranges come from the host because reading them from the
-/// plugin means `PluginHandle::parameters()`, a blocking IPC call with a
-/// five-second timeout that has no business on the frame thread.
-///
-/// # Why `insert_target` and not a captured `ModParams` handle
-///
-/// Capturing the client as the entity's `ModParamsHandle` looks like it would
-/// work — `PluginClient` implements `ModParams`, answering on `ParamAddr::Id`.
-/// It would be wrong.
-///
-/// A captured handle is asked again on **every** modulation rebuild, and
-/// `PluginControls::param_target` is a *constructor*: it returns a fresh
-/// accumulator each call and stores nothing. So each rebuild would mint a new
-/// `Arc`, hand it to the router, and leave the plugin reading the previous one —
-/// the param would sit silently at its base while the modulation appeared to be
-/// connected.
-///
-/// A node with a `ParamSet` survives this **not** because it returns an
-/// existing accumulator — `ParamSetTargets` also constructs a fresh `AtomicTarget` every
-/// call — but because the accumulator it builds *mirrors into the node's own
-/// `AtomicF32`*, which the node keeps reading. The `Arc` is new; the cell it
-/// writes through is the same one. That is a narrower guarantee than it looks,
-/// and it has one real consequence: see
-/// [`rebuild`](crate::modulation::legacy::rebuild)'s note on a rebuild re-seeding the
-/// base from `ModParamRange`.
-///
-/// So the target is built **once, here**, and supplied to the registry with
-/// `insert_target` — checked before the node path, so the node's own
-/// `ModParams` is never asked for these params. The same `Arc` goes to the plugin's automation source, which is
-/// what makes accumulation visible to the per-block read.
-///
-/// `insert_target` is also the only route that accepts **curve** layers
-/// (`AtomicTarget` declines them, since it collapses at a fixed beat), so a
-/// plugin param modulated with `ModRoute::as_curve` traces a real ramp where a
-/// native param would get a frame-rate staircase.
-///
-/// # Every resource here is optional, deliberately
-///
-/// `engine_ready` reads `AudioEngineState`, which says nothing about whether
-/// `build_into` ran (graph, config, transport) or whether the host added
-/// `TuttiModulationPlugin` (the registry). `TuttiPlugin` notably does **not**
-/// add the modulation plugin, so under `--features plugin,modulation` this
-/// system is scheduled by the hosting plugin while reading a resource only a
-/// different plugin inserts — a hard `Res` would panic on frame one.
-#[cfg(feature = "modulation")]
-pub fn plugin_bind_params(
-    mut commands: Commands,
-    registry: Option<ResMut<crate::modulation::legacy::ModTargetRegistry>>,
-    graph: Option<ResMut<crate::graph::AudioGraphRes>>,
-    mut feeds: ResMut<crate::graph::EventFeeds>,
-    mut dirty: ResMut<crate::graph::GraphDirty>,
-    changed: Query<(ParamBindItem, Option<&PluginAutomationNode>), ParamsNeedRebind>,
-) {
-    if changed.is_empty() {
-        return;
-    }
-    let (Some(mut registry), Some(mut graph)) = (registry, graph) else {
-        return;
-    };
-
-    for ((entity, node, shadow, ranges), existing) in changed.iter() {
-        let Some(client) = shadow.controls_for(node) else {
-            continue; // captured for another node — retried next frame
-        };
-
-        let mut timed: Vec<tutti_plugin::handles::TimedParam> = Vec::new();
-        for range in &ranges.params {
-            // A plugin speaks numeric ids only. A `Unit` entry on a plugin is a
-            // host mistake, not something to paper over: it would resolve to
-            // `None` and silently do nothing.
-            let tutti_types::ParamAddr::Id(param_id) = range.param else {
-                warn!(
-                    "plugin entity {entity:?} declares a native UnitParam \
-                     ({:?}) — hosted plugins address params by id, ignoring",
-                    range.param
-                );
-                continue;
-            };
-
-            // One `Arc`, two roles: the accumulator modulation writes into, and
-            // the curve the plugin's per-block producer reads. Keeping them the
-            // same object is the whole contract.
-            let target = client.param_target(param_id, range.base, range.min, range.max);
-            registry.insert_target(entity, range.param, target.clone());
-            timed.push(tutti_plugin::handles::TimedParam {
-                // `Opaque` is the right `ParamAddress` arm: `Index` is VST2-only
-                // and dense, while `ParamAddr::Id` is the app's plugin-chosen
-                // handle — exactly what `Opaque` models.
-                param_id: tutti_plugin::handles::ParamAddress::Opaque(param_id.into()),
-                curve: target,
-            });
-        }
-
-        // The automation is a node of its own, fed into this entity's event
-        // input: kept across rebinds (and across a crossfade to another
-        // plugin, whose node the feed follows), its curves replaced in place.
-        match existing {
-            Some(automation) => automation.controls.set_params(timed),
-            None if !timed.is_empty() => {
-                let (node, controls) = graph.insert(client.automation(timed));
-                feeds.set(entity, AUTOMATION, vec![node.into()]);
-                dirty.0 = true;
-                commands
-                    .entity(entity)
-                    .insert(PluginAutomationNode { node, controls });
-            }
-            None => {}
-        }
-
-        commands.entity(entity).insert(PluginParamsBound);
     }
 }

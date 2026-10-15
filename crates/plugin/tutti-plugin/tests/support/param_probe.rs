@@ -11,39 +11,22 @@
 
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tutti_nodes::automation::Curve;
-use tutti_plugin::handles::{ParamAddress, PluginClient, PluginHandle, TimedParam};
+use tutti_mod::ControlProgram;
+use tutti_nodes::automation::{ControlLaneNode, LaneControls};
+use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::BridgeConfig;
-use tutti_types::Beat;
 
 use crate::clap_probe::plugin_server_path;
 use crate::probe_path::probe_path;
 
-/// A curve holding one value, changeable while the graph runs: the host's
-/// value for one parameter.
-#[derive(Default)]
-pub struct Knob(AtomicU32);
-
-impl Knob {
-    pub fn new(v: f32) -> Arc<Self> {
-        let k = Arc::new(Self::default());
-        k.set(v);
-        k
-    }
-
-    pub fn set(&self, v: f32) {
-        self.0.store(v.to_bits(), Ordering::Relaxed);
-    }
-}
-
-impl Curve for Knob {
-    fn value_at(&self, _beat: Beat) -> Option<f32> {
-        Some(f32::from_bits(self.0.load(Ordering::Relaxed)))
-    }
+/// A host's value for plugin parameter `id`: a foreign control lane whose
+/// knob is at `value`, in the plugin's normalisation (doc 014 §5). It sends
+/// its knob on its first block and whenever the knob moves
+/// (`LaneControls::set_knob`), and again on `LaneControls::resync`.
+pub fn knob(id: u32, value: f32) -> ControlLaneNode {
+    ControlLaneNode::for_foreign(id, ControlProgram::default(), Some(value), (0.0, 1.0))
 }
 
 /// The VST2 probe with `params` parameters, loaded through a real
@@ -64,19 +47,13 @@ pub fn load_vst2_probe(params: usize, sample_rate: f64) -> (PluginClient, Plugin
     (client, handle)
 }
 
-/// One knob per parameter `0..n`, each at `value(i)`, and the timed params
-/// that automate the plugin's parameters from them.
-pub fn knobs(n: usize, value: impl Fn(usize) -> f32) -> (Vec<Arc<Knob>>, Vec<TimedParam>) {
-    let knobs: Vec<Arc<Knob>> = (0..n).map(|i| Knob::new(value(i))).collect();
-    let params = knobs
-        .iter()
-        .enumerate()
-        .map(|(i, k)| TimedParam {
-            param_id: ParamAddress::Index(i32::try_from(i).expect("a few params")),
-            curve: Arc::clone(k) as Arc<dyn Curve>,
-        })
+/// One [`knob`] lane per parameter `0..n` (VST2 indices), each at
+/// `value(i)`, and their controls.
+pub fn knobs(n: usize, value: impl Fn(usize) -> f32) -> (Vec<LaneControls>, Vec<ControlLaneNode>) {
+    let lanes: Vec<ControlLaneNode> = (0..n)
+        .map(|i| knob(u32::try_from(i).expect("a few params"), value(i)))
         .collect();
-    (knobs, params)
+    (lanes.iter().map(ControlLaneNode::controls).collect(), lanes)
 }
 
 /// Polls `check` while `step` renders, until it holds or `timeout` passes.

@@ -123,7 +123,7 @@ impl UnisonEngine {
         self.spread.as_atomic()
     }
 
-    /// Folds any control-rate change to the detune/spread atomics back into
+    /// Folds any change to the detune/spread atomics back into
     /// `config` and recompute per-voice params. Called once per block. Cheap
     /// when nothing moved (compares against the current config first).
     pub fn sync_from_atomics(&mut self) {

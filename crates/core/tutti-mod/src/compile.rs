@@ -164,8 +164,7 @@ pub enum RouteTarget {
     Depth(RouteKey),
 }
 
-/// A route: a source into a target, shaped by an amount. Named so it cannot
-/// collide with the `routing` feature's `Route` while both exist.
+/// A route: a source into a target, shaped by an amount.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RouteDecl {
     /// What modulates.

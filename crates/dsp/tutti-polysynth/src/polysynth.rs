@@ -1204,30 +1204,21 @@ mod tests {
         assert!(synth.unison.is_some());
     }
 
-    /// A control-rate route onto `synth`'s param `p`, resolved as a host
-    /// resolves one (bevy-tutti's `ParamSetTargets`): the `ParamSet`'s cell,
-    /// mirrored by an `AtomicTarget`. `None` for a param the set lacks.
-    /// (These tests pinned the synth's `ModParams` impl, the route before
-    /// the `ParamSet` was its one address.)
-    fn route(
-        synth: &PolySynth,
-        p: tutti_core::UnitParam,
-        base: f32,
-        min: f32,
-        max: f32,
-    ) -> Option<std::sync::Arc<dyn tutti_mod::ModTarget>> {
-        tutti_graph::ParamNode::param_set(synth)
-            .cell(p)
-            .map(|cell| {
-                std::sync::Arc::new(tutti_mod::AtomicTarget::with_mirror(base, min, max, cell))
-                    as std::sync::Arc<dyn tutti_mod::ModTarget>
-            })
+    /// `synth`'s param `p` set through its `ParamSet`, as a host writes a
+    /// knob (`AudioParam`, `write_param`) and as a control lane's knob is
+    /// the same cell: `false` for a param the set lacks. (These tests
+    /// pinned the synth's `ModParams` impl and then an `AtomicTarget` over
+    /// the set's cell; doc 014 PR 5 deleted both, and the `ParamSet` is the
+    /// one address.)
+    fn set(synth: &PolySynth, p: tutti_core::UnitParam, value: f32) -> bool {
+        tutti_graph::ParamNode::param_set(synth).set(p, value)
     }
 
+    /// Mutation (run): `param_set` hands `Volume` a fresh cell instead of
+    /// the master atomic → the atomic stays 1.0 → fails.
     #[test]
-    fn mod_params_volume_moves_the_master_atomic() {
+    fn a_volume_write_moves_the_master_atomic() {
         use tutti_core::UnitParam;
-        use tutti_mod::LayerKey;
 
         let synth = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
@@ -1235,21 +1226,19 @@ mod tests {
             ..Default::default()
         });
         let vol_atomic = synth.volume_atomic();
-        let target =
-            route(&synth, UnitParam::Volume, 1.0, 0.0, 1.0).expect("volume is modulatable");
-
-        target.accumulate(LayerKey(1), -0.4);
-        assert!((target.final_value() - 0.6).abs() < 1e-4);
+        assert!(set(&synth, UnitParam::Volume, 0.6), "volume is addressable");
         assert!(
             (vol_atomic.load(core::sync::atomic::Ordering::Acquire) - 0.6).abs() < 1e-4,
-            "the synth's master-volume atomic reflects the modulation"
+            "the synth's master-volume atomic reflects the write"
         );
         // (A foreign `ParamAddr::Id` is not expressible: a `ParamSet` is
         // addressed by `UnitParam`.)
     }
 
+    /// Mutation (run): `param_set` adds `Detune` with unison absent → the
+    /// last assertion fails.
     #[test]
-    fn mod_params_detune_is_present_with_unison_absent_without() {
+    fn detune_is_addressable_with_unison_absent_without() {
         use tutti_core::UnitParam;
 
         let with_unison = synth(SynthConfig {
@@ -1261,17 +1250,18 @@ mod tests {
             }),
             ..Default::default()
         });
-        assert!(route(&with_unison, UnitParam::Detune, 10.0, 0.0, 100.0).is_some());
-        assert!(route(&with_unison, UnitParam::StereoSpread, 0.5, 0.0, 1.0).is_some());
+        assert!(set(&with_unison, UnitParam::Detune, 10.0));
+        assert!(set(&with_unison, UnitParam::StereoSpread, 0.5));
 
         let no_unison = synth(SynthConfig::default());
-        assert!(route(&no_unison, UnitParam::Detune, 0.0, 0.0, 100.0).is_none());
+        assert!(!set(&no_unison, UnitParam::Detune, 0.0));
     }
 
+    /// Mutation (run): `sync_from_atomics` skips the unison recompute →
+    /// the ratio stays 1.0 → fails.
     #[test]
-    fn mod_params_detune_recomputes_unison_on_process() {
+    fn a_detune_write_recomputes_unison_on_process() {
         use tutti_core::UnitParam;
-        use tutti_mod::LayerKey;
 
         let mut synth = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
@@ -1292,10 +1282,9 @@ mod tests {
         let ratio_before = synth.unison.as_ref().unwrap().voice_params(0).freq_ratio;
         assert!((ratio_before - 1.0).abs() < 1e-4, "no detune yet");
 
-        // Route a modulation offset into the detune atomic, then run a block:
-        // `sync_from_atomics` must fold it into a recompute.
-        let target = route(&synth, UnitParam::Detune, 0.0, 0.0, 100.0).expect("detune modulatable");
-        target.accumulate(LayerKey(1), 30.0);
+        // Write the detune cell, then run a block: `sync_from_atomics` must
+        // fold it into a recompute.
+        assert!(set(&synth, UnitParam::Detune, 30.0), "detune addressable");
 
         let mut out = [0.0f32; 64];
         synth.tick(&[], &mut out);
@@ -1303,7 +1292,7 @@ mod tests {
         let ratio_after = synth.unison.as_ref().unwrap().voice_params(0).freq_ratio;
         assert!(
             (ratio_after - 1.0).abs() > 1e-4,
-            "detune modulation reached the unison voice params after a block \
+            "the detune write reached the unison voice params after a block \
              (before={ratio_before}, after={ratio_after})"
         );
     }

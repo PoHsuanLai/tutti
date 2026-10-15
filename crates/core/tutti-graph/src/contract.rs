@@ -82,7 +82,7 @@ use tutti_types::{
 use crate::builder::GraphBuilder;
 use crate::controls::{ParamFork, ParamNode};
 use crate::editor::Editor;
-use crate::event::{Event, EventKind, EventWriter, SortedEvents};
+use crate::event::{Event, EventKind, EventWriter, ParamSegment, SegmentShape, SortedEvents};
 use crate::exec::Executor;
 use crate::fork::Unforkable;
 use crate::history::TransportHistory;
@@ -90,8 +90,8 @@ use crate::io::Io;
 use crate::node::{
     Cx, Env, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
 };
-use crate::param::{ParamFrom, ParamIn, ParamInput, ParamShaping};
-use crate::spec::EventIn;
+use crate::param::{ParamIn, ParamInput};
+use crate::spec::{EventIn, EventOut};
 
 mod snapshot;
 pub use snapshot::{IsolateRow, SNAPSHOT_FRAMES};
@@ -155,15 +155,15 @@ pub enum Excite {
         /// The impulse's height.
         amplitude: f32,
     },
-    /// Put one sample of `amplitude` on the audio source of the node's
-    /// modulated param `param` (unshaped, unclamped): the compiler-owned
-    /// modulation's sample-accuracy case. A
-    /// modulation step at frame `F` must reach the node's param at `F +
-    /// arrival`, exactly. The source is connected from the start, so its
-    /// declick is over long before the excitation. Behind PDC the latent
-    /// sibling feeds the node's audio input 0 and the param source is the
-    /// early path, delayed to the node's arrival by the compiler. Runs the
-    /// audio paths.
+    /// Put one frame of `amplitude` on the node's param `param` through its
+    /// event source (a [`ParamPulse`]: a step to `amplitude` at frame `F`
+    /// and back to 0 at `F + 1`, unclamped): the compiler-owned param
+    /// port's sample-accuracy case. A step at frame `F` must reach the
+    /// node's param at `F + arrival`, exactly. The source is connected from
+    /// the start, so its declick is over long before the excitation. Behind
+    /// PDC the latent sibling feeds the node's audio input 0 and the param
+    /// source is the early path, delayed to the node's arrival by the
+    /// compiler. Runs the audio paths.
     Param {
         /// The node's declared param.
         param: UnitParam,
@@ -618,8 +618,8 @@ impl Row {
             .collect();
 
         let impulse_port = match self.excite {
-            Excite::Impulse { amplitude, .. } | Excite::Param { amplitude, .. } => Some(amplitude),
-            Excite::Event { .. } => None,
+            Excite::Impulse { amplitude, .. } => Some(amplitude),
+            Excite::Event { .. } | Excite::Param { .. } => None,
         };
         let mut out = Vec::with_capacity(total as usize);
         let mut done = 0u64;
@@ -777,8 +777,8 @@ impl Row {
     }
 
     fn build(&self, topo: Topo, feed: Feed, f: u64, gap: u64) -> Rig {
-        if let Excite::Param { param, .. } = self.excite {
-            return self.build_param(topo, param);
+        if let Excite::Param { param, amplitude } = self.excite {
+            return self.build_param(topo, param, Frame(f), amplitude);
         }
         let node = (self.make)();
         let shape = node.shape();
@@ -866,10 +866,10 @@ impl Row {
 }
 
 impl Row {
-    /// The [`Excite::Param`] graph: the global input through a [`Sum`] (its
-    /// other input silent) into `param`, and behind PDC a [`Latent`] sibling
-    /// on the node's audio input 0.
-    fn build_param(&self, topo: Topo, param: UnitParam) -> Rig {
+    /// The [`Excite::Param`] graph: a [`ParamPulse`] armed for `at` driving
+    /// `param`, and behind PDC a [`Latent`] sibling on the node's audio
+    /// input 0.
+    fn build_param(&self, topo: Topo, param: UnitParam, at: Frame, amplitude: f32) -> Rig {
         let node = (self.make)();
         let shape = node.shape();
         assert!(
@@ -877,10 +877,10 @@ impl Row {
             "{}: the node does not declare {param:?}",
             self.name
         );
-        let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
         let n = g.add(Unforkable(node));
-        let sum = g.add(Unforkable(Sum));
-        g.connect_input(0, sum, 1);
+        let pulse = ParamPulse::new(at, param, amplitude);
+        let src = g.add(Unforkable(pulse));
         if topo == Topo::Pdc {
             assert!(
                 shape.audio_in.count() > 0,
@@ -892,11 +892,9 @@ impl Row {
             )))));
             g.connect(lat, 0, n, 0);
         }
-        g.spec_mut().connect_param(
-            ParamIn { node: n, param },
-            ParamFrom::Audio(OutPort { node: sum, port: 0 }),
-            ParamShaping::Identity,
-        );
+        let _ = g
+            .spec_mut()
+            .connect_param(ParamIn { node: n, param }, EventOut { node: src, port: 0 });
         g.connect_output(n, self.output as usize, 0);
         let (ed, exec) = g
             .build(Prepare::new(SAMPLE_RATE, Samples(MAX_BLOCK)))
@@ -910,11 +908,11 @@ impl Row {
             ed,
             exec,
             node: n,
-            feeder: Some((sum, FeederKind::Sum)),
+            feeder: Some((src, FeederKind::ParamPulse(pulse))),
             arrival,
             latency: prepared.latency.samples(),
             resolution: prepared.event_resolution,
-            has_input: true,
+            has_input: false,
         }
     }
 }
@@ -926,6 +924,7 @@ const BOTH: &[Topo] = &[Topo::Direct, Topo::Pdc];
 enum FeederKind {
     Sum,
     Emitter(Frame, EventKind),
+    ParamPulse(ParamPulse),
 }
 
 struct Rig {
@@ -972,6 +971,11 @@ impl Rig {
                     FeederKind::Emitter(at, kind) => {
                         self.ed
                             .insert(key, "emitter", Unforkable(Emitter::new(at, kind)));
+                    }
+                    // Armed as the old one was: it sends only the steps
+                    // still ahead of it, so none is sent twice or lost.
+                    FeederKind::ParamPulse(pulse) => {
+                        self.ed.insert(key, "param pulse", Unforkable(pulse));
                     }
                 }
             }
@@ -1077,7 +1081,7 @@ fn transport_for(start: Option<u64>, bs: u64, n: usize) -> (Transport, Transport
 
 // ---- the harness's own nodes -------------------------------------------------
 
-/// The param row's node: it declares one modulatable param, whose base is
+/// The param row's node: it declares one drivable param, whose base is
 /// 0, and writes that param's value at every frame to its one output — 0
 /// while it reads its base. Its one audio input (for the PDC path's latent
 /// sibling) is ignored.
@@ -1339,6 +1343,52 @@ impl Node for Emitter {
     fn reset(&mut self) {}
 }
 
+/// Drives one param for one frame: on its one event output, a step to
+/// `amplitude` at absolute frame `at` and a step back to 0 at `at + 1`,
+/// each addressed to `param` ([`ParamSegment::unit`], zero length). Each
+/// step is sent in the block holding its frame, so a re-insert armed alike
+/// sends only the steps still ahead.
+#[derive(Clone, Copy, Debug)]
+pub struct ParamPulse {
+    at: Frame,
+    param: UnitParam,
+    amplitude: f32,
+}
+
+impl ParamPulse {
+    /// A pulse of `amplitude` on `param` at `at`.
+    pub fn new(at: Frame, param: UnitParam, amplitude: f32) -> Self {
+        Self {
+            at,
+            param,
+            amplitude,
+        }
+    }
+}
+
+impl Node for ParamPulse {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+    }
+
+    fn prepare(&mut self, _: &Prepare) {}
+
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for (frame, value) in [(self.at, self.amplitude), (self.at + Samples(1), 0.0)] {
+            if let Some(offset) = cx.env.offset_of(frame) {
+                let step =
+                    ParamSegment::unit(self.param, value, value, Samples(0), SegmentShape::Linear);
+                io.event_out(0)
+                    .push(Event::segment(offset, step))
+                    .expect("two events fit");
+            }
+        }
+        Status::Silent
+    }
+
+    fn reset(&mut self) {}
+}
+
 /// Two audio inputs, summed into one output.
 #[derive(Clone, Copy, Debug)]
 pub struct Sum;
@@ -1574,14 +1624,15 @@ pub fn prepared<N: Node>(mut node: N, rate: SampleRate, max_block: usize) -> N {
 
 /// Checks a [`ParamNode`]'s fork, the promise [`param_parts`](crate::param_parts)
 /// relies on: a fork of `node` starts from the values last **set** through
-/// its [`ParamSet`](crate::ParamSet) (the authored values, not a live
-/// composite a modulation driver left in the cells), and shares no cell with
-/// the live node in either direction.
+/// its [`ParamSet`](crate::ParamSet) (the cells hold them: a modulation lane
+/// sends to the port and never writes a cell, doc 014 §10), and shares no
+/// cell with the live node in either direction.
 ///
 /// What this catches in a node: a param missing from
-/// [`ParamNode::param_set`] (a host cannot reach it by address), and a cell
-/// [`ParamNode::fork_fresh`] forgot to detach (a fork that follows the live
-/// knob, or moves it).
+/// [`ParamNode::param_set`] (a host cannot reach it by address), a
+/// [`ParamNode::fork_fresh`] that starts its cells from the constructor's
+/// defaults instead of the values set, and a cell it forgot to detach (a
+/// fork that follows the live knob, or moves it).
 ///
 /// # Panics
 ///
@@ -1593,34 +1644,30 @@ pub fn assert_param_fork<N: ParamNode + Clone>(node: N) {
     let params: Vec<UnitParam> = live.params().collect();
     assert!(!params.is_empty(), "a ParamNode with no params");
     // A distinct value per param, away from anything a constructor picks.
-    let authored = |i: usize| 0.37 + i as f32 * 1.13;
+    let set = |i: usize| 0.37 + i as f32 * 1.13;
     for (i, &p) in params.iter().enumerate() {
-        live.set(p, authored(i));
-        // A modulation driver's composite, left in the live cell.
-        live.cell(p)
-            .expect("the set has it")
-            .store(authored(i) + 100.0, std::sync::atomic::Ordering::Release);
+        live.set(p, set(i));
     }
     let forked = fork.fork_node();
     let fresh = forked.param_set();
     for (i, &p) in params.iter().enumerate() {
         assert_eq!(
             fresh.get(p),
-            Some(authored(i)),
-            "{p:?}: a fork starts from the authored value, not the live composite"
+            Some(set(i)),
+            "{p:?}: a fork starts from the value set, not the constructor's"
         );
     }
     for (i, &p) in params.iter().enumerate() {
-        live.set(p, authored(i) + 7.0);
+        live.set(p, set(i) + 7.0);
         assert_eq!(
             fresh.get(p),
-            Some(authored(i)),
+            Some(set(i)),
             "{p:?}: a live write reached the fork (a cell fork_fresh did not detach)"
         );
         fresh.set(p, -1.0);
         assert_eq!(
             live.get(p),
-            Some(authored(i) + 7.0),
+            Some(set(i) + 7.0),
             "{p:?}: a write to the fork reached the live node"
         );
     }

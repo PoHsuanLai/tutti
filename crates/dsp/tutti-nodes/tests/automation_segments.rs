@@ -1,5 +1,4 @@
-//! `AutomationLaneNode::for_param`'s lane (a `ControlLaneNode` of
-//! automation alone, in exact mode): a curve sent to a param port as
+//! A `ControlLaneNode` of automation alone (no knob, no range: exact mode): a curve sent to a param port as
 //! curve-segment events (doc 013, decision 7; doc 014 §5.4), rendered by the
 //! port per frame.
 //!
@@ -21,11 +20,12 @@ use std::sync::Arc;
 
 use audio_automation::{AutomationEnvelope, AutomationPoint, CurveType};
 use tutti_graph::{
-    Cx, Editor, EventOut, Executor, Io, Node, Offset, ParamFrom, ParamIn, ParamShaping, Prepare,
-    Shape, Status, Transport, TransportChanges, Unforkable,
+    Cx, Editor, EventOut, Executor, Io, Node, Offset, ParamIn, Prepare, Shape, Status, Transport,
+    TransportChanges, Unforkable,
 };
+use tutti_mod::ControlProgram;
 use tutti_mod::Curve;
-use tutti_nodes::automation::{AutomationLaneNode, ControlLaneNode, CONTROL_STEP};
+use tutti_nodes::automation::{ControlLaneNode, CONTROL_STEP};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
     Beat, Bpm, ChannelLayout, FrameClock, Hz, LoopRange, NodeKey, ParamKey, SampleRate, Samples,
@@ -33,6 +33,18 @@ use tutti_types::{
 };
 
 const RATE: f64 = 48_000.0;
+
+/// A lane sending `curve` to the cutoff, with no knob and no range: the
+/// automation-only lane every test here drives (it was
+/// `AutomationLaneNode::for_param` until doc 014 PR 5).
+fn automation(curve: impl Curve + 'static) -> ControlLaneNode {
+    ControlLaneNode::for_param(
+        ParamKey::<Hz>::CUTOFF,
+        ControlProgram::from_automation(Arc::new(curve)),
+        None,
+        None,
+    )
+}
 /// A tempo whose beat is not a whole number of frames, so breakpoints fall
 /// between frames.
 const TEMPO: Bpm = Bpm(113.0);
@@ -78,11 +90,10 @@ fn graph(lane: ControlLaneNode) -> (Editor, Executor) {
             node: NodeKey(2),
             param: UnitParam::Cutoff,
         },
-        ParamFrom::Events(EventOut {
+        EventOut {
             node: NodeKey(1),
             port: 0,
-        }),
-        ParamShaping::Identity,
+        },
     );
     ed.commit().expect("commits");
     (ed, exec)
@@ -183,12 +194,7 @@ fn an_exponential_lane_renders_the_curve_not_linear_pieces() {
     let curve = shaped();
     let total = (0.7 * frames_per_beat()) as usize;
     for blocks in [ragged(total), vec![MAX; total / MAX]] {
-        let out = check_rolling(
-            &curve,
-            AutomationLaneNode::for_param(curve.clone(), ParamKey::<Hz>::CUTOFF),
-            &blocks,
-            None,
-        );
+        let out = check_rolling(&curve, automation(curve.clone()), &blocks, None);
         // Halfway along the exponential piece (beat 0.125): a quarter of
         // the way up, where a line between its breakpoints is at half.
         let mid = (0.125 * frames_per_beat()).round() as usize;
@@ -212,19 +218,11 @@ fn wraps_seeks_and_tempo_changes_stay_on_the_curve() {
     // Loop 0.1 → 0.5 beats, through four pieces; ragged blocks wrap inside.
     let looping = LoopRange::new(Beat(0.1), Beat(0.5));
     let total = (1.3 * frames_per_beat()) as usize;
-    check_rolling(
-        &curve,
-        AutomationLaneNode::for_param(curve.clone(), ParamKey::<Hz>::CUTOFF),
-        &ragged(total),
-        looping,
-    );
+    check_rolling(&curve, automation(curve.clone()), &ragged(total), looping);
 
     // A seek, then a tempo change, then a stop, each at offset 50 of a
     // 128-frame block.
-    let (mut ed, mut exec) = graph(AutomationLaneNode::for_param(
-        curve.clone(),
-        ParamKey::<Hz>::CUTOFF,
-    ));
+    let (mut ed, mut exec) = graph(automation(curve.clone()));
     let at50 = Offset::new(50, Samples(MAX)).expect("inside");
     let cases: [(Transport, Transport); 3] = [
         (
@@ -309,7 +307,7 @@ fn an_unrepresentable_piece_is_linear_on_the_grid() {
     curve.add_point(AutomationPoint::with_curve(0.0, 0.0, CurveType::Elastic));
     curve.add_point(AutomationPoint::new(0.2, 1.0));
     let total = (0.15 * frames_per_beat()) as usize;
-    let lane = || AutomationLaneNode::for_param(curve.clone(), ParamKey::<Hz>::CUTOFF);
+    let lane = || automation(curve.clone());
     let a = check_grid(&curve, lane(), &ragged(total), 1e-4);
     let b = check_grid(&curve, lane(), &vec![MAX; total.div_ceil(MAX)], 1e-4);
     assert_eq!(
@@ -335,11 +333,6 @@ fn a_curve_without_pieces_takes_the_grid() {
         }
     }
     let curve: Arc<dyn Curve> = Arc::new(Sine);
-    let out = check_grid(
-        &*curve,
-        AutomationLaneNode::for_param(Sine, ParamKey::<Hz>::CUTOFF),
-        &[64; 20],
-        1e-5,
-    );
+    let out = check_grid(&*curve, automation(Sine), &[64; 20], 1e-5);
     assert_eq!(out.len(), 64 * 20);
 }

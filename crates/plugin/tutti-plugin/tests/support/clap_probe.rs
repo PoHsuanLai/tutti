@@ -57,39 +57,35 @@ impl Rig {
 
     /// `client` in a graph prepared with `prepare` (a device quantum, say).
     pub fn prepared(client: PluginClient<Bound>, prepare: Prepare) -> Self {
-        Self::prepared_with(client, prepare, None)
+        Self::prepared_with(client, prepare, Vec::new())
     }
 
-    /// As [`prepared`](Self::prepared), with `automation` (when given) feeding
-    /// the plugin's event input.
+    /// As [`prepared`](Self::prepared), with `lanes` (foreign control
+    /// lanes, one per parameter) feeding the plugin's event input.
     pub fn prepared_with(
         client: PluginClient<Bound>,
         prepare: Prepare,
-        automation: Option<tutti_plugin::handles::PluginAutomation>,
+        lanes: Vec<tutti_nodes::automation::ControlLaneNode>,
     ) -> Self {
-        Self::build(client, prepare, automation, None, false).0
+        Self::build(client, prepare, lanes, false).0
     }
 
     /// As [`prepared_with`](Self::prepared_with), with a keyboard: a
-    /// `MidiQueueNode` feeding the plugin's event input too, and its sender;
-    /// and `lane` (an event-output automation lane), when given, feeding it
-    /// as well.
+    /// `MidiQueueNode` feeding the plugin's event input too, and its sender.
     #[allow(dead_code)]
     pub fn prepared_with_keys(
         client: PluginClient<Bound>,
         prepare: Prepare,
-        automation: Option<tutti_plugin::handles::PluginAutomation>,
-        lane: Option<tutti_nodes::automation::ControlLaneNode>,
+        lanes: Vec<tutti_nodes::automation::ControlLaneNode>,
     ) -> (Self, tutti_midi_runtime::MidiSender) {
-        let (rig, keys) = Self::build(client, prepare, automation, lane, true);
+        let (rig, keys) = Self::build(client, prepare, lanes, true);
         (rig, keys.expect("asked for keys"))
     }
 
     fn build(
         client: PluginClient<Bound>,
         prepare: Prepare,
-        automation: Option<tutti_plugin::handles::PluginAutomation>,
-        lane: Option<tutti_nodes::automation::ControlLaneNode>,
+        lanes: Vec<tutti_nodes::automation::ControlLaneNode>,
         keys: bool,
     ) -> (Self, Option<tutti_midi_runtime::MidiSender>) {
         let (inputs, outputs) = (client.inputs(), client.outputs());
@@ -97,11 +93,7 @@ impl Rig {
         let mut g = GraphBuilder::new(layout(inputs), layout(outputs));
         let (key, controls) = g.add_with_controls(client);
         g.pipe_input(key).pipe_output(key);
-        if let Some(automation) = automation {
-            let (from, _controls) = g.add_with_controls(automation);
-            g.event_connect(from, 0, key, 0);
-        }
-        if let Some(lane) = lane {
+        for lane in lanes {
             let (from, _lane) = g.add_with_controls(lane);
             g.event_connect(from, 0, key, 0);
         }

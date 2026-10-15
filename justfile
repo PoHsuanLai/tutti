@@ -75,7 +75,8 @@ test-all: test test-features test-editor test-doc
 #   tutti-io/bevy       — WaveAsset's Asset derive
 #   bevy-tutti/plugin   — plugin_host binding against a live plugin
 #                         (tests/plugin_capture.rs); `full,plugin` so the
-#                         modulation-gated param binding compiles with it
+#                         modulation-gated plugin parameter lanes compile
+#                         with it
 #
 # Not `--all-features`: that would pull every plugin-format SDK and (once it
 # exists) JACK, which needs libjack on the box. Name the combinations.

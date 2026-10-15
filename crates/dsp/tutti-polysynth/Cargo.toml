@@ -42,9 +42,6 @@ thiserror = "2"
 # The graph contract's test harness. No cycle: `tutti-graph` names no tutti
 # crate but `tutti-types`.
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
-# A control-rate route's target (`AtomicTarget`), for the tests that resolve
-# one on the synth's `ParamSet`. `routing` (std-only) keeps it bevy-free.
-tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
 criterion.workspace = true
 approx = "0.5"
 assert_no_alloc = { version = "1", default-features = false }

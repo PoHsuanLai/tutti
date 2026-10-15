@@ -330,8 +330,9 @@ struct VoiceNodeFork {
     channels: ChannelLayout,
     /// The live node's placement cell, read when a fork is taken.
     placement: PlacementCell,
-    /// The node's params: a fork starts from the gain last **set** (the
-    /// authored value), not a modulation composite caught in the live cell.
+    /// The node's params: a fork starts from the gain cell, which holds the
+    /// gain last **set** (a modulation lane sends its composite to the
+    /// port and never writes the cell).
     params: ParamSet,
 }
 
@@ -344,7 +345,7 @@ impl ForkSource for VoiceNodeFork {
         }
         let gain = self
             .params
-            .authored(UnitParam::Volume)
+            .get(UnitParam::Volume)
             .map_or(voice.play.gain, Amplitude);
         voice.play.gain = gain;
         voice.source.apply_gain(gain);

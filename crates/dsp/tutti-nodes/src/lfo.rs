@@ -131,14 +131,13 @@ pub struct ModulatorNode<M: Modulator> {
 /// [`Lfo`]. Monomorphized, so `value()` inlines.
 ///
 /// **The per-sample tier.** Reach for this when a control-rate value is too
-/// coarse (audio-rate modulation): in `BeatSynced` mode it reads the beat of
-/// every frame from its block's `Env`, so it is sample-accurate and renders
-/// identically offline, with no edge to wire.
+/// coarse (audio-rate modulation): an audio generator whose output feeds a
+/// node's own audio input (doc 014 §11). In `BeatSynced` mode it reads the
+/// beat of every frame from its block's `Env`, so it is sample-accurate and
+/// renders identically offline.
 ///
-/// The frame-rate alternative is `tutti_mod::ModPreFrame` sampling
-/// `tutti-mod`'s copy of `Lfo` (the same shapes and depth; this crate's copy
-/// is doc 014's, PR 3) and writing a scalar, which is what `bevy_tutti`'s
-/// `ModSource` builds until doc 014's control lanes replace it.
+/// The control-rate alternative is a `tutti_mod::Source::Lfo` route, which a
+/// control lane evaluates into the param's port (doc 014 §5).
 pub type LfoNode = ModulatorNode<Lfo>;
 
 impl ModulatorNode<Lfo> {

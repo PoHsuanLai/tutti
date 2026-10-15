@@ -97,12 +97,10 @@ fn lookahead_row() -> Row {
 /// at frame `F` reaches the node's param at `F + arrival`, exactly — on the
 /// PDC path through the compiler's delay of the early param source.
 ///
-/// Mutations (run): in `compile`, treat a param source's gap as zero (no
-/// `DelayKey::ParamAudio` delay) → `behind_pdc`, both recompile paths and
-/// the PDC half of every `blocks_*` path fail, `direct` passes. In
-/// `ParamState::port`, write the sum one frame late (`out[i]` from source
-/// frame `i - 1`) → every path fails. In `Executor::rebuild`, carry no ring
-/// across a commit → both recompile paths fail.
+/// Mutations (re-run in doc 014 PR 5, the source an event pulse): in
+/// `compile`, never lower a param source's delay (no
+/// `DelayKey::ParamEvent`) → the PDC paths fail. In `render_ramps`, take
+/// each event one frame late → every path fails.
 fn param_row() -> Row {
     Row::new(
         "ParamEcho on Cutoff",

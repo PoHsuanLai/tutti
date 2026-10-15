@@ -6,12 +6,6 @@
 #[allow(dead_code)]
 pub mod plugin;
 
-/// A host's own `ParamNode`, registered with `param_graph_node!`, for the
-/// suites whose subject is capturing and routing to its params. Not every
-/// suite uses it.
-#[allow(dead_code)]
-pub mod drive_unit;
-
 /// Nodes that show what a modulation lane delivers, for the modulation
 /// suites. Not every suite uses them.
 #[allow(dead_code)]

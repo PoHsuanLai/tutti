@@ -43,11 +43,9 @@ tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
 tutti-spatial = { path = "../dsp/tutti-spatial", default-features = false, optional = true }
 
 # Optional subsystems (gated by bevy-tutti features below).
-# `routing` is the mod-matrix layer (targets, bus, table, driver); tutti-mod's
-# own `bevy` feature is deliberately left off — it adds derives to
-# `ModTargetId`/`LayerKey`, which this adapter keeps inside its resources rather
-# than exposing as components.
-tutti-mod = { path = "../core/tutti-mod", optional = true, default-features = false, features = ["routing"] }
+# The modulation compiler the declarations compile through; the `modulation`
+# feature turns on its `bevy` feature (Reflect on its vocabulary).
+tutti-mod = { path = "../core/tutti-mod", optional = true, default-features = false }
 tutti-sampler = { path = "../dsp/tutti-sampler", optional = true, default-features = false }
 # The I/O edge — `WavOut`, `MicMonitorNode`, `Recorder` for `audio-io`, and
 # `Wave`/`WaveAsset`/the decoder for `sampler`. Re-exported through `engine`.
@@ -120,7 +118,8 @@ hrtf = ["spatial", "tutti-spatial/hrtf"]
 # FFT convolution reverb (partitioned IR) in tutti-nodes.
 convolution = ["tutti-nodes/convolution"]
 
-# Control-rate modulation: LFO sources and mod-matrix edges as ECS entities.
+# Modulation as declarations (`Mods`, `ModRoute`, `ModRange`) that compile to
+# control lanes.
 # `tutti-mod/bevy` is what makes the components reflectable — it carries the
 # `Reflect` derives on the shape vocabulary and pulls the reflection features of
 # the units and the curve type underneath.

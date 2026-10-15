@@ -79,11 +79,8 @@
 //! target its node does not have) changes nothing; it is logged, sent as a
 //! [`ModulationRefused`] message and held in [`ModulationState::refusal`]
 //! until the declarations apply again.
-//!
-//! The frame-rate driver this replaced is [`legacy`], unscheduled.
 
 mod declare;
-pub mod legacy;
 mod reconcile;
 #[cfg(test)]
 mod tests;

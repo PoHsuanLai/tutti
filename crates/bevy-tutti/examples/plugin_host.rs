@@ -19,7 +19,7 @@
 //! wants a private field or a second lookup, the design is wrong.
 //!
 //! Note what is *absent*: no `plugins.load(..)` on the frame thread, no manual
-//! `set_meter`, no `param_target` bookkeeping. Those are the adapter's job, and
+//! `set_meter`, no control lane wired by hand. Those are the adapter's job, and
 //! a host that had to do them would be doing the work this crate exists to do.
 //!
 //! # Audio

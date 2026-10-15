@@ -9,10 +9,8 @@ use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     SegmentShape, Shape, Status,
 };
-use tutti_mod::ControlProgram;
-use tutti_types::{Beat, Latency, ParamKey, Tail, Unit};
+use tutti_types::{Beat, Latency, Tail};
 
-use super::control_lane::ControlLaneNode;
 use super::Curve;
 
 /// The [`SegmentShape`] an `audio-automation` [`CurveType`] is, or `None`
@@ -33,7 +31,7 @@ use super::Curve;
 /// `Back`, `Elastic` and `Bounce` overshoot their endpoints and `Bezier`'s
 /// two control values would not fit an event; `Circular` is a quarter
 /// circle no power matches. A lane sends those pieces as linear pieces on
-/// the play-clock grid (see [`ControlLaneNode`]).
+/// the play-clock grid (see [`ControlLaneNode`](super::ControlLaneNode)).
 pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
     use CurveType as C;
     use SegmentShape as S;
@@ -77,12 +75,13 @@ pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
 /// and agnostic to how the curve is stored — an [`AutomationEnvelope`], a
 /// constant, an LFO shape.
 ///
-/// **Two outputs to choose from.** [`new`](Self::new) renders the curve as
-/// audio, one value per frame, for anything that reads a signal (an audio
-/// param source, a meter). [`for_param`](Self::for_param) and
-/// [`for_foreign`](Self::for_foreign) build a [`ControlLaneNode`] instead,
-/// which sends it as curve-segment events
-/// ([`ParamSegment`](tutti_graph::ParamSegment)) for a param port.
+/// **Audio, not a param source.** It renders the curve as audio, one value
+/// per frame, for anything that reads a signal (a node's audio input, a
+/// meter). A param port is driven by a [`ControlLaneNode`](super::ControlLaneNode) instead
+/// (`ControlLaneNode::for_param` over
+/// [`ControlProgram::from_automation`](tutti_mod::ControlProgram::from_automation)),
+/// which sends the curve as curve-segment events
+/// ([`ParamSegment`](tutti_graph::ParamSegment)).
 ///
 /// # In a graph
 ///
@@ -136,43 +135,6 @@ impl AutomationLaneNode {
             curve: Arc::new(curve),
             last_value: 0.0,
         }
-    }
-
-    /// A [`ControlLaneNode`] that sends `curve` to built-in parameter `key`
-    /// as curve-segment events on one event output (no audio): wire it to a
-    /// param port with `ParamFrom::Events`. The curve's values are `key`'s
-    /// raw values.
-    ///
-    /// A program of automation alone
-    /// ([`ControlProgram::from_automation`]), with no knob and no range: the
-    /// lane sends the curve's own shaped pieces (exact mode), a piece with
-    /// no [`segment_shape`] as linear pieces on the play-clock grid, the
-    /// value at its beat held while stopped, and nothing where the curve has
-    /// no value (the port keeps the value it has). For a knob, a range or
-    /// layers, build the [`ControlLaneNode`] directly.
-    pub fn for_param<U: Unit<Raw = f32> + 'static>(
-        curve: impl Curve + 'static,
-        key: ParamKey<U>,
-    ) -> ControlLaneNode {
-        ControlLaneNode::for_param(
-            key,
-            ControlProgram::from_automation(Arc::new(curve)),
-            None,
-            None,
-        )
-    }
-
-    /// As [`for_param`](Self::for_param), for a foreign unit's parameter
-    /// `id` in its own normalisation, clamped to `0..=1` (a hosted plugin's
-    /// normalised value). A plugin lane never uses exact mode: every piece
-    /// goes on the play-clock grid.
-    pub fn for_foreign(curve: impl Curve + 'static, id: u32) -> ControlLaneNode {
-        ControlLaneNode::for_foreign(
-            id,
-            ControlProgram::from_automation(Arc::new(curve)),
-            None,
-            (0.0, 1.0),
-        )
     }
 
     /// Replaces the curve, allocating a new `Arc`.

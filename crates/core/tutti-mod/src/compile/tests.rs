@@ -810,21 +810,20 @@ fn each_refusal_fires_by_name() {
     assert!(run(&one_lfo, &routes, &t1).is_ok());
 }
 
-/// Exit (doc 014 §12): what `bevy-tutti` expresses today compiles with no
-/// runtime: only the ungated floor (no `routing` feature, no driver, no
-/// target), with each feature as a declaration:
+/// Exit of doc 014 PR 1 (§12): what `bevy-tutti` expressed then compiles
+/// with no runtime (no driver, no target), each feature as a declaration:
 ///
 /// - a `ModSource { shape }` at `ModClock::Free { hz }` or
 ///   `ModClock::Synced { beats_per_cycle }` with a `phase_offset`: an LFO
 ///   on a seconds or a beat clock, every shape (the random ones as hashed
 ///   waves);
 /// - a `ModRoute { depth, polarity, curve }` to a native param or a plugin
-///   parameter (`ParamAddr::Id`), whatever its `ModDelivery` (every tier
-///   is now a lane); a disabled one is left out;
-/// - a `ModParamRange { min, max }`: the target's range (its `base` is the
-///   knob, a cell, not a declaration);
+///   parameter (`ParamAddr::Id`), every one a lane; a disabled one is left
+///   out;
+/// - a `ModRange { min, max }`: the target's range (its base is the knob,
+///   a cell, not a declaration);
 /// - a plugin parameter's automation curve, and an LFO route into a plugin
-///   parameter (`LfoCurve`, `LfoOffset`): automation and a layer.
+///   parameter: automation and a layer.
 ///
 /// A custom `ModSourceKind` (an arbitrary `Modulator`) has no closed form;
 /// PR 4 gives it `declare() -> Source` (doc 014 §8.1).

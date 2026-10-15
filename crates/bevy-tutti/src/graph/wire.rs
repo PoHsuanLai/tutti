@@ -192,8 +192,8 @@ impl PortSources {
     ///
     /// Audio ports only. A node's modulatable params (a filter's cutoff, a
     /// distortion's drive) are not input ports: the graph modulates them
-    /// through its own param edges (`AudioGraphRes::set_param_mod`, which the
-    /// audio-rate modulation reconciler drives), so re-declaring a node's
+    /// through its own param ports (a control lane's events, or
+    /// `AudioGraphRes::set_param_mod`), so re-declaring a node's
     /// audio ports cannot disturb its modulation — they are two different
     /// spaces, and neither can clobber the other.
     pub fn with(mut self, port: usize, source: PortSource) -> Self {

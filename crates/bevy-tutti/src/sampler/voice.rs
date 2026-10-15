@@ -42,7 +42,7 @@ use tutti_sampler::{
 };
 
 use crate::graph::insert_and_bind;
-use crate::graph::{CapturedControls, GraphNode, NodeControls};
+use crate::graph::{GraphNode, NodeControls};
 
 /// Marks an entity whose audio node is a sampler voice.
 ///
@@ -66,12 +66,8 @@ pub type VoiceCommands = NodeControls<VoiceNodeHandle>;
 
 /// A voice as a graph node: its params (the gain) addressed by its
 /// set, so an [`AudioParam`](crate::graph::AudioParam) on the entity writes
-/// the cell the node reads and a fork starts from the authored gain.
+/// the cell the node reads and a fork starts from the gain as set.
 impl GraphNode for VoiceNode {
-    fn captured(&self) -> CapturedControls {
-        CapturedControls::for_params(&self.param_set())
-    }
-
     fn params(controls: &VoiceNodeHandle) -> Option<ParamSet> {
         Some(controls.params().clone())
     }
@@ -83,10 +79,6 @@ impl GraphNode for VoicePool {}
 
 /// A bare clip reader as a graph node, its gain addressed by its set.
 impl GraphNode for MemorySource {
-    fn captured(&self) -> CapturedControls {
-        CapturedControls::for_params(&tutti_graph::ParamNode::param_set(self))
-    }
-
     fn params(controls: &ParamSet) -> Option<ParamSet> {
         Some(controls.clone())
     }

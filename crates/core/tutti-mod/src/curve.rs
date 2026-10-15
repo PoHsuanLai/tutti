@@ -1,10 +1,8 @@
 //! [`Curve`] — a value as a pure function of a musical position.
 //!
 //! The rate-agnostic `beat -> value` interface shared by automation and
-//! modulation: an automation envelope, an LFO, a constant, and the `routing`
-//! feature's summing `LayeredCurve` are all `Curve`s. Ungated (doc 014 §3):
-//! a [`ControlProgram`](crate::ControlProgram)'s automation is one, and
-//! automation needs no routing. It lives here rather than in
+//! modulation: an automation envelope is a `Curve`, and so is a
+//! [`ControlProgram`](crate::ControlProgram)'s automation. It lives here rather than in
 //! `tutti-nodes` because modulation depends on it and `tutti-nodes` depends on
 //! this crate. The one foreign impl,
 //! [`AutomationEnvelope`], is orphan-legal here since `audio_automation` is a
@@ -46,9 +44,8 @@ pub enum CurveSegment {
 
 /// A value as a pure function of a musical position (`beat -> value`).
 ///
-/// An automation envelope (`audio_automation::AutomationEnvelope`), a shaped
-/// LFO (the `routing` feature's `ShapedCurve`), a constant, and the summing
-/// `LayeredCurve` are all curves. The stored form — breakpoints, a constant, an LFO shape, an expression — is
+/// An automation envelope (`audio_automation::AutomationEnvelope`) is a
+/// curve, as is any host's own. The stored form — breakpoints, a constant, an LFO shape, an expression — is
 /// the implementor's business. Callers supply an already-resolved, already
 /// loop-wrapped [`Beat`]; the curve holds no clock and consults no loop range.
 /// That keeps it evaluable from a live transport, an offline render, or a
@@ -57,8 +54,7 @@ pub enum CurveSegment {
 ///
 /// Returns `None` where the curve has no value (disabled / empty), so callers
 /// keep the empty-vs-zero distinction the playback consumers rely on: an
-/// automation lane substitutes `0.0`, a plugin parameter source leaves the
-/// plugin at its last value.
+/// automation lane substitutes `0.0`, a control lane holds its knob.
 pub trait Curve: Send + Sync {
     /// Evaluates the curve at `beat`, or returns `None` if it has no value
     /// there.
@@ -71,8 +67,8 @@ pub trait Curve: Send + Sync {
     /// `None`, the default, says the curve is immutable once shared — an
     /// envelope, an LFO shape, anything whose `value_at` reads only what it was
     /// built with — so sharing the `Arc` already is the copy. A curve that reads
-    /// state something writes after construction (a modulation target a router
-    /// writes every frame) returns `Some` of a frozen copy, and one that wraps
+    /// state something writes after construction (a live-edited envelope)
+    /// returns `Some` of a frozen copy, and one that wraps
     /// another curve forwards the question to it.
     fn frozen(&self) -> Option<std::sync::Arc<dyn Curve>> {
         None

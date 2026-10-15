@@ -1,6 +1,7 @@
 //! This crate's modulatable nodes under the graph's compiler-owned param
-//! modulation, run as they run in an engine: a node reading its param ports
-//! through `Io::param`.
+//! ports, run as they run in an engine: a control lane (`ControlLaneNode`)
+//! sending into a node's param port, the node reading it through
+//! `Io::param`.
 //!
 //! What is pinned:
 //!
@@ -10,27 +11,35 @@
 //!   (`an_unmodulated_param_adds_nothing_to_the_plan`, below);
 //! - the port a node advertises is the one its DSP reads, at every width:
 //!   `each_fed_param_is_the_one_the_dsp_reads`, below;
-//! - the edge changes what the node produces, the sum folds base + N offsets
-//!   and clamps, a crossed range is survivable, and the shaper agrees with
-//!   the control-rate shaping: below, and `param_mod_oracle.rs` (bit for bit
-//!   against a reference chain);
-//! - the base is the node's own control, so an authored write — or a
-//!   control-rate target mirroring into that cell — moves the modulated
-//!   param (`an_authored_write_moves_the_base_under_modulation`).
+//! - the edge changes what the node produces, and a crossed range is
+//!   survivable: below;
+//! - the lane's knob is the node's own control, so a write to it moves the
+//!   driven param, the lane's offset riding on it
+//!   (`an_authored_write_moves_the_base_under_modulation`).
+//!
+//! Ported in doc 014 PR 5 from an audio-rate source (`ParamFrom::Audio` of
+//! a `Const`, gone with audio-rate param sources, §10, §11) to the lane an
+//! engine wires; the shaping oracle (`param_mod_oracle.rs`) went with
+//! `ParamModShaping`.
 
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
+use audio_automation::CurveType;
 use tutti_graph::{
-    GraphBuilder, IntoNode, NodeParts, ParamFrom, ParamIn, ParamRange, ParamShaping, Prepare,
-    Renderer, PARAM_DECLICK,
+    Editor, EventOut, GraphBuilder, IntoNode, NodeParts, ParamIn, ParamRange, Prepare, Renderer,
+    PARAM_DECLICK,
 };
-use tutti_nodes::testing::Const;
+use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Wave};
+use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, GateNode,
     LadderFilterNode, LadderType, LimiterNode, ShapeKind, SvfFilterNode, SvfType,
 };
-use tutti_types::graph::OutPort;
-use tutti_types::{Amplitude, ChannelLayout, SampleRate, Samples, UnitParam};
+use tutti_types::{
+    Amplitude, AtomicF32, BeatDuration, ChannelLayout, Depth, NodeKey, PhaseIncrement, SampleRate,
+    Samples, UnitParam,
+};
 
 const FRAMES: usize = 24_000;
 /// Where [`each_fed_param_is_the_one_the_dsp_reads`] starts comparing: far
@@ -48,9 +57,50 @@ fn noise(seed: u32) -> Vec<f32> {
         .collect()
 }
 
+/// The key a test's lane goes in at: no builder key reaches it.
+const LANE: NodeKey = NodeKey(9_000);
+
+/// A constant offset of `depth` × the port's span (doc 014 §4.1).
+fn konst(depth: f32) -> Layer {
+    Layer {
+        id: LayerId(1),
+        clock: Clock::Beats {
+            per_cycle: BeatDuration(1.0),
+            phase: PhaseIncrement(0.0),
+        },
+        wave: Wave::Const(1.0),
+        amount: Amount {
+            depth: Depth(depth),
+            polarity: Polarity::Bipolar,
+            curve: CurveType::Linear,
+        },
+        depth_by: None,
+    }
+}
+
+/// A control lane at [`LANE`] driving `at`, with `knob` as its knob (the
+/// node's own cell, in an engine) and `layers` on top, then a commit: how
+/// an engine drives a param port. Layers scale by the port's range, so a
+/// lane with any is built on the port's range cell (the port's node must
+/// have been committed); one without sends its knob, unranged.
+fn drive(ed: &mut Editor, at: ParamIn, knob: Arc<AtomicF32>, layers: Vec<Layer>) {
+    let range = (!layers.is_empty()).then(|| ed.param_range_cell(at).expect("committed"));
+    let program = ControlProgram::new(None, layers, vec![]).expect("a valid program");
+    let lane = ControlLaneNode::for_unit(at.param, program, Some(knob), range);
+    ed.insert(LANE, "lane", lane);
+    ed.spec_mut().connect_param(
+        at,
+        EventOut {
+            node: LANE,
+            port: 0,
+        },
+    );
+    ed.commit().expect("the lane commits");
+}
+
 /// `node` with every input on a global input carrying noise, its outputs
 /// the graph's, and — when `fed` — `param` driven to exactly `v` by a
-/// constant source through a degenerate range (`v..=v`), whatever the base.
+/// control lane whose knob is at `v`, whatever the node's own control.
 /// Renders `FRAMES` in 100-frame blocks (not a multiple of 64).
 fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
     let shape = node.node.shape();
@@ -66,19 +116,13 @@ fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
     for c in 0..outs {
         g.connect_output(n, c, c);
     }
-    if let Some((param, v)) = fed {
-        let src = g.add(Const::mono(0.0));
-        let at = ParamIn { node: n, param };
-        g.spec_mut().connect_param(
-            at,
-            ParamFrom::Audio(OutPort { node: src, port: 0 }),
-            ParamShaping::Identity,
-        );
-        g.spec_mut().set_param_range(at, ParamRange::new(v, v));
-    }
     let mut r = g
         .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
         .expect("builds");
+    if let Some((param, v)) = fed {
+        let at = ParamIn { node: n, param };
+        drive(r.editor_mut(), at, Arc::new(AtomicF32::new(v)), vec![]);
+    }
     let input: Vec<Vec<f32>> = (0..ins).map(|c| noise(c as u32 + 7)).collect();
     let refs: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
     r.render_input(&refs)
@@ -346,9 +390,9 @@ fn settled(out: &[Vec<f32>]) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
 /// Mutation (run): in the SVF's `process`, read the Q port as its cutoff
 /// (`io.param(1)` for `io.param(0)`) → "svf cutoff" sounds nothing like a
 /// cutoff → fails. Declare `DELAY_PARAMS` in the other order →
-/// fails. (A swapped `param_base` is not seen here, since the degenerate
-/// range drives the value whatever the base: the nodes' own
-/// `the_feed_declares_*` / `the_shape_is_*` tests pin the bases.)
+/// fails. (A swapped `param_base` is not seen here, since the lane drives
+/// the value whatever the base: the nodes' own `the_feed_declares_*` /
+/// `the_shape_is_*` tests pin the bases.)
 #[test]
 fn each_fed_param_is_the_one_the_dsp_reads() {
     for w in [1usize, 2, 6] {
@@ -392,77 +436,77 @@ fn plain_distortion(d: f32) -> Vec<f32> {
     .remove(0)
 }
 
-/// The base is the node's own control: an authored write to it — through
-/// the node's own handle, or a control-rate target mirroring into the same
-/// cell — moves the modulated param, ramped across the next block, and the
-/// modulation keeps riding on it. There is no second base cell to lose.
+/// The lane's knob is the node's own control: a write to that cell (through
+/// the node's own handle, or `ParamSet::set`) moves the driven param, and
+/// the lane's offset keeps riding on it. There is no second base cell to
+/// lose (doc 014 §4.2: one writer per knob).
 ///
-/// Mutation (run): make `DistortionNode::param_base` answer the drive it
-/// was built with (a snapshot, not the cell) → the write never reaches the
-/// modulated drive → fails.
+/// Changed in doc 014 PR 5: the offset was an audio source added to the
+/// node's base by the port; it is now the lane's constant layer (`Wave::Const`,
+/// a twentieth of the port's 0..10 span), added to the knob by the lane.
+///
+/// Mutation (run): the lane building its knob from a snapshot of the cell
+/// (`Arc::new(AtomicF32::new(knob.load()))` in `drive`'s call) → the write
+/// never reaches the driven drive → fails.
 #[test]
 fn an_authored_write_moves_the_base_under_modulation() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let cell = node.drive();
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
-    let src = g.add(Const::mono(0.5));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
-    g.spec_mut().connect_param(
-        ParamIn {
-            node: n,
-            param: UnitParam::Drive,
-        },
-        ParamFrom::Audio(OutPort { node: src, port: 0 }),
-        ParamShaping::Identity,
-    );
+    let at = ParamIn {
+        node: n,
+        param: UnitParam::Drive,
+    };
+    g.spec_mut().set_param_range(at, ParamRange::new(0.0, 10.0));
     let mut r = g
         .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
         .expect("builds");
+    drive(r.editor_mut(), at, Arc::clone(&cell), vec![konst(0.05)]);
     let x = noise(7);
     let before = r.render_input(&[&x[..1_000]]).remove(0);
     let at_1_5 = plain_distortion(1.5);
     for i in PARAM_DECLICK.get()..1_000 {
         assert!(
             (before[i] - at_1_5[i]).abs() < 1e-6,
-            "frame {i}: base 1.0 + 0.5 is drive 1.5"
+            "frame {i}: knob 1.0 + 0.5 is drive 1.5"
         );
     }
     cell.store(3.0, Ordering::Release);
-    // One block to ramp there, then the new base under the same offset.
+    // One block for the lane to hear it, then the new knob under the same
+    // offset.
     let after = r.render_input(&[&x[1_000..]]).remove(0);
     let at_3_5 = plain_distortion(3.5);
-    for i in 100..after.len() {
+    for i in 200..after.len() {
         assert!(
             (after[i] - at_3_5[1_000 + i]).abs() < 1e-6,
-            "frame {}: the authored 3.0 + 0.5 is drive 3.5",
+            "frame {}: the written 3.0 + 0.5 is drive 3.5",
             1_000 + i
         );
     }
 }
 
 /// A crossed range (its min above its max) is ordered, never a panic: a
-/// sum past it clamps to the higher bound.
+/// value past it clamps to the higher bound.
+///
+/// Mutation (run): `ParamRange::ordered` returning `(min, max)` as given →
+/// `f32::clamp` panics on the crossed bounds → fails.
 #[test]
 fn a_crossed_range_is_survivable() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
-    let src = g.add(Const::mono(100.0));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let at = ParamIn {
         node: n,
         param: UnitParam::Drive,
     };
-    g.spec_mut().connect_param(
-        at,
-        ParamFrom::Audio(OutPort { node: src, port: 0 }),
-        ParamShaping::Identity,
-    );
     g.spec_mut().set_param_range(at, ParamRange::new(4.0, 2.0));
     let mut r = g
         .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
         .expect("builds");
+    drive(r.editor_mut(), at, Arc::new(AtomicF32::new(100.0)), vec![]);
     let out = r.render_input(&[&noise(7)]).remove(0);
     let at_4 = plain_distortion(4.0);
     for i in PARAM_DECLICK.get()..FRAMES {
@@ -470,42 +514,56 @@ fn a_crossed_range_is_survivable() {
     }
 }
 
-/// An unmodulated param adds nothing to the plan — no op, no slot, no
-/// param port — and connecting and disconnecting one is a commit that
-/// keeps the unit (the same generation throughout: nothing is rebuilt, so a
+/// An undriven param adds nothing to the plan — no op, no slot, no param
+/// port — and connecting and disconnecting a lane is a commit that keeps
+/// the unit (the same generation throughout: nothing is rebuilt, so a
 /// stateful node's state would survive), with no step reaching the output.
 ///
 /// Mutation (run): in `ParamState::port`, drop the declick (`fading =
 /// false`) → the connect steps the drive from 1 to 5 in one frame, a step
-/// of 0.6 on a steady tone → fails.
+/// of 0.6 on a steady tone → fails. Drop the `resync` after connecting →
+/// the steady lane sends nothing, the port reads its base → "the
+/// connection was heard" fails.
 #[test]
 fn an_unmodulated_param_adds_nothing_to_the_plan() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
-    let src = g.add(Const::mono(4.0));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let mut r: Renderer = g
         .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
         .expect("builds");
+    // The lane is in the graph, unconnected, from the start.
+    let lane = ControlLaneNode::for_unit(
+        UnitParam::Drive,
+        ControlProgram::default(),
+        Some(Arc::new(AtomicF32::new(5.0))),
+        None,
+    );
+    let controls = r.editor_mut().insert(LANE, "lane", lane);
+    r.editor_mut().commit().expect("commits");
+    // A steady tone, so a jump in drive is a jump in level.
+    let tone = vec![0.25f32; 600];
+    let mut out = r.render_input(&[&tone]).remove(0);
     let plan = r.executor().plan().expect("a plan");
     assert!(plan.param_ports().is_empty(), "no param step at all");
     let gen = plan.unit(n).expect("the distortion").gen;
 
-    // A steady tone, so a jump in drive is a jump in level.
-    let tone = vec![0.25f32; 600];
-    let mut out = r.render_input(&[&tone]).remove(0);
     let at = ParamIn {
         node: n,
         param: UnitParam::Drive,
     };
-    let from = ParamFrom::Audio(OutPort { node: src, port: 0 });
-    r.editor_mut()
-        .spec_mut()
-        .connect_param(at, from, ParamShaping::Identity);
+    let from = EventOut {
+        node: LANE,
+        port: 0,
+    };
+    r.editor_mut().spec_mut().connect_param(at, from);
     r.editor_mut().commit().expect("connects");
+    // The lane has sent its knob already, into nothing: a re-wired lane
+    // re-sends on request (doc 014 §5.2).
+    controls.resync();
     out.extend(r.render_input(&[&tone]).remove(0));
-    r.editor_mut().spec_mut().disconnect_param(at, from);
+    assert!(r.editor_mut().spec_mut().disconnect_param(at, from));
     r.editor_mut().commit().expect("disconnects");
     out.extend(r.render_input(&[&tone]).remove(0));
 
@@ -533,36 +591,31 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
     assert_eq!(back, base, "back on the base");
 }
 
-/// A fork (an export) modulates as the live graph does: the modulation is
-/// part of the graph value it copies, the modulator is upstream of the node
-/// it modulates (so it is forked too, even when no output reaches it), and
-/// the base is the forked unit's own control. From the fork's first frame:
-/// a forked unit's first block is not a change of sources, so nothing fades
-/// in.
+/// A fork (an export) drives as the live graph does: the port's source is
+/// part of the graph value it copies, the lane is upstream of the node it
+/// drives (so it is forked too, even when no output reaches it), and the
+/// fork's lane is fresh, so it sends its value on its first block (doc 014
+/// §10's fork requirement). From the fork's first frame: a forked unit's
+/// first block is not a change of sources, so nothing fades in.
 ///
 /// Mutation (run): drop `fork.params` from `Editor::fork` → the fork plays
 /// the distortion at its base drive → fails. Drop the param sources from
-/// `upstream` → the modulator is not forked and the fork refuses to compile
-/// the modulation → fails. Declick a port's first block (drop the
-/// `st.fresh` branch in `ParamState::port`) → the first frames fade in from
-/// drive 1 → fails.
+/// `upstream` → the lane is not forked and the fork refuses to compile the
+/// port → fails. Declick a port's first block (drop the `st.fresh` branch
+/// in `ParamState::port`) → the first frames fade in from drive 1 → fails.
 #[test]
 fn a_fork_modulates_as_the_live_graph_does() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
-    let src = g.add(Const::mono(2.0));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
-    g.spec_mut().connect_param(
-        ParamIn {
-            node: n,
-            param: UnitParam::Drive,
-        },
-        ParamFrom::Audio(OutPort { node: src, port: 0 }),
-        ParamShaping::Identity,
-    );
     let prepare = Prepare::new(SampleRate(48_000.0), Samples(100));
-    let (editor, _exec) = g.build(prepare).expect("builds");
+    let (mut editor, _exec) = g.build(prepare).expect("builds");
+    let at = ParamIn {
+        node: n,
+        param: UnitParam::Drive,
+    };
+    drive(&mut editor, at, Arc::new(AtomicF32::new(3.0)), vec![]);
     let (fed, fexec) = editor
         .fork(
             tutti_graph::ForkTarget::Master,
@@ -577,7 +630,7 @@ fn a_fork_modulates_as_the_live_graph_does() {
     for i in 0..2_000 {
         assert!(
             (out[i] - at_3[i]).abs() < 1e-6,
-            "frame {i}: the fork plays base 1 + 2, drive 3"
+            "frame {i}: the fork plays the lane's drive 3"
         );
     }
 }

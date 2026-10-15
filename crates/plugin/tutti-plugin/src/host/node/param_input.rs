@@ -12,9 +12,8 @@
 use tutti_graph::{Cx, Event, EventKind, Offset};
 use tutti_types::ParamAddr;
 
-use crate::protocol::ParameterQueue;
+use crate::protocol::{ParamAddress, ParamId, ParameterQueue};
 
-use super::automation_node;
 use super::param_delivery::ParamDelivery;
 use super::segment_points::SegmentPoints;
 
@@ -92,10 +91,8 @@ pub(crate) fn take(
                 let ParamAddr::Id(id) = ramp.addr() else {
                     continue;
                 };
-                let (Some(address), Some(value)) = (
-                    automation_node::address(id, indexed),
-                    ramp.foreign_target(id),
-                ) else {
+                let (Some(address), Some(value)) = (address(id, indexed), ramp.foreign_target(id))
+                else {
                     continue;
                 };
                 // A ramp stops a segment in flight on its parameter.
@@ -109,7 +106,7 @@ pub(crate) fn take(
                 let ParamAddr::Id(id) = seg.addr() else {
                     continue;
                 };
-                let Some(address) = automation_node::address(id, indexed) else {
+                let Some(address) = address(id, indexed) else {
                     continue;
                 };
                 segments.start(params, address, seg, abs(o), frame, grid(abs(o)));
@@ -120,6 +117,18 @@ pub(crate) fn take(
         }
     }
     segments.points(params, abs(done), abs(from + n), at + done - from, grid);
+}
+
+/// The address a ramp's or segment's number names on a plugin that
+/// addresses its parameters by VST2 index (`indexed`) or by opaque handle:
+/// the plugin reads a foreign lane's `u32` (`ParamAddr::Id`) back in its
+/// own model.
+fn address(id: u32, indexed: bool) -> Option<ParamAddress> {
+    if indexed {
+        i32::try_from(id).ok().map(ParamAddress::Index)
+    } else {
+        Some(ParamAddress::Opaque(ParamId::new(id)))
+    }
 }
 
 #[cfg(test)]

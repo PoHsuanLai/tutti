@@ -282,20 +282,6 @@ pub(crate) enum ShapeTag {
     Exp,
 }
 
-impl ShapeTag {
-    /// The tag for a byte the fork tap stored (`Linear` for any other).
-    pub(crate) fn from_u8(b: u8) -> Self {
-        match b {
-            1 => Self::Hold,
-            2 => Self::PowerIn,
-            3 => Self::PowerOut,
-            4 => Self::PowerInOut,
-            5 => Self::Exp,
-            _ => Self::Linear,
-        }
-    }
-}
-
 /// A curve segment of one parameter: from a start value to an end value
 /// along a [`SegmentShape`], over a length in frames, evaluated by the param
 /// port **per frame inside the block** — sample-accurate non-linear

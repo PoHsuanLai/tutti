@@ -54,7 +54,7 @@ use crate::cost::{Schedule, Work};
 use crate::fade::Fade;
 use crate::io::PortKind;
 use crate::node::{InPlaceMask, Prepare, Shape};
-use crate::param::{ParamFrom, ParamIn, ParamShaping};
+use crate::param::ParamIn;
 use crate::spec::{EventIn, EventOut};
 
 /// The audio slot every unconnected or `Source::Zero` input reads.
@@ -110,17 +110,10 @@ pub enum DelayKey {
         /// The source.
         from: EventOut,
     },
-    /// An audio source of a modulated param, delayed to the param's node's
+    /// The event source of a driven param, delayed to the param's node's
     /// arrival (see [`GraphSpec::connect_param`](crate::GraphSpec::connect_param)).
-    ParamAudio {
-        /// The param port.
-        at: ParamIn,
-        /// The audio output that drives it.
-        from: OutPort,
-    },
-    /// An event source of a modulated param, delayed likewise. Its pending
-    /// events are not flushed when the key disappears: the source was
-    /// disconnected, and the port crossfades away from it.
+    /// Its pending events are not flushed when the key disappears: the
+    /// source was disconnected, and the port crossfades away from it.
     ParamEvent {
         /// The param port.
         at: ParamIn,
@@ -362,7 +355,7 @@ pub enum Op {
         event_out: Span,
         /// Channels whose output slot *is* their input slot.
         in_place: InPlaceMask,
-        /// The node's modulated params, in port order (into
+        /// The node's driven params, in port order (into
         /// [`Plan::param_ports`]); a declared param not listed reads its
         /// base. Their sources are read by this op, before the node runs.
         params: Span,
@@ -392,11 +385,11 @@ pub enum Op {
     },
 }
 
-/// One modulated param port of a node op: the fused `ParamMod` step the op
+/// One driven param port of a node op: the fused `ParamMod` step the op
 /// runs before its node (see
 /// [`GraphSpec::connect_param`](crate::GraphSpec::connect_param)).
 ///
-/// It carries no range: the sum is clamped to the port's live range, a
+/// It carries no range: the value is clamped to the port's live range, a
 /// control the executor reads per block
 /// ([`Editor::set_param_range`](crate::Editor::set_param_range)), so moving a
 /// range never changes the plan.
@@ -407,33 +400,12 @@ pub struct ParamPortOp {
     pub port: u16,
     /// The param.
     pub param: UnitParam,
-    /// Its sources' signature: equal across plans exactly when the sources
-    /// (outputs and shapings) are, so the executor crossfades a port whose
-    /// sources changed and leaves one that only moved slots alone.
-    pub sig: u64,
-    /// Its sources, in source order (into [`Plan::param_sources`]).
-    pub sources: Span,
-}
-
-/// Where one param source is read from this block.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ParamSlot {
-    /// An audio slot: one value per frame.
-    Audio(u32),
-    /// An event slot: its `ParamRamp`s.
-    Event(u32),
-}
-
-/// One source of a [`ParamPortOp`].
-#[derive(Clone, Debug, PartialEq)]
-pub struct ParamSourceOp {
-    /// The source it is: what its running state (an event source's ramp,
-    /// the last value a PDC delay is filled with) is kept by.
-    pub from: ParamFrom,
-    /// Where it is read from.
-    pub slot: ParamSlot,
-    /// How its value becomes an offset.
-    pub shaping: ParamShaping,
+    /// The event output that drives it: what its running state (the
+    /// source's ramp) is kept by, so the executor crossfades a port whose
+    /// source changed and leaves one that only moved slots alone.
+    pub from: EventOut,
+    /// The event slot it reads its source's events from.
+    pub slot: u32,
 }
 
 /// How the executor borrows one node op's buffers — decided at compile time,
@@ -595,7 +567,7 @@ pub(crate) struct NodeRec {
     pub(crate) event_borrows: Span,
     /// How the call borrows its buffers.
     pub(crate) form: Form,
-    /// The node's modulated params (into [`Plan::param_ports`]).
+    /// The node's driven params (into [`Plan::param_ports`]).
     pub(crate) params: Span,
     /// Its declared params, which the step walks in port order.
     pub(crate) declared: crate::param::ParamPorts,
@@ -861,7 +833,6 @@ pub struct Plan {
     pub(crate) event_values: Vec<Value>,
     pub(crate) value_readers: Vec<u32>,
     pub(crate) param_ports: Vec<ParamPortOp>,
-    pub(crate) param_sources: Vec<ParamSourceOp>,
     /// The node ops, lowered for the executor. Derived from the fields
     /// above; `verify` checks each record against its op.
     pub(crate) nodes: NodeTables,
@@ -1063,11 +1034,6 @@ impl Plan {
     /// [`Op::Node`] indexes this).
     pub fn param_ports(&self) -> &[ParamPortOp] {
         &self.param_ports
-    }
-
-    /// Every param source ([`ParamPortOp::sources`] indexes this).
-    pub fn param_sources(&self) -> &[ParamSourceOp] {
-        &self.param_sources
     }
 
     /// The unit compiled for `key`.

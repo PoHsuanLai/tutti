@@ -96,9 +96,11 @@
 //!   keeps neither the live transport bindings nor running state (delay
 //!   lines, a sounding voice).
 //! - **Controls are a snapshot** at the fork: a parameter moved while the
-//!   render runs does not reach it. A modulated parameter renders its
-//!   authored base, not the live modulation (an LFO's offset); a hosted
-//!   plugin renders its saved state plus its authored automation.
+//!   render runs does not reach it. A modulated parameter renders the
+//!   same modulation as live: its control lane is a graph node, forked
+//!   with the graph, and sends its value on the fork's first block; a
+//!   hosted plugin renders its saved state plus the lanes on its event
+//!   input.
 //! - **A hosted plugin is forked by state transfer**: a fresh instance in a
 //!   new `plugin-server` process, loaded with the live one's state, told it
 //!   is rendering offline. Its MIDI clip comes with it, rebound onto the

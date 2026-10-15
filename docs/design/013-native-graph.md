@@ -1203,7 +1203,11 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    program's parameters, needed their own design and tests. (Since landed:
    [below](#in-process-vst2-forks-by-state-transfer).)
 
-   Two rules from its review. **Modulation does not reach a fork.** A
+   Two rules from its review. (The first is history: doc 014 PR 5 deleted
+   `PluginParamTarget` and the router, and modulation now reaches a fork,
+   as control lanes that are graph nodes and send their value on the
+   fork's first block; 014 §10, §12 "PR 5: landed".) **Modulation does not
+   reach a fork.** A
    param-automation curve can be a live `PluginParamTarget` the mod router
    writes every frame; a fork freezes each curve (`Curve::frozen`, a new
    defaulted method in tutti-mod) and a target freezes to its **authored**
@@ -4649,6 +4653,16 @@ under both.
 > is a lane in the graph an export forks (014 §8.2 "As landed (PR 4b)",
 > §12 "PR 4b"). The frame-rate driver and `plugin_bind_params` are
 > unscheduled (`modulation::legacy`); `ParamSet::set_authored` is gone.
+>
+> **Doc 014 PR 5 landed** the deletion, and this section is now history
+> (014 §10, §12 "PR 5: landed"). A param port has at most one source, an
+> event output (`connect_param(at, from: EventOut)`); the fused step is
+> `clamp(held, range)`. Gone: audio sources (`ParamFrom::Audio`; audio-rate
+> modulation is a node's own audio input, 014 §11), shapings and their LUT,
+> the source list and `MAX_PARAM_SOURCES`, `ParamTap` and the fork seeds (a
+> fresh source sends its value on its first block), `ParamSet::authored`,
+> and the frame-rate driver. Where the record below describes those, it
+> describes what was.
 
 **What landed.**
 

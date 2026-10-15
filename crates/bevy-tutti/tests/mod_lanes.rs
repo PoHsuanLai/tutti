@@ -886,3 +886,187 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
         .lane(cutoff)
         .is_some());
 }
+
+// ------------------------------------- ported from the old driver --
+//
+// Doc 014 PR 5 deleted the frame-rate driver (`modulation::legacy`) and its
+// suites (`mod_value_path.rs`, `mod_audio_rate.rs`,
+// `graph_value_modulation.rs`). The properties below were theirs and still
+// hold of the declarations; each is asserted on the lanes now.
+
+/// The value probe 0 settles to, past the connect's declick: frames
+/// `DECLICK + STEP..` of a 1024-frame render must all read it.
+fn assert_holds(out: &[f32], want: f32, what: &str) {
+    for (f, &v) in out.iter().enumerate().skip(DECLICK + STEP) {
+        assert!(
+            (v - want).abs() < 1e-3,
+            "{what}: frame {f} reads {v}, not {want}"
+        );
+    }
+}
+
+/// **Two routes onto one param sum, and a disabled route adds nothing.**
+/// Two macros at 1 on a cutoff (knob 500 in `0..=1000`) at depths 0.1 and
+/// 0.2 add 100 and 200: 800. Disabling the second (`enabled: false`) leaves
+/// 600; enabling it again, 800.
+///
+/// Ported from `mod_value_path.rs`'s
+/// `two_routes_onto_one_param_sum_instead_of_overwriting` and
+/// `a_disabled_route_contributes_nothing`.
+///
+/// Mutations (run, PR 5), each fails: `Declared::collect` ignoring
+/// `enabled` (the disabled route still adds: 800 for 600); the lane's
+/// program keeping only its last layer (`ControlProgram::new` given
+/// `layers.split_off(len - 1)`: 700 for 800).
+#[test]
+fn two_routes_on_one_param_sum_and_a_disabled_one_adds_nothing() {
+    let (mut app, mut side) = app(1);
+    let probe = spawn(&mut app, ProbeUnit::new(500.0));
+    master(&mut app, &[probe]);
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(cutoff, 0.0, 1_000.0));
+    let a = world.spawn(ModSource::new(Macro(1.0))).id();
+    let b = world.spawn(ModSource::new(Macro(1.0))).id();
+    world.spawn(ModRoute::new(a, cutoff).with_depth(Depth(0.1)));
+    let second = world
+        .spawn(ModRoute::new(b, cutoff).with_depth(Depth(0.2)))
+        .id();
+    settle(&mut app);
+    assert_holds(&render(&mut side, 1_024, 128)[0], 800.0, "both routes");
+
+    app.world_mut()
+        .get_mut::<ModRoute>(second)
+        .expect("the route")
+        .enabled = false;
+    settle(&mut app);
+    assert_holds(&render(&mut side, 1_024, 128)[0], 600.0, "one disabled");
+
+    app.world_mut()
+        .get_mut::<ModRoute>(second)
+        .expect("the route")
+        .enabled = true;
+    settle(&mut app);
+    assert_holds(&render(&mut side, 1_024, 128)[0], 800.0, "enabled again");
+}
+
+/// A host's own source kind: a macro at half its setting.
+struct HalfMacro(f32);
+
+impl bevy_tutti::modulation::ModSourceKind for HalfMacro {
+    fn declare(&self) -> tutti_mod::Source {
+        tutti_mod::Source::Macro {
+            value: self.0 / 2.0,
+        }
+    }
+}
+
+/// **A host's own source kind drives a param, its config included.** A
+/// `HalfMacro(1.0)` (raw 0.5) routed at depth 0.4 onto a cutoff (knob 500
+/// in `0..=1000`) adds 200, beside a built-in macro at depth 0.1 (100):
+/// 800. Replacing its component with `HalfMacro(-1.0)` moves it to 400.
+///
+/// Ported from `mod_value_path.rs`'s `a_custom_kind_drives_a_param`,
+/// `the_kinds_own_config_reaches_the_modulator` and
+/// `a_built_in_and_a_custom_kind_coexist`. (`registering_a_kind_twice_is_
+/// idempotent` went with the registration: a `ModSource` holds its kind,
+/// and nothing is registered.)
+///
+/// Mutation (run, PR 5): `Declared::collect` declaring every source as a
+/// macro at 1 (`Source::Macro { value: 1.0 }` for `s.kind.declare()`) →
+/// 900 → fails.
+#[test]
+fn a_hosts_own_source_kind_drives_a_param() {
+    let (mut app, mut side) = app(1);
+    let probe = spawn(&mut app, ProbeUnit::new(500.0));
+    master(&mut app, &[probe]);
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(cutoff, 0.0, 1_000.0));
+    let half = world.spawn(ModSource::new(HalfMacro(1.0))).id();
+    let built_in = world.spawn(ModSource::new(Macro(1.0))).id();
+    world.spawn(ModRoute::new(half, cutoff).with_depth(Depth(0.4)));
+    world.spawn(ModRoute::new(built_in, cutoff).with_depth(Depth(0.1)));
+    settle(&mut app);
+    assert_holds(&render(&mut side, 1_024, 128)[0], 800.0, "the host's kind");
+
+    app.world_mut()
+        .entity_mut(half)
+        .insert(ModSource::new(HalfMacro(-1.0)));
+    settle(&mut app);
+    assert_holds(&render(&mut side, 1_024, 128)[0], 400.0, "its config moved");
+}
+
+/// **A route declared before its target's node binds once the node is
+/// in.** The range and the route name an entity with no node yet: nothing
+/// is refused, and no lane is built. Once the entity gets its node
+/// (`insert_audio_node`), the cutoff (knob 500 in `0..=1000`) reads the
+/// macro's `+300`.
+///
+/// Ported from `mod_audio_rate.rs`'s
+/// `a_route_declared_before_its_sinks_node_still_binds`.
+///
+/// Mutation (run, PR 5): `Modulation::apply` refusing a target it cannot
+/// resolve (`WrongTarget` for `unresolved_targets.push`) → the nodeless
+/// target is refused → fails.
+#[test]
+fn a_route_declared_before_its_targets_node_binds_once_it_is_in() {
+    use bevy_tutti::graph::InsertAudioNode;
+
+    let (mut app, mut side) = app(1);
+    let entity = app.world_mut().spawn_empty().id();
+    let cutoff = ParamRef::unit(entity, UnitParam::Cutoff);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(cutoff, 0.0, 1_000.0));
+    let offset = world.spawn(ModSource::new(Macro(1.0))).id();
+    world.spawn(ModRoute::new(offset, cutoff).with_depth(Depth(0.3)));
+    for _ in 0..3 {
+        app.update();
+    }
+    let state = app.world().resource::<ModulationState>();
+    assert_eq!(state.refusal(), None, "a target with no node is no error");
+    assert!(state.lane(cutoff).is_none(), "and has no lane");
+
+    app.world_mut()
+        .commands()
+        .entity(entity)
+        .insert_audio_node(ProbeUnit::new(500.0));
+    app.world_mut().flush();
+    master(&mut app, &[entity]);
+    settle(&mut app);
+    assert_holds(&render(&mut side, 1_024, 128)[0], 800.0, "bound late");
+}
+
+/// **A bus strip's volume and pan take lanes.** The strip declares its
+/// params itself (`STRIP_PARAMS`), so a route onto either resolves to a
+/// lane on its port, with nothing refused.
+///
+/// Ported from `mod_audio_rate.rs`'s
+/// `a_bus_strips_volume_and_pan_reach_audio_rate` (its audio-rate half
+/// went with `ParamFrom::Audio`, doc 014 §11).
+///
+/// Mutation (run, PR 5): `Pan` dropped from `STRIP_PARAMS` → the route is
+/// refused (`NoSuchParam`) → fails.
+#[test]
+fn a_bus_strips_volume_and_pan_take_lanes() {
+    let (mut app, _side) = app(2);
+    let strip = spawn(
+        &mut app,
+        tutti_nodes::BusStripNode::with_channels(tutti_types::ChannelLayout::STEREO),
+    );
+    let offset = app.world_mut().spawn(ModSource::new(Macro(0.5))).id();
+    for param in [UnitParam::Volume, UnitParam::Pan] {
+        let at = ParamRef::unit(strip, param);
+        let world = app.world_mut();
+        world.spawn(ModRange::new(at, 0.0, 1.0));
+        world.spawn(ModRoute::new(offset, at).with_depth(Depth(0.5)));
+    }
+    settle(&mut app);
+    let state = app.world().resource::<ModulationState>();
+    for param in [UnitParam::Volume, UnitParam::Pan] {
+        assert!(
+            state.lane(ParamRef::unit(strip, param)).is_some(),
+            "{param:?} has its lane"
+        );
+    }
+}

@@ -126,8 +126,8 @@ impl Node for PolySynth {
 impl ParamNode for PolySynth {
     /// `Volume` (the master gain, as a linear amplitude), and — only when
     /// this synth has a unison engine — `Detune` (cents) and `StereoSpread`
-    /// (0..1): the cells the synth reads once per block, and the ones a
-    /// control-rate modulation route writes.
+    /// (0..1): the cells the synth reads once per block, which a host
+    /// writes (and a control lane takes as its knob).
     fn param_set(&self) -> ParamSet {
         let set = ParamSet::builder().param(UnitParam::Volume, self.volume_atomic());
         match (self.detune_atomic(), self.spread_atomic()) {

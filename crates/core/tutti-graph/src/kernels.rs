@@ -58,35 +58,15 @@ impl AudioRing {
             .copied()
     }
 
-    /// A ring of `len` already full of `value`, as if it had been fed
-    /// `value` forever: a param source's delay that appears under a running
-    /// port (see `GraphSpec::connect_param`).
-    pub(crate) fn filled(len: Samples, value: f32) -> Self {
-        Self {
-            buf: vec![value; len.get().max(1)],
-            pos: 0,
-            quiet: if value == 0.0 { usize::MAX } else { 0 },
-        }
-    }
-
     /// Change the length, keeping the most recent `min(old, new)` inputs.
     /// Control side: allocates.
     pub(crate) fn retune(&mut self, len: Samples) {
-        self.retune_padded(len, 0.0);
-    }
-
-    /// [`retune`](Self::retune), padding a longer ring's oldest end with
-    /// `pad` instead of silence.
-    pub(crate) fn retune_padded(&mut self, len: Samples, pad: f32) {
         let m = len.get().max(1);
         let n = self.buf.len();
         if m == n {
             return;
         }
-        if pad != 0.0 {
-            self.quiet = 0;
-        }
-        let mut next = vec![pad; m];
+        let mut next = vec![0.0; m];
         let keep = n.min(m);
         for (slot, x) in next[m - keep..]
             .iter_mut()
@@ -405,24 +385,6 @@ mod tests {
         let mut out = vec![0.0; 4];
         r.run(&[0.0; 4], &mut out, false);
         assert_eq!(out, vec![0.0, 0.0, 0.0, 0.0]);
-    }
-
-    /// A filled ring outputs its value for its length, then its input; a
-    /// padded retune outputs the pad before the kept history.
-    ///
-    /// Mutation (run): `filled` filling with 0 → the first three outputs
-    /// are 0 → fails. `retune_padded` padding with 0 → the grown ring's
-    /// first output is 0 → fails.
-    #[test]
-    fn a_filled_ring_holds_its_value_and_a_padded_retune_its_pad() {
-        let mut r = AudioRing::filled(Samples(3), 0.5);
-        let mut out = vec![0.0; 5];
-        r.run(&[1.0, 2.0, 3.0, 4.0, 5.0], &mut out, false);
-        assert_eq!(out, vec![0.5, 0.5, 0.5, 1.0, 2.0]);
-        r.retune_padded(Samples(5), 9.0);
-        let mut out = vec![0.0; 5];
-        r.run(&[0.0; 5], &mut out, false);
-        assert_eq!(out, vec![9.0, 9.0, 3.0, 4.0, 5.0]);
     }
 
     /// An event is delivered `len` frames later, in whichever block that is.

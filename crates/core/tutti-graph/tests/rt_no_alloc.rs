@@ -656,15 +656,15 @@ impl Node for RampEvery {
 /// (applying allocates by design); the declicks they start, and every block
 /// that reads a moved range, run inside it.
 ///
-/// Mutation (run): in `ParamState::port`, copy an audio source into a
-/// `Vec` per block → aborts. Rebuild the ramp buffer per block
+/// Mutation (run): in `ParamState::port`, copy the source's events into
+/// a `Vec` per block → aborts. Rebuild the ramp buffer per block
 /// (`self.ramp_buf = vec![0.0; frames]`) → aborts. Box the live range as it
 /// is read (`*Box::new(r.load(k))`) → aborts (in the first phase already:
 /// the range is read every block a port is modulated, moved or not).
 /// Allocate where `render_ramps` starts a segment (a `Vec` per segment
 /// event) → aborts.
 fn modulated_params_are_allocation_free_on(workers: usize) {
-    use tutti_graph::{ParamFrom, ParamIn, ParamShaping, ShapeLut};
+    use tutti_graph::ParamIn;
     let (mut ed, mut exec) = Editor::new(prepare(256));
     use_pool(&mut exec, workers);
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
@@ -674,20 +674,11 @@ fn modulated_params_are_allocation_free_on(workers: usize) {
         "lag",
         Unforkable(TestNode::new(Kind::Lag { latency: 31 })),
     );
-    ed.insert(
-        NodeKey(3),
-        "gain",
-        Unforkable(TestNode::new(Kind::Gain {
-            gain: 0.5,
-            width: 1,
-        })),
-    );
     ed.insert(NodeKey(4), "ramps", Unforkable(RampEvery));
     {
         let t = &mut ed.spec_mut().topology;
         t.edges.insert(at(2, 0), Edge::Direct(Source::Global(0)));
         t.edges.insert(at(1, 0), from(2, 0));
-        t.edges.insert(at(3, 0), Edge::Direct(Source::Global(0)));
         t.outputs = vec![Source::Node(OutPort {
             node: NodeKey(1),
             port: 0,
@@ -701,20 +692,13 @@ fn modulated_params_are_allocation_free_on(workers: usize) {
         node: NodeKey(1),
         param: tutti_types::UnitParam::Q,
     };
-    let gain = ParamFrom::Audio(OutPort {
-        node: NodeKey(3),
+    // The ramps are the early path: the sink sits behind the lag's PDC, so
+    // the plan delays its event source.
+    let ramps = EventOut {
+        node: NodeKey(4),
         port: 0,
-    });
-    ed.spec_mut()
-        .connect_param(cut, gain, ParamShaping::Lut(ShapeLut::from_fn(|x| x * x)));
-    ed.spec_mut().connect_param(
-        cut,
-        ParamFrom::Events(EventOut {
-            node: NodeKey(4),
-            port: 0,
-        }),
-        ParamShaping::Identity,
-    );
+    };
+    ed.spec_mut().connect_param(cut, ramps);
     ed.commit().expect("commits");
 
     let input: Vec<f32> = (0..256).map(|i| (i % 13) as f32 / 13.0).collect();
@@ -735,11 +719,11 @@ fn modulated_params_are_allocation_free_on(workers: usize) {
     );
     assert_no_alloc::assert_no_alloc(|| run(&mut exec));
 
-    // A connection made (Q, behind the lag's PDC: the gain is the early
+    // A connection made (Q, behind the lag's PDC: the ramps are the early
     // path) and one broken: both declick inside the gate.
     ed.collect();
-    ed.spec_mut().connect_param(q, gain, ParamShaping::Identity);
-    ed.spec_mut().disconnect_param(cut, gain);
+    ed.spec_mut().connect_param(q, ramps);
+    ed.spec_mut().disconnect_param(cut, ramps);
     ed.commit().expect("commits");
     exec.apply_pending();
     assert_eq!(
@@ -771,7 +755,7 @@ fn modulated_params_are_allocation_free_on(workers: usize) {
     assert!(
         plan.delays()
             .iter()
-            .any(|d| matches!(d.key, tutti_graph::DelayKey::ParamAudio { .. })),
+            .any(|d| matches!(d.key, tutti_graph::DelayKey::ParamEvent { .. })),
         "a param source was delayed by PDC inside the gate"
     );
 }

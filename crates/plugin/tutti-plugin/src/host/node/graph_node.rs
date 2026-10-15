@@ -53,8 +53,8 @@ impl Node for PluginClient<Bound> {
     /// at (so a chunk late, as the audio is; the declared latency covers
     /// both).
     ///
-    /// Its event input carries parameter ramps too (a
-    /// [`PluginAutomation`](super::PluginAutomation) node's) and chords and
+    /// Its event input carries parameter ramps and segments too (a foreign
+    /// control lane's, `ControlLaneNode::for_foreign`) and chords and
     /// scales (a `HarmonyNode`'s, for a plugin that takes sequencer context).
     ///
     /// **Not `legacy`**, though one input is still read out of band: a clip
@@ -261,8 +261,8 @@ impl Chunks for PluginChunks<'_> {
     }
 
     /// The event input's events on these frames join the chunk at the
-    /// chunk's frames: MIDI to its MIDI, a parameter ramp (from a
-    /// [`PluginAutomation`](super::PluginAutomation) node) to its parameter
+    /// chunk's frames: MIDI to its MIDI, a parameter ramp or segment (from
+    /// a foreign control lane, `ControlLaneNode::for_foreign`) to its parameter
     /// points, in this plugin's address model (a ramp as its target, a curve
     /// segment as points along it until it lands: a plugin takes point
     /// values; see `segment_points`), and a chord or scale to its

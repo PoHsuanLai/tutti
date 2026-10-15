@@ -428,32 +428,40 @@ impl AudioGraphRes {
         self.read().declares_param(node, param)
     }
 
-    /// Drives `node`'s declared `param` from exactly `sources` — each a node's
-    /// output 0, through its shaping — summed onto the param's own control
-    /// (its base) and clamped to `range`, per frame, by the graph's fused
-    /// param step. Replaces whatever modulated it; the change crossfades
-    /// (`PARAM_DECLICK`) rather than stepping. Takes effect with the frame's
-    /// commit, like any edge. A call that changes only `range` is a control
-    /// move, not a rewire (`tutti_graph::Editor::set_param_range`): no commit
-    /// is needed, and the running node clamps to the new range from its next
-    /// block, stepping to it (a range move is not declicked).
+    /// Drives `node`'s declared `param` from `source`'s event output 0 — a
+    /// control lane, or any node sending param events (ramps, segments) —
+    /// clamped to `range` by the graph's fused param step; `None` leaves the
+    /// port reading its base under the range. Replaces whatever drove it;
+    /// the change crossfades (`PARAM_DECLICK`) rather than stepping. Takes
+    /// effect with the frame's commit, like any edge. A call that changes
+    /// only `range` is a control move, not a rewire
+    /// (`tutti_graph::Editor::set_param_range`): no commit is needed, and the
+    /// running node clamps to the new range from its next block, stepping to
+    /// it (a range move is not declicked).
+    ///
+    /// A new source starts at rest: the port holds its base until the
+    /// source sends. A source that sends only on a change (a control lane
+    /// whose knob is still) must be asked to send again once it is wired
+    /// here (`LaneControls::resync`), and a hand-written one must send its
+    /// value on its first block, so a fork of the graph reads it from frame
+    /// 0 (doc 014 §10).
+    ///
+    /// Audio does not drive a param (doc 014 §11): a node that wants a
+    /// signal-rate input takes it as one of its own audio inputs.
     ///
     /// # Errors
     ///
     /// Refused, changing nothing, with the error the commit would otherwise
     /// fail on (every commit after it, too): a NaN bound
-    /// (`GraphInvalid::BadParamRange`), more than
-    /// [`MAX_PARAM_SOURCES`](tutti_graph::MAX_PARAM_SOURCES) sources
-    /// (`TooManyParamSources`), or one node listed twice
-    /// (`UnsortedParamSources`: sum its shapings into one first).
+    /// (`GraphInvalid::BadParamRange`).
     pub fn set_param_mod(
         &mut self,
         node: AudioNode,
         param: UnitParam,
-        sources: &[(AudioNode, tutti_graph::ParamShaping)],
+        source: Option<AudioNode>,
         range: tutti_graph::ParamRange,
     ) -> Result<(), tutti_graph::GraphInvalid> {
-        self.write().set_param_mod(node, param, sources, range)
+        self.write().set_param_mod(node, param, source, range)
     }
 
     /// Stops modulating `node`'s `param`: it reads its own control again,

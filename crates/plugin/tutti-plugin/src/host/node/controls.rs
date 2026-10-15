@@ -37,7 +37,6 @@ use tutti_plugin_types::PluginTail;
 use tutti_types::Latency;
 
 use super::batcher::MAX_CHUNK;
-use super::{PluginAutomation, PluginParamTarget, TimedParam};
 
 /// A plugin node's host-side controls: its input slots, its meter, latency
 /// and tail cells, and its sample rate — every one shared with the node it
@@ -248,34 +247,6 @@ impl PluginControls {
     /// Whether the plugin addresses its parameters by VST2 index.
     pub(super) fn indexed(&self) -> bool {
         self.indexed
-    }
-
-    /// Creates this plugin's parameter automation node.
-    ///
-    /// The node is an event source sampling one curve per parameter at each
-    /// block's beats; insert it in the graph and wire it to the plugin node's
-    /// event input. The
-    /// automation reaches the plugin through the graph, so its delay
-    /// compensation covers it. An address of the other model than this
-    /// plugin's (a VST2 index on a CLAP plugin) is refused, logged. Replace
-    /// the curves through the node's [`AutomationControls`](super::AutomationControls).
-    pub fn automation(&self, params: impl IntoIterator<Item = TimedParam>) -> PluginAutomation {
-        PluginAutomation::new(params, self.indexed)
-    }
-
-    /// Build an accumulator for one of the plugin's params. See
-    /// [`PluginClient::param_target`](super::PluginClient::param_target) — it
-    /// stores nothing, so the caller keeps the returned `Arc` for both roles
-    /// (a modulation target, and a [`TimedParam`]'s curve for
-    /// [`automation`](Self::automation)).
-    pub fn param_target(
-        &self,
-        _param_id: u32,
-        base: f32,
-        min: f32,
-        max: f32,
-    ) -> Arc<PluginParamTarget> {
-        Arc::new(PluginParamTarget::new(base, min, max))
     }
 }
 

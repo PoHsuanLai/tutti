@@ -320,30 +320,6 @@ impl Plugin {
         }
     }
 
-    /// Creates a sample-accurate parameter automation source, one curve per
-    /// parameter.
-    ///
-    /// The returned [`PluginAutomation`](crate::handles::PluginAutomation) is
-    /// an event source node: insert it and wire it to this plugin node's event
-    /// input ([`PluginControls::automation`](crate::handles::PluginControls::automation),
-    /// or the in-process VST2 node's own).
-    ///
-    /// No capability gate: every format carries parameter automation, and
-    /// both backends take it on their event input. Addresses are the
-    /// plugin's own model: a VST2 plugin's are indices
-    /// ([`ParamAddress::Index`](crate::handles::ParamAddress::Index)), and
-    /// one of the other model is refused.
-    pub fn automation(
-        &self,
-        params: impl IntoIterator<Item = crate::host::node::TimedParam>,
-    ) -> crate::host::node::PluginAutomation {
-        match &self.backend {
-            Backend::Subprocess(c) => c.automation(params),
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.automation(params),
-        }
-    }
-
     // ---- The graph node ---------------------------------------------------
 
     /// Returns the node as the concrete out-of-process [`PluginClient`],

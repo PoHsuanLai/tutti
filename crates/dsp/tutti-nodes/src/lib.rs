@@ -28,10 +28,10 @@
 //!   control lane's event input: [`EnvelopeFollowerNode`] and
 //!   [`NoteEnvelopeNode`].
 //! - Mixing: [`ChannelSumNode`], [`DownmixNode`], [`BusStripNode`].
-//! - Param modulation: each node's `*_PARAMS` port list (for example
-//!   [`SVF_PARAMS`]) and [`ParamModShaping`].
-//! - Modules: [`automation`] (lanes and recording), [`buffer`] (ring buffers),
-//!   [`param_mod`].
+//! - Param ports: each node's `*_PARAMS` port list (for example
+//!   [`SVF_PARAMS`]), which a control lane drives
+//!   ([`ControlLaneNode`](automation::ControlLaneNode)).
+//! - Modules: [`automation`] (lanes and recording), [`buffer`] (ring buffers).
 //!
 //! [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
 
@@ -60,9 +60,8 @@ pub use tutti_core::{
 pub mod buffer;
 
 mod lfo;
-// The pure modulators, copied from tutti-mod (doc 014 §7): its copies serve
-// its `routing` driver until doc 014's PR 5 deletes it; these serve the
-// nodes here.
+// The pure modulators the nodes here run (doc 014 §7: tutti-mod is a
+// compiler and holds none).
 mod modulator;
 // `LfoNode` is `ModulatorNode<Lfo>` — the graph node over a pure
 // `Modulator`. `LfoShape` is re-exported from `tutti-mod` through `lfo`, so
@@ -87,21 +86,6 @@ mod dynamics;
 pub use dynamics::{
     BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode, BRICKWALL_PARAMS,
     COMPRESSOR_PARAMS, GATE_PARAMS, LIMITER_PARAMS,
-};
-
-// The shaping an audio-rate modulation edge authors; the edge itself is the
-// graph's.
-pub mod param_mod;
-pub use param_mod::ParamModShaping;
-
-// A node's control-rate modulation surface is its `ParamSet` (a host
-// resolves a route on its cells). Re-export the `ModParams` trait +
-// modulation *target* surface from tutti-mod so
-// downstream crates (e.g. tutti-plugin implementing `ModParams`) reach it here
-// alongside `Lfo`, without a separate tutti-mod dep. The routing feature is on
-// (tutti-nodes deps tutti-mod with `features = ["routing"]`).
-pub use tutti_mod::{
-    AtomicTarget, BeatLfo, CurveModulator, LayerKey, LayeredCurve, ModParams, ModTarget,
 };
 
 // The fan-in every mixer needs: `K` sources × `N` channels summed into one

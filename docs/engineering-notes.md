@@ -407,6 +407,20 @@ param takes nothing. `AudioNode` is the only thing `tutti-core` gates behind its
   have. When a property genuinely cannot be covered here, say so in a comment
   rather than writing an assertion that always passes.
 
+### What guards `plugin-server`'s realtime raise
+
+`real_plugin_pressure` once named its 90% audio floor as the only guard on
+`raise_to_realtime`. The floor could not stay there: under bursty load it
+failed on correct code, and any floor loose enough to hold under load passes
+an unraised server too. It is 70% now, a check on the bridge, and
+`plugin_server_audio_thread_is_raised_where_the_os_allows` reads the server's
+audio thread (policy, realtime priority, nice) from `/proc` instead, against
+a scratch thread that made the same call. That is Linux-only, and it bites
+only where the OS grants the raise: GitHub's runners are unprivileged
+(`RLIMIT_NICE` 0, no `CAP_SYS_NICE`), so in CI it checks only that the server
+stayed where an unraised thread does. Run it as root, or with `CAP_SYS_NICE`,
+to cover the call.
+
 ## Check the constraint before designing around it
 
 Before writing anything that *works around* an obstacle, **name the obstacle in

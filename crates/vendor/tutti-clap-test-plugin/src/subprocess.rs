@@ -32,6 +32,8 @@
 //! - `block_from` parks `process()` indefinitely. In
 //!   process that would deadlock the caller, since the caller *is* the audio
 //!   thread; out of process it is the case the pipelined design exists for.
+//! - `stall_us` makes every `process()` late by a fixed sleep, for the same
+//!   reason, on many instances at once.
 //! - `apply_gain` is not about failure — it is here
 //!   because the gain has to be applied by the same `render_output` the other
 //!   modes go through, and reaching that switch from another process needs the
@@ -53,6 +55,16 @@ static CRASH_ON_BLOCK: AtomicU32 = AtomicU32::new(0);
 
 /// Park `process()` from this call (1-based) onward. `0` = never.
 static BLOCK_FROM: AtomicU32 = AtomicU32::new(0);
+
+/// Sleep this many microseconds at the start of every `process()` call. `0` =
+/// never. A plugin that is alive and answers every block, but late.
+///
+/// A sleep, unlike [`BLOCK_FROM`]'s spin, because it is meant for many
+/// instances at once: `plugin-server` raises its audio thread's priority
+/// (nice -20 on Linux, where it is allowed), so N spinning instances would
+/// take N cores from the host under test, and the host's own timing is what
+/// the suites that stall many plugins measure.
+static STALL_US: AtomicU32 = AtomicU32::new(0);
 
 /// Cleared by `tutti_test_plugin_release_block` to let a parked `process()`
 /// proceed. Reachable only by a host in *this* process.
@@ -131,6 +143,9 @@ pub(crate) fn configure() {
         // flag that is only set once `process()` has already decided to park
         // would let a release that arrives first be lost.
         BLOCKED.store(n > 0, Ordering::SeqCst);
+    }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_STALL_US") {
+        STALL_US.store(n, Ordering::SeqCst);
     }
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY") {
         OFFLINE_EXTRA_LATENCY.store(n, Ordering::SeqCst);
@@ -237,6 +252,11 @@ pub(crate) fn on_process_entry() {
         if parked {
             PARKED_BLOCKS.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    let stall = STALL_US.load(Ordering::SeqCst);
+    if stall != 0 {
+        std::thread::sleep(std::time::Duration::from_micros(u64::from(stall)));
     }
 }
 

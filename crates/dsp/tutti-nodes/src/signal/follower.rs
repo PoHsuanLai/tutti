@@ -83,7 +83,8 @@ pub struct EnvelopeFollowerNode {
     env: f64,
     /// `env` at the last grid point: the next piece's start.
     from: f64,
-    /// The end of the last piece sent (0 before any).
+    /// The end of the last piece sent (0 before any; NaN for a
+    /// [`replacing`](Self::replacing) node before its first).
     sent: f32,
     /// The play clock's epoch at the last frame read; `None` while fresh.
     epoch: Option<u32>,
@@ -118,6 +119,17 @@ impl EnvelopeFollowerNode {
             }
             SignalKind::NoteEnvelope { .. } => None,
         }
+    }
+
+    /// This follower, sending its first grid piece even while silent: for
+    /// one that replaces another of the same [`SourceId`] (a declaration
+    /// edit rebuilds it), since a lane holds the old node's last piece until
+    /// this one sends, and a silent follower otherwise sends nothing. A
+    /// fork (the node reset) does not keep it.
+    pub fn replacing(mut self) -> Self {
+        // NaN is no value it could have sent: the first grid piece goes out.
+        self.sent = f32::NAN;
+        self
     }
 
     /// The source id its pieces are addressed to.

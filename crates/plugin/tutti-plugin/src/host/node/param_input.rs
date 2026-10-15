@@ -115,6 +115,8 @@ pub(crate) fn take(
                 segments.start(params, address, seg, abs(o), frame, grid(abs(o)));
             }
             EventKind::Midi(_) | EventKind::Harmony(_) => other(e, frame),
+            // A plugin is no source a lane reads: nothing to re-send.
+            EventKind::Resync => {}
         }
     }
     segments.points(params, abs(done), abs(from + n), at + done - from, grid);

@@ -112,8 +112,11 @@ impl Node for InProcessVst2Client {
                     });
                 }
                 // VST 2.4 has no chord or scale event; the walk keeps the
-                // parameter events for itself.
-                EventKind::Harmony(_) | EventKind::Ramp(_) | EventKind::Segment(_) => {}
+                // parameter events for itself; a plugin re-sends nothing.
+                EventKind::Harmony(_)
+                | EventKind::Ramp(_)
+                | EventKind::Segment(_)
+                | EventKind::Resync => {}
             },
         );
         // Built before the plugin is entered: `drive_f32` publishes it to the

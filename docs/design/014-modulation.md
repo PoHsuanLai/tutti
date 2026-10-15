@@ -3,8 +3,8 @@
 Status: **in progress** (proposed 2026-10-14). Supersedes the
 param-modulation design of [doc 013](013-native-graph.md) ("Item 6 landed:
 compiler-owned param modulation" and the control-rate tier it sits beside).
-PRs 1, 2a, 2b, 3 and 3b have landed; the [campaign](#12-the-campaign) lists
-them and the PRs still to come.
+PRs 1, 2a, 2b, 3, 3b and 4a have landed; the [campaign](#12-the-campaign)
+lists them and the PRs still to come.
 
 All file references are to `main` at `8ae55f4b`.
 
@@ -114,7 +114,8 @@ Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
 | A port's event source replaces its base | `tutti-graph` | The engine's one rule |
 | `RangeCell` (packed `AtomicU64`) | `tutti-types`, beside `AtomicF32` | A plugin lane's own range; `ParamRanges` reuses it |
 | Plugin delivery | `tutti-plugin{,-types,-server}` | Where `ParameterChanges` is built, carried, applied |
-| Declarations, reconcile | `bevy-tutti` (`modulation`) | The API |
+| The reconcile (`Modulation`, `ModHost`) | `tutti-nodes` (re-exported at the root), Bevy-free: PR 4a, landed | It builds `tutti-nodes`' lanes and signal-source nodes and edits a plain `Editor`; a headless host needs it as much as an app. `tutti-nodes` already names `tutti-mod` and `tutti-graph`, and `bevy-tutti` names `tutti-nodes` |
+| Declarations (`Mods`, `ModRange`, `ParamRef`) and their adapter onto `Modulation` | `bevy-tutti` (`modulation`): PR 4b | The API: entities to keys, `ModHost` over `AudioNode`s |
 
 ## 4. The control program
 
@@ -681,6 +682,13 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
   a follower downstream of its own target and has no `Cycle` refusal. PR 4
   refuses that case by route when it adds the edges, and the graph refuses
   any cycle at commit regardless.
+  **As landed (PR 4a):** `Modulation::apply` refuses it
+  (`ReconcileError::Cycle { route }`, the first such route in key order)
+  before it changes anything: the reconciler wires every source's input
+  itself, from `ModHost::feed`, so both ends are known there. The walk is
+  the spec's direct audio, event and param edges less the reconciler's own
+  nodes, plus each source's feed and each wanted edge as source → target
+  node.
 - **As landed (PR 3):** the compiler gives each signal source a
   `SourceNode { id, kind }`: a pure description (`SignalKind::Follower
   { attack, release }` or `SignalKind::NoteEnvelope { adsr }`) carrying
@@ -742,6 +750,19 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
     re-sends where it stands, as a resumed segment, as it already does
     after a refused segment. Deferred to PR 4, where the host knows which
     routes it adds (§12).
+    **As landed (PR 4a):** `EventKind::Resync`, a generic event: a request
+    to an event source to re-send where it stands. The note envelope
+    answers it on its input (a resumed segment, or 0 when idle);
+    `Modulation::commit` schedules one (`Editor::schedule`, `At::NextBlock`)
+    into each envelope a lane's program newly reads (a diff of the sources
+    the published and the new program read). A scheduled command waits for
+    the commit sent before it, so the re-send meets the edges that commit
+    placed; nothing crosses outside the ports, so the envelope stays
+    `ForkByClone`. A follower has no event input and needs none. A source
+    rebuilt at the same id (a declaration edit) is covered too: a follower
+    is built `replacing()` (it sends its first grid piece even while
+    silent), and a note envelope is owed a resync (it sends the 0 it stands
+    at).
 
 ## 7. `tutti-mod` as a pure compiler
 
@@ -913,6 +934,24 @@ fn setup(mut mods: Mods, filter: Single<SvfRef>, pad: Single<GainRef>, kick_bus:
   tutti_mod::Source`.
 
 ### 8.2 The reconcile step
+
+**As landed (PR 4a): the reconcile is Bevy-free**, `tutti_nodes::Modulation`
+(`src/reconcile.rs`). `apply(&Declarations, &mut Editor, &dyn ModHost)`
+compiles against the last `Compiled` it holds, diffs per target and
+applies the rules below to a plain `Editor`, reporting whether a commit is
+needed (`Applied::commit`); `commit` commits and sends the resyncs (§6).
+The one thing it cannot derive is the host's seam, `ModHost`: which graph
+node a `TargetKey` names (`Target::Native { node, knob }`, the knob the
+node's `Param` cell, or `Target::Foreign { node, port, knob }`, a plugin
+node's event input) and what feeds a signal source (`Feed::Audio(node)`,
+`Feed::Events(out)`). A target whose node is not yet placed (no range
+cell) or a follower with no feed is reported unresolved and gets nothing
+yet. A rebind (another node, generation or knob cell) rebuilds the lane,
+which as a fresh lane fetches the range view again (§4.2) and sends at its
+first frame (§5.2), so no `LaneControls::resync` is needed. Built nodes
+get keys from `NodeKey::fresh`, past any the editor holds.
+`bevy-tutti`'s system (PR 4b) collects the declarations, implements
+`ModHost` over its entities and calls it:
 
 `modulation::reconcile`, in `GraphReconcileSystems::Spawn`: collect the
 declarations (keys are entities), compile, diff against the `CompiledMods`
@@ -1216,6 +1255,15 @@ compiler's tests); `param_set_routes.rs` is ported; `bevy-tutti`'s
 `mod_value_path.rs`, `mod_audio_rate.rs`, `graph_value_modulation.rs` are
 ported to lanes; `tutti-polysynth`'s `AtomicTarget` route tests become
 `ParamSet` writes.
+
+**`EventKind::Resync` is how a hand-wired event source meets the fork
+requirement above** (as landed in PR 4a, §6). A `ForkByClone` fork of a
+source driven by live input cannot know the value it holds; a source that
+answers a `Resync` on an event input by re-sending where it stands (a
+ramp's in-flight move as `ParamSegment::resumed`, a held value as a step)
+can be asked to, by the host, into the fork's executor as into the live
+one (`Editor::schedule`), with nothing crossing outside the ports. Every
+param port and every node that sends nothing a sink could miss ignores it.
 
 ## 11. Out of scope
 
@@ -1532,9 +1580,62 @@ an epoch change at the input's time, `ForkByClone`, `from_decl` in
 
 ### PR 4: `bevy-tutti` to lanes and edges
 
-**Scope.** §8: `Mods`, `ModRange`, `Automation`, `ParamRef`, reconcile,
-knob and plugin-GUI paths, takes, plugin targets as lanes. The old driver is
-unscheduled, not yet deleted.
+**Split in two (coordinator's decision).** **PR 4a** is the reconcile,
+Bevy-free, in `tutti-nodes`: everything §8.2 does to an `Editor`, the
+source-side resync (§6) and the cycle refusal, with a headless host. **PR
+4b** is `bevy-tutti`: the declarations, the adapter implementing `ModHost`
+over entities, the knob and plugin-GUI paths, takes, and the properties
+that need an app or a plugin.
+
+**PR 4a: landed** (branch `claude/mod-reconciler`):
+
+- `tutti_nodes::Modulation` (`src/reconcile.rs`, §8.2 "As landed"):
+  `apply(&Declarations, &mut Editor, &dyn ModHost) -> Result<Applied,
+  ReconcileError>`, `commit`, `send_resyncs`, `lane`, `source`,
+  `compiled`. The seam is `ModHost` (`target`, `feed`) with `Target`
+  and `Feed`. `ReconcileError` names `Compile`, `Cycle { route }`,
+  `WrongTarget`, `NoSuchParam`, `NoSuchEventInput` and `WrongFeed`, and
+  a refused `apply` changes neither the editor nor the reconciler.
+  `Applied` reports `commit`, the `republished` targets and the targets
+  and sources left unresolved.
+- `EventKind::Resync` and `Event::resync` (`tutti-graph`): every
+  exhaustive match on `EventKind` names it (param ports, the plugin
+  nodes, the reference). The note envelope answers it (§6 "As landed
+  (PR 4a)"); `EnvelopeFollowerNode::replacing` covers a rebuilt follower.
+- `ParamSegment::unit(UnitParam, …)` and `ControlLaneNode::for_unit`:
+  the erased constructors a reconcile holding a `ParamAddr` needs, which
+  also reach params with no `ParamKey` (`Pan`, `RoomSize`, …).
+  `for_param::<U>` is a thin wrapper over `for_unit`, so there is one
+  construction path.
+- A headless example, `tutti-nodes/examples/headless_modulation.rs` (an
+  LFO and a follower on an SVF's cutoff and Q), and a doctest on
+  `Modulation`.
+- **Properties, each a test** (`tutti-nodes/tests/modulation_reconcile.rs`
+  unless named): the §8.1 example's analytic cutoff and the pad's
+  analytic dip; a depth edit keeps phase (M2) with no plan and no commit;
+  range and depth edits need no commit and a follower route exactly one;
+  a removed source leaves no node and no layer (M10); a knob written
+  after a route edit is the knob (M9); a held note envelope newly routed
+  reads its level from the first grid piece; a route dropped and re-added
+  between commits resyncs (the trigger is the program's read set); a
+  follower takes no resync; a follower downstream of its target, directly
+  and through a bus, is refused by route with the editor and the
+  reconciler unchanged; export == live through a fork on a native param;
+  `for_param::<Hz>` and `for_unit(Cutoff)` send the same segments, and a
+  `Pan` lane reaches its port; a foreign target's lane delivers on its
+  event input and takes a range edit as a store; a host's literal key is
+  never taken; and
+  no allocation on the audio thread across an apply that republishes
+  (`rt_no_alloc_modulation.rs`).
+- **Left for PR 4b:** export == live on the reference CLAP plugin's gain
+  at a pinned chunk size (a plugin is `tutti-plugin`'s, which
+  `tutti-nodes` cannot name; the foreign seam is exercised here on a
+  capture node standing in for a plugin), a plugin GUI edit becoming the knob, takes,
+  `Mods`/`ModRange`/`ParamRef` and the breaking changes below.
+
+**Scope (PR 4b).** §8: `Mods`, `ModRange`, `Automation`, `ParamRef`, the
+adapter onto `Modulation`, knob and plugin-GUI paths, takes, plugin
+targets as lanes. The old driver is unscheduled, not yet deleted.
 
 **Properties.** The §8.1 example renders the analytic cutoff within
 tolerance and the pad dips with the kick; a depth slider keeps phase at

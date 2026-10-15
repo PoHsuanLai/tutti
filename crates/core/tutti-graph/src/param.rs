@@ -545,7 +545,13 @@ pub(crate) fn render_ramps(
                         },
                     );
                 }
-                _ => {}
+                // Another param's, MIDI, a chord, or a resync: a port re-sends
+                // nothing.
+                EventKind::Ramp(_)
+                | EventKind::Segment(_)
+                | EventKind::Midi(_)
+                | EventKind::Harmony(_)
+                | EventKind::Resync => {}
             }
         }
         *o = if ramp.started { ramp.step() } else { base(i) };

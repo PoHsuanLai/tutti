@@ -382,11 +382,27 @@ impl ParamSegment {
         duration: Samples,
         shape: SegmentShape,
     ) -> Self {
+        Self::unit(key.id(), from.to_raw(), to.to_raw(), duration, shape)
+    }
+
+    /// A segment of built-in parameter `param` in its raw `f32` domain, as
+    /// [`new`](Self::new) otherwise: for a producer that is erased over the
+    /// unit (a control lane built from a `ParamAddr`, doc 014 §4.1), and for
+    /// a param with no [`ParamKey`] yet. The raw value is exactly what
+    /// [`new`](Self::new) sends for a key with this id: a unit's raw value is
+    /// its bits.
+    pub fn unit(
+        param: UnitParam,
+        from: f32,
+        to: f32,
+        duration: Samples,
+        shape: SegmentShape,
+    ) -> Self {
         Self::packed(
-            u32::from(u16::from(key.id())),
+            u32::from(u16::from(param)),
             false,
-            from.to_raw(),
-            to.to_raw(),
+            from,
+            to,
             duration,
             shape,
         )
@@ -584,6 +600,15 @@ pub enum EventKind {
     Segment(ParamSegment),
     /// A chord or scale taking effect.
     Harmony(Harmony),
+    /// A request to an **event source**: re-send where it stands, from this
+    /// event's frame, as a resumed segment (doc 014 §6). What a sink that
+    /// starts reading a source late (a control lane whose program newly
+    /// reads a held note envelope) needs, since a source sends only when it
+    /// moves. Delivered by [`Editor::schedule`](crate::Editor::schedule),
+    /// which waits for the commit sent before it, so the re-send reaches the
+    /// edges that commit placed. A node that sends nothing a sink could
+    /// miss ignores it; so does every param port.
+    Resync,
 }
 
 /// Whether a [`Harmony`] is a chord or a scale.
@@ -723,6 +748,14 @@ impl Event {
         Self {
             offset,
             kind: EventKind::Segment(segment),
+        }
+    }
+
+    /// A [`Resync`](EventKind::Resync) request at `offset`.
+    pub const fn resync(offset: Offset) -> Self {
+        Self {
+            offset,
+            kind: EventKind::Resync,
         }
     }
 

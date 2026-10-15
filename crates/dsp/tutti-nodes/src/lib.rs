@@ -51,8 +51,10 @@ pub use tutti_core::{
 };
 
 // The boundary this crate holds: pure DSP graph nodes plus the `ParamSet` /
-// controls surface a host drives them through. DAW-param ECS policy — the
-// shared param pool, node authoring markers, spawners, reconcilers, deferred
+// controls surface a host drives them through, and the Bevy-free modulation
+// reconciler (`Modulation`) that builds this crate's lanes and signal nodes
+// from `tutti_mod` declarations. DAW-param ECS policy — the shared param
+// pool, node authoring markers, spawners, ECS reconcilers, deferred
 // convolver load — is the host's, and deliberately outside this workspace.
 
 pub mod buffer;
@@ -128,6 +130,13 @@ mod signal;
 pub use signal::{
     EnvelopeFollowerNode, NoteEnvelopeNode, FOLLOWER_EVENT_CAPACITY, NOTE_ENVELOPE_EVENT_CAPACITY,
 };
+
+// The reconcile step (doc 014 §8.2): declarations compiled and applied to
+// an `Editor` as lanes, signal-source nodes and edges, with no Bevy. It
+// lives here because this crate owns the lane and the signal nodes and
+// already names `tutti-mod` and `tutti-graph`.
+mod reconcile;
+pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
 
 #[cfg(feature = "convolution")]
 mod convolution;

@@ -1358,7 +1358,13 @@ impl Reference {
                                         started: true,
                                     };
                                 }
-                                _ => {}
+                                // Another param's, MIDI, a chord, or a resync: a port re-sends
+                                // nothing.
+                                EventKind::Ramp(_)
+                                | EventKind::Segment(_)
+                                | EventKind::Midi(_)
+                                | EventKind::Harmony(_)
+                                | EventKind::Resync => {}
                             }
                         }
                         let r = &src.ramp;

@@ -823,11 +823,17 @@ fn has_seconds(program: &ControlProgram) -> bool {
 impl Node for ControlLaneNode {
     /// No audio; one event input (signal sources), one event output
     /// (segments to the target).
+    ///
+    /// `Moderate`, from a measurement (doc 014 §5.3): 200 lanes of one
+    /// moving layer each at 512-frame blocks spend about 3.7 µs per lane per
+    /// block in `process` (a point's transport roll and the program's
+    /// evaluation, sixteen grid points a block), about 7 ns a frame, where
+    /// `Moderate`'s model is 200 + 8 a frame and `Light`'s 100 + 1.
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
             .with_events(1, 1)
             .with_event_capacity(LANE_EVENT_CAPACITY)
-            .with_cost(Cost::Light)
+            .with_cost(Cost::Moderate)
             .with_tail(Tail::Unbounded)
     }
 

@@ -54,8 +54,8 @@ pub use value::{
     Bpm, CCNumber, Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation,
     Feedback, Frame, Hz, Latency, MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note,
     NoteNumberOutOfRange, Pan, Param, ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass,
-    PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds,
-    Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitParam,
+    PlayReading, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, SampleRate, Samples,
+    Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitParam,
     UnitParamOutOfRange, Velocity, Q,
 };
 

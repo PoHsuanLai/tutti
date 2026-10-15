@@ -29,8 +29,9 @@ use crate::fork::ForkSource;
 use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::param::ParamPorts;
-use crate::play::{PlayClock, PlayReading};
+use crate::play::PlayClock;
 use crate::time::Offset;
+use tutti_types::PlayReading;
 
 /// Most audio channels, or event ports, on one side of one node.
 ///

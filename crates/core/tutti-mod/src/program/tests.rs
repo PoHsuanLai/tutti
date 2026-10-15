@@ -362,13 +362,14 @@ fn the_left_limit_is_the_level_before_a_jump() {
 #[test]
 fn depth_by_scales_the_offset_and_adds_its_corners() {
     let scaled = |depth_clock| Layer {
-        depth_by: Some((
-            depth_clock,
-            Wave::Shape {
+        depth_by: Some(DepthBy {
+            clock: depth_clock,
+            wave: Wave::Shape {
                 shape: LfoShape::Square,
                 seed: 0,
             },
-        )),
+            amount: DepthBy::UNIT,
+        }),
         ..layer(1, beats(4.0), LfoShape::Square, amount(1.0))
     };
     let p = program(vec![scaled(beats(8.0))]);
@@ -530,4 +531,180 @@ fn new_refuses_what_a_lane_cannot_hold() {
         ProgramError::BadDrawnWave(LayerId(5))
     );
     assert!(ControlProgram::new(None, (0..16).map(l).collect(), vec![]).is_ok());
+}
+
+/// A depth-by amount other than the unit one shapes the scale, and a curved
+/// bipolar one kinks it at the scaling wave's zero crossings, which are
+/// corners as a layer's own are: a constant +1 layer scaled by a sine on 4
+/// beats through an exponential bipolar amount has a corner at beat 2 (the
+/// sine's crossing), and none with the unit amount or a curved unipolar
+/// one; its value at beat 1 (sine +1) is `shape(1, 0.5, Bipolar,
+/// Exponential)` = 0.5, at beat 3 (sine −1) −0.5.
+///
+/// Mutations (run), each fails: the depth wave's corners taken without
+/// kinks (`next_corner(at, &d.wave, false)`, as before `DepthBy` had an
+/// amount) → no corner at beat 2; the scale ignoring the amount (always
+/// `(raw + 1) / 2`) → beat 1 reads 1.0 and beat 3 reads 0.0.
+#[test]
+fn a_curved_bipolar_depth_by_kinks_at_its_zero_crossings() {
+    let scaled = |by| Layer {
+        wave: Wave::Const(1.0),
+        depth_by: Some(DepthBy {
+            clock: beats(4.0),
+            wave: Wave::Shape {
+                shape: LfoShape::Sine,
+                seed: 0,
+            },
+            amount: by,
+        }),
+        ..layer(1, beats(4.0), LfoShape::Sine, amount(1.0))
+    };
+    let curved = Amount {
+        depth: Depth(0.5),
+        polarity: Polarity::Bipolar,
+        curve: CurveType::Exponential,
+    };
+    let p = program(vec![scaled(curved)]);
+    assert_eq!(p.next_corner(&at_beat(1.0)).beat, Some(Beat(2.0)));
+    assert_eq!(p.value_at(Some(0.0), &at_beat(1.0), 1.0, &[]), Some(0.5));
+    assert_eq!(p.value_at(Some(0.0), &at_beat(3.0), 1.0, &[]), Some(-0.5));
+    let unit = program(vec![scaled(DepthBy::UNIT)]);
+    assert_eq!(unit.next_corner(&at_beat(1.0)).beat, None);
+    let uni = Amount {
+        polarity: Polarity::Unipolar,
+        ..curved
+    };
+    assert_eq!(
+        program(vec![scaled(uni)]).next_corner(&at_beat(1.0)).beat,
+        None,
+        "unipolar: no kink"
+    );
+}
+
+/// The unit depth-by amount is `(raw + 1) / 2` in `f64`, to the bit (the
+/// figure before `DepthBy` had an amount): the scale itself, and the
+/// scaled offset through a drawn depth wave holding each raw value.
+///
+/// Mutation (run): the unit path through `shape` (computed in `f32`) →
+/// raw 1e-7 rounds away in `f32`'s `raw + 1` (the scale reads 0.5 plus an
+/// `f32` ulp, not the `f64` figure) → fails.
+#[test]
+fn the_unit_depth_by_is_half_raw_plus_one_in_f64() {
+    for raw in [-1.0f32, -0.7, 0.0, 1e-7, 0.3, 0.9, 1.0] {
+        let held = Wave::Drawn(Arc::from(vec![PeriodPoint {
+            at: Phase(0.0),
+            value: raw,
+            curve: CurveType::Linear,
+        }]));
+        let l = Layer {
+            wave: Wave::Const(1.0),
+            depth_by: Some(DepthBy {
+                clock: beats(4.0),
+                wave: held,
+                amount: DepthBy::UNIT,
+            }),
+            ..layer(1, beats(4.0), LfoShape::Sine, amount(0.25))
+        };
+        let span = 1000.0;
+        let off = Amount::offset(&amount(0.25), 1.0, span);
+        let want = (f64::from(100.0f32) + (-0.0 + off * ((f64::from(raw) + 1.0) * 0.5))) as f32;
+        let d = l.depth_by.clone().expect("scaled");
+        assert_eq!(
+            d.scale(raw).to_bits(),
+            ((f64::from(raw) + 1.0) * 0.5).to_bits(),
+            "raw {raw}"
+        );
+        let got = program(vec![l]).value_at(Some(100.0), &at_beat(1.0), span, &[]);
+        assert_eq!(got, Some(want), "raw {raw}");
+    }
+}
+
+/// A constant wave is its value at every time on any clock, even one that
+/// gives no position (a beat span of 0, which silences a moving wave), and
+/// has no corner; `is_constant` holds only while its depth-by is constant
+/// too.
+///
+/// Mutations (run), each fails: `raw_on` asking the clock first for a
+/// constant → the dead clock silences it (reads the knob, 10.0);
+/// `is_constant` ignoring `depth_by` → the sine-scaled layer reads as
+/// constant.
+#[test]
+fn a_constant_wave_needs_no_clock() {
+    let dead = Clock::Beats {
+        per_cycle: BeatDuration(0.0),
+        phase: PhaseIncrement(0.0),
+    };
+    let c = Layer {
+        wave: Wave::Const(-1.0),
+        ..layer(1, dead, LfoShape::Sine, amount(0.5))
+    };
+    assert!(c.is_constant());
+    let p = program(vec![c.clone()]);
+    for b in [0.0, 1.5, 7.0] {
+        assert_eq!(p.value_at(Some(10.0), &at_beat(b), 8.0, &[]), Some(6.0));
+    }
+    assert_eq!(p.next_corner(&at_beat(0.0)), Corners::default());
+    let scaled = Layer {
+        depth_by: Some(DepthBy {
+            clock: beats(1.0),
+            wave: Wave::Shape {
+                shape: LfoShape::Sine,
+                seed: 0,
+            },
+            amount: DepthBy::UNIT,
+        }),
+        ..c
+    };
+    assert!(!scaled.is_constant());
+}
+
+/// `new` refuses a NaN anywhere in a layer, by name, so a program is `Eq`
+/// (it equals itself).
+///
+/// Mutation (run): `has_nan` not looking into `depth_by` → the NaN-phased
+/// depth clock is accepted → fails.
+#[test]
+fn new_refuses_a_nan() {
+    let l = || layer(3, beats(1.0), LfoShape::Sine, amount(0.1));
+    let nan_depth = Layer {
+        amount: amount(f32::NAN),
+        ..l()
+    };
+    let nan_rate = Layer {
+        clock: seconds(f32::NAN),
+        ..l()
+    };
+    let nan_const = Layer {
+        wave: Wave::Const(f32::NAN),
+        ..l()
+    };
+    let nan_depth_by = Layer {
+        depth_by: Some(DepthBy {
+            clock: Clock::Seconds {
+                rate: Hz(1.0),
+                phase: PhaseIncrement(f32::NAN),
+                anchor: None,
+            },
+            wave: Wave::Const(0.0),
+            amount: DepthBy::UNIT,
+        }),
+        ..l()
+    };
+    for bad in [nan_depth, nan_rate, nan_const, nan_depth_by] {
+        assert_eq!(
+            ControlProgram::new(None, vec![bad], vec![]).unwrap_err(),
+            ProgramError::NotANumber(LayerId(3))
+        );
+    }
+    let input = InputLayer {
+        id: LayerId(4),
+        source: SourceId(1),
+        amount: amount(f32::NAN),
+    };
+    assert_eq!(
+        ControlProgram::new(None, vec![], vec![input]).unwrap_err(),
+        ProgramError::NotANumber(LayerId(4))
+    );
+    let p = program(vec![l()]);
+    assert_eq!(p, p.clone());
 }

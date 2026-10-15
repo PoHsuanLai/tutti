@@ -16,7 +16,7 @@ use tutti_graph::{
     Prepare, SegmentShape, Shape, Status, Transport, TransportChanges, PARAM_DECLICK,
 };
 use tutti_mod::{
-    Amount, Clock, ControlProgram, Curve, CurveType, InputLayer, Layer, LayerId, LfoShape,
+    Amount, Clock, ControlProgram, Curve, CurveType, DepthBy, InputLayer, Layer, LayerId, LfoShape,
     PeriodPoint, Polarity, RateAnchor, SourceId, Wave,
 };
 use tutti_nodes::automation::{ControlLaneNode, LaneControls, CONTROL_STEP};
@@ -536,7 +536,11 @@ fn an_export_is_the_live_render_bit_for_bit() {
             program(
                 None,
                 vec![Layer {
-                    depth_by: Some((beats(1.0), wave(LfoShape::Square))),
+                    depth_by: Some(DepthBy {
+                        clock: beats(1.0),
+                        wave: wave(LfoShape::Square),
+                        amount: DepthBy::UNIT,
+                    }),
                     ..layer(1, seconds(2.0), wave(LfoShape::Sine), amount(0.3))
                 }],
             ),
@@ -1260,4 +1264,64 @@ fn lane_controls_reach_their_own_cells() {
     ed.set_param_range(cutoff(2), ParamRange::new(6.0, 60.0))
         .expect("a probe");
     assert_eq!(c.range(), (6.0, 60.0), "the port's own cell");
+}
+
+/// **A constant layer (a macro) does not move.** A plugin lane whose one
+/// layer is `Wave::Const(1.0)` at depth 0.5 of a 0..1 range, on knob 0.25,
+/// sends one piece at frame 0 and holds 0.75, rolling (the beat moves, so
+/// a beat-clocked wave would walk the grid) and stopped with the layer on
+/// a seconds clock (the play clock moves, so a seconds-clocked wave would
+/// walk it), and stopped beside a beat-clocked sine (which holds while
+/// stopped, at 0 on beat 0), also when that sine's `depth_by` is a
+/// constant on a seconds clock: a macro costs the lane one held value, not
+/// a piece every `CONTROL_STEP` frames.
+///
+/// Mutations (run), each fails: the lane's "what moves" counting every
+/// layer (`let layers = !self.program.layers().is_empty() || …`) → the
+/// rolling lane sends a piece on every grid frame; `has_seconds` counting
+/// a constant layer's clock → the stopped lane beside the sine does;
+/// `has_seconds` counting a constant `depth_by`'s clock → the stopped lane
+/// with the scaled sine does.
+#[test]
+fn a_constant_layer_is_one_held_value() {
+    let konst = |clock| layer(1, clock, Wave::Const(1.0), amount(0.5));
+    let sine = layer(2, beats(1.0), wave(LfoShape::Sine), amount(0.25));
+    let scaled = Layer {
+        depth_by: Some(DepthBy {
+            clock: seconds(3.0),
+            wave: Wave::Const(1.0),
+            amount: DepthBy::UNIT,
+        }),
+        ..sine.clone()
+    };
+    let cases = [
+        (vec![konst(beats(1.0))], true),
+        (vec![konst(seconds(3.0))], false),
+        (vec![konst(seconds(3.0)), sine], false),
+        (vec![konst(beats(1.0)), scaled], false),
+    ];
+    for (layers, rolling) in cases {
+        let (mut ed, mut exec) = probes(128, &[], (0.0, 1.0));
+        let p = program(None, layers);
+        let lane = ControlLaneNode::for_foreign(3, p, Some(0.25), (0.0, 1.0));
+        wire_sink(&mut ed, 1, lane, 2);
+        ed.commit().expect("commits");
+        let mut host = Host::new();
+        let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+        let mut all = Vec::new();
+        for _ in 0..8 {
+            if rolling {
+                host.roll(&mut ed, &mut exec, 128, &mut all);
+            } else {
+                let got = block(&mut ed, &mut exec, &stopped, &TransportChanges::NONE, 128);
+                append(&mut all, got);
+            }
+        }
+        let marks: Vec<usize> = (0..all[1].len()).filter(|&f| all[1][f] != 0.0).collect();
+        assert_eq!(marks, [0], "rolling {rolling}: one piece, at frame 0");
+        assert!(
+            all[0].iter().all(|&v| v == 0.75),
+            "rolling {rolling}: knob + 0.5 × span"
+        );
+    }
 }

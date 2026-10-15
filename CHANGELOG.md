@@ -93,6 +93,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`tutti-mod` as a pure compiler** (design doc 014, PR 3): `compile`
+  turns declared sources, routes and targets into a `ControlProgram` per
+  target, a `SourceNode` per signal-driven source and the event edges
+  between them. It is a pure function with stable layer ids, rate-edit
+  anchors and refusals by name, and it needs no runtime. Nothing calls it
+  yet: `bevy-tutti` moves to it in PR 4, and the follower and
+  note-envelope nodes it describes come in PR 3b. **Breaking** for code
+  that builds a `Layer` with a `depth_by`, matches `ProgramError`
+  exhaustively, or relies on `tutti_nodes::{Lfo, Modulator}` being
+  `tutti-mod`'s types.
+
+  | Was | Now |
+  |---|---|
+  | — | `tutti_mod::compile(&Declarations, prev: Option<&Compiled>, now: PlayReading, rate: SampleRate) -> Result<Compiled, CompileError>`, with `Declarations { sources, routes, targets }`, `Source::{Lfo, Macro, Follower, NoteEnvelope}`, `RouteDecl { source, to: RouteTarget::{Param, Depth}, depth, polarity, curve }`, `TargetDecl { min, max, automation }`, the keys `SourceKey`, `RouteKey`, `TargetKey { node, param }`, `Adsr` (sustain is an `Amplitude`), `Compiled { programs, nodes, edges, clocks }` (`clocks`: each LFO's dated clock, so a rate anchor is the source's and one LFO stays phase-coherent across its targets), `SourceNode { id, kind: SignalKind }`, `layer_id(route, depth_by)` and `RATE_ANCHOR_MARGIN` (12 288 frames). `CompileError` has a variant per refusal (doc 014 §7); a route's depth and a constant wave must be finite. A signal source keeps its `SourceId`; an id freed by a compile is not reused in that compile |
+  | `Layer::depth_by: Option<(Clock, Wave)>` | `Option<DepthBy>`, where `DepthBy { clock, wave, amount }` carries the depth route's own `Amount`. Migration: `Some((clock, wave))` becomes `Some(DepthBy { clock, wave, amount: DepthBy::UNIT })`, which renders bit for bit as before for a depth wave's raw value in [-1, 1]. A drawn depth wave beyond ±1 is now clamped to ±1 before it scales (it scaled past full depth before). A curved or bipolar amount adds its zero-crossing corners |
+  | — | `Wave::Const(f32)`: a constant raw value, with no corners and no clock. A lane whose layers are all constant, with no automation, is steady (a macro costs nothing per block) |
+  | `ControlProgram::new` accepted a NaN in a layer or an input's depth | it returns `ProgramError::NotANumber(layer)`, so `ControlProgram` is `Eq`. Add an arm if you match `ProgramError` exhaustively |
+  | `tutti_graph::PlayReading` | defined in `tutti_types::PlayReading`, so the compiler names no graph; `tutti_graph::PlayReading` re-exports it, so existing paths still compile |
+  | `ParamAddr` was `Eq + Hash` only | it also derives `PartialOrd + Ord` (every `Unit` before every `Id`), so `TargetKey` can be a map key |
+  | `tutti_nodes::{Lfo, Modulator}` re-exported `tutti-mod`'s | they are `tutti-nodes`' own copies, used by `ModulatorNode` and `LfoNode`, and `tutti_nodes::{SampleHold, RandomState}` are newly exported. Migration: code that hands a `tutti_nodes::Lfo` to `tutti-mod`'s routing (anything bounded on `tutti_mod::Modulator`, such as `Sourced`) names `tutti_mod::Lfo` instead. `tutti-mod`'s copies go with `routing` in PR 5 |
+
 - **The control lane** (design doc 014, PR 2b): one node per target that
   evaluates the target's `ControlProgram` (automation or the knob, plus
   every modulation offset) on a 32-frame grid of the play clock and every

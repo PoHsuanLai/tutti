@@ -1,19 +1,20 @@
 //! The audio-rate modulation adapter.
 //!
-//! [`ModulatorNode<M>`] is the graph adapter over a pure
-//! [`tutti_mod::Modulator`]: it owns everything *audio* — the
-//! `tutti_graph::Node` impl, the phase accumulator, the sample rate, the beat
-//! read from each block's `Env` — and calls the modulator only for the one pure
-//! step `phase -> value`. The modulator itself (`tutti_mod::Lfo`, `SampleHold`,
-//! …) knows nothing of transport or audio.
+//! [`ModulatorNode<M>`] is the graph adapter over a pure [`Modulator`]: it
+//! owns everything *audio* — the `tutti_graph::Node` impl, the phase
+//! accumulator, the sample rate, the beat read from each block's `Env` — and
+//! calls the modulator only for the one pure step `phase -> value`. The
+//! modulator itself ([`Lfo`], [`SampleHold`](crate::SampleHold), …) knows
+//! nothing of transport or audio.
 //!
 //! [`LfoNode`] is `ModulatorNode<Lfo>` — the concrete, monomorphized LFO node
 //! the graph builds. Because `M` is a concrete type param (not `Box<dyn>`),
 //! `value()` inlines, so the adapter is RT-cost-free.
 //!
-//! The waveform math (`LfoShape::evaluate_periodic`), the random stepper
-//! (`RandomState`), and the `Lfo` modulator live in `tutti-mod`; this file is
-//! purely the adapter. `LfoShape` is re-exported so `use
+//! The waveform math (`LfoShape::evaluate_periodic`) is `tutti-mod`'s; the
+//! random stepper ([`RandomState`](crate::RandomState)) and the `Lfo`
+//! modulator are this crate's copies (`modulator.rs`, doc 014 §7); this file
+//! is purely the adapter. `LfoShape` is re-exported so `use
 //! tutti_nodes::LfoShape` resolves here.
 
 use tutti_core::Arc;
@@ -25,9 +26,10 @@ use tutti_core::{
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{Latency, Tail, UnitParam};
 
-// The waveform vocabulary + the pure LFO modulator live in tutti-mod now. Re-
-// exported so existing `use tutti_nodes::LfoShape` / `Lfo` sites are untouched.
-pub use tutti_mod::{Lfo, LfoShape, Modulator};
+// The waveform vocabulary is tutti-mod's floor, re-exported so `use
+// tutti_nodes::LfoShape` resolves; the modulators are this crate's copies.
+pub use crate::modulator::{Lfo, Modulator};
+pub use tutti_mod::LfoShape;
 
 /// Where `beat` falls within a cycle `beats_per_cycle` beats long.
 ///
@@ -128,15 +130,15 @@ pub struct ModulatorNode<M: Modulator> {
 /// The concrete LFO node the graph builds — a [`ModulatorNode`] driving a pure
 /// [`Lfo`]. Monomorphized, so `value()` inlines.
 ///
-/// **The per-sample tier.** This is not a different LFO from the one the
-/// modulation matrix drives — it is the same [`Lfo`] under a different adapter.
-/// Reach for this when a frame-rate scalar is too coarse: in `BeatSynced` mode
-/// it reads the beat of every frame from its block's `Env`, so it is
-/// sample-accurate and renders identically offline, with no edge to wire.
+/// **The per-sample tier.** Reach for this when a control-rate value is too
+/// coarse (audio-rate modulation): in `BeatSynced` mode it reads the beat of
+/// every frame from its block's `Env`, so it is sample-accurate and renders
+/// identically offline, with no edge to wire.
 ///
-/// The frame-rate alternative is `tutti_mod::ModPreFrame` sampling the same
-/// `Lfo` and writing a scalar, which is what `bevy_tutti`'s `ModSource` builds.
-/// See tutti-mod's crate docs for the full rate comparison.
+/// The frame-rate alternative is `tutti_mod::ModPreFrame` sampling
+/// `tutti-mod`'s copy of `Lfo` (the same shapes and depth; this crate's copy
+/// is doc 014's, PR 3) and writing a scalar, which is what `bevy_tutti`'s
+/// `ModSource` builds until doc 014's control lanes replace it.
 pub type LfoNode = ModulatorNode<Lfo>;
 
 impl ModulatorNode<Lfo> {

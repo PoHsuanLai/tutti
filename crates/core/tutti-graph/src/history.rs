@@ -6,8 +6,8 @@ use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{Frame, Latency, SampleRate, Samples};
 
 use crate::node::{Env, Transport, MAX_TRANSPORT_CHANGES};
-use crate::play::PlayReading;
 use crate::time::Offset;
+use tutti_types::PlayReading;
 
 /// From `frame` on, the transport was `transport`, counted at `rate`.
 #[derive(Clone, Copy, Debug, PartialEq)]

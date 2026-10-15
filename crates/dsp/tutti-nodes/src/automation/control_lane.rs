@@ -11,7 +11,7 @@ use tutti_graph::{
     NodeParts, Offset, ParamRangeReader, ParamSegment, PlayReading, Prepare, SegmentShape, Shape,
     Status, Transport,
 };
-use tutti_mod::{Clock, ControlProgram, CurveSegment, ProgramTime, MAX_LANE_INPUTS};
+use tutti_mod::{Clock, ControlProgram, CurveSegment, ProgramTime, Wave, MAX_LANE_INPUTS};
 use tutti_types::{
     AtomicF32, Beat, Frame, ParamAddr, ParamKey, RangeCell, RtPublish, SamplePosition, Samples,
     Tail, Unit,
@@ -242,8 +242,8 @@ struct Seen {
 ///   them), and a piece with no [`SegmentShape`] on the grid. A plugin lane
 ///   never uses it: a plugin receives points.
 /// - **Steady.** When nothing moves (stopped with no seconds-clock layer,
-///   or no layers at all, and every input arrived) the lane sends one held
-///   value and no grid.
+///   or no layers but constant ones, and every input arrived) the lane
+///   sends one held value and no grid.
 /// - **The clamp** is the native port's, per frame. A plugin lane clamps
 ///   its own pieces, split where they cross a bound.
 ///
@@ -636,7 +636,9 @@ impl Block<'_> {
                 .program
                 .value_at(self.knob, &time, self.span, &ins[..n_in]),
         };
-        let layers = !self.program.layers().is_empty() || self.program.automation().is_some();
+        // What moves with time: a constant layer (a macro) does not.
+        let layers = self.program.layers().iter().any(|l| !l.is_constant())
+            || self.program.automation().is_some();
         let steady = moving.is_none() && (!layers || (fpb.is_none() && !self.seconds));
         let grid = (self.stride - play.play.get() % self.stride) as f64;
         let Some(v0) = v0 else {
@@ -855,13 +857,17 @@ impl Block<'_> {
     }
 }
 
-/// Whether any of `program`'s layers runs on the play clock.
+/// Whether any of `program`'s moving waves runs on the play clock (a
+/// constant wave, a layer's or its `depth_by`'s, moves on no clock).
 fn has_seconds(program: &ControlProgram) -> bool {
-    let secs = |c: &Clock| matches!(c, Clock::Seconds { .. });
-    program
-        .layers()
-        .iter()
-        .any(|l| secs(&l.clock) || l.depth_by.as_ref().is_some_and(|(c, _)| secs(c)))
+    let moves =
+        |c: &Clock, w: &Wave| matches!(c, Clock::Seconds { .. }) && !matches!(w, Wave::Const(_));
+    program.layers().iter().any(|l| {
+        moves(&l.clock, &l.wave)
+            || l.depth_by
+                .as_ref()
+                .is_some_and(|d| moves(&d.clock, &d.wave))
+    })
 }
 
 impl Node for ControlLaneNode {

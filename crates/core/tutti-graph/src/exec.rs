@@ -171,9 +171,10 @@ use crate::param::{ParamFrom, ParamInput, ParamShaping, ParamState, SourceIn};
 use crate::plan::{
     DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, ParamSlot, Plan, UnitIdx,
 };
-use crate::play::{PlayClock, PlayReader, PlayReading, PlayState};
+use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{borrow_events, event_pair, AudioSlots, EventSlots, SlotFlags};
 use crate::spec::{EventIn, EventOut};
+use tutti_types::PlayReading;
 
 /// Events per block an event output port holds when its node declares no
 /// [`Shape::event_capacity`](crate::Shape::event_capacity), unless

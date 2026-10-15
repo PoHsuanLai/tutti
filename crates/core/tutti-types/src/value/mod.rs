@@ -11,6 +11,7 @@
 //!   the [`LoopRange`] it wraps at.
 //! - [`timeline`] — [`TimelineSegment`], the one frame↔beat conversion, and
 //!   [`first_frame_at_or_after`], the one rule for the frame a beat lands on.
+//! - [`play`] — [`PlayReading`], the graph's play clock at one frame.
 //! - [`samples`] — [`Samples`], an integer frame count. A discrete quantity,
 //!   deliberately *not* a `Unit` (it is compared and added, not interpolated
 //!   or automated).
@@ -30,6 +31,7 @@ pub mod frame;
 pub mod frame_clock;
 pub mod latency;
 pub mod param;
+pub mod play;
 pub mod samples;
 pub mod tail;
 pub mod timeline;
@@ -43,6 +45,7 @@ pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
 pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};
 pub use param::Param;
+pub use play::PlayReading;
 pub use samples::Samples;
 pub use tail::Tail;
 pub use timeline::{

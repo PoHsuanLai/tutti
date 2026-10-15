@@ -107,6 +107,10 @@ pub enum Wave {
     /// curve of the piece it starts; the last piece runs to the first point
     /// of the next period.
     Drawn(Arc<[PeriodPoint]>),
+    /// One value at every time, whatever the clock: a macro. It has no
+    /// corners, and a layer of it does not move, so a lane whose layers are
+    /// all constant is steady (one held value, no grid).
+    Const(f32),
 }
 
 /// A breakpoint of a [`Wave::Drawn`] period.
@@ -166,9 +170,50 @@ pub struct Layer {
     pub wave: Wave,
     /// How the raw value becomes an offset.
     pub amount: Amount,
-    /// The offset scaled by a second wave mapped to `[0, 1]` (depth moved
-    /// by an LFO). `None`: unscaled.
-    pub depth_by: Option<(Clock, Wave)>,
+    /// The offset scaled by a second wave through its own [`Amount`] (depth
+    /// moved by an LFO or a macro). `None`: unscaled.
+    pub depth_by: Option<DepthBy>,
+}
+
+/// What scales a [`Layer`]'s offset: a second wave on its own clock, shaped
+/// by its own amount, `m = shape(raw, amount)`. The offset is multiplied by
+/// `m`.
+///
+/// [`DepthBy::UNIT`] (full depth, unipolar, linear) maps the wave's
+/// `[-1, 1]` onto `[0, 1]`, computed as `(raw + 1) / 2` in `f64`; any other
+/// amount goes through [`shape`]. A curved bipolar amount kinks at the
+/// wave's zero crossings, which are corners as a layer's are (doc 014 §5.3).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DepthBy {
+    /// The clock the scaling wave runs on.
+    pub clock: Clock,
+    /// The scaling wave.
+    pub wave: Wave,
+    /// How its raw value becomes the scale.
+    pub amount: Amount,
+}
+
+impl DepthBy {
+    /// The amount that maps a wave's `[-1, 1]` onto `[0, 1]`.
+    pub const UNIT: Amount = Amount {
+        depth: Depth::FULL,
+        polarity: Polarity::Unipolar,
+        curve: CurveType::Linear,
+    };
+
+    /// The scale `raw` gives.
+    #[inline]
+    fn scale(&self, raw: f32) -> f64 {
+        let a = self.amount;
+        if a.polarity == Polarity::Unipolar && a.curve == CurveType::Linear {
+            // `(raw + 1) / 2` in `f64`, and exactly that at full depth:
+            // `1.0 ×` is exact.
+            let u = (f64::from(raw.clamp(-1.0, 1.0)) + 1.0) * 0.5;
+            f64::from(a.depth.get()) * u
+        } else {
+            a.offset(raw, 1.0)
+        }
+    }
 }
 
 /// A signal source's raw value (its events on the lane's event input,
@@ -228,6 +273,9 @@ pub enum ProgramError {
     /// A drawn wave whose points are not ascending in `[0, 1)` with finite
     /// values, in this layer.
     BadDrawnWave(LayerId),
+    /// A NaN in this layer (a depth, a rate, a phase, a beat span, an
+    /// anchor, a constant): a program is [`Eq`], and NaN equals nothing.
+    NotANumber(LayerId),
 }
 
 impl fmt::Display for ProgramError {
@@ -251,6 +299,7 @@ impl fmt::Display for ProgramError {
                 "layer {}: a drawn wave's points must ascend in [0, 1) with finite values",
                 id.0
             ),
+            Self::NotANumber(id) => write!(f, "layer {}: a NaN", id.0),
         }
     }
 }
@@ -316,7 +365,9 @@ impl fmt::Debug for ControlProgram {
 }
 
 /// Equal when the layers are equal and the automation is the same curve
-/// (`Arc` identity: a curve has no equality of its own).
+/// (`Arc` identity: a curve has no equality of its own). [`Eq`]:
+/// [`new`](ControlProgram::new) refuses a NaN anywhere in a program, so
+/// every program equals itself.
 impl PartialEq for ControlProgram {
     fn eq(&self, other: &Self) -> bool {
         let same_curve = match (&self.automation, &other.automation) {
@@ -327,6 +378,8 @@ impl PartialEq for ControlProgram {
         same_curve && self.layers == other.layers && self.inputs == other.inputs
     }
 }
+
+impl Eq for ControlProgram {}
 
 /// A tolerance in a clock's units (cycles, beats) at `x`: what "strictly
 /// after" a corner and "just before" one mean, wide enough that a corner
@@ -345,8 +398,8 @@ impl ControlProgram {
     /// # Errors
     ///
     /// Past [`MAX_LANE_LAYERS`] or [`MAX_LANE_INPUTS`], two layers with one
-    /// id, or a drawn wave whose points do not ascend in `[0, 1)` with
-    /// finite values.
+    /// id, a drawn wave whose points do not ascend in `[0, 1)` with finite
+    /// values, or a NaN in a layer.
     pub fn new(
         automation: Option<Arc<dyn Curve>>,
         mut layers: Vec<Layer>,
@@ -371,7 +424,10 @@ impl ControlProgram {
             return Err(ProgramError::DuplicateLayer(w[0].id));
         }
         for l in &layers {
-            let waves = std::iter::once(&l.wave).chain(l.depth_by.as_ref().map(|(_, w)| w));
+            if l.has_nan() {
+                return Err(ProgramError::NotANumber(l.id));
+            }
+            let waves = std::iter::once(&l.wave).chain(l.depth_by.as_ref().map(|d| &d.wave));
             for w in waves {
                 if let Wave::Drawn(points) = w {
                     let in_range = points
@@ -383,6 +439,9 @@ impl ControlProgram {
                     }
                 }
             }
+        }
+        if let Some(l) = inputs.iter().find(|l| l.amount.depth.get().is_nan()) {
+            return Err(ProgramError::NotANumber(l.id));
         }
         Ok(Self {
             automation: automation.map(|c| c.frozen().unwrap_or(c)),
@@ -520,10 +579,9 @@ impl ControlProgram {
         let mut corners = [Corners::default(); 2];
         for l in self.layers.iter() {
             corners[0] = l.clock.next_corner(at, &l.wave, l.amount.kinks_at_zero());
-            corners[1] = l
-                .depth_by
-                .as_ref()
-                .map_or(Corners::default(), |(c, w)| c.next_corner(at, w, false));
+            corners[1] = l.depth_by.as_ref().map_or(Corners::default(), |d| {
+                d.clock.next_corner(at, &d.wave, d.amount.kinks_at_zero())
+            });
             for c in corners {
                 if let Some(b) = c.beat {
                     beat(b.get());
@@ -572,18 +630,55 @@ fn automation_at(curve: &dyn Curve, b: f64, left: bool) -> Option<f32> {
 }
 
 impl Layer {
+    /// Whether this layer's offset is the same at every time: a constant
+    /// wave, scaled by nothing or by another constant. A lane whose layers
+    /// are all constant (and with no automation) does not walk the grid.
+    pub fn is_constant(&self) -> bool {
+        matches!(self.wave, Wave::Const(_))
+            && self
+                .depth_by
+                .as_ref()
+                .is_none_or(|d| matches!(d.wave, Wave::Const(_)))
+    }
+
     /// This layer's offset at `at` (just before it when `left`), `None`
     /// when its clock gives no position.
     fn offset(&self, at: &ProgramTime, span: f64, left: bool) -> Option<f64> {
-        let raw = self.wave.raw_at(self.clock.cycles(at)?, left);
+        let raw = self.wave.raw_on(&self.clock, at, left)?;
         let mut off = self.amount.offset(raw, span);
-        if let Some((clock, wave)) = &self.depth_by {
-            let m = clock
-                .cycles(at)
-                .map_or(1.0, |c| (f64::from(wave.raw_at(c, left)) + 1.0) * 0.5);
+        if let Some(d) = &self.depth_by {
+            let m = d
+                .wave
+                .raw_on(&d.clock, at, left)
+                .map_or(1.0, |r| d.scale(r));
             off *= m;
         }
         Some(off)
+    }
+
+    /// Whether a NaN is anywhere in the layer.
+    fn has_nan(&self) -> bool {
+        let amount = |a: &Amount| a.depth.get().is_nan();
+        let clock = |c: &Clock| match *c {
+            Clock::Beats { per_cycle, phase } => per_cycle.get().is_nan() || phase.get().is_nan(),
+            Clock::Seconds {
+                rate,
+                phase,
+                anchor,
+            } => {
+                rate.get().is_nan()
+                    || phase.get().is_nan()
+                    || anchor.is_some_and(|a| a.phase.is_nan() || a.prev_rate.get().is_nan())
+            }
+        };
+        let wave = |w: &Wave| matches!(w, Wave::Const(v) if v.is_nan());
+        amount(&self.amount)
+            || clock(&self.clock)
+            || wave(&self.wave)
+            || self
+                .depth_by
+                .as_ref()
+                .is_some_and(|d| amount(&d.amount) || clock(&d.clock) || wave(&d.wave))
     }
 }
 
@@ -694,6 +789,15 @@ pub(crate) fn hash_bipolar(n: i64) -> f32 {
 }
 
 impl Wave {
+    /// The raw value on `clock` at `at` (just before it when `left`); `None`
+    /// when the clock gives no position. A constant needs none.
+    fn raw_on(&self, clock: &Clock, at: &ProgramTime, left: bool) -> Option<f32> {
+        match self {
+            Self::Const(v) => Some(*v),
+            _ => Some(self.raw_at(clock.cycles(at)?, left)),
+        }
+    }
+
     /// The raw value at `cycles` (just before it when `left`).
     pub fn raw_at(&self, cycles: f64, left: bool) -> f32 {
         let c = if left { cycles - tol(cycles) } else { cycles };
@@ -717,6 +821,7 @@ impl Wave {
                 }
             },
             Self::Drawn(points) => drawn_value(points, frac),
+            Self::Const(v) => *v,
         }
     }
 
@@ -803,6 +908,7 @@ impl Wave {
                     }
                 }
             }
+            Self::Const(_) => {}
         }
     }
 }

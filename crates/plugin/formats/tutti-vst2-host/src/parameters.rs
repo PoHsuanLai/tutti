@@ -79,9 +79,14 @@ impl Vst2Instance {
     /// Returns `false` when `id` addresses no declared parameter, or the plugin
     /// exposes no `setParameter`: either way the value was discarded rather
     /// than applied.
+    ///
+    /// A plugin that echoes the write through `audioMasterAutomate` from
+    /// inside the call is not reported in
+    /// [`drain_param_changes`](Self::drain_param_changes): the host set the
+    /// value, so it is not the plugin's edit.
     pub fn set_parameter(&self, id: i32, value: f32) -> bool {
         match self.param_index(id) {
-            Some(index) => self.params.set_parameter(index, value),
+            Some(index) => crate::host::host_write(|| self.params.set_parameter(index, value)),
             None => false,
         }
     }

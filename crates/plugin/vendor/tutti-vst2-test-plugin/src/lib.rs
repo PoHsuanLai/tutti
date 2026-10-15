@@ -82,10 +82,13 @@ struct ProbeParameters {
     current_program: std::sync::atomic::AtomicI32,
     /// Backing store for `effGetChunk` / `effSetChunk` round-trips.
     chunk: std::sync::Mutex<Vec<u8>>,
+    /// Where `setParameter` echoes to, under
+    /// `tutti_vst2_probe_set_echo_set_parameter`.
+    host: HostCallback,
 }
 
 impl ProbeParameters {
-    fn new(serviced: i32, serviced_programs: i32) -> Self {
+    fn new(serviced: i32, serviced_programs: i32, host: HostCallback) -> Self {
         let n = serviced.max(0) as usize;
         Self {
             // Distinct, recognisable starting values: parameter i starts at
@@ -96,6 +99,7 @@ impl ProbeParameters {
             serviced_programs,
             current_program: std::sync::atomic::AtomicI32::new(0),
             chunk: std::sync::Mutex::new(b"tutti-vst2-probe-chunk-v1".to_vec()),
+            host,
         }
     }
 
@@ -127,13 +131,17 @@ impl PluginParameters for ProbeParameters {
             return false;
         }
         let mut values = self.values.lock().unwrap_or_else(|p| p.into_inner());
-        match values.get_mut(index as usize) {
-            Some(slot) => {
-                *slot = value.clamp(0.0, 1.0);
-                true
-            }
-            None => false,
+        let Some(slot) = values.get_mut(index as usize) else {
+            return false;
+        };
+        *slot = value.clamp(0.0, 1.0);
+        let set = *slot;
+        drop(values);
+        if switches::echo_set_parameter() {
+            // Inside the host's `setParameter`, as an echoing plugin does.
+            self.host.automate(index, set);
         }
+        true
     }
 
     fn get_parameter_name(&self, index: i32) -> String {
@@ -335,6 +343,7 @@ impl Plugin for ProbePlugin {
         let params = Arc::new(ProbeParameters::new(
             config.serviced_parameters,
             config.serviced_programs,
+            host,
         ));
         Self {
             host,

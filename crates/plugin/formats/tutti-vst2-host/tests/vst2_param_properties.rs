@@ -910,3 +910,31 @@ fn the_display_string_describes_only_the_current_value() {
          share a label — the seam's current-value guard rests on this"
     );
 }
+
+/// **A plugin echoing the host's write is not reporting an edit.** With the
+/// probe's echo on, `setParameter` calls `audioMasterAutomate` with the value
+/// it was just set to, from inside the call. That report is the host's own
+/// value coming back, and `drain_param_changes` must not hand it on: a host
+/// that takes reported values as the user's (a modulation lane's knob in
+/// `bevy-tutti`) would adopt the modulated value as its base and ratchet it.
+///
+/// Mutation (run): `HostState::automate` without the `IN_HOST_WRITE` check
+/// → the drain returns `[(0, 0.5)]` → fails.
+#[test]
+fn a_plugins_echo_of_a_host_write_is_not_reported() {
+    let _guard = lock_probe();
+    let (instance, path) = load_probe();
+    probe_call(&path, b"tutti_vst2_probe_set_echo_set_parameter\0", |sym| {
+        // SAFETY: the probe exports this as `extern "C" fn(bool)`.
+        let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
+        f(true);
+    });
+
+    assert!(instance.set_parameter(0, 0.5));
+    let echoed = instance.drain_param_changes();
+    reset_switches(&path);
+
+    assert_eq!(instance.get_parameter(0), Some(0.5), "the write landed");
+    assert_eq!(echoed, Vec::new(), "the echo is not an edit");
+    assert_eq!(instance.dropped_param_changes(), 0, "nor a dropped one");
+}

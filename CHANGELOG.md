@@ -1091,6 +1091,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (it reserved `n` more); a list never reserved is unbounded, as before.
     A list never given a parameter room is unbounded on that side too.
 
+- **Two audio-thread reads could free on the audio thread** (design doc
+  013, "nothing the audio thread reads is an `ArcSwap`"). An `ArcSwap`
+  guard held while a control thread stores is settled into a strong count,
+  and its drop can then be the last one. Both cells are now `RtPublish`,
+  whose read only borrows:
+  - `tutti-midi-hardware`'s `HardwareMidiInputs`: a hotplug
+    (`create_input_port`) during the per-block drain could free the old
+    port list in the callback. Two concurrent `create_input_port` calls
+    could also lose one of the ports (load, clone and store was not one
+    step); creation is now serialized, and each caller's port lands at the
+    index it is handed.
+  - `tutti-plugin`'s `PluginMeter`: a `set_meter` or `clear_meter` during
+    playback, replacing a meter cell the host did not keep, freed the whole
+    cell in the callback.
+
+  No public signature changed. `PluginControls::set_tail` and
+  `PluginClient::set_tail` take a short lock now (the tail is a `Mutex`; no
+  audio thread reads it), and their docs no longer claim they are RT-safe:
+  the old store allocated. `arc-swap` is no longer a dependency of any
+  engine crate (only `tutti-types`' bench baseline keeps it).
+
 - **A live in-process VST2 plugin behind a latent path was told the wrong
   playhead** (tutti-plugin; design doc 013, "In-process VST2 live transport
   from `Cx` landed"). The live node polled the installed `Transport` once

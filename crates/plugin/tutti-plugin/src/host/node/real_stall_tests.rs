@@ -340,18 +340,22 @@ fn a_real_plugin_that_stops_answering_is_abandoned_and_later_drained() {
     let _ = std::fs::remove_file(release_path());
 }
 
-/// The counter really moves only because a block was abandoned.
+/// The counter really moves only because a block was abandoned, and an
+/// ordinary run rarely abandons one.
 ///
 /// The control for the test above, and the reason its `settled > 0` assertion is
-/// worth anything: an identical run with **no** park must settle nothing. Without
-/// this, `settled_replies() > 0` could be satisfied by any incidental drain and
-/// the suite would be claiming to exercise the budget path without evidence that
-/// it ever entered it.
+/// worth anything. An identical run with **no** park must show two things:
 ///
-/// This is also the mutation the brief calls for, kept as a permanent test rather
-/// than performed once and thrown away: releasing immediately means the "budget
-/// elapsed" branch is never taken, and the assertion on `settled_replies()` is
-/// what notices.
+/// - **`settled <= abandoned`**: every reply the drain took back was owed by an
+///   abandoned block. Without this, `settled_replies() > 0` could be satisfied
+///   by any incidental drain.
+/// - **`abandoned <= ORDINARY_MISSES`**: an ordinary block misses its budget
+///   only occasionally. Without this, a budget that every block misses would
+///   keep the first bound (each abandoned reply is settled) and make the stall
+///   test's abandonment a property of the budget rather than of the park.
+///
+/// Neither is pinned to 0: the budget is wall clock, and a loaded machine can
+/// make an ordinary block miss it. See the bound's derivation below.
 #[test]
 fn a_plugin_that_never_parks_settles_nothing() {
     let _lock = probe_lock::acquire();
@@ -364,7 +368,8 @@ fn a_plugin_that_never_parks_settles_nothing() {
     let mut client = graph_of(client);
     let mut midi_out = crate::protocol::MidiEventVec::new();
 
-    for _ in 0..12 {
+    const BLOCKS: usize = 12;
+    for _ in 0..BLOCKS {
         let _ = drive_block(&mut client, &mut midi_out);
         std::thread::sleep(PACE);
     }
@@ -373,13 +378,43 @@ fn a_plugin_that_never_parks_settles_nothing() {
         !handle.status().is_dead(),
         "an unstressed plugin stays alive"
     );
-    assert_eq!(
-        bridge.settled_replies(),
-        0,
-        "nothing was ever abandoned, so nothing can have been settled. A \
-         non-zero count here means the budget is being missed on an ordinary \
-         run — the counter would then prove nothing in the stall test, because \
-         it would be moving for reasons unrelated to the park."
+
+    // `settled` first: its `Acquire` makes every `abandoned` bump that owed
+    // those replies visible to the read after it.
+    let settled = bridge.settled_replies();
+    let abandoned = bridge.abandoned_replies();
+
+    // Bounded by `abandoned`, not pinned to 0: on a loaded machine an ordinary
+    // block can miss its budget, and the drain then rightly takes that reply
+    // back (an exact `== 0` would read 1).
+    //
+    // Mutation: count a settle on every block (`note_settled(taken + 1)` in
+    // `Owed::settle`, which runs before each block's send) → `settled` grows
+    // with no abandonment (12 vs 0) → fails.
+    assert!(
+        settled <= abandoned,
+        "{settled} replies were settled but only {abandoned} were ever \
+         abandoned. The counter is moving for reasons unrelated to a missed \
+         budget, so it would prove nothing in the stall test."
+    );
+
+    // A quarter of the blocks. The budget is 4 periods (5.3 ms at 64/48k), the
+    // probe's work is a passthrough, and each block follows a whole `PACE` (20
+    // periods) of idle time. So an ordinary block is abandoned only if its
+    // round trip is kept off a core for over 5 ms; idle that is 0 of 12,
+    // and it stayed 0 of 12 in every run under bursty load pinned to one core.
+    // A machine that keeps it off a core that long on more than 3 widely
+    // spaced blocks cannot judge this control anyway.
+    //
+    // Mutation: `process_timeout` returns 1 us → every block's reply misses
+    // (abandoned 12, settled 11, which the bound above passes) → fails.
+    const ORDINARY_MISSES: u64 = BLOCKS as u64 / 4;
+    assert!(
+        abandoned <= ORDINARY_MISSES,
+        "{abandoned} of {BLOCKS} ordinary blocks missed their budget (at most \
+         {ORDINARY_MISSES} allowed). The plugin was never parked, so the \
+         budget itself is being missed routinely, and the stall test's \
+         abandonment would not be evidence of the park."
     );
 }
 

@@ -42,7 +42,6 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false 
 
 # Lock-free
 crossbeam-channel = "0.5"
-arc-swap = "1.7"
 ringbuf = "0.4"
 
 

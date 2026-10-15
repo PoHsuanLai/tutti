@@ -69,7 +69,6 @@ bincode = "1"
 memmap2 = "0.9"
 
 # Lock-free channels and queues
-arc-swap = "1"
 crossbeam-channel = "0.5"
 crossbeam = "0.8"
 parking_lot = "0.12"

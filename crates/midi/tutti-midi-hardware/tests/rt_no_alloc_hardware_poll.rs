@@ -206,3 +206,59 @@ fn hardware_poll_with_stale_timestamps_is_allocation_free() {
         }
     });
 }
+
+/// A hotplug landing while a block drains frees nothing on the audio thread.
+///
+/// The drain borrows the port set; a device connecting mid-drain publishes a
+/// new set on the control side. The old set must then be retired for the
+/// *control* side to free, never released by the drain's borrow when it drops
+/// inside the gate. The hotplug is run inside the drain's visitor, under
+/// `permit_alloc`, so it lands exactly while the drain holds its borrow, and
+/// only the drain's own code stays gated.
+///
+/// This pins the reader's code path, not the race: a single thread cannot
+/// exhaust the interleavings. The reclamation protocol itself is checked by
+/// `tutti-types`' loom model.
+///
+/// Mutation: putting the port set back on `ArcSwap` (`load()` in the drain,
+/// `load` + clone + `store` in `create_input_port`) aborts this test on its
+/// first block: the store turns the drain's guard into the old set's last
+/// strong count, and the guard's drop frees that `Vec` inside the gate.
+#[test]
+fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
+    let inputs = HardwareMidiInputs::new(256);
+    inputs.set_sample_rate(48_000.0);
+    let first = inputs.create_input_port("Input 0");
+
+    // Warm the scratch outside the gate, as the other gates do.
+    feed(&inputs, first, 4);
+    inputs.cycle_start_read_all_inputs(512, |_, _| {});
+
+    const BLOCKS: usize = 32;
+    let mut visited = 0usize;
+    assert_no_alloc::assert_no_alloc(|| {
+        for block in 0..BLOCKS {
+            feed(&inputs, first, 4);
+            let mut plugged = false;
+            visited += inputs.cycle_start_read_all_inputs(512, |_, _| {
+                if !plugged {
+                    plugged = true;
+                    assert_no_alloc::permit_alloc(|| {
+                        inputs.create_input_port(format!("Hotplug {block}"));
+                    });
+                }
+            });
+        }
+    });
+
+    assert_eq!(
+        visited,
+        BLOCKS * 4,
+        "every block drained its events, so every hotplug landed mid-drain"
+    );
+    assert_eq!(
+        inputs.list_input_ports().len(),
+        1 + BLOCKS,
+        "every hotplug's port landed"
+    );
+}

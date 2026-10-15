@@ -1,9 +1,8 @@
 //! The sampler streaming-engine handle. See [`DiskStreamer`].
 
-use super::{BufferConfig, ButlerCommand, ButlerThread};
+use super::{BufferConfig, ButlerSender, ButlerThread};
 use crate::error::Result;
 use crate::ports::{Commands, Status};
-use smol::channel::Sender;
 use std::sync::Arc;
 use tutti_core::RtPublish;
 use tutti_core::SampleRate;
@@ -56,7 +55,7 @@ use tutti_core::Samples;
 /// # }
 /// ```
 pub struct DiskStreamer {
-    butler_tx: Sender<ButlerCommand>,
+    butler_tx: ButlerSender,
     butler: ButlerThread,
 }
 

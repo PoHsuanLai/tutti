@@ -1,41 +1,58 @@
-//! Butler thread body: the async main loop.
+//! Butler thread body: the main loop.
 //!
-//! Runs on the butler thread inside `smol::block_on`. The *work* of a cycle is
+//! The *work* of a cycle is
 //! [`ButlerCycle::step`](super::step::ButlerCycle::step) — synchronous, and
-//! shared with the test driver. What lives here is the half that genuinely needs
-//! an executor: the pacing, i.e. racing the command channel against a timer so a
-//! max-priority thread with nothing to do does not spin a core.
+//! shared with the test driver. What lives here is the pacing: parking with a
+//! timeout between cycles, so a max-priority thread with nothing to do does
+//! not spin a core, and a sent command (which unparks it) is handled at once.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
-use smol::channel::Receiver;
-use smol::Timer;
-
-use super::command::ButlerCommand;
 use super::config::BufferConfig;
 use super::handlers::Handles;
+use super::queue::ButlerQueue;
 use super::step::{ButlerCycle, StepOutcome};
+
+/// How long the butler parks between cycles when nothing wakes it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Pacing {
+    /// Nothing streaming.
+    pub(super) idle: Duration,
+    /// Every ring above its refill threshold, or stalled.
+    pub(super) healthy: Duration,
+}
+
+impl Pacing {
+    /// 1 ms idle, [`HEALTHY_SLEEP_MS`] healthy.
+    pub(super) const DEFAULT: Self = Self {
+        idle: Duration::from_millis(1),
+        healthy: Duration::from_millis(HEALTHY_SLEEP_MS),
+    };
+}
 
 /// The butler thread's main loop; returns only on shutdown.
 ///
-/// Each cycle runs one [`ButlerCycle::step`] and then parks according to its
-/// [`StepOutcome`].
+/// Each cycle drains the queue and does one [`ButlerCycle::step`], then
+/// paces according to its [`StepOutcome`].
 ///
 /// # Pacing
 ///
-/// This thread runs at maximum priority, so it must not spin. With no streams it
-/// parks on the command channel against a 1 ms timer; with every ring above its
-/// refill threshold it does the same against [`HEALTHY_SLEEP_MS`]. A genuine
-/// refill need keeps a ring below threshold, which drops it straight back to
-/// yield-and-loop — so the parking adds no latency to refills that actually
-/// matter.
-pub(super) async fn butler_loop_async(
-    rx: Receiver<ButlerCommand>,
+/// This thread runs at maximum priority, so it must not spin. With no streams
+/// it parks for [`Pacing::idle`]; with every ring above its refill threshold,
+/// for [`Pacing::healthy`]. A sent command unparks it (the sender's
+/// `unpark`), so the park bounds only how late a refill is checked, never how
+/// late a command lands. A genuine refill need keeps a ring below threshold,
+/// which drops it straight back to yield-and-loop — so the parking adds no
+/// latency to refills that actually matter.
+pub(super) fn butler_loop(
+    queue: &ButlerQueue,
     shared: Handles,
     config: BufferConfig,
     shutdown: Arc<AtomicBool>,
+    pacing: Pacing,
 ) {
     let mut cycle = ButlerCycle::new(config);
 
@@ -44,48 +61,31 @@ pub(super) async fn butler_loop_async(
             break;
         }
 
-        match cycle.step(&shared, || rx.try_recv().ok()) {
+        match cycle.step(&shared, || queue.pop()) {
             StepOutcome::Shutdown => break,
 
             // Nothing streaming, nothing urgent, or nothing this loop can do
-            // about it: race the command channel against a short timer instead
-            // of spinning.
+            // about it: park until a command wakes it or the timeout ends.
             //
             // `Stalled` belongs here rather than with `Busy`. A ring whose
             // capacity is sized from the whole file can never reach its refill
             // threshold once the stream nears the end, so treating "below
             // threshold" as "come straight back" spun this max-priority thread
             // flat out for the tail of every clip.
+            //
+            // No wake is lost: a command pushed after the step's drain left
+            // the park token set, and this park returns at once.
             outcome @ (StepOutcome::Idle | StepOutcome::Healthy | StepOutcome::Stalled) => {
-                let park_ms = if outcome == StepOutcome::Idle {
-                    1
+                thread::park_timeout(if outcome == StepOutcome::Idle {
+                    pacing.idle
                 } else {
-                    HEALTHY_SLEEP_MS
-                };
-                let timeout = async {
-                    Timer::after(Duration::from_millis(park_ms)).await;
-                    Err(smol::channel::RecvError)
-                };
-                // The received command is dropped rather than handled here: the
-                // recv exists to *wake* the loop, and the next cycle's drain is
-                // the one place a command is applied. Pushing it back would
-                // reorder it behind commands queued after it.
-                if let Ok(cmd) = futures_lite::future::or(rx.recv(), timeout).await {
-                    if matches!(cmd, ButlerCommand::Shutdown) {
-                        break;
-                    }
-                    // Apply immediately — this command was taken off the queue
-                    // by the wake-up recv, so nothing else will see it.
-                    cycle.step(&shared, {
-                        let mut once = Some(cmd);
-                        move || once.take()
-                    });
-                }
+                    pacing.healthy
+                });
             }
 
-            // A ring is below threshold. Yield so any spawned async tasks can
-            // progress, then come straight back.
-            StepOutcome::Busy => futures_lite::future::yield_now().await,
+            // A ring is below threshold: come straight back, letting other
+            // threads run first.
+            StepOutcome::Busy => thread::yield_now(),
         }
     }
 }

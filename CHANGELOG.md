@@ -80,6 +80,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Sampler real-time fixes** (tutti-sampler; design doc 013, "Sampler
+  real-time fixes"). A voice pool's drain no longer blocks on a stalled
+  butler, no longer grows its voice vector in the callback, and counts
+  what it drops instead of logging it. A standalone `VoiceNode`'s
+  placement is a published value rather than a queue. **Breaking** for
+  `VoiceNodeHandle::set_placement`, which returns `()`.
+
+  | Was | Now |
+  |---|---|
+  | a streaming voice's loop forward blocked `process` while the butler's queue was full | it is refused, counted (`PoolDrops::loops_butler_full`), and not recorded in the voice's `Playback`; a host re-sends it. `Commands::send` (control thread) still blocks |
+  | the drain's dropped loops and ignored `ReplaceWave`s went to `tracing::warn!` | `VoicePoolHandle::drops() -> PoolDrops` (`loops_butler_full`, `loops_butler_gone`, `loops_no_butler`, `wave_swaps_ignored`, `voices_refused`, `freed_in_callback`); `#[non_exhaustive]` |
+  | an `AddVoice` past 64 resident voices reallocated the voice vector in the callback | it is refused, counted (`voices_refused`), and the voice handed back for `collect_retired` to free |
+  | a value the full retirement channel could not take was freed in the callback silently | still freed there, now counted (`freed_in_callback`) |
+  | `VoiceNodeHandle::set_placement(..) -> Result<(), SendError>` (a 64-entry queue, `Full` when it filled) | `-> ()`: the window is published, latest wins, from the node's next block. **Migration:** drop the `?`/`.unwrap()`; two placements between blocks play the second |
+  | the butler's command queue was a `smol` channel, whose send locked a listener list (and allocated it on the first send) | a lock-free (not wait-free: on a full queue a send can spin briefly behind the butler's in-progress pop), allocation-free fixed queue whose send unparks the butler. A butler thread that exits, however it exits, closes it and drops what was queued, and every later `Commands::send` returns `ButlerGone`; a command sent as it exits either is popped (run, or dropped by that drain) or reports `ButlerGone` |
+  | an `AddVoice` whose voice carried a loop recorded it in `Playback` even when the butler refused the forward | the loop is recorded only once the butler takes it |
+  | a control-thread `insert_voice` of a streaming voice with a loop | waits for room in the butler's queue (retrying every 100 µs) instead of refusing, as `Commands::send` does; it returns early only when the butler is gone (counted as `loops_butler_gone`). It waits as long as a stalled butler stalls, and for good on an unstarted controller or a `DiskStreamer::manual` stepped on the calling thread: step or start it before inserting a looping voice into a full queue |
+  | `loops_no_butler` counted every loop change on a streaming voice with no butler, `Off` included | it counts only a lost `On`; an `Off` there has nothing to clear |
+  | `tutti-sampler` depended on `ringbuf`, `smol` and `futures-lite` | it depends on none of them (`crossbeam-queue` instead) |
+
 - **A hardware MIDI input ring has one producer, by ownership**
   (tutti-midi-hardware; design doc 013, "Hardware MIDI input ring"). Each
   port's ring is split once: `create_input_port` returns its only

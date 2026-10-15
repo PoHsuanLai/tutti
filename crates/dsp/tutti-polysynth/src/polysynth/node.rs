@@ -124,8 +124,8 @@ impl Node for PolySynth {
             SortedEvents::EMPTY
         };
         let count = self.gather_events(events);
-        let volume =
-            block_driven(&io, 0).map_or_else(|| self.master_volume.load().get(), |v| v.max(0.0));
+        let volume = block_driven(&io, 0)
+            .map_or_else(|| self.master_volume.load().get(), Self::clamp_volume);
         let (_, mut outputs) = io.split();
         let mut channels = outputs.iter_mut();
         let (Some(left), right) = (channels.next(), channels.next()) else {

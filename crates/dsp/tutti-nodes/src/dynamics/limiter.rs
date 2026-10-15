@@ -15,6 +15,7 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepar
 use super::envelope::EnvelopeFollower;
 use super::utils::{amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope};
 use crate::buffer::{CircularBuffer, MonotonicMinDeque};
+use crate::ramp::LastGood;
 use tutti_core::{Db, Param, SampleRate, Samples, Seconds, Tail};
 use tutti_types::Latency;
 use tutti_types::UnitParam;
@@ -124,6 +125,10 @@ pub struct LimiterNode {
     threshold_db: Param<Db>,
     ceiling_db: Param<Db>,
     release: Param<Seconds>,
+    /// The last finite release, driven or written: a NaN release would
+    /// make the envelope's coefficient NaN, and the envelope NaN for good
+    /// (see [`LastGood`]).
+    good_release: LastGood,
 
     ring: LookaheadRing,
     /// The lookahead window **as requested**, which is the only form a rate
@@ -224,6 +229,7 @@ impl LimiterNode {
             threshold_db: Param::new(threshold_db.into()),
             ceiling_db: Param::new(ceiling_db.into()),
             release: Param::new(Seconds(0.1)),
+            good_release: LastGood::new(0.1),
             ring: LookaheadRing::new(n, lookahead_samples),
             lookahead: lookahead_secs,
             layout,
@@ -270,7 +276,7 @@ impl LimiterNode {
     /// ones sound transparent and hold reduction through a passage.
     pub fn with_release(self, release_secs: impl Into<Seconds>) -> Self {
         self.release
-            .store(Seconds(release_secs.into().get().max(0.001)));
+            .store(Seconds(Self::clamp_release(release_secs.into().get())));
         self
     }
 
@@ -313,7 +319,17 @@ impl LimiterNode {
 
     /// Sets the release time in [`Seconds`], floored at 1 ms.
     pub fn set_release(&self, secs: impl Into<Seconds>) {
-        self.release.store(Seconds(secs.into().get().max(0.001)));
+        self.release
+            .store(Seconds(Self::clamp_release(secs.into().get())));
+    }
+
+    /// A release time as the setters store it: floored at 1 ms. Shared by
+    /// the setters and a driven port's value. Below it the follower's
+    /// coefficient reaches 1.0 (`time_to_coeff` at `<= 0`), the envelope
+    /// freezes and the gain reduction it holds never releases.
+    #[inline]
+    fn clamp_release(secs: f32) -> f32 {
+        secs.max(0.001)
     }
 
     /// The gain reduction currently applied, in [`Db`] — a **measurement**, for
@@ -330,8 +346,15 @@ impl LimiterNode {
     /// `driven` is the block's release from the node's param port when a
     /// lane drives it; `None` reads the cell.
     fn update_coefficients(&mut self, driven: Option<f32>) {
-        let release = driven.map_or_else(|| self.release.load(), Seconds);
-        self.follower.update_coefficients(Seconds(0.0), release);
+        // The setter's floor at the point of use, so a driven value (or a
+        // raw `ParamSet` write) gets it too; after the `LastGood` read,
+        // which needs to see a NaN that `max` would hide.
+        let release = Self::clamp_release(
+            self.good_release
+                .read(driven.unwrap_or_else(|| self.release.load().get())),
+        );
+        self.follower
+            .update_coefficients(Seconds(0.0), Seconds(release));
     }
 
     #[inline]
@@ -508,6 +531,7 @@ impl Clone for LimiterNode {
             threshold_db: self.threshold_db.handle(),
             ceiling_db: self.ceiling_db.handle(),
             release: self.release.handle(),
+            good_release: self.good_release,
             ring: self.ring.clone(),
             // Carried, not re-derived: a clone may be prepared at a different
             // rate, so a clone that lost the request would re-derive its

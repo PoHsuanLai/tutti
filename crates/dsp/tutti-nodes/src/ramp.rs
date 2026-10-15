@@ -140,6 +140,18 @@ impl LastGood {
     }
 }
 
+/// A driven value through its setter's `clamp`, a non-finite one left as it
+/// is for the [`LastGood`] read that follows (a floor written with `f32::max`
+/// would turn a NaN into the floor and hide it from that read).
+#[inline]
+pub(crate) fn clamp_finite(value: f32, clamp: impl FnOnce(f32) -> f32) -> f32 {
+    if value.is_finite() {
+        clamp(value)
+    } else {
+        value
+    }
+}
+
 /// `value` if finite, else `fallback` — for audio-rate param ports, which are
 /// read per sample and fall back to the block's (already sanitised) value.
 #[inline]

@@ -50,13 +50,25 @@ struct PhaserControls {
     mix: f32,
 }
 
+/// The lowest frequency an all-pass stage is tuned to (see [`allpass_coeff`]).
+const SWEEP_FLOOR_HZ: f32 = 1.0;
+
 /// One first-order all-pass coefficient for a sweep position.
 ///
 /// `tan` of the normalised centre, folded into the all-pass form. It is solved
 /// only at the control points — every 16 samples and a block's last sample —
 /// and interpolated between, rather than per sample and channel.
+///
+/// The sweep is held inside `SWEEP_FLOOR_HZ..=0.49 · sr` first. Outside it
+/// `tan` of the normalised frequency is negative (a sweep below 0 Hz, which a
+/// negative [`Depth`] reaches: `set_depth` allows down to −1) or past its
+/// pole (above Nyquist), `|c|` exceeds 1 and the all-pass diverges. Every
+/// sweep a depth in `0..=1` makes lies in `[min_hz, max_hz]`, inside the hold
+/// (`min_hz >= 20`, `max_hz <= 0.90` of Nyquist), so the hold changes nothing
+/// there.
 #[inline]
 fn allpass_coeff(sweep_hz: f32, sr: f32) -> f32 {
+    let sweep_hz = sweep_hz.max(SWEEP_FLOOR_HZ).min(0.49 * sr);
     let w = core::f32::consts::PI * sweep_hz / sr;
     (w.tan() - 1.0) / (w.tan() + 1.0)
 }
@@ -224,7 +236,9 @@ impl PhaserNode {
 
     /// Sets the LFO rate in [`Hz`], floored at 0.01 Hz.
     pub fn set_rate(&self, hz: impl Into<Hz>) {
-        self.lfo.rate.store(Hz(hz.into().get().max(0.01)));
+        self.lfo
+            .rate
+            .store(Hz(LfoDrive::clamp_rate(hz.into().get())));
     }
 
     /// Sets the sweep [`Depth`], clamped to the unit range.

@@ -52,6 +52,19 @@ pub struct ModDelayConfig {
 }
 
 impl ModDelayConfig {
+    /// A sweep depth in seconds as [`ModDelayNode::set_depth`] stores it:
+    /// clamped to `depth_min..=depth_max`. Shared by the setter and the
+    /// block's read, so a driven depth (or a raw `ParamSet` write) cannot
+    /// sweep past the line.
+    #[inline]
+    ///
+    /// `max` then `min` rather than `f32::clamp`, which panics on a config
+    /// whose `depth_min` exceeds its `depth_max`; this is read on the audio
+    /// thread. For a well-formed config the two agree.
+    pub fn clamp_depth(&self, secs: f32) -> f32 {
+        secs.max(self.depth_min.get()).min(self.depth_max.get())
+    }
+
     /// Chorus: 10 ms base delay, a quarter-cycle stagger between channels, 1 Hz
     /// rate, 5 ms sweep depth (clamped to `0..=40 ms`), 0.3 feedback, 50/50
     /// mix. The long base delay is what separates chorus from flanger — the copy
@@ -242,16 +255,17 @@ impl ModDelayNode {
 
     /// Sets the LFO rate in [`Hz`], floored at 0.01 Hz.
     pub fn set_rate(&self, hz: impl Into<Hz>) {
-        self.lfo.rate.store(Hz(hz.into().get().max(0.01)));
+        self.lfo
+            .rate
+            .store(Hz(LfoDrive::clamp_rate(hz.into().get())));
     }
 
     /// Sets the sweep depth in [`Seconds`], clamped to the configuration's
     /// `depth_min..=depth_max`.
     pub fn set_depth(&self, secs: impl Into<Seconds>) {
-        let (lo, hi) = (self.config.depth_min.get(), self.config.depth_max.get());
         self.controls
             .depth
-            .store(Seconds(secs.into().get().clamp(lo, hi)));
+            .store(Seconds(self.config.clamp_depth(secs.into().get())));
     }
 
     /// Sets the [`Feedback`], clamped to the stable range.
@@ -284,7 +298,7 @@ impl ModDelayNode {
         let [rate, depth, fb, mix] = driven;
         let (depth, fb, mix) = self.controls.load([depth, fb, mix]);
         let target = ModDelayControls {
-            depth,
+            depth: self.config.clamp_depth(depth),
             fb,
             mix: mix.get(),
         };

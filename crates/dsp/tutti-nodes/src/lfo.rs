@@ -368,12 +368,16 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
             "a node with no inputs arrives at zero"
         );
         let size = io.frames();
-        // A driven depth is clamped as `set_depth` clamps a written one.
+        // A driven depth is clamped as `set_depth` clamps a written one. A
+        // non-finite driven value reads the cell instead: a NaN rate would
+        // leave the phase NaN for good.
+        let finite = |v: &f32| v.is_finite();
         let depth = crate::ramp::block_driven(&io, 0)
+            .filter(finite)
             .map_or_else(|| self.depth.load(), Depth::new_clamped)
             .get();
         let driven_rate = match self.mode {
-            LfoMode::FreeRunning => crate::ramp::block_driven(&io, 1),
+            LfoMode::FreeRunning => crate::ramp::block_driven(&io, 1).filter(finite),
             LfoMode::BeatSynced => None,
         };
         let out = io.output(0);

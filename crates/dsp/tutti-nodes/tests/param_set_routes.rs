@@ -30,7 +30,8 @@ use tutti_graph::{
 use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
-    CompressorNode, LadderFilterNode, LadderType, LfoNode, ModDelayNode, SvfFilterNode, SvfType,
+    CompressorNode, LadderFilterNode, LadderType, LfoNode, LimiterNode, ModDelayNode, PhaserNode,
+    SvfFilterNode, SvfType,
 };
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{BeatDuration, Depth, Hz, NodeKey, PhaseIncrement, SampleRate, Samples};
@@ -416,4 +417,227 @@ fn a_lane_drives_an_lfo_nodes_depth_and_rate() {
     let rising = out.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
     assert_eq!(rising, 3, "3 Hz: three rising crossings in a second");
     assert_eq!(knob, 1.0, "the lane never writes the rate cell");
+}
+
+/// `input` (mono) through `node` at 48 kHz in 128-frame blocks, with a
+/// control lane on `param` whose knob is the node's own cell, the port's
+/// range `range`, and whose one layer adds a constant `depth` of that range
+/// (negative: below the knob). The lane is wired before the first block.
+fn render_driven<N>(
+    node: N,
+    param: UnitParam,
+    range: ParamRange,
+    depth: f32,
+    input: &[f32],
+) -> Vec<f32>
+where
+    N: tutti_graph::IntoNode<Controls = ParamSet>,
+{
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let (n, params) = g.add_with_controls(node);
+    g.connect_input(0, n, 0).connect_output(n, 0, 0);
+    let at = ParamIn { node: n, param };
+    g.spec_mut().set_param_range(at, range);
+    let mut r = g
+        .renderer(Prepare::new(SampleRate(48_000.0), Samples(128)))
+        .expect("builds");
+    let ed = r.editor_mut();
+    let layer = Layer {
+        id: LayerId(1),
+        clock: Clock::Beats {
+            per_cycle: BeatDuration(1.0),
+            phase: PhaseIncrement(0.0),
+        },
+        wave: Wave::Const(1.0),
+        amount: Amount {
+            depth: Depth(depth),
+            polarity: Polarity::Bipolar,
+            curve: CurveType::Linear,
+        },
+        depth_by: None,
+    };
+    let program = ControlProgram::new(None, vec![layer], vec![]).expect("valid");
+    let knob = params.cell(param).expect("the node addresses it");
+    let range = ed
+        .param_range_cell(at)
+        .expect("the node declares it as a port");
+    let lane = ControlLaneNode::for_unit(param, program, Some(knob), Some(range));
+    ed.insert(NodeKey(9_000), "lane", lane);
+    ed.spec_mut().connect_param(
+        at,
+        EventOut {
+            node: NodeKey(9_000),
+            port: 0,
+        },
+    );
+    ed.commit().expect("the lane commits");
+    r.render_input(&[input]).swap_remove(0)
+}
+
+/// Peak magnitude of `x`.
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+}
+
+/// **A limiter driven to a release below its floor still releases.** A lane
+/// on the release port, ranged `-1..=1` s, drives it to −0.4 s, below the
+/// 1 ms `set_release` floors at. A full-scale burst into a −12 dB limiter,
+/// then a quiet tone under the threshold: the output is finite, and the
+/// quiet tone comes back at its own level (the gain reduction released),
+/// not held down at the burst's.
+///
+/// Mutation (run, PR 5 review): `update_coefficients` without
+/// `clamp_release` (the driven value as is) → the follower's coefficient
+/// is 1.0 (`time_to_coeff` at `<= 0`), the envelope freezes at the burst's
+/// reduction and the tone stays about 12 dB down → fails.
+#[test]
+fn a_limiter_driven_below_its_release_floor_still_releases() {
+    const SR: f32 = 48_000.0;
+    let tone = |amp: f32, frames: usize| -> Vec<f32> {
+        (0..frames)
+            .map(|i| amp * (std::f32::consts::TAU * 440.0 * i as f32 / SR).sin())
+            .collect()
+    };
+    let mut input = tone(1.0, 12_000);
+    input.extend(tone(0.05, 36_000));
+    let out = render_driven(
+        LimiterNode::with_channels(ChannelLayout::MONO, -12.0, -12.0),
+        UnitParam::Release,
+        ParamRange::new(-1.0, 1.0),
+        -0.25,
+        &input,
+    );
+    assert!(out.iter().all(|v| v.is_finite()), "finite throughout");
+    let tail = peak(&out[out.len() - 12_000..]);
+    assert!(
+        (tail - 0.05).abs() < 0.005,
+        "the quiet tone comes back at 0.05, not held down: {tail}"
+    );
+}
+
+/// **A phaser driven past its depth range stays stable.** A lane on the
+/// depth port, ranged `-8..=8`, drives it to 8 and, separately, to −7.5. Past
+/// 1 the sweep would cross Nyquist and below 0 it would go below 0 Hz;
+/// either puts the all-pass coefficient outside `-1..=1`, where the stages
+/// diverge. Clamped (`Depth::new_clamped` on the depth, the sweep held
+/// inside `1 Hz..0.49 sr`) the output stays bounded by what the input and a
+/// 0.5 feedback can make.
+///
+/// And the depth gets `set_depth`'s clamp: driven to 8 it sounds as it
+/// does driven to exactly 1 (the knob at 1, nothing added).
+///
+/// Mutation (run, PR 5 review): `LinearModMix::load` without
+/// `Depth::new_clamped` → the sweep hold keeps the +8 drive bounded, but it
+/// sweeps unlike depth 1 → the last assertion fails. Mutation (run, PR 5
+/// review): `allpass_coeff` without the sweep hold → the −7.5 drive
+/// diverges → fails. (A depth of −1 reaches the second through `set_depth` itself, so
+/// the hold also fixes a divergence that predates the port.)
+#[test]
+fn a_phaser_driven_past_its_depth_range_stays_stable() {
+    let mut state = 0x9e37_79b9_u32;
+    let noise: Vec<f32> = (0..48_000)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            0.5 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
+        })
+        .collect();
+    for depth in [0.5, -0.5] {
+        // Knob 0.5 plus `depth` of the 16-wide range: 8.5 (held at the
+        // range's 8) and -7.5.
+        let out = render_driven(
+            PhaserNode::with_channels(ChannelLayout::MONO, 4),
+            UnitParam::Depth,
+            ParamRange::new(-8.0, 8.0),
+            depth,
+            &noise,
+        );
+        let p = peak(&out);
+        assert!(
+            p.is_finite() && p < 4.0,
+            "driven at {depth} of the range: bounded, peak {p}"
+        );
+    }
+    let phaser_at = |knob: f32, depth: f32| {
+        let n = PhaserNode::with_channels(ChannelLayout::MONO, 4);
+        n.set_depth(knob);
+        render_driven(
+            n,
+            UnitParam::Depth,
+            ParamRange::new(-8.0, 8.0),
+            depth,
+            &noise,
+        )
+    };
+    let (past, full) = (phaser_at(1.0, 0.4375), phaser_at(1.0, 0.0));
+    for (i, (a, b)) in past.iter().zip(&full).enumerate() {
+        assert!(
+            (a - b).abs() < 1e-5,
+            "frame {i}: driven to 8 {a} vs depth 1 {b}"
+        );
+    }
+}
+
+/// **A chorus's driven depth and rate get their setters' clamps.** Driven
+/// to 0.5 s of depth (range `0..=1`), past the chorus's 40 ms
+/// `depth_max`, it sounds as it does at a 40 ms knob; driven to −5 Hz
+/// (range `-10..=10`), below `set_rate`'s 0.01 Hz floor, as it does at a
+/// 0.01 Hz knob.
+///
+/// Mutation (run, PR 5 review): the block's depth without
+/// `ModDelayConfig::clamp_depth` → a 0.5 s sweep reads past the line's
+/// capacity, unlike 40 ms → fails. Mutation (run, PR 5 review):
+/// `LfoDrive::fill_block` taking a driven rate unclamped → the LFO runs
+/// backwards at 5 Hz → fails.
+#[test]
+fn a_chorus_driven_past_its_depth_and_rate_gets_the_setters_clamps() {
+    let mut state = 0x2545_f491_u32;
+    let noise: Vec<f32> = (0..24_000)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            0.5 * ((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0)
+        })
+        .collect();
+    let chorus = |depth: f32, rate: f32| {
+        let n = ModDelayNode::chorus(ChannelLayout::MONO);
+        n.set_depth(depth);
+        n.set_rate(rate);
+        n
+    };
+    let close = |a: &[f32], b: &[f32], what: &str| {
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert!((x - y).abs() < 1e-5, "{what}: frame {i}: {x} vs {y}");
+        }
+    };
+    // Knob 5 ms plus 0.495 of a 1 s range: 0.5 s.
+    let past = render_driven(
+        chorus(0.005, 1.0),
+        UnitParam::Depth,
+        ParamRange::new(0.0, 1.0),
+        0.495,
+        &noise,
+    );
+    let at_max = render_driven(
+        chorus(0.04, 1.0),
+        UnitParam::Depth,
+        ParamRange::new(0.0, 1.0),
+        0.0,
+        &noise,
+    );
+    close(&past, &at_max, "depth past 40 ms");
+    // Knob 1 Hz minus 0.3 of a 20 Hz range: -5 Hz.
+    let below = render_driven(
+        chorus(0.005, 1.0),
+        UnitParam::Rate,
+        ParamRange::new(-10.0, 10.0),
+        -0.3,
+        &noise,
+    );
+    let at_floor = render_driven(
+        chorus(0.005, 0.01),
+        UnitParam::Rate,
+        ParamRange::new(-10.0, 10.0),
+        0.0,
+        &noise,
+    );
+    close(&below, &at_floor, "rate below 0.01 Hz");
 }

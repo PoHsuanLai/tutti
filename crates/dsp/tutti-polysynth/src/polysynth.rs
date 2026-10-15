@@ -224,6 +224,13 @@ impl PolySynth {
         }
     }
 
+    /// A master volume as [`set_volume`](Self::set_volume) stores it:
+    /// floored at 0. Shared by the setter and a driven port's value.
+    #[inline]
+    pub(crate) fn clamp_volume(volume: f32) -> f32 {
+        volume.max(0.0)
+    }
+
     /// Sets the master output gain as a linear [`Amplitude`]: `1.0` (the
     /// default) is unity, `0.0` silence, and values above unity boost.
     /// Negative values clamp to 0.
@@ -234,7 +241,8 @@ impl PolySynth {
     /// [`volume_atomic`](Self::volume_atomic) returns, so it reaches a synth
     /// that is already rendering.
     pub fn set_volume(&self, volume: f32) {
-        self.master_volume.store(Amplitude(volume.max(0.0)));
+        self.master_volume
+            .store(Amplitude(Self::clamp_volume(volume)));
     }
 
     /// Returns the current master gain as a linear amplitude. Reflects modulation

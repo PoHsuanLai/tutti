@@ -135,12 +135,18 @@ impl CompressorCore {
         self.follower.update_coefficients(attack, release);
     }
 
-    /// Attack and release, with non-finite writes held off.
+    /// Attack and release, with non-finite writes held off, floored as
+    /// the setters floor them ([`AttackRelease::clamp_time`]), driven or
+    /// not.
     #[inline]
     fn times(&mut self, [attack, release]: [Option<f32>; 2]) -> (Seconds, Seconds) {
         (
-            Seconds(self.good[4].read(attack.unwrap_or_else(|| self.timing.attack.load().get()))),
-            Seconds(self.good[5].read(release.unwrap_or_else(|| self.timing.release.load().get()))),
+            Seconds(AttackRelease::clamp_time(self.good[4].read(
+                attack.unwrap_or_else(|| self.timing.attack.load().get()),
+            ))),
+            Seconds(AttackRelease::clamp_time(self.good[5].read(
+                release.unwrap_or_else(|| self.timing.release.load().get()),
+            ))),
         )
     }
 
@@ -406,7 +412,7 @@ impl CompressorNode {
         self.core
             .timing
             .attack
-            .store(Seconds(seconds.into().get().max(0.0)));
+            .store(Seconds(AttackRelease::clamp_time(seconds.into().get())));
     }
 
     /// Sets the release time in [`Seconds`], floored at 0.
@@ -414,7 +420,7 @@ impl CompressorNode {
         self.core
             .timing
             .release
-            .store(Seconds(seconds.into().get().max(0.0)));
+            .store(Seconds(AttackRelease::clamp_time(seconds.into().get())));
     }
 
     /// Sets the makeup gain in [`Db`], applied after reduction.

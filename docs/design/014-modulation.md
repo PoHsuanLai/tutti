@@ -1390,6 +1390,27 @@ differences from it:
   rate as a port is not §11's "LFO rate by LFO": that is a compiled
   layer's rate, which still needs an integrating layer; the node
   integrates its own phase.
+- **A driven value gets its setter's clamp at the point of use**, through
+  one function the setter and the block's read share, so the two cannot
+  drift: `AttackRelease::clamp_time` (compressor and gate, floored at 0),
+  the limiter's `clamp_release` (1 ms: below it the follower freezes and
+  gain reduction never releases), `LfoDrive::clamp_rate` (0.01 Hz),
+  `ModDelayConfig::clamp_depth`, `Depth::new_clamped` (phaser and LFO
+  depth), `CompressionRatio`, `Feedback` and `Mix`'s `new_clamped`, and
+  the synth's `clamp_volume` and `clamp_detune` (floored at 0). None
+  hides a NaN from the node's `LastGood` read (a `max` floor comes after
+  it), so a NaN from a lane reads as the last good value; the limiter
+  gained one here, and the LFO node, which has none, reads its cell for a
+  non-finite drive. Where a clamp also applies to the cell's value, it
+  changes nothing a setter wrote (only a raw `ParamSet::set`). The rate
+  floor is the exception, driven-only: a negative rate written straight to
+  the effects' LFO cell runs it backwards, which their tests pin. A param
+  whose setter does not clamp (the SVF's gain, the compressor's makeup,
+  the LFO node's rate) is driven unclamped too, beyond the port's range.
+  The phaser's all-pass also holds its sweep inside `1 Hz..0.49 sr`,
+  which a negative depth (`set_depth` allows −1) could leave: its
+  coefficient then exceeds 1 in magnitude and the stages diverge, a
+  defect older than the ports.
 - **Kept knob-only:** `BusStripNode`'s `Mute`, a toggle (`>= 0.5` is
   muted) the strip folds in as a factor it never modulates. A route onto it
   is refused with `NoSuchParam`. Nothing else in the table is kept;

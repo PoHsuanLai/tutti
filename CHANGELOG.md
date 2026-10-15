@@ -1469,6 +1469,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A phaser at a negative depth no longer diverges** (`tutti-nodes`).
+  `PhaserNode::set_depth` allows down to −1, which swept the all-pass
+  below 0 Hz, past where its coefficient stays inside `-1..=1`; the stages
+  grew without bound. The sweep is now held inside `1 Hz..0.49 sr`, which
+  every depth in `0..=1` already was.
+
 - **A VST2 plugin's echo of a host write is no longer reported as its own
   edit** (`tutti-vst2-host`). A plugin that calls `audioMasterAutomate`
   from inside `setParameter` with the value it was just given used to

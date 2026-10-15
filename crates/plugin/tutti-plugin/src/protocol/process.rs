@@ -58,7 +58,7 @@ mod tests {
             ChordValue, IpcMidiEvent, NoteExpressionIntValue, NoteExpressionTextValue,
             NoteExpressionType, NoteExpressionValue, ParamAddress, ScaleValue,
         };
-        let mut param_changes = ParameterChanges::new();
+        let mut param_changes = ParameterChanges::reserved(2, 2);
         param_changes.add_change(ParamAddress::Index(3), 0, 0.25);
         param_changes.add_change(ParamAddress::Index(3), 32, 0.75);
         param_changes.add_change(ParamAddress::Opaque(0xDEAD_BEEFu32.into()), 16, 1.0);

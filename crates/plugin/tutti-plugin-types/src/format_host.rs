@@ -289,6 +289,16 @@ pub trait PluginParams {
     /// not parameter id `n` for VST3, CLAP or AU. Address through each entry's
     /// [`ParameterInfo::id`].
     fn get_parameter_list(&self) -> Vec<ParameterInfo>;
+
+    /// Returns how many parameters the plugin advertises, without building
+    /// their descriptors.
+    ///
+    /// At least `get_parameter_list().len()`: a format whose list skips a
+    /// parameter the plugin declines to describe still counts it. The default
+    /// builds the list; a format with a count query overrides it.
+    fn parameter_count(&self) -> usize {
+        self.get_parameter_list().len()
+    }
 }
 
 /// Saves and restores a plugin's full state as an opaque chunk.

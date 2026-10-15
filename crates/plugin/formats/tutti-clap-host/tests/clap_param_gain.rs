@@ -216,7 +216,7 @@ fn minus_six_db_halves_the_output_amplitude() {
     let session = GainSession::begin();
     let mut inst = session.activate();
 
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(1, 1);
     params.add_change(gain_addr(), 0, normalized_for_db(-6.0));
     let out = drive(&mut inst, &params);
 
@@ -246,7 +246,7 @@ fn unity_gain_leaves_the_output_untouched() {
     let session = GainSession::begin();
     let mut inst = session.activate();
 
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(1, 1);
     params.add_change(gain_addr(), 0, normalized_for_db(0.0));
     let out = drive(&mut inst, &params);
 
@@ -281,7 +281,7 @@ fn a_mid_block_point_takes_effect_at_its_own_sample() {
     let session = GainSession::begin();
     let mut inst = session.activate();
 
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(1, 1);
     params.add_change(gain_addr(), AT as i32, normalized_for_db(-6.0));
     let out = drive(&mut inst, &params);
 
@@ -324,7 +324,7 @@ fn two_points_apply_in_order_at_their_own_offsets() {
     let session = GainSession::begin();
     let mut inst = session.activate();
 
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(1, 2);
     params.add_change(gain_addr(), FIRST as i32, normalized_for_db(-6.0));
     params.add_change(gain_addr(), SECOND as i32, normalized_for_db(-12.0));
     let out = drive(&mut inst, &params);
@@ -361,7 +361,7 @@ fn a_gain_set_in_one_block_persists_into_the_next() {
     let session = GainSession::begin();
     let mut inst = session.activate();
 
-    let mut params = ParameterChanges::new();
+    let mut params = ParameterChanges::reserved(1, 1);
     params.add_change(gain_addr(), 0, normalized_for_db(-6.0));
     let _ = drive(&mut inst, &params);
 

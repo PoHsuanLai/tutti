@@ -779,6 +779,10 @@ impl PluginParams for Vst3Instance {
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         Vst3Instance::get_parameter_list(self)
     }
+
+    fn parameter_count(&self) -> usize {
+        vst_dispatch!(self, inner => inner.parameter_count() as usize)
+    }
 }
 
 impl PluginEditorHost for Vst3Instance {
@@ -957,6 +961,16 @@ impl PluginState for Vst3Instance {
     fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
         vst_dispatch_mut!(self, inner => inner.set_state(data))
             .map_err(|e| PluginError::State(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+impl Vst3Instance {
+    /// Calls the host's `restartComponent(flags)` as the plugin would, so a
+    /// session test can raise a restart the probe never raises on its own.
+    pub(crate) fn plugin_restart_component(&self, flags: i32) {
+        use tutti_vst3_host::host::conformance::plugin_restart_component;
+        vst_dispatch!(self, inner => plugin_restart_component(inner, flags));
     }
 }
 

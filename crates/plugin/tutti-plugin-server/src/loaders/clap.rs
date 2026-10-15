@@ -583,6 +583,10 @@ impl PluginParams for ClapInstance {
         // `ParameterInfo` at its own boundary, so the loader maps no flags here.
         clap_dispatch!(self, i => i.get_parameter_list())
     }
+
+    fn parameter_count(&self) -> usize {
+        clap_dispatch!(self, i => i.parameter_count())
+    }
 }
 
 impl PluginEditorHost for ClapInstance {
@@ -1626,7 +1630,7 @@ mod tests {
         assert!(!params.is_empty());
 
         let mut changes = ParameterChanges::new();
-        let mut queue = ParameterQueue::new(params[0].id);
+        let mut queue = ParameterQueue::with_capacity(params[0].id, 1);
         queue.add_point(0, 0.5);
         changes.add_queue(queue);
 

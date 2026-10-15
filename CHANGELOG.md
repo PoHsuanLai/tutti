@@ -142,6 +142,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | — | `PluginClient::dropped_parameter_events()`, `PluginHandle::dropped_parameter_events()` |
   | `HostParams` had no drop count | **Breaking** for a custom backend: `HostParams::dropped_parameter_events(&self) -> u64` is required. A backend that cannot lose a plugin's parameter reports returns `0`; the in-process VST2 backend returns the `audioMasterAutomate` reports its bounded queue refused (`Vst2Instance::dropped_param_changes`) |
 
+- **Plugin parameter changes draw their points from a shared pool, in
+  fixed-capacity storage** (design doc 014, §9's point-storage note; §12's
+  memory follow-up). A reserved `ParameterChanges` held every queue at its
+  full room, so a plugin's parameter-change memory grew with
+  `params × room`: about 43 MB in the IPC node's buffers and 40 MB in a
+  CLAP instance's lists at 2000 parameters and a 4096-frame chunk, ten
+  times that at 16k. Now each queue keeps a small floor and the set a pool
+  of 256 full-room blocks (6.98 MB and 6.2 MB at that size; the per-instance
+  figures are in doc 014 §9). A queue's points are a `PointBuf`, whose
+  capacity is fixed when it is built, so no point storage on the parameter
+  path can grow, on any thread. A queue's logical room
+  (`ParameterQueue::chunk_room`), the wire bytes and the delivery semantics
+  are unchanged. **Breaking**: `ParameterQueue::points` is a `PointBuf`,
+  not a `Vec`; nothing grows a set or a queue past the capacity it was
+  built with; `ParameterQueue::new` and `ParameterChanges::with_capacity`
+  are removed; `ParameterChanges::new()` has room for nothing.
+
+  | Was | Now |
+  |---|---|
+  | `ParameterQueue::points: Vec<ParameterPoint>` | `ParameterQueue::points: PointBuf` (`tutti_plugin_types::PointBuf`, re-exported where `ParameterQueue` is): a boxed slice and a length. It derefs to `[ParameterPoint]` (`len`, `iter`, indexing, `first`/`last`, `sort_by_key` and `&queue.points` in a `for` all compile as before); `try_push(p) -> Result<(), ParameterPoint>`, `try_push_front(p) -> Result<(), ParameterPoint>`, `clear`, `capacity`, `has_room`, `push_or_replace_last(p) -> bool`, `replace_latest(p) -> Option<usize>` (the slot it took). It serializes as the same sequence. `PointBuf` and `ParameterPoint` are `Default` |
+  | `ParameterQueue::new(id)` (an empty `Vec`) | removed: `ParameterQueue::with_capacity(id, points)`, or `ParameterQueue::from_points(id, vec)` (exactly the given points, off the audio thread) |
+  | `ParameterQueue::add_point(..)` grew the queue | `add_point(..) -> bool`: at its capacity the one full-queue policy, `PointBuf::push_or_replace_last` (the point replaces the queue's latest-in-time point if it is no earlier, so the queue ends on its latest value), and `false` for the caller to count |
+  | `ParameterChanges::new()` grew as points were added; `with_capacity(queues)` reserved queues | `new()` is the empty set with room for nothing (`add_change` on it stores nothing, counted); `with_capacity` removed: build `ParameterChanges::reserved(queues, points)` |
+  | `ParameterChanges::reserved(queues, points)`: every queue with room for `points` | one layout for every set: every queue with a floor of `ParameterChanges::FLOOR_POINTS + 1` (3), the set with a `PointPool` of `ParameterChanges::POOLED_QUEUES` (256) blocks of `points + 1`, where that at least halves the storage; otherwise every queue at `points + 1` (`ParameterChanges::point_layout(queues, points) -> (floor, blocks)`). The one more point is the bridge's carried value's, so a queue can reach `points + 1` |
+  | — | `ParameterChanges::reserved_bridged(queues, room)`: `reserved`, with one point of every queue and block kept back for `prepend_carried`, so its producers stop at `room`; `prepend_carried(i, point) -> bool` (with no slot the value is dropped, counted: it is older than the queue's points; past the queues, where no queue holds the parameter, it is dropped and counted too, and is its latest value: unreachable from the IPC bridge, whose buffers hold a queue for every slot of the delivery); `push_point(i, offset, value) -> bool`; `ParameterChanges::SPARE_QUEUES` (64), the queues a host's chunk holds past the parameter list; `PointPool::new(blocks, room, holders)` |
+  | a producer pushed while `queues[i].has_room()` | `ParameterChanges::make_room(i) -> bool`: `true` when the queue has room of its own or took a block from the pool |
+  | — | `PluginInstance::parameter_count() -> usize`: the parameter count without building the descriptors; the default is `get_parameter_list().len()`, and the VST3, CLAP and VST2 loaders answer from the format's count query. An existing implementation needs no change |
+  | `ParameterQueue::has_room()`: room in the queue's own storage | removed: a producer asks `ParameterChanges::make_room(i)` (the queue's room or a pool block), and a sizing check compares `point_storage()` with `point_budget`; the queue's own storage alone is `queue.points.has_room()` |
+  | `add_change(..)` returned nothing, and grew any set past its room | `add_change(..) -> bool`, never grows: past the queue's room the one full-queue policy, and an address past every queue is dropped; either returns `false` and is counted in `ParameterChanges::points_overflowed()`. It costs O(queues) a call (a linear scan; no allocation) |
+  | `add_change` on a set built `new` or `with_capacity` grew it (the unbounded path) | removed: there is no unbounded path. `add_queue` (off the audio thread) still pushes a prebuilt queue |
+  | `point_capacity()`: the smallest room among the spare queues | removed: compare `point_storage()` (the points a set holds now, in its queues, spares and pool) with `ParameterChanges::point_budget(queues, points)` (the points `reserved` holds) |
+  | the IPC bridge grew a floor queue by the carried value it prepends, and pushed a queue for a carried value with no spare queue | the node's delivery and the bridge's buffers are built `reserved_bridged`, so the value takes a real slot; with no spare queue it is dropped, counted in the buffer's `points_overflowed`, which loses the parameter's latest value but is unreachable: every buffer holds the delivery's slot count, the parameters + 64, and every carried id is one of those slots (only the empty placeholder of a block with no changes gets queues built). Their storage is `point_budget` (a floor of 3, not 2, and blocks of `room + 1`): 6.98 MB, not 6.65 MB, at 2000 parameters and 4096 frames |
+  | `ProcessOutput::emit_param_point(..)` grew queues from a private pool of retired ones | `ProcessOutput::reserve_params(queues, points)` sizes `param_changes` (the plugin-server does at load, and again at that room, sized by `PluginInstance::parameter_count`, when a VST3 or AU plugin says its parameter list changed and it grew (a VST3 `kParamTitlesChanged` without a reload still keeps the instance's activation-time output queues); a CLAP `params.rescan` reaches no event there, so its output stays at the load's count, counted past it); `emit_param_point(..) -> bool` is `add_change` within that room. The private `retired` pool is removed |
+  | the CLAP host's input list reserved and bounded at `params × (room + 1)` events | at `ParameterChanges::point_budget(params, room)`, so a chunk the host's pool bounded reaches the plugin whole. Past it, as before, a parameter's point replaces its previous event in the list, and a parameter with no event in the list yet when the room runs out loses its points; counted (`ClapActive::param_points_dropped`) |
+  | the CLAP host's output list's parameter room `queues × room` | `ParameterChanges::point_budget(queues, room)`, the output queues the same (the one layout: a queue and a block hold `room + 1`); past it the one full-queue policy, counted (`ClapActive::output_param_points_dropped`) |
+  | the VST3 host's input queues each reserved a full room; a queue past its room kept its first `room − 1` points and its last | the one layout, for the parameters and the 64 spare queues, lent from the same `PointPool` per block; past its room a queue keeps its latest value (the one policy) |
+  | the VST3 host's output queues grew past their room as the plugin called `addPoint` | fixed at their room: past it `addPoint` keeps the latest value, counted: a point no earlier than the queue's latest replaces it and returns `kResultOk` with that slot's index; an earlier one is dropped and returns `kResultFalse` |
+  | the VST3 host's input and output lists grew their queue count on the audio thread past the queues they were built with | fixed: a refill drops the queues past the list's, and `addParameterData` past them returns null (the failure the SDK's samples check for), both counted in `param_points_dropped` / `output_param_points_dropped`. `addParameterData` for an id already in the list returns that queue and its index, as the SDK's host does |
+  | the VST3 `IMidiMapping` route's scratch in the plain layout, seeded through `add_change` (a scan of the open queues a point); its merge replaced the last point *added* | the one layout (`reserved`) for the parameters and the 64 spare queues, so the host's chunk reaches it whole, seeded a queue opened for each of the chunk's, linear in it; the merge keeps the latest value in time, host or controller |
+  | — | `Vst3Active::param_points_dropped()`, `Vst3Active::output_param_points_dropped()`: read on the instance only; the plugin-server does not report them, as it does not report the CLAP host's |
+
+  Migrating: build a queue with `ParameterQueue::with_capacity(id, n)` (or
+  `from_points`) where it was `ParameterQueue::new(id)`, and a set with
+  `ParameterChanges::reserved(queues, points)` where it was `new()` or
+  `with_capacity(..)` and then filled. Code that pushed onto
+  `queue.points` calls `try_push` (or `add_point`) and decides what a full
+  queue means; code that read it needs no change. A producer that filled a
+  reserved set with `has_room` checks calls `make_room(i)` in their place.
+  A `ProcessOutput` the caller fills with `emit_param_point` is reserved
+  once with `reserve_params`. Code that relied on a set or a queue growing
+  past its room reserves the room it needs, or reads `points_overflowed`.
+
 - **Sampler real-time fixes** (tutti-sampler; design doc 013, "Sampler
   real-time fixes"). A voice pool's drain no longer blocks on a stalled
   butler, no longer grows its voice vector in the callback, and counts

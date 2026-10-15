@@ -42,7 +42,7 @@ use vst3::Steinberg::{
     },
 };
 
-use tutti_plugin_types::RtMidiEvents;
+use tutti_plugin_types::{PointPool, RtMidiEvents};
 use tutti_types::{ChannelLayout, ChannelTopology};
 
 use crate::com::{
@@ -353,22 +353,31 @@ impl<T: Vst3Sample> Vst3Active<T> {
         // One queue per parameter on every param-change list, built here off
         // the audio thread: the host sends changes only, so one block can
         // carry a change for every parameter at once, and the count varies
-        // from block to block.
+        // from block to block. Nothing grows past them on the audio thread:
+        // a queue past a list's is dropped, counted.
         // Capped so a controller reporting a negative or absurd count (read
-        // back through `as u32`) cannot reserve gigabytes; past the cap a
-        // list grows on first use, as it did before it was presized.
+        // back through `as u32`) cannot reserve gigabytes.
         const MAX_PRESIZED_QUEUES: u32 = 1 << 14;
         let param_queues = (loaded.parameter_count().min(MAX_PRESIZED_QUEUES) as usize)
             .max(OUTPUT_PARAM_QUEUE_RESERVE);
+        // The host's chunk adds its spare queues to the parameter count.
+        let chunk_queues = param_queues + ParameterChanges::SPARE_QUEUES;
         // The plugin's emitted changes are drained into reserved queues, each
-        // with the room the output COM queues start with, so a block whose
+        // with the room the output COM queues have, so a block whose
         // emitted points fit it never allocates a queue or its points.
         let emitted_param_changes = ParameterChanges::reserved(param_queues, MIN_POINT_ROOM);
         // Each input queue has room for the points one parameter can carry
         // in a block of `block_size` (what the host's plugin node reserves),
-        // and one more a skipped block's carried value can prepend, so
-        // `refill_from_queue` never grows a queue on the audio thread.
-        let param_points = tutti_plugin_types::ParameterQueue::chunk_room(block_size) + 1;
+        // and one more a skipped block's carried value can prepend, stored
+        // as the host's chunk stores them (`ParameterChanges::point_layout`):
+        // a floor of its own and a block from the list's shared pool when it
+        // carries more, so the refill never grows a queue on the audio
+        // thread and the list's memory follows the points a chunk carries,
+        // not the parameter count. The `IMidiMapping` route copies the same
+        // chunk into a set laid out the same way (`ParameterChanges::reserved`).
+        let chunk_room = tutti_plugin_types::ParameterQueue::chunk_room(block_size);
+        let (floor, blocks) = ParameterChanges::point_layout(chunk_queues, chunk_room);
+        let input_pool = PointPool::new(blocks, chunk_room + 1, chunk_queues);
 
         let audio = AudioIO {
             config: ProcessConfig {
@@ -387,22 +396,25 @@ impl<T: Vst3Sample> Vst3Active<T> {
             input: InputStaging {
                 buses: in_scratch.buses,
                 events: EventList::new(),
-                param_changes: ParameterChangesImpl::with_queues(param_queues, param_points),
+                param_changes: ParameterChangesImpl::with_queues(chunk_queues, floor, input_pool),
             },
             output: OutputStaging {
                 buses: out_scratch.buses,
                 events: EventList::new(),
-                // The plugin fills this one: its points per queue are its
-                // own, so the queues start with the least room,
-                // `MIN_POINT_ROOM`.
-                param_changes: ParameterChangesImpl::with_queues(param_queues, MIN_POINT_ROOM),
+                // The plugin fills this one through `addPoint`, which cannot
+                // borrow a block: every queue has `MIN_POINT_ROOM`, no pool.
+                param_changes: ParameterChangesImpl::with_queues(
+                    param_queues,
+                    MIN_POINT_ROOM,
+                    PointPool::default(),
+                ),
                 emitted_midi: RtMidiEvents::new(),
                 emitted_param_changes,
             },
             cc: CcRoute::new(
                 MidiCcMapping::query(loaded.interfaces.controller.as_ref()),
-                param_queues,
-                param_points,
+                chunk_queues,
+                chunk_room,
             ),
             midi_learn: loaded.midi_learn.producer(),
         };
@@ -742,6 +754,31 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// call; a text past the room is staged as an empty text and counted here.
     pub fn event_text_dropped(&self) -> usize {
         self.audio.input.events.text_dropped() + self.audio.output.events.text_dropped()
+    }
+
+    /// Host parameter points not handed to the plugin whole since
+    /// activation: the input list holds a chunk's points as the host's chunk
+    /// does (a few per parameter and a shared pool of a chunk's room), and a
+    /// point past a queue's room, or past its own few with the pool spent,
+    /// gives way to its parameter's latest value and is counted here, as is
+    /// one the `IMidiMapping` route's merge of host automation and mapped
+    /// controllers could not hold. Zero while the host stays within the
+    /// room the instance was activated for. Read on this instance only: the
+    /// plugin-server does not report it (as it does not report the CLAP
+    /// host's `param_points_dropped`).
+    pub fn param_points_dropped(&self) -> u64 {
+        self.audio.input.param_changes.points_dropped() + self.audio.cc.points_overflowed()
+    }
+
+    /// Points the plugin emitted that the host could not hold whole since
+    /// activation: past an output queue's `MIN_POINT_ROOM` as the plugin
+    /// added them (`addPoint`), or past it in the drained output set with
+    /// the set's pool spent. Each time the parameter kept its latest value.
+    /// Read on this instance only, like
+    /// [`param_points_dropped`](Self::param_points_dropped).
+    pub fn output_param_points_dropped(&self) -> u64 {
+        self.audio.output.emitted_param_changes.points_overflowed()
+            + self.audio.output.param_changes.points_dropped()
     }
 
     /// Re-query the `IMidiMapping` CC→parameter table from the controller.

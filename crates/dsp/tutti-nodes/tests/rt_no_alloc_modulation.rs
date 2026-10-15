@@ -443,7 +443,7 @@ fn lane_program(k: usize, gen: u32) -> tutti_mod::ControlProgram {
         Wave,
     };
     use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint};
-    use tutti_types::{BeatDuration, Depth, Hz, PhaseIncrement};
+    use tutti_types::{BeatDuration, Depth, Hz, Phase, PhaseIncrement};
     let depth = 0.05 + 0.01 * ((k as u32 + gen) % 7) as f32;
     let amount = Amount {
         depth: Depth(depth),
@@ -483,12 +483,12 @@ fn lane_program(k: usize, gen: u32) -> tutti_mod::ControlProgram {
                 beats,
                 Wave::Drawn(Arc::from(vec![
                     PeriodPoint {
-                        at: 0.0,
+                        at: Phase(0.0),
                         value: -0.5,
                         curve: CurveType::Linear,
                     },
                     PeriodPoint {
-                        at: 0.4,
+                        at: Phase(0.4),
                         value: 1.0,
                         curve: CurveType::SCurve,
                     },

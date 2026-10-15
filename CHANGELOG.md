@@ -92,18 +92,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | Was | Now |
   |---|---|
   | — | `tutti_mod::ControlProgram` (automation, `Layer`s on a `Clock::{Beats, Seconds}` with an optional `RateAnchor`, `InputLayer`s; `Wave`, `Amount`, `PeriodPoint`, `ProgramTime`, `Corners`, `ProgramError`, `MAX_LANE_LAYERS` = 16, `MAX_LANE_INPUTS` = 8). `Curve` and `CurveSegment` no longer need the `routing` feature |
-  | — | `tutti_nodes::automation::{ControlLaneNode, LaneControls, CONTROL_STEP}`: `ControlLaneNode::for_param(key, program, knob, range)` and `for_foreign(id, program, knob, (min, max))`; `LaneControls::{publish, publish_arc, program, set_knob, knob, set_range, range, thinned, truncated, unranged}`. Declared `Cost::Moderate` (measured) |
+  | — | `tutti_nodes::automation::{ControlLaneNode, LaneControls, CONTROL_STEP}`: `ControlLaneNode::for_param(key, program, knob, range)` and `for_foreign(id, program, knob, (min, max))`; `LaneControls::{publish, publish_arc, program, resync, set_knob, knob, set_range, range, thinned, truncated, unranged}`. Declared `Cost::Moderate` (measured) |
   | `AutomationLaneNode::for_param(curve, key)` / `for_foreign(curve, id)` returned an `AutomationLaneNode` with an event output | they return a `ControlLaneNode` of the curve alone; `AutomationLaneNode` is the audio-output lane only |
   | `LANE_EVENT_CAPACITY` = 128 (`AutomationLaneNode`'s) | 256, the control lane's: a 4096-frame block's grid and as many corners; past it a lane thins its grid (`thinned()`), then drops its last points (`truncated()`) |
   | a piece no `SegmentShape` carries (`Elastic`, a curve without pieces) was sampled at block edges, so it moved with the block size | it is linear between grid points of the play clock and the breakpoints: the same frames at any block size |
   | `ParameterQueue::chunk_room(chunk)` = `max(ceil(chunk / 32) + 4, 10)`; a full queue replaced its last point (`points_merged`) | `ceil(chunk / 32) + 1 + CORNER_POINTS` (256); a full queue drops a grid point (a frame whose play count is a multiple of 32), or a corner evicts its earliest grid point, both counted in `ParamDeliveryStats::grid_points_dropped`; only a queue of corners is merged |
   | `SegmentPoints` sent a point every stride frames of each chunk | it sends a segment's start, its value on each 32-frame play-grid frame, each chunk's last frame and its arrival; the lane's pieces are the points |
-  | a plugin node's and plugin-server's parameter buffers reserved 132 points per parameter at a 4096-frame chunk | 385 (about 2.9× the memory: the node's buffers about 118 MB at 2000 parameters, the CLAP input list about 56 MB; doc 014 §12 lists every figure and the arena that will replace them) |
+  | a plugin node's and plugin-server's parameter buffers reserved 132 points per parameter at a 4096-frame chunk | 385, and 273 at a 512-frame chunk (was 20): about 2.9× the memory at 4096 frames and about 9× (the node's buffers) to 13× (the CLAP lists) at 512. Per instance at 2000 parameters: a CLAP plugin about 235 MB at 4096 frames and 168 MB at 512, a VST3 plugin about 130 MB and 93 MB. Doc 014 §12 lists every figure and the arena that will replace them |
 
   Migration:
   - Wire `AutomationLaneNode::for_param(curve, key)`'s result as before: it is a `ControlLaneNode`, inserted the same way. For a knob under the automation, or modulation, build `ControlLaneNode::for_param` with a `ControlProgram` and the target's `Param` cell and `Editor::param_range_cell`.
   - Read `LaneControls::thinned()` / `truncated()` where a block over 4096 frames may carry more than 256 points; render exports in blocks of at most 4096 frames.
   - Expect a CLAP parameter under automation to step every 32 frames or less, at play-clock grid frames.
+  - `AutomationLaneNode::for_param` / `for_foreign` now freeze the curve when they build (`ControlProgram::from_automation` takes `Curve::frozen`). A curve that reads state written later (a `LayeredCurve`, whose layers a router writes) no longer sees those writes: publish a new program through the lane's `LaneControls` when it changes, or express the modulation as program layers.
+  - After re-wiring a lane's output or replacing its target, call `LaneControls::resync()`: a steady lane does not re-send at block edges, so a new target hears nothing until something moves.
 
 - **The control-lane floor** (design doc 014, PR 2a): the port rule for
   event sources, the graph's play clock and a shareable range cell.

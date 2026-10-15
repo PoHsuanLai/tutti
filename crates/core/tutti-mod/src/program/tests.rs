@@ -451,17 +451,17 @@ fn random_waves_replay_by_cycle() {
 fn a_drawn_wave_follows_its_points() {
     let points: Arc<[PeriodPoint]> = Arc::from(vec![
         PeriodPoint {
-            at: 0.1,
+            at: Phase(0.1),
             value: 1.0,
             curve: CurveType::Linear,
         },
         PeriodPoint {
-            at: 0.5,
+            at: Phase(0.5),
             value: -1.0,
             curve: CurveType::Exponential,
         },
         PeriodPoint {
-            at: 0.9,
+            at: Phase(0.9),
             value: 0.5,
             curve: CurveType::Linear,
         },
@@ -513,12 +513,12 @@ fn new_refuses_what_a_lane_cannot_hold() {
     let bad = Layer {
         wave: Wave::Drawn(Arc::from(vec![
             PeriodPoint {
-                at: 0.5,
+                at: Phase(0.5),
                 value: 0.0,
                 curve: CurveType::Linear,
             },
             PeriodPoint {
-                at: 0.2,
+                at: Phase(0.2),
                 value: 0.0,
                 curve: CurveType::Linear,
             },

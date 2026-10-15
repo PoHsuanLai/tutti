@@ -112,8 +112,10 @@ pub enum Wave {
 /// A breakpoint of a [`Wave::Drawn`] period.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PeriodPoint {
-    /// Where in the period, in `[0, 1)`.
-    pub at: f32,
+    /// Where in the period, in `[0, 1)` (a program with one outside is
+    /// refused: `Phase(x)` does not wrap, and a point past the period's end
+    /// is a mistake, not the next period's start).
+    pub at: Phase,
     /// The raw value there, in `[-1, 1]`.
     pub value: f32,
     /// The curve of the piece from here to the next point.
@@ -374,7 +376,7 @@ impl ControlProgram {
                 if let Wave::Drawn(points) = w {
                     let in_range = points
                         .iter()
-                        .all(|p| (0.0..1.0).contains(&p.at) && p.value.is_finite());
+                        .all(|p| (0.0..1.0).contains(&p.at.get()) && p.value.is_finite());
                     let ascending = points.windows(2).all(|w| w[0].at < w[1].at);
                     if !(in_range && ascending) {
                         return Err(ProgramError::BadDrawnWave(l.id));
@@ -787,13 +789,13 @@ impl Wave {
             Self::Drawn(points) => {
                 let len = points.len();
                 for (i, p) in points.iter().enumerate() {
-                    let start = k + f64::from(p.at);
+                    let start = k + f64::from(p.at.get());
                     f(start);
                     if kinks && len > 1 {
                         let (q, end) = if i + 1 < len {
-                            (points[i + 1], k + f64::from(points[i + 1].at))
+                            (points[i + 1], k + f64::from(points[i + 1].at.get()))
                         } else {
-                            (points[0], k + 1.0 + f64::from(points[0].at))
+                            (points[0], k + 1.0 + f64::from(points[0].at.get()))
                         };
                         if let Some(x) = crossing(p.curve, p.value, q.value) {
                             f(start + x * (end - start));
@@ -814,16 +816,26 @@ fn drawn_value(points: &[PeriodPoint], frac: f64) -> f32 {
     if points.len() == 1 {
         return first.value;
     }
-    let after = points.partition_point(|p| f64::from(p.at) <= frac);
+    let after = points.partition_point(|p| f64::from(p.at.get()) <= frac);
     let (p, start, q, end) = if after == 0 {
         // Before the first point: the last piece, wrapped.
-        (last, f64::from(last.at) - 1.0, *first, f64::from(first.at))
+        (
+            last,
+            f64::from(last.at.get()) - 1.0,
+            *first,
+            f64::from(first.at.get()),
+        )
     } else if after == points.len() {
-        (last, f64::from(last.at), *first, 1.0 + f64::from(first.at))
+        (
+            last,
+            f64::from(last.at.get()),
+            *first,
+            1.0 + f64::from(first.at.get()),
+        )
     } else {
         let p = points[after - 1];
         let q = points[after];
-        (p, f64::from(p.at), q, f64::from(q.at))
+        (p, f64::from(p.at.get()), q, f64::from(q.at.get()))
     };
     let t = ((frac - start) / (end - start)) as f32;
     p.curve.interpolate(p.value, q.value, t)

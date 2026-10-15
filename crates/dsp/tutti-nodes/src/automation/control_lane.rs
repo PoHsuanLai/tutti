@@ -2,7 +2,7 @@
 //! play-clock grid and sent to the target as curve segments (design doc 014
 //! §5).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tutti_core::ChannelLayout;
@@ -60,15 +60,23 @@ impl RangeSource {
     }
 }
 
+/// A published program with its generation, so one read gives both: how
+/// the lane tells a republish (a glide) from a block that reads the same
+/// program.
+struct Published {
+    generation: u64,
+    program: Arc<ControlProgram>,
+}
+
 /// What a lane shares with its [`LaneControls`] and its fork source.
 struct Shared {
-    program: RtPublish<ControlProgram>,
-    /// The last program published, for the fork (an `RtRef` must not leave
-    /// the block, doc 014 §4.5). Control thread only.
-    last: Mutex<Arc<ControlProgram>>,
-    /// Bumped after every publish: how the lane tells a republish (a glide)
-    /// from a block that reads the same program.
-    generation: AtomicU64,
+    program: RtPublish<Published>,
+    /// The last program published and its generation, for the fork (an
+    /// `RtRef` must not leave the block, doc 014 §4.5) and the next
+    /// publish's generation. Control thread only.
+    last: Mutex<(u64, Arc<ControlProgram>)>,
+    /// Set by [`LaneControls::resync`]: the next block sends at frame 0.
+    resync: AtomicBool,
     knob: Option<Arc<AtomicF32>>,
     range: RangeSource,
     thinned: AtomicU64,
@@ -92,14 +100,28 @@ impl LaneControls {
     /// [`publish`](Self::publish) of a program already behind an `Arc`.
     pub fn publish_arc(&self, program: Arc<ControlProgram>) {
         let mut last = self.0.last.lock().unwrap_or_else(|e| e.into_inner());
-        *last = Arc::clone(&program);
-        self.0.program.publish(program);
-        self.0.generation.fetch_add(1, Ordering::Release);
+        let generation = last.0.wrapping_add(1);
+        *last = (generation, Arc::clone(&program));
+        self.0.program.publish(Arc::new(Published {
+            generation,
+            program,
+        }));
     }
 
     /// The program last published (or built with).
     pub fn program(&self) -> Arc<ControlProgram> {
-        Arc::clone(&self.0.last.lock().unwrap_or_else(|e| e.into_inner()))
+        Arc::clone(&self.0.last.lock().unwrap_or_else(|e| e.into_inner()).1)
+    }
+
+    /// Makes the lane send its value at its next block's first frame, even
+    /// while steady (doc 014 §5.2): what to call after the lane's output is
+    /// re-wired to another target, or its target replaced, since a lane
+    /// sends nothing while nothing moves and a new target would otherwise
+    /// hold its own base until something does. The send is a point, not a
+    /// glide: the new target has no value in flight to glide from. Control
+    /// thread.
+    pub fn resync(&self) {
+        self.0.resync.store(true, Ordering::Release);
     }
 
     /// Writes the knob the lane reads: a native lane's is its target's own
@@ -263,9 +285,12 @@ impl ControlLaneNode {
         native: bool,
     ) -> Self {
         let shared = Shared {
-            program: RtPublish::from_arc(Arc::clone(&program)),
-            last: Mutex::new(program),
-            generation: AtomicU64::new(0),
+            program: RtPublish::new(Published {
+                generation: 0,
+                program: Arc::clone(&program),
+            }),
+            last: Mutex::new((0, program)),
+            resync: AtomicBool::new(false),
             knob,
             range,
             thinned: AtomicU64::new(0),
@@ -337,7 +362,7 @@ impl ControlLaneNode {
     /// piece in flight (doc 014 §5.6). Control thread.
     pub fn fork_fresh(&self) -> Self {
         let s = &*self.shared;
-        let program = Arc::clone(&s.last.lock().unwrap_or_else(|e| e.into_inner()));
+        let program = Arc::clone(&s.last.lock().unwrap_or_else(|e| e.into_inner()).1);
         let knob = s
             .knob
             .as_ref()
@@ -736,10 +761,8 @@ impl Block<'_> {
             if let Some((p, glide)) = cur {
                 // Input events on this frame land before its point.
                 while let Some(e) = events.get(ev).filter(|e| e.offset.index() <= p) {
-                    if let EventKind::Segment(seg) = e.kind {
-                        if let ParamAddr::Id(id) = seg.addr() {
-                            self.take_input(walk, id, seg, self.base() + Samples(e.offset.index()));
-                        }
+                    if let Some((id, seg)) = self.input_of(e) {
+                        self.take_input(walk, id, seg, self.base() + Samples(e.offset.index()));
                     }
                     ev += 1;
                 }
@@ -753,15 +776,8 @@ impl Block<'_> {
                         f.next = Some(self.base() + Samples(p));
                     }
                     for e in &events[ev..] {
-                        if let EventKind::Segment(seg) = e.kind {
-                            if let ParamAddr::Id(id) = seg.addr() {
-                                self.take_input(
-                                    walk,
-                                    id,
-                                    seg,
-                                    self.base() + Samples(e.offset.index()),
-                                );
-                            }
+                        if let Some((id, seg)) = self.input_of(e) {
+                            self.take_input(walk, id, seg, self.base() + Samples(e.offset.index()));
                         }
                     }
                     return Err(o);
@@ -778,8 +794,11 @@ impl Block<'_> {
                 .iter()
                 .map(|c| c.at.index())
                 .find(|&i| i >= from && i < len);
-            let input = events
-                .get(ev)
+            // Only an input the program reads is a point: MIDI or an unread
+            // source uses no capacity.
+            let input = events[ev.min(events.len())..]
+                .iter()
+                .find(|e| self.input_of(e).is_some())
                 .map(|e| e.offset.index())
                 .filter(|&i| i < len);
             let next = [sched, change, input].into_iter().flatten().min();
@@ -790,17 +809,42 @@ impl Block<'_> {
         }
     }
 
+    /// Whether the program reads source `id`.
+    fn reads(&self, id: u32) -> bool {
+        self.program.inputs().iter().any(|l| l.source.0 == id)
+    }
+
+    /// The segment `e` carries for a source the program reads, if any: the
+    /// only events that are inputs (anything else is ignored, and is no
+    /// point).
+    fn input_of(&self, e: &Event) -> Option<(u32, ParamSegment)> {
+        let EventKind::Segment(seg) = e.kind else {
+            return None;
+        };
+        let ParamAddr::Id(id) = seg.addr() else {
+            return None;
+        };
+        self.reads(id).then_some((id, seg))
+    }
+
     /// Records input `id`'s segment, received on frame `recv`, if the
-    /// program reads that source (other events are ignored).
+    /// program reads that source (other events are ignored). Its slot is
+    /// the source's own, else a free one, else one whose source the program
+    /// no longer reads (a republish dropped it): a program reads at most
+    /// [`MAX_LANE_INPUTS`] sources, so a source it reads always finds one.
     fn take_input(&self, walk: &mut Walk, id: u32, seg: ParamSegment, recv: Frame) {
-        if !self.program.inputs().iter().any(|l| l.source.0 == id) {
+        if !self.reads(id) {
             return;
         }
         let slot = walk
             .inputs
             .iter()
             .position(|i| i.is_some_and(|i| i.source == id))
-            .or_else(|| walk.inputs.iter().position(Option::is_none));
+            .or_else(|| {
+                walk.inputs
+                    .iter()
+                    .position(|i| i.is_none_or(|i| !self.reads(i.source)))
+            });
         if let Some(k) = slot {
             walk.inputs[k] = Some(Input {
                 source: id,
@@ -848,8 +892,8 @@ impl Node for ControlLaneNode {
             return Status::Modified;
         }
         let s = &*self.shared;
-        let generation = s.generation.load(Ordering::Acquire);
-        let program = s.program.read();
+        let published = s.program.read();
+        let (generation, program) = (published.generation, &*published.program);
         let knob = s
             .knob
             .as_ref()
@@ -870,6 +914,8 @@ impl Node for ControlLaneNode {
         let changed = generation != self.seen.generation
             || knob.map(f32::to_bits) != self.seen.knob
             || range_bits != self.seen.range;
+        // A resync is a point at frame 0, never a glide (`LaneControls::resync`).
+        let resync = s.resync.swap(false, Ordering::AcqRel);
         let t0 = cx.transport_at(Offset::ZERO);
         let p0 = cx.play_at(Offset::ZERO);
         let moved = match self.seen.end {
@@ -884,12 +930,12 @@ impl Node for ControlLaneNode {
             .walk
             .flight
             .is_none_or(|f| f.next.is_some_and(|n| n <= env.frame));
-        let at_zero = (due || changed || moved).then_some(changed && !moved);
+        let at_zero = (due || changed || moved || resync).then_some(changed && !moved && !resync);
 
         let events = io.events(0).as_slice();
         let mut block = Block {
             cx,
-            program: &program,
+            program,
             knob,
             range,
             span,
@@ -897,7 +943,7 @@ impl Node for ControlLaneNode {
             make: &*self.make,
             stride: u64::from(CONTROL_STEP),
             truncate: false,
-            seconds: has_seconds(&program),
+            seconds: has_seconds(program),
         };
         let mut thinned = false;
         loop {
@@ -926,7 +972,7 @@ impl Node for ControlLaneNode {
         if thinned {
             s.thinned.fetch_add(1, Ordering::Relaxed);
         }
-        drop(program);
+        drop(published);
         let out = io.event_out(0);
         for e in &self.scratch {
             // Within the declared capacity: never refused.

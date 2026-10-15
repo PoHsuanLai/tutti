@@ -867,34 +867,40 @@ fn set_param_output_own(points: u32) {
 }
 
 /// **A parameter flood neither refuses a note-off nor loses a parameter's
-/// final value.** The plugin floods its own four parameters with 1200 points
-/// each, every block (4800 parameter events against a parameter room of
+/// final value.** The plugin floods its own four parameters with 2200 points
+/// each, every block (8800 parameter events against a parameter room of
 /// 4368),
 /// and echoes a note-on and a note-off after the flood (the probe's note
 /// mode). Under one shared room the note events came after the room was full
 /// and were refused: a stuck note, since plugins rarely check `try_push`.
 /// With separate rooms the note-off arrives every block, inside the gate,
-/// and nothing is refused. The 432 parameter values past the room are
+/// and nothing is refused. The 4432 parameter values past the room are
 /// coalesced into a latest-value table, so every parameter still ends the
-/// block on its last value, 1199/1200; the points that cost is counted.
+/// block on its last value, 2199/2200; the points that cost is counted.
+/// Parameters 2 and 3 are wholly past the room: they exist only in the
+/// table, which must open their queues.
 ///
-/// Points lost a block: the list holds parameters 0, 1 and 2's 1200 points
-/// and 768 of parameter 3's, which their 273-point queues reduce by 927
-/// three times and 495; the table keeps one value for parameter 3's other
-/// 432 (431 overwritten), and that latest replaces its queue's last point
-/// (1 more). 3708.
+/// Points lost a block: the list holds parameter 0's 2200 points and 2168
+/// of parameter 1's, which their 273-point queues reduce by 1927 and 1895;
+/// the table keeps one value per parameter for the other 32 + 2200 + 2200
+/// (31 + 2199 + 2199 overwritten), and parameter 1's latest replaces its
+/// queue's last point (1 more). 8252.
 ///
 /// Changed in doc 014 PR 2b: the parameter room is 4368 and a queue's 273
-/// (they were 320 and 20), so the flood is 1200 points a parameter (it was
-/// 200) and the count 3708 a block (it was 758); the property is the same.
+/// (they were 320 and 20), so the flood is 2200 points a parameter (it was
+/// 200) and the count 8252 a block (it was 758): as before, two parameters
+/// are table-only.
 ///
 /// Mutation (run): one shared room for every event (`try_push` refusing any
 /// push once the list holds `room + param_room`) → the note-off is refused
 /// and the note-off assertion fails. Mutation (run): no latest-value table
-/// (`coalesce_param` refusing every push) → the 432 values past the room
-/// are refused (parameter 3 would end on point 767) and the refusal
+/// (`coalesce_param` refusing every push) → the 4432 values past the room
+/// are refused (parameters 2 and 3 would end with no queue) and the refusal
 /// assertion fails. Mutation (run): the parameter room check removed → the
-/// flood grows the list inside the gate and aborts.
+/// flood grows the list inside the gate and aborts. Mutation (run, the PR
+/// 2b review's): the table never opening a queue (`None if ix < nl &&
+/// out.open_queue(addr)` in `fill_param_changes`) → parameters 2 and 3
+/// have no queue → fails.
 #[test]
 fn a_param_flood_keeps_note_offs_and_final_values() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -921,7 +927,7 @@ fn a_param_flood_keeps_note_offs_and_final_values() {
     );
     let before = inst.output_param_points_dropped();
 
-    const POINTS: u32 = 1200;
+    const POINTS: u32 = 2200;
     const BLOCKS: u64 = 16;
     set_param_output_own(POINTS);
     assert_no_alloc::assert_no_alloc(|| {
@@ -954,7 +960,7 @@ fn a_param_flood_keeps_note_offs_and_final_values() {
     }
     assert_eq!(
         inst.output_param_points_dropped() - before,
-        (BLOCKS + 1) * 3708
+        (BLOCKS + 1) * 8252
     );
 }
 

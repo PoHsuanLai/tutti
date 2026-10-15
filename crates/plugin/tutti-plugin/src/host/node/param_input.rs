@@ -31,6 +31,12 @@ use super::segment_points::SegmentPoints;
 ///   first (design doc 014 §9 requirement 6).
 /// - Any other event (MIDI, harmony) goes to `other` with its chunk frame.
 ///
+/// The classification is by frame alone: a lane's corner (a breakpoint, a
+/// wrap) that lands on a grid frame is a grid point, and is dropped first
+/// like one. That loses nothing a grid point would not: the lane's grid
+/// piece starting on that frame carries the same value. A ramp is always a
+/// corner.
+///
 /// `cx` is the node's call: its `Env::frame` is the absolute frame of block
 /// frame 0 (where a segment in flight is along itself), and its play clock
 /// classifies a segment's first point. `indexed` says how a parameter
@@ -112,4 +118,110 @@ pub(crate) fn take(
         }
     }
     segments.points(params, abs(done), abs(from + n), at + done - from, grid);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::node::param_delivery::DeliveryCounters;
+    use crate::protocol::{ParamAddress, ParamId};
+    use std::sync::Arc;
+    use tutti_graph::{
+        Env, ParamSegment, PlayClock, PlayReading, SegmentShape, Transport, TransportChanges,
+        TransportHistory,
+    };
+    use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate, Samples};
+
+    /// **The play clock decides which points are grid points.** A block
+    /// whose play clock starts at 10 takes a segment on each of frames
+    /// 0..300 (two frames long, holding alternating values) into one
+    /// parameter whose queue holds 259 points (a 64-frame chunk's room).
+    /// Nine of the 300 starts fall on a frame whose play count is a multiple
+    /// of 32 (22, 54, .. 278): past the room those nine go first, counted as
+    /// grid drops, and only then are corners merged: 300 - 259 - 9, less
+    /// the one start that follows the refused grid point at 278 and so
+    /// repeats the queue's last value (skipped, changes only). The last
+    /// segment's arrival repeats its value too. None is left on a grid
+    /// frame.
+    ///
+    /// Mutation (run): `take`'s grid test always false (`let grid = |_: u64|
+    /// false`) → no grid drops, 42 merges → fails. Mutation (run): the
+    /// block's frame for the play clock (`f.is_multiple_of(32)`) → the drops
+    /// land on 0, 32, .. → fails.
+    #[test]
+    fn a_full_queue_drops_the_play_grid_first() {
+        let address = ParamAddress::Opaque(ParamId::new(7));
+        let counters = Arc::new(DeliveryCounters::default());
+        let mut params = ParamDelivery::new([address], Arc::clone(&counters));
+        let room = params.prepare(64);
+        assert_eq!(room, 259);
+        let mut segments = SegmentPoints::default();
+        segments.prepare(params.room());
+        params.begin();
+        segments.begin(64);
+        let len = 512;
+        let env = Env {
+            frame: Frame(0),
+            sample_rate: SampleRate(48_000.0),
+            block_len: Samples(len),
+            transport: Transport::new(false, Bpm(120.0), Beat(0.0), None),
+            changes: TransportChanges::NONE,
+            play: PlayClock {
+                start: PlayReading {
+                    epoch: 0,
+                    play: Frame(10),
+                },
+                next_epoch: 0,
+            },
+        };
+        let cx = Cx {
+            env: &env,
+            arrival: Latency::ZERO,
+            history: TransportHistory::none(),
+        };
+        let events: Vec<Event> = (0..300)
+            .map(|i| {
+                let v = if i % 2 == 0 { 0.25 } else { 0.75 };
+                let seg = ParamSegment::foreign(7, v, v, Samples(2), SegmentShape::Linear);
+                Event::segment(Offset::new(i, Samples(len)).expect("inside"), seg)
+            })
+            .collect();
+        take(
+            &events,
+            0,
+            len,
+            0,
+            &cx,
+            false,
+            &mut segments,
+            &mut params,
+            |_, _| {},
+        );
+        let stats = counters.snapshot();
+        eprintln!(
+            "DBG {stats:?} {:?}",
+            params
+                .changes()
+                .queues
+                .iter()
+                .map(|q| q
+                    .points
+                    .iter()
+                    .map(|p| (p.sample_offset, p.value.get()))
+                    .collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(stats.grid_points_dropped, 9, "the nine grid frames");
+        assert_eq!(stats.points_merged, 300 - 259 - 9 - 1);
+        let offsets: Vec<i32> = params.changes().queues[0]
+            .points
+            .iter()
+            .map(|p| p.sample_offset)
+            .collect();
+        assert_eq!(offsets.len(), room);
+        assert!(
+            offsets.iter().all(|&o| (10 + o) % 32 != 0),
+            "no point left on a grid frame: {offsets:?}"
+        );
+    }
 }

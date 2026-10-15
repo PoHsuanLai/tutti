@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use audio_automation::{AutomationEnvelope, AutomationPoint};
+use tutti_core::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
     ForkTarget, Io, Node, Offset, ParamFrom, ParamIn, ParamRange, ParamSegment, ParamShaping,
@@ -22,7 +23,7 @@ use tutti_nodes::automation::{ControlLaneNode, LaneControls, CONTROL_STEP};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
     AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, NodeKey,
-    ParamKey, PhaseIncrement, SampleRate, Samples, UnitParam,
+    OfflineTransport, ParamKey, Phase, PhaseIncrement, SampleRate, Samples, UnitParam,
 };
 
 const RATE: f64 = 48_000.0;
@@ -231,6 +232,17 @@ fn block(
     }
     ed.collect();
     bufs
+}
+
+/// An export's timeline, for an offline fork. The fork's blocks are driven
+/// with an explicit transport (`block`), so the lane reads the same `Env`
+/// either way; the mode is the export's, so a fork source that rebinds
+/// offline is exercised as an export would.
+fn offline() -> OfflineTransport {
+    OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        sample_rate: SampleRate(RATE),
+        ..Default::default()
+    })))
 }
 
 /// The host's playhead: a frame clock from beat 0 at `TEMPO`.
@@ -469,17 +481,17 @@ fn an_export_is_the_live_render_bit_for_bit() {
         };
         let drawn = Wave::Drawn(Arc::from(vec![
             PeriodPoint {
-                at: 0.0,
+                at: Phase(0.0),
                 value: -1.0,
                 curve: CurveType::Linear,
             },
             PeriodPoint {
-                at: 0.3,
+                at: Phase(0.3),
                 value: 0.8,
                 curve: CurveType::Exponential,
             },
             PeriodPoint {
-                at: 0.7,
+                at: Phase(0.7),
                 value: 0.2,
                 curve: CurveType::SCurve,
             },
@@ -563,10 +575,11 @@ fn an_export_is_the_live_render_bit_for_bit() {
     for _ in 0..3 {
         block(&mut ed, &mut exec, &stopped, &TransportChanges::NONE, 128);
     }
+    let offline = offline();
     let (mut fed, mut fexec) = ed
         .fork(
             ForkTarget::Master,
-            ForkMode::Live,
+            ForkMode::Offline(&offline),
             Prepare::new(SampleRate(RATE), Samples(1024)),
         )
         .expect("forks");
@@ -995,16 +1008,7 @@ fn an_input_offset_is_exact_from_its_frame() {
             plan: vec![(0, step(0.5)), (300, step(0.25)), (600, ramp)],
         }),
     );
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(1),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(5),
-            port: 0,
-        }),
-    );
+    feed_into(&mut ed, 5, 1);
     ed.commit().expect("commits");
     let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
     let mut all = Vec::new();
@@ -1023,6 +1027,159 @@ fn an_input_offset_is_exact_from_its_frame() {
         } else {
             assert!(got > 22.0 && got < 58.0, "frame {f}: {got}, ramping");
         }
+    }
+}
+
+/// Connects the `Feed` at `feed` to the lane at `lane`'s event input.
+fn feed_into(ed: &mut Editor, feed: u64, lane: u64) {
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(lane),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(feed),
+            port: 0,
+        }),
+    );
+}
+
+/// **A republish that reads a new source frees a slot for it.** A program
+/// reading sources 1..=8 (every input slot, each at 0.0) is republished to
+/// read source 9 alone at depth 0.5 of a 0..96 range; source 9 stepping to
+/// 0.5 on frame 640 reads 10 + 24 = 34.0 from that frame. (Reported in the
+/// PR 2b review: the eight stale slots were never freed, so source 9's
+/// events were dropped, uncounted, and the lane held 10.)
+///
+/// Mutation (run): the slot fallback only a free slot (`Option::is_none`,
+/// not a slot whose source the program no longer reads) → 10.0 from frame
+/// 640 → fails.
+#[test]
+fn a_republished_program_reads_a_new_source() {
+    let (mut ed, mut exec) = probes(128, &[2], (0.0, 96.0));
+    let input = |src: u32, depth: f32| InputLayer {
+        id: LayerId(u64::from(src)),
+        source: SourceId(src),
+        amount: amount(depth),
+    };
+    let eight = (1..=8).map(|k| input(k, 0.1)).collect();
+    let p = ControlProgram::new(None, vec![], eight).expect("valid");
+    let lane = native(&ed, 2, p, Some(10.0));
+    let controls = wire(&mut ed, 1, lane, 2);
+    let step =
+        |src: u32, v: f32| ParamSegment::foreign(src, v, v, Samples(0), SegmentShape::Linear);
+    let mut plan: Vec<(u64, ParamSegment)> = (1..=8).map(|k| (0, step(k, 0.0))).collect();
+    plan.push((640, step(9, 0.5)));
+    ed.insert(NodeKey(5), "feed", ForkByClone(Feed { plan }));
+    feed_into(&mut ed, 5, 1);
+    ed.commit().expect("commits");
+    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let mut all = Vec::new();
+    for k in 0..10 {
+        if k == 4 {
+            let nine = ControlProgram::new(None, vec![], vec![input(9, 0.5)]).expect("valid");
+            controls.publish(nine);
+        }
+        let got = block(&mut ed, &mut exec, &stopped, &TransportChanges::NONE, 128);
+        append(&mut all, got);
+    }
+    for (f, &got) in all[0].iter().enumerate() {
+        let want = if f < 640 { 10.0 } else { 34.0 };
+        assert_eq!(got, want, "frame {f}");
+    }
+}
+
+/// **Only an input the program reads is a point.** A stopped plugin lane
+/// whose program reads source 7 sends one piece at frame 0 and holds; a
+/// feed sending source 99 (which it does not read) every 10 frames adds no
+/// piece, so an unread source (or MIDI) uses none of the lane's capacity.
+///
+/// Mutation (run): `run`'s next input point taken from any event
+/// (`.find(|_| true)` for the first `input_of`) → a piece on every tenth
+/// frame → fails.
+#[test]
+fn an_unread_source_is_no_point() {
+    let (mut ed, mut exec) = probes(128, &[], (0.0, 1.0));
+    let input = InputLayer {
+        id: LayerId(1),
+        source: SourceId(7),
+        amount: amount(0.5),
+    };
+    let p = ControlProgram::new(None, vec![], vec![input]).expect("valid");
+    let lane = ControlLaneNode::for_foreign(3, p, Some(0.25), (0.0, 1.0));
+    wire_sink(&mut ed, 1, lane, 2);
+    let step = |v| ParamSegment::foreign(99, v, v, Samples(0), SegmentShape::Linear);
+    let plan = (1..60).map(|k| (k * 10, step(k as f32 / 100.0))).collect();
+    ed.insert(NodeKey(5), "feed", ForkByClone(Feed { plan }));
+    feed_into(&mut ed, 5, 1);
+    ed.commit().expect("commits");
+    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let mut all = Vec::new();
+    for _ in 0..5 {
+        let got = block(&mut ed, &mut exec, &stopped, &TransportChanges::NONE, 128);
+        append(&mut all, got);
+    }
+    let marks: Vec<usize> = (0..all[1].len()).filter(|&f| all[1][f] != 0.0).collect();
+    assert_eq!(marks, [0], "one piece, at frame 0");
+    assert!(all[0].iter().all(|&v| v == 0.25), "the knob, held");
+}
+
+/// **A resync tells a new target a steady lane's value.** A stopped lane
+/// with knob 250 sends one held value and nothing more (doc 014 §5.2), so
+/// re-wiring it from probe 2 to probe 3 leaves probe 3 at its own base
+/// until something moves. `LaneControls::resync` makes the next block send
+/// at frame 0: probe 3 hears it on that block's first frame (through the
+/// port's connect crossfade) and reads 250.0 once the crossfade ends. This
+/// is what PR 4's reconcile calls after it re-wires a lane.
+///
+/// Mutation (run): `process` ignoring the resync flag (`let resync =
+/// false`) → probe 3 never reads 250 → fails.
+#[test]
+fn a_resync_sends_a_steady_lane_to_its_new_target() {
+    let (mut ed, mut exec) = probes(64, &[2, 3], (0.0, 1000.0));
+    let lane = native(&ed, 2, program(None, vec![]), Some(250.0));
+    let controls = wire(&mut ed, 1, lane, 2);
+    ed.commit().expect("commits");
+    let stopped = Transport::new(false, TEMPO, Beat(0.0), None);
+    let run = |ed: &mut Editor, exec: &mut Executor| {
+        block(ed, exec, &stopped, &TransportChanges::NONE, 64)
+    };
+    for _ in 0..3 {
+        run(&mut ed, &mut exec);
+    }
+    let got = run(&mut ed, &mut exec);
+    assert!(got[0].iter().all(|&v| v == 250.0), "probe 2 has it");
+    let from = ParamFrom::Events(EventOut {
+        node: NodeKey(1),
+        port: 0,
+    });
+    assert!(ed.spec_mut().disconnect_param(cutoff(2), from));
+    ed.spec_mut()
+        .connect_param(cutoff(3), from, ParamShaping::Identity);
+    ed.commit().expect("commits");
+    for _ in 0..3 {
+        let got = run(&mut ed, &mut exec);
+        assert!(
+            got[1].iter().all(|&v| v != 250.0),
+            "steady: probe 3 has not heard it"
+        );
+    }
+    controls.resync();
+    // The port's connect crossfade (`PARAM_DECLICK` frames from the commit,
+    // 192 frames ago) is still running: the value it fades to is now 250,
+    // so frame 0 already moves, and from the crossfade's end the port reads
+    // 250 exactly.
+    let done = PARAM_DECLICK.get() - 3 * 64;
+    let mut after = Vec::new();
+    for _ in 0..3 {
+        append(&mut after, run(&mut ed, &mut exec));
+    }
+    assert!(
+        after[1][0] > 0.0,
+        "frame 0 of the resync's block has heard it"
+    );
+    for (f, &v) in after[1].iter().enumerate().skip(done) {
+        assert_eq!(v, 250.0, "frame {f} after the resync");
     }
 }
 
@@ -1047,10 +1204,11 @@ fn a_lane_fed_fork_reads_its_value_at_frame_0() {
     }
     assert!(live[0].iter().all(|&v| v == 300.0));
 
+    let offline = offline();
     let (mut fed, mut fexec) = ed
         .fork(
             ForkTarget::Master,
-            ForkMode::Live,
+            ForkMode::Offline(&offline),
             Prepare::new(SampleRate(RATE), Samples(64)),
         )
         .expect("forks");

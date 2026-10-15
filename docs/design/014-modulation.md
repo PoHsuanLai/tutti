@@ -1370,8 +1370,31 @@ differences from it:
   `AudioGraphRes::set_param_mod` takes `source: Option<AudioNode>` (the
   node's event output 0). `write_param`'s modulated branch and
   `set_param_snapshot` went in PR 4b.
-- **Kept:** nothing in the table. `AutomationLaneNode::new` (the audio
-  lane) and `LfoNode` stay, as the table and §11 say.
+- **Params that were cells, not ports, became ports.** The driver
+  modulated any `ParamSet` cell by writing it; a lane drives a port, and
+  `Modulation::apply` binds only a param the node declares
+  (`reconcile.rs`, `NoSuchParam`). So every param a node addressed but did
+  not declare would have lost its modulation. Each is declared now and read
+  where the node read its cell, once per block, as the port's last frame
+  (`block_driven` in `tutti-nodes`' `src/ramp.rs`; the synth's and the sampler's own
+  one-liners), the setter's clamp applied to a driven value as to a
+  written one: `ModDelayNode` (chorus and flanger: rate, depth, feedback,
+  mix, `MOD_DELAY_PARAMS`), `PhaserNode` (the same four), the convolver's
+  mix, `PolySynth`'s volume and, with a unison engine, detune and spread
+  (`SYNTH_PARAMS`), a `VoiceNode`'s and a standalone `MemorySource`'s gain
+  (`VOICE_PARAMS`), `LfoNode`'s depth and, free-running, rate
+  (`LFO_PARAMS`; a beat-synced LFO's rate cell holds beats, which its
+  `ParamSet` does not address either); and the rest of the compressor
+  (ratio, attack, release, makeup), the gate (attack, release), the
+  limiter (release), the delay (mix) and the SVF (gain). An LFO node's
+  rate as a port is not §11's "LFO rate by LFO": that is a compiled
+  layer's rate, which still needs an integrating layer; the node
+  integrates its own phase.
+- **Kept knob-only:** `BusStripNode`'s `Mute`, a toggle (`>= 0.5` is
+  muted) the strip folds in as a factor it never modulates. A route onto it
+  is refused with `NoSuchParam`. Nothing else in the table is kept;
+  `AutomationLaneNode::new` (the audio lane) and `LfoNode` stay, as the
+  table and §11 say.
 
 **The fork-requirement audit** (every `connect_param` and every event
 source into a param port outside the lane, at PR 5): the one production
@@ -1879,7 +1902,8 @@ bevy-tutti drops `modulation::legacy`, `LegacyModulationPlugin`,
 `plugin_bind_params` and its kin, and `CapturedControls::for_params` (a
 node's params are addressed at insert by `GraphNode::params`).
 `AudioGraphRes::set_param_mod` takes an `Option<AudioNode>` event source
-and a range. Audio-rate modulation (`ParamFrom::Audio`) went with nothing
+and a range. Every param a node addresses is a port a lane can drive,
+except the bus strip's `Mute` (§10 "As landed"). Audio-rate modulation (`ParamFrom::Audio`) went with nothing
 in its place but §11's: a node's own audio input.
 
 Tests went with what they tested. Ported: bevy-tutti's
@@ -1895,7 +1919,17 @@ tutti-graph's `param_mod` suite and polysynth's three modulation tests to
 the collapsed port; tutti-sampler's
 `a_fork_starts_from_the_gain_last_set_and_shares_nothing` loses its half
 that stored a driver's composite into the live cell (the cell is the gain
-last set now) and gains a sharing mutation. Deleted with their subject: tutti-mod's runtime suites
+last set now) and gains a sharing mutation. New with the ports that
+replaced written cells: `param_set_routes`'
+`a_lane_modulates_a_chorus_rate_around_its_own_cell` (the claim the old
+`chorus_rate_route_moves_the_nodes_own_cell` made, on a lane) and
+`a_lane_drives_an_lfo_nodes_depth_and_rate`, `graph_param_mod`'s
+block-rate cases, `tutti-polysynth`'s `param_lanes` (volume, detune,
+spread), the sampler's lane tests on a voice's and a memory source's gain,
+and `mod_lanes`' `a_chorus_rate_and_a_phaser_mix_take_lanes`; and
+`removing_the_last_route_returns_the_param_to_its_knob`, the counterpart
+of `mod_value_path`'s `removing_a_route_returns_the_param_to_its_base`.
+Deleted with their subject: tutti-mod's runtime suites
 (`curve_source`, `driver`, `id`, `layered`, `lfo`, `matrix`, `modulator`,
 `param`, `router`, `routing`, `matrix_public_api`, the fold tests in
 `shape.rs`), tutti-plugin's `automation_node` and

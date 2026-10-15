@@ -59,7 +59,7 @@ real time.
 | [`tutti-soundfont`](crates/dsp/tutti-soundfont) | SoundFont (`.sf2`) playback |
 | [`tutti-spatial`](crates/dsp/tutti-spatial) | The engine's only geometry: VBAP for speakers, HRTF for headphones |
 | [`tutti-analysis`](crates/dsp/tutti-analysis) | Waveform summaries, onset detection, pitch, correlation, loudness |
-| [`tutti-mod`](crates/core/tutti-mod) | The modulation matrix — audio-free and Bevy-free |
+| [`tutti-mod`](crates/core/tutti-mod) | The modulation compiler — routes to one control program per param, which a control lane plays; audio-free and Bevy-free |
 | [`tutti-midi-types`](crates/midi/tutti-midi-types) | MIDI 2.0 / UMP value types, the vocabulary the MIDI stack shares |
 | [`tutti-midi-runtime`](crates/midi/tutti-midi-runtime) | Routing, voice allocation, MPE, clock |
 | [`tutti-midi-file`](crates/midi/tutti-midi-file) | SMF and MIDI 2.0 clip codecs — OS-free, so reading a `.mid` links no CoreMIDI |

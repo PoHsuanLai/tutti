@@ -103,7 +103,9 @@ crates/
                       #   file side (Wave, FileIn, the symphonia decoder).
                       #   Device-free, so tutti-cpal depends on it, not vice
                       #   versa. Peer of tutti-export (the offline edge).
-    tutti-mod         # Pure modulation (audio-free mod matrix, curves)
+    tutti-mod         # Pure modulation: the route compiler (one control
+                      #   program per param, played by a control lane in
+                      #   tutti-nodes), curves. Audio-free.
     tutti-graph       # The graph: `Node` contract, Topology→Plan compiler
                       #   (PDC), executor. Design doc 013.
     tutti-export      # Offline rendering and export

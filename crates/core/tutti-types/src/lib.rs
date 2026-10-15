@@ -38,9 +38,8 @@ pub mod tail;
 pub use rt::{
     AudioThread, AudioThreadCell, AudioThreadGuard, BorrowGuard, BorrowRef, ClaimConflict,
     ClaimTable, Claimed, ClaimedRun, Held, JobGate, Participant, PosClaim, PosFrame, PosReader,
-    PosRing, PosWriter, RangeCell, RingWindow, RtEventBuf, RtPublish, RtRef, RtScratch,
-    RtScratchOverflow, RtVec, RwView, ScopedNoDenormals, SplitMut, SplitRw, TaskGraph,
-    MAX_POS_RING_FRAMES,
+    PosRing, PosWriter, RangeCell, RingWindow, RtPublish, RtRef, RtScratch, RtScratchOverflow,
+    RtVec, RwView, ScopedNoDenormals, SplitMut, SplitRw, TaskGraph, MAX_POS_RING_FRAMES,
 };
 
 // The cell a `Param` shares (`Param::as_atomic`), named here so a crate that

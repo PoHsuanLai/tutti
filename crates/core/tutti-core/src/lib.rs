@@ -93,11 +93,9 @@ pub use std::sync::Arc;
 
 // Real-time audio-thread primitives, all homed in `tutti-types` (the bottom
 // leaf, no engine dependency) and surfaced here so consumers reach them via the
-// engine root: the one-borrow cell, the event/scratch buffers, the fixed
+// engine root: the one-borrow cell, the capped buffer, the fixed
 // scratch, and the denormals guard.
-pub use tutti_types::{
-    AudioThreadCell, RtEventBuf, RtScratch, RtScratchOverflow, RtVec, ScopedNoDenormals,
-};
+pub use tutti_types::{AudioThreadCell, RtScratch, RtScratchOverflow, RtVec, ScopedNoDenormals};
 // The engine's I/O edge vocabulary (mic/file/plugin sources + sinks), homed in
 // `tutti-types` and surfaced here so consumers reach it via the engine root.
 pub use tutti_types::io::{self, pump, AudioIn, AudioOut, OnEmpty};

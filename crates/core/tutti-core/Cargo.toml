@@ -45,7 +45,7 @@ tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 # MIDI types (pure types from tutti-midi-types) — always included for SmpteFrameRate etc.
 tutti-midi-types = { version = "0.0.1", path = "../../midi/tutti-midi-types" }
 
-# Shared RT primitives (AudioThreadCell, RtEventBuf).
+# Shared RT primitives (AudioThreadCell, RtVec).
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
 
 # Lock-free (no_std compatible)

@@ -6,10 +6,11 @@
 //! reaching it needs this crate, because `tutti-midi-runtime` cannot depend on
 //! `tutti-midi-hardware` (the dependency runs the other way).
 //!
-//! What the real path does that the fake does not: drain N port rings into a
-//! timestamp scratch, convert arrival `Instant`s to per-block `frame_offset`s,
-//! and copy the result into a fixed-capacity scratch buffer. Each of those is a
-//! place a buffer could grow, and growing means `realloc` inside the callback.
+//! What the real path does that the fake does not: drain N port rings,
+//! converting arrival `Instant`s to per-block `frame_offset`s, into a
+//! fixed-capacity scratch buffer, then hand each event to the node. A buffer
+//! that grew there would `realloc` inside the callback, and a port set or ring
+//! released there would free inside it.
 //!
 //! Each gate runs the node in a graph, channel 0's port wired to a
 //! `MidiOutNode` whose ring the test drains, so what was polled is counted.
@@ -20,7 +21,7 @@ use std::time::Instant;
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Executor, Prepare, Transport};
-use tutti_midi_hardware::HardwareMidiInputs;
+use tutti_midi_hardware::{HardwareMidiInputs, InputProducerHandle};
 use tutti_midi_runtime::{MidiInputNode, MidiOutControls, MidiOutNode};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -76,10 +77,11 @@ fn note() -> MidiEvent {
     MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
 }
 
-/// Feed `count` events into `port` on `inputs`, as a driver callback thread would.
-fn feed(inputs: &HardwareMidiInputs, port: usize, count: usize) {
+/// Feed `count` events through a port's producer, as a driver callback
+/// thread would.
+fn feed(port: &mut InputProducerHandle, count: usize) {
     for _ in 0..count {
-        inputs.push_input_event(port, note());
+        port.push(note(), Instant::now());
     }
 }
 
@@ -88,18 +90,18 @@ fn feed(inputs: &HardwareMidiInputs, port: usize, count: usize) {
 fn hardware_poll_is_allocation_free() {
     let inputs = Arc::new(HardwareMidiInputs::new(256));
     inputs.set_sample_rate(48_000.0);
-    let port = inputs.create_input_port("Test Input");
+    let mut port = inputs.create_input_port("Test Input");
 
     let mut pre = Rig::new(inputs.clone());
 
-    // Warm up: the first poll primes the scratch buffers, which is the engine's
+    // Warm up: the first poll primes the scratch, which is the engine's
     // cost rather than the audio thread's.
-    feed(&inputs, port, 16);
+    feed(&mut port, 16);
     pre.run(512);
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..500 {
-            feed(&inputs, port, 16);
+            feed(&mut port, 16);
             pre.run(512);
         }
     });
@@ -112,14 +114,14 @@ fn hardware_poll_is_allocation_free() {
 
 /// The overflow case: more events queued than one block may carry.
 ///
-/// This is the path that can grow both scratch buffers. Four ports of 256
+/// This is the path that could grow the scratch buffer. Four ports of 256
 /// events offer 1024 against a 256 cap, so the drain must stop at the cap and
 /// leave the rest — without reallocating to hold them.
 #[test]
 fn hardware_poll_over_capacity_is_allocation_free() {
     let inputs = Arc::new(HardwareMidiInputs::new(256));
     inputs.set_sample_rate(48_000.0);
-    let ports: Vec<usize> = (0..4)
+    let mut ports: Vec<InputProducerHandle> = (0..4)
         .map(|i| inputs.create_input_port(format!("Input {i}")))
         .collect();
 
@@ -127,13 +129,13 @@ fn hardware_poll_over_capacity_is_allocation_free() {
 
     // Warm with a *light* load — one event per port.
     //
-    // Warming with the flood would defeat the test: the scratch buffers would
+    // Warming with the flood would defeat the test: a growable scratch would
     // grow to the flood's size outside the gate and have nothing left to grow
-    // for inside it, so an unbounded drain would pass. The buffers must enter
-    // the gate holding only their reserved capacity, exactly as they do on a
+    // for inside it, so an unbounded drain would pass. The scratch must enter
+    // the gate holding only its reserved capacity, exactly as it does on a
     // freshly started stream that then meets a burst.
-    for &port in &ports {
-        feed(&inputs, port, 1);
+    for port in &mut ports {
+        feed(port, 1);
     }
     pre.run(512);
 
@@ -141,8 +143,8 @@ fn hardware_poll_over_capacity_is_allocation_free() {
         for _ in 0..200 {
             // 4 ports x 256 events against a 256-event cap: the drain must stop
             // at the cap and leave the backlog, rather than growing to hold it.
-            for &port in &ports {
-                feed(&inputs, port, 256);
+            for port in &mut ports {
+                feed(port, 256);
             }
             pre.run(512);
         }
@@ -154,20 +156,20 @@ fn hardware_poll_over_capacity_is_allocation_free() {
 fn hardware_poll_across_block_sizes_is_allocation_free() {
     let inputs = Arc::new(HardwareMidiInputs::new(256));
     inputs.set_sample_rate(48_000.0);
-    let port = inputs.create_input_port("Test Input");
+    let mut port = inputs.create_input_port("Test Input");
 
     let mut pre = Rig::new(inputs.clone());
 
     const SIZES: [usize; 5] = [64, 128, 256, 512, 1024];
     for frames in SIZES {
-        feed(&inputs, port, 8);
+        feed(&mut port, 8);
         pre.run(frames);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..100 {
             for frames in SIZES {
-                feed(&inputs, port, 8);
+                feed(&mut port, 8);
                 pre.run(frames);
             }
         }
@@ -183,11 +185,10 @@ fn hardware_poll_across_block_sizes_is_allocation_free() {
 fn hardware_poll_with_stale_timestamps_is_allocation_free() {
     let inputs = Arc::new(HardwareMidiInputs::new(256));
     inputs.set_sample_rate(48_000.0);
-    let port = inputs.create_input_port("Test Input");
+    let mut handle = inputs.create_input_port("Test Input");
 
     let mut pre = Rig::new(inputs.clone());
 
-    let handle = inputs.get_input_producer_handle(port).expect("port exists");
     // An arrival a full second ago converts to a `samples_ago` far past any
     // block, so every event takes the clamp branch.
     let stale = Instant::now() - std::time::Duration::from_secs(1);
@@ -228,23 +229,25 @@ fn hardware_poll_with_stale_timestamps_is_allocation_free() {
 fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
     let inputs = HardwareMidiInputs::new(256);
     inputs.set_sample_rate(48_000.0);
-    let first = inputs.create_input_port("Input 0");
+    let mut first = inputs.create_input_port("Input 0");
 
     // Warm the scratch outside the gate, as the other gates do.
-    feed(&inputs, first, 4);
+    feed(&mut first, 4);
     inputs.cycle_start_read_all_inputs(512, |_, _| {});
 
     const BLOCKS: usize = 32;
     let mut visited = 0usize;
     assert_no_alloc::assert_no_alloc(|| {
         for block in 0..BLOCKS {
-            feed(&inputs, first, 4);
+            feed(&mut first, 4);
             let mut plugged = false;
             visited += inputs.cycle_start_read_all_inputs(512, |_, _| {
                 if !plugged {
                     plugged = true;
                     assert_no_alloc::permit_alloc(|| {
-                        inputs.create_input_port(format!("Hotplug {block}"));
+                        // The new port's producer is dropped at once: this
+                        // test is about the set it lands in, not its ring.
+                        let _ = inputs.create_input_port(format!("Hotplug {block}"));
                     });
                 }
             });
@@ -260,5 +263,65 @@ fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
         inputs.list_input_ports().len(),
         1 + BLOCKS,
         "every hotplug's port landed"
+    );
+}
+
+/// A device unplugged while a block drains frees nothing on the audio thread.
+///
+/// The other half of hot-plug. Each block, a device is plugged in and fed on
+/// the control side, then its connection closes (its producer handle drops), so
+/// the port in the published set is the ring's last owner. The removal lands
+/// inside the drain's visitor, under `permit_alloc`, while the drain still
+/// borrows the set holding the port. The set is retired, so the port and its
+/// ring must be freed by the next publish (the next block's plug-in, outside
+/// the gate), never when the drain's borrow drops inside it.
+///
+/// Mutation: hold the port set in a `Mutex<Arc<_>>` that the drain reads as
+/// an `Arc` clone (an owning snapshot, as the old `ArcSwap` guard became) →
+/// the drain's snapshot is the old set's last owner, its drop frees the set,
+/// the port and its ring inside the gate, and `assert_no_alloc` aborts. (The
+/// same mutation aborts the plug-in gate above.)
+#[test]
+fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
+    let inputs = HardwareMidiInputs::new(256);
+    inputs.set_sample_rate(48_000.0);
+
+    // Warm the scratch outside the gate, as the other gates do.
+    let mut warm = inputs.create_input_port("Warm");
+    feed(&mut warm, 4);
+    inputs.cycle_start_read_all_inputs(512, |_, _| {});
+    assert!(inputs.remove_input_port(warm.port_id()));
+    drop(warm);
+
+    const BLOCKS: usize = 32;
+    let mut visited = 0usize;
+    for block in 0..BLOCKS {
+        let mut device = inputs.create_input_port(format!("Device {block}"));
+        feed(&mut device, 4);
+        let id = device.port_id();
+        // The connection closed: the published set now owns the ring alone.
+        drop(device);
+
+        assert_no_alloc::assert_no_alloc(|| {
+            let mut unplugged = false;
+            visited += inputs.cycle_start_read_all_inputs(512, |_, _| {
+                if !unplugged {
+                    unplugged = true;
+                    assert_no_alloc::permit_alloc(|| {
+                        assert!(inputs.remove_input_port(id), "the port was there");
+                    });
+                }
+            });
+        });
+    }
+
+    assert_eq!(
+        visited,
+        BLOCKS * 4,
+        "every block drained its events, so every unplug landed mid-drain"
+    );
+    assert!(
+        inputs.list_input_ports().is_empty(),
+        "every unplugged port is gone"
     );
 }

@@ -40,8 +40,8 @@ tutti-core = { path = "../../core/tutti-core", default-features = false, feature
 # Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-hardware.
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 
-# Lock-free
-crossbeam-channel = "0.5"
+# Lock-free: each input port's SPSC ring, split into an owned producer and
+# consumer.
 ringbuf = "0.4"
 
 

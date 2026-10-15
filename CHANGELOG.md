@@ -130,6 +130,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once with `reserve_params`. Code that relied on a set or a queue growing
   past its room reserves the room it needs, or reads `points_overflowed`.
 
+- **A hardware MIDI input ring has one producer, by ownership**
+  (tutti-midi-hardware; design doc 013, "Hardware MIDI input ring"). Each
+  port's ring is split once: `create_input_port` returns its only
+  `InputProducerHandle`, which owns the producer half, is not `Clone`, and
+  pushes through `&mut self`; the port keeps the consumer. The `unsafe`
+  `SpscRing` is deleted. A disconnect retires its port, and a new port takes
+  the lowest free slot, so the port set no longer grows with every hot-plug
+  cycle. A port is named by a `PortId` (its slot and a generation), so an
+  id kept past its port's removal reaches nothing, not the port that took
+  its slot. **Breaking:**
+
+  | Was | Now |
+  |---|---|
+  | `HardwareMidiInputs::create_input_port(name) -> usize` | `-> InputProducerHandle`; the port is `handle.port_id()`, a `PortId` |
+  | `HardwareMidiInputs::get_input_producer_handle(index)` | removed: keep the handle `create_input_port` returned. There is no second handle to a ring |
+  | `HardwareMidiInputs::push_input_event(index, event)` | removed: `handle.push(event, Instant::now())` |
+  | `InputProducerHandle: Clone`, `push(&self, ..)` | not `Clone`, `push(&mut self, ..)`: a driver callback owns its handle (`move` it into an `FnMut`, or the pump thread) |
+  | ports were only appended; a `PortInfo::index` was never reused | `HardwareMidiInputs::remove_input_port(id: PortId) -> bool`; a removed port's slot is reused by the next port, under a new generation. `MidiSession` retires a port on disconnect, on a failed open, and when the session drops |
+  | a port named by `usize` index: `PortInfo::index`, `get_port_info(type, index)`, `set_port_active(type, index, on)`, `is_port_active(type, index)` | by `PortId`: `PortInfo::id`, and each of those takes a `PortId`. A stale id (its port removed) is a no-op: `None` / `false`. `PortId::index()` is still the slot, for display |
+  | `cycle_start_read_all_inputs[_at]`'s visitor: `FnMut(usize, MidiEvent)` | `FnMut(PortId, MidiEvent)`. A drain started from inside a visitor returns 0 and visits nothing; the outer drain still hands out every event |
+  | `set_sample_rate` wrote an audio-thread cell (a concurrent drain could trip it) | an atomic, safe from any thread; a drain reads it once per block |
+  | — | `HardwareMidiInputs::collect() -> usize`: frees a removed port whose ring a drain still held when it was removed, without waiting for the next port change; returns how many retired sets are still held |
+  | `tutti_midi_hardware::crossbeam_channel` | removed (and the dependency): depend on `crossbeam-channel` directly |
+  | `tutti_types::RtEventBuf` / `tutti_core::RtEventBuf` | removed (its one user was this crate): `AudioThreadCell<RtVec<T, N>>` |
+  | `ClockNode` dropped events past `CLOCK_EVENT_CAPACITY` in a block silently | it still drops them, and counts them: `ClockMaster::dropped_events()` |
+
+  `tutti-midi-runtime` no longer depends on `parking_lot` or `dashmap`
+  (nothing used them).
+
 - **VST3 host callbacks are bounded and allocation-free** (design doc 013,
   "VST3 host callbacks bounded"). Plugins call `performEdit` and
   `restartComponent` from their process thread, where the host's unbounded
@@ -1185,6 +1214,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     CoreMIDI type. It now takes an erased sink, so every backend gets it.
 
 ### Fixed
+
+- **A MIDI input driver can no longer push into a freed ring**
+  (tutti-midi-hardware). The producer handle was a raw pointer into a ring
+  the port manager owned, so an ALSA pump thread still running while a
+  session dropped (the manager before the connections) could write through
+  a dangling pointer, and two handles to one port were two producers. The
+  handle now owns its half of the ring; the session closes its inputs before
+  the rest of its state, in a stated order.
 
 - **The sampler no longer frees a decoded wave on the audio thread**
   (tutti-sampler). A pool's `VoiceCommand::ReplaceWave` drain dropped the

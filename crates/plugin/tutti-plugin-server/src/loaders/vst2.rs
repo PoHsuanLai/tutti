@@ -376,6 +376,15 @@ impl PluginParams for Vst2Instance {
         #[cfg(not(feature = "vst2"))]
         Vec::new()
     }
+
+    fn parameter_count(&self) -> usize {
+        #[cfg(feature = "vst2")]
+        {
+            self.inner.parameter_count() as usize
+        }
+        #[cfg(not(feature = "vst2"))]
+        0
+    }
 }
 
 impl PluginEditorHost for Vst2Instance {

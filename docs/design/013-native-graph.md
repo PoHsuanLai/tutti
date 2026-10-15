@@ -4843,7 +4843,7 @@ carried.
   chunk is gone. The plugin's parameter list is read once at
   `PluginClient::new` (which already blocks on the server; no protocol
   change), and the node's `ParamDelivery` (`host/node/param_delivery.rs`)
-  holds one slot per parameter plus `SPARE_SLOTS` (64) for addresses the
+  holds one slot per parameter plus `ParameterChanges::SPARE_QUEUES` (64) for addresses the
   list did not name. A chunk's `ParameterChanges` is a `Vec` (wire format
   unchanged) reserved at prepare with a queue per slot and, per queue,
   `points_for(chunk)` = one point per 32 frames plus 4 corners (never
@@ -4872,8 +4872,8 @@ carried.
   and a state load keep it, and a fork is seeded with it, so an export
   plays an edit made in the plugin's editor as live playback does. Not
   here: a ramp is still a step on a plugin, CLAP `PARAM_MOD`, and the
-  parameter-change buffers' memory scales with the parameter count (doc
-  014 §12's follow-up). (The in-process VST2 node had no parameter path
+  parameter-change buffers' memory scaled with the parameter count (doc
+  014 §12's follow-up; since landed, below). (The in-process VST2 node had no parameter path
   either; it has since landed, next.)
 - **In-process VST2 parameter delivery (landed, doc 014 §13 question 2).**
   The in-process VST2 node's event input took MIDI and dropped every
@@ -4912,6 +4912,34 @@ carried.
   renders the plugin-side edit, through the probe's state DC) and
   `vst2_in_process_no_alloc.rs` (200 parameters moving every block under
   `assert_no_alloc`).
+- **Parameter-change point pool (landed, doc 014 §12's follow-up).** The
+  parameter-change buffers' memory follows the points a chunk carries, not
+  the parameter count, and no point storage on the parameter path can
+  grow. A queue's points are a `PointBuf` (a boxed slice and a length, its
+  capacity fixed off the audio thread). `ParameterChanges::reserved(queues,
+  room)` gives each queue a 2-point floor of its own and the set a shared
+  `PointPool` of 256 full-room blocks; a queue past its floor takes one
+  (`ParameterChanges::make_room`), and `clear` gives them back. A queue is
+  still one contiguous, time-ordered slice, so CLAP's flattening and sort,
+  VST3's per-parameter queues and the wire bytes are unchanged (a
+  `PointBuf` serializes as the same sequence; the pool is not serialized).
+  Past a queue's room every site applies one policy,
+  `PointBuf::push_or_replace_last` (the latest-in-time point gives way, so
+  the parameter ends on its latest value), and counts it with its own
+  counter. Every set has one layout (a floor of 3 and blocks of
+  `room + 1`, `ParameterChanges::point_budget`); the host's sets are built
+  `reserved_bridged`, one point of each kept for the bridge's carried
+  value, so the carried value takes a real slot instead of growing a
+  queue, and everything that receives a bridged chunk (the CLAP input list,
+  the VST3 input list, VST3's `IMidiMapping` route) reserves the same
+  budget. No queue count grows on the audio thread either: past its queues
+  the VST3 input list drops a queue and the output list's
+  `addParameterData` returns null, both counted. At 2000 parameters and a
+  4096-frame chunk the IPC node's buffers went from about 43 MB to
+  6.98 MB, a CLAP instance's lists from about 40 MB to 6.2 MB; the
+  figures, the budget's derivation and what is left (a CLAP
+  `params.rescan` does not re-reserve the server's output) are in doc 014
+  §9.
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
   does not honour offsets sample-accurately, as it refuses a ramp.
 

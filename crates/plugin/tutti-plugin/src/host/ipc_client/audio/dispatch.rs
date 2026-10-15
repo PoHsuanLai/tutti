@@ -6,8 +6,8 @@ use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
 use crate::protocol::{
-    midi_from_wire, BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParameterChanges,
-    ParameterQueue, ProcessAudioData,
+    midi_from_wire, BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParamAddress,
+    ParameterChanges, ParameterPoint, ParameterQueue, ProcessAudioData,
 };
 use crate::util::transport::control::{self as ipc, ControlStream, PartialFrame};
 use crate::util::transport::shm::RING_SLOTS;
@@ -148,8 +148,9 @@ pub(super) struct Owed {
     /// Where the last read stopped, so a timeout resumes rather than restarts.
     partial: PartialFrame,
     /// The parameter changes of blocks skipped as stale, as each parameter's
-    /// last value: sent on the first frame of the next block that goes.
-    carried: ParameterChanges,
+    /// last value, on frame 0: sent on the first frame of the next block that
+    /// goes. A plain list, cleared (its capacity kept) once merged.
+    carried: Vec<(ParamAddress, ParameterPoint)>,
 }
 
 impl Owed {
@@ -164,17 +165,13 @@ impl Owed {
             let Some(last) = queue.points.last() else {
                 continue;
             };
-            let value = last.value.get();
-            match self.carried.get_queue_mut(queue.param_id) {
-                Some(kept) => {
-                    kept.clear();
-                    kept.add_point(0, value);
-                }
-                None => {
-                    let mut kept = ParameterQueue::new(queue.param_id);
-                    kept.add_point(0, value);
-                    self.carried.queues.push(kept);
-                }
+            let point = ParameterPoint {
+                sample_offset: 0,
+                value: last.value,
+            };
+            match self.carried.iter_mut().find(|(a, _)| *a == queue.param_id) {
+                Some((_, kept)) => *kept = point,
+                None => self.carried.push((queue.param_id, point)),
             }
         }
     }
@@ -183,24 +180,49 @@ impl Owed {
     /// on its first frame: a parameter the block moves itself keeps its own
     /// points, preceded by the carried value when its first point is later
     /// than frame 0.
+    ///
+    /// Never grows the block's buffer: it is built
+    /// `ParameterChanges::reserved_bridged`, which keeps a point of every
+    /// queue (and of every pool block) for the carried value, so the value
+    /// takes a real slot (`ParameterChanges::prepend_carried`, counted in the
+    /// buffer's `points_overflowed` when it cannot: a buffer built some other
+    /// way, full, or one with every queue open). A parameter the block does
+    /// not move opens one of the buffer's spare queues. Only the empty
+    /// placeholder of a block that had no changes (no queue room at all)
+    /// gets queues built here (bridge thread: may allocate; it is dropped on
+    /// return).
     fn merge_carried(&mut self, changes: &mut ParameterChanges) {
-        for kept in self.carried.queues.drain(..) {
-            if let Some(own) = changes.get_queue_mut(kept.param_id) {
-                if own.points.first().is_some_and(|p| p.sample_offset > 0) {
-                    own.points.insert(0, kept.points[0]);
+        let placeholder = changes.capacity() == 0;
+        for &(param_id, carried) in &self.carried {
+            let i = match changes.queues.iter().position(|q| q.param_id == param_id) {
+                Some(i)
+                    if changes.queues[i]
+                        .points
+                        .first()
+                        .is_some_and(|p| p.sample_offset > 0) =>
+                {
+                    i
                 }
-            } else if changes.open_queue(kept.param_id) {
-                // A reserved queue when the buffer has one spare, so the
-                // buffer goes back to the pool with its point room intact.
-                if let Some(own) = changes.queues.last_mut() {
-                    own.points.push(kept.points[0]);
+                Some(_) => continue,
+                None if placeholder => {
+                    changes
+                        .queues
+                        .push(ParameterQueue::from_points(param_id, vec![carried]));
+                    continue;
                 }
-            } else {
-                // No spare: the empty placeholder of a block that had no
-                // changes (dropped on return), or a full buffer.
-                changes.queues.push(kept);
-            }
+                None if changes.open_queue(param_id) => changes.queues.len() - 1,
+                // No spare queue: past the queues, so dropped and counted.
+                // Here the carried value is the parameter's latest, and it
+                // is lost. Unreachable from the delivery: every buffer holds
+                // its slot count (the parameters + `SPARE_QUEUES`), and each
+                // id a block holds or the bridge carries is one of those
+                // slots. No `debug_assert`: a buffer built smaller reaches
+                // it, and the test below builds one.
+                None => changes.queues.len(),
+            };
+            let _ = changes.prepend_carried(i, carried);
         }
+        self.carried.clear();
     }
 
     /// Note that a block's reply was abandoned before it arrived.
@@ -333,7 +355,7 @@ pub(super) fn handle(
                 return Ok(());
             }
 
-            if !owed.carried.queues.is_empty() {
+            if !owed.carried.is_empty() {
                 owed.merge_carried(&mut payload.param_changes);
             }
             let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
@@ -759,11 +781,11 @@ mod tests {
     ///
     /// Mutation (run): `merge_carried` pushes the carried queue
     /// (`changes.queues.push(kept)`) instead of opening a spare → the
-    /// merged queue has the inline room → fails.
+    /// merged queue has the room of its one point → fails.
     #[test]
     fn a_carried_value_fills_a_reserved_queue() {
         let mut owed = Owed::default();
-        let mut skipped = ParameterChanges::new();
+        let mut skipped = ParameterChanges::reserved(1, 1);
         skipped.add_change(ParamAddress::Index(7), 3, 0.25);
         owed.carry(&skipped);
 
@@ -784,7 +806,115 @@ mod tests {
             carried.points.capacity()
         );
         block.clear();
-        assert_eq!(block.point_capacity(), 40);
+        assert_eq!(block.point_storage(), 4 * 41, "the reserved storage");
+    }
+
+    /// **A reserved buffer with no spare queue drops a carried value,
+    /// counted, rather than growing; the empty placeholder takes every one.**
+    /// A one-queue buffer with its queue open for another parameter: the
+    /// carried value is dropped inside the no-alloc gate and counted, and the
+    /// buffer still has one queue. The placeholder of a block with no
+    /// changes (`ParameterChanges::new`) gets a queue for each of two
+    /// carried values, though the first gives it queue room.
+    ///
+    /// Mutations (run), each fails: the no-spare case pushing a queue (as
+    /// it did) → the gate trips on the allocation; the placeholder decided
+    /// per value (`changes.capacity() == 0` inside the loop) → the second
+    /// value opens a queue with no point room and is dropped.
+    #[test]
+    fn a_carried_value_past_the_queues_is_dropped_but_the_placeholder_takes_all() {
+        let mut skipped = ParameterChanges::reserved(2, 1);
+        skipped.add_change(ParamAddress::Index(7), 3, 0.25);
+        skipped.add_change(ParamAddress::Index(8), 3, 0.5);
+
+        let mut owed = Owed::default();
+        owed.carry(&skipped);
+        let mut block = ParameterChanges::reserved_bridged(1, 40);
+        assert!(block.add_change(ParamAddress::Index(1), 5, 0.5));
+        assert_no_alloc::assert_no_alloc(|| owed.merge_carried(&mut block));
+        assert_eq!(block.queues.len(), 1);
+        assert_eq!(block.points_overflowed(), 2);
+
+        let mut owed = Owed::default();
+        owed.carry(&skipped);
+        let mut placeholder = ParameterChanges::new();
+        owed.merge_carried(&mut placeholder);
+        assert_eq!(placeholder.queues.len(), 2);
+        assert_eq!(placeholder.points_overflowed(), 0);
+        for (id, value) in [(7, 0.25), (8, 0.5)] {
+            let q = placeholder
+                .get_queue(ParamAddress::Index(id))
+                .expect("queued");
+            assert_eq!(q.points.len(), 1);
+            assert_eq!(
+                (q.points[0].sample_offset, q.points[0].value.get()),
+                (0, value)
+            );
+        }
+    }
+
+    /// **The carried values reach a chunk at the pool budget whole, in real
+    /// slots, without allocating or growing it.** 2 000 parameters at a
+    /// 512-frame block, the block's buffer built `reserved_bridged` as the
+    /// buffer pool builds it. The block moves all but the last ten
+    /// parameters, every one at its floor (first point after frame 0) and
+    /// the last `POOLED_QUEUES` of them at their full room; a skipped block
+    /// left a value owed for every parameter. Inside the no-alloc gate,
+    /// `merge_carried` puts each on frame 0 (the ten unmoved ones in spare
+    /// queues): nothing is counted, every queue gained exactly its carried
+    /// point ahead of its own, and the buffer's storage is what it was.
+    ///
+    /// Mutation (run): `ParameterChanges::reserved_bridged` without its
+    /// carry slot (`carry_slot: 0`) → `make_room` lets the full queues fill
+    /// the kept point, so their carried values have no slot and no block
+    /// left and are dropped, counted → fails.
+    #[test]
+    fn carried_values_take_real_slots_at_the_pool_budget_without_allocating() {
+        const PARAMS: usize = 2_000;
+        const UNMOVED: usize = 10;
+        let room = crate::protocol::ParameterQueue::chunk_room(512);
+        let moved = PARAMS - UNMOVED;
+        let full = moved - ParameterChanges::POOLED_QUEUES..moved;
+        let addr = |i: usize| ParamAddress::Index(i as i32);
+
+        let mut skipped = ParameterChanges::reserved(PARAMS, 1);
+        for i in 0..PARAMS {
+            assert!(skipped.add_change(addr(i), 7, 0.25));
+        }
+        let mut owed = Owed::default();
+        owed.carry(&skipped);
+
+        // Filled as the node's delivery fills it: a full queue takes points
+        // while `make_room` gives it room (the producers' room, `room`).
+        let mut block = ParameterChanges::reserved_bridged(PARAMS, room);
+        for i in 0..moved {
+            assert!(block.open_queue(addr(i)));
+            if full.contains(&i) {
+                let mut k = 0;
+                while block.make_room(i) {
+                    assert!(block.push_point(i, 1 + k, 0.5));
+                    k += 1;
+                }
+            } else {
+                for k in 0..ParameterChanges::FLOOR_POINTS {
+                    assert!(block.push_point(i, 1 + k as i32, 0.5));
+                }
+            }
+        }
+        let before: Vec<usize> = block.queues.iter().map(|q| q.points.len()).collect();
+        let storage = block.point_storage();
+
+        assert_no_alloc::assert_no_alloc(|| owed.merge_carried(&mut block));
+
+        assert_eq!(block.points_overflowed(), 0);
+        assert_eq!(block.point_storage(), storage, "nothing grew");
+        assert_eq!(block.queues.len(), PARAMS);
+        for (i, q) in block.queues.iter().enumerate() {
+            let own = before.get(i).copied().unwrap_or(0);
+            assert_eq!(q.points.len(), own + 1, "queue {i}");
+            assert_eq!(q.points[0].sample_offset, 0, "queue {i}");
+            assert!((q.points[0].value.get() - 0.25).abs() < 1e-12);
+        }
     }
 
     /// Every production block size / rate combination the engine can present.

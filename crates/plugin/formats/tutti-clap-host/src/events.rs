@@ -680,7 +680,7 @@ pub struct InputEventList {
     /// may push: the room reserved for them at activation
     /// ([`set_param_point_room`](Self::set_param_point_room)). Unbounded
     /// until set.
-    param_room: usize,
+    pub(crate) param_room: usize,
     /// Parameter points not handed on whole since the list was built: see
     /// [`param_points_dropped`](Self::param_points_dropped).
     param_points_dropped: u64,
@@ -731,8 +731,10 @@ impl InputEventList {
     /// the room the caller reserved for them (with [`reserve`](Self::reserve),
     /// on top of the room for MIDI and note expressions), so a block carrying
     /// more never grows the list on the audio thread. Off-RT; call it at
-    /// activation, with the plugin's parameter count times the points a
-    /// chunk can carry for one parameter
+    /// activation, with the points the host's chunk can arrive with:
+    /// [`ParameterChanges::point_budget`](tutti_plugin_types::ParameterChanges::point_budget)
+    /// for the plugin's parameter count and the points a chunk can carry for
+    /// one parameter
     /// ([`ParameterQueue::chunk_room`](tutti_plugin_types::ParameterQueue::chunk_room)).
     pub fn set_param_point_room(&mut self, points: usize) {
         self.param_room = points;
@@ -1057,7 +1059,7 @@ pub struct OutputEventList {
     /// The `PARAM_VALUE` events `try_push` keeps in the list in one block:
     /// the room set with [`set_param_room`](Self::set_param_room). Unbounded
     /// until set.
-    param_room: usize,
+    pub(crate) param_room: usize,
     /// `PARAM_VALUE` events in the list this block.
     param_pushed: usize,
     /// The plugin's parameter ids, sorted: the keys of `latest`.
@@ -1154,8 +1156,9 @@ impl OutputEventList {
     /// Bound the `PARAM_VALUE` events the plugin's `try_push` keeps in the
     /// list in one block to `points`, and key the latest-value table by
     /// `param_ids` (the plugin's parameter ids). Off-RT; call it at
-    /// activation, with the plugin's parameter count times the points a
-    /// block can carry for one parameter
+    /// activation, with the point budget
+    /// ([`ParameterChanges::point_budget`]) for the plugin's parameter count
+    /// and the points a block can carry for one parameter
     /// ([`ParameterQueue::chunk_room`]), and again when the block size
     /// changes. **Grows only:** a smaller `points` keeps the larger room.
     ///
@@ -1239,19 +1242,19 @@ impl OutputEventList {
     }
 
     /// Extracts parameter-value events into a [`ParameterChanges`] grouped
-    /// by parameter ID. Allocates as it needs to and keeps every point; off
-    /// the audio thread only.
+    /// by parameter ID. Allocates as it needs to and keeps every point, each
+    /// queue sized to its points; off the audio thread only.
     pub fn to_param_changes(&self) -> ParameterChanges {
-        let mut changes = ParameterChanges::new();
+        let mut grouped: Vec<(ParamAddress, Vec<ParameterPoint>)> = Vec::new();
         for (addr, point) in self.param_points() {
-            match changes.get_queue_mut(addr) {
-                Some(queue) => queue.points.push(point),
-                None => {
-                    let mut queue = ParameterQueue::new(addr);
-                    queue.points.push(point);
-                    changes.add_queue(queue);
-                }
+            match grouped.iter_mut().find(|(a, _)| *a == addr) {
+                Some((_, points)) => points.push(point),
+                None => grouped.push((addr, vec![point])),
             }
+        }
+        let mut changes = ParameterChanges::new();
+        for (addr, points) in grouped {
+            changes.add_queue(ParameterQueue::from_points(addr, points));
         }
         changes
     }
@@ -1268,9 +1271,11 @@ impl OutputEventList {
     /// neither allocates nor frees. Groups events by `param_id` with a linear
     /// scan over the open queues.
     ///
-    /// Past the room nothing grows. A point whose queue is full replaces that
-    /// queue's last point, so the parameter still ends the block on its latest
-    /// value; a point for a parameter with no queue left to open is lost.
+    /// Past the room nothing grows. A point whose queue is full (its room, or
+    /// its own few points with `out`'s shared point pool spent,
+    /// [`ParameterChanges::make_room`]) replaces that queue's last point, so
+    /// the parameter still ends the block on its latest value; a point for a
+    /// parameter with no queue left to open is lost.
     /// Each parameter's latest value pushed past the list's own parameter
     /// room ([`set_param_room`](Self::set_param_room)) is folded in after the
     /// list's points, as its last. Returns how many points were lost any of
@@ -1287,26 +1292,18 @@ impl OutputEventList {
         for (addr, point) in self.param_points() {
             // Linear scan: distinct param_ids per block are typically few, and
             // the scan touches only the queues opened this block.
-            let queue = match out.queues.iter().position(|q| q.param_id == addr) {
-                Some(i) => &mut out.queues[i],
-                None if out.open_queue(addr) => {
-                    let last = out.queues.len() - 1;
-                    &mut out.queues[last]
-                }
+            let i = match out.queues.iter().position(|q| q.param_id == addr) {
+                Some(i) => i,
+                None if out.open_queue(addr) => out.queues.len() - 1,
                 None => {
                     dropped += 1;
                     continue;
                 }
             };
-            if queue.has_room() {
-                queue.points.push(point);
-            } else {
-                // A full queue has a point (its room is never zero), so the
-                // last one gives way to the latest value.
+            // Room of its own, or a block from `out`'s shared point pool;
+            // past both the queue keeps its latest value.
+            if !out.push_point(i, point.sample_offset, point.value.get()) {
                 dropped += 1;
-                if let Some(last) = queue.points.last_mut() {
-                    *last = point;
-                }
             }
         }
         dropped
@@ -1640,7 +1637,7 @@ mod tests {
     #[test]
     fn add_param_changes_finds_each_range_in_a_sorted_list() {
         let ranges = [(1, 0.0, 1.0), (5, 0.0, 10.0), (9, 100.0, 1100.0)];
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(2, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.5);
         changes.add_change(ParamAddress::Opaque(5u32.into()), 1, 0.25);
         let mut list = InputEventList::new();
@@ -1671,7 +1668,7 @@ mod tests {
     fn a_dense_block_sorts_stably_without_allocating() {
         use tutti_plugin_types::ParameterQueue;
         let points = ParameterQueue::chunk_room(512);
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(200, points);
         for id in 0..200u32 {
             for k in 0..points {
                 // Every parameter on the same frames: many ties.
@@ -1742,7 +1739,7 @@ mod tests {
     /// point (dropped only) → the second parameter ends on 0.1.
     #[test]
     fn add_param_changes_stays_within_its_room() {
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(3, 4);
         for k in 0..4 {
             changes.add_change(ParamAddress::Opaque(1u32.into()), k, 0.5);
         }
@@ -1791,7 +1788,7 @@ mod tests {
         // emitted. Picking an index with no matching range would let the
         // existing `plugin_claims_params` arm drop it, and the test would pass
         // without the model check ever running.
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Index(0), 0, 0.25);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(0, 100.0, 1100.0)], true);
@@ -1802,7 +1799,7 @@ mod tests {
 
         // The same number as an opaque id is a real address, so the refusal is
         // about the model and not about the value being rejected outright.
-        let mut ok = ParameterChanges::new();
+        let mut ok = ParameterChanges::reserved(1, 1);
         ok.add_change(ParamAddress::Opaque(0u32.into()), 0, 0.25);
         let mut list2 = InputEventList::new();
         list2.add_param_changes(&ok, &[(0, 100.0, 1100.0)], true);
@@ -1812,7 +1809,7 @@ mod tests {
     #[test]
     fn add_param_changes_denormalizes_against_range() {
         // Param 9 has plain range [100, 1100]; a normalized 0.25 → 350.
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.25);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(9, 100.0, 1100.0)], true);
@@ -1822,7 +1819,7 @@ mod tests {
     #[test]
     fn add_param_changes_clamps_denormalized_value_into_range() {
         // A normalized 1.5 (over-range) must clamp to the plain max, not overshoot.
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 1.5);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(9, 0.0, 10.0)], true);
@@ -1834,7 +1831,7 @@ mod tests {
         // `f32::clamp` panics when `lo > hi`, and these bounds are whatever the
         // plugin reported. A malformed plugin must not take down the audio
         // thread — the value lands inside the range either way round.
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.5);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(9, 10.0, 0.0)], true);
@@ -1846,7 +1843,7 @@ mod tests {
     fn add_param_changes_passes_through_when_range_unknown() {
         // No range for this param id → value forwarded unchanged (safe fallback
         // for the common normalized-0..1 param).
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.42);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[], false);
@@ -1868,7 +1865,7 @@ mod tests {
     /// inside the plugin.
     #[test]
     fn negative_sample_offset_does_not_wrap_to_four_billion_h3() {
-        let mut changes = ParameterChanges::new();
+        let mut changes = ParameterChanges::reserved(1, 1);
         changes.add_change(ParamAddress::Opaque(9u32.into()), -1, 0.5);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[], false);
@@ -2672,5 +2669,218 @@ mod tests {
             assert!(result);
         }
         assert!(output.events().is_empty());
+    }
+
+    /// The parameter queues a pooled chunk carries at its budget: `PARAMS`
+    /// parameters with a room of `room`, the first
+    /// `ParameterChanges::POOLED_QUEUES` at full room and every other one at
+    /// its floor, points for different parameters arriving interleaved in
+    /// time (frame by frame, every parameter), as the host's node fills it.
+    /// Point `k` of parameter `id` is on frame `3k` (every parameter on the
+    /// same frames: many ties) with value `(id + k) % 7 / 8`.
+    fn pooled_chunk(params: u32, room: usize) -> ParameterChanges {
+        let mut changes = ParameterChanges::reserved(params as usize, room);
+        for id in 0..params {
+            assert!(changes.open_queue(ParamAddress::Opaque(id.into())));
+        }
+        for k in 0..room {
+            for id in 0..params {
+                let i = id as usize;
+                if k >= ParameterChanges::FLOOR_POINTS && i >= ParameterChanges::POOLED_QUEUES {
+                    continue;
+                }
+                assert!(changes.make_room(i), "within the budget");
+                changes.queues[i].add_point(3 * k as i32, pooled_value(id, k));
+            }
+        }
+        changes
+    }
+
+    fn pooled_value(id: u32, k: usize) -> f64 {
+        ((id as usize + k) % 7) as f64 / 8.0
+    }
+
+    /// Each parameter's `(time, value)` events in list order.
+    fn per_param(events: &[ClapEvent], params: u32) -> Vec<Vec<(u32, f64)>> {
+        let mut out = vec![Vec::new(); params as usize];
+        for e in events {
+            if let ClapEvent::ParamValue(v) = e {
+                out[v.param_id as usize].push((v.header.time, v.value));
+            }
+        }
+        out
+    }
+
+    /// **A chunk at the pool budget reaches the plugin whole, time-sorted,
+    /// without allocating; one point past it is counted.** 2 000 parameters
+    /// at a 512-frame block (a room of 20): the input list is reserved at the
+    /// chunk's pool budget (`ParameterChanges::point_budget`, as activation
+    /// reserves it), and the host's pooled chunk, its
+    /// points arriving interleaved, is flattened and sorted inside the
+    /// no-alloc gate. Every event is in time order, and each parameter's
+    /// points are its queue's, in order. Then a set past the budget (the last
+    /// parameter carrying the list's remaining room and two more points,
+    /// which the host's pooled chunk cannot): each surplus point replaces
+    /// that parameter's previous one (it still ends on its latest value),
+    /// counted.
+    ///
+    /// Mutations (run), each fails: `add_param_changes` without its room
+    /// check (`pushed < self.param_room` always true) → the over-budget
+    /// points are pushed past the list's reserve, which allocates inside
+    /// the gate (abort); `sort_by_time` a no-op (its already-sorted early
+    /// return taken always) → the events are in queue order, not time
+    /// order. The reservation activation makes is pinned by
+    /// `activation_reserves_the_pool_budget_not_params_times_room`.
+    #[test]
+    fn a_chunk_at_the_pool_budget_is_handed_on_sorted_without_allocating() {
+        const PARAMS: u32 = 2_000;
+        let room = ParameterQueue::chunk_room(512);
+        let budget = ParameterChanges::point_budget(PARAMS as usize, room);
+        let changes = pooled_chunk(PARAMS, room);
+        // What the chunk carries: a moving parameter's floor sits idle while
+        // it holds a block, so the budget is that much over what can arrive.
+        let pooled = ParameterChanges::POOLED_QUEUES;
+        let carried = (PARAMS as usize - pooled) * ParameterChanges::FLOOR_POINTS + pooled * room;
+        let mut list = InputEventList::new();
+        list.reserve(budget);
+        list.set_param_point_room(budget);
+        let fill = |list: &mut InputEventList, changes: &ParameterChanges| {
+            list.clear();
+            list.add_param_changes(changes, &[], false);
+            list.clamp_times(512);
+            list.sort_by_time();
+        };
+        fill(&mut list, &changes);
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..3 {
+                fill(&mut list, &changes);
+            }
+        });
+        assert_eq!(list.len(), carried);
+        assert_eq!(list.param_points_dropped(), 0);
+        assert!(list.events().is_sorted_by_key(|e| e.header().time));
+        for (id, got) in per_param(list.events(), PARAMS).into_iter().enumerate() {
+            let q = &changes.queues[id];
+            let want: Vec<(u32, f64)> = q
+                .points
+                .iter()
+                .map(|p| (p.sample_offset as u32, p.value.get()))
+                .collect();
+            assert_eq!(got, want, "parameter {id}");
+        }
+
+        // One point past the budget (a set the pool did not bound, built by
+        // hand: the last parameter given the rest of the list's room, and
+        // one more). The last queue is built with room for them all
+        // (`ParameterQueue::with_capacity`), as the host's pool never would.
+        // (Reworded with `PointBuf`: the cloned queue grew before.)
+        let mut over = ParameterChanges::new();
+        for q in &changes.queues {
+            over.add_queue(q.clone());
+        }
+        let extra = budget - carried + 1;
+        let last = over.queues.last_mut().expect("a queue");
+        let mut grown = ParameterQueue::with_capacity(last.param_id, last.len() + extra + 1);
+        for p in &last.points {
+            assert!(grown.points.try_push(*p).is_ok());
+        }
+        for k in 0..extra {
+            assert!(grown.add_point(70 + k as i32 % 300, 0.5));
+        }
+        assert!(grown.add_point(400, 0.875));
+        *last = grown;
+        assert_no_alloc::assert_no_alloc(|| fill(&mut list, &over));
+        assert_eq!(list.len(), budget);
+        assert_eq!(list.param_points_dropped(), 2);
+        let last = per_param(list.events(), PARAMS).pop().expect("a parameter");
+        assert_eq!(last.last(), Some(&(400, 0.875)), "ends on its latest");
+        assert_eq!(last.len(), ParameterChanges::FLOOR_POINTS + extra - 1);
+    }
+
+    /// **The plugin's output at the pool budget is grouped into the pooled
+    /// queues without allocating, each per parameter and time-ordered; one
+    /// point past it is counted.** The output list and its queues reserved
+    /// as activation reserves them for 2 000 parameters at 512 frames; the
+    /// plugin pushes `POOLED_QUEUES` parameters at full room and every other
+    /// one at its floor, interleaved frame by frame, inside the gate. Then
+    /// one more parameter pushes a point past its floor: past the list's parameter
+    /// room it is kept as that parameter's latest, and with the queues' pool
+    /// spent it replaces the queue's last point, counted once.
+    ///
+    /// Mutations (run), each fails: `fill_param_changes` without
+    /// `make_room` (the queue's own floor only) → the moving parameters
+    /// lose points past their floor, counted; the over-budget point dropped
+    /// instead of replacing the last → the parameter ends on its earlier
+    /// value.
+    #[test]
+    fn plugin_output_at_the_pool_budget_groups_without_allocating() {
+        const PARAMS: u32 = 2_000;
+        let room = ParameterQueue::chunk_room(512);
+        let budget = ParameterChanges::point_budget(PARAMS as usize, room);
+        let ids: Vec<u32> = (0..PARAMS).collect();
+        let mut output = OutputEventList::new();
+        output.reserve(16);
+        output.set_param_room(budget, &ids);
+        let mut changes = ParameterChanges::reserved(PARAMS as usize, room);
+        let (floor, _) = ParameterChanges::point_layout(PARAMS as usize, room);
+        let push = |output: &mut OutputEventList, event: &ClapEvent| {
+            let list = output.as_raw_mut();
+            // SAFETY: `list` is `output`'s own vtable, live for the call, and
+            // `event` a whole `PARAM_VALUE` event.
+            unsafe { (*list).try_push.expect("try_push")(list, event.header()) }
+        };
+        let block = |output: &mut OutputEventList, changes: &mut ParameterChanges, extra: bool| {
+            output.clear();
+            for k in 0..room {
+                for id in 0..PARAMS {
+                    let moving = (id as usize) < ParameterChanges::POOLED_QUEUES;
+                    let third = extra && id == PARAMS - 1 && k == floor;
+                    if k >= floor && !moving && !third {
+                        continue;
+                    }
+                    let e = ClapEvent::param_value(3 * k as u32, id, pooled_value(id, k));
+                    assert!(push(output, &e));
+                }
+            }
+            output.fill_param_changes(changes)
+        };
+        assert_eq!(block(&mut output, &mut changes, false), 0);
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..3 {
+                assert_eq!(block(&mut output, &mut changes, false), 0);
+            }
+        });
+        assert_eq!(changes.queues.len(), PARAMS as usize);
+        for q in &changes.queues {
+            let id = q.param_id.opaque().expect("opaque").get();
+            let n = if (id as usize) < ParameterChanges::POOLED_QUEUES {
+                room
+            } else {
+                floor
+            };
+            let want: Vec<(i32, f64)> = (0..n)
+                .map(|k| (3 * k as i32, pooled_value(id, k)))
+                .collect();
+            let got: Vec<(i32, f64)> = q
+                .points
+                .iter()
+                .map(|p| (p.sample_offset, p.value.get()))
+                .collect();
+            assert_eq!(got, want, "parameter {id}");
+        }
+
+        let mut dropped = 0;
+        assert_no_alloc::assert_no_alloc(|| dropped = block(&mut output, &mut changes, true));
+        assert_eq!(dropped, 1);
+        let last = changes
+            .get_queue(ParamAddress::Opaque((PARAMS - 1).into()))
+            .expect("queued");
+        assert_eq!(last.points.len(), floor);
+        let k = floor;
+        assert_eq!(
+            last.points.last().map(|p| (p.sample_offset, p.value.get())),
+            Some((3 * k as i32, pooled_value(PARAMS - 1, k))),
+            "ends on its latest"
+        );
     }
 }

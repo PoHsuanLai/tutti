@@ -14,7 +14,7 @@
 //! The plugin's parameter list is read once, when the client is loaded
 //! (`PluginClient::new`, which blocks on the plugin-server anyway), and
 //! [`ParamDelivery::new`] sizes everything from it on the control thread:
-//! one slot per parameter, plus [`SPARE_SLOTS`] for addresses the list did
+//! one slot per parameter, plus [`ParameterChanges::SPARE_QUEUES`] for addresses the list did
 //! not name (a plugin that grows a parameter later, or a list the server
 //! could not give). A chunk's [`ParameterChanges`] has room for a queue per
 //! slot, so every parameter can move in the same chunk; this replaces the 16
@@ -25,11 +25,17 @@
 //! **Points.** Each queue has room for [`points_for`] the chunk: one point
 //! per 32 frames and 4 more ([`ParameterQueue::chunk_room`]), sized in
 //! [`prepare`](ParamDelivery::prepare) once the chunk length is known
-//! (`ParameterChanges::reserved`, here and in the bridge's buffers). The
-//! queues are kept, emptied, from chunk to chunk, so their point storage is
-//! never freed or rebuilt on the audio thread. A source denser than that
-//! has the queue's last point replaced (the chunk still ends on the latest
-//! value), counted ([`ParamDeliveryStats::points_merged`]).
+//! (`ParameterChanges::reserved`, here and in the bridge's buffers). That
+//! room is logical: each queue owns `ParameterChanges::FLOOR_POINTS` points,
+//! and a queue that needs more takes a block of the full room from the
+//! chunk's shared pool (`ParameterChanges::make_room`), so the memory follows
+//! the points a chunk carries (any `ParameterChanges::POOLED_QUEUES`
+//! parameters at full density at once), not the parameter count. The queues
+//! and the pool are kept, emptied, from chunk to chunk, so their point
+//! storage is never freed or rebuilt on the audio thread. A source denser
+//! than a queue's room, or a queue that needs a block when the pool is
+//! spent, has the queue's last point replaced (the chunk still ends on the
+//! latest value), counted ([`ParamDeliveryStats::points_merged`]).
 //!
 //! An address past every slot is the one bound left. Its points are refused
 //! and counted ([`ParamDeliveryStats::points_dropped`]), never silently.
@@ -104,10 +110,6 @@ use std::sync::{Arc, OnceLock};
 use super::param_automation_source::MAX_POINTS;
 use crate::protocol::{Normalized, ParamAddress, ParameterChanges, ParameterQueue};
 
-/// Slots beyond the plugin's parameter list, for addresses it did not name:
-/// learned on the audio thread, within the reserved capacity.
-pub(crate) const SPARE_SLOTS: usize = 64;
-
 /// A slot with no queue in the chunk being filled.
 const NO_QUEUE: u32 = u32::MAX;
 
@@ -149,7 +151,9 @@ pub struct ParamDeliveryStats {
     /// the queue was full: a chunk carries up to one point per 32 frames per
     /// parameter, plus a few for corners, and a source sending denser than
     /// that loses the points between (the chunk still ends on the latest
-    /// value).
+    /// value). A queue past its own few points draws on the chunk's shared
+    /// point pool (`ParameterChanges::POOLED_QUEUES` parameters at full
+    /// room); with the pool spent it is full too, counted here the same way.
     pub points_merged: u64,
 }
 
@@ -290,14 +294,14 @@ impl std::fmt::Debug for ParamDelivery {
 }
 
 impl ParamDelivery {
-    /// Slots for `params` (the plugin's parameter list) and [`SPARE_SLOTS`]
+    /// Slots for `params` (the plugin's parameter list) and [`ParameterChanges::SPARE_QUEUES`]
     /// more, and a chunk with room for a queue in each. Control thread:
     /// allocates.
     pub(crate) fn new(
         params: impl IntoIterator<Item = ParamAddress>,
         counters: Arc<DeliveryCounters>,
     ) -> Self {
-        Self::with_spares(params, counters, SPARE_SLOTS)
+        Self::with_spares(params, counters, ParameterChanges::SPARE_QUEUES)
     }
 
     /// Slots for `params` only: an address the list does not name is
@@ -333,7 +337,7 @@ impl ParamDelivery {
         Self {
             slots,
             staged: Vec::with_capacity(room),
-            changes: ParameterChanges::reserved(room, MAX_POINTS),
+            changes: ParameterChanges::reserved_bridged(room, MAX_POINTS),
             owed: 0,
             room,
             chunk_points: 0,
@@ -368,7 +372,7 @@ impl ParamDelivery {
     pub(crate) fn prepare(&mut self, chunk: usize) -> usize {
         self.abandon();
         self.points = points_for(chunk);
-        self.changes = ParameterChanges::reserved(self.room(), self.points);
+        self.changes = ParameterChanges::reserved_bridged(self.room(), self.points);
         self.points
     }
 
@@ -439,9 +443,10 @@ impl ParamDelivery {
 
     /// A point for `address` at chunk frame `offset`, unless the value is
     /// the one the plugin already has from this node (see the module docs).
-    /// A full queue (its point budget, [`points_for`] the chunk) has its
-    /// last point replaced, counted as merged: the latest value wins, so a
-    /// chunk spanning several blocks ends exact.
+    /// A full queue (its point budget, [`points_for`] the chunk, or its own
+    /// points with the chunk's shared pool spent) has its last point
+    /// replaced, counted as merged: the latest value wins, so a chunk
+    /// spanning several blocks ends exact.
     /// `false` when `address` has no slot (counted). Allocation-free.
     pub(crate) fn point(&mut self, address: ParamAddress, offset: i32, value: f32) -> bool {
         let Some(i) = self.slot(address) else {
@@ -477,17 +482,14 @@ impl ParamDelivery {
             // The chunk already ends on it.
             return;
         }
-        let queue = &mut self.changes.queues[slot.queue as usize];
-        if !queue.has_room() {
-            // Full: the latest value replaces the last point, never grows
-            // the queue (which would allocate).
-            queue.points.pop();
-            self.counters.merged.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.chunk_points += 1;
-        }
-        queue.add_point(offset, value);
         slot.staged = value;
+        // Room of its own, or a block from the chunk's shared pool; past
+        // both the queue keeps its latest value (it cannot grow).
+        if self.changes.push_point(slot.queue as usize, offset, value) {
+            self.chunk_points += 1;
+        } else {
+            self.counters.merged.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// A chunk begins: what earlier chunks owe goes on its first frame.
@@ -591,7 +593,7 @@ mod tests {
     /// Hand the chunk off as the bridge does: swapped for an empty buffer of
     /// the same room.
     fn hand_off(d: &mut ParamDelivery, delivered: bool) -> ParameterChanges {
-        let mut fresh = ParameterChanges::reserved(d.room(), d.points());
+        let mut fresh = ParameterChanges::reserved_bridged(d.room(), d.points());
         if delivered {
             std::mem::swap(d.changes(), &mut fresh);
         }
@@ -603,7 +605,7 @@ mod tests {
     /// each, none dropped, and nothing past the reserved room.
     ///
     /// Mutation (run): the chunk sized at 16 queues (the old cap,
-    /// `ParameterChanges::reserved(16, MAX_POINTS)` in `new`) → 184 points
+    /// `ParameterChanges::reserved_bridged(16, MAX_POINTS)` in `new`) → 184 points
     /// refused → fails.
     #[test]
     fn two_hundred_parameters_fit_one_chunk() {
@@ -723,7 +725,7 @@ mod tests {
         let (mut d, counters) = delivery(2);
         let room = d.slots.capacity();
         d.begin();
-        for id in 1000..1000 + SPARE_SLOTS as u32 {
+        for id in 1000..1000 + ParameterChanges::SPARE_QUEUES as u32 {
             assert!(d.point(op(id), 0, 0.5), "spare slot for {id}");
         }
         assert!(!d.point(op(5000), 0, 0.5));
@@ -745,7 +747,7 @@ mod tests {
     /// **A closed list learns nothing**: an index the VST2 plugin did not
     /// declare is refused and counted dropped, while a declared one goes.
     ///
-    /// Mutation (run): `closed` built with `SPARE_SLOTS` spares, as `new`
+    /// Mutation (run): `closed` built with `ParameterChanges::SPARE_QUEUES` spares, as `new`
     /// is → the undeclared index is learned and staged, nothing dropped →
     /// fails.
     #[cfg(feature = "vst2")]
@@ -795,7 +797,7 @@ mod tests {
         let budget = CHUNK / ParameterQueue::POINT_SPACING + ParameterQueue::CORNER_POINTS;
         let (mut d, counters) = delivery(200);
         assert_eq!(d.prepare(CHUNK), budget);
-        let mut spare = ParameterChanges::reserved(d.room(), d.points());
+        let mut spare = ParameterChanges::reserved_bridged(d.room(), d.points());
         let chunk = |d: &mut ParamDelivery, spare: &mut ParameterChanges| {
             d.begin();
             for k in 0..budget {
@@ -831,5 +833,110 @@ mod tests {
             Some((budget + 2) as i32)
         );
         assert_eq!(counters.snapshot().points_merged, 3);
+    }
+
+    /// **The chunk's point storage is the pool budget, not parameters ×
+    /// room**: a delivery for 2 000 parameters (and its 64 spare slots)
+    /// prepared for 512- and 4096-frame chunks holds
+    /// `ParameterChanges::point_budget` points (a floor of
+    /// `FLOOR_POINTS + 1` a slot and a shared pool of `POOLED_QUEUES`
+    /// blocks of `room + 1`, the extra point kept for the bridge's carried
+    /// value), under a third of a full carried room per slot. (Reworded with
+    /// `PointBuf`: the chunk was `point_budget`, under a quarter of `room`,
+    /// and the carried value grew a queue on the bridge thread.)
+    ///
+    /// Mutation (run): `prepare` reserving the old layout (every slot a
+    /// full room: `ParameterChanges::point_layout` always `(full, 0)`) →
+    /// the storage is `slots × (room + 1)` → fails.
+    #[test]
+    fn the_chunk_holds_the_pool_budget_not_params_times_room() {
+        let (mut d, _) = delivery(2_000);
+        for chunk in [512usize, 4096] {
+            let room = d.prepare(chunk);
+            assert_eq!(room, points_for(chunk));
+            let slots = 2_000 + ParameterChanges::SPARE_QUEUES;
+            let budget = slots * (ParameterChanges::FLOOR_POINTS + 1)
+                + ParameterChanges::POOLED_QUEUES * (room + 1);
+            assert_eq!(ParameterChanges::point_budget(slots, room), budget);
+            assert_eq!(d.changes.point_storage(), budget, "at {chunk}");
+            assert!(3 * budget < slots * (room + 1), "at {chunk}");
+        }
+    }
+
+    /// **Up to the pool budget every point goes, without allocating; past
+    /// it each point is merged into its parameter's last, counted.** 1 000
+    /// parameters prepared for a 1024-frame chunk (a room of 36): the first
+    /// `POOLED_QUEUES` carry their full room, every other one its floor (a
+    /// step and a second value), points for different parameters arriving
+    /// interleaved, chunk after chunk inside the no-alloc gate, with nothing
+    /// merged. Then one more parameter needs a third point with the pool
+    /// spent: it replaces that parameter's last point (the chunk ends on the
+    /// latest value), counted once.
+    ///
+    /// Mutations (run), each fails: `push_point` without `make_room` (the
+    /// queue's own room only, `has_room`) → the moving parameters merge
+    /// past their floor; the merge not counted → `points_merged` is 0 after
+    /// the overflow; the host's chunk built without its carry slot
+    /// (`reserved`) → the floor queues take a third point, and the
+    /// moving parameters' per-chunk counts are off.
+    #[test]
+    fn up_to_the_pool_budget_nothing_merges_and_past_it_merges_counted() {
+        const PARAMS: u32 = 1_000;
+        const CHUNK: usize = 1024;
+        let (mut d, counters) = delivery(PARAMS);
+        let room = d.prepare(CHUNK);
+        let moving = ParameterChanges::POOLED_QUEUES as u32;
+        let mut spare = ParameterChanges::reserved_bridged(d.room(), d.points());
+        let chunk = |d: &mut ParamDelivery, spare: &mut ParameterChanges, phase: usize| {
+            d.begin();
+            for k in 0..room {
+                for id in 0..PARAMS {
+                    if k >= ParameterChanges::FLOOR_POINTS && id >= moving {
+                        continue;
+                    }
+                    // Distinct from point to point, and a chunk's first
+                    // from the last chunk's last (else it is unchanged and
+                    // not sent).
+                    let v = ((k + id as usize + 4 * phase) % 8) as f32 / 8.0;
+                    d.point(op(id), (k * 28) as i32, v);
+                }
+            }
+            for (i, q) in d.changes.queues.iter().enumerate() {
+                let want = if (i as u32) < moving {
+                    room
+                } else {
+                    ParameterChanges::FLOOR_POINTS
+                };
+                assert_eq!(q.points.len(), want);
+                assert!(q
+                    .points
+                    .windows(2)
+                    .all(|w| w[0].sample_offset < w[1].sample_offset));
+            }
+            std::mem::swap(d.changes(), spare);
+            d.handed_off(true);
+            spare.clear();
+        };
+        chunk(&mut d, &mut spare, 0);
+        assert_no_alloc::assert_no_alloc(|| {
+            for phase in 1..4 {
+                chunk(&mut d, &mut spare, phase);
+            }
+        });
+        assert_eq!(counters.snapshot().points_merged, 0);
+
+        // The pool spent, one more parameter takes a third point.
+        // Odd sixteenths: none was sent before, so every point goes.
+        d.begin();
+        for k in 0..3 {
+            for id in 0..=moving {
+                d.point(op(id), k, (2 * k + 1) as f32 / 16.0);
+            }
+        }
+        let last = d.changes.get_queue(op(moving)).expect("queued");
+        assert_eq!(last.points.len(), ParameterChanges::FLOOR_POINTS);
+        assert_eq!(last.points.last().map(|p| p.value.get()), Some(5.0 / 16.0));
+        assert_eq!(last.points.last().map(|p| p.sample_offset), Some(2));
+        assert_eq!(counters.snapshot().points_merged, 1);
     }
 }

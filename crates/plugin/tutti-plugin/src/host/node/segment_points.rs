@@ -219,7 +219,7 @@ mod tests {
 
     /// The chunk goes, as the bridge takes it: swapped for an empty buffer.
     fn hand_off(d: &mut ParamDelivery) -> ParameterChanges {
-        let mut sent = ParameterChanges::reserved(d.room(), d.points());
+        let mut sent = ParameterChanges::reserved_bridged(d.room(), d.points());
         std::mem::swap(d.changes(), &mut sent);
         d.handed_off(true);
         sent
@@ -305,7 +305,7 @@ mod tests {
     /// a chunk or more late.)
     ///
     /// Mutations (run), each fails: the delivery's chunk sized at 16 queues
-    /// (`ParameterChanges::reserved(16, MAX_POINTS)` in `ParamDelivery::new`) →
+    /// (`ParameterChanges::reserved_bridged(16, MAX_POINTS)` in `ParamDelivery::new`) →
     /// 184 parameters get no points in the first chunk; a track dropped before its arrival
     /// point is placed (`return false` ahead of the `point` call) → the end
     /// values never land.

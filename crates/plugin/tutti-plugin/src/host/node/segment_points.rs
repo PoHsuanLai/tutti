@@ -108,9 +108,10 @@ impl SegmentPoints {
     }
 
     /// `segment` for `address` starts at absolute frame `frame`, chunk frame
-    /// `at`: its first point (a grid point when `grid`: dropped first past
-    /// the queue's room), and the segment followed from the next frame on
-    /// unless it has already arrived. With no slot free it is sent as a
+    /// `at`: its first point (a grid point when `grid` and not on the
+    /// chunk's last frame: dropped first past the queue's room), and the
+    /// segment followed from the next frame on unless it has already
+    /// arrived. With no slot free it is sent as a
     /// ramp: its end value, now. An address the delivery has no slot for is
     /// refused (counted there).
     pub(super) fn start(
@@ -139,7 +140,11 @@ impl SegmentPoints {
             return;
         }
         let first = segment.raw_value_after(Samples(0));
-        if grid {
+        // On the chunk's last frame it is a corner, grid frame or not, as
+        // the chunk edge is in `points`: a parameter's last point in a
+        // chunk is never the one dropped first, so a full queue still ends
+        // the chunk on its latest value.
+        if grid && at != self.chunk.saturating_sub(1) {
             let offset = i32::try_from(at).unwrap_or(i32::MAX);
             changes.grid_point(address, offset, first);
         } else {
@@ -251,6 +256,38 @@ mod tests {
         std::mem::swap(d.changes(), &mut sent);
         d.handed_off(true);
         sent
+    }
+
+    /// **A segment starting on the chunk's last frame is a corner, grid
+    /// frame or not**, so a full queue still ends the chunk on it: one
+    /// parameter's queue filled to its room with corners, then a segment
+    /// starting on the 64-frame chunk's last frame, which is a play-grid
+    /// frame. Its start takes the latest point's place (merged); as a grid
+    /// point it would be dropped, and the chunk would end on the value
+    /// before it.
+    ///
+    /// Mutation (run): `start` classifying by `grid` alone (`&& at !=
+    /// self.chunk - 1` removed) → the start is dropped and the queue ends on
+    /// frame 62's value → fails.
+    #[test]
+    fn a_start_on_the_chunk_s_last_frame_is_a_corner() {
+        let seg = ParamSegment::foreign(7, 0.5, 1.0, Samples(100), SegmentShape::Linear);
+        let mut sp = SegmentPoints::default();
+        let mut d = delivery([7]);
+        sp.prepare(MAX_SEGMENTS);
+        let room = d.prepare(64);
+        d.begin();
+        sp.begin(64);
+        // Alternating values to the room, on frames before the last.
+        for k in 0..room {
+            let v = if k.is_multiple_of(2) { 0.25 } else { 0.75 };
+            d.point(A, (k * 62 / room) as i32, v);
+        }
+        assert_eq!(queue(&mut d, A).len(), room);
+        sp.start(&mut d, A, seg, 63, 63, true);
+        let first = seg.raw_value_after(Samples(0));
+        assert_eq!(queue(&mut d, A).last(), Some(&(63, first)));
+        assert_eq!(queue(&mut d, A).len(), room);
     }
 
     /// A segment spanning several chunks sends its start, its value on each

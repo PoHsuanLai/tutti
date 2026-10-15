@@ -198,19 +198,6 @@ mod tests {
             |_, _| {},
         );
         let stats = counters.snapshot();
-        eprintln!(
-            "DBG {stats:?} {:?}",
-            params
-                .changes()
-                .queues
-                .iter()
-                .map(|q| q
-                    .points
-                    .iter()
-                    .map(|p| (p.sample_offset, p.value.get()))
-                    .collect::<Vec<_>>())
-                .collect::<Vec<_>>()
-        );
         assert_eq!(stats.grid_points_dropped, 9, "the nine grid frames");
         assert_eq!(stats.points_merged, 300 - 259 - 9 - 1);
         let offsets: Vec<i32> = params.changes().queues[0]

@@ -1203,4 +1203,194 @@ mod tests {
         assert_eq!(last.points.last().map(|p| p.sample_offset), Some(2));
         assert_eq!(counters.snapshot().points_merged, 1);
     }
+
+    /// One chunk of [`more_lanes_than_the_pool`]'s shape for `lanes` lanes
+    /// of a delivery prepared for 512-frame chunks: in time order, frame by
+    /// frame and lane by lane, a grid point on every 32nd frame, a corner 7
+    /// frames after each, and a corner on the chunk's last frame (a lane's
+    /// shape: its grid, its breakpoints, its chunk edge). Each lane's
+    /// values step through sevenths of a cycle shifted by `phase`, so every
+    /// point is a change (from its predecessor and from the last chunk's
+    /// last). Writes each lane's latest value into `latest` (one a lane).
+    fn lane_chunk(d: &mut ParamDelivery, latest: &mut [f32], phase: usize) {
+        let lanes = latest.len() as u32;
+        let mut k = 0;
+        d.begin();
+        for f in 0..512i32 {
+            let grid = f % 32 == 0;
+            if !(grid || f % 32 == 7 || f == 511) {
+                continue;
+            }
+            for id in 0..lanes {
+                let v = ((k + id as usize + 3 * phase) % 7 + 1) as f32 / 8.0;
+                if grid {
+                    d.grid_point(op(id), f, v);
+                } else {
+                    d.point(op(id), f, v);
+                }
+                latest[id as usize] = v;
+            }
+            k += 1;
+        }
+    }
+
+    /// **More moving lanes than the pool has blocks: each parameter still
+    /// ends the chunk on its latest value, grid points go before corners,
+    /// every drop is counted, and nothing allocates** (design doc 014 §9
+    /// requirement 6, past the pool). 300 lanes of a 600-parameter plugin
+    /// move in one 512-frame chunk, each with 16 grid points, 16 corners and
+    /// the chunk's last frame (33 points, inside the room of 273). The
+    /// first 256 to need a third point take the pool's 256 blocks and keep
+    /// all 33. The other 44 stay at their floor (two points, the third kept
+    /// for the bridge's carried value): each drops the 15 grid points
+    /// offered to its full queue, its first corner past the floor evicts
+    /// its one grid point (frame 0), and its later corners, with no grid
+    /// point left to evict, keep the latest value in the latest point's
+    /// place: 16 grid drops and 15 merges a lane, and the queue ends
+    /// `[7, 511]`, a corner and the latest value. Chunk after chunk inside
+    /// the no-alloc gate, each handed off as the bridge does.
+    ///
+    /// Mutations (run), each fails: `place` without `make_room` (the
+    /// queue's own storage only, `len + 1 < capacity`) → every lane is
+    /// held at its floor and the first 256 lose their points; a grid point
+    /// at a full queue handled like a corner (the `if grid` drop removed)
+    /// → it evicts a grid point or takes the latest point's place, and the
+    /// grid-drop count is not 16 a lane; a corner never evicting a
+    /// grid point (the `first` match always `None`) → the spent lanes end
+    /// `[0, 511]`, a grid point kept over a corner; the merge not counted
+    /// → `points_merged` is 0.
+    #[test]
+    fn more_lanes_than_the_pool_end_on_their_latest_values_counted() {
+        const PARAMS: u32 = 600;
+        const LANES: u32 = 300;
+        let (mut d, counters) = delivery(PARAMS);
+        let room = d.prepare(512);
+        assert_eq!(room, 273);
+        let pooled = ParameterChanges::POOLED_QUEUES;
+        assert_eq!(
+            ParameterChanges::point_layout(d.room(), room),
+            (ParameterChanges::FLOOR_POINTS + 1, pooled),
+            "the delivery is pooled"
+        );
+        let spent = LANES as usize - pooled;
+        let mut spare = ParameterChanges::reserved_bridged(d.room(), d.points());
+        let mut check = |d: &mut ParamDelivery, latest: &[f32]| {
+            for (id, &v) in latest.iter().enumerate() {
+                let q = &d.changes.queues[id];
+                assert_eq!(q.param_id, op(id as u32));
+                let last = q.points.last().expect("a point");
+                assert_eq!(
+                    (last.sample_offset, last.value.get()),
+                    (511, f64::from(v)),
+                    "lane {id} ends on its latest value"
+                );
+                let offsets: Vec<i32> = q.points.iter().map(|p| p.sample_offset).collect();
+                if id < pooled {
+                    assert_eq!(offsets.len(), 33, "lane {id} holds a block");
+                } else {
+                    assert_eq!(offsets, [7, 511], "lane {id}: corners before grid points");
+                }
+            }
+        };
+        let mut latest = vec![0.0; LANES as usize];
+        lane_chunk(&mut d, &mut latest, 0);
+        check(&mut d, &latest);
+        assert_eq!(counters.snapshot().grid_points_dropped, spent as u64 * 16);
+        assert_eq!(counters.snapshot().points_merged, spent as u64 * 15);
+        std::mem::swap(d.changes(), &mut spare);
+        d.handed_off(true);
+        spare.clear();
+        for phase in 1..4 {
+            assert_no_alloc::assert_no_alloc(|| lane_chunk(&mut d, &mut latest, phase));
+            check(&mut d, &latest);
+            assert_no_alloc::assert_no_alloc(|| {
+                std::mem::swap(d.changes(), &mut spare);
+                d.handed_off(true);
+                spare.clear();
+            });
+        }
+        let stats = counters.snapshot();
+        assert_eq!(stats.grid_points_dropped, 4 * spent as u64 * 16);
+        assert_eq!(stats.points_merged, 4 * spent as u64 * 15);
+        assert_eq!(stats.points_dropped, 0);
+    }
+
+    /// **A queue that took a block keeps its grid marks**: its floor's
+    /// marks move with its points into the block (`GridBits::fits`), so at
+    /// its room a corner still evicts its *earliest* grid point, the one
+    /// it took on its floor. A pooled delivery (600 parameters at a
+    /// 512-frame chunk, room 273): one parameter takes a grid point on
+    /// frame 0, a corner, then corners to its room (borrowing a block on
+    /// the way); a corner past the room evicts the frame-0 grid point.
+    ///
+    /// Mutation (run): `fits` moving to a cleared block without copying the
+    /// floor's marks → the frame-0 point reads as a corner, nothing is
+    /// evicted, the corner is merged → fails.
+    #[test]
+    fn a_queue_keeps_its_grid_marks_when_it_takes_a_block() {
+        let (mut d, counters) = delivery(600);
+        let room = d.prepare(512);
+        let v = |k: usize| if k.is_multiple_of(2) { 0.25 } else { 0.75 };
+        d.begin();
+        d.grid_point(op(0), 0, v(0));
+        for k in 1..room {
+            d.point(op(0), k as i32, v(k));
+        }
+        let points = |d: &ParamDelivery| d.changes.queues[0].points.len();
+        assert_eq!(points(&d), room);
+        d.point(op(0), 1000, v(room));
+        assert_eq!(points(&d), room);
+        assert_eq!(d.changes.queues[0].points[0].sample_offset, 1);
+        let stats = counters.snapshot();
+        assert_eq!((stats.grid_points_dropped, stats.points_merged), (1, 0));
+    }
+
+    /// **The pool-spent chunk reaches a CLAP plugin whole and in time
+    /// order**, without allocating: the chunk of
+    /// [`more_lanes_than_the_pool_end_on_their_latest_values_counted`],
+    /// as the bridge hands it on, is flattened into a CLAP input list
+    /// reserved as the plugin-server reserves it at activation
+    /// (`ParameterChanges::point_budget` of the plugin's parameters at the
+    /// chunk's room) inside the no-alloc gate. Every point is handed on,
+    /// in time order, and every lane's last event is its latest value on
+    /// the chunk's last frame.
+    ///
+    /// Mutation (run): the list reserved at the floor alone (`3 × params`,
+    /// as if the pool's blocks were not counted) → the 256 full lanes'
+    /// points past it are refused and counted → fails.
+    #[cfg(feature = "clap")]
+    #[test]
+    fn a_pool_spent_chunk_reaches_a_clap_plugin_whole() {
+        const PARAMS: u32 = 600;
+        const LANES: u32 = 300;
+        let (mut d, _) = delivery(PARAMS);
+        let room = d.prepare(512);
+        let mut latest = vec![0.0; LANES as usize];
+        lane_chunk(&mut d, &mut latest, 0);
+        let budget = ParameterChanges::point_budget(PARAMS as usize, room);
+        let mut list = tutti_clap_host::InputEventList::new();
+        list.reserve(budget);
+        list.set_param_point_room(budget);
+        let carried: usize = d.changes.queues.iter().map(|q| q.points.len()).sum();
+        assert_no_alloc::assert_no_alloc(|| {
+            list.add_param_changes(&d.changes, &[], false);
+            list.clamp_times(512);
+            list.sort_by_time();
+        });
+        assert_eq!(list.param_points_dropped(), 0);
+        assert_eq!(list.events().len(), carried);
+        let mut last = vec![None; LANES as usize];
+        let mut time = 0;
+        for e in list.events() {
+            let tutti_clap_host::ClapEvent::ParamValue(p) = e else {
+                panic!("only parameter events");
+            };
+            assert!(p.header.time >= time, "time order");
+            time = p.header.time;
+            last[p.param_id as usize] = Some((p.header.time, p.value));
+        }
+        for (id, &v) in latest.iter().enumerate() {
+            assert_eq!(last[id], Some((511, f64::from(v))), "lane {id}");
+        }
+    }
 }

@@ -258,11 +258,11 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 /// [`Vst3Active::rebuild_midi_cc_mapping`](crate::Vst3Active)).
 ///
 /// **`param_changes` is reserved exactly while `mapping` is non-empty.** The
-/// reservation is the carried layout the host's chunk arrives in
-/// (`ParameterChanges::reserved_carried`, `carried_budget(queues, room)`: up
-/// to 16384 queues of a few points each and a shared pool of a block's chunk
-/// room and one more, about a megabyte at a large block; past it a point
-/// gives way, counted, and nothing grows), and `route` never touches
+/// reservation is the layout the host's chunk arrives in
+/// (`ParameterChanges::reserved`, `point_budget(queues, room)`: up to 16448
+/// queues of a few points each and a shared pool of a block's chunk room and
+/// one more, about a megabyte at a large block; past it a point gives way,
+/// counted, and nothing grows), and `route` never touches
 /// the scratch for an empty mapping, so a plugin with no CC mapping (most of
 /// them) holds none of it. `mapping` is private so that the only ways to
 /// change it, [`new`](Self::new) and [`set_mapping`](Self::set_mapping), both
@@ -272,25 +272,27 @@ pub(crate) struct CcRoute {
     mapping: MidiCcMapping,
     filtered_midi: RtMidiEvents,
     param_changes: ParameterChanges,
-    /// The parameter queues to reserve (the plugin's parameter count).
+    /// The parameter queues to reserve (the host's chunk's: the plugin's
+    /// parameter count and the spare ones).
     queues: usize,
     /// The chunk room the scratch is reserved for (the host input list's:
     /// `ParameterQueue::chunk_room` at the activated block size).
     room: usize,
-    /// Points earlier scratches could not hold (see
-    /// [`points_overflowed`](Self::points_overflowed)), kept across a
-    /// [`set_mapping`](Self::set_mapping) that replaces the scratch.
-    overflowed_before: u64,
+    /// Points the scratch's own count does not hold (see
+    /// [`points_overflowed`](Self::points_overflowed)): those of earlier
+    /// scratches, kept across a [`set_mapping`](Self::set_mapping) that replaces the
+    /// scratch, and the host's points the seed could not copy.
+    overflowed: u64,
 }
 
 impl CcRoute {
     /// Builds with `mapping` and empty scratch. The MIDI scratch is capped
     /// and never grows. When `mapping` is non-empty, `param_changes` is
-    /// reserved with `queues` parameter queues (the plugin's parameter
-    /// count) for a chunk room of `room` (the host input list's) in the
-    /// carried layout (`ParameterChanges::reserved_carried`: a floor of
-    /// `FLOOR_POINTS + 1` each and a shared pool of blocks of `room + 1`, as
-    /// the host's chunk arrives, carried values and all), and never grows:
+    /// reserved with `queues` parameter queues (the host's chunk's) for a
+    /// chunk room of `room` (the host input list's) in the layout
+    /// (`ParameterChanges::reserved`: a floor of `FLOOR_POINTS + 1` each and
+    /// a shared pool of blocks of `room + 1`, as the host's chunk arrives,
+    /// carried values and all), and never grows:
     /// past it a point gives way to its parameter's latest value, counted
     /// ([`points_overflowed`](Self::points_overflowed)); when it is empty,
     /// `param_changes` holds nothing until [`set_mapping`](Self::set_mapping)
@@ -302,7 +304,7 @@ impl CcRoute {
             param_changes: ParameterChanges::new(),
             queues,
             room,
-            overflowed_before: 0,
+            overflowed: 0,
         };
         route.set_mapping(mapping);
         route
@@ -315,7 +317,7 @@ impl CcRoute {
     /// reserved queue (dropped). Zero while the host's chunk and the
     /// mapped controllers stay within the reservation.
     pub(crate) fn points_overflowed(&self) -> u64 {
-        self.overflowed_before + self.param_changes.points_overflowed()
+        self.overflowed + self.param_changes.points_overflowed()
     }
 
     /// Installs `mapping`, reserving the param scratch when it is non-empty
@@ -327,13 +329,13 @@ impl CcRoute {
         let replaced = if mapping.is_empty() {
             Some(ParameterChanges::new())
         } else if self.mapping.is_empty() {
-            Some(ParameterChanges::reserved_carried(self.queues, self.room))
+            Some(ParameterChanges::reserved(self.queues, self.room))
         } else {
             None
         };
         if let Some(scratch) = replaced {
             let old = core::mem::replace(&mut self.param_changes, scratch);
-            self.overflowed_before += old.points_overflowed();
+            self.overflowed += old.points_overflowed();
         }
         self.mapping = mapping;
     }
@@ -369,18 +371,23 @@ impl CcRoute {
         self.filtered_midi.clear();
         self.param_changes.clear();
 
-        // Seed the merged param changes with the host's automation, queue
-        // by queue: the carried layout fits a floor queue carrying the
-        // bridge's carried value in its own room, so the pool's blocks go to
-        // the queues at full room wherever they are in the chunk.
+        // Seed the merged param changes with the host's automation, a
+        // queue opened for each of the host's (its addresses are distinct),
+        // so the copy is linear in the chunk. The layout fits a floor queue
+        // carrying the bridge's carried value in its own room, so the pool's
+        // blocks go to the queues at full room wherever they are in the
+        // chunk. A queue past the reservation is dropped, counted.
         if let Some(pc) = param_changes {
+            let changes = &mut self.param_changes;
             for queue in &pc.queues {
+                if !changes.open_queue(queue.param_id) {
+                    self.overflowed += queue.points.len() as u64;
+                    continue;
+                }
+                let i = changes.queues.len() - 1;
                 for point in &queue.points {
-                    let _ = self.param_changes.add_change(
-                        queue.param_id,
-                        point.sample_offset,
-                        point.value.get(),
-                    );
+                    let stored = changes.push_point(i, point.sample_offset, point.value.get());
+                    self.overflowed += u64::from(!stored);
                 }
             }
         }
@@ -735,13 +742,15 @@ mod tests {
 
         let mut route = CcRoute::new(MidiCcMapping::empty(), QUEUES, room);
         assert_eq!(route.param_changes.capacity(), 0, "no mapping, no queues");
-        assert_eq!(route.param_changes.point_capacity(), 0, "no spare queues");
+        assert_eq!(route.param_changes.point_storage(), 0, "no spare queues");
         assert!(route.route(&[], None).is_none());
 
         route.set_mapping(mod_wheel_mapping(500));
         assert_eq!(route.param_changes.capacity(), QUEUES);
-        // The carried layout: the chunk room and the carried value's point.
-        assert_eq!(route.param_changes.point_capacity(), room + 1);
+        assert_eq!(
+            route.param_changes.point_storage(),
+            ParameterChanges::point_budget(QUEUES, room)
+        );
 
         let events = [MidiEvent::cc(
             MidiGroup::FIRST,
@@ -878,11 +887,11 @@ mod tests {
     /// for the mapped parameter (which takes a spare queue), and nothing
     /// allocates.
     ///
-    /// Mutation (run): the scratch in the plain layout
-    /// (`ParameterChanges::reserved(queues, room + 1)`, a floor of
-    /// `FLOOR_POINTS`, as it was) → each floor queue's third point takes a
-    /// block, the pool is spent before the full queues, and their points
-    /// past the floor are counted (6 352 of them) → fails.
+    /// Mutation (run): the seed pushing into each queue's own room only
+    /// (`try_push` on the queue, no block borrowed) → the full queues'
+    /// points past their floor are counted → fails. (Reworded with the one
+    /// layout: the mutation was the scratch in the plain layout, which no
+    /// longer exists.)
     #[test]
     fn a_bridged_chunk_reaches_the_route_whole() {
         use tutti_midi_types::convert::midi1_cc_to_midi2;
@@ -936,6 +945,43 @@ mod tests {
                 (!events.is_empty()).then_some(1)
             );
         }
+    }
+
+    /// **The seed copies the host's chunk queue by queue, and counts what
+    /// it cannot hold.** A route reserved for two queues of a room of two
+    /// (three points each), seeded inside the no-alloc gate from a chunk of
+    /// three queues: the first two are copied, the first's fourth point
+    /// keeping its latest value (one counted), and the third queue, past
+    /// the reservation, is dropped with its two points counted.
+    ///
+    /// Mutations (run), each fails: the seed not counting a point past a
+    /// queue's room → the count is 2; not counting a queue past the
+    /// reservation → the count is 1. Not covered: the seed's cost, linear in
+    /// the chunk (through `add_change`, as it was, it scanned the open
+    /// queues for every point); nothing but time observes it.
+    #[test]
+    fn the_seed_copies_the_host_chunk_and_counts_what_it_cannot_hold() {
+        let mut host = ParameterChanges::reserved(3, 4);
+        for (id, points) in [(1u32, 4), (2, 3), (3, 2)] {
+            for k in 0..points {
+                assert!(host.add_change(ParamAddress::Opaque(id.into()), 10 * k, 0.5));
+            }
+        }
+        let mut route = CcRoute::new(mod_wheel_mapping(500), 2, 2);
+        assert_no_alloc::assert_no_alloc(|| {
+            let _ = route.route(&[], Some(&host)).expect("mapped");
+        });
+        let got: Vec<(u32, Vec<i32>)> = route
+            .param_changes
+            .queues
+            .iter()
+            .map(|q| {
+                let id = q.param_id.opaque().map_or(0, |id| id.get());
+                (id, q.points.iter().map(|p| p.sample_offset).collect())
+            })
+            .collect();
+        assert_eq!(got, [(1, vec![0, 10, 30]), (2, vec![0, 10, 20])]);
+        assert_eq!(route.points_overflowed(), 3);
     }
 
     /// **A queue with two sources ends on its latest value.** The host's

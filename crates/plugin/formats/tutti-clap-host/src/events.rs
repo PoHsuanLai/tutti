@@ -732,7 +732,7 @@ impl InputEventList {
     /// on top of the room for MIDI and note expressions), so a block carrying
     /// more never grows the list on the audio thread. Off-RT; call it at
     /// activation, with the points the host's chunk can arrive with:
-    /// [`ParameterChanges::carried_budget`](tutti_plugin_types::ParameterChanges::carried_budget)
+    /// [`ParameterChanges::point_budget`](tutti_plugin_types::ParameterChanges::point_budget)
     /// for the plugin's parameter count and the points a chunk can carry for
     /// one parameter
     /// ([`ParameterQueue::chunk_room`](tutti_plugin_types::ParameterQueue::chunk_room)).
@@ -2713,11 +2713,9 @@ mod tests {
 
     /// **A chunk at the pool budget reaches the plugin whole, time-sorted,
     /// without allocating; one point past it is counted.** 2 000 parameters
-    /// at a 512-frame block (a room of 21 with the carried value's one):
-    /// the input list is reserved at the chunk's pool budget
-    /// (`ParameterChanges::point_budget`; activation reserves more, for the
-    /// carried values: `ParameterChanges::carried_budget`), and the host's
-    /// pooled chunk, its
+    /// at a 512-frame block (a room of 20): the input list is reserved at the
+    /// chunk's pool budget (`ParameterChanges::point_budget`, as activation
+    /// reserves it), and the host's pooled chunk, its
     /// points arriving interleaved, is flattened and sorted inside the
     /// no-alloc gate. Every event is in time order, and each parameter's
     /// points are its queue's, in order. Then a set past the budget (the last
@@ -2736,7 +2734,7 @@ mod tests {
     #[test]
     fn a_chunk_at_the_pool_budget_is_handed_on_sorted_without_allocating() {
         const PARAMS: u32 = 2_000;
-        let room = ParameterQueue::chunk_room(512) + 1;
+        let room = ParameterQueue::chunk_room(512);
         let budget = ParameterChanges::point_budget(PARAMS as usize, room);
         let changes = pooled_chunk(PARAMS, room);
         // What the chunk carries: a moving parameter's floor sits idle while
@@ -2805,7 +2803,7 @@ mod tests {
     /// as activation reserves them for 2 000 parameters at 512 frames; the
     /// plugin pushes `POOLED_QUEUES` parameters at full room and every other
     /// one at its floor, interleaved frame by frame, inside the gate. Then
-    /// one more parameter pushes a third point: past the list's parameter
+    /// one more parameter pushes a point past its floor: past the list's parameter
     /// room it is kept as that parameter's latest, and with the queues' pool
     /// spent it replaces the queue's last point, counted once.
     ///
@@ -2824,6 +2822,7 @@ mod tests {
         output.reserve(16);
         output.set_param_room(budget, &ids);
         let mut changes = ParameterChanges::reserved(PARAMS as usize, room);
+        let (floor, _) = ParameterChanges::point_layout(PARAMS as usize, room);
         let push = |output: &mut OutputEventList, event: &ClapEvent| {
             let list = output.as_raw_mut();
             // SAFETY: `list` is `output`'s own vtable, live for the call, and
@@ -2835,8 +2834,8 @@ mod tests {
             for k in 0..room {
                 for id in 0..PARAMS {
                     let moving = (id as usize) < ParameterChanges::POOLED_QUEUES;
-                    let third = extra && id == PARAMS - 1 && k == ParameterChanges::FLOOR_POINTS;
-                    if k >= ParameterChanges::FLOOR_POINTS && !moving && !third {
+                    let third = extra && id == PARAMS - 1 && k == floor;
+                    if k >= floor && !moving && !third {
                         continue;
                     }
                     let e = ClapEvent::param_value(3 * k as u32, id, pooled_value(id, k));
@@ -2857,7 +2856,7 @@ mod tests {
             let n = if (id as usize) < ParameterChanges::POOLED_QUEUES {
                 room
             } else {
-                ParameterChanges::FLOOR_POINTS
+                floor
             };
             let want: Vec<(i32, f64)> = (0..n)
                 .map(|k| (3 * k as i32, pooled_value(id, k)))
@@ -2876,8 +2875,8 @@ mod tests {
         let last = changes
             .get_queue(ParamAddress::Opaque((PARAMS - 1).into()))
             .expect("queued");
-        assert_eq!(last.points.len(), ParameterChanges::FLOOR_POINTS);
-        let k = ParameterChanges::FLOOR_POINTS;
+        assert_eq!(last.points.len(), floor);
+        let k = floor;
         assert_eq!(
             last.points.last().map(|p| (p.sample_offset, p.value.get())),
             Some((3 * k as i32, pooled_value(PARAMS - 1, k))),

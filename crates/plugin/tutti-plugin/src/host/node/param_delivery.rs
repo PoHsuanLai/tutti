@@ -14,7 +14,7 @@
 //! The plugin's parameter list is read once, when the client is loaded
 //! (`PluginClient::new`, which blocks on the plugin-server anyway), and
 //! [`ParamDelivery::new`] sizes everything from it on the control thread:
-//! one slot per parameter, plus [`SPARE_SLOTS`] for addresses the list did
+//! one slot per parameter, plus [`ParameterChanges::SPARE_QUEUES`] for addresses the list did
 //! not name (a plugin that grows a parameter later, or a list the server
 //! could not give). A chunk's [`ParameterChanges`] has room for a queue per
 //! slot, so every parameter can move in the same chunk; this replaces the 16
@@ -109,10 +109,6 @@ use std::sync::{Arc, OnceLock};
 
 use super::param_automation_source::MAX_POINTS;
 use crate::protocol::{Normalized, ParamAddress, ParameterChanges, ParameterQueue};
-
-/// Slots beyond the plugin's parameter list, for addresses it did not name:
-/// learned on the audio thread, within the reserved capacity.
-pub(crate) const SPARE_SLOTS: usize = 64;
 
 /// A slot with no queue in the chunk being filled.
 const NO_QUEUE: u32 = u32::MAX;
@@ -298,14 +294,14 @@ impl std::fmt::Debug for ParamDelivery {
 }
 
 impl ParamDelivery {
-    /// Slots for `params` (the plugin's parameter list) and [`SPARE_SLOTS`]
+    /// Slots for `params` (the plugin's parameter list) and [`ParameterChanges::SPARE_QUEUES`]
     /// more, and a chunk with room for a queue in each. Control thread:
     /// allocates.
     pub(crate) fn new(
         params: impl IntoIterator<Item = ParamAddress>,
         counters: Arc<DeliveryCounters>,
     ) -> Self {
-        Self::with_spares(params, counters, SPARE_SLOTS)
+        Self::with_spares(params, counters, ParameterChanges::SPARE_QUEUES)
     }
 
     /// Slots for `params` only: an address the list does not name is
@@ -729,7 +725,7 @@ mod tests {
         let (mut d, counters) = delivery(2);
         let room = d.slots.capacity();
         d.begin();
-        for id in 1000..1000 + SPARE_SLOTS as u32 {
+        for id in 1000..1000 + ParameterChanges::SPARE_QUEUES as u32 {
             assert!(d.point(op(id), 0, 0.5), "spare slot for {id}");
         }
         assert!(!d.point(op(5000), 0, 0.5));
@@ -751,7 +747,7 @@ mod tests {
     /// **A closed list learns nothing**: an index the VST2 plugin did not
     /// declare is refused and counted dropped, while a declared one goes.
     ///
-    /// Mutation (run): `closed` built with `SPARE_SLOTS` spares, as `new`
+    /// Mutation (run): `closed` built with `ParameterChanges::SPARE_QUEUES` spares, as `new`
     /// is → the undeclared index is learned and staged, nothing dropped →
     /// fails.
     #[cfg(feature = "vst2")]
@@ -839,10 +835,10 @@ mod tests {
         assert_eq!(counters.snapshot().points_merged, 3);
     }
 
-    /// **The chunk's point storage is the carried pool budget, not
-    /// parameters × room**: a delivery for 2 000 parameters (and its 64
-    /// spare slots) prepared for 512- and 4096-frame chunks holds
-    /// `ParameterChanges::carried_budget` points (a floor of
+    /// **The chunk's point storage is the pool budget, not parameters ×
+    /// room**: a delivery for 2 000 parameters (and its 64 spare slots)
+    /// prepared for 512- and 4096-frame chunks holds
+    /// `ParameterChanges::point_budget` points (a floor of
     /// `FLOOR_POINTS + 1` a slot and a shared pool of `POOLED_QUEUES`
     /// blocks of `room + 1`, the extra point kept for the bridge's carried
     /// value), under a third of a full carried room per slot. (Reworded with
@@ -850,7 +846,7 @@ mod tests {
     /// and the carried value grew a queue on the bridge thread.)
     ///
     /// Mutation (run): `prepare` reserving the old layout (every slot a
-    /// full room: `ParameterChanges::point_layout` always `(points, 0)`) →
+    /// full room: `ParameterChanges::point_layout` always `(full, 0)`) →
     /// the storage is `slots × (room + 1)` → fails.
     #[test]
     fn the_chunk_holds_the_pool_budget_not_params_times_room() {
@@ -858,10 +854,10 @@ mod tests {
         for chunk in [512usize, 4096] {
             let room = d.prepare(chunk);
             assert_eq!(room, points_for(chunk));
-            let slots = 2_000 + SPARE_SLOTS;
+            let slots = 2_000 + ParameterChanges::SPARE_QUEUES;
             let budget = slots * (ParameterChanges::FLOOR_POINTS + 1)
                 + ParameterChanges::POOLED_QUEUES * (room + 1);
-            assert_eq!(ParameterChanges::carried_budget(slots, room), budget);
+            assert_eq!(ParameterChanges::point_budget(slots, room), budget);
             assert_eq!(d.changes.point_storage(), budget, "at {chunk}");
             assert!(3 * budget < slots * (room + 1), "at {chunk}");
         }
@@ -881,7 +877,7 @@ mod tests {
     /// queue's own room only, `has_room`) → the moving parameters merge
     /// past their floor; the merge not counted → `points_merged` is 0 after
     /// the overflow; the host's chunk built without its carry slot
-    /// (`reserved_carried`) → the floor queues take a third point, and the
+    /// (`reserved`) → the floor queues take a third point, and the
     /// moving parameters' per-chunk counts are off.
     #[test]
     fn up_to_the_pool_budget_nothing_merges_and_past_it_merges_counted() {

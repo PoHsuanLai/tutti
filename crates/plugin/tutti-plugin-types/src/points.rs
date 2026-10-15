@@ -14,14 +14,14 @@ use crate::ParameterPoint;
 /// It reads as the slice of the points it holds (`len`, `iter`, indexing,
 /// `sort_by_key` all go through [`Deref`](core::ops::Deref)). A point is
 /// added only within the capacity: [`try_push`](Self::try_push) and
-/// [`try_insert`](Self::try_insert) hand the point back when it is full,
-/// and [`push_or_replace_last`](Self::push_or_replace_last) is **the one
-/// policy** for a full buffer, which every producer that cannot drop a
+/// [`try_push_front`](Self::try_push_front) hand the point back when it is
+/// full, and [`push_or_replace_last`](Self::push_or_replace_last) is **the
+/// one policy** for a full buffer, which every producer that cannot drop a
 /// point uses: the buffer keeps its latest value.
 ///
 /// On the wire it is the sequence of its points (a length, then the points),
 /// byte for byte what a `Vec` of them is; the spare capacity is not on it.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PointBuf {
     /// The storage, every slot pre-filled; `..len` are the points.
     slots: Box<[ParameterPoint]>,
@@ -29,12 +29,6 @@ pub struct PointBuf {
 }
 
 impl PointBuf {
-    /// An empty buffer with no capacity. Does not allocate; every push on
-    /// it is refused.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// An empty buffer with room for exactly `capacity` points. Allocates;
     /// call it off the audio thread.
     pub fn with_capacity(capacity: usize) -> Self {
@@ -77,26 +71,16 @@ impl PointBuf {
         }
     }
 
-    /// Inserts `point` at `index`, shifting the points after it, or hands it
-    /// back when the buffer is full (or `index` is past the end).
-    pub fn try_insert(
-        &mut self,
-        index: usize,
-        point: ParameterPoint,
-    ) -> Result<(), ParameterPoint> {
-        if index > self.len || !self.has_room() {
+    /// Puts `point` ahead of every point, or hands it back when the buffer
+    /// is full.
+    pub fn try_push_front(&mut self, point: ParameterPoint) -> Result<(), ParameterPoint> {
+        if !self.has_room() {
             return Err(point);
         }
-        self.slots.copy_within(index..self.len, index + 1);
-        self.slots[index] = point;
+        self.slots.copy_within(..self.len, 1);
+        self.slots[0] = point;
         self.len += 1;
         Ok(())
-    }
-
-    /// Removes and returns the last point.
-    pub fn pop(&mut self) -> Option<ParameterPoint> {
-        self.len = self.len.checked_sub(1)?;
-        Some(self.slots[self.len])
     }
 
     /// Drops every point, keeping the capacity.
@@ -126,22 +110,20 @@ impl PointBuf {
     /// `sample_offset`, the last of them when several share it) when it is
     /// no earlier than that one, so the buffer ends on its latest value
     /// whatever order its points were added in; an earlier `point` is
-    /// dropped, the buffer already holding a later value. Returns whether
-    /// `point` was stored. Nothing is stored in an empty buffer.
-    pub fn replace_latest(&mut self, point: ParameterPoint) -> bool {
+    /// dropped, the buffer already holding a later value. Returns the index
+    /// `point` was stored at, or `None` when it was dropped (always, in an
+    /// empty buffer).
+    pub fn replace_latest(&mut self, point: ParameterPoint) -> Option<usize> {
         // `max_by_key` returns the last of equal maxima.
-        let latest = self
+        let (i, latest) = self
             .iter()
             .enumerate()
-            .max_by_key(|(_, p)| p.sample_offset)
-            .map(|(i, p)| (i, p.sample_offset));
-        match latest {
-            Some((i, offset)) if point.sample_offset >= offset => {
-                self.slots[i] = point;
-                true
-            }
-            _ => false,
+            .max_by_key(|(_, p)| p.sample_offset)?;
+        if point.sample_offset < latest.sample_offset {
+            return None;
         }
+        self.slots[i] = point;
+        Some(i)
     }
 }
 
@@ -168,21 +150,6 @@ impl<'a> IntoIterator for &'a PointBuf {
     }
 }
 
-impl<'a> IntoIterator for &'a mut PointBuf {
-    type Item = &'a mut ParameterPoint;
-    type IntoIter = core::slice::IterMut<'a, ParameterPoint>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_mut()
-    }
-}
-
-impl core::fmt::Debug for PointBuf {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_list().entries(self.iter()).finish()
-    }
-}
-
 /// The points as a sequence, exactly as a `Vec<ParameterPoint>` encodes
 /// them: the capacity past them is not on the wire.
 #[cfg(feature = "serde")]
@@ -202,10 +169,11 @@ impl<'de> serde::Deserialize<'de> for PointBuf {
     }
 }
 
-/// A pool of point buffers of one room, lent to the holders of smaller ones
-/// (by index) and given back all at once: how a set of parameter queues
-/// stores its points as the points a chunk carries rather than the
-/// parameter count ([`ParameterChanges::reserved`](crate::ParameterChanges::reserved)).
+/// A pool of point buffers of one room, lent to a fixed number of holders
+/// of smaller ones (by index) and given back all at once: how a set of
+/// parameter queues stores its points as the points a chunk carries rather
+/// than the parameter count
+/// ([`ParameterChanges::reserved`](crate::ParameterChanges::reserved)).
 ///
 /// [`lend`](Self::lend) swaps a block into a holder's buffer, the holder's
 /// points moved into it, and keeps the holder's own buffer;
@@ -217,44 +185,34 @@ pub struct PointPool {
     free: Vec<PointBuf>,
     /// Each holder of a block, by index, with the buffer it gets back.
     lent: Vec<(usize, PointBuf)>,
-    /// The points a block holds; 0 for a pool with no blocks.
+    /// Whether each holder, by index, holds a block.
+    holds: Vec<bool>,
+    /// The points a block holds.
     block_room: usize,
 }
 
 impl PointPool {
-    /// A pool of `blocks` blocks of `room` points each. Allocates; call it
-    /// off the audio thread.
-    pub fn new(blocks: usize, room: usize) -> Self {
-        let mut free = Vec::with_capacity(blocks);
-        free.extend((0..blocks).map(|_| PointBuf::with_capacity(room)));
+    /// A pool of `blocks` blocks of `room` points each, for holders
+    /// `0..holders`. Allocates; call it off the audio thread.
+    pub fn new(blocks: usize, room: usize, holders: usize) -> Self {
         Self {
-            free,
+            free: (0..blocks).map(|_| PointBuf::with_capacity(room)).collect(),
             lent: Vec::with_capacity(blocks),
-            block_room: if blocks > 0 { room } else { 0 },
+            holds: vec![false; holders],
+            block_room: room,
         }
-    }
-
-    /// The points a block holds, or 0 when the pool has none.
-    pub fn block_room(&self) -> usize {
-        self.block_room
-    }
-
-    /// The blocks not lent.
-    pub fn available(&self) -> usize {
-        self.free.len()
-    }
-
-    /// Whether holder `index` holds a block.
-    pub fn holds(&self, index: usize) -> bool {
-        self.lent.iter().any(|(i, _)| *i == index)
     }
 
     /// Lends holder `index` a block: `points`' contents move into it, and it
     /// takes `points`' place until [`give_back`](Self::give_back). `false`,
-    /// changing nothing, when the holder already holds one, the pool is
-    /// spent, or a block would not hold `points`. Allocation-free.
+    /// changing nothing, when the holder already holds one (or is not one of
+    /// the pool's), the pool is spent, or a block would not hold `points`.
+    /// Allocation-free.
     pub fn lend(&mut self, index: usize, points: &mut PointBuf) -> bool {
-        if self.holds(index) || points.len() > self.block_room {
+        let Some(holds) = self.holds.get_mut(index) else {
+            return false;
+        };
+        if *holds || points.len() > self.block_room {
             return false;
         }
         let Some(mut block) = self.free.pop() else {
@@ -265,6 +223,7 @@ impl PointPool {
             let _ = block.try_push(*p);
         }
         core::mem::swap(points, &mut block);
+        *holds = true;
         // One entry per block lent, reserved for them all.
         self.lent.push((index, block));
         true
@@ -276,6 +235,7 @@ impl PointPool {
     /// block. Each block comes back emptied. Allocation-free.
     pub fn give_back(&mut self, mut swap: impl FnMut(usize, &mut PointBuf) -> bool) {
         for (i, mut own) in self.lent.drain(..) {
+            self.holds[i] = false;
             if swap(i, &mut own) {
                 own.clear();
                 self.free.push(own);
@@ -336,7 +296,7 @@ mod tests {
         let storage = buf.as_ptr();
         let refused = assert_no_alloc::assert_no_alloc(|| {
             let refused = buf.try_push(at(9, 0.75));
-            let inserted = buf.try_insert(0, at(0, 0.5));
+            let inserted = buf.try_push_front(at(0, 0.5));
             (refused, inserted)
         });
         assert_eq!(refused.0.map_err(|p| p.sample_offset), Err(9));
@@ -374,7 +334,7 @@ mod tests {
         assert_eq!(buf[1].value.get(), 0.125);
         assert_eq!(buf.capacity(), 3);
         // An empty buffer of no room stores nothing.
-        let mut none = PointBuf::new();
+        let mut none = PointBuf::default();
         assert!(!none.push_or_replace_last(at(0, 0.5)));
         assert!(none.is_empty());
     }
@@ -383,7 +343,7 @@ mod tests {
     /// refilled block after block is the same allocation.
     ///
     /// Mutation (run): `clear` rebuilding the storage (`*self =
-    /// Self::new()`) → the capacity is 0 → fails.
+    /// Self::default()`) → the capacity is 0 → fails.
     #[test]
     fn clear_keeps_the_capacity() {
         let mut buf = PointBuf::with_capacity(4);
@@ -398,21 +358,21 @@ mod tests {
         }
         assert!(buf.try_push(at(0, 0.5)).is_ok());
         assert_eq!(buf.as_ptr(), storage);
-        assert_eq!(buf.pop().map(|p| p.sample_offset), Some(0));
-        assert!(buf.pop().is_none());
+        assert_eq!(points(&buf), vec![(0, 0.5)]);
     }
 
-    /// `try_insert` shifts the points after the index, as `Vec::insert`.
+    /// **`try_push_front` puts the point ahead of every point**, shifting
+    /// them, within the capacity.
+    ///
+    /// Mutation (run): `try_push_front` writing slot 0 without shifting
+    /// (no `copy_within`) → the frame-10 point is overwritten → fails.
     #[test]
-    fn try_insert_shifts_the_points_after_it() {
-        let mut buf = PointBuf::with_capacity(4);
+    fn try_push_front_shifts_the_points_after_it() {
+        let mut buf = PointBuf::with_capacity(3);
         assert!(buf.try_push(at(10, 0.5)).is_ok());
         assert!(buf.try_push(at(20, 0.75)).is_ok());
-        assert!(buf.try_insert(0, at(0, 0.25)).is_ok());
-        assert!(buf.try_insert(3, at(30, 1.0)).is_ok());
-        assert_eq!(
-            points(&buf),
-            vec![(0, 0.25), (10, 0.5), (20, 0.75), (30, 1.0)]
-        );
+        assert!(buf.try_push_front(at(0, 0.25)).is_ok());
+        assert_eq!(points(&buf), vec![(0, 0.25), (10, 0.5), (20, 0.75)]);
+        assert!(buf.try_push_front(at(0, 1.0)).is_err());
     }
 }

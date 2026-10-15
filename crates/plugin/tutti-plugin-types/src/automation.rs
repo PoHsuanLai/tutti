@@ -238,8 +238,7 @@ impl<'de> serde::Deserialize<'de> for ParameterQueue {
 /// The per-block parameter automation passed into or returned from a plugin's
 /// process call, as one [`ParameterQueue`] per parameter.
 ///
-/// **Nothing on it grows.** Every way of building one states its room: a set
-/// built [`reserved`](Self::reserved) (or [`reserved_carried`](Self::reserved_carried),
+/// **Nothing on it grows.** A set built [`reserved`](Self::reserved) (or
 /// [`reserved_bridged`](Self::reserved_bridged)) off the audio thread holds a
 /// queue for every parameter and the point storage they share, and is
 /// [`clear`](Self::clear)ed between blocks, which keeps all of it. A set built
@@ -262,23 +261,25 @@ impl<'de> serde::Deserialize<'de> for ParameterQueue {
 /// none.
 ///
 /// **The point pool.** The points a set can carry follow the points a chunk
-/// carries, not the parameter count: each spare queue owns only
-/// [`FLOOR_POINTS`](Self::FLOOR_POINTS) points, and the set keeps a shared
-/// [`PointPool`] of [`POOLED_QUEUES`](Self::POOLED_QUEUES) blocks, each the
-/// full per-queue room. A queue whose own points are spent borrows a block
-/// ([`make_room`](Self::make_room)), its points moved into it, and
-/// [`clear`](Self::clear) gives every block back. So every parameter can move
-/// in every chunk, and any `POOLED_QUEUES` of them can carry their full room
-/// at once. A set for which the pool would not at least halve the storage
-/// gives every queue the full room instead ([`point_layout`](Self::point_layout)).
+/// carries, not the parameter count. For a chunk room of `room` points each
+/// spare queue owns [`FLOOR_POINTS`](Self::FLOOR_POINTS) `+ 1` points, and
+/// the set keeps a shared [`PointPool`] of
+/// [`POOLED_QUEUES`](Self::POOLED_QUEUES) blocks of `room + 1`. A queue whose
+/// own points are spent borrows a block ([`make_room`](Self::make_room)), its
+/// points moved into it, and [`clear`](Self::clear) gives every block back.
+/// So every parameter can move in every chunk, and any `POOLED_QUEUES` of
+/// them can carry their full room at once. A set for which the pool would
+/// not at least halve the storage gives every queue `room + 1` instead
+/// ([`point_layout`](Self::point_layout)).
 ///
-/// **The carried value.** The IPC bridge prepends a skipped block's carried
-/// value to a queue ([`prepend_carried`](Self::prepend_carried)). A set built
-/// [`reserved_bridged`](Self::reserved_bridged) (the host's chunk) keeps a
-/// point of every queue's storage and of every block for it, so it takes a
-/// real slot; a set built [`reserved_carried`](Self::reserved_carried) (what
-/// receives a bridged chunk) has that point in every queue's room.
-/// [`carried_budget`](Self::carried_budget) is what such a set holds.
+/// **The carried value.** The one point past `room` in every queue's own
+/// storage and in every block is for the value the IPC bridge prepends from a
+/// skipped block ([`prepend_carried`](Self::prepend_carried)). A set built
+/// [`reserved_bridged`](Self::reserved_bridged) (the host's chunk) keeps it
+/// back from its producers, so the carried value always takes a real slot; a
+/// set built [`reserved`](Self::reserved) (what receives a bridged chunk,
+/// and every other set) lets its producers use it, so it holds a bridged
+/// chunk whole.
 ///
 /// Every reader (the wire, CLAP's time-sorted list, VST3's per-parameter
 /// queues) sees the same per-parameter, time-ordered points as before. On the
@@ -308,11 +309,11 @@ pub struct ParameterChanges {
 }
 
 impl ParameterChanges {
-    /// The points every queue of a [`reserved`](Self::reserved) set owns,
-    /// whether or not it draws on the pool: a parameter can always take a
-    /// step (or a value owed from an earlier chunk and a new one) in any
-    /// chunk, so every listed parameter can move in every chunk (design doc
-    /// 014 §9, requirement 1).
+    /// The points every queue of a [`reserved`](Self::reserved) set can take
+    /// of its own, whether or not it draws on the pool, besides the carried
+    /// value's: a parameter can always take a step (or a value owed from an
+    /// earlier chunk and a new one) in any chunk, so every listed parameter
+    /// can move in every chunk (design doc 014 §9, requirement 1).
     pub const FLOOR_POINTS: usize = 2;
 
     /// The queues of a [`reserved`](Self::reserved) set that can carry their
@@ -324,53 +325,47 @@ impl ParameterChanges {
     /// budget, and nothing on the wire carries it.
     pub const POOLED_QUEUES: usize = 256;
 
-    /// How a set for `queues` queues of `points` points stores them: each
-    /// queue's own room, and the number of blocks (each of `points`) in the
-    /// shared pool. Pooled only when that holds at most half the points of
-    /// every queue at full room: just past the break-even the pool would
-    /// save little while letting only `POOLED_QUEUES` queues reach their
-    /// full room. Otherwise `(points, 0)`, every queue at full room. A
-    /// format host that keeps its own per-parameter queues (VST3's) lays
-    /// them out the same way.
-    pub fn point_layout(queues: usize, points: usize) -> (usize, usize) {
-        let floor = Self::FLOOR_POINTS.min(points);
+    /// The queues a host's chunk holds past the plugin's parameter list,
+    /// for addresses the list did not name (the plugin node learns them on
+    /// the audio thread, within this room). A plugin-side reservation for
+    /// the chunk adds them to the parameter count.
+    pub const SPARE_QUEUES: usize = 64;
+
+    /// How a set for `queues` queues of a chunk room of `room` points stores
+    /// them: each queue's own storage, and the number of blocks (each of
+    /// `room + 1`) in the shared pool. Pooled, at
+    /// [`FLOOR_POINTS`](Self::FLOOR_POINTS) `+ 1` a queue, only when that
+    /// holds at most half the points of every queue at `room + 1`: just past
+    /// the break-even the pool would save little while letting only
+    /// `POOLED_QUEUES` queues reach their full room. Otherwise
+    /// `(room + 1, 0)`. A format host that keeps its own per-parameter
+    /// queues (VST3's) lays them out the same way.
+    pub fn point_layout(queues: usize, room: usize) -> (usize, usize) {
+        let full = room.saturating_add(1);
+        let floor = (Self::FLOOR_POINTS + 1).min(full);
         let blocks = queues.min(Self::POOLED_QUEUES);
         let pooled = queues
             .saturating_mul(floor)
-            .saturating_add(blocks.saturating_mul(points));
-        if pooled.saturating_mul(2) <= queues.saturating_mul(points) {
+            .saturating_add(blocks.saturating_mul(full));
+        if pooled.saturating_mul(2) <= queues.saturating_mul(full) {
             (floor, blocks)
         } else {
-            (points, 0)
+            (full, 0)
         }
     }
 
     /// The point storage [`reserved`](Self::reserved) gives a set for
-    /// `queues` queues of `points` points each: `queues × FLOOR_POINTS +
-    /// POOLED_QUEUES × points`, or `queues × points` when that is less (few
-    /// queues). What a format host that hands a chunk's points on reserves
-    /// for them too, so it holds what the set can carry.
-    pub fn point_budget(queues: usize, points: usize) -> usize {
-        let (floor, blocks) = Self::point_layout(queues, points);
+    /// `queues` queues of a chunk room of `room`, in the
+    /// [`point_layout`](Self::point_layout): `queues × (FLOOR_POINTS + 1) +
+    /// POOLED_QUEUES × (room + 1)`, or `queues × (room + 1)` when that is
+    /// less (few queues). What the host's chunk holds, and what a format
+    /// host that hands a chunk's points on reserves for them, so a chunk the
+    /// host's pool bounded reaches the plugin whole.
+    pub fn point_budget(queues: usize, room: usize) -> usize {
+        let (floor, blocks) = Self::point_layout(queues, room);
         queues
             .saturating_mul(floor)
-            .saturating_add(blocks.saturating_mul(points))
-    }
-
-    /// The point storage of the **carried layout** for `queues` queues of
-    /// `points` points ([`reserved_carried`](Self::reserved_carried),
-    /// [`reserved_bridged`](Self::reserved_bridged)): the
-    /// [`point_layout`](Self::point_layout) with one more point in every
-    /// queue's own room and in every block, for the value a skipped block
-    /// carries, which the bridge prepends to any queue (a floor queue's own
-    /// points, or a full block, and that one more). What the host's chunk
-    /// holds, and what the plugin-server's format hosts reserve for an input
-    /// chunk, so a chunk the host's pool bounded reaches the plugin whole.
-    pub fn carried_budget(queues: usize, points: usize) -> usize {
-        let (_, blocks) = Self::point_layout(queues, points);
-        Self::point_budget(queues, points)
-            .saturating_add(queues)
-            .saturating_add(blocks)
+            .saturating_add(blocks.saturating_mul(room.saturating_add(1)))
     }
 
     /// Points this set could not store as new points since it was built:
@@ -378,8 +373,8 @@ impl ParameterChanges {
     /// the pool spent (the queue kept its latest value) or for an address
     /// past every queue (dropped); through
     /// [`prepend_carried`](Self::prepend_carried), a carried value with no
-    /// slot. Not on the wire, and [`clear`](Self::clear) keeps it. A producer
-    /// that writes through [`push_point`](Self::push_point) or
+    /// slot (dropped). Not on the wire, and [`clear`](Self::clear) keeps it.
+    /// A producer that writes through [`push_point`](Self::push_point) or
     /// [`make_room`](Self::make_room) counts with its own counter.
     pub fn points_overflowed(&self) -> u64 {
         self.overflowed
@@ -393,55 +388,15 @@ impl ParameterChanges {
         Self::default()
     }
 
-    /// Builds an empty set with room for `queues` parameter queues of up to
-    /// `points` points each (a queue's logical room), in the
+    /// Builds an empty set with room for `queues` parameter queues for a
+    /// chunk room of `room` points, in the
     /// [`point_layout`](Self::point_layout): every queue and the shared point
     /// pool are built here ([`point_budget`](Self::point_budget)), so
     /// [`open_queue`](Self::open_queue), [`make_room`](Self::make_room) and
-    /// the pushes after it never allocate. Allocates; call it off the audio
-    /// thread.
-    pub fn reserved(queues: usize, points: usize) -> Self {
-        let (floor, blocks) = Self::point_layout(queues, points);
-        Self::laid_out(queues, floor, blocks, points)
-    }
-
-    /// [`reserved`](Self::reserved) in the **carried layout**: one more point
-    /// in every queue's own room and in every block
-    /// ([`carried_budget`](Self::carried_budget)), every one of them usable.
-    /// What receives a chunk the IPC bridge may have prepended a carried
-    /// value to (VST3's `IMidiMapping` route, which copies the chunk queue by
-    /// queue), so a floor queue carrying that value fits its own room and the
-    /// blocks go to the queues at full room, wherever they are in the list.
-    /// Allocates; call it off the audio thread.
-    pub fn reserved_carried(queues: usize, points: usize) -> Self {
-        let (floor, blocks) = Self::point_layout(queues, points);
-        let points = points.saturating_add(1);
-        if blocks == 0 {
-            Self::laid_out(queues, points, 0, points)
-        } else {
-            Self::laid_out(queues, floor + 1, blocks, points)
-        }
-    }
-
-    /// The host's chunk: the carried layout
-    /// ([`reserved_carried`](Self::reserved_carried)), with the extra point
-    /// of every queue and every block kept for the bridge's
-    /// [`prepend_carried`](Self::prepend_carried). Its producers
-    /// ([`make_room`](Self::make_room), [`push_point`](Self::push_point),
-    /// [`add_change`](Self::add_change)) stop at the room
-    /// [`reserved`](Self::reserved) gives, so the carried value always takes
-    /// a real slot and nothing grows. Allocates; call it off the audio
-    /// thread.
-    pub fn reserved_bridged(queues: usize, points: usize) -> Self {
-        Self {
-            carry_slot: 1,
-            ..Self::reserved_carried(queues, points)
-        }
-    }
-
-    /// `queues` spare queues of `floor` points and a pool of `blocks` blocks
-    /// of `block` points.
-    fn laid_out(queues: usize, floor: usize, blocks: usize, block: usize) -> Self {
+    /// the pushes after it never allocate. A queue can reach `room + 1`
+    /// points. Allocates; call it off the audio thread.
+    pub fn reserved(queues: usize, room: usize) -> Self {
+        let (floor, blocks) = Self::point_layout(queues, room);
         // A placeholder address: `open_queue` readdresses each queue.
         let placeholder = ParamAddress::Index(0);
         Self {
@@ -449,9 +404,23 @@ impl ParameterChanges {
             spare: (0..queues)
                 .map(|_| ParameterQueue::with_capacity(placeholder, floor))
                 .collect(),
-            pool: PointPool::new(blocks, block),
+            pool: PointPool::new(blocks, room.saturating_add(1), queues),
             carry_slot: 0,
             overflowed: 0,
+        }
+    }
+
+    /// The host's chunk: [`reserved`](Self::reserved), with the point past
+    /// `room` of every queue and every block kept for the bridge's
+    /// [`prepend_carried`](Self::prepend_carried). Its producers
+    /// ([`make_room`](Self::make_room), [`push_point`](Self::push_point),
+    /// [`add_change`](Self::add_change)) stop at `room`, so the carried value
+    /// always takes a real slot and nothing grows. Allocates; call it off
+    /// the audio thread.
+    pub fn reserved_bridged(queues: usize, room: usize) -> Self {
+        Self {
+            carry_slot: 1,
+            ..Self::reserved(queues, room)
         }
     }
 
@@ -469,10 +438,8 @@ impl ParameterChanges {
         let Some(q) = self.queues.get_mut(queue) else {
             return false;
         };
-        if q.points.len() + self.carry_slot < q.points.capacity() {
-            return true;
-        }
-        self.pool.lend(queue, &mut q.points)
+        q.points.len() + self.carry_slot < q.points.capacity()
+            || self.pool.lend(queue, &mut q.points)
     }
 
     /// Adds a point to `self.queues[queue]` within the set's room
@@ -497,74 +464,37 @@ impl ParameterChanges {
     }
 
     /// Puts `carried` (a skipped block's last value for this parameter, on
-    /// frame 0) ahead of `self.queues[queue]`'s points: in the slot a set
-    /// built [`reserved_bridged`](Self::reserved_bridged) kept for it, or one
-    /// the queue has spare, or after borrowing a block. With none of those
-    /// (a set built otherwise, full) the one full-queue policy applies: the
-    /// queue's own points are later, so it keeps them and the carried value
-    /// is dropped, counted in [`points_overflowed`](Self::points_overflowed)
+    /// frame 0) ahead of `self.queues[queue]`'s points, in the slot a set
+    /// built [`reserved_bridged`](Self::reserved_bridged) kept for it. With
+    /// no slot (a set built otherwise, full), or an index past the queues, it
+    /// is dropped: the queue's own points are later, so its latest value is
+    /// already there. Counted in [`points_overflowed`](Self::points_overflowed)
     /// and `false` returned. Allocation-free.
     pub fn prepend_carried(&mut self, queue: usize, carried: ParameterPoint) -> bool {
-        let Some(q) = self.queues.get_mut(queue) else {
-            self.overflowed += 1;
-            return false;
-        };
-        if !q.points.has_room() {
-            let _ = self.pool.lend(queue, &mut q.points);
-        }
-        match q.points.try_insert(0, carried) {
-            Ok(()) => true,
-            Err(carried) => {
-                q.points.replace_latest(carried);
-                self.overflowed += 1;
-                false
-            }
-        }
+        let stored = self
+            .queues
+            .get_mut(queue)
+            .is_some_and(|q| q.points.try_push_front(carried).is_ok());
+        self.overflowed += u64::from(!stored);
+        stored
     }
 
     /// Opens an empty queue for `param_id` at the end of `queues`: a spare
     /// one when there is one (with its reserved point room), otherwise one
-    /// with no point room. Returns `false`, opening nothing, when `queues`
-    /// has no room left ([`has_room`](Self::has_room)). Allocation-free.
+    /// with no point room (which does not allocate). Returns `false`,
+    /// opening nothing, when `queues` has no room left
+    /// ([`has_room`](Self::has_room)). Allocation-free.
     pub fn open_queue(&mut self, param_id: ParamAddress) -> bool {
         if !self.has_room() {
             return false;
         }
-        let queue = self.take_queue(param_id);
+        let mut queue = self
+            .spare
+            .pop()
+            .unwrap_or_else(|| ParameterQueue::with_capacity(param_id, 0));
+        queue.param_id = param_id;
         self.queues.push(queue);
         true
-    }
-
-    /// An empty queue for `param_id`: a spare one (with its reserved point
-    /// room) when there is one, otherwise one with no point room (which
-    /// does not allocate).
-    fn take_queue(&mut self, param_id: ParamAddress) -> ParameterQueue {
-        match self.spare.pop() {
-            Some(mut q) => {
-                q.param_id = param_id;
-                q
-            }
-            None => ParameterQueue::with_capacity(param_id, 0),
-        }
-    }
-
-    /// The points each queue [`open_queue`](Self::open_queue) hands out can
-    /// reach through [`make_room`](Self::make_room) while the pool has a
-    /// block left: the smallest room among the spares, or none when there
-    /// are no spares. For a set built
-    /// [`reserved_bridged`](Self::reserved_bridged), without the carry slot.
-    pub fn point_capacity(&self) -> usize {
-        let block = if self.pool.available() == 0 {
-            0
-        } else {
-            self.pool.block_room()
-        };
-        self.spare
-            .iter()
-            .map(|q| q.points.capacity().max(block))
-            .min()
-            .unwrap_or(0)
-            .saturating_sub(self.carry_slot)
     }
 
     /// Every point this set has storage for, in its queues, its spares and
@@ -621,12 +551,9 @@ impl ParameterChanges {
                 return false;
             }
         };
-        if self.push_point(i, sample_offset, value) {
-            true
-        } else {
-            self.overflowed += 1;
-            false
-        }
+        let stored = self.push_point(i, sample_offset, value);
+        self.overflowed += u64::from(!stored);
+        stored
     }
 
     /// Pushes a prebuilt queue, returning `self` for chaining. Off the audio
@@ -655,18 +582,11 @@ impl ParameterChanges {
     /// Empties the set, keeping the reserved storage for reuse across
     /// blocks: each pool block goes back from the queue that borrowed it (by
     /// index; the queue gets its own storage back), and each queue goes back
-    /// to the spares, emptied with its point storage kept, while the spares
-    /// have room for it. Allocation-free, and frees nothing for a set built
-    /// [`reserved`](Self::reserved) whose queues all came from
-    /// [`open_queue`](Self::open_queue).
-    ///
-    /// **The spares keep the largest queues.** When they are full (a queue
-    /// was pushed past them, with whatever room it had), each further queue
-    /// replaces the spare with the least point room if it has more, and the
-    /// smaller one is dropped. So a set that held one unreserved queue among
-    /// its reserved ones keeps its reserved point room
-    /// ([`point_capacity`](Self::point_capacity)), whatever order the
-    /// queues were in.
+    /// to the spares, emptied with its point storage kept. Allocation-free,
+    /// and frees nothing for a set built [`reserved`](Self::reserved) whose
+    /// queues all came from [`open_queue`](Self::open_queue). Queues pushed
+    /// past the spares' room ([`add_queue`](Self::add_queue), off the audio
+    /// thread) are dropped first, so the spares keep the reserved queues.
     pub fn clear(&mut self) {
         // From exactly the queues that borrowed them, by index, each swapped
         // for its own storage, so the pool never holds more blocks than it was
@@ -680,18 +600,11 @@ impl ParameterChanges {
             }
             None => false,
         });
-        while let Some(mut queue) = self.queues.pop() {
+        self.queues
+            .truncate(self.spare.capacity() - self.spare.len());
+        for mut queue in self.queues.drain(..) {
             queue.points.clear();
-            if self.spare.len() < self.spare.capacity() {
-                self.spare.push(queue);
-                continue;
-            }
-            let smallest = self.spare.iter_mut().min_by_key(|q| q.points.capacity());
-            if let Some(smallest) = smallest {
-                if smallest.points.capacity() < queue.points.capacity() {
-                    core::mem::swap(smallest, &mut queue);
-                }
-            }
+            self.spare.push(queue);
         }
     }
 
@@ -902,7 +815,7 @@ mod serde_tests {
         }
         let mut changes = ParameterChanges::reserved(1_000, 40);
         assert!(
-            changes.pool.available() > 0,
+            ParameterChanges::point_layout(1_000, 40).1 > 0,
             "1000 queues of 40 points are pooled"
         );
         // Interleaved: frame by frame, every parameter, as a producer
@@ -952,7 +865,7 @@ mod reserved_tests {
     #[test]
     fn a_reserved_set_keeps_its_point_storage_across_blocks() {
         let mut changes = ParameterChanges::reserved(3, 40);
-        assert_eq!(changes.point_capacity(), 40);
+        assert!(changes.spare.iter().all(|q| q.points.capacity() == 41));
         let mut first = Vec::new();
         for block in 0..3 {
             for id in 0..3i32 {
@@ -960,7 +873,7 @@ mod reserved_tests {
                 let q = changes.queues.last_mut().expect("opened");
                 assert_eq!(q.param_id, ParamAddress::Index(id));
                 assert!(q.is_empty(), "a reused queue starts empty");
-                for k in 0..40 {
+                for k in 0..41 {
                     assert!(q.has_room(), "block {block} queue {id} point {k}");
                     q.add_point(k, 0.5);
                 }
@@ -994,8 +907,9 @@ mod reserved_tests {
     /// place and a reserved queue was dropped, and every later chunk had a
     /// queue with no room among its 40-point ones.
     ///
-    /// Mutation (run): `clear` without the swap (a queue past full spares is
-    /// dropped, the old behaviour) → `point_capacity()` is 0 → fails.
+    /// Mutation (run): `clear` without its `truncate` (every queue pushed
+    /// back to the spares, the unreserved one last, so opened first) → the
+    /// first queue opened has no room → fails.
     #[test]
     fn clear_keeps_the_reserved_queues_over_an_unreserved_one() {
         let mut changes = ParameterChanges::reserved(4, 40);
@@ -1005,14 +919,14 @@ mod reserved_tests {
             .queues
             .push(ParameterQueue::with_capacity(ParamAddress::Index(2), 0));
         changes.clear();
-        assert_eq!(changes.point_capacity(), 40);
+        assert!(changes.spare.iter().all(|q| q.points.capacity() == 41));
         for id in 0..4 {
             assert!(changes.open_queue(ParamAddress::Index(id)));
             assert!(
                 changes
                     .queues
                     .last()
-                    .is_some_and(|q| q.points.capacity() >= 40),
+                    .is_some_and(|q| q.points.capacity() >= 41),
                 "queue {id} has the reserved room"
             );
         }
@@ -1038,7 +952,7 @@ mod reserved_tests {
             }
             assert_eq!(changes.queues.len(), 2);
             assert!(
-                changes.queues.iter().all(|q| q.points.capacity() == 16),
+                changes.queues.iter().all(|q| q.points.capacity() == 17),
                 "block {block}: each queue is a reserved one"
             );
             let mut ptrs: Vec<*const ParameterPoint> =
@@ -1060,43 +974,50 @@ mod pool_tests {
 
     /// **A reserved set's point storage is its budget, not parameters ×
     /// room**: for 2 000 and 16 384 parameters at 512- and 4096-frame chunks,
-    /// `queues × FLOOR_POINTS + POOLED_QUEUES × room`, under a quarter of
-    /// every queue at full room. And a set for few queues gives each the full
-    /// room, as it did before the pool, as does one where the pool would
-    /// save less than half (300 queues of 40 points: 10 840 pooled against
-    /// 12 000), while one where it saves more is pooled (1 000 queues of 40).
+    /// `queues × (FLOOR_POINTS + 1) + POOLED_QUEUES × (room + 1)` (the
+    /// carried layout: one point a queue and a block past the room), under a
+    /// third of every queue at the room. And a set for few queues gives each
+    /// `room + 1`, as does one where the pool would save less than half (300
+    /// queues of 40 points: 11 396 pooled against 12 300), while one where
+    /// it saves more is pooled (1 000 queues of 40). (Reworded with the one
+    /// layout: the plain layout's floor was `FLOOR_POINTS` and its blocks
+    /// `room`, under a quarter.)
     ///
-    /// Mutations (run), each fails: `point_layout` always `(points, 0)`
+    /// Mutations (run), each fails: `point_layout` always `(full, 0)`
     /// (every queue at full room, the old layout) → the storage is `queues ×
-    /// room`; `point_layout` pooling at any saving (`pooled < full`, as it
-    /// first did) → 300 queues of 40 are pooled.
+    /// (room + 1)`; `point_layout` pooling at any saving (`pooled < full`, as
+    /// it first did) → 300 queues of 40 are pooled.
     #[test]
     fn a_reserved_set_holds_its_budget_not_params_times_room() {
         for params in [2_000usize, 16_384] {
             for chunk in [512usize, 4096] {
                 let room = ParameterQueue::chunk_room(chunk);
                 let changes = ParameterChanges::reserved(params, room);
-                let budget = params * ParameterChanges::FLOOR_POINTS
-                    + ParameterChanges::POOLED_QUEUES * room;
+                let budget = params * (ParameterChanges::FLOOR_POINTS + 1)
+                    + ParameterChanges::POOLED_QUEUES * (room + 1);
                 assert_eq!(ParameterChanges::point_budget(params, room), budget);
                 assert_eq!(changes.point_storage(), budget, "{params} at {chunk}");
                 assert!(
-                    4 * changes.point_storage() < params * room,
+                    3 * changes.point_storage() < params * room,
                     "{params} at {chunk}: {} points",
                     changes.point_storage()
                 );
-                assert_eq!(changes.point_capacity(), room);
+                assert!(changes
+                    .pool
+                    .free_blocks()
+                    .iter()
+                    .all(|b| b.capacity() == room + 1));
             }
         }
         let few = ParameterChanges::reserved(10, 40);
-        assert_eq!(few.point_storage(), 400);
-        assert_eq!(ParameterChanges::point_budget(10, 40), 400);
-        assert_eq!(ParameterChanges::point_layout(300, 40), (40, 0));
-        assert_eq!(ParameterChanges::reserved(300, 40).point_storage(), 12_000);
+        assert_eq!(few.point_storage(), 410);
+        assert_eq!(ParameterChanges::point_budget(10, 40), 410);
+        assert_eq!(ParameterChanges::point_layout(300, 40), (41, 0));
+        assert_eq!(ParameterChanges::reserved(300, 40).point_storage(), 12_300);
         assert_eq!(
             ParameterChanges::point_layout(1_000, 40),
             (
-                ParameterChanges::FLOOR_POINTS,
+                ParameterChanges::FLOOR_POINTS + 1,
                 ParameterChanges::POOLED_QUEUES
             )
         );
@@ -1117,6 +1038,7 @@ mod pool_tests {
         const QUEUES: usize = 1_000;
         const ROOM: usize = 40;
         let mut changes = ParameterChanges::reserved(QUEUES, ROOM);
+        let (floor, _) = ParameterChanges::point_layout(QUEUES, ROOM);
         let storage = changes.point_storage();
         let mut first: Vec<*const ParameterPoint> = Vec::new();
         for block in 0..3 {
@@ -1125,7 +1047,7 @@ mod pool_tests {
             }
             // Every queue takes its floor.
             for i in 0..QUEUES {
-                for k in 0..ParameterChanges::FLOOR_POINTS {
+                for k in 0..floor {
                     assert!(changes.make_room(i), "block {block} floor {i}");
                     changes.queues[i].add_point(k as i32, 0.5);
                 }
@@ -1135,7 +1057,7 @@ mod pool_tests {
             let moving = block * ParameterChanges::POOLED_QUEUES
                 ..(block + 1) * ParameterChanges::POOLED_QUEUES;
             for i in moving.clone() {
-                for k in ParameterChanges::FLOOR_POINTS..ROOM {
+                for k in floor..=ROOM {
                     assert!(changes.make_room(i), "block {block} queue {i} point {k}");
                     changes.queues[i].add_point(k as i32, 0.5);
                 }
@@ -1179,10 +1101,11 @@ mod pool_tests {
         const QUEUES: usize = 1_000;
         const ROOM: usize = 20;
         let pooled = ParameterChanges::POOLED_QUEUES;
+        let (floor, _) = ParameterChanges::point_layout(QUEUES, ROOM);
         let fill = |changes: &mut ParameterChanges, moving: core::ops::Range<usize>| {
             for k in 0..ROOM {
                 for id in 0..QUEUES {
-                    if k < ParameterChanges::FLOOR_POINTS || moving.contains(&id) {
+                    if k < floor || moving.contains(&id) {
                         assert!(changes.add_change(ParamAddress::Index(id as i32), k as i32, 0.5));
                     }
                 }
@@ -1204,7 +1127,7 @@ mod pool_tests {
         let past = ParamAddress::Index((2 * pooled) as i32);
         assert!(!changes.add_change(past, 7, 0.875), "the pool is spent");
         let q = changes.get_queue(past).expect("queued");
-        assert_eq!(q.points.len(), ParameterChanges::FLOOR_POINTS);
+        assert_eq!(q.points.len(), floor);
         assert_eq!(
             q.points.last().map(|p| (p.sample_offset, p.value.get())),
             Some((7, 0.875))
@@ -1280,7 +1203,7 @@ mod pool_tests {
             .pool
             .free_blocks()
             .iter()
-            .all(|b| b.is_empty() && b.capacity() == ROOM));
+            .all(|b| b.is_empty() && b.capacity() == ROOM + 1));
         assert!(changes
             .spare
             .iter()
@@ -1320,34 +1243,39 @@ mod pool_tests {
 mod carried_tests {
     use super::*;
 
-    /// **The carried layout holds the carried budget, and the host's chunk
-    /// gives its producers the plain room**: a set built
-    /// `reserved_carried` or `reserved_bridged` stores
-    /// [`ParameterChanges::carried_budget`] points (a floor of
-    /// `FLOOR_POINTS + 1` and blocks of `room + 1` when pooled, every queue
-    /// at `room + 1` when not), and a bridged one lets a producer reach
-    /// `room`, not `room + 1`.
+    /// **Every set holds the one budget, and the host's chunk gives its
+    /// producers the room, not `room + 1`**: a set built `reserved` or
+    /// `reserved_bridged` stores [`ParameterChanges::point_budget`] points (a
+    /// floor of `FLOOR_POINTS + 1` and blocks of `room + 1` when pooled,
+    /// every queue at `room + 1` when not); a producer fills a queue of a
+    /// plain set to `room + 1` and one of a bridged set to `room`.
     ///
-    /// Mutations (run), each fails: `reserved_carried` without the extra
-    /// floor point (`floor`, not `floor + 1`) → the storage is
-    /// `queues` short; `point_capacity` not taking off the carry slot → a
-    /// bridged set reports `room + 1`.
+    /// Mutations (run), each fails: `reserved` without the extra floor
+    /// point (`FLOOR_POINTS`, not `FLOOR_POINTS + 1`) → the storage is
+    /// `queues` short; `make_room` ignoring the carry slot → a bridged queue
+    /// takes `room + 1`.
     #[test]
-    fn the_carried_layout_holds_the_carried_budget() {
+    fn every_set_holds_the_one_budget_and_a_bridged_one_keeps_a_slot() {
         for (queues, room) in [(2_000usize, 20usize), (16_384, 132), (10, 40)] {
-            let budget = ParameterChanges::carried_budget(queues, room);
-            let carried = ParameterChanges::reserved_carried(queues, room);
-            let bridged = ParameterChanges::reserved_bridged(queues, room);
-            assert_eq!(carried.point_storage(), budget, "{queues} × {room}");
+            let budget = ParameterChanges::point_budget(queues, room);
+            let mut plain = ParameterChanges::reserved(queues, room);
+            let mut bridged = ParameterChanges::reserved_bridged(queues, room);
+            assert_eq!(plain.point_storage(), budget, "{queues} × {room}");
             assert_eq!(bridged.point_storage(), budget, "{queues} × {room}");
-            assert_eq!(carried.point_capacity(), room + 1);
-            assert_eq!(bridged.point_capacity(), room);
+            for (changes, want) in [(&mut plain, room + 1), (&mut bridged, room)] {
+                assert!(changes.open_queue(ParamAddress::Index(0)));
+                let mut k = 0;
+                while changes.push_point(0, k, 0.5) {
+                    k += 1;
+                }
+                assert_eq!(k as usize, want, "{queues} × {room}");
+            }
         }
         assert_eq!(
-            ParameterChanges::carried_budget(2_000, 20),
+            ParameterChanges::point_budget(2_000, 20),
             2_000 * (ParameterChanges::FLOOR_POINTS + 1) + ParameterChanges::POOLED_QUEUES * 21
         );
-        assert_eq!(ParameterChanges::carried_budget(10, 40), 10 * 41);
+        assert_eq!(ParameterChanges::point_budget(10, 40), 10 * 41);
     }
 
     /// **The bridge's carried value takes a real slot in the host's chunk at
@@ -1355,19 +1283,18 @@ mod carried_tests {
     /// grows.** 2 000 parameters at a 512-frame chunk room, built
     /// `reserved_bridged`: every queue filled to its floor, the last
     /// `POOLED_QUEUES` (so the floor queues before them had every chance to
-    /// take a block) to the full room, each through `push_point` until
-    /// `make_room` refuses. Then a carried value goes ahead of every queue,
+    /// take a block) through `push_point` until `make_room` refuses, which
+    /// is at the room. (Reworded: the fill stopped at the room whatever
+    /// `make_room` said, so the carry-slot mutation below survived it.) Then a carried value goes ahead of every queue,
     /// inside the no-alloc gate: each lands first, on frame 0, nothing is
     /// counted, and the storage is the reservation's.
     ///
     /// Mutations (run), each fails: `reserved_bridged` without the carry slot
-    /// (`carry_slot: 0`) → the producers fill the slot, and the moving
-    /// queues have none left for the carried value, counted;
-    /// `reserved_bridged` in the plain layout (`reserved`, floor 2 and
-    /// blocks of `room`) → the floor queues have no slot and borrow the
-    /// pool for it, spent after 256, counted; `prepend_carried` appending
+    /// (`carry_slot: 0`) → the producers fill the slot, and the queues have
+    /// none left for the carried value, counted; `prepend_carried` appending
     /// (`try_push`) rather than inserting at the front → the carried value
-    /// is not first.
+    /// is not first. (Reworded with the one layout: a third mutation, the
+    /// plain layout, no longer exists.)
     #[test]
     fn a_carried_value_takes_a_real_slot_at_the_pool_budget_without_allocating() {
         const PARAMS: usize = 2_000;
@@ -1382,13 +1309,12 @@ mod carried_tests {
             } else {
                 ParameterChanges::FLOOR_POINTS
             };
+            // A moving queue fills until `make_room` refuses: the room the
+            // producers get, with the carried value's slot kept back.
             let mut k = 0;
-            while changes.make_room(id) {
+            while (moving.contains(&id) || k < want) && changes.make_room(id) {
                 assert!(changes.push_point(id, 1 + k as i32, 0.5));
                 k += 1;
-                if k == want {
-                    break;
-                }
             }
             assert_eq!(k, want, "queue {id}");
         }
@@ -1415,30 +1341,35 @@ mod carried_tests {
         }
         changes.clear();
         assert_eq!(changes.point_storage(), storage);
-        assert_eq!(changes.point_capacity(), room);
     }
 
-    /// **Past every slot, the carried value gives way to the queue's own
-    /// later points**, counted: on a full plain set the one full-queue
-    /// policy keeps the latest value, which is the queue's.
+    /// **Past every slot, the carried value is dropped, counted**: the
+    /// queue's own points are later, so its latest value is already there,
+    /// and nothing of the queue is touched; an index past the queues is
+    /// dropped and counted the same way. (Reworded with the one layout: a
+    /// full queue fell back to the full-queue policy, which never took a
+    /// carried value, always the earliest.)
     ///
-    /// Mutation (run): `prepend_carried` not counting the miss → fails.
+    /// Mutation (run): `prepend_carried` not counting the miss → the count
+    /// is 0 → fails.
     #[test]
-    fn a_carried_value_with_no_slot_gives_way_counted() {
+    fn a_carried_value_with_no_slot_is_dropped_counted() {
         let mut changes = ParameterChanges::reserved(1, 2);
-        assert!(changes.add_change(ParamAddress::Index(0), 5, 0.5));
-        assert!(changes.add_change(ParamAddress::Index(0), 9, 0.75));
+        for (k, v) in [(5, 0.5), (9, 0.75), (12, 1.0)] {
+            assert!(changes.add_change(ParamAddress::Index(0), k, v));
+        }
         let carried = ParameterPoint {
             sample_offset: 0,
             value: Normalized::new(0.25),
         };
         assert!(!changes.prepend_carried(0, carried));
-        assert_eq!(changes.points_overflowed(), 1);
-        let offsets: Vec<i32> = changes.queues[0]
+        assert!(!changes.prepend_carried(1, carried));
+        assert_eq!(changes.points_overflowed(), 2);
+        let points: Vec<(i32, f64)> = changes.queues[0]
             .points
             .iter()
-            .map(|p| p.sample_offset)
+            .map(|p| (p.sample_offset, p.value.get()))
             .collect();
-        assert_eq!(offsets, vec![5, 9]);
+        assert_eq!(points, vec![(5, 0.5), (9, 0.75), (12, 1.0)]);
     }
 }

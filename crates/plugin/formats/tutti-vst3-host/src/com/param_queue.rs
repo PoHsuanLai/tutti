@@ -9,9 +9,9 @@
 //!
 //! [`refill_from_queue`](ParamValueQueueImpl::refill_from_queue) lets
 //! callers recycle a single `ComWrapper<ParamValueQueueImpl>` across
-//! buffers. Its point storage is a [`PointBuf`] sized at construction (at
-//! least [`MIN_POINT_ROOM`]) and never grown: past it the queue keeps its
-//! latest value ([`PointBuf::push_or_replace_last`]), counted. A pooled
+//! buffers. Its point storage is a [`PointBuf`] sized at construction and
+//! never grown: past it the queue keeps its latest value
+//! ([`PointBuf::push_or_replace_last`]), counted. A pooled
 //! list lends a queue a larger buffer for a block
 //! ([`lend_from`](ParamValueQueueImpl::lend_from)).
 
@@ -45,22 +45,10 @@ impl Class for ParamValueQueueImpl {
 }
 
 impl ParamValueQueueImpl {
-    pub fn new_empty(param_id: u32) -> ComWrapper<Self> {
-        Self::with_room(param_id, 0)
-    }
-
-    /// An empty queue with room for `points` points
-    /// ([`MIN_POINT_ROOM`] when `points` is fewer). Allocates; call it off the
-    /// audio thread.
+    /// An empty queue with room for exactly `points` points (a pooled list's
+    /// queue draws on the list's shared pool past them). Allocates; call it
+    /// off the audio thread.
     pub fn with_room(param_id: u32, points: usize) -> ComWrapper<Self> {
-        Self::with_exact_room(param_id, points.max(MIN_POINT_ROOM))
-    }
-
-    /// An empty queue with room for exactly `points` points: a pooled list's
-    /// floor ([`ParameterChangesImpl::with_pool`](super::ParameterChangesImpl::with_pool)),
-    /// which draws on the list's shared pool past it. Allocates; call it off
-    /// the audio thread.
-    pub fn with_exact_room(param_id: u32, points: usize) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             param_id: AudioThreadCell::new(param_id),
             points: AudioThreadCell::new(PointBuf::with_capacity(points)),
@@ -181,27 +169,34 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
         kResultOk
     }
 
-    /// Adds the plugin's point within the queue's room. Past it the queue
-    /// keeps its latest value ([`PointBuf::push_or_replace_last`]), the point
-    /// is counted ([`ParameterChangesImpl::points_dropped`](super::ParameterChangesImpl::points_dropped)),
-    /// and `kResultFalse` says it was not added as a new point (`index`
-    /// untouched). Never allocates: the plugin calls this on the audio
-    /// thread.
+    /// Adds the plugin's point within the queue's room, `kResultOk` with
+    /// its `index`. Past the room the queue keeps its latest value
+    /// ([`PointBuf::replace_latest`]): a point no earlier than the latest
+    /// takes its place, `kResultOk` with that slot's `index`; an earlier one
+    /// is dropped, `kResultFalse` with `index` untouched. Either way a point
+    /// is lost, counted
+    /// ([`ParameterChangesImpl::points_dropped`](super::ParameterChangesImpl::points_dropped)).
+    /// Never allocates: the plugin calls this on the audio thread.
     unsafe fn addPoint(&self, sample_offset: i32, value: f64, index: *mut i32) -> tresult {
         let mut points = self.points.borrow_mut();
-        let added = points.push_or_replace_last(ParameterPoint {
+        let point = ParameterPoint {
             sample_offset,
             // Inbound across the ABI: the *plugin* calls this, so the value is
             // as untrusted as anything else crossing that edge. `Normalized`
             // clamps it, which is a guard this direction never had.
             value: Normalized::new(value),
-        });
-        if !added {
-            *self.dropped.borrow_mut() += 1;
-            return kResultFalse;
-        }
-        if !index.is_null() {
-            *index = (points.len() - 1) as i32;
+        };
+        let at = match points.try_push(point) {
+            Ok(()) => Some(points.len() - 1),
+            Err(point) => {
+                *self.dropped.borrow_mut() += 1;
+                points.replace_latest(point)
+            }
+        };
+        match at {
+            Some(i) if !index.is_null() => *index = i as i32,
+            Some(_) => {}
+            None => return kResultFalse,
         }
         kResultOk
     }
@@ -234,7 +229,7 @@ mod tests {
         source.add_point(0, 0.25);
         source.add_point(128, 0.5);
 
-        let queue = ParamValueQueueImpl::new_empty(0);
+        let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
         queue.refill_from_queue(&source);
 
         let mut got = Vec::new();
@@ -255,7 +250,7 @@ mod tests {
         source.add_point(64, 0.1); // old value
         source.add_point(64, 0.9); // new value at the same instant
 
-        let queue = ParamValueQueueImpl::new_empty(0);
+        let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
         queue.refill_from_queue(&source);
 
         let mut got = Vec::new();
@@ -277,7 +272,7 @@ mod tests {
             source.add_point(i * 8, f64::from(i) * 0.01);
         }
 
-        let queue = ParamValueQueueImpl::new_empty(0);
+        let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
         queue.refill_from_queue(&source); // warm up capacity
 
         assert_no_alloc::assert_no_alloc(|| {
@@ -293,7 +288,7 @@ mod tests {
     /// automation path where a DAW streams per-buffer points.
     #[test]
     fn refill_from_queue_is_allocation_free() {
-        let queue = ParamValueQueueImpl::new_empty(0);
+        let queue = ParamValueQueueImpl::with_room(0, MIN_POINT_ROOM);
         let source = queue_with_points(8);
 
         // Warm up.
@@ -337,28 +332,37 @@ mod tests {
         assert_eq!(last, Some(32), "ends on its latest");
     }
 
-    /// **The plugin's `addPoint` past the room keeps the latest value and
-    /// is counted, never growing the queue.** A queue of `MIN_POINT_ROOM`
-    /// takes that many points, then a later point replaces its latest
-    /// (`kResultFalse`, counted), inside the no-alloc gate.
+    /// **The plugin's `addPoint` past the room keeps the latest value,
+    /// counted, and says where it went.** A queue of `MIN_POINT_ROOM` takes
+    /// that many points (`kResultOk`, each at its index), then a later point
+    /// replaces its latest: `kResultOk` with the replaced slot's index, the
+    /// lost point counted. An earlier point is dropped: `kResultFalse`,
+    /// `index` untouched, counted. All inside the no-alloc gate.
     ///
     /// Mutations (run), each fails: `addPoint` dropping the point past the
-    /// room (`try_push`) → the queue ends on its earlier value; the miss not
-    /// counted → `points_dropped` is 0.
+    /// room (no `replace_latest`) → the queue ends on its earlier value; the
+    /// miss not counted → `points_dropped` is 0; the replacement answered
+    /// `kResultFalse` (as it was) → the second result is wrong; the
+    /// replacement's index not written → `at` is still -1.
     #[test]
     fn add_point_past_the_room_keeps_the_latest_counted() {
         use vst3::Steinberg::Vst::IParamValueQueueTrait;
-        let queue = ParamValueQueueImpl::new_empty(3);
+        let queue = ParamValueQueueImpl::with_room(3, MIN_POINT_ROOM);
         let ptr = queue.to_com_ptr::<IParamValueQueue>().unwrap();
-        let results = assert_no_alloc::assert_no_alloc(|| unsafe {
+        let (fitted, replaced, dropped) = assert_no_alloc::assert_no_alloc(|| unsafe {
             let mut at = -1;
             let fitted = (0..MIN_POINT_ROOM as i32)
                 .all(|k| ptr.addPoint(k, 0.25, &mut at) == kResultOk && at == k);
-            (fitted, ptr.addPoint(100, 0.75, &mut at))
+            at = -1;
+            let replaced = (ptr.addPoint(100, 0.75, &mut at), at);
+            at = -1;
+            let dropped = (ptr.addPoint(50, 0.5, &mut at), at);
+            (fitted, replaced, dropped)
         });
-        assert!(results.0);
-        assert_eq!(results.1, kResultFalse);
-        assert_eq!(queue.points_dropped(), 1);
+        assert!(fitted);
+        assert_eq!(replaced, (kResultOk, MIN_POINT_ROOM as i32 - 1));
+        assert_eq!(dropped, (kResultFalse, -1));
+        assert_eq!(queue.points_dropped(), 2);
         assert_eq!(queue.len(), MIN_POINT_ROOM);
         let mut last = None;
         queue.for_each_point(|p| last = Some((p.sample_offset, p.value.get())));

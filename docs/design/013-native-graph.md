@@ -4669,7 +4669,7 @@ carried.
   chunk is gone. The plugin's parameter list is read once at
   `PluginClient::new` (which already blocks on the server; no protocol
   change), and the node's `ParamDelivery` (`host/node/param_delivery.rs`)
-  holds one slot per parameter plus `SPARE_SLOTS` (64) for addresses the
+  holds one slot per parameter plus `ParameterChanges::SPARE_QUEUES` (64) for addresses the
   list did not name. A chunk's `ParameterChanges` is a `Vec` (wire format
   unchanged) reserved at prepare with a queue per slot and, per queue,
   `points_for(chunk)` = one point per 32 frames plus 4 corners (never
@@ -4752,15 +4752,19 @@ carried.
   Past a queue's room every site applies one policy,
   `PointBuf::push_or_replace_last` (the latest-in-time point gives way, so
   the parameter ends on its latest value), and counts it with its own
-  counter. The host's sets are built `reserved_bridged` (a floor of 3 and
-  blocks of `room + 1`, one point of each kept for the bridge's carried
-  value), so the carried value takes a real slot instead of growing a
-  queue; everything that receives a bridged chunk (the CLAP input list, the
-  VST3 input list, VST3's `IMidiMapping` route) reserves that,
-  `ParameterChanges::carried_budget`. At 2000 parameters and a 4096-frame
-  chunk the IPC node's buffers went from about 43 MB to 6.98 MB, a CLAP
-  instance's lists from about 40 MB to 6 MB; the figures, the budget's
-  derivation and what is left (the VST3 lists' queue count) are in doc 014
+  counter. Every set has one layout (a floor of 3 and blocks of
+  `room + 1`, `ParameterChanges::point_budget`); the host's sets are built
+  `reserved_bridged`, one point of each kept for the bridge's carried
+  value, so the carried value takes a real slot instead of growing a
+  queue, and everything that receives a bridged chunk (the CLAP input list,
+  the VST3 input list, VST3's `IMidiMapping` route) reserves the same
+  budget. No queue count grows on the audio thread either: past its queues
+  the VST3 input list drops a queue and the output list's
+  `addParameterData` returns null, both counted. At 2000 parameters and a
+  4096-frame chunk the IPC node's buffers went from about 43 MB to
+  6.98 MB, a CLAP instance's lists from about 40 MB to 6.2 MB; the
+  figures, the budget's derivation and what is left (a CLAP
+  `params.rescan` does not re-reserve the server's output) are in doc 014
   §9.
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
   does not honour offsets sample-accurately, as it refuses a ramp.

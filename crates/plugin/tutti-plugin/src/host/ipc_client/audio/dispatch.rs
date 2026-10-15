@@ -185,31 +185,36 @@ impl Owed {
     /// `ParameterChanges::reserved_bridged`, which keeps a point of every
     /// queue (and of every pool block) for the carried value, so the value
     /// takes a real slot (`ParameterChanges::prepend_carried`, counted in the
-    /// buffer's `points_overflowed` in the one case it cannot: a buffer built
-    /// some other way, full). A parameter the block does not move opens one
-    /// of the buffer's spare queues. Only the empty placeholder of a block
-    /// that had no changes gets queues built here (bridge thread: may
-    /// allocate; it is dropped on return).
+    /// buffer's `points_overflowed` when it cannot: a buffer built some other
+    /// way, full, or one with every queue open). A parameter the block does
+    /// not move opens one of the buffer's spare queues. Only the empty
+    /// placeholder of a block that had no changes (no queue room at all)
+    /// gets queues built here (bridge thread: may allocate; it is dropped on
+    /// return).
     fn merge_carried(&mut self, changes: &mut ParameterChanges) {
+        let placeholder = changes.capacity() == 0;
         for &(param_id, carried) in &self.carried {
-            if let Some(i) = changes.queues.iter().position(|q| q.param_id == param_id) {
-                if changes.queues[i]
-                    .points
-                    .first()
-                    .is_some_and(|p| p.sample_offset > 0)
+            let i = match changes.queues.iter().position(|q| q.param_id == param_id) {
+                Some(i)
+                    if changes.queues[i]
+                        .points
+                        .first()
+                        .is_some_and(|p| p.sample_offset > 0) =>
                 {
-                    let _ = changes.prepend_carried(i, carried);
+                    i
                 }
-            } else if changes.open_queue(param_id) {
-                let i = changes.queues.len() - 1;
-                let _ = changes.prepend_carried(i, carried);
-            } else {
-                // No spare: the empty placeholder of a block that had no
-                // changes (dropped on return), or a full buffer.
-                changes
-                    .queues
-                    .push(ParameterQueue::from_points(param_id, vec![carried]));
-            }
+                Some(_) => continue,
+                None if placeholder => {
+                    changes
+                        .queues
+                        .push(ParameterQueue::from_points(param_id, vec![carried]));
+                    continue;
+                }
+                None if changes.open_queue(param_id) => changes.queues.len() - 1,
+                // No spare queue: past the queues, so dropped and counted.
+                None => changes.queues.len(),
+            };
+            let _ = changes.prepend_carried(i, carried);
         }
         self.carried.clear();
     }
@@ -795,7 +800,51 @@ mod tests {
             carried.points.capacity()
         );
         block.clear();
-        assert_eq!(block.point_capacity(), 40);
+        assert_eq!(block.point_storage(), 4 * 41, "the reserved storage");
+    }
+
+    /// **A reserved buffer with no spare queue drops a carried value,
+    /// counted, rather than growing; the empty placeholder takes every one.**
+    /// A one-queue buffer with its queue open for another parameter: the
+    /// carried value is dropped inside the no-alloc gate and counted, and the
+    /// buffer still has one queue. The placeholder of a block with no
+    /// changes (`ParameterChanges::new`) gets a queue for each of two
+    /// carried values, though the first gives it queue room.
+    ///
+    /// Mutations (run), each fails: the no-spare case pushing a queue (as
+    /// it did) → the gate trips on the allocation; the placeholder decided
+    /// per value (`changes.capacity() == 0` inside the loop) → the second
+    /// value opens a queue with no point room and is dropped.
+    #[test]
+    fn a_carried_value_past_the_queues_is_dropped_but_the_placeholder_takes_all() {
+        let mut skipped = ParameterChanges::reserved(2, 1);
+        skipped.add_change(ParamAddress::Index(7), 3, 0.25);
+        skipped.add_change(ParamAddress::Index(8), 3, 0.5);
+
+        let mut owed = Owed::default();
+        owed.carry(&skipped);
+        let mut block = ParameterChanges::reserved_bridged(1, 40);
+        assert!(block.add_change(ParamAddress::Index(1), 5, 0.5));
+        assert_no_alloc::assert_no_alloc(|| owed.merge_carried(&mut block));
+        assert_eq!(block.queues.len(), 1);
+        assert_eq!(block.points_overflowed(), 2);
+
+        let mut owed = Owed::default();
+        owed.carry(&skipped);
+        let mut placeholder = ParameterChanges::new();
+        owed.merge_carried(&mut placeholder);
+        assert_eq!(placeholder.queues.len(), 2);
+        assert_eq!(placeholder.points_overflowed(), 0);
+        for (id, value) in [(7, 0.25), (8, 0.5)] {
+            let q = placeholder
+                .get_queue(ParamAddress::Index(id))
+                .expect("queued");
+            assert_eq!(q.points.len(), 1);
+            assert_eq!(
+                (q.points[0].sample_offset, q.points[0].value.get()),
+                (0, value)
+            );
+        }
     }
 
     /// **The carried values reach a chunk at the pool budget whole, in real

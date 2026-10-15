@@ -3580,9 +3580,9 @@ text past it, since the plugin holds pointers into it for the block.
 
 #### Sampler real-time fixes
 
-**Status: landed** (2026-10-15). Four audit findings in `tutti-sampler`
+**Status: landed** (2026-10-15). The audit's findings in `tutti-sampler`
 (collections and channels more complex, or less real-time, than they
-need to be):
+need to be), and what review of the fix turned up:
 
 - **The butler send from `process` no longer blocks.** A `VoicePool`'s
   drain forwards a streaming voice's loop to the butler (`Command::Loop`)
@@ -3593,21 +3593,45 @@ need to be):
   or closed queue refuses the command, the intent stays unrecorded, and
   the refusal is counted. `Commands::send` stays blocking for the control
   thread, waiting while the queue is full.
-- **The butler's queue takes no lock and allocates nothing.** It was a
+- **The butler's queue takes no lock and allocates nothing** (lock-free,
+  not wait-free; below). It was a
   `smol` channel, whose successful send woke the butler through a listener
   list behind a `Mutex`, allocated on the channel's first notify. It is
   now a crate-private `ButlerQueue`: a `crossbeam_queue::ArrayQueue`, the
   butler's `Thread` (registered by the thread before its first cycle) and
-  a `closed` flag the thread sets on exit, however it exits, so a send
-  after it reports `ButlerGone`. A send is a push then an `unpark`; the
+  a `closed` flag. A send is a push then an `unpark`; the
   butler parks with a timeout between cycles (1 ms idle, 3 ms healthy) and
   yields when a ring needs a refill, and a push between its drain and its
   park leaves the token set, so no wake is lost. A control-thread send on
   a full queue retries every 100 µs, waking the butler each time, and
-  stops when the queue closes. It composes two existing primitives and a
-  flag, with no `unsafe` and no ordering argument of its own, so it lives
-  in `tutti-sampler` rather than as a `tutti-types` primitive with a loom
-  model. `smol` and `futures-lite` are no longer dependencies.
+  stops when the queue closes. `smol` and `futures-lite` are no longer
+  dependencies.
+- **The audio thread's send is lock-free, not wait-free.** crossbeam's
+  `ArrayQueue::pop` moves `head` and only then frees the slot's stamp; a
+  push into a full queue whose tail lands on that slot sees `head` moved
+  and spins until the stamp is stored, rather than report `Full`. The
+  wait is the butler's two-instruction window, long only if the butler is
+  preempted inside it, and only on a full queue; senders also retry
+  against each other's tail claims. **Deferred:** the wait-free design is
+  a single-producer ring (`rtrb`) per sender, which the butler polls. The
+  parallel executor makes the send multi-producer (pools rendering on
+  several workers), so that is a ring per producer and a registry of
+  them.
+- **Closing cannot strand a command.** The thread closes the queue on
+  exit, however it exits (and `stop` closes it too, for a controller that
+  never started): it sets `closed`, then a `SeqCst` fence, then drains and
+  drops what is queued. A sender checks `closed`, pushes, then a `SeqCst`
+  fence, then checks `closed` again and reports `ButlerGone` if it is set.
+  That is the store-buffering pattern: either the drain sees the push or
+  the sender sees the flag, so an `Ok` command is always popped (run, or
+  dropped by the final drain) and every send that starts after the close
+  reports `ButlerGone`. A `ButlerGone` command may still have run, if the
+  butler's last cycle popped it while the sender was descheduled. This
+  handshake is an ordering argument the queue owns, which CLAUDE.md would
+  put in `tutti-types` under a loom model; crossbeam has no loom build, so
+  a model could check only a stand-in, and the exception and its argument
+  are in `docs/engineering-notes.md` ("The butler queue's close
+  handshake").
 - **A loop the butler refuses is not recorded on an add either.** An
   `AddVoice` for a streaming voice whose `play.loop_` is `On` takes the
   loop out of the voice (`Off` left behind) before the slot is built, and

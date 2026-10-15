@@ -237,10 +237,10 @@ impl Commands {
             .map_err(|_| ButlerGone)
     }
 
-    /// Dispatches a command without waiting: the audio thread's send.
+    /// Dispatches a command without blocking: the audio thread's send.
     ///
     /// A full queue (the butler is stalled, on I/O or descheduled) refuses
-    /// the command rather than blocking the callback until the butler drains
+    /// the command rather than holding the callback until the butler drains
     /// it. The caller decides what a refusal means; the voice pool counts it
     /// and does not record the intent.
     ///
@@ -248,6 +248,14 @@ impl Commands {
     /// any other: a push into a fixed-capacity lock-free queue and an
     /// `unpark` of the butler thread (`butler::queue`). It frees nothing on
     /// refusal either (no variant the audio thread sends owns heap data).
+    ///
+    /// Lock-free, not wait-free: on a full queue the push can spin briefly
+    /// behind a pop the butler has begun on the same slot, and senders
+    /// retry against each other's claims. The wait-free alternative (a
+    /// single-producer ring per sender) is deferred; see `butler::queue`.
+    ///
+    /// `Gone` means the butler has exited or is exiting. A command sent as
+    /// it exits may still have run, or been dropped by its final drain.
     pub(crate) fn try_send(&self, cmd: Command) -> Result<(), ButlerRefused> {
         self.tx.try_send(cmd.into_butler()).map_err(|e| match e {
             TrySendError::Full(_) => ButlerRefused::Full,

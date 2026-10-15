@@ -494,9 +494,10 @@ impl VoicePool {
     ///   forking on the tier itself.
     ///
     /// `forward` says how the streaming forward is sent. From the drain it is
-    /// [`Forward::Refuse`] ([`Commands::try_send`]), which never waits on a
-    /// full butler queue: a stalled butler would otherwise hold the callback
-    /// until it drained. A refused forward is counted ([`PoolDrops`]) and
+    /// [`Forward::Refuse`] ([`Commands::try_send`]), which does not wait
+    /// for room in a full butler queue: a stalled butler would otherwise
+    /// hold the callback until it drained. (It is lock-free rather than
+    /// wait-free: it can spin briefly behind a pop in progress.) A refused forward is counted ([`PoolDrops`]) and
     /// leaves the intent unrecorded. A control-thread
     /// [`insert_voice`](Self::insert_voice) sends [`Forward::Wait`]
     /// ([`Commands::send`]), which waits for room as any control-thread send
@@ -563,6 +564,8 @@ impl VoicePool {
     ///
     /// Boxes the voice (the slot holds it boxed), so control thread only; the
     /// audio-thread drain hands the box it received straight to the slot.
+    /// It can wait on the butler as `insert_voice` does
+    /// (see its "Blocking" section).
     pub fn insert_voice_with_stretch(
         &mut self,
         id: SlotId,
@@ -601,6 +604,26 @@ impl VoicePool {
     /// sender. Either way the work sits on the COLD
     /// command drain, above the per-sample loop, so the loop's butler send never
     /// touches the hot path.
+    ///
+    /// # Blocking
+    ///
+    /// A streaming voice whose `play.loop_` is `On` forwards the loop with
+    /// the butler's blocking send ([`Commands::send`]): while the butler's
+    /// queue is full, this waits, retrying every 100 µs, until there is room
+    /// or the butler is gone (then the loop is dropped, counted as
+    /// [`PoolDrops::loops_butler_gone`], and not recorded). Two cases make
+    /// that wait long:
+    ///
+    /// - **A stalled butler** (on disk I/O, or descheduled): this waits as
+    ///   long as the stall does.
+    /// - **Nobody draining the queue**: a butler controller that was never
+    ///   started, or a `DiskStreamer::manual` (`test-support`) stepped on
+    ///   the thread that calls this. The queue then drains only
+    ///   when that same thread steps it, so a full queue waits for good.
+    ///   Step the streamer (or start it) before inserting a looping voice
+    ///   into a full queue.
+    ///
+    /// Every other voice, and every in-memory one, never waits.
     pub fn insert_voice(&mut self, id: SlotId, voice: Voice) {
         let stretch = stretch_wanted(&voice.play).then(|| {
             let unit = stretch::Unit::with_channels(self.sample_rate, self.channels);

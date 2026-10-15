@@ -149,7 +149,8 @@ impl ButlerThread {
             .spawn(move || {
                 // Closes the queue however the loop ends (a panic included),
                 // so a sender learns the butler is gone instead of queueing
-                // into nothing.
+                // into nothing, and drops what was left queued, here on the
+                // butler's own thread (`ButlerQueue::close`).
                 struct CloseOnExit(Arc<ButlerQueue>);
                 impl Drop for CloseOnExit {
                     fn drop(&mut self) {
@@ -177,8 +178,10 @@ impl ButlerThread {
     ///
     /// The flag ends the loop at its next cycle, and an unpark starts that
     /// cycle now; a `Shutdown` command is also queued when there is room,
-    /// which ends a cycle already draining. The queue is closed afterwards,
-    /// so a sender still holding it is told the butler is gone. Called by
+    /// which ends a cycle already draining. The queue is closed (and
+    /// drained) afterwards, so a sender still holding it is told the butler
+    /// is gone; for a started butler its thread has already done so on its
+    /// way out, and this covers a controller that never started. Called by
     /// `Drop`, and idempotent — stopping an already-stopped controller does
     /// nothing more.
     pub fn stop(&mut self) {

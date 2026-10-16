@@ -22,7 +22,9 @@
 //! least [`Liveness::DEFAULT_WINDOW`] (50 ms), reset by a healthy one.
 //! [`PluginLiveness::Failing`] mirrors the count and only
 //! [`PluginLiveness::Dead`] unwires. The window is measured on the wall clock
-//! each frame reads, not counted in frames, so it holds at any frame rate. The
+//! each frame reads, not counted in frames, so it holds at any frame rate: a
+//! death lands on the first unhealthy frame at least 50 ms after the first
+//! (the 4th at a steady 60 Hz, later under jitter). The
 //! cost is that a genuinely dead plugin emits silence for a few extra frames —
 //! which it was emitting anyway, since a crashed bridge returns zeros rather
 //! than erroring.

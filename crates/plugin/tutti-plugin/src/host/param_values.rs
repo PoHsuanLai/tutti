@@ -52,6 +52,7 @@ pub struct PluginParamValues {
 ///
 /// `Send`, so it runs on any thread. [`run`](Self::run) makes one round trip
 /// per parameter, so a host keeps it off a thread that must not block.
+#[must_use = "a mirror whose read is dropped never becomes ready"]
 pub struct ParamRead {
     handle: PluginHandle,
 }
@@ -84,6 +85,7 @@ impl PluginParamValues {
     /// The callback takes the handle's single `on_parameter_changed` slot,
     /// replacing any callback installed before, and one installed after
     /// replaces it (the mirror then stops following the plugin).
+    #[must_use = "run the `ParamRead` and `land` its values, or the mirror never becomes ready"]
     pub fn start(handle: &PluginHandle) -> (Self, ParamRead) {
         let edits: Edits = Arc::default();
         let queue = Arc::clone(&edits);
@@ -284,7 +286,8 @@ mod tests {
     /// Mutations (each run, each failed): `start` not installing the callback
     /// (nothing is drained); `drain_edits` applying before the read lands (the
     /// first drain sees the edit); `drain_edits` clearing the queue before the
-    /// read lands (the second drain sees nothing).
+    /// read lands (the second drain sees nothing); `drain_edits` cloning the
+    /// queue instead of taking it (the third drain applies the edit again).
     #[test]
     fn a_reported_edit_waits_for_the_read_then_reaches_the_mirror() {
         use crate::handles::ParamId;
@@ -303,6 +306,13 @@ mod tests {
             mirror.get(1),
             Some(Some(0.9)),
             "the edit replaces the value read"
+        );
+
+        mirror.drain_edits(|id, v| seen.push((id, v)));
+        assert_eq!(
+            seen,
+            [(1, 0.9)],
+            "a drained edit is consumed, not applied again"
         );
     }
 }

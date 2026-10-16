@@ -598,13 +598,15 @@ fn digest(samples: &[(f32, f32)]) -> u64 {
 /// (TimGM6mb's violin) on channel 3 at 44.1 kHz, middle C at velocity 100,
 /// 2048 frames in 64-frame blocks. The digest was recorded on Linux/glibc
 /// from this unit's render; elsewhere only the rate and the sound are
-/// asserted.
+/// asserted, so the preset itself is pinned only by the glibc golden digest.
+/// A non-integral rate rounds to the nearest hertz (44 100.6 → 44 101).
 ///
 /// Mutations (each run on Linux/glibc, each failed): dropping the
 /// `program_change` from `with_preset` (the unit plays preset 0, the digest
 /// assert); building at `sample_rate` truncated to 44_000 Hz (the rate
 /// assert); the note on channel 0 instead of 3 (preset 0 again, the digest
-/// assert).
+/// assert); `round` replaced by `trunc` (44 100.6 builds at 44 100, the
+/// rounding assert).
 #[test]
 fn a_preset_units_first_note_on_renders_that_preset() {
     const PRESET: i32 = 40;
@@ -613,6 +615,18 @@ fn a_preset_units_first_note_on_renders_that_preset() {
     let unit = SoundFontUnit::with_preset(load_test_soundfont(), rate, CHANNEL, PRESET)
         .expect("TimGM6mb builds at 44.1 kHz");
     assert_eq!(unit.sample_rate(), rate);
+    let fractional = SoundFontUnit::with_preset(
+        load_test_soundfont(),
+        tutti_core::SampleRate(44_100.6),
+        CHANNEL,
+        PRESET,
+    )
+    .expect("TimGM6mb builds at 44.1 kHz");
+    assert_eq!(
+        fractional.sample_rate(),
+        tutti_core::SampleRate(44_101.0),
+        "the rate rounds to the nearest hertz"
+    );
 
     let mut hand = Hand::new(unit);
     hand.note_on(CHANNEL, 60, 100);

@@ -708,11 +708,13 @@ headless loop may call `update()` back to back, which would shrink a
 frame-counted window to microseconds. Each threshold becomes a `Duration`,
 measured on `PhaseCx::now`:
 
-- **The plugin-death debounce.** Today it is 3 frames (`health.rs:61-67`),
-  sized to outlast the crash flag's publish from the bridge's thread. The
-  rule becomes: dead after at least 3 consecutive unhealthy observations
-  spanning at least 50 ms (three 60 Hz frames). A healthy reading resets
-  it. The count still guards against one racy observation; the time keeps
+- **The plugin-death debounce.** It was 3 frames (`health.rs:61-67`
+  before PR 2), sized to outlast the crash flag's publish from the bridge's
+  thread. The rule is now (PR 2, `tutti_plugin::Liveness`): dead after at
+  least 3 consecutive unhealthy observations spanning at least 50 ms (three
+  60 Hz frame intervals). In a Bevy app that is the first unhealthy frame
+  at least 50 ms after the first: the 4th at a steady 60 Hz, later under
+  jitter. A healthy reading resets it. The count still guards against one racy observation; the time keeps
   the window when updates are fast.
 - **The state snapshot** of a healthy plugin: every 8 s, today's 512 frames
   at 60 Hz (`health.rs:76`).
@@ -1207,8 +1209,9 @@ the moved code.
   `read_plugin_params`.
 - `Liveness::DEATHS` (3) and `DEFAULT_WINDOW` (50 ms), `with_window`; a
   death is latched. `bevy-tutti`'s `PluginHealth` holds one and feeds it
-  `Instant::now()` each frame, so at 60 Hz a crashed plugin is written off
-  on its 4th unhealthy frame, not its 3rd. Its adapter tests space their
+  `Instant::now()` each frame, so a crashed plugin is written off on the
+  first unhealthy frame at least 50 ms after the first (the 4th at a steady
+  60 Hz, later under jitter), not on its 3rd. Its adapter tests space their
   frames half a window apart; the rule's own tests, with explicit `now`s,
   are `tutti-plugin`'s. `PluginLiveness` stays as the component's mirror.
 - `tutti_mod::{Lfo, LfoRate, Macro, Follower, NoteEnvelope}`, each a

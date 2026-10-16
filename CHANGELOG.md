@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed: the audio pump is `tutti_io::Recorder` (design 015 PR 3)
+
+- **One pump loop.** `bevy-tutti`'s `AudioPump` ran its own copy of
+  `tutti_io::Recorder`'s thread loop; it now holds a `Recorder`, and
+  `Recorder` gained what the component had: any sink and element type, a
+  capacity, a park, and a non-blocking end. **Breaking** for code that names
+  `ThreadDriver` as a value, implements `PumpDriver` or `RunningPump`, or
+  names `PumpLoop<I>`. `AudioPump::start` and its systems keep their
+  signatures.
+
+  | Was | Now |
+  |---|---|
+  | `Recorder::{start, start_with}` took a `WavOut` | any `O: AudioOut<S>` over any `S: Default + Copy + Send` (inferred; `WavOut` callers compile unchanged) |
+  | the scratch was always 1024 frames | `Recorder::start_with_capacity(src, sink, capacity: Samples, driver)`; zero is one frame |
+  | `ThreadDriver` (unit struct) parked a private 5 ms | `ThreadDriver::default()` parks `tutti_io::IDLE_PARK` (now public); `ThreadDriver::with_park(Duration)`, `ThreadDriver::park()`. Replace a `ThreadDriver` value with `ThreadDriver::default()` |
+  | `PumpLoop<I>` | `PumpLoop<I, O, S = f32>` |
+  | `PumpDriver::drive<I: AudioIn + Send>(self, PumpLoop<I>, ..)` | `drive<I, O, S>(self, PumpLoop<I, O, S>, ..)` with `I: AudioIn<S>`, `O: AudioOut<S>`, `S: Copy`, all `Send + 'static` |
+  | `RunningPump { join }`; `Recorder` was `!Send` | `RunningPump: Send + Sync { join, is_finished }`; `Recorder` is `Send + Sync`. A custom running handle adds `is_finished` (never blocks) |
+  | `Recorder` could only be ended by consuming it (`stop`, `wait`) or dropping it | also `request_stop(&self)`, `is_running(&self)`, `is_finished(&self)`, and `shutdown(&mut self) -> Option<io::Result<()>>` (joins in place; `None` once collected) |
+  | — | `impl From<tutti_io::Error> for std::io::Error` (`Io` unwraps; `ChannelWidthMismatch` becomes `InvalidInput` with the typed error as its source) |
+  | `AudioPump::start` with mismatched widths ran anyway (only `pump`'s `debug_assert` objected) | it starts no thread, and the drain reports `PumpFinished { result: Err(InvalidInput) }` carrying `ChannelWidthMismatch` |
+  | an `AudioPump` dropped with its world (no `Remove` observer) detached its thread unfinalized | the `Recorder` inside finalizes in its `Drop` |
+  | `tutti-io` was an optional `bevy-tutti` dependency (`audio-io`, `sampler`) | it is always one: `graph::pump` is always compiled. `wav`/`flac`/`mp3`/`ogg` now turn on `tutti-io`'s codec unconditionally |
+  | the pump's thread panic read "audio pump thread panicked" | "recording thread panicked", `Recorder`'s message |
+
 ### Added
 
 - **`tutti_types::{SeqWriter<W>, SeqReader<W>}`**, a sequence lock over

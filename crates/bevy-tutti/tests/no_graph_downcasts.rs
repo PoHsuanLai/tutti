@@ -62,17 +62,27 @@ const PATTERNS: &[Pattern] = &[
 /// `(file, pattern name, allowed count, why)`.
 ///
 /// A count rather than a path: a new use in an allow-listed file still fails.
-const ALLOWED: &[(&str, &str, usize, &str)] = &[(
-    "tests/export_fork.rs",
-    "downcast_ref / downcast_mut",
-    2,
-    "a_plugin_fork_that_cannot_be_built_is_a_named_failure and \
+const ALLOWED: &[(&str, &str, usize, &str)] = &[
+    (
+        "tests/export_fork.rs",
+        "downcast_ref / downcast_mut",
+        2,
+        "a_plugin_fork_that_cannot_be_built_is_a_named_failure and \
          off_thread::a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread \
          each downcast an export error's `ForkCause` to the source's own error \
          (the cause's documented use), not a graph node. (The `Net`-era oracle's downcast of the synth \
          in its own `Net`, and its raw node access, went with it in doc 013 \
          PR 15.)",
-)];
+    ),
+    (
+        "tests/audio_io_pump.rs",
+        "downcast_ref / downcast_mut",
+        1,
+        "a_width_mismatch_is_reported_not_recorded downcasts a `PumpFinished` \
+         io::Error's source to the `tutti_io::Error` it carries (the \
+         conversion's documented use), not a graph node.",
+    ),
+];
 
 fn scanned_files(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {

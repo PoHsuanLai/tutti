@@ -293,6 +293,80 @@ mod audio_pump {
         );
     }
 
+    /// A source and sink that disagree on width start no pump, and the drain
+    /// reports the refusal as the pump's result.
+    ///
+    /// `Recorder::start` refuses the pair; a component has no error to return,
+    /// so `PumpFinished` is where it goes. Before design 015 PR 3 this pump ran
+    /// anyway and only `pump`'s `debug_assert` stood between it and a file
+    /// whose channels rotate every frame.
+    ///
+    /// *Mutation:* store `Take::Refused(None)` in `AudioPump::start_with_park`
+    /// (drop the error). Nothing is reported, the component is never removed,
+    /// and `run_until_drained` gives up.
+    #[test]
+    fn a_width_mismatch_is_reported_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mismatch.wav");
+
+        let mut app = app();
+        // A stereo source into a six-channel sink.
+        let wide = WavOut::create(
+            &path,
+            SAMPLE_RATE,
+            ChannelLayout::from(6u16),
+            BitDepth::Float32,
+        )
+        .expect("sink should open");
+        let entity = app
+            .world_mut()
+            .spawn(AudioPump::start(
+                SliceSource {
+                    frames: frames(64),
+                    pos: 0,
+                },
+                wide,
+                Samples(256),
+            ))
+            .id();
+        assert!(
+            !app.world()
+                .entity(entity)
+                .get::<AudioPump<f32>>()
+                .expect("the component is spawned either way")
+                .is_running(),
+            "a refused pump was never running"
+        );
+
+        assert!(
+            run_until_drained(&mut app, 4),
+            "a refused pump is collected on the first drain"
+        );
+
+        let messages = app.world().resource::<Messages<PumpFinished>>();
+        let mut cursor = messages.get_cursor();
+        let reported: Vec<&PumpFinished> = cursor.read(messages).collect();
+        assert_eq!(reported.len(), 1, "exactly one report");
+        assert_eq!(reported[0].entity, entity);
+        let error = reported[0]
+            .result
+            .as_ref()
+            .expect_err("a width mismatch must be reported as a failure");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        let cause = error
+            .get_ref()
+            .and_then(|e| e.downcast_ref::<tutti_io::Error>())
+            .expect("the typed refusal rides along as the source");
+        assert!(
+            matches!(
+                cause,
+                tutti_io::Error::ChannelWidthMismatch { src, sink }
+                    if *src == ChannelLayout::STEREO && *sink == ChannelLayout::from(6u16)
+            ),
+            "got {cause:?}"
+        );
+    }
+
     /// Registering the same frame type twice drains once.
     ///
     /// `add_systems` does not deduplicate, so a host and a library plugin both

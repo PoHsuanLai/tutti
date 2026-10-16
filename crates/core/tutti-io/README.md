@@ -19,6 +19,10 @@ Four live pieces, and recording is just a pump between two of them:
 - `WavOut` — the write side, an `AudioOut` sink.
 - `Recorder` — `pump(src, sink)` on its own thread, plus the stop policy and the
   finalize-exactly-once guarantee that `pump` itself deliberately leaves out.
+  Any `AudioIn` into any `AudioOut` of the same element, not only a WAV. It is
+  the workspace's one pump loop: `bevy-tutti`'s `AudioPump` component holds a
+  `Recorder` and ends it through the non-blocking `request_stop`,
+  `is_finished` and `shutdown`.
 
 And the file side, which needs no device either:
 

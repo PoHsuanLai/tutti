@@ -3018,6 +3018,11 @@ own tests (tutti-nodes, tutti-sampler, tutti-spatial, tutti-graph's builder
 and fork suites) and tutti-graph's `graph_render` A/B bench; tutti-sampler's
 `profile_stretch_clone` example; and `TransportClock`'s `AudioUnit` half.
 
+> **Design 015 PR 3 landed** (`docs/design/015-headless-api.md` §9): the
+> pump thread loop `bevy-tutti`'s `AudioPump` ran is gone; the component
+> holds a `tutti_io::Recorder`, the one `AudioIn → AudioOut` loop. The graph
+> contract does not change.
+
 ### Phase 4 — port nodes natively
 
 Mechanical, 43 impls: `route`→`Shape.latency`, drop `tick`/`footprint`/

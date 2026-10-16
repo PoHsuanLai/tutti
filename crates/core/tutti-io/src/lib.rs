@@ -16,7 +16,7 @@ pub use error::{Error, Result};
 pub use mic::{MicMonitorNode, MicRing};
 pub use recorder::{
     FinalizeStatus, ManualDriver, ManualPump, PumpDriver, PumpLoop, PumpPass, Recorder,
-    RunningPump, ThreadDriver,
+    RunningPump, ThreadDriver, IDLE_PARK,
 };
 pub use tap_in::TapIn;
 // `MAX_WAV_FOLD_CHANNELS` is the widest input `WavOut` will fold, so a caller

@@ -3,8 +3,8 @@
 //!
 //! [`tutti_core::io::pump`] is the whole of "recording" minus the loop and the
 //! stop condition, which its own docs call the caller's policy. [`AudioPump`] is
-//! that policy for a Bevy host: a background thread running the loop, a
-//! component holding its handle, and a drain system that joins it.
+//! that policy for a Bevy host: a [`Recorder`] running the loop on its own
+//! thread, a component holding it, and a drain system that collects it.
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
@@ -76,8 +76,12 @@
 //! it and all converge on one join:
 //!
 //! - [`AudioPump::stop`] clears the flag; [`drain_audio_pumps`] joins.
-//! - The source ends on its own (see [`OnEmpty`]); the same drain joins.
+//! - The source ends on its own (see [`OnEmpty`](tutti_core::io::OnEmpty));
+//!   the same drain joins.
 //! - The entity despawns mid-pump; [`finalize_removed_pumps`] joins.
+//!
+//! A component dropped with no `Remove` hook running (the world itself torn
+//! down) is still finalized: the [`Recorder`] inside does it in its `Drop`.
 //!
 //! The loop itself is the engine's, and so is the decision of what an empty
 //! poll means — that is [`AudioIn::ON_EMPTY`], read off the source type rather
@@ -90,32 +94,39 @@
 //! occupy all of them permanently — soundfont decodes and plugin scans would
 //! stop running with no error anywhere. `IoTaskPool` has the same cap. A
 //! starving source also needs a real sleep between polls, which is illegal on a
-//! shared pool. `tutti_io::Recorder` already runs exactly this loop on a
-//! dedicated thread; this wraps that shape rather than reimplementing it.
+//! shared pool.
+//!
+//! # The loop is `tutti_io::Recorder`'s
+//!
+//! This module used to run its own copy of the poll / park / break / finalize
+//! loop. It was the same loop as [`Recorder`]'s, so design 015 PR 3 kept that
+//! one: it already had the width check, the `Drop` finalization and the
+//! driver seam its tests count passes through, and it gained the three
+//! non-blocking methods a frame loop needs ([`Recorder::request_stop`],
+//! [`Recorder::is_finished`], [`Recorder::shutdown`]). An [`AudioPump`] is a
+//! `Recorder` plus the element type that keys its drain system.
 
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use bevy_app::{App, Update};
 use bevy_ecs::message::{Message, MessageWriter};
 use bevy_ecs::prelude::*;
 
-use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
+use tutti_core::io::{AudioIn, AudioOut};
 use tutti_core::Samples;
+use tutti_io::{Recorder, ThreadDriver};
 
-/// How long the pump parks when a [`Starved`](OnEmpty::Starved) source yields
-/// nothing. Matches `tutti_io::Recorder`: long enough not to spin a core,
-/// far shorter than the ring it drains can overrun.
-pub const IDLE_PARK: Duration = Duration::from_millis(5);
+/// How long the pump parks when a [`Starved`](tutti_core::io::OnEmpty::Starved)
+/// source yields nothing: `tutti_io`'s default, long enough not to spin a
+/// core, far shorter than the ring it drains can overrun.
+pub use tutti_io::IDLE_PARK;
 
 /// A running `AudioIn → AudioOut` pump: one background thread moving frames
 /// from a source into a sink until it stops or is stopped.
 ///
-/// `S` mirrors [`pump`]'s sample element. The **channel width is not a type
-/// parameter**: the I/O traits carry it as a runtime
+/// `S` is the sample element both endpoints speak. The **channel width is not
+/// a type parameter**: the I/O traits carry it as a runtime
 /// [`ChannelLayout`](tutti_core::ChannelLayout), read off the source at
 /// [`start`](Self::start), so one `AudioPump<f32>` covers stereo, 5.1, and a
 /// width that only exists at runtime. A const width would put the width in the
@@ -123,24 +134,31 @@ pub const IDLE_PARK: Duration = Duration::from_millis(5);
 /// per width, and could register none at all for a width it learns from the
 /// device.
 ///
-/// The **endpoints are deliberately not type parameters** — `pump` is
+/// The **endpoints are deliberately not type parameters** — the loop is
 /// monomorphized over the concrete source and sink (never `dyn`, by design), so
 /// making them generic here would mint a distinct component type per pairing,
-/// each needing its own registered drain system. They are erased into the thread
-/// instead, leaving one component to query per sample element.
+/// each needing its own registered drain system. They are erased into the
+/// [`Recorder`]'s thread instead, leaving one component to query per sample
+/// element.
 ///
 /// Register the drain for each element type a host uses with
 /// [`add_audio_pump`](AudioPumpAppExt::add_audio_pump).
 #[derive(Component)]
 pub struct AudioPump<S = f32> {
-    /// `Option` so a join can happen exactly once: whoever `take`s it owns the
-    /// finalize result, and a second attempt finds `None` rather than panicking
-    /// on a joined handle.
-    handle: Option<JoinHandle<std::io::Result<()>>>,
-    running: Arc<AtomicBool>,
+    take: Take,
     /// `fn() -> S` rather than `S`, so the component is `Send + Sync` whatever
     /// `S` is and carries no drop obligation for a type it never holds.
     _frame: PhantomData<fn() -> S>,
+}
+
+/// What [`AudioPump::start`] got back from [`Recorder`].
+enum Take {
+    /// The pump is live (or has ended and awaits collection).
+    Running(Recorder),
+    /// The source and sink disagreed on width, so no thread was started. The
+    /// error waits here for the drain to report it as [`PumpFinished`];
+    /// `Option` so it is reported once.
+    Refused(Option<std::io::Error>),
 }
 
 impl<S> AudioPump<S> {
@@ -150,17 +168,19 @@ impl<S> AudioPump<S> {
     /// caller cannot hand over a sample count by mistake and get a buffer
     /// `width` times too large. It is allocated once, sized
     /// [`capacity.interleaved_len(layout)`](Samples::interleaved_len) from the
-    /// source's own layout, so the loop body never allocates.
+    /// source's own layout, so the loop body never allocates. Zero is taken as
+    /// one frame.
     ///
     /// There is no policy argument: whether an empty poll means "retry" or
     /// "done" is [`AudioIn::ON_EMPTY`], a property of the source type. A caller
     /// cannot pair it wrongly because a caller does not state it.
     ///
-    /// Width agreement between `src` and `dst` is checked by [`pump`]'s
-    /// `debug_assert` — this constructor does not reject a mismatch, because
-    /// unlike `tutti_io::Recorder::start` it has no error channel (it returns a
-    /// `Component`, not a `Result`). A host that needs the checked form uses
-    /// `Recorder`.
+    /// **Width agreement is checked here**, by [`Recorder`]'s start. A
+    /// component has no error to return, so a mismatch starts no thread and
+    /// the drain reports it as a [`PumpFinished`] whose `result` is an
+    /// [`InvalidInput`](std::io::ErrorKind::InvalidInput) error carrying the
+    /// [`tutti_io::Error::ChannelWidthMismatch`]. The sink is dropped
+    /// unfinalized, as `Recorder::start` drops it: not one frame reached it.
     pub fn start<I, O>(src: I, dst: O, capacity: Samples) -> Self
     where
         I: AudioIn<S> + Send + 'static,
@@ -172,50 +192,27 @@ impl<S> AudioPump<S> {
 
     /// [`start`](Self::start) with the back-off named.
     ///
-    /// Only reached for a [`Starved`](OnEmpty::Starved) source — an
-    /// [`EndOfStream`](OnEmpty::EndOfStream) one never parks, it exits. How long
-    /// to wait is the consumer's tuning; *whether* to wait is the source's
-    /// nature, which is why only this half is an argument.
-    pub fn start_with_park<I, O>(mut src: I, mut dst: O, capacity: Samples, park: Duration) -> Self
+    /// Only reached for a [`Starved`](tutti_core::io::OnEmpty::Starved) source —
+    /// an [`EndOfStream`](tutti_core::io::OnEmpty::EndOfStream) one never parks,
+    /// it exits. How long to wait is the consumer's tuning; *whether* to wait is
+    /// the source's nature, which is why only this half is an argument.
+    pub fn start_with_park<I, O>(src: I, dst: O, capacity: Samples, park: Duration) -> Self
     where
         I: AudioIn<S> + Send + 'static,
         O: AudioOut<S> + Send + 'static,
         S: Default + Copy + Send + 'static,
     {
-        // The source's width, read ONCE here — the scratch is sized from it and
-        // never resized, so a layout that changed mid-stream would be a bug in
-        // the source, not something this loop re-checks per pass.
-        let layout = src.layout();
-
-        let running = Arc::new(AtomicBool::new(true));
-        let flag = Arc::clone(&running);
-
-        let handle = std::thread::spawn(move || {
-            // Allocated once; the loop body below never allocates.
-            let frames = if capacity.is_zero() {
-                Samples(1)
-            } else {
-                capacity
-            };
-            let mut scratch = vec![S::default(); frames.interleaved_len(layout)];
-            while flag.load(Ordering::Acquire) {
-                if pump(&mut src, &mut dst, &mut scratch).is_zero() {
-                    match I::ON_EMPTY {
-                        // The producer has not caught up — back off, don't spin.
-                        OnEmpty::Starved => std::thread::sleep(park),
-                        // Nothing more is coming; stop and finalize below.
-                        OnEmpty::EndOfStream => break,
-                    }
-                }
-            }
-            // Exactly once, here, where the sink is owned. The result rides the
-            // joined thread back to whoever joins.
-            dst.finalize()
-        });
-
+        let take = match Recorder::start_with_capacity(
+            src,
+            dst,
+            capacity,
+            ThreadDriver::with_park(park),
+        ) {
+            Ok(recorder) => Take::Running(recorder),
+            Err(refused) => Take::Refused(Some(refused.into())),
+        };
         Self {
-            handle: Some(handle),
-            running,
+            take,
             _frame: PhantomData,
         }
     }
@@ -225,49 +222,59 @@ impl<S> AudioPump<S> {
     /// Returns immediately — the thread notices the flag on its next pass, then
     /// finalizes. [`drain_audio_pumps`] reports the outcome once it has.
     pub fn stop(&self) {
-        self.running.store(false, Ordering::Release);
+        if let Take::Running(recorder) = &self.take {
+            recorder.request_stop();
+        }
     }
 
     /// Whether the pump thread is still supposed to be running.
     ///
     /// This reports the *flag*, not the thread: an
-    /// [`EndOfStream`](OnEmpty::EndOfStream) source that ran out has exited
-    /// while this still reads `true`, until the drain observes it.
+    /// [`EndOfStream`](tutti_core::io::OnEmpty::EndOfStream) source that ran out
+    /// has exited while this still reads `true`, until the drain observes it. A
+    /// pump refused at start was never running.
     pub fn is_running(&self) -> bool {
-        self.running.load(Ordering::Acquire)
+        match &self.take {
+            Take::Running(recorder) => recorder.is_running(),
+            Take::Refused(_) => false,
+        }
     }
 
-    /// Stop, join, and return the sink's finalize result.
+    /// Stop, join, and return the sink's finalize result (or the start's
+    /// refusal).
     ///
-    /// `None` when the handle was already taken, which is the case that makes
+    /// `None` when it was already collected, which is the case that makes
     /// double-finalize unrepresentable rather than a panic.
     fn join(&mut self) -> Option<std::io::Result<()>> {
-        self.running.store(false, Ordering::Release);
-        let handle = self.handle.take()?;
-        Some(
-            handle
-                .join()
-                .unwrap_or_else(|_| Err(std::io::Error::other("audio pump thread panicked"))),
-        )
+        match &mut self.take {
+            Take::Running(recorder) => recorder.shutdown(),
+            Take::Refused(error) => error.take().map(Err),
+        }
     }
 
-    /// Whether the thread has finished, without blocking on it.
+    /// Whether there is an outcome to collect, without blocking on it.
     fn is_finished(&self) -> bool {
-        self.handle.as_ref().is_some_and(JoinHandle::is_finished)
+        match &self.take {
+            Take::Running(recorder) => recorder.is_finished(),
+            Take::Refused(error) => error.is_some(),
+        }
     }
 }
 
-/// A pump finished and its sink was finalized.
+/// A pump ended: its sink was finalized, or the pump was refused at start.
 ///
 /// Carries the [`AudioOut::finalize`] result, which is the only place a sink's
 /// closing error can surface — for a WAV, an `Err` here means the header was
-/// never patched and the file will not open.
+/// never patched and the file will not open. A pump refused at start (source
+/// and sink widths disagree) reports an
+/// [`InvalidInput`](std::io::ErrorKind::InvalidInput) error here instead.
 #[derive(Message, Debug)]
 pub struct PumpFinished {
     /// The entity that carried the pump. Already had its [`AudioPump`] removed.
     pub entity: Entity,
-    /// What [`AudioOut::finalize`] returned. An `Err` means the sink never
-    /// closed cleanly — for a WAV, a header that was never patched.
+    /// What [`AudioOut::finalize`] returned, or the start's refusal. An `Err`
+    /// means the sink never closed cleanly — for a WAV, a header that was
+    /// never patched.
     pub result: std::io::Result<()>,
 }
 
@@ -289,22 +296,25 @@ pub fn drain_audio_pumps<S: Send + Sync + 'static>(
         let Some(result) = pump.join() else { continue };
 
         if let Err(error) = &result {
-            bevy_log::error!("audio pump sink failed to finalize: {error}");
+            bevy_log::error!("audio pump ended with error: {error}");
         }
         commands.entity(entity).remove::<AudioPump<S>>();
         finished.write(PumpFinished { entity, result });
     }
 }
 
-/// Finalizes a pump whose component is being removed.
+/// Finalizes a pump whose component is being removed, and logs a failure.
 ///
 /// `On<Remove, AudioPump<S>>` fires at command-flush with the value still
 /// readable, mirroring
 /// [`unwire_removed_sources`](super::wire::unwire_removed_sources).
-/// Without it, despawning an entity mid-recording would drop the `JoinHandle`
-/// and detach the thread — the sink is owned *by that thread*, so its
-/// `finalize` would never run and the WAV would be left unreadable. Nothing
-/// else can reach it, because the entity has already left the drain's query.
+/// The sink would be finalized without it: the [`Recorder`] inside stops and
+/// joins in its `Drop`. But `Drop` can only store the finalize error in a
+/// [`FinalizeStatus`](tutti_io::FinalizeStatus) that nothing here reads, so a
+/// sink that failed to close on a despawn (an unreadable WAV) would go
+/// unreported. This collects the result while the component is still
+/// reachable, and logs it; the entity has already left the drain's query, so
+/// no [`PumpFinished`] is sent.
 ///
 /// This blocks the frame until the thread notices its flag (one poll, so
 /// bounded by the park). That is the cost of the guarantee, and it is only paid
@@ -318,7 +328,7 @@ pub fn finalize_removed_pumps<S: Send + Sync + 'static>(
         return;
     };
     if let Some(Err(error)) = pump.join() {
-        bevy_log::error!("audio pump sink failed to finalize on removal: {error}");
+        bevy_log::error!("audio pump ended with error on removal: {error}");
     }
 }
 
@@ -326,7 +336,7 @@ pub fn finalize_removed_pumps<S: Send + Sync + 'static>(
 ///
 /// `add_systems` does not deduplicate, so without this an element type
 /// registered by both a host and a library plugin would drain twice per frame.
-/// The second pass finds `handle` already taken and does nothing, but it doubles
+/// The second pass finds the take already collected and does nothing, but it doubles
 /// the per-frame query cost and makes the schedule depend on how many callers
 /// asked.
 #[derive(Resource, Default)]

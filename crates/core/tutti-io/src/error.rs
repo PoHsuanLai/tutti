@@ -41,3 +41,23 @@ pub enum Error {
 /// `std::result::Result` with this crate's [`Error`](enum@Error) as the error
 /// type.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// An [`Error`](enum@Error) as the `io::Error` a sink's
+/// [`finalize`](crate::AudioOut::finalize) speaks, for a host that reports
+/// every way a take can end through one channel (`bevy-tutti`'s
+/// `PumpFinished`).
+///
+/// [`Io`](Error::Io) unwraps to the error it carries.
+/// [`ChannelWidthMismatch`](Error::ChannelWidthMismatch) becomes
+/// [`InvalidInput`](std::io::ErrorKind::InvalidInput) with this error as its
+/// source, so the layouts stay reachable through `get_ref`/`downcast`.
+impl From<Error> for std::io::Error {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Io(io) => io,
+            mismatch @ Error::ChannelWidthMismatch { .. } => {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, mismatch)
+            }
+        }
+    }
+}

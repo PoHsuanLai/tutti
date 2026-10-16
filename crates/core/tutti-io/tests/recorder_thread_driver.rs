@@ -25,6 +25,14 @@
 //! | `PumpPass::Starved => break` | `a_starving_source_…` (times out in `wait_until`) |
 //! | `.unwrap_or_else(…)` → `.unwrap()` | `a_panicking_source_…` |
 //! | `Recorder::wait` calls `shutdown()` rather than `join_pump()` | `wait_returns_a_complete_finite_take_…` (short file) |
+//! | `PumpPass::Ended => {}` | `is_finished_reports_…` (times out in `wait_until`) |
+//! | `JoinHandle`'s `is_finished` returns `false` | both `is_finished`/`request_stop` tests (time out) |
+//! | `request_stop` stores `true` | `a_requested_stop_…` (fails at once at `!rec.is_running()`; the test holds the recorder in `ManuallyDrop`, so the unwind leaks the pump rather than joining a take the mutated `request_stop` can no longer end) |
+//!
+//! The last three tests are the Bevy-free half of `bevy-tutti`'s
+//! `audio_io_pump.rs` (design 015 PR 3 moved its pump loop here): a finite
+//! source ends its own take and a frame loop can see that without blocking; a
+//! live one ends only when asked, and the ask does not block either.
 //!
 //! On the first row: waiting for the source to run dry and then checking the
 //! file proves nothing about the break, because a driver that spins on a dry
@@ -407,4 +415,101 @@ fn wait_returns_a_complete_finite_take_without_sequencing_on_the_pump() {
             -expect
         );
     }
+}
+
+/// **A finite take ends itself, and a host that cannot block can see it.**
+///
+/// `bevy-tutti`'s drain system polls `is_finished` once per frame and only
+/// then calls `shutdown`, so the frame never waits on the pump thread. This is
+/// that sequence without Bevy: nobody requests a stop, the source's own
+/// [`OnEmpty::EndOfStream`] ends the loop, and the run flag is still set when
+/// the take is collected, which is what tells "it ended" from "it was ended".
+#[test]
+fn is_finished_reports_a_finite_take_ending_itself_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("self_ended.wav");
+
+    const FRAMES: usize = 3000;
+    let mut rec = Recorder::start(
+        Ramp {
+            frames: FRAMES,
+            pos: 0,
+            drained: Arc::new(AtomicBool::new(false)),
+            polls: Arc::new(AtomicUsize::new(0)),
+            delay: std::time::Duration::ZERO,
+        },
+        sink(&path),
+    )
+    .expect("stereo source into a stereo sink");
+
+    wait_until("the finite take to finish on its own", || rec.is_finished());
+    assert!(
+        rec.is_running(),
+        "no stop was requested: the source's EndOfStream ended the take"
+    );
+
+    let result = rec.shutdown().expect("the take had not been collected yet");
+    result.expect("a healthy finite take finalizes cleanly");
+
+    let reader = hound::WavReader::open(&path).expect("finalized WAV should be readable");
+    assert_eq!(
+        reader.len() as usize,
+        FRAMES * 2,
+        "the take ended itself after the last frame, so every frame is in the file"
+    );
+}
+
+/// **A live take ends when asked, and asking does not block.**
+///
+/// `request_stop` is what `bevy-tutti`'s `AudioPump::stop` calls from a
+/// system: it returns at once, the pump notices on its next pass, and
+/// `is_finished` turns true without anyone joining. The collect after it is
+/// then a join that does not wait.
+#[test]
+fn a_requested_stop_ends_a_live_take_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("asked.wav");
+
+    let polls = Arc::new(AtomicUsize::new(0));
+    // `ManuallyDrop` so a failed assertion below leaks the pump instead of
+    // joining it. The `Drop` join stops the pump through `request_stop`, the
+    // method under test: if that is broken, an unwinding `Drop` would wait on
+    // a live take forever, and neither nextest nor CI here has a timeout. A
+    // leaked thread dies with the test's process.
+    let mut rec = std::mem::ManuallyDrop::new(
+        Recorder::start(
+            HalfStarving {
+                polls: Arc::clone(&polls),
+            },
+            sink(&path),
+        )
+        .expect("stereo source into a stereo sink"),
+    );
+
+    wait_until(
+        "the live source to survive a starve and be polled again",
+        || polls.load(Ordering::Acquire) >= 3,
+    );
+    assert!(
+        !rec.is_finished(),
+        "a starving source never ends its own take"
+    );
+
+    rec.request_stop();
+    assert!(!rec.is_running());
+    wait_until("the pump to notice the request", || rec.is_finished());
+
+    rec.shutdown()
+        .expect("the take had not been collected yet")
+        .expect("stopping a live take finalizes cleanly");
+    assert!(rec.shutdown().is_none(), "a take is collected once");
+    // Collected, so this drop joins nothing.
+    drop(std::mem::ManuallyDrop::into_inner(rec));
+
+    let reader = hound::WavReader::open(&path)
+        .expect("a stopped live take must leave a readable, header-patched WAV");
+    assert!(
+        reader.len() > 0,
+        "frames landed before the stop; zero means the driver broke on Starved"
+    );
 }

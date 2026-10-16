@@ -23,10 +23,12 @@
 //!
 //! # [`Recorder`] or [`AudioPump`](crate::graph::AudioPump)?
 //!
-//! Same loop; they differ in who owns the stopping. **In a Bevy app, use
-//! `AudioPump`** — it is a `Component`, so despawning finalizes the sink and
-//! `PumpFinished` carries the result. A forgotten `Recorder` in a resource
-//! leaves a WAV whose header was never patched.
+//! One loop: an `AudioPump` is a `Component` holding a `Recorder`. They differ
+//! in who owns the stopping. **In a Bevy app, use `AudioPump`** — despawning
+//! finalizes the sink, a finite source's end is noticed by a system without
+//! blocking the frame, and `PumpFinished` carries the result (a width mismatch
+//! included). A `Recorder` kept in a resource finalizes only when it is
+//! stopped or dropped, and nothing reports its result to the world.
 //!
 //! `Recorder` is for hosts with no ECS: a CLI, a test, a headless render.
 //!

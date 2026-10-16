@@ -1,7 +1,7 @@
 # 015: a Bevy-free tutti API layer
 
-Status: **in progress**. PRs 1 and 2 (§9) have landed; the rest has not.
-Each landed PR says so in a "Landed" note. The user has made every
+Status: **in progress**. PRs 1, 2 and 3 (§9) have landed; the rest has
+not. Each landed PR says so in a "Landed" note. The user has made every
 decision it asked for (§11). §2's file:line citations are the survey of
 `bevy-tutti` before PR 1.
 
@@ -146,7 +146,7 @@ The ordered bootstrap in `build_on`, step by step:
 | `GraphNode` trait, `param_graph_node!` list | `graph/events.rs:112-280` | logic (which controls are a `ParamSet`) | `tutti_session::SessionNode` |
 | Event `reconcile` | `graph/events.rs:292-347` | glue | stays |
 | `AudioParam<U, P>` | `graph/param.rs` | glue | stays |
-| `AudioPump` thread loop | `graph/pump.rs:135-240` | logic | **(c)** `tutti-io` |
+| `AudioPump` thread loop | `graph/pump.rs:135-240` | logic | **(c)** `tutti-io`: **done** (PR 3), the loop was `Recorder`'s; `AudioPump` now holds a `Recorder` |
 | Pump drain/finalize systems | `graph/pump.rs:266-383` | glue | stays |
 | Transport, tap and metering resource wrappers | `graph/transport.rs`, `tap.rs`, `metering.rs` | glue | stays |
 
@@ -176,7 +176,7 @@ The ordered bootstrap in `build_on`, step by step:
 | `Declared` query | `modulation/reconcile.rs:186-324` | glue | stays, implements `ModKeys` |
 | `Lfo`, `Macro` → `tutti_mod::Source` | `modulation/declare.rs:142-243` | logic | **(c)** `tutti-mod` |
 | `Follower`, `NoteEnvelope` | `modulation/declare.rs:245-330` | logic (the `Source`) plus glue (the `Entity` they follow, `ModFeed::Audio(Entity)` at `:79`) | split: the `Source` half to **(c)** `tutti-mod`, the feed stays |
-| `AutomationTake`, `close_takes` | `modulation/declare.rs:446-530` | logic | session (`tutti-mod`'s `Recorder` plus the close rule) |
+| `AutomationTake`, `close_takes` | `modulation/declare.rs:446-530` | logic | session (`tutti-nodes`' automation `Recorder` plus the close rule) |
 | `ModSource`/`ModRoute`/`ModRange`/`Automation` components, `Mods` | `modulation/declare.rs` | glue | stays |
 
 `collect` checks ranges and automation for `DuplicateTarget`, and gives a
@@ -356,7 +356,7 @@ plugin crates, and `core/` is the floor.
 | `tutti-nodes` | always | click, control lanes, `Modulation` |
 | `tracing` | always | logging; what `GraphRuntime`'s `bevy_log` calls become |
 | `tutti-cpal` | `device` | the sound card; off means offline only, with no ALSA headers |
-| `tutti-io` | `audio-io` | pump, recorder, mic |
+| `tutti-io` | `audio-io` | the pump (`Recorder`), mic |
 | `tutti-mod` | `modulation` | declarations |
 | `tutti-midi-types`, `tutti-midi-runtime`, `tutti-midi-file` | `midi` | |
 | `tutti-midi-hardware` | `midi-hardware` | |
@@ -928,7 +928,7 @@ Three engine changes this example needs, each a **(c)** move in §9:
 | `graph/schedule.rs` | `GraphReconcileSystems`, `GraphDirty` | the sets, built from `PHASES`; `GraphDirty` deleted (§4.4) |
 | `graph/topology.rs`, `wire.rs`, `spawn.rs`, `despawn.rs`, `param.rs` | glue | unchanged but for two calls: the crossfade calls `Graph::crossfade`, the re-bind calls `Graph::move_feeds` |
 | `graph/events.rs` | `GraphNode`, `EventFeeds` | `GraphNode` becomes `tutti_session::SessionNode`; feeds keyed by `AudioNode`, in the session |
-| `graph/pump.rs` | thread loop + systems | systems only, over `tutti-io`'s pump |
+| `graph/pump.rs` | thread loop + systems | systems only, over `tutti-io`'s `Recorder` (done, PR 3) |
 | `modulation/` | declare + reconcile | components and `Mods` stay; `Declared: ModKeys`; the two systems collect and call `run_phase` with a `ModInput` |
 | `plugin_host/` | load, health, latency, params, render mode, windows, scan | load, param read and snapshot are jobs on the task pool (two loads at a time); health, latency, params and render mode are session phases; windows, scan and catalog stay |
 | `midi/` | nodes, sequence, routes, hardware out, files | components call `Session::midi()`; the asset loader wraps `MidiFile`; MIDI-CI negotiation and device state stay |
@@ -1278,6 +1278,35 @@ PR decides which by reading both.
 joining) run in `tutti-io`.
 
 **Exit:** `bevy-tutti`'s pump systems compile over the moved type.
+
+**Landed.** The two loops were one loop: `AudioPump`'s thread ran
+`Recorder`'s `ThreadDriver` body (poll, park on `Starved`, break on
+`EndOfStream`, finalize once, join) line for line. `Recorder` stays and
+`AudioPump`'s loop goes, because `Recorder` already had what the component
+lacked: the width check (`AudioPump::start` could only `debug_assert` it),
+the `Drop` finalization, `wait`, and the driver seam its tests count passes
+through. What `AudioPump` had that `Recorder` lacked is now `Recorder`'s:
+
+- any `AudioOut<S>` and any element `S`, not only `WavOut` and `f32`;
+- `start_with_capacity` (frames per pass, zero taken as one) and
+  `ThreadDriver::with_park` (the back-off; `IDLE_PARK` is now public);
+- the non-blocking end a frame loop needs: `request_stop`, `is_running`,
+  `is_finished` (`RunningPump::is_finished`), and `shutdown(&mut self)`,
+  which joins in place and returns `None` once collected.
+
+`bevy_tutti::graph::AudioPump<S>` is a component holding a `Recorder`; its
+`start` signature and its systems are unchanged. A width mismatch now starts
+no thread and is reported through `PumpFinished` as an `InvalidInput` error
+carrying `tutti_io::Error::ChannelWidthMismatch` (new
+`From<tutti_io::Error> for io::Error`). `tutti-io` became a required
+dependency of `bevy-tutti`, since `graph::pump` is always compiled.
+
+Tests: `bevy-tutti`'s `audio_io_pump.rs` passes unchanged, plus
+`a_width_mismatch_is_reported_not_recorded`. Their Bevy-free halves are in
+`tutti-io`: `is_finished_reports_a_finite_take_ending_itself_without_blocking`
+(ending on `ON_EMPTY`) and `a_requested_stop_ends_a_live_take_without_blocking`
+(`stop` joining) in `tests/recorder_thread_driver.rs`, and the capacity and
+in-place shutdown tests in `recorder.rs`.
 
 ### PR 4: `tutti-session`: graph, bootstrap, commit and the modulation seam
 

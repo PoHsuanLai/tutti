@@ -1,10 +1,22 @@
-//! [`Recorder`] — the background pump that drives any live source into a WAV.
+//! [`Recorder`] — the background pump that drives any source into any sink.
 //!
-//! Recording is `pump(src, wav)`: poll a block of frames from an
-//! [`AudioIn`], write it to the
-//! [`AudioOut`] WAV sink, repeat. This is the caller
-//! side of [`tutti_core::io::pump`] — the loop and the stop policy that the pump
+//! Recording is `pump(src, sink)`: poll a block of frames from an
+//! [`AudioIn`], write it to an [`AudioOut`] (a [`WavOut`](crate::WavOut), a
+//! socket, a counter in a test), repeat. This is the caller side of
+//! [`tutti_core::io::pump`] — the loop and the stop policy that the pump
 //! function itself deliberately leaves out.
+//!
+//! # The one pump loop
+//!
+//! This is the workspace's only `AudioIn → AudioOut` thread loop. `bevy-tutti`
+//! had a second one (its `AudioPump` component ran the same poll / park /
+//! break / finalize body on its own thread); design 015 PR 3 folded it into
+//! this one. The component now holds a `Recorder` and adds only what an ECS
+//! needs on top: polling for the end without blocking
+//! ([`is_finished`](Recorder::is_finished)), asking for the end without
+//! blocking ([`request_stop`](Recorder::request_stop)), and joining in place
+//! ([`shutdown`](Recorder::shutdown)) so a despawn can finalize. That is the
+//! whole of the difference, so it is three methods here and not a second loop.
 //!
 //! # It takes a source, not a device
 //!
@@ -12,7 +24,8 @@
 //! is one option among several: a socket, a decoded file, or a generated signal
 //! record identically. That is what keeps this crate device-free and lets it sit
 //! *below* `tutti-cpal` rather than inside it — a host opens its own `MicIn` and
-//! hands it over.
+//! hands it over. It is generic over the [`AudioOut`] and the sample element
+//! too, for the same reason.
 //!
 //! # Threading, and the seam through it
 //!
@@ -41,8 +54,9 @@
 //!
 //! Ending a take is the *only* way `finalize` runs, so it cannot be left to a
 //! caller remembering to ask. [`Drop`] performs the same stop-and-join
-//! [`stop`](Recorder::stop) does — the two share one `shutdown`, and the taken
-//! `JoinHandle` is what stops them joining twice.
+//! [`stop`](Recorder::stop) does — the two share one
+//! [`shutdown`](Recorder::shutdown), and the taken `JoinHandle` is what stops
+//! them joining twice.
 //!
 //! This is not defensive tidiness. The loop exits on its own only for a finite
 //! source ([`EndOfStream`](OnEmpty::EndOfStream) breaks); a
@@ -53,12 +67,15 @@
 //!
 //! `Drop` cannot return the finalize `Result` and this workspace does not panic
 //! in `Drop`, so that path stores its outcome in a
-//! [`FinalizeStatus`] handle taken beforehand. [`stop`](Recorder::stop) remains
-//! the path that hands the result straight back.
+//! [`FinalizeStatus`] handle taken beforehand. [`stop`](Recorder::stop) and
+//! [`shutdown`](Recorder::shutdown) remain the paths that hand the result
+//! straight back.
 //!
 //! The scratch buffer is allocated once before the loop, sized
-//! `SCRATCH_FRAMES.interleaved_len(layout)` samples at the source's own width; the loop body
-//! never allocates.
+//! `capacity.interleaved_len(layout)` samples at the source's own width
+//! (`capacity` is 1024 frames unless
+//! [`start_with_capacity`](Recorder::start_with_capacity) names another); the
+//! loop body never allocates.
 //!
 //! Whether a zero-FRAME poll means "back off" or "finished" is the source's
 //! own [`ON_EMPTY`](tutti_core::io::AudioIn::ON_EMPTY), and the pump loop is
@@ -93,21 +110,22 @@ use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 use tutti_core::Samples;
 
 use crate::error::{Error, Result};
-use crate::wav_out::WavOut;
 
-/// Frames moved per pump pass. One bufferful, allocated once before the loop so
-/// the pump body stays allocation-free. ~21ms at 48kHz — small enough to bound
-/// how far the sink can lag the source, large enough to amortize per-pass cost.
+/// Frames moved per pump pass unless the caller names a capacity. One
+/// bufferful, allocated once before the loop so the pump body stays
+/// allocation-free. ~21ms at 48kHz — small enough to bound how far the sink can
+/// lag the source, large enough to amortize per-pass cost.
 const SCRATCH_FRAMES: Samples = Samples(1024);
 
-/// How long [`ThreadDriver`] parks when a [`Starved`](OnEmpty::Starved) source
-/// yields nothing. A live mic has nothing ready between callback pushes;
-/// sleeping avoids busy-spinning a core while still draining the ring far
-/// faster than it can overrun.
+/// How long a default [`ThreadDriver`] parks when a
+/// [`Starved`](OnEmpty::Starved) source yields nothing. A live mic has nothing
+/// ready between callback pushes; sleeping avoids busy-spinning a core while
+/// still draining the ring far faster than it can overrun.
 ///
 /// This belongs to the *driver*, not to the pump: it is a pacing decision about
-/// a thread, and [`PumpLoop`] has neither.
-const IDLE_PARK: Duration = Duration::from_millis(5);
+/// a thread, and [`PumpLoop`] has neither. [`ThreadDriver::with_park`] names
+/// another.
+pub const IDLE_PARK: Duration = Duration::from_millis(5);
 
 /// What one [`PumpLoop::pump_once`] pass achieved.
 ///
@@ -126,21 +144,30 @@ pub enum PumpPass {
     Ended,
 }
 
-/// One source→[`WavOut`] pump, with no thread and no clock.
+/// One source→sink pump, with no thread and no clock.
 ///
 /// Owns both endpoints and a scratch buffer. [`pump_once`](Self::pump_once)
-/// moves at most 1024 frames and allocates nothing.
+/// moves at most the capacity the recorder was started with (1024 frames by
+/// default) and allocates nothing.
 ///
-/// Built by [`Recorder::start_with`] after it has checked the two widths agree,
-/// and handed to a [`PumpDriver`]; a custom driver runs it.
-pub struct PumpLoop<I: AudioIn> {
+/// `S` is the sample element both endpoints speak. The channel width is not a
+/// type parameter: the endpoints carry it as a runtime `ChannelLayout`.
+///
+/// Built by [`Recorder::start_with_capacity`] after it has checked the two
+/// widths agree, and handed to a [`PumpDriver`]; a custom driver runs it.
+pub struct PumpLoop<I, O, S = f32> {
     src: I,
-    sink: WavOut,
+    sink: O,
     /// Allocated once at construction; `pump_once` never grows it.
-    scratch: Vec<f32>,
+    scratch: Vec<S>,
 }
 
-impl<I: AudioIn> PumpLoop<I> {
+impl<I, O, S> PumpLoop<I, O, S>
+where
+    S: Copy,
+    I: AudioIn<S>,
+    O: AudioOut<S>,
+{
     /// Runs one pass: polls a block of frames from the source and writes them
     /// to the sink.
     ///
@@ -158,15 +185,16 @@ impl<I: AudioIn> PumpLoop<I> {
         }
     }
 
-    /// Consumes the loop and closes the WAV, back-patching its header.
+    /// Consumes the loop and closes the sink (for a WAV, back-patching its
+    /// header).
     ///
     /// Taking `self` makes it once-only: a driver that has finalized cannot
     /// pump again.
     ///
     /// # Errors
     ///
-    /// The I/O error from flushing or back-patching the file; the WAV is then
-    /// unreadable.
+    /// The sink's [`finalize`](AudioOut::finalize) error; for a WAV, the file
+    /// is then unreadable.
     pub fn finalize(self) -> std::io::Result<()> {
         self.sink.finalize()
     }
@@ -190,16 +218,20 @@ pub trait PumpDriver {
     /// `running` is the [`Recorder`]'s stop flag. An implementation must check
     /// it between passes — a [`Starved`](PumpPass::Starved) source never ends on
     /// its own, so this flag is the only thing that ends a live take.
-    fn drive<I: AudioIn + Send + 'static>(
-        self,
-        loop_: PumpLoop<I>,
-        running: Arc<AtomicBool>,
-    ) -> Self::Running;
+    fn drive<I, O, S>(self, loop_: PumpLoop<I, O, S>, running: Arc<AtomicBool>) -> Self::Running
+    where
+        I: AudioIn<S> + Send + 'static,
+        O: AudioOut<S> + Send + 'static,
+        S: Copy + Send + 'static;
 }
 
 /// The handle a [`PumpDriver`] hands back: something that can be waited on for
 /// the finalize result.
-pub trait RunningPump {
+///
+/// `Send + Sync` so a [`Recorder`] is too: a host stores a take wherever it
+/// keeps state (a Bevy component, a resource, a struct shared across threads),
+/// and an `!Sync` handle would rule most of those out.
+pub trait RunningPump: Send + Sync {
     /// Waits for the pump to stop and returns what
     /// [`finalize`](PumpLoop::finalize) reported.
     ///
@@ -210,30 +242,69 @@ pub trait RunningPump {
     ///
     /// The finalize error, or an error if the pump thread panicked.
     fn join(self: Box<Self>) -> std::io::Result<()>;
+
+    /// Whether the pump has stopped running passes, so [`join`](Self::join)
+    /// would not block.
+    ///
+    /// Never blocks. This is how a host that cannot block (a frame loop)
+    /// notices that a finite source has ended its own take.
+    fn is_finished(&self) -> bool;
 }
 
 /// The default driver: one dedicated thread per take.
 ///
-/// Parks 5 ms when the source is starved rather than spinning a core, and
-/// stops on [`Ended`](PumpPass::Ended) or on the cleared stop flag. This is
-/// what [`Recorder::start`] uses.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ThreadDriver;
+/// Parks [`IDLE_PARK`] (or the duration given to
+/// [`with_park`](Self::with_park)) when the source is starved rather than
+/// spinning a core, and stops on [`Ended`](PumpPass::Ended) or on the cleared
+/// stop flag. This is what [`Recorder::start`] uses.
+#[derive(Debug, Clone, Copy)]
+pub struct ThreadDriver {
+    park: Duration,
+}
+
+impl ThreadDriver {
+    /// A thread driver that parks `park` on a [`Starved`](PumpPass::Starved)
+    /// pass.
+    ///
+    /// Only a starving source ever parks; an
+    /// [`EndOfStream`](OnEmpty::EndOfStream) one exits instead. How long to
+    /// wait is the host's tuning; *whether* to wait is the source's nature,
+    /// which is why only this half is an argument.
+    #[must_use]
+    pub const fn with_park(park: Duration) -> Self {
+        Self { park }
+    }
+
+    /// How long this driver parks on a starved pass.
+    #[must_use]
+    pub const fn park(&self) -> Duration {
+        self.park
+    }
+}
+
+impl Default for ThreadDriver {
+    /// Parks [`IDLE_PARK`].
+    fn default() -> Self {
+        Self::with_park(IDLE_PARK)
+    }
+}
 
 impl PumpDriver for ThreadDriver {
     type Running = std::thread::JoinHandle<std::io::Result<()>>;
 
-    fn drive<I: AudioIn + Send + 'static>(
-        self,
-        mut loop_: PumpLoop<I>,
-        running: Arc<AtomicBool>,
-    ) -> Self::Running {
+    fn drive<I, O, S>(self, mut loop_: PumpLoop<I, O, S>, running: Arc<AtomicBool>) -> Self::Running
+    where
+        I: AudioIn<S> + Send + 'static,
+        O: AudioOut<S> + Send + 'static,
+        S: Copy + Send + 'static,
+    {
+        let park = self.park;
         std::thread::spawn(move || {
             while running.load(Ordering::Acquire) {
                 match loop_.pump_once() {
                     PumpPass::Wrote(_) => {}
                     // Live source: the producer has not caught up.
-                    PumpPass::Starved => std::thread::sleep(IDLE_PARK),
+                    PumpPass::Starved => std::thread::sleep(park),
                     // Finite source: there is no more to read.
                     PumpPass::Ended => break,
                 }
@@ -249,6 +320,10 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
     fn join(self: Box<Self>) -> std::io::Result<()> {
         std::thread::JoinHandle::join(*self)
             .unwrap_or_else(|_| Err(std::io::Error::other("recording thread panicked")))
+    }
+
+    fn is_finished(&self) -> bool {
+        std::thread::JoinHandle::is_finished(self)
     }
 }
 
@@ -304,18 +379,23 @@ pub struct ManualPump {
     slot: Arc<std::sync::Mutex<Option<Box<dyn ErasedPump>>>>,
 }
 
-/// [`PumpLoop`] with its source type erased.
+/// [`PumpLoop`] with its endpoint and element types erased.
 ///
-/// The driver is handed a `PumpLoop<I>` for a caller-chosen `I`, but
-/// [`ManualPump`] is built *before* the recorder exists and so cannot name it.
-/// Two methods, both already on `PumpLoop`; `finalize` takes `Box<Self>` because
-/// it consumes the loop.
+/// The driver is handed a `PumpLoop<I, O, S>` for caller-chosen types, but
+/// [`ManualPump`] is built *before* the recorder exists and so cannot name
+/// them. Two methods, both already on `PumpLoop`; `finalize` takes `Box<Self>`
+/// because it consumes the loop.
 trait ErasedPump: Send {
     fn pump_once(&mut self) -> PumpPass;
     fn finalize(self: Box<Self>) -> std::io::Result<()>;
 }
 
-impl<I: AudioIn + Send> ErasedPump for PumpLoop<I> {
+impl<I, O, S> ErasedPump for PumpLoop<I, O, S>
+where
+    S: Copy + Send,
+    I: AudioIn<S> + Send,
+    O: AudioOut<S> + Send,
+{
     fn pump_once(&mut self) -> PumpPass {
         PumpLoop::pump_once(self)
     }
@@ -382,16 +462,24 @@ impl RunningPump for ManualRunning {
             None => Ok(()),
         }
     }
+
+    /// Always `false`: this driver runs no passes of its own, so it never
+    /// stops on its own either. The caller who runs the passes also ends the
+    /// take.
+    fn is_finished(&self) -> bool {
+        false
+    }
 }
 
 impl PumpDriver for ManualDriver {
     type Running = ManualRunning;
 
-    fn drive<I: AudioIn + Send + 'static>(
-        self,
-        loop_: PumpLoop<I>,
-        _running: Arc<AtomicBool>,
-    ) -> Self::Running {
+    fn drive<I, O, S>(self, loop_: PumpLoop<I, O, S>, _running: Arc<AtomicBool>) -> Self::Running
+    where
+        I: AudioIn<S> + Send + 'static,
+        O: AudioOut<S> + Send + 'static,
+        S: Copy + Send + 'static,
+    {
         // The stop flag is unused here on purpose. Nothing runs between the
         // caller's own `pump_once` calls, so there is no loop to break; the
         // recorder's shutdown ends the take by taking the loop out of the slot,
@@ -401,20 +489,25 @@ impl PumpDriver for ManualDriver {
     }
 }
 
-/// Records any [`AudioIn`] source into a [`WavOut`] on a background thread.
+/// Pumps any [`AudioIn`] source into any [`AudioOut`] sink on a background
+/// thread.
 ///
 /// [`start`](Self::start) checks that source and sink have the same channel
 /// width, spawns a dedicated thread that repeatedly polls up to 1024 frames
-/// from the source and writes them, and returns once recording is live. The
+/// from the source and writes them, and returns once the pump is live. The
 /// loop does not allocate. When a live source has nothing ready, the thread
 /// parks for 5 ms and polls again; a finite source ends the loop by itself.
 ///
 /// End a take with one of:
 ///
 /// - [`stop`](Self::stop) — for a live source (a microphone, [`TapIn`](crate::TapIn)):
-///   stops the thread wherever it is, finalizes the WAV and returns the result.
+///   stops the thread wherever it is, finalizes the sink and returns the result.
 /// - [`wait`](Self::wait) — for a finite source (a decoded file): lets the
 ///   source reach its end, then finalizes.
+/// - [`shutdown`](Self::shutdown) — `stop` without consuming the recorder, for
+///   a host that stores the take in place (a Bevy component). Pair it with
+///   [`request_stop`](Self::request_stop) and
+///   [`is_finished`](Self::is_finished) to end a take without blocking.
 /// - dropping the recorder — does what `stop` does and stores the finalize
 ///   result in [`finalize_status`](Self::finalize_status).
 ///
@@ -435,26 +528,28 @@ impl PumpDriver for ManualDriver {
 /// # }
 /// ```
 pub struct Recorder {
-    /// Cleared by [`stop`](Self::stop) to break the pump loop.
+    /// Cleared by [`request_stop`](Self::request_stop) (and so by every
+    /// shutdown) to break the pump loop.
     running: Arc<AtomicBool>,
     /// The running pump, joinable for the `finalize` result. `Option` because
-    /// taking it is what makes the shutdown once-only: both `stop` and `drop`
-    /// go through `shutdown`, and whichever runs first leaves `None` behind
-    /// for the other.
+    /// taking it is what makes the shutdown once-only: `stop`, `wait`,
+    /// `shutdown` and `drop` all join through it, and whichever runs first
+    /// leaves `None` behind for the others.
     ///
     /// Boxed rather than generic on the driver: `Recorder` is one type a caller
     /// stores in a field, and making it `Recorder<D>` would push the choice of
-    /// driver into every signature that holds a take.
+    /// driver into every signature that holds a take. The endpoints and the
+    /// sample element are erased into the driver for the same reason.
     handle: Option<Box<dyn RunningPump>>,
     /// Where a shutdown that cannot return its result leaves it.
     ///
-    /// Only `drop` writes here — `stop` returns the same value to its caller
-    /// instead. It is a *shared* cell rather than a plain field so a caller can
-    /// hold `finalize_status` across the drop and read the outcome afterwards,
-    /// which is the only moment the answer exists on that path.
+    /// Only `drop` writes here — every other shutdown returns the same value to
+    /// its caller instead. It is a *shared* cell rather than a plain field so a
+    /// caller can hold `finalize_status` across the drop and read the outcome
+    /// afterwards, which is the only moment the answer exists on that path.
     ///
-    /// `None` means no drop-path finalize has completed: either `stop` was
-    /// called, or the recorder is still alive.
+    /// `None` means no drop-path finalize has completed: either another
+    /// shutdown ran, or the recorder is still alive.
     status: Arc<FinalizeStatus>,
 }
 
@@ -508,7 +603,7 @@ impl FinalizeStatus {
 
 impl Recorder {
     /// Spawns a background thread pumping `src` into `sink`. Returns once
-    /// recording is live.
+    /// the pump is live.
     ///
     /// The **sample rate** is the caller's to match: [`AudioIn`] carries none,
     /// so nothing here can compare them. For a microphone, build the sink with
@@ -518,11 +613,13 @@ impl Recorder {
     ///
     /// [`Error::ChannelWidthMismatch`] when `src` and `sink` disagree on
     /// channel width, before any frame is written.
-    pub fn start<I>(src: I, sink: WavOut) -> Result<Self>
+    pub fn start<I, O, S>(src: I, sink: O) -> Result<Self>
     where
-        I: AudioIn + Send + 'static,
+        I: AudioIn<S> + Send + 'static,
+        O: AudioOut<S> + Send + 'static,
+        S: Default + Copy + Send + 'static,
     {
-        Self::start_with(src, sink, ThreadDriver)
+        Self::start_with(src, sink, ThreadDriver::default())
     }
 
     /// Starts like [`start`](Self::start), with the caller choosing how the
@@ -531,35 +628,74 @@ impl Recorder {
     /// The width check, the stop flag, the once-only shutdown and the `Drop`
     /// finalization are all identical — a driver decides only *where the loop
     /// runs and how it waits*, never when the take ends. Use a
-    /// [`ManualDriver`] to run passes by hand in a test.
+    /// [`ManualDriver`] to run passes by hand in a test, or
+    /// [`ThreadDriver::with_park`] to tune the back-off.
     ///
     /// # Errors
     ///
     /// [`Error::ChannelWidthMismatch`] when `src` and `sink` disagree on width,
     /// checked before the driver is handed anything — so no frame is ever
     /// written to a file whose channels would rotate.
-    pub fn start_with<I, D>(src: I, sink: WavOut, driver: D) -> Result<Self>
+    pub fn start_with<I, O, S, D>(src: I, sink: O, driver: D) -> Result<Self>
     where
-        I: AudioIn + Send + 'static,
+        I: AudioIn<S> + Send + 'static,
+        O: AudioOut<S> + Send + 'static,
+        S: Default + Copy + Send + 'static,
+        D: PumpDriver,
+        D::Running: 'static,
+    {
+        Self::start_with_capacity(src, sink, SCRATCH_FRAMES, driver)
+    }
+
+    /// Starts like [`start_with`](Self::start_with), moving at most `capacity`
+    /// frames per pass.
+    ///
+    /// `capacity` is in **frames** — a [`Samples`], so a caller cannot hand
+    /// over a sample count by mistake and get a buffer `width` times too large.
+    /// The scratch is allocated once, sized
+    /// [`capacity.interleaved_len(layout)`](Samples::interleaved_len) from the
+    /// width both endpoints agreed on, so the loop body never allocates. A zero
+    /// capacity is taken as one frame: an empty scratch would make every poll
+    /// return zero, ending a finite take before its first frame and parking a
+    /// live one forever.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ChannelWidthMismatch`], as [`start_with`](Self::start_with).
+    pub fn start_with_capacity<I, O, S, D>(
+        src: I,
+        sink: O,
+        capacity: Samples,
+        driver: D,
+    ) -> Result<Self>
+    where
+        I: AudioIn<S> + Send + 'static,
+        O: AudioOut<S> + Send + 'static,
+        S: Default + Copy + Send + 'static,
         D: PumpDriver,
         D::Running: 'static,
     {
         let layout = src.layout();
-        if layout != AudioOut::layout(&sink) {
+        if layout != sink.layout() {
             return Err(Error::ChannelWidthMismatch {
                 src: layout,
-                sink: AudioOut::layout(&sink),
+                sink: sink.layout(),
             });
         }
         // Sized once, here, from the width both endpoints agreed on above.
-        let scratch_samples = SCRATCH_FRAMES.interleaved_len(layout);
+        let frames = if capacity.is_zero() {
+            Samples(1)
+        } else {
+            capacity
+        };
+        let scratch_samples = frames.interleaved_len(layout);
 
         let running = Arc::new(AtomicBool::new(true));
         let pump_loop = PumpLoop {
             src,
             sink,
             // Allocated once; `pump_once` never allocates.
-            scratch: vec![0.0f32; scratch_samples],
+            scratch: vec![S::default(); scratch_samples],
         };
 
         let handle = driver.drive(pump_loop, Arc::clone(&running));
@@ -571,22 +707,24 @@ impl Recorder {
         })
     }
 
-    /// Stops the pump, waits for its thread, and finalizes the WAV.
+    /// Stops the pump, waits for its thread, and finalizes the sink.
     ///
-    /// Blocks for at most one pass (or one 5 ms park). Frames the source has
-    /// not yet delivered are not recorded; for a finite source that should
-    /// run to its end, use [`wait`](Self::wait). Dropping the recorder does
-    /// the same as `stop` but can only store the result in
-    /// [`finalize_status`](Self::finalize_status).
+    /// Blocks for at most one pass (or one park). Frames the source has not
+    /// yet delivered are not recorded; for a finite source that should run to
+    /// its end, use [`wait`](Self::wait). Dropping the recorder does the same
+    /// as `stop` but can only store the result in
+    /// [`finalize_status`](Self::finalize_status). After
+    /// [`shutdown`](Self::shutdown) has already returned the result, this
+    /// returns `Ok(())`.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] if finalizing failed (the WAV header was left unpatched
-    /// and the file is unreadable) or the pump thread panicked.
+    /// [`Error::Io`] if finalizing failed (for a WAV, the header was left
+    /// unpatched and the file is unreadable) or the pump thread panicked.
     pub fn stop(mut self) -> Result<()> {
         // `self` is consumed, so the `Drop` that follows finds `handle` already
         // taken and does nothing — the join happens exactly once.
-        Ok(self.shutdown()?)
+        Ok(self.shutdown().unwrap_or(Ok(()))?)
     }
 
     /// Waits for a **finite** take to reach its own end, then finalizes.
@@ -600,7 +738,8 @@ impl Recorder {
     /// **On a [`Starved`](tutti_core::io::OnEmpty::Starved) source this blocks
     /// forever**, and every microphone capture is one — the pump parks and
     /// re-polls rather than ending. Choose the method that matches your
-    /// source's `ON_EMPTY`.
+    /// source's `ON_EMPTY`. After [`shutdown`](Self::shutdown) has already
+    /// returned the result, this returns `Ok(())` without blocking.
     ///
     /// # Errors
     ///
@@ -608,51 +747,81 @@ impl Recorder {
     pub fn wait(mut self) -> Result<()> {
         // Deliberately not `shutdown()`: the one line that differs is the one
         // that would truncate the take.
-        Ok(self.join_pump()?)
+        Ok(self.join_pump().unwrap_or(Ok(()))?)
+    }
+
+    /// Asks the pump to finish, without waiting for it. Idempotent.
+    ///
+    /// The driver notices on its next pass, finalizes, and stops;
+    /// [`is_finished`](Self::is_finished) then reads `true`, and
+    /// [`shutdown`](Self::shutdown) collects the result without blocking.
+    pub fn request_stop(&self) {
+        self.running.store(false, Ordering::Release);
+    }
+
+    /// Whether the pump is still meant to run: `false` once a stop was
+    /// requested.
+    ///
+    /// This reports the *flag*, not the driver: a finite source that ran out
+    /// has stopped while this still reads `true`. Ask
+    /// [`is_finished`](Self::is_finished) for that.
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
+    }
+
+    /// Whether the pump has stopped running passes, so
+    /// [`shutdown`](Self::shutdown) will not block.
+    ///
+    /// Never blocks. `true` once a finite source has ended its own take, or
+    /// once a requested stop has been noticed. `false` after a shutdown, since
+    /// there is no pump left to report on; a [`ManualDriver`] take is never
+    /// finished on its own (its caller runs the passes).
+    pub fn is_finished(&self) -> bool {
+        self.handle.as_ref().is_some_and(|h| h.is_finished())
+    }
+
+    /// Stops the pump, joins it and returns the sink's finalize result, leaving
+    /// the recorder in place.
+    ///
+    /// [`stop`](Self::stop) for a host that stores the take where it cannot be
+    /// moved out (a component, a field). `None` when a shutdown already ran,
+    /// which is what makes a second finalize unrepresentable rather than a
+    /// panic. Blocks for at most one pass (or one park); after
+    /// [`is_finished`](Self::is_finished) it does not block at all.
+    ///
+    /// Clearing the stop flag is the half that matters for a **live** source.
+    /// The pump loop exits on its own only for a finite one
+    /// ([`OnEmpty::EndOfStream`] breaks); a starving source — every microphone
+    /// capture — parks and re-polls forever, so nothing else ever reaches the
+    /// `finalize` below it.
+    pub fn shutdown(&mut self) -> Option<std::io::Result<()>> {
+        self.request_stop();
+        self.join_pump()
     }
 
     /// Returns the handle where a drop-path finalize leaves its outcome.
     ///
     /// Take it *before* dropping the recorder; it outlives the recorder. After
-    /// [`stop`](Self::stop) or [`wait`](Self::wait) it stays untouched, since
-    /// those return the result directly.
+    /// [`stop`](Self::stop), [`wait`](Self::wait) or
+    /// [`shutdown`](Self::shutdown) it stays untouched, since those return the
+    /// result directly.
     pub fn finalize_status(&self) -> Arc<FinalizeStatus> {
         Arc::clone(&self.status)
-    }
-
-    /// Break the pump loop, join the thread, and surface the finalize result.
-    ///
-    /// The shared body of [`stop`](Self::stop) and [`Drop`]. Taking `handle`
-    /// is what makes it once-only: a second call finds `None` and returns
-    /// `Ok(())` without joining anything.
-    ///
-    /// Clearing `running` is the half that matters for a **live** source. The
-    /// pump loop exits on its own only for a finite one
-    /// ([`OnEmpty::EndOfStream`] breaks); a starving source — every microphone
-    /// capture — parks and re-polls forever, so nothing else ever reaches the
-    /// `finalize` below it.
-    fn shutdown(&mut self) -> std::io::Result<()> {
-        self.running.store(false, Ordering::Release);
-        self.join_pump()
     }
 
     /// Join the pump and surface its finalize result, leaving `running`
     /// alone.
     ///
     /// The half [`shutdown`](Self::shutdown) and [`wait`](Self::wait) share,
-    /// and the whole difference between them is the line above this call.
-    /// Taking `handle` is what makes either once-only.
-    fn join_pump(&mut self) -> std::io::Result<()> {
-        match self.handle.take() {
-            // The driver finalizes the sink and returns that io::Result.
-            Some(handle) => handle.join(),
-            None => Ok(()),
-        }
+    /// and the whole difference between them is the flag clear before this
+    /// call. Taking `handle` is what makes either once-only.
+    fn join_pump(&mut self) -> Option<std::io::Result<()>> {
+        // The driver finalizes the sink and returns that io::Result.
+        self.handle.take().map(|handle| handle.join())
     }
 }
 
-/// Stop, join and finalize a recorder nobody called [`stop`](Recorder::stop)
-/// on.
+/// Stop, join and finalize a recorder nobody shut down.
 ///
 /// Without this, dropping a live recorder leaks the pump thread *and* the
 /// take: the loop only breaks on `running`, so a
@@ -665,11 +834,10 @@ impl Recorder {
 /// caller reads through a handle taken before the drop.
 impl Drop for Recorder {
     fn drop(&mut self) {
-        // `stop` consumed `self` and already took `handle`, so this is a no-op
-        // on that path and must not overwrite the status it deliberately left
-        // clear.
-        if self.handle.is_some() {
-            let result = self.shutdown();
+        // `stop`, `wait` and `shutdown` already took `handle`, so this is a
+        // no-op on those paths and must not overwrite the status they
+        // deliberately left clear.
+        if let Some(result) = self.shutdown() {
             self.status.set(result);
         }
     }
@@ -678,6 +846,7 @@ impl Drop for Recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WavOut;
     use tutti_core::io::{AudioIn, OnEmpty};
     use tutti_core::pcm::BitDepth;
     use tutti_core::ChannelLayout;
@@ -1103,5 +1272,167 @@ mod tests {
              record one, or a caller cannot tell which shutdown ran"
         );
         assert!(hound::WavReader::open(&path).is_ok());
+    }
+
+    /// A sink that is not a WAV, over an element that is not `f32`: the pump
+    /// is generic over both, and a test sink can be read back directly.
+    #[derive(Clone)]
+    struct Collect(Arc<std::sync::Mutex<Vec<i16>>>);
+
+    impl AudioOut<i16> for Collect {
+        fn layout(&self) -> ChannelLayout {
+            ChannelLayout::STEREO
+        }
+        fn write(&mut self, interleaved: &[i16]) {
+            self.0.lock().unwrap().extend_from_slice(interleaved);
+        }
+        fn finalize(self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A finite stereo `i16` ramp: frame `k` is `(k, -k)`.
+    struct RampI16 {
+        frames: usize,
+        pos: usize,
+    }
+
+    impl AudioIn<i16> for RampI16 {
+        const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
+
+        fn layout(&self) -> ChannelLayout {
+            ChannelLayout::STEREO
+        }
+
+        fn poll_into(&mut self, out: &mut [i16]) -> Samples {
+            let fits = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO).get();
+            let n = (self.frames - self.pos).min(fits);
+            for i in 0..n {
+                let k = (self.pos + i) as i16;
+                out[i * 2] = k;
+                out[i * 2 + 1] = -k;
+            }
+            self.pos += n;
+            Samples(n)
+        }
+    }
+
+    /// **A named capacity bounds every pass**, over any sink and element.
+    ///
+    /// `bevy-tutti`'s `AudioPump` hands its capacity through here, so this is
+    /// the property its `Samples(64)` relies on: 1000 frames at 64 per pass is
+    /// fifteen full passes and a 40-frame tail, then `Ended`. The values are
+    /// read back from the sink, so a pass that skipped or repeated frames fails
+    /// on the content, not just the count.
+    ///
+    /// *Mutation:* size the scratch from `SCRATCH_FRAMES` instead of `frames`
+    /// in `start_with_capacity`. The first pass then writes all 1000 frames and
+    /// the `Wrote(64)` assertion fails.
+    #[test]
+    fn a_named_capacity_bounds_each_pass_over_any_sink() {
+        let seen = Collect(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let (driver, pump) = ManualDriver::new();
+        let rec = Recorder::start_with_capacity(
+            RampI16 {
+                frames: 1000,
+                pos: 0,
+            },
+            seen.clone(),
+            Samples(64),
+            driver,
+        )
+        .expect("stereo into stereo");
+
+        for pass in 0..15 {
+            assert_eq!(
+                pump.pump_once(),
+                Some(PumpPass::Wrote(Samples(64))),
+                "pass {pass} must move exactly the named capacity"
+            );
+        }
+        assert_eq!(pump.pump_once(), Some(PumpPass::Wrote(Samples(40))));
+        assert_eq!(pump.pump_once(), Some(PumpPass::Ended));
+        rec.stop().expect("a collecting sink finalizes cleanly");
+
+        let got = seen.0.lock().unwrap();
+        assert_eq!(got.len(), 2000, "1000 stereo frames are 2000 samples");
+        for (k, frame) in got.as_chunks::<2>().0.iter().enumerate() {
+            assert_eq!(*frame, [k as i16, -(k as i16)], "frame {k}");
+        }
+    }
+
+    /// **A zero capacity is one frame, not a take that never moves.**
+    ///
+    /// An empty scratch makes every poll return zero, and the source's
+    /// `ON_EMPTY` then reads that zero as its own: a finite take ends before
+    /// its first frame, a live one parks forever. `AudioPump` has always
+    /// clamped to one frame; the clamp moved here with it.
+    ///
+    /// *Mutation:* drop the clamp (`let frames = capacity;`). The first pass
+    /// then reports `Ended` with nothing written and this fails.
+    #[test]
+    fn a_zero_capacity_moves_one_frame_per_pass() {
+        let seen = Collect(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let (driver, pump) = ManualDriver::new();
+        let rec = Recorder::start_with_capacity(
+            RampI16 { frames: 3, pos: 0 },
+            seen.clone(),
+            Samples::ZERO,
+            driver,
+        )
+        .expect("stereo into stereo");
+
+        assert_eq!(pump.pump_until_dry(16), Samples(3));
+        assert_eq!(pump.pump_once(), Some(PumpPass::Ended));
+        rec.stop().expect("finalize");
+        assert_eq!(*seen.0.lock().unwrap(), [0, 0, 1, -1, 2, -2]);
+    }
+
+    /// **`shutdown` finalizes in place, once.**
+    ///
+    /// A component holding a take cannot move it into `stop`, so it calls
+    /// `shutdown` from a `&mut`. The first call returns the finalize result;
+    /// every later one returns `None`, and the `Drop` that follows records
+    /// nothing, since the caller already holds the result.
+    ///
+    /// *Mutations:* make `join_pump` return `Some(Ok(()))` when the handle is
+    /// gone (the second-call assertion fails); make `Drop` call
+    /// `self.status.set(Ok(()))` unconditionally (the `is_done` assertion
+    /// fails).
+    #[test]
+    fn shutdown_finalizes_in_place_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("in_place.wav");
+        let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+
+        let (driver, pump) = ManualDriver::new();
+        let mut rec =
+            Recorder::start_with(AlwaysLive, wav, driver).expect("matching stereo widths");
+        let status = rec.finalize_status();
+        assert!(matches!(pump.pump_once(), Some(PumpPass::Wrote(_))));
+
+        assert!(rec.is_running());
+        assert!(
+            matches!(rec.shutdown(), Some(Ok(()))),
+            "the first shutdown returns the finalize result"
+        );
+        assert!(!rec.is_running(), "a shutdown clears the run flag");
+        assert!(
+            rec.shutdown().is_none(),
+            "a second shutdown has nothing to join and must say so"
+        );
+        assert!(!rec.is_finished(), "no pump is left to report on");
+        assert_eq!(pump.pump_once(), None, "the loop is finalized and gone");
+
+        drop(rec);
+        assert!(
+            !status.is_done(),
+            "the drop after a shutdown must not record a second finalize"
+        );
+        let reader = hound::WavReader::open(&path).expect("finalized in place");
+        assert_eq!(
+            reader.len() as usize,
+            SCRATCH_FRAMES.interleaved_len(ChannelLayout::STEREO)
+        );
     }
 }

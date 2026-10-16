@@ -13,9 +13,9 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 
-use tutti_mod::{Adsr, Clock, Curve, CurveType, LfoShape, Polarity, Source, Wave};
+use tutti_mod::{Adsr, Curve, CurveType, Lfo, Macro, Polarity, Source};
 use tutti_nodes::automation::{RecordMode, Recorder};
-use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, PhaseIncrement, Seconds, UnitParam};
+use tutti_types::{Depth, ParamAddr, Seconds, UnitParam};
 
 /// One modulatable parameter: an entity and the param's address on its
 /// node. A native param is a [`UnitParam`]; a hosted plugin's is its own
@@ -127,115 +127,19 @@ impl std::fmt::Debug for ModSource {
     }
 }
 
-/// How an [`Lfo`] keeps time.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LfoRate {
-    /// One cycle per this many beats: bar-locked, follows seeks, holds while
-    /// the transport is stopped.
-    Beats(BeatDuration),
-    /// Cycles per second on the graph's play clock, running while stopped.
-    Hz(Hz),
-}
-
-/// A low-frequency oscillator: a closed-form wave on a clock, no node.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Lfo {
-    /// The wave.
-    pub shape: LfoShape,
-    /// The random shapes' seed; ignored by the others.
-    pub seed: u64,
-    /// Its clock.
-    pub rate: LfoRate,
-    /// Added to the cycle position.
-    pub phase: PhaseIncrement,
-}
-
-impl Lfo {
-    /// `shape` at one cycle per second.
-    pub const fn new(shape: LfoShape) -> Self {
-        Self {
-            shape,
-            seed: 0,
-            rate: LfoRate::Hz(Hz(1.0)),
-            phase: PhaseIncrement(0.0),
-        }
-    }
-
-    /// A sine.
-    pub const fn sine() -> Self {
-        Self::new(LfoShape::Sine)
-    }
-
-    /// A triangle.
-    pub const fn triangle() -> Self {
-        Self::new(LfoShape::Triangle)
-    }
-
-    /// A square.
-    pub const fn square() -> Self {
-        Self::new(LfoShape::Square)
-    }
-
-    /// A rising saw.
-    pub const fn saw() -> Self {
-        Self::new(LfoShape::Sawtooth)
-    }
-
-    /// One cycle per `per_cycle` beats.
-    pub const fn rate(mut self, per_cycle: BeatDuration) -> Self {
-        self.rate = LfoRate::Beats(per_cycle);
-        self
-    }
-
-    /// `rate` cycles per second.
-    pub const fn hz(mut self, rate: Hz) -> Self {
-        self.rate = LfoRate::Hz(rate);
-        self
-    }
-
-    /// Starting `phase` cycles in.
-    pub const fn phase(mut self, phase: PhaseIncrement) -> Self {
-        self.phase = phase;
-        self
-    }
-
-    /// The random shapes' seed.
-    pub const fn seed(mut self, seed: u64) -> Self {
-        self.seed = seed;
-        self
-    }
-}
+// `Lfo` and `Macro` are `tutti-mod`'s builders, declared as they are. A
+// follower and a note envelope wrap `tutti-mod`'s too, adding what feeds
+// their node: an entity, which only this crate can name.
 
 impl ModSourceKind for Lfo {
     fn declare(&self) -> Source {
-        let clock = match self.rate {
-            LfoRate::Beats(per_cycle) => Clock::Beats {
-                per_cycle,
-                phase: self.phase,
-            },
-            LfoRate::Hz(rate) => Clock::Seconds {
-                rate,
-                phase: self.phase,
-                anchor: None,
-            },
-        };
-        Source::Lfo {
-            wave: Wave::Shape {
-                shape: self.shape,
-                seed: self.seed,
-            },
-            clock,
-        }
+        (*self).into()
     }
 }
 
-/// A constant the user moves: a raw value, saturating past ±1.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Macro(pub f32);
-
 impl ModSourceKind for Macro {
     fn declare(&self) -> Source {
-        Source::Macro { value: self.0 }
+        (*self).into()
     }
 }
 
@@ -245,41 +149,36 @@ impl ModSourceKind for Macro {
 pub struct Follower {
     /// The entity it follows.
     pub input: Entity,
-    /// Rise time constant.
-    pub attack: Seconds,
-    /// Fall time constant.
-    pub release: Seconds,
+    /// Its attack and release.
+    pub envelope: tutti_mod::Follower,
 }
 
 impl Follower {
-    /// Follows `input` with a 5 ms attack and a 100 ms release.
+    /// Follows `input` with a 5 ms attack and a 100 ms release
+    /// (`tutti_mod::Follower::new`).
     pub const fn new(input: Entity) -> Self {
         Self {
             input,
-            attack: Seconds(0.005),
-            release: Seconds(0.1),
+            envelope: tutti_mod::Follower::new(),
         }
     }
 
     /// Rises with `attack`.
     pub const fn attack(mut self, attack: Seconds) -> Self {
-        self.attack = attack;
+        self.envelope = self.envelope.attack(attack);
         self
     }
 
     /// Falls with `release`.
     pub const fn release(mut self, release: Seconds) -> Self {
-        self.release = release;
+        self.envelope = self.envelope.release(release);
         self
     }
 }
 
 impl ModSourceKind for Follower {
     fn declare(&self) -> Source {
-        Source::Follower {
-            attack: self.attack,
-            release: self.release,
-        }
+        self.envelope.into()
     }
 
     fn feed(&self) -> Option<ModFeed> {
@@ -295,7 +194,7 @@ pub struct NoteEnvelope {
     /// Its event output.
     pub port: u16,
     /// The stages.
-    pub adsr: Adsr,
+    pub envelope: tutti_mod::NoteEnvelope,
 }
 
 impl NoteEnvelope {
@@ -304,14 +203,14 @@ impl NoteEnvelope {
         Self {
             midi,
             port: 0,
-            adsr,
+            envelope: tutti_mod::NoteEnvelope::new(adsr),
         }
     }
 }
 
 impl ModSourceKind for NoteEnvelope {
     fn declare(&self) -> Source {
-        Source::NoteEnvelope { adsr: self.adsr }
+        self.envelope.into()
     }
 
     fn feed(&self) -> Option<ModFeed> {

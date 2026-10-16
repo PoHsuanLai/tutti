@@ -42,7 +42,7 @@
 //! instead of flapping between two back-to-back bounces.
 
 use bevy_ecs::prelude::*;
-use tutti_plugin::RenderMode;
+use tutti_plugin::{needs_announcement, RenderMode};
 
 use crate::export::ExportInFlight;
 use crate::plugin_host::editor::PluginEmitter;
@@ -71,7 +71,8 @@ pub struct PluginRenderMode(
 ///
 /// A plugin loaded *during* a render is told on the frame it appears: the
 /// per-plugin [`RenderModeAnnounced`] marker is consulted alongside the mode
-/// change rather than instead of it — see `needs_announcement`. Without that,
+/// change rather than instead of it — see [`needs_announcement`], the rule
+/// `tutti-plugin` owns. Without that,
 /// a plugin that finished loading mid-bounce would render the rest of the file
 /// in the wrong mode.
 pub fn plugin_render_mode_drive(
@@ -102,23 +103,6 @@ pub fn plugin_render_mode_drive(
     announced.0 = wanted;
 }
 
-/// Whether a plugin needs telling, given whether the mode moved this frame and
-/// whether this plugin has ever been told one.
-///
-/// Split out for the same reason [`super::latency::plugin_latency_poll`] splits
-/// its rule: reaching the loop body needs a `PluginEmitter`, which needs a
-/// `PluginHandle`, which needs a launched subprocess. Keeping the decision here
-/// means it can be pinned without one — and this half is where the interesting
-/// case lives.
-///
-/// `!told` is not redundant with `mode_changed`. A plugin that finishes loading
-/// *during* a bounce arrives on a frame when the mode did not move, so a rule
-/// keyed only on the change would leave it rendering the remainder of the file
-/// in whatever mode it defaulted to.
-fn needs_announcement(mode_changed: bool, told: bool) -> bool {
-    mode_changed || !told
-}
-
 /// Marks a plugin as having been told a render mode at least once.
 ///
 /// Distinguishes "the mode is `Realtime` and this plugin knows" from "the mode
@@ -132,16 +116,17 @@ pub struct RenderModeAnnounced;
 mod tests {
     //! A `PluginEmitter` needs a `PluginHandle`, which needs a launched
     //! subprocess, so no test here can put a plugin in the world. These cover
-    //! the two halves that do not need one: which mode a frame resolves to, and
-    //! `needs_announcement`'s rule about who gets told.
+    //! the half that does not need one: which mode a frame resolves to.
+    //! `needs_announcement`'s rule about who gets told is `tutti-plugin`'s,
+    //! and its truth table is pinned there.
     //!
     //! **Not covered here:** a `set_render_mode` call actually reaching a
-    //! plugin. Deleting the call in the loop body leaves all seven of these
+    //! plugin. Deleting the call in the loop body leaves all four of these
     //! green — they observe the decision, not the delivery. That half is covered
     //! one crate down, in `tutti-plugin`'s
     //! `tests/vst2_in_process_render_mode.rs`, which loads the reference probe
     //! and reads back the process level the plugin actually saw. Stated rather
-    //! than implied, because a reader counting seven passing tests would
+    //! than implied, because a reader counting four passing tests would
     //! otherwise assume this file covers the wire.
 
     use super::*;
@@ -236,45 +221,6 @@ mod tests {
             RenderMode::Offline,
             "the mode must not flap between two consecutive bounces"
         );
-    }
-
-    /// The complete truth table of `needs_announcement(mode_changed, told)`.
-    ///
-    /// A two-argument predicate has exactly four inputs, so one table covers it
-    /// exhaustively where separate functions covered it by hand. Each row
-    /// carries the reason it matters:
-    ///
-    /// - `(false, true)` is the only `false`, and it is what keeps this from
-    ///   re-announcing every frame: three of the four formats can only take the
-    ///   mode while deactivated, so without this check every plugin would run a
-    ///   deactivate/reactivate cycle per frame for the life of the session.
-    /// - `(false, false)` is the mid-render load — a plugin finishing its
-    ///   subprocess launch during a bounce arrives when `mode_changed` is
-    ///   already `false`. Keyed on the change alone it would render the rest of
-    ///   the file in the wrong mode, and nothing downstream would report it.
-    /// - the two `mode_changed` rows are the ordinary case: a change reaches
-    ///   every plugin, told or not.
-    #[test]
-    fn needs_announcement_tells_everyone_on_a_change_and_the_untold_always() {
-        let cases = [
-            (false, true, false, "already told, mode did not move"),
-            (
-                false,
-                false,
-                true,
-                "a plugin loaded mid-render must still be told the current mode",
-            ),
-            (true, true, true, "already told, mode moved"),
-            (true, false, true, "never told, mode moved"),
-        ];
-
-        for (mode_changed, told, expected, why) in cases {
-            assert_eq!(
-                needs_announcement(mode_changed, told),
-                expected,
-                "needs_announcement(mode_changed={mode_changed}, told={told}): {why}"
-            );
-        }
     }
 
     /// An `ExportInFlight` carrying a task that is already finished still counts.

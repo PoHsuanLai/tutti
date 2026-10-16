@@ -331,7 +331,7 @@ pub fn plugin_load_promote(
                 #[cfg(feature = "modulation")]
                 commands
                     .entity(entity)
-                    .insert(crate::plugin_host::PluginParamValues::read(&handle));
+                    .insert(crate::plugin_host::read_plugin_params(&handle));
                 commands
                     .entity(entity)
                     .insert((PluginEmitter { handle }, PluginHealth::default()));

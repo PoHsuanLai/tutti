@@ -93,5 +93,12 @@ pub mod catalog {
 // Per-plugin handles: the graph node and the main-thread control surface.
 pub use host::handles;
 
+// Host policy over a handle, written once for every host: the parameter
+// mirror and the job that fills it (nothing here spawns it), the death
+// debounce, and when a plugin must be told the render mode.
+pub use host::liveness::{Liveness, Verdict};
+pub use host::param_values::{ParamRead, PluginParamValues};
+pub use host::render_mode::needs_announcement;
+
 // Wire-contract types shared with `tutti-plugin-server`.
 pub mod server;

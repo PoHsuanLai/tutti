@@ -79,7 +79,7 @@ pub use load::{
     PluginRequest,
 };
 #[cfg(feature = "modulation")]
-pub use params::{plugin_param_edits, PluginParamValues};
+pub use params::{plugin_param_edits, read_plugin_params, PluginParamRead, PluginParamValues};
 #[cfg(feature = "export")]
 pub use render_mode::{plugin_render_mode_drive, PluginRenderMode, RenderModeAnnounced};
 pub use scan::{
@@ -157,8 +157,8 @@ impl PluginsRes {
 /// `GraphReconcileSystems` set) to be added before this plugin.
 ///
 /// With the `modulation` feature, each loaded plugin's
-/// [`PluginParamValues::read`] takes its handle's single
-/// `on_parameter_changed` slot (the GUI edits that move a lane's knob). A
+/// [`read_plugin_params`] ([`PluginParamValues::start`]) takes its handle's
+/// single `on_parameter_changed` slot (the GUI edits that move a lane's knob). A
 /// host installing its own callback on that handle replaces it, and the
 /// knobs stop following the plugin's GUI.
 ///

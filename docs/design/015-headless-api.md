@@ -1,8 +1,9 @@
 # 015: a Bevy-free tutti API layer
 
-Status: **proposed**, revised after review. PR 1 (§9) has landed; the
-rest has not. The user has made every decision it asked for (§11).
-§2's file:line citations are the survey of `bevy-tutti` before PR 1.
+Status: **in progress**. PRs 1 and 2 (§9) have landed; the rest has not.
+Each landed PR says so in a "Landed" note. The user has made every
+decision it asked for (§11). §2's file:line citations are the survey of
+`bevy-tutti` before PR 1.
 
 ## Summary
 
@@ -709,11 +710,13 @@ headless loop may call `update()` back to back, which would shrink a
 frame-counted window to microseconds. Each threshold becomes a `Duration`,
 measured on `PhaseCx::now`:
 
-- **The plugin-death debounce.** Today it is 3 frames (`health.rs:61-67`),
-  sized to outlast the crash flag's publish from the bridge's thread. The
-  rule becomes: dead after at least 3 consecutive unhealthy observations
-  spanning at least 50 ms (three 60 Hz frames). A healthy reading resets
-  it. The count still guards against one racy observation; the time keeps
+- **The plugin-death debounce.** It was 3 frames (`health.rs:61-67`
+  before PR 2), sized to outlast the crash flag's publish from the bridge's
+  thread. The rule is now (PR 2, `tutti_plugin::Liveness`): dead after at
+  least 3 consecutive unhealthy observations spanning at least 50 ms (three
+  60 Hz frame intervals). In a Bevy app that is the first unhealthy frame
+  at least 50 ms after the first: the 4th at a steady 60 Hz, later under
+  jitter. A healthy reading resets it. The count still guards against one racy observation; the time keeps
   the window when updates are fast.
 - **The state snapshot** of a healthy plugin: every 8 s, today's 512 frames
   at 60 Hz (`health.rs:76`).
@@ -1238,6 +1241,32 @@ not the loader; the loader-extension and write tests stay unchanged, as do
 
 **Exit:** `plugin_host/health.rs`'s, `params.rs`'s and
 `modulation/tests.rs`'s tests pass, calling the moved types.
+
+**Landed.** As scoped, with these specifics:
+
+- `tutti_plugin::{PluginParamValues, ParamRead, Liveness, Verdict,
+  needs_announcement}` at the crate root. `PluginParamValues` is still a
+  component on the plugin's entity until PR 6: `tutti-plugin` gained a
+  `bevy` feature (off by default, `bevy_ecs` derives only) for it, which
+  `bevy-tutti`'s `plugin` enables. Its edits apply through
+  `drain_edits(apply)`, which holds them until the read lands. Bevy's read
+  task is a separate `PluginParamRead` component, started by
+  `read_plugin_params`.
+- `Liveness::DEATHS` (3) and `DEFAULT_WINDOW` (50 ms), `with_window`; a
+  death is latched. `bevy-tutti`'s `PluginHealth` holds one and feeds it
+  `Instant::now()` each frame, so a crashed plugin is written off on the
+  first unhealthy frame at least 50 ms after the first (the 4th at a steady
+  60 Hz, later under jitter), not on its 3rd. Its adapter tests space their
+  frames half a window apart; the rule's own tests, with explicit `now`s,
+  are `tutti-plugin`'s. `PluginLiveness` stays as the component's mirror.
+- `tutti_mod::{Lfo, LfoRate, Macro, Follower, NoteEnvelope}`, each a
+  `Source` through `From`. `bevy_tutti::modulation` re-exports `Lfo`,
+  `LfoRate` and `Macro`; its `Follower` and `NoteEnvelope` wrap the
+  `tutti-mod` builder in an `envelope` field beside their entity. No
+  `Reflect` was added: none of these was reflected before.
+- `SoundFontUnit::with_preset` takes a `SampleRate`; `bevy-tutti`'s
+  off-thread build now applies the preset too.
+- The render-mode truth table moved to `tutti-plugin` with the rule.
 
 ### PR 3: the pump to `tutti-io`
 

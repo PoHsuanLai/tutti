@@ -163,6 +163,32 @@ impl SoundFontUnit {
         })
     }
 
+    /// Creates a unit over `soundfont` at `sample_rate`, playing `preset` on
+    /// `channel`: [`new`](Self::new) with the default
+    /// [`SynthesizerSettings`] at that rate, then
+    /// [`program_change`](Self::program_change).
+    ///
+    /// The rate is rounded to whole hertz (RustySynth's settings take an
+    /// `i32`). `channel` is 0..16 and `preset` the 7-bit program number,
+    /// as for `program_change`. Allocates, so call it off the audio thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` at
+    /// that rate (outside 16–192 kHz).
+    pub fn with_preset(
+        soundfont: Arc<SoundFont>,
+        sample_rate: SampleRate,
+        channel: i32,
+        preset: i32,
+    ) -> Result<Self> {
+        // rustysynth's settings field is `i32`; the cast is ours to make.
+        let hz = sample_rate.get().round() as i32;
+        let mut unit = Self::new(soundfont, &SynthesizerSettings::new(hz))?;
+        unit.program_change(channel, preset);
+        Ok(unit)
+    }
+
     /// Returns the rate this unit renders at: its settings' rate at
     /// construction, or the rate its graph prepared it at.
     pub fn sample_rate(&self) -> SampleRate {

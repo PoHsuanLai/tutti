@@ -573,3 +573,68 @@ fn test_clone_creates_independent_instance() {
     // Clone has extra note, should be louder
     assert!(rms_clone > rms_original);
 }
+
+/// Whether this target is the one the golden digest below was recorded on:
+/// Linux with glibc's libm. RustySynth's voices call `sin`, `exp` and `pow`,
+/// libm quality-of-implementation that differs in the last ulp between C
+/// runtimes, so the digest is asserted only where it was recorded.
+const GOLDEN_HERE: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
+
+/// FNV-1a over the frames' little-endian `f32` bits, left then right.
+fn digest(samples: &[(f32, f32)]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in samples
+        .iter()
+        .flat_map(|&(l, r)| [l, r])
+        .flat_map(f32::to_le_bytes)
+    {
+        h ^= u64::from(byte);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// A `with_preset` unit's first note-on renders that preset: preset 40
+/// (TimGM6mb's violin) on channel 3 at 44.1 kHz, middle C at velocity 100,
+/// 2048 frames in 64-frame blocks. The digest was recorded on Linux/glibc
+/// from this unit's render; elsewhere only the rate and the sound are
+/// asserted, so the preset itself is pinned only by the glibc golden digest.
+/// A non-integral rate rounds to the nearest hertz (44 100.6 → 44 101).
+///
+/// Mutations (each run on Linux/glibc, each failed): dropping the
+/// `program_change` from `with_preset` (the unit plays preset 0, the digest
+/// assert); building at `sample_rate` truncated to 44_000 Hz (the rate
+/// assert); the note on channel 0 instead of 3 (preset 0 again, the digest
+/// assert); `round` replaced by `trunc` (44 100.6 builds at 44 100, the
+/// rounding assert).
+#[test]
+fn a_preset_units_first_note_on_renders_that_preset() {
+    const PRESET: i32 = 40;
+    const CHANNEL: i32 = 3;
+    let rate = tutti_core::SampleRate(44_100.0);
+    let unit = SoundFontUnit::with_preset(load_test_soundfont(), rate, CHANNEL, PRESET)
+        .expect("TimGM6mb builds at 44.1 kHz");
+    assert_eq!(unit.sample_rate(), rate);
+    let fractional = SoundFontUnit::with_preset(
+        load_test_soundfont(),
+        tutti_core::SampleRate(44_100.6),
+        CHANNEL,
+        PRESET,
+    )
+    .expect("TimGM6mb builds at 44.1 kHz");
+    assert_eq!(
+        fractional.sample_rate(),
+        tutti_core::SampleRate(44_101.0),
+        "the rate rounds to the nearest hertz"
+    );
+
+    let mut hand = Hand::new(unit);
+    hand.note_on(CHANNEL, 60, 100);
+    let out = render_process_blocks(&mut hand, support::BLOCK, 2048 / support::BLOCK, &[]);
+    assert!(rms(&out) > 1e-3, "the note sounds: rms {}", rms(&out));
+
+    let got = digest(&out);
+    if GOLDEN_HERE {
+        assert_eq!(got, 0xcf94_549c_015d_9f17, "digest {got:#018x}");
+    }
+}

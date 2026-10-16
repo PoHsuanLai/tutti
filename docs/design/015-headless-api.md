@@ -1,6 +1,8 @@
 # 015: a Bevy-free tutti API layer
 
-Status: **proposed**. Doc only; nothing here has landed.
+Status: **proposed**, revised after review. Doc only; nothing here has
+landed. The crate name `tutti-session` is a working name, pending the
+user's choice (§11).
 
 ## Summary
 
@@ -42,8 +44,12 @@ option c).**
   failure was two umbrellas stacked so that the upper needed the lower's
   logic; this layout cannot form that stack (§3).
 
-The plan is seven PRs (§9), and `bevy-tutti` stays green after each one.
-§11 lists the four questions only the user can answer.
+**The user's decisions**, applied below:
+
+- `tutti` turns the layer on by default: `default = ["session"]` (§7).
+- `bevy-tutti` does **not** re-export the session (§6).
+- All seven PRs of §9 will run.
+- The crate name is still open. `tutti-session` is the working name (§11).
 
 ## 1. The constraint
 
@@ -67,12 +73,14 @@ umbrella, every crate. Any design must answer two questions:
 
 ## 2. Inventory: what a headless host hand-rolls today
 
-The survey covers `crates/bevy-tutti/src/`: about 15,800 non-test lines,
-doc comments included, counted up to each file's `#[cfg(test)]`.
+The survey covers `crates/bevy-tutti/src/`: about 15,280 non-test lines,
+doc comments included. The count stops at each file's `#[cfg(test)] mod`
+and leaves out the separate `tests.rs` files.
 
 Each piece below is one of two things:
 
-- **glue**: ECS components, systems, resources, events, assets or windows;
+- **glue**: ECS components, systems, resources, events, assets, windows, or
+  a scheduling choice that belongs to the host;
 - **logic**: engine behaviour that would be the same in any host.
 
 Logic moves. A row marked **(c)** goes to a single owning crate. The rest
@@ -86,7 +94,7 @@ goes to `tutti-session`.
 | `assemble`: engine, callback state, driver | `engine/build.rs:269-299` | logic | session builder |
 | `root_width` policy (plugin floor vs device width) | `engine/build.rs:326-330` | logic | session builder |
 | Resource insertion, click/MIDI entities | inside `build_on` | glue | stays |
-| `build_into` opening the device | `engine/build.rs:60-67` | logic | session builder |
+| `build_into` opening the device | `engine/build.rs:60-67` | logic | `SessionBuilder::build_device` |
 | `rerate` (detail below) | `engine/restart.rs:169-241` | logic | `Session::restart` |
 | `restart_device{,_on}`: the World/NonSend driver dance | `engine/restart.rs:98-160` | glue | stays, shrinks to a call |
 | `AudioEngineState`, `AudioDeviceState` mirrors | `engine/state.rs`, `engine/device_state.rs` | glue (the fault polling is logic) | the polling moves |
@@ -119,19 +127,21 @@ The ordered bootstrap in `build_on`, step by step:
 | Piece | Where | Kind | Destination |
 |---|---|---|---|
 | `GraphRuntime` (whole type, see below) | `graph/runtime.rs:106-954` | logic | `tutti_session::Graph` |
-| `ModHostOver`: target and feed resolution | `graph/runtime.rs:985-1023` | logic over an `Entity` key | session, keyed by a resolver trait (§4.6) |
+| `GraphRuntime::modulate` over `ModEntities` | `graph/runtime.rs:566` | logic over an `Entity` seam | session, over `ModKeys` (§4.6), in PR 4 |
+| `ModHostOver`: target and feed resolution | `graph/runtime.rs:985-1023` | logic, decodes `Entity::try_from_bits` (`:998`, `:1020`) | session; the decode stays in bevy-tutti's `ModKeys` impl |
 | `AudioSide` renderer, `PendingExport` | `graph/runtime.rs:1028-1142` | logic | session |
 | `AudioGraphRes(Mutex<GraphRuntime>)`, `AudioConfig`, `GraphSource` | `graph/resources.rs` | glue (the `Mutex` is only for `Sync`) | stays, wraps `Session` |
-| `commit_graph`, `commit_and_publish` | `graph/commit.rs:29-80` | logic | `Session::commit` |
+| `commit_graph`, `commit_and_publish` | `graph/commit.rs:29-80` | logic | `Phase::Commit` |
 | `ChannelCompensation`, `GraphLatency`, `publish`, `publish_sent` | `graph/latency.rs:110-168` | logic | session |
 | `LatencyCompensationPlugin`, the debug check | `graph/latency.rs:170-226` | glue | stays |
 | Topology from `PortSources`/`MasterSources`, diff-apply, `Changed<AudioNode>` | `graph/topology.rs`, `graph/wire.rs` | glue (the Entity layer) | stays |
 | The root-widen policy inside the rebuild | `graph/wire.rs` | logic | `Graph::widen_outputs` (already there) |
-| `GraphReconcileSystems`, `GraphDirty` | `graph/schedule.rs` | glue | stays, built from `Session::PHASES` (§4.4) |
+| `GraphDirty` | `graph/schedule.rs:99` | logic: it decides whether a commit goes out, and `after_commit` reads it (`reconcile.rs:428-436`) | replaced by the session's own edit flag (§4.4) |
+| `GraphReconcileSystems` | `graph/schedule.rs` | glue | stays, built from `PHASES` (§4.4) |
 | `spawn_audio_node` and friends | `graph/spawn.rs:114-212` | glue | stays |
 | Crossfade retry queue, 5 ms equal-amplitude fade | `graph/spawn.rs:327-429` (fade at `:367`) | logic | `Graph::crossfade` + session retry |
 | `CapturedControls` (plugin controls, meter) | `graph/capture.rs:57-151` | logic, bound to an entity | the capture moves; `bind` stays |
-| `EventFeeds` (named feeders merged per sink) | `graph/events.rs:80-110` | logic | session, keyed by `AudioNode` |
+| `EventFeeds` (named feeders merged per sink) | `graph/events.rs:80-110` | logic | session, keyed by `AudioNode` (§4.5) |
 | `GraphNode` trait, `param_graph_node!` list | `graph/events.rs:112-280` | logic (which controls are a `ParamSet`) | `tutti_session::SessionNode` |
 | Event `reconcile` | `graph/events.rs:292-347` | glue | stays |
 | `AudioParam<U, P>` | `graph/param.rs` | glue | stays |
@@ -139,7 +149,8 @@ The ordered bootstrap in `build_on`, step by step:
 | Pump drain/finalize systems | `graph/pump.rs:266-383` | glue | stays |
 | Transport, tap and metering resource wrappers | `graph/transport.rs`, `tap.rs`, `metering.rs` | glue | stays |
 
-`GraphRuntime` provides, all Bevy-free but for `bevy_log`:
+`GraphRuntime` provides, all Bevy-free but for `bevy_log` (`runtime.rs:243`,
+`:590`, `:905`, `:929`), which becomes `tracing` (§4.1):
 
 - `insert`, `insert_plugin`, `replace_plugin`, `replace` (with
   `ReplaceRefused`) and `remove`;
@@ -156,12 +167,14 @@ The ordered bootstrap in `build_on`, step by step:
 | Piece | Where | Kind | Destination |
 |---|---|---|---|
 | `collect` (detail below) | `modulation/reconcile.rs:204-292` | logic | session |
-| `apply` / `after_commit` protocol (detail below) | `modulation/reconcile.rs:325-444` | logic | `Session` update phases |
-| Unresolved-target warning after 240 updates | `modulation/reconcile.rs:54` | logic | session |
-| `ModulationState` | `modulation/reconcile.rs:39-105` | logic, keyed by `Entity` | session, keyed by `SourceId`/`AudioNode` |
+| `apply` / `after_commit` protocol (detail below) | `modulation/reconcile.rs:325-444` | logic | `Phase::Modulation`, `Phase::AfterCommit` |
+| Unresolved-target warning after 240 frames | `modulation/reconcile.rs:54` | logic | session, as a time (§4.4) |
+| `ModulationState` | `modulation/reconcile.rs:39-105` | logic, keyed by `Entity` | session, keyed by `tutti_mod`'s `TargetKey`/`SourceKey` |
 | `ModulationRefused` → route/target entity | `modulation/reconcile.rs:109-185` | glue | stays |
-| `Declared` query, `ModEntities` | `modulation/reconcile.rs:186-324` | glue | stays, implements the resolver |
-| `Lfo`, `Macro`, `Follower`, `NoteEnvelope` → `tutti_mod::Source` | `modulation/declare.rs:142-330` | logic | **(c)** `tutti-mod` |
+| `ModEntities` (`node`, `plugin_value`, `feed`) | `modulation/reconcile.rs:174-182` | the seam | becomes `ModKeys` (§4.6) |
+| `Declared` query | `modulation/reconcile.rs:186-324` | glue | stays, implements `ModKeys` |
+| `Lfo`, `Macro` → `tutti_mod::Source` | `modulation/declare.rs:142-243` | logic | **(c)** `tutti-mod` |
+| `Follower`, `NoteEnvelope` | `modulation/declare.rs:245-330` | logic (the `Source`) plus glue (the `Entity` they follow, `ModFeed::Audio(Entity)` at `:79`) | split: the `Source` half to **(c)** `tutti-mod`, the feed stays |
 | `AutomationTake`, `close_takes` | `modulation/declare.rs:446-530` | logic | session (`tutti-mod`'s `Recorder` plus the close rule) |
 | `ModSource`/`ModRoute`/`ModRange`/`Automation` components, `Mods` | `modulation/declare.rs` | glue | stays |
 
@@ -175,19 +188,24 @@ The `apply` / `after_commit` protocol:
 3. While targets are unresolved, re-apply and commit again.
 4. Send the resyncs.
 
+Both halves read the declarations: `after_commit` collects them again from
+the ECS queries (`reconcile.rs:416-444`). §4.4 says how the session gets
+them.
+
 ### 2.4 `plugin_host/`
 
 | Piece | Where | Kind | Destination |
 |---|---|---|---|
 | Load (detail below) | `plugin_host/load.rs:225-375` | logic | `PluginLoad` job + `Session::add_plugin` |
-| At most 2 concurrent loads | `plugin_host/load.rs:72` | logic | session |
+| At most 2 concurrent loads (`MAX_CONCURRENT_LOADS`) | `plugin_host/load.rs:72` | glue: a rule for Bevy's shared task pool | stays |
 | The ECS request/observer shape | `plugin_host/load.rs:115-224` | glue | stays |
 | Meter cell bound from the metronome | `plugin_host/bind.rs` | logic | session |
-| Latency poll: declared vs graph, `refresh_node_latency` | `plugin_host/latency.rs:73-96` | logic | session update phase |
-| `PluginParamValues` mirror | `plugin_host/params.rs:48-122` | logic | **(c)** `tutti-plugin` |
-| GUI edit queue → knob | `plugin_host/params.rs:135-169` | logic | session |
-| Health debounce: 3 deaths, then remove; snapshot every 512 updates | `plugin_host/health.rs:67-260` | logic | **(c)** `tutti-plugin` (the counter), session (the removal) |
-| Render mode: Offline during an export | `plugin_host/render_mode.rs:58-130` | logic | session export job |
+| Latency poll: declared vs graph, `refresh_node_latency` | `plugin_host/latency.rs:73-96` | logic | `Phase::Plugins` |
+| `PluginParamValues` mirror | `plugin_host/params.rs:48-122` | logic, except `read`'s spawn on `AsyncComputeTaskPool` (`:72`) | **(c)** `tutti-plugin`, with the read split out as a job (PR 2) |
+| GUI edit queue → knob | `plugin_host/params.rs:135-169` | logic | `Phase::Plugins` |
+| Health debounce: 3 deaths, then remove | `plugin_host/health.rs:67`, `:187-240` | logic | **(c)** `tutti-plugin` (the rule), session (the removal) |
+| State snapshot every 512 frames | `plugin_host/health.rs:76`, `:251-300` | logic, except the spawn on `AsyncComputeTaskPool` (`:295`) | session, with the snapshot as a job |
+| Render mode: Offline while any export is in flight | `plugin_host/render_mode.rs:58-130` | logic, level-triggered | `Phase::RenderMode` (§4.3), `needs_announcement` to **(c)** `tutti-plugin` |
 | `scan.rs`, `catalog.rs` | | glue over `tutti-plugin` | stays |
 | `editor.rs`, `native_window.rs`, `live_resize.rs` | | Bevy window glue | stays |
 
@@ -203,11 +221,12 @@ A load, step by step:
 | Piece | Where | Kind | Destination |
 |---|---|---|---|
 | `LiveMidi`: a queue node plus a feed | `midi/nodes.rs:93-157` | logic | session |
-| Clip sequencing (detail below) | `midi/sequence.rs:101-188` | logic | `Session::play_clip` |
+| Clip sequencing (detail below) | `midi/sequence.rs:101-188` | logic | `Session::midi().play_clip` |
 | Route rules → input ports, with a fallback | `midi/inbound/route.rs:143-206` | logic | **(c)** `tutti-midi-runtime` (pure compile) |
 | `MidiOutRouter`, `drain_receiver_through`, `MidiOutDrops`, JR stamping | `midi/hardware/hardware_out.rs:35-300` | logic | session (it joins runtime and hardware) |
 | Clock-out pump | `midi/hardware/clock_out.rs:55-80` | logic | session |
-| `track_out`, `negotiation`, `metadata`, `device` | `midi/hardware/` | glue over the runtime's state machines | stays |
+| `track_out`, `metadata`, `device` | `midi/hardware/` | glue over the runtime's state machines | stays |
+| MIDI-CI and UMP endpoint discovery | `midi/hardware/negotiation.rs` | glue over `tutti-midi-runtime`'s `CiResponder`/`CiInitiator` | stays; out of scope for the session (§10) |
 | `MidiFileContents` sniff and decode | `midi/file.rs:100-168` | logic | **(c)** `tutti-midi-file` |
 | SMF → `(Beat, MidiEvent)` | not in the engine | missing | **(c)** `tutti-midi-file` |
 | Asset loader, write tasks | `midi/file.rs:169-330` | glue | stays |
@@ -223,10 +242,12 @@ unplayable.
 | `memory_voice`, `voice_width` | `sampler/voice.rs:149-186` | logic | **(c)** `tutti-sampler` |
 | `GraphNode` impls for voices | `sampler/voice.rs:53-100` | logic | session's `SessionNode` list |
 | `DiskStreamerRes`, `WaveAssetLoader` | `sampler/` | glue | stays |
-| `.sf2` → `SoundFontUnit` at the graph rate, then `program_change` | `soundfont.rs:182-296` | logic | **(c)** `tutti-soundfont` |
+| `soundfont_playback_system`, `promote_pending_soundfonts` | `soundfont.rs:182-296` | mostly glue (queries, `AsyncComputeTaskPool`, commands); the logic is the rate cast and `SoundFontUnit::new` (`:205-212`) and the `program_change` (`:266`) | the logic to **(c)** `tutti-soundfont`; the systems stay |
 | Asset and pending task | `soundfont.rs` | glue | stays |
 | Export pipeline (detail below) | `export/run.rs:50-335` | logic | `ExportJob` |
-| `ExportRequest`, observers, `poll_exports` | `export/request.rs`, `export/run.rs:336-372` | glue | stays |
+| `ExportRequest` component: `ExportSource::Node(Entity)` (`request.rs:61`), `PrepareGraph = Fn(&World)` (`:609`) | `export/request.rs` | glue over a request | stays; translates into the session's request (§4.3) |
+| `NodeNames`: entity ↔ node, error names through `Name` | `export/run.rs:272-296` | glue | stays; maps the session's `AudioNode`s back |
+| Observers, `poll_exports` | `export/run.rs:336-372` | glue | stays |
 | `io/mod.rs` | | re-exports | stays |
 
 The export pipeline, step by step:
@@ -242,16 +263,17 @@ The export pipeline, step by step:
 
 ### 2.7 Headline
 
-About **4,600 of 15,800 non-test lines (≈30%) move**. The figure includes
+About **4,600 of 15,280 non-test lines (≈30%) move**. The figure includes
 doc comments and is an estimate.
 
 - Half of it is three pieces: `GraphRuntime` (1,142 lines, almost all of it),
   the export job (≈350) and the modulation protocol (≈650 across
   `reconcile.rs` and `declare.rs`).
-- About 600 of those lines are **(c)** moves into single owning crates.
+- About 550 of those lines are **(c)** moves into single owning crates.
 - The rest is glue, and it stays: topology/wire, spawn, the param
-  components, the asset loaders, the plugin windows, the MIDI-CI device
-  state, the request/observer shapes, and the schedule.
+  components, the asset loaders and their systems, the plugin windows, the
+  MIDI-CI device state, the request/observer shapes, the load cap and the
+  schedule.
 
 One gap is missing everywhere, not just in bevy-tutti: converting an SMF to
 timed events. `ParsedMidiFile` holds midly messages; `ParsedClipFile::timed`
@@ -268,8 +290,10 @@ needing logic the other owns?
   both depend on it; neither depends on the other.
 - No umbrella is "lower", so the failure's shape cannot form. The crate is
   the *bottom* of the composition, never the middle of a stack.
-- The risk is a second god-crate. §4.1 bounds it: it holds composition only,
-  and anything with a single owner goes to that owner.
+- The risks are a second god-crate and a third umbrella. §4.1 bounds the
+  first: it holds composition only, and anything with a single owner goes to
+  that owner. §8 check 4 bounds the second: it may not re-export a crate
+  whole.
 
 **(b) Logic in `tutti`, with `bevy-tutti` depending on `tutti`.**
 
@@ -303,7 +327,7 @@ and so on).
 
 - This only moves the composition problem up one level: something must
   still own their order (§4.4) and their shared state (the
-  `ChannelCompensation` table, the export's render-mode announcement).
+  `ChannelCompensation` table, the export's render-mode phase).
 - It loses to (a) on every count but crate size.
 
 **Recommended: (a), fed by (c).**
@@ -329,6 +353,7 @@ plugin crates, and `core/` is the floor.
 |---|---|---|
 | `tutti-types`, `tutti-graph`, `tutti-core` | always | the graph, engine and transport |
 | `tutti-nodes` | always | click, control lanes, `Modulation` |
+| `tracing` | always | logging; what `GraphRuntime`'s `bevy_log` calls become |
 | `tutti-cpal` | `device` | the sound card; off means offline only, with no ALSA headers |
 | `tutti-io` | `audio-io` | pump, recorder, mic |
 | `tutti-mod` | `modulation` | declarations |
@@ -340,11 +365,21 @@ plugin crates, and `core/` is the floor.
 | `tutti-export` | `export` | |
 | `tutti-plugin` | `plugin` (+ `vst2`/`vst3`/`clap`/`au`) | |
 
+**Logging is `tracing`.** The workspace has no `log` dependency; `tracing
+0.1` is what `tutti-sampler`, `tutti-midi-file`, `tutti-midi-hardware` and
+`tutti-plugin` already use. `bevy_log` is a `tracing` subscriber, so a Bevy
+app sees the session's events where it sees `GraphRuntime`'s today, and a
+headless host installs any subscriber it likes.
+
 Constraints on the crate:
 
+- **`default = []`.** Every subsystem is a feature, as on every engine
+  crate.
 - **There is no `bevy` feature, and nothing reaches Bevy.** Any type a Bevy
   app wants reflected lives in the crate that owns it, behind that crate's
   `bevy` feature, as today (`tutti-mod/bevy`).
+- **It is not an umbrella.** It never re-exports a crate whole (§8 check
+  4). It re-exports single items its own signatures take, as any crate does.
 - No tutti crate depends on `tutti-session` except `bevy-tutti` and
   `tutti`.
 - `tutti-session` names neither umbrella.
@@ -353,7 +388,7 @@ Constraints on the crate:
 
 `tutti-plugin-server` stays out, as it does for `tutti`. A host that runs
 plugins out of process builds the server binary, as `bevy-tutti`'s tests
-do.
+do. The session's own plugin tests need it too, and fail without it (§8).
 
 ### 4.2 The types
 
@@ -362,19 +397,19 @@ pub struct SessionBuilder { /* options */ }
 pub struct Session { /* graph, transport, engine side, subsystems */ }
 pub struct Graph { /* today's GraphRuntime: Editor, nodes, feeds, pool */ }
 
-pub enum Output {
-    Device(DeviceSpec),                       // `device`
-    Offline { rate: SampleRate, channels: ChannelLayout, max_block: Samples },
-}
+/// The sound card: owns the `TuttiDriver`. `!Send`, so it stays on the
+/// thread that opened it.
+#[cfg(feature = "device")]
+pub struct Device { driver: TuttiDriver, _not_send: PhantomData<*const ()> }
 
 /// A node that may enter the graph: today's `GraphNode`, renamed.
 /// `params` says which of its controls is a `ParamSet`.
 pub trait SessionNode: IntoNode { fn params(c: &Self::Controls) -> Option<ParamSet> { None } }
 
 pub enum SessionEvent {
-    PluginDied { node: AudioNode },           // after the debounce
+    PluginDied { node: AudioNode },           // after the debounce (§4.4)
     PluginLatencyChanged { node: AudioNode, latency: Samples },
-    ModulationRefused(ModRefusal),            // keyed by SourceId / ParamRef
+    ModulationRefused(ModRefusal),            // keyed by the host's TargetKey / SourceKey / RouteKey (§4.7)
     ExportDone(Result<ExportOutput, ExportError>),
     DeviceFault(StreamFault),
     MidiOutDropped(u64),
@@ -388,57 +423,110 @@ pub enum SessionEvent {
   swaps.
 - **The Entity layer is a Bevy concern.** It exists so a *component* can be
   re-bound to a new node.
-- **`Session` is `Send`, not `Sync`**, and owned by one control thread.
-  This is the Bevy main world's role today. `bevy-tutti` keeps its
-  `Mutex`, which exists only for `Sync`.
-- **Blocking work is a `Send` job the host places.** A plugin open, a
-  SoundFont build and an export render are each a value with
-  `fn run(self) -> Done`. The host runs it on any thread and hands `Done`
-  back to the session on the control thread.
-  - This is `tutti-export`'s existing rule, "spawns no threads", applied to
-    the whole layer.
-  - `bevy-tutti` places jobs on `AsyncComputeTaskPool`. A CLI calls
-    `run()` inline.
-  - Each job has a `_blocking` convenience on `Session` that does both
-    halves.
+
+**`Session` is `Send`, not `Sync`. `Device` is neither.**
+
+- The session is owned by one control thread, the Bevy main world's role
+  today. `bevy-tutti` keeps `AudioGraphRes(Mutex<Session>)`; the `Mutex`
+  exists only for `Sync`.
+- The device is split out because its stream may not move.
+  `cpal::Stream` is `!Send`. `tutti-cpal` wraps it as `Send` with an
+  `unsafe impl` whose safety argument is that the stream is created and
+  dropped on the control thread (`driver_seam.rs:179-183`). `TuttiDriver`
+  is therefore `Send` but not `Sync` (`driver.rs:89-91`), which is why
+  `bevy-tutti` holds it with `insert_non_send` (`engine/build.rs:185`,
+  `engine/restart.rs:154`).
+  - A `Send` session that held the driver would let a host move the stream
+    to another thread and drop it there. The `unsafe impl`'s argument would
+    then be false, with nothing to say so.
+  - `Device` is `!Send` on purpose, stricter than `TuttiDriver`, so that
+    argument becomes a type error instead of a comment.
+- The builder hands back the two halves (§4.3). A restart takes both,
+  because it stops the stream (`Device`) and re-rates the graph
+  (`Session`).
+
+**The main-thread rule.** Some session calls free values whose `Drop` is
+only legal on the host's main (UI) thread:
+
+- The commit frees the previous graph version, including in-process plugin
+  nodes whose `Drop` tears down a native editor window (AppKit, Win32,
+  X11). `bevy-tutti` pins `commit_graph` and `after_commit` to the main
+  thread with `NonSendMarker` (`graph/commit.rs:22-30`,
+  `modulation/reconcile.rs:416-417`).
+- An export's leftovers include forks of in-process plugins, whose
+  teardown is main-thread-only (`tutti-export` `lib.rs:172-174`).
+
+So these calls are main-thread calls: `update()`, `run_phase(Collect)`,
+`run_phase(Commit)`, `run_phase(AfterCommit)`, `add_plugin`, `remove`,
+`finish_export`, and dropping the `Session`.
+
+- With `plugin` on, each asserts it with `tutti-plugin`'s existing
+  debug-only guard (`assert_main_thread`, `tutti-plugin-types`
+  `main_thread.rs:40`). The host marks its main thread with
+  `mark_main_thread()` at startup, as `bevy-tutti` does
+  (`plugin_host/mod.rs:188`). The guard is a no-op until marked, so a
+  test rig without a UI thread is unaffected.
+- `Session: Send` stays, because a Bevy resource must be `Send`. A host may
+  build the session on one thread and hand it to its main thread before
+  the first plugin loads.
+
+**Blocking work is a `Send` job the host places.** A plugin open, a
+plugin's parameter read, a state snapshot, a SoundFont build and an export
+render are each a value with `fn run(self) -> Done`. The host runs it on any
+thread and hands `Done` back to the session on the control thread.
+
+- The rule is **no blocking call on the control thread**. The session never
+  spawns a thread for a job; the host decides where it runs.
+- `bevy-tutti` places jobs on `AsyncComputeTaskPool`, and keeps its own
+  scheduling rules there, such as `MAX_CONCURRENT_LOADS`
+  (`plugin_host/load.rs:72`). A CLI calls `run()` inline.
+- Each job has a `_blocking` convenience on `Session` that does both
+  halves.
 
 ### 4.3 Lifecycle
 
 **Create, and start or stop the device.**
 
 ```rust
+// Offline: no stream, no tutti-cpal.
 let mut s = Session::builder()
-    .output(Output::Device(DeviceSpec::default()))   // or Output::Offline { .. }
-    .outputs_floor(2)                                 // TuttiPlugin::outputs today
-    .render_workers(0)                                // one per core
-    .midi_hardware(true)                              // `midi-hardware`
-    .build()?;                                        // build_on + assemble
-s.restart(DeviceRestart::rate(SampleRate(96_000.0)))?; // rerate, §2.1
-s.stop(); s.start()?;
+    .outputs_floor(2)                                  // TuttiPlugin::outputs today
+    .render_workers(0)                                 // one per core
+    .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(512))?;
+
+// With the sound card (`device`): two halves.
+let (mut s, mut device) = Session::builder()
+    .midi_hardware(true)                               // `midi-hardware`
+    .build_device(DeviceSelector::Default)?;           // build_on + assemble
+s.restart(&mut device, DeviceSelector::Name("USB Audio".into()))?;  // rerate, §2.1
+device.stop(); device.start()?;
 ```
 
-- `Output::Offline` builds everything but the stream. The host pulls blocks
+- `build_offline` builds everything but the stream. The host pulls blocks
   with `s.render(&mut out)` (it calls `Engine::process`, in `tutti-core`), so
   the offline path never links `tutti-cpal`.
+- `build_device` opens the device first, reads its `OutputSpec` and builds
+  the graph at that rate, as `build_into` does.
 - Today's device-free path (`AudioEngine::from_spec` on a
-  `ManualStreamDriver`) is kept for tests that want the callback state
-  itself.
+  `ManualStreamDriver`) stays, as `build_device_on(OutputSpec, driver)`, for
+  tests that want the callback state itself.
 
 **Add and wire nodes.**
 
 ```rust
-let osc = s.graph().insert(ForkByClone(Osc::saw(Hz(110.0))));      // (AudioNode, Controls)
-let (filter, ctl) = s.graph().insert(SvfFilterNode::<f64>::new(..));
-s.graph().set_source(filter, 0, GraphSource::node(osc.0, 0));
+let (pad, _) = s.graph().insert(PolySynth::new(SynthConfig::default())?);
+let (filter, _) = s.graph().insert(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
+s.graph().set_source(filter, 0, GraphSource::node(pad, 0));
 s.graph().set_outputs_from(filter);
-s.graph().crossfade(filter, other_filter, Seconds(0.005))?;          // retried by update() while Busy
+s.graph().crossfade(filter, other_filter, Seconds(0.005))?;  // retried by update() while Busy
 ```
 
 **Params.** The units rule wants a typed setter. `ParamKey<U>` already
-exists (`tutti-types` `unit_param.rs:204`), so:
+exists (`tutti-types` `unit_param.rs:204`), with one constant per
+`UnitParam`, so:
 
 ```rust
-s.graph().set(filter, params::CUTOFF, Hz(800.0));   // ParamKey<Hz>, through the node's ParamSet
+s.graph().set(filter, ParamKey::<Hz>::CUTOFF, Hz(800.0));  // through the node's ParamSet
 ```
 
 The untyped `set_param(node, UnitParam, f32)` stays for plugin and dynamic
@@ -448,7 +536,7 @@ addresses.
 it mints. The full example is §5.1.
 
 ```rust
-let lfo = s.mods().lfo(Lfo::sine().rate(BeatDuration(0.5)));    // builders from tutti-mod
+let lfo = s.mods().lfo(Lfo::sine().rate(BeatDuration(0.5)));    // a SourceKey; builders from tutti-mod
 s.mods().range(ParamRef::unit(filter, UnitParam::Cutoff), 0.0, 1_000.0);
 s.mods().route(lfo, ParamRef::unit(filter, UnitParam::Cutoff), Depth(0.3));
 ```
@@ -458,9 +546,9 @@ plugin's parameter edits arrive through `PluginParamValues` and become
 knob writes at the next update.
 
 ```rust
-let job = s.plugin_load(PluginRequest { id, state: None, ..Default::default() }); // Send
+let job = s.plugin_load(PluginLoadRequest { id: PluginId::from_path(path), state: None }); // &self; Send; rate from the session
 let done = job.run();                        // any thread
-let synth = s.add_plugin(done)?;             // AudioNode; controls and meter captured
+let synth = s.add_plugin(done)?;             // main thread: AudioNode; controls and meter captured
 ```
 
 **MIDI.**
@@ -474,13 +562,66 @@ s.midi().route(MidiRouteRule::any_channel().to(synth)); // `midi-hardware`
 **Transport.** `s.transport()` returns today's `Transport` handle, and
 `MotionFsm::schedule(At, ..)` is unchanged.
 
-**Export.**
+**Export.** The session has its own request, free of `Entity` and `World`.
+It is today's `bevy-tutti` request with the two Bevy-bound fields
+replaced:
 
 ```rust
-let job = s.export(ExportRequest::file("out.wav", ExportConfig::default()))?; // gather on this thread
-let out = job.run();                  // build, announce Offline, render, all on a worker
-s.finish_export(out)?;                // drop leftovers here, announce Realtime
+pub enum ExportSource { Mix, Node(AudioNode) }       // was Node(Entity)
+pub struct ExportRequest {
+    pub source: ExportSource,
+    pub target: ExportTarget,                        // File { path, normalize } | Buffers, moved
+    pub config: ExportConfig,                        // tutti-export's, unchanged
+    pub clock: ExportClock,                          // moved
+    pub edit: Option<PrepareEdit>,                   // the edit half only: Box<dyn FnOnce(PreparedGraph) + Send>
+    pub latency_from_graph: bool,
+    pub tail_from_graph: Option<Samples>,
+}
+impl ExportRequest {
+    pub fn file(path: impl Into<PathBuf>, config: ExportConfig) -> Self; // Mix, frozen clock
+    pub fn on_timeline<T>(self, timeline: Arc<T>) -> Self;
+    pub fn with_edit(self, edit: PrepareEdit) -> Self;
+    pub fn trim_reported_latency(self) -> Self;
+    pub fn with_reported_tail(self, cap: Samples) -> Self;
+}
 ```
+
+```rust
+let job = s.export(ExportRequest::file("out.wav", config))?;  // gather here; announces Offline (below)
+let done = job.run();                 // build, edit, render: any thread
+s.finish_export(done)?;               // main thread: drop the leftovers, release the token
+```
+
+- The Bevy `ExportRequest` component stays in `bevy-tutti`. Its observer
+  runs the `PrepareGraph` hook's `Fn(&World)` half on the main thread,
+  resolves `ExportSource::Node(Entity)` to its `AudioNode`, and builds the
+  session's request with the returned edit. `NodeNames` stays too: it maps
+  the `AudioNode` an `ExportError` names back to an entity and its `Name`.
+- **One export at a time.** `s.export` returns `Error::ExportInFlight`
+  while another is in flight. `bevy-tutti` keeps its queue of request
+  entities, as today.
+
+**The render mode is a level, not an edge.** Today's rule
+(`plugin_host/render_mode.rs:19-33`, `:64-99`) is "Offline while any export is in
+flight", evaluated on the control thread every frame. It covers
+completion, failure, cancellation and a despawned request with one
+observable. The session keeps that rule:
+
+- `s.export` mints an `ExportToken`. It is a clone of an `Arc<()>` the
+  session holds, and it rides inside the `ExportJob` and then its `Done`.
+  An export is in flight while any token lives.
+- `Phase::RenderMode` (§4.4) computes the wanted mode from that level:
+  Offline while a token lives, Realtime otherwise. It tells each plugin
+  per `needs_announcement` (moved to `tutti-plugin` in PR 2): on a change
+  of mode, or if the plugin was never told. A plugin loaded mid-bounce is
+  told Offline on its first update.
+- `s.export` runs that phase itself before it returns. Offline is
+  announced on the control thread before the job can render a block.
+- `finish_export` drops the token and runs the phase again. A job or `Done`
+  dropped without `finish_export` (a cancelled task, a panic on the
+  worker) drops its token, and the next `update()` restores Realtime.
+- Nothing is announced on a worker, and nothing waits for `Done` to come
+  back.
 
 ### 4.4 `update()`, and the order is data
 
@@ -491,19 +632,35 @@ order from one call:
 
 ```rust
 pub const PHASES: &[Phase] = &[
-    Phase::Collect,          // editor.collect, finished jobs promoted
-    Phase::Plugins,          // health debounce, latency poll, GUI edits → knobs
+    Phase::Collect,          // editor.collect (frees retired units), finished jobs promoted
+    Phase::Plugins,          // health, latency poll, GUI edits → knobs, snapshots due
+    Phase::RenderMode,       // Offline while an export token lives (§4.3)
     Phase::Modulation,       // collect + apply
-    Phase::Commit,           // commit, publish compensation, retry crossfades
+    Phase::Commit,           // commit iff edited, publish compensation, retry crossfades
     Phase::AfterCommit,      // modulation re-apply while unresolved, resyncs
     Phase::MidiOut,          // hardware out drains, clock out
-    Phase::Poll,             // device faults, export status
+    Phase::Poll,             // device faults, through the session's clone of the Device's Arc<StreamFaults>
 ];
+
+/// What one phase reads besides the session.
+pub struct PhaseCx<'a> {
+    pub now: Instant,
+    /// `None`: the session's own declarations (`s.mods()`).
+    pub mods: Option<ModInput<'a>>,
+}
+pub struct ModInput<'a> {
+    pub declarations: Declarations<'a>,   // tutti_mod's: borrowed slices
+    pub keys: &'a dyn ModKeys,            // §4.6
+}
+
 impl Session {
-    pub fn update(&mut self) -> Vec<SessionEvent> { /* each phase in PHASES order */ }
-    pub fn run_phase(&mut self, p: Phase) -> &mut Vec<SessionEvent>;
+    /// Every phase in `PHASES` order, with `Instant::now()` and the session's own declarations.
+    pub fn update(&mut self) -> Vec<SessionEvent>;
+    pub fn run_phase(&mut self, p: Phase, cx: PhaseCx<'_>, out: &mut Vec<SessionEvent>);
 }
 ```
+
+**Bevy runs the phases one system at a time.**
 
 - Bevy's `Spawn`, `Params` and `Despawn` have no headless phase: a
   headless insert, param write or removal is a direct call between updates.
@@ -513,12 +670,58 @@ impl Session {
 - `bevy-tutti` builds its system-set chain *from* `PHASES`. Its schedule
   test asserts the chain and the constant agree, so the order cannot drift
   between the two hosts.
-- Counts that are "frames" today become "updates":
-  - the plugin-death debounce of 3;
-  - the snapshot interval of 512;
-  - the modulation warning after 240.
-  They are builder options, with today's values as defaults. The host owns
-  the cadence; at 60 Hz the behaviour is today's.
+
+**The modulation phases take the declarations as an argument.** The session
+does not cache a copy.
+
+- Bevy's declarations live in ECS queries, and today they are collected
+  twice per frame, once in `apply` and once in `after_commit`
+  (`reconcile.rs:416-444`). Both collects borrow the World.
+- So `bevy-tutti`'s two modulation systems each collect into an owned
+  `Collected`, as today, and pass it with `Declared` as the `ModInput`.
+- A cached copy inside the session would be a mirror the adapter must
+  reconcile every frame. CLAUDE.md says to derive at the point of use
+  instead, and the point of use is the phase.
+- A headless session passes `None`, and the phase reads `s.mods()`. A
+  session has one declarer: passing `Some` while `s.mods()` holds
+  declarations is refused with a `SessionEvent`.
+
+**`update()` commits iff the graph was edited.** The session has one edit
+flag. It is today's `GraphRuntime::edited` (`runtime.rs:866`), set by every
+edit made through the session.
+
+- `GraphDirty` goes. Today it separates "the frame's commit is waiting"
+  from "a host's own staged edit through `AudioGraphRes`", and
+  `after_commit` commits the second early (`reconcile.rs:428-436`).
+- With the flag as the only signal, there is no second state. An edit
+  through `AudioGraphRes` is a session edit, so the frame's commit sends it.
+- Edits still coalesce: one commit per update at most, plus the
+  re-apply commit in `AfterCommit` while a target is unresolved.
+- A refused commit (`Retry`) leaves the flag set, and the next update
+  retries, as `GraphDirty` does today.
+- `bevy-tutti` gives up one behaviour: a host can no longer stage an edit
+  through `AudioGraphRes` that the frame's commit leaves alone. The
+  CHANGELOG records it.
+- PR 4 pins the choice in two tests (§9).
+
+**Thresholds are times, not counts.** A Bevy frame is about 16 ms. A
+headless loop may call `update()` back to back, which would shrink a
+frame-counted window to microseconds. Each threshold becomes a `Duration`,
+measured on `PhaseCx::now`:
+
+- **The plugin-death debounce.** Today it is 3 frames (`health.rs:61-67`),
+  sized to outlast the crash flag's publish from the bridge's thread. The
+  rule becomes: dead after at least 3 consecutive unhealthy observations
+  spanning at least 50 ms (three 60 Hz frames). A healthy reading resets
+  it. The count still guards against one racy observation; the time keeps
+  the window when updates are fast.
+- **The state snapshot** of a healthy plugin: every 8 s, today's 512 frames
+  at 60 Hz (`health.rs:76`).
+- **The unresolved-target warning:** after 4 s, today's 240 frames
+  (`reconcile.rs:54`).
+
+They are builder options, with those defaults. A test passes its own `now`
+through `run_phase`, so none of them needs a sleep.
 
 ### 4.5 Wiring stays declared
 
@@ -528,8 +731,7 @@ impl Session {
   `Topology` value, and `set_source` writes one port of it.
 - **The commit is the compile.** Nothing is spliced into a running graph,
   and PDC is the compiler's.
-- Edits between two updates coalesce into one commit, as `GraphDirty` does
-  per frame.
+- Edits between two updates coalesce into one commit (§4.4).
 - **Partial declarations behave as they do today.** A port the host never
   writes keeps its value. In Bevy, the rebuild writes only the ports a
   `PortSources` declares.
@@ -543,6 +745,19 @@ Why a headless host does not need it:
 - Imperative calls *on a value that compiles at a boundary* are what
   "declared" means here.
 
+**Event feeds are keyed by the sink's `AudioNode`.** Today `EventFeeds` is
+keyed by the sink's `Entity` (`graph/events.rs:80`), and an entity survives
+a re-bind. A node key does not. So:
+
+- `Graph::move_feeds(from: AudioNode, to: AudioNode)` moves every feeder's
+  sources from one sink to another.
+- `bevy-tutti`'s `Changed<AudioNode>` path calls it with the entity's old
+  and new nodes when it re-derives the entity's wires. The old node is the
+  one `LiveGraph` last recorded.
+- The source side needs nothing new. Each feeder (a clip, a route rule, a
+  plugin's automation) re-sets its own sources when its node changes, as it
+  does today.
+
 Two things are deliberately not offered:
 
 - a whole-`Topology` replace, since it would fight Bevy's partial
@@ -552,38 +767,61 @@ Two things are deliberately not offered:
 
 ### 4.6 Modulation keys
 
-`tutti_mod`'s declarations key targets by `TargetKey { node: u64, param }`
-and sources by `SourceKey(u64)`. Today the u64 is an `Entity`'s bits, and
-`ModHostOver` decodes it (`graph/runtime.rs:998`, `:1020`).
+`tutti_mod`'s declarations key targets by `TargetKey { node: u64, param }`,
+sources by `SourceKey(u64)` and routes by `RouteKey(u64)`. Today the u64 is
+an `Entity`'s bits, and `ModHostOver` decodes it (`graph/runtime.rs:998`,
+`:1020`).
 
-The session takes a resolver instead:
+The session takes a resolver instead. Its boundary in one sentence: it
+resolves a host's modulation keys to graph nodes.
 
 ```rust
 pub trait ModKeys {
     fn node(&self, target: u64) -> Option<AudioNode>;
-    fn source(&self, source: SourceKey) -> Option<Feed>;
+    /// Plugin parameter `id`'s value on `target`'s node: `None` while not read yet,
+    /// `Some(None)` for a parameter it does not list. Goes in PR 6 (below).
+    fn plugin_value(&self, target: u64, id: u32) -> Option<Option<f32>>;
+    fn feed(&self, source: SourceKey) -> Option<Feed>;
 }
-impl Session { pub fn apply_modulation(&mut self, d: &Declarations, keys: &dyn ModKeys) -> Applied; }
 ```
 
-- **Headless:** `s.mods()` keeps its own declarations, keyed by the
-  `AudioNode`'s `NodeKey` bits and by minted `SourceId`s, so the identity
-  resolver applies.
-- **Bevy:** `Declared` implements `ModKeys` over entities. The re-apply loop,
-  the resync and the warning counter are the session's either way.
+- **It replaces `ModEntities`** (`modulation/reconcile.rs:174-182`) one for
+  one, `plugin_value` included (`:179`).
+- **It lands in PR 4, not PR 5.** `GraphRuntime::modulate` takes
+  `&dyn ModEntities` (`runtime.rs:566-570`), and `GraphRuntime` moves in
+  PR 4. So the seam moves with it, and `bevy-tutti`'s `Declared`
+  implements `ModKeys` in that PR, keeping the `Entity::try_from_bits`
+  decode on its side.
+- **`plugin_value` is temporary.** Until PR 6 the plugin mirror
+  (`PluginParamValues`) is a component on the plugin's entity, so only the
+  host can read it. From PR 6 the session owns the mirror, keyed by
+  `AudioNode`, and reads the value itself once `node` resolves. PR 6
+  removes the method.
+- **Headless:** `s.mods()` keeps its own declarations. It mints
+  `SourceKey`s and `RouteKey`s from a counter, and keys targets by the
+  `AudioNode`'s `NodeKey` bits, so the session's own resolver applies.
+  There is no new id type: `tutti_mod::SourceId(pub u32)` (`program.rs:46`)
+  is the compiler's own index and stays out of the API.
+- **Bevy:** `Declared` implements `ModKeys` over entities. The re-apply
+  loop, the resync and the warning are the session's either way.
 
 ### 4.7 Errors
 
 `tutti_session::Error` covers the build, the device, the graph (commit,
 reprepare), plugins, MIDI and export.
 
-Refusals keyed by a host id live in the host:
+**Refusals are reported in the host's keys.** A modulation refusal names
+the `TargetKey`, `SourceKey` or `RouteKey` the host declared, never a
+session `ParamRef`. Those keys are the host's own minting, so each host can
+map them back:
 
-- `ModulationRefused` mapping a refusal to an `Entity`;
-- `ExportError::NotForkable` naming an entity.
+- `bevy-tutti`'s `ModulationRefused` decodes them to the route or target
+  entity, as today (`modulation/reconcile.rs:109-185`);
+- a headless host compares them with the keys `s.mods()` returned.
 
-The session reports `AudioNode`s, `SourceId`s and `ParamRef`s. The adapter
-translates them.
+The other host ids stay in the host: `ExportError::NotForkable` names an
+`AudioNode`, and `bevy-tutti`'s `NodeNames` maps it to an entity and its
+`Name`.
 
 ## 5. Examples
 
@@ -592,10 +830,10 @@ translates them.
 ```rust
 use tutti::prelude::*;
 
-let mut s = Session::builder().output(Output::Device(DeviceSpec::default())).build()?;
+let (mut s, _device) = Session::builder().build_device(DeviceSelector::Default)?;
 let (filter, _) = s.graph().insert(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
-let (pad, _) = s.graph().insert(pad_synth());
-let (kick_bus, _) = s.graph().insert(kick());
+let (pad, _) = s.graph().insert(PolySynth::new(SynthConfig::default())?);
+let (kick_bus, _) = s.graph().insert(ChannelSumNode::new(1, ChannelLayout::STEREO));
 s.graph().set_source(filter, 0, GraphSource::node(pad, 0));
 s.graph().set_outputs_from(filter);
 
@@ -606,7 +844,7 @@ m.range(cutoff, 0.0, 1_000.0);
 m.range(gain, 0.0, 1.0);
 let wobble = m.lfo(Lfo::sine().rate(BeatDuration(0.5)));
 m.route(wobble, cutoff, Depth(0.3));
-let kick = m.follower(kick_bus);
+let kick = m.follower(Follower::default(), kick_bus);
 m.route(kick, gain, Depth(-0.6)); // sidechain
 
 s.transport().play();
@@ -614,12 +852,16 @@ loop { for e in s.update() { log(e) } sleep(frame) }
 ```
 
 - This is line for line the Bevy example, with `ParamRef` taking an
-  `AudioNode` where Bevy takes an `Entity`.
+  `AudioNode` where Bevy takes an `Entity`. The session's `ParamRef` is
+  `{ node: AudioNode, param: ParamAddr }`.
+- `m.follower` takes `tutti-mod`'s `Follower` (attack and release, the
+  `Source` half) and the node it follows (the feed). Bevy's `Follower`
+  component keeps its `input: Entity` and wraps the same builder.
 - The 250 lines of `headless_modulation.rs` (the hand-built `ModHost`, the
   `Declarations` and `apply`) become the `update()` call.
-- PR 4 ports `tests/mod_lanes.rs`'s
+- PR 5 ports `tests/mod_lanes.rs`'s
   `the_8_1_example_renders_its_analytic_values` onto an offline session,
-  with the same analytic figures.
+  with its own probe nodes and the same analytic figures.
 
 ### 5.2 Load a plugin, play a MIDI file, export to WAV
 
@@ -627,67 +869,92 @@ loop { for e in s.update() { log(e) } sleep(frame) }
 use tutti::prelude::*;
 
 let mut s = Session::builder()
-    .output(Output::Offline { rate: SampleRate(48_000.0), channels: ChannelLayout::STEREO, max_block: Samples(512) })
-    .build()?;
+    .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(512))?;
 
-let synth = s.add_plugin(s.plugin_load(PluginRequest { id: PluginId::clap("org.example.synth"), ..Default::default() }).run())?;
+let job = s.plugin_load(PluginLoadRequest { id: PluginId::from_path("Synth.clap"), state: None });
+let synth = s.add_plugin(job.run())?;
 s.graph().set_outputs_from(synth);
 
 let file = MidiFile::read("song.mid")?;                 // tutti-midi-file: sniffs SMF vs Clip File
 s.midi().play_clip(synth, file.timed().map(TimedMidiEvent::from))?;
 s.transport().set_tempo(file.tempo());
 
-let seconds = file.duration().to_seconds(file.tempo());  // f64: an hour-long render
-let job = s.export(ExportRequest::file("song.wav", seconds)
-    .latency_from_graph()                                // RenderConfig::latency, from the plan
-    .tail_from_graph())?;                                // RenderConfig::tail, the plugin's declared tail
-let out = job.run();                                     // the plugin hears Offline mode
-s.finish_export(out)?;
+let mut config = ExportConfig::default();
+config.render.sample_rate = SampleRate(48_000.0);
+config.render.duration_seconds = file.end().to_seconds(file.tempo()); // f64: an hour-long render
+let job = s.export(
+    ExportRequest::file("song.wav", config)
+        .on_timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+            tempo: file.tempo(),
+            sample_rate: SampleRate(48_000.0),
+            ..Default::default()
+        })))
+        .trim_reported_latency()                         // RenderConfig::latency, from the plan
+        .with_reported_tail(Samples(48_000 * 10)),       // RenderConfig::tail, the plugin's declared tail
+)?;                                                      // the plugin hears Offline from here
+s.finish_export(job.run())?;                             // and Realtime from here
 ```
 
-`ExportRequest` is today's `bevy-tutti` request, with its `latency_from_graph`
-and `tail_from_graph` fields (`export/request.rs:116-120`), moved. It fills
-`tutti-export`'s `RenderConfig`, which stays a pure value: "the caller
-knows, so the caller says" (`tutti-export` `config.rs:50-59`). The session is
-that caller.
+The request fills `tutti-export`'s `RenderConfig`, which stays a pure value:
+"the caller knows, so the caller says" (`tutti-export` `config.rs:50-59`).
+The session is that caller: `trim_reported_latency` and
+`with_reported_tail` ask the rendered graph, as `bevy-tutti`'s request does
+today (`export/request.rs:116-120`).
 
 Three engine changes this example needs, each a **(c)** move in §9:
 
 - `MidiFile::read`, with `timed()` yielding `(Beat, MidiEvent)` for both
-  containers;
+  containers, plus `tempo()` and `end()`;
 - `TimedMidiEvent: From<(Beat, MidiEvent)>`, which exists;
-- the render-mode announcement, carried by the export job.
+- `needs_announcement`, for the render-mode phase.
 
 ## 6. How `bevy-tutti` rebases
 
 | Module | Today | After |
 |---|---|---|
-| `engine/` | builds everything into the World | `build_into` calls `SessionBuilder::build` and inserts the parts as resources; `restart` is a `Session::restart` call inside the NonSend dance |
+| `engine/` | builds everything into the World | `build_into` calls `SessionBuilder::build_device`; the `Session` goes into `AudioGraphRes`, the `Device` in with `insert_non_send`; `restart` is a `Session::restart(&mut device, ..)` call inside the NonSend dance |
 | `graph/runtime.rs` | `GraphRuntime` | deleted; `AudioGraphRes(Mutex<Session>)`, its methods delegate |
-| `graph/commit.rs`, `latency.rs` publish | logic | one system calling `run_phase(Commit)` |
-| `graph/topology.rs`, `wire.rs`, `spawn.rs`, `despawn.rs`, `param.rs` | glue | unchanged; the spawn path's crossfade calls `Graph::crossfade` |
-| `graph/events.rs` | `GraphNode`, `EventFeeds` | `GraphNode` becomes `SessionNode` (re-exported); feeds keyed by `AudioNode` |
+| `graph/commit.rs`, `latency.rs` publish | logic | one main-thread system calling `run_phase(Commit)` |
+| `graph/schedule.rs` | `GraphReconcileSystems`, `GraphDirty` | the sets, built from `PHASES`; `GraphDirty` deleted (§4.4) |
+| `graph/topology.rs`, `wire.rs`, `spawn.rs`, `despawn.rs`, `param.rs` | glue | unchanged but for two calls: the crossfade calls `Graph::crossfade`, the re-bind calls `Graph::move_feeds` |
+| `graph/events.rs` | `GraphNode`, `EventFeeds` | `GraphNode` becomes `tutti_session::SessionNode`; feeds keyed by `AudioNode`, in the session |
 | `graph/pump.rs` | thread loop + systems | systems only, over `tutti-io`'s pump |
-| `modulation/` | declare + reconcile | components and `Mods` stay; `Declared: ModKeys`; reconcile calls `apply_modulation` |
-| `plugin_host/` | load, health, latency, params, render mode, windows, scan | load is a `PluginLoad` job on the task pool; health, latency and params are session phases; windows, scan and catalog stay |
-| `midi/` | nodes, sequence, routes, hardware out, files | components call `Session::midi()`; the asset loader wraps `MidiFile`; MIDI-CI device state stays |
-| `sampler/`, `soundfont.rs` | logic + assets | assets and pending tasks only |
-| `export/` | pipeline + request | `ExportRequest` observer creates an `ExportJob`, the task pool runs it, `poll_exports` calls `finish_export` |
+| `modulation/` | declare + reconcile | components and `Mods` stay; `Declared: ModKeys`; the two systems collect and call `run_phase` with a `ModInput` |
+| `plugin_host/` | load, health, latency, params, render mode, windows, scan | load, param read and snapshot are jobs on the task pool (two loads at a time); health, latency, params and render mode are session phases; windows, scan and catalog stay |
+| `midi/` | nodes, sequence, routes, hardware out, files | components call `Session::midi()`; the asset loader wraps `MidiFile`; MIDI-CI negotiation and device state stay |
+| `sampler/`, `soundfont.rs` | logic + assets | assets, systems and pending tasks only |
+| `export/` | pipeline + request | the `ExportRequest` component stays; its observer translates it into the session's request (§4.3) and places the job on the task pool; `poll_exports` calls `finish_export` |
+
+**`bevy-tutti` does not re-export the session.** A Bevy app sees
+`bevy-tutti`'s own API. Two paths still need the session's names:
+
+- **`param_graph_node!`** expands to `impl tutti_session::SessionNode for
+  $ty`. The macro names the trait through `bevy-tutti`'s existing hidden
+  `$crate::__private` module (`lib.rs:212-213`), which gains
+  `pub use tutti_session::SessionNode;`. `#[doc(hidden)]` keeps it out of
+  the API, so the decision holds, and a host using the macro adds no
+  dependency.
+- **A hand-written `SessionNode` impl** (a node with controls the macro
+  does not cover) needs the trait by name. That host adds `tutti-session`
+  as a direct dependency, as a host that writes `ParamNode` depends on
+  `tutti-graph` today.
 
 **Stays Bevy-only:**
 
 - the ECS vocabulary: `AudioParam<U, P>`, `PortSources`, `MasterSources`,
   `Mods` and the mod components, the requests;
-- the asset loaders;
+- the asset loaders and their systems;
 - the plugin editor windows and live resize;
+- the plugin load cap;
+- MIDI-CI negotiation;
 - `GraphReconcileSystems` (built from `PHASES`);
 - Reflect registration;
 - the `On<Remove, AudioNode>` observer.
 
 `bevy-tutti` keeps its direct edges to the engine crates for their `bevy`
 features, and adds one to `tutti-session`. Its features forward to
-`tutti-session`'s, as they forward today: `midi` → `tutti-session/midi`,
-and so on. `device` is always on for `bevy-tutti`.
+`tutti-session`'s: `midi` → `tutti-session/midi`, and so on. `device` is
+always on for `bevy-tutti`.
 
 ## 7. The umbrella, for all the tutti crates
 
@@ -696,23 +963,48 @@ crates". It already re-exports every engine crate under an alias. It
 gains:
 
 ```rust
-pub use tutti_session as session;          // always: the API layer
+#[cfg(feature = "session")]
+pub use tutti_session as session;          // the API layer, on by default
 pub mod prelude {
-    pub use tutti_session::{Session, SessionBuilder, Output, SessionEvent, ParamRef, Phase};
+    #[cfg(feature = "session")]
+    pub use tutti_session::{Session, SessionBuilder, SessionEvent, ParamRef, Phase};
     // ...today's prelude, unchanged
 }
 ```
 
-**Features.**
+**Features.** The user decided the layer is on by default.
 
-- `tutti`'s features keep their names. Each enables the member crate as
-  today *and* `tutti-session`'s feature of the same name, so there is still
-  one switch per subsystem.
+```toml
+[dependencies]
+tutti-session = { path = "../tutti-session", default-features = false, optional = true }
+
+[features]
+# `default = ["session"]`: the API layer is what this umbrella is for. It is
+# the one member whose default is not empty, and it costs nothing a feature
+# did not already ask for: `tutti-session` itself has `default = []`, so the
+# default build adds the session's own code and nothing else. Set
+# `default-features = false` for the raw crates alone.
+default = ["session"]
+session = ["dep:tutti-session"]
+device = ["dep:tutti-cpal", "tutti-session?/device"]
+midi = ["dep:tutti-midi-types", "dep:tutti-midi-file", "dep:tutti-midi-runtime",
+        "tutti-core/midi", "tutti-session?/midi"]
+# ...each feature forwards the same way
+```
+
+- Each `tutti` feature enables the member crate as today, *and*
+  `tutti-session`'s feature of the same name with `?`. A host without the
+  session gets no session edge from a feature.
+- **No ALSA by default.** `tutti` depends on `tutti-session` with
+  `default-features = false`, and `tutti-session` has `default = []`. So
+  `default = ["session"]` never turns on `device`, and a headless default
+  build links neither `tutti-cpal` nor ALSA.
+- **The cost of the default** is the session's own code. Its always-on
+  edges (`tutti-types`, `tutti-graph`, `tutti-core`, `tutti-nodes`) are
+  already always-on edges of `tutti`; `tracing` is the one new crate.
+- The comment in `crates/tutti/Cargo.toml` that reads "`default = []`, as
+  on every other member" is replaced by the one above, in PR 4.
 - `full` is unchanged, and the plugin formats stay opt-in.
-- A new feature, `session`, is on in `default`. It is the one deliberate
-  exception to `default = []`: the API layer is what the umbrella is *for*.
-  A host wanting only the raw crates sets `default-features = false`. This
-  is §11 question 3.
 
 **Organisation.** The root has the aliased crate modules (`tutti::core`,
 `tutti::graph`, `tutti::session`, …) and one prelude.
@@ -722,8 +1014,9 @@ daily: units, `UnitParam`, `ParamKey`s, `AudioNode`, the transport's `At`,
 the node constructors of the enabled DSP crates. Nothing in it is reached
 through a second path.
 
-**`no_logic.rs`** is unchanged. It already allows exactly `pub use`,
-`pub mod` and `}`; `pub use tutti_session as session;` passes it.
+**`no_logic.rs`** is unchanged. It skips attribute lines and allows
+`pub use`, `pub mod` and `}`, so the `#[cfg]`-gated `pub use tutti_session
+as session;` passes it.
 
 **`check-canonical-paths.sh`:**
 
@@ -733,58 +1026,88 @@ through a second path.
 
 ## 8. Rules
 
-The rule must stay mechanically enforced. Three checks enforce it, each
+The rule must stay mechanically enforced. Four checks enforce it, each
 with its failure message naming the alternative.
 
 1. **`tutti` holds no code.** `no_logic.rs`, unchanged.
-2. **`tutti-session` is Bevy-free.** Add
-   `crates/tutti-session/tests/bevy_free.rs`. It reads
-   `cargo metadata --format-version 1` for `tutti-session --all-features`,
-   resolves the normal-dependency closure, and fails on any package named
-   `bevy` or `bevy_*`. A second assertion is that the crate's `Cargo.toml`
-   declares no `bevy` feature.
-   - Mutation: add `bevy_ecs` as an optional dep behind a feature. The test
-     must fail on the `--all-features` closure.
-3. **`bevy-tutti` holds no engine logic.** Add `scripts/check-adapter.sh`,
-   run in CI. It fails if `crates/bevy-tutti/src` (tests excluded) names any
-   of the engine's composition entry points:
-   - `Editor::new`, `.commit()` on an `Editor`;
-   - `Modulation::new`, `.apply(`;
-   - `RenderGraph`, `TuttiDriver::from_parts`, `AudioCallbackState::new`;
-   - `Plugin::open_with`;
-   - `Engine::new`.
-   After the rebase these appear only in `tutti-session`. The deny-list
-   lives in the script, with each entry's owner beside it.
-   - Mutation: call `Editor::commit` from a system. The script fails and
-     names `Session::commit`.
+2. **`tutti-session` is Bevy-free.** `scripts/check-bevy-free.sh`, run in
+   `just ci` and CI, runs
 
-`no_logic.rs` cannot tell "logic" from "glue" in general. The three checks
-pin the one thing that failed before: both hosts call the same entry
-points, so no umbrella owns the composition.
+   ```bash
+   cargo tree -p tutti-session -e normal --all-features --prefix none
+   ```
 
-**CLAUDE.md edits** (in PR 7, when they become true):
+   and fails on any line starting `bevy` (`bevy`, `bevy_*`). It also fails
+   if `crates/tutti-session/Cargo.toml` declares a `bevy` feature.
+   - **Why `cargo tree`, not `cargo metadata`.** `cargo metadata` resolves
+     features once for the whole workspace, so `bevy-tutti`'s `bevy`
+     features leak into every member's closure. Probed on `origin/main`
+     (489649fe): `tutti`'s normal closure in `cargo metadata` contains
+     `bevy_ecs`, `bevy_reflect` and `bevy_tasks` even without
+     `--all-features`. `cargo tree -p tutti --all-features -e normal`
+     resolves only `tutti`'s features and lists no Bevy crate.
+   - **Mutation (run on `tutti` as the probe):** add `bevy_ecs` as an
+     optional dependency behind a feature. `cargo tree --all-features`
+     then lists `bevy_ecs v0.19.1` and the check fails. Without
+     `--all-features` it lists none, which is why the flag is required.
+   - A script rather than a test, because a test that shells out to
+     `cargo` inside `cargo nextest` contends for the build lock.
+3. **`bevy-tutti` holds no engine composition.** `scripts/check-adapter.sh`,
+   run in `just ci` and CI. It fails if `crates/bevy-tutti/src`, tests and
+   comment lines excluded, names any of these types as a whole word:
+   - `Editor`, `Executor` (the graph's halves: `Session` and `Graph` own
+     them);
+   - `Modulation` (the reconcile: `run_phase(Modulation)`);
+   - `TuttiDriver`, `AudioCallbackState` (the device: `Device`);
+   - `Engine` (the renderer: `SessionBuilder`);
+   - `RenderGraph` (export: `Session::export`).
 
-- **Workspace tree:** add `tutti-session` with the line "Bevy-free API
-  layer: the cross-crate composition both umbrellas use."
-- **Bullets:**
+   Method names such as `.commit()` and `.apply(` are not checked: they
+   cannot tell an `Editor` from a `Session`. A type name can, and no
+   composition happens without naming one. The deny-list lives in the
+   script, with each entry's owner beside it.
+   - Mutation: add `fn f(e: &mut tutti_graph::Editor) { e.commit(); }` to a
+     system module. The script fails and names `Session`.
+4. **`tutti-session` is not an umbrella.** The same script fails if
+   `crates/tutti-session/src` holds a whole-crate re-export: `pub use
+   tutti_x as …;`, `pub use tutti_x;` or `pub use tutti_x::*;`. Single-item
+   re-exports are allowed.
+   - Mutation: add `pub use tutti_mod as modulation;` to the crate root.
+     The script fails and names `tutti` as the umbrella.
+
+`no_logic.rs` cannot tell "logic" from "glue" in general. The checks pin
+the one thing that failed before: both hosts call the same entry points,
+so no umbrella owns the composition, and the logic crate cannot become a
+third umbrella.
+
+**CLAUDE.md edits** (each in the PR that makes it true):
+
+- **Workspace tree** (PR 4): add `tutti-session` with the line "Bevy-free
+  API layer: the cross-crate composition both umbrellas use."
+- **Bullets** (PR 7):
   - Replace "A Bevy app depends on `bevy-tutti`; a headless consumer
     depends on `tutti`. `bevy-tutti` does not depend on `tutti`." with the
     same, plus: "Both use `tutti-session`. It holds only code that names
-    two or more engine crates, or the order they run in, and has no `bevy`
-    feature (`tests/bevy_free.rs`). `bevy-tutti` reaches the engine's
-    composition only through it (`scripts/check-adapter.sh`)."
-  - Add `tutti-session` to "keeps every module private".
-- **"Rules that came from bugs":** replace "The `tutti` umbrella holds no
-  code. Anything that wants to live there belongs in the crate that owns
-  what it wires." with: "Neither umbrella holds engine logic. A piece with
-  one owner goes to that crate; a piece composing several goes to
-  `tutti-session`."
-- **"Wiring is declared, not called":** add one line saying a headless
-  `Session` declares through its own spec, keyed by `AudioNode`.
-- **Commands:** add `scripts/check-adapter.sh` beside the other two
-  scripts.
+    two or more engine crates, or the order they run in, has no `bevy`
+    feature (`scripts/check-bevy-free.sh`) and re-exports no crate whole.
+    `bevy-tutti` reaches the engine's composition only through it
+    (`scripts/check-adapter.sh`), and does not re-export it."
+  - Add `tutti-session` to "keeps every module private" (PR 4).
+- **"Build `plugin-server` first"** (PR 6): add `tutti-session`'s plugin
+  and export tests to the list. They fail without the binary, with the
+  same rule: fail, don't skip.
+- **"Rules that came from bugs"** (PR 7): replace "The `tutti` umbrella
+  holds no code. Anything that wants to live there belongs in the crate
+  that owns what it wires." with: "Neither umbrella holds engine logic. A
+  piece with one owner goes to that crate; a piece composing several goes
+  to `tutti-session`."
+- **"Wiring is declared, not called"** (PR 7): add one line saying a
+  headless `Session` declares through its own spec, keyed by `AudioNode`,
+  and that `update()` commits iff the graph was edited.
+- **Commands** (PR 7): add `scripts/check-bevy-free.sh` and
+  `scripts/check-adapter.sh` beside the other two scripts.
 
-**engineering-notes edits:**
+**engineering-notes edits** (PR 7):
 
 - **"There are two umbrellas…":** add a paragraph recording this design,
   that is, why (a) and not (b). Correct "device bootstrap in `tutti-cpal`,
@@ -792,6 +1115,7 @@ points, so no umbrella owns the composition.
 - **"Workspace Structure":** add the tree entry, and change the member
   count.
 - **"Wiring is declared, not called":** add the headless paragraph of §4.5.
+- A note on why `Device` is `!Send` while `TuttiDriver` is `Send` (§4.2).
 
 **doc 013:** a pointer from Phase 3's `bevy-tutti` items to this doc. The
 graph contract does not change.
@@ -815,8 +1139,9 @@ PRs 1–3 are **(c)** moves and can land in any order. PR 4 needs them. PRs
 **Scope:**
 
 - `tutti-midi-file`: `MidiFile` (sniffed SMF or Clip File, today's
-  `MidiFileContents`) with `timed()` → `(Beat, MidiEvent)` for both. The
-  SMF half is new (midly → `MidiEvent::from_midi1_bytes`).
+  `MidiFileContents`) with `timed()` → `(Beat, MidiEvent)` for both, plus
+  `tempo()` and `end()`. The SMF half is new (midly →
+  `MidiEvent::from_midi1_bytes`).
 - `tutti-midi-runtime`: the route-rule compile (rules → `input_ports`, with
   the fallback) as a pure function.
 - `tutti-sampler`: `memory_voice` and `voice_width`.
@@ -834,30 +1159,42 @@ PRs 1–3 are **(c)** moves and can land in any order. PR 4 needs them. PRs
 **Exit:** `bevy-tutti`'s MIDI file and route tests pass unchanged against
 the moved code.
 
-### PR 2: plugin and SoundFont pieces to their owners
+### PR 2: plugin, SoundFont and mod-source pieces to their owners
 
 **Scope:**
 
 - `tutti-plugin`:
-  - `PluginParamValues`;
-  - the liveness debounce as a counter type (`Liveness::observe(dead) ->
-    Verdict`, with the threshold a parameter);
-  - the render-mode announcement rule (`needs_announcement`).
-- `tutti-soundfont`: `SoundFontUnit::with_preset(font, rate, bank,
-  program)`.
-- `tutti-mod`: the `Lfo`/`Macro`/`Follower`/`NoteEnvelope` builders,
-  producing a `Source`. Reflect stays behind `tutti-mod/bevy`.
+  - `PluginParamValues`, with the read split in two: `start(&handle)`
+    installs the callback and returns the mirror plus a `Send`
+    `ParamRead` job, and `land(values)` fills the mirror. Nothing in
+    `tutti-plugin` spawns.
+  - The liveness debounce, `Liveness::observe(healthy, now: Instant) ->
+    Verdict`: dead after at least 3 consecutive unhealthy observations
+    spanning at least a window (default 50 ms), reset by a healthy one.
+  - The render-mode announcement rule (`needs_announcement`).
+- `tutti-soundfont`: `SoundFontUnit::with_preset(font, rate, channel,
+  preset)`: the rate cast, `SoundFontUnit::new` and `program_change` of
+  `soundfont.rs:205-212` and `:266`.
+- `tutti-mod`: the `Lfo` and `Macro` builders, and the `Source` half of
+  `Follower` (attack, release) and `NoteEnvelope` (ADSR), each producing a
+  `Source`. Reflect stays behind `tutti-mod/bevy`.
+- `bevy-tutti` keeps the rest: `Follower`'s and `NoteEnvelope`'s followed
+  `Entity` and `ModFeed`, the `AsyncComputeTaskPool` spawns of the read and
+  the snapshot, and `MAX_CONCURRENT_LOADS`.
 
 **Properties:**
 
-- The debounce declares dead on exactly the 3rd consecutive death and
-  resets on a live reading.
+- The debounce declares dead on the 3rd consecutive unhealthy observation
+  once 50 ms have passed. Three observations 1 µs apart are not dead; a
+  healthy reading resets both the count and the window.
+- `ParamRead::run` over a fake handle returns its descriptors' values, and
+  `land` makes the mirror ready.
 - Each builder's `Source` is pinned field by field.
 - A preset unit's first note-on renders that preset: a golden digest on the
   recording target.
 
-**Exit:** `plugin_host/health.rs`'s and `modulation/tests.rs`'s tests pass,
-calling the moved types.
+**Exit:** `plugin_host/health.rs`'s, `params.rs`'s and
+`modulation/tests.rs`'s tests pass, calling the moved types.
 
 ### PR 3: the pump to `tutti-io`
 
@@ -870,19 +1207,44 @@ joining) run in `tutti-io`.
 
 **Exit:** `bevy-tutti`'s pump systems compile over the moved type.
 
-### PR 4: `tutti-session`: graph, bootstrap and commit
+### PR 4: `tutti-session`: graph, bootstrap, commit and the modulation seam
 
 **Scope:**
 
-- The crate, with features and `tests/bevy_free.rs`.
-- `Graph` (today's `GraphRuntime`, moved with its tests).
-- `SessionBuilder` with `Output::{Device, Offline}`, `restart`, `render`.
-- Commit with compensation publication, the crossfade retry, `EventFeeds`,
-  `SessionNode` with the engine-node list.
-- `PHASES` and `update()`.
+- The crate, `default = []`, with its features, `tracing` for logging,
+  `scripts/check-bevy-free.sh` and the "no whole-crate re-export" check.
+- `Graph` (today's `GraphRuntime`), with `modulate` over `ModKeys`
+  (§4.6). `bevy-tutti`'s `Declared` implements `ModKeys`, `plugin_value`
+  included, and `ModEntities` is deleted.
+- `SessionBuilder` with `build_offline`, `build_device` and
+  `build_device_on`; `Session` and the `!Send` `Device`;
+  `Session::restart(&mut Device, ..)`; `render`.
+- The main-thread asserts of §4.2.
+- Commit with compensation publication, the crossfade retry, `EventFeeds`
+  keyed by `AudioNode` with `move_feeds`, `SessionNode` with the
+  engine-node list.
+- `PHASES`, `PhaseCx`, `run_phase` and `update()`, with the edit flag
+  replacing `GraphDirty`.
+- `bevy-tutti`'s `AudioGraphRes` wraps `Session`, and `engine/build.rs`
+  calls the builder. `param_graph_node!` names the trait through
+  `__private`.
+- The `tutti` umbrella re-exports `session`, with `default = ["session"]`,
+  the `?` forwarding of §7 and the new `Cargo.toml` comment.
 
-`bevy-tutti`'s `AudioGraphRes` wraps `Session`; `engine/build.rs` calls the
-builder. The `tutti` umbrella re-exports `session`.
+**Porting `runtime.rs`'s tests.** Its three tests
+(`every_param_write_path_reaches_a_fork`,
+`a_crossfade_during_a_re_prepare_lands_after_it`,
+`a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls`) build
+a `bevy_app` `App` (`runtime.rs:1146`, `:1264`), so they cannot move as
+they are. Each splits in two:
+
+- The graph property becomes a `tutti-session` test that calls `Session`
+  directly, with no App: the same node, the same edits and the same
+  asserted figures.
+- The ECS path (a spawn, an `AudioParam` write, a mod route reaching the
+  fork) stays in `bevy-tutti` as an adapter test over `AudioGraphRes`.
+- Each half carries a mutation record. Breaking the property must fail
+  the half that owns it.
 
 **Properties:**
 
@@ -891,7 +1253,16 @@ builder. The `tutti` umbrella re-exports `session`.
 - A rerate from 48 kHz to 96 kHz keeps the published compensation in step
   with the plan.
 - A crossfade refused `Busy` during a reprepare lands on a later update.
-- `bevy_free.rs` and its mutation.
+- **The edit flag:** an edit between two updates is committed by the next
+  update; an update with no edit sends no plan (the plan generation is
+  unchanged). Mutations: commit unconditionally (the second fails); commit
+  only on an external flag nobody sets (the first fails).
+- `move_feeds` moves every feeder's sources, and a re-bound `bevy-tutti`
+  sink keeps its clip feed.
+- `Device` is `!Send`: a `compile_fail` doctest that moves one into
+  `std::thread::spawn`.
+- `check-bevy-free.sh` and the re-export check, with their mutations
+  (§8).
 
 **Exit:** every `bevy-tutti` graph, engine and restart test passes over the
 session. `headless_engine.rs` is rewritten on `Session` and is under 20
@@ -901,12 +1272,14 @@ lines.
 
 **Scope:**
 
-- `ModKeys`, `apply_modulation` and the re-apply/resync loop.
-- `s.mods()` with minted ids and the take recorder.
+- `Phase::Modulation` and `Phase::AfterCommit` with `ModInput`: the
+  re-apply/resync loop and the time-based warning.
+- `s.mods()`, minting `SourceKey`s and `RouteKey`s, and the take recorder.
+- Refusals keyed by the host's `TargetKey`/`SourceKey`/`RouteKey`.
 - `s.midi()`: live input, clip sequencing, routes, hardware out and clock
   out.
-- `bevy-tutti`'s `Declared` implements `ModKeys`; its MIDI systems call the
-  session.
+- `bevy-tutti`'s two modulation systems collect and call `run_phase`; its
+  MIDI systems call the session.
 
 **Properties:**
 
@@ -914,6 +1287,8 @@ lines.
   session.
 - A route to a target placed one update later resolves on that update
   (the re-apply loop).
+- A refusal in `bevy-tutti` still names its route entity.
+- The warning fires after 4 s of `now`, not after N updates.
 - A clip edit updates in place: the node count stays the same.
 
 **Exit:** `tests/mod_lanes.rs` and the MIDI suites pass.
@@ -923,22 +1298,42 @@ lines.
 
 **Scope:**
 
-- `PluginLoad`, `add_plugin`, and the health, latency and GUI-edit phases.
-- `ExportJob` with the render-mode announcement and drop-on-control-thread.
-- `bevy-tutti` places jobs on the task pool.
+- `PluginLoad`, `add_plugin`, the session-owned parameter mirror (and
+  `ModKeys::plugin_value` deleted), and the health, snapshot, latency and
+  GUI-edit work of `Phase::Plugins`.
+- `Phase::RenderMode` and the `ExportToken` (§4.3).
+- The session's `ExportRequest`, `ExportJob`, `finish_export` and the
+  drop of leftovers on the main thread.
+- `bevy-tutti`'s request observer translates its component; jobs go on the
+  task pool.
+- CLAUDE.md's "build `plugin-server` first" list gains these tests.
 
-**Properties:**
+**Properties and tests:**
 
-- An export over a CLAP test plugin announces Offline before its first
-  block and Realtime after its last. The test plugin records the calls.
-- A plugin whose server dies three updates running is removed and reported
-  once.
-- An export's leftovers are dropped on the calling thread (a `!Send` drop
-  probe).
+- `an_export_announces_offline_before_its_first_block_and_realtime_after`:
+  over the CLAP test plugin, which records the calls.
+- `a_dropped_export_job_restores_realtime_on_the_next_update`: drop the job
+  (and, separately, its `Done`) without `finish_export`; the next
+  `update()` announces Realtime. Mutation: announce Realtime only in
+  `finish_export`, and the test fails.
+- `a_plugin_added_mid_export_is_told_offline`: `needs_announcement`'s
+  `!told` half, end to end.
+- `a_plugin_dead_for_the_window_is_removed_and_reported_once`, driven with
+  explicit `now`s.
+- `export_leftovers_drop_on_the_main_thread`: the live graph holds a
+  `ForkByClone` probe node whose `Drop` records `thread::current().id()`
+  into a shared cell, so the export's fork carries a clone of it. The test
+  runs `job.run()` on a spawned thread and `finish_export` on its own, and
+  asserts the fork's recorded id is the test's thread. The probe is
+  `Send`, so it can ride in the job and its `Done`. (Not a probe captured
+  by the prepare edit: an edit's captures drop on the worker by design,
+  `export/request.rs:612-620`.) Mutation: drop the leftovers inside
+  `run()`, and the recorded id is the worker's.
 
-**Exit:** `clap_pdc_alignment`, `clap_crash_recovery` and the export
-suites pass. §5.2 is an example under `tutti-session/examples`, run in CI
-offline with the CLAP test plugin.
+**Exit:** those session tests, `bevy-tutti`'s plugin-host and export suites,
+and the §5.2 example under `tutti-session/examples`, run in CI offline with
+the CLAP test plugin. All of them fail, not skip, without
+`tutti-plugin-server`.
 
 ### PR 7: rules and gates
 
@@ -946,40 +1341,44 @@ offline with the CLAP test plugin.
 
 - `scripts/check-adapter.sh` in `just ci` and CI.
 - `bevy-tutti`'s schedule test against `PHASES`.
-- The CLAUDE.md, engineering-notes and doc 013 edits of §8.
+- The CLAUDE.md, engineering-notes and doc 013 edits of §8 not already
+  made.
 - The CHANGELOG migration table: `GraphRuntime` → `Graph`, `GraphNode` →
-  `SessionNode`, `TuttiPlugin` options → builder.
+  `SessionNode`, `TuttiPlugin` options → builder, `GraphDirty` → none (an
+  `AudioGraphRes` edit is committed by the frame), the Bevy
+  `ExportRequest` → unchanged for Bevy users, translated internally.
 
-**Properties:** both gates' mutations (§8).
+**Properties:** the gates' mutations (§8).
 
 **Exit:** `just ci` is green, and `scripts/check-adapter.sh` reports no
-engine entry points in `bevy-tutti/src`.
+denied type in `bevy-tutti/src`.
 
 ## 10. Out of scope
 
 - **A plugin editor window API for headless hosts.** It needs a window
   system; a host brings its own, and the `tutti-plugin` handle already
   opens an editor into a raw handle.
+- **MIDI-CI and UMP endpoint negotiation.** The state machines are
+  `tutti-midi-runtime`'s. A headless host drives `CiResponder` and
+  `CiInitiator` itself and writes their output through
+  `s.midi().hardware_out()`. `bevy-tutti`'s `negotiation.rs` stays its
+  adapter.
 - **Project files and session save/load.** "Session" here means a running
-  engine, not a document. If the name misleads, see §11 question 1.
+  engine, not a document. That is one reason the name is still open (§11).
 - **Any change to the graph, the node contract or the RT rules.**
 
-## 11. Open questions
+## 11. Open question
 
-1. **The crate's name.** The proposal is `tutti-session`, with `Session`.
-   - `tutti-engine` collides with `tutti_core::Engine`.
-   - `tutti-host` collides with the plugin host and the cpal host.
-   - `tutti-app` collides with Bevy's `App`.
-   - `tutti-runtime` is close to `tutti-midi-runtime`.
-   - "Session" may suggest a saved project to a DAW user. Which name do you
-     want?
-2. **Should `bevy-tutti` re-export `tutti-session`?** Its users would then
-   get `Session` too, for a headless test rig beside their app. This would
-   be `bevy_tutti::session`, not a dependency on `tutti`.
-3. **Should `tutti`'s default features include the API layer?** Today
-   `tutti` is `default = []`, and §7 proposes `default = ["session"]`. The
-   cost is that a bare `tutti` dependency builds `tutti-nodes` and the
-   graph.
-4. **Where should this sit in the queue?** You said "queue this item after
-   everything". PRs 1–3 are small and independent. Should they wait too, or
-   may they land while other work is in flight, with PRs 4–7 queued last?
+The user decided the rest (see the Summary). One question is left.
+
+**The crate's name.** The working name is `tutti-session`, with
+`Session`.
+
+- `tutti-engine` collides with `tutti_core::Engine`.
+- `tutti-host` collides with the plugin host and the cpal host.
+- `tutti-app` collides with Bevy's `App`.
+- `tutti-runtime` is close to `tutti-midi-runtime`.
+- "Session" may suggest a saved project to a DAW user.
+
+Which name do you want? A rename touches only the crate, the umbrella's
+alias, and the docs. It is cheapest before PR 4.

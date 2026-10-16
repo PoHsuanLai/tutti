@@ -17,10 +17,17 @@
 //!   declines to model it, because how many failures over how long is a host's
 //!   policy — this module is that host.
 //!
-//! So liveness is debounced here: [`PluginLiveness::Failing`] counts consecutive
-//! observations and only [`PluginLiveness::Dead`] unwires. The cost is that a
-//! genuinely dead plugin emits silence for a few extra frames — which it was
-//! emitting anyway, since a crashed bridge returns zeros rather than erroring.
+//! So liveness is debounced, by `tutti-plugin`'s [`Liveness`]: dead after at
+//! least [`Liveness::DEATHS`] consecutive unhealthy observations spanning at
+//! least [`Liveness::DEFAULT_WINDOW`] (50 ms), reset by a healthy one.
+//! [`PluginLiveness::Failing`] mirrors the count and only
+//! [`PluginLiveness::Dead`] unwires. The window is measured on the wall clock
+//! each frame reads, not counted in frames, so it holds at any frame rate: a
+//! death lands on the first unhealthy frame at least 50 ms after the first
+//! (the 4th at a steady 60 Hz, later under jitter). The
+//! cost is that a genuinely dead plugin emits silence for a few extra frames —
+//! which it was emitting anyway, since a crashed bridge returns zeros rather
+//! than erroring.
 //!
 //! # Why the cause is read, not subscribed to
 //!
@@ -46,6 +53,8 @@
 //! session wants to survive a crash must have been captured while the plugin was
 //! healthy, which is what [`plugin_state_snapshot`] does.
 
+use std::time::Instant;
+
 use bevy_ecs::prelude::*;
 use bevy_log::error;
 use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
@@ -55,16 +64,9 @@ use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 // one word apart in the same file is how a reader mistakes the host's belief
 // for the engine's observation.
 use tutti_plugin::handles::PluginStatus as EngineStatus;
+use tutti_plugin::{Liveness, Verdict};
 
 use crate::plugin_host::editor::{PluginEditorOpen, PluginEmitter};
-
-/// How many consecutive unhealthy observations before a plugin is declared dead.
-///
-/// Three rather than one because the crash flag is published from another thread
-/// after the failing call returns, so a single observation races it. Three
-/// frames is a handful of milliseconds — far below the threshold where a user
-/// notices, and far above the publish window.
-const DEATHS_BEFORE_DEAD: u8 = 3;
 
 /// Frames between state snapshots of a healthy plugin.
 ///
@@ -79,8 +81,8 @@ const SNAPSHOT_INTERVAL_FRAMES: u32 = 512;
 ///
 /// Distinct from [`tutti_plugin::handles::PluginStatus`], which reports what the
 /// *engine* has observed: a latched death, or nothing yet. This adds the
-/// debounce between them — `Failing` is a belief this module forms by counting,
-/// and has no engine counterpart by design.
+/// debounce between them — `Failing` is a belief [`Liveness`] forms by
+/// counting, and has no engine counterpart by design.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PluginLiveness {
     /// Answering normally.
@@ -114,6 +116,9 @@ pub struct PluginHealth {
     /// [`plugin_health_poll`]; a host reads it, or asks
     /// [`is_dead`](Self::is_dead).
     pub status: PluginLiveness,
+    /// The debounce behind `status`: the run of unhealthy observations, and
+    /// when it began.
+    liveness: Liveness,
     /// The most recent state captured while healthy, if any.
     ///
     /// Private: this is a snapshot [`plugin_state_snapshot`] maintains, and a
@@ -188,28 +193,37 @@ pub fn plugin_health_poll(
     mut commands: Commands,
     mut plugins: Query<(Entity, &PluginEmitter, &mut PluginHealth)>,
 ) {
+    let now = Instant::now();
     for (entity, plugin, mut health) in plugins.iter_mut() {
         if health.is_dead() {
             continue;
         }
-        let EngineStatus::Dead { cause } = plugin.handle.status() else {
+        let cause = match plugin.handle.status() {
+            EngineStatus::Dead { cause } => Some(cause),
+            _ => None,
+        };
+        match health
+            .bypass_change_detection()
+            .liveness
+            .observe(cause.is_none(), now)
+        {
             // Any healthy observation resets the count: the debounce is for
             // *consecutive* failures, and a single late reply is not a death.
-            if health.status != PluginLiveness::Healthy {
-                health.status = PluginLiveness::Healthy;
+            Verdict::Healthy => {
+                if health.status != PluginLiveness::Healthy {
+                    health.status = PluginLiveness::Healthy;
+                }
+                continue;
             }
-            continue;
-        };
-
-        let consecutive = match health.status {
-            PluginLiveness::Failing { consecutive } => consecutive.saturating_add(1),
-            _ => 1,
-        };
-
-        if consecutive < DEATHS_BEFORE_DEAD {
-            health.status = PluginLiveness::Failing { consecutive };
-            continue;
+            Verdict::Failing { consecutive } => {
+                health.status = PluginLiveness::Failing { consecutive };
+                continue;
+            }
+            Verdict::Dead => {}
         }
+        // `Liveness` declares a death only on an unhealthy observation, and
+        // every unhealthy one carries the engine's cause.
+        let cause = cause.unwrap_or_default();
 
         // The engine's latched reason, not a placeholder. It is captured where
         // the crash is noticed rather than reconstructed from the flag, so it
@@ -395,6 +409,16 @@ mod tests {
     /// Spawn a plugin that reports `cause`, run `frames` updates, return the
     /// entity.
     ///
+    /// The frames are half of [`Liveness::DEFAULT_WINDOW`] apart (a sleep: the
+    /// system reads the wall clock), so [`Liveness::DEATHS`] of them span the
+    /// window, as they do at 60 Hz. The debounce's own rule, count against
+    /// window with explicit times, is pinned in `tutti-plugin`'s `Liveness`
+    /// tests; these pin that the system feeds it and acts on its verdict.
+    /// Mutations (each run, each failed): the system observing every plugin
+    /// healthy (the three crash tests); the sleep removed, so the frames run
+    /// back to back inside the window (both death tests: three observations
+    /// are not a death until they span it).
+    ///
     /// `AudioNode` is a real graph node rather than a fabricated id: its
     /// *removal* is the whole teardown this system performs, so the component
     /// has to be present for the unwire to be observable at all. A `dc` node
@@ -416,7 +440,10 @@ mod tests {
                 node,
             ))
             .id();
-        for _ in 0..frames {
+        for frame in 0..frames {
+            if frame > 0 {
+                std::thread::sleep(Liveness::DEFAULT_WINDOW / 2);
+            }
             app.update();
         }
         entity
@@ -435,7 +462,7 @@ mod tests {
         let entity = run(
             &mut app,
             Some("could not connect to plugin-server: No such file or directory"),
-            DEATHS_BEFORE_DEAD as usize,
+            Liveness::DEATHS as usize,
         );
 
         let health = app.world().get::<PluginHealth>(entity).unwrap();
@@ -457,7 +484,7 @@ mod tests {
     /// unwire a live plugin.
     #[test]
     fn a_crash_is_not_declared_until_the_debounce_elapses() {
-        for frames in 1..DEATHS_BEFORE_DEAD as usize {
+        for frames in 1..Liveness::DEATHS as usize {
             let mut app = test_app();
             let entity = run(&mut app, Some("stream closed"), frames);
 
@@ -484,7 +511,7 @@ mod tests {
     #[test]
     fn declaring_death_unwires_the_node() {
         let mut app = test_app();
-        let entity = run(&mut app, Some("stream closed"), DEATHS_BEFORE_DEAD as usize);
+        let entity = run(&mut app, Some("stream closed"), Liveness::DEATHS as usize);
 
         assert!(
             app.world().get::<tutti_core::AudioNode>(entity).is_none(),
@@ -501,7 +528,7 @@ mod tests {
     #[test]
     fn a_live_plugin_is_never_declared_dead() {
         let mut app = test_app();
-        let entity = run(&mut app, None, DEATHS_BEFORE_DEAD as usize + 5);
+        let entity = run(&mut app, None, Liveness::DEATHS as usize + 5);
 
         let health = app.world().get::<PluginHealth>(entity).unwrap();
         assert_eq!(health.status, PluginLiveness::Healthy);

@@ -1,9 +1,11 @@
 #![doc = include_str!("../README.md")]
 
 pub mod clip;
+mod file;
 pub mod smf;
 
 pub use clip::{read_clip_file_from_path, write_clip_file_to_path, MidiFileKind};
+pub use file::{MidiFile, SmfFile};
 pub use smf::{
     encode_midi_file, write_midi_file, MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfNote,
     SmfTimedEvent, SmfTrack,
@@ -35,6 +37,22 @@ pub enum Error {
     /// list, a zero ticks-per-beat.
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
+
+    /// A Clip File that did not parse, read from bytes by
+    /// [`MidiFile::from_bytes`].
+    ///
+    /// Kept apart from [`Self::MidiFileParse`]: the clip decoder's errors name
+    /// which structural rule the file broke, and flattening them to a string
+    /// would lose which container was being read.
+    #[error(transparent)]
+    Clip(#[from] ClipFileError),
+
+    /// The leading bytes match neither container's magic, so no decoder ran
+    /// ([`MidiFile::from_bytes`]). Distinct from a parse failure: "this is not
+    /// a MIDI file" is a different thing to fix than "this MIDI file is
+    /// malformed".
+    #[error("not a Standard MIDI File or a MIDI 2.0 Clip File")]
+    UnknownFormat,
 }
 
 impl From<midly::Error> for Error {

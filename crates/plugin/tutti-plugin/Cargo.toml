@@ -32,6 +32,10 @@ au = ["dep:tutti-au-host"]
 # here.
 vst2 = ["dep:tutti-vst2-host", "dep:arrayvec"]
 
+# `Component` on `PluginParamValues`, so a Bevy host keeps the mirror on the
+# plugin's entity. ECS derives only: no systems, no task pool.
+bevy = ["dep:bevy_ecs"]
+
 [dependencies]
 # Core types (units, transport, metering)
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
@@ -76,6 +80,9 @@ thiserror = "2"
 
 # Logging
 tracing = "0.1"
+
+# The `bevy` feature's derive.
+bevy_ecs = { workspace = true, optional = true }
 
 # Typed parent-window handle for editor embedding. The public API accepts
 # anything that impls `HasWindowHandle` (Bevy, winit, wgpu, …) and we

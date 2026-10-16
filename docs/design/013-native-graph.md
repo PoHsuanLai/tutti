@@ -4569,8 +4569,10 @@ under both.
   its first event before JR stamping. `MidiRouteRule`s compile into
   `EventFeeds` of the input's ports (`EventFeeds` and `set_event_sources`
   now name a port, `EventSource`); the fallback takes the ports no armed
-  rule covers. A keyboard is a `LiveMidiInput` on its entity (a queue node
-  wired to it, `LiveMidi` the sender). The sequencer plays only through clip
+  rule covers. (The compile itself is `tutti_midi_runtime::compile_routes`
+  since doc 015's PR 1; `bevy-tutti` only writes its result.) A keyboard is a
+  `LiveMidiInput` on its entity (a queue node wired to it, `LiveMidi` the
+  sender). The sequencer plays only through clip
   nodes: removing the last install empties the clip (its notes end on their
   frames) rather than removing it and sending an all-notes-off through a
   port. `AudioGraphRes::render_frame_at` renders a hand-driven graph under

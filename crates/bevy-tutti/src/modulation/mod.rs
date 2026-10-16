@@ -86,12 +86,13 @@ mod reconcile;
 mod tests;
 
 pub use declare::{
-    close_takes, Automation, AutomationTake, Follower, Lfo, LfoRate, Macro, ModFeed, ModRange,
-    ModRoute, ModSource, ModSourceKind, Mods, NoteEnvelope, ParamRef,
+    close_takes, Automation, AutomationTake, Follower, ModFeed, ModRange, ModRoute, ModSource,
+    ModSourceKind, Mods, NoteEnvelope, ParamRef,
 };
 pub(crate) use reconcile::ModEntities;
 pub use reconcile::{after_commit, reconcile, Declared, ModulationRefused, ModulationState};
-pub use tutti_mod::{Adsr, CurveType, LfoShape, Polarity};
+// The time-function builders are `tutti-mod`'s, declared as they are.
+pub use tutti_mod::{Adsr, CurveType, Lfo, LfoRate, LfoShape, Macro, Polarity};
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;

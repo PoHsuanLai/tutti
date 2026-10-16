@@ -5,6 +5,7 @@ mod compile;
 mod curve;
 mod program;
 mod shape;
+mod sources;
 
 pub use audio_automation::CurveType;
 pub use compile::{
@@ -18,3 +19,4 @@ pub use program::{
     ProgramError, ProgramTime, RateAnchor, SourceId, Wave, MAX_LANE_INPUTS, MAX_LANE_LAYERS,
 };
 pub use shape::{curve_apply, shape, LfoShape, Polarity};
+pub use sources::{Follower, Lfo, LfoRate, Macro, NoteEnvelope};

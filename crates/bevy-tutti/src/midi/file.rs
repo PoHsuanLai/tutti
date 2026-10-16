@@ -50,17 +50,17 @@
 //! }
 //! assert_eq!(*landed.lock().unwrap(), Some(true));
 //!
-//! // **Read** — a host takes `asset_server.load("song.mid")` and matches on the
-//! // loaded asset's `contents`. The loader is this call with the file's bytes,
-//! // which is the half worth showing without a file on disk:
-//! use bevy_tutti::midi::{MidiFileAsset, MidiFileContents};
+//! // **Read** — a host takes `asset_server.load("song.mid")` and reads the
+//! // loaded asset's `contents`, a `tutti_midi_file::MidiFile`. The loader is
+//! // `MidiFile::from_bytes` over the file's bytes, which is the half worth
+//! // showing without a file on disk:
+//! use tutti_midi_file::MidiFile;
 //!
-//! let asset = MidiFileAsset::from_bytes(&bytes).expect("the bytes we just encoded");
-//! match &asset.contents {
+//! match MidiFile::from_bytes(&bytes).expect("the bytes we just encoded") {
 //!     // Which arm you land in is decided by the leading magic bytes, not the
 //!     // extension — both containers wear `.mid`.
-//!     MidiFileContents::Smf(tracks) => assert_eq!(tracks.len(), 1),
-//!     MidiFileContents::Clip(_) => panic!("that was an SMF"),
+//!     MidiFile::Smf(smf) => assert_eq!(smf.tracks().len(), 1),
+//!     MidiFile::Clip(_) => panic!("that was an SMF"),
 //! }
 //! ```
 //!
@@ -95,105 +95,32 @@ use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 // This module decodes bytes an asset loader already read; it opens no MIDI port,
 // so it must not depend on the crate that does — `midi-hardware` gates that one,
 // and reaching through it makes *reading a `.mid` file* require an OS MIDI layer.
-use tutti_midi_file::clip::MidiFileKind;
-use tutti_midi_file::smf::{tracks, SmfTrack};
-use tutti_midi_file::ParsedClipFile;
-// The byte-slice clip decoder lives one crate further down, in
-// `tutti-midi-types`; `tutti-midi-file` wraps it for the path-taking form.
-use tutti_midi_types::read_clip_file;
-
-/// What a decoded MIDI file carries.
-///
-/// Two variants because the formats genuinely differ in what they hold — an SMF
-/// is a list of named tracks with 7-bit velocities, a Clip File is one stream
-/// that keeps 16 bits. Collapsing them here would discard whichever half the
-/// other lacks, in a layer whose job is only to move bytes.
-#[derive(Debug)]
-pub enum MidiFileContents {
-    /// A Standard MIDI File: named tracks, 7-bit velocities.
-    Smf(Vec<SmfTrack>),
-    /// A MIDI 2.0 Clip File: one stream, keeping 16-bit velocities.
-    Clip(Box<ParsedClipFile>),
-}
+use tutti_midi_file::MidiFile;
 
 /// A decoded MIDI file, loadable as a Bevy asset.
 ///
 /// Covers both containers, because they share an extension: `.mid` is worn by a
 /// Standard MIDI File and a MIDI 2.0 Clip File alike, so which decoder to run
-/// is decided by the leading magic bytes rather than by the file name. That is
-/// also why this is one asset type and not two — an `AssetLoader` is selected
-/// by extension, so two loaders both claiming `.mid` could not be told apart.
+/// is decided by the leading magic bytes ([`MidiFile::from_bytes`]) rather than
+/// by the file name. That is also why this is one asset type and not two — an
+/// `AssetLoader` is selected by extension, so two loaders both claiming `.mid`
+/// could not be told apart.
 #[derive(Debug, bevy_asset::Asset, TypePath)]
 pub struct MidiFileAsset {
     /// The decoded file, in whichever of the two containers it turned out to be.
-    pub contents: MidiFileContents,
+    pub contents: MidiFile,
 }
 
-impl MidiFileAsset {
-    /// Extensions the loader claims.
-    ///
-    /// `.midi` and `.mid` are the Standard MIDI File's; `.midi2` and `.mid2`
-    /// are in use for Clip Files. All four are handled by the same loader,
-    /// which sniffs rather than trusting any of them.
-    pub const EXTENSIONS: &'static [&'static str] = &["mid", "midi", "mid2", "midi2"];
-
-    /// Decodes a complete MIDI file from an in-memory byte slice.
-    ///
-    /// Sniffs the container from its magic — `MThd` for an SMF, `SMF2CLIP` for
-    /// a Clip File — because the extension cannot discriminate the two.
-    ///
-    /// # Errors
-    ///
-    /// [`MidiFileLoaderError::UnknownFormat`] when the magic matches neither
-    /// container, and [`Smf`](MidiFileLoaderError::Smf) or
-    /// [`Clip`](MidiFileLoaderError::Clip) when the matching decoder rejects
-    /// the bytes.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, MidiFileLoaderError> {
-        let contents = match MidiFileKind::sniff(bytes) {
-            Some(MidiFileKind::StandardMidiFile) => MidiFileContents::Smf(tracks(bytes)?),
-            Some(MidiFileKind::ClipFile) => {
-                MidiFileContents::Clip(Box::new(read_clip_file(bytes)?))
-            }
-            // Distinct from a parse failure, and worth its own error: "this is
-            // not a MIDI file" is a different thing for a user to fix than
-            // "this MIDI file is malformed".
-            None => return Err(MidiFileLoaderError::UnknownFormat),
-        };
-        Ok(Self { contents })
-    }
-}
-
-/// Loader for [`MidiFileAsset`]. Reads the whole payload, then delegates to
-/// [`MidiFileAsset::from_bytes`].
+/// Loader for [`MidiFileAsset`]. Reads the whole payload, then decodes it with
+/// [`MidiFile::from_bytes`]; it claims [`MidiFile::EXTENSIONS`].
 #[derive(Default, TypePath)]
 pub struct MidiFileAssetLoader;
-
-/// Why a [`MidiFileAsset`] load failed: unreadable, unrecognised, or malformed.
-#[derive(Debug, thiserror::Error)]
-pub enum MidiFileLoaderError {
-    /// The bytes could not be read at all.
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    /// An SMF that did not parse.
-    ///
-    /// The *file* error, not the I/O crate's: this is a decode failure, and
-    /// nothing here opens a MIDI port.
-    #[error(transparent)]
-    Smf(#[from] tutti_midi_file::Error),
-    /// A Clip File that did not parse. Kept distinct from [`Self::Smf`] because
-    /// the two decoders have unrelated error vocabularies, and flattening them
-    /// would lose which container was actually being read.
-    #[error(transparent)]
-    Clip(#[from] tutti_midi_types::ClipFileError),
-    /// The leading magic matched neither container, so no decoder was run.
-    #[error("not a Standard MIDI File or a MIDI 2.0 Clip File")]
-    UnknownFormat,
-}
 
 impl AssetLoader for MidiFileAssetLoader {
     type Asset = MidiFileAsset;
     type Settings = ();
-    type Error = MidiFileLoaderError;
+    /// Unreadable (`Io`), unrecognised (`UnknownFormat`) or malformed.
+    type Error = tutti_midi_file::Error;
 
     async fn load(
         &self,
@@ -203,11 +130,13 @@ impl AssetLoader for MidiFileAssetLoader {
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        MidiFileAsset::from_bytes(&bytes)
+        Ok(MidiFileAsset {
+            contents: MidiFile::from_bytes(&bytes)?,
+        })
     }
 
     fn extensions(&self) -> &[&str] {
-        MidiFileAsset::EXTENSIONS
+        MidiFile::EXTENSIONS
     }
 }
 

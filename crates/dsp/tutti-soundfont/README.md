@@ -5,8 +5,10 @@ SoundFont (`.sf2`) playback for the Tutti audio engine, via RustySynth.
 The crate has one type, `SoundFontUnit`: a graph node (`tutti_graph::Node`)
 with no audio inputs, stereo out and one MIDI event input. Build it from a
 decoded `SoundFont` and a `SynthesizerSettings`, choose a preset with
-`program_change`, insert it into a graph, and wire a MIDI source (a clip
-node, a keyboard queue, a hardware input) to its event input. Each event is
+`program_change` (or build both in one call with
+`SoundFontUnit::with_preset(font, rate, channel, preset)`), insert it into a
+graph, and wire a MIDI source (a clip node, a keyboard queue, a hardware
+input) to its event input. Each event is
 applied at its own frame offset within the block, to a resolution of 8
 frames.
 

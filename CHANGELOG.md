@@ -7,7 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed: the audio pump is `tutti_io::Recorder` (design 015 PR 3)
+### Changed — design 015 PR 1: MIDI and sample pieces to their owning crates
+
+- **MIDI file decoding, the inbound route compile and the memory voice move
+  out of `bevy-tutti` into the crates that own them** (design doc 015,
+  PR 1), so a headless host gets them without Bevy. `bevy-tutti` calls
+  them; its behaviour is unchanged.
+  - `tutti_midi_file::MidiFile` is the sniffed file (SMF or MIDI 2.0 Clip
+    File) that was `bevy_tutti::midi::MidiFileContents`. New: `timed()`
+    yields `(Beat, MidiEvent)` for both containers, normalized to MIDI 2.0
+    (an SMF's 7-bit values widened), with `tempo()` (the tempo at beat 0),
+    `tempo_map()` (every Set Tempo as `(Beat, Bpm)`, in time order),
+    `end()`, `kind()`, `read(path)` and `EXTENSIONS`. Its SMF variant is
+    `Smf(SmfFile)`: the tracks and the merged event stream from one parse,
+    behind `tracks()` and `stream()`, so `timed()` carries controllers,
+    bends and program changes.
+  - **Fixed:** `tutti_midi_file::ParsedMidiFile::tempo_bpm` was the first
+    Set Tempo in *track* order, wherever it sat in time. It is now the tempo
+    at beat 0: a Set Tempo at tick 0, else the SMF specification's 120. New
+    field `tempo_changes: Vec<(Beat, Bpm)>` holds every change in time
+    order (breaking for a struct literal; none exists outside the crate).
+  - `tutti_midi_file::Error` gains `Clip(ClipFileError)` and
+    `UnknownFormat`, the two errors of `MidiFileLoaderError` it lacked.
+  - `tutti_midi_runtime::compile_routes(rules, fallback)` is the pure route
+    compile (rules to input-node ports, the fallback taking only uncovered
+    ports) that `bevy_tutti::midi::rebuild_midi_routes` ran inline;
+    `RouteRule { channel, targets }` is its input.
+  - `tutti_sampler::{memory_voice, voice_width}` were
+    `bevy_tutti::sampler`'s. `bevy_tutti::prelude` still re-exports both.
+
+  | Was | Now |
+  |---|---|
+  | `bevy_tutti::midi::MidiFileContents::Smf(tracks)` | `tutti_midi_file::MidiFile::Smf(smf)`, `smf.tracks()` (and `smf.stream()`) |
+  | `ParsedMidiFile::tempo_bpm`: the first track's first Set Tempo | the tempo at beat 0; changes in `tempo_changes` |
+  | `bevy_tutti::midi::MidiFileContents::Clip(clip)` | `tutti_midi_file::MidiFile::Clip(clip)` |
+  | `MidiFileAsset::from_bytes(bytes)` | `MidiFile::from_bytes(bytes)`, the asset's `contents` |
+  | `MidiFileAsset::EXTENSIONS` | `MidiFile::EXTENSIONS` |
+  | `bevy_tutti::midi::MidiFileLoaderError` (`Io`, `Smf`, `Clip`, `UnknownFormat`) | `tutti_midi_file::Error` (`Io`, `Clip`, `UnknownFormat`; an SMF's parse errors are its own variants) |
+  | `bevy_tutti::sampler::{memory_voice, voice_width}` | `tutti_sampler::{memory_voice, voice_width}` (also in `bevy_tutti::prelude`) |
+
+### Changed — design 015 PR 3: the audio pump is `tutti_io::Recorder`
 
 - **One pump loop.** `bevy-tutti`'s `AudioPump` ran its own copy of
   `tutti_io::Recorder`'s thread loop; it now holds a `Recorder`, and
@@ -115,6 +154,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   below for the chunk's room). `Editor::schedule` refuses a segment into
   a node that does not honour offsets sample-accurately, as it refuses a
   ramp.
+
+### Design 015 PR 2: plugin, SoundFont and mod-source pieces to their owners
+
+Engine logic that lived in `bevy-tutti` moves into the one crate that owns
+it, so a headless host gets it without Bevy (design doc 015, §9 "PR 2").
+`bevy-tutti`'s systems call the moved code. **Breaking** where noted.
+
+| Was | Now |
+|---|---|
+| `bevy_tutti::plugin_host::PluginParamValues` (a `bevy-tutti` component) | `tutti_plugin::PluginParamValues`, a `Component` behind `tutti-plugin`'s new `bevy` feature (which `bevy-tutti`'s `plugin` enables); still re-exported from `bevy_tutti::plugin_host` |
+| `PluginParamValues::read(&handle)` spawned the read on `AsyncComputeTaskPool` | `PluginParamValues::start(&handle) -> (PluginParamValues, ParamRead)`: installs the report callback; `ParamRead` is a `Send` job (`run() -> HashMap<u32, f32>`), and `land(values)` fills the mirror. Nothing in `tutti-plugin` spawns. Bevy: `bevy_tutti::plugin_host::read_plugin_params(&handle)` returns the mirror and a `PluginParamRead` (the task) to insert together |
+| the mirror's edits were applied by `plugin_param_edits` reaching its fields | `PluginParamValues::drain_edits(apply)`: applies the reported values once the read has landed, each into the mirror and then to `apply` |
+| `plugin_health_poll` declared a plugin dead on its 3rd consecutive unhealthy frame | `tutti_plugin::{Liveness, Verdict}`: `Liveness::observe(healthy, now) -> Verdict`, dead after at least `Liveness::DEATHS` (3) consecutive unhealthy observations spanning at least a window (`Liveness::DEFAULT_WINDOW`, 50 ms; `Liveness::with_window`), reset by a healthy one, latched once dead. `plugin_health_poll` feeds it the wall clock: a crashed plugin is now written off on the first unhealthy frame at least 50 ms after the first (the 4th at a steady 60 Hz, later under jitter), not on the 3rd, and back-to-back frames no longer shrink the window |
+| `needs_announcement` private to `bevy-tutti`'s render-mode system | `tutti_plugin::needs_announcement(mode_changed, told)` |
+| `bevy-tutti` built a SoundFont unit with `SoundFontUnit::new` at its own `i32` rate cast, then `program_change` on promotion | `SoundFontUnit::with_preset(font, rate: SampleRate, channel, preset)`; the off-thread build now applies the preset, and `PendingSoundFontUnit` carries only the task |
+| `bevy_tutti::modulation::{Lfo, LfoRate, Macro}` defined in `bevy-tutti` | `tutti_mod::{Lfo, LfoRate, Macro}` (same builders), still re-exported from `bevy_tutti::modulation`; each converts with `Source::from` |
+| `bevy_tutti::modulation::Follower { input, attack, release }` | `Follower { input, envelope: tutti_mod::Follower }`; `Follower::new(input)`, `.attack(..)`, `.release(..)` unchanged. `tutti_mod::Follower` (attack and release, default 5 ms / 100 ms) is the source half |
+| `bevy_tutti::modulation::NoteEnvelope { midi, port, adsr }` | `NoteEnvelope { midi, port, envelope: tutti_mod::NoteEnvelope }`; `NoteEnvelope::new(midi, adsr)` unchanged. `tutti_mod::NoteEnvelope { adsr }` is the source half |
+
+**Migration.** Code that named `bevy_tutti::modulation::{Lfo, LfoRate,
+Macro}` or `bevy_tutti::plugin_host::PluginParamValues` keeps compiling. A
+struct literal or field access on `Follower`'s `attack`/`release` or
+`NoteEnvelope`'s `adsr` goes through `envelope` (`f.envelope.attack`,
+`n.envelope.adsr`), or uses the constructors. A headless host reads a
+plugin's values with `let (mut mirror, read) = PluginParamValues::start(&handle);`,
+runs `read.run()` on a thread of its own, and calls `mirror.land(values)`;
+it debounces a plugin's death with one `Liveness` per plugin, observing
+`handle.status()` with its own `Instant`. A test that drove
+`plugin_health_poll` with back-to-back frames to a death spaces them over
+the window (or asserts on `Liveness` with explicit times).
 
 ### Changed
 

@@ -182,6 +182,8 @@ audio-io = ["tutti-cpal/capture"]
 # step.
 plugin = [
     "dep:tutti-plugin",
+    # `Component` on `PluginParamValues`, the mirror on a plugin's entity.
+    "tutti-plugin/bevy",
     "dep:tutti-plugin-server",
     "dep:bevy_window",
     "dep:raw-window-handle",

@@ -14,11 +14,17 @@
 //!   surface and the granular capability traits (`HostParams`/`HostState`/
 //!   `HostEditor`) each backend implements the subset of.
 //! - [`plugin`] / [`plugins`] — the public load API.
+//! - [`param_values`], [`liveness`], [`render_mode`] — host policy written
+//!   once: the parameter mirror and its read job, the death debounce, and
+//!   when to announce a render mode.
 
 pub mod discovery;
 pub mod handles;
 pub mod ipc_client;
+pub mod liveness;
 pub mod node;
+pub mod param_values;
 pub mod plugin;
 pub mod plugins;
+pub mod render_mode;
 pub mod subprocess;

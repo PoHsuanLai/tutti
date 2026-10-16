@@ -3,8 +3,8 @@
 //!
 //! [`tutti_core::io::pump`] is the whole of "recording" minus the loop and the
 //! stop condition, which its own docs call the caller's policy. [`AudioPump`] is
-//! that policy for a Bevy host: a background thread running the loop, a
-//! component holding its handle, and a drain system that joins it.
+//! that policy for a Bevy host: a [`Recorder`] running the loop on its own
+//! thread, a component holding it, and a drain system that collects it.
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
@@ -261,17 +261,20 @@ impl<S> AudioPump<S> {
     }
 }
 
-/// A pump finished and its sink was finalized.
+/// A pump ended: its sink was finalized, or the pump was refused at start.
 ///
 /// Carries the [`AudioOut::finalize`] result, which is the only place a sink's
 /// closing error can surface — for a WAV, an `Err` here means the header was
-/// never patched and the file will not open.
+/// never patched and the file will not open. A pump refused at start (source
+/// and sink widths disagree) reports an
+/// [`InvalidInput`](std::io::ErrorKind::InvalidInput) error here instead.
 #[derive(Message, Debug)]
 pub struct PumpFinished {
     /// The entity that carried the pump. Already had its [`AudioPump`] removed.
     pub entity: Entity,
-    /// What [`AudioOut::finalize`] returned. An `Err` means the sink never
-    /// closed cleanly — for a WAV, a header that was never patched.
+    /// What [`AudioOut::finalize`] returned, or the start's refusal. An `Err`
+    /// means the sink never closed cleanly — for a WAV, a header that was
+    /// never patched.
     pub result: std::io::Result<()>,
 }
 
@@ -293,22 +296,25 @@ pub fn drain_audio_pumps<S: Send + Sync + 'static>(
         let Some(result) = pump.join() else { continue };
 
         if let Err(error) = &result {
-            bevy_log::error!("audio pump sink failed to finalize: {error}");
+            bevy_log::error!("audio pump ended with error: {error}");
         }
         commands.entity(entity).remove::<AudioPump<S>>();
         finished.write(PumpFinished { entity, result });
     }
 }
 
-/// Finalizes a pump whose component is being removed.
+/// Finalizes a pump whose component is being removed, and logs a failure.
 ///
 /// `On<Remove, AudioPump<S>>` fires at command-flush with the value still
 /// readable, mirroring
 /// [`unwire_removed_sources`](super::wire::unwire_removed_sources).
-/// Without it, despawning an entity mid-recording would drop the `JoinHandle`
-/// and detach the thread — the sink is owned *by that thread*, so its
-/// `finalize` would never run and the WAV would be left unreadable. Nothing
-/// else can reach it, because the entity has already left the drain's query.
+/// The sink would be finalized without it: the [`Recorder`] inside stops and
+/// joins in its `Drop`. But `Drop` can only store the finalize error in a
+/// [`FinalizeStatus`](tutti_io::FinalizeStatus) that nothing here reads, so a
+/// sink that failed to close on a despawn (an unreadable WAV) would go
+/// unreported. This collects the result while the component is still
+/// reachable, and logs it; the entity has already left the drain's query, so
+/// no [`PumpFinished`] is sent.
 ///
 /// This blocks the frame until the thread notices its flag (one poll, so
 /// bounded by the park). That is the cost of the guarantee, and it is only paid
@@ -322,7 +328,7 @@ pub fn finalize_removed_pumps<S: Send + Sync + 'static>(
         return;
     };
     if let Some(Err(error)) = pump.join() {
-        bevy_log::error!("audio pump sink failed to finalize on removal: {error}");
+        bevy_log::error!("audio pump ended with error on removal: {error}");
     }
 }
 
@@ -330,7 +336,7 @@ pub fn finalize_removed_pumps<S: Send + Sync + 'static>(
 ///
 /// `add_systems` does not deduplicate, so without this an element type
 /// registered by both a host and a library plugin would drain twice per frame.
-/// The second pass finds `handle` already taken and does nothing, but it doubles
+/// The second pass finds the take already collected and does nothing, but it doubles
 /// the per-frame query cost and makes the schedule depend on how many callers
 /// asked.
 #[derive(Resource, Default)]

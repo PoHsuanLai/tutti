@@ -27,7 +27,7 @@
 //! | `Recorder::wait` calls `shutdown()` rather than `join_pump()` | `wait_returns_a_complete_finite_take_…` (short file) |
 //! | `PumpPass::Ended => {}` | `is_finished_reports_…` (times out in `wait_until`) |
 //! | `JoinHandle`'s `is_finished` returns `false` | both `is_finished`/`request_stop` tests (time out) |
-//! | `request_stop` stores `true` | `a_requested_stop_…` (fails at `!rec.is_running()`; the unwind's `Drop` shares the mutated `request_stop` and then hangs, so the run ends at the harness timeout) |
+//! | `request_stop` stores `true` | `a_requested_stop_…` (fails at once at `!rec.is_running()`; the test holds the recorder in `ManuallyDrop`, so the unwind leaks the pump rather than joining a take the mutated `request_stop` can no longer end) |
 //!
 //! The last three tests are the Bevy-free half of `bevy-tutti`'s
 //! `audio_io_pump.rs` (design 015 PR 3 moved its pump loop here): a finite
@@ -471,13 +471,20 @@ fn a_requested_stop_ends_a_live_take_without_blocking() {
     let path = dir.path().join("asked.wav");
 
     let polls = Arc::new(AtomicUsize::new(0));
-    let mut rec = Recorder::start(
-        HalfStarving {
-            polls: Arc::clone(&polls),
-        },
-        sink(&path),
-    )
-    .expect("stereo source into a stereo sink");
+    // `ManuallyDrop` so a failed assertion below leaks the pump instead of
+    // joining it. The `Drop` join stops the pump through `request_stop`, the
+    // method under test: if that is broken, an unwinding `Drop` would wait on
+    // a live take forever, and neither nextest nor CI here has a timeout. A
+    // leaked thread dies with the test's process.
+    let mut rec = std::mem::ManuallyDrop::new(
+        Recorder::start(
+            HalfStarving {
+                polls: Arc::clone(&polls),
+            },
+            sink(&path),
+        )
+        .expect("stereo source into a stereo sink"),
+    );
 
     wait_until(
         "the live source to survive a starve and be polled again",
@@ -496,6 +503,8 @@ fn a_requested_stop_ends_a_live_take_without_blocking() {
         .expect("the take had not been collected yet")
         .expect("stopping a live take finalizes cleanly");
     assert!(rec.shutdown().is_none(), "a take is collected once");
+    // Collected, so this drop joins nothing.
+    drop(std::mem::ManuallyDrop::into_inner(rec));
 
     let reader = hound::WavReader::open(&path)
         .expect("a stopped live take must leave a readable, header-patched WAV");

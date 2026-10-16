@@ -738,7 +738,8 @@ impl Recorder {
     /// **On a [`Starved`](tutti_core::io::OnEmpty::Starved) source this blocks
     /// forever**, and every microphone capture is one — the pump parks and
     /// re-polls rather than ending. Choose the method that matches your
-    /// source's `ON_EMPTY`.
+    /// source's `ON_EMPTY`. After [`shutdown`](Self::shutdown) has already
+    /// returned the result, this returns `Ok(())` without blocking.
     ///
     /// # Errors
     ///

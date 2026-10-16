@@ -1,7 +1,7 @@
 # 015: a Bevy-free tutti API layer
 
-Status: **proposed**, revised after review. Doc only; nothing here has
-landed. The user has made every decision it asked for (§11).
+Status: **in progress**. The user has made every decision it asked for
+(§11). Each PR of §9 that has landed says so in a "Landed" note.
 
 ## Summary
 
@@ -1194,6 +1194,31 @@ the moved code.
 
 **Exit:** `plugin_host/health.rs`'s, `params.rs`'s and
 `modulation/tests.rs`'s tests pass, calling the moved types.
+
+**Landed.** As scoped, with these specifics:
+
+- `tutti_plugin::{PluginParamValues, ParamRead, Liveness, Verdict,
+  needs_announcement}` at the crate root. `PluginParamValues` is still a
+  component on the plugin's entity until PR 6: `tutti-plugin` gained a
+  `bevy` feature (off by default, `bevy_ecs` derives only) for it, which
+  `bevy-tutti`'s `plugin` enables. Its edits apply through
+  `drain_edits(apply)`, which holds them until the read lands. Bevy's read
+  task is a separate `PluginParamRead` component, started by
+  `read_plugin_params`.
+- `Liveness::DEATHS` (3) and `DEFAULT_WINDOW` (50 ms), `with_window`; a
+  death is latched. `bevy-tutti`'s `PluginHealth` holds one and feeds it
+  `Instant::now()` each frame, so at 60 Hz a crashed plugin is written off
+  on its 4th unhealthy frame, not its 3rd. Its adapter tests space their
+  frames half a window apart; the rule's own tests, with explicit `now`s,
+  are `tutti-plugin`'s. `PluginLiveness` stays as the component's mirror.
+- `tutti_mod::{Lfo, LfoRate, Macro, Follower, NoteEnvelope}`, each a
+  `Source` through `From`. `bevy_tutti::modulation` re-exports `Lfo`,
+  `LfoRate` and `Macro`; its `Follower` and `NoteEnvelope` wrap the
+  `tutti-mod` builder in an `envelope` field beside their entity. No
+  `Reflect` was added: none of these was reflected before.
+- `SoundFontUnit::with_preset` takes a `SampleRate`; `bevy-tutti`'s
+  off-thread build now applies the preset too.
+- The render-mode truth table moved to `tutti-plugin` with the rule.
 
 ### PR 3: the pump to `tutti-io`
 

@@ -17,7 +17,7 @@ use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use std::sync::Arc;
 
 use crate::graph::{engine_ready, AudioConfig, AudioGraphRes, GraphDirty, GraphReconcileSystems};
-use tutti_soundfont::{SoundFont, SoundFontError, SoundFontUnit, SynthesizerSettings};
+use tutti_soundfont::{SoundFont, SoundFontError, SoundFontUnit};
 
 /// A parsed `.sf2` as a loadable asset.
 ///
@@ -155,14 +155,13 @@ pub struct PlaySoundFont {
 /// In-flight off-thread build of a [`SoundFontUnit`].
 ///
 /// Inserted by `soundfont_playback_system` once the `.sf2` asset has resolved;
-/// the task owns the decoded `Arc<SoundFont>` and a `SynthesizerSettings` and
-/// runs the synchronous `SoundFontUnit::new` build on the
-/// [`AsyncComputeTaskPool`]. `promote_pending_soundfonts` drains it.
+/// the task owns the decoded `Arc<SoundFont>` and runs the synchronous
+/// [`SoundFontUnit::with_preset`] build (the unit at the graph's rate, its
+/// channel on the entity's preset) on the [`AsyncComputeTaskPool`].
+/// `promote_pending_soundfonts` drains it.
 #[derive(Component)]
 pub struct PendingSoundFontUnit {
     task: Task<Result<SoundFontUnit, tutti_soundfont::Error>>,
-    preset: i32,
-    channel: i32,
 }
 
 /// Query filter for the steady-state SoundFont trigger: carries `PlaySoundFont`
@@ -175,7 +174,7 @@ type PlaySoundFontPending = (
 
 /// Processes `PlaySoundFont` trigger components: once the `.sf2` asset has
 /// resolved, spawns the (synchronous, potentially expensive)
-/// `SoundFontUnit::new` decode onto the [`AsyncComputeTaskPool`] and attaches
+/// [`SoundFontUnit::with_preset`] build onto the [`AsyncComputeTaskPool`] and attaches
 /// [`PendingSoundFontUnit`], removing `PlaySoundFont`.
 ///
 /// Entities whose asset is still loading are left alone for the next frame.
@@ -202,30 +201,23 @@ pub fn soundfont_playback_system(
         };
 
         let soundfont = source.0.clone();
-        // rustysynth's settings field is `i32`; the cast is ours to make.
-        let sample_rate = config.sample_rate.get().round() as i32;
-        let preset = play.preset;
-        let channel = play.channel;
+        let sample_rate = config.sample_rate;
+        let (channel, preset) = (play.channel, play.preset);
 
         let task = AsyncComputeTaskPool::get().spawn(async move {
-            let settings = SynthesizerSettings::new(sample_rate);
-            SoundFontUnit::new(soundfont, &settings)
+            SoundFontUnit::with_preset(soundfont, sample_rate, channel, preset)
         });
 
         commands
             .entity(entity)
             .remove::<PlaySoundFont>()
-            .insert(PendingSoundFontUnit {
-                task,
-                preset,
-                channel,
-            });
+            .insert(PendingSoundFontUnit { task });
     }
 }
 
 /// Drains [`PendingSoundFontUnit`] entities whose off-thread build has
-/// finished: applies the entity's program change, adds the unit to tutti's
-/// graph, attaches `AudioNode`, then removes the pending marker.
+/// finished: adds the unit (already on its preset) to tutti's graph,
+/// attaches `AudioNode`, then removes the pending marker.
 ///
 /// Entities whose build is still running are left alone for the next frame.
 ///
@@ -258,7 +250,7 @@ pub fn promote_pending_soundfonts(
             continue;
         };
 
-        let mut unit = match result {
+        let unit = match result {
             Ok(unit) => unit,
             Err(e) => {
                 bevy_log::error!("Failed to create SoundFontUnit: {}", e);
@@ -266,8 +258,6 @@ pub fn promote_pending_soundfonts(
                 continue;
             }
         };
-        unit.program_change(pending_unit.channel, pending_unit.preset);
-
         // Inserted as a graph node: a MIDI event input (so a
         // `MidiSourceInstall` plays through a clip node), a fork, and a node
         // that follows the graph's rate on a device restart (`Node::prepare`).

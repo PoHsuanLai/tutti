@@ -1042,9 +1042,11 @@ the cell is that value, a fork's template shares it
 it. One cell per param, one writer.)
 
 **A plugin's GUI** edit reaches the host through `ParameterChangeSink`; for
-a parameter with a lane, it is written into the lane's knob. (As landed:
-`PluginParamValues::read` installs the handle's `on_parameter_changed`
-callback, which queues each report; `plugin_param_edits`, in
+a parameter with a lane, it is written into the lane's knob. (As landed,
+and moved to `tutti-plugin` by design 015 PR 2:
+`PluginParamValues::start` installs the handle's `on_parameter_changed`
+callback, which queues each report, and hands back the `ParamRead` job
+that fills the mirror; `plugin_param_edits`, in
 `GraphReconcileSystems::Spawn`, writes them into the mirror and the lane's
 knob, `ModulationState::set_knob`. Under automation the curve decides the
 base, so the knob shows again when the automation or its take goes.)

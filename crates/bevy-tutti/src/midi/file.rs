@@ -59,7 +59,7 @@
 //! match MidiFile::from_bytes(&bytes).expect("the bytes we just encoded") {
 //!     // Which arm you land in is decided by the leading magic bytes, not the
 //!     // extension — both containers wear `.mid`.
-//!     MidiFile::Smf { tracks, .. } => assert_eq!(tracks.len(), 1),
+//!     MidiFile::Smf(smf) => assert_eq!(smf.tracks().len(), 1),
 //!     MidiFile::Clip(_) => panic!("that was an SMF"),
 //! }
 //! ```

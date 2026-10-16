@@ -18,7 +18,8 @@ MIDI **file** codecs for the Tutti audio engine: Standard MIDI File ([`smf`],
 [`MidiFileKind::sniff`] tells the two formats apart by magic bytes, not by
 extension. [`MidiFile`] reads either one, sniffed, and its `timed()` yields
 the file as `(Beat, MidiEvent)` in the engine's MIDI 2.0 vocabulary (an SMF's
-7-bit velocities widened), with `tempo()` and `end()` beside it. Errors are
+7-bit velocities widened), with `tempo()` (at beat 0), `tempo_map()` and
+`end()` beside it. Errors are
 [`Error`](enum@Error).
 
 Nothing here touches an OS MIDI API, and nothing is `cfg`-gated, so a consumer

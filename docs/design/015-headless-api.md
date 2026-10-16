@@ -876,15 +876,17 @@ let synth = s.add_plugin(job.run())?;
 s.graph().set_outputs_from(synth);
 
 let file = MidiFile::read("song.mid")?;                 // tutti-midi-file: sniffs SMF vs Clip File
-let tempo = file.tempo().unwrap_or(Bpm(120.0));         // an SMF always has one; a clip may not
+let tempo = file.tempo().unwrap_or(Bpm(120.0));         // the tempo at beat 0; an SMF always has one
 s.midi().play_clip(synth, file.timed().map(TimedMidiEvent::from))?;
 s.transport().set_tempo(tempo);
 
 let mut config = ExportConfig::default();
 config.render.sample_rate = SampleRate(48_000.0);
-// `end()` is a `Beat`. An f64 seconds converter for an hour-long render does
-// not exist yet (`BeatDuration::to_seconds` is f32 `Seconds`): PR 6's to add.
-config.render.duration_seconds = (file.end() - Beat(0.0)).to_seconds_f64(tempo);
+// `end()` is a `Beat`. One tempo is right only for a file that never changes
+// it: in general the length integrates over `file.tempo_map()`. An f64
+// converter that does (`BeatDuration::to_seconds` is f32 `Seconds` at one
+// tempo) does not exist yet: PR 6's to add.
+config.render.duration_seconds = file_seconds(file.end(), &file.tempo_map());
 let job = s.export(
     ExportRequest::file("song.wav", config)
         .on_timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -907,8 +909,9 @@ today (`export/request.rs:116-120`).
 Three engine changes this example needs, each a **(c)** move in §9:
 
 - `MidiFile::read`, with `timed()` yielding `(Beat, MidiEvent)` for both
-  containers, plus `tempo()` and `end()` (landed in PR 1; `tempo()` is an
-  `Option<Bpm>`, since a Clip File may declare none);
+  containers, plus `tempo()` and `end()` (landed in PR 1; `tempo()` is the
+  tempo at beat 0 as an `Option<Bpm>`, since a Clip File may declare none,
+  and `tempo_map()` holds every change);
 - `TimedMidiEvent: From<(Beat, MidiEvent)>`, which exists;
 - `needs_announcement`, for the render-mode phase.
 
@@ -1154,7 +1157,10 @@ PRs 1–3 are **(c)** moves and can land in any order. PR 4 needs them. PRs
 **Properties:**
 
 - An SMF and a Clip File of the same notes yield the same
-  `(Beat, MidiEvent)` list, velocity widened.
+  `(Beat, MidiEvent)` list, velocity widened. (Only channel-voice messages
+  compare: a clip's `timed()` keeps its Flex Data, a Set Tempo or time
+  signature, while an SMF's meta events are not MIDI messages and are not
+  in it.)
 - A note-on at tick 480 of a 480-ppq file lands at `Beat(1.0)`.
 - The route compile is total over the rule set, and its fallback holds only
   unrouted channels.
@@ -1163,17 +1169,26 @@ PRs 1–3 are **(c)** moves and can land in any order. PR 4 needs them. PRs
 **Exit:** `bevy-tutti`'s MIDI file and route tests pass unchanged against
 the moved code.
 
+The exit is met with the four decode tests moved rather than left
+unchanged: their assertions are equivalent, with the types renamed
+(`MidiFileContents` → `MidiFile`, `MidiFileLoaderError` → `Error`). The
+route, loader-extension, write and prelude tests are unchanged.
+
 **Landed.** What moved, old → new:
 
 - `bevy_tutti::midi::MidiFileContents` → `tutti_midi_file::MidiFile`, its
   sniff-and-decode (`MidiFileAsset::from_bytes`) → `MidiFile::from_bytes`,
   the extension list → `MidiFile::EXTENSIONS`, and `MidiFileLoaderError` →
   `tutti_midi_file::Error` (which gained `Clip` and `UnknownFormat`). The
-  SMF variant is `Smf { tracks, stream }`: `timed()` reads the merged
-  stream, because the paired notes alone would drop every controller.
-  `tempo()` is `Option<Bpm>` (an SMF always answers, its spec's 120 if it
-  declares none; a Clip File may not), and `end()` is the last event's
-  `Beat`.
+  SMF variant is `Smf(SmfFile)`: its tracks and its merged stream come from
+  one `midly` parse, behind accessors, so the two cannot disagree; `timed()`
+  reads the stream, because the paired notes alone would drop every
+  controller. `tempo()` is the tempo at beat 0 as `Option<Bpm>` (an SMF
+  always answers: a Set Tempo at tick 0, else its spec's 120; a Clip File
+  answers only with a Set Tempo at beat 0). `tempo_map()` lists every Set
+  Tempo in time order. A file whose tempo changes needs the map: one tempo
+  does not give its length in seconds, and PR 6's f64 duration converter
+  must integrate over the map. `end()` is the last event's `Beat`.
 - The route compile → `tutti_midi_runtime::compile_routes` over
   `RouteRule { channel, targets }`; `bevy-tutti`'s `rebuild` filters the
   armed rules, compiles, and writes the feeds.

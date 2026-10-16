@@ -208,6 +208,11 @@ mod tests {
 
     /// Without a fallback an uncovered port reaches nobody, and with
     /// nothing declared the result is empty.
+    ///
+    /// Mutation (run): every rule compiled as an any-channel rule
+    /// (`input_ports(None)` for `input_ports(rule.channel)`) → the drums take
+    /// all seventeen ports → fails. Mutation (run): a channel rule giving its
+    /// channel's port alone → fails.
     #[test]
     fn without_a_fallback_an_unrouted_port_reaches_nobody() {
         assert!(compile_routes::<&str>([], None).is_empty());

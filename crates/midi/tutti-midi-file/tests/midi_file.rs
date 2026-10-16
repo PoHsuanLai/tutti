@@ -125,7 +125,7 @@ fn a_note_on_at_tick_480_of_a_480_ppq_file_lands_at_beat_one() {
     assert_eq!(file.end(), Beat(2.0), "the last event, the note-off");
 }
 
-/// **`tempo` is the declared one, and an SMF always declares one.**
+/// **`tempo` is the declared tempo at beat 0, and an SMF always has one.**
 ///
 /// 600 000 µs per quarter is exactly 100 BPM, and so is the clip header's
 /// Flex Data tempo. An SMF with no Set Tempo reads as the specification's
@@ -170,6 +170,9 @@ fn tempo_reads_the_declared_tempo_from_either_container() {
 
 /// `read` is `from_bytes` over a file's bytes, and a missing file is an IO
 /// error, not an unknown format.
+///
+/// Mutation (run): `read` mapping the IO failure to `Error::UnknownFormat`
+/// (`std::fs::read(..).map_err(|_| Error::UnknownFormat)?`) → fails.
 #[test]
 fn read_decodes_a_path_and_reports_a_missing_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -190,10 +193,10 @@ fn read_decodes_a_path_and_reports_a_missing_file() {
 fn smf_bytes_decode_to_tracks() {
     let file = MidiFile::from_bytes(&smf_bytes()).expect("decodes");
     match file {
-        MidiFile::Smf { tracks, .. } => {
-            assert_eq!(tracks.len(), 1, "one track in, one track out");
+        MidiFile::Smf(smf) => {
+            assert_eq!(smf.tracks().len(), 1, "one track in, one track out");
             assert!(
-                !tracks[0].notes.is_empty(),
+                !smf.tracks()[0].notes.is_empty(),
                 "the encoded note must survive the round trip"
             );
         }
@@ -245,4 +248,143 @@ fn a_truncated_smf_is_a_parse_error() {
         "a truncated SMF still has MThd, so it is a decode failure rather than \
          an unrecognised container; got {err:?}"
     );
+}
+
+// ── tempo: the one at beat 0, and the map ───────────────────────────────────
+
+/// **The tempo at beat 0 is the earliest Set Tempo across tracks, not the
+/// first track's.** Track 0 sets 60 BPM at beat 4; track 1 sets 100 BPM at
+/// beat 0. Beat 0 plays at 100, and the map holds both, in time order.
+///
+/// Mutation (run): dropping the sort of the merged changes by tick (so track
+/// order decides, as before this fix) → `tempo()` reads 60 → fails.
+#[test]
+fn the_tempo_at_beat_zero_is_the_earliest_set_tempo_across_tracks() {
+    let file = MidiFile::from_bytes(&metrical(&[
+        vec![
+            RawEvent::tempo(4 * BEAT, 1_000_000),
+            RawEvent::note_on(0, 0, 60, 100),
+        ],
+        vec![
+            RawEvent::tempo(0, 600_000),
+            RawEvent::note_on(0, 1, 62, 100),
+        ],
+    ]))
+    .unwrap();
+    assert_eq!(file.tempo(), Some(Bpm(100.0)));
+    assert_eq!(
+        file.tempo_map(),
+        vec![(Beat(0.0), Bpm(100.0)), (Beat(4.0), Bpm(60.0))]
+    );
+}
+
+/// **A Set Tempo after beat 0 does not govern beat 0.** The file's only Set
+/// Tempo is 60 BPM at beat 8; beats 0–8 play at the specification's 120.
+///
+/// Mutation (run): `ParsedMidiFile` taking the earliest change as the beat-0
+/// tempo wherever it sits (`Some(&(_, tempo))` for `Some(&(0, tempo))`) →
+/// `tempo()` reads 60 → fails.
+#[test]
+fn a_later_set_tempo_does_not_govern_beat_zero() {
+    let file = MidiFile::from_bytes(&metrical(&[vec![
+        RawEvent::note_on(0, 0, 60, 100),
+        RawEvent::tempo(8 * BEAT, 1_000_000),
+    ]]))
+    .unwrap();
+    assert_eq!(file.tempo(), Some(Bpm(120.0)));
+    assert_eq!(file.tempo_map(), vec![(Beat(8.0), Bpm(60.0))]);
+}
+
+/// **A Clip File's tempo map is its Flex Data Set Tempos, and its tempo at
+/// beat 0 is one at beat 0 or none.** 150 BPM is exactly 40 000 000 ten-ns
+/// units per quarter, so it survives the wire.
+///
+/// Mutation (run): the clip arm of `tempo()` taking the first change wherever
+/// it sits (the `filter` on beat 0 dropped) → the second clip reads
+/// `Some(150)` → fails.
+#[test]
+fn a_clip_files_tempo_map_is_its_set_tempos() {
+    let g = MidiGroup::FIRST;
+    let clip = write_clip_file_from_beats(
+        TPQ,
+        [
+            (Beat(0.0), MidiEvent::flex_set_tempo(g, 100.0)),
+            (
+                Beat(0.0),
+                MidiEvent::note_on(g, MidiChannel::FIRST, 60, 0x8000),
+            ),
+            (Beat(2.0), MidiEvent::flex_set_tempo(g, 150.0)),
+        ],
+    );
+    let file = MidiFile::from_bytes(&clip).unwrap();
+    let map = file.tempo_map();
+    assert_eq!(map.len(), 2);
+    assert_eq!((map[0].0, map[1].0), (Beat(0.0), Beat(2.0)));
+    assert!(!map[0].1.differs_from(Bpm(100.0), 1e-6), "got {map:?}");
+    assert!(!map[1].1.differs_from(Bpm(150.0), 1e-6), "got {map:?}");
+    assert!(!file.tempo().unwrap().differs_from(Bpm(100.0), 1e-6));
+
+    let late = write_clip_file_from_beats(
+        TPQ,
+        [
+            (
+                Beat(0.0),
+                MidiEvent::note_on(g, MidiChannel::FIRST, 60, 0x8000),
+            ),
+            (Beat(2.0), MidiEvent::flex_set_tempo(g, 150.0)),
+        ],
+    );
+    assert_eq!(MidiFile::from_bytes(&late).unwrap().tempo(), None);
+}
+
+// ── the merged stream carries more than notes ───────────────────────────────
+
+/// **An SMF's controllers, bends, program changes and running-status notes
+/// reach `timed()`, widened to MIDI 2.0.** The figures are the spec's
+/// Min-Center-Max upscales: CC value 100 → `0xC924_9249`, the bend centre
+/// (`0x2000`) → `0x8000_0000`, velocity 1 → 512; a running-status velocity-0
+/// note-on is a note-off.
+///
+/// Mutation (run): `timed()`'s SMF arm keeping note-on and note-off only (a
+/// `filter` on the message before the conversion) → two events, not five →
+/// fails. This is the test that shows `stream` is needed: the paired notes
+/// carry no controller.
+#[test]
+fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
+    let file = MidiFile::from_bytes(&metrical(&[vec![
+        RawEvent::new(0, vec![0xB2, 7, 100]), // CC 7 = 100, channel 2
+        RawEvent::new(BEAT / 4, vec![0xE2, 0x00, 0x40]), // bend centre
+        RawEvent::new(BEAT / 4, vec![0xC2, 5]), // program 5
+        RawEvent::note_on(BEAT / 4, 2, 60, 1),
+        RawEvent::running_status(BEAT, vec![60, 0]), // 0x92 60 0: a note-off
+    ]]))
+    .unwrap();
+    let timed: Vec<(Beat, MidiEvent)> = file.timed().collect();
+    assert_eq!(timed.len(), 5, "every channel message: {timed:?}");
+
+    // MIDI 2.0 Channel Voice: type 4, the opcode in word 0, the value in word 1.
+    let op = |e: &MidiEvent| (e.data_words()[0] >> 28, (e.data_words()[0] >> 20) & 0xF);
+    let (_, cc) = timed[0];
+    assert_eq!(op(&cc), (0x4, 0xB));
+    assert_eq!((cc.data_words()[0] >> 8) & 0x7F, 7, "the controller index");
+    assert_eq!(cc.data_words()[1], 0xC924_9249);
+    assert_eq!(cc.channel(), Some(MidiChannel::new(2)));
+
+    let (at, bend) = timed[1];
+    assert_eq!(at, Beat(0.25));
+    assert_eq!(op(&bend), (0x4, 0xE));
+    assert_eq!(bend.data_words()[1], 0x8000_0000);
+
+    let (_, program) = timed[2];
+    assert_eq!(op(&program), (0x4, 0xC));
+    assert_eq!(program.data_words()[1] >> 24, 5);
+
+    let (_, on) = timed[3];
+    assert!(on.is_note_on());
+    assert_eq!(on.velocity_u16(), Some(512));
+
+    let (at, off) = timed[4];
+    assert_eq!(at, Beat(1.75));
+    assert!(off.is_note_off() && !off.is_note_on(), "{off:?}");
+    assert_eq!(op(&off), (0x4, 0x8), "an explicit MIDI 2.0 note-off");
 }

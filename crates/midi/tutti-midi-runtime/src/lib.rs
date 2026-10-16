@@ -13,9 +13,10 @@ mod schedule;
 mod sysex;
 
 pub use live::{
-    input_port_of, input_ports, MidiInputControls, MidiInputNode, MidiMailbox, MidiOutControls,
-    MidiOutNode, MidiQueueNode, MidiReceiver, MidiSender, CHANNELLESS_PORT, MAILBOX_CAPACITY,
-    MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MIDI_OUT_CAPACITY, MIDI_QUEUE_CAPACITY,
+    compile_routes, input_port_of, input_ports, MidiInputControls, MidiInputNode, MidiMailbox,
+    MidiOutControls, MidiOutNode, MidiQueueNode, MidiReceiver, MidiSender, RouteRule,
+    CHANNELLESS_PORT, MAILBOX_CAPACITY, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
+    MIDI_OUT_CAPACITY, MIDI_QUEUE_CAPACITY,
 };
 pub use negotiate::{
     CiInitiator, CiProperty, CiResponder, DeviceIdentity, DiscoveredCiDevice, DiscoveredEndpoint,

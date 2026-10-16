@@ -9,12 +9,15 @@
 //! - [`MidiOutNode`] hands what reaches it to a control thread (a hardware
 //!   pump).
 //! - [`MidiMailbox`] is the ring the last two cross the thread boundary on.
+//! - [`compile_routes`] turns inbound routing rules into which of the input
+//!   node's ports each listener takes.
 
 pub mod input_node;
 pub mod mailbox;
 pub(crate) mod order;
 pub mod out_node;
 pub mod queue_node;
+mod route;
 
 pub use input_node::{
     input_port_of, input_ports, MidiInputControls, MidiInputNode, CHANNELLESS_PORT,
@@ -23,3 +26,4 @@ pub use input_node::{
 pub use mailbox::{MidiMailbox, MidiReceiver, MidiSender, MAILBOX_CAPACITY};
 pub use out_node::{MidiOutControls, MidiOutNode, MIDI_OUT_CAPACITY};
 pub use queue_node::{MidiQueueNode, MIDI_QUEUE_CAPACITY};
+pub use route::{compile_routes, RouteRule};

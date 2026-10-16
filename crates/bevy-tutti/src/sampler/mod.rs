@@ -12,16 +12,16 @@ use bevy_ecs::prelude::*;
 
 use tutti_sampler::DiskStreamer;
 
-// What `SpawnVoice` / `memory_voice` take and what the `.wav` loader hands out,
-// re-exported so a Bevy host playing a clip needs no direct `tutti-io`
-// dependency. (`sampler` enables `tutti-io/bevy`, so `WaveAsset` always exists
+// What `SpawnVoice` / `tutti_sampler::memory_voice` take and what the `.wav`
+// loader hands out, re-exported so a Bevy host playing a clip needs no direct
+// `tutti-io` dependency. (`sampler` enables `tutti-io/bevy`, so `WaveAsset` always exists
 // here.)
 pub use tutti_io::{Wave, WaveAsset};
 
 pub mod voice;
 pub mod wave_loader;
 
-pub use voice::{memory_voice, voice_width, InsertVoice, SamplerVoice, SpawnVoice, VoiceCommands};
+pub use voice::{InsertVoice, SamplerVoice, SpawnVoice, VoiceCommands};
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 
 /// The disk-streaming engine. Owns the butler thread that drives all disk I/O;

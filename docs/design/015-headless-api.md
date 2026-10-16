@@ -1,7 +1,8 @@
 # 015: a Bevy-free tutti API layer
 
-Status: **proposed**, revised after review. Doc only; nothing here has
-landed. The user has made every decision it asked for (§11).
+Status: **proposed**, revised after review. PR 1 (§9) has landed; the
+rest has not. The user has made every decision it asked for (§11).
+§2's file:line citations are the survey of `bevy-tutti` before PR 1.
 
 ## Summary
 
@@ -875,16 +876,19 @@ let synth = s.add_plugin(job.run())?;
 s.graph().set_outputs_from(synth);
 
 let file = MidiFile::read("song.mid")?;                 // tutti-midi-file: sniffs SMF vs Clip File
+let tempo = file.tempo().unwrap_or(Bpm(120.0));         // an SMF always has one; a clip may not
 s.midi().play_clip(synth, file.timed().map(TimedMidiEvent::from))?;
-s.transport().set_tempo(file.tempo());
+s.transport().set_tempo(tempo);
 
 let mut config = ExportConfig::default();
 config.render.sample_rate = SampleRate(48_000.0);
-config.render.duration_seconds = file.end().to_seconds(file.tempo()); // f64: an hour-long render
+// `end()` is a `Beat`. An f64 seconds converter for an hour-long render does
+// not exist yet (`BeatDuration::to_seconds` is f32 `Seconds`): PR 6's to add.
+config.render.duration_seconds = (file.end() - Beat(0.0)).to_seconds_f64(tempo);
 let job = s.export(
     ExportRequest::file("song.wav", config)
         .on_timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-            tempo: file.tempo(),
+            tempo,
             sample_rate: SampleRate(48_000.0),
             ..Default::default()
         })))
@@ -903,7 +907,8 @@ today (`export/request.rs:116-120`).
 Three engine changes this example needs, each a **(c)** move in §9:
 
 - `MidiFile::read`, with `timed()` yielding `(Beat, MidiEvent)` for both
-  containers, plus `tempo()` and `end()`;
+  containers, plus `tempo()` and `end()` (landed in PR 1; `tempo()` is an
+  `Option<Bpm>`, since a Clip File may declare none);
 - `TimedMidiEvent: From<(Beat, MidiEvent)>`, which exists;
 - `needs_announcement`, for the render-mode phase.
 
@@ -1157,6 +1162,30 @@ PRs 1–3 are **(c)** moves and can land in any order. PR 4 needs them. PRs
 
 **Exit:** `bevy-tutti`'s MIDI file and route tests pass unchanged against
 the moved code.
+
+**Landed.** What moved, old → new:
+
+- `bevy_tutti::midi::MidiFileContents` → `tutti_midi_file::MidiFile`, its
+  sniff-and-decode (`MidiFileAsset::from_bytes`) → `MidiFile::from_bytes`,
+  the extension list → `MidiFile::EXTENSIONS`, and `MidiFileLoaderError` →
+  `tutti_midi_file::Error` (which gained `Clip` and `UnknownFormat`). The
+  SMF variant is `Smf { tracks, stream }`: `timed()` reads the merged
+  stream, because the paired notes alone would drop every controller.
+  `tempo()` is `Option<Bpm>` (an SMF always answers, its spec's 120 if it
+  declares none; a Clip File may not), and `end()` is the last event's
+  `Beat`.
+- The route compile → `tutti_midi_runtime::compile_routes` over
+  `RouteRule { channel, targets }`; `bevy-tutti`'s `rebuild` filters the
+  armed rules, compiles, and writes the feeds.
+- `memory_voice`, `voice_width` → `tutti_sampler`, in a private
+  `voice::build` module; `bevy_tutti::prelude` re-exports them from there.
+
+Test dispositions: `voice_width`'s and the memory-voice test moved with
+their code. The four decode tests of `bevy-tutti`'s `midi/file/tests.rs`
+(an SMF to its tracks, a clip by its magic, neither format, a truncated SMF)
+moved to `tutti-midi-file/tests/midi_file.rs`, since they test the decode,
+not the loader; the loader-extension and write tests stay unchanged, as do
+`tests/midi_routes.rs` and `tests/prelude_surface.rs`.
 
 ### PR 2: plugin, SoundFont and mod-source pieces to their owners
 

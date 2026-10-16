@@ -58,12 +58,12 @@
 //!
 //! [`MidiEngineNodes::input`]: crate::midi::MidiEngineNodes
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::HashSet;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_runtime::{input_ports, MIDI_INPUT_PORTS};
+use tutti_midi_runtime::{compile_routes, RouteRule};
 use tutti_midi_types::MidiChannel;
 
 use crate::graph::{engine_ready, EventFeeds, EventSource, EventWiring, GraphReconcileSystems};
@@ -133,8 +133,9 @@ const ROUTES: &str = "midi routes";
 #[derive(Resource, Default)]
 pub struct RoutedTargets(HashSet<Entity>);
 
-/// Compiles every declared rule into which of the hardware input's ports each
-/// target takes, and writes it into [`EventFeeds`] (see the module docs).
+/// Compiles every armed rule into which of the hardware input's ports each
+/// target takes ([`compile_routes`], the engine's pure compile), and writes it
+/// into [`EventFeeds`] (see the module docs).
 ///
 /// Runs when a rule changes, is added, or is removed, and when the fallback
 /// changes: a whole recompile, since a target's ports are the union of every
@@ -163,35 +164,20 @@ pub fn rebuild(
         return;
     };
 
-    let mut ports: HashMap<Entity, BTreeSet<usize>> = HashMap::new();
-    let mut covered: BTreeSet<usize> = BTreeSet::new();
-    for rule in rules.iter().filter(|r| r.enabled && !r.targets.is_empty()) {
-        let theirs: Vec<usize> = input_ports(rule.channel).collect();
-        covered.extend(theirs.iter().copied());
-        for &target in &rule.targets {
-            ports
-                .entry(target)
-                .or_default()
-                .extend(theirs.iter().copied());
-        }
-    }
-    if let Some(target) = fallback.0 {
-        let uncovered = (0..MIDI_INPUT_PORTS).filter(|p| !covered.contains(p));
-        ports.entry(target).or_default().extend(uncovered);
-    }
+    let ports = compile_routes(
+        rules.iter().filter(|r| r.enabled).map(|r| RouteRule {
+            channel: r.channel,
+            targets: &r.targets,
+        }),
+        fallback.0,
+    );
 
-    let wanted: HashSet<Entity> = ports
-        .iter()
-        .filter(|(_, p)| !p.is_empty())
-        .map(|(e, _)| *e)
-        .collect();
+    // Every target `compile_routes` returns takes at least one port.
+    let wanted: HashSet<Entity> = ports.keys().copied().collect();
     for gone in routed.0.difference(&wanted) {
         feeds.remove(*gone, ROUTES);
     }
     for (target, ports) in ports {
-        if ports.is_empty() {
-            continue;
-        }
         let sources = ports
             .into_iter()
             .filter_map(|p| u16::try_from(p).ok())

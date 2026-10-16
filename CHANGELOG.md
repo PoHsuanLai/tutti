@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — design 015 PR 1: MIDI and sample pieces to their owning crates
+
+- **MIDI file decoding, the inbound route compile and the memory voice move
+  out of `bevy-tutti` into the crates that own them** (design doc 015,
+  PR 1), so a headless host gets them without Bevy. `bevy-tutti` calls
+  them; its behaviour is unchanged.
+  - `tutti_midi_file::MidiFile` is the sniffed file (SMF or MIDI 2.0 Clip
+    File) that was `bevy_tutti::midi::MidiFileContents`. New: `timed()`
+    yields `(Beat, MidiEvent)` for both containers, normalized to MIDI 2.0
+    (an SMF's 7-bit velocity widened), with `tempo()`, `end()`, `kind()`,
+    `read(path)` and `EXTENSIONS`. Its SMF variant keeps the merged event
+    stream beside the tracks, so `timed()` carries controllers and bends.
+  - `tutti_midi_file::Error` gains `Clip(ClipFileError)` and
+    `UnknownFormat`, the two errors of `MidiFileLoaderError` it lacked.
+  - `tutti_midi_runtime::compile_routes(rules, fallback)` is the pure route
+    compile (rules to input-node ports, the fallback taking only uncovered
+    ports) that `bevy_tutti::midi::rebuild_midi_routes` ran inline;
+    `RouteRule { channel, targets }` is its input.
+  - `tutti_sampler::{memory_voice, voice_width}` were
+    `bevy_tutti::sampler`'s. `bevy_tutti::prelude` still re-exports both.
+
+  | Was | Now |
+  |---|---|
+  | `bevy_tutti::midi::MidiFileContents::Smf(tracks)` | `tutti_midi_file::MidiFile::Smf { tracks, stream }` |
+  | `bevy_tutti::midi::MidiFileContents::Clip(clip)` | `tutti_midi_file::MidiFile::Clip(clip)` |
+  | `MidiFileAsset::from_bytes(bytes)` | `MidiFile::from_bytes(bytes)`, the asset's `contents` |
+  | `MidiFileAsset::EXTENSIONS` | `MidiFile::EXTENSIONS` |
+  | `bevy_tutti::midi::MidiFileLoaderError` (`Io`, `Smf`, `Clip`, `UnknownFormat`) | `tutti_midi_file::Error` (`Io`, `Clip`, `UnknownFormat`; an SMF's parse errors are its own variants) |
+  | `bevy_tutti::sampler::{memory_voice, voice_width}` | `tutti_sampler::{memory_voice, voice_width}` (also in `bevy_tutti::prelude`) |
+
 ### Added
 
 - **`tutti_types::{SeqWriter<W>, SeqReader<W>}`**, a sequence lock over

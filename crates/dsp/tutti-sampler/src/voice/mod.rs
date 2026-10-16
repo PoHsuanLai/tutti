@@ -10,6 +10,8 @@
 //! - [`pool`] — per-track multi-voice mixer over both tiers.
 //! - [`node`] — one voice as a standalone graph node.
 //! - [`interp`] — the interpolation kernel and the transport-placement gate.
+//! - `build` — a [`Voice`] from a decoded wave ([`memory_voice`]), and the
+//!   width a file's voice runs at ([`voice_width`]).
 
 // A loop as the frames it plays: shared by every reader that indexes a file.
 pub(crate) mod loop_span;
@@ -38,10 +40,14 @@ pub mod types;
 // Tests only — they exercise the five modules above in combination and reach
 // private state a sibling module could not see.
 mod voice_pool;
+// A voice from what a host has: a wave, a file's width.
+mod build;
 // Tests only: the block read is the same whatever the block length.
 #[cfg(test)]
 mod block_render;
 
+/// A voice built from a decoded wave, and the width a file's voice runs at.
+pub use build::{memory_voice, voice_width};
 /// The control-plane protocol and the two handles that send it — one per owner
 /// ([`VoicePool`] and [`VoiceNode`]). Documented on [`command`].
 pub use command::{VoiceCommand, VoiceNodeHandle, VoicePoolHandle};

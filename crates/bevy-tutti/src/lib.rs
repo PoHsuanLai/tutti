@@ -271,15 +271,13 @@ pub mod prelude {
     #[cfg(feature = "plugin")]
     pub use crate::plugin_host::{PluginsRes, SetEditorVisible, TuttiHostingPlugin};
     #[cfg(feature = "sampler")]
-    pub use crate::sampler::{
-        memory_voice, voice_width, DiskStreamerRes, InsertVoice, TuttiPlaybackPlugin,
-    };
+    pub use crate::sampler::{DiskStreamerRes, InsertVoice, TuttiPlaybackPlugin};
     #[cfg(feature = "soundfont")]
     pub use crate::soundfont::{
         PlaySoundFont, SoundFontAsset, SoundFontAssetLoader, TuttiSoundFontPlugin,
     };
     #[cfg(feature = "sampler")]
-    pub use tutti_sampler::{Playback, Voice, VoiceWindow};
+    pub use tutti_sampler::{memory_voice, voice_width, Playback, Voice, VoiceWindow};
 
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::ClickState;

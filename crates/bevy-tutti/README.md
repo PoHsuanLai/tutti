@@ -127,7 +127,8 @@ through the graph. `Recorder` is the same loop without ECS.
 ### Sample playback (`sampler`), SoundFonts (`soundfont`), synths (`synth`)
 
 `sampler` registers a `.wav` asset loader and adds `DiskStreamerRes` for disk
-streaming; `memory_voice` and `InsertVoice` put a voice on an entity.
+streaming; `tutti_sampler::memory_voice` (in the prelude) builds a voice and
+`InsertVoice` puts it on an entity.
 `soundfont` loads `.sf2` assets and plays them with `PlaySoundFont`. `synth`
 re-exports the polyphonic synth.
 

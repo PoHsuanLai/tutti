@@ -68,6 +68,10 @@ assert_eq!(on_three, vec![3, CHANNELLESS_PORT]);
 assert_eq!(input_ports(None).count(), MIDI_INPUT_PORTS);
 ```
 
+A set of routing rules compiles to those port sets with `compile_routes`: each
+rule's targets take its channel's ports (several rules, the union), and an
+optional fallback takes every port no rule covers.
+
 ## MIDI across a thread boundary
 
 A `MidiQueueNode`'s controls are the push half of its ring: a control thread

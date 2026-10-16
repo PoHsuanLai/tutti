@@ -59,13 +59,22 @@ pub struct SmfTimedEvent {
 pub struct ParsedMidiFile {
     /// Every channel-voice event in the file, merged across tracks and sorted by
     /// [`Beat`]. Meta events (tempo, track name) are not included — tempo is
-    /// surfaced as `tempo_bpm` instead.
+    /// surfaced as `tempo_bpm` and `tempo_changes` instead.
     pub events: Vec<SmfTimedEvent>,
     /// The file's division: SMF ticks per quarter note, from the header. Never
     /// zero — a zero division is rejected at parse.
     pub ticks_per_beat: u16,
-    /// Default tempo (from the first tempo event, or 120 BPM if none).
+    /// The tempo at beat 0: a Set Tempo at tick 0 (the first in track order if
+    /// several tracks set one there), otherwise the 120 BPM the SMF
+    /// specification assumes until a Set Tempo says otherwise. A Set Tempo
+    /// later in the file does not govern the beats before it; every change is
+    /// in [`tempo_changes`](Self::tempo_changes).
     pub tempo_bpm: Bpm,
+    /// Every Set Tempo in the file as `(position, tempo)`, merged across
+    /// tracks in time order (ties in track order). A zero
+    /// microseconds-per-quarter is skipped rather than read as an infinite
+    /// tempo. Empty for a file that declares none.
+    pub tempo_changes: Vec<(Beat, Bpm)>,
     /// Where the last event lands, measured from the start of the file.
     ///
     /// A span rather than a position, because that is how every caller reads
@@ -94,18 +103,13 @@ impl ParsedMidiFile {
     /// - [`Error::MidiFileParse`] if the division is zero, or `midly` rejects the
     ///   bytes.
     pub fn parse(data: &[u8]) -> Result<Self> {
-        let smf = Smf::parse(data)?;
+        Self::from_smf(&Smf::parse(data)?)
+    }
 
-        let ticks_per_beat = match smf.header.timing {
-            Timing::Metrical(tpb) => tpb.as_int(),
-            Timing::Timecode(_, _) => return Err(Error::MidiUnsupportedTiming),
-        };
-        // Both readers of this field reject a zero: it is the divisor for every
-        // `time_beats` in the file, so letting one through returns a parse in
-        // which every event sits at infinity. `tracks()` makes the same check.
-        if ticks_per_beat == 0 {
-            return Err(Error::MidiFileParse("zero ticks-per-beat".into()));
-        }
+    /// [`parse`](Self::parse) over an SMF `midly` already parsed, so a reader
+    /// that wants [`tracks`] too parses the bytes once.
+    pub(crate) fn from_smf(smf: &Smf) -> Result<Self> {
+        let ticks_per_beat = metrical_division(smf)?;
 
         debug!(
             "Parsing MIDI file: {} tracks, {} tpb",
@@ -114,19 +118,23 @@ impl ParsedMidiFile {
         );
 
         let mut all_events = Vec::new();
-        let mut tempo_bpm = Bpm(120.0);
-        let mut found_tempo = false;
-
+        let mut changes: Vec<(u64, Bpm)> = Vec::new();
         for track in &smf.tracks {
             all_events.extend(parse_track(track, ticks_per_beat));
-            if !found_tempo {
-                if let Some(t) = extract_tempo(track) {
-                    tempo_bpm = t;
-                    found_tempo = true;
-                    debug!("Found tempo: {} BPM", tempo_bpm);
-                }
-            }
+            changes.extend(track_tempos(track));
         }
+        // Stable: two tracks setting a tempo on one tick keep track order.
+        changes.sort_by_key(|&(tick, _)| tick);
+        let tempo_bpm = match changes.first() {
+            Some(&(0, tempo)) => tempo,
+            // Nothing at tick 0: the spec's 120 governs until the first change.
+            _ => Bpm(120.0),
+        };
+        debug!("Tempo at beat 0: {} BPM", tempo_bpm);
+        let tempo_changes = changes
+            .into_iter()
+            .map(|(tick, tempo)| (Beat(tick as f64 / f64::from(ticks_per_beat)), tempo))
+            .collect();
 
         sort_by_time(&mut all_events);
         let duration_beats = all_events
@@ -143,6 +151,7 @@ impl ParsedMidiFile {
             events: all_events,
             ticks_per_beat,
             tempo_bpm,
+            tempo_changes,
             duration_beats,
         })
     }
@@ -188,20 +197,44 @@ fn parse_track(track: &Track, ticks_per_beat: u16) -> Vec<SmfTimedEvent> {
 /// `ump::flex_data::TEN_NS_UNITS_PER_MINUTE`.
 const US_PER_MINUTE: f64 = 60_000_000.0;
 
-/// The first Set Tempo in `track` as [`Bpm`], or `None` if it declares none.
+/// Every Set Tempo in `track` as `(absolute tick, Bpm)`, in track order.
 ///
-/// A zero microseconds-per-quarter is wire-representable and yields `None` rather
-/// than an infinite BPM — an infinity here would become
+/// A zero microseconds-per-quarter is wire-representable and is skipped rather
+/// than read as an infinite BPM — an infinity here would become
 /// `ParsedMidiFile::tempo_bpm` and reach every consumer of the parse. The MIDI-2
 /// inverse (`ten_ns_per_quarter_to_bpm`) guards the identical condition.
-fn extract_tempo(track: &Track) -> Option<Bpm> {
-    track.iter().find_map(|e| match &e.kind {
-        TrackEventKind::Meta(MetaMessage::Tempo(t)) => match t.as_int() {
-            0 => None,
-            us_per_quarter => Some(Bpm(US_PER_MINUTE / f64::from(us_per_quarter))),
-        },
-        _ => None,
-    })
+fn track_tempos(track: &Track) -> Vec<(u64, Bpm)> {
+    let mut tick = 0u64;
+    let mut out = Vec::new();
+    for event in track.iter() {
+        tick = tick.saturating_add(u64::from(event.delta.as_int()));
+        if let TrackEventKind::Meta(MetaMessage::Tempo(t)) = &event.kind {
+            match t.as_int() {
+                0 => {}
+                us_per_quarter => out.push((tick, Bpm(US_PER_MINUTE / f64::from(us_per_quarter)))),
+            }
+        }
+    }
+    out
+}
+
+/// The file's division in ticks per quarter note.
+///
+/// # Errors
+///
+/// [`Error::MidiUnsupportedTiming`] for an SMPTE/timecode division, and
+/// [`Error::MidiFileParse`] for a zero one: it is the divisor for every
+/// `Beat` in the file, so letting one through returns a parse in which every
+/// event sits at infinity.
+fn metrical_division(smf: &Smf) -> Result<u16> {
+    let ticks_per_beat = match smf.header.timing {
+        Timing::Metrical(tpb) => tpb.as_int(),
+        Timing::Timecode(_, _) => return Err(Error::MidiUnsupportedTiming),
+    };
+    if ticks_per_beat == 0 {
+        return Err(Error::MidiFileParse("zero ticks-per-beat".into()));
+    }
+    Ok(ticks_per_beat)
 }
 
 fn sort_by_time(events: &mut [SmfTimedEvent]) {
@@ -266,14 +299,12 @@ pub struct SmfTrack {
 /// - [`Error::MidiFileParse`] if the division is zero, or `midly` rejects the
 ///   bytes.
 pub fn tracks(data: &[u8]) -> Result<Vec<SmfTrack>> {
-    let smf = Smf::parse(data)?;
-    let ticks_per_beat = match smf.header.timing {
-        Timing::Metrical(tpb) => f64::from(tpb.as_int()),
-        Timing::Timecode(_, _) => return Err(Error::MidiUnsupportedTiming),
-    };
-    if ticks_per_beat == 0.0 {
-        return Err(Error::MidiFileParse("zero ticks-per-beat".into()));
-    }
+    tracks_of(&Smf::parse(data)?)
+}
+
+/// [`tracks`] over an SMF `midly` already parsed.
+pub(crate) fn tracks_of(smf: &Smf) -> Result<Vec<SmfTrack>> {
+    let ticks_per_beat = f64::from(metrical_division(smf)?);
 
     Ok(smf
         .tracks

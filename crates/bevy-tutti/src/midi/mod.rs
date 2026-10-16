@@ -117,8 +117,8 @@ pub use hardware::track_out::{
 };
 
 pub use file::{
-    MidiFileAsset, MidiFileAssetLoader, MidiFileContents, MidiFileLoaderError, MidiFilePlugin,
-    MidiFileWrite, MidiFileWriteInFlight, MidiFileWritten,
+    MidiFileAsset, MidiFileAssetLoader, MidiFilePlugin, MidiFileWrite, MidiFileWriteInFlight,
+    MidiFileWritten,
 };
 pub use plugin::TuttiMidiPlugin;
 pub use sequence::{

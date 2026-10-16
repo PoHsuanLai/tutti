@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — design 015 PR 1: MIDI and sample pieces to their owning crates
+
+- **MIDI file decoding, the inbound route compile and the memory voice move
+  out of `bevy-tutti` into the crates that own them** (design doc 015,
+  PR 1), so a headless host gets them without Bevy. `bevy-tutti` calls
+  them; its behaviour is unchanged.
+  - `tutti_midi_file::MidiFile` is the sniffed file (SMF or MIDI 2.0 Clip
+    File) that was `bevy_tutti::midi::MidiFileContents`. New: `timed()`
+    yields `(Beat, MidiEvent)` for both containers, normalized to MIDI 2.0
+    (an SMF's 7-bit values widened), with `tempo()` (the tempo at beat 0),
+    `tempo_map()` (every Set Tempo as `(Beat, Bpm)`, in time order),
+    `end()`, `kind()`, `read(path)` and `EXTENSIONS`. Its SMF variant is
+    `Smf(SmfFile)`: the tracks and the merged event stream from one parse,
+    behind `tracks()` and `stream()`, so `timed()` carries controllers,
+    bends and program changes.
+  - **Fixed:** `tutti_midi_file::ParsedMidiFile::tempo_bpm` was the first
+    Set Tempo in *track* order, wherever it sat in time. It is now the tempo
+    at beat 0: a Set Tempo at tick 0, else the SMF specification's 120. New
+    field `tempo_changes: Vec<(Beat, Bpm)>` holds every change in time
+    order (breaking for a struct literal; none exists outside the crate).
+  - `tutti_midi_file::Error` gains `Clip(ClipFileError)` and
+    `UnknownFormat`, the two errors of `MidiFileLoaderError` it lacked.
+  - `tutti_midi_runtime::compile_routes(rules, fallback)` is the pure route
+    compile (rules to input-node ports, the fallback taking only uncovered
+    ports) that `bevy_tutti::midi::rebuild_midi_routes` ran inline;
+    `RouteRule { channel, targets }` is its input.
+  - `tutti_sampler::{memory_voice, voice_width}` were
+    `bevy_tutti::sampler`'s. `bevy_tutti::prelude` still re-exports both.
+
+  | Was | Now |
+  |---|---|
+  | `bevy_tutti::midi::MidiFileContents::Smf(tracks)` | `tutti_midi_file::MidiFile::Smf(smf)`, `smf.tracks()` (and `smf.stream()`) |
+  | `ParsedMidiFile::tempo_bpm`: the first track's first Set Tempo | the tempo at beat 0; changes in `tempo_changes` |
+  | `bevy_tutti::midi::MidiFileContents::Clip(clip)` | `tutti_midi_file::MidiFile::Clip(clip)` |
+  | `MidiFileAsset::from_bytes(bytes)` | `MidiFile::from_bytes(bytes)`, the asset's `contents` |
+  | `MidiFileAsset::EXTENSIONS` | `MidiFile::EXTENSIONS` |
+  | `bevy_tutti::midi::MidiFileLoaderError` (`Io`, `Smf`, `Clip`, `UnknownFormat`) | `tutti_midi_file::Error` (`Io`, `Clip`, `UnknownFormat`; an SMF's parse errors are its own variants) |
+  | `bevy_tutti::sampler::{memory_voice, voice_width}` | `tutti_sampler::{memory_voice, voice_width}` (also in `bevy_tutti::prelude`) |
+
 ### Added
 
 - **`tutti_types::{SeqWriter<W>, SeqReader<W>}`**, a sequence lock over

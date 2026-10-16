@@ -1,10 +1,9 @@
 //! MIDI file IO tests.
 //!
-//! Split the way the module is: decoding is tested on bytes (which is what an
-//! `AssetLoader` is handed), and writing is tested against real files in a temp
-//! dir — the thing under test there is that a blocking call reaches the task
-//! pool and its result comes back as an event, and a mock would remove exactly
-//! that.
+//! Split the way the module is: the loader's extensions, and writing tested
+//! against real files in a temp dir — the thing under test there is that a
+//! blocking call reaches the task pool and its result comes back as an event,
+//! and a mock would remove exactly that.
 
 use super::*;
 use bevy_ecs::system::RunSystemOnce;
@@ -53,71 +52,12 @@ fn smf_bytes() -> Vec<u8> {
     .expect("encodes")
 }
 
-// ── decoding: what the loader does with the bytes it is handed ──────────────
-
-/// **An SMF decodes to its tracks.**
-#[test]
-fn smf_bytes_decode_to_tracks() {
-    let asset = MidiFileAsset::from_bytes(&smf_bytes()).expect("decodes");
-    match asset.contents {
-        MidiFileContents::Smf(tracks) => {
-            assert_eq!(tracks.len(), 1, "one track in, one track out");
-            assert!(
-                !tracks[0].notes.is_empty(),
-                "the encoded note must survive the round trip"
-            );
-        }
-        MidiFileContents::Clip(_) => panic!("an SMF must not decode as a clip file"),
-    }
-}
-
-/// **The container is decided by magic, not by extension.**
-///
-/// This is why one asset type covers both formats. `.mid` is worn by a Standard
-/// MIDI File and a MIDI 2.0 Clip File alike, and an `AssetLoader` is selected by
-/// extension — so two loaders both claiming `.mid` could not be told apart, and
-/// a loader that trusted the name would decode half its inputs with the wrong
-/// decoder.
-#[test]
-fn a_clip_file_is_recognised_by_its_magic() {
-    let bytes = tutti_midi_types::write_clip_file(960, &[]);
-    let asset = MidiFileAsset::from_bytes(&bytes).expect("decodes");
-    assert!(
-        matches!(asset.contents, MidiFileContents::Clip(_)),
-        "a clip file's SMF2CLIP magic must select the clip decoder, whatever \
-         extension the file happened to have"
-    );
-}
-
-/// **Neither format is its own error, not a parse failure.**
-///
-/// "This is not a MIDI file" and "this MIDI file is malformed" are different
-/// things for a user to fix, so they must not collapse into one message.
-#[test]
-fn a_file_of_neither_format_is_named_as_such() {
-    let err = MidiFileAsset::from_bytes(b"not a midi file at all").expect_err("must fail");
-    assert!(
-        matches!(err, MidiFileLoaderError::UnknownFormat),
-        "expected UnknownFormat, got {err:?}"
-    );
-}
-
-/// **A truncated file of a known format is a *parse* error, not UnknownFormat.**
-///
-/// The complement of the test above: the magic is right, so the container is
-/// known — what failed is the decode. Distinguishing the two is the whole point
-/// of sniffing separately from parsing.
-#[test]
-fn a_truncated_smf_is_a_parse_error() {
-    let mut bytes = smf_bytes();
-    bytes.truncate(10); // keeps `MThd`, loses the rest
-    let err = MidiFileAsset::from_bytes(&bytes).expect_err("must fail");
-    assert!(
-        !matches!(err, MidiFileLoaderError::UnknownFormat),
-        "a truncated SMF still has MThd, so it is a decode failure rather than \
-         an unrecognised container; got {err:?}"
-    );
-}
+// ── decoding: the loader's half ──────────────────────────────────────────────
+//
+// The decode itself is `tutti_midi_file::MidiFile::from_bytes`, and its tests
+// (an SMF to its tracks, a clip file by its magic, neither format, a truncated
+// SMF) moved there with it (design 015, PR 1). What stays is the loader's own
+// claim.
 
 /// The loader claims the extensions both containers are found under.
 #[test]

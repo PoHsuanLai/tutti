@@ -1,8 +1,7 @@
 # 015: a Bevy-free tutti API layer
 
 Status: **proposed**, revised after review. Doc only; nothing here has
-landed. The crate name `tutti-session` is a working name, pending the
-user's choice (§11).
+landed. The user has made every decision it asked for (§11).
 
 ## Summary
 
@@ -49,7 +48,7 @@ option c).**
 - `tutti` turns the layer on by default: `default = ["session"]` (§7).
 - `bevy-tutti` does **not** re-export the session (§6).
 - All seven PRs of §9 will run.
-- The crate name is still open. `tutti-session` is the working name (§11).
+- The crate is named `tutti-session`, re-exported as `tutti::session`.
 
 ## 1. The constraint
 
@@ -1364,21 +1363,19 @@ denied type in `bevy-tutti/src`.
   `s.midi().hardware_out()`. `bevy-tutti`'s `negotiation.rs` stays its
   adapter.
 - **Project files and session save/load.** "Session" here means a running
-  engine, not a document. That is one reason the name is still open (§11).
+  engine, not a document (§11).
 - **Any change to the graph, the node contract or the RT rules.**
 
-## 11. Open question
+## 11. Decisions
 
-The user decided the rest (see the Summary). One question is left.
+No question is open. The user decided:
 
-**The crate's name.** The working name is `tutti-session`, with
-`Session`.
-
-- `tutti-engine` collides with `tutti_core::Engine`.
-- `tutti-host` collides with the plugin host and the cpal host.
-- `tutti-app` collides with Bevy's `App`.
-- `tutti-runtime` is close to `tutti-midi-runtime`.
-- "Session" may suggest a saved project to a DAW user.
-
-Which name do you want? A rename touches only the crate, the umbrella's
-alias, and the docs. It is cheapest before PR 4.
+1. **The name:** `tutti-session`, with `Session`, re-exported as
+   `tutti::session`. The alternatives each collided with something:
+   `tutti-engine` with `tutti_core::Engine`, `tutti-host` with the plugin
+   and cpal hosts, `tutti-app` with Bevy's `App`, and `tutti-runtime` with
+   `tutti-midi-runtime`. "Session" means a running engine here, not a saved
+   project (§10).
+2. **The default:** `tutti` has `default = ["session"]` (§7).
+3. **No re-export from `bevy-tutti`** (§6).
+4. **All seven PRs run** (§9).

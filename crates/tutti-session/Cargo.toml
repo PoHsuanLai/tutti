@@ -85,6 +85,12 @@ tutti-io = { path = "../core/tutti-io" }
 tutti-sampler = { path = "../dsp/tutti-sampler", default-features = false, features = ["test-support"] }
 # `ManualStreamDriver`, `OutputSpec`: the device-free device tests.
 tutti-cpal = { path = "../core/tutti-cpal", default-features = false }
+# The reference CLAP plugin `tests/plugin.rs` and the §5.2 example load, in a
+# `plugin-server` (built first: `cargo build -p tutti-plugin-server`; it is
+# not a dev-dependency, which would be a cycle through `tutti-plugin`).
+tutti-clap-test-plugin = { path = "../vendor/tutti-clap-test-plugin" }
+# Finds both beside the running binary (`tests/support`).
+tutti-fixture-resolve = { path = "../plugin/vendor/tutti-fixture-resolve" }
 
 [package.metadata.docs.rs]
 all-features = true
@@ -106,7 +112,20 @@ required-features = ["modulation"]
 name = "midi"
 required-features = ["midi"]
 
+# Hosted plugins, their render mode and exports, over the reference CLAP
+# plugin in a real `plugin-server`: fails without the server, by design.
+[[test]]
+name = "plugin"
+required-features = ["clap", "export"]
+
 # Design 015 §5.1: doc 014 §8.1's modulation, headless.
 [[example]]
 name = "headless_modulation"
 required-features = ["modulation"]
+
+# Design 015 §5.2: load a plugin, play a MIDI file, export to WAV. Run as a
+# test (`test = true`) so CI plays it; it needs `plugin-server` built first.
+[[example]]
+name = "plugin_midi_export"
+required-features = ["clap", "export"]
+test = true

@@ -278,6 +278,29 @@ fn the_tempo_at_beat_zero_is_the_earliest_set_tempo_across_tracks() {
     );
 }
 
+/// **A file's length in seconds integrates over its tempo map.** 120 BPM
+/// from beat 0, 60 BPM from beat 4: beat 4 is 2 s in, beat 8 is 2 s + 4 s.
+/// A beat inside the first stretch is at the first tempo; beat 0 is 0 s.
+///
+/// Mutations (each run, each failed): one tempo throughout (the loop over
+/// the map skipped: beat 8 reads 4 s); the change applied before its
+/// stretch is counted (`tempo = bpm` before the `+=`: beat 8 reads 8 s).
+#[test]
+fn seconds_integrate_over_the_tempo_map() {
+    let file = MidiFile::from_bytes(&metrical(&[vec![
+        RawEvent::tempo(0, 500_000),
+        RawEvent::note_on(0, 0, 60, 100),
+        RawEvent::tempo(4 * BEAT, 1_000_000),
+        RawEvent::note_on(4 * BEAT, 0, 62, 100),
+    ]]))
+    .unwrap();
+    assert_eq!(file.seconds_at(Beat(0.0)), 0.0);
+    assert_eq!(file.seconds_at(Beat(2.0)), 1.0);
+    assert_eq!(file.seconds_at(Beat(4.0)), 2.0);
+    assert_eq!(file.seconds_at(Beat(8.0)), 6.0);
+    assert_eq!(file.seconds_at(file.end()), 6.0);
+}
+
 /// **A Set Tempo after beat 0 does not govern beat 0.** The file's only Set
 /// Tempo is 60 BPM at beat 8; beats 0–8 play at the specification's 120.
 ///

@@ -51,6 +51,9 @@ test-editor-no-corpus:
 # is the only way to run them; nextest has no doctest support at all.
 test-doc *ARGS:
     cargo test --doc --workspace {{ARGS}}
+    # `Device`'s `!Send` proof is a `compile_fail` doctest behind `device`;
+    # named here, not left to bevy-tutti's features unifying it in.
+    cargo test --doc -p tutti-session --features device {{ARGS}}
 
 # Everything.
 test-all: test test-features test-editor test-doc

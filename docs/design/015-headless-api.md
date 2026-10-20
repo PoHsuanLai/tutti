@@ -1409,7 +1409,12 @@ doctest. The engine tests of `engine/build.rs` (the click, the rate, the
 voices, `root_width`) moved to `tests/engine.rs` and `tests/graph.rs`;
 `the_transport_converts_at_the_sessions_rate` is new, because the click
 cannot see the transport's rate. `scripts/check-bevy-free.sh` runs in
-`just ci` and CI, with its three mutations recorded in the script.
+`just ci` and CI, with its mutations recorded in the script. After review:
+`a_target_removed_then_re_bound_keeps_its_clip`,
+`a_keyboard_follows_its_entity_onto_a_node_bound_after_a_removal` and
+`a_removal_is_any_threads_and_a_free_is_the_main_threads`, and CI and
+`just test-doc` run `cargo test --doc -p tutti-session --features device`
+(the `Device` `compile_fail` proof) by name.
 
 Where the code differs from the text above:
 

@@ -390,6 +390,12 @@ jobs:
       # `///` examples, so a green nextest run is not a green workspace.
       - name: Doctests
         run: cargo test --doc --workspace
+      # `Device`'s `compile_fail` doctest (it is `!Send`) exists only with
+      # `device`. The workspace run above has it only because bevy-tutti's
+      # features unify it in; this names the feature so the proof does not
+      # depend on another crate's defaults.
+      - name: Doctests (tutti-session, device)
+        run: cargo test --doc -p tutti-session --features device
 
   bevy-free:
     name: Bevy-free floor

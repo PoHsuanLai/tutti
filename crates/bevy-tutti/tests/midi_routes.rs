@@ -137,8 +137,9 @@ mod routes {
     /// **A disabled rule routes nothing, and removing a rule unwires its
     /// target.**
     ///
-    /// Mutation (run): the rebuild not removing the feeds of a target no rule
-    /// names any more (`RoutedTargets` unused) → the ports stay → fails.
+    /// Mutation (run, against `tutti_session::Midi::set_routes` since design
+    /// 015 PR 5): not removing the feeds of a node no rule reaches any more
+    /// (the session's `routed` set unused) → the ports stay → fails.
     #[test]
     fn removing_or_disabling_a_rule_unwires_its_target() {
         let mut app = app();
@@ -234,8 +235,10 @@ mod keyboard {
     /// feeds with it (`Graph::remove`), so nothing is left to move; the live
     /// input re-asserts its feed on the entity's node whenever that changes.
     ///
-    /// Mutation (run): `attach_live_midi` not re-asserting the feed on a
-    /// changed `AudioNode` → the new synth's event input is empty → fails.
+    /// Mutations (run, design 015 PR 5), each fails: `attach_live_midi` not
+    /// re-aiming the queue on a changed `AudioNode` (`Midi::retarget`
+    /// skipped); the session's `retarget` not feeding the new target → the
+    /// new synth's event input is empty.
     #[test]
     fn a_keyboard_follows_its_entity_onto_a_node_bound_after_a_removal() {
         use bevy_tutti::graph::InsertAudioNode;
@@ -270,6 +273,93 @@ mod keyboard {
                 .event_sources(new, 0),
             vec![queue.into()],
             "the keyboard feeds the new node"
+        );
+    }
+
+    /// **A `LiveMidiInput` added before the graph exists is attached once it
+    /// arrives.** The entity and its node are there, the `AudioGraphRes` is
+    /// not (taken out) for a few frames; on the frame it is back, the entity
+    /// gets its `LiveMidi`, fed into its node.
+    ///
+    /// Mutation (run): `attach_live_midi` gated by an early return on a
+    /// missing graph rather than the plugin's `run_if` (as design 015 PR 5
+    /// first did: the system ran, consuming the `Added` tick) → no
+    /// `LiveMidi` → fails.
+    #[test]
+    fn a_keyboard_declared_before_the_graph_attaches_when_it_arrives() {
+        let mut app = app();
+        let lead = synth(&mut app);
+        app.update();
+        let graph = app
+            .world_mut()
+            .remove_resource::<AudioGraphRes>()
+            .expect("the graph");
+        app.world_mut().entity_mut(lead).insert(LiveMidiInput);
+        app.update();
+        app.update();
+        assert!(app.world().get::<LiveMidi>(lead).is_none(), "no graph yet");
+
+        app.insert_resource(graph);
+        app.update();
+        let queue = app
+            .world()
+            .get::<LiveMidi>(lead)
+            .expect("attached once the graph is back")
+            .node();
+        assert_eq!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .event_sources(node_of(&app, lead), 0),
+            vec![queue.into()]
+        );
+    }
+
+    /// **A keyboard on a node that takes no MIDI gets none, and gets one
+    /// when its entity is re-bound to a synth.** The first attach is
+    /// refused (`Error::NoEventInput`, warned); the rebind is a changed
+    /// `AudioNode`, which tries again.
+    ///
+    /// Mutation (run): the attach query filtering on `Added<LiveMidiInput>`
+    /// alone (not `Changed<AudioNode>`) → the rebind is not seen → no
+    /// `LiveMidi` → fails.
+    #[test]
+    fn a_keyboard_on_a_node_without_midi_attaches_after_a_rebind_to_a_synth() {
+        use bevy_tutti::graph::InsertAudioNode;
+        use tutti_graph::ForkByClone;
+        use tutti_nodes::testing::Const;
+
+        let mut app = app();
+        let lead = app
+            .world_mut()
+            .commands()
+            .spawn_audio_node(ForkByClone(Const::mono(0.0)))
+            .id();
+        app.world_mut().flush();
+        app.world_mut().entity_mut(lead).insert(LiveMidiInput);
+        app.update();
+        app.update();
+        assert!(
+            app.world().get::<LiveMidi>(lead).is_none(),
+            "a node with no event input takes no keyboard"
+        );
+
+        let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
+        app.world_mut()
+            .commands()
+            .entity(lead)
+            .insert_audio_node(synth);
+        app.world_mut().flush();
+        app.update();
+        let queue = app
+            .world()
+            .get::<LiveMidi>(lead)
+            .expect("attached after the rebind")
+            .node();
+        assert_eq!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .event_sources(node_of(&app, lead), 0),
+            vec![queue.into()]
         );
     }
 

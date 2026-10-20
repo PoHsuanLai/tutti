@@ -28,7 +28,7 @@ use tutti_types::graph::NodeKey;
 /// a stable id of its own (e.g. an asset path or document node id) at
 /// serialization time.
 #[cfg_attr(feature = "bevy", derive(Component))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AudioNode(pub NodeKey);
 
 impl AudioNode {

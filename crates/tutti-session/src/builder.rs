@@ -33,6 +33,8 @@ pub struct SessionBuilder {
     midi_hardware: bool,
     #[cfg(feature = "midi")]
     mpe_mode: tutti_midi_types::MpeMode,
+    #[cfg(feature = "modulation")]
+    unresolved_warning: std::time::Duration,
 }
 
 impl Default for SessionBuilder {
@@ -45,6 +47,8 @@ impl Default for SessionBuilder {
             midi_hardware: false,
             #[cfg(feature = "midi")]
             mpe_mode: tutti_midi_types::MpeMode::Disabled,
+            #[cfg(feature = "modulation")]
+            unresolved_warning: crate::UNRESOLVED_WARNING,
         }
     }
 }
@@ -97,6 +101,16 @@ impl SessionBuilder {
     #[cfg(feature = "midi")]
     pub fn mpe_mode(mut self, mode: tutti_midi_types::MpeMode) -> Self {
         self.mpe_mode = mode;
+        self
+    }
+
+    /// How long a modulation target may stay unresolved, measured on
+    /// [`PhaseCx::now`](crate::PhaseCx::now), before it is logged and
+    /// reported ([`SessionEvent::ModulationUnresolved`](crate::SessionEvent::ModulationUnresolved)).
+    /// Default [`UNRESOLVED_WARNING`](crate::UNRESOLVED_WARNING), 4 s.
+    #[cfg(feature = "modulation")]
+    pub fn unresolved_warning(mut self, after: std::time::Duration) -> Self {
+        self.unresolved_warning = after;
         self
     }
 
@@ -175,6 +189,7 @@ impl SessionBuilder {
     /// The session over `parts`, `engine` its offline engine if any, with
     /// (`sampler`) a disk streamer when `streamer`.
     fn session(
+        &self,
         parts: Parts,
         engine: Option<tutti_core::Engine>,
         streamer: bool,
@@ -206,6 +221,10 @@ impl SessionBuilder {
             resumed: false,
             #[cfg(feature = "midi")]
             midi: parts.midi,
+            #[cfg(feature = "midi")]
+            midi_state: Default::default(),
+            #[cfg(feature = "modulation")]
+            mods: crate::modulation::ModSession::new(self.unresolved_warning),
             #[cfg(feature = "midi-hardware")]
             midi_io: parts.midi_io,
             #[cfg(feature = "sampler")]
@@ -238,7 +257,7 @@ impl SessionBuilder {
             root_width(self.outputs_floor, layout),
         );
         let engine = parts.graph.engine(&parts.transport)?;
-        Self::session(parts, Some(engine), true)
+        self.session(parts, Some(engine), true)
     }
 
     /// A session with no engine: the executor stays on this side, every
@@ -253,7 +272,7 @@ impl SessionBuilder {
     pub fn build_detached(self, rate: SampleRate) -> Result<Session> {
         let mut graph = Graph::new(self.inputs, self.outputs_floor, rate, LIVE_MAX_BLOCK, None);
         graph.set_render_workers(self.render_workers);
-        Self::session(
+        self.session(
             Parts {
                 graph,
                 transport: Transport::new(rate),
@@ -333,7 +352,7 @@ impl SessionBuilder {
             root_width(self.outputs_floor, spec.channels),
         );
         let engine = parts.graph.engine(&parts.transport)?;
-        let mut session = Self::session(parts, None, true)?;
+        let mut session = self.session(parts, None, true)?;
         // Consumers read the meter directly, so it measures from the start.
         session.meter.enable();
         let state = Arc::new(tutti_cpal::AudioCallbackState::new(

@@ -28,7 +28,7 @@ use bevy_tutti::graph::{
 };
 use bevy_tutti::modulation::{
     Adsr, Automation, AutomationTake, Follower, Lfo, Macro, ModRange, ModRoute, ModSource, Mods,
-    ModulationRefused, ModulationState, NoteEnvelope, ParamRef, TuttiModulationPlugin,
+    ModulationRefused, NoteEnvelope, ParamRef, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::transport::Transport;
@@ -89,7 +89,7 @@ fn settle(app: &mut App) {
     for _ in 0..4 {
         app.update();
     }
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.refusal(), None, "the declarations apply");
     assert_eq!(
         state.unresolved_targets().count(),
@@ -411,7 +411,7 @@ fn a_despawned_source_leaves_no_node_and_no_layer() {
     world.spawn(ModRoute::new(follower, cutoff).with_depth(Depth(-0.2)));
     settle(&mut app);
     render(&mut side, 1_024, 128);
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     let node = state
         .source_node(follower)
         .expect("the follower has a node");
@@ -430,7 +430,7 @@ fn a_despawned_source_leaves_no_node_and_no_layer() {
     settle(&mut app);
     render(&mut side, 1_024, 128);
 
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.source_node(follower), None, "nothing held for it");
     assert!(
         !app.world()
@@ -485,7 +485,7 @@ fn a_knob_written_after_a_route_edit_is_the_knob() {
     app.update();
     let b = render(&mut side, 2_048, 128);
 
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.lane(cutoff).expect("a lane").1.knob(), Some(700.0));
     let tol = lfo_tolerance(0.2, 2.0);
     for (base, from, got) in [(300.0, 1_024, &a[0]), (700.0, 3_072, &b[0])] {
@@ -509,11 +509,12 @@ fn a_knob_written_after_a_route_edit_is_the_knob() {
 /// sustain: from the first grid piece after the frame it lands in, probe 2
 /// reads `0.1 + 0.5 · 0.4`, not its knob until the next note.
 ///
-/// Mutation (run): `after_commit` not sending the resyncs owed
-/// (`send_mod_resyncs` skipped) fails: the resync stays owed. Neutral, not
-/// a gap: `reconcile` asking for a commit on `Applied::resync` too (as it
-/// once did) changes nothing, since `after_commit` sends the resyncs owed
-/// whether or not the frame commits.
+/// Mutation (run, against the session's loop since design 015 PR 5):
+/// `Phase::AfterCommit` not sending the resyncs owed (`ModSession::resync`
+/// skipped) fails: the resync stays owed. Neutral, not a gap: the
+/// modulation phase asking for a commit on `Applied::resync` too (as it
+/// once did) changes nothing, since `Phase::AfterCommit` sends the resyncs
+/// owed whether or not the update commits.
 #[test]
 fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
     let (mut app, mut side) = app(2);
@@ -554,7 +555,7 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
     app.update();
     assert_eq!(
         app.world()
-            .resource::<ModulationState>()
+            .resource::<AudioGraphRes>()
             .modulation()
             .resyncs_owed(),
         0,
@@ -577,8 +578,9 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
 /// Mutations (run), each fails: `Declared::collect` ignoring the take
 /// (the automation plays through it: 800, not 300); `close_takes` leaving
 /// the curve (the old 800 is back after the release, not 650);
-/// `AutomationTake::done` ignoring a touch take's release (the take stays
-/// open: 300).
+/// `tutti_session::Take::is_done` ignoring a touch take's release (the
+/// take stays open: 300; re-run against the session's `Take`, design 015
+/// PR 5).
 #[test]
 fn a_take_suspends_the_automation_then_restores_it() {
     let (mut app, mut side) = app(1);
@@ -634,10 +636,12 @@ fn a_take_suspends_the_automation_then_restores_it() {
 /// `ModulationState::refusal`, and nothing is built. Dropping the route
 /// applies the rest, and clears the refusal.
 ///
-/// Mutations (run), each fails: `apply` swallowing the error (no message,
-/// no refusal held); `ModulationRefused::route` mapping `Cycle` to `None`;
-/// a refusal written every frame (`refusal` compared to nothing: two
-/// messages across two frames).
+/// Mutations (run, against the session's loop since design 015 PR 5), each
+/// fails: the adapter's `run` not forwarding the session's
+/// `ModulationRefused` (no message); `tutti_session::ModRefusal::route`
+/// mapping `Cycle` to `None`; a refusal reported every update (the
+/// session's `ModState::refuse` comparing to nothing: two messages across
+/// two frames).
 #[test]
 fn a_follower_downstream_of_its_target_is_refused_by_route() {
     let (mut app, mut side) = app(1);
@@ -672,7 +676,7 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
     assert_eq!(refused.len(), 1, "one message for one refusal: {refused:?}");
     assert_eq!(refused[0].route(), Some(route), "refused by route");
     assert!(matches!(refused[0].error, ReconcileError::Cycle { .. }));
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert!(matches!(
         state.refusal(),
         Some(ReconcileError::Cycle { .. })
@@ -686,7 +690,13 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
 
     app.world_mut().despawn(route);
     settle(&mut app);
-    assert_eq!(app.world().resource::<ModulationState>().refusal(), None);
+    assert_eq!(
+        app.world()
+            .resource::<AudioGraphRes>()
+            .modulation()
+            .refusal(),
+        None
+    );
 }
 
 /// **Two ranges, or two automations, on one param are refused by
@@ -698,9 +708,11 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
 /// it applies again; then two `Automation`s on the cutoff are refused the
 /// same way.
 ///
-/// Mutations (run), each fails with no message: `collect` merging a second
-/// range (`ranged.insert`'s answer ignored); merging a second automation
-/// (`automated.insert`'s answer ignored).
+/// Mutations (run, against `tutti_session::declare_targets`, which
+/// `Declared::collect` calls since design 015 PR 5), each fails with no
+/// message: a second range replacing the first (merged); a second
+/// automation merged into the first (`automated.insert`'s answer
+/// ignored).
 #[test]
 fn two_ranges_or_automations_on_one_param_are_refused() {
     let (mut app, mut side) = app(1);
@@ -730,7 +742,10 @@ fn two_ranges_or_automations_on_one_param_are_refused() {
         assert_eq!(refused[0].target(), Some(cutoff), "{what}: by target");
         assert!(
             matches!(
-                app.world().resource::<ModulationState>().refusal(),
+                app.world()
+                    .resource::<AudioGraphRes>()
+                    .modulation()
+                    .refusal(),
                 Some(ReconcileError::Compile(
                     tutti_mod::CompileError::DuplicateTarget(_)
                 ))
@@ -769,11 +784,13 @@ fn two_ranges_or_automations_on_one_param_are_refused() {
 /// a plan) the new node plays `400 + 250`, and a range edit after it lands
 /// on the new node (`+500`).
 ///
-/// Mutations (run), each fails: `after_commit` not re-applying while a
-/// target is unresolved (`if false`: the new node's first frame plays its
-/// bare knob, 400, and only the next frame's apply resolves it); the
-/// re-apply's commit skipped (`&& false`: the first lane never plays, so
-/// the precondition reads 500).
+/// Mutations (run, against the session's `Phase::AfterCommit` since design
+/// 015 PR 5), each fails: not re-applying while a target is unresolved
+/// (`ModSession::reapply` returning `false`: the new node's first frame
+/// plays its bare knob, 400, and only the next frame's apply resolves it);
+/// the re-apply's commit skipped (`self.commit()` deleted: the lanes the
+/// re-apply built wait for the next frame, so "modulated from its first
+/// frame" fails).
 #[test]
 fn an_entity_rebound_to_another_param_list_keeps_modulating() {
     let (mut app, mut side) = app(1);
@@ -843,16 +860,25 @@ impl tutti_graph::Node for Late {
     fn reset(&mut self) {}
 }
 
-/// **A host's staged edit that `after_commit` commits publishes its PDC
-/// figures.** A host inserts, through `AudioGraphRes` and between frames, a
-/// latent node on the outputs and a probe it then modulates: the probe's
-/// target is unresolved, so the next frame's `after_commit` commits the
-/// host's edit early. That commit is a plan the audio thread runs, so
-/// [`GraphLatency`](bevy_tutti::GraphLatency) is its latency on that frame,
-/// as after any `commit_graph`.
+/// **A host's staged edit committed on a frame with an unresolved target
+/// publishes its PDC figures on that frame.** A host inserts, through
+/// `AudioGraphRes` and between frames, a latent node on the outputs and a
+/// probe it then modulates: the probe's target is unresolved when the
+/// frame applies. The frame's commit sends the host's edit with the lanes,
+/// and [`GraphLatency`](bevy_tutti::GraphLatency) is that plan's latency
+/// on that frame; the re-apply after it resolves the target.
 ///
-/// Mutation (run): `after_commit` calling `graph.commit()` directly, not
-/// `commit_and_publish` → `GraphLatency` reads 0 on that frame → fails.
+/// Not a mutation this can see (run, design 015 PR 5): the session's
+/// re-apply commit not publishing (`self.graph.commit()` for
+/// `self.commit()`), or Bevy's `after_commit` not mirroring. Since PR 4
+/// the frame's own commit takes every staged edit (`Graph::is_edited`),
+/// so here the re-apply's plan adds a macro's lane, which moves no latency
+/// figure; the old record (`after_commit` calling `graph.commit()`, not
+/// `commit_and_publish`) already survived on the PR 4 merge.
+/// `a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame` covers
+/// both. The mutation that fails here: the frame's figures mirrored by
+/// neither system (the `mirror` calls in `commit_graph` and `after_commit`
+/// both deleted: `GraphLatency` reads 0).
 #[test]
 fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     let (mut app, mut side) = app(1);
@@ -876,13 +902,53 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     assert_eq!(
         app.world().resource::<bevy_tutti::GraphLatency>().0,
         tutti_types::Samples(LATE),
-        "the plan after_commit sent, published"
+        "the plan the frame sent, published"
     );
     render(&mut side, 128, 128);
     settle(&mut app);
     assert!(app
         .world()
-        .resource::<ModulationState>()
+        .resource::<AudioGraphRes>()
+        .modulation()
+        .lane(cutoff)
+        .is_some());
+}
+
+/// **A re-apply whose commit moves the latency is mirrored on that
+/// frame.** A follower of a latent node (`LATE` frames, settled) is routed
+/// to a probe spawned on output 0 in the same frame. The apply finds the
+/// probe uncommitted, so the frame's commit sends the probe and the
+/// follower with no lane (latency 0); `after_commit`'s re-apply builds the
+/// lane, putting the follower's `LATE` frames in front of the probe, and
+/// [`GraphLatency`](bevy_tutti::GraphLatency) reads them on that frame.
+///
+/// Mutations (run), each fails (`GraphLatency` reads 0): the session's
+/// re-apply committing with `self.graph.commit()`, not `self.commit()` (no
+/// publish); `after_commit` not mirroring (its `mirror` deleted).
+#[test]
+fn a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame() {
+    let (mut app, mut side) = app(1);
+    let late = spawn(&mut app, ForkByClone(Late));
+    settle(&mut app);
+    render(&mut side, 128, 128);
+
+    let probe = spawn(&mut app, ProbeUnit::new(500.0));
+    master(&mut app, &[probe]);
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(cutoff, 0.0, 1_000.0));
+    let follower = world.spawn(ModSource::new(Follower::new(late))).id();
+    world.spawn(ModRoute::new(follower, cutoff).with_depth(Depth(0.5)));
+    app.update();
+    assert_eq!(
+        app.world().resource::<bevy_tutti::GraphLatency>().0,
+        tutti_types::Samples(LATE),
+        "the re-apply's plan, mirrored"
+    );
+    assert!(app
+        .world()
+        .resource::<AudioGraphRes>()
+        .modulation()
         .lane(cutoff)
         .is_some());
 }
@@ -980,7 +1046,8 @@ fn removing_the_last_route_returns_the_param_to_its_knob() {
     assert_holds(&render(&mut side, 1_024, 128)[0], 600.0, "the route");
     assert!(
         app.world()
-            .resource::<ModulationState>()
+            .resource::<AudioGraphRes>()
+            .modulation()
             .lane(cutoff)
             .is_some(),
         "the route has its lane"
@@ -991,7 +1058,8 @@ fn removing_the_last_route_returns_the_param_to_its_knob() {
     assert_holds(&render(&mut side, 1_024, 128)[0], 500.0, "no route left");
     assert!(
         app.world()
-            .resource::<ModulationState>()
+            .resource::<AudioGraphRes>()
+            .modulation()
             .lane(cutoff)
             .is_none(),
         "and no lane"
@@ -1071,7 +1139,7 @@ fn a_route_declared_before_its_targets_node_binds_once_it_is_in() {
     for _ in 0..3 {
         app.update();
     }
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.refusal(), None, "a target with no node is no error");
     assert!(state.lane(cutoff).is_none(), "and has no lane");
 
@@ -1110,7 +1178,7 @@ fn a_bus_strips_volume_and_pan_take_lanes() {
         world.spawn(ModRoute::new(offset, at).with_depth(Depth(0.5)));
     }
     settle(&mut app);
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     for param in [UnitParam::Volume, UnitParam::Pan] {
         assert!(
             state.lane(ParamRef::unit(strip, param)).is_some(),
@@ -1152,7 +1220,7 @@ fn a_chorus_rate_and_a_phaser_mix_take_lanes() {
         world.spawn(ModRoute::new(offset, at).with_depth(Depth(0.5)));
     }
     settle(&mut app);
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     for at in targets {
         assert!(state.lane(at).is_some(), "{at:?} has its lane");
     }

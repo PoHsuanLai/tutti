@@ -11,7 +11,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use tutti_core::AudioNode;
-use tutti_midi_runtime::{MidiInputControls, MidiQueueNode, MidiSender};
+use tutti_midi_runtime::{MidiInputControls, MidiSender};
 
 use crate::graph::{engine_ready, AudioGraphRes, EventWiring};
 
@@ -79,9 +79,9 @@ impl std::ops::Deref for MpeModeRes {
 }
 
 /// Marks an entity (a synth, a hosted plugin) that the host sends MIDI to
-/// from the control thread: a keyboard, a preview, an all-notes-off. A
-/// `MidiQueueNode` is inserted for it and wired to its event input, and the
-/// entity gets [`LiveMidi`], the sender. Removing this (or despawning the
+/// from the control thread: a keyboard, a preview, an all-notes-off. The
+/// session's live input (a `MidiQueueNode` wired to its event input) is
+/// made for it, and the entity gets [`LiveMidi`], the sender. Removing this (or despawning the
 /// entity) removes the node.
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct LiveMidiInput;
@@ -109,34 +109,48 @@ impl std::ops::Deref for LiveMidi {
     }
 }
 
-/// Who feeds an entity's node through its [`LiveMidiInput`], in the
-/// session's feeds (`AudioGraphRes::set_feed`).
-const LIVE: &str = "live midi";
-
-/// Inserts a queue node for every [`LiveMidiInput`] without one, feeding the
-/// entity's node: one whose node is not in yet waits for it. The feed is
-/// keyed by the node, and is re-asserted on the node an entity is bound to
-/// whenever its `AudioNode` changes: a node bound in place of the old one
-/// (the event reconcile would move the feed), and one bound after the old
-/// node was removed (whose feeds went with it, `Graph::remove`).
+/// Gives every [`LiveMidiInput`] without one the session's live input on
+/// the entity's node (`tutti_session::Midi::live_input`: a queue node fed
+/// into its event input); one whose node is not in yet waits for it, and
+/// one whose node takes no MIDI is warned of and tried again when it is
+/// rebound. It runs only once the graph exists (the plugin's `run_if`), so
+/// one added before that is attached when it arrives. The
+/// queue is re-aimed (`Midi::retarget`) at the node an entity is bound to
+/// whenever its `AudioNode` changes: a node bound in place of the old one,
+/// and one bound after the old node was removed (whose feeds went with it,
+/// `Graph::remove`).
+#[allow(clippy::type_complexity)]
 pub fn attach_live_midi(
     mut commands: Commands,
-    wanted: Query<(Entity, &AudioNode), (With<LiveMidiInput>, Without<LiveMidi>)>,
-    rebound: Query<(&AudioNode, &LiveMidi), (With<LiveMidiInput>, Changed<AudioNode>)>,
-    graph: Option<ResMut<AudioGraphRes>>,
+    wanted: Query<
+        (Entity, &AudioNode),
+        (
+            With<LiveMidiInput>,
+            Without<LiveMidi>,
+            Or<(Added<LiveMidiInput>, Changed<AudioNode>)>,
+        ),
+    >,
+    rebound: Query<(Entity, &AudioNode, &LiveMidi), (With<LiveMidiInput>, Changed<AudioNode>)>,
+    mut graph: ResMut<AudioGraphRes>,
 ) {
-    let Some(mut graph) = graph else {
-        return;
-    };
+    let mut midi = graph.midi();
     for (entity, &sink) in &wanted {
-        let (node, sender) = graph.insert(MidiQueueNode::new());
-        graph.set_feed(sink, LIVE, vec![node.into()]);
-        commands.entity(entity).insert(LiveMidi { sender, node });
+        match midi.live_input(sink) {
+            Ok(live) => {
+                commands.entity(entity).insert(LiveMidi {
+                    sender: live.sender,
+                    node: live.node,
+                });
+            }
+            Err(e) => tracing::warn!("live MIDI for {entity:?}: {e}"),
+        }
     }
-    // Derived at the point of use: `set_feed` leaves an unchanged feed (and
-    // the edit flag) alone.
-    for (&sink, live) in &rebound {
-        graph.set_feed(sink, LIVE, vec![live.node.into()]);
+    // Derived at the point of use: an unchanged feed (and the edit flag) is
+    // left alone.
+    for (entity, &sink, live) in &rebound {
+        if let Err(e) = midi.retarget(live.node, sink) {
+            tracing::warn!("live MIDI for {entity:?} not re-aimed: {e}");
+        }
     }
 }
 
@@ -169,7 +183,13 @@ impl Plugin for LiveMidiPlugin {
         app.add_observer(detach_live_midi);
         app.add_systems(
             Update,
-            attach_live_midi.before(EventWiring).run_if(engine_ready),
+            attach_live_midi
+                .before(EventWiring)
+                // A hard gate, not an early return: a system that runs
+                // consumes its change ticks, so a `LiveMidiInput` added
+                // before the graph exists would never be seen again.
+                .run_if(engine_ready)
+                .run_if(resource_exists::<AudioGraphRes>),
         );
     }
 }

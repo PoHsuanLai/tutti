@@ -48,6 +48,10 @@ mod builder;
 mod device;
 mod error;
 mod graph;
+#[cfg(feature = "midi")]
+mod midi;
+#[cfg(feature = "modulation")]
+mod modulation;
 mod node;
 mod session;
 
@@ -62,6 +66,15 @@ pub use graph::{AudioNodeTarget, PendingExport};
 pub use graph::{
     AudioSide, Committed, Crossfade, CrossfadeId, CrossfadeRefused, EventSource, Graph,
     GraphSource, ReplaceRefused, LIVE_MAX_BLOCK,
+};
+#[cfg(feature = "midi")]
+pub use midi::{
+    drain_receiver_through, LiveInput, Midi, MidiOutDrops, MidiOutRouter, MidiRouteId,
+    MidiRouteRule, UmpOut, MIDI_OUT_DROP_REPORT,
+};
+#[cfg(feature = "modulation")]
+pub use modulation::{
+    declare_targets, ModRefusal, ModState, Mods, ParamRef, Take, UNRESOLVED_WARNING,
 };
 pub use node::SessionNode;
 #[cfg(feature = "midi")]

@@ -1,16 +1,16 @@
 //! The adapter: the frame's declarations, collected from components and
-//! applied to the graph by `tutti_nodes::Modulation` (doc 014 §8.2).
+//! handed to the session's modulation phases (design 015 §4.4).
 //!
 //! [`reconcile`] runs after [`GraphReconcileSystems::Spawn`], so a node
-//! spawned this frame has its `AudioNode`, and before the frame's commit,
-//! which sends what the apply staged. A native target resolves only once
-//! its node is in a committed plan, so a target on a node new this frame is
-//! unresolved at first: [`after_commit`] re-applies right after the commit
-//! while any target is unresolved, and commits again, so the lane plays from
-//! the frame its node does. It also sends the note-envelope resyncs the
-//! apply owes, which wait for the commit that placed their nodes.
-
-use std::collections::{BTreeMap, BTreeSet};
+//! spawned this frame has its `AudioNode`, and before the frame's commit:
+//! it runs `Phase::Modulation` over the frame's declarations, keyed by
+//! entities ([`Declared`]). [`after_commit`] runs `Phase::AfterCommit`
+//! with them after the commit: the session re-applies while a target is
+//! unresolved and commits what that built, and sends the note-envelope
+//! resyncs the apply owes. The loop, the refusal's dedupe and the
+//! unresolved warning are the session's; this keeps the entity mapping.
+//!
+//! [`GraphReconcileSystems::Spawn`]: crate::graph::GraphReconcileSystems::Spawn
 
 use bevy_ecs::message::{Message, MessageWriter};
 use bevy_ecs::prelude::*;
@@ -19,56 +19,49 @@ use bevy_ecs::system::SystemParam;
 use tutti_core::AudioNode;
 use tutti_graph::EventOut;
 use tutti_mod::{
-    CompileError, Declarations, RouteDecl, RouteKey, RouteTarget, Source, SourceKey, TargetDecl,
-    TargetKey,
+    Declarations, RouteDecl, RouteKey, RouteTarget, Source, SourceKey, TargetDecl, TargetKey,
 };
 use tutti_nodes::automation::LaneControls;
-use tutti_nodes::{Feed, Modulation, ReconcileError};
+use tutti_nodes::{Feed, ReconcileError};
+use tutti_session::{ModInput, ModRefusal, Phase, SessionEvent};
 use tutti_types::NodeKey;
 
 use super::declare::{
     Automation, AutomationTake, ModFeed, ModRange, ModRoute, ModSource, ParamRef,
 };
-use crate::graph::commit::commit_and_publish;
 use crate::graph::latency::{ChannelCompensation, GraphLatency};
 use crate::graph::AudioGraphRes;
 
-/// The app's modulation as applied: the reconciler, and what its last apply
-/// left unresolved or refused.
-#[derive(Resource, Default)]
-pub struct ModulationState {
-    modulation: Modulation,
-    refusal: Option<ReconcileError>,
-    unresolved_targets: Vec<TargetKey>,
-    unresolved_sources: Vec<SourceKey>,
-    /// How many applies in a row each unresolved target has been
-    /// unresolved for: the warning's clock ([`UNRESOLVED_WARN_AFTER`]).
-    unresolved_for: BTreeMap<TargetKey, u32>,
-}
+/// The app's modulation as the session applied it, read through
+/// [`AudioGraphRes::modulation`]: the lanes, what is unresolved, the
+/// refusal held, in the app's entities. Each read takes the session's lock
+/// for that read alone, and hands back what it read.
+#[derive(Clone, Copy)]
+pub struct ModulationState<'a>(&'a AudioGraphRes);
 
-/// Applies a target may stay unresolved (two a frame at most: `reconcile`
-/// and `after_commit`) before it is logged, once. A target waits a frame or
-/// two for its node's commit, and a plugin's for its values' read; one
-/// still waiting after this many is likely never to resolve (an entity
-/// no node is ever bound to).
-const UNRESOLVED_WARN_AFTER: u32 = 240;
-
-impl ModulationState {
-    /// The reconciler (its lanes, sources and last compile).
-    pub fn modulation(&self) -> &Modulation {
-        &self.modulation
+impl ModulationState<'_> {
+    fn read<T>(&self, f: impl FnOnce(&tutti_session::ModState) -> T) -> T {
+        f(self.0.read().mod_state())
     }
 
     /// Why the declarations are refused now, `None` while they apply. The
     /// graph keeps what the last apply that succeeded built.
-    pub fn refusal(&self) -> Option<&ReconcileError> {
-        self.refusal.as_ref()
+    pub fn refusal(&self) -> Option<ReconcileError> {
+        self.read(|s| match s.refusal()? {
+            ModRefusal::Apply(error) => Some(error.clone()),
+            // The app declares through components only: the session's own
+            // `mods()` is out of its reach, so a second declarer cannot be.
+            _ => None,
+        })
     }
 
     /// `target`'s lane: its node and its controls (the knob, the range, the
     /// counters). `None` while it has none.
-    pub fn lane(&self, target: ParamRef) -> Option<(NodeKey, &LaneControls)> {
-        self.modulation.lane(target.key())
+    pub fn lane(&self, target: ParamRef) -> Option<(NodeKey, LaneControls)> {
+        self.read(|s| {
+            s.lane(target.key())
+                .map(|(node, controls)| (node, controls.clone()))
+        })
     }
 
     /// Writes `value` into `target`'s knob: for a plugin parameter with a
@@ -76,29 +69,48 @@ impl ModulationState {
     /// lane reads (as [`write_param`](crate::graph::write_param) does).
     /// `false` when `target` has no lane with a knob.
     pub fn set_knob(&self, target: ParamRef, value: f32) -> bool {
-        self.lane(target)
-            .is_some_and(|(_, controls)| controls.set_knob(value))
+        self.read(|s| s.set_knob(target.key(), value))
     }
 
     /// Signal source `source`'s node (a follower's, a note envelope's).
     pub fn source_node(&self, source: Entity) -> Option<NodeKey> {
-        self.modulation.source(SourceKey(source.to_bits()))
+        self.read(|s| s.source_node(SourceKey(source.to_bits())))
     }
 
     /// The targets the last apply could not resolve: their node is not in
     /// the graph (or not yet committed), or a plugin's values are not read
     /// yet.
-    pub fn unresolved_targets(&self) -> impl Iterator<Item = ParamRef> + '_ {
-        self.unresolved_targets
-            .iter()
-            .filter_map(|&k| ParamRef::from_key(k))
+    pub fn unresolved_targets(&self) -> impl Iterator<Item = ParamRef> {
+        self.read(|s| {
+            s.unresolved_targets()
+                .iter()
+                .filter_map(|&k| ParamRef::from_key(k))
+                .collect::<Vec<_>>()
+        })
+        .into_iter()
     }
 
     /// The followers the last apply could not feed.
-    pub fn unresolved_sources(&self) -> impl Iterator<Item = Entity> + '_ {
-        self.unresolved_sources
-            .iter()
-            .filter_map(|s| Entity::try_from_bits(s.0))
+    pub fn unresolved_sources(&self) -> impl Iterator<Item = Entity> {
+        self.read(|s| {
+            s.unresolved_sources()
+                .iter()
+                .filter_map(|k| Entity::try_from_bits(k.0))
+                .collect::<Vec<_>>()
+        })
+        .into_iter()
+    }
+
+    /// Note-envelope resyncs owed to the next `AfterCommit`.
+    pub fn resyncs_owed(&self) -> usize {
+        self.read(|s| s.resyncs_owed())
+    }
+}
+
+impl AudioGraphRes {
+    /// The app's modulation as applied ([`ModulationState`]).
+    pub fn modulation(&self) -> ModulationState<'_> {
+        ModulationState(self)
     }
 }
 
@@ -112,46 +124,19 @@ pub struct ModulationRefused {
 }
 
 impl ModulationRefused {
+    fn refusal(&self) -> ModRefusal {
+        ModRefusal::Apply(self.error.clone())
+    }
+
     /// The route entity it names: a route whose follower is downstream of
     /// its own target (`ReconcileError::Cycle`), or one the compile refused.
     pub fn route(&self) -> Option<Entity> {
-        use tutti_mod::CompileError as C;
-        let key = match &self.error {
-            ReconcileError::Cycle { route } => *route,
-            ReconcileError::Compile(
-                C::DuplicateRoute(route)
-                | C::BadRoute(route)
-                | C::UnknownSource { route }
-                | C::UnknownRoute { route }
-                | C::UndeclaredTarget { route }
-                | C::DepthByChain { route }
-                | C::DepthBySignal { route }
-                | C::TwoDepthBy { route },
-            ) => *route,
-            _ => return None,
-        };
-        Entity::try_from_bits(key.0)
+        Entity::try_from_bits(self.refusal().route()?.0)
     }
 
     /// The target it names, when it names one.
     pub fn target(&self) -> Option<ParamRef> {
-        use tutti_mod::CompileError as C;
-        match &self.error {
-            ReconcileError::WrongTarget(t)
-            | ReconcileError::NoSuchParam(t)
-            | ReconcileError::NoSuchEventInput(t)
-            | ReconcileError::PortTaken(t)
-            | ReconcileError::SharedPort { first: t, .. }
-            | ReconcileError::Compile(
-                C::DuplicateTarget(t)
-                | C::NanRange(t)
-                | C::LiveCurve(t)
-                | C::LayerIdCollision(t)
-                | C::TooManyLayers { target: t, .. }
-                | C::TooManyInputs { target: t, .. },
-            ) => ParamRef::from_key(*t),
-            _ => None,
-        }
+        ParamRef::from_key(self.refusal().target()?)
     }
 }
 
@@ -189,6 +174,16 @@ struct Collected {
     targets: Vec<(TargetKey, TargetDecl)>,
 }
 
+impl Collected {
+    fn declarations(&self) -> Declarations<'_> {
+        Declarations {
+            sources: &self.sources,
+            routes: &self.routes,
+            targets: &self.targets,
+        }
+    }
+}
+
 impl Declared<'_, '_> {
     fn alive(&self, entity: Entity) -> bool {
         self.entities.contains(entity)
@@ -197,9 +192,10 @@ impl Declared<'_, '_> {
     /// Sources, routes and targets, keyed by entity bits. A route whose
     /// source or target entity is gone is left out, and so is a target on a
     /// gone entity: despawning a source (or a node) removes what it built.
-    /// Two [`ModRange`]s, or two [`Automation`]s, on one target are refused
-    /// (`CompileError::DuplicateTarget`).
-    fn collect(&self) -> Result<Collected, ReconcileError> {
+    /// Two [`ModRange`]s, or two [`Automation`]s, on one target are both
+    /// declared, and the compile refuses them
+    /// (`CompileError::DuplicateTarget`; `tutti_session::declare_targets`).
+    fn collect(&self) -> Collected {
         let mut sources: Vec<(SourceKey, Source)> = self
             .sources
             .iter()
@@ -207,47 +203,22 @@ impl Declared<'_, '_> {
             .collect();
         sources.sort_by_key(|(k, _)| *k);
 
-        // A target takes one range and one automation: a second of either
-        // on the same `ParamRef` is refused, never merged, since which one
-        // won would be the queries' iteration order.
-        let mut targets: BTreeMap<TargetKey, TargetDecl> = BTreeMap::new();
-        let mut ranged = BTreeSet::new();
-        for range in &self.ranges {
-            if !self.alive(range.param.entity) {
-                continue;
-            }
-            let key = range.param.key();
-            if !ranged.insert(key) {
-                return Err(ReconcileError::Compile(CompileError::DuplicateTarget(key)));
-            }
-            targets.insert(
-                key,
-                TargetDecl {
-                    min: range.min,
-                    max: range.max,
-                    automation: None,
-                },
-            );
-        }
-        let mut automated = BTreeSet::new();
-        for (automation, take) in &self.automation {
-            if !self.alive(automation.target.entity) {
-                continue;
-            }
-            let key = automation.target.key();
-            if !automated.insert(key) {
-                return Err(ReconcileError::Compile(CompileError::DuplicateTarget(key)));
-            }
-            let decl = targets.entry(key).or_insert(TargetDecl {
-                min: f32::NEG_INFINITY,
-                max: f32::INFINITY,
-                automation: None,
-            });
-            // An open take: the knob (the gesture) drives the param.
-            if take.is_none() {
-                decl.automation = Some(automation.curve.clone());
-            }
-        }
+        let targets = tutti_session::declare_targets(
+            self.ranges
+                .iter()
+                .filter(|range| self.alive(range.param.entity))
+                .map(|range| (range.param.key(), range.min, range.max)),
+            self.automation
+                .iter()
+                .filter(|(automation, _)| self.alive(automation.target.entity))
+                // An open take: the knob (the gesture) drives the param.
+                .map(|(automation, take)| {
+                    (
+                        automation.target.key(),
+                        take.is_none().then(|| automation.curve.clone()),
+                    )
+                }),
+        );
 
         let mut routes: Vec<(RouteKey, RouteDecl)> = self
             .routes
@@ -270,11 +241,11 @@ impl Declared<'_, '_> {
             .collect();
         routes.sort_by_key(|(k, _)| *k);
 
-        Ok(Collected {
+        Collected {
             sources,
             routes,
-            targets: targets.into_iter().collect(),
-        })
+            targets,
+        }
     }
 }
 
@@ -317,118 +288,80 @@ impl tutti_session::ModKeys for Declared<'_, '_> {
     }
 }
 
-/// One apply: the frame's declarations onto the graph. Returns whether it
-/// asked for a commit. Resyncs owed (`Applied::resync`) need none:
-/// [`after_commit`] sends them on a frame that owes them and has nothing
-/// left to commit, whether or not that frame committed anything.
-fn apply(
+/// Runs `phase` over the frame's declarations, keyed by entities, and
+/// forwards a refusal as a [`ModulationRefused`] message.
+fn run(
+    phase: Phase,
     declared: &Declared<'_, '_>,
     graph: &mut AudioGraphRes,
-    state: &mut ModulationState,
     refused: &mut MessageWriter<ModulationRefused>,
-) -> bool {
-    let applied = declared.collect().and_then(|collected| {
-        let decl = Declarations {
-            sources: &collected.sources,
-            routes: &collected.routes,
-            targets: &collected.targets,
-        };
-        graph.modulate(&mut state.modulation, &decl, declared)
-    });
-    match applied {
-        Ok(applied) => {
-            state.refusal = None;
-            state.unresolved_for = applied
-                .unresolved_targets
-                .iter()
-                .map(|&key| {
-                    let applies = state.unresolved_for.get(&key).map_or(1, |n| n + 1);
-                    if applies == UNRESOLVED_WARN_AFTER {
-                        if let Some(target) = ParamRef::from_key(key) {
-                            bevy_log::warn!(
-                                "modulation target (entity {}, {:?}) still unresolved after \
-                                 {applies} applies: no node is bound to its entity, or \
-                                 the plugin's values were never read",
-                                target.entity,
-                                target.param
-                            );
-                        }
-                    }
-                    (key, applies)
-                })
-                .collect();
-            state.unresolved_targets = applied.unresolved_targets;
-            state.unresolved_sources = applied.unresolved_sources;
-            applied.commit
-        }
-        Err(error) => {
-            if state.refusal.as_ref() != Some(&error) {
-                let message = ModulationRefused { error };
-                bevy_log::error!("modulation refused: {message}");
-                state.refusal = Some(message.error.clone());
-                refused.write(message);
-            }
-            false
+) {
+    let collected = declared.collect();
+    let mods = ModInput {
+        declarations: collected.declarations(),
+        keys: declared,
+    };
+    for event in graph.run_phase_with_mods(phase, std::time::Instant::now(), mods) {
+        if let SessionEvent::ModulationRefused(ModRefusal::Apply(error)) = event {
+            refused.write(ModulationRefused { error });
         }
     }
 }
 
 /// Applies the frame's declarations (doc 014 §8.2): collects them, keyed by
-/// entities, and hands them to `Modulation::apply` on the graph's editor.
-/// A program edit (a depth, a curve, a range, a macro's value, an automation
-/// curve) republishes the lanes it changes and stages nothing; a new lane or
-/// signal node, or a moved edge, is staged for the frame's commit.
+/// entities, and runs the session's `Phase::Modulation` over them. A
+/// program edit (a depth, a curve, a range, a macro's value, an automation
+/// curve) republishes the lanes it changes and stages nothing; a new lane
+/// or signal node, or a moved edge, is staged for the frame's commit.
 ///
 /// Every frame: a frame that changes nothing republishes nothing and commits
 /// nothing. A refusal ([`ModulationRefused`]) changes nothing in the graph.
 pub fn reconcile(
     declared: Declared,
     graph: Option<ResMut<AudioGraphRes>>,
-    mut state: ResMut<ModulationState>,
     mut refused: MessageWriter<ModulationRefused>,
 ) {
     // `engine_ready` reads a state a host may insert without an engine. What
     // the apply stages edits the session, which the frame's commit sends.
     let Some(mut graph) = graph else { return };
-    apply(&declared, &mut graph, &mut state, &mut refused);
+    run(Phase::Modulation, &declared, &mut graph, &mut refused);
 }
 
-/// After the frame's commit: re-applies while a target is unresolved (its
-/// node was new, or rebound, before that commit) and commits what that
-/// built, then sends the resyncs owed.
-///
-/// Its commits go through `commit_and_publish`, as `commit_graph`'s do, so
-/// [`GraphLatency`] and [`ChannelCompensation`] describe the plan sent.
+/// After the frame's commit: the session's `Phase::AfterCommit` over the
+/// frame's declarations, which re-applies while a target is unresolved
+/// (its node was new, or rebound, before that commit), commits what that
+/// built, and sends the resyncs owed. [`GraphLatency`] and
+/// [`ChannelCompensation`] then describe the plan sent.
 ///
 /// While the frame's own commit is still waiting (refused for now: the
-/// session's edit flag is still set), nothing here runs: its nodes are not in
-/// a plan yet. A host's edit made through `AudioGraphRes` after this frame's
-/// `commit_graph` sets the same flag, so it too waits for the next frame's
-/// commit.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a Bevy system: one parameter per resource it reads"
-)]
+/// session's edit flag is still set), the session re-applies nothing: its
+/// nodes are not in a plan yet. A host's edit made through `AudioGraphRes`
+/// after this frame's `commit_graph` sets the same flag, so it too waits
+/// for the next frame's commit.
 pub fn after_commit(
     _main: bevy_ecs::system::NonSendMarker,
     declared: Declared,
     graph: Option<ResMut<AudioGraphRes>>,
-    mut state: ResMut<ModulationState>,
     mut refused: MessageWriter<ModulationRefused>,
     table: Option<ResMut<ChannelCompensation>>,
     total: Option<ResMut<GraphLatency>>,
 ) {
     let Some(mut graph) = graph else { return };
-    // Nothing to resolve while the frame's own commit waits (refused for
-    // now): its nodes are not in a plan yet. A commit refused here leaves
-    // the flag set for the next frame's.
-    if !state.unresolved_targets.is_empty()
-        && !graph.is_edited()
-        && apply(&declared, &mut graph, &mut state, &mut refused)
-    {
-        commit_and_publish(&mut graph, table, total);
+    // Nothing to re-apply or resync (the common frame): the phase would do
+    // nothing, so the declarations are not collected. Mutations (run), each
+    // fails a `mod_lanes` test: idle on no unresolved target alone
+    // (`a_held_note_envelope_newly_routed_reads_its_level_at_once`: its
+    // resync is never sent); idle on no resync alone
+    // (`an_entity_rebound_to_another_param_list_keeps_modulating`, and
+    // `a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame`).
+    let idle = {
+        let session = graph.read();
+        let state = session.mod_state();
+        state.unresolved_targets().is_empty() && state.resyncs_owed() == 0
+    };
+    if idle {
+        return;
     }
-    if state.modulation.resyncs_owed() > 0 && !graph.is_edited() {
-        graph.send_mod_resyncs(&mut state.modulation);
-    }
+    run(Phase::AfterCommit, &declared, &mut graph, &mut refused);
+    crate::graph::latency::mirror(&graph, table, total);
 }

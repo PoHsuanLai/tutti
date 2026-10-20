@@ -324,9 +324,10 @@ struct SourcePlan {
 ///
 /// # Examples
 ///
-/// `examples/headless_modulation.rs` drives an LFO and a follower on a
-/// filter's native params with a plain `Editor`. The shape of it, for an
-/// LFO on a filter's cutoff:
+/// `tutti-session`'s `examples/headless_modulation.rs` drives an LFO and a
+/// follower on a filter's native params through a session, whose update
+/// runs this reconciler. The shape of it with a plain `Editor`, for an LFO
+/// on a filter's cutoff:
 ///
 /// ```
 /// use std::sync::Arc;

@@ -11,7 +11,7 @@ use bevy_reflect::prelude::*;
 use tutti_core::transport::OfflineTransport;
 use tutti_core::{AudioNode, Compensation, CrossfadeCurve, Samples, Seconds, Tail};
 use tutti_session::{
-    AudioSide, Committed, Crossfade, CrossfadeRefused, EventSource, GraphSource, Phase, PhaseCx,
+    AudioSide, Crossfade, CrossfadeRefused, EventSource, GraphSource, Phase, PhaseCx,
     ReplaceRefused, Session, SessionEvent, SessionNode,
 };
 use tutti_types::{ChannelLayout, SampleRate, UnitParam};
@@ -123,7 +123,7 @@ pub struct AudioGraphRes(Mutex<Session>);
 impl AudioGraphRes {
     /// `&self` access. Poison is recovered: a panic mid-edit leaves a spec
     /// the next commit validates, never a torn audio thread.
-    fn read(&self) -> MutexGuard<'_, Session> {
+    pub(crate) fn read(&self) -> MutexGuard<'_, Session> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -135,6 +135,19 @@ impl AudioGraphRes {
     /// The session, for this crate's engine and restart paths.
     pub(crate) fn session(&mut self) -> &mut Session {
         self.write()
+    }
+
+    /// The session's MIDI ([`tutti_session::Midi`]): the hardware output
+    /// a host connects (`set_hardware_out`), its drop count, and a host's
+    /// own outbound mailbox drained through it (`drain_out`). Clips, live
+    /// inputs and the hardware input's routes are declared in the ECS
+    /// ([`MidiSourceInstall`](crate::midi::MidiSourceInstall),
+    /// [`LiveMidiInput`](crate::midi::LiveMidiInput),
+    /// [`MidiRouteRule`](crate::midi::MidiRouteRule)), whose systems call
+    /// this; what a host edits here directly, they do not see.
+    #[cfg(feature = "midi")]
+    pub fn midi(&mut self) -> tutti_session::Midi<'_> {
+        self.write().midi()
     }
 
     /// The resource over a built `session` ([`build_into`](crate::engine::build_into)).
@@ -588,26 +601,6 @@ impl AudioGraphRes {
         self.read().graph_ref().fork_live().ok()
     }
 
-    /// Applies modulation declarations to the editor (doc 014 §8.2),
-    /// resolving the host's keys through `keys`
-    /// (`tutti_session::Graph::modulate`).
-    #[cfg(feature = "modulation")]
-    pub(crate) fn modulate(
-        &mut self,
-        m: &mut tutti_nodes::Modulation,
-        decl: &tutti_mod::Declarations<'_>,
-        keys: &dyn tutti_session::ModKeys,
-    ) -> Result<tutti_nodes::Applied, tutti_nodes::ReconcileError> {
-        self.write().graph().modulate(m, decl, keys)
-    }
-
-    /// Schedules the resyncs `m` owes, after the commit that sent their
-    /// nodes.
-    #[cfg(feature = "modulation")]
-    pub(crate) fn send_mod_resyncs(&mut self, m: &mut tutti_nodes::Modulation) {
-        self.write().graph().send_mod_resyncs(m);
-    }
-
     /// `node`'s latency moved at runtime — a hosted plugin's latency cell
     /// changed. The editor holds the latency the node's `Shape` declared at
     /// insert, so this hands it `latency` (for a plugin,
@@ -635,9 +628,9 @@ impl AudioGraphRes {
     /// case), and for good when the graph does not compile (logged; the next
     /// edit tries again). A changed global output count needs nothing
     /// special: it is part of the spec the commit compiles.
-    #[cfg_attr(not(feature = "modulation"), allow(dead_code))]
+    #[cfg(all(test, feature = "plugin"))]
     pub(crate) fn commit(&mut self) -> bool {
-        self.write().commit() == Committed::Sent
+        self.write().commit() == tutti_session::Committed::Sent
     }
 
     /// Runs one of the session's phases (`Session::run_phase`) at `now`,
@@ -645,6 +638,21 @@ impl AudioGraphRes {
     pub(crate) fn run_phase(&mut self, phase: Phase, now: std::time::Instant) -> Vec<SessionEvent> {
         let mut out = Vec::new();
         self.write().run_phase(phase, PhaseCx::at(now), &mut out);
+        out
+    }
+
+    /// [`run_phase`](Self::run_phase) with the app's modulation
+    /// declarations (`PhaseCx::with_mods`): what the modulation systems run.
+    #[cfg(feature = "modulation")]
+    pub(crate) fn run_phase_with_mods(
+        &mut self,
+        phase: Phase,
+        now: std::time::Instant,
+        mods: tutti_session::ModInput<'_>,
+    ) -> Vec<SessionEvent> {
+        let mut out = Vec::new();
+        self.write()
+            .run_phase(phase, PhaseCx::at(now).with_mods(mods), &mut out);
         out
     }
 

@@ -59,7 +59,7 @@ struct FaderView {
 impl FaderView {
     /// Read one param the way a widget would, at play-clock frame `play`.
     fn read<U: Unit<Raw = f32>>(
-        state: &ModulationState,
+        state: &ModulationState<'_>,
         param: ParamRef,
         knob: U,
         declared_range: (f32, f32),
@@ -185,10 +185,10 @@ fn main() {
         app.update();
 
         let world = app.world();
-        let state = world.resource::<ModulationState>();
+        let state = world.resource::<AudioGraphRes>().modulation();
         let knob = world.get::<DriveParam>(strip).unwrap().value;
         let play = tick as u64 * FRAMES_PER_TICK;
-        let view = FaderView::read(state, drive, knob, (0.0, 10.0), play);
+        let view = FaderView::read(&state, drive, knob, (0.0, 10.0), play);
 
         println!("{} {:>7.2} {:>8.2}", view.draw(), view.knob, view.live);
     }
@@ -196,9 +196,9 @@ fn main() {
     // The same widget code on a param nobody modulates: handle and ghost
     // coincide, and the view reports it so a UI can skip the ghost entirely.
     let world = app.world();
-    let state = world.resource::<ModulationState>();
+    let state = world.resource::<AudioGraphRes>().modulation();
     let value = world.get::<CutoffParam>(strip).unwrap().value;
-    let view = FaderView::read(state, cutoff, value, (20.0, 20_000.0), 0);
+    let view = FaderView::read(&state, cutoff, value, (20.0, 20_000.0), 0);
     println!(
         "\ncutoff (unmodulated): modulated={} handle={:.0}Hz live={:.0}Hz",
         view.modulated, view.knob, view.live

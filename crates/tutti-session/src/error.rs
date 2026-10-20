@@ -40,6 +40,35 @@ pub enum Error {
     #[error("MIDI: {0}")]
     Midi(#[from] tutti_midi_hardware::Error),
 
+    /// A MIDI call named a target that is not in the graph, or takes no
+    /// MIDI (it has no event input): `Midi::play_clip`, `Midi::live_input`,
+    /// `Midi::retarget`.
+    #[cfg(feature = "midi")]
+    #[error("{0:?} takes no MIDI: it is not in the graph, or has no event input")]
+    NoEventInput(tutti_core::AudioNode),
+
+    /// A route rule on a session with no MIDI input node (one built
+    /// detached).
+    #[cfg(feature = "midi")]
+    #[error("the session has no MIDI input node to route")]
+    NoMidiInput,
+
+    /// `Midi::retarget` named a node that is not a clip or live input of
+    /// the session's.
+    #[cfg(feature = "midi")]
+    #[error("{0:?} is not a clip or live input of this session's")]
+    NotSessionMidi(tutti_core::AudioNode),
+
+    /// The hardware input's routes have one declarer: the session's own
+    /// (`Midi::route`, `Midi::set_route_fallback`) or a host's
+    /// (`Midi::set_routes`), not both at once.
+    #[cfg(feature = "midi")]
+    #[error(
+        "the MIDI routes are declared by {0}; clear those before declaring \
+         them the other way"
+    )]
+    TwoRouteDeclarers(&'static str),
+
     /// Polyphonic-synth subsystem failure. Wraps `tutti_polysynth::Error`.
     #[cfg(feature = "synth")]
     #[error("Synth: {0}")]

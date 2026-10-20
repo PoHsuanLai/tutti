@@ -1006,7 +1006,7 @@ impl Graph {
     ///
     /// The apply's refusal: the graph keeps what the last apply built.
     #[cfg(feature = "modulation")]
-    pub fn modulate(
+    pub(crate) fn modulate(
         &mut self,
         m: &mut tutti_nodes::Modulation,
         decl: &tutti_mod::Declarations<'_>,
@@ -1026,7 +1026,7 @@ impl Graph {
     /// Schedules the note-envelope resyncs `m` owes, after the commit that
     /// sent their nodes (`Modulation::send_resyncs`).
     #[cfg(feature = "modulation")]
-    pub fn send_mod_resyncs(&mut self, m: &mut tutti_nodes::Modulation) {
+    pub(crate) fn send_mod_resyncs(&mut self, m: &mut tutti_nodes::Modulation) {
         // A resync refused for now stays owed (the next update retries); one
         // refused for good is counted (`Modulation::resyncs_dropped`).
         if let Err(e) = m.send_resyncs(&mut self.editor) {
@@ -1463,7 +1463,8 @@ pub enum AudioNodeTarget {
 ///
 /// `tutti_mod`'s declarations key a target by `TargetKey { node: u64, param }`
 /// and a source by `SourceKey(u64)`; the `u64` is the host's own minting (a
-/// Bevy entity's bits, say), and this is how [`Graph::modulate`] reads it.
+/// Bevy entity's bits, say), and this is how the session's
+/// [`Modulation`](crate::Phase::Modulation) phase reads it ([`ModInput`](crate::ModInput)).
 #[cfg(feature = "modulation")]
 pub trait ModKeys {
     /// The node a target's key names.

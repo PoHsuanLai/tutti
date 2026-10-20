@@ -143,7 +143,7 @@ pub(crate) fn build_on(
             hardware_out: out_entity,
         });
         app.insert_resource(MpeModeRes(nodes.input_controls));
-        app.insert_resource(ClockMasterRes::new(nodes.clock_master, nodes.out_controls));
+        app.insert_resource(ClockMasterRes::new(nodes.clock_master));
     }
     #[cfg(feature = "midi-hardware")]
     if let Some(io) = midi_io {

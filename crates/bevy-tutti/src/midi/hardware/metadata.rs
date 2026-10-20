@@ -160,8 +160,10 @@ pub fn flex_metadata_broadcast_system(
 ///
 /// Registers [`BroadcastFlexMetadata`] and its broadcast system. JR-out is
 /// somebody else's: an app that wants it inserts
-/// [`JrStamperRes`](super::hardware_out::JrStamperRes) and
-/// [`UmpOutRes`](super::hardware_out::UmpOutRes), which the output pumps read.
+/// [`JrStamperRes`](super::hardware_out::JrStamperRes) and connects a
+/// [`UmpOut`](crate::midi::UmpOut) to the session
+/// (`AudioGraphRes::midi`'s `set_hardware_out`), which the output pumps
+/// drain to.
 pub struct MidiMetadataPlugin;
 
 impl Plugin for MidiMetadataPlugin {

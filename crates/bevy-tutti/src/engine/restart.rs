@@ -22,7 +22,7 @@
 //! again.
 //!
 //! A `SoundFontUnit` re-rates in its own `prepare`. Not re-rated here: a
-//! host-built `UmpOutRes` (its JR clock). A MIDI clip node needs nothing: it
+//! host-connected `UmpOut` (its JR clock; `Midi::set_hardware_out`). A MIDI clip node needs nothing: it
 //! places its events by its block's `Env`, rate included.
 
 use bevy_ecs::prelude::*;
@@ -617,8 +617,11 @@ mod tests {
             stream.render_block(frames).expect("the stream is open");
             let n = app
                 .world()
-                .resource::<crate::midi::ClockMasterRes>()
-                .out
+                .resource::<AudioGraphRes>()
+                .read()
+                .midi_nodes()
+                .expect("the engine's MIDI nodes")
+                .out_controls
                 .poll_into(&mut buf);
             out.extend(
                 buf[..n]

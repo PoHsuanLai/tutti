@@ -1,6 +1,6 @@
 # 015: a Bevy-free tutti API layer
 
-Status: **in progress**. PRs 1, 2, 3 and 4 (§9) have landed; the rest
+Status: **in progress**. PRs 1, 2, 3, 4 and 5 (§9) have landed; the rest
 has not. Each landed PR says so in a "Landed" note. The user has made every
 decision it asked for (§11). §2's file:line citations are the survey of
 `bevy-tutti` before PR 1.
@@ -1484,6 +1484,104 @@ loop, MIDI wiring, plugins and export are PRs 5 and 6.
 
 **Exit:** `tests/mod_lanes.rs` and the MIDI suites pass.
 `headless_modulation.rs` moves to `tutti-session/examples` as §5.1.
+
+**Landed.** Two private modules, `modulation` (feature `modulation`) and
+`midi` (feature `midi`). What moved, old → new:
+
+| Was (`bevy-tutti`) | Now (`tutti-session`) |
+|---|---|
+| `reconcile`'s apply and refusal bookkeeping, `after_commit`'s re-apply, commit and resync | `Phase::Modulation`, `Phase::AfterCommit` (`ModInput` in `PhaseCx`); the systems collect `Declared` and call `run_phase` |
+| `commit_and_publish` (`graph/commit.rs`) | deleted: the re-apply commits with `Session::commit`, which publishes on `Sent` |
+| the unresolved warning after N frames | `SessionEvent::ModulationUnresolved`, after 4 s of `PhaseCx::now` (`UNRESOLVED_WARNING`, `SessionBuilder::unresolved_warning`) |
+| `ModulationState` (a resource) | `ModState` (`Session::mod_state`); Bevy's `ModulationState<'_>` is a view, `AudioGraphRes::modulation()` |
+| `collect`'s duplicate-range and -automation check | `declare_targets` |
+| `AutomationTake`'s recorder | `Take` (Bevy's component wraps it) |
+| `sequence::rebuild`'s clip nodes | `Midi::{play_clip, stop_clip, clip, retarget}`; `SequencedClips` maps an entity to the session's clip |
+| `attach_live_midi`'s queue node | `Midi::live_input` (a `LiveInput`) and `Midi::retarget` |
+| `inbound::route::rebuild`'s compile and `RoutedTargets` | `Midi::set_routes` (host-keyed, with a resolver) and the session's own `route`/`unroute`/`set_route_fallback` |
+| `UmpOutRes`, `MidiOutDrops`, `MidiOutRouter`, `drain_receiver_through`, `out_active` | `UmpOut`, `MidiOutDrops`, `MidiOutRouter`, `drain_receiver_through` (re-exported by `bevy_tutti::midi`); `Midi::{set_hardware_out, set_jr_stamping, hardware_out, drain_out, out_drops}` |
+| `pump_clock_out_system`'s drain of `ClockMasterRes::out` | `Phase::MidiOut` (the session's MIDI nodes' out ring); `ClockMasterRes` holds the master alone |
+| `crates/dsp/tutti-nodes/examples/headless_modulation.rs` | `crates/tutti-session/examples/headless_modulation.rs`, §5.1 on an offline session |
+
+The session API: `Session::mods()` (`Mods`: `source`, `lfo`, `macro_`,
+`follower`, `note_envelope`, `set_source`, `remove_source`, `route`,
+`route_mut`, `remove_route`, `range`, `clear_range`, `automate`,
+`clear_automation`, `record`, `take_mut`) mints `SourceKey`s and
+`RouteKey`s and names targets by `ParamRef` (`unit`, `plugin`, `key`,
+`from_key`); `Session::mod_state()`; `Session::midi()` (`Midi`). A refusal
+is `ModRefusal` (`Apply(ReconcileError)` or `TwoDeclarers`, with `route`,
+`target` and `source` in the declarer's keys), reported once per change as
+`SessionEvent::ModulationRefused`. `Session::remove` forgets the session's
+own declarations on the node, and a clip or live input that was it.
+
+Tests. The session's: `tests/modulation.rs`
+(`the_8_1_example_renders_its_analytic_values`,
+`a_target_placed_one_update_later_resolves_on_that_update`,
+`the_unresolved_warning_fires_after_four_seconds_not_n_updates`,
+`a_refusal_names_the_route_key_the_session_minted`,
+`a_host_and_the_session_cannot_both_declare`,
+`removing_a_node_forgets_its_declarations`,
+`a_param_ref_round_trips_through_its_key`) and `tests/midi.rs`
+(`a_clip_plays_its_note_on_its_frame`, `a_clip_edit_updates_in_place`,
+`a_target_without_an_event_input_takes_no_clip`,
+`a_clip_and_a_live_input_survive_a_re_bind`,
+`route_rules_wire_the_hardware_input`,
+`the_hardware_out_drains_with_stamping_off`), each with its mutations
+recorded. Moved: `hardware_out.rs`'s five wire tests, into `midi.rs`'s unit
+tests; `out_active_yields_the_output_with_stamping_disabled` split, its
+logic half the session's stamping tests and its adapter half
+`the_stamper_switch_reaches_the_sessions_output`. Kept and passing over the
+moved code: `tests/mod_lanes.rs`, `midi_sequence.rs`, `midi_routes.rs`,
+`midi_soundfont.rs`, `midi_hardware_io.rs`, with the mutation records that
+named moved code re-run against it.
+`a_target_removed_then_re_bound_keeps_its_clip` also asserts the clip is
+the same node, since a skipped re-aim now makes a second clip that plays
+rather than none. `a_host_edit_committed_for_a_target_publishes_its_latency`
+says what it covers: since PR 4 the frame's own commit takes a host's edit,
+so in that scene the re-apply's commit adds a macro's lane and moves no
+figure (the old mutation had already survived on the PR 4 merge). A
+re-apply can move the latency (a follower of a latent node reaches its
+target's param port only through the lane the re-apply builds): the
+session's `a_re_apply_that_moves_the_latency_publishes_it` and Bevy's
+`a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame` cover the
+publish and the mirror. After review: `the_routes_have_one_declarer`,
+`dropped_ticks_are_reported_at_most_once_a_second`,
+`with_no_graph_the_drained_events_are_counted`,
+`a_keyboard_declared_before_the_graph_attaches_when_it_arrives` and
+`a_keyboard_on_a_node_without_midi_attaches_after_a_rebind_to_a_synth`.
+
+Where the code differs from the text above:
+
+- **`ModRefusal::TwoDeclarers`.** A session has one declarer: a host's
+  `ModInput` while `s.mods()` holds anything is refused, not merged.
+- **The session logs keys, not entity names.** Bevy's
+  `ModulationRefused` maps a refusal's keys back to entities.
+- **`Graph::modulate` and `Graph::send_mod_resyncs` are `pub(crate)`**:
+  the phases are the one way in.
+- **`AudioNode` is `Ord`**, for the session's `BTreeMap`s.
+- **`live_input` returns a `LiveInput`** (its node and its `MidiSender`),
+  and **`Midi::retarget`** re-aims a clip or live input: both outlive their
+  target, so a host whose entity is re-bound keeps them, and removes one
+  with `Session::remove`.
+- **Routes are under `midi`, not `midi-hardware`**: the input node exists
+  without the OS layer. `set_routes` takes the host's own keys and a
+  resolver, which keeps Bevy's rule that a target with no node yet still
+  covers its rule's ports.
+- **`Midi::hardware_out()` returns the router** (a host's MIDI-CI reply or
+  track mailbox is stamped and counted through it), and a rising drop
+  count is `SessionEvent::MidiOutDropped`, at most once per
+  `MIDI_OUT_DROP_REPORT` (1 s) of `now`.
+- **The routes have one declarer**, as modulation does: the session's own
+  `route`/`set_route_fallback` or a host's `set_routes`, the other refused
+  with `Error::TwoRouteDeclarers`. `set_routes` returns a `Result`.
+- **The §5.1 example** uses `build_offline` and `Graph::add`, not a
+  device and `insert`, and an LFO and a follower on an SVF.
+
+PR 4's deferred items stay deferred: building `GraphReconcileSystems` from
+`PHASES` waits for `Phase::Plugins` (PR 6) and is PR 7's; Bevy's device
+poll is not modulation or MIDI, and stays a system until then. Bevy runs
+`Phase::{Modulation, AfterCommit}` from its modulation systems and
+`Phase::MidiOut` from the clock pump.
 
 ### PR 6: plugins and export in the session
 

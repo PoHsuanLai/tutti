@@ -19,7 +19,7 @@ use bevy_ecs::prelude::*;
 use bevy_tutti::graph::{
     AudioGraphRes, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
 };
-use bevy_tutti::modulation::{ModulationState, ParamRef, TuttiModulationPlugin};
+use bevy_tutti::modulation::{ParamRef, TuttiModulationPlugin};
 use bevy_tutti::plugin_host::{
     PluginLoadTerminated, PluginParamValues, PluginRequest, TuttiHostingPlugin,
 };
@@ -91,7 +91,7 @@ fn load(app: &mut App, path: std::path::PathBuf) -> Entity {
 fn knob_of(app: &mut App, target: ParamRef) -> f32 {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let state = app.world().resource::<ModulationState>();
+        let state = app.world().resource::<AudioGraphRes>().modulation();
         assert_eq!(state.refusal(), None, "the declarations apply");
         if let Some((_, lane)) = state.lane(target) {
             return lane.knob().expect("a plugin lane has a knob");
@@ -317,7 +317,7 @@ fn a_plugin_gui_edit_becomes_the_knob() {
         .editor_idle();
     app.update();
 
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.lane(p0).expect("a lane").1.knob(), Some(0.5));
     assert_eq!(state.lane(p1).expect("a lane").1.knob(), Some(1.0 / 16.0));
     assert_eq!(
@@ -362,7 +362,8 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
     knob_of(&mut app, p0);
     let lane = AudioNode(
         app.world()
-            .resource::<ModulationState>()
+            .resource::<AudioGraphRes>()
+            .modulation()
             .lane(p0)
             .expect("a lane")
             .0,
@@ -479,7 +480,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
             .clone();
         handle.editor_idle();
         app.update();
-        let state = app.world().resource::<ModulationState>();
+        let state = app.world().resource::<AudioGraphRes>().modulation();
         assert_eq!(
             state.lane(p0).expect("a lane").1.knob(),
             Some(0.0),

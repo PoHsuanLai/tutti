@@ -7,8 +7,10 @@
 //! each in one call. Add [`TuttiModulationPlugin`] yourself: `TuttiPlugin`
 //! does not.
 //!
-//! Every frame [`reconcile`] collects them and applies them to the graph
-//! through `tutti_nodes::Modulation`: each modulated param gets one control
+//! Every frame [`reconcile`] collects them and hands them, keyed by
+//! entities, to the session's modulation phases (`tutti_session`'s
+//! `Phase::Modulation` and `Phase::AfterCommit`), which apply them through
+//! `tutti_nodes::Modulation`: each modulated param gets one control
 //! lane, a graph node sending its value (`clamp((automation else knob) + Σ
 //! offsets, range)`) into the param's port, sample-accurately on a 32-frame
 //! grid; a follower or a note envelope is a node of its own. The lanes and
@@ -19,7 +21,7 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode, TransportRes};
-//! use bevy_tutti::modulation::{Lfo, ModulationState, Mods, ParamRef, TuttiModulationPlugin};
+//! use bevy_tutti::modulation::{Lfo, Mods, ParamRef, TuttiModulationPlugin};
 //! use bevy_tutti::AudioEngineState;
 //! use tutti_core::transport::Transport;
 //! use tutti_core::SampleRate;
@@ -51,7 +53,7 @@
 //! app.update();
 //!
 //! // The cutoff has its lane, its knob the node's own cutoff cell.
-//! let state = app.world().resource::<ModulationState>();
+//! let state = app.world().resource::<AudioGraphRes>().modulation();
 //! let (_, lane) = state.lane(ParamRef::unit(filter, UnitParam::Cutoff)).unwrap();
 //! assert_eq!(lane.knob(), Some(1_000.0));
 //! ```
@@ -63,7 +65,9 @@
 //! is ([`AudioParam`](crate::graph::AudioParam),
 //! [`write_param`](crate::graph::write_param)); a plugin parameter's is its
 //! lane's, started at the plugin's value and moved by an edit in the
-//! plugin's GUI or by [`ModulationState::set_knob`]. Nothing else writes it
+//! plugin's GUI or by [`ModulationState::set_knob`]
+//! ([`AudioGraphRes::modulation`](crate::graph::AudioGraphRes::modulation)).
+//! Nothing else writes it
 //! (doc 014 §8.2, "one writer per knob").
 //!
 //! # Takes
@@ -78,7 +82,8 @@
 //! downstream of its own target, a route to a param with no range, a
 //! target its node does not have) changes nothing; it is logged, sent as a
 //! [`ModulationRefused`] message and held in [`ModulationState::refusal`]
-//! until the declarations apply again.
+//! until the declarations apply again. A target that stays unresolved for
+//! four seconds (no node is ever bound to its entity) is logged, once.
 
 mod declare;
 mod reconcile;
@@ -109,9 +114,10 @@ pub enum ModulationSystems {
     AfterCommit,
 }
 
-/// Adds modulation on control lanes: the [`ModulationState`], the
-/// [`ModulationRefused`] message, and the systems that apply the
-/// declarations ([`ModulationSystems`]).
+/// Adds modulation on control lanes: the [`ModulationRefused`] message and
+/// the systems that hand the declarations to the session
+/// ([`ModulationSystems`]). What they applied is
+/// [`AudioGraphRes::modulation`](crate::graph::AudioGraphRes::modulation).
 ///
 /// Not added by [`TuttiPlugin`](crate::TuttiPlugin); add it after it. Its
 /// systems are gated on [`engine_ready`] and need
@@ -120,8 +126,7 @@ pub struct TuttiModulationPlugin;
 
 impl Plugin for TuttiModulationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ModulationState>()
-            .add_message::<ModulationRefused>();
+        app.add_message::<ModulationRefused>();
         app.configure_sets(
             Update,
             (

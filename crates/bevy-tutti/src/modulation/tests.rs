@@ -11,7 +11,7 @@ use tutti_core::transport::Transport;
 use tutti_graph::ForkByClone;
 use tutti_types::{Beat, Bpm, Depth, Hz, SampleRate, UnitParam};
 
-use super::{Lfo, ModRange, ModRoute, Mods, ModulationState, ParamRef, TuttiModulationPlugin};
+use super::{Lfo, ModRange, ModRoute, Mods, ParamRef, TuttiModulationPlugin};
 use crate::graph::{
     AudioGraphRes, AudioSide, GraphReconcilePlugin, MasterSources, PortSource, SpawnAudioNode,
     TransportRes,
@@ -107,7 +107,7 @@ fn lfo_scene(app: &mut App, side: &mut AudioSide, rate: f32, depth: f32) -> [Ent
     for _ in 0..4 {
         frame(app, side);
     }
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.refusal(), None);
     assert!(state.lane(cutoff).is_some(), "precondition: a lane");
     [filter, range, route]
@@ -127,8 +127,8 @@ fn lfo_scene(app: &mut App, side: &mut AudioSide, rate: f32, depth: f32) -> [Ent
 /// follower rebuilt on every apply (`p.decl != n.decl` as `==`: more than
 /// one plan); the range store skipped (`if lane.range != range` as
 /// `false`: "the range clamps" reads 500). Not a mutation this can see:
-/// `after_commit` committing every frame, since a commit with nothing
-/// staged sends no plan.
+/// the session's `Phase::AfterCommit` committing every update, since a
+/// commit with nothing staged sends no plan.
 #[test]
 fn range_and_depth_edits_send_no_plan_and_a_follower_route_one_commit() {
     let (mut app, mut side) = app();

@@ -11,8 +11,11 @@
 //! keyed by its [`AudioNode`]: its handle, its controls (an out-of-process
 //! plugin's latency and meter cells), its liveness, whether it was told
 //! the render mode, its last snapshot, and (`modulation`) its parameter
-//! mirror. A crossfade to another plugin (`Graph::crossfade_plugin`) moves
-//! the record to the incoming plugin; removing the node drops it.
+//! mirror. A crossfade to another plugin (`Graph::crossfade_plugin`,
+//! `replace_plugin`) carries the record over to the incoming plugin, with
+//! nothing of the outgoing plugin's state (its snapshot, an in-flight
+//! snapshot job, its mirror); replacing it with a native node
+//! (`Graph::replace`, `crossfade`) or removing the node drops it.
 //!
 //! # `Phase::Plugins`
 //!
@@ -256,15 +259,39 @@ impl HostedPlugin {
     }
 
     /// The incoming plugin of a crossfade at the same node: its handle and
-    /// controls, a fresh debounce, and not yet told the render mode. The
-    /// snapshot and the mirror stay until the incoming plugin has its own.
+    /// controls, a fresh debounce, and not yet told the render mode. Nothing
+    /// of the outgoing plugin's state carries over: its snapshot is cleared
+    /// (its bytes would restore the wrong plugin), a fresh snapshot token
+    /// makes a job of the outgoing plugin still in flight land nowhere
+    /// ([`Session::land_snapshot`]), and the snapshot clock restarts.
+    ///
+    /// (`modulation`) A record that kept a parameter mirror gets one for
+    /// the incoming plugin, from its handle (where its reports now arrive)
+    /// and its current values, read here: one round trip per parameter on
+    /// the calling thread. The outgoing mirror's report callback was on the
+    /// outgoing handle, which reports nothing here once it is gone.
     pub(crate) fn replace(&mut self, handle: PluginHandle, controls: PluginControls) {
-        self.handle = handle;
+        self.adopt(handle);
         self.meter = Some(controls.meter());
         self.controls = Some(controls);
+    }
+
+    /// [`replace`](Self::replace)'s handle half: everything but the
+    /// controls.
+    fn adopt(&mut self, handle: PluginHandle) {
+        #[cfg(feature = "modulation")]
+        if self.mirror.is_some() {
+            let (mut mirror, read) = tutti_plugin::PluginParamValues::start(&handle);
+            mirror.land(read.run());
+            self.mirror = Some(mirror);
+        }
+        self.handle = handle;
         self.liveness = Liveness::new();
         self.status = PluginLiveness::Healthy;
         self.told = false;
+        self.snapshot = None;
+        self.snapshot_token = Arc::new(());
+        self.snapshot_at = None;
     }
 
     /// The plugin's control surface: editor, parameters, state.
@@ -335,7 +362,7 @@ impl PluginSnapshot {
         PluginSnapshotTaken {
             node: self.node,
             state: self.handle.state().save_state(),
-            _token: self.token,
+            token: self.token,
         }
     }
 }
@@ -353,7 +380,9 @@ impl std::fmt::Debug for PluginSnapshot {
 pub struct PluginSnapshotTaken {
     node: AudioNode,
     state: Result<Vec<u8>, tutti_plugin::error::StateError>,
-    _token: Arc<()>,
+    /// The record's token when the job was asked for: a crossfade to
+    /// another plugin mints a new one, and the job no longer lands.
+    token: Arc<()>,
 }
 
 impl PluginSnapshotTaken {
@@ -469,11 +498,19 @@ impl Session {
     /// refused one is logged and keeps the previous snapshot (a good
     /// recovery point beats none). Returns whether it was stored. Frees the
     /// plugin for its next snapshot.
+    ///
+    /// A snapshot of a plugin no longer at its node (removed, or crossfaded
+    /// to another plugin since the job was asked for) lands nowhere: it is
+    /// the outgoing plugin's state, not a recovery point for the node.
     pub fn land_snapshot(&mut self, taken: PluginSnapshotTaken) -> bool {
-        let PluginSnapshotTaken { node, state, .. } = taken;
+        let PluginSnapshotTaken { node, state, token } = taken;
         let Some(hosted) = self.graph.plugins.get_mut(&node) else {
             return false;
         };
+        if !Arc::ptr_eq(&token, &hosted.snapshot_token) {
+            tracing::debug!("plugin {node:?}: a snapshot of its previous plugin was discarded");
+            return false;
+        }
         match state {
             Ok(state) => {
                 hosted.snapshot = Some(state);
@@ -626,14 +663,21 @@ mod tests {
         state: Option<Vec<u8>>,
         saves: Arc<AtomicUsize>,
         dead: Arc<AtomicBool>,
+        /// The parameters it lists, and their values.
+        params: Vec<(ParamAddress, f32)>,
     }
 
     impl tutti_plugin::backend::HostParams for Fake {
         fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
-            None
+            Some(
+                self.params
+                    .iter()
+                    .map(|&(id, _)| ParameterInfo::new(id, "p"))
+                    .collect(),
+            )
         }
-        fn parameter_value(&self, _id: ParamAddress) -> Option<f32> {
-            None
+        fn parameter_value(&self, id: ParamAddress) -> Option<f32> {
+            self.params.iter().find(|(a, _)| *a == id).map(|&(_, v)| v)
         }
         fn set_parameter_value(&self, _id: ParamAddress, _value: Normalized) {}
         fn is_crashed(&self) -> bool {
@@ -681,6 +725,7 @@ mod tests {
                 state,
                 saves: Arc::clone(&saves),
                 dead: Arc::clone(&dead),
+                params: Vec::new(),
             }),
             OptionalCapabilities::default(),
             Default::default(),
@@ -700,13 +745,41 @@ mod tests {
         }
     }
 
+    /// A fake plugin's handle listing `params`, answering `state`, and the
+    /// sink its reports go through (firing it is the plugin reporting).
+    fn fake_handle(
+        state: Option<Vec<u8>>,
+        params: Vec<(ParamAddress, f32)>,
+    ) -> (PluginHandle, tutti_plugin::backend::ParameterChangeSink) {
+        let sink = tutti_plugin::backend::ParameterChangeSink::default();
+        let handle = PluginHandle::from_backend(
+            Arc::new(Fake {
+                state,
+                saves: Arc::default(),
+                dead: Arc::default(),
+                params,
+            }),
+            OptionalCapabilities::default(),
+            Default::default(),
+            Default::default(),
+            sink.clone(),
+        );
+        (handle, sink)
+    }
+
     impl Rig {
-        /// `Phase::Plugins` at `t0 + ms`: the snapshot jobs it asked for.
-        fn plugins_at(&mut self, ms: u64) -> Vec<PluginSnapshot> {
+        /// `Phase::Plugins` at `t0 + ms`: every event it reported.
+        fn events_at(&mut self, ms: u64) -> Vec<SessionEvent> {
             let mut out = Vec::new();
             let cx = crate::PhaseCx::at(self.t0 + Duration::from_millis(ms));
             self.session.run_phase(crate::Phase::Plugins, cx, &mut out);
-            out.into_iter()
+            out
+        }
+
+        /// `Phase::Plugins` at `t0 + ms`: the snapshot jobs it asked for.
+        fn plugins_at(&mut self, ms: u64) -> Vec<PluginSnapshot> {
+            self.events_at(ms)
+                .into_iter()
                 .filter_map(|e| match e {
                     SessionEvent::PluginSnapshotDue(job) => Some(job),
                     _ => None,
@@ -802,5 +875,128 @@ mod tests {
             rig.session.plugin(rig.node).unwrap().liveness(),
             PluginLiveness::Failing { consecutive: 1 }
         ));
+    }
+
+    /// **A hosted plugin replaced by a native node is no longer hosted**
+    /// (`Graph::replace`, and `Graph::crossfade` through it): its record
+    /// goes, so a later death of the outgoing plugin removes nothing (the
+    /// node is the native one's now) and reports nothing, and the record's
+    /// handle no longer keeps the outgoing plugin alive.
+    ///
+    /// Mutation (run, failed): `Graph::replace` keeping the record (the
+    /// `plugins.remove` taken out) → the dead fake is declared dead, the
+    /// native node removed, and `PluginDied` names it.
+    #[test]
+    fn a_plugin_replaced_by_a_native_node_is_no_longer_hosted() {
+        for crossfade in [false, true] {
+            let mut rig = rig(None);
+            let replacement = tutti_graph::ForkByClone(tutti_nodes::testing::Const::mono(1.0));
+            let fade = tutti_core::Seconds(0.0);
+            let curve = tutti_core::CrossfadeCurve::EqualAmplitude;
+            if crossfade {
+                assert!(matches!(
+                    rig.session
+                        .graph()
+                        .crossfade(rig.node, replacement, fade, curve),
+                    Ok(crate::Crossfade::Landed(_))
+                ));
+            } else {
+                assert!(rig
+                    .session
+                    .graph()
+                    .replace(rig.node, replacement, fade, curve)
+                    .is_ok());
+            }
+            assert!(rig.session.plugin(rig.node).is_none(), "the record went");
+            // The outgoing plugin dies, past the debounce's count and window.
+            rig.dead.store(true, Ordering::SeqCst);
+            for ms in [0, 100, 200, 300, 400] {
+                let died = rig
+                    .events_at(ms)
+                    .into_iter()
+                    .any(|e| matches!(e, SessionEvent::PluginDied { .. }));
+                assert!(!died, "a native node is reported dead (crossfade: {crossfade})");
+            }
+            assert!(
+                rig.session.graph_ref().contains(rig.node),
+                "the native replacement stays in the graph (crossfade: {crossfade})"
+            );
+        }
+    }
+
+    /// **A crossfade to another plugin does not inherit the outgoing
+    /// plugin's recovery state.** Its last snapshot is cleared, and a
+    /// snapshot job of the outgoing plugin still in flight lands nowhere
+    /// (its token is not the record's any more); the incoming plugin gets
+    /// its own on the interval from the crossfade. Driven through
+    /// `HostedPlugin::adopt`, `replace`'s handle half (a crossfade to
+    /// another plugin needs a `PluginClient`, a real `plugin-server`).
+    ///
+    /// Mutations (each run, each failed): `adopt` keeping the old token
+    /// (the in-flight job lands, `[1, 2, 3]`); `land_snapshot` without the
+    /// `ptr_eq` check (the same); `adopt` keeping the old snapshot (it
+    /// reads `[1, 2, 3]` after the crossfade).
+    #[test]
+    fn a_crossfade_to_another_plugin_drops_the_old_snapshot() {
+        let mut rig = rig(Some(vec![1, 2, 3]));
+        rig.plugins_at(0);
+        let first = rig.plugins_at(1_000).pop().expect("a job at the interval");
+        assert!(rig.session.land_snapshot(first.run()));
+        let in_flight = rig.plugins_at(2_000).pop().expect("the next job");
+
+        let (incoming, _) = fake_handle(Some(vec![9]), Vec::new());
+        rig.session
+            .graph
+            .plugins
+            .get_mut(&rig.node)
+            .unwrap()
+            .adopt(incoming);
+        assert_eq!(
+            rig.session.plugin(rig.node).unwrap().snapshot(),
+            None,
+            "the outgoing plugin's snapshot is not the incoming one's"
+        );
+        assert!(
+            !rig.session.land_snapshot(in_flight.run()),
+            "the outgoing plugin's job must not land on the incoming plugin"
+        );
+        assert_eq!(rig.session.plugin(rig.node).unwrap().snapshot(), None);
+
+        assert!(rig.plugins_at(2_000).is_empty(), "its clock starts here");
+        let own = rig.plugins_at(3_000).pop().expect("its own job");
+        assert!(rig.session.land_snapshot(own.run()));
+        assert_eq!(
+            rig.session.plugin(rig.node).unwrap().snapshot(),
+            Some(&[9u8][..])
+        );
+    }
+
+    /// **A crossfade to another plugin rebuilds the parameter mirror from
+    /// the incoming plugin**: its values are the incoming plugin's, read
+    /// through the incoming handle (which `PluginParamValues::start` also
+    /// gives the mirror's report callback; a fake's reports cannot be fired
+    /// from outside `tutti-plugin`, so the callback is not asserted here).
+    ///
+    /// Mutation (run, failed): `adopt` keeping the old mirror → the value
+    /// reads the outgoing plugin's 0.25.
+    #[cfg(feature = "modulation")]
+    #[test]
+    fn a_crossfade_to_another_plugin_rebuilds_the_mirror() {
+        let param = ParamAddress::Index(3);
+        let mut rig = rig(None);
+        let (outgoing, _) = fake_handle(None, vec![(param, 0.25)]);
+        let (mut mirror, read) = tutti_plugin::PluginParamValues::start(&outgoing);
+        mirror.land(read.run());
+        let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
+        hosted.mirror = Some(mirror);
+        assert_eq!(hosted.param_value(3), Some(Some(0.25)), "precondition");
+
+        let (incoming, _) = fake_handle(None, vec![(param, 0.75)]);
+        hosted.adopt(incoming);
+        assert_eq!(
+            hosted.param_value(3),
+            Some(Some(0.75)),
+            "the mirror holds the incoming plugin's values"
+        );
     }
 }

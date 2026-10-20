@@ -609,11 +609,13 @@ impl Graph {
         }
         let handle = tutti_plugin::handles::PluginHandle::from_client(&client);
         let controls = client.controls();
-        match self.replace(node, client.bind(), fade, curve) {
+        match self.swap_unit(node, client.bind(), fade, curve) {
             Ok(_controls) => {
-                // The record follows the incoming plugin: its handle is what
-                // the health watch and the render mode talk to now, its
-                // controls what the latency poll reads.
+                // The record is carried over to the incoming plugin (unlike
+                // `replace`, which takes it out): its handle is what the
+                // health watch and the render mode talk to now, its controls
+                // what the latency poll reads; nothing of the outgoing
+                // plugin's state survives (`HostedPlugin::replace`).
                 match self.plugins.get_mut(&node) {
                     Some(hosted) => hosted.replace(handle, controls),
                     None => {
@@ -682,7 +684,26 @@ impl Graph {
     /// [`ReplaceRefused::Busy`] with the node handed back while the graph
     /// re-prepares, and for good on a poisoned graph.
     /// [`crossfade`](Self::crossfade) waits out a re-prepare instead.
+    ///
+    /// (`plugin`) A hosted plugin replaced this way is no longer hosted: its
+    /// record is dropped, so its health, snapshots and render mode stop
+    /// (a replacement plugin goes in with
+    /// [`replace_plugin`](Self::replace_plugin), which carries the record).
     pub fn replace<N: IntoNode>(
+        &mut self,
+        node: AudioNode,
+        incoming: N,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+    ) -> Result<N::Controls, ReplaceRefused<N>> {
+        let controls = self.swap_unit(node, incoming, fade, curve)?;
+        #[cfg(feature = "plugin")]
+        self.plugins.remove(&node);
+        Ok(controls)
+    }
+
+    /// [`replace`](Self::replace)'s swap, leaving the plugin record alone.
+    fn swap_unit<N: IntoNode>(
         &mut self,
         node: AudioNode,
         incoming: N,

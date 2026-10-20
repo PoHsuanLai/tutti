@@ -153,7 +153,7 @@ fn the_8_1_example_renders_its_analytic_values() {
     let mut buf = vec![0.0f32; block * 2];
     for _ in 0..total / block {
         s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        for frame in buf.chunks_exact(2) {
+        for frame in buf.as_chunks::<2>().0 {
             all[0].push(frame[0]);
             all[1].push(frame[1]);
         }

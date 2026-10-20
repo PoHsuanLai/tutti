@@ -53,7 +53,7 @@ pub(crate) struct PlaybackSlot {
     /// retirement channel, box and all.
     pub(crate) voice: Box<Voice>,
     /// The time-stretch processor is **always resident**: it is built once (one
-    /// phase-vocoder construction + two `RtScratch` buffers *per channel*) when
+    /// phase-vocoder construction + two block-scratch buffers *per channel*) when
     /// the slot is created, and thereafter the audio thread only flips the
     /// lock-free `stretch_factor` / `pitch_cents` atomics inside it. It owns NO
     /// copy of the audio source: it is a pure frame-in → frame-out filter. At
@@ -99,7 +99,7 @@ impl PlaybackSlot {
     /// actually needs it, for two reasons:
     ///
     /// - Most voices never stretch. A `stretch::Unit` is one FFT setup plus two
-    ///   `RtScratch` buffers *per channel* (~120 KB × N), so building one for
+    ///   block-scratch buffers *per channel* (~120 KB × N), so building one for
     ///   every voice spent that on the common case for nothing.
     /// - This constructor is reachable from the audio thread.
     ///   `VoiceCommand::AddVoice` is drained by `drain_commands`, which runs from

@@ -102,7 +102,7 @@ pub enum VoiceCommand {
         /// `voice.play` asks for stretching.
         ///
         /// The drain runs inside `process`, so building this there would
-        /// allocate in the audio callback (an FFT setup plus two `RtScratch`
+        /// allocate in the audio callback (an FFT setup plus two block-scratch
         /// buffers per channel). [`VoicePoolHandle::send`] fills it in
         /// before the command is queued; the drain only moves it into the slot.
         ///

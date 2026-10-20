@@ -290,7 +290,7 @@ the race. Every type below exists because the audit found the bug it prevents.
 |---|---|---|
 | **`Latency(Samples)`**, the only thing `Shape::latency` accepts; musical delay times stay `Seconds`/`Samples` | `route` → `Signal::Latency` carrying both "this node is late" and "this node echoes" | D1–D3: an echo compensated as if it were processing latency |
 | **`ParamKey<U>`**, typed by unit (`ParamKey::<Hz>::CUTOFF`) over the stable `UnitParam` `u16` wire id; `set<U>(ParamKey<U>, U)` | `Setting`/`unit_param` erasing `U` at `to_raw()` | Sending a `Db` to a `Hz` param compiles today; the units rule stops one layer too early |
-| **The audio-thread marker on `Drop`**: the executor runs under `AudioThread::enter`, and what it hands back (units, crossfades, commits, a unit's param state) calls `AudioThread::check_not_current` in its `Drop`, so a free on the audio thread panics in debug. (Planned as an owning box, `Retire<T>`; it shipped, but nothing in production held one, since each hand-off type carries the check in its own `Drop`, and it was deleted; see "SmallVec removed" under Phase 6.) | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; the `Drop` check does it for hand-offs |
+| **The audio-thread marker on `Drop`**: the executor runs under `RtScope::enter`, and what it hands back (units, crossfades, commits, a unit's param state) calls `RtScope::check_outside` in its `Drop`, so a free on the audio thread panics in debug. (Planned as an owning box, `Retire<T>`; it shipped, but nothing in production held one, since each hand-off type carries the check in its own `Drop`, and it was deleted; see "SmallVec removed" under Phase 6.) | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; the `Drop` check does it for hand-offs |
 | **`MaxBlock`**, obtainable only from `Prepare`; node scratch is built from it; `Io` is guaranteed to be at most that long | Five separate 64-frame assumptions: the polysynth clamp, SoundFont, the batcher, VST2, the disk-voice reserve | D4: silent truncation or audio-thread reallocation when the block grows |
 | **`SortedEvents<'a>`**, constructible only sorted by offset with every offset below the block length | A raw `&[Event]` that every sub-chunking node must trust or re-check | Events out of order, or past the block |
 | **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
@@ -3606,7 +3606,7 @@ reserved once and reused), the type is a `Vec` or a boxed slice; where the
 inline storage was a hard cap (`RtVec`/`RtEventBuf`, the IPC MIDI block, the
 harmony containers) it is an `arrayvec::ArrayVec`, whose push past the cap
 is refused rather than spilling to the heap. `tutti-types` takes `arrayvec`
-for `Capped`. The `Retire<T>` box in §5 is deleted (no production user; the
+for `Capped` (since folded into `RtVec`). The `Retire<T>` box in §5 is deleted (no production user; the
 `Drop` check on the audio-thread marker does its job), and the graph's probe
 of it in `tests/executor.rs` uses that check directly.
 
@@ -3991,6 +3991,27 @@ all three into fresh `Vec`s to keep only the restart flags.
 - **Deferred.** `CALLER_YIELD_AFTER` could be a per-pool setting in the
   planned crate extraction. `HELPER_SPINS` is still a count, so how long a
   helper stays in a block still differs across cores.
+
+#### RT primitive cleanups (landed)
+
+**Status: landed** (2026-10-20).
+
+- **`RtScratch` is gone.** Its three users own a `Box<[T]>` and slice it
+  where they use it. Its release-mode clamp is replaced by a decision at
+  each site: the master meter meters the head of an oversized buffer (debug
+  still panics), the stretch filter's `process` splits a block past its
+  8192-frame scratch into runs, and the VBAP scratch is always used whole.
+- **`Capped` is folded into `RtVec`**, its only user.
+- **The audio-thread marker is `RtScope`** (`enter`, `is_inside`,
+  `check_outside`; the guard is `RtScopeGuard`): it marks a scope, not a
+  thread. The executor enters it at the top of a block and each hand-off
+  type checks it in its `Drop`, as before.
+- **Not done: replacing `ScopedNoDenormals` with `no_denormals` 0.3.0.**
+  The crate restores the register on drop and neither allocates nor makes a
+  syscall, but its only API is `unsafe fn no_denormals(f)`, and three of
+  the guard's seven users are in this crate, which is
+  `#![forbid(unsafe_code)]`. Adopting it needs a safe wrapper in
+  `tutti-types`, which is the module it was meant to delete.
 
 ## Per-node rewrite plan
 

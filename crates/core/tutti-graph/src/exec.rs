@@ -39,7 +39,7 @@
 //! editor is dropped, the executor keeps running its current plan; boxes it
 //! returns afterwards wait in the return ring until the executor is dropped.
 //!
-//! Applying runs under the [`AudioThread::enter`] marker, so a unit or a
+//! Applying runs under the [`RtScope::enter`] marker, so a unit or a
 //! commit dropped there panics in a debug build. The marker's coverage of
 //! applying is **partial**: applying *allocates* (it builds the new arena and
 //! delay state) and frees transient allocations of its own — the key maps it
@@ -151,7 +151,7 @@ use std::sync::Arc;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tutti_types::{AudioThread, Frame, NodeKey, Samples, ScopedNoDenormals, Tail};
+use tutti_types::{Frame, NodeKey, RtScope, Samples, ScopedNoDenormals, Tail};
 
 use crate::arena::{Arena, Role};
 use crate::command::{overlay_capacity, CommandRx, Deliveries};
@@ -193,7 +193,7 @@ pub const FADE_CAPACITY: usize = 256;
 
 /// A unit, owned. Crate-private, so the only code that can replace or drop
 /// the box is this crate's; its drop is checked against the audio-thread
-/// marker (`AudioThread::check_not_current`). This crate must *run* its
+/// marker (`RtScope::check_outside`). This crate must *run* its
 /// units, so the box hands `&mut` out.
 pub(crate) struct NodeBox(Box<dyn Node>);
 
@@ -242,7 +242,7 @@ impl DerefMut for NodeBox {
 
 impl Drop for NodeBox {
     fn drop(&mut self) {
-        AudioThread::check_not_current("a unit");
+        RtScope::check_outside("a unit");
     }
 }
 
@@ -280,7 +280,7 @@ impl Crossfade {
 
 impl Drop for Crossfade {
     fn drop(&mut self) {
-        AudioThread::check_not_current("a crossfade");
+        RtScope::check_outside("a crossfade");
     }
 }
 
@@ -311,7 +311,7 @@ pub(crate) struct Commit {
 
 impl Drop for Commit {
     fn drop(&mut self) {
-        AudioThread::check_not_current("Commit");
+        RtScope::check_outside("Commit");
     }
 }
 
@@ -848,7 +848,7 @@ impl Executor {
     /// executor's (only possible through
     /// [`Editor::package`](crate::Editor::package)).
     pub fn apply_pending(&mut self) {
-        let _rt = AudioThread::enter();
+        let _rt = RtScope::enter();
         while let Some(mut commit) = self.queue.try_pop() {
             self.apply(&mut commit);
             send_back(&mut self.back, commit);
@@ -1249,7 +1249,7 @@ impl Executor {
     /// `outputs` one per global output channel; every slice at least `frames`
     /// long. Applies queued commits first ([`apply_pending`](Self::apply_pending));
     /// with none queued it never allocates. Marks the thread with
-    /// [`AudioThread::enter`] for the duration.
+    /// [`RtScope::enter`] for the duration.
     ///
     /// # Panics
     ///
@@ -1284,7 +1284,7 @@ impl Executor {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
-        let _rt = AudioThread::enter();
+        let _rt = RtScope::enter();
         let _ftz = ScopedNoDenormals::new();
         // Before the bound is checked: a queued resume changes it, and the
         // first longer block may be the one that arrives with it.

@@ -1,6 +1,6 @@
 //! Owned, capped, slice-lending collection for the audio thread.
 
-use super::capped::Capped;
+use arrayvec::ArrayVec;
 
 /// A capped per-block collection that owns its storage and lends it out as
 /// `&[T]`.
@@ -9,16 +9,18 @@ use super::capped::Capped;
 /// caller" shape — the most common one on the RT path, and the one the other
 /// `rt` buffers do not serve:
 ///
-/// - [`RtScratch`](crate::RtScratch) has no `push`: its length is chosen by
-///   slicing a preallocated run, not by appending.
+/// A caller that needs the same buffer through `&self` (behind an `Arc`, in a
+/// COM object) wraps it in an [`AudioThreadCell`](crate::AudioThreadCell).
 ///
 /// # The cap is the point
 ///
 /// `push` **refuses** at `N` and returns `false`; it never grows. A bare
 /// `Vec` in this position grows instead, which means a `malloc`
 /// inside the audio callback (and, if drained with `mem::take`, a `free` there
-/// too). The storage is inline, so the collection itself never touches the
-/// heap.
+/// too). The storage is an inline [`ArrayVec`], which has no heap path at all,
+/// so the collection itself never touches the heap. (Its items may: `clear`
+/// drops them where it runs, so an `RtVec<Box<_>>` cleared on the audio
+/// thread frees there.)
 ///
 /// # Overflow is visible, not silent
 ///
@@ -49,21 +51,24 @@ use super::capped::Capped;
 /// assert!(due.is_empty() && !due.overflowed());
 /// ```
 pub struct RtVec<T, const N: usize> {
-    inner: Capped<T, N>,
+    buf: ArrayVec<T, N>,
+    overflowed: bool,
 }
 
 impl<T, const N: usize> RtVec<T, N> {
     /// Creates an empty collection with `N` inline slots.
     pub fn new() -> Self {
         Self {
-            inner: Capped::new(),
+            buf: ArrayVec::new(),
+            overflowed: false,
         }
     }
 
     /// Drops all items and resets the overflow flag, keeping the storage.
     #[inline]
     pub fn clear(&mut self) {
-        self.inner.clear();
+        self.buf.clear();
+        self.overflowed = false;
     }
 
     /// Appends one item if there is room.
@@ -72,7 +77,11 @@ impl<T, const N: usize> RtVec<T, N> {
     /// [`overflowed`](Self::overflowed)) when already at `N`.
     #[inline]
     pub fn push(&mut self, v: T) -> bool {
-        self.inner.push(v)
+        if self.buf.try_push(v).is_err() {
+            self.overflowed = true;
+            return false;
+        }
+        true
     }
 
     /// Appends from an iterator, stopping at the cap.
@@ -81,52 +90,59 @@ impl<T, const N: usize> RtVec<T, N> {
     /// dropped.
     #[inline]
     pub fn extend(&mut self, it: impl IntoIterator<Item = T>) -> usize {
-        self.inner.extend(it)
+        let mut written = 0;
+        for v in it {
+            if !self.push(v) {
+                break;
+            }
+            written += 1;
+        }
+        written
     }
 
     /// Returns the filled run.
     #[inline]
     pub fn as_slice(&self) -> &[T] {
-        self.inner.as_slice()
+        &self.buf
     }
 
     /// Returns the filled run mutably, for in-place fixups (sorting by frame
     /// offset, clamping) that do not change the length.
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        self.inner.as_mut_slice()
+        &mut self.buf
     }
 
     /// Returns whether anything has been dropped since the last
     /// [`clear`](Self::clear).
     #[inline]
     pub fn overflowed(&self) -> bool {
-        self.inner.overflowed()
+        self.overflowed
     }
 
     /// Returns how many items are in the filled run; never more than `N`.
     #[inline]
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.buf.len()
     }
 
     /// Returns whether nothing has been pushed since the last
     /// [`clear`](Self::clear).
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.buf.is_empty()
     }
 
     /// Returns whether the next `push` will be refused.
     #[inline]
     pub fn is_full(&self) -> bool {
-        self.inner.is_full()
+        self.buf.is_full()
     }
 
     /// Returns the room left before the cap.
     #[inline]
     pub fn remaining(&self) -> usize {
-        self.inner.remaining()
+        self.buf.remaining_capacity()
     }
 
     /// Returns the cap, `N`, for code where `N` is not in scope.
@@ -138,7 +154,7 @@ impl<T, const N: usize> RtVec<T, N> {
     /// Iterates over the filled run.
     #[inline]
     pub fn iter(&self) -> core::slice::Iter<'_, T> {
-        self.inner.iter()
+        self.buf.iter()
     }
 }
 
@@ -161,7 +177,7 @@ impl<'a, T, const N: usize> IntoIterator for &'a RtVec<T, N> {
     type IntoIter = core::slice::Iter<'a, T>;
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        self.inner.iter()
+        self.buf.iter()
     }
 }
 
@@ -181,6 +197,8 @@ mod tests {
     use super::*;
     use std::vec::Vec;
 
+    /// Mutation (run): `push` through `ArrayVec::push` instead of `try_push`
+    /// → the fourth push panics ("ArrayVec: capacity exceeded") → fails.
     #[test]
     fn push_fills_then_refuses_at_the_cap() {
         let mut v: RtVec<u32, 3> = RtVec::new();

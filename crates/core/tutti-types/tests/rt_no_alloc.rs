@@ -12,8 +12,8 @@ static A: AllocDisabler = AllocDisabler;
 /// behind an `AudioThreadCell`. Ported from the gate on `RtEventBuf`, the
 /// `&self` wrapper this composition replaced, so the cap stays gated.
 ///
-/// Mutation (run): `Capped` over an uncapped `Vec` in place of the
-/// `ArrayVec` → the first block pushes past the warm-up's capacity, grows the
+/// Mutation (run, when the cap lived in a private `Capped` layer since folded
+/// into `RtVec`): an uncapped `Vec` in place of the `ArrayVec` → the first block pushes past the warm-up's capacity, grows the
 /// `Vec` inside the gate, and aborts.
 #[test]
 fn rt_vec_steady_state_is_allocation_free() {

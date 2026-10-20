@@ -6,8 +6,8 @@
 //!
 //! Covered: in-memory `MemorySource` (the workhorse playback node) in full
 //! blocks and in one-frame blocks, the voice-pool command drain, and
-//! `stretch::Unit`, whose fixed-capacity `RtScratch` buffers make `process`
-//! non-allocating for any block size up to the preallocated maximum.
+//! `stretch::Unit`, whose fixed-capacity `Box<[f32]>` scratch buffers make `process`
+//! non-allocating for any block size (a longer one is split into runs).
 //!
 //! The sampler's nodes are graph nodes: each is driven through
 //! `tutti_graph::contract::Direct`, whose buffers are built once, under a
@@ -160,7 +160,7 @@ fn time_stretch_process_is_allocation_free() {
 /// here: it drives a freshly constructed unit, not a clone.
 ///
 /// Mutation (run): `Unit::process` building its input scratch per block
-/// (`self.scratch_in = … RtScratch::new(MAX_BUFFER_SIZE) …`) → fails. (A
+/// (`self.ch.scratch_in = … vec![0.0; MAX_BUFFER_SIZE].into_boxed_slice() …`) → fails. (A
 /// clone that sized its scratch only on first use would slip past: the
 /// warm-up runs that use. `stretch::tests::a_clone_arrives_with_its_block_scratch_sized`
 /// pins that a clone arrives sized.)
@@ -659,7 +659,7 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
 //
 // `drain_commands` runs from `process`, so anything it builds is built
 // in the audio callback. Two paths are the standing temptation: `AddVoice`
-// needs a stretch filter (an FFT setup plus two `RtScratch` buffers PER
+// needs a stretch filter (an FFT setup plus two block-scratch buffers PER
 // CHANNEL), and `UpdateLoop` needs a pre-loop crossfade plus a read buffer.
 // Both are kept off the callback — the sender builds the filter, and the
 // crossfade buffer is resident and re-pointed in place.

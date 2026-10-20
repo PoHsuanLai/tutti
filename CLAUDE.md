@@ -62,6 +62,8 @@ serial one.
   `arc-lend/tests/loom.rs`). It names nothing of tutti's; keep it that way.
 - **Store-load pairs use `SeqCst` fences**, not `SeqCst` accesses (loom
   models fences exactly; see `rt/job_gate.rs`).
+- **Nodes run under `ScopedNoDenormals`**: never make memory safety depend
+  on an exact float result (its `# Soundness` docs say why).
 - A parallel test compares against the **serial render, bit for bit**
   (`tests/parallel.rs`, the differential suite's `modes`), and a gate on the
   parallel path runs every participant inside `assert_no_alloc`, helpers

@@ -32,6 +32,11 @@ outside those two sites no longer asserts on a parked `Loan`; call
 `debug_check_reclaiming` after its `publish` to restore the check. CI's miri and loom jobs, `just miri`, `just loom` and
 `just loom-full` run `-p arc-lend`.
 
+### Changed — `ScopedNoDenormals` is `!Send` and `!Sync`, and documents its soundness
+
+- `ScopedNoDenormals` is `!Send` and `!Sync`: dropped on another thread, a guard would write its own thread's saved MXCSR/FPCR there. Migration: build the guard on the thread whose block it covers, as every in-tree caller already does.
+- `ScopedNoDenormals` documents its `# Soundness` (the FP-environment rule it departs from, the audit of what runs under it, why the parallel render stays bit-identical).
+
 ### Changed — RT primitive cleanups: `RtScratch` dropped, `Capped` folded into `RtVec`, `AudioThread` renamed `RtScope`
 
 | Was | Now |

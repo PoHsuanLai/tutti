@@ -680,7 +680,7 @@ mod tests {
     /// (`strong_count == 1` taken away: the update at 5 s asks again while
     /// the first job is held); the interval check removed (the update at
     /// 0.5 s asks); `snapshot_at` not restarted on a job (the update at
-    /// 2.5 s asks); `land_snapshot` not storing (the bytes check).
+    /// 6 s asks); `land_snapshot` not storing (the bytes check).
     #[test]
     fn snapshots_are_taken_on_the_interval_one_at_a_time() {
         let mut rig = rig(Some(vec![1, 2, 3]));

@@ -152,8 +152,10 @@ fn wired_probe(s: &mut Session) -> (AudioNode, Samples) {
 /// the token and runs the phase again: back to realtime, with no update.
 ///
 /// Mutations (each run, each failed): `Session::export` not running the
-/// phase (the latency stays realtime while the job waits); `finish_export`
-/// not running it (the latency stays offline after it).
+/// phase (the session still says Realtime after `export`); `finish_export`
+/// not running it (still Offline after it); `render_mode_phase` recording
+/// the mode without calling `set_render_mode` (the latency stays realtime
+/// while the job waits).
 #[test]
 fn an_export_announces_offline_before_its_first_block_and_realtime_after() {
     let mut s = session(&[]);
@@ -181,9 +183,11 @@ fn an_export_announces_offline_before_its_first_block_and_realtime_after() {
 /// finds none alive. Until that update the session still says Offline:
 /// nothing is announced from a drop (it may be a worker's).
 ///
-/// Mutation (run, failed): announcing Realtime only in `finish_export` (the
-/// `Phase::RenderMode` arm of `run_phase` emptied) → the latency stays
-/// offline after the update, in both halves.
+/// Mutations (each run, each failed): announcing Realtime only in
+/// `finish_export` (the `Phase::RenderMode` arm of `run_phase` emptied) →
+/// the session still says Offline after the update; `render_mode_phase`
+/// recording the mode without calling `set_render_mode` → the latency never
+/// moves offline.
 #[test]
 fn a_dropped_export_job_restores_realtime_on_the_next_update() {
     let mut s = session(&[]);
@@ -252,9 +256,11 @@ fn a_plugin_added_mid_export_is_told_offline() {
 /// after reports it again.
 ///
 /// Mutations (each run, each failed): the phase observing every plugin
-/// healthy (never removed); the `Dead` arm not removing the node (still in
-/// the graph); `Graph::remove` keeping the plugin's record and the phase not
-/// skipping a dead one (reported again at 200 ms).
+/// healthy (never Failing); the `Dead` arm not removing the node (still in
+/// the graph); `Graph::remove` keeping the plugin's record, with the phase
+/// not skipping a dead one (the record check). "Reported once" is then held
+/// by the record's removal: no mutation leaves the record and passes the
+/// record check, so the two last asserts guard a regression in that order.
 #[test]
 fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
     let mut s = session(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1")]);

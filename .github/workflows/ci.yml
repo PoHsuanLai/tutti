@@ -607,9 +607,9 @@ jobs:
   #
   # Release, because loom explores every interleaving in-process. The
   # `ArcLend` models run at a preemption bound of 4: about a minute and a
-  # half, and every recorded mutation fails at a bound of 3. The exhaustive run
-  # (about 17 minutes, bar one model that is always bounded) is
-  # `just loom-full`, for a change to `arc-lend`'s `src/lend.rs` itself.
+  # half, and every recorded mutation fails at a bound of 3. A bound of 5
+  # (about 6 minutes) is `just loom-full`, for a change to `arc-lend`'s
+  # `src/lend.rs` itself.
   loom:
     name: loom
     runs-on: ubuntu-latest

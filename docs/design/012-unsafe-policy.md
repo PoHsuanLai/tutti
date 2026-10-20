@@ -120,7 +120,7 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
   does the same for `ArcLend`, but against the real code: its atomics switch
   to loom's under the flag, which that crate's dependency closure tolerates.
   Both run in the `loom` CI job and `just loom`, the `ArcLend` models at a
-  preemption bound of 4; `just loom-full` runs them exhaustively.
+  preemption bound of 4; `just loom-full` runs them at 5.
 - **miri**, on the non-FFI crates, via `just miri` and the `miri` CI job.
   Installing a nightly toolchain on the machine that wrote this failed
   repeatedly, so — exactly as with `just check-jack` — CI is the first thing

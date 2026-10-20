@@ -167,11 +167,11 @@ loom:
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test job_gate_loom
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test task_graph_loom
 
-# The `ArcLend` loom models exhaustively (bar `xthread_overflow`, which is
-# always bounded): about 17 minutes. Run it after changing `arc-lend`'s
-# `src/lend.rs`.
+# The `ArcLend` loom models at a preemption bound of 5, one above CI's: about
+# 6 minutes. Run it after changing `arc-lend`'s `src/lend.rs`. (Unbounded,
+# the registered-reader models did not finish in 50 minutes.)
 loom-full:
-    RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom
+    LOOM_MAX_PREEMPTIONS=5 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom
 
 check-jack:
     cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings

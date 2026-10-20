@@ -654,8 +654,8 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
 /// The session goes back to this thread to be dropped: its drop asserts too.
 ///
 /// Mutations (run):
-/// - `Session::remove` asserting the main thread again → the first spawned
-///   thread panics → fails;
+/// - `Session::remove` asserting the main thread again → the removal
+///   panics → fails;
 /// - `Graph::pump_local` without its guard → the commit off the main
 ///   thread frees unchecked and does not panic → fails.
 #[cfg(all(feature = "plugin", debug_assertions))]
@@ -668,13 +668,17 @@ fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
     let (dc, _) = s.graph().insert(Const::mono(0.5));
     s.update();
 
-    let s = std::thread::spawn(move || {
+    let (s, removed) = std::thread::spawn(move || {
         let mut s = s;
-        assert!(s.remove(dc), "the node was in the graph");
-        s
+        let removed = catch_unwind(AssertUnwindSafe(|| s.remove(dc)));
+        (s, removed)
     })
     .join()
-    .expect("a removal off the main thread does not assert");
+    .expect("the session comes back");
+    assert!(
+        removed.expect("a removal off the main thread does not assert"),
+        "the node was in the graph"
+    );
 
     let (s, panicked) = std::thread::spawn(move || {
         let mut s = s;

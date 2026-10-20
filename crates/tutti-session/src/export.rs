@@ -794,6 +794,38 @@ mod tests {
         );
     }
 
+    /// **A frozen export's timeline is stopped at beat 0**: what its
+    /// `PrepareEdit` is handed (`PreparedGraph::ctx`, the timeline a node
+    /// it builds binds to) reads not rolling, at beat 0. No forked node
+    /// observes it while the render's transport is stopped; a hook does.
+    ///
+    /// Mutations (each run, each failed): `Stopped::is_rolling` answering
+    /// `true`; `Stopped::beat` answering beat 1.
+    #[test]
+    fn a_frozen_exports_timeline_is_stopped_at_beat_zero() {
+        use std::sync::Mutex;
+        let mut session = session();
+        let seen: Arc<Mutex<Option<(bool, tutti_core::Beat)>>> = Arc::default();
+        let into = Arc::clone(&seen);
+        session
+            .export_blocking(
+                ExportRequest::new(
+                    ExportSource::Mix,
+                    ExportTarget::Buffers,
+                    ExportConfig::default(),
+                    ExportClock::frozen(),
+                )
+                .with_edit(Box::new(move |prepared: PreparedGraph<'_>| {
+                    *into.lock().unwrap() =
+                        Some((prepared.ctx.is_rolling(), prepared.ctx.beat()));
+                })),
+            )
+            .expect("the export renders");
+        let (rolling, beat) = seen.lock().unwrap().expect("the edit ran");
+        assert!(!rolling, "a frozen export's timeline must not roll");
+        assert_eq!(beat, tutti_core::Beat(0.0));
+    }
+
     /// **An export kept in flight past `EXPORT_STALL_WARNING` is warned
     /// about once**, on the collect's `now`; its clock restarts once
     /// nothing is in flight, so the next leaked export is warned about too.

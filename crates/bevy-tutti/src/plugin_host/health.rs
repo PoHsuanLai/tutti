@@ -40,7 +40,7 @@
 //! (`Session::land_snapshot`) and copies the stored bytes onto the
 //! component.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use bevy_ecs::prelude::*;
@@ -139,7 +139,10 @@ pub fn plugin_health_poll(
     _main: bevy_ecs::system::NonSendMarker,
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
-    mut plugins: Query<(Entity, &AudioNode, Option<&mut PluginHealth>)>,
+    mut plugins: ParamSet<(
+        Query<(&AudioNode, &mut PluginHealth)>,
+        Query<(Entity, &AudioNode, Option<&mut PluginHealth>)>,
+    )>,
 ) {
     let Some(mut graph) = graph else {
         return;
@@ -148,16 +151,13 @@ pub fn plugin_health_poll(
         .bypass_change_detection()
         .run_phase(Phase::Plugins, Instant::now());
 
-    let by_node: HashMap<AudioNode, Entity> = plugins
-        .iter()
-        .map(|(entity, node, _)| (*node, entity))
-        .collect();
-    // The session's belief, onto each component; written only when it moved,
-    // so `Changed<PluginHealth>` means a change.
+    // The session's belief, onto each plugin's component (only plugin
+    // entities carry one); written only when it moved, so
+    // `Changed<PluginHealth>` means a change.
     {
         let session = graph.bypass_change_detection().session();
-        for (_, node, health) in &mut plugins {
-            let (Some(mut health), Some(hosted)) = (health, session.plugin(*node)) else {
+        for (node, mut health) in &mut plugins.p0() {
+            let Some(hosted) = session.plugin(*node) else {
                 continue;
             };
             if health.status != *hosted.liveness() {
@@ -166,13 +166,34 @@ pub fn plugin_health_poll(
         }
     }
 
+    // The entities the events name, looked up only when there are events
+    // that name a node: most frames have none.
+    let named: HashSet<AudioNode> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::PluginDied { node, .. } => Some(*node),
+            SessionEvent::PluginSnapshotDue(job) => Some(job.node()),
+            _ => None,
+        })
+        .collect();
+    let mut entities = plugins.p1();
+    let by_node: HashMap<AudioNode, Entity> = if named.is_empty() {
+        HashMap::new()
+    } else {
+        entities
+            .iter()
+            .filter(|(_, node, _)| named.contains(*node))
+            .map(|(entity, node, _)| (*node, entity))
+            .collect()
+    };
+
     for event in events {
         match event {
             SessionEvent::PluginDied { node, cause } => {
                 let Some(&entity) = by_node.get(&node) else {
                     continue;
                 };
-                if let Ok((_, _, Some(mut health))) = plugins.get_mut(entity) {
+                if let Ok((_, _, Some(mut health))) = entities.get_mut(entity) {
                     health.status = PluginLiveness::Dead { cause };
                 }
                 commands
@@ -188,7 +209,7 @@ pub fn plugin_health_poll(
                 let Some(&entity) = by_node.get(&job.node()) else {
                     continue;
                 };
-                if let Ok((_, _, Some(mut health))) = plugins.get_mut(entity) {
+                if let Ok((_, _, Some(mut health))) = entities.get_mut(entity) {
                     health.pending_snapshot =
                         Some(AsyncComputeTaskPool::get().spawn(async move { job.run() }));
                 }
@@ -312,6 +333,56 @@ mod tests {
             Default::default(),
             Default::default(),
         )
+    }
+
+    /// **A graph with no hosted plugin is not edited by the phase**: a
+    /// `dc` node, an entity bound to it, and the system alone (no commit,
+    /// so an edit the phase made would stay on the session's flag, and
+    /// nothing else in this app edits the graph). Every node carries
+    /// `AudioNode`, so a phase that treated each as a plugin would mark
+    /// the graph edited every frame and re-plan compensation forever.
+    /// (Ported from the old `plugin_latency_poll`'s
+    /// `a_non_plugin_node_never_marks_the_graph_edited`.)
+    ///
+    /// Mutation (run, failed): `Phase::Plugins` handing every graph node's
+    /// latency to the graph as moved (`plugins_phase` setting the graph's
+    /// edit flag on each run) → `is_edited`.
+    #[test]
+    fn a_non_plugin_node_never_marks_the_graph_edited() {
+        let mut app = app_over(AudioGraphRes::headless(0, 2));
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let (node, _) = graph.insert(tutti_nodes::testing::Const::mono(0.0));
+            // The insert is an edit: send it, so the flag starts clear.
+            graph.session().commit();
+            assert!(!graph.is_edited(), "precondition: committed");
+            node
+        };
+        app.world_mut().spawn(node);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(
+            !app.world().resource::<AudioGraphRes>().is_edited(),
+            "a dc node is not a plugin and has no latency to compensate"
+        );
+    }
+
+    /// **With no graph resource both systems are inert**, not a panic:
+    /// `AudioGraphRes` belongs to `engine::build_into`, and a host that
+    /// adds the plugin host alone must not crash. The property is the
+    /// absence of a panic; there is nothing else to observe. (Ported from
+    /// the old `plugin_latency_poll`'s `the_poll_is_inert_without_a_graph`.)
+    ///
+    /// Mutation (run, failed): `plugin_health_poll` taking
+    /// `ResMut<AudioGraphRes>` (not an `Option`) → Bevy panics on the
+    /// missing resource.
+    #[test]
+    fn the_poll_is_inert_without_a_graph() {
+        let mut app = App::new();
+        app.add_systems(Update, (plugin_state_snapshot, plugin_health_poll).chain());
+        app.world_mut().spawn(PluginHealth::default());
+        app.update();
     }
 
     /// An app running both systems over `graph`.

@@ -435,9 +435,10 @@ fn a_graph_with_no_outputs_says_so() {
 /// the voice at beat 0 sounds. (The voice reads the render's `Env`, not the
 /// fork's offline timeline: `ExportClock::offline` answering the stopped
 /// timeline for a named one passes here, and fails `export_surface`'s
-/// rebinding tests. `Stopped::is_rolling` answering `true` passes every
-/// suite: no node reads the frozen fork's timeline while the render's
-/// transport is stopped, so nothing can observe it.)
+/// rebinding tests. `Stopped::is_rolling` answering `true` passes here: no
+/// node reads the frozen fork's timeline while the render's transport is
+/// stopped. A `PrepareEdit` does: `tutti-session`'s
+/// `a_frozen_exports_timeline_is_stopped_at_beat_zero` pins it.)
 #[cfg(feature = "sampler")]
 #[test]
 fn a_node_export_follows_a_90_bpm_timeline() {

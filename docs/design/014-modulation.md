@@ -996,7 +996,21 @@ from the node's first frame), commits a host's own staged insert for the
 same reason, and sends the resyncs owed. Every `ReconcileError` is
 surfaced: logged, sent once as a `ModulationRefused` message (with the
 route or target entity it names) and held in
-`ModulationState::refusal`. A target takes one `ModRange` and one
+`ModulationState::refusal`.
+
+*Since design 015 PRs 4 and 5* the loop is `tutti-session`'s, and the
+paragraph above describes its first home. `reconcile` and `after_commit`
+collect the declarations (keyed by entity, as above) and run the
+session's `Phase::Modulation` and `Phase::AfterCommit` with them
+(`PhaseCx::with_mods`); the session holds the `Modulation`, the refusal
+and what is unresolved (`ModState`), and Bevy's `ModulationState` is a
+view of it, `AudioGraphRes::modulation()`. `AudioGraphRes::modulate` is
+gone. `Phase::AfterCommit` re-applies while a target is unresolved and
+the graph is otherwise clean, and commits through `Session::commit`
+(publishing the plan's compensation); it no longer commits a host's
+staged edit, which the frame's own commit takes (`Graph::is_edited`).
+The unresolved warning is after 4 s of the update's `now`, not after
+240 applies. A target takes one `ModRange` and one
 `Automation`: a second of either on the same `ParamRef` is refused as
 `DuplicateTarget`, never merged (which one won would be query order). A
 target still unresolved after 240 applies is logged once. A follower's feed is `Feed::Audio` (its input

@@ -347,6 +347,21 @@ pub fn after_commit(
     total: Option<ResMut<GraphLatency>>,
 ) {
     let Some(mut graph) = graph else { return };
+    // Nothing to re-apply or resync (the common frame): the phase would do
+    // nothing, so the declarations are not collected. Mutations (run), each
+    // fails a `mod_lanes` test: idle on no unresolved target alone
+    // (`a_held_note_envelope_newly_routed_reads_its_level_at_once`: its
+    // resync is never sent); idle on no resync alone
+    // (`an_entity_rebound_to_another_param_list_keeps_modulating`, and
+    // `a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame`).
+    let idle = {
+        let session = graph.read();
+        let state = session.mod_state();
+        state.unresolved_targets().is_empty() && state.resyncs_owed() == 0
+    };
+    if idle {
+        return;
+    }
     run(Phase::AfterCommit, &declared, &mut graph, &mut refused);
     crate::graph::latency::mirror(&graph, table, total);
 }

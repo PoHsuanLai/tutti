@@ -154,7 +154,9 @@ pub enum SessionEvent {
         waited: std::time::Duration,
     },
     /// The hardware out dropped events for want of an output: the total so
-    /// far, reported when it rises.
+    /// far, reported when it rises, at most once per
+    /// [`MIDI_OUT_DROP_REPORT`](crate::MIDI_OUT_DROP_REPORT) of
+    /// [`PhaseCx::now`].
     #[cfg(feature = "midi")]
     MidiOutDropped(u64),
 }
@@ -375,7 +377,8 @@ impl Session {
             Phase::MidiOut =>
             {
                 #[cfg(feature = "midi")]
-                self.midi_state.midi_out_phase(self.midi.as_ref(), out)
+                self.midi_state
+                    .midi_out_phase(self.midi.as_ref(), cx.now, out)
             }
             Phase::Plugins | Phase::RenderMode => {}
             Phase::Poll =>

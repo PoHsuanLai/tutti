@@ -578,8 +578,9 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
 /// Mutations (run), each fails: `Declared::collect` ignoring the take
 /// (the automation plays through it: 800, not 300); `close_takes` leaving
 /// the curve (the old 800 is back after the release, not 650);
-/// `AutomationTake::done` ignoring a touch take's release (the take stays
-/// open: 300).
+/// `tutti_session::Take::is_done` ignoring a touch take's release (the
+/// take stays open: 300; re-run against the session's `Take`, design 015
+/// PR 5).
 #[test]
 fn a_take_suspends_the_automation_then_restores_it() {
     let (mut app, mut side) = app(1);
@@ -871,13 +872,13 @@ impl tutti_graph::Node for Late {
 /// re-apply commit not publishing (`self.graph.commit()` for
 /// `self.commit()`), or Bevy's `after_commit` not mirroring. Since PR 4
 /// the frame's own commit takes every staged edit (`Graph::is_edited`),
-/// and the re-apply runs only when nothing is left staged, so its plan
-/// adds lanes alone, which move no latency figure; the old record
-/// (`after_commit` calling `graph.commit()`, not `commit_and_publish`)
-/// already survived on the PR 4 merge. The mutation that fails: the
-/// frame's figures mirrored by neither system (the `mirror` calls in
-/// `commit_graph` and `after_commit` both deleted: `GraphLatency` reads
-/// 0); either alone is covered by the other.
+/// so here the re-apply's plan adds a macro's lane, which moves no latency
+/// figure; the old record (`after_commit` calling `graph.commit()`, not
+/// `commit_and_publish`) already survived on the PR 4 merge.
+/// `a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame` covers
+/// both. The mutation that fails here: the frame's figures mirrored by
+/// neither system (the `mirror` calls in `commit_graph` and `after_commit`
+/// both deleted: `GraphLatency` reads 0).
 #[test]
 fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     let (mut app, mut side) = app(1);
@@ -905,6 +906,45 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     );
     render(&mut side, 128, 128);
     settle(&mut app);
+    assert!(app
+        .world()
+        .resource::<AudioGraphRes>()
+        .modulation()
+        .lane(cutoff)
+        .is_some());
+}
+
+/// **A re-apply whose commit moves the latency is mirrored on that
+/// frame.** A follower of a latent node (`LATE` frames, settled) is routed
+/// to a probe spawned on output 0 in the same frame. The apply finds the
+/// probe uncommitted, so the frame's commit sends the probe and the
+/// follower with no lane (latency 0); `after_commit`'s re-apply builds the
+/// lane, putting the follower's `LATE` frames in front of the probe, and
+/// [`GraphLatency`](bevy_tutti::GraphLatency) reads them on that frame.
+///
+/// Mutations (run), each fails (`GraphLatency` reads 0): the session's
+/// re-apply committing with `self.graph.commit()`, not `self.commit()` (no
+/// publish); `after_commit` not mirroring (its `mirror` deleted).
+#[test]
+fn a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame() {
+    let (mut app, mut side) = app(1);
+    let late = spawn(&mut app, ForkByClone(Late));
+    settle(&mut app);
+    render(&mut side, 128, 128);
+
+    let probe = spawn(&mut app, ProbeUnit::new(500.0));
+    master(&mut app, &[probe]);
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(cutoff, 0.0, 1_000.0));
+    let follower = world.spawn(ModSource::new(Follower::new(late))).id();
+    world.spawn(ModRoute::new(follower, cutoff).with_depth(Depth(0.5)));
+    app.update();
+    assert_eq!(
+        app.world().resource::<bevy_tutti::GraphLatency>().0,
+        tutti_types::Samples(LATE),
+        "the re-apply's plan, mirrored"
+    );
     assert!(app
         .world()
         .resource::<AudioGraphRes>()

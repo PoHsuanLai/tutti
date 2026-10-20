@@ -59,6 +59,16 @@ pub enum Error {
     #[error("{0:?} is not a clip or live input of this session's")]
     NotSessionMidi(tutti_core::AudioNode),
 
+    /// The hardware input's routes have one declarer: the session's own
+    /// (`Midi::route`, `Midi::set_route_fallback`) or a host's
+    /// (`Midi::set_routes`), not both at once.
+    #[cfg(feature = "midi")]
+    #[error(
+        "the MIDI routes are declared by {0}; clear those before declaring \
+         them the other way"
+    )]
+    TwoRouteDeclarers(&'static str),
+
     /// Polyphonic-synth subsystem failure. Wraps `tutti_polysynth::Error`.
     #[cfg(feature = "synth")]
     #[error("Synth: {0}")]

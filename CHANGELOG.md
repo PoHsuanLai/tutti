@@ -138,7 +138,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hardware out: `set_hardware_out(Option<UmpOut>)`, `set_jr_stamping`,
   `hardware_out()` (the router), `drain_out`, `out_drops`.
   `Phase::MidiOut` drains the engine's hardware-out node and reports a
-  rising drop count as `SessionEvent::MidiOutDropped`.
+  rising drop count as `SessionEvent::MidiOutDropped`, at most once per
+  `MIDI_OUT_DROP_REPORT` (1 s of `PhaseCx::now`). The routes have one
+  declarer: `set_routes` (which returns a `Result`) is refused while the
+  session's own rules or fallback exist, and `route`/`set_route_fallback`
+  while a host's `set_routes` declares any, with
+  `Error::TwoRouteDeclarers`.
+- **Two `bevy-tutti` MIDI behaviours changed:**
+  - A `LiveMidiInput` on a node with no event input gets no `LiveMidi`
+    (before, a queue node fed into nothing): the attach is warned of and
+    tried again when the entity's `AudioNode` changes. The attach waits
+    for `AudioGraphRes` (a `run_if`), so one declared before the graph
+    exists is attached when it arrives.
+  - The track MIDI-out pump with no graph (no engine) still drains its
+    mailbox, and counts what it drops in `MidiOutRes::unrouted_drops`,
+    warning once; with a graph the session counts them
+    (`AudioGraphRes::midi().out_drops()`).
 - **`examples/headless_modulation.rs` moved** from `tutti-nodes` to
   `tutti-session` (design 015 §5.1): `cargo run -p tutti-session
   --features modulation --example headless_modulation`.

@@ -112,7 +112,9 @@ impl std::ops::Deref for LiveMidi {
 /// Gives every [`LiveMidiInput`] without one the session's live input on
 /// the entity's node (`tutti_session::Midi::live_input`: a queue node fed
 /// into its event input); one whose node is not in yet waits for it, and
-/// one whose node takes no MIDI is tried again when it is rebound. The
+/// one whose node takes no MIDI is warned of and tried again when it is
+/// rebound. It runs only once the graph exists (the plugin's `run_if`), so
+/// one added before that is attached when it arrives. The
 /// queue is re-aimed (`Midi::retarget`) at the node an entity is bound to
 /// whenever its `AudioNode` changes: a node bound in place of the old one,
 /// and one bound after the old node was removed (whose feeds went with it,
@@ -129,11 +131,8 @@ pub fn attach_live_midi(
         ),
     >,
     rebound: Query<(Entity, &AudioNode, &LiveMidi), (With<LiveMidiInput>, Changed<AudioNode>)>,
-    graph: Option<ResMut<AudioGraphRes>>,
+    mut graph: ResMut<AudioGraphRes>,
 ) {
-    let Some(mut graph) = graph else {
-        return;
-    };
     let mut midi = graph.midi();
     for (entity, &sink) in &wanted {
         match midi.live_input(sink) {
@@ -184,7 +183,12 @@ impl Plugin for LiveMidiPlugin {
         app.add_observer(detach_live_midi);
         app.add_systems(
             Update,
-            attach_live_midi.before(EventWiring).run_if(engine_ready),
+            attach_live_midi
+                .before(EventWiring)
+                // A hard gate, not an early return: a system that runs
+                // consumes its change ticks, so a `LiveMidiInput` added
+                // before the graph exists would never be seen again.
+                .run_if(engine_ready.and(resource_exists::<AudioGraphRes>)),
         );
     }
 }

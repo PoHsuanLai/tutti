@@ -170,11 +170,16 @@ pub fn rebuild(
             enabled: r.enabled,
         })
         .collect();
-    graph
+    // Refused only while the session declares routes of its own, which a
+    // Bevy app does not (its routes are these rules).
+    if let Err(e) = graph
         .midi()
         .set_routes(nodes.input_node, &rules, fallback.0, |target| {
             bound.get(target).ok().copied()
-        });
+        })
+    {
+        tracing::error!("MIDI routes not compiled: {e}");
+    }
 }
 
 /// Whether the engine's MIDI nodes arrived (or changed) this frame: rules

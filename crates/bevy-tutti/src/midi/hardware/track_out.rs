@@ -46,16 +46,30 @@ use crate::graph::AudioGraphRes;
 pub struct MidiOutRes {
     sender: MidiSender,
     receiver: MidiReceiver,
+    /// What [`pump_midi_out_system`] drained with no graph to route it
+    /// through: counted, and warned of once.
+    unrouted: tutti_session::MidiOutDrops,
 }
 
 impl Default for MidiOutRes {
     fn default() -> Self {
         let (sender, receiver) = MidiMailbox::pair();
-        Self { sender, receiver }
+        Self {
+            sender,
+            receiver,
+            unrouted: tutti_session::MidiOutDrops::default(),
+        }
     }
 }
 
 impl MidiOutRes {
+    /// Events drained while there was no graph (no engine) to route them
+    /// to an output: dropped, and counted here. With a graph, the session
+    /// counts them (`AudioGraphRes::midi().out_drops()`).
+    pub fn unrouted_drops(&self) -> u64 {
+        self.unrouted.count()
+    }
+
     /// Returns a cheaply-clonable push handle onto the mailbox, for a caller that pushes
     /// directly — the UI, or a clip source's `out_tap` (`Arc<dyn MidiOut>`).
     pub fn sender(&self) -> MidiSender {
@@ -114,7 +128,8 @@ pub fn midi_out_send_system(out: Res<MidiOutRes>, mut requests: MessageReader<Se
 /// Drains the track MIDI-out mailbox each frame and routes it to hardware,
 /// through the session's router (`Midi::drain_out`), the one the clock-out
 /// pump drains through. With no graph (no engine), the mailbox is drained
-/// and its events dropped, uncounted, so it does not back up.
+/// so it does not back up, and its events are dropped, counted in
+/// [`MidiOutRes::unrouted_drops`] and warned of once.
 pub fn pump_midi_out_system(
     out: Option<Res<MidiOutRes>>,
     graph: Option<ResMut<AudioGraphRes>>,
@@ -133,7 +148,7 @@ pub fn pump_midi_out_system(
                 &out.receiver,
                 &mut tutti_session::MidiOutRouter {
                     out: None,
-                    drops: None,
+                    drops: Some(&out.unrouted),
                 },
             );
         }
@@ -179,6 +194,26 @@ mod tests {
             }
         }
         events
+    }
+
+    /// **With no graph, what the pump drains is counted, not lost
+    /// silently.** `MidiOutPlugin` alone (no engine, no `AudioGraphRes`): a
+    /// `SendMidiOut` of two notes is drained and counted as two drops.
+    ///
+    /// Mutation (run): the no-graph arm draining with `drops: None` (as
+    /// design 015 PR 5 first did) → the count stays 0 → fails.
+    #[test]
+    fn with_no_graph_the_drained_events_are_counted() {
+        let mut app = App::new();
+        app.add_plugins(MidiOutPlugin);
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+        app.world_mut()
+            .resource_mut::<Messages<SendMidiOut>>()
+            .write(SendMidiOut(vec![note, note]));
+        app.update();
+        let out = app.world().resource::<MidiOutRes>();
+        assert_eq!(out.unrouted_drops(), 2, "both notes counted as dropped");
+        assert!(drain(out).is_empty(), "and the mailbox is drained");
     }
 
     #[test]

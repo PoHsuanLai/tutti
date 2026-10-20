@@ -70,7 +70,7 @@ pub use graph::{
 #[cfg(feature = "midi")]
 pub use midi::{
     drain_receiver_through, LiveInput, Midi, MidiOutDrops, MidiOutRouter, MidiRouteId,
-    MidiRouteRule, UmpOut,
+    MidiRouteRule, UmpOut, MIDI_OUT_DROP_REPORT,
 };
 #[cfg(feature = "modulation")]
 pub use modulation::{

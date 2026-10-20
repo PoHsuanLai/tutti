@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use tutti_core::AudioNode;
 use tutti_midi_runtime::{
@@ -345,12 +346,21 @@ pub(crate) struct MidiState {
     minted: u64,
     /// The sinks the last route compile fed.
     routed: BTreeSet<AudioNode>,
+    /// Whether a host's last `set_routes` declared any rule or fallback:
+    /// the routes are then the host's, and the session's own are refused.
+    host_routes: bool,
     out: Option<UmpOut>,
     stamping: bool,
     drops: MidiOutDrops,
-    /// The drop count the last `MidiOut` phase reported.
+    /// The drop count the last `MidiOut` phase reported, and when.
     drops_seen: u64,
+    reported_at: Option<Instant>,
 }
+
+/// How often a rising drop count is reported at most
+/// ([`SessionEvent::MidiOutDropped`](crate::SessionEvent::MidiOutDropped)):
+/// a clock running with no output drops ticks on every update.
+pub const MIDI_OUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
 impl MidiState {
     /// `node` left the graph: a clip or live input of the session's own is
@@ -363,10 +373,12 @@ impl MidiState {
     }
 
     /// `Phase::MidiOut`: drains the hardware out to the output, and reports
-    /// the drops when their count rose.
+    /// the drops when their count rose, at most once per
+    /// [`MIDI_OUT_DROP_REPORT`] of `now`.
     pub(crate) fn midi_out_phase(
         &mut self,
         nodes: Option<&MidiNodes>,
+        now: Instant,
         out: &mut Vec<crate::SessionEvent>,
     ) {
         if let Some(nodes) = nodes {
@@ -377,8 +389,12 @@ impl MidiState {
             drain_receiver_through(nodes.out_controls.receiver(), &mut router);
         }
         let count = self.drops.count();
-        if count != self.drops_seen {
+        let due = self
+            .reported_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= MIDI_OUT_DROP_REPORT);
+        if count != self.drops_seen && due {
             self.drops_seen = count;
+            self.reported_at = Some(now);
             out.push(crate::SessionEvent::MidiOutDropped(count));
         }
     }
@@ -537,12 +553,18 @@ impl Midi<'_> {
     /// Adds a rule routing the hardware input to its targets. Returns its
     /// id, for [`unroute`](Self::unroute).
     ///
+    /// The routes have one declarer: these rules and
+    /// [`set_route_fallback`](Self::set_route_fallback), or a host's
+    /// [`set_routes`](Self::set_routes).
+    ///
     /// # Errors
     ///
     /// [`Error::NoMidiInput`] on a session with no MIDI input node (one
-    /// built detached).
+    /// built detached); [`Error::TwoRouteDeclarers`] while a host's
+    /// `set_routes` declares the routes.
     pub fn route(&mut self, rule: MidiRouteRule) -> Result<MidiRouteId> {
         let input = self.input()?;
+        self.own_may_declare()?;
         self.state.minted += 1;
         let id = MidiRouteId(self.state.minted);
         self.state.rules.insert(id, rule);
@@ -567,12 +589,23 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`Error::NoMidiInput`] on a session with no MIDI input node.
+    /// [`Error::NoMidiInput`] on a session with no MIDI input node;
+    /// [`Error::TwoRouteDeclarers`] while a host's
+    /// [`set_routes`](Self::set_routes) declares the routes.
     pub fn set_route_fallback(&mut self, fallback: Option<AudioNode>) -> Result<()> {
         let input = self.input()?;
+        self.own_may_declare()?;
         self.state.fallback = fallback;
         self.compile_own(input);
         Ok(())
+    }
+
+    fn own_may_declare(&self) -> Result<()> {
+        if self.state.host_routes {
+            Err(Error::TwoRouteDeclarers("a host's `set_routes`"))
+        } else {
+            Ok(())
+        }
     }
 
     fn input(&self) -> Result<AudioNode> {
@@ -582,7 +615,7 @@ impl Midi<'_> {
     fn compile_own(&mut self, input: AudioNode) {
         let rules = std::mem::take(&mut self.state.rules);
         let fallback = self.state.fallback;
-        self.set_routes(input, rules.values(), fallback, Some);
+        self.compile_routes(input, rules.values(), fallback, Some);
         self.state.rules = rules;
     }
 
@@ -597,7 +630,36 @@ impl Midi<'_> {
     /// every port no armed rule covers. A target `resolve` maps to no node,
     /// or to one not in the graph, takes nothing (and still covers its
     /// rule's ports); one fed before and not now is unwired.
+    ///
+    /// The routes have one declarer: while this declares any rule or a
+    /// fallback, the session's own [`route`](Self::route) and
+    /// [`set_route_fallback`](Self::set_route_fallback) are refused; a call
+    /// with neither hands the routes back.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TwoRouteDeclarers`] while the session's own rules or
+    /// fallback are declared ([`unroute`](Self::unroute) them first).
+    /// Nothing is changed.
     pub fn set_routes<'r, T: Copy + Ord + 'r>(
+        &mut self,
+        input: AudioNode,
+        rules: impl IntoIterator<Item = &'r MidiRouteRule<T>>,
+        fallback: Option<T>,
+        resolve: impl Fn(T) -> Option<AudioNode>,
+    ) -> Result<()> {
+        if !self.state.rules.is_empty() || self.state.fallback.is_some() {
+            return Err(Error::TwoRouteDeclarers("the session's own `route`"));
+        }
+        let rules: Vec<&MidiRouteRule<T>> = rules.into_iter().collect();
+        self.state.host_routes = !rules.is_empty() || fallback.is_some();
+        self.compile_routes(input, rules, fallback, resolve);
+        Ok(())
+    }
+
+    /// The compile both declarers share: `rules` onto `input`'s ports,
+    /// replacing every route before.
+    fn compile_routes<'r, T: Copy + Ord + 'r>(
         &mut self,
         input: AudioNode,
         rules: impl IntoIterator<Item = &'r MidiRouteRule<T>>,

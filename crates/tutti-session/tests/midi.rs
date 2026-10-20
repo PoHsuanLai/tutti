@@ -6,6 +6,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use std::time::{Duration, Instant};
 use tutti_core::{
     AudioNode, Beat, BeatDuration, ChannelLayout, InterleavedMut, MotionEvent, SampleRate, Samples,
 };
@@ -13,9 +14,20 @@ use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, 
 use tutti_midi_runtime::{TimedMidiEvent, CHANNELLESS_PORT, MIDI_INPUT_PORTS};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
+
 use tutti_session::{
-    Error, EventSource, MidiRouteRule, Session, SessionEvent, SessionNode, UmpOut,
+    Error, EventSource, MidiRouteRule, PhaseCx, Session, SessionEvent, SessionNode, UmpOut,
+    MIDI_OUT_DROP_REPORT, PHASES,
 };
+
+/// Every phase at `now`: one update, at a time the test picks.
+fn update_at(s: &mut Session, now: Instant) -> Vec<SessionEvent> {
+    let mut out = Vec::new();
+    for &phase in PHASES {
+        s.run_phase(phase, PhaseCx::at(now), &mut out);
+    }
+    out
+}
 
 const RATE: f64 = 48_000.0;
 const MF: u16 = 0x8000;
@@ -246,8 +258,9 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
 /// channelless one; the fallback the ports no rule covers; unrouting
 /// unwires.
 ///
-/// Mutation (run): `Midi::set_routes` not unwiring a sink no rule names
-/// any more → the unrouted tap keeps its ports → fails.
+/// Mutation (run): the route compile (`Midi::compile_routes`, which
+/// `set_routes` and the session's own rules share) not unwiring a sink no
+/// rule names any more → the unrouted tap keeps its ports → fails.
 #[test]
 fn route_rules_wire_the_hardware_input() {
     let mut s = offline();
@@ -290,6 +303,57 @@ fn route_rules_wire_the_hardware_input() {
     assert_eq!(ports(&s, a), rest, "the fallback takes what no rule covers");
 }
 
+/// **The routes have one declarer.** While the session's own rules are
+/// declared, a host's `set_routes` is refused and changes nothing; once
+/// they are unrouted it applies, and then the session's own `route` and
+/// `set_route_fallback` are refused, until a `set_routes` with no rule and
+/// no fallback hands the routes back.
+///
+/// Mutations (run), each fails:
+/// - `set_routes` not refusing while own rules exist → the host's rule
+///   replaces the session's (`a` loses its ports);
+/// - `own_may_declare` always `Ok` → the session's `route` is accepted
+///   while the host declares;
+/// - `host_routes` not cleared by an empty `set_routes` → `route` is
+///   still refused after the hand-back.
+#[test]
+fn the_routes_have_one_declarer() {
+    let mut s = offline();
+    let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
+    let (a, _) = tap(&mut s);
+    let (b, _) = tap(&mut s);
+    let fed = |s: &Session, n: AudioNode| !s.graph_ref().feed(n, "midi routes").is_empty();
+
+    let own = s.midi().route(MidiRouteRule::any_channel().to(a)).unwrap();
+    let host = [MidiRouteRule::<u8>::any_channel().to(1)];
+    let resolve = |k: u8| (k == 1).then_some(b);
+    assert!(matches!(
+        s.midi().set_routes(input, &host, None, resolve),
+        Err(Error::TwoRouteDeclarers(_))
+    ));
+    assert!(fed(&s, a) && !fed(&s, b), "the refusal changed nothing");
+
+    assert!(s.midi().unroute(own));
+    s.midi().set_routes(input, &host, None, resolve).unwrap();
+    assert!(fed(&s, b), "the host's routes apply");
+    assert!(matches!(
+        s.midi().route(MidiRouteRule::any_channel().to(a)),
+        Err(Error::TwoRouteDeclarers(_))
+    ));
+    assert!(matches!(
+        s.midi().set_route_fallback(Some(a)),
+        Err(Error::TwoRouteDeclarers(_))
+    ));
+    assert!(!fed(&s, a) && fed(&s, b), "the refusals changed nothing");
+
+    s.midi()
+        .set_routes(input, &[] as &[MidiRouteRule<u8>], None, resolve)
+        .unwrap();
+    assert!(!fed(&s, b), "handed back: nothing routed");
+    s.midi().route(MidiRouteRule::any_channel().to(a)).unwrap();
+    assert!(fed(&s, a), "the session declares again");
+}
+
 /// Counts what reached the wire.
 struct CountingSink(Arc<AtomicUsize>);
 impl tutti_midi_types::MidiOut for CountingSink {
@@ -312,7 +376,8 @@ fn clocked() -> Session {
 /// **The hardware out drains to the output with stamping off**: the
 /// `MidiOut` phase routes the clock's ticks to the output whether or not
 /// it JR-stamps (stamping gates timestamps, not delivery), and with no
-/// output it counts them as dropped and says so once per rise.
+/// output it counts them as dropped and says so when the count rises
+/// (rate-limited: `dropped_ticks_are_reported_at_most_once_a_second`).
 ///
 /// Mutations (run), each fails:
 /// - `MidiState::midi_out_phase` routing to no output while stamping is
@@ -351,5 +416,59 @@ fn the_hardware_out_drains_with_stamping_off() {
             .iter()
             .any(|e| matches!(e, SessionEvent::MidiOutDropped(_))),
         "reported when the count rises, not every update"
+    );
+}
+
+/// **A clock dropping ticks with no output is reported once per
+/// `MIDI_OUT_DROP_REPORT`, not every update.** The first update that drops
+/// reports the total; later updates within the second drop more and report
+/// nothing; the first update a second after the report reports the new
+/// total.
+///
+/// Mutations (run), each fails:
+/// - the rate limit dropped (`due` always true) → the second update
+///   reports again;
+/// - `reported_at` never set → the same;
+/// - `>=` as `>` on the interval → nothing at exactly one second.
+#[test]
+fn dropped_ticks_are_reported_at_most_once_a_second() {
+    let mut s = clocked();
+    let now = Instant::now();
+    let drops = |events: &[SessionEvent]| -> Vec<u64> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::MidiOutDropped(n) => Some(*n),
+                _ => None,
+            })
+            .collect()
+    };
+    let first = drops(&update_at(&mut s, now));
+    assert_eq!(
+        first,
+        vec![s.midi().out_drops()],
+        "the first drop, reported"
+    );
+
+    for at in [
+        Duration::ZERO,
+        Duration::from_millis(500),
+        Duration::from_millis(999),
+    ] {
+        roll(&s, 24_000);
+        let before = s.midi().out_drops();
+        assert!(drops(&update_at(&mut s, now + at)).is_empty(), "at {at:?}");
+        assert!(
+            s.midi().out_drops() > before,
+            "precondition: it dropped more"
+        );
+    }
+
+    roll(&s, 24_000);
+    let later = drops(&update_at(&mut s, now + MIDI_OUT_DROP_REPORT));
+    assert_eq!(
+        later,
+        vec![s.midi().out_drops()],
+        "a second on, the new total"
     );
 }

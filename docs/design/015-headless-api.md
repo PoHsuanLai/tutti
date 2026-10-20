@@ -1538,8 +1538,17 @@ named moved code re-run against it.
 the same node, since a skipped re-aim now makes a second clip that plays
 rather than none. `a_host_edit_committed_for_a_target_publishes_its_latency`
 says what it covers: since PR 4 the frame's own commit takes a host's edit,
-so the re-apply's commit adds lanes alone and its publish moves no figure
-(the old mutation had already survived on the PR 4 merge).
+so in that scene the re-apply's commit adds a macro's lane and moves no
+figure (the old mutation had already survived on the PR 4 merge). A
+re-apply can move the latency (a follower of a latent node reaches its
+target's param port only through the lane the re-apply builds): the
+session's `a_re_apply_that_moves_the_latency_publishes_it` and Bevy's
+`a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame` cover the
+publish and the mirror. After review: `the_routes_have_one_declarer`,
+`dropped_ticks_are_reported_at_most_once_a_second`,
+`with_no_graph_the_drained_events_are_counted`,
+`a_keyboard_declared_before_the_graph_attaches_when_it_arrives` and
+`a_keyboard_on_a_node_without_midi_attaches_after_a_rebind_to_a_synth`.
 
 Where the code differs from the text above:
 
@@ -1560,7 +1569,11 @@ Where the code differs from the text above:
   covers its rule's ports.
 - **`Midi::hardware_out()` returns the router** (a host's MIDI-CI reply or
   track mailbox is stamped and counted through it), and a rising drop
-  count is `SessionEvent::MidiOutDropped`.
+  count is `SessionEvent::MidiOutDropped`, at most once per
+  `MIDI_OUT_DROP_REPORT` (1 s) of `now`.
+- **The routes have one declarer**, as modulation does: the session's own
+  `route`/`set_route_fallback` or a host's `set_routes`, the other refused
+  with `Error::TwoRouteDeclarers`. `set_routes` returns a `Result`.
 - **The §5.1 example** uses `build_offline` and `Graph::add`, not a
   device and `insert`, and an LFO and a follower on an SVF.
 

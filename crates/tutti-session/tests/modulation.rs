@@ -441,3 +441,81 @@ fn a_param_ref_round_trips_through_its_key() {
     assert_eq!(p.key().node, 42);
     assert_eq!(ParamRef::from_key(p.key()), p);
 }
+
+/// A source declaring `LATE` frames of latency: a look-ahead's bookkeeping.
+#[derive(Clone)]
+struct Late;
+
+const LATE: usize = 100;
+
+impl tutti_graph::Node for Late {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+            .with_latency(tutti_types::Latency::new(Samples(LATE)))
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        _: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        io.output(0).fill(0.5);
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **A re-apply whose commit moves the latency publishes it on that
+/// update.** A follower of a latent node (`LATE` frames) is routed to a
+/// probe inserted in the same update, the probe alone on output 0. The
+/// apply finds the probe uncommitted, so the update's commit sends the
+/// probe and the follower with no lane: nothing latent reaches an output,
+/// and the latency is 0. `AfterCommit`'s re-apply then builds the lane,
+/// which puts the follower's path (and its `LATE` frames) in front of the
+/// probe's param port: that commit's plan has `LATE` frames on output 0,
+/// and the session publishes them, the total and the per-channel figures,
+/// before the update returns.
+///
+/// Mutation (run): the re-apply committing with `self.graph.commit()`, not
+/// `self.commit()` (no publish) → the latency still reads 0 after the
+/// update → fails.
+#[test]
+fn a_re_apply_that_moves_the_latency_publishes_it() {
+    let mut s = offline();
+    let (late, _) = s.graph().insert(ForkByClone(Late));
+    s.update();
+    assert_eq!(s.latency(), Samples(0), "precondition: nothing latent out");
+
+    let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
+    s.graph().set_output_source(0, GraphSource::Node(probe, 0));
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let mut m = s.mods();
+    m.range(cutoff, 0.0, 1_000.0);
+    let follower = m.follower(Follower::default(), late);
+    m.route(follower, cutoff, Depth(0.5));
+
+    let now = Instant::now();
+    let mut out = Vec::new();
+    for &phase in PHASES {
+        s.run_phase(phase, PhaseCx::at(now), &mut out);
+        if phase == tutti_session::Phase::Commit {
+            assert_eq!(
+                s.mod_state().unresolved_targets(),
+                &[cutoff.key()],
+                "precondition: the lane waits for the re-apply"
+            );
+            assert_eq!(s.latency(), Samples(0), "precondition: no lane yet");
+        }
+    }
+    assert_eq!(s.mod_state().unresolved_targets(), &[], "the lane is built");
+    assert_eq!(s.latency(), Samples(LATE), "the re-apply's plan, published");
+    assert_eq!(
+        s.compensation().read().as_slice(),
+        s.graph_ref()
+            .sent_compensation()
+            .expect("a plan was sent")
+            .0
+            .as_slice(),
+        "and its per-channel figures"
+    );
+}

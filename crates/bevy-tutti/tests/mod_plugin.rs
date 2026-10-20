@@ -107,7 +107,9 @@ fn knob_of(app: &mut App, target: ParamRef) -> f32 {
 /// sample-accurately at each parameter event's frame); a 3 Hz sine at depth
 /// 0.1 modulates the gain's lane, whose knob starts at the plugin's own
 /// value (0 dB: 60/72 of `-60..=12`). Live renders rolling 1024-frame
-/// blocks, paced so the server keeps up, from the play start; the export
+/// blocks from the play start, each once the server answered the chunk
+/// before it (`PluginControls::chunk_in_flight_answered`), and fails by name
+/// if one was played unanswered (`missed_chunks`); the export
 /// forks the graph (the plugin by state transfer, the lane by clone) and
 /// renders the same span at its 1024-frame chunk. Equal bit for bit.
 ///
@@ -122,7 +124,11 @@ fn knob_of(app: &mut App, target: ParamRef) -> f32 {
 /// a lane handing the editor no fork source (`fork: None` in
 /// `ControlLaneNode::into_parts`: the export is refused as not forkable);
 /// a lane's fork starting its knob at 0, not the live knob (`fork_fresh`:
-/// frame 1024 reads 1 live, 0.001 exported).
+/// frame 1024 reads 1 live, 0.001 exported); the wait for the answer
+/// removed (the blocks rendered back to back: "live block 1 late or
+/// missed", not a silent-vs-signal compare). With the old fixed 25 ms
+/// pacing a slow server under a loaded run left a block silent (2 of 33
+/// full-suite runs: "frame 4096: live 0 vs export 2.169").
 #[cfg(feature = "export")]
 #[test]
 fn an_export_is_the_live_render_on_a_clap_gain() {
@@ -188,7 +194,22 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     };
 
     // Live: rolling from beat 0 in device-sized blocks, a frame between
-    // each as a device's callbacks would leave.
+    // each as a device's callbacks would leave. The plugin's pipeline plays
+    // each chunk's answer one block later; a block played before its answer
+    // landed is silence, which would read as a mismatch below. So before each
+    // block, wait for the chunk in flight to be answered (a slow server, a
+    // loaded machine), and after it, require that none was played unanswered:
+    // a late block is waited for, a missed one fails here, by name.
+    let controls = {
+        let world = app.world();
+        let node = *world.get::<AudioNode>(probe).expect("loaded");
+        world
+            .resource::<AudioGraphRes>()
+            .with_plugin(node, |p| p.controls().cloned())
+            .flatten()
+            .expect("an out-of-process plugin has controls")
+    };
+    let missed_before = controls.missed_chunks();
     let mut side = app
         .world_mut()
         .resource_mut::<AudioGraphRes>()
@@ -203,12 +224,24 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
             Beat(beat),
             None,
         ));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !controls.chunk_in_flight_answered() {
+            assert!(
+                Instant::now() < deadline,
+                "live block {b}: the chunk before it was never answered (10 s)"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         side.render(BLOCK, BLOCK, &mut out);
+        assert_eq!(
+            controls.missed_chunks(),
+            missed_before,
+            "live block {b} late or missed: the plugin's chunk was played unanswered"
+        );
         for (l, o) in live.iter_mut().zip(&out) {
             l.extend_from_slice(o);
         }
         app.update();
-        std::thread::sleep(Duration::from_millis(25));
     }
 
     let slot: Arc<Mutex<Option<Vec<Vec<f32>>>>> = Arc::default();

@@ -915,7 +915,10 @@ mod tests {
                     .events_at(ms)
                     .into_iter()
                     .any(|e| matches!(e, SessionEvent::PluginDied { .. }));
-                assert!(!died, "a native node is reported dead (crossfade: {crossfade})");
+                assert!(
+                    !died,
+                    "a native node is reported dead (crossfade: {crossfade})"
+                );
             }
             assert!(
                 rig.session.graph_ref().contains(rig.node),

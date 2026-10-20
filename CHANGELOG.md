@@ -283,9 +283,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Behaviour changes: a crossfade to another plugin moves its health and
     latency watch to the incoming one; a plugin inserted with
     `AudioGraphRes::insert_plugin` is health-watched too; the state snapshot
-    is every 8 s of wall clock, not every 512 frames; two back-to-back Bevy
-    exports announce Realtime between them; `plugin_health_poll` is pinned
+    is every 8 s of wall clock, not every 512 frames; `plugin_health_poll` is pinned
     to the main thread and runs in `GraphReconcileSystems::Spawn`.
+  - **Fixed:** every plugin load panicked in a debug build of a
+    multi-threaded Bevy app: `plugin_load_promote` ran on a pool thread and
+    `add_plugin` asserts the main thread. It, `plugin_state_snapshot` and
+    `plugin_render_mode` are now pinned to the main thread
+    (`NonSendMarker`), and an in-process (VST2) plugin opens in
+    `add_plugin` rather than in the load job, which ran on the task pool
+    (`Plugin::opens_in_process`). CI and `just ci` run the plugin host on
+    a threaded executor.
+  - **Fixed:** `plugin_render_mode` was never scheduled in a `TuttiPlugin`
+    app (the hosting plugin is added before `ExportPlugin`, which it checked
+    for). `ExportPlugin` schedules it, after `poll_exports` and
+    `start_exports`.
+  - Back-to-back Bevy exports stay Offline: `poll_exports` finishes with
+    `Session::finish_export_unannounced` and the frame's
+    `plugin_render_mode` announces the level once. `finish_export` and
+    `export_blocking` still announce.
+  - `Graph::replace` and `Graph::crossfade` to a native node drop the
+    plugin's record, so a later `PluginDied` cannot remove the native node
+    and the record no longer keeps the old plugin server alive. A crossfade
+    or `replace_plugin` to another plugin gives it a fresh liveness, no
+    snapshot (a save in flight from the old plugin is refused) and a mirror
+    read from the new plugin.
+  - An export token held past `EXPORT_STALL_WARNING` (an hour) is warned
+    about once (`tracing::warn!`) from `Phase::Collect`; it holds Offline
+    until it drops.
+  - `tutti_plugin::PluginControls::{missed_chunks, chunk_in_flight_answered}`
+    report what the node played: chunks played unanswered while the bridge
+    lived, and whether the chunk in flight is answered yet.
 
   | Was | Now |
   |---|---|
@@ -300,6 +327,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | — | `Session::{plugin_load, add_plugin, add_plugin_blocking, plugin, plugins, land_snapshot, render_mode, export, finish_export, export_blocking, export_in_flight, drop_export_leftovers}`, `Graph::host_plugin`, `SessionBuilder::snapshot_interval`, `Error::ExportInFlight`, `SessionEvent::{PluginDied, PluginLatencyChanged, PluginSnapshotDue}` |
   | — | `AudioGraphRes::{with_plugin, render_mode}`, `CapturedControls::for_hosted` |
   | `bevy-tutti/plugin` enabled `tutti-plugin/bevy` | it does not: no plugin entity holds a `PluginParamValues` |
+  | `plugin_load_promote`, `plugin_state_snapshot`, `plugin_render_mode` on any thread | pinned to the main thread |
+  | a VST2 plugin opened in the load task | opened in `add_plugin`, on the main thread; `PluginLoaded::error()` is `None` until then |
+  | `plugin_render_mode` scheduled by the hosting plugin, if `ExportPlugin` was already added | scheduled by `ExportPlugin`, after both export systems |
+  | back-to-back Bevy exports: Offline → Realtime → Offline | Offline throughout (`finish_export_unannounced`) |
+  | `Graph::replace`/`crossfade` from a plugin to a native node kept the plugin's record | drop it |
+  | a plugin→plugin crossfade kept the old snapshot, snapshot token and mirror | fresh token, no snapshot, mirror read from the new plugin |
+  | a leaked export token: Offline, silently | Offline, warned once past `EXPORT_STALL_WARNING` |
+  | — | `Session::finish_export_unannounced`, `tutti_session::EXPORT_STALL_WARNING`, `tutti_plugin::Plugin::opens_in_process`, `PluginControls::{missed_chunks, chunk_in_flight_answered}` |
 
 ### Added
 

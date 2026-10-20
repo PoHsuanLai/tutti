@@ -151,7 +151,11 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert_eq!(done.load(std::sync::atomic::Ordering::SeqCst), 2, "both export");
+        assert_eq!(
+            done.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "both export"
+        );
         app.update();
         assert_eq!(mode(&app), RenderMode::Realtime, "Realtime once both end");
 

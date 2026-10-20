@@ -688,7 +688,7 @@ impl Graph {
     /// (`plugin`) A hosted plugin replaced this way is no longer hosted: its
     /// record is dropped, so its health, snapshots and render mode stop
     /// (a replacement plugin goes in with
-    /// [`replace_plugin`](Self::replace_plugin), which carries the record).
+    /// `Graph::replace_plugin`, which carries the record).
     pub fn replace<N: IntoNode>(
         &mut self,
         node: AudioNode,

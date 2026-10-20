@@ -73,7 +73,9 @@ use crate::error::Result;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
 use crate::protocol::{MidiEvent, MidiEventVec, ParameterChanges, SampleFormat};
-use std::sync::Arc;
+use crate::util::transport::shm::AudioSlab;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tutti_core::Samples;
 use tutti_graph::Prepare;
@@ -240,6 +242,42 @@ pub(crate) struct Batcher {
     /// The plugin's MIDI-out for the chunk the ring holds, at that chunk's
     /// frames, sorted (`collect`). Inline, so the drain never allocates.
     reply: MidiEventVec,
+    /// What the pipeline reports to its controls.
+    counters: Arc<ChunkCounters>,
+}
+
+/// What the pipeline reports to its controls
+/// ([`PluginControls::missed_chunks`](super::PluginControls::missed_chunks),
+/// [`chunk_in_flight_answered`](super::PluginControls::chunk_in_flight_answered)):
+/// written on the audio thread with relaxed atomics, read anywhere.
+#[derive(Default)]
+pub(crate) struct ChunkCounters {
+    /// The chunk submitted and not collected yet; 0 for none (sequences
+    /// start at 1).
+    in_flight: AtomicU64,
+    /// Chunks the server had not answered when the node collected them
+    /// (played as silence), the bridge alive.
+    missed: AtomicU64,
+    /// The slab the answers land in, set when the node is bound.
+    slab: OnceLock<Arc<AudioSlab>>,
+}
+
+impl ChunkCounters {
+    /// Records the slab the chunks are answered in (the node's bind).
+    pub(crate) fn attach(&self, slab: &Arc<AudioSlab>) {
+        let _ = self.slab.set(Arc::clone(slab));
+    }
+
+    /// See `PluginControls::missed_chunks`.
+    pub(crate) fn missed(&self) -> u64 {
+        self.missed.load(Ordering::Relaxed)
+    }
+
+    /// See `PluginControls::chunk_in_flight_answered`.
+    pub(crate) fn in_flight_answered(&self) -> bool {
+        let seq = self.in_flight.load(Ordering::Acquire);
+        seq == 0 || self.slab.get().is_none_or(|slab| slab.has_output(seq))
+    }
 }
 
 /// An offline fork's wait: its [`ForkWatch`] holds the per-block budget and
@@ -265,7 +303,14 @@ impl Batcher {
             expect_seq: None,
             offline_wait: None,
             reply: MidiEventVec::new(),
+            counters: Arc::default(),
         }
+    }
+
+    /// Reports to `counters` (the controls' cells) instead of its own.
+    pub(super) fn with_counters(mut self, counters: Arc<ChunkCounters>) -> Self {
+        self.counters = counters;
+        self
     }
 
     /// Settle the chunk for `p`: the host's device quantum when it knows one
@@ -395,6 +440,7 @@ impl Batcher {
     /// audio from arriving.
     pub(super) fn reset(&mut self) {
         self.expect_seq = None;
+        self.counters.in_flight.store(0, Ordering::Release);
         self.pos = 0;
         self.reply.clear();
         for row in self.fifo.iter_mut().chain(self.ring.iter_mut()) {
@@ -440,6 +486,10 @@ impl Batcher {
                 }
             }
             None => {
+                // A chunk in flight the server had not answered: a dropout.
+                if self.expect_seq.is_some() && !bridge.is_crashed() {
+                    self.counters.missed.fetch_add(1, Ordering::Relaxed);
+                }
                 for row in &mut self.ring {
                     row[..chunk].fill(0.0);
                 }
@@ -453,6 +503,7 @@ impl Batcher {
         tutti_plugin_types::insertion_sort_by_key(&mut self.reply, |e| e.frame_offset);
         host.midi_out(&self.reply);
         self.expect_seq = None;
+        self.counters.in_flight.store(0, Ordering::Release);
     }
 
     /// Ship the full FIFO as the next chunk: stage every input port, publish
@@ -495,6 +546,7 @@ impl Batcher {
         if submitted.block {
             self.next_seq += 1;
             self.expect_seq = Some(seq);
+            self.counters.in_flight.store(seq, Ordering::Release);
         } else {
             self.expect_seq = None;
         }

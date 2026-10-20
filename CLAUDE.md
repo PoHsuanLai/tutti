@@ -93,7 +93,8 @@ just test-all                      # both
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
   `real_stall_tests`, `tutti-session`'s `plugin` suite and §5.2 example
   (`plugin_midi_export`, `--features clap,export`), and `bevy-tutti`'s
-  `plugin_capture`, `mod_plugin` and `export_fork` plugin tests
+  `plugin_capture`, `mod_plugin` and `export_fork` plugin tests and
+  `engine::restart::tests::a_restart_to_another_callback_size_re_declares_a_plugins_latency`
   (`--features full,plugin`) fail with that exact command. They must fail
   rather than skip, and they cannot use a dev-dependency because that would
   be a cycle.

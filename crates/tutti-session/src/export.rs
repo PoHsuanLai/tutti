@@ -783,8 +783,16 @@ mod tests {
         let job = session.export(request()).unwrap();
         assert_eq!(session.render_mode(), RenderMode::Offline);
         session.finish_export_unannounced(job.run()).unwrap();
-        session.run_phase(Phase::RenderMode, PhaseCx::at(Instant::now()), &mut Vec::new());
-        assert_eq!(session.render_mode(), RenderMode::Realtime, "the phase announces");
+        session.run_phase(
+            Phase::RenderMode,
+            PhaseCx::at(Instant::now()),
+            &mut Vec::new(),
+        );
+        assert_eq!(
+            session.render_mode(),
+            RenderMode::Realtime,
+            "the phase announces"
+        );
 
         session.export_blocking(request()).unwrap();
         assert_eq!(
@@ -816,8 +824,7 @@ mod tests {
                     ExportClock::frozen(),
                 )
                 .with_edit(Box::new(move |prepared: PreparedGraph<'_>| {
-                    *into.lock().unwrap() =
-                        Some((prepared.ctx.is_rolling(), prepared.ctx.beat()));
+                    *into.lock().unwrap() = Some((prepared.ctx.is_rolling(), prepared.ctx.beat()));
                 })),
             )
             .expect("the export renders");

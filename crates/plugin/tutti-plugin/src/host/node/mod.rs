@@ -436,7 +436,10 @@ impl PluginClient<Unbound> {
     /// ([`controls`](Self::controls)), so an install through a handle reaches
     /// the running node.
     pub fn bind(self) -> PluginClient<Bound> {
-        let io = Batcher::new(self.inputs, self.outputs, self.format, self.ceiling);
+        let chunks = self.controls.chunk_counters();
+        chunks.attach(self.bridge.audio_buffer());
+        let io = Batcher::new(self.inputs, self.outputs, self.format, self.ceiling)
+            .with_counters(chunks);
         // A slot per parameter: every parameter can move in one chunk. The
         // chunk's point room, here and in the bridge's buffers, is sized in
         // `prepare`, once the chunk length is known.

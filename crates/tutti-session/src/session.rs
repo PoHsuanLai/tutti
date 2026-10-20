@@ -27,9 +27,9 @@ pub enum Phase {
     /// session owns exports (design 015 PR 6).
     RenderMode,
     /// Modulation's apply (feature `modulation`): the declarations (the
-    /// host's, [`PhaseCx::mods`], or the session's own,
-    /// [`Session::mods`]) onto the graph, staging what is new for the
-    /// commit. A refusal is [`SessionEvent::ModulationRefused`].
+    /// host's, `PhaseCx::mods`, or the session's own, `Session::mods`)
+    /// onto the graph, staging what is new for the commit. A refusal is
+    /// `SessionEvent::ModulationRefused`.
     Modulation,
     /// The commit, iff the graph was edited since the last one, and the
     /// compensation of the plan it sent (or of a re-prepare's resumed plan)
@@ -42,9 +42,7 @@ pub enum Phase {
     /// resyncs the apply owes are sent.
     AfterCommit,
     /// The hardware out (the clock, and whatever else is wired to its node)
-    /// drained to the output (feature `midi`; [`Midi::set_hardware_out`]).
-    ///
-    /// [`Midi::set_hardware_out`]: crate::Midi::set_hardware_out
+    /// drained to the output (feature `midi`; `Midi::set_hardware_out`).
     MidiOut,
     /// The device's faults, as `SessionEvent::DeviceFault` (feature `device`).
     Poll,
@@ -424,11 +422,10 @@ impl Session {
     /// main-thread guard is (see the type docs).
     ///
     /// The session's own declarations on `node` go with it: its modulation
-    /// ranges, automation and the routes into it ([`mods`](Self::mods)),
-    /// and, when it is a clip or live input of the session's
-    /// ([`midi`](Self::midi)), that. A clip or live input feeding `node`
-    /// stays, to be re-aimed ([`Midi::retarget`](crate::Midi::retarget)) or
-    /// removed.
+    /// ranges, automation and the routes into it (`mods`, feature
+    /// `modulation`), and, when it is a clip or live input of the
+    /// session's (`midi`, feature `midi`), that. A clip or live input
+    /// feeding `node` stays, to be re-aimed (`Midi::retarget`) or removed.
     pub fn remove(&mut self, node: AudioNode) -> bool {
         #[cfg(feature = "modulation")]
         self.mods.own.forget_node(node);

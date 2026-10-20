@@ -72,9 +72,11 @@ fn main() {
         .build_offline(SampleRate(RATE), ChannelLayout::MONO, Samples(BLOCK))
         .expect("builds");
     let (saw, _) = s.graph().insert(ForkByClone(Osc::saw(Hz(110.0))));
-    let (filter, _) = s
-        .graph()
-        .add(SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(1_000.0), Q(0.7)));
+    let (filter, _) = s.graph().add(SvfFilterNode::<f64>::new(
+        SvfType::LowPass,
+        Hz(1_000.0),
+        Q(0.7),
+    ));
     let (kick, _) = s.graph().insert(ForkByClone(Kick));
     s.graph().set_source(filter, 0, GraphSource::Node(saw, 0));
     s.graph().set_output_source(0, GraphSource::Node(filter, 0));

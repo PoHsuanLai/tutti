@@ -1463,7 +1463,8 @@ pub enum AudioNodeTarget {
 ///
 /// `tutti_mod`'s declarations key a target by `TargetKey { node: u64, param }`
 /// and a source by `SourceKey(u64)`; the `u64` is the host's own minting (a
-/// Bevy entity's bits, say), and this is how [`Graph::modulate`] reads it.
+/// Bevy entity's bits, say), and this is how the session's
+/// [`Modulation`](crate::Phase::Modulation) phase reads it ([`ModInput`](crate::ModInput)).
 #[cfg(feature = "modulation")]
 pub trait ModKeys {
     /// The node a target's key names.

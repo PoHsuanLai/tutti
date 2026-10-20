@@ -14,7 +14,16 @@
 //! hears Offline before the job can render a block), `finish_export` drops
 //! the token and runs it again, and a job or its return dropped unfinished
 //! (a cancelled task, a panic on the worker) drops its token, so the next
-//! update restores Realtime.
+//! update restores Realtime. A host that may start the next export before
+//! its next `Phase::RenderMode` finishes with
+//! [`Session::finish_export_unannounced`] instead, so its plugins are not
+//! told Realtime and then Offline again between two exports.
+//!
+//! **A token that never drops** (a job `mem::forget`ed, or kept unrun
+//! forever) keeps the export in flight: the plugins stay Offline and every
+//! later export is refused. [`Phase::Collect`](crate::Phase::Collect) warns,
+//! once, when one has been in flight for [`EXPORT_STALL_WARNING`] of its
+//! `now`.
 //!
 //! **Leftovers drop on the main thread.** The rendered graph, what a failed
 //! fork build had made, an edit that never ran: each is wrapped so that
@@ -27,6 +36,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tutti_core::transport::OfflineTransport;
 use tutti_core::AudioNode;
@@ -318,12 +328,24 @@ impl PreparedGraph<'_> {
 /// build failed, the job was dropped) is dropped on the main thread.
 pub type PrepareEdit = Box<dyn for<'a> FnOnce(PreparedGraph<'a>) + Send>;
 
+/// How long an export may be in flight, on the `now` the session's
+/// [`Phase::Collect`](crate::Phase::Collect) is given, before it warns that
+/// its token may have leaked: an hour. Generous: an offline render of a
+/// long project, with plugin forks that launch servers, takes minutes.
+pub const EXPORT_STALL_WARNING: Duration = Duration::from_secs(60 * 60);
+
 /// The session's export state: the token every export holds a clone of,
-/// and the channel leftovers come back on.
+/// the channel leftovers come back on, and the stall watch.
 pub(crate) struct ExportState {
     token: Arc<()>,
     send: Sender<Box<dyn Send>>,
     recv: Receiver<Box<dyn Send>>,
+    /// The `now` the collect first saw the current export in flight.
+    since: Option<Instant>,
+    /// Whether the current export's stall was warned about.
+    stall_warned: bool,
+    /// How many stalls were warned about: what a test reads.
+    stall_warnings: usize,
 }
 
 impl Default for ExportState {
@@ -333,6 +355,9 @@ impl Default for ExportState {
             token: Arc::new(()),
             send,
             recv,
+            since: None,
+            stall_warned: false,
+            stall_warnings: 0,
         }
     }
 }
@@ -341,6 +366,28 @@ impl ExportState {
     /// Whether an export token lives.
     pub(crate) fn in_flight(&self) -> bool {
         Arc::strong_count(&self.token) > 1
+    }
+
+    /// Watches for a leaked token at `now`: warns once when an export has
+    /// been in flight (as the collects saw it) for [`EXPORT_STALL_WARNING`].
+    /// Its clock restarts when nothing is in flight.
+    pub(crate) fn watch_stall(&mut self, now: Instant) {
+        if !self.in_flight() {
+            self.since = None;
+            self.stall_warned = false;
+            return;
+        }
+        let since = *self.since.get_or_insert(now);
+        if !self.stall_warned && now.saturating_duration_since(since) >= EXPORT_STALL_WARNING {
+            self.stall_warned = true;
+            self.stall_warnings += 1;
+            tracing::warn!(
+                "an export has been in flight for over {} minutes: if its job or what it \
+                 returned leaked (forgotten, or kept unrun), hosted plugins stay offline \
+                 and every later export is refused (ExportInFlight)",
+                EXPORT_STALL_WARNING.as_secs() / 60
+            );
+        }
     }
 
     /// Drops, on this thread, every leftover sent back so far.
@@ -403,6 +450,13 @@ impl<T: Send + 'static> Drop for ToMain<T> {
 /// Holds the export's token: dropping it unrun ends the export (the next
 /// update announces Realtime), and what it holds goes back to the session
 /// to drop.
+///
+/// **Do not leak it.** A job (or its [`ExportRendered`]) that is
+/// `mem::forget`ed, or kept unrun forever, keeps its token: the export
+/// stays in flight, hosted plugins stay Offline, and every later
+/// [`Session::export`] is refused with
+/// [`Error::ExportInFlight`](crate::Error::ExportInFlight). Nothing else
+/// reports it; the session warns once after [`EXPORT_STALL_WARNING`].
 #[must_use = "an export renders nothing until it is run and finished"]
 pub struct ExportJob {
     pending: ToMain<PendingExport>,
@@ -610,6 +664,36 @@ impl Session {
     /// fork that failed mid-render names its node's key), an I/O or encoder
     /// error.
     pub fn finish_export(&mut self, rendered: ExportRendered) -> crate::Result<ExportOutput> {
+        let result = self.finish_export_unannounced(rendered);
+        #[cfg(feature = "plugin")]
+        self.render_mode_phase();
+        result
+    }
+
+    /// [`finish_export`](Self::finish_export) without its announcement:
+    /// drops the rendered graph and the leftovers here and releases the
+    /// export's token, but leaves telling the plugins Realtime to the next
+    /// [`Phase::RenderMode`](crate::Phase::RenderMode) (the next
+    /// [`update`](Self::update), or the host's own run of the phase).
+    ///
+    /// For a host that may start another export before that phase runs (a
+    /// queue of them, one finished and the next started in one frame):
+    /// with `finish_export` each plugin would be told Realtime and then
+    /// Offline again between the two, and three of the four formats take a
+    /// mode change only while deactivated, so each announcement is a
+    /// deactivate and reactivate (and, for a plugin whose latency follows
+    /// the mode, a re-plan). The host must run `Phase::RenderMode` after it,
+    /// or the plugins stay Offline once the last export ends.
+    ///
+    /// A main-thread call (design 015 §4.2).
+    ///
+    /// # Errors
+    ///
+    /// As [`finish_export`](Self::finish_export).
+    pub fn finish_export_unannounced(
+        &mut self,
+        rendered: ExportRendered,
+    ) -> crate::Result<ExportOutput> {
         crate::main_thread();
         let ExportRendered {
             result,
@@ -621,8 +705,6 @@ impl Session {
         }
         self.export.drop_leftovers();
         drop(_token);
-        #[cfg(feature = "plugin")]
-        self.render_mode_phase();
         Ok(result?)
     }
 
@@ -651,5 +733,125 @@ impl Session {
     /// still alive.
     pub fn export_in_flight(&self) -> bool {
         self.export.in_flight()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Phase, PhaseCx};
+    use tutti_types::SampleRate;
+
+    /// A detached session whose outputs hear a dc node: something to export.
+    fn session() -> Session {
+        let mut session = Session::builder()
+            .build_detached(SampleRate(48_000.0))
+            .unwrap();
+        let (dc, _) = session
+            .graph()
+            .insert(tutti_nodes::testing::Const::mono(0.0));
+        session.graph().set_outputs_from(dc);
+        session
+    }
+
+    /// **An unannounced finish leaves the mode to the next
+    /// `Phase::RenderMode`**; the announcing one (and `export_blocking`)
+    /// announces Realtime itself. No plugin is needed: the mode asserted is
+    /// the one the session announced.
+    ///
+    /// Mutation (run, failed): `finish_export_unannounced` running the
+    /// render-mode phase → the mode reads Realtime straight after it.
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn an_unannounced_finish_leaves_the_mode_to_the_phase() {
+        use tutti_plugin::RenderMode;
+        let mut session = session();
+        let request = || {
+            ExportRequest::new(
+                ExportSource::Mix,
+                ExportTarget::Buffers,
+                ExportConfig::default(),
+                ExportClock::frozen(),
+            )
+        };
+        let job = session.export(request()).unwrap();
+        assert_eq!(session.render_mode(), RenderMode::Offline);
+        session.finish_export_unannounced(job.run()).unwrap();
+        assert!(!session.export_in_flight(), "the token is released");
+        assert_eq!(session.render_mode(), RenderMode::Offline, "not announced");
+        // The next export starts with no Realtime in between.
+        let job = session.export(request()).unwrap();
+        assert_eq!(session.render_mode(), RenderMode::Offline);
+        session.finish_export_unannounced(job.run()).unwrap();
+        session.run_phase(Phase::RenderMode, PhaseCx::at(Instant::now()), &mut Vec::new());
+        assert_eq!(session.render_mode(), RenderMode::Realtime, "the phase announces");
+
+        session.export_blocking(request()).unwrap();
+        assert_eq!(
+            session.render_mode(),
+            RenderMode::Realtime,
+            "the headless finish announces"
+        );
+    }
+
+    /// **An export kept in flight past `EXPORT_STALL_WARNING` is warned
+    /// about once**, on the collect's `now`; its clock restarts once
+    /// nothing is in flight, so the next leaked export is warned about too.
+    ///
+    /// Mutations (each run, each failed): the `!stall_warned` guard removed
+    /// (three warnings for the first export); the bound removed (a warning
+    /// at the first collect); the clock not restarted when nothing is in
+    /// flight (the second export warned at its first collect).
+    #[test]
+    fn a_leaked_export_is_warned_about_once() {
+        let mut session = session();
+        let collect = |session: &mut Session, at: Instant| {
+            session.run_phase(Phase::Collect, PhaseCx::at(at), &mut Vec::new());
+            session.export.stall_warnings
+        };
+        let t0 = Instant::now();
+        let job = session
+            .export(ExportRequest::new(
+                ExportSource::Mix,
+                ExportTarget::Buffers,
+                ExportConfig::default(),
+                ExportClock::frozen(),
+            ))
+            .expect("the export starts");
+        assert_eq!(collect(&mut session, t0), 0, "just started");
+        let minute = Duration::from_secs(60);
+        assert_eq!(
+            collect(&mut session, t0 + EXPORT_STALL_WARNING - minute),
+            0,
+            "inside the bound"
+        );
+        assert_eq!(collect(&mut session, t0 + EXPORT_STALL_WARNING), 1);
+        assert_eq!(
+            collect(&mut session, t0 + EXPORT_STALL_WARNING + minute),
+            1,
+            "once"
+        );
+        assert_eq!(collect(&mut session, t0 + 3 * EXPORT_STALL_WARNING), 1);
+
+        // The job dropped: nothing in flight, and the next export's clock
+        // starts at its own first collect.
+        drop(job);
+        let t1 = t0 + 4 * EXPORT_STALL_WARNING;
+        assert_eq!(collect(&mut session, t1), 1);
+        let job = session
+            .export(ExportRequest::new(
+                ExportSource::Mix,
+                ExportTarget::Buffers,
+                ExportConfig::default(),
+                ExportClock::frozen(),
+            ))
+            .expect("the next export starts");
+        assert_eq!(collect(&mut session, t1 + minute), 1, "a new clock");
+        assert_eq!(
+            collect(&mut session, t1 + minute + EXPORT_STALL_WARNING),
+            2,
+            "the second leak is warned about too"
+        );
+        drop(job);
     }
 }

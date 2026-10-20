@@ -66,7 +66,7 @@ pub use error::{Error, Result};
 #[cfg(feature = "export")]
 pub use export::{
     ExportClock, ExportJob, ExportOutput, ExportRendered, ExportRequest, ExportSource,
-    ExportTarget, PrepareEdit, PreparedGraph,
+    ExportTarget, PrepareEdit, PreparedGraph, EXPORT_STALL_WARNING,
 };
 #[cfg(feature = "modulation")]
 pub use graph::ModKeys;

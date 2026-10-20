@@ -45,10 +45,9 @@ pub mod editor;
 pub mod health;
 pub mod load;
 pub mod native_window;
-// `render_mode` is scheduled after `crate::export`'s systems, and that module
-// is itself `export`-gated. This is the one place a `cfg` is right rather
-// than an `is_plugin_added` check: without the feature the systems do not
-// exist to order against.
+// `render_mode` is scheduled by `crate::export::ExportPlugin`, after its
+// systems, and that module is itself `export`-gated: without the feature
+// the systems do not exist to order against.
 #[cfg(feature = "export")]
 pub mod render_mode;
 pub mod scan;
@@ -242,28 +241,6 @@ impl Plugin for TuttiHostingPlugin {
             )
                 .run_if(windowing_ready),
         );
-
-        // Announce the render mode to hosted plugins each frame (the session's
-        // `Phase::RenderMode`), but only if this app can actually export: a
-        // cancelled export restores `Realtime` here, the frame after.
-        //
-        // `is_plugin_added` rather than a feature flag: whether a host bounces
-        // is a composition choice it makes at build time, and a flag would make
-        // it a compile-time property of this crate instead.
-        //
-        // After both export systems, so the frame's answer has settled before it
-        // is read. Ungated on the engine for the same reason `poll_exports` is:
-        // a render already in flight when audio stops still has to put its
-        // plugins back.
-        #[cfg(feature = "export")]
-        if app.is_plugin_added::<crate::export::ExportPlugin>() {
-            app.add_systems(
-                Update,
-                plugin_render_mode
-                    .after(crate::export::poll_exports)
-                    .after(crate::export::start_exports),
-            );
-        }
 
         // Scanning is deliberately **not** gated on `engine_ready`: it walks the
         // filesystem and probes subprocesses, touching neither the graph nor a

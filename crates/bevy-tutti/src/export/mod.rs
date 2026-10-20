@@ -202,5 +202,21 @@ impl Plugin for ExportPlugin {
             )
                 .chain(),
         );
+
+        // The plugins' render mode (the session's `Phase::RenderMode`),
+        // after both: `poll_exports` finishes without announcing, so this is
+        // what tells the plugins `Realtime` once the last export of a queue
+        // ends, and the frame after a cancelled one. Scheduled here, not by
+        // `TuttiHostingPlugin`: a frame that finishes an export must run it,
+        // whichever plugin was added first. Ungated on the engine, as
+        // `poll_exports` is: a render in flight when audio stops still has
+        // to put its plugins back.
+        #[cfg(feature = "plugin")]
+        app.add_systems(
+            Update,
+            crate::plugin_host::plugin_render_mode
+                .after(poll_exports)
+                .after(start_exports),
+        );
     }
 }

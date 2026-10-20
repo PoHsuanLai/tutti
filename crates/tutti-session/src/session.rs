@@ -16,7 +16,9 @@ use crate::graph::{Committed, CrossfadeId, Graph, Retried};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Phase {
-    /// Crossfades that waited out a re-prepare are retried, then
+    /// Crossfades that waited out a re-prepare are retried, what exports
+    /// sent back is dropped (feature `export`; and an export in flight for
+    /// `EXPORT_STALL_WARNING` of `PhaseCx::now` warned about, once), then
     /// `Editor::collect` frees what the audio thread retired (here, on the
     /// main thread) and, mid re-prepare, sends the resumed plan.
     Collect,
@@ -394,7 +396,10 @@ impl Session {
                 // What an export left behind (a render's fork, an edit
                 // that never ran) drops here, on the main thread.
                 #[cfg(feature = "export")]
-                self.export.drop_leftovers();
+                {
+                    self.export.drop_leftovers();
+                    self.export.watch_stall(cx.now);
+                }
                 let repreparing = self.graph.is_repreparing();
                 self.graph.collect();
                 // A re-prepare resumed in that collect: it sent the resumed

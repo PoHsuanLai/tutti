@@ -118,7 +118,7 @@ impl PluginLoad {
         let opened = if Plugin::opens_in_process(&self.path) {
             Opened::OnMain(self)
         } else {
-            Opened::Done(self.open())
+            Opened::Done(Box::new(self.open()))
         };
         PluginLoaded { path, opened }
     }
@@ -161,8 +161,9 @@ struct Open {
 
 /// What a [`PluginLoad`]'s run did.
 enum Opened {
-    /// Opened (or failed to) on the job's thread.
-    Done(Open),
+    /// Opened (or failed to) on the job's thread. Boxed: a plugin is far
+    /// larger than an unopened load.
+    Done(Box<Open>),
     /// Hosted in process: opened by `add_plugin`, on the main thread.
     OnMain(PluginLoad),
 }
@@ -424,7 +425,7 @@ impl Session {
             #[cfg(feature = "modulation")]
             mirror,
         } = match loaded.opened {
-            Opened::Done(open) => open,
+            Opened::Done(open) => *open,
             // A plugin hosted in process opens here, on the main thread.
             Opened::OnMain(load) => load.open(),
         };

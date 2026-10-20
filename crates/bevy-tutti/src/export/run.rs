@@ -7,8 +7,10 @@
 //! told `Offline`), then hands the job (building the fork, the hook's edit,
 //! the render) to a task on the shared compute pool; [`poll_exports`]
 //! drives those tasks, finishes each on the main thread
-//! (`Session::finish_export`: what the render held dropped there, the
-//! plugins told `Realtime`) and triggers [`ExportDone`].
+//! (`Session::finish_export_unannounced`: what the render held dropped
+//! there; the plugins are told `Realtime` by the frame's render-mode phase,
+//! after `start_exports`, so a queue of exports never flaps) and triggers
+//! [`ExportDone`].
 //!
 //! The render itself is synchronous and `Send` (tutti-export spawns no threads
 //! by design — "a host that wants a render off the main thread already owns a
@@ -237,7 +239,8 @@ impl NodeNames {
 }
 
 /// Drives in-flight exports; finishes the ones whose job returned
-/// (`Session::finish_export`) and triggers [`ExportDone`] on them.
+/// (`Session::finish_export_unannounced`: the frame's
+/// `plugin_render_mode` announces) and triggers [`ExportDone`] on them.
 ///
 /// **Pinned to the main thread** ([`NonSendMarker`](bevy_ecs::system::NonSendMarker)):
 /// `finish_export` drops the rendered graph (or, failed, whatever of it was
@@ -267,10 +270,14 @@ pub fn poll_exports(
             continue;
         };
         let result = match graph.as_mut() {
+            // Unannounced: `start_exports`, next in this frame, may start
+            // the next export, and the plugins must not hear Realtime and
+            // then Offline between the two. `plugin_render_mode`, after both
+            // export systems, announces Realtime if nothing started.
             Some(graph) => graph
                 .bypass_change_detection()
                 .session()
-                .finish_export(rendered)
+                .finish_export_unannounced(rendered)
                 .map_err(|e| names.session_error(e)),
             None => {
                 drop(rendered);

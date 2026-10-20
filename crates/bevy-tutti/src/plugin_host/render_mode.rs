@@ -7,7 +7,10 @@
 //! `PluginHandle::set_render_mode`. The session owns the answer (design 015
 //! §4.3): `Offline` while any export's token lives, `Realtime` otherwise,
 //! announced by `Session::export` before it returns and by
-//! `Session::finish_export` after it drops the token.
+//! `Session::finish_export` after it drops the token. Bevy finishes with
+//! `Session::finish_export_unannounced` instead and leaves the Realtime to
+//! this system, after `start_exports`: a frame that finishes one export
+//! and starts the next keeps its plugins Offline throughout.
 //!
 //! What neither of those sees is an export that never finishes: an
 //! [`ExportInFlight`](crate::export::ExportInFlight) cancelled or despawned
@@ -21,11 +24,12 @@ use tutti_session::Phase;
 
 use crate::graph::AudioGraphRes;
 
-/// Runs the session's `Phase::RenderMode`. Added (by
-/// [`TuttiHostingPlugin`](super::TuttiHostingPlugin)) after both export
-/// systems when [`ExportPlugin`](crate::export::ExportPlugin) is, and
-/// ungated on the engine: a render in flight when audio stops still has to
-/// put its plugins back.
+/// Runs the session's `Phase::RenderMode`. Added by
+/// [`ExportPlugin`](crate::export::ExportPlugin) (with `plugin`) after both
+/// export systems, and ungated on the engine: a render in flight when audio
+/// stops still has to put its plugins back. `poll_exports` finishes without
+/// announcing, so this is what tells the plugins `Realtime` when the last
+/// export of a queue ends.
 ///
 /// **Pinned to the main thread** ([`NonSendMarker`](bevy_ecs::system::NonSendMarker))
 /// with the session's other plugin calls, which design 015 §4.2 makes
@@ -68,6 +72,99 @@ mod tests {
 
     fn mode(app: &App) -> RenderMode {
         app.world().resource::<AudioGraphRes>().render_mode()
+    }
+
+    /// What the probe saw: the session's announced mode, read between
+    /// `poll_exports` and `start_exports` each frame.
+    #[derive(Resource, Default)]
+    struct SeenAtHandOff(Vec<RenderMode>);
+
+    fn probe(graph: Res<AudioGraphRes>, mut seen: ResMut<SeenAtHandOff>) {
+        seen.0.push(graph.render_mode());
+    }
+
+    /// **Two back-to-back exports keep the plugins Offline across the
+    /// hand-off.** `poll_exports` and `start_exports` run in one frame, so a
+    /// frame can finish one export and start the next; `poll_exports`
+    /// finishes without announcing (`Session::finish_export_unannounced`),
+    /// and the probe between the two systems never reads Realtime while the
+    /// queue drains. Two requests queued at once, over real session jobs,
+    /// with `ExportPlugin`'s own scheduling (which adds this module's
+    /// system after both).
+    ///
+    /// Mutation (run, failed): `poll_exports` finishing with the announcing
+    /// `Session::finish_export` → the probe reads Realtime on the frame the
+    /// first export finishes, before the second starts, and again when the
+    /// second does (`[Realtime; 4]`: no Offline run at the hand-off).
+    #[test]
+    fn back_to_back_renders_stay_offline() {
+        use crate::export::{ExportDone, ExportPlugin, ExportRequest as BevyRequest};
+        use crate::graph::AudioConfig;
+        use crate::AudioEngineState;
+
+        let mut graph = AudioGraphRes::headless(0, 2);
+        let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.0));
+        graph.set_outputs_from(dc);
+        let mut app = App::new();
+        app.add_plugins(bevy_app::TaskPoolPlugin::default());
+        app.insert_resource(graph);
+        app.insert_resource(AudioConfig {
+            sample_rate: tutti_core::SampleRate(48_000.0),
+            channels: tutti_core::ChannelLayout::STEREO,
+        });
+        app.insert_resource(AudioEngineState::Running);
+        app.add_plugins(ExportPlugin);
+        app.init_resource::<SeenAtHandOff>();
+        app.add_systems(
+            Update,
+            probe
+                .after(crate::export::poll_exports)
+                .before(crate::export::start_exports),
+        );
+
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for _ in 0..2 {
+            let done = std::sync::Arc::clone(&done);
+            app.world_mut()
+                .spawn(BevyRequest::new(
+                    crate::export::ExportSource::Master,
+                    crate::export::ExportTarget::Buffers,
+                    tutti_export::ExportConfig {
+                        render: tutti_export::RenderConfig {
+                            sample_rate: tutti_core::SampleRate(48_000.0),
+                            duration_seconds: 0.01,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    crate::export::ExportClock::frozen(),
+                ))
+                .observe(move |d: On<ExportDone>| {
+                    assert!(d.result.is_ok(), "the export failed: {:?}", d.result);
+                    done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                });
+        }
+        for _ in 0..4000 {
+            app.update();
+            if done.load(std::sync::atomic::Ordering::SeqCst) == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(done.load(std::sync::atomic::Ordering::SeqCst), 2, "both export");
+        app.update();
+        assert_eq!(mode(&app), RenderMode::Realtime, "Realtime once both end");
+
+        let seen = &app.world().resource::<SeenAtHandOff>().0;
+        let offline_runs = seen
+            .windows(2)
+            .filter(|w| w[0] != RenderMode::Offline && w[1] == RenderMode::Offline)
+            .count()
+            + usize::from(seen.first() == Some(&RenderMode::Offline));
+        assert_eq!(
+            offline_runs, 1,
+            "the mode must not flap between two consecutive bounces: {seen:?}"
+        );
     }
 
     /// An export started through the session, its job on the pool as

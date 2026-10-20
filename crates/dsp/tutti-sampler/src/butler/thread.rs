@@ -53,10 +53,11 @@ pub struct ButlerThread {
     /// has been called on an unstarted controller; `start` refuses once it is
     /// set, so the two drivers can never both own `Local`.
     ///
-    /// In a `Mutex` only so the controller stays `Sync` (a Bevy resource
-    /// holds it): the cycle's compensation feed holds an `arc_lend::Reader`,
-    /// which is `Send` but not `Sync`. Every access is through `&mut self`
-    /// (`Mutex::get_mut`), so nothing ever locks it.
+    /// The `Mutex` exists only to keep `ButlerThread` `Sync` (a Bevy
+    /// resource holds it): the cycle's compensation feed holds an
+    /// `arc_lend::Reader`, which is `Send` but not `Sync`. It is only ever
+    /// used through `Mutex::get_mut` (via `manual_cycle`, from `&mut self`),
+    /// so it is never locked.
     #[cfg(any(test, feature = "test-support"))]
     manual: Option<std::sync::Mutex<ButlerCycle>>,
 }

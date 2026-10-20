@@ -112,7 +112,7 @@ register a `Reader` ahead of time.
 arc-lend's own figures, this run against the E2 run on the same VM (both
 shared, so a difference within noise is marked *same*: within 10%). Tails
 on a shared VM are one or two samples each; read the medians first.
-17 wins, 4 losses.
+17 wins, 5 losses.
 
 | measurement (arc-lend) | E2 | E3 | |
 |---|---:|---:|---|
@@ -133,6 +133,7 @@ on a shared VM are one or two samples each; read the medians first.
 | 5 block p50, depth 8, 4 readers, no publisher | 5539 ns | 128 ns | win |
 | 5 block p50, depth 16, 4 readers, no publisher | 11.6 µs | 226 ns | win |
 | 6 max live values, no parked read | 2 | 2902 | loss |
+| 6 max live values, one parked read | 3 | 9 | loss |
 | 6 max live values, staircase of 12 parked reads | 20001 | 13 | win |
 | 6 publish p50, staircase | 47.2 µs | 214 ns | win |
 | 7.1 publish p50, 1 registered | 132 ns | 138 ns | same |
@@ -180,7 +181,20 @@ criterion reports means, and a deadline thread cares about the tail.
 
 ### The machine
 
-
+| | |
+|---|---|
+| cpu | Intel(R) Xeon(R) Processor @ 2.10GHz |
+| logical cores | 4 |
+| virtual machine | yes: the CPU reports the `hypervisor` flag |
+| os | Ubuntu 24.04.5 LTS (linux x86_64) |
+| kernel | 6.18.44-fc-v139 |
+| rustc | rustc 1.99.1 (58cf8f9c3 2026-10-13) |
+| profile | release |
+| clocksource | tsc |
+| thread pinning | yes: publisher on core 0, readers from core 1, wrapping (4 cores visible to core_affinity) |
+| reader counts | 1, 2, 3, 4 (N = logical cores − 1) |
+| run length per cell | 1500 ms (section 2), 1000 ms (section 5) |
+| load average at start | 1.10 1.28 0.82 |
 
 ### Timer overhead
 

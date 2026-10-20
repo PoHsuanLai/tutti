@@ -240,11 +240,17 @@ Rules:
   at one to four readers on a shared VM with a 30 ns timer floor (arc-swap
   51 ns) — `arc-lend`'s `BENCHMARKS.md`.
 - **Never park a `Loan`** in a struct field or hold one across blocks. A
-  parked loan pins the one value it holds, and nothing retired after it: the
-  retired list stays bounded by the registered readers. (Before E3 a parked
-  overflow loan could pin every value retired after it, and tutti ran a
-  debug-build check, `debug_check_reclaiming`, at the busiest publishes; E3
-  removed the failure, and the check with it.)
+  parked loan pins one value per reader, the one it holds. A reader
+  preempted mid-lend pins what is retired meanwhile, until the next scan
+  after it resumes; that is not bounded by the reader count (the bench
+  measured 2902 values at peak). Poll `retired_len()` to see it. (Before E3
+  a parked overflow loan could pin every value retired after it, and tutti
+  ran a debug-build count check, `debug_check_reclaiming`, at the busiest
+  publishes. E3 deleted it with its tests: a node cannot park a `Loan`
+  across blocks, since that needs a self-referential borrow of its own
+  `Reader`, and a `mem::forget` pins one value per reader
+  (`arc-lend`'s `parked_loans_pin_one_value_per_reader`). The count
+  measured the overflow epochs' hazard, which no longer exists.)
 - **One reader per nesting level.** A `Reader` lends one `Loan` at a time
   (`lend` takes `&mut self`); a second live loan of one cell on one thread
   needs a second reader.
@@ -279,8 +285,9 @@ the slots once, and frees only what no slot announces and no outstanding claim
 could still load. The soundness argument, in C++20 terms, is in `arc-lend`'s
 `docs::internal` (`crates/arc-lend/src/docs/internal.rs`). The `SeqCst` fence
 pair is the whole argument, and both halves are load-bearing: the loom model
-(`arc-lend/tests/loom.rs`, run against the shipped code; bounded at 4 in CI and
-at 5 under `just loom-full`) fails with either removed, and so does miri on the
+(`arc-lend/tests/loom.rs`, run against the shipped code: six models
+exhaustively, and `registering_and_dropping_readers` at a preemption bound of
+4 in CI and 5 under `just loom-full`) fails with either removed, and so does miri on the
 concurrent stress test. A plain x86 run does not, which is why neither check
 can be replaced by more iterations.
 

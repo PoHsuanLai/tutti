@@ -62,6 +62,9 @@
 //!   seven (a scan that reads the `FREE` no longer happens-after the
 //!   reader's last read);
 //! - the scan's slot load weakened from `Acquire` to `Relaxed` → all seven;
+//! - the publish's `swap(Release)` weakened to `Relaxed` → all seven (a
+//!   causality violation: a reader's `Acquire` load of the new pointer no
+//!   longer sees the payload's construction);
 //! - every claim given a fresh floor (`scanned_at`, as if the last scan had
 //!   not seen it) → all but `two_readers_one_publish` (which has one
 //!   publish, so no claim spans two scans): a reader preempted between its
@@ -76,6 +79,11 @@
 //!   no longer happens-after the old owner's last `FREE`, and a scan that
 //!   reads that `FREE` frees the new owner's value.
 //!
+//! The swap was `AcqRel` until a review found that weakening it to `Release`
+//! survives every model: the outgoing value was stored by a publisher holding
+//! the same lock, so the mutex already orders its contents before this
+//! publisher, and the `Acquire` half added nothing. `Release` is what ships.
+
 //! Two mutations survive, by construction, because both only make the
 //! publisher keep *more*:
 //!
@@ -183,8 +191,9 @@ impl Drop for Tracked {
 }
 
 /// No preemption bound of its own: exhaustive unless `LOOM_MAX_PREEMPTIONS`
-/// is set. CI sets it to 4; `just loom-full` to 5 (unbounded did not finish
-/// in 50 minutes).
+/// is set. CI and `just loom-full` run every model unbounded but
+/// `registering_and_dropping_readers`, which they bound at 4 and 5 (at 6 it
+/// did not finish in 25 minutes).
 fn model(f: impl Fn() + Sync + Send + 'static) {
     loom::model::Builder::new().check(f);
 }

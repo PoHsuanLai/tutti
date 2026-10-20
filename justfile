@@ -157,7 +157,8 @@ miri:
 # the same bound, about five minutes, and the parallel executor's three
 # primitives (`split`, `job_gate`, `task_graph`) at a bound of 3.
 loom:
-    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers
+    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test pos_ring_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test range_cell_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test seq_cell_loom
@@ -167,11 +168,13 @@ loom:
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test job_gate_loom
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test task_graph_loom
 
-# The `ArcLend` loom models at a preemption bound of 5, one above CI's: about
-# 6 minutes. Run it after changing `arc-lend`'s `src/lend.rs`. (Unbounded,
-# the registered-reader models did not finish in 50 minutes.)
+# The `ArcLend` loom models, after changing `arc-lend`'s `src/lend.rs`: six of
+# them unbounded (exhaustive, about 10 s; CI runs them so too), and
+# `registering_and_dropping_readers` at a preemption bound of 5, one above
+# CI's (about 6 minutes; at 6 it did not finish in 25 minutes).
 loom-full:
-    LOOM_MAX_PREEMPTIONS=5 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers
+    LOOM_MAX_PREEMPTIONS=5 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact
 
 check-jack:
     cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings

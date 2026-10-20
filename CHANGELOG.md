@@ -14,7 +14,11 @@ cache line of its own) in a growable, append-only slot list. A lend writes
 only that slot, and a publish never waits on a reader: a reader caught
 between claiming its slot and announcing what it loaded pins what it might
 load, through per-slot generations, and the next publish looks again. The
-loom model runs against the new code, with a new mutation record.
+loom model runs against the new code, with a new mutation record; six of
+its seven models run exhaustively in CI. A publish's swap is `Release`
+(the lock already orders publishers), and `Debug` formats the value after
+releasing the lock, so a `T::fmt` that publishes to the cell cannot
+deadlock.
 
 | Was | Now |
 |---|---|
@@ -41,7 +45,7 @@ registered where the reading node or structure is built:
 | — | re-exported: `tutti_types::Reader`, `tutti_core::Reader`, and `tutti_core::MeterSlotReader` (`Reader<Option<Arc<MeterMap>>>`) |
 | — | `MeterSlot::reader()`, `ChannelCompensation::reader()` (bevy-tutti), `Session::compensation_reader()` |
 | `compensation.0.lend()`, `session.compensation().lend()` | register once with `reader()` / `compensation_reader()`, keep it, and `lend` through it; re-register when the `ChannelCompensation` resource is rebound |
-| `tutti_types::debug_check_reclaiming`, `PARKED_LOAN_LIMIT` (and their `tutti_core` re-exports) | removed: a parked loan now pins one value, so the retired list cannot grow past the registered readers, and the check could never trip |
+| `tutti_types::debug_check_reclaiming`, `PARKED_LOAN_LIMIT` (and their `tutti_core` re-exports) | removed. A parked loan pins one value per reader; a reader preempted mid-lend pins what is retired meanwhile, until the next scan after it resumes (poll `retired_len()`). The count measured the overflow epochs' hazard, which is gone: a node cannot park a `Loan` across blocks (that needs a self-referential borrow of its `Reader`), and a `mem::forget` pins one value per reader (`arc-lend`'s `parked_loans_pin_one_value_per_reader`) |
 | `HardwareMidiInputs::collect` republished the port set to free retired ones | it calls `ArcLend::reclaim`, publishing nothing; same return value |
 
 Each node registers its reader in its constructor, and a fork's node

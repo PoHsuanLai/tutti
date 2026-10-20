@@ -301,8 +301,13 @@ the interpreter.
   on the shared VM). tutti's read sites hold `Reader`s, each registered
   where its node (or the butler's cycle, or the MIDI drain) is built, and a
   fork's node registers on its own new cell. `debug_check_reclaiming` and
-  `PARKED_LOAN_LIMIT` are gone: a parked loan pins one value, so the retired
-  list is bounded by the registered readers and the check could not trip.
+  `PARKED_LOAN_LIMIT` are gone. A parked loan pins one value per reader; a
+  reader preempted mid-lend pins what is retired meanwhile, until the next
+  scan after it resumes (hosts poll `retired_len()`). The count check
+  measured the overflow epochs' hazard, which no longer exists: a node
+  cannot park a `Loan` across blocks (it would need a self-referential
+  borrow of its own `Reader`), and a `mem::forget` pins one value per
+  reader (`parked_loans_pin_one_value_per_reader`).
   Hosts register a reader of the compensation table with
   `ChannelCompensation::reader` or `Session::compensation_reader`.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose

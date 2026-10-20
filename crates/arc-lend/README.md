@@ -88,17 +88,17 @@ Each row is the crate's documented or source-visible behaviour, checked
 against the version named; the sources are cited under [Sources](#sources).
 "Waits" means the operation can loop on another thread's progress.
 
-| | Reader holds | Reader frees? | Reader allocates? | Reader waits? | Writer waits on readers? | Readers |
-|---|---|---|---|---|---|---|
-| **arc-lend** | a borrow | never | never (registering may, on the control side) | no (wait-free) | never | one registered `Reader` each |
-| `arc-swap` 1.9.3 `load` | a `Guard`, which a store can promote to an owned `Arc` | yes, if its guard was promoted and is the last owner | on a thread's first load, if no free debt node exists (`debt/list.rs:169`) | lock-free; wait-free almost always | no | any |
-| `basedrop` 0.1.3 `SharedCell` | an owned `Shared<T>` | no: the last drop queues it for a `Collector` | no | no | yes: `replace` spins until no reader is mid-`get` | any |
-| Firewheel 0.14 `ArcGc` | an owned `ArcGc<T>` | no: a registry keeps a count until `collect` | no | no | n/a: a pointer type, swapped by other means; registering takes a global mutex | any |
-| `left-right` 0.11.8 | a borrow (`ReadGuard`) | no | no (a `ReadHandle` allocates once, when made) | no | yes: `publish` waits for every reader to leave the old copy | one handle per reader |
-| `triple_buffer` 9.0.0 | a borrow of its own buffer | no | no | no | no | one |
-| `rtrb` 0.4.0 + a return ring | an owned value it popped | only if it does not send it back | no | no | no | one |
-| farbot `NonRealtimeMutatable` | a borrow | no | no | no | yes: the writer's CAS loops until the reader releases | one |
-| `Mutex` / `RwLock` | a lock guard | it can, if it drops the last `Arc` it cloned | no | yes: it blocks | yes | any |
+| | Reader holds | Reader frees? | Reader allocates? | Reader waits? | Writer waits on readers? | A reader preempted mid-read pins | Readers |
+|---|---|---|---|---|---|---|---|
+| **arc-lend** | a borrow | never | never (registering may, on the control side) | no (wait-free) | never | what is retired while it is preempted (2902 values at peak in the benchmark, under a flat-out publisher) | one registered `Reader` each |
+| `arc-swap` 1.9.3 `load` | a `Guard`, which a store can promote to an owned `Arc` | yes, if its guard was promoted and is the last owner | on a thread's first load, if no free debt node exists (`debt/list.rs:169`) | lock-free; wait-free almost always | no | the value it loaded | any |
+| `basedrop` 0.1.3 `SharedCell` | an owned `Shared<T>` | no: the last drop queues it for a `Collector` | no | no | yes: `replace` spins until no reader is mid-`get` | nothing (the writer spins instead) | any |
+| Firewheel 0.14 `ArcGc` | an owned `ArcGc<T>` | no: a registry keeps a count until `collect` | no | no | n/a: a pointer type, swapped by other means; registering takes a global mutex | the value it holds | any |
+| `left-right` 0.11.8 | a borrow (`ReadGuard`) | no | no (a `ReadHandle` allocates once, when made) | no | yes: `publish` waits for every reader to leave the old copy | nothing (the writer waits instead) | one handle per reader |
+| `triple_buffer` 9.0.0 | a borrow of its own buffer | no | no | no | no | its own buffer | one |
+| `rtrb` 0.4.0 + a return ring | an owned value it popped | only if it does not send it back | no | no | no | the value it popped | one |
+| farbot `NonRealtimeMutatable` | a borrow | no | no | no | yes: the writer's CAS loops until the reader releases | nothing (the writer waits instead) | one |
+| `Mutex` / `RwLock` | a lock guard | it can, if it drops the last `Arc` it cloned | no | yes: it blocks | yes | nothing (the writer blocks instead) | any |
 
 ### When to prefer something else
 
@@ -106,7 +106,9 @@ against the version named; the sources are cited under [Sources](#sources).
   what a lend does (see
   [the benchmark](BENCHMARKS.md)),
   need no registration, and its writer's cost does not grow with the
-  readers. It has a far larger API (`rcu`, `compare_and_swap`, `Cache`,
+  readers. A reader preempted mid-load pins only the value it loaded,
+  where arc-lend's pins everything retired meanwhile: under a fast
+  publisher and frequent preemption, arc-swap holds less memory. It has a far larger API (`rcu`, `compare_and_swap`, `Cache`,
   `Access` projections) and years of use. If the reader may free, or a
   thread's first load may allocate, it is the right choice. It can also be
   made safe for a deadline by discipline: prewarm each reader thread, and

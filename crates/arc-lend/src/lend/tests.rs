@@ -646,3 +646,50 @@ fn concurrent_readers_and_a_publisher_hammering() {
 fn concurrent_readers_and_a_publisher_small() {
     readers_against_a_publisher(2, 40, true);
 }
+
+/// `Debug` formats the value with the cell's lock released, so a payload
+/// whose `fmt` publishes to the same cell (a value that logs a correction
+/// of itself) does not deadlock.
+///
+/// Mutation (run): format under the lock (`let _control = self.lock();`
+/// held across `f.debug_tuple(..)`). `fmt`'s publish blocks on the lock the
+/// formatting thread holds, and the `recv_timeout` fails.
+#[test]
+#[cfg_attr(miri, ignore = "waits on a wall-clock deadline")]
+fn debug_formats_outside_the_lock() {
+    struct Reentrant {
+        cell: std::sync::OnceLock<std::sync::Weak<ArcLend<Reentrant>>>,
+    }
+    impl std::fmt::Debug for Reentrant {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if let Some(cell) = self.cell.get().and_then(std::sync::Weak::upgrade) {
+                cell.publish(Arc::new(Reentrant {
+                    cell: std::sync::OnceLock::new(),
+                }));
+            }
+            f.write_str("Reentrant")
+        }
+    }
+
+    let first = Arc::new(Reentrant {
+        cell: std::sync::OnceLock::new(),
+    });
+    let cell = Arc::new(ArcLend::from_arc(Arc::clone(&first)));
+    first.cell.set(Arc::downgrade(&cell)).expect("set once");
+    drop(first);
+
+    let (done_tx, done_rx) = mpsc::channel();
+    let formatter = {
+        let cell = Arc::clone(&cell);
+        std::thread::spawn(move || {
+            let text = format!("{cell:?}");
+            done_tx.send(text).unwrap();
+        })
+    };
+    let text = done_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("Debug deadlocked on a payload that publishes");
+    formatter.join().unwrap();
+    assert_eq!(text, "ArcLend(Reentrant)");
+    assert_eq!(cell.retired_len(), 0, "the formatted value was freed after");
+}

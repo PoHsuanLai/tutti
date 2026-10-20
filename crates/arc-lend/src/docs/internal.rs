@@ -66,7 +66,7 @@
 //! 1. reserve room in the retired list and take the reused free buffer (the
 //!    only allocations, before anything changes, so a panic there leaves the
 //!    cell untouched);
-//! 2. swap the new pointer in (`AcqRel`), bump `seq`, and retire the old value
+//! 2. swap the new pointer in (`Release`), bump `seq`, and retire the old value
 //!    with its sequence number;
 //! 3. `fence(SeqCst)`;
 //! 4. **scan**: read every slot once (`Acquire`):
@@ -104,9 +104,12 @@
 //! one under the mutex). Call the reader's claim `C`, its fence `Fr`, its load
 //! `R`. `SeqCst` fences are totally ordered.
 //!
-//! **If `Fp` precedes `Fr`**, then `X` is sequenced before `Fp` and `R` after
-//! `Fr`, so `R` reads `X` or a later write of `current` ([atomics.order]/4,
-//! the fence-to-fence clause). It cannot load `V`.
+//! **If `Fp` precedes `Fr`**, then `X` happens before `Fp` (sequenced before
+//! it in a publish; through the mutex for a reclaim, or for a swap made by an
+//! earlier publish) and `R` is sequenced after `Fr`, so `R` reads `X` or a
+//! later write of `current` ([atomics.order]/4.4: were `R` coherence-ordered
+//! before `X`, then with `Fr` happening before `R` and `X` happening before
+//! `Fp`, `Fr` would precede `Fp` in the total order). It cannot load `V`.
 //!
 //! **If `Fr` precedes `Fp`**, `S`'s read of the slot sees `C` or a later write
 //! of it (the same clause, with `C` sequenced before `Fr`). Each case:

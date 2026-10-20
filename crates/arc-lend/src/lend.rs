@@ -293,14 +293,18 @@ impl<T> ArcLend<T> {
             freeable.reserve(control.retired.len() + 1);
 
             // Step 2. `Release` publishes the new value's contents to readers'
-            // `Acquire` loads; `Acquire` makes the outgoing value's contents
-            // ours before we drop it.
+            // `Acquire` loads. No `Acquire` half: the outgoing value was
+            // stored by a publisher holding this lock, so the mutex already
+            // orders its contents before us, and what readers did with it
+            // reaches the free through the scan's `Acquire` slot reads.
+            // (`AcqRel` here was redundant with the lock; see the loom
+            // model's mutation record.)
             let old_seq = control.seq;
             control.seq += 1;
             let old = self
                 .current
                 .0
-                .swap(Arc::into_raw(value).cast_mut(), Ordering::AcqRel);
+                .swap(Arc::into_raw(value).cast_mut(), Ordering::Release);
             // SAFETY: `old` came out of `current`, which only ever holds a
             // pointer from `Arc::into_raw` whose strong count the cell owns.
             // The swap removed it from `current`, so this is the one place that
@@ -498,14 +502,22 @@ impl<T: Default> Default for ArcLend<T> {
 
 impl<T: std::fmt::Debug> std::fmt::Debug for ArcLend<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Read on the publisher side: under the lock, no publish can retire
-        // (let alone free) the current value.
-        let _control = self.lock();
-        let ptr = self.current.0.load(Ordering::Acquire);
-        // SAFETY: `current` always holds a live `Arc` the cell owns, and only
-        // a publish, which needs the lock held here, can replace it.
-        let value = unsafe { &*ptr };
-        f.debug_tuple("ArcLend").field(value).finish()
+        // Take a strong count under the lock, then format with the lock
+        // released: a `T::fmt` that publishes to this cell would otherwise
+        // deadlock on it.
+        let value: Arc<T> = {
+            let _control = self.lock();
+            let ptr = self.current.0.load(Ordering::Acquire);
+            // SAFETY: `current` always holds a pointer from `Arc::into_raw`
+            // whose strong count the cell owns, and only a publish, which
+            // needs the lock held here, can replace (and so retire) it. The
+            // increment gives `from_raw` a count of its own to take.
+            unsafe {
+                Arc::increment_strong_count(ptr);
+                Arc::from_raw(ptr)
+            }
+        };
+        f.debug_tuple("ArcLend").field(&*value).finish()
     }
 }
 
@@ -613,7 +625,7 @@ impl<T> Reader<T> {
         // dangling pointer.
         fence(Ordering::SeqCst);
 
-        // `Acquire` pairs with the publisher's `AcqRel` swap, so the pointee is
+        // `Acquire` pairs with the publisher's `Release` swap, so the pointee is
         // fully constructed from this thread's point of view.
         let ptr = self.cell.current.0.load(Ordering::Acquire);
 

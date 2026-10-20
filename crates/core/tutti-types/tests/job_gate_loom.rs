@@ -25,7 +25,8 @@
 //! (`LOOM_MAX_PREEMPTIONS=3`):
 //!
 //! - the caller's wait for `entered` in `Close::drop` deleted → a causality
-//!   violation on the job cell (a helper reads after the overwrite);
+//!   violation on the job cell (a helper reads after the overwrite). Re-run
+//!   after that wait became `SpinThenYield` (`rt/spin.rs`): the same;
 //! - the helper's re-read of `state` after entering deleted → the same;
 //! - either `SeqCst` fence (the caller's in `Close::drop`, the helper's in
 //!   `help`) removed → the same;
@@ -33,6 +34,12 @@
 //!   to `Relaxed` → the same;
 //! - `help` made not to record the generation it served → "index 1 ran
 //!   twice".
+//!
+//! The close's spin-then-yield is a scheduling change, not an ordering one:
+//! its progress check is the same `Acquire` load of `entered` the exit test
+//! makes, and loom's `spin_loop` and `yield_now` both just schedule another
+//! thread. So removing the yield is not a mutation this model can see; the
+//! unit test `the_close_yields_while_a_helper_is_inside` catches it.
 
 #![cfg(loom)]
 

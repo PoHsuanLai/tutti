@@ -63,6 +63,11 @@ assert_no_alloc = { version = "1", default-features = false }
 # tested against a real format rather than a hand-rolled deserializer.
 serde_json = "1"
 
+# `tests/spin_starvation.rs` (an ignored probe) pins its threads to one core
+# and sets their scheduling policy: `sched_setaffinity`, `pthread_setschedparam`.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+
 [[bench]]
 name = "rt_publish_read"
 harness = false

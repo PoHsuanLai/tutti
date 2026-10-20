@@ -1745,6 +1745,27 @@ the window (or asserts on `Liveness` with explicit times).
 
 ### Fixed
 
+- **The audio thread no longer starves a parallel-executor helper on its
+  own core** (`tutti-types`, `tutti-core`). Its two waits on a helper
+  inside a block, `TaskGraph::work` as `Participant::Caller` and
+  `JobGate::run`'s close, spun without bound and never yielded. Under
+  `SCHED_FIFO`, which does not time-slice, a helper queued behind the audio
+  thread on its core could then not run until the kernel migrated it: a
+  same-core probe with both at one FIFO priority stalled until its 2 s
+  watchdog in every run. On Linux and Android, each wait now yields its
+  core once per 250 µs in which the counter it waits on has not moved, and
+  otherwise spins as before. The probe's wait drops to about 1.8 ms, the
+  rest of the task. A healthy block never waits that long: the executor
+  bench's caller does not yield at all, apart from blocks whose helper was
+  off its core. On other platforms the caller only spins, as before:
+  Windows' and macOS's yields can hand the core to a lower-priority thread,
+  and both schedulers round-robin equal-priority real-time threads. No API
+  change. **Hosts:** a `WorkerPool`'s helpers must run at the audio
+  callback's priority (`WorkerPoolBuilder::on_start`). A helper below it
+  still waits for RT throttling (about 950 ms), because a yield only gives
+  way to threads of the caller's own priority (doc 013, "The caller yields
+  to a same-core helper").
+
 - **A phaser at a negative depth no longer diverges** (`tutti-nodes`).
   `PhaserNode::set_depth` allows down to −1, which swept the all-pass
   below 0 Hz, past where its coefficient stays inside `-1..=1`; the stages

@@ -62,6 +62,7 @@ pub mod publish;
 pub mod range_cell;
 pub mod scratch;
 pub mod seq_cell;
+mod spin;
 pub mod split;
 pub mod task_graph;
 pub mod vec;

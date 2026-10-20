@@ -1966,7 +1966,10 @@ Recorded for later:
     must not insert a main-thread-only unit. An export still in flight when
     the world is dropped has no `ExportDrops` to send to and drops where it
     is (documented on `ExportInFlight`; exit does not wait for renders). tutti-export gains
-    `RenderGraph::gather` / `RenderGraph::build`.
+    `RenderGraph::gather` / `RenderGraph::build`. (Design 015 PR 6 moved
+    the gather, the job and the leftovers' channel into `tutti-session`:
+    `Session::export`, `ExportJob::run`, `Session::finish_export`;
+    `ExportDrops` is gone.)
   - Pinned by tutti-graph's `a_gathered_fork_is_the_live_graph_at_the_gather`,
     `each_source_builds_and_prepares_where_its_gather_says`,
     `a_failing_build_names_its_key_and_hands_back_what_it_built`, and

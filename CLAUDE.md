@@ -91,8 +91,12 @@ just test-all                      # both
 
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
-  `real_stall_tests` fail with that exact command. They must fail rather than
-  skip, and they cannot use a dev-dependency because that would be a cycle.
+  `real_stall_tests`, `tutti-session`'s `plugin` suite and §5.2 example
+  (`plugin_midi_export`, `--features clap,export`), and `bevy-tutti`'s
+  `plugin_capture`, `mod_plugin` and `export_fork` plugin tests
+  (`--features full,plugin`) fail with that exact command. They must fail
+  rather than skip, and they cannot use a dev-dependency because that would
+  be a cycle.
 - **Feature-gated suites** (for example `tutti-nodes --features convolution`)
   are only covered by a workspace run. Name the feature when testing one crate.
 

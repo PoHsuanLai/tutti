@@ -1624,6 +1624,97 @@ and the §5.2 example under `tutti-session/examples`, run in CI offline with
 the CLAP test plugin. All of them fail, not skip, without
 `tutti-plugin-server`.
 
+**Landed.** Two private modules, `plugin` (feature `plugin`) and `export`
+(feature `export`; the render mode needs both). What moved, old → new:
+
+| Was (`bevy-tutti`) | Now (`tutti-session`) |
+|---|---|
+| `plugin_load_start`'s task: `PluginClient` load, param read, state restore | `Session::plugin_load` → `PluginLoad` (`Send`; `with_config`, `at_rate`), `run()` → `PluginLoaded`; `Session::add_plugin` (and `add_plugin_blocking`) |
+| `plugin_load_promote`'s insert, controls and meter capture | `Session::add_plugin` keeps a `HostedPlugin` record per node (`Session::plugin`, `plugins`); Bevy binds its shadow from it (`CapturedControls::for_hosted`) |
+| `PluginParamValues` as a component, `read_plugin_params`, `PluginParamRead`, `plugin_param_edits` | the record's mirror (`HostedPlugin::param_values`), started in the load job; GUI edits drained into the lanes' knobs by `Phase::Plugins` |
+| `ModKeys::plugin_value` | deleted: `ModHostOver` reads the session's mirror by `AudioNode` |
+| `plugin_health_poll`'s debounce and teardown | `Phase::Plugins`: `PluginLiveness` on the record, the dead node removed by the session, `SessionEvent::PluginDied { node, cause }` once |
+| `plugin_latency_poll`, `AudioGraphRes::refresh_node_latency` | `Phase::Plugins` → `Graph::refresh_node_latency`, `SessionEvent::PluginLatencyChanged` |
+| `plugin_state_snapshot`'s 512-frame counter and inline task | `SessionEvent::PluginSnapshotDue(PluginSnapshot)` every `SNAPSHOT_INTERVAL` (8 s) of `now`, a job; `Session::land_snapshot(PluginSnapshotTaken)` |
+| `PluginRenderMode`, `RenderModeAnnounced`, `plugin_render_mode_drive` | `Phase::RenderMode` and the export token; `Session::render_mode()`; Bevy's `plugin_render_mode` runs the phase |
+| `AudioGraphRes::export`, `ExportRefused`, `start_exports`' fork build and render | `Session::export(ExportRequest)` → `ExportJob`, `run()` → `ExportRendered`, `Session::finish_export`; `export_blocking`, `export_in_flight` |
+| `ExportTarget`, `ExportOutput`, `ExportClock`, `PreparedGraph`, `PrepareEdit`, `Stopped` (`export/request.rs`) | the session's; `bevy_tutti::export` re-exports each by name |
+| `ExportDrops` | the session's leftovers channel, drained by `Phase::Collect`, `finish_export` and `drop_export_leftovers` |
+| the §5.2 example's f64 length | `MidiFile::seconds_at(Beat) -> f64`, integrated over `tempo_map()` |
+
+The session API: `Session::{plugin_load, add_plugin, add_plugin_blocking,
+plugin, plugins, land_snapshot, render_mode, export, finish_export,
+export_blocking, export_in_flight, drop_export_leftovers}`,
+`Graph::host_plugin` (records a handle at an existing node),
+`SessionBuilder::snapshot_interval`, `Error::ExportInFlight`, and the
+events above. `HostedPlugin` exposes `handle`, `controls`, `meter`,
+`liveness`, `snapshot` and `param_values`.
+
+Tests. The session's `tests/plugin.rs`, over the CLAP test plugin:
+`an_export_announces_offline_before_its_first_block_and_realtime_after`,
+`a_dropped_export_job_restores_realtime_on_the_next_update`,
+`a_plugin_added_mid_export_is_told_offline`,
+`a_plugin_dead_for_the_window_is_removed_and_reported_once`,
+`export_leftovers_drop_on_the_main_thread`; its `plugin` unit tests
+(`snapshots_are_taken_on_the_interval_one_at_a_time`,
+`a_declined_save_keeps_the_previous_snapshot`,
+`a_failing_plugin_is_not_snapshotted`); and the §5.2 example,
+`examples/plugin_midi_export.rs`, run as a test (`test = true`,
+`the_example_plays`). Each carries its mutations, run. Split: Bevy's
+snapshot cadence test moved to the session (`snapshots_are_taken_on_...`);
+the Bevy half keeps the placing (`a_snapshot_is_captured_and_stored`,
+`the_triggering_frame_does_not_wait_for_the_plugin`,
+`a_declined_save_does_not_erase_the_previous_snapshot`), over a session
+with a zero interval. Bevy's health tests run the phase through a
+`Graph::host_plugin` fixture; its render-mode tests run real session
+export jobs. Kept and passing over the moved code, with every mutation
+record that named moved code re-run against it: `plugin_capture.rs`,
+`mod_plugin.rs`, `export_fork.rs` (its `off_thread` tests threaded),
+`export_surface.rs`. Two records in `export_fork.rs`'s
+`a_node_export_follows_a_90_bpm_timeline` were stale before this PR
+(`ExportClock::offline` and `Stopped::is_rolling`: a memory voice reads
+the render's `Env`, not the fork's timeline); they now name the render
+clock, which the test does pin. `ExportClock::offline` is pinned by
+`export_surface.rs`'s rebinding tests; `Stopped::is_rolling` by nothing,
+since no node reads the frozen fork's timeline while the render is
+stopped.
+
+Where the code differs from the text above:
+
+- **The plugin records live in `Graph`**, not beside it, so
+  `Graph::crossfade_plugin` and `replace_plugin` move a record to the
+  incoming plugin (its health, latency cell and render mode), and
+  `Graph::remove` drops it.
+- **The load job reads the params and restores the state**, off the
+  control thread: `add_plugin` only inserts and records. A refused state
+  is logged and the plugin loads at its defaults.
+- **No `ExportToken` type.** The token is a clone of the session's
+  `Arc<()>` inside `ExportJob` and `ExportRendered` (the doc's `Done`);
+  `export_in_flight()` asks it.
+- **Snapshots are a job with a token**, one in flight per plugin; a
+  dropped job frees the plugin for the next interval, and a declined save
+  keeps the previous snapshot.
+- **`Phase::Plugins` asserts the main thread** (a dead plugin's removal
+  may drop an in-process plugin with an editor), so Bevy's
+  `plugin_health_poll` is `NonSendMarker`-pinned. It runs in
+  `GraphReconcileSystems::Spawn`, after `plugin_load_promote`.
+- **Any plugin the graph hosts is watched**, including one a host inserts
+  with `AudioGraphRes::insert_plugin`: it has a record.
+- **`Phase::RenderMode` needs `export`**; with `plugin` alone it is a
+  no-op (nothing can be in flight).
+- **`finish_export` announces Realtime between two back-to-back Bevy
+  exports**: the first's token is released before the next starts.
+  `back_to_back_renders_stay_offline` is gone; the level is pinned by the
+  session's tests.
+- **An export failure is keyed by `NodeKey`** in the session; Bevy maps it
+  to an entity and `Name` (`NodeNames`, as before).
+- **The §5.2 example** sets the tempo through
+  `s.transport().settings.set_tempo`, and its length is
+  `file.seconds_at(file.end())`.
+- **`bevy-tutti`'s `plugin` feature no longer enables `tutti-plugin/bevy`**:
+  nothing puts `PluginParamValues` on an entity. The derive itself stays in
+  `tutti-plugin` (PR 7 can drop the feature).
+
 ### PR 7: rules and gates
 
 **Scope:**

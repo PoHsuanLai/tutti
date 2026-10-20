@@ -182,6 +182,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   headless host that called `Graph::modulate` passes its declarations as
   `PhaseCx::with_mods` to `run_phase`, or declares through `s.mods()`.
 
+### Changed — design 015 PR 6: plugins and export in `tutti-session`
+
+- **Hosted plugins and exports are the session's** (design doc 015, PR 6),
+  so a headless host loads a plugin, plays a MIDI file into it and bounces
+  it without Bevy (`crates/tutti-session/examples/plugin_midi_export.rs`).
+  `bevy-tutti` runs the session's `Phase::Plugins` and `Phase::RenderMode`
+  and translates its `ExportRequest` component into the session's.
+  **Breaking** for code that names the removed `bevy-tutti` items below.
+  - The load is a job: `Session::plugin_load(PluginLoadRequest)` →
+    `PluginLoad` (`Send`), `run()` → `PluginLoaded`, then
+    `Session::add_plugin` on the control thread. The session keeps a
+    `HostedPlugin` per node (`Session::plugin`, `plugins`): its handle,
+    controls, meter, liveness, last snapshot and parameter mirror.
+  - `Phase::Plugins` debounces each plugin's health and removes a dead one
+    (`SessionEvent::PluginDied`), hands a moved latency to the graph
+    (`PluginLatencyChanged`), writes GUI edits to the lanes' knobs, and asks
+    for a state snapshot every `SNAPSHOT_INTERVAL` (8 s,
+    `SessionBuilder::snapshot_interval`) as a job
+    (`PluginSnapshotDue`, landed with `Session::land_snapshot`).
+  - `Session::export(ExportRequest)` → `ExportJob`, `run()` on any thread →
+    `ExportRendered`, `Session::finish_export` on the control thread. One at
+    a time: a second is `Error::ExportInFlight`. Plugins hear Offline from
+    `export` and Realtime from `finish_export`, or from the next update when
+    a job or its return is dropped. What an export leaves behind drops on the
+    control thread (`Phase::Collect`, `finish_export`,
+    `drop_export_leftovers`).
+  - `tutti_midi_file::MidiFile::seconds_at(Beat) -> f64`: the time to a
+    beat over the file's tempo map.
+  - Behaviour changes: a crossfade to another plugin moves its health and
+    latency watch to the incoming one; a plugin inserted with
+    `AudioGraphRes::insert_plugin` is health-watched too; the state snapshot
+    is every 8 s of wall clock, not every 512 frames; two back-to-back Bevy
+    exports announce Realtime between them; `plugin_health_poll` is pinned
+    to the main thread and runs in `GraphReconcileSystems::Spawn`.
+
+  | Was | Now |
+  |---|---|
+  | `bevy_tutti::plugin_host::plugin_latency_poll` (the `latency` module) | the session's `Phase::Plugins`, run by `plugin_health_poll` |
+  | `bevy_tutti::plugin_host::{read_plugin_params, plugin_param_edits, PluginParamRead, PluginParamValues}` (`plugin_host::params`) | the session's mirror: `AudioGraphRes::with_plugin(node, \|p\| p.param_values())`; GUI edits reach the knobs in `Phase::Plugins` |
+  | `bevy_tutti::plugin_host::{PluginRenderMode, RenderModeAnnounced, plugin_render_mode_drive}` | `plugin_render_mode` (runs `Phase::RenderMode`); `AudioGraphRes::render_mode()` |
+  | `bevy_tutti::plugin_host::PluginLiveness` (Bevy's enum) | `tutti_session::PluginLiveness`, re-exported at the same path, same variants |
+  | `bevy_tutti::export::ExportDrops` | none: the session drops an export's leftovers (`poll_exports` calls `drop_export_leftovers`) |
+  | `bevy_tutti::export::{ExportTarget, ExportOutput, ExportClock, PreparedGraph, PrepareEdit}` (Bevy's own) | the session's, re-exported at the same paths |
+  | `tutti_session::{PendingExport, AudioNodeTarget}`, `Graph::gather_for_export` | crate-private: `Session::export` |
+  | `tutti_session::ModKeys::plugin_value` | deleted: the session reads its own mirror |
+  | — | `Session::{plugin_load, add_plugin, add_plugin_blocking, plugin, plugins, land_snapshot, render_mode, export, finish_export, export_blocking, export_in_flight, drop_export_leftovers}`, `Graph::host_plugin`, `SessionBuilder::snapshot_interval`, `Error::ExportInFlight`, `SessionEvent::{PluginDied, PluginLatencyChanged, PluginSnapshotDue}` |
+  | — | `AudioGraphRes::{with_plugin, render_mode}`, `CapturedControls::for_hosted` |
+  | `bevy-tutti/plugin` enabled `tutti-plugin/bevy` | it does not: no plugin entity holds a `PluginParamValues` |
+
 ### Added
 
 - **`tutti_types::{SeqWriter<W>, SeqReader<W>}`**, a sequence lock over

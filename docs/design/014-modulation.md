@@ -1063,7 +1063,9 @@ callback, which queues each report, and hands back the `ParamRead` job
 that fills the mirror; `plugin_param_edits`, in
 `GraphReconcileSystems::Spawn`, writes them into the mirror and the lane's
 knob, `ModulationState::set_knob`. Under automation the curve decides the
-base, so the knob shows again when the automation or its take goes.)
+base, so the knob shows again when the automation or its take goes.
+Design 015 PR 6 moved the mirror into `tutti-session`'s plugin record and
+the drain into its `Phase::Plugins`.)
 
 **As landed (PR 4b): VST2 only.** Only VST2 reports a value the plugin
 moves itself (`audioMasterAutomate`, in process and through the

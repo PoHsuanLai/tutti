@@ -255,6 +255,9 @@ check-bevy-free:
     @! cargo tree -p tutti --features full -e normal | grep -qE '\bbevy(_[a-z]+)?\b' \
         || (cargo tree -p tutti --features full -e normal | grep -nE '\bbevy(_[a-z]+)?\b'; \
             echo "FAIL: a bevy crate reached the Bevy-free facade."; exit 1)
+    # The session layer both umbrellas use: no Bevy crate under it with every
+    # feature on, no `bevy` feature, no whole-crate re-export (design 015 §8).
+    scripts/check-bevy-free.sh
 
 # Import-path gate. Engine types are imported from a crate's root or prelude,
 # never through its modules. Neither rustc nor clippy has a lint for a redundant

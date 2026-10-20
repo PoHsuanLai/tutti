@@ -60,6 +60,8 @@ jobs:
       # or a *.md naming a module path compiles fine and goes stale the moment
       # a module is renamed. The per-module gate covers it.
       - run: scripts/check-canonical-paths.sh tutti_graph arena builder command compile editor event exec fade fork io kernels legacy node param plan reference spec time
+      # The same for `tutti-session`, which keeps every module private too.
+      - run: scripts/check-canonical-paths.sh tutti_session builder device error graph node session
       # The vendored VST3 SDK is three Steinberg submodules, documented as
       # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
       # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
@@ -429,6 +431,12 @@ jobs:
             echo "FAIL: a bevy crate reached the Bevy-free facade."
             exit 1
           fi
+
+      # The session layer both umbrellas use (design 015 §8): no Bevy crate in
+      # its closure with every feature on (`--all-features`: a Bevy crate
+      # behind an optional feature is absent from the default tree), no `bevy`
+      # feature, and no whole-crate re-export (it is not an umbrella).
+      - run: scripts/check-bevy-free.sh
 
   doc:
     name: rustdoc

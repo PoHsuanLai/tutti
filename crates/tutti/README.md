@@ -51,9 +51,11 @@ assert!(out.iter().any(|&s| s != 0.0));
 Keep the editor: later edits go through it (`commit`) and reach the engine
 on its next block.
 
-To play through a sound card, turn on `device` and wrap the same engine in
-`tutti::device`'s `AudioCallbackState` and `TuttiDriver`:
-`examples/headless_engine.rs` does it in about thirty lines. To write a file
+To play through a sound card, turn on `device` and let the session (the
+`session` feature, on by default) open it and build the graph at the rate it
+reports: `SessionBuilder::build_device` hands back a `Session` and its
+`Device`, and `examples/headless_engine.rs` plays a tone in under twenty
+lines. To write a file
 instead, turn on `export` and a codec: see `examples/headless_export.rs`.
 
 ## How the pieces fit

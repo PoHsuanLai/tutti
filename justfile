@@ -228,6 +228,18 @@ bench-cmp BASE="main":
 # a changed API is invisible to every other recipe here.
 bench-smoke:
     just bench -- --test
+    just bench-compare --test
+
+# arc-lend against arc-swap, basedrop, left-right and locks: tail latency,
+# reader allocations and frees, publisher latency, retained memory. A custom
+# harness (HDR histograms, not criterion), so it is not in `just bench`:
+# criterion's flags mean nothing to it, and a full run takes minutes. Its
+# output is the Markdown that `crates/arc-lend/BENCHMARKS.md` is built from;
+# record a run with
+#   just bench-compare | tee crates/arc-lend/compare/results/<date>-<host>.txt
+# `--test` is the smoke run (tiny counts; proves it runs, measures nothing).
+bench-compare *ARGS:
+    cargo bench --locked -p arc-lend-compare --bench compare -- {{ARGS}}
 
 # Samply a criterion bench. `--profile-time` turns criterion's own analysis
 # off, so the profile is of the code rather than of the statistics.

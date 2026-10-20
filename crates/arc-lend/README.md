@@ -102,7 +102,9 @@ against the version named; the sources are cited under [Sources](#sources).
 ### When to prefer something else
 
 - **`arc-swap`** is the better general-purpose cell. Its uncontended loads
-  cost about what a lend does (see benches, E2), it has a far larger API
+  cost about what a lend does with one reader, stay flat as readers are
+  added where a lend does not, and nest past 8 more cheaply (see
+  [the benchmark](BENCHMARKS.md)). It has a far larger API
   (`rcu`, `compare_and_swap`, `Cache`, `Access` projections) and years of
   use. If the reader may free, or a
   thread's first load may allocate, it is the right choice. It can also be
@@ -129,8 +131,16 @@ against the version named; the sources are cited under [Sources](#sources).
 
 ## Cost
 
-Counts of operations, not measured times; the benchmark that compares the
-cells above on tail latency is planned (see benches, E2).
+Counts of operations, not measured times. The measured comparison with
+`arc-swap`, `basedrop`, `left-right` and the locks is in
+[BENCHMARKS.md](BENCHMARKS.md), one run on a shared VM. In it no arc-lend
+reader allocated or freed, and one reader's lend cost what an `arc-swap`
+load did (47 ns against 51 ns p50). arc-lend lost where readers share the
+cell: its slots are one cache line for all readers, so the reader p50 rose
+to 300 ns at four readers (`arc-swap` stayed at 51 ns), nested lends past
+the slots were slower than `arc-swap`'s, and the publisher's tail grew when
+a reader was preempted mid-lend. A staircase of parked loans pinned every
+retired value, as `docs::limitations` describes.
 
 | Operation | Thread | What it does |
 |---|---|---|

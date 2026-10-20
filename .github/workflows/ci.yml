@@ -342,6 +342,10 @@ jobs:
           cargo bench --locked -p tutti-sampler   --bench voice_pool     -- --test
           cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process -- --test
           cargo bench --locked -p arc-lend --bench lend -- --test
+          # `just bench-compare --test`: the comparison harness at tiny
+          # counts. Never the full run here: it takes minutes, and a shared
+          # runner's tails mean nothing.
+          cargo bench --locked -p arc-lend-compare --bench compare -- --test
 
   test:
     name: test (${{ matrix.os }})

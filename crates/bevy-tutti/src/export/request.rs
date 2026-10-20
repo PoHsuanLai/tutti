@@ -227,8 +227,8 @@ impl ExportInFlight {
         Self { task, names }
     }
 
-    /// An in-flight export with no node bindings, for this crate's tests.
-    #[cfg(test)]
+    /// An in-flight export with no node bindings, for the render-mode tests.
+    #[cfg(all(test, feature = "plugin"))]
     pub(crate) fn for_test(task: Task<tutti_session::ExportRendered>) -> Self {
         Self::new(task, NodeNames::default())
     }

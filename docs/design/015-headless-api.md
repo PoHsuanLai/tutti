@@ -1794,13 +1794,19 @@ addition). Specifics:
   there from `check-bevy-free.sh`), in `just ci` and CI's paths job. Check
   3 is a small Perl lexer over `bevy-tutti/src`, not a line grep: it
   blanks comments (nested too), string, raw-string and char literals, and
-  every item under `#[cfg(test)]` or `#[cfg(all(test, …))]` to its closing
-  brace, keeping line numbers; an out-of-line `#[cfg(test)] mod x;` is
-  excluded by path (`#[path]` honoured). `Phase::Modulation` is a phase,
+  whatever a `#[cfg(test)]` or `#[cfg(all(test, …))]` governs (an item to
+  the `}` closing its first brace or its `;`; a field, argument or element
+  to its `,` or the closer of its group), keeping line numbers; an
+  out-of-line `#[cfg(test)] mod x;` is excluded by path (`#[path]`
+  honoured). Check 4 parses each `pub use` as a use tree, groups nested to
+  any depth. `Phase::Modulation` is a phase,
   not the reconcile, and is not a hit. Its limits are in the script: an
   item under `cfg(any(test, …))` is checked, a name built by a macro or
-  reached through an alias declared outside the crate is not seen, and an
-  inner `#![cfg(test)]` is not read.
+  reached through an alias declared outside the crate is not seen, an
+  inner `#![cfg(test)]` is not read, and a test-only item with a comma in
+  its generics is blanked only to that comma (a false hit, never a hidden
+  one). A review caught the scan running past a `cfg(test)` field's group
+  and blanking the rest of the file; it stops at the group's closer now.
 - **One real hit on main:** `bevy_tutti::export` re-exported
   `tutti_export::RenderGraph`. Nothing in the adapter used it; it is
   removed, and the one test that named it imports it from `tutti-export`.

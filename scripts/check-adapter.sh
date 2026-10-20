@@ -14,8 +14,10 @@
 #    module) whole: `pub use tutti_x as ...;`, `pub use tutti_x;`,
 #    `pub use tutti_x::{self ...}`, or a glob anywhere under a `tutti_` path
 #    (`pub use tutti_x::*;`, `pub use tutti_x::prelude::*;`,
-#    `pub use tutti_x::{a::*, B};`), with or without attributes in front and
-#    across lines. Single items are allowed: the types its own signatures
+#    `pub use tutti_x::{a::*, B};`), with or without attributes in front,
+#    across lines, in groups nested to any depth
+#    (`pub use tutti_x::{a::{B}, self};`) and in a root group
+#    (`pub use {tutti_x as m};`). Single items are allowed: the types its own signatures
 #    take. (This check moved here from `check-bevy-free.sh`, which ran it
 #    from PR 4 to PR 7; its mutation records are below.)
 #
@@ -28,8 +30,12 @@
 #   raw-string, byte-string and char literals are blanked, newlines kept (so
 #   line numbers hold, and `error!("... Audio Engine ...")` is not a hit);
 # - an item under `#[cfg(test)]` or `#[cfg(all(test, ...))]` is blanked from
-#   the attribute to the end of the item: its matching `}` (a `mod tests {}`
-#   block, a test-only `fn`, anywhere in the file) or its `;` at depth 0;
+#   the attribute to the end of what it governs: the `}` that closes its
+#   first brace (a `mod tests {}` block, a test-only `fn`, anywhere in the
+#   file), a `;` or `,` at depth 0 (an out-of-line `mod`, a `use`, a struct
+#   or tuple field, a call argument, an array element), or the closer of the
+#   group it sits in (a last field or argument without a trailing comma),
+#   which is kept;
 # - a test module declared out of line (`#[cfg(test)] mod tests;`, with or
 #   without `#[path = ".."]`) excludes its file, and any directory module of
 #   that name, by path;
@@ -45,6 +51,11 @@
 #   `Edi` and `tor`), or reached through a type alias declared outside
 #   `bevy-tutti/src`, is not seen. An alias declared inside it is: the
 #   alias names the type.
+# - A `,` at depth 0 ends the blanked span, and `<`/`>` are not brackets
+#   (they are also comparisons), so a test-only item whose header has a
+#   comma outside parentheses (`fn f<A, B>()`, `impl<T> X where T: A, U: B`)
+#   is blanked only up to that comma. That can only report a false hit on
+#   the rest of the item, never hide one; split the item if it happens.
 # - The cfg attribute must be on its own item; an inner `#![cfg(test)]` at
 #   the top of a module file is not read (`bevy-tutti` has none: its test
 #   modules are `#[cfg(test)] mod tests` at the end of a file, or out of line
@@ -76,6 +87,29 @@
 #   deleted.
 #   (Current main names no denied type inside its test code either, so the
 #   exclusions are exercised only by these cases.)
+# - (3), PR 7 review: a `#[cfg(test)]` on a field, an argument or an
+#   expression used to blank the rest of the file (the scan went past the
+#   closer of its group at depth -1). `AudioGraphRes`'s `cfg(test)` phase
+#   log field hid the 247 lines after it, and
+#   `let _probe: Option<tutti_core::Engine> = None;` planted in its `read()`
+#   passed. With the scan ending at a depth-0 `,` or the closer of its
+#   group, each of these, appended to `src/graph/commit.rs` with
+#   `fn k() -> Option<tutti_core::Engine> { None }` after it, now fails (and
+#   passed before): `struct P(u8, #[cfg(test)] u16);`,
+#   `struct Q { a: u8, #[cfg(test)] b: u16 }` (a last field, no comma),
+#   `(x, #[cfg(test)] x)` in a fn body, and
+#   `g(1, #[cfg(test)] 2, 3); let _v = [1, #[cfg(test)] 2];`. The planted
+#   probe in `read()` fails too. `struct P(u8, #[cfg(test)]
+#   tutti_core::Engine);` passes (the test-only field is still excluded),
+#   and `#[cfg(test)] fn t<A, B>() -> Option<tutti_core::Engine>` reports
+#   a false hit (the generics limit above).
+# - (4), PR 7 review: `pub use tutti_mod::{a::{B}, self};` and
+#   `pub use {tutti_mod as m};` passed the old regex. Check 4 now parses the
+#   use tree, and both fail, as do `pub use ::tutti_mod::{x::{y::{*}}};` and
+#   a multi-line `pub use tutti_mod::{ a::{B, C}, self as m, };`. These
+#   pass: `pub use tutti_mod::{a::{B}, C};`, `pub use {tutti_mod::A as M};`,
+#   `pub(crate) use tutti_mod;`, and `pub use tutti_mod;` in a comment or
+#   a string. Every earlier (4) mutation above still fails.
 #
 # Usage:
 #   scripts/check-adapter.sh
@@ -98,22 +132,10 @@ Engine|tutti_session::SessionBuilder (the renderer): build_device / build_offlin
 RenderGraph|tutti_session::Session::export (the offline render): ExportRequest, ExportJob, finish_export
 '
 
-fail=0
-
-# 3. The adapter's source. Perl: one pass to collect the out-of-line test
-#    modules, one to blank and scan.
-hits=$(DENY="$deny_list" perl -e '
+# Shared by both checks: strict perl, and `lex`, which blanks comments and
+# literal contents (keeping newlines, so offsets and line numbers hold).
+prelude_pl=$(cat <<'PL'
 use strict; use warnings;
-use File::Find; use File::Basename;
-
-my $root = shift @ARGV;
-my %deny;
-for (split /\n/, $ENV{DENY} // "") { next unless /\S/; my ($t, $o) = split /\|/, $_, 2; $deny{$t} = $o; }
-die "the deny-list is empty\n" unless %deny;
-my @files;
-find({ wanted => sub { push @files, $File::Find::name if /\.rs\z/ }, no_chdir => 1 }, $root);
-@files = sort @files;
-
 # Blank comments and literal contents, keeping newlines.
 sub lex {
   my ($s) = @_;
@@ -148,6 +170,25 @@ sub lex {
   }
   return $out;
 }
+PL
+)
+readonly prelude_pl
+
+fail=0
+
+# 3. The adapter's source. Perl: one pass to collect the out-of-line test
+#    modules, one to blank and scan.
+hits=$(DENY="$deny_list" perl -e "$prelude_pl"'
+use File::Find; use File::Basename;
+
+my $root = shift @ARGV;
+my %deny;
+for (split /\n/, $ENV{DENY} // "") { next unless /\S/; my ($t, $o) = split /\|/, $_, 2; $deny{$t} = $o; }
+die "the deny-list is empty\n" unless %deny;
+my @files;
+find({ wanted => sub { push @files, $File::Find::name if /\.rs\z/ }, no_chdir => 1 }, $root);
+@files = sort @files;
+
 
 # A test-only attribute: `#[cfg(test)]` or `#[cfg(all(test, ...))]`.
 my $test_attr = qr/\#\[\s*cfg\s*\(\s*(?:test|all\s*\(\s*test\s*,[^\]]*\))\s*\)\s*\]/;
@@ -183,13 +224,20 @@ for my $f (@files) {
       if (defined $path) { $skip_file{"$dir/$path"} = 1 }
       else { $skip_file{"$mdir/$name.rs"} = 1; push @skip_dir, "$mdir/$name/" }
     }
-    # The item: to its `;` at depth 0, or the `}` matching its first `{`.
+    # What the attribute governs: to the `}` closing its first brace, a `;`
+    # or `,` at depth 0, or (kept) the closer of the enclosing group. Without
+    # the last two, a cfg(test) field or argument ran on past the closer of
+    # its group at depth -1 and blanked the rest of the file.
     my $d = 0; my $j = $i;
     for (; $j < length $c; $j++) {
       my $ch = substr($c, $j, 1);
       if ($ch eq "{" || $ch eq "(" || $ch eq "[") { $d++ }
-      elsif ($ch eq "}" || $ch eq ")" || $ch eq "]") { $d--; last if $d == 0 && $ch eq "}" }
-      elsif ($ch eq ";" && $d == 0) { last }
+      elsif ($ch eq "}" || $ch eq ")" || $ch eq "]") {
+        $d--;
+        if ($d < 0) { $j--; last }
+        last if $d == 0 && $ch eq "}";
+      }
+      elsif (($ch eq ";" || $ch eq ",") && $d == 0) { last }
     }
     my $len = $j + 1 - $start;
     (my $b = substr($c, $start, $len)) =~ s/[^\n]/ /g;
@@ -229,23 +277,77 @@ if [[ -n $hits ]]; then
   fail=1
 fi
 
-# 4. Whole-crate re-exports in the session. Perl over each whole file, so a
-#    `use` spanning lines is one match. A statement starts a line, after
-#    optional attributes; comment lines never start with `pub` or `#[`, so
-#    they cannot match. `pub(crate) use` is not a re-export and is not
-#    matched. Per `pub use tutti_x` (optionally `::`-led):
-#    - then `;` or `as NAME;`: the crate itself;
-#    - then any `::seg` path ending `::*`: a glob;
-#    - then any `::seg` path and a `{...}` group holding `self` or a `*`.
-hits=$(find "$SESSION_SRC" -name '*.rs' -print0 | xargs -0 perl -0777 -ne '
-  while (/^[ \t]*(?:\#\[[^\]]*\][ \t]*)*pub[ \t]+use[ \t]+(?:::)?tutti_[a-z0-9_]+
-          (?: \s*(?:as\s+\w+\s*)?;
-            | (?:::\w+)*::\*
-            | (?:::\w+)*::\{[^}]*(?:\bself\b|\*) )/gmx) {
-    my $line = 1 + (substr($_, 0, $-[0]) =~ tr/\n//);
-    (my $text = $&) =~ s/\s+/ /g;
-    print "$ARGV:$line: $text\n";
-  }')
+# 4. Whole-crate re-exports in the session. Each file is lexed (comments
+#    and literals blanked), and each `pub use ... ;` is parsed as a use
+#    tree, braces nested to any depth, so a statement spanning lines, a
+#    group inside a group, and a root group (`pub use {..};`) are all read.
+#    `pub(crate) use` is not a re-export and is not read. A leaf is a hit
+#    when its full path starts at a `tutti_` crate (optionally `::`-led) and
+#    it is:
+#    - the crate itself, with or without `as NAME` (`tutti_x`);
+#    - `self` (`tutti_x::{self}`, `tutti_x::a::{self as m}`: a crate or
+#      module whole);
+#    - a glob at any depth (`tutti_x::*`, `tutti_x::prelude::*`).
+hits=$(find "$SESSION_SRC" -name '*.rs' -print0 | sort -z | xargs -0 perl -e "$prelude_pl"'
+my @found;
+# Parse one use tree from @$t at $$k under the path @$pre; record the
+# whole-crate leaves.
+sub tree {
+  my ($t, $k, $pre, $hit) = @_;
+  my @path = @$pre;
+  $$k++ if $$k < @$t && $t->[$$k] eq "::";
+  while ($$k < @$t) {
+    my $tok = $t->[$$k];
+    if ($tok eq "{") {
+      $$k++;
+      while ($$k < @$t && $t->[$$k] ne "}") {
+        tree($t, $k, \@path, $hit);
+        $$k++ if $$k < @$t && $t->[$$k] eq ",";
+      }
+      $$k++;
+      return;
+    }
+    if ($tok eq "*") {
+      $$k++;
+      push @$hit, join("::", @path, "*") if @path && $path[0] =~ /\Atutti_/;
+      return;
+    }
+    if ($tok =~ /\A\w+\z/) {
+      $$k++;
+      if ($$k < @$t && $t->[$$k] eq "::") { push @path, $tok; $$k++; next }
+      my $full = join "::", @path, $tok;
+      $$k += 2 if $$k < @$t && $t->[$$k] eq "as";
+      if ($tok eq "self") {
+        push @$hit, $full if @path && $path[0] =~ /\Atutti_/;
+      } elsif (!@path && $tok =~ /\Atutti_/) {
+        push @$hit, $full;
+      }
+      return;
+    }
+    $$k++;
+    return;
+  }
+}
+for my $f (@ARGV) {
+  open my $fh, "<", $f or die "$f: $!\n";
+  local $/; my $src = <$fh>; close $fh;
+  my $c = lex($src);
+  while ($c =~ /(?<![\w)])pub\s+use\b/g) {
+    my $at = $-[0];
+    my $body_at = $+[0];
+    my $semi = index($c, ";", $body_at);
+    die "$f: unterminated use\n" if $semi < 0;
+    my $body = substr($c, $body_at, $semi - $body_at);
+    my @t = $body =~ /(::|\w+|[{},*])/g;
+    my ($k, @hit) = (0);
+    tree(\@t, \$k, [], \@hit);
+    next unless @hit;
+    my $line = 1 + (substr($c, 0, $at) =~ tr/\n//);
+    (my $text = substr($src, $at, $semi + 1 - $at)) =~ s/\s+/ /g;
+    print "$f:$line: $text\n    whole: ", join(", ", @hit), "\n";
+  }
+}
+')
 if [[ -n $hits ]]; then
   echo "$hits"
   echo "FAIL: tutti-session re-exports a crate whole (design 015 §8, check 4). It is"

@@ -17,6 +17,13 @@ use crate::graph::{AudioGraphRes, PendingCrossfades};
 /// collect, and this binds the incoming node's controls to the entity that
 /// asked ([`PendingCrossfades`]).
 ///
+/// First in the frame means one frame's wall time after the previous commit,
+/// not just before the next. With a device, the audio thread may not yet
+/// have picked up that commit's version, so a node it retires is freed a
+/// frame later than when the collect ran beside the commit. That is benign:
+/// the free still happens here, on the main thread, and the next collect
+/// takes it.
+///
 /// **Pinned to the main thread** via [`NonSendMarker`](bevy_ecs::system::NonSendMarker).
 /// The collect deallocates retired graph versions, which include any
 /// in-process plugin nodes whose `Drop` tears down a native editor window

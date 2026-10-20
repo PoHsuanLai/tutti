@@ -16,13 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `RenderGraph`. Tests and comments are not checked. A hit names the
     session item that owns the type.
   - `crates/tutti-session/src` may not re-export a crate whole. That check
-    moved here from `check-bevy-free.sh`.
+    moved here from `check-bevy-free.sh`, and now parses each `pub use`
+    as a use tree, so nested groups and root groups are read.
 - **`bevy-tutti` runs the session's phases in `PHASES` order.**
   `SessionPhaseSystems(Phase)` is a system set per phase. They are chained
   from `PHASES` and placed in the `GraphReconcileSystems`.
   - `Phase::Collect` now runs first in the frame, in its own system,
     `collect_graph`, before `Spawn`. Before, `commit_graph` ran it just
-    ahead of the commit.
+    ahead of the commit. With a device, a retired node's free can slip one
+    frame, when the audio thread has not yet picked up the previous commit.
+    That is benign: the next frame's collect frees it, on the main thread.
+  - With `plugin` and `export`, `start_exports` (the live graph's fork) now
+    runs before the frame's `Params` and `Commit`, because
+    `plugin_render_mode` runs after it, in
+    `SessionPhaseSystems(Phase::RenderMode)`. Before, the fork was unordered
+    against them.
   - `Phase::MidiOut` (the clock pump) was unordered against the commit. It
     now follows `AfterCommit`.
   - A test derives the expected order from `PHASES` and checks it against

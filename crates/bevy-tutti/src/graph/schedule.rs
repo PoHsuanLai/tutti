@@ -272,6 +272,7 @@ mod tests {
         #[cfg(feature = "midi")]
         every_frame.push(Phase::MidiOut);
 
+        #[cfg(feature = "modulation")]
         let mut seen = Vec::new();
         for frame in 0..3 {
             app.update();
@@ -286,6 +287,7 @@ mod tests {
             for phase in &every_frame {
                 assert!(ran.contains(phase), "frame {frame}: {phase:?} did not run");
             }
+            #[cfg(feature = "modulation")]
             seen.extend(ran);
         }
         #[cfg(feature = "modulation")]
@@ -293,6 +295,5 @@ mod tests {
             seen.contains(&Phase::AfterCommit),
             "a new target's frame runs AfterCommit"
         );
-        let _ = seen;
     }
 }

@@ -213,6 +213,12 @@ impl Plugin for ExportPlugin {
         // whichever plugin was added first. Ungated on the engine, as
         // `poll_exports` is: a render in flight when audio stops still has
         // to put its plugins back.
+        //
+        // Its set runs after `GraphReconcileSystems::Spawn` and before
+        // `Params` (`configure_phases`), so with `plugin` this also forces
+        // `start_exports`, which forks the live graph, before the frame's
+        // `Params` and `Commit`. Before design 015 PR 7 the two were
+        // unordered. Without `plugin`, they still are.
         #[cfg(feature = "plugin")]
         app.add_systems(
             Update,

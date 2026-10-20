@@ -26,17 +26,25 @@ pub enum Phase {
     /// The plugins' render mode (realtime or offline). Empty until the
     /// session owns exports (design 015 PR 6).
     RenderMode,
-    /// Modulation's collect and apply. Empty until the session owns the
-    /// modulation loop (design 015 PR 5): a host applies its declarations
-    /// with `Graph::modulate` (feature `modulation`) until then.
+    /// Modulation's apply (feature `modulation`): the declarations (the
+    /// host's, [`PhaseCx::mods`], or the session's own,
+    /// [`Session::mods`]) onto the graph, staging what is new for the
+    /// commit. A refusal is [`SessionEvent::ModulationRefused`].
     Modulation,
     /// The commit, iff the graph was edited since the last one, and the
     /// compensation of the plan it sent (or of a re-prepare's resumed plan)
     /// published.
     Commit,
-    /// Modulation's re-apply and resyncs. Empty until design 015 PR 5.
+    /// Modulation's re-apply and resyncs (feature `modulation`): while a
+    /// target is unresolved (its node was new before the commit), the
+    /// declarations apply again and what that built is committed, so the
+    /// lane plays from the update its node does; then the note-envelope
+    /// resyncs the apply owes are sent.
     AfterCommit,
-    /// Hardware MIDI out and the clock. Empty until design 015 PR 5.
+    /// The hardware out (the clock, and whatever else is wired to its node)
+    /// drained to the output (feature `midi`; [`Midi::set_hardware_out`]).
+    ///
+    /// [`Midi::set_hardware_out`]: crate::Midi::set_hardware_out
     MidiOut,
     /// The device's faults, as `SessionEvent::DeviceFault` (feature `device`).
     Poll,
@@ -60,7 +68,9 @@ pub struct PhaseCx<'a> {
     /// The time thresholds are measured on (a test passes its own).
     pub now: Instant,
     /// The host's modulation declarations and the resolver for its keys;
-    /// `None`: the session's own.
+    /// `None`: the session's own ([`Session::mods`]). Read by the
+    /// [`Modulation`](Phase::Modulation) and
+    /// [`AfterCommit`](Phase::AfterCommit) phases.
     #[cfg(feature = "modulation")]
     pub mods: Option<ModInput<'a>>,
     _borrow: std::marker::PhantomData<&'a ()>,
@@ -128,6 +138,27 @@ pub enum SessionEvent {
     /// the most recent one since the last poll.
     #[cfg(feature = "device")]
     DeviceFault(tutti_cpal::StreamFault),
+    /// The modulation declarations were refused, in the host's keys
+    /// (design 015 §4.7): reported once, when the refusal starts or
+    /// changes; [`ModState::refusal`](crate::ModState::refusal) holds it
+    /// while it lasts.
+    #[cfg(feature = "modulation")]
+    ModulationRefused(crate::ModRefusal),
+    /// A modulation target has stayed unresolved for the session's warning
+    /// time ([`UNRESOLVED_WARNING`](crate::UNRESOLVED_WARNING) by default)
+    /// of [`PhaseCx::now`]: likely a key no node is ever bound to. Reported
+    /// once per stretch it stays unresolved.
+    #[cfg(feature = "modulation")]
+    ModulationUnresolved {
+        /// The target, in the host's key.
+        target: tutti_mod::TargetKey,
+        /// How long it has been unresolved.
+        waited: std::time::Duration,
+    },
+    /// The hardware out dropped events for want of an output: the total so
+    /// far, reported when it rises.
+    #[cfg(feature = "midi")]
+    MidiOutDropped(u64),
 }
 
 impl std::fmt::Debug for SessionEvent {
@@ -146,6 +177,18 @@ impl std::fmt::Debug for SessionEvent {
                 .finish(),
             #[cfg(feature = "device")]
             Self::DeviceFault(fault) => f.debug_tuple("DeviceFault").field(fault).finish(),
+            #[cfg(feature = "modulation")]
+            Self::ModulationRefused(refusal) => {
+                f.debug_tuple("ModulationRefused").field(refusal).finish()
+            }
+            #[cfg(feature = "modulation")]
+            Self::ModulationUnresolved { target, waited } => f
+                .debug_struct("ModulationUnresolved")
+                .field("target", target)
+                .field("waited", waited)
+                .finish(),
+            #[cfg(feature = "midi")]
+            Self::MidiOutDropped(count) => f.debug_tuple("MidiOutDropped").field(count).finish(),
         }
     }
 }
@@ -230,6 +273,12 @@ pub struct Session {
     pub(crate) resumed: bool,
     #[cfg(feature = "midi")]
     pub(crate) midi: Option<MidiNodes>,
+    /// Clips, live inputs, routes and the hardware out's output.
+    #[cfg(feature = "midi")]
+    pub(crate) midi_state: crate::midi::MidiState,
+    /// What modulation applied, and the session's own declarations.
+    #[cfg(feature = "modulation")]
+    pub(crate) mods: crate::modulation::ModSession,
     #[cfg(feature = "midi-hardware")]
     pub(crate) midi_io: Option<tutti_midi_hardware::MidiSession>,
     #[cfg(feature = "sampler")]
@@ -274,6 +323,7 @@ impl Session {
     /// Runs one phase, pushing what it found onto `out`. A host running the
     /// phases itself runs them in [`PHASES`] order, once each per update.
     pub fn run_phase(&mut self, phase: Phase, cx: PhaseCx<'_>, out: &mut Vec<SessionEvent>) {
+        #[cfg(not(feature = "modulation"))]
         let _ = cx;
         match phase {
             Phase::Collect => {
@@ -306,8 +356,30 @@ impl Session {
                 }
                 self.resumed = false;
             }
-            Phase::AfterCommit => crate::main_thread(),
-            Phase::Plugins | Phase::RenderMode | Phase::Modulation | Phase::MidiOut => {}
+            Phase::Modulation =>
+            {
+                #[cfg(feature = "modulation")]
+                self.mods
+                    .modulation_phase(&mut self.graph, cx.mods, cx.now, out)
+            }
+            Phase::AfterCommit => {
+                crate::main_thread();
+                #[cfg(feature = "modulation")]
+                {
+                    // The re-apply's commit, as the update's own: published
+                    // on `Sent` (what `commit_and_publish` did in Bevy).
+                    if self.mods.reapply(&mut self.graph, cx.mods, cx.now, out) {
+                        self.commit();
+                    }
+                    self.mods.resync(&mut self.graph);
+                }
+            }
+            Phase::MidiOut =>
+            {
+                #[cfg(feature = "midi")]
+                self.midi_state.midi_out_phase(self.midi.as_ref(), out)
+            }
+            Phase::Plugins | Phase::RenderMode => {}
             Phase::Poll =>
             {
                 #[cfg(feature = "device")]
@@ -350,8 +422,48 @@ impl Session {
     /// owns the session: the removal frees nothing itself. The unit is freed
     /// when the executor hands it back, at a collect, which is where the
     /// main-thread guard is (see the type docs).
+    ///
+    /// The session's own declarations on `node` go with it: its modulation
+    /// ranges, automation and the routes into it ([`mods`](Self::mods)),
+    /// and, when it is a clip or live input of the session's
+    /// ([`midi`](Self::midi)), that. A clip or live input feeding `node`
+    /// stays, to be re-aimed ([`Midi::retarget`](crate::Midi::retarget)) or
+    /// removed.
     pub fn remove(&mut self, node: AudioNode) -> bool {
+        #[cfg(feature = "modulation")]
+        self.mods.own.forget_node(node);
+        #[cfg(feature = "midi")]
+        self.midi_state.forget_node(node);
         self.graph.remove(node)
+    }
+
+    /// The session's own modulation declarations, to edit (design 015
+    /// §4.3, §5.1): the next update applies them. A session has one
+    /// declarer: while these hold anything, a host's
+    /// [`ModInput`] is refused.
+    #[cfg(feature = "modulation")]
+    pub fn mods(&mut self) -> crate::Mods<'_> {
+        crate::Mods {
+            own: &mut self.mods.own,
+        }
+    }
+
+    /// The modulation as applied: the lanes, what is unresolved, the
+    /// refusal held.
+    #[cfg(feature = "modulation")]
+    pub fn mod_state(&self) -> &crate::ModState {
+        &self.mods.state
+    }
+
+    /// The session's MIDI: live inputs, clips, the hardware input's routes
+    /// and the hardware out.
+    #[cfg(feature = "midi")]
+    pub fn midi(&mut self) -> crate::Midi<'_> {
+        crate::Midi {
+            graph: &mut self.graph,
+            state: &mut self.midi_state,
+            nodes: self.midi.as_ref(),
+        }
     }
 
     /// Renders one block into `output`, as a device callback would: what an

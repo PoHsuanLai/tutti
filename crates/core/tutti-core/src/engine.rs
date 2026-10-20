@@ -326,7 +326,13 @@ impl Engine {
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
-        let g = &mut *self.graph.borrow_mut();
+        // Refused only while the control side holds the graph
+        // (`settle_graph` racing a callback): this block is silent.
+        let Some(mut graph) = self.graph.try_borrow_mut() else {
+            output.fill(0.0);
+            return;
+        };
+        let g = &mut *graph;
         let mut done = 0;
         while done < frames {
             let (bound, rate) = g.settle(self.motion.timed());
@@ -362,11 +368,24 @@ impl Engine {
     /// allocation, no locks, no I/O.
     #[inline]
     pub fn process(&self, output: &mut InterleavedMut<'_>) {
-        self.motion.drain();
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
-        let g = &mut *self.graph.borrow_mut();
+        // The audio thread never panics on a borrow. The graph is refused
+        // only while the control side holds it (`settle_graph` racing a
+        // callback): this block is silent, and the motion queue is left for
+        // the next one. A refused FSM borrow (a stray `MotionFsm::drain` or
+        // `complete_declick` on another thread) leaves its work queued the
+        // same way. The fader and the schedule's pending list need no `try_`:
+        // the fader is private to this method, and the pending list is
+        // reached only under the graph borrow (here, or `settle_graph`'s).
+        let Some(mut graph) = self.graph.try_borrow_mut() else {
+            output.fill(0.0);
+            return;
+        };
+        // A refusal leaves the events queued for the next block.
+        let _ = self.motion.drain();
+        let g = &mut *graph;
         let mut done = 0;
         while done < frames {
             let (bound, rate) = g.settle(self.motion.timed());
@@ -470,12 +489,16 @@ impl Engine {
                 pieces.run(cursor, at, &t);
                 cursor = at;
             }
+            if !self.motion.apply(pending[i].command) {
+                // The FSM is borrowed elsewhere (see `process`): the command
+                // stays pending, and lands late on a later block.
+                break;
+            }
             let cmd = pending.swap_remove(i);
             schedule.release(1);
             if late {
                 schedule.count_late();
             }
-            self.motion.apply(cmd.command);
             if self.settle_declick(&mut walk.gain, cursor) {
                 // A jump clears the fader's aim.
                 aim = None;
@@ -506,9 +529,11 @@ impl Engine {
     /// here) and settle the machine, whose own ramp the engine does not use.
     /// Returns whether it marked one.
     fn settle_declick(&self, gain: &mut GainPlan, at: usize) -> bool {
-        if is_declicking(self.motion.motion()) {
+        // A refused completion (the FSM borrowed elsewhere, see `process`)
+        // leaves the fade pending, and the next block's first frame settles
+        // it.
+        if is_declicking(self.motion.motion()) && self.motion.complete_declick() {
             gain.push(at, Gain::Jump);
-            self.motion.complete_declick();
             return true;
         }
         false
@@ -532,32 +557,23 @@ impl Engine {
     /// Allocates nothing itself; a commit it installs was built on the
     /// control side.
     ///
-    /// # Safety
+    /// # Panics
     ///
-    /// The caller guarantees that **no audio callback runs [`process`] or
-    /// [`process_segment`] on this engine for the duration of the call** —
-    /// the stream is stopped (dropped, or not yet started). This borrows the
-    /// executor and the transport schedule the audio thread otherwise owns;
-    /// their [`AudioThreadCell`](tutti_types::AudioThreadCell)s catch a
-    /// concurrent borrow only in debug builds, so in release a call racing
-    /// a callback is an unchecked data race.
+    /// If an audio callback is inside [`process`] or [`process_segment`] on
+    /// this engine at the same moment: this borrows the executor and the
+    /// transport schedule the audio thread otherwise owns, and their
+    /// [`AudioThreadCell`]s refuse a second borrow in every build. The panic
+    /// is on this, the control, side: a callback that meets this call's
+    /// borrow instead renders a silent block and does not panic. Call it
+    /// only while the stream is stopped (dropped, or not yet started), as
+    /// `Stopped` arranges.
     ///
     /// [`process`]: Self::process
     /// [`process_segment`]: Self::process_segment
-    pub unsafe fn settle_graph(&self) -> bool {
+    pub fn settle_graph(&self) -> bool {
         let graph = &mut *self.graph.borrow_mut();
         graph.settle(self.motion.timed());
         graph.exec.pending_prepare().is_none() && graph.exec.plan().is_some()
-    }
-
-    /// Does nothing.
-    ///
-    /// The engine's [`AudioThreadCell`](tutti_types::AudioThreadCell)s pin no
-    /// owner thread, so a device switch that moves the callback to another
-    /// thread needs no reset. A call to this can be removed.
-    pub fn reset_owners(&self) {
-        self.graph.reset_owner();
-        self.motion.reset_owner();
     }
 }
 
@@ -973,6 +989,67 @@ mod tests {
         assert_eq!(change.to.tempo, Bpm(120.0), "not the racing store");
         // The next block reads it.
         assert_eq!(Control::read(settings).tempo, Bpm(200.0));
+    }
+
+    /// The audio thread is never the side that panics: a block that meets
+    /// the graph held on the control side (`settle_graph` racing a callback)
+    /// renders silence and leaves the motion queue for the next block, which
+    /// applies it.
+    ///
+    /// Mutations (run): `process` on a panicking `borrow_mut` → panics →
+    /// fails; the refused block not zeroed → its `1.0`s survive → fails;
+    /// `drain` before the graph borrow → the Play applies in the refused
+    /// block → "the queued Play waits" fails.
+    #[test]
+    fn a_block_refused_the_graph_is_silent_and_retries() {
+        use tutti_types::ChannelLayout;
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        let _ = transport.motion.try_send(MotionEvent::Play);
+        let mut buf = vec![1.0f32; 64 * 2];
+        let mut seg = vec![1.0f32; 64 * 2];
+        {
+            let _control = engine.graph.borrow_mut();
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            engine.process_segment(&mut InterleavedMut::new(&mut seg, ChannelLayout::STEREO));
+        }
+        assert!(buf.iter().all(|&x| x == 0.0), "a refused block is silent");
+        assert!(seg.iter().all(|&x| x == 0.0), "a refused segment is silent");
+        assert!(transport.motion.is_stopped(), "the queued Play waits");
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        assert!(transport.motion.is_playing(), "the next block applies it");
+    }
+
+    /// A block whose scheduled command meets the FSM borrowed elsewhere (a
+    /// stray `MotionFsm::drain` on a clone) does not panic: the command
+    /// stays pending and lands, late, on a later block.
+    ///
+    /// Mutations (run): `MotionFsm::apply` on a panicking `borrow_mut` →
+    /// panics → fails; the walk removing the command before applying it →
+    /// the refused command is lost (`scheduled_outstanding` 0, never plays)
+    /// → fails.
+    #[test]
+    fn a_scheduled_command_refused_the_fsm_lands_late() {
+        use tutti_types::ChannelLayout;
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        transport
+            .motion
+            .schedule(At::Frame(Frame(10)), MotionEvent::Play)
+            .expect("room");
+        let mut buf = vec![0.0f32; 64 * 2];
+        {
+            let _control = transport.motion.hold_fsm();
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        }
+        assert!(transport.motion.is_stopped());
+        assert_eq!(transport.motion.scheduled_outstanding(), 1, "still pending");
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        assert!(transport.motion.is_playing(), "applied on the next block");
+        assert_eq!(transport.motion.scheduled_outstanding(), 0);
+        assert_eq!(transport.motion.late_commands(), 1, "it landed late");
     }
 
     /// A block with no declicked command in sight plans no gain event, and

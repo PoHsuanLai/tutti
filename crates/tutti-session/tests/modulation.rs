@@ -129,8 +129,7 @@ fn the_8_1_example_renders_its_analytic_values() {
         to: 7_200,
         level: 0.8,
     }));
-    s.graph()
-        .set_output_source(0, GraphSource::Node(filter, 0));
+    s.graph().set_output_source(0, GraphSource::Node(filter, 0));
     s.graph().set_output_source(1, GraphSource::Node(pad, 0));
 
     let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
@@ -402,10 +401,9 @@ fn a_host_and_the_session_cannot_both_declare() {
     let decl = HostDecl::new(true);
     let events = update_at(&mut s, Instant::now(), Some(decl.input(&keys)));
     assert!(
-        events.iter().any(|e| matches!(
-            e,
-            SessionEvent::ModulationRefused(ModRefusal::TwoDeclarers)
-        )),
+        events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::ModulationRefused(ModRefusal::TwoDeclarers))),
         "{events:?}"
     );
     assert_eq!(s.mod_state().refusal(), Some(&ModRefusal::TwoDeclarers));

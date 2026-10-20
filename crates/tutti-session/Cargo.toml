@@ -100,3 +100,8 @@ required-features = ["device"]
 [[test]]
 name = "modulation"
 required-features = ["modulation"]
+
+# Clips, live inputs, routes and the hardware out (`Session::midi`).
+[[test]]
+name = "midi"
+required-features = ["midi"]

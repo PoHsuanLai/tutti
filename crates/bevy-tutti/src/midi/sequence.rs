@@ -100,9 +100,9 @@ impl SequencedClips {
 pub fn rebuild(
     installs: Query<&MidiSourceInstall>,
     changed: Query<Entity, Changed<MidiSourceInstall>>,
-    // A target rebound to a new node (a respawn) keeps its clip: the event
-    // wiring moves its node's feeds onto the new one. One rebound to a node with no
-    // event input loses its clip here.
+    // A target rebound to a new node (a respawn) keeps its clip: every clip's
+    // feed is re-asserted on its target's current node below. One rebound to a
+    // node with no event input loses its clip here.
     rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<MidiSourceInstall>,
     mut clips: ResMut<SequencedClips>,
@@ -169,16 +169,24 @@ pub fn rebuild(
         if !playable.contains(&target) {
             continue;
         }
-        match clips.0.get(&target) {
-            Some((_, controls)) => controls.set_events(events),
+        let clip = match clips.0.get(&target) {
+            Some((clip, controls)) => {
+                controls.set_events(events);
+                *clip
+            }
             None => {
                 let (clip, controls) = graph.insert(MidiClipNode::new(events));
                 clips.0.insert(target, (clip, controls));
-                // `playable`: the target has a node.
-                if let Ok(&sink) = nodes.get(target) {
-                    graph.set_feed(sink, SEQUENCER, vec![clip.into()]);
-                }
+                clip
             }
+        };
+        // The feed is derived here, from the target's node now, on every
+        // rebuild: a target whose `AudioNode` was removed and re-inserted
+        // lost its old node's feeds with that node (`Graph::remove`), and
+        // nothing else would restore them. `set_feed` leaves an unchanged
+        // feed (and the edit flag) alone. `playable`: the target has a node.
+        if let Ok(&sink) = nodes.get(target) {
+            graph.set_feed(sink, SEQUENCER, vec![clip.into()]);
         }
     }
 }

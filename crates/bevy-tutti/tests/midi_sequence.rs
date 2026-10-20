@@ -227,6 +227,46 @@ fn a_re_bound_target_keeps_its_clip() {
     );
 }
 
+/// **A target whose node is removed, then bound to a new one, keeps its
+/// clip.** Removing `AudioNode` removes the old node from the graph, and
+/// every feed keyed by it goes with it (`Graph::remove`), so by the time the
+/// new node is bound there is nothing for the event reconcile to move. The
+/// sequencer derives the feed from the target's node on every rebuild, so
+/// the clip reaches the new node anyway.
+///
+/// Mutation (run): the rebuild setting the feed only when it creates a clip
+/// (not for one it already has) → the new tap hears `[]` → fails.
+#[test]
+fn a_target_removed_then_re_bound_keeps_its_clip() {
+    use bevy_tutti::graph::InsertAudioNode;
+    use tutti_core::AudioNode;
+
+    let mut app = app();
+    let (tap, old) = spawn_tap(&mut app);
+    app.world_mut().spawn(MidiSourceInstall::new(
+        tap,
+        note(60, Beat(1.0 / 3.0), BeatDuration(1.0), MF).to_vec(),
+    ));
+    app.update();
+
+    app.world_mut().entity_mut(tap).remove::<AudioNode>();
+    app.world_mut().flush();
+    let new = Seen::default();
+    app.world_mut()
+        .commands()
+        .entity(tap)
+        .insert_audio_node(Tap(Arc::clone(&new)));
+    app.world_mut().flush();
+    app.update();
+
+    roll(&mut app, 0, 9_000);
+    assert_eq!(note_ons(&new), vec![(8_000, 60)], "the new node plays it");
+    assert!(
+        note_ons(&old).is_empty(),
+        "the node the entity left does not"
+    );
+}
+
 /// **Two installs naming one target both play**: they are merged into its
 /// one clip.
 ///

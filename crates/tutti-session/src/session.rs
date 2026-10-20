@@ -178,13 +178,19 @@ pub struct MidiNodes {
 /// `Device`, feature `device`), or detached (the executor stays on
 /// this side: [`render_frame`](Self::render_frame)).
 ///
-/// `Send`, not `Sync`: one control thread owns it. With `plugin` on,
-/// [`update`](Self::update), the [`Collect`](Phase::Collect),
-/// [`Commit`](Phase::Commit) and [`AfterCommit`](Phase::AfterCommit)
-/// phases, [`Graph::remove`] through [`remove`](Self::remove), and dropping
-/// the session assert the main thread (`tutti_plugin_types::assert_main_thread`,
-/// a no-op until a host marks one): they free what an in-process plugin's
-/// `Drop` tears down.
+/// `Send`, not `Sync`: one control thread owns it. With `plugin` on, every
+/// path that frees a retired unit asserts the main thread
+/// (`tutti_plugin_types::assert_main_thread`, a no-op until a host marks
+/// one), because what it frees may be an in-process plugin whose `Drop`
+/// tears down an editor. A unit is freed only when the executor hands it
+/// back, at the editor's collect, so the guard is there: the
+/// [`Collect`](Phase::Collect) phase, a commit (on a detached session, which
+/// applies and collects at once: [`commit`](Self::commit),
+/// [`render_frame`](Self::render_frame), [`Graph::set_sample_rate`]), and
+/// dropping the session. [`update`](Self::update) and the
+/// [`Commit`](Phase::Commit) and [`AfterCommit`](Phase::AfterCommit) phases
+/// assert it too. Editing the graph (an insert, [`remove`](Self::remove), a
+/// wire) frees nothing and may run on any thread that owns the session.
 ///
 /// ```
 /// use tutti_core::{ChannelLayout, InterleavedMut, SampleRate, Samples};
@@ -234,13 +240,6 @@ pub struct Session {
     pub(crate) faults: Option<(Arc<tutti_cpal::StreamFaults>, u64)>,
 }
 
-/// With `plugin`, the main-thread guard of §4.2; otherwise nothing.
-#[inline]
-fn main_thread() {
-    #[cfg(feature = "plugin")]
-    tutti_plugin_types::assert_main_thread();
-}
-
 impl Session {
     /// A builder with the defaults.
     pub fn builder() -> crate::SessionBuilder {
@@ -263,7 +262,7 @@ impl Session {
     ///
     /// A main-thread call (see the type docs).
     pub fn update(&mut self) -> Vec<SessionEvent> {
-        main_thread();
+        crate::main_thread();
         let mut out = Vec::new();
         let cx = PhaseCx::at(Instant::now());
         for &phase in PHASES {
@@ -278,7 +277,7 @@ impl Session {
         let _ = cx;
         match phase {
             Phase::Collect => {
-                main_thread();
+                crate::main_thread();
                 // Before the collect, as a frame's spawns run before its
                 // commit: a crossfade lands on the update that first finds
                 // the re-prepare resumed.
@@ -300,14 +299,14 @@ impl Session {
                 self.resumed |= repreparing && !self.graph.is_repreparing();
             }
             Phase::Commit => {
-                main_thread();
+                crate::main_thread();
                 let sent = self.graph.is_edited() && self.commit() == Committed::Sent;
                 if !sent && self.resumed {
                     self.publish_sent();
                 }
                 self.resumed = false;
             }
-            Phase::AfterCommit => main_thread(),
+            Phase::AfterCommit => crate::main_thread(),
             Phase::Plugins | Phase::RenderMode | Phase::Modulation | Phase::MidiOut => {}
             Phase::Poll =>
             {
@@ -347,10 +346,11 @@ impl Session {
         }
     }
 
-    /// Takes `node` out of the graph ([`Graph::remove`]), on the main
-    /// thread: what it frees on the next collect may be a plugin's editor.
+    /// Takes `node` out of the graph ([`Graph::remove`]). Any thread that
+    /// owns the session: the removal frees nothing itself. The unit is freed
+    /// when the executor hands it back, at a collect, which is where the
+    /// main-thread guard is (see the type docs).
     pub fn remove(&mut self, node: AudioNode) -> bool {
-        main_thread();
         self.graph.remove(node)
     }
 
@@ -460,6 +460,6 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        main_thread();
+        crate::main_thread();
     }
 }

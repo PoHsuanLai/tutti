@@ -229,6 +229,50 @@ mod keyboard {
         assert!(!app.world().resource::<AudioGraphRes>().contains(queue));
     }
 
+    /// **A keyboard follows its entity onto a new node bound after the old
+    /// one was removed.** Removing `AudioNode` removes the old node, and its
+    /// feeds with it (`Graph::remove`), so nothing is left to move; the live
+    /// input re-asserts its feed on the entity's node whenever that changes.
+    ///
+    /// Mutation (run): `attach_live_midi` not re-asserting the feed on a
+    /// changed `AudioNode` → the new synth's event input is empty → fails.
+    #[test]
+    fn a_keyboard_follows_its_entity_onto_a_node_bound_after_a_removal() {
+        use bevy_tutti::graph::InsertAudioNode;
+
+        let mut app = app();
+        let lead = synth(&mut app);
+        app.world_mut().entity_mut(lead).insert(LiveMidiInput);
+        app.update();
+        let queue = app.world().get::<LiveMidi>(lead).unwrap().node();
+        let old = node_of(&app, lead);
+
+        app.world_mut().entity_mut(lead).remove::<AudioNode>();
+        app.world_mut().flush();
+        let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
+        app.world_mut()
+            .commands()
+            .entity(lead)
+            .insert_audio_node(synth);
+        app.world_mut().flush();
+        app.update();
+
+        let new = node_of(&app, lead);
+        assert_ne!(new, old, "the entity is bound to a new node");
+        assert_eq!(
+            app.world().get::<LiveMidi>(lead).unwrap().node(),
+            queue,
+            "the same keyboard"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .event_sources(new, 0),
+            vec![queue.into()],
+            "the keyboard feeds the new node"
+        );
+    }
+
     /// **What a keyboard sends arrives at its synth**: a note through
     /// `LiveMidi` sounds.
     #[test]

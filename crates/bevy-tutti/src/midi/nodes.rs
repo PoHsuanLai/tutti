@@ -115,11 +115,14 @@ const LIVE: &str = "live midi";
 
 /// Inserts a queue node for every [`LiveMidiInput`] without one, feeding the
 /// entity's node: one whose node is not in yet waits for it. The feed is
-/// keyed by the node, and follows the entity onto a node bound in its place
-/// (the event reconcile moves it).
+/// keyed by the node, and is re-asserted on the node an entity is bound to
+/// whenever its `AudioNode` changes: a node bound in place of the old one
+/// (the event reconcile would move the feed), and one bound after the old
+/// node was removed (whose feeds went with it, `Graph::remove`).
 pub fn attach_live_midi(
     mut commands: Commands,
     wanted: Query<(Entity, &AudioNode), (With<LiveMidiInput>, Without<LiveMidi>)>,
+    rebound: Query<(&AudioNode, &LiveMidi), (With<LiveMidiInput>, Changed<AudioNode>)>,
     graph: Option<ResMut<AudioGraphRes>>,
 ) {
     let Some(mut graph) = graph else {
@@ -129,6 +132,11 @@ pub fn attach_live_midi(
         let (node, sender) = graph.insert(MidiQueueNode::new());
         graph.set_feed(sink, LIVE, vec![node.into()]);
         commands.entity(entity).insert(LiveMidi { sender, node });
+    }
+    // Derived at the point of use: `set_feed` leaves an unchanged feed (and
+    // the edit flag) alone.
+    for (&sink, live) in &rebound {
+        graph.set_feed(sink, LIVE, vec![live.node.into()]);
     }
 }
 

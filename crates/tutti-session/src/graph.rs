@@ -500,6 +500,8 @@ impl Graph {
         let Some(local) = &mut self.local else {
             return;
         };
+        // The collect below frees what the local executor retired.
+        crate::main_thread();
         for _ in 0..4 {
             if self.editor.in_flight() == 0 {
                 break;
@@ -1382,8 +1384,10 @@ impl Graph {
 
     // --- Committing and rendering ---
 
-    /// Drain what the executor sent back, freeing retired units here.
+    /// Drain what the executor sent back, freeing retired units here: on
+    /// the main thread (`crate::main_thread`).
     pub(crate) fn collect(&mut self) {
+        crate::main_thread();
         self.editor.collect();
     }
 

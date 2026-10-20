@@ -458,8 +458,14 @@ only legal on the host's main (UI) thread:
   teardown is main-thread-only (`tutti-export` `lib.rs:172-174`).
 
 So these calls are main-thread calls: `update()`, `run_phase(Collect)`,
-`run_phase(Commit)`, `run_phase(AfterCommit)`, `add_plugin`, `remove`,
-`finish_export`, and dropping the `Session`.
+`run_phase(Commit)`, `run_phase(AfterCommit)`, `add_plugin`,
+`finish_export`, and dropping the `Session`. The free itself is guarded
+where it happens, at the editor's collect (the `Collect` phase, and on a
+detached session every commit, `render_frame` and `set_sample_rate`, which
+apply and collect at once), so no path around the list frees off the main
+thread unchecked. `remove` is not on the list (PR 4 review): it frees
+nothing itself, and Bevy calls it from parallel systems (a clip whose target
+lost its event input); the node it removes is freed at the next collect.
 
 - With `plugin` on, each asserts it with `tutti-plugin`'s existing
   debug-only guard (`assert_main_thread`, `tutti-plugin-types`

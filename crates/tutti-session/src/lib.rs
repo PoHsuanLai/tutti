@@ -34,6 +34,15 @@
 
 #![forbid(unsafe_code)]
 
+/// With `plugin`, the main-thread guard of design 015 §4.2 (a no-op until a
+/// host marks its main thread); otherwise nothing. Called wherever a retired
+/// unit can be freed: the editor's collect, and the session's drop.
+#[inline]
+pub(crate) fn main_thread() {
+    #[cfg(feature = "plugin")]
+    tutti_plugin_types::assert_main_thread();
+}
+
 mod builder;
 #[cfg(feature = "device")]
 mod device;

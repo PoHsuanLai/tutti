@@ -643,3 +643,48 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
         "the same samples on both, to the bit"
     );
 }
+
+/// **The main-thread guard sits where a unit is freed, not on an edit**
+/// (design 015 §4.2). A removal frees nothing, so a session owned by another
+/// thread may remove a node (Bevy removes a clip's node from a parallel
+/// system); the free happens at a collect, here a detached commit's, and
+/// that is what asserts. Debug builds with `plugin` only: the guard is a
+/// `debug_assert!` behind that feature.
+///
+/// The session goes back to this thread to be dropped: its drop asserts too.
+///
+/// Mutations (run):
+/// - `Session::remove` asserting the main thread again → the first spawned
+///   thread panics → fails;
+/// - `Graph::pump_local` without its guard → the commit off the main
+///   thread frees unchecked and does not panic → fails.
+#[cfg(all(feature = "plugin", debug_assertions))]
+#[test]
+fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    tutti_plugin_types::mark_main_thread();
+    let mut s = detached(1);
+    let (dc, _) = s.graph().insert(Const::mono(0.5));
+    s.update();
+
+    let s = std::thread::spawn(move || {
+        let mut s = s;
+        assert!(s.remove(dc), "the node was in the graph");
+        s
+    })
+    .join()
+    .expect("a removal off the main thread does not assert");
+
+    let (s, panicked) = std::thread::spawn(move || {
+        let mut s = s;
+        let freed = catch_unwind(AssertUnwindSafe(|| {
+            s.commit();
+        }));
+        (s, freed.is_err())
+    })
+    .join()
+    .expect("the session comes back");
+    assert!(panicked, "a commit off the main thread frees, and asserts");
+    drop(s);
+}

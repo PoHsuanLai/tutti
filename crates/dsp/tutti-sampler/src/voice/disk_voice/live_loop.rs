@@ -719,7 +719,7 @@ fn an_edit_that_changes_nothing_near_the_playhead_is_not_heard() {
     moved.loop_(far);
     memory.source.set_loop_setting(far);
     got.extend(moved.render(1));
-    let at = moved.voice.inner.read.ring().map().at;
+    let at = moved.voice.inner.read.ring().map_reader().lend().at;
     assert_eq!(at, 30_000, "the ring switched where the loops still agreed");
     got.extend(moved.render(599));
     want.extend(memory.render(600));

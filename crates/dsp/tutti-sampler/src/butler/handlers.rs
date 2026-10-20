@@ -82,8 +82,10 @@ pub(super) struct Local {
     pub next_region_id: u64,
     /// Flat interleaved refill scratch. Butler-thread-local, so it may grow.
     pub interleave_buffer: Vec<f32>,
-    /// The read state on the delay-compensation table, built with the
-    /// controller (`ButlerThread::with_pdc`) and read by `&mut` here.
+    /// The read state on the delay-compensation table (a reader registered
+    /// on it), built on the control thread with this cycle
+    /// (`ButlerThread::cycle`, or `with_pdc` for a hand-stepped one) and read
+    /// by `&mut` here.
     pub pdc: PdcFeed,
 }
 

@@ -298,8 +298,13 @@ the interpreter.
   and the publisher's preemption tails went. The new costs: a publish scans
   every registered reader, and a reader preempted mid-lend under a
   flat-out publisher pins what is retired meanwhile (2902 values at peak
-  on the shared VM). tutti's read sites move to `Reader`s with the E3a
-  prep (pending).
+  on the shared VM). tutti's read sites hold `Reader`s, each registered
+  where its node (or the butler's cycle, or the MIDI drain) is built, and a
+  fork's node registers on its own new cell. `debug_check_reclaiming` and
+  `PARKED_LOAN_LIMIT` are gone: a parked loan pins one value, so the retired
+  list is bounded by the registered readers and the check could not trip.
+  Hosts register a reader of the compensation table with
+  `ChannelCompensation::reader` or `Session::compensation_reader`.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
   tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is

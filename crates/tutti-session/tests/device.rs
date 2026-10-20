@@ -79,7 +79,7 @@ fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
         assert_eq!(total, lim, "{what}: the plan compensates the limiter");
         assert_eq!(s.latency(), total, "{what}: the total is the plan's");
         assert_eq!(
-            s.compensation().lend().as_slice(),
+            s.compensation_reader().lend().as_slice(),
             channels.as_slice(),
             "{what}: the table is the plan's"
         );

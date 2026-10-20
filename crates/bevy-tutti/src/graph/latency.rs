@@ -92,8 +92,7 @@ use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
 use crate::graph::{engine_ready, AudioGraphRes, GraphReconcileSystems};
-use tutti_core::ArcLend;
-use tutti_core::Samples;
+use tutti_core::{ArcLend, Reader, Samples};
 
 /// Per-output-channel pre-roll for sources outside the audio graph.
 ///
@@ -102,11 +101,28 @@ use tutti_core::Samples;
 /// sends. The sampler holds one of these; a host wanting to display or apply
 /// the figures elsewhere can clone it from the resource.
 ///
-/// Read a channel with `compensation.0.lend().get(channel)` (see
-/// [`ArcLend::lend`]), which is `None` for a channel past the end of the
-/// table. The table is empty until the first plan is sent.
+/// To read it, register a [`Reader`] with [`reader`](Self::reader), keep it
+/// where the reading code runs (a system's `Local`, a struct field), and
+/// read a channel with `reader.lend().get(channel)`, which is `None` for a
+/// channel past the end of the table. The table is empty until the first
+/// plan is sent.
+///
+/// The resource can be rebound to another cell (once, when the graph's own
+/// replaces the one a plugin initialized before it was inserted): a reader
+/// registered before that keeps reading the old cell. Register again when
+/// the resource changes (`Res::is_changed`), or compare
+/// [`Reader::cell`] with `.0`.
 #[derive(Resource, Clone, Default)]
 pub struct ChannelCompensation(pub Arc<ArcLend<Vec<Samples>>>);
+
+impl ChannelCompensation {
+    /// A reader of the table: one per reading thread, registered off the
+    /// audio thread (it takes the cell's publisher lock and may allocate),
+    /// kept, and lent through for each read.
+    pub fn reader(&self) -> Reader<Vec<Samples>> {
+        self.0.reader()
+    }
+}
 
 /// The graph's total latency, as of the last plan sent to the audio thread.
 ///
@@ -293,7 +309,8 @@ mod tests {
         app.update();
 
         let published = app.world().resource::<ChannelCompensation>();
-        let table = published.0.lend();
+        let mut reader = published.reader();
+        let table = reader.lend();
         assert_eq!(table.first().copied(), Some(Samples(0)));
         assert_eq!(table.get(1).copied(), Some(eff_lat));
     }
@@ -315,7 +332,8 @@ mod tests {
         assert!(!app.world().resource::<GraphLatency>().is_empty());
 
         // The point: reading it off the table gives the wrong answer.
-        let table = app.world().resource::<ChannelCompensation>().0.lend();
+        let mut reader = app.world().resource::<ChannelCompensation>().reader();
+        let table = reader.lend();
         assert_eq!(
             table.first().copied(),
             Some(Samples(0)),
@@ -364,7 +382,7 @@ mod tests {
         app.update();
 
         let published = app.world().resource::<ChannelCompensation>();
-        assert_eq!(*published.0.lend(), sentinel, "no table published");
+        assert_eq!(*published.reader().lend(), sentinel, "no table published");
     }
 
     /// The check reads the edit flag; it never clears it.
@@ -434,7 +452,8 @@ mod tests {
             .resource::<AudioGraphRes>()
             .sent_compensation()
             .expect("the commit sent a plan");
-        let table = app.world().resource::<ChannelCompensation>().0.lend();
+        let mut reader = app.world().resource::<ChannelCompensation>().reader();
+        let table = reader.lend();
         assert_eq!(&*table, &sent_channels[..], "per-channel pre-roll");
         assert_eq!(
             app.world().resource::<GraphLatency>().0,
@@ -495,7 +514,7 @@ mod tests {
         assert_eq!(
             app.world()
                 .resource::<ChannelCompensation>()
-                .0
+                .reader()
                 .lend()
                 .get(1),
             Some(&at_48k),

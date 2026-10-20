@@ -13,8 +13,8 @@ use tutti_graph::{
 };
 use tutti_mod::{Clock, ControlProgram, CurveSegment, ProgramTime, Wave, MAX_LANE_INPUTS};
 use tutti_types::{
-    debug_check_reclaiming, ArcLend, AtomicF32, Beat, Frame, ParamAddr, ParamKey, RangeCell,
-    SamplePosition, Samples, Tail, Unit, UnitParam,
+    ArcLend, AtomicF32, Beat, Frame, ParamAddr, ParamKey, RangeCell, Reader, SamplePosition,
+    Samples, Tail, Unit, UnitParam,
 };
 
 use super::lane::segment_shape;
@@ -70,7 +70,9 @@ struct Published {
 
 /// What a lane shares with its [`LaneControls`] and its fork source.
 struct Shared {
-    program: ArcLend<Published>,
+    /// What the lane reads once per block, through the reader the node
+    /// registered on it when it was built.
+    program: Arc<ArcLend<Published>>,
     /// The last program published and its generation, for the fork (an
     /// `Loan` must not leave the block, doc 014 §4.5) and the next
     /// publish's generation. Control thread only.
@@ -106,9 +108,6 @@ impl LaneControls {
             generation,
             program,
         }));
-        // A modulation edit republishes this every frame: where a parked
-        // `Loan` shows first. Debug builds only.
-        debug_check_reclaiming(&self.0.program);
     }
 
     /// The program last published (or built with).
@@ -255,6 +254,9 @@ struct Seen {
 /// reserved at `prepare`.
 pub struct ControlLaneNode {
     shared: Arc<Shared>,
+    /// A reader of `shared.program`, registered when the node is built (a
+    /// fork builds a node over a new cell, and registers there).
+    program: Reader<Published>,
     make: Arc<MakeSegment>,
     /// A native port (exact mode allowed; the port clamps).
     native: bool,
@@ -288,10 +290,10 @@ impl ControlLaneNode {
         native: bool,
     ) -> Self {
         let shared = Shared {
-            program: ArcLend::new(Published {
+            program: Arc::new(ArcLend::new(Published {
                 generation: 0,
                 program: Arc::clone(&program),
-            }),
+            })),
             last: Mutex::new((0, program)),
             resync: AtomicBool::new(false),
             knob,
@@ -301,6 +303,7 @@ impl ControlLaneNode {
             unranged: AtomicU64::new(0),
         };
         Self {
+            program: shared.program.reader(),
             shared: Arc::new(shared),
             make,
             native,
@@ -922,7 +925,7 @@ impl Node for ControlLaneNode {
             return Status::Modified;
         }
         let s = &*self.shared;
-        let published = s.program.lend();
+        let published = self.program.lend();
         let (generation, program) = (published.generation, &*published.program);
         let knob = s
             .knob
@@ -1073,35 +1076,5 @@ impl IntoNode for ControlLaneNode {
             controls,
             fork: Some(Box::new(fork)),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A loan of the lane's program parked across blocks trips the debug net
-    /// at `publish`, before the retired list grows without bound.
-    ///
-    /// Mutation: delete the `debug_check_reclaiming` call in `publish_arc`.
-    /// Every publish succeeds and the test fails with "did not panic".
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "a `Loan` is parked across blocks")]
-    fn a_parked_program_loan_trips_the_debug_net() {
-        let empty = || ControlProgram::new(None, vec![], vec![]).expect("a valid program");
-        let lane = ControlLaneNode::for_unit(UnitParam::Volume, empty(), None, None);
-        let controls = lane.controls();
-        // What a lane that kept its loans would do: loans in every overflow
-        // epoch, so nothing retired after them can be reclaimed.
-        let mut parked = Vec::new();
-        for _ in 0..4 {
-            parked.extend((0..16).map(|_| controls.0.program.lend()));
-            controls.publish(empty());
-        }
-        for _ in 0..tutti_types::PARKED_LOAN_LIMIT {
-            controls.publish(empty());
-        }
-        drop(parked);
     }
 }

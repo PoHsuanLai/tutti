@@ -13,16 +13,16 @@
 //!
 //! What this file deliberately does *not* test: that the audio thread never
 //! *frees* a retired non-scalar value (a `MeterMap`, a routing table). That
-//! property is carried by the type — `ArcLend::lend` returns a `Loan`, a
-//! `!Send` borrow tied to the cell's lifetime, so there is no owning handle for
+//! property is carried by the type — `Reader::lend` returns a `Loan`, a
+//! `!Send` borrow tied to the reader's lifetime, so there is no owning handle for
 //! the callback to be left holding — and by `ArcLend`'s reclamation protocol,
 //! whose reader side has no path to a destructor. It cannot be pinned by a
 //! no-alloc gate here: the hazard is a race, and a sampling schedule cannot
 //! exhaust one; a test that tried would pass while asserting a property it
 //! structurally could not observe. The race is covered where it can be: the
-//! loom model `arc-lend/tests/loom.rs` (against the shipped code; bounded
-//! in CI, exhaustive under `just loom-full`) and miri over `arc-lend`'s
-//! stress test.
+//! loom model `arc-lend/tests/loom.rs` (against the shipped code, at a
+//! preemption bound of 4 in CI and 5 under `just loom-full`) and miri over
+//! `arc-lend`'s stress test.
 
 mod support;
 

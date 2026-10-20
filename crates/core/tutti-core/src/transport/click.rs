@@ -41,7 +41,7 @@ use tutti_graph::{
 };
 use tutti_types::meter::{Meter, MeterMap};
 use tutti_types::value::{Amplitude, Beat, Hz, Phase, PhaseIncrement, Samples, Seconds};
-use tutti_types::{ArcLend, ChannelLayout, Tail};
+use tutti_types::{ChannelLayout, Reader, Tail};
 
 /// How far two beat onsets must differ to count as different beats.
 ///
@@ -223,14 +223,18 @@ pub type ClickState = ClickSettings;
 /// A fork (an export, a live duplicate) renders the metronome as it was set
 /// at the fork: a [`snapshot`](ClickSettings::snapshot) of the settings and
 /// the count-in flag as it stood, sharing nothing with the live node.
+///
+/// A clone reads the same settings and count-in flag, and its meter through
+/// a reader of its own: `Reader::clone` registers a new reader on the same
+/// cell, so the clone and the original never share a reader slot.
 #[derive(Clone)]
 pub struct ClickNode {
     settings: Arc<ClickSettings>,
-    /// The meter cell of `settings`' project meter, taken when the node is
-    /// built: the one cell the node reads the meter from, once per block.
-    /// Never swapped: a node over other settings is built with
-    /// [`over`](Self::over), which takes that settings' cell.
-    meter: Arc<ArcLend<MeterMap>>,
+    /// A reader registered on the meter cell of `settings`' project meter
+    /// when the node is built: the one cell the node reads the meter from,
+    /// once per block. Never swapped: a node over other settings is built
+    /// with [`over`](Self::over), which registers on that settings' cell.
+    meter: Reader<MeterMap>,
     /// The transport's count-in flag (`TransportSettings::in_preroll`), or a
     /// fork's own copy of it.
     preroll: Arc<AtomicBool>,
@@ -275,10 +279,11 @@ impl ClickNode {
     }
 
     /// A node over `settings` and the count-in flag `preroll`, reading the
-    /// meter cell of `settings`' project meter. Control thread.
+    /// meter cell of `settings`' project meter through a reader it registers
+    /// there. Control thread: registering may allocate.
     fn over(settings: Arc<ClickSettings>, preroll: Arc<AtomicBool>) -> Self {
         Self {
-            meter: settings.meter.cell(),
+            meter: settings.meter.reader(),
             settings,
             preroll,
             sample_rate: None,
@@ -479,7 +484,7 @@ impl ClickNode {
     ///
     /// The mode, the count-in flag, the volume and the meter are read once
     /// per block — a UI write lands at the next block, never mid-block, and
-    /// the meter's `ArcLend::lend` (a guard acquire) is never per frame.
+    /// the meter's `Reader::lend` (a slot claim and a fence) is never per frame.
     /// The beat is per frame, and the play and record state per piece of the
     /// block ([`Env::segments`]): a stop inside the block silences the click
     /// from its frame, and a start sounds the beat it lands on, on its frame.
@@ -496,7 +501,7 @@ impl ClickNode {
                 right[range].fill(0.0);
                 continue;
             }
-            // One lease for the piece — `ArcLend::lend` is never per frame.
+            // One lease for the piece — `Reader::lend` is never per frame.
             let meter = self.meter.lend();
             let Self {
                 click_normal,
@@ -574,8 +579,8 @@ impl Node for ClickNode {
 ///
 /// It holds the cells, not a node: a fork is a node built over new cells
 /// ([`ClickNode::over`]), never a clone of the live one with its cells
-/// swapped, so whatever the node reads its meter cell with is built for the
-/// fork's own cell.
+/// swapped, so the reader the node lends its meter through is registered on
+/// the fork's own cell.
 struct ClickFork {
     settings: Arc<ClickSettings>,
     preroll: Arc<AtomicBool>,

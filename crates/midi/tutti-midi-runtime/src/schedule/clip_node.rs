@@ -22,7 +22,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tutti_core::{ArcLend, ChannelLayout};
+use tutti_core::{ArcLend, ChannelLayout, Reader};
 use tutti_graph::{
     Cx, Event, EventWriter, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts,
     Offset, Prepare, Shape, Status,
@@ -48,8 +48,9 @@ struct ClipEvents {
 
 /// What the node and its controls share.
 struct Shared {
-    /// What the audio thread reads, once per block.
-    cell: ArcLend<ClipEvents>,
+    /// What the audio thread reads, once per block, through the node's
+    /// reader.
+    cell: Arc<ArcLend<ClipEvents>>,
     /// The clip last published, for the control side (a fork's snapshot, a
     /// count). Control thread only.
     current: Mutex<Arc<ClipEvents>>,
@@ -63,7 +64,7 @@ impl Shared {
             events,
         });
         Arc::new(Self {
-            cell: ArcLend::from_arc(Arc::clone(&first)),
+            cell: Arc::new(ArcLend::from_arc(Arc::clone(&first))),
             current: Mutex::new(first),
             next_generation: AtomicU64::new(1),
         })
@@ -141,6 +142,9 @@ impl MidiClipControls {
 /// ```
 pub struct MidiClipNode {
     shared: Arc<Shared>,
+    /// A reader of `shared.cell`, registered in [`over`](Self::over): a
+    /// fork's node is built over its own cell and registers there.
+    clip: Reader<ClipEvents>,
     /// The generation of the clip this node last played.
     generation: u64,
     play: Play,
@@ -158,9 +162,12 @@ impl MidiClipNode {
         Self::over(Shared::new(sorted(events)))
     }
 
+    /// A node over `shared`, reading it through a reader registered here.
+    /// Control thread: registering may allocate.
     fn over(shared: Arc<Shared>) -> Self {
         let generation = shared.current().generation;
         Self {
+            clip: shared.cell.reader(),
             shared,
             generation,
             play: Play {
@@ -221,7 +228,7 @@ impl Node for MidiClipNode {
     fn prepare(&mut self, _p: &Prepare) {}
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let clip = self.shared.cell.lend();
+        let clip = self.clip.lend();
         let out = io.event_out(0);
         if self.play.held.owed {
             if let Some(o) = cx.env.offset(0) {
@@ -279,7 +286,7 @@ impl ForkSource for ClipFork {
     fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         let clip = self.shared.current();
         let shared = Arc::new(Shared {
-            cell: ArcLend::from_arc(Arc::clone(&clip)),
+            cell: Arc::new(ArcLend::from_arc(Arc::clone(&clip))),
             current: Mutex::new(clip),
             next_generation: AtomicU64::new(0),
         });

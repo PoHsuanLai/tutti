@@ -183,7 +183,8 @@ impl Drop for Tracked {
 }
 
 /// No preemption bound of its own: exhaustive unless `LOOM_MAX_PREEMPTIONS`
-/// is set. CI sets it to 4; `just loom-full` leaves it unset.
+/// is set. CI sets it to 4; `just loom-full` to 5 (unbounded did not finish
+/// in 50 minutes).
 fn model(f: impl Fn() + Sync + Send + 'static) {
     loom::model::Builder::new().check(f);
 }

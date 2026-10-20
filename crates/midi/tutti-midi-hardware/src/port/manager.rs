@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use tutti_core::{ArcLend, RtVec, SampleRate};
+use tutti_core::{ArcLend, Reader, RtVec, SampleRate};
 
 use super::async_port::{HardwareMidiInput, InputProducerHandle};
 use tutti_midi_types::ump::MidiEvent;
@@ -244,8 +244,9 @@ pub struct HardwareMidiInputs {
     /// upgraded to a strong count, and its drop then freed the old `Vec` on
     /// the audio thread.) The same holds for a removed port: the set that
     /// still holds it is retired, and the port and its ring are freed on the
-    /// control side (see [`collect`](Self::collect)).
-    input_ports: ArcLend<PortSlots>,
+    /// control side (see [`collect`](Self::collect)). Each drain lends it
+    /// through a reader of its own, registered in [`HardwareMidiDrain::new`].
+    input_ports: Arc<ArcLend<PortSlots>>,
     /// Serializes the read, change and publish of every control-side change
     /// (`ArcLend` has no compare-and-publish), so two control threads racing
     /// on hotplug cannot each publish a copy missing the other's change. The
@@ -267,7 +268,7 @@ impl HardwareMidiInputs {
     pub fn new(fifo_size: usize) -> Self {
         let slots = Arc::new(PortSlots::new());
         Self {
-            input_ports: ArcLend::from_arc(Arc::clone(&slots)),
+            input_ports: Arc::new(ArcLend::from_arc(Arc::clone(&slots))),
             published: Mutex::new(Published {
                 slots,
                 next_generation: 0,
@@ -387,19 +388,19 @@ impl HardwareMidiInputs {
     /// retired sets are still held (by a drain in progress).
     ///
     /// Control-thread only. Cheap when there is nothing to do (a lock and a
-    /// load); otherwise it publishes the current set again, which takes the
-    /// same route every change does to free what no reader holds. A host that
-    /// removes ports and then makes no further change calls this from a
-    /// periodic control-side task to get the memory back.
+    /// load); otherwise one scan of the drains' readers
+    /// ([`ArcLend::reclaim`]), publishing nothing. A host that removes ports
+    /// and then makes no further change calls this from a periodic
+    /// control-side task to get the memory back.
     pub fn collect(&self) -> usize {
-        let published = self
+        // Held so a change racing this call frees in one order: `reclaim`
+        // takes the cell's publisher lock too, but the record's lock is the
+        // one every control-side change takes first.
+        let _published = self
             .published
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if self.input_ports.retired_len() > 0 {
-            self.input_ports.publish(Arc::clone(&published.slots));
-        }
-        self.input_ports.retired_len()
+        self.input_ports.reclaim()
     }
 
     /// The port set last published, as the control side recorded it: what
@@ -524,6 +525,9 @@ impl Default for HardwareMidiInputs {
 /// drain at a time takes a manager's events.
 pub struct HardwareMidiDrain {
     inputs: Arc<HardwareMidiInputs>,
+    /// A reader of `inputs`' port set, registered in [`new`](Self::new): what
+    /// the drain lends the set through, once per drain.
+    ports: Reader<PortSlots>,
     /// The block's drained events, already timed. One buffer, not two: the
     /// timestamp → `frame_offset` conversion needs only the rate, `nframes`
     /// and the block start, all known before the first pop, so each event is
@@ -533,9 +537,11 @@ pub struct HardwareMidiDrain {
 }
 
 impl HardwareMidiDrain {
-    /// A drain of `inputs`, for one node. Control thread.
+    /// A drain of `inputs`, for one node. Control thread: it registers a
+    /// reader of the port set, which may allocate.
     pub fn new(inputs: Arc<HardwareMidiInputs>) -> Self {
         Self {
+            ports: inputs.input_ports.reader(),
             inputs,
             events: RtVec::new(),
         }
@@ -606,7 +612,7 @@ impl HardwareMidiDrain {
         // from the snapshot past it. The borrow is held to the drain's end:
         // a port removed while the drain runs is freed by the control side
         // afterwards (`collect`), never by this borrow's drop.
-        let input_ports = self.inputs.input_ports.lend();
+        let input_ports = self.ports.lend();
         read_inputs(
             &mut self.events,
             &input_ports,
@@ -1278,7 +1284,7 @@ mod tests {
     /// `collect` frees it on the control side once the drain is done, with no
     /// further change needed.
     ///
-    /// Mutation (run): `collect` not publishing (returning `retired_len` only)
+    /// Mutation (run): `collect` not reclaiming (returning `retired_len` only)
     /// → the port stays alive → fails.
     #[test]
     fn collect_frees_a_port_removed_during_a_drain() {

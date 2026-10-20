@@ -36,9 +36,9 @@ pub use engine::{Engine, GraphEngineError, DEFAULT_BLOCK_CAPACITY, MAX_ROOT_CHAN
 pub mod transport;
 pub use transport::{
     ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange, MeterSlot,
-    MeterSlotCell, MetronomeMode, MotionEvent, MotionFsm, MotionState, OfflineTimeline,
-    OfflineTimelineConfig, ProjectMeter, QueueFull, RenderClock, ScheduleFull, Then, Timeline,
-    Transport, TransportClock, TransportCommand, TransportSettings, TransportState,
+    MeterSlotCell, MeterSlotReader, MetronomeMode, MotionEvent, MotionFsm, MotionState,
+    OfflineTimeline, OfflineTimelineConfig, ProjectMeter, QueueFull, RenderClock, ScheduleFull,
+    Then, Timeline, Transport, TransportClock, TransportCommand, TransportSettings, TransportState,
     SCHEDULE_CAPACITY,
 };
 // The time a scheduled command names, and the engine's frame clock. Homed in
@@ -57,8 +57,8 @@ pub use tutti_types::meter::{
     TimeSignature,
 };
 pub use tutti_types::{
-    debug_check_reclaiming, ArcLend, Loan, PosClaim, PosFrame, PosReader, PosRing, PosWriter,
-    RingWindow, MAX_POS_RING_FRAMES, PARKED_LOAN_LIMIT,
+    ArcLend, Loan, PosClaim, PosFrame, PosReader, PosRing, PosWriter, Reader, RingWindow,
+    MAX_POS_RING_FRAMES,
 };
 
 mod metering;

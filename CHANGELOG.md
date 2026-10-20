@@ -32,7 +32,25 @@ loom model runs against the new code, with a new mutation record.
 Migration: register a `Reader` per reading thread (and per nesting level)
 where the reading structure is built, store it beside the cell, and call
 `lend` on it; replace `epoch_stalls()` with `reclaim()` or `retired_len()`.
-tutti's own migration lands with E3a's prep (pending).
+
+tutti's read sites (the ones E3a gave one cell each) now hold a `Reader`,
+registered where the reading node or structure is built:
+
+| Was | Now |
+|---|---|
+| — | re-exported: `tutti_types::Reader`, `tutti_core::Reader`, and `tutti_core::MeterSlotReader` (`Reader<Option<Arc<MeterMap>>>`) |
+| — | `MeterSlot::reader()`, `ChannelCompensation::reader()` (bevy-tutti), `Session::compensation_reader()` |
+| `compensation.0.lend()`, `session.compensation().lend()` | register once with `reader()` / `compensation_reader()`, keep it, and `lend` through it; re-register when the `ChannelCompensation` resource is rebound |
+| `tutti_types::debug_check_reclaiming`, `PARKED_LOAN_LIMIT` (and their `tutti_core` re-exports) | removed: a parked loan now pins one value, so the retired list cannot grow past the registered readers, and the check could never trip |
+| `HardwareMidiInputs::collect` republished the port set to free retired ones | it calls `ArcLend::reclaim`, publishing nothing; same return value |
+
+Each node registers its reader in its constructor, and a fork's node
+(built over a new cell) registers on that: the metronome (`ClickNode`), the
+automation lane, the MIDI clip, harmony and input nodes, the sampler voice's
+placement and its live ring's map, the plugin nodes' meter (out-of-process and
+in-process VST2), the hardware MIDI drain, and the butler's compensation feed
+(a `PdcFeed` per butler cycle, no longer `Clone`). `ClickNode` and the VST2
+`TransportFeed` keep a derived `Clone`, which now registers a new reader.
 
 ### Changed — every `ArcLend` read site reads one cell it owns (arc-lend E3a)
 

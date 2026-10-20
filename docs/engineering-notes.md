@@ -208,12 +208,15 @@ keep using `Param<U>`. (It was `RtPublish`/`RtRef` in `tutti-types` until it
 moved into its own crate; see the CHANGELOG.)
 
 **The invariant: the audio thread never holds an owning handle to published
-state.** `lend()` returns a `Loan` — a borrow, `!Send`, lifetime-tied to the
-cell, with no way to get an owning `Arc` back out. `publish()` is control-thread
-only: it frees every retired value no reader still holds, *there*, and leaves
-one a reader is holding on a retirement list for a later publish (or the cell's
-drop) to free — still on the control side. The reader's `Loan::drop` only
-clears a slot; there is no path from it to a destructor.
+state.** A reading thread lends through a `Reader`, registered on the cell
+(`ArcLend::reader`, from an `Arc` of it) on the control side and kept by the
+node or structure that reads. `Reader::lend` returns a `Loan`: a borrow,
+`!Send`, lifetime-tied to the reader, with no way to get an owning `Arc` back
+out. `publish()` is control-thread only: it frees every retired value no
+reader still holds, *there*, and leaves one a reader is holding on a
+retirement list for a later publish, a `reclaim()` or the cell's drop to
+free — still on the control side. The `Loan`'s drop only clears its reader's
+slot; there is no path from it to a destructor.
 
 This exists because an owning read (`ArcSwap::load_full`) on the audio thread can
 leave the callback holding the last reference to a retired value and free its
@@ -224,63 +227,62 @@ property with a no-alloc test**; the hazard is a race, and sampling schedules
 cannot exhaust one. That is why the guarantee lives in the return type.
 
 Rules:
-- **Lend once per block, never per sample.** A lend is a slot CAS, a
-  `SeqCst` fence and an `Acquire` load (plus a `Release` store on drop) — far
-  heavier than the atomics beside it. Measured at ~3 ns uncontended, the same
-  as the `ArcSwap::load` it replaced, and ~25 ns against a publisher hammering
-  the cell (arc-swap: ~41 ns) — `arc-lend`'s `benches/lend.rs` (measured when
-  it was `tutti-types`' `benches/rt_publish_read.rs`).
-- **Never park a `Loan`** in a struct field or hold one across blocks. The
-  type enforces only part of this: a `Loan` is `!Send` and borrows the cell,
-  so it stays on one thread and cannot outlive the cell, but a struct with a
-  lifetime can still hold one across blocks. In debug builds, tutti's
-  `debug_check_reclaiming` at the busiest publish sites panics once a cell
-  holds back `PARKED_LOAN_LIMIT` (1024) retired values.
-- **Avoid nested lends** — several live `Loan`s into the same cell. Each
-  occupies one of the cell's reader slots; past them a lend registers in an
-  overflow *epoch* instead, which is just as wait-free and allocation-free for
-  the reader but tells the publisher only which run of values was current
-  while the epoch was open, so it pins that whole run (usually one or two
-  values). A forgotten overflow `Loan` pins its run forever and nothing else;
-  the retired list stays bounded. (The slot and epoch counts are the cell's
-  const parameters, `ArcLend<T, SLOTS = 8, EPOCHS = 4>`; the engine uses the
-  defaults — don't code against a number.) The cell neither asserts nor logs
-  when parked loans stall reclamation; `retired_len()` and `epoch_stalls()`
-  are there for a host to poll with its own policy. tutti's is
-  `tutti_types::debug_check_reclaiming`, called after the two publishes a
-  drag repeats every frame (an automation lane's program, a sampler voice's
-  placement): a debug build panics once 1024 retired values are waiting.
-- **Never `publish` from the audio thread** — it stalls the callback *and* frees
-  inside it.
+- **Register on the control side; lend on the reading thread.** Registering
+  takes the publisher's lock and may allocate a block of slots, so it happens
+  where the node (or the butler's cycle, or the MIDI drain) is built, and
+  the reader is stored beside what it reads. A fork builds its node over a
+  new cell and registers there. `Reader::clone` registers a new reader on the
+  same cell, so a derived `Clone` on a node holding one is a node with its
+  own reader, never a shared slot.
+- **Lend once per block, never per sample.** A lend is a `Release` store, a
+  `SeqCst` fence, an `Acquire` load and a `Relaxed` store, all on the
+  reader's own cache line but the load. Measured at 41-42 ns p50 per block
+  at one to four readers on a shared VM with a 30 ns timer floor (arc-swap
+  51 ns) — `arc-lend`'s `BENCHMARKS.md`.
+- **Never park a `Loan`** in a struct field or hold one across blocks. A
+  parked loan pins the one value it holds, and nothing retired after it: the
+  retired list stays bounded by the registered readers. (Before E3 a parked
+  overflow loan could pin every value retired after it, and tutti ran a
+  debug-build check, `debug_check_reclaiming`, at the busiest publishes; E3
+  removed the failure, and the check with it.)
+- **One reader per nesting level.** A `Reader` lends one `Loan` at a time
+  (`lend` takes `&mut self`); a second live loan of one cell on one thread
+  needs a second reader.
+- **The design's cost is memory, not waiting.** A publish never waits on a
+  reader. A reader preempted between claiming its slot and announcing what it
+  loaded pins what is retired while it is preempted, freed by the first scan
+  after it announces. `retired_len()` reports what is waiting and `reclaim()`
+  frees what it can without publishing; a control-side cell with no further
+  publishes (the hardware MIDI port set, `HardwareMidiInputs::collect`) calls
+  `reclaim` to get memory back.
+- **Never `publish` from the audio thread** — it takes the publisher's lock
+  *and* frees inside it.
 - Nullable hot-swap slots go through `ArcLend` as well, as
-  `ArcLend<Option<Arc<_>>>`: the plugin nodes' `PluginMeter` publishes the
-  installed meter cell's `Arc`, so the node borrows it and an install or
-  clear during playback retires the old cell for the control side to free.
-  They were `ArcSwapOption` until a host that installed a meter it did not
-  keep, then replaced it mid-block, was shown to free the whole cell on the
-  audio thread (the guard-debt hazard below). The node's read is then nested
-  (the slot, then the meter cell), but in two cells, one reader slot each.
-  Control-thread-only cells (device enumeration in `tutti-midi-hardware`)
-  stay plain; its per-block port set is an `ArcLend` behind a publisher
-  lock.
+  `ArcLend<Option<Arc<_>>>`. The plugin nodes' meter was one, holding the
+  installed meter cell's `Arc`; it was `ArcSwapOption` until a host that
+  installed a meter it did not keep, then replaced it mid-block, was shown to
+  free the whole cell on the audio thread (the guard-debt hazard below).
+  Since E3a each plugin node reads a `MeterSlot` cell of its own, holding the
+  project's `MeterMap` or nothing, and `ProjectMeter::set_meter` publishes
+  into every follower. Control-thread-only cells (device enumeration in
+  `tutti-midi-hardware`) stay plain; its per-block port set is an `ArcLend`
+  behind a publisher lock.
 
 **The guarantee is structural.** The cell (then `RtPublish`) used to wrap `ArcSwap`, which made
 RT deallocation very unlikely and bounded but not *impossible*: a guard whose
 debt a writer settled concurrently degraded into an owning reference, and its
-drop could be the last one. It is now an `AtomicPtr` plus per-cell hazard slots,
-overflow epochs, and a retirement list the audio thread never touches (doc 013
-§4), with no call site moving — which is what the wrapper was for. A reader
-claims a slot, fences, loads, and announces (or, with every slot taken,
-registers in the current epoch with one RMW and loads); a publisher swaps,
-fences, advances the epoch, and frees only what no slot announces and no live
-epoch pins. The soundness argument, in C++20 terms, is in `arc-lend`'s
-`docs::internal` (`crates/arc-lend/src/docs/internal.rs`). On the slot path the `SeqCst` fence pair is the whole argument,
-and both halves are load-bearing: the loom model (`arc-lend/tests/loom.rs`, run
-against the shipped code; bounded in CI, exhaustive under `just loom-full`)
-fails with either removed, and so does miri, over 16 seeds, on the concurrent
-stress test. A plain x86 run does not — its CAS is
-already a full barrier — which is why neither check can be replaced by more
-iterations.
+drop could be the last one. It is now an `AtomicPtr`, one slot per registered
+reader in a growable, append-only slot list, and a retirement list the audio
+thread never touches. A reader stores a generation-tagged claim in its slot,
+fences, loads, and announces what it loaded; a publisher swaps, fences, scans
+the slots once, and frees only what no slot announces and no outstanding claim
+could still load. The soundness argument, in C++20 terms, is in `arc-lend`'s
+`docs::internal` (`crates/arc-lend/src/docs/internal.rs`). The `SeqCst` fence
+pair is the whole argument, and both halves are load-bearing: the loom model
+(`arc-lend/tests/loom.rs`, run against the shipped code; bounded at 4 in CI and
+at 5 under `just loom-full`) fails with either removed, and so does miri on the
+concurrent stress test. A plain x86 run does not, which is why neither check
+can be replaced by more iterations.
 
 ### The butler queue's close handshake (an exception to the loom rule)
 

@@ -28,7 +28,7 @@ use bevy_tutti::graph::{
 };
 use bevy_tutti::modulation::{
     Adsr, Automation, AutomationTake, Follower, Lfo, Macro, ModRange, ModRoute, ModSource, Mods,
-    ModulationRefused, ModulationState, NoteEnvelope, ParamRef, TuttiModulationPlugin,
+    ModulationRefused, NoteEnvelope, ParamRef, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::transport::Transport;
@@ -89,7 +89,7 @@ fn settle(app: &mut App) {
     for _ in 0..4 {
         app.update();
     }
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.refusal(), None, "the declarations apply");
     assert_eq!(
         state.unresolved_targets().count(),
@@ -411,7 +411,7 @@ fn a_despawned_source_leaves_no_node_and_no_layer() {
     world.spawn(ModRoute::new(follower, cutoff).with_depth(Depth(-0.2)));
     settle(&mut app);
     render(&mut side, 1_024, 128);
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     let node = state
         .source_node(follower)
         .expect("the follower has a node");
@@ -430,7 +430,7 @@ fn a_despawned_source_leaves_no_node_and_no_layer() {
     settle(&mut app);
     render(&mut side, 1_024, 128);
 
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.source_node(follower), None, "nothing held for it");
     assert!(
         !app.world()
@@ -485,7 +485,7 @@ fn a_knob_written_after_a_route_edit_is_the_knob() {
     app.update();
     let b = render(&mut side, 2_048, 128);
 
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.lane(cutoff).expect("a lane").1.knob(), Some(700.0));
     let tol = lfo_tolerance(0.2, 2.0);
     for (base, from, got) in [(300.0, 1_024, &a[0]), (700.0, 3_072, &b[0])] {
@@ -554,7 +554,7 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
     app.update();
     assert_eq!(
         app.world()
-            .resource::<ModulationState>()
+            .resource::<AudioGraphRes>()
             .modulation()
             .resyncs_owed(),
         0,
@@ -672,7 +672,7 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
     assert_eq!(refused.len(), 1, "one message for one refusal: {refused:?}");
     assert_eq!(refused[0].route(), Some(route), "refused by route");
     assert!(matches!(refused[0].error, ReconcileError::Cycle { .. }));
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert!(matches!(
         state.refusal(),
         Some(ReconcileError::Cycle { .. })
@@ -686,7 +686,7 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
 
     app.world_mut().despawn(route);
     settle(&mut app);
-    assert_eq!(app.world().resource::<ModulationState>().refusal(), None);
+    assert_eq!(app.world().resource::<AudioGraphRes>().modulation().refusal(), None);
 }
 
 /// **Two ranges, or two automations, on one param are refused by
@@ -730,7 +730,7 @@ fn two_ranges_or_automations_on_one_param_are_refused() {
         assert_eq!(refused[0].target(), Some(cutoff), "{what}: by target");
         assert!(
             matches!(
-                app.world().resource::<ModulationState>().refusal(),
+                app.world().resource::<AudioGraphRes>().modulation().refusal(),
                 Some(ReconcileError::Compile(
                     tutti_mod::CompileError::DuplicateTarget(_)
                 ))
@@ -882,7 +882,7 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     settle(&mut app);
     assert!(app
         .world()
-        .resource::<ModulationState>()
+        .resource::<AudioGraphRes>().modulation()
         .lane(cutoff)
         .is_some());
 }
@@ -980,7 +980,7 @@ fn removing_the_last_route_returns_the_param_to_its_knob() {
     assert_holds(&render(&mut side, 1_024, 128)[0], 600.0, "the route");
     assert!(
         app.world()
-            .resource::<ModulationState>()
+            .resource::<AudioGraphRes>().modulation()
             .lane(cutoff)
             .is_some(),
         "the route has its lane"
@@ -991,7 +991,7 @@ fn removing_the_last_route_returns_the_param_to_its_knob() {
     assert_holds(&render(&mut side, 1_024, 128)[0], 500.0, "no route left");
     assert!(
         app.world()
-            .resource::<ModulationState>()
+            .resource::<AudioGraphRes>().modulation()
             .lane(cutoff)
             .is_none(),
         "and no lane"
@@ -1071,7 +1071,7 @@ fn a_route_declared_before_its_targets_node_binds_once_it_is_in() {
     for _ in 0..3 {
         app.update();
     }
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.refusal(), None, "a target with no node is no error");
     assert!(state.lane(cutoff).is_none(), "and has no lane");
 
@@ -1110,7 +1110,7 @@ fn a_bus_strips_volume_and_pan_take_lanes() {
         world.spawn(ModRoute::new(offset, at).with_depth(Depth(0.5)));
     }
     settle(&mut app);
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     for param in [UnitParam::Volume, UnitParam::Pan] {
         assert!(
             state.lane(ParamRef::unit(strip, param)).is_some(),
@@ -1152,7 +1152,7 @@ fn a_chorus_rate_and_a_phaser_mix_take_lanes() {
         world.spawn(ModRoute::new(offset, at).with_depth(Depth(0.5)));
     }
     settle(&mut app);
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     for at in targets {
         assert!(state.lane(at).is_some(), "{at:?} has its lane");
     }

@@ -150,8 +150,10 @@ mod plugins_without_engine {
     /// above and is what most hosts actually add.
     ///
     /// `TuttiPlugin` notably does *not* add `TuttiModulationPlugin`, so under
-    /// `--features plugin,modulation` it schedules `plugin_param_edits`, which
-    /// reads `ModulationState`, a resource only the modulation plugin inserts.
+    /// `--features plugin,modulation` it schedules `plugin_param_edits`,
+    /// which used to read `ModulationState`, a resource only the modulation
+    /// plugin inserted (the session's now, read through
+    /// `AudioGraphRes::modulation`).
     /// (The frame-rate binding it replaced, deleted in doc 014 PR 5, required
     /// it too, and that combination panicked on frame one.)
     #[test]

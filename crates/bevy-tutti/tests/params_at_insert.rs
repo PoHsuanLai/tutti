@@ -43,7 +43,7 @@ use bevy_tutti::graph::{
     TransportRes,
 };
 use bevy_tutti::modulation::TuttiModulationPlugin;
-use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource, ModulationState, ParamRef};
+use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource, ParamRef};
 use bevy_tutti::AudioEngineState;
 use tutti_core::transport::Transport;
 use tutti_core::AtomicF32;
@@ -78,14 +78,14 @@ fn settle(app: &mut App) {
     for _ in 0..4 {
         app.update();
     }
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.refusal(), None, "the declarations apply");
 }
 
 /// The knob of `entity`'s drive lane, `None` with no lane or no knob.
 fn knob(app: &App, entity: Entity) -> Option<f32> {
     app.world()
-        .resource::<ModulationState>()
+        .resource::<AudioGraphRes>().modulation()
         .lane(ParamRef::unit(entity, UnitParam::Drive))
         .and_then(|(_, lane)| lane.knob())
 }

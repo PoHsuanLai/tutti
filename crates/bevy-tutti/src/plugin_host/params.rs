@@ -35,7 +35,8 @@ use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use tutti_plugin::handles::PluginHandle;
 pub use tutti_plugin::PluginParamValues;
 
-use crate::modulation::{ModulationState, ParamRef};
+use crate::graph::AudioGraphRes;
+use crate::modulation::ParamRef;
 
 /// A plugin's load-time parameter read, in flight on the
 /// [`AsyncComputeTaskPool`] (each value is a blocking round trip). Its
@@ -65,7 +66,7 @@ pub fn read_plugin_params(handle: &PluginHandle) -> (PluginParamValues, PluginPa
 pub fn plugin_param_edits(
     mut commands: Commands,
     mut plugins: Query<(Entity, &mut PluginParamValues, Option<&mut PluginParamRead>)>,
-    state: Option<Res<ModulationState>>,
+    graph: Option<Res<AudioGraphRes>>,
 ) {
     for (entity, mut mirror, reading) in &mut plugins {
         let mirror = mirror.bypass_change_detection();
@@ -76,8 +77,10 @@ pub fn plugin_param_edits(
             }
         }
         mirror.drain_edits(|id, value| {
-            if let Some(state) = state.as_ref() {
-                state.set_knob(ParamRef::plugin(entity, id), value);
+            if let Some(graph) = graph.as_ref() {
+                graph
+                    .modulation()
+                    .set_knob(ParamRef::plugin(entity, id), value);
             }
         });
     }

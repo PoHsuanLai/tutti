@@ -297,7 +297,7 @@ mod audio_param {
     };
     #[cfg(feature = "modulation")]
     use bevy_tutti::modulation::{
-        Macro, ModRange, ModRoute, ModSource, ModulationState, ParamRef, TuttiModulationPlugin,
+        Macro, ModRange, ModRoute, ModSource, ParamRef, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -498,7 +498,7 @@ mod audio_param {
         }
         let knob = |app: &App| {
             app.world()
-                .resource::<ModulationState>()
+                .resource::<AudioGraphRes>().modulation()
                 .lane(drive)
                 .expect("the drive has a lane")
                 .1

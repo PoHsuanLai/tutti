@@ -11,7 +11,7 @@ use tutti_core::transport::Transport;
 use tutti_graph::ForkByClone;
 use tutti_types::{Beat, Bpm, Depth, Hz, SampleRate, UnitParam};
 
-use super::{Lfo, ModRange, ModRoute, Mods, ModulationState, ParamRef, TuttiModulationPlugin};
+use super::{Lfo, ModRange, ModRoute, Mods, ParamRef, TuttiModulationPlugin};
 use crate::graph::{
     AudioGraphRes, AudioSide, GraphReconcilePlugin, MasterSources, PortSource, SpawnAudioNode,
     TransportRes,
@@ -107,7 +107,7 @@ fn lfo_scene(app: &mut App, side: &mut AudioSide, rate: f32, depth: f32) -> [Ent
     for _ in 0..4 {
         frame(app, side);
     }
-    let state = app.world().resource::<ModulationState>();
+    let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.refusal(), None);
     assert!(state.lane(cutoff).is_some(), "precondition: a lane");
     [filter, range, route]

@@ -15,6 +15,7 @@ use bevy_ecs::system::SystemParam;
 
 use tutti_mod::{Adsr, Curve, CurveType, Lfo, Macro, Polarity, Source};
 use tutti_nodes::automation::{RecordMode, Recorder};
+use tutti_session::Take;
 use tutti_types::{Depth, ParamAddr, Seconds, UnitParam};
 
 /// One modulatable parameter: an entity and the param's address on its
@@ -341,53 +342,37 @@ impl std::fmt::Debug for Automation {
 /// It closes on [`close`](Self::close), or, in [`RecordMode::Touch`], when
 /// the recorder is released after a touch. Feed the recorder through
 /// [`recorder_mut`](Self::recorder_mut) as the gesture moves.
+///
+/// The take itself is the session's ([`tutti_session::Take`]); this is the
+/// component that puts one on an entity.
 #[derive(Component, Debug)]
-pub struct AutomationTake {
-    recorder: Recorder,
-    touched: bool,
-    closed: bool,
-}
+pub struct AutomationTake(Take);
 
 impl AutomationTake {
     /// A take recording into `recorder` (a fresh one, or
     /// `Recorder::overdub` over the lane's envelope).
     pub fn new(recorder: Recorder) -> Self {
-        Self {
-            recorder,
-            touched: false,
-            closed: false,
-        }
+        Self(Take::new(recorder))
     }
 
     /// A fresh `mode` take over `min..=max`.
     pub fn record(mode: RecordMode, min: f32, max: f32) -> Self {
-        Self::new(Recorder::new(mode, min, max))
+        Self(Take::record(mode, min, max))
     }
 
     /// The recorder.
     pub fn recorder(&self) -> &Recorder {
-        &self.recorder
+        self.0.recorder()
     }
 
     /// The recorder, to touch, record and release.
     pub fn recorder_mut(&mut self) -> &mut Recorder {
-        &mut self.recorder
+        self.0.recorder_mut()
     }
 
     /// Ends the take: on the next frame its envelope becomes the automation.
     pub fn close(&mut self) {
-        self.closed = true;
-    }
-
-    /// Whether the take is done: closed, or a touch take released.
-    fn done(&mut self) -> bool {
-        if self.recorder.is_taking() {
-            self.touched = true;
-        }
-        self.closed
-            || (self.touched
-                && !self.recorder.is_taking()
-                && self.recorder.mode().stops_on_release())
+        self.0.close();
     }
 }
 
@@ -399,14 +384,14 @@ pub fn close_takes(
     mut takes: Query<(Entity, &mut AutomationTake, Option<&mut Automation>)>,
 ) {
     for (entity, mut take, automation) in &mut takes {
-        if !take.bypass_change_detection().done() {
+        if !take.bypass_change_detection().0.is_done() {
             continue;
         }
-        let recorder = std::mem::replace(
-            &mut take.bypass_change_detection().recorder,
-            Recorder::new(RecordMode::Touch, 0.0, 0.0),
+        let take = std::mem::replace(
+            &mut take.bypass_change_detection().0,
+            Take::record(RecordMode::Touch, 0.0, 0.0),
         );
-        let envelope: Arc<dyn Curve> = Arc::new(recorder.finish());
+        let envelope: Arc<dyn Curve> = take.finish();
         if let Some(mut automation) = automation {
             automation.curve = envelope;
         }

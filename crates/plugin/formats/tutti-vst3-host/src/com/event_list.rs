@@ -281,9 +281,15 @@ impl EventList {
     }
 }
 
+/// Every entry point takes its borrow with `try_`: a plugin whose worker
+/// threads read the list during `process` share the borrow, and one that
+/// reads it while another of its threads adds to it gets the method's failure
+/// value, where a panicking borrow would unwind into the plugin's C++ frame
+/// and abort the process.
 impl IEventListTrait for EventList {
+    /// Zero while another thread is adding to the list.
     unsafe fn getEventCount(&self) -> i32 {
-        self.inner.borrow().events.len() as i32
+        self.inner.try_borrow().map_or(0, |i| i.events.len() as i32)
     }
 
     unsafe fn getEvent(&self, index: i32, e: *mut Event) -> tresult {
@@ -294,7 +300,10 @@ impl IEventListTrait for EventList {
         // `DataEvent.bytes` / `text` pointers it hands out point *into* it and
         // stay live for the rest of the plugin's `process` call. Copying the
         // event out and pointing at the copy would leave them dangling.
-        let inner = self.inner.borrow();
+        // `kResultFalse` while another thread is adding to the list.
+        let Some(inner) = self.inner.try_borrow() else {
+            return kResultFalse;
+        };
         let Ok(index) = usize::try_from(index) else {
             return kInvalidArgument;
         };
@@ -310,7 +319,11 @@ impl IEventListTrait for EventList {
             return kInvalidArgument;
         }
         let c_event = &*e;
-        let mut inner = self.inner.borrow_mut();
+        // `kResultFalse`, uncounted, while another thread reads or adds to
+        // the list: the count lives in the storage that is borrowed.
+        let Some(mut inner) = self.inner.try_borrow_mut() else {
+            return kResultFalse;
+        };
         // Checked before the conversion interns the event's text: a full
         // list refuses a non-note-off without spending the arena on it.
         if !inner.has_room() && c_event.r#type != K_NOTE_OFF_EVENT {
@@ -399,6 +412,71 @@ mod tests {
         list.update_from_midi(&midi_events);
         list.clear();
         assert_eq!(list.len(), 0);
+    }
+
+    /// Plugin threads reading the list at once all get it: a read taken on
+    /// another thread is live (barriers hold it) while this one calls the
+    /// COM reads, and both succeed.
+    ///
+    /// Mutation (run): `AudioThreadCell::try_acquire_reader` exclusive (a
+    /// compare-exchange from 0 to 1) → `getEventCount` answers 0 and
+    /// `getEvent` `kResultFalse` → fails.
+    #[test]
+    fn concurrent_reads_of_the_list_both_succeed() {
+        use std::sync::Barrier;
+        let list = EventList::new();
+        list.update_from_midi(&[MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000,
+        )]);
+        let (taken, done) = (Barrier::new(2), Barrier::new(2));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let read = list.inner.borrow();
+                taken.wait();
+                done.wait();
+                assert_eq!(read.events.len(), 1);
+            });
+            taken.wait();
+            let ptr = list.to_com_ptr::<IEventList>().unwrap();
+            let mut out: Event = unsafe { std::mem::zeroed() };
+            let count = unsafe { ptr.getEventCount() };
+            let got = unsafe { ptr.getEvent(0, &mut out) };
+            done.wait();
+            assert_eq!(count, 1, "a second reader must see the list");
+            assert_eq!(got, kResultOk);
+        });
+    }
+
+    /// A read while the list is being written answers with the method's
+    /// failure value instead of panicking (a panic would unwind into the
+    /// plugin's frame and abort the process); once the write ends it reads.
+    ///
+    /// Mutation (run): `getEvent` back on a panicking `borrow` → the panic
+    /// cannot unwind out of the COM thunk, and the test process aborts
+    /// (SIGABRT): the plugin-server crash this guards against.
+    #[test]
+    fn a_read_during_a_write_fails_at_the_com_level() {
+        let list = EventList::new();
+        list.update_from_midi(&[MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000,
+        )]);
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        let mut out: Event = unsafe { std::mem::zeroed() };
+        {
+            let _writing = list.inner.borrow_mut();
+            assert_eq!(unsafe { ptr.getEventCount() }, 0);
+            assert_eq!(unsafe { ptr.getEvent(0, &mut out) }, kResultFalse);
+            out.r#type = K_NOTE_ON_EVENT;
+            assert_eq!(unsafe { ptr.addEvent(&mut out) }, kResultFalse);
+        }
+        assert_eq!(unsafe { ptr.getEventCount() }, 1);
+        assert_eq!(unsafe { ptr.getEvent(0, &mut out) }, kResultOk);
     }
 
     #[test]

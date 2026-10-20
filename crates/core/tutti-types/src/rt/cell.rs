@@ -1,69 +1,82 @@
 //! Lock-free interior mutability for the audio callback.
 //!
 //! [`AudioThreadCell`] backs a `&self`-reachable value with an `UnsafeCell`
-//! and one contract — at most one borrow live at a time — rather than a
-//! `Mutex`. [`BorrowGuard`] and [`BorrowRef`] are its two guards.
+//! and a reader-writer contract — any number of shared borrows, or one
+//! mutable borrow, never both — rather than a `Mutex` or an `RwLock`.
+//! [`BorrowGuard`] and [`BorrowRef`] are its two guards.
 //!
 //! Its own module because the contract is unusual enough to need stating in one
 //! place: the cell checks it on every borrow, in every build, with one atomic
-//! flag, so a violation is a panic (or `None`), never two live `&mut T`.
+//! word, so a violation is a panic (or `None`), never a `&mut T` aliased.
 
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 
-use sync::{AtomicBool, Ordering};
+use sync::{AtomicUsize, Ordering};
 
-/// The flag's atomic: `std`'s in a real build, `loom`'s under `--cfg loom`, so
-/// the model in `tests/cell_loom.rs` checks this code rather than a replica.
+/// The state word's atomic: `std`'s in a real build, `loom`'s under
+/// `--cfg loom`, so the model in `tests/cell_loom.rs` checks this code rather
+/// than a replica.
 mod sync {
     #[cfg(loom)]
-    pub(super) use loom::sync::atomic::{AtomicBool, Ordering};
+    pub(super) use loom::sync::atomic::{AtomicUsize, Ordering};
     #[cfg(not(loom))]
-    pub(super) use std::sync::atomic::{AtomicBool, Ordering};
+    pub(super) use std::sync::atomic::{AtomicUsize, Ordering};
 }
 
-/// An interior-mutability cell for the audio callback, with the contract "at
-/// most one borrow active at any moment".
+/// The state word's writer bit: set while a [`BorrowGuard`] is live. The bits
+/// below it count live [`BorrowRef`]s.
+const WRITER: usize = 1 << (usize::BITS - 1);
+
+/// An interior-mutability cell for the audio callback: any number of shared
+/// borrows at once, or one mutable borrow, never both.
 ///
 /// The cell enforces that contract itself, in release builds as in debug
-/// ones: an atomic "in-use" flag is set by each borrow (a compare-exchange) and cleared
-/// when its guard drops. A second borrow while one is live — from another
-/// thread, or nested on the same one — panics ([`borrow_mut`], [`borrow`]) or
-/// returns `None` ([`try_borrow_mut`]); it never hands out a second reference.
-/// That is what makes the cell sound to share across threads (`Sync`) through
-/// safe code. The cost is one uncontended atomic compare-exchange per borrow
-/// and a plain store per release, `atomic_refcell`'s: no lock, no allocation, nothing that
-/// waits, so it is fine on the audio thread.
+/// ones, `atomic_refcell`-style: one atomic word holds a writer bit and a
+/// reader count. A mutable borrow sets the writer bit with one
+/// compare-exchange from zero; a shared borrow adds one to the count with a
+/// compare-exchange that never succeeds while the writer bit is set. A borrow
+/// that the contract refuses — a second mutable borrow, or a shared and a
+/// mutable one together, from another thread or nested on the same one —
+/// panics ([`borrow_mut`], [`borrow`]) or returns `None` ([`try_borrow_mut`],
+/// [`try_borrow`]), and writes nothing. It never hands out a `&mut T` that
+/// aliases. That is what makes the cell sound to share across threads (`Sync`)
+/// through safe code. The cost is one uncontended compare-exchange per borrow
+/// and one store or decrement per release: no lock, no allocation, nothing
+/// that waits on another thread's progress, so it is fine on the audio thread.
 ///
-/// A panic is the diagnostic, not the plan: a caller still keeps the cell to
-/// one borrower at a time, typically by reaching it only from the audio
-/// callback, and a panic means it did not.
+/// A panic is the diagnostic, not the plan: a caller still keeps mutable
+/// borrows to one thread at a time, typically by reaching the cell only from
+/// the audio callback. Where a refusal is a legitimate runtime outcome — the
+/// audio thread meeting a control-side borrow, or a plugin's worker thread
+/// reading a VST3 list the plugin is also writing — the caller uses the
+/// `try_` forms and degrades (skips the block, answers the COM call with a
+/// failure) instead.
 ///
-/// The check is "one borrow at a time", never "always the same thread".
+/// The check is "no conflicting borrow live", never "always the same thread".
 /// Pinning an owner thread is the stricter and *wrong* check: an OS audio stack
 /// (notably CoreAudio) legitimately migrates its callback to a different thread
 /// between invocations, and an owner check fires on every such migration.
 ///
-/// [`borrow`] is exclusive too: it is a convenience for `&T` access, not a
-/// reader count, so two `borrow`s cannot overlap either.
-///
 /// [`borrow_mut`]: Self::borrow_mut
 /// [`borrow`]: Self::borrow
 /// [`try_borrow_mut`]: Self::try_borrow_mut
+/// [`try_borrow`]: Self::try_borrow
 ///
 /// # Why not a `Mutex<T>`
 ///
 /// VST3's COM-object contract guarantees that the host and plugin only touch a
-/// given parameter / event object during `IAudioProcessor::process`, which
-/// runs single-threaded on the audio thread. Likewise the engine's own RT
-/// processors are entered one call at a time. That single-borrow guarantee lets
+/// given parameter / event object during `IAudioProcessor::process`. Likewise
+/// the engine's own RT processors are entered one call at a time. That lets
 /// these objects drop the `Mutex<T>` wrappers traditional implementations use:
 /// a borrow never waits, so it cannot block the audio thread behind a UI
-/// thread holding the lock, and a stray cross-thread access (a UI thread
-/// reaching in) is an immediate panic instead of a silent race.
+/// thread holding the lock, and a stray conflicting access is refused at once
+/// instead of racing.
 pub struct AudioThreadCell<T> {
     inner: UnsafeCell<T>,
-    in_use: AtomicBool,
+    /// [`WRITER`] while a mutable borrow is live, else the number of live
+    /// shared borrows.
+    state: AtomicUsize,
 }
 
 impl<T> AudioThreadCell<T> {
@@ -72,7 +85,7 @@ impl<T> AudioThreadCell<T> {
     pub const fn new(val: T) -> Self {
         Self {
             inner: UnsafeCell::new(val),
-            in_use: AtomicBool::new(false),
+            state: AtomicUsize::new(0),
         }
     }
 
@@ -81,7 +94,7 @@ impl<T> AudioThreadCell<T> {
     pub fn new(val: T) -> Self {
         Self {
             inner: UnsafeCell::new(val),
-            in_use: AtomicBool::new(false),
+            state: AtomicUsize::new(0),
         }
     }
 
@@ -89,8 +102,8 @@ impl<T> AudioThreadCell<T> {
     ///
     /// # Panics
     ///
-    /// If another borrow is already live, in any build. The message names
-    /// this call site.
+    /// If any other borrow, shared or mutable, is live, in any build. The
+    /// message names this call site.
     #[inline]
     #[track_caller]
     pub fn borrow_mut(&self) -> BorrowGuard<'_, T> {
@@ -100,40 +113,59 @@ impl<T> AudioThreadCell<T> {
         }
     }
 
-    /// Borrows the cell mutably, or returns `None` if another borrow is
-    /// already live: for a caller that would rather skip than panic.
+    /// Borrows the cell mutably, or returns `None` if any other borrow is
+    /// live: for a caller that would rather skip than panic.
     #[inline]
     pub fn try_borrow_mut(&self) -> Option<BorrowGuard<'_, T>> {
         // Not `then_some`: that builds the guard eagerly, and dropping the
-        // unused one on the `None` path would clear the live borrow's flag.
-        if self.try_acquire() {
+        // unused one on the `None` path would release a borrow never taken.
+        if self.try_acquire_writer() {
             Some(BorrowGuard {
                 cell: self,
-                _lent: Lent::default(),
+                _lent: PhantomData,
             })
         } else {
             None
         }
     }
 
-    /// Borrows the cell shared for the lifetime of the returned guard.
+    /// Borrows the cell shared for the lifetime of the returned guard. Any
+    /// number of shared borrows may be live at once, on any threads.
     ///
-    /// The contract still allows only one borrow at a time, so this is a
-    /// convenience for `&T` access; it does not allow concurrent readers.
+    /// Only for `T: Sync`, since two threads' borrows hand each a `&T` at
+    /// once. A `T` that is only `Send` (a graph of `Box<dyn Node>`) is read
+    /// through [`borrow_mut`](Self::borrow_mut), which is exclusive.
     ///
     /// # Panics
     ///
-    /// If another borrow is already live, in any build. The message names
-    /// this call site.
+    /// If a mutable borrow is live, in any build. The message names this call
+    /// site.
     #[inline]
     #[track_caller]
-    pub fn borrow(&self) -> BorrowRef<'_, T> {
-        if !self.try_acquire() {
-            already_borrowed(core::panic::Location::caller());
+    pub fn borrow(&self) -> BorrowRef<'_, T>
+    where
+        T: Sync,
+    {
+        match self.try_borrow() {
+            Some(guard) => guard,
+            None => already_borrowed(core::panic::Location::caller()),
         }
-        BorrowRef {
-            cell: self,
-            _lent: Lent::default(),
+    }
+
+    /// Borrows the cell shared, or returns `None` if a mutable borrow is
+    /// live: for a caller that would rather skip than panic.
+    #[inline]
+    pub fn try_borrow(&self) -> Option<BorrowRef<'_, T>>
+    where
+        T: Sync,
+    {
+        if self.try_acquire_reader() {
+            Some(BorrowRef {
+                cell: self,
+                _lent: PhantomData,
+            })
+        } else {
+            None
         }
     }
 
@@ -145,34 +177,66 @@ impl<T> AudioThreadCell<T> {
         self.inner.get_mut()
     }
 
-    /// Sets the in-use flag; `false` if it was already set (a borrow is live).
+    /// Sets the writer bit if nothing is borrowed; `false` if anything is.
     ///
-    /// `Acquire` pairs with [`release`](Self::release)'s `Release`: a borrow
-    /// that finds the flag clear happens after the previous guard's drop, so
-    /// everything that borrow wrote is visible here.
-    ///
-    /// A compare-exchange rather than a swap, as `atomic_refcell`'s
-    /// `borrow_mut`: a refused borrow writes nothing, so the flag's only
-    /// writers are the borrow that holds it and that borrow's release. The
-    /// cost is the same one locked instruction. (A refused swap's write of
-    /// `true` is harmless under the C++ model, but loom 0.7 does not order
-    /// it before a later release by the holder, and reports a phantom
-    /// refusal after every guard has dropped; see `tests/cell_loom.rs`.)
+    /// `Acquire` pairs with both releases' `Release`: a mutable borrow
+    /// granted after a guard's drop happens after it, so the last writer's
+    /// writes are visible, and no reader is still reading what it will
+    /// overwrite. A refused compare-exchange writes nothing, so the word's
+    /// only writers are the borrows that hold it. (A swap would also write
+    /// when refused; loom 0.7 leaves such a write unordered against the
+    /// holder's later release and reports a phantom refusal after every guard
+    /// has dropped, though the C++ model forbids that read. See
+    /// `tests/cell_loom.rs`.)
     #[inline]
-    fn try_acquire(&self) -> bool {
-        self.in_use
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+    fn try_acquire_writer(&self) -> bool {
+        self.state
+            .compare_exchange(0, WRITER, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
     }
 
+    /// Adds a reader unless the writer bit is set; `false` if it is.
+    ///
+    /// A compare-exchange loop rather than `atomic_refcell`'s
+    /// unconditional `fetch_add`, so a refused reader writes nothing (as
+    /// above). It retries only when another *reader* changed the count in
+    /// between, so it is lock-free: some reader always makes progress, and
+    /// a writer never makes a reader wait.
     #[inline]
-    fn release(&self) {
-        self.in_use.store(false, Ordering::Release);
+    fn try_acquire_reader(&self) -> bool {
+        let mut seen = self.state.load(Ordering::Relaxed);
+        loop {
+            // The writer bit is set, or the count would reach it.
+            if seen >= WRITER - 1 {
+                return false;
+            }
+            match self.state.compare_exchange_weak(
+                seen,
+                seen + 1,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(now) => seen = now,
+            }
+        }
+    }
+
+    #[inline]
+    fn release_writer(&self) {
+        // Nothing else writes the word while the writer bit is set: every
+        // other borrow's compare-exchange fails without writing.
+        self.state.store(0, Ordering::Release);
+    }
+
+    #[inline]
+    fn release_reader(&self) {
+        self.state.fetch_sub(1, Ordering::Release);
     }
 }
 
-/// The panic for a borrow that found another one live. Out of line and cold,
-/// so the borrow's fast path is the compare-exchange and a branch.
+/// The panic for a borrow that found a conflicting one live. Out of line and
+/// cold, so the borrow's fast path is the compare-exchange and a branch.
 #[cold]
 #[inline(never)]
 #[track_caller]
@@ -184,52 +248,27 @@ fn already_borrowed(caller: &core::panic::Location<'_>) -> ! {
     );
 }
 
-/// Gives a guard the auto traits of the `&mut T` it lends, rather than those
-/// of the `&AudioThreadCell<T>` it holds.
-///
-/// The cell is `Sync` for `T: Send` alone, because its flag lets one guard
-/// exist at a time. A guard has no such flag of its own: a `&BorrowRef`
-/// shared between two threads hands each a `&T` at once, which is only sound
-/// for `T: Sync`. So a guard is `Sync` only when `T` is, and `Send` when `T`
-/// is (moving the one guard moves the one borrow), as `&mut T` is.
-///
-/// ```compile_fail
-/// fn sync<S: Sync>() {}
-/// // `Cell` is `Send` but not `Sync`: two threads must not share a `&Cell`.
-/// sync::<tutti_types::BorrowRef<'static, core::cell::Cell<u32>>>();
-/// ```
-///
-/// ```compile_fail
-/// fn sync<S: Sync>() {}
-/// sync::<tutti_types::BorrowGuard<'static, core::cell::Cell<u32>>>();
-/// ```
-///
-/// ```
-/// fn send<S: Send>() {}
-/// fn sync<S: Sync>() {}
-/// sync::<tutti_types::AudioThreadCell<core::cell::Cell<u32>>>();
-/// send::<tutti_types::BorrowGuard<'static, core::cell::Cell<u32>>>();
-/// sync::<tutti_types::BorrowGuard<'static, u32>>();
-/// ```
-///
-/// Mutation (run): drop the field from both guards → the two `compile_fail`
-/// examples compile, and the doctests fail.
-type Lent<'a, T> = core::marker::PhantomData<&'a mut T>;
+use core::marker::PhantomData;
 
 /// Mutable borrow guard returned by [`AudioThreadCell::borrow_mut`].
+///
+/// It has `&mut T`'s auto traits rather than those of the
+/// `&AudioThreadCell<T>` it holds: `Send` when `T: Send` (moving the one
+/// guard moves the one borrow), `Sync` when `T: Sync` (a shared `&guard`
+/// hands out `&T`).
 pub struct BorrowGuard<'a, T> {
     cell: &'a AudioThreadCell<T>,
-    /// What the guard lends out, for the auto traits: see `Lent`.
-    _lent: Lent<'a, T>,
+    _lent: PhantomData<&'a mut T>,
 }
 
 impl<T> Deref for BorrowGuard<'_, T> {
     type Target = T;
     #[inline]
     fn deref(&self) -> &T {
-        // SAFETY: this guard exists only because `try_acquire` set the
-        // in-use flag, and no other guard can exist until its drop clears it,
-        // so nothing else references the value.
+        // SAFETY: this guard exists only because `try_acquire_writer` moved
+        // the word from 0 (nothing borrowed) to the writer bit, and no other
+        // borrow is granted until its drop clears it, so nothing else
+        // references the value.
         unsafe { &*self.cell.inner.get() }
     }
 }
@@ -246,22 +285,26 @@ impl<T> DerefMut for BorrowGuard<'_, T> {
 impl<T> Drop for BorrowGuard<'_, T> {
     #[inline]
     fn drop(&mut self) {
-        self.cell.release();
+        self.cell.release_writer();
     }
 }
 
 /// Shared borrow guard returned by [`AudioThreadCell::borrow`].
+///
+/// It has `&T`'s auto traits: `Send` and `Sync` only when `T: Sync`, since
+/// either way another thread gets a `&T` while this one may hold its own.
 pub struct BorrowRef<'a, T> {
     cell: &'a AudioThreadCell<T>,
-    /// What the guard lends out, for the auto traits: see `Lent`.
-    _lent: Lent<'a, T>,
+    _lent: PhantomData<&'a T>,
 }
 
 impl<T> Deref for BorrowRef<'_, T> {
     type Target = T;
     #[inline]
     fn deref(&self) -> &T {
-        // SAFETY: see `BorrowGuard::deref`; this guard holds the same flag.
+        // SAFETY: this guard exists only because `try_acquire_reader` counted
+        // it with the writer bit clear, and no mutable borrow is granted while
+        // the count is nonzero, so only `&T`s reference the value.
         unsafe { &*self.cell.inner.get() }
     }
 }
@@ -269,19 +312,18 @@ impl<T> Deref for BorrowRef<'_, T> {
 impl<T> Drop for BorrowRef<'_, T> {
     #[inline]
     fn drop(&mut self) {
-        self.cell.release();
+        self.cell.release_reader();
     }
 }
 
 impl<T> core::fmt::Debug for AudioThreadCell<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Deliberately does NOT print the value. Reading it needs the very
-        // borrow this type exists to hand out one at a time, so a `Debug` impl
-        // that dereferenced would either take that borrow behind the caller's
-        // back or trip the in-use flag it is meant to police. The `T: Debug`
-        // bound is likewise omitted: requiring it would make a cell over a
-        // non-Debug payload un-printable for no gain, since the payload is not
-        // printed either way.
+        // Deliberately does NOT print the value. Reading it needs a borrow,
+        // so a `Debug` impl that dereferenced would either take one behind the
+        // caller's back or trip the check it is meant to police. The
+        // `T: Debug` bound is likewise omitted: requiring it would make a cell
+        // over a non-Debug payload un-printable for no gain, since the payload
+        // is not printed either way.
         f.debug_struct("AudioThreadCell").finish_non_exhaustive()
     }
 }
@@ -303,13 +345,59 @@ impl<T: core::fmt::Debug> core::fmt::Debug for BorrowRef<'_, T> {
 // `Send` is the auto trait's: the cell owns its `T` and an atomic, so it is
 // `Send` exactly when `T` is.
 
-// SAFETY: sharing the cell hands each thread only `borrow`/`borrow_mut`, and
-// the in-use flag, checked in every build, lets one guard exist at a time. So
-// at most one thread reaches the value at once, which is a `Mutex`'s
-// condition: `T: Send`, not `T: Sync`, because `borrow` is exclusive too.
+/// The bounds, pinned. The cell is `Sync` for `T: Send`, a `Mutex`'s
+/// condition, because only [`AudioThreadCell::borrow_mut`] is open to every
+/// `T`, and it is exclusive. The shared borrows, which hand two threads a `&T`
+/// at once, exist only for `T: Sync` (an `RwLock`'s condition, met at the
+/// method instead of on the type, so a graph of `Box<dyn Node>`, `Send` but
+/// not `Sync`, can still sit in a shared cell).
+///
+/// ```compile_fail
+/// // `Cell` is `Send` but not `Sync`: two readers must not share a `&Cell`.
+/// let cell = tutti_types::AudioThreadCell::new(core::cell::Cell::new(0u32));
+/// let _r = cell.borrow();
+/// ```
+///
+/// ```compile_fail
+/// let cell = tutti_types::AudioThreadCell::new(core::cell::Cell::new(0u32));
+/// let _r = cell.try_borrow();
+/// ```
+///
+/// ```compile_fail
+/// fn sync<S: Sync>() {}
+/// // A shared `&guard` hands out `&Cell` on two threads.
+/// sync::<tutti_types::BorrowGuard<'static, core::cell::Cell<u32>>>();
+/// ```
+///
+/// ```
+/// fn send<S: Send>() {}
+/// fn sync<S: Sync>() {}
+/// sync::<tutti_types::AudioThreadCell<core::cell::Cell<u32>>>();
+/// send::<tutti_types::BorrowGuard<'static, core::cell::Cell<u32>>>();
+/// sync::<tutti_types::BorrowGuard<'static, u32>>();
+/// send::<tutti_types::BorrowRef<'static, u32>>();
+/// sync::<tutti_types::BorrowRef<'static, u32>>();
+/// let cell = tutti_types::AudioThreadCell::new(core::cell::Cell::new(0u32));
+/// cell.borrow_mut().set(1);
+/// ```
+///
+/// (`BorrowRef<'_, T>` is `Send`/`Sync` only for `T: Sync`, `&T`'s traits;
+/// it exists only for such a `T`, so there is no `!Sync` case to pin.)
+///
+/// Mutations (run): both shared borrows without their `T: Sync` bound → the
+/// first two examples compile (`borrow` alone cannot lose it: it calls
+/// `try_borrow`); `try_borrow` alone without it → the second; `BorrowGuard`
+/// with `PhantomData<()>` → the third. Each fails the doctests.
+const _AUTO_TRAITS: () = ();
+
+// SAFETY: sharing the cell hands each thread only the borrow methods, and the
+// state word grants either one `&mut T` or any number of `&T`, never both. A
+// `&mut T` reached from another thread needs `T: Send`, which this bound
+// requires; `&T`s on two threads at once need `T: Sync`, which `borrow` and
+// `try_borrow` require themselves, so no `&T` is shared without it.
 unsafe impl<T: Send> Sync for AudioThreadCell<T> {}
 
-// Under `--cfg loom` the flag is loom's, which only runs inside a model:
+// Under `--cfg loom` the word is loom's, which only runs inside a model:
 // these run on `std` threads, and `tests/cell_loom.rs` is the model.
 #[cfg(all(test, not(loom)))]
 mod tests {
@@ -318,7 +406,7 @@ mod tests {
 
     /// Sequential borrows on one thread: each guard's drop frees the cell.
     ///
-    /// Mutation (run): `release` a no-op (the flag never clears) → the
+    /// Mutation (run): `release_writer` a no-op (the bit never clears) → the
     /// `borrow` after the first guard drops panics → fails.
     #[test]
     fn borrow_mut_from_same_thread() {
@@ -332,7 +420,7 @@ mod tests {
     /// After one thread's borrow drops, another thread may borrow. This is
     /// the CoreAudio callback-migration case an owner-pinning check rejects.
     ///
-    /// Mutation (run): `release` a no-op → the spawned thread's borrow
+    /// Mutation (run): `release_writer` a no-op → the spawned thread's borrow
     /// panics → fails.
     #[test]
     fn sequential_borrows_across_threads_are_ok() {
@@ -368,7 +456,7 @@ mod tests {
     /// so the holder cannot drop the guard too early. Between them the ordering
     /// is enforced rather than hoped for, and the test has no timing to tune.
     ///
-    /// Mutation (run): gate `try_acquire`'s compare-exchange behind
+    /// Mutation (run): gate `try_acquire_writer`'s compare-exchange behind
     /// `cfg(debug_assertions)` (always succeeding without it), the shape the
     /// cell had → `cargo nextest run --release -p tutti-types -E
     /// 'test(concurrent_borrows_panic)'` fails (no panic: two `&mut u32`
@@ -417,6 +505,75 @@ mod tests {
         assert_eq!(*cell.borrow(), 0);
     }
 
+    /// Shared borrows on two threads are both granted at once, and a mutable
+    /// borrow is refused while either is live.
+    ///
+    /// The same two-barrier shape as `concurrent_borrows_panic`: the main
+    /// thread's borrow falls strictly inside the other thread's.
+    ///
+    /// Mutation (run): `try_acquire_reader` as a compare-exchange from 0 to
+    /// 1 (shared borrows exclusive, as before this cell counted readers) →
+    /// the main thread's `try_borrow` is refused → fails.
+    #[test]
+    fn concurrent_shared_borrows_are_both_granted() {
+        use std::sync::{Arc, Barrier};
+        let cell = Arc::new(AudioThreadCell::new(5u32));
+        let taken = Arc::new(Barrier::new(2));
+        let attempted = Arc::new(Barrier::new(2));
+
+        let cell2 = Arc::clone(&cell);
+        let (taken2, attempted2) = (Arc::clone(&taken), Arc::clone(&attempted));
+        let other = std::thread::spawn(move || {
+            let r = cell2.borrow();
+            taken2.wait();
+            attempted2.wait();
+            *r
+        });
+
+        taken.wait();
+        let mine = cell.try_borrow().map(|r| *r);
+        let writer_refused = cell.try_borrow_mut().is_none();
+        attempted.wait();
+
+        assert_eq!(other.join().unwrap(), 5);
+        assert_eq!(mine, Some(5), "a second reader must be admitted");
+        assert!(
+            writer_refused,
+            "a writer must be refused while readers are live"
+        );
+        *cell.borrow_mut() = 6;
+        assert_eq!(*cell.borrow(), 6);
+    }
+
+    /// A reader is refused while a writer is live, writes nothing when
+    /// refused, and the last reader's drop frees the cell for a writer.
+    ///
+    /// Mutations (run): `release_reader` a no-op → the `borrow_mut` after
+    /// the readers drop panics → fails; the reader check against
+    /// `WRITER - 1` dropped (a reader admitted beside the writer) →
+    /// `try_borrow` returns `Some` while `w` is live → fails.
+    #[test]
+    fn readers_and_a_writer_exclude_each_other() {
+        let cell = AudioThreadCell::new(1u32);
+        let w = cell.borrow_mut();
+        assert!(cell.try_borrow().is_none());
+        assert!(
+            cell.try_borrow().is_none(),
+            "a refused reader changed the word"
+        );
+        drop(w);
+
+        let a = cell.borrow();
+        let b = cell.borrow();
+        assert_eq!(*a + *b, 2);
+        assert!(cell.try_borrow_mut().is_none());
+        drop(a);
+        assert!(cell.try_borrow_mut().is_none(), "one reader is still live");
+        drop(b);
+        *cell.borrow_mut() = 3;
+        assert_eq!(*cell.borrow(), 3);
+    }
+
     /// The panic names the call site that broke the contract, through
     /// `#[track_caller]` on `borrow_mut`.
     ///
@@ -443,8 +600,8 @@ mod tests {
     /// borrow after the guard drops succeeds.
     ///
     /// Mutation (run): build the guard with `bool::then_some` (eagerly, so
-    /// the refused attempt's unused guard drops and clears the flag) → the
-    /// second attempt gets `Some` while `held` is live → fails.
+    /// the refused attempt's unused guard drops and clears the writer bit) →
+    /// the second attempt gets `Some` while `held` is live → fails.
     #[test]
     fn a_refused_try_borrow_keeps_the_live_borrow() {
         let cell = AudioThreadCell::new(1u32);

@@ -98,6 +98,14 @@ impl ParameterChangesImpl {
         *self.dropped.borrow() + added
     }
 
+    /// Counts one refused `addParameterData`, from a COM entry point:
+    /// skipped (uncounted) if the host is reading the count at that moment.
+    fn count_dropped(&self) {
+        if let Some(mut dropped) = self.dropped.try_borrow_mut() {
+            *dropped += 1;
+        }
+    }
+
     /// Every point the list has storage for, in its queues and its pool.
     #[cfg(test)]
     pub fn point_storage(&self) -> usize {
@@ -196,15 +204,25 @@ impl ParameterChangesImpl {
     }
 }
 
+/// Every entry point takes its borrows with `try_`: a plugin whose worker
+/// threads read the list during `process` share the borrows, and one that
+/// reads it while another of its threads adds to it gets the method's failure
+/// value (zero, null), where a panicking borrow would unwind into the
+/// plugin's C++ frame and abort the process.
 impl IParameterChangesTrait for ParameterChangesImpl {
+    /// Zero while another thread is adding to the list.
     unsafe fn getParameterCount(&self) -> i32 {
-        i32::try_from(*self.live.borrow()).unwrap_or(i32::MAX)
+        self.live
+            .try_borrow()
+            .map_or(0, |live| i32::try_from(*live).unwrap_or(i32::MAX))
     }
 
+    /// Null while another thread is adding to the list.
     unsafe fn getParameterData(&self, index: i32) -> *mut IParamValueQueue {
-        let queues = self.queues.borrow();
-        let live = *self.live.borrow();
-        if index < 0 || index as usize >= live {
+        let (Some(queues), Some(live)) = (self.queues.try_borrow(), self.live.try_borrow()) else {
+            return std::ptr::null_mut();
+        };
+        if index < 0 || index as usize >= *live {
             return std::ptr::null_mut();
         }
         // Borrowed pointer: VST3 plugins do not release queues returned here.
@@ -219,26 +237,34 @@ impl IParameterChangesTrait for ParameterChangesImpl {
     /// emptied for it. Past the list's queues it returns null, the failure
     /// the SDK's samples check for (`again.cpp`), counted in
     /// [`points_dropped`](ParameterChangesImpl::points_dropped): it never
-    /// allocates, as the plugin calls it on the audio thread.
+    /// allocates, as the plugin calls it on the audio thread. It returns null
+    /// too, counted when the count is free, while another thread reads or
+    /// adds to the list.
     unsafe fn addParameterData(&self, id: *const u32, index: *mut i32) -> *mut IParamValueQueue {
         if id.is_null() {
             return std::ptr::null_mut();
         }
         let param_id = *id;
-        let queues = self.queues.borrow();
-        let mut live = self.live.borrow_mut();
+        let (Some(queues), Some(mut live)) = (self.queues.try_borrow(), self.live.try_borrow_mut())
+        else {
+            self.count_dropped();
+            return std::ptr::null_mut();
+        };
         let at = match queues[..*live]
             .iter()
-            .position(|q| q.param_id() == param_id)
+            .position(|q| q.try_param_id() == Some(param_id))
         {
             Some(at) => at,
             None if *live < queues.len() => {
-                queues[*live].reset(param_id);
+                if !queues[*live].try_reset(param_id) {
+                    self.count_dropped();
+                    return std::ptr::null_mut();
+                }
                 *live += 1;
                 *live - 1
             }
             None => {
-                *self.dropped.borrow_mut() += 1;
+                self.count_dropped();
                 return std::ptr::null_mut();
             }
         };
@@ -279,6 +305,56 @@ mod tests {
     fn input_list(queues: usize, room: usize) -> ComWrapper<ParameterChangesImpl> {
         let (floor, blocks) = ParameterChanges::point_layout(queues, room);
         ParameterChangesImpl::with_queues(queues, floor, PointPool::new(blocks, room + 1, queues))
+    }
+
+    /// Plugin threads reading the list at once all get it.
+    ///
+    /// Mutation (run): `AudioThreadCell::try_acquire_reader` exclusive → the
+    /// COM reads answer 0 / null → fails.
+    #[test]
+    fn concurrent_reads_of_the_list_both_succeed() {
+        use std::sync::Barrier;
+        let list = unpooled(2, 4);
+        list.refill_from_changes(&changes_with(2, 1));
+        let (taken, done) = (Barrier::new(2), Barrier::new(2));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let read = list.queues.borrow();
+                let live = list.live.borrow();
+                taken.wait();
+                done.wait();
+                assert_eq!((read.len(), *live), (2, 2));
+            });
+            taken.wait();
+            let ptr = list.to_com_ptr::<IParameterChanges>().unwrap();
+            let count = unsafe { ptr.getParameterCount() };
+            let queue = unsafe { ptr.getParameterData(1) };
+            done.wait();
+            assert_eq!(count, 2, "a second reader must see the list");
+            assert!(!queue.is_null());
+        });
+    }
+
+    /// A read while the list is being added to answers with the method's
+    /// failure value instead of panicking into the plugin.
+    ///
+    /// Mutation (run): `getParameterData` back on a panicking `borrow` → the panic
+    /// cannot unwind out of the COM thunk, and the test process aborts
+    /// (SIGABRT): the plugin-server crash this guards against.
+    #[test]
+    fn a_read_during_a_write_fails_at_the_com_level() {
+        let list = unpooled(2, 4);
+        list.refill_from_changes(&changes_with(1, 1));
+        let ptr = list.to_com_ptr::<IParameterChanges>().unwrap();
+        {
+            let _adding = list.live.borrow_mut();
+            assert_eq!(unsafe { ptr.getParameterCount() }, 0);
+            assert!(unsafe { ptr.getParameterData(0) }.is_null());
+            assert!(unsafe { ptr.addParameterData(&7, &mut 0) }.is_null());
+        }
+        assert_eq!(unsafe { ptr.getParameterCount() }, 1);
+        assert!(!unsafe { ptr.getParameterData(0) }.is_null());
+        assert_eq!(list.points_dropped(), 1, "the refused add is counted");
     }
 
     fn changes_with(num_queues: usize, points_per: usize) -> ParameterChanges {

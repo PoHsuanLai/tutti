@@ -385,6 +385,13 @@ jobs:
           cargo test -p tutti-vst3-host --test gui_lifecycle_main
           cargo test -p tutti-au-host --test au_gui_lifecycle_main
 
+      # The RT primitives in release. Some of their properties only exist
+      # with `debug_assertions` off: `AudioThreadCell`'s borrow check was
+      # debug-only once (two `&mut T` from safe code in release), and nothing
+      # but this run would have caught it outside the loom job.
+      - name: Test tutti-types (release)
+        run: cargo nextest run --release -p tutti-types
+
       # nextest does NOT run doctests, and says nothing about skipping them.
       # That is not a rounding error here: these are the only tests covering the
       # `///` examples, so a green nextest run is not a green workspace.

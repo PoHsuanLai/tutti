@@ -37,16 +37,19 @@ fn rt_vec_steady_state_is_allocation_free() {
     assert!(buf.borrow().overflowed());
 }
 
-/// Every `AudioThreadCell` borrow path — `borrow_mut`, `borrow`, a granted
-/// and a refused `try_borrow_mut`, and each guard's drop — neither allocates
-/// nor frees: the always-on check is one atomic compare-exchange and one store.
+/// Every `AudioThreadCell` borrow path — `borrow_mut`, `borrow`, granted
+/// and refused `try_borrow_mut` and `try_borrow`, two shared borrows at once,
+/// and each guard's drop — neither allocates nor frees: the always-on check
+/// is a compare-exchange and a store or decrement.
 ///
 /// The panic path is left out: it formats a message, and it is a contract
 /// violation, not a path the audio thread runs.
 ///
-/// Mutation (run): box the flag's state in `try_acquire` (a
-/// `Box::new(self.in_use.compare_exchange(..))`, unboxed for the test) → the first
-/// borrow allocates inside the gate, and `assert_no_alloc` aborts.
+/// Mutations (run): box the result in `try_acquire_writer` (a
+/// `Box::new(self.state.compare_exchange(..))`, unboxed for the test) → the
+/// first borrow allocates inside the gate, and `assert_no_alloc` aborts; the
+/// same in `try_acquire_reader` (`Ok(_) => return *Box::new(true)`) →
+/// aborts at the first `try_borrow`.
 #[test]
 fn audio_thread_cell_borrows_neither_allocate_nor_free() {
     let cell = AudioThreadCell::new(0u64);
@@ -55,8 +58,12 @@ fn audio_thread_cell_borrows_neither_allocate_nor_free() {
             *cell.borrow_mut() += i;
             let held = cell.try_borrow_mut().expect("nothing else borrows");
             assert!(cell.try_borrow_mut().is_none());
+            assert!(cell.try_borrow().is_none());
             drop(held);
-            core::hint::black_box(*cell.borrow());
+            let a = cell.try_borrow().expect("no writer");
+            let b = cell.borrow();
+            assert!(cell.try_borrow_mut().is_none());
+            core::hint::black_box(*a + *b);
         }
     });
     assert_eq!(*cell.borrow(), (0..10_000u64).sum::<u64>());

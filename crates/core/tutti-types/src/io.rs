@@ -591,7 +591,11 @@ mod tests {
     /// The outer half — a checked constructor that errors in release builds too
     /// — is `tutti_io::Recorder::start`, which is the one place both endpoints
     /// are in scope before any frame moves.
+    // It tests a `debug_assert` (CLAUDE.md makes `pump`'s width check one),
+    // so it exists only where that assertion does: a release build has no
+    // check to test, and the test would fail there for that reason alone.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "must agree on channel width")]
     fn pump_rejects_a_width_mismatch() {
         let mut src = SliceSource {

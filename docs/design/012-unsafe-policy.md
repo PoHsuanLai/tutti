@@ -25,23 +25,26 @@ question is the other 5%.
 
 ## The non-FFI `unsafe`, in full
 
-There are six sites (there were eight until design doc 013 Phase 5 deleted
-`tutti-node` and its planar buffers, and seven until `AudioThreadCell`'s
-borrow check went on in release builds and `Engine::settle_graph` stopped
-needing to be `unsafe`). Each exists because a safe construct would have cost
-something on the audio thread (or, for the last, because an invariant the
-type system cannot see must be stated at the call), and each is named here
-so the list can be checked against the tree.
+There are five sites: the five code bullets below. (Earlier revisions said
+eight, then seven, counting the prose-only last bullet too; design doc 013
+Phase 5 deleted `tutti-node` and its planar buffers, and #116 made
+`Engine::settle_graph` safe.) Each exists because a safe construct would have
+cost something on the audio thread, and each is named here so the list can
+be checked against the tree.
 
 - **`tutti-types/src/rt/cell.rs`** — `AudioThreadCell`: an `UnsafeCell` plus
-  `unsafe impl Sync`, with a borrow check in every build: one atomic flag,
-  taken by a compare-exchange per borrow and cleared by its guard's drop, so
-  a second borrow panics (or `try_borrow_mut` returns `None`) instead of
-  aliasing. The flag is what makes the `Sync` true; until the change that
-  made it unconditional it was `#[cfg(debug_assertions)]`, and safe code
-  sharing a cell (`tutti_core::MotionFsm::drain` on two threads) could make
-  two `&mut T` in release. The RT-safe alternative to a `Mutex`: the check
-  never waits. Its `loom` model is `tests/cell_loom.rs`. (Its `reset_owner`,
+  `unsafe impl Sync`, with a borrow check in every build: one atomic word,
+  a writer bit plus a reader count, taken by a compare-exchange per borrow
+  and released by its guard's drop. Any number of shared borrows (`borrow`,
+  `try_borrow`, which need `T: Sync`) or one exclusive borrow (`borrow_mut`,
+  `try_borrow_mut`); a conflicting borrow panics, or its `try_` form returns
+  `None`, instead of aliasing. The word is what makes the `Sync` true; until
+  the change that made it unconditional it was `#[cfg(debug_assertions)]`,
+  and safe code sharing a cell (`tutti_core::MotionFsm::drain` on two
+  threads) could make two `&mut T` in release. The audio thread and the
+  VST3 COM entry points take the `try_` forms, so a conflict there is a
+  skipped step or a failure code, never a panic. The RT-safe alternative to
+  a `Mutex`: the check never waits. Its `loom` model is `tests/cell_loom.rs`. (Its `reset_owner`,
   a no-op that pinned no owner thread, is deleted.)
 - **`tutti-types/src/rt/publish.rs`** — `RtPublish`: an `AtomicPtr` holding
   an `Arc::into_raw` pointer, reclaimed with `Arc::from_raw` by `publish` and
@@ -95,7 +98,7 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
    safe API whose soundness rests on a check keeps the check in every
    build.
 4. **New non-FFI `unsafe` is a design question, not an implementation
-   detail.** Six sites is small enough to review one at a time; that is worth
+   detail.** Five sites is small enough to review one at a time; that is worth
    keeping true. Prefer the safe construct and measure before concluding it is
    too slow — the repo's rule is to check the constraint before designing
    around it.

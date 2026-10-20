@@ -57,15 +57,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data race with no `unsafe` in sight. The check is now unconditional, as
   `atomic_refcell`'s: one uncontended compare-exchange per borrow, a store
   on the guard's drop, no lock, no allocation, nothing that waits. A second
-  borrow while one is live panics, in every build, with the same message and
-  call site; the new `try_borrow_mut` returns `None` instead. A `loom` model
-  (`tutti-types/tests/cell_loom.rs`, in `just loom` and CI) checks the flag
-  against the shipped code.
+  conflicting borrow panics, in every build, with the same message and call
+  site; the new `try_borrow_mut` and `try_borrow` return `None` instead. A
+  `loom` model (`tutti-types/tests/cell_loom.rs`, in `just loom` and CI)
+  checks the state word against the shipped code.
+- **`borrow` is a real shared borrow.** The state word is a writer bit plus
+  a reader count, so any number of `borrow`s are live at once, and none
+  while a `borrow_mut` is. Before, `borrow` took the same exclusive flag, so
+  two threads reading one cell (a VST3 plugin reading its parameter queues
+  from two threads, which COM allows) would have panicked. `borrow` and
+  `try_borrow` need `T: Sync`, since the readers share one `&T`; the cell
+  itself stays `Sync` for `T: Send`, so `borrow_mut` keeps working on a
+  `!Sync` `T` (the engine's graph holds `Box<dyn Node>`).
+- **The audio thread and the COM entry points never panic on a held
+  borrow.** The VST3 host's `IParamValueQueue`, `IParameterChanges` and
+  `IEventList` methods take the `try_` forms and return their failure value
+  (`0`, null, `kResultFalse`, `kNoParamId`) on a conflict: a panic cannot
+  unwind out of an `extern "system"` thunk, and would abort the plugin
+  server. On the audio side, `MotionFsm::drain` leaves the event queued and
+  `complete_declick` leaves the declick pending when the control side holds
+  the FSM (both now return `bool`, `true` when the work ran), a scheduled
+  command refused the FSM lands on a later block (counted late), and
+  `Engine::process`/`process_segment` render a silent block when the control
+  side holds the graph. Control-side callers keep the panicking `borrow_mut`.
 - **The guards no longer make `T` shareable.** `BorrowGuard` and
   `BorrowRef` were `Sync` for any `T: Send` (they inherited the cell's
   auto traits), so a `&BorrowRef<Cell<_>>` shared between two threads gave
-  each a `&Cell` at once. They now carry `&mut T`'s auto traits: `Sync` only
-  for `T: Sync`. No caller in the workspace shared one.
+  each a `&Cell` at once. `BorrowGuard` now carries `&mut T`'s auto traits
+  and `BorrowRef` `&T`'s. No caller in the workspace shared one.
+- **`tutti-types`' tests run in release in CI** (`cargo nextest run
+  --release -p tutti-types`, in the `test` job), so a check that only a
+  debug build makes cannot pass for one every build makes.
+  `io::tests::pump_rejects_a_width_mismatch` tests a `debug_assert` and is
+  gated to debug builds.
 - **`reset_owner` is gone.** It was a no-op (the cell pins no owner thread;
   CoreAudio migrates its callback between threads), and `MotionFsm`,
   `Engine` and `AudioCallbackState` forwarded to it, the last called on
@@ -78,9 +102,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   | Was | Now |
   |---|---|
-  | `AudioThreadCell::borrow`/`borrow_mut` checked a live borrow only with `debug_assertions` (release: unchecked aliasing) | checked in every build: a second live borrow panics (same message, `#[track_caller]` site) |
-  | — | `AudioThreadCell::try_borrow_mut() -> Option<BorrowGuard<'_, T>>`, `None` while a borrow is live |
-  | `BorrowGuard<'_, T>` / `BorrowRef<'_, T>`: `Sync` when `T: Send` | `Sync` when `T: Sync`, `Send` when `T: Send` (as `&mut T`) |
+  | `AudioThreadCell::borrow`/`borrow_mut` checked a live borrow only with `debug_assertions` (release: unchecked aliasing) | checked in every build: a conflicting live borrow panics (same message, `#[track_caller]` site) |
+  | `AudioThreadCell::borrow()` was exclusive, for any `T` | shared (any number of readers, no writer); needs `T: Sync` |
+  | — | `AudioThreadCell::try_borrow_mut() -> Option<BorrowGuard<'_, T>>`, `None` while any borrow is live |
+  | — | `AudioThreadCell::try_borrow() -> Option<BorrowRef<'_, T>>` (`T: Sync`), `None` while a `borrow_mut` is live |
+  | `BorrowGuard<'_, T>`: `Sync` when `T: Send` | as `&mut T`: `Send` when `T: Send`, `Sync` when `T: Sync` |
+  | `BorrowRef<'_, T>`: `Sync` when `T: Send` | as `&T`: `Send` and `Sync` when `T: Sync` |
+  | `MotionFsm::drain(&self)`, `MotionFsm::complete_declick(&self)` (tutti-core) | return `bool`: `false` when the FSM was held and the work was left for a later call; never panic |
   | `AudioThreadCell::reset_owner()` (tutti-types) | removed; delete the call (it did nothing) |
   | `MotionFsm::reset_owner()` (tutti-core) | removed; delete the call |
   | `Engine::reset_owners()` (tutti-core) | removed; delete the call |

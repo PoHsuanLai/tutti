@@ -179,9 +179,10 @@ pub struct MotionFsm {
     /// [`MotionFsm::try_send`] reports that rather than hiding it.
     queue: Arc<ArrayQueue<MotionEvent>>,
     /// Mutated only from the audio thread, via [`MotionFsm::drain`]. The
-    /// cell checks its one-borrow contract in every build, so a stray call
-    /// from another thread while the callback holds it panics rather than
-    /// racing.
+    /// cell checks its borrows in every build, and every borrow of it here
+    /// is a `try_`, so a stray call from another thread while the callback
+    /// holds it is refused (and retried by the next call) rather than racing
+    /// or panicking.
     fsm: Arc<AudioThreadCell<TransportFsm>>,
     /// Published mirror of the FSM's motion, so the UI can read it without
     /// touching the audio thread's cell.
@@ -325,12 +326,23 @@ impl MotionFsm {
     /// Apply one scheduled command now. **Audio thread only**, as
     /// [`drain`](Self::drain): a motion change goes through the state
     /// machine exactly as a drained event does.
-    pub(crate) fn apply(&self, command: TransportCommand) {
+    ///
+    /// Returns `false`, applying nothing, if a motion command found the FSM
+    /// borrowed elsewhere (see [`drain`](Self::drain)): the caller keeps the
+    /// command for a later block.
+    #[must_use = "a refused command must be kept for a later block"]
+    pub(crate) fn apply(&self, command: TransportCommand) -> bool {
         match command {
             TransportCommand::Motion(event) => {
-                let result = { self.fsm.borrow_mut().transition(event) };
-                if let Some(result) = result {
-                    self.publish(result);
+                let Some(mut fsm) = self.fsm.try_borrow_mut() else {
+                    return false;
+                };
+                let step = fsm
+                    .transition(event)
+                    .map(|result| (result, fsm.declick_outcome()));
+                drop(fsm);
+                if let Some((result, outcome)) = step {
+                    self.publish(result, outcome);
                 }
             }
             TransportCommand::Tempo(bpm) => self.settings.set_tempo(bpm),
@@ -342,6 +354,7 @@ impl MotionFsm {
             }
             TransportCommand::Loop(None) => self.settings.loop_span.set_enabled(false),
         }
+        true
     }
 
     /// Requests a transition. Lock-free, callable from any thread.
@@ -392,34 +405,54 @@ impl MotionFsm {
         self.motion() == MotionState::Stopped
     }
 
-    /// Drains the queue into the FSM and publishes the results.
+    /// Drains the queue into the FSM and publishes the results. Returns
+    /// `false` if it was refused (see below), `true` once the queue is empty.
     ///
     /// **Audio thread only.** RT-safe: no allocation, no locks, bounded by the
     /// queue's 64-command capacity. Any thread may be the audio thread, and
     /// it may change between calls (a device restart, CoreAudio migrating its
     /// callback): nothing is pinned to the first caller.
     ///
-    /// # Panics
+    /// # Refusal, not a panic
     ///
-    /// If another call is borrowing the FSM at the same moment — this, or
-    /// [`complete_declick`](Self::complete_declick), on another thread, since
-    /// a clone of this handle reaches the same FSM. The FSM's
-    /// [`AudioThreadCell`] checks that in every build, so the overlap is a
-    /// panic, never two threads writing the FSM at once.
+    /// A clone of this handle reaches the same FSM, so another thread may be
+    /// borrowing it at the same moment (this, or
+    /// [`complete_declick`](Self::complete_declick), called where it should
+    /// not be). The audio thread must never be the side that panics, so the
+    /// borrow is a [`try_borrow_mut`](AudioThreadCell::try_borrow_mut): when
+    /// it is refused, the events still queued stay queued and the next call
+    /// applies them. Never two threads writing the FSM at once, and never a
+    /// panic on the callback.
     // The intended follow-up is to split this handle in two: a `Clone`
     // control half (`try_send`, `schedule`, `motion`) and an engine-owned
     // audio half (`drain`, `apply`, `complete_declick`) holding the FSM as a
     // plain field, so the overlap above cannot be written at all.
-    pub fn drain(&self) {
-        while let Some(event) = self.queue.pop() {
-            let result = {
-                let mut fsm = self.fsm.borrow_mut();
-                fsm.transition(event)
+    pub fn drain(&self) -> bool {
+        loop {
+            // Borrowed before the pop, so a refusal leaves the event queued.
+            let Some(mut fsm) = self.fsm.try_borrow_mut() else {
+                return false;
             };
-            if let Some(result) = result {
-                self.publish(result);
+            let Some(event) = self.queue.pop() else {
+                return true;
+            };
+            // The outcome is read under the same borrow: `publish` must not
+            // borrow again, where a refusal would lose it.
+            let step = fsm
+                .transition(event)
+                .map(|result| (result, fsm.declick_outcome()));
+            drop(fsm);
+            if let Some((result, outcome)) = step {
+                self.publish(result, outcome);
             }
         }
+    }
+
+    /// The FSM's borrow, held by a test as "the control side": what a stray
+    /// `drain` on another thread holds while the callback runs.
+    #[cfg(test)]
+    pub(crate) fn hold_fsm(&self) -> tutti_types::BorrowGuard<'_, TransportFsm> {
+        self.fsm.borrow_mut()
     }
 
     fn set_motion(&self, motion: MotionState) {
@@ -434,7 +467,9 @@ impl MotionFsm {
         self.seek.request(pos);
     }
 
-    fn publish(&self, result: TransitionResult) {
+    /// `outcome` is the FSM's parked fade outcome right after the transition
+    /// that produced `result`, read under that transition's borrow.
+    fn publish(&self, result: TransitionResult, outcome: Option<DeclickOutcome>) {
         match result {
             TransitionResult::MotionChanged(motion) if is_declicking(motion) => {
                 // A fade retargeted in flight. Its ramp is mid-count and must
@@ -442,7 +477,6 @@ impl MotionFsm {
                 // but its new outcome takes effect on the transport now, as a
                 // fresh fade's does.
                 self.set_mirror(motion);
-                let outcome = { self.fsm.borrow().declick_outcome() };
                 if let Some(outcome) = outcome {
                     self.apply_outcome(outcome);
                 }
@@ -503,20 +537,27 @@ impl MotionFsm {
     /// FSM/mirror disagreement pass unnoticed.
     ///
     /// **Audio thread only**, for the same reason as
-    /// [`drain`](Self::drain) — it borrows the FSM's cell, and panics as it
-    /// does if another call is borrowing it at the same moment.
-    pub fn complete_declick(&self) {
+    /// [`drain`](Self::drain) — it borrows the FSM's cell — and refused as it
+    /// is: if another call is borrowing the FSM at the same moment it returns
+    /// `false` and changes nothing, so the fade stays pending and a later
+    /// call completes it. `true` once completed.
+    pub fn complete_declick(&self) -> bool {
+        let Some(mut fsm) = self.fsm.try_borrow_mut() else {
+            return false;
+        };
+        let outcome = fsm.take_declick_outcome();
+        drop(fsm);
         self.declick.clear();
 
-        let outcome = { self.fsm.borrow_mut().take_declick_outcome() };
         let Some(outcome) = outcome else {
-            return;
+            return true;
         };
 
         match outcome {
             DeclickOutcome::Stop => self.set_motion(MotionState::Stopped),
             DeclickOutcome::Locate { motion, .. } => self.set_motion(motion),
         }
+        true
     }
 }
 
@@ -550,6 +591,49 @@ mod tests {
 
         m.drain();
         assert!(m.is_playing());
+    }
+
+    /// A drain that finds the FSM borrowed elsewhere (a stray `drain` on a
+    /// clone of the handle) neither panics nor loses the event: it stays
+    /// queued, and the next drain applies it.
+    ///
+    /// Mutations (run): `drain` on a panicking `borrow_mut` → panics → fails;
+    /// the event popped before the borrow is tried → the refused drain drops
+    /// it, and the later one finds the queue empty → fails.
+    #[test]
+    fn a_refused_drain_leaves_the_event_queued() {
+        let m = fsm();
+        let _ = m.try_send(MotionEvent::Play);
+        {
+            let _control = m.hold_fsm();
+            assert!(!m.drain(), "the drain must report the refusal");
+        }
+        assert!(m.is_stopped(), "nothing applied while refused");
+        assert!(m.drain());
+        assert!(m.is_playing(), "the queued event applies on the next drain");
+    }
+
+    /// Completing a fade while the FSM is borrowed elsewhere changes nothing,
+    /// and a later call completes it.
+    ///
+    /// Mutations (run): `complete_declick` on a panicking `borrow_mut` →
+    /// panics → fails; `declick.clear()` before the borrow is tried → the
+    /// fade is cleared while refused → fails.
+    #[test]
+    fn a_refused_declick_completion_stays_pending() {
+        let m = fsm();
+        let _ = m.try_send(MotionEvent::Play);
+        m.drain();
+        let _ = m.try_send(MotionEvent::stop());
+        m.drain();
+        {
+            let _control = m.hold_fsm();
+            assert!(!m.complete_declick());
+        }
+        assert_eq!(m.motion(), MotionState::DeclickToStop);
+        assert!(m.declick.is_active(), "the fade stays pending");
+        assert!(m.complete_declick());
+        assert!(m.is_stopped());
     }
 
     #[test]

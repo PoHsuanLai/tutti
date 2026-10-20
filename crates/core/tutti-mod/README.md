@@ -12,7 +12,7 @@ signal-driven source's node, and the event edges between them. The
   (`Source::Lfo`, `Macro`, `Follower`, `NoteEnvelope`), routes (`RouteDecl`,
   to a param or to another route's depth) and targets (`TargetDecl`: range
   and automation) in, a `Compiled` out. Pure: no clock, no state, no
-  `RtPublish`. Equal declarations compile equal, so a host republishes only
+  `ArcLend`. Equal declarations compile equal, so a host republishes only
   the programs that changed. Refusals are by name (`CompileError`).
 - **The program.** `ControlProgram`: automation (which replaces the knob
   where it has a value) plus time-function layers and event-input layers

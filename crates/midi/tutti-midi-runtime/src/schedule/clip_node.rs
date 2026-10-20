@@ -16,13 +16,13 @@
 //! clip is replaced, those notes would hang in whatever it feeds, so it ends
 //! each with a note-off on the frame the jump happens.
 //!
-//! The clip itself is published to the node with [`RtPublish`]
+//! The clip itself is published to the node with [`ArcLend`]
 //! ([`MidiClipControls::set_events`]); the node reads it once per block.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tutti_core::{ChannelLayout, RtPublish};
+use tutti_core::{ArcLend, ChannelLayout};
 use tutti_graph::{
     Cx, Event, EventWriter, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts,
     Offset, Prepare, Shape, Status,
@@ -49,7 +49,7 @@ struct ClipEvents {
 /// What the node and its controls share.
 struct Shared {
     /// What the audio thread reads, once per block.
-    cell: RtPublish<ClipEvents>,
+    cell: ArcLend<ClipEvents>,
     /// The clip last published, for the control side (a fork's snapshot, a
     /// count). Control thread only.
     current: Mutex<Arc<ClipEvents>>,
@@ -63,7 +63,7 @@ impl Shared {
             events,
         });
         Arc::new(Self {
-            cell: RtPublish::from_arc(Arc::clone(&first)),
+            cell: ArcLend::from_arc(Arc::clone(&first)),
             current: Mutex::new(first),
             next_generation: AtomicU64::new(1),
         })
@@ -221,7 +221,7 @@ impl Node for MidiClipNode {
     fn prepare(&mut self, _p: &Prepare) {}
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let clip = self.shared.cell.read();
+        let clip = self.shared.cell.lend();
         let out = io.event_out(0);
         if self.play.held.owed {
             if let Some(o) = cx.env.offset(0) {
@@ -279,7 +279,7 @@ impl ForkSource for ClipFork {
     fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         let clip = self.shared.current();
         let shared = Arc::new(Shared {
-            cell: RtPublish::from_arc(Arc::clone(&clip)),
+            cell: ArcLend::from_arc(Arc::clone(&clip)),
             current: Mutex::new(clip),
             next_generation: AtomicU64::new(0),
         });

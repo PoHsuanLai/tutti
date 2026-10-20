@@ -40,7 +40,7 @@ use tutti_graph::{
 };
 use tutti_types::meter::{Meter, MeterMap};
 use tutti_types::value::{Amplitude, Beat, Hz, Phase, PhaseIncrement, Samples, Seconds};
-use tutti_types::{ChannelLayout, RtPublish, Tail};
+use tutti_types::{ArcLend, ChannelLayout, Tail};
 
 /// How far two beat onsets must differ to count as different beats.
 ///
@@ -111,7 +111,7 @@ pub struct ClickSettings {
     volume: AtomicF32,
     /// The project meter, driving both the click rate and the downbeat accent.
     ///
-    /// An [`RtPublish`] rather than a packed atomic because a [`MeterMap`] is a
+    /// An [`ArcLend`] rather than a packed atomic because a [`MeterMap`] is a
     /// `Vec`, not a scalar. Read once per block in [`ClickNode::process`], never
     /// per sample — the read is a guard acquire, far heavier than the plain
     /// atomic loads beside it.
@@ -120,7 +120,7 @@ pub struct ClickSettings {
     /// contents: hosted plugins need the same meter for their transport
     /// snapshot, and handing them this handle means one publish reaches the
     /// metronome and every plugin at once. See [`meter_cell`](Self::meter_cell).
-    meter: Arc<RtPublish<MeterMap>>,
+    meter: Arc<ArcLend<MeterMap>>,
     mode: AtomicU8,
 }
 
@@ -129,7 +129,7 @@ impl ClickSettings {
     pub fn new() -> Self {
         Self {
             volume: AtomicF32::new(0.5),
-            meter: Arc::new(RtPublish::new(MeterMap::default())),
+            meter: Arc::new(ArcLend::new(MeterMap::default())),
             mode: AtomicU8::new(MetronomeMode::Off as u8),
         }
     }
@@ -154,11 +154,11 @@ impl ClickSettings {
 
     /// The meter in force. Prefer calling this once per block.
     ///
-    /// A borrow, not an owning handle — see [`RtPublish`] for why that is the
+    /// A borrow, not an owning handle — see [`ArcLend`] for why that is the
     /// whole point on the audio thread. Hold it for the block you are rendering
     /// and no longer.
-    pub fn meter(&self) -> tutti_types::RtRef<'_, MeterMap> {
-        self.meter.read()
+    pub fn meter(&self) -> tutti_types::Loan<'_, MeterMap> {
+        self.meter.lend()
     }
 
     /// The shared meter cell, for other subsystems that must see the same value.
@@ -166,7 +166,7 @@ impl ClickSettings {
     /// Hosted plugins carry the meter in their transport snapshot; giving them
     /// this handle rather than a copy means [`set_meter`](Self::set_meter)
     /// reaches them too, with no second publish path to keep in sync.
-    pub fn meter_cell(&self) -> Arc<RtPublish<MeterMap>> {
+    pub fn meter_cell(&self) -> Arc<ArcLend<MeterMap>> {
         Arc::clone(&self.meter)
     }
 
@@ -467,7 +467,7 @@ impl ClickNode {
     ///
     /// The mode, the count-in flag, the volume and the meter are read once
     /// per block — a UI write lands at the next block, never mid-block, and
-    /// the meter's `RtPublish::read` (a guard acquire) is never per frame.
+    /// the meter's `ArcLend::lend` (a guard acquire) is never per frame.
     /// The beat is per frame, and the play and record state per piece of the
     /// block ([`Env::segments`]): a stop inside the block silences the click
     /// from its frame, and a start sounds the beat it lands on, on its frame.
@@ -484,7 +484,7 @@ impl ClickNode {
                 right[range].fill(0.0);
                 continue;
             }
-            // One lease for the piece — `RtPublish::read` is never per frame.
+            // One lease for the piece — `ArcLend::lend` is never per frame.
             let meter = self.settings.meter();
             let Self {
                 click_normal,

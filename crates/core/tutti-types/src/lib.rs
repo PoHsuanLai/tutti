@@ -38,10 +38,16 @@ pub mod tail;
 pub use rt::{
     AudioThread, AudioThreadCell, AudioThreadGuard, BorrowGuard, BorrowRef, ClaimConflict,
     ClaimTable, Claimed, ClaimedRun, Held, JobGate, Participant, PosClaim, PosFrame, PosReader,
-    PosRing, PosWriter, RangeCell, RingWindow, RtPublish, RtRef, RtScratch, RtScratchOverflow,
-    RtVec, RwView, ScopedNoDenormals, SeqReader, SeqWriter, SplitMut, SplitRw, TaskGraph,
-    MAX_POS_RING_FRAMES, SEQ_CELL_READ_RETRIES,
+    PosRing, PosWriter, RangeCell, RingWindow, RtScratch, RtScratchOverflow, RtVec, RwView,
+    ScopedNoDenormals, SeqReader, SeqWriter, SplitMut, SplitRw, TaskGraph, MAX_POS_RING_FRAMES,
+    SEQ_CELL_READ_RETRIES,
 };
+
+// The cell non-scalar state reaches the audio thread through: a control
+// thread publishes, the audio thread only borrows (`Loan`), so it never frees.
+// Its own crate (`arc-lend`, which names nothing of tutti's); re-exported here
+// so the engine spells it `tutti_types::ArcLend`.
+pub use arc_lend::{ArcLend, Loan};
 
 // The cell a `Param` shares (`Param::as_atomic`), named here so a crate that
 // addresses params without their unit types (tutti-graph's `ParamSet`) need
@@ -127,7 +133,7 @@ pub mod prelude {
     pub use crate::io::{pump, AudioIn, AudioOut, OnEmpty};
 
     pub use crate::meter::{MeterMap, NoteValue, TimeSignature};
-    pub use crate::rt::{RtPublish, RtRef};
+    pub use crate::{ArcLend, Loan};
 }
 
 // PCM quantization.

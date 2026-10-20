@@ -28,6 +28,10 @@ serde = ["dep:serde"]
 bevy = ["dep:bevy_reflect"]
 
 [dependencies]
+# `ArcLend`/`Loan`, re-exported at the root: the cell non-scalar state reaches
+# the audio thread through. A general-purpose crate in this workspace that names
+# no tutti crate, so the rule "tutti-types names no other tutti crate" holds.
+arc-lend = { path = "../../arc-lend" }
 # The fixed inline storage behind `RtVec` (`rt/capped.rs`):
 # a run of `N` slots that cannot grow, so the cap is the type's, not a check
 # beside it.
@@ -39,25 +43,21 @@ serde = { version = "1", optional = true, features = ["derive"] }
 # defines vocabulary, not ECS surface.
 bevy_reflect = { workspace = true, optional = true }
 
-# `RtPublish`'s, `PosRing`'s, `RangeCell`'s, `SeqWriter`/`SeqReader`'s and `AudioThreadCell`'s
+# `PosRing`'s, `RangeCell`'s, `SeqWriter`/`SeqReader`'s and `AudioThreadCell`'s
 # atomics become loom's under
 # `--cfg loom`, so the models in `tests/*_loom.rs` check the
 # shipped protocols rather than replicas.
 # Only that flag pulls this in; a normal build never sees loom.
 #
-#     RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
+#     RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test pos_ring_loom
 #
 # This can live here, unlike `tutti-shm-model`, because nothing in this crate's
-# dependency closure has `cfg(loom)` support of its own to break under the flag.
+# dependency closure breaks under the flag. The one dependency that reacts to
+# it, `arc-lend`, does so by the same design (its atomics become loom's too).
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
 
 [dev-dependencies]
-# The baseline in `benches/rt_publish_read.rs`: `RtPublish` wrapped
-# `ArcSwap` until its reclamation became structural, and the bench measures the
-# read against the `load()` it replaced. Nothing in `src/` uses it.
-arc-swap = "1.7"
-criterion.workspace = true
 assert_no_alloc = { version = "1", default-features = false }
 # The meter `Deserialize` impls are the untrusted-document edge, so they are
 # tested against a real format rather than a hand-rolled deserializer.
@@ -68,6 +68,3 @@ serde_json = "1"
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 libc = "0.2"
 
-[[bench]]
-name = "rt_publish_read"
-harness = false

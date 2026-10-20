@@ -7,9 +7,9 @@
 //! `loom` model in `tests/seq_cell_loom.rs` runs this code and checks exactly
 //! that.
 //!
-//! # Why not [`RtPublish`](crate::RtPublish)
+//! # Why not [`ArcLend`](crate::ArcLend)
 //!
-//! `RtPublish` hands the audio thread a value the control thread built and
+//! `ArcLend` hands the audio thread a value the control thread built and
 //! frees the retired one on the control thread. A sequence cell is for the other
 //! direction: a value the *audio thread* writes each block (a VST2 plugin's
 //! `audioMasterGetTime` snapshot), where publishing a fresh allocation and

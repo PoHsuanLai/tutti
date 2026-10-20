@@ -1044,7 +1044,7 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
 /// `AddVoice` doc spells out — a command that carries a `Voice` or a stretch
 /// filter has to be *built* on the control thread, or the callback pays for it.
 ///
-/// A node's placement is a `Copy` window in an `RtPublish` cell, read once
+/// A node's placement is a `Copy` window in an `ArcLend` cell, read once
 /// per block and applied as a field write when it changed, so this should be
 /// free. "Should be" is exactly the kind of claim this file exists to convert
 /// into a measurement.

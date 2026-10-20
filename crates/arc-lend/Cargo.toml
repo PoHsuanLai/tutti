@@ -1,0 +1,37 @@
+[package]
+name = "arc-lend"
+version = "0.1.0"
+edition = "2021"
+description = "Like arc-swap, but readers only ever borrow: the writer keeps ownership, so the read side never frees"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+readme = "README.md"
+keywords = ["arc", "realtime", "lock-free", "wait-free", "hazard-pointer"]
+categories = ["concurrency", "data-structures", "memory-management"]
+# Not published: whether and when this goes to crates.io is the maintainer's
+# call, not a side effect of a workspace change. Remove this line to publish.
+publish = false
+
+[lints]
+workspace = true
+
+# No dependencies. Under `--cfg loom` the cell's atomics, fences and mutex
+# become loom's, so `tests/loom.rs` checks the shipped protocol rather than a
+# replica of it. Only that flag pulls loom in; a normal build never sees it.
+#
+#     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p arc-lend --release --test loom
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[dev-dependencies]
+# The baseline in `benches/lend.rs`: the cell this one replaced in tutti was an
+# `ArcSwap`, and the bench measures a lend against the `load()` it replaced.
+# Nothing in `src/` uses it.
+arc-swap = "1.7"
+# `tests/no_alloc.rs`: the reader's code path runs inside an allocation gate.
+assert_no_alloc = { version = "1", default-features = false }
+criterion.workspace = true
+
+[[bench]]
+name = "lend"
+harness = false

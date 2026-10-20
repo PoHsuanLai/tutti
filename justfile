@@ -134,7 +134,7 @@ test-features:
 # clean and reaches nothing, which is exactly the silent-no-op shape
 # `check-windows` exists to catch — hence this recipe.
 # Miri over the non-FFI unsafe: the aliasing in `tutti-types`' `AudioThreadCell`
-# and `RtPublish`'s hazard-slot reclamation (and, until doc 013 Phase 5 deleted
+# and `arc-lend`'s hazard-slot reclamation (`ArcLend`) (and, until doc 013 Phase 5 deleted
 # it, the pointer arithmetic in `tutti-node`'s planar buffers). See
 # `docs/design/012-unsafe-policy.md` for why this crate and not the rest — miri
 # does not execute FFI at all, so the ~95% of this repo's unsafe that is a C ABI
@@ -145,18 +145,19 @@ test-features:
 # and miri has no x86 SSE intrinsics.
 miri:
     cargo +nightly miri test --locked -p tutti-types --lib
-    MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p tutti-types --lib rt::publish
+    cargo +nightly miri test --locked -p arc-lend
+    MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p arc-lend --lib
 
-# The loom models: `RtPublish`'s reclamation protocol, `PosRing`'s no-tear
+# The loom models: `ArcLend`'s reclamation protocol, `PosRing`'s no-tear
 # protocol, `RangeCell`'s untorn pair, the sequence cell's unmixed copy and
 # `AudioThreadCell`'s borrow flag (against the
 # shipped code) and the plugin shm header protocol (a replica). `--cfg loom` is
-# global, so each runs on its own target. This is what CI runs: the `RtPublish` models at a
+# global, so each runs on its own target. This is what CI runs: the `ArcLend` models at a
 # preemption bound of 4, about a minute and a half, and the `PosRing` models at
 # the same bound, about five minutes, and the parallel executor's three
 # primitives (`split`, `job_gate`, `task_graph`) at a bound of 3.
 loom:
-    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test rt_publish_loom
+    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test pos_ring_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test range_cell_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test seq_cell_loom
@@ -166,10 +167,11 @@ loom:
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test job_gate_loom
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test task_graph_loom
 
-# The `RtPublish` loom models exhaustively (bar `xthread_overflow`, which is
-# always bounded): about 17 minutes. Run it after changing `rt/publish.rs`.
+# The `ArcLend` loom models exhaustively (bar `xthread_overflow`, which is
+# always bounded): about 17 minutes. Run it after changing `arc-lend`'s
+# `src/lend.rs`.
 loom-full:
-    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test rt_publish_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom
 
 check-jack:
     cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings
@@ -205,6 +207,8 @@ bench *ARGS:
     # `--features vst2`: the only plugin path criterion can measure honestly.
     # Everything else is a subprocess — see the bench's own header.
     cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process {{ARGS}}
+    # `ArcLend::lend` against `ArcSwap::load` (means only).
+    cargo bench --locked -p arc-lend --bench lend {{ARGS}}
 
 # Record a named baseline on THIS machine, then compare against it later.
 #

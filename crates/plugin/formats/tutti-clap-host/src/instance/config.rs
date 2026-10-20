@@ -181,7 +181,7 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// through
     /// [`ClapActive::last_process_status`](super::ClapActive::last_process_status);
     /// as a plain field, TAIL and SLEEP reached callers only via an `eprintln!`
-    /// on the audio thread. A plain `AtomicI32` rather than `RtPublish` because
+    /// on the audio thread. A plain `AtomicI32` rather than `ArcLend` because
     /// this is a scalar — nothing here can be freed on the audio thread.
     pub last_process_status: AtomicI32,
 }

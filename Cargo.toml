@@ -25,6 +25,10 @@ members = [
     # (`scripts/check-adapter.sh`) and never reaches Bevy
     # (`scripts/check-bevy-free.sh`).
     "crates/tutti-session",
+    # The publish cell the engine hands non-scalar state to its audio thread
+    # through. A general-purpose crate that names nothing of tutti's (and
+    # `publish = false` until the maintainer decides otherwise).
+    "crates/arc-lend",
     "crates/core/tutti-core",
     "crates/core/tutti-cpal",
     "crates/core/tutti-types",

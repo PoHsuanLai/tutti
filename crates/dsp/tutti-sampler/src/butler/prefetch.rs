@@ -37,7 +37,7 @@
 //! another. A voice in a live graph is dropped where the graph frees units:
 //! under the graph's executor, retired units travel back to the control thread
 //! (`tutti_graph::Editor::collect`), so the last handle is never dropped on
-//! the audio thread, and the ring's slots and its `RtPublish` are freed off it.
+//! the audio thread, and the ring's slots and its `ArcLend` are freed off it.
 //!
 //! # Frames, not samples
 //!
@@ -49,7 +49,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tutti_core::{
-    ChannelLayout, PosReader, PosRing, PosWriter, RtPublish, RtRef, Samples, MAX_POS_RING_FRAMES,
+    ArcLend, ChannelLayout, Loan, PosReader, PosRing, PosWriter, Samples, MAX_POS_RING_FRAMES,
 };
 use tutti_io::Wave;
 
@@ -117,7 +117,7 @@ pub(crate) struct Ring {
     /// Butler → reader: output frames a reader's crossfade lasts.
     fade_frames: AtomicU64,
     /// Butler → reader: how to read the slots.
-    map: RtPublish<RingMap>,
+    map: ArcLend<RingMap>,
     /// The live reader is a placed voice (it follows its clock, so a relayed
     /// seek must not move where the butler fills).
     placed: AtomicBool,
@@ -158,8 +158,8 @@ impl Ring {
     /// How to read the slots, for this block (once per block, never per
     /// sample; never parked across blocks).
     #[inline]
-    pub(crate) fn map(&self) -> RtRef<'_, RingMap> {
-        self.map.read()
+    pub(crate) fn map(&self) -> Loan<'_, RingMap> {
+        self.map.lend()
     }
 
     /// The channel's PDC preroll, file frames.
@@ -460,7 +460,7 @@ impl RegionBuffer {
             seek_epoch: AtomicU64::new(0),
             seek_target: AtomicU64::new(0),
             fade_frames: AtomicU64::new(0),
-            map: RtPublish::new(RingMap::plain(Arrangement::plain(len), 0)),
+            map: ArcLend::new(RingMap::plain(Arrangement::plain(len), 0)),
             placed: AtomicBool::new(false),
         });
         let writer = RegionOut {

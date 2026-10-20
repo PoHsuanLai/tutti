@@ -28,7 +28,7 @@ use tutti_plugin::catalog::{Plugin, PluginRole};
 use tutti_plugin::handles::ParamAddress;
 use tutti_plugin::Result;
 
-use tutti_core::{Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, RtPublish, SampleRate};
+use tutti_core::{ArcLend, Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, SampleRate};
 
 const SAMPLE_RATE: SampleRate = SampleRate::SR_48K;
 
@@ -54,7 +54,7 @@ fn main() -> Result<()> {
     //    instrument.
     //    The transport itself needs no install: the node reads it from each
     //    block it renders. The meter (time signature and bars) is the host's.
-    let meter = Arc::new(RtPublish::new(MeterMap::default()));
+    let meter = Arc::new(ArcLend::new(MeterMap::default()));
 
     let took_transport = plugin.set_meter(Arc::clone(&meter));
 

@@ -6,7 +6,7 @@
 //! and an automation curve. [`compile`] turns that into what the engine
 //! *runs*: a program per target for its control lane, a description of the
 //! node each signal-driven source needs, and the event edges from those
-//! nodes to the lanes. It is pure: no clock, no state, no `RtPublish`. Equal
+//! nodes to the lanes. It is pure: no clock, no state, no `ArcLend`. Equal
 //! declarations (in any order) compile to equal [`Compiled`]s, so a host
 //! republishes only the programs that changed.
 //!

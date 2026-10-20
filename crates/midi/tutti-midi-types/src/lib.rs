@@ -8,8 +8,8 @@ pub use midly;
 // The tutti-types vocabulary this crate's own API is spelled in: every UMP
 // constructor takes a `MidiGroup` and a `MidiChannel`, the clip API positions in
 // `Beat`/`BeatDuration` and declares its tempo in `Bpm`, a CC message needs
-// `CCNumber`, and state reaches the audio thread through `RtPublish`.
-pub use tutti_types::{Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup, RtPublish};
+// `CCNumber`, and state reaches the audio thread through `ArcLend`.
+pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup};
 
 // No `///` on a `pub mod` line: it would shadow the module's own `//!` header
 // and re-resolve that text's intra-doc links in this scope rather than the
@@ -151,5 +151,5 @@ pub mod prelude {
         ClipFileError, ControllerNamespace, MidiEvent, MidiMessage, NoteAttribute, NoteId,
         ParsedClipFile, PerNoteController, Protocol,
     };
-    pub use tutti_types::{Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup, RtPublish};
+    pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup};
 }

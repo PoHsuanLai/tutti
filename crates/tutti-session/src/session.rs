@@ -5,7 +5,7 @@ use std::any::Any;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tutti_core::{AudioNode, AudioTap, ClickSettings, MasterMeter, RtPublish, Samples, Transport};
+use tutti_core::{ArcLend, AudioNode, AudioTap, ClickSettings, MasterMeter, Samples, Transport};
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
 
@@ -316,7 +316,7 @@ pub struct Session {
     pub(crate) click_settings: Arc<ClickSettings>,
     /// The per-channel pre-roll of the plan sent last, for sources outside
     /// the graph (a disk stream), republished with every plan.
-    pub(crate) compensation: Arc<RtPublish<Vec<Samples>>>,
+    pub(crate) compensation: Arc<ArcLend<Vec<Samples>>>,
     /// The total latency of the plan sent last.
     pub(crate) latency: Samples,
     /// A re-prepare resumed in this update's collect: its plan's figures
@@ -587,7 +587,7 @@ impl Session {
     /// The per-channel pre-roll of the plan sent last, for a source outside
     /// the graph (a disk stream seeks by it). Republished with every plan;
     /// empty until the first.
-    pub fn compensation(&self) -> &Arc<RtPublish<Vec<Samples>>> {
+    pub fn compensation(&self) -> &Arc<ArcLend<Vec<Samples>>> {
         &self.compensation
     }
 

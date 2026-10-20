@@ -615,7 +615,7 @@ impl AudioGraphRes {
 
     /// The session's published per-channel pre-roll, republished with every
     /// plan: what [`ChannelCompensation`](crate::ChannelCompensation) holds.
-    pub(crate) fn compensation(&self) -> std::sync::Arc<tutti_core::RtPublish<Vec<Samples>>> {
+    pub(crate) fn compensation(&self) -> std::sync::Arc<tutti_core::ArcLend<Vec<Samples>>> {
         std::sync::Arc::clone(self.read().compensation())
     }
 

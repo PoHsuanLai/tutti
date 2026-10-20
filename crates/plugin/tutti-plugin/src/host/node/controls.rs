@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use atomic_float::AtomicF64;
 use tutti_core::meter::MeterMap;
-use tutti_core::{RtPublish, SampleRate, Samples};
+use tutti_core::{ArcLend, SampleRate, Samples};
 use tutti_plugin_types::PluginTail;
 use tutti_types::Latency;
 
@@ -212,7 +212,7 @@ impl PluginControls {
     /// the plugin. Pass the cell the host publishes meter edits into, and an
     /// edit reaches the running plugin with nothing re-installed. Replaces any
     /// meter installed before.
-    pub fn set_meter(&self, meter: Arc<RtPublish<MeterMap>>) {
+    pub fn set_meter(&self, meter: Arc<ArcLend<MeterMap>>) {
         self.meter.set_meter(meter);
     }
 
@@ -293,7 +293,7 @@ pub(super) fn lock_tail(tail: &Mutex<PluginTail>) -> std::sync::MutexGuard<'_, P
 /// built, wherever that is: a source the host installs on the live node
 /// afterwards does not reach the fork.
 pub(super) struct ForkedSources {
-    meter: Option<Arc<RtPublish<MeterMap>>>,
+    meter: Option<Arc<ArcLend<MeterMap>>>,
 }
 
 impl ForkedSources {
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn a_fork_gets_the_live_meter() {
         let live = controls();
-        let meter = Arc::new(RtPublish::new(MeterMap::default()));
+        let meter = Arc::new(ArcLend::new(MeterMap::default()));
         live.set_meter(Arc::clone(&meter));
         let fork = PluginControls::new(
             Samples(0),
@@ -368,7 +368,7 @@ mod tests {
             false,
         );
         let gathered = live.sources_now();
-        live.set_meter(Arc::new(RtPublish::new(MeterMap::default())));
+        live.set_meter(Arc::new(ArcLend::new(MeterMap::default())));
         gathered.install(&fork);
         let shared_meter = fork
             .meter

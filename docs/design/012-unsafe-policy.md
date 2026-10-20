@@ -46,14 +46,16 @@ be checked against the tree.
   skipped step or a failure code, never a panic. The RT-safe alternative to
   a `Mutex`: the check never waits. Its `loom` model is `tests/cell_loom.rs`. (Its `reset_owner`,
   a no-op that pinned no owner thread, is deleted.)
-- **`tutti-types/src/rt/publish.rs`** — `RtPublish`: an `AtomicPtr` holding
-  an `Arc::into_raw` pointer, reclaimed with `Arc::from_raw` by `publish` and
-  `Drop`, and dereferenced by `RtRef` under a hazard-slot protocol. The safe
+- **`arc-lend/src/lend.rs`** — `ArcLend` (it was `tutti-types`'
+  `RtPublish`, in `rt/publish.rs`, until it became its own crate): an
+  `AtomicPtr` holding an `Arc::into_raw` pointer, reclaimed with
+  `Arc::from_raw` by `publish` and `Drop`, and dereferenced by `Loan` under a
+  hazard-slot protocol. The safe
   alternative (`ArcSwap`) could, rarely, free on the audio thread; this cannot,
   and that is the whole reason for it. The dereference's soundness rests on a
   `SeqCst` fence pair, which is a *concurrency* property — so it is checked by
-  a loom model run against the shipped code (`tests/rt_publish_loom.rs`) as
-  well as by miri over the module's concurrent stress test.
+  a loom model run against the shipped code (`arc-lend/tests/loom.rs`) as
+  well as by miri over the crate's concurrent stress test.
 - **`tutti-types/src/rt/denormals.rs`** — `read_mxcsr` and the FTZ/DAZ
   set. x86 SSE control-register intrinsics; there is no safe spelling.
 - **`tutti-sampler/src/butler/prefetch.rs`** — `unsafe impl Send`/`Sync` on
@@ -114,10 +116,10 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
   subprocess. This is the reason the 1,519-line figure above is tolerable.
 - **`tutti-shm-model`** is a loom model of the shm header protocol — a
   separate crate because `--cfg loom` is global. That covers the concurrency
-  argument the shm `unsafe` rests on. **`tutti-types/tests/rt_publish_loom.rs`**
-  does the same for `RtPublish`, but against the real code: its atomics switch
+  argument the shm `unsafe` rests on. **`arc-lend/tests/loom.rs`**
+  does the same for `ArcLend`, but against the real code: its atomics switch
   to loom's under the flag, which that crate's dependency closure tolerates.
-  Both run in the `loom` CI job and `just loom`, the `RtPublish` models at a
+  Both run in the `loom` CI job and `just loom`, the `ArcLend` models at a
   preemption bound of 4; `just loom-full` runs them exhaustively.
 - **miri**, on the non-FFI crates, via `just miri` and the `miri` CI job.
   Installing a nightly toolchain on the machine that wrote this failed
@@ -125,7 +127,7 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
   to run it. It cannot go everywhere:
   it does not execute FFI at all, and it cannot run x86 intrinsics, so
   `denormals.rs`'s tests are `#[cfg_attr(miri, ignore)]`. What it does cover
-  is the aliasing in `AudioThreadCell` and `RtPublish`'s reclamation, which is
+  is the aliasing in `AudioThreadCell` and `ArcLend`'s reclamation, which is
   where a mistake would be silent. (It covered the pointer arithmetic in
   `tutti-node`'s planar buffers too, until doc 013 Phase 5 deleted them: a
   graph node gets its buffers from `tutti-graph`, which is

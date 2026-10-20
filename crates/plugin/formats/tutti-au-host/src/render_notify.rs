@@ -90,17 +90,17 @@
 //!    the host closure's obligation is a documented contract rather than
 //!    something the type can enforce.
 //!
-//! 3. **Plain atomics, not [`RtPublish`](tutti_types::RtPublish).** Every piece
+//! 3. **Plain atomics, not [`ArcLend`](tutti_types::ArcLend).** Every piece
 //!    of state this module hands to the render thread is a scalar: a parameter
-//!    id, two `f32` endpoints, a frame offset, a duration. `RtPublish` exists
+//!    id, two `f32` endpoints, a frame offset, a duration. `ArcLend` exists
 //!    for state too large to pack into an atomic and costs a slot CAS, a
 //!    `SeqCst` fence and a load plus a slot store — more than the handful
 //!    of loads here, and a category error besides: there is no heap state here
-//!    for an `RtRef` borrow to protect. Same trade [`crate::transport`]'s module
+//!    for a `Loan` borrow to protect. Same trade [`crate::transport`]'s module
 //!    docs make.
 //!
 //!    What the host closure captures is the host's own business — that is where
-//!    an `RtPublish` belongs if the host needs to hand a table across.
+//!    an `ArcLend` belongs if the host needs to hand a table across.
 //!
 //! # Why removal ordering is load-bearing
 //!
@@ -553,7 +553,7 @@ impl RenderNotify {
     /// that cannot be checked, so the bound is a contract rather than a
     /// guarantee. Concretely: no `Vec`/`String`/`format!`, no `Mutex`, no
     /// channel send that may allocate, no `println!`. Push scalars through
-    /// atomics; publish a table with [`RtPublish`](tutti_types::RtPublish) from
+    /// atomics; publish a table with [`ArcLend`](tutti_types::ArcLend) from
     /// the control thread and *read* it here.
     ///
     /// A panic is caught rather than propagated, but by then it has already

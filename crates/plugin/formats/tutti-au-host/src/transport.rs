@@ -35,11 +35,11 @@
 //!
 //! 1. **The state is read on the audio thread without locking or allocating.**
 //!    Every field of [`TransportState`] is a scalar, so this is a set of plain
-//!    atomics rather than a `tutti_types::RtPublish` cell. `RtPublish` exists
+//!    atomics rather than a `tutti_types::ArcLend` cell. `ArcLend` exists
 //!    for state too large to pack into an atomic — a routing table, a meter map
 //!    — and its read is a slot CAS, a `SeqCst` fence and a load, plus a slot
 //!    store on release, strictly more work than the handful of `Relaxed` loads here.
-//!    Using it would also be a category error: it hands out an `RtRef` borrow
+//!    Using it would also be a category error: it hands out a `Loan` borrow
 //!    whose whole purpose is to keep the audio thread from owning heap state,
 //!    and there is no heap state here to protect.
 //!
@@ -144,7 +144,7 @@ pub type TransportStateProc2 = unsafe extern "C" fn(
 ///
 /// Written by the control thread via [`set_transport`](Self::set_transport) and
 /// read by the AU through the C procs. See the module docs for why this is a
-/// set of atomics rather than an `RtPublish` cell.
+/// set of atomics rather than an `ArcLend` cell.
 ///
 /// Lives behind a `Box` owned by the `AuInstance` so its address is stable for
 /// the `hostUserData` pointer the AU retains — the same pinning discipline

@@ -236,7 +236,19 @@ the interpreter.
   installed cell, so an install or clear mid-block retires it for the control
   side, whether or not the host kept a clone. Its read is nested, one slot in
   each of two cells. The plugin tail, which no audio thread reads, is a
-  `Mutex`. `arc-swap` is now only `tutti-types`' bench baseline.
+  `Mutex`. `arc-swap` is now only `tutti-types`' bench baseline (since the
+  move below, `arc-lend`'s).
+- **Landed (arc-lend E1): the cell is its own crate.** `RtPublish`/`RtRef`
+  are `arc_lend::{ArcLend, Loan}` in `crates/arc-lend`, which names nothing
+  of tutti's and is re-exported as `tutti_types::{ArcLend, Loan}`; `read()`
+  is `lend()`. The protocol is unchanged (the loom model, its mutation
+  record, the stress test and the bench moved with it, to
+  `arc-lend/tests/loom.rs` and `arc-lend/benches/lend.rs`). The slot and
+  epoch counts became const parameters with the old values as defaults
+  (`ArcLend<T, SLOTS = 8, EPOCHS = 4>`), and the debug assertion at 1024
+  retired values went: a library does not assert on its host's behaviour,
+  and `retired_len()`/`epoch_stalls()` are what a host polls. The paths in
+  the bullet above are as they were when #15 landed.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
   tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is
@@ -3171,7 +3183,8 @@ Decisions:
    run exhaustively (`tests/task_graph_loom.rs`, ~8 minutes at
    `LOOM_MAX_PREEMPTIONS=3`). Revisit if profiling shows the head's cache
    line contended.
-2. **The unsafe goes in `tutti-types`**, next to `RtPublish`, where the loom
+2. **The unsafe goes in `tutti-types`**, next to `RtPublish` (which has
+   since moved to its own crate, `arc-lend`; these three stay), where the loom
    infrastructure is, and not in `tutti-graph` or `tutti-core`: the three
    primitives are generic (no graph types), and `tutti-graph`'s dependency
    limits did not change.

@@ -37,8 +37,8 @@ use tutti_types::{
     reason = "resolution IS the assertion — nothing uses these"
 )]
 use tutti_types::prelude::{
-    AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _, Interleaved as _,
-    InterleavedMut as _, MeterMap as _, NoteValue as _, RtPublish as _, RtRef as _, Speaker as _,
+    ArcLend as _, AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _,
+    Interleaved as _, InterleavedMut as _, Loan as _, MeterMap as _, NoteValue as _, Speaker as _,
     StereoPlanes as _, TimeSignature as _,
 };
 #[allow(
@@ -46,8 +46,8 @@ use tutti_types::prelude::{
     reason = "resolution IS the assertion — nothing uses these"
 )]
 use tutti_types::{
-    AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _, Interleaved as _,
-    InterleavedMut as _, MeterMap as _, NoteValue as _, RtPublish as _, RtRef as _, Speaker as _,
+    ArcLend as _, AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _,
+    Interleaved as _, InterleavedMut as _, Loan as _, MeterMap as _, NoteValue as _, Speaker as _,
     StereoPlanes as _, TimeSignature as _,
 };
 

@@ -10,7 +10,7 @@
 //! that cannot fail is worse than no test. Four are unfalsifiable because the
 //! installed AUs never exhibit the distinguishing behaviour; two are
 //! unfalsifiable *in kind*, being races that no sampling schedule can exhaust —
-//! the same reasoning the repo's `RtPublish` rule applies to no-alloc tests.
+//! the same reasoning the repo's `ArcLend` rule applies to no-alloc tests.
 //!
 //! Absent behaviour in the corpus:
 //!

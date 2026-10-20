@@ -13,8 +13,8 @@ use tutti_graph::{
 };
 use tutti_mod::{Clock, ControlProgram, CurveSegment, ProgramTime, Wave, MAX_LANE_INPUTS};
 use tutti_types::{
-    AtomicF32, Beat, Frame, ParamAddr, ParamKey, RangeCell, RtPublish, SamplePosition, Samples,
-    Tail, Unit, UnitParam,
+    ArcLend, AtomicF32, Beat, Frame, ParamAddr, ParamKey, RangeCell, SamplePosition, Samples, Tail,
+    Unit, UnitParam,
 };
 
 use super::lane::segment_shape;
@@ -70,9 +70,9 @@ struct Published {
 
 /// What a lane shares with its [`LaneControls`] and its fork source.
 struct Shared {
-    program: RtPublish<Published>,
+    program: ArcLend<Published>,
     /// The last program published and its generation, for the fork (an
-    /// `RtRef` must not leave the block, doc 014 §4.5) and the next
+    /// `Loan` must not leave the block, doc 014 §4.5) and the next
     /// publish's generation. Control thread only.
     last: Mutex<(u64, Arc<ControlProgram>)>,
     /// Set by [`LaneControls::resync`]: the next block sends at frame 0.
@@ -285,7 +285,7 @@ impl ControlLaneNode {
         native: bool,
     ) -> Self {
         let shared = Shared {
-            program: RtPublish::new(Published {
+            program: ArcLend::new(Published {
                 generation: 0,
                 program: Arc::clone(&program),
             }),
@@ -912,7 +912,7 @@ impl Node for ControlLaneNode {
             return Status::Modified;
         }
         let s = &*self.shared;
-        let published = s.program.read();
+        let published = s.program.lend();
         let (generation, program) = (published.generation, &*published.program);
         let knob = s
             .knob

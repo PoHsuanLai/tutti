@@ -92,7 +92,7 @@ use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
 use crate::graph::{engine_ready, AudioGraphRes, GraphReconcileSystems};
-use tutti_core::RtPublish;
+use tutti_core::ArcLend;
 use tutti_core::Samples;
 
 /// Per-output-channel pre-roll for sources outside the audio graph.
@@ -102,11 +102,11 @@ use tutti_core::Samples;
 /// sends. The sampler holds one of these; a host wanting to display or apply
 /// the figures elsewhere can clone it from the resource.
 ///
-/// Read a channel with `compensation.0.read().get(channel)` (see
-/// [`RtPublish::read`]), which is `None` for a channel past the end of the
+/// Read a channel with `compensation.0.lend().get(channel)` (see
+/// [`ArcLend::lend`]), which is `None` for a channel past the end of the
 /// table. The table is empty until the first plan is sent.
 #[derive(Resource, Clone, Default)]
-pub struct ChannelCompensation(pub Arc<RtPublish<Vec<Samples>>>);
+pub struct ChannelCompensation(pub Arc<ArcLend<Vec<Samples>>>);
 
 /// The graph's total latency, as of the last plan sent to the audio thread.
 ///
@@ -293,7 +293,7 @@ mod tests {
         app.update();
 
         let published = app.world().resource::<ChannelCompensation>();
-        let table = published.0.read();
+        let table = published.0.lend();
         assert_eq!(table.first().copied(), Some(Samples(0)));
         assert_eq!(table.get(1).copied(), Some(eff_lat));
     }
@@ -315,7 +315,7 @@ mod tests {
         assert!(!app.world().resource::<GraphLatency>().is_empty());
 
         // The point: reading it off the table gives the wrong answer.
-        let table = app.world().resource::<ChannelCompensation>().0.read();
+        let table = app.world().resource::<ChannelCompensation>().0.lend();
         assert_eq!(
             table.first().copied(),
             Some(Samples(0)),
@@ -364,7 +364,7 @@ mod tests {
         app.update();
 
         let published = app.world().resource::<ChannelCompensation>();
-        assert_eq!(*published.0.read(), sentinel, "no table published");
+        assert_eq!(*published.0.lend(), sentinel, "no table published");
     }
 
     /// The check reads the edit flag; it never clears it.
@@ -434,7 +434,7 @@ mod tests {
             .resource::<AudioGraphRes>()
             .sent_compensation()
             .expect("the commit sent a plan");
-        let table = app.world().resource::<ChannelCompensation>().0.read();
+        let table = app.world().resource::<ChannelCompensation>().0.lend();
         assert_eq!(&*table, &sent_channels[..], "per-channel pre-roll");
         assert_eq!(
             app.world().resource::<GraphLatency>().0,
@@ -496,7 +496,7 @@ mod tests {
             app.world()
                 .resource::<ChannelCompensation>()
                 .0
-                .read()
+                .lend()
                 .get(1),
             Some(&at_48k),
             "the dry channel pre-rolls by the new figure"

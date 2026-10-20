@@ -17,7 +17,7 @@ use super::slot::{stretch_values_want_filter, stretch_wanted};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tutti_core::{
-    Amplitude, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate, RtPublish,
+    Amplitude, ArcLend, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate,
     SamplePosition, SampleRate, StretchFactor,
 };
 use tutti_graph::ParamSet;
@@ -458,7 +458,7 @@ pub struct VoiceNodeHandle {
 /// so applying every intermediate window in one block ends in the same
 /// state as applying the last, and nothing else rides with it to be ordered
 /// against.
-pub(crate) type PlacementCell = Arc<RtPublish<Option<VoiceWindow>>>;
+pub(crate) type PlacementCell = Arc<ArcLend<Option<VoiceWindow>>>;
 
 impl VoiceNodeHandle {
     /// Moves the voice's timeline window, from the node's next block on.

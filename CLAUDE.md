@@ -56,8 +56,10 @@ serial one.
   the event slots, a unit, a ring or an output except through them or a
   claim: that is what keeps `tutti-graph` `#![forbid(unsafe_code)]`.
 - **New lock-free or `unsafe` runtime structure goes in `tutti-types`**, with
-  a loom model beside `rt_publish_loom.rs` that runs the shipped code, and a
-  mutation record in it.
+  a loom model beside `pos_ring_loom.rs` that runs the shipped code, and a
+  mutation record in it. The one exception is the publish cell, which is its
+  own crate, `crates/arc-lend` (`ArcLend`/`Loan`; its loom model is
+  `arc-lend/tests/loom.rs`). It names nothing of tutti's; keep it that way.
 - **Store-load pairs use `SeqCst` fences**, not `SeqCst` accesses (loom
   models fences exactly; see `rt/job_gate.rs`).
 - A parallel test compares against the **serial render, bit for bit**
@@ -175,6 +177,8 @@ crates/
   bevy-tutti     Bevy umbrella + adapter; the only Bevy-mandatory member.
   tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`).
+  arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
+                 no dependencies, `publish = false`, re-exported by tutti-types.
   core/          tutti-core (graph runtime, transport, metering, PDC)
                  tutti-types (value vocabulary, units, io edges, rt primitives, Topology)
                  tutti-cpal (device),
@@ -190,7 +194,9 @@ crates/
   vendor/        rustysynth-tutti, tutti-clap-test-plugin
 ```
 
-- `tutti-types` names no other tutti crate.
+- `tutti-types` names no other tutti crate. Its one workspace dependency is
+  `arc-lend`, which is not a tutti crate: it depends on nothing at all, and
+  nothing audio-specific belongs in it.
 - `tutti-graph` depends on no tutti crate but `tutti-types` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
@@ -230,27 +236,29 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
 ## Publishing to the audio thread (MANDATORY)
 
 Non-scalar state handed to the audio thread goes through
-`tutti_types::{RtPublish, RtRef}`. Scalars use `Param<U>`.
+`tutti_types::{ArcLend, Loan}` (the `arc-lend` crate, re-exported). Scalars
+use `Param<U>`.
 
 - **The audio thread never holds an owning handle to published state, and
-  never frees it.** `read()` returns a `!Send` borrow and is wait-free;
-  `publish()` is control-thread only and frees retired values there. This is
-  structural (hazard slots, overflow epochs, and a retirement list only the
-  publisher touches),
-  and the loom model `tutti-types/tests/rt_publish_loom.rs` checks it.
-- Read once per block, never per sample. Never park an `RtRef` across blocks
-  (a parked one delays the free of what it holds). Avoid nested reads of one
-  cell: past the cell's slot count they stay safe but pin every value current during
-  their overflow epoch, not just the one they hold.
-- **The design's limit:** once parked overflow `RtRef`s occupy every overflow
+  never frees it.** `lend()` returns a `Loan`, a `!Send` borrow, and is
+  wait-free; `publish()` is control-thread only and frees retired values
+  there. This is structural (hazard slots, overflow epochs, and a retirement
+  list only the publisher touches), and the loom model
+  `arc-lend/tests/loom.rs` checks it.
+- Lend once per block, never per sample. Never park a `Loan` across blocks
+  (a parked one delays the free of what it holds). Avoid nested lends of one
+  cell: past the cell's slot count they stay safe but pin every value current
+  during their overflow epoch, not just the one they hold.
+- **The design's limit:** once parked overflow `Loan`s occupy every overflow
   epoch, each publish's retired value stays pinned and memory grows until they
   drop. It is unreachable if the rule above is kept. A host can poll
-  `retired_len()` and `epoch_stalls()`; debug builds assert at 1024.
+  `retired_len()` and `epoch_stalls()`; the cell itself neither asserts nor
+  logs (it is a library, and the policy is the host's).
 - Never `publish` from the audio thread.
 - Do not try to prove the race with a no-alloc test. The loom model and miri
   cover it; a single-threaded gate can only pin the reader's code path.
-- Nullable hot-swap slots go through `RtPublish` too, as
-  `RtPublish<Option<Arc<_>>>` (the plugin nodes' `PluginMeter`). Nothing the
+- Nullable hot-swap slots go through `ArcLend` too, as
+  `ArcLend<Option<Arc<_>>>` (the plugin nodes' `PluginMeter`). Nothing the
   audio thread reads is an `ArcSwap`: a store settles a held guard's debt
   into a strong count, and the guard's drop can then free on the audio thread.
   Control-thread-only cells stay plain. (The sampler's `SharedReader` is a

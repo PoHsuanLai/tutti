@@ -146,7 +146,7 @@ pub(crate) struct FadeRecord {
 }
 
 /// What the reader needs to read the ring, published by the butler
-/// (`RtPublish`, read once per block): the arrangement before and from a
+/// (`ArcLend`, read once per block): the arrangement before and from a
 /// switch point, and the fade across it.
 #[derive(Debug)]
 pub(crate) struct RingMap {

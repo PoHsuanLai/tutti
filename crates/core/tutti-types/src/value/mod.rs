@@ -1,10 +1,10 @@
 //! Value vocabulary — what a parameter *is* and how it's carried.
 //!
 //! - [`units`] — the [`Unit`] marker trait + the measurement-unit newtypes
-//!   (`Bpm`, `Hz`, `Db`, `Semitones`, …) plus [`AtomicSamplePosition`].
-//!   "What kind of value this is."
+//!   (`Bpm`, `Hz`, `Db`, `Semitones`, …). "What kind of value this is."
 //! - [`param`] — [`Param`], a lock-free atomic cell holding a `Unit` value,
-//!   shareable with the audio thread (load / store / handle).
+//!   shareable with the audio thread (load / store / handle), and
+//!   [`Param64`], its `f64` neighbour.
 //! - [`frame`] — [`Frame`], an absolute frame position (a count's affine
 //!   partner), and [`At`], when a scheduled command takes effect.
 //! - [`frame_clock`] — [`FrameClock`], the playhead as a frame count, and
@@ -44,7 +44,7 @@ pub use latency::Latency;
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
 pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};
-pub use param::Param;
+pub use param::{Param, Param64};
 pub use play::PlayReading;
 pub use samples::Samples;
 pub use tail::Tail;
@@ -53,9 +53,8 @@ pub use timeline::{
 };
 pub use unit_param::{ParamAddr, ParamKey, UnitParam, UnitParamOutOfRange};
 pub use units::{
-    Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,
-    Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz,
-    Mix, Pan, Phase, PhaseIncrement, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition,
-    SampleRate, Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Velocity,
-    Q,
+    Amplitude, ArcDegrees, Azimuth, Beat, BeatDuration, Bpm, Cents, CompressionRatio, Confidence,
+    Correlation, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Pan, Phase, PhaseIncrement,
+    PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, SampleRate, Seconds, Semitones,
+    Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Velocity, Q,
 };

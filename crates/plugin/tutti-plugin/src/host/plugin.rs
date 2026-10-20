@@ -140,12 +140,10 @@ impl Plugin {
         let sample_rate = sample_rate.into();
 
         #[cfg(feature = "vst2")]
-        if matches!(format_from_path(path), Some(PluginFormat::Vst2)) {
+        if Self::opens_in_process(path) {
             let (client, handle) = crate::format::vst2_in_process::load_client(path, sample_rate)?;
             return Ok(Self::from_in_process_vst2(client, handle));
         }
-        let _ = format_from_path; // keep the import live without the vst2 feature
-        let _ = PluginFormat::Vst2;
 
         let (client, handle) =
             PluginClient::new(audio.to_bridge_config(), path.to_path_buf(), sample_rate).map(
@@ -155,6 +153,15 @@ impl Plugin {
                 },
             )?;
         Ok(Self::from_subprocess(client, handle))
+    }
+
+    /// Whether [`open_with`](Self::open_with) loads `path` in the host
+    /// process: a VST2 plugin, with the `vst2` feature. Such a load (and the
+    /// instance's drop) is confined to the main thread; every other format
+    /// loads in a `plugin-server` subprocess, from any thread.
+    pub fn opens_in_process(path: impl AsRef<Path>) -> bool {
+        cfg!(feature = "vst2")
+            && matches!(format_from_path(path.as_ref()), Some(PluginFormat::Vst2))
     }
 
     /// Wrap a subprocess client.

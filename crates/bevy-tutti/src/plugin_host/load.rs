@@ -280,7 +280,14 @@ pub fn plugin_load_start(
 /// the engine tears down still has to be reported rather than left hanging —
 /// the same reason `poll_exports` is ungated while `start_exports` is not. The
 /// graph write is guarded on its own resource instead.
+///
+/// **Pinned to the main thread** ([`NonSendMarker`](bevy_ecs::system::NonSendMarker)):
+/// `Session::add_plugin` is a main-thread call (it asserts it). It opens an
+/// in-process VST2 plugin there, which VST2 confines to the main thread, and
+/// it edits the graph whose collect may drop a plugin with an editor. A
+/// multi-threaded executor otherwise runs this system on a pool thread.
 pub fn plugin_load_promote(
+    _main: bevy_ecs::system::NonSendMarker,
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     mut pending: Query<(Entity, &mut PendingPlugin)>,

@@ -203,7 +203,14 @@ pub fn plugin_health_poll(
 /// previous snapshot, in the session and here. Runs before
 /// [`plugin_health_poll`], so a job finished during the frame is landed
 /// before the phase considers the interval again.
+///
+/// Pinned to the main thread ([`NonSendMarker`](bevy_ecs::system::NonSendMarker))
+/// with the rest of the session's plugin calls: the record it writes is the
+/// one `Phase::Plugins` reads on the main thread, and a landed job drops the
+/// handle clone it carried here, which for the last handle of a plugin is
+/// its teardown.
 pub fn plugin_state_snapshot(
+    _main: bevy_ecs::system::NonSendMarker,
     graph: Option<ResMut<AudioGraphRes>>,
     mut plugins: Query<(&AudioNode, &mut PluginHealth)>,
 ) {

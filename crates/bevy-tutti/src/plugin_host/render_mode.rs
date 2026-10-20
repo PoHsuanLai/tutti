@@ -26,7 +26,16 @@ use crate::graph::AudioGraphRes;
 /// systems when [`ExportPlugin`](crate::export::ExportPlugin) is, and
 /// ungated on the engine: a render in flight when audio stops still has to
 /// put its plugins back.
-pub fn plugin_render_mode(graph: Option<ResMut<AudioGraphRes>>) {
+///
+/// **Pinned to the main thread** ([`NonSendMarker`](bevy_ecs::system::NonSendMarker))
+/// with the session's other plugin calls, which design 015 §4.2 makes
+/// main-thread calls. No format needs it for the announcement today (each
+/// carries it on a lock or over IPC); the pin keeps a format that does from
+/// being called on a pool thread.
+pub fn plugin_render_mode(
+    _main: bevy_ecs::system::NonSendMarker,
+    graph: Option<ResMut<AudioGraphRes>>,
+) {
     if let Some(mut graph) = graph {
         let _ = graph
             .bypass_change_detection()

@@ -107,7 +107,24 @@ impl PluginLoad {
     /// Opens the plugin, restores the request's state, and (`modulation`)
     /// reads its parameter values, after the state: those are what a
     /// modulation lane's knob starts at. Any thread; it blocks.
+    ///
+    /// A plugin hosted in process (`Plugin::opens_in_process`: a VST2
+    /// plugin, with `vst2`) is not opened here: VST2 confines its load to
+    /// the main thread, so the job returns it unopened and
+    /// [`Session::add_plugin`] opens it there (a library load and an
+    /// instance's init, with no subprocess to wait for).
     pub fn run(self) -> PluginLoaded {
+        let path = self.path.clone();
+        let opened = if Plugin::opens_in_process(&self.path) {
+            Opened::OnMain(self)
+        } else {
+            Opened::Done(self.open())
+        };
+        PluginLoaded { path, opened }
+    }
+
+    /// [`run`](Self::run)'s open, on this thread.
+    fn open(self) -> Open {
         let plugin = Plugin::open_with(&self.config, &self.path, self.rate);
         if let (Ok(plugin), Some(state)) = (&plugin, &self.state) {
             // A refusal does not abort the load: a plugin at its defaults
@@ -126,8 +143,7 @@ impl PluginLoad {
             mirror.land(read.run());
             mirror
         });
-        PluginLoaded {
-            path: self.path,
+        Open {
             plugin,
             #[cfg(feature = "modulation")]
             mirror,
@@ -135,14 +151,28 @@ impl PluginLoad {
     }
 }
 
+/// An opened plugin (or why it did not open) and (`modulation`) its
+/// parameter values.
+struct Open {
+    plugin: Result<Plugin, BridgeError>,
+    #[cfg(feature = "modulation")]
+    mirror: Option<tutti_plugin::PluginParamValues>,
+}
+
+/// What a [`PluginLoad`]'s run did.
+enum Opened {
+    /// Opened (or failed to) on the job's thread.
+    Done(Open),
+    /// Hosted in process: opened by `add_plugin`, on the main thread.
+    OnMain(PluginLoad),
+}
+
 /// A finished [`PluginLoad`]: the plugin, or why it did not load. `Send`;
 /// [`Session::add_plugin`] takes it on the control thread.
 #[must_use = "a loaded plugin goes into the graph with `Session::add_plugin`"]
 pub struct PluginLoaded {
     path: PathBuf,
-    plugin: Result<Plugin, BridgeError>,
-    #[cfg(feature = "modulation")]
-    mirror: Option<tutti_plugin::PluginParamValues>,
+    opened: Opened,
 }
 
 impl PluginLoaded {
@@ -151,9 +181,14 @@ impl PluginLoaded {
         &self.path
     }
 
-    /// Why the load failed, if it did.
+    /// Why the load failed, if it did. `None` for a plugin hosted in
+    /// process too, which [`Session::add_plugin`] opens: its error is
+    /// `add_plugin`'s.
     pub fn error(&self) -> Option<&BridgeError> {
-        self.plugin.as_ref().err()
+        match &self.opened {
+            Opened::Done(open) => open.plugin.as_ref().err(),
+            Opened::OnMain(_) => None,
+        }
     }
 }
 
@@ -372,8 +407,9 @@ impl Session {
     /// metronome's (time signature and bar), and its health, latency,
     /// parameter mirror and render mode are the session's from here
     /// ([`HostedPlugin`]). An out-of-process plugin is bound as it goes in
-    /// (`PluginClient::bind`); an in-process VST2 plugin goes in as its own
-    /// node.
+    /// (`PluginClient::bind`); an in-process VST2 plugin is opened here (its
+    /// job left it unopened: VST2 confines the load to the main thread) and
+    /// goes in as its own node.
     ///
     /// A main-thread call (design 015 §4.2).
     ///
@@ -382,7 +418,17 @@ impl Session {
     /// Why the load failed.
     pub fn add_plugin(&mut self, loaded: PluginLoaded) -> Result<AudioNode, BridgeError> {
         crate::main_thread();
-        let plugin = loaded.plugin?;
+        let path = loaded.path;
+        let Open {
+            plugin,
+            #[cfg(feature = "modulation")]
+            mirror,
+        } = match loaded.opened {
+            Opened::Done(open) => open,
+            // A plugin hosted in process opens here, on the main thread.
+            Opened::OnMain(load) => load.open(),
+        };
+        let plugin = plugin?;
         let handle = plugin.handle().clone();
         let meter = self.click_settings.meter_cell();
         let node = match plugin.into_client() {
@@ -402,9 +448,9 @@ impl Session {
         };
         #[cfg(feature = "modulation")]
         if let Some(hosted) = self.graph.plugins.get_mut(&node) {
-            hosted.mirror = loaded.mirror;
+            hosted.mirror = mirror;
         }
-        tracing::info!("plugin '{}' added as {node:?}", loaded.path.display());
+        tracing::info!("plugin '{}' added as {node:?}", path.display());
         Ok(node)
     }
 

@@ -110,6 +110,9 @@ test-features:
     cargo nextest run -p tutti-io --features bevy
     # Threaded task pool, for the tests that need it (see ci.yml).
     cargo nextest run -p bevy-tutti --features full,bevy_tasks/multi_threaded -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
+    # The plugin host on a threaded executor and pool (see ci.yml): every
+    # system that calls a main-thread session API must be pinned.
+    cargo nextest run -p bevy-tutti --features full,plugin,vst2,clap,bevy_tasks/multi_threaded,bevy_ecs/multi_threaded
 
 # JACK, separately: it hard-links libjack at BUILD time, so it needs
 # `libjack-jackd2-dev` (Debian) / `jack-audio-connection-kit-devel` (Fedora)

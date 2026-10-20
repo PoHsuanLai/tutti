@@ -231,6 +231,19 @@ jobs:
           cargo nextest run -p bevy-tutti --features full,bevy_tasks/multi_threaded
           -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
 
+      # The plugin host on a multi-threaded executor and pool, as an app with
+      # Bevy's default features runs it: a system that calls a main-thread
+      # session API (`Session::add_plugin`, the plugin phases, an export's
+      # finish) runs on a pool thread unless it is pinned, and the session's
+      # main-thread assert panics there (a debug build). An in-process VST2
+      # plugin's load is confined to the main thread the same way. The whole
+      # suite, `vst2` included (in process: the CLAP-only server above
+      # suffices).
+      - name: Plugin host on a threaded executor
+        run: >-
+          cargo nextest run -p bevy-tutti
+          --features full,plugin,vst2,clap,bevy_tasks/multi_threaded,bevy_ecs/multi_threaded
+
       # JACK hard-links libjack at build time, so it gets its own step (and its
       # own apt package) rather than joining the list above. `AudioHost::Jack`
       # exists on every platform and answers `Error::HostUnavailable` where it

@@ -52,8 +52,8 @@ fn the_session_publishes_the_tap_its_callback_feeds() {
 /// - the restart hook not calling `publish_sent` → the 48 kHz figures stay
 ///   published → fails;
 /// - the hook not settling the engine and collecting (leaving the second
-///   half to the next update's collect) → the sent plan is still the old
-///   rate's → fails.
+///   half to the next update's collect) → the hook's own check finds the
+///   re-prepare still pending and the restart is refused → fails.
 #[test]
 fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
     let (driver, old) = ManualStreamDriver::new();

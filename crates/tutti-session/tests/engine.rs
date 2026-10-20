@@ -127,8 +127,9 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
 ///   onsets land on block starts and move;
 /// - the click's volume at 0.99 → the digest moves.
 ///
-/// Mutation (run here): `SessionBuilder::parts` building the transport at
-/// `SampleRate::DEFAULT` → the beat steps at 44.1 kHz and the onsets move.
+/// Mutation (run here): `SessionBuilder::parts` building the click with
+/// its own `ClickSettings` (not the session's) → the settings the test sets
+/// reach no click, which stays silent → fails.
 #[test]
 fn the_click_sounds_on_every_beat_across_the_seek() {
     let frames = 3 * RATE as usize;

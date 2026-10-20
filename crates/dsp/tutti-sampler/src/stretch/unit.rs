@@ -12,8 +12,7 @@ use tutti_analysis::StftGeometry;
 use super::vocoder::Vocoder;
 use super::{FftSize, MAX_BUFFER_SIZE};
 use tutti_core::{
-    AtomicF32, Cents, ChannelLayout, Ordering, ReadRate, RtScratch, SampleRate, Samples,
-    StretchFactor, Tail,
+    AtomicF32, Cents, ChannelLayout, Ordering, ReadRate, SampleRate, Samples, StretchFactor, Tail,
 };
 
 /// Real-time time-stretching and pitch-shifting unit.
@@ -54,8 +53,7 @@ use tutti_core::{
 ///
 /// # Channels
 ///
-/// One vocoder per channel, plus one in/out
-/// [`RtScratch`](tutti_core::RtScratch) pair each. The vocoders are
+/// One vocoder per channel, plus one in/out block-scratch pair each. The vocoders are
 /// **independent** — there is no phase locking between them, so a correlated
 /// source can drift channel-to-channel. Fixing that is a separate question from
 /// width.
@@ -93,11 +91,13 @@ pub(super) struct Channels {
     /// `process`'s per-block working buffers, one pair per channel. Carry
     /// nothing between blocks: `process` overwrites `scratch_in` from its
     /// input and clears `scratch_out` before draining into it.
-    pub(super) scratch_in: Vec<RtScratch<f32>>,
-    pub(super) scratch_out: Vec<RtScratch<f32>>,
+    /// Each is a `Box<[f32]>` of `MAX_BUFFER_SIZE`, fixed here; `process`
+    /// slices a run of it and splits a longer block into runs.
+    pub(super) scratch_in: Vec<Box<[f32]>>,
+    pub(super) scratch_out: Vec<Box<[f32]>>,
 }
 
-// Hand-rolled: holds non-`Debug` vocoders and `RtScratch` buffers. Print the
+// Hand-rolled: holds non-`Debug` vocoders and block scratch buffers. Print the
 // live stretch/pitch atomics and the enabled flag.
 impl std::fmt::Debug for Unit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -173,7 +173,7 @@ impl Unit {
         let n = vocoders.len();
         let scratch = || {
             (0..n)
-                .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
+                .map(|_| vec![0.0f32; MAX_BUFFER_SIZE].into_boxed_slice())
                 .collect::<Vec<_>>()
         };
         Self {
@@ -657,14 +657,28 @@ impl Unit {
     /// `output`, as `size` calls of [`tick`](Self::tick) would. Each slice
     /// holds at least `size` frames. Allocation-free.
     ///
+    /// A `size` past the unit's block scratch (8192 frames) is run as
+    /// consecutive runs of at most 8192, exactly as that many `process` calls
+    /// would: every frame is rendered, none truncated.
+    ///
     /// # Panics
     ///
-    /// If a slice of `input` or `output` holds fewer than `size` frames, or if
-    /// `size` exceeds the unit's scratch capacity of 8192 frames.
+    /// If a slice of `input` or `output` holds fewer than `size` frames.
     pub fn process(&mut self, size: usize, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        // `size` past MAX_BUFFER_SIZE is clamped by `RtScratch::active`; the
-        // fixed capacity makes a per-block reallocation impossible.
-        //
+        // The scratch is fixed at MAX_BUFFER_SIZE so a block can never
+        // reallocate it; a longer block is split here rather than clamped,
+        // which would leave the tail of `output` unwritten.
+        let mut at = 0;
+        while at < size {
+            let run = (size - at).min(MAX_BUFFER_SIZE);
+            self.process_run(at, run, input, output);
+            at += run;
+        }
+    }
+
+    /// `process` for frames `at..at + size` of each slice, with `size` at
+    /// most the scratch capacity (a larger one panics on the slice).
+    fn process_run(&mut self, at: usize, size: usize, input: &[&[f32]], output: &mut [&mut [f32]]) {
         // One scratch pair per channel (not one flat strided buffer): the
         // vocoder API is per-channel `push`/`pop` over a contiguous run of
         // samples, so channel-major is what it wants. A frame-major buffer
@@ -673,24 +687,20 @@ impl Unit {
         // Stride derived once per block, above the loops.
         let channels = self.stride();
         let in_ch = input.len();
+        let frames = at..at + size;
 
         for (c, s) in self.ch.scratch_in.iter_mut().enumerate() {
-            let buf = s.active(size);
             // Fewer input channels than vocoders: mirror `tick`'s
             // fan-from-channel-0 rather than emitting silence.
             let src_ch = if c < in_ch { c } else { 0 };
-            for (i, b) in buf.iter_mut().enumerate().take(size) {
-                *b = input[src_ch][i];
-            }
+            s[..size].copy_from_slice(&input[src_ch][frames.clone()]);
         }
 
         let out_ch = output.len().min(channels);
 
         if !self.is_processing() {
             for (lane, scratch) in output[..out_ch].iter_mut().zip(&self.ch.scratch_in) {
-                let buf = scratch.active_ref(size);
-                let n = buf.len().min(size);
-                lane[..n].copy_from_slice(&buf[..n]);
+                lane[frames.clone()].copy_from_slice(&scratch[..size]);
             }
             return;
         }
@@ -707,7 +717,7 @@ impl Unit {
             while self.intake_debt >= 1.0 {
                 self.intake_debt -= 1.0;
                 for (c, v) in self.ch.vocoders.iter_mut().enumerate() {
-                    let sample = self.ch.scratch_in[c].active_ref(size)[i];
+                    let sample = self.ch.scratch_in[c][i];
                     v.input.push(&[sample]);
                     v.process(analysis_hop, synthesis_hop);
                 }
@@ -715,14 +725,14 @@ impl Unit {
         }
 
         for c in 0..channels {
-            let out = self.ch.scratch_out[c].active(size);
+            let out = &mut self.ch.scratch_out[c][..size];
             out.fill(0.0);
             let count = self.ch.vocoders[c].output.drain(out);
             let Some(lane) = output[..out_ch].get_mut(c) else {
                 continue;
             };
-            for (i, &s) in out.iter().enumerate().take(size) {
-                lane[i] = if i < count { s } else { 0.0 };
+            for (i, (l, &s)) in lane[frames.clone()].iter_mut().zip(out.iter()).enumerate() {
+                *l = if i < count { s } else { 0.0 };
             }
         }
     }

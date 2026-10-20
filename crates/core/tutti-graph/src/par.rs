@@ -72,7 +72,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 
 use tutti_types::{
-    AudioThread, ClaimTable, Held, Participant, ScopedNoDenormals, SplitMut, SplitRw, TaskGraph,
+    ClaimTable, Held, Participant, RtScope, ScopedNoDenormals, SplitMut, SplitRw, TaskGraph,
 };
 
 use crate::arena::{Arena, Line};
@@ -366,7 +366,7 @@ impl Shared<'_, '_> {
         if w >= self.workers.len() {
             return;
         }
-        let _rt = AudioThread::enter();
+        let _rt = RtScope::enter();
         // Per participant, per block: a plugin on this thread may have
         // cleared it since the last one (doc 013's pitfalls).
         let _ftz = ScopedNoDenormals::new();

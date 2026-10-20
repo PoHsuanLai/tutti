@@ -14,7 +14,7 @@ use tutti_graph::{
     Prepare, Shape, Status, Transport, Ump, Unforkable,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{At, AudioThread, ChannelLayout, NodeKey, Samples};
+use tutti_types::{At, ChannelLayout, NodeKey, RtScope, Samples};
 
 const NODE: NodeKey = NodeKey(1);
 
@@ -142,7 +142,7 @@ struct DropProbe {
 
 impl Drop for DropProbe {
     fn drop(&mut self) {
-        let on_audio = AudioThread::is_current();
+        let on_audio = RtScope::is_inside();
         self.dropped
             .store(if on_audio { 2 } else { 1 }, Ordering::SeqCst);
     }

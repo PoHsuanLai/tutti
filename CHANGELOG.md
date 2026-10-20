@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — RT primitive cleanups: `RtScratch` dropped, `Capped` folded into `RtVec`, `AudioThread` renamed `RtScope`
+
+| Was | Now |
+|---|---|
+| `tutti_types::RtScratch<T>` (also re-exported from `tutti_core`) | removed. Own a `Box<[T]>` sized off the audio thread and slice it at the use site (`&mut buf[..len]`), deciding there what an oversized request does. |
+| `tutti_types::RtScratchOverflow` | removed, with `RtScratch`. |
+| `RtScratch::active` clamping an oversized length in release builds | each former user states its own behaviour: `meter_output` meters the first 8192 frames of an oversized buffer (debug builds still panic); `stretch::Unit::process` renders a block past its 8192-frame scratch as consecutive runs instead of truncating the bypass copy and panicking mid-vocoder; the VBAP panner's scratch is always used whole. |
+| `tutti_types::rt::capped` (crate-private `Capped<T, N>`) | folded into `RtVec`, which now holds its `ArrayVec` and overflow flag itself. `RtVec`'s API is unchanged. |
+| `tutti_types::AudioThread` | `tutti_types::RtScope` |
+| `tutti_types::AudioThreadGuard` | `tutti_types::RtScopeGuard` |
+| `AudioThread::enter()` | `RtScope::enter()` |
+| `AudioThread::is_current()` | `RtScope::is_inside()` |
+| `AudioThread::check_not_current(what)` | `RtScope::check_outside(what)` |
+| `tutti_types::rt::audio_thread` | `tutti_types::rt::scope` |
+
+Migration: rename per the table; `AudioThreadCell` is unchanged. A former
+`RtScratch::new(n)` is `vec![T::default(); n].into_boxed_slice()`;
+`active(len)` / `active_ref(len)` are `&mut buf[..len]` / `&buf[..len]`
+(which panic past the length in every build), `try_active(len)` is
+`buf.get_mut(..len)`, and `capacity()` is `len()`.
+
+`ScopedNoDenormals` stays: the `no_denormals` crate's only API is an
+`unsafe fn` taking a closure, which `tutti-graph`'s
+`#![forbid(unsafe_code)]` cannot call, and it is a `compile_error!` on
+any architecture but x86, x86_64 and aarch64, where `ScopedNoDenormals`
+compiles to nothing (see the PR for the verification).
+
 ### Changed — design 015 PR 7: rules, gates and a pinned toolchain
 
 - **`scripts/check-adapter.sh`**, run in `just ci` and CI's paths job,

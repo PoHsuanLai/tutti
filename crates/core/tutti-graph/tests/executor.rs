@@ -242,9 +242,9 @@ fn masked_status_reaches_the_next_nodes_mask() {
 /// node's `process` panics in a debug build — the executor marks the audio
 /// thread for the whole block. The probe is the check every control-freed
 /// value in the graph makes (`NodeBox`, a crossfade, a commit):
-/// `AudioThread::check_not_current` from its `Drop`.
+/// `RtScope::check_outside` from its `Drop`.
 ///
-/// Mutation: delete `let _rt = AudioThread::enter();` from
+/// Mutation: delete `let _rt = RtScope::enter();` from
 /// `Executor::process` → the drop is silent → fails.
 #[test]
 #[cfg(debug_assertions)]
@@ -253,7 +253,7 @@ fn freeing_a_control_freed_value_inside_process_panics_in_debug() {
     struct ControlFreed(#[allow(dead_code, reason = "held only to be freed")] Vec<f32>);
     impl Drop for ControlFreed {
         fn drop(&mut self) {
-            tutti_types::AudioThread::check_not_current("a probe buffer");
+            tutti_types::RtScope::check_outside("a probe buffer");
         }
     }
     struct Freer(Option<ControlFreed>);

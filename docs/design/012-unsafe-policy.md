@@ -25,18 +25,27 @@ question is the other 5%.
 
 ## The non-FFI `unsafe`, in full
 
-There are seven sites (there were eight until design doc 013 Phase 5 deleted
-`tutti-node` and its planar buffers). Each exists because a safe construct would have cost
-something on the audio thread (or, for the last, because an invariant the
-type system cannot see must be stated at the call), and each is named here
-so the list can be checked against the tree.
+There are five sites: the five code bullets below. (Earlier revisions said
+eight, then seven, counting the prose-only last bullet too; design doc 013
+Phase 5 deleted `tutti-node` and its planar buffers, and #116 made
+`Engine::settle_graph` safe.) Each exists because a safe construct would have
+cost something on the audio thread, and each is named here so the list can
+be checked against the tree.
 
 - **`tutti-types/src/rt/cell.rs`** — `AudioThreadCell`: an `UnsafeCell` plus
-  `unsafe impl Send`/`Sync`, with a `#[cfg(debug_assertions)]` borrow check.
-  The RT-safe alternative to `RefCell`, which would pay a counter per access.
-  Note its `reset_owner` is a **no-op** and always has been; the cell pins no
-  owner thread, and three doc comments that claimed otherwise were corrected
-  after a mutation test found the call could be deleted with no effect.
+  `unsafe impl Sync`, with a borrow check in every build: one atomic word,
+  a writer bit plus a reader count, taken by a compare-exchange per borrow
+  and released by its guard's drop. Any number of shared borrows (`borrow`,
+  `try_borrow`, which need `T: Sync`) or one exclusive borrow (`borrow_mut`,
+  `try_borrow_mut`); a conflicting borrow panics, or its `try_` form returns
+  `None`, instead of aliasing. The word is what makes the `Sync` true; until
+  the change that made it unconditional it was `#[cfg(debug_assertions)]`,
+  and safe code sharing a cell (`tutti_core::MotionFsm::drain` on two
+  threads) could make two `&mut T` in release. The audio thread and the
+  VST3 COM entry points take the `try_` forms, so a conflict there is a
+  skipped step or a failure code, never a panic. The RT-safe alternative to
+  a `Mutex`: the check never waits. Its `loom` model is `tests/cell_loom.rs`. (Its `reset_owner`,
+  a no-op that pinned no owner thread, is deleted.)
 - **`tutti-types/src/rt/publish.rs`** — `RtPublish`: an `AtomicPtr` holding
   an `Arc::into_raw` pointer, reclaimed with `Arc::from_raw` by `publish` and
   `Drop`, and dereferenced by `RtRef` under a hazard-slot protocol. The safe
@@ -53,21 +62,16 @@ so the list can be checked against the tree.
 - **`tutti-cpal/src/driver_seam.rs`** — `unsafe impl Send for CpalStream`.
   cpal's stream handle is not `Send` on every backend; the driver owns it and
   never shares it, which is what makes the claim true.
-- **`tutti-core/src/engine.rs`** — `unsafe fn Engine::settle_graph`, and
-  its one call, in **`tutti-cpal/src/driver.rs`**'s `Stopped::settle_graph`.
-  It contains no unsafe operation: the `unsafe` is a *contract*. It borrows
-  the executor and the transport schedule the audio thread owns, from the
+- **`tutti-core/src/engine.rs`** — no longer a site. `Engine::settle_graph`
+  was an `unsafe fn` whose `unsafe` was a *contract*: it borrows the
+  executor and the transport schedule the audio thread owns, from the
   control side, so a device restart can finish a graph re-prepare before the
-  first block (doc 013, PR 13). Those live in `AudioThreadCell`s, whose
-  concurrent-borrow check is debug-only, so a safe `pub fn` would have let a
-  host race a running callback in release with no diagnostic. The caller
-  must guarantee no callback runs for the duration; `Stopped` — a token
-  constructible only inside `TuttiDriver`'s restart, after the old stream
-  is dropped and before the new one starts — is the safe way in, and its
-  `SAFETY:` comment argues the invariant (including the one part no type
-  checks: a host must not render the callback state by hand besides the
-  driver, which `TuttiDriver::from_parts` states). Nothing for miri to
-  check: the race is the hazard, and the body is safe code.
+  first block (doc 013, PR 13), and the cells holding them checked a
+  concurrent borrow only in debug builds. With the check always on, a call
+  racing a running callback panics rather than racing, so it is a safe
+  `pub fn` that documents the panic. `Stopped` (a token constructible only
+  inside `TuttiDriver`'s restart, after the old stream is dropped and before
+  the new one starts) is still the way in that cannot panic.
 - **`tutti-polysynth`, `tutti-analysis`** — mentions in prose only, no
   `unsafe` code.
 
@@ -87,12 +91,14 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
    `unsafe impl`, everything else safe around it. A crate with `unsafe`
    scattered across ten files has ten things to re-verify on every change.
 3. **A safety argument that depends on a *property* must be checked where the
-   property lives.** `AudioThreadCell` is the cautionary case: its debug check
-   detects a concurrent borrow, not a foreign thread, and the surrounding docs
-   drifted into claiming the stronger thing. If the invariant is not
-   mechanically checked, say so at the type.
+   property lives.** `AudioThreadCell` is the cautionary case, twice: its
+   check detects a concurrent borrow, not a foreign thread, and the
+   surrounding docs drifted into claiming the stronger thing; and the check
+   was debug-only, so the `Sync` it justified held only in debug builds. A
+   safe API whose soundness rests on a check keeps the check in every
+   build.
 4. **New non-FFI `unsafe` is a design question, not an implementation
-   detail.** Eight sites is small enough to review one at a time; that is worth
+   detail.** Five sites is small enough to review one at a time; that is worth
    keeping true. Prefer the safe construct and measure before concluding it is
    too slow — the repo's rule is to check the constraint before designing
    around it.

@@ -56,8 +56,9 @@ impl Stopped<'_> {
     /// block at the new rate renders the re-prepared graph instead of the
     /// silent block a re-prepare otherwise costs.
     pub fn settle_graph(&self) -> bool {
-        // SAFETY: `Engine::settle_graph` needs no callback running on this
-        // engine. A `Stopped` is constructed only in
+        // `Engine::settle_graph` panics if a callback renders this engine at
+        // the same moment (the engine's cells refuse the second borrow), and
+        // none can: a `Stopped` is constructed only in
         // `TuttiDriver::rerate_or_restore` (its field is private to this
         // module), which only `restart_with` and `restart_on` call, after
         // `AudioEngine::stop` has dropped the running stream and before
@@ -69,7 +70,7 @@ impl Stopped<'_> {
         // same `AudioCallbackState` by hand (`process_audio` on a clone of
         // the `Arc` it handed `from_parts`) during a restart; `from_parts`
         // documents that the driver's streams are the state's only renderer.
-        unsafe { self.state.engine.settle_graph() }
+        self.state.engine.settle_graph()
     }
 }
 
@@ -211,7 +212,6 @@ impl TuttiDriver {
         rerate: impl FnOnce(&crate::OutputSpec, &Stopped<'_>) -> core::result::Result<(), E>,
     ) -> core::result::Result<(), E> {
         self.audio_engine.stop();
-        self.callback_state.reset_owners();
         self.audio_engine.select_device(device.into());
         let old = self.audio_engine.spec().clone();
         let device = self.audio_engine.resolve()?;
@@ -245,7 +245,6 @@ impl TuttiDriver {
         D::Running: 'static,
     {
         self.audio_engine.stop();
-        self.callback_state.reset_owners();
         let old = self.audio_engine.spec().clone();
         self.audio_engine.set_spec(spec);
         self.rerate_or_restore(old, rerate)?;
@@ -322,7 +321,6 @@ impl TuttiDriver {
         D::Running: 'static,
     {
         self.audio_engine.stop();
-        self.callback_state.reset_owners();
         self.audio_engine
             .start_with(self.callback_state.clone(), driver)
     }

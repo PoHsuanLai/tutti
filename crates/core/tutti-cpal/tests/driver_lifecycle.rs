@@ -13,7 +13,6 @@
 //!
 //! | mutation | fails |
 //! |---|---|
-//! | delete `reset_owners()` from `TuttiDriver::start_with` | **nothing** — see `a_restarted_stream_renders_from_a_different_thread` |
 //! | `is_running` → `self.running.is_some()` | `a_disconnect_stops_the_engine_reporting_healthy` |
 //! | restore `\|_err\| {}` (drop `faults.record`) | `a_backend_fault_reaches_the_handle_taken_before_it` |
 //! | drop `faults.clear()` from `start_with` | `a_restart_clears_the_fault_state` |
@@ -121,10 +120,10 @@ fn the_engine_reports_the_spec_it_was_opened_at() {
 /// This is the property a host actually depends on: CPAL gives a restarted
 /// stream a *different* backend thread, and the RT cells must tolerate that.
 ///
-/// It does not pin `TuttiDriver`'s `reset_owners` call: every `reset_owner`
-/// in the chain bottoms out in `AudioThreadCell::reset_owner`, which is a
-/// no-op — the cell's debug check detects a *concurrent borrow*, not a
-/// foreign thread — so deleting that call changes nothing.
+/// There is nothing to reset between the two threads: the engine's cells
+/// check for a *concurrent* borrow, not a foreign thread, so the old
+/// `reset_owners` call (a no-op a mutation could delete with no effect) is
+/// gone.
 #[test]
 fn a_restarted_stream_renders_from_a_different_thread() {
     let (_t, state) = rolling_state(2);

@@ -17,7 +17,7 @@
 
 use vst3::Steinberg::{
     kInvalidArgument, kResultFalse, kResultOk, tresult,
-    Vst::{IParamValueQueue, IParamValueQueueTrait},
+    Vst::{kNoParamId, IParamValueQueue, IParamValueQueueTrait},
 };
 use vst3::{Class, ComWrapper};
 
@@ -120,10 +120,26 @@ impl ParamValueQueueImpl {
     }
 
     /// Empties this queue for `param_id`, keeping its point storage. For a
-    /// pooled queue handed to the plugin through `addParameterData`.
-    pub fn reset(&self, param_id: u32) {
-        *self.param_id.borrow_mut() = param_id;
-        self.points.borrow_mut().clear();
+    /// pooled queue handed to the plugin through `addParameterData`, so it
+    /// is a COM entry point's: `false`, touching nothing, if the plugin is
+    /// reading or writing this queue on another thread at the same moment.
+    pub(crate) fn try_reset(&self, param_id: u32) -> bool {
+        let (Some(mut id), Some(mut points)) =
+            (self.param_id.try_borrow_mut(), self.points.try_borrow_mut())
+        else {
+            return false;
+        };
+        *id = param_id;
+        points.clear();
+        true
+    }
+
+    /// Counts one dropped point, from a COM entry point: skipped (the point
+    /// goes uncounted) if the host is reading the count at that moment.
+    fn count_dropped(&self) {
+        if let Some(mut dropped) = self.dropped.try_borrow_mut() {
+            *dropped += 1;
+        }
     }
 
     /// Points the plugin added past this queue's room, since it was built.
@@ -143,23 +159,39 @@ impl ParamValueQueueImpl {
         *self.param_id.borrow()
     }
 
+    /// [`param_id`](Self::param_id) for a COM entry point: `None` while
+    /// another thread is resetting this queue.
+    pub(crate) fn try_param_id(&self) -> Option<u32> {
+        self.param_id.try_borrow().map(|id| *id)
+    }
+
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.points.borrow().len()
     }
 }
 
+/// Every entry point takes its borrow with `try_`: a plugin whose worker
+/// threads read this queue during `process` share the borrow, and one that
+/// reads it while another of its threads writes it gets the method's failure
+/// value, where a panicking borrow would unwind into the plugin's C++ frame
+/// and abort the process.
 impl IParamValueQueueTrait for ParamValueQueueImpl {
+    /// `kNoParamId` while another thread is resetting the queue.
     unsafe fn getParameterId(&self) -> u32 {
-        *self.param_id.borrow()
+        self.try_param_id().unwrap_or(kNoParamId)
     }
 
+    /// Zero while another thread is writing the queue.
     unsafe fn getPointCount(&self) -> i32 {
-        self.points.borrow().len() as i32
+        self.points.try_borrow().map_or(0, |p| p.len() as i32)
     }
 
+    /// `kResultFalse` while another thread is writing the queue.
     unsafe fn getPoint(&self, index: i32, sample_offset: *mut i32, value: *mut f64) -> tresult {
-        let points = self.points.borrow();
+        let Some(points) = self.points.try_borrow() else {
+            return kResultFalse;
+        };
         if index < 0 || index >= points.len() as i32 {
             return kInvalidArgument;
         }
@@ -181,8 +213,14 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
     /// is lost, counted
     /// ([`ParameterChangesImpl::points_dropped`](super::ParameterChangesImpl::points_dropped)).
     /// Never allocates: the plugin calls this on the audio thread.
+    ///
+    /// While another thread reads or writes the queue the point is dropped,
+    /// `kResultFalse`, and counted when the count is free too.
     unsafe fn addPoint(&self, sample_offset: i32, value: f64, index: *mut i32) -> tresult {
-        let mut points = self.points.borrow_mut();
+        let Some(mut points) = self.points.try_borrow_mut() else {
+            self.count_dropped();
+            return kResultFalse;
+        };
         let point = ParameterPoint {
             sample_offset,
             // Inbound across the ABI: the *plugin* calls this, so the value is
@@ -193,7 +231,7 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
         let at = match points.try_push(point) {
             Ok(()) => Some(points.len() - 1),
             Err(point) => {
-                *self.dropped.borrow_mut() += 1;
+                self.count_dropped();
                 points.replace_latest(point)
             }
         };
@@ -209,6 +247,62 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plugin threads reading a queue at once all get it.
+    ///
+    /// Mutation (run): `AudioThreadCell::try_acquire_reader` exclusive → the
+    /// COM reads answer 0 / `kResultFalse` → fails.
+    #[test]
+    fn concurrent_reads_of_a_queue_both_succeed() {
+        use std::sync::Barrier;
+        let queue = ParamValueQueueImpl::with_room(9, MIN_POINT_ROOM);
+        queue.refill_from_queue(&queue_with_points(2));
+        let (taken, done) = (Barrier::new(2), Barrier::new(2));
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let read = queue.points.borrow();
+                taken.wait();
+                done.wait();
+                assert_eq!(read.len(), 2);
+            });
+            taken.wait();
+            let ptr = queue.to_com_ptr::<IParamValueQueue>().unwrap();
+            let (mut offset, mut value) = (0, 0.0);
+            let count = unsafe { ptr.getPointCount() };
+            let got = unsafe { ptr.getPoint(1, &mut offset, &mut value) };
+            done.wait();
+            assert_eq!(count, 2, "a second reader must see the queue");
+            assert_eq!((got, offset), (kResultOk, 1));
+        });
+    }
+
+    /// A read while the queue is being written answers with the method's
+    /// failure value instead of panicking into the plugin.
+    ///
+    /// Mutation (run): `getPoint` back on a panicking `borrow` → the panic
+    /// cannot unwind out of the COM thunk, and the test process aborts
+    /// (SIGABRT): the plugin-server crash this guards against.
+    #[test]
+    fn a_read_during_a_write_fails_at_the_com_level() {
+        let queue = ParamValueQueueImpl::with_room(9, MIN_POINT_ROOM);
+        queue.refill_from_queue(&queue_with_points(2));
+        let ptr = queue.to_com_ptr::<IParamValueQueue>().unwrap();
+        let (mut offset, mut value) = (0, 0.0);
+        {
+            let _writing = queue.points.borrow_mut();
+            let _renaming = queue.param_id.borrow_mut();
+            assert_eq!(unsafe { ptr.getPointCount() }, 0);
+            assert_eq!(
+                unsafe { ptr.getPoint(0, &mut offset, &mut value) },
+                kResultFalse
+            );
+            assert_eq!(unsafe { ptr.getParameterId() }, kNoParamId);
+            assert_eq!(unsafe { ptr.addPoint(5, 0.5, &mut 0) }, kResultFalse);
+        }
+        assert_eq!(unsafe { ptr.getPointCount() }, 2);
+        assert_eq!(unsafe { ptr.getParameterId() }, 42);
+        assert_eq!(queue.points_dropped(), 1, "the refused point is counted");
+    }
 
     fn queue_with_points(count: usize) -> ParameterQueue {
         let mut q = ParameterQueue::with_capacity(ParamAddress::Opaque(42u32.into()), count);

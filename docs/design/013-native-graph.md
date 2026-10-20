@@ -326,7 +326,14 @@ the race. Every type below exists because the audit found the bug it prevents.
 - `AudioThreadCell`, `RtEventBuf`'s `&self` interior mutability and
   `reset_owner`. All three exist so `Arc`-shared state survives
   clone-on-commit. (`RtEventBuf` is deleted: see "Hardware MIDI input
-  ring".) Units owned once by the audio thread only need `&mut self`.
+  ring". `reset_owner`, a no-op, is deleted with `Engine::reset_owners` and
+  `MotionFsm::reset_owner`. `AudioThreadCell` stays where `&self` is the
+  shape — the VST3 COM objects, the MIDI port drain, the engine's render
+  state and `MotionFsm`'s FSM behind a `Clone` handle — and now checks its
+  one-borrow contract in release builds too, so safe code sharing one can
+  no longer alias it. Splitting `MotionFsm` into a control handle and an
+  engine-owned audio half, which would make that FSM a plain field, is the
+  follow-up.) Units owned once by the audio thread only need `&mut self`.
 - `Param<U>` as a way to survive the clone. `Param<U>` stays, as the control
   value handed out through `Controls`; the hand-written sharing `Clone` impls
   go.
@@ -2751,7 +2758,7 @@ seeked in that window pre-rolled by old-rate sample counts (`Net` had
 committed and published before the first block). Now tutti-cpal hands a
 restart hook a `Stopped` — the engine, constructible only while the stream
 is stopped — whose `settle_graph` calls `unsafe fn Engine::settle_graph` (tutti-core,
-new): install the editor's commits and follow the rate with the engine's
+new; since made safe, #116): install the editor's commits and follow the rate with the engine's
 clock and the transport's scheduled commands, exactly as the next block's
 settle would. The hook sets the transport's rate (the rescale mark), then
 settles (units out), collects (units re-prepared, resumed plan sent),

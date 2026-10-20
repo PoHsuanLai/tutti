@@ -23,8 +23,11 @@
 //!
 //! The numbers are the headings the output prints.
 //!
-//! 1. **First read on a fresh thread** (adversarial case 3). First, so that no
-//!    earlier section has left arc-swap's process-wide debt nodes behind.
+//! 1. **First read on a fresh thread** (adversarial case 3). In a child
+//!    process of its own: arc-swap's debt nodes are process-wide and never
+//!    freed, so a section that spawns dozens of threads would leave nodes
+//!    that every later `store` in the process walks (`Debt::pay_all`), and
+//!    earlier sections would leave free nodes that hide the allocation.
 //! 2. **Reader latency** per block (one read, sum the payload, drop) at 1, 2,
 //!    4 and N readers (N = cores − 1) against a publisher at 0, 1 kHz,
 //!    100 kHz and flat out, with each reader's allocations, frees and
@@ -440,9 +443,11 @@ fn header(plan: &Plan, cores: &Cores, reader_counts: &[usize]) {
             .join(", ")
     );
     println!(
-        "| run length per cell | {} ms (sections 2, 4) |",
-        plan.run.as_millis()
+        "| run length per cell | {} ms (section 2), {} ms (section 5) |",
+        plan.run.as_millis(),
+        plan.nested_run.as_millis()
     );
+    println!("| load average at start | {} |", load_average());
 
     heading(2, "Contenders");
     println!("| contender | configuration |\n|---|---|");
@@ -622,7 +627,14 @@ fn section_matrix(plan: &Plan, cores: &Cores, reader_counts: &[usize]) {
     for &rate in &rates {
         heading(
             3,
-            &format!("2.{}. Publisher {}", rate_index(rate), rate.label()),
+            &format!(
+                "2.{}. {}",
+                rate_index(rate),
+                match rate {
+                    Rate::Idle => "No publisher".to_owned(),
+                    _ => format!("Publisher at {}", rate.label()),
+                }
+            ),
         );
         println!(
             "| contender | readers | blocks | {TAIL_HEAD} | allocs | frees | values freed on reader |"
@@ -715,6 +727,13 @@ fn held_store<C: Contender>(stores: u64, cores: &Cores) -> HeldRow {
                     sum
                 }));
                 dropped.store(i, Ordering::Release);
+                // Rounds stay in step: without this, a reader whose
+                // publisher is blocked on its lock would run every round
+                // while the publisher waits (an unfair lock lets it re-take
+                // the lock first), and the table would show one long wait
+                // instead of one per round.
+                let far = Instant::now() + Duration::from_secs(10);
+                wait_until(far, || stored.load(Ordering::Acquire) >= i);
             }
             end_counting()
         });
@@ -1134,17 +1153,60 @@ fn main() {
     reader_counts.sort_unstable();
     reader_counts.dedup();
 
+    if std::env::args().any(|a| a == FRESH_ONLY) {
+        section_fresh(&plan);
+        return;
+    }
+
     let began = Instant::now();
     header(&plan, &cores, &reader_counts);
-    section_fresh(&plan);
+    run_fresh_in_child(&plan);
     section_matrix(&plan, &cores, &reader_counts);
     section_held(&plan, &cores);
     section_nested(&plan, &cores, &reader_counts);
     section_retained(&plan, &cores);
     section_publish_cost(&plan, &cores);
     println!(
-        "\n_Finished in {:.0} s. Live payloads at exit: {}._",
+        "\n_Finished in {:.0} s. Load average at the end: {}. Live payloads at exit: {}._",
         began.elapsed().as_secs_f64(),
+        load_average(),
         live_payloads()
     );
+}
+
+/// The flag that makes this binary run section 1 only (in a child process).
+const FRESH_ONLY: &str = "--fresh-thread-section-only";
+
+/// Section 1 in a fresh process, its output printed here. Falls back to
+/// running it in this process (and says so) if the child cannot be spawned.
+fn run_fresh_in_child(plan: &Plan) {
+    let child = std::env::current_exe().and_then(|exe| {
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg(FRESH_ONLY);
+        if plan.smoke {
+            cmd.arg("--test");
+        }
+        cmd.stderr(std::process::Stdio::inherit()).output()
+    });
+    match child {
+        Ok(out) if out.status.success() => {
+            print!("{}", String::from_utf8_lossy(&out.stdout));
+        }
+        other => {
+            println!(
+                "\n_Section 1 could not run in a child process ({:?}); it runs in this one, after no other section._",
+                other.map(|o| o.status)
+            );
+            section_fresh(plan);
+        }
+    }
+}
+
+/// `/proc/loadavg`'s first three fields, or "unknown". The machine is shared;
+/// a load above zero before the run means something else was running.
+fn load_average() -> String {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .map(|s| s.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+        .unwrap_or_else(|| "unknown".into())
 }

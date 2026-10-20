@@ -8,9 +8,10 @@
 //! then host clears them on the next buffer. All of that happens on the
 //! audio thread, so the lock is pure overhead.
 //!
-//! The cell enforces the single-thread discipline with a debug-build
-//! thread-identity assertion and compiles to a bare `UnsafeCell` in
-//! release; see [`tutti_types::AudioThreadCell`] for the wrapper.
+//! The cell checks that discipline on every borrow, in every build, with one
+//! atomic flag (no lock, nothing that waits): a plugin reaching the list from
+//! a second thread mid-borrow panics rather than racing. It checks one borrow
+//! at a time, not one thread; see [`tutti_types::AudioThreadCell`].
 //!
 //! Nothing here allocates after construction. The list holds at most
 //! [`EVENT_CAPACITY`] events, reserved once; an event past it is dropped and

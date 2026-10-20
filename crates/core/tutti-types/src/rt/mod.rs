@@ -19,7 +19,8 @@
 //! preallocated run.
 //!
 //! - [`AudioThreadCell`] — interior mutability with a "one borrow at a time"
-//!   contract, reached through `&self` (e.g. behind an `Arc` or a COM object).
+//!   contract, checked on every borrow in every build, reached through
+//!   `&self` (e.g. behind an `Arc` or a COM object).
 //! - [`RtScratch`] — a fixed-*capacity* scratch buffer with no grow/push API;
 //!   the active length per block is chosen by slicing, not by resizing.
 //! - [`RtVec`] — collect-then-lend through `&mut self`: a capped collection

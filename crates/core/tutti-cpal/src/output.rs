@@ -40,19 +40,6 @@ impl AudioCallbackState {
     pub fn new(engine: Engine, meter: MasterMeter, tap: AudioTap) -> Self {
         Self { engine, meter, tap }
     }
-
-    /// Clears the audio-thread owner checks, ahead of moving the callback to a
-    /// new thread.
-    ///
-    /// Currently a no-op: the engine's audio-thread cells check for concurrent
-    /// borrows, not for a fixed owner thread, so a device switch needs no
-    /// reset. [`TuttiDriver`](crate::TuttiDriver) still calls it on every
-    /// restart; do not write code that depends on it doing something.
-    ///
-    /// Control-thread only, and only while no stream is running.
-    pub fn reset_owners(&self) {
-        self.engine.reset_owners();
-    }
 }
 
 /// Renders one block of the graph into `output`, an interleaved device buffer

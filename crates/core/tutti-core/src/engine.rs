@@ -532,32 +532,21 @@ impl Engine {
     /// Allocates nothing itself; a commit it installs was built on the
     /// control side.
     ///
-    /// # Safety
+    /// # Panics
     ///
-    /// The caller guarantees that **no audio callback runs [`process`] or
-    /// [`process_segment`] on this engine for the duration of the call** —
-    /// the stream is stopped (dropped, or not yet started). This borrows the
-    /// executor and the transport schedule the audio thread otherwise owns;
-    /// their [`AudioThreadCell`](tutti_types::AudioThreadCell)s catch a
-    /// concurrent borrow only in debug builds, so in release a call racing
-    /// a callback is an unchecked data race.
+    /// If an audio callback is running [`process`] or [`process_segment`]
+    /// on this engine at the same moment: this borrows the executor and the
+    /// transport schedule the audio thread otherwise owns, and their
+    /// [`AudioThreadCell`]s refuse a second borrow in every build. Whichever
+    /// side borrows second panics, so call it only while the stream is
+    /// stopped (dropped, or not yet started), as `Stopped` arranges.
     ///
     /// [`process`]: Self::process
     /// [`process_segment`]: Self::process_segment
-    pub unsafe fn settle_graph(&self) -> bool {
+    pub fn settle_graph(&self) -> bool {
         let graph = &mut *self.graph.borrow_mut();
         graph.settle(self.motion.timed());
         graph.exec.pending_prepare().is_none() && graph.exec.plan().is_some()
-    }
-
-    /// Does nothing.
-    ///
-    /// The engine's [`AudioThreadCell`](tutti_types::AudioThreadCell)s pin no
-    /// owner thread, so a device switch that moves the callback to another
-    /// thread needs no reset. A call to this can be removed.
-    pub fn reset_owners(&self) {
-        self.graph.reset_owner();
-        self.motion.reset_owner();
     }
 }
 

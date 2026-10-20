@@ -1156,9 +1156,9 @@ mod tests {
     /// one of those set.
     ///
     /// Mutation (run): the rate back in an `AudioThreadCell` written with
-    /// `borrow_mut` (the old shape) → in a debug build the two threads trip the
-    /// cell's in-use flag and the test panics. In a release build that is a
-    /// data race, which this test cannot observe.
+    /// `borrow_mut` (the old shape) → the two threads trip the cell's in-use
+    /// flag and the test panics (in a debug build when this was run; the flag
+    /// is checked in release builds too now).
     #[test]
     #[cfg_attr(miri, ignore = "threaded stress test; too slow under miri")]
     fn the_sample_rate_can_be_set_while_a_drain_runs() {

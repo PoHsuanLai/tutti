@@ -178,8 +178,10 @@ pub struct MotionFsm {
     /// MPMC lock-free bounded queue. A full queue drops the command;
     /// [`MotionFsm::try_send`] reports that rather than hiding it.
     queue: Arc<ArrayQueue<MotionEvent>>,
-    /// Mutated only from the audio thread, via [`MotionFsm::drain`].
-    /// `AudioThreadCell` enforces this in debug builds.
+    /// Mutated only from the audio thread, via [`MotionFsm::drain`]. The
+    /// cell checks its one-borrow contract in every build, so a stray call
+    /// from another thread while the callback holds it panics rather than
+    /// racing.
     fsm: Arc<AudioThreadCell<TransportFsm>>,
     /// Published mirror of the FSM's motion, so the UI can read it without
     /// touching the audio thread's cell.
@@ -393,14 +395,21 @@ impl MotionFsm {
     /// Drains the queue into the FSM and publishes the results.
     ///
     /// **Audio thread only.** RT-safe: no allocation, no locks, bounded by the
-    /// queue's 64-command capacity.
+    /// queue's 64-command capacity. Any thread may be the audio thread, and
+    /// it may change between calls (a device restart, CoreAudio migrating its
+    /// callback): nothing is pinned to the first caller.
     ///
     /// # Panics
     ///
-    /// In debug builds, if called from a thread other than the one that first
-    /// borrowed the FSM's `AudioThreadCell`. Announce a new callback thread
-    /// with [`reset_owner`](Self::reset_owner) rather than letting it be
-    /// discovered here.
+    /// If another call is borrowing the FSM at the same moment — this, or
+    /// [`complete_declick`](Self::complete_declick), on another thread, since
+    /// a clone of this handle reaches the same FSM. The FSM's
+    /// [`AudioThreadCell`] checks that in every build, so the overlap is a
+    /// panic, never two threads writing the FSM at once.
+    // The intended follow-up is to split this handle in two: a `Clone`
+    // control half (`try_send`, `schedule`, `motion`) and an engine-owned
+    // audio half (`drain`, `apply`, `complete_declick`) holding the FSM as a
+    // plain field, so the overlap above cannot be written at all.
     pub fn drain(&self) {
         while let Some(event) = self.queue.pop() {
             let result = {
@@ -411,16 +420,6 @@ impl MotionFsm {
                 self.publish(result);
             }
         }
-    }
-
-    /// Does nothing.
-    ///
-    /// The state machine's [`AudioThreadCell`](tutti_types::AudioThreadCell)
-    /// pins no owner thread (its debug check detects a *concurrent borrow*,
-    /// not a foreign thread), so a device switch needs no reset. A call to
-    /// this can be removed.
-    pub fn reset_owner(&self) {
-        self.fsm.reset_owner();
     }
 
     fn set_motion(&self, motion: MotionState) {
@@ -504,7 +503,8 @@ impl MotionFsm {
     /// FSM/mirror disagreement pass unnoticed.
     ///
     /// **Audio thread only**, for the same reason as
-    /// [`drain`](Self::drain) — it borrows the FSM's cell.
+    /// [`drain`](Self::drain) — it borrows the FSM's cell, and panics as it
+    /// does if another call is borrowing it at the same moment.
     pub fn complete_declick(&self) {
         self.declick.clear();
 

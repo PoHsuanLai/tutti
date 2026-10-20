@@ -569,6 +569,10 @@ jobs:
       # against the shipped code: two models (the writer on either thread),
       # unbounded, about four seconds.
       - run: cargo test -p tutti-types --release --test seq_cell_loom
+      # `AudioThreadCell`'s always-on borrow flag (no aliasing, a granted
+      # borrow sees the last one's writes), against the shipped code: one
+      # model, unbounded, under a second.
+      - run: cargo test -p tutti-types --release --test cell_loom
       - run: cargo test -p tutti-shm-model --release
 
   # The parallel executor's runtime primitives (doc 013 Phase 6, part a), each

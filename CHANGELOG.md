@@ -46,6 +46,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `bevy_tutti::midi::MidiFileLoaderError` (`Io`, `Smf`, `Clip`, `UnknownFormat`) | `tutti_midi_file::Error` (`Io`, `Clip`, `UnknownFormat`; an SMF's parse errors are its own variants) |
   | `bevy_tutti::sampler::{memory_voice, voice_width}` | `tutti_sampler::{memory_voice, voice_width}` (also in `bevy_tutti::prelude`) |
 
+### Fixed — `AudioThreadCell` checks its one-borrow contract in release builds
+
+- **Soundness: safe code could create two `&mut T` through an
+  `AudioThreadCell` in a release build.** The cell is `Sync` for `T: Send`
+  and its `borrow`/`borrow_mut` are safe, but the "one borrow at a time"
+  check ran only under `debug_assertions`. `tutti_core::MotionFsm` is a
+  public `Clone` handle whose safe `drain` and `complete_declick` borrow its
+  FSM, so a clone driven from a UI thread while the callback drained was a
+  data race with no `unsafe` in sight. The check is now unconditional, as
+  `atomic_refcell`'s: one uncontended compare-exchange per borrow, a store
+  on the guard's drop, no lock, no allocation, nothing that waits. A second
+  borrow while one is live panics, in every build, with the same message and
+  call site; the new `try_borrow_mut` returns `None` instead. A `loom` model
+  (`tutti-types/tests/cell_loom.rs`, in `just loom` and CI) checks the flag
+  against the shipped code.
+- **The guards no longer make `T` shareable.** `BorrowGuard` and
+  `BorrowRef` were `Sync` for any `T: Send` (they inherited the cell's
+  auto traits), so a `&BorrowRef<Cell<_>>` shared between two threads gave
+  each a `&Cell` at once. They now carry `&mut T`'s auto traits: `Sync` only
+  for `T: Sync`. No caller in the workspace shared one.
+- **`reset_owner` is gone.** It was a no-op (the cell pins no owner thread;
+  CoreAudio migrates its callback between threads), and `MotionFsm`,
+  `Engine` and `AudioCallbackState` forwarded to it, the last called on
+  every `TuttiDriver` restart.
+- **`Engine::settle_graph` is safe.** It was `unsafe fn` only because the
+  cells it borrows from the control side checked a racing callback in debug
+  builds alone; with the check always on, a race panics instead, so the
+  `unsafe` contract is now a documented panic. `Stopped::settle_graph` is
+  unchanged and remains the way in that cannot race.
+
+  | Was | Now |
+  |---|---|
+  | `AudioThreadCell::borrow`/`borrow_mut` checked a live borrow only with `debug_assertions` (release: unchecked aliasing) | checked in every build: a second live borrow panics (same message, `#[track_caller]` site) |
+  | — | `AudioThreadCell::try_borrow_mut() -> Option<BorrowGuard<'_, T>>`, `None` while a borrow is live |
+  | `BorrowGuard<'_, T>` / `BorrowRef<'_, T>`: `Sync` when `T: Send` | `Sync` when `T: Sync`, `Send` when `T: Send` (as `&mut T`) |
+  | `AudioThreadCell::reset_owner()` (tutti-types) | removed; delete the call (it did nothing) |
+  | `MotionFsm::reset_owner()` (tutti-core) | removed; delete the call |
+  | `Engine::reset_owners()` (tutti-core) | removed; delete the call |
+  | `AudioCallbackState::reset_owners()` (tutti-cpal) | removed; delete the call |
+  | `unsafe fn Engine::settle_graph(&self) -> bool` | `fn Engine::settle_graph(&self) -> bool`: drop the `unsafe` block; it panics if a callback renders the engine at the same moment |
+  | `AudioThreadCell::new` is `const` | still `const`, except under `--cfg loom` (loom's atomics are not) |
+
 ### Changed — design 015 PR 3: the audio pump is `tutti_io::Recorder`
 
 - **One pump loop.** `bevy-tutti`'s `AudioPump` ran its own copy of

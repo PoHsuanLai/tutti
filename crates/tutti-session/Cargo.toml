@@ -95,3 +95,8 @@ all-features = true
 [[test]]
 name = "device"
 required-features = ["device"]
+
+# The session's modulation loop (`Session::mods`, `ModInput`).
+[[test]]
+name = "modulation"
+required-features = ["modulation"]

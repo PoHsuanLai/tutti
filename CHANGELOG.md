@@ -97,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   |---|---|
   | `bevy_tutti::graph::GraphDirty` (set by hand after an edit) | gone: every edit through `AudioGraphRes` marks the session graph edited (`AudioGraphRes::is_edited`), and `commit_graph` commits iff it is set |
   | `GraphNode` (trait; `GraphNode::params`) | `SessionNode` (`bevy_tutti::graph::SessionNode`, also in the prelude); `param_graph_node!` unchanged for callers |
+  | `GraphNode::captured(&self) -> CapturedControls` (default: nothing captured) | gone: the session's trait cannot name a Bevy type. Every spawn path binds `CapturedControls::default()`; a plugin's capture is `CapturedControls::for_plugin` / `for_plugin_meter`; a host with controls of another shape builds a `CapturedControls` and calls `bind(entity, node)` itself |
   | `EventFeeds` resource (`set`, `remove`, keyed by `Entity`) | `AudioGraphRes::{set_feed, feed, move_feeds}`, keyed by `AudioNode`; removing a node purges it from every feed |
   | `TuttiDriver` resource (`bevy_tutti::TuttiDriver`) | `Device`, a non-send resource (`NonSend<Device>`); `Device::devices()` enumerates |
   | `DeviceRestart { device: Option<usize>, .. }` (`Copy`) | `DeviceRestart { device: DeviceSelector, .. }` (`Clone`); `DeviceSelector::from(Option<usize>)` converts |
@@ -109,8 +110,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retried by the session; `crossfade_audio_node` binds the new node's
   controls when it lands (`PendingCrossfades`, resolved from
   `SessionEvent::CrossfadeLanded`). `EngineNodes` is inserted only when the session has a click. A live MIDI
-  input is fed once its entity has an `AudioNode`, and the inbound routes
-  and MIDI clips follow a target re-bound to a new node.
+  input is fed once its entity has an `AudioNode`. The inbound routes, MIDI
+  clips and live MIDI inputs follow a target re-bound to a new node, whether
+  the new `AudioNode` replaces the old one in place or is inserted after the
+  old one was removed: each re-asserts its feed on the entity's current node
+  when its `AudioNode` changes (the old node's feeds go with it).
 
 ### Added
 

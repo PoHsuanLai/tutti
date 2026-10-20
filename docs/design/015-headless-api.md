@@ -1383,6 +1383,7 @@ lines.
 |---|---|
 | `graph::runtime::GraphRuntime` | `Graph` (`Session::graph`) |
 | `GraphNode` (and its impls for the engine's nodes, the voices, the panners) | `SessionNode`; `param_graph_node!` names it through `__private` |
+| `GraphNode::captured` (default: nothing captured) | removed: a Bevy-free trait cannot name `CapturedControls`. The spawn paths bind `CapturedControls::default()` (a plugin's, `for_plugin`), and a host with other controls calls `CapturedControls::bind` |
 | `GraphDirty` | the edit flag, `Graph::is_edited`; `update()` and `Phase::Commit` commit iff it is set |
 | `EventFeeds` (keyed by `Entity`) | `Graph::{set_feed, feed, move_feeds}`, keyed by `AudioNode`; `remove` purges a node from every feed |
 | `ModEntities` | `ModKeys` (`node`, `plugin_value`, `feed`), implemented by `Declared` |
@@ -1439,9 +1440,14 @@ Where the code differs from the text above:
   that built, only while the graph is otherwise clean.
 - **`EngineNodes` is inserted only when the click exists** (a detached or
   offline-without-click session has none).
-- **A live MIDI input is fed once its entity has an `AudioNode`**, and the
-  inbound routes resolve on `Changed<AudioNode>` too, so a re-bound target
-  keeps its route.
+- **A live MIDI input is fed once its entity has an `AudioNode`.** The
+  inbound routes, the clips and the live inputs each re-assert their feed
+  on the entity's current node when its `AudioNode` changes, so a re-bound
+  target keeps all three, also when the old `AudioNode` was removed first
+  (`Graph::remove` drops the old node's feeds, so `move_feeds` alone would
+  find nothing; a review of PR 4 caught this).
+- **`Session::remove` does not assert the main thread** (§4.2): the free
+  is guarded at the editor's collect, every path to which asserts.
 
 Deferred: `GraphReconcileSystems` is not yet built from `PHASES` (the sets
 run the same steps in the same order by hand), and Bevy does not run

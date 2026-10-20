@@ -386,10 +386,27 @@ impl PendingCrossfades {
                         (waiting.bind)(&mut e, controls);
                     });
                 }
-                Err(why) => bevy_log::error!(
-                    "crossfade_audio_node: entity {:?} not crossfaded: {why}",
-                    waiting.entity
-                ),
+                Err(why) => {
+                    let entity = waiting.entity;
+                    commands.queue(move |world: &mut World| {
+                        // An entity despawned (or unbound) while its
+                        // crossfade waited took the node with it: expected,
+                        // and a warning, as before the session. A refusal
+                        // with the node still bound is an error.
+                        if world.get::<AudioNode>(entity) == Some(&node) {
+                            bevy_log::error!(
+                                "crossfade_audio_node: entity {:?} not crossfaded: {why}",
+                                entity
+                            );
+                        } else {
+                            bevy_log::warn!(
+                                "crossfade_audio_node: entity {:?} lost its AudioNode; \
+                                 crossfade dropped",
+                                entity
+                            );
+                        }
+                    });
+                }
             }
         }
     }

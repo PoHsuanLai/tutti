@@ -159,11 +159,13 @@ pub use request::{
     ExportSource, ExportTarget, PrepareEdit, PrepareGraph, PreparedGraph,
 };
 
-// The engine types this module's API hands out, so a host names them without
-// depending on the crates they come from: the graph a `prepare` hook edits,
-// and what an `ExportError` carries.
 pub use run::{poll_exports, start_exports};
-pub use tutti_export::RenderGraph;
+// The engine types an `ExportError` carries, so a host names them without
+// depending on the crates they come from. Not the graph a `prepare` hook
+// edits: `PreparedGraph::graph` is `tutti_export::RenderGraph`, the session's
+// offline render, which this adapter does not name (design 015 §8, check 3,
+// `scripts/check-adapter.sh`). A hook calls its methods without naming it;
+// a host that names it depends on `tutti-export`.
 pub use tutti_graph::{ForkCause, ForkFaultKind};
 pub use tutti_types::NodeKey;
 
@@ -211,12 +213,21 @@ impl Plugin for ExportPlugin {
         // whichever plugin was added first. Ungated on the engine, as
         // `poll_exports` is: a render in flight when audio stops still has
         // to put its plugins back.
+        //
+        // Its set runs after `GraphReconcileSystems::Spawn` and before
+        // `Params` (`configure_phases`), so with `plugin` this also forces
+        // `start_exports`, which forks the live graph, before the frame's
+        // `Params` and `Commit`. Before design 015 PR 7 the two were
+        // unordered. Without `plugin`, they still are.
         #[cfg(feature = "plugin")]
         app.add_systems(
             Update,
             crate::plugin_host::plugin_render_mode
                 .after(poll_exports)
-                .after(start_exports),
+                .after(start_exports)
+                .in_set(crate::graph::SessionPhaseSystems(
+                    tutti_session::Phase::RenderMode,
+                )),
         );
     }
 }

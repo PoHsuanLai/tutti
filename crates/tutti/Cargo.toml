@@ -43,6 +43,12 @@ tutti-session = { path = "../tutti-session", default-features = false, optional 
 # doctest. Dev-only: a consumer of the umbrella never sees the module.
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false, features = ["testing"] }
 tempfile = "3.8"
+# The reference CLAP plugin the §5.2 example plays, in a `plugin-server`
+# (built first: `cargo build -p tutti-plugin-server`; not a dev-dependency,
+# which would be a cycle through `tutti-plugin`), and the lookup that finds
+# both beside the running binary (`tutti-session/tests/support`).
+tutti-clap-test-plugin = { path = "../vendor/tutti-clap-test-plugin" }
+tutti-fixture-resolve = { path = "../plugin/vendor/tutti-fixture-resolve" }
 
 [features]
 # `default = ["session"]`: the API layer is what this umbrella is for. It is
@@ -157,3 +163,16 @@ required-features = ["export", "analysis", "wav"]
 [[example]]
 name = "headless_engine"
 required-features = ["session", "device"]
+
+# Design 015 §5.1: doc 014 §8.1's modulation, headless, in one import.
+[[example]]
+name = "headless_modulation"
+required-features = ["session", "modulation"]
+
+# Design 015 §5.2: load a plugin, play a MIDI file, export to WAV, in one
+# import. Run as a test (`test = true`) so CI plays it; it needs
+# `plugin-server` built first, and fails without it.
+[[example]]
+name = "plugin_midi_export"
+required-features = ["session", "clap", "export"]
+test = true

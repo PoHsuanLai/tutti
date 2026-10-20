@@ -1,0 +1,12 @@
+# The toolchain every stable build uses: local, `just`, and CI (whose jobs run
+# `rustup toolchain install`, which reads this file). Bumping it is a PR of its
+# own: change `channel`, run `just ci`, and fix the new lints in that PR
+# (CLAUDE.md, Commands). The jobs that need nightly (miri) name it explicitly
+# (`cargo +nightly`), which overrides this file.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+# No `targets`: CI builds each platform natively. `just check-windows`'s
+# cross-lint wants `rustup target add x86_64-pc-windows-msvc` once, which
+# adds it to this toolchain.
+profile = "minimal"

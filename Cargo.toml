@@ -22,7 +22,8 @@ members = [
     "crates/tutti",
     # The Bevy-free API layer both umbrellas use (design 015): the
     # cross-crate composition, not an umbrella. It re-exports no crate whole
-    # and never reaches Bevy (`scripts/check-bevy-free.sh`).
+    # (`scripts/check-adapter.sh`) and never reaches Bevy
+    # (`scripts/check-bevy-free.sh`).
     "crates/tutti-session",
     "crates/core/tutti-core",
     "crates/core/tutti-cpal",

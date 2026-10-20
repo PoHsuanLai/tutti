@@ -1808,7 +1808,8 @@ that need an app or a plugin.
   construction path.
 - A headless example, `tutti-nodes/examples/headless_modulation.rs` (an
   LFO and a follower on an SVF's cutoff and Q; moved to
-  `tutti-session/examples` by design 015 PR 5), and a doctest on
+  `tutti-session/examples` by design 015 PR 5, and to `crates/tutti/examples`
+  by its PR 7), and a doctest on
   `Modulation`.
 - **Properties, each a test** (`tutti-nodes/tests/modulation_reconcile.rs`
   unless named): the §8.1 example's analytic cutoff and the pad's

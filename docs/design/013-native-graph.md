@@ -1040,6 +1040,14 @@ Phase 5.
 - Params: `AudioParam<U,P>` writes go to `Param<U>` handles from `Controls`
   (sample-accurate automation as events); the `Setting` queue goes away.
 
+> **Where these `bevy-tutti` items live now:** [doc 015](015-headless-api.md)
+> moved the runtime they describe (`GraphRuntime`, the commit, PDC
+> publishing, the modulation loop, plugin hosting and export) into
+> `tutti-session`, which both umbrellas use. `bevy-tutti` keeps the ECS
+> glue: the declarations, the reconcile sets and the schedule, which runs
+> the session's `PHASES` in `SessionPhaseSystems` (doc 015 PR 7). The graph
+> contract is unchanged.
+
 #### Phase 3 PR plan (scoped 2026-09-25)
 
 Seven gaps have to close before the flip. Each is closed by the PR in brackets:

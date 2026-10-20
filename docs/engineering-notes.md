@@ -88,13 +88,16 @@ sudo dnf install -y alsa-lib-devel pkgconf-pkg-config  # Fedora
 
 ## Workspace Structure
 
-One workspace, rooted at the repo root. 32 members, grouped by subsystem.
+One workspace, rooted at the repo root. 33 members, grouped by subsystem.
 
 ```
 crates/
   tutti               # THE BEVY-FREE UMBRELLA. Re-exports only — see below.
   bevy-tutti          # THE BEVY UMBRELLA. Adapter + engine re-exports; the only
                       #   Bevy-mandatory member.
+  tutti-session       # Bevy-free API layer: the cross-crate composition both
+                      #   umbrellas use (design 015: Session, Graph,
+                      #   SessionBuilder, Device). Not an umbrella itself.
   core/
     tutti-core        # Engine runtime (Engine, Transport, Metering)
     tutti-types       # Engine value vocabulary + io::{AudioIn, AudioOut, pump}
@@ -442,6 +445,25 @@ phase through the node's `ParamSet` (`SessionNode::params`); a node without the
 param takes nothing. `AudioNode` is the only thing `tutti-core` gates behind its
 `bevy` feature: one `derive(Component)` on one struct.
 
+The session runs a frame as the phases of `tutti_session::PHASES`, and
+`bevy-tutti` schedules each in a `SessionPhaseSystems(Phase)` set chained
+from that array: `Collect` before `Spawn`, `Commit` inside `Commit`, the rest
+between or after. The order is therefore declared once, in the session, and
+the adapter's schedule test reads it from there rather than restating it.
+
+**A headless host declares too, without the ECS layer** (design 015 §4.5).
+The declaration is the session graph's spec: `Graph::set_source` writes one
+port of its `Topology` value, a port never written keeps its value, and
+`Session::update()` compiles it iff the graph was edited, so a frame's edits
+coalesce into one commit. The ECS layer exists so a *component* can be
+re-bound to a new node and re-derive its wires (`Changed<AudioNode>`). A
+headless host's handle is the `AudioNode` itself, stable across crossfades,
+so it needs none of that. Event feeds are keyed by the sink's `AudioNode`;
+`Graph::move_feeds` carries them to a replacement, which is what Bevy's
+re-bind calls. There is no whole-`Topology` replace, since it would fight
+Bevy's partial declarations when both hosts share one session, and no direct
+`Editor` access: `Graph` stays opaque, as `AudioGraphRes` is.
+
 ## Testing Policy
 
 - **NEVER simplify, skip, or modify tests to make them pass** — fix the
@@ -498,6 +520,16 @@ names them directly:
 - **The bevy 0.19 line**, for anything that touches `bevy-tutti`.
 
 Both are declared in this repo's `[workspace.dependencies]`.
+
+`Cargo.lock` is committed and every CI and `just` cargo command passes
+`--locked`, so a drifted lock fails loudly instead of resolving newer
+dependencies (an unpinned resolve once brought in a deprecation,
+`SystemCondition::and`, that broke a PR's clippy). That protects this repo
+only. **A git-dependency consumer ignores our lock** and resolves with its
+own, so the two pins above still have to be kept in step by hand.
+`rust-toolchain.toml` pins the stable every gate runs on, for the same
+reason: a new stable's lints otherwise land on whichever PR runs first.
+Nightly jobs (miri) name `+nightly`, which overrides the file.
 
 ## Platform status, and what it cost to get there
 
@@ -633,8 +665,13 @@ comments and docs, and treat it as a bug when you find it:
 
   So `crates/tutti` exists again, with one rule: **every item in it is a
   `pub use`.** No builder, no engine bundle, no error aggregation. If
-  something wants to live there it belongs in the crate that owns the thing
-  it wires — device bootstrap in `tutti-cpal`, graph logic in `tutti-core`.
+  something wants to live there and has one owner, it belongs in that
+  crate; if it composes several, it belongs in `tutti-session` (below).
+  (This note used to say "device bootstrap in `tutti-cpal`, graph logic in
+  `tutti-core`". Design 015 §3(c) showed the bootstrap needs the sampler's
+  streamer, MIDI hardware, the click and plugins, so putting it in
+  `tutti-cpal` would make the device layer depend on all of them and pull a
+  device into `tutti-io` and the offline path.)
   `crates/tutti/tests/no_logic.rs` enforces this by reading `lib.rs`, and
   `scripts/check-canonical-paths.sh` additionally requires every whole-crate
   re-export there to be aliased (`pub use tutti_core as core`), so
@@ -643,6 +680,35 @@ comments and docs, and treat it as a bug when you find it:
   `bevy-tutti` does **not** depend on `tutti`, deliberately: it would keep
   its direct edges anyway for their `bevy` features, ending with two edges to
   each crate.
+
+  **The composition both umbrellas need lives in `tutti-session`** (design
+  015). That is option (a) of its §3: a logic crate *below* both umbrellas,
+  which both depend on and which depends on neither. Option (b), logic in
+  `tutti` with `bevy-tutti` depending on it, is exactly the failure above:
+  `tutti` would become the lower umbrella owning logic `bevy-tutti` needs,
+  and it would recreate the double edges. Making it safe would mean `tutti`
+  stops being an umbrella and a new facade goes on top, which is (a) with
+  the names swapped. Option (c), spreading the API over the owning crates,
+  is right for every single-owner piece (design 015 PRs 1–3 moved those),
+  but cannot hold the composition without inverting an edge. The crate is
+  bounded by one sentence: it holds only code that names two or more engine
+  crates, or the order they run in. Three checks keep it so:
+  `scripts/check-bevy-free.sh` (no Bevy in its closure, no `bevy` feature),
+  and `scripts/check-adapter.sh`, which fails if `bevy-tutti/src` names a
+  type the session owns (`Editor`, `Executor`, `Modulation`, `TuttiDriver`,
+  `AudioCallbackState`, `Engine`, `RenderGraph`) or if `tutti-session`
+  re-exports a crate whole, which would make it a third umbrella.
+
+  **Why `Device` is `!Send` when `TuttiDriver` is `Send`.** `cpal::Stream`
+  is `!Send`; `tutti-cpal` wraps it as `Send` with an `unsafe impl` whose
+  safety argument is that the stream is created and dropped on the control
+  thread (`driver_seam.rs`). That makes `TuttiDriver` `Send` but not
+  `Sync`, which is why Bevy held it as a non-send resource. A `Send`
+  session that owned the driver would let a host move the stream to another
+  thread and drop it there, falsifying the `unsafe impl` with nothing to
+  say so. So the builder hands back two halves: a `Send` `Session` and a
+  `Device` made `!Send` by a `PhantomData<*const ()>`, which turns that
+  safety argument into a type error (a `compile_fail` doctest pins it).
 
   There is no `tutti-plugin-host` package either — `bevy_tutti::plugin_host`
   is a *module*.

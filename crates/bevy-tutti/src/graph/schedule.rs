@@ -1,6 +1,7 @@
 //! When reconcile work runs, and whether it runs at all.
 //!
-//! The ordering anchor ([`GraphReconcileSystems`]) and the run-condition every
+//! The ordering anchors ([`GraphReconcileSystems`], and [`SessionPhaseSystems`]
+//! chained from the session's `PHASES`) and the run-condition every
 //! engine-touching system is gated on ([`engine_ready`]).
 //!
 //! Whether the frame ends in a commit is the session's edit flag, not
@@ -8,8 +9,10 @@
 //! sets it, and the frame's commit (the session's `Commit` phase) sends the
 //! frame's edits at once, iff it is set.
 
+use bevy_app::{App, Update};
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::SystemSet;
+use tutti_session::{Phase, PHASES};
 
 use crate::AudioEngineState;
 
@@ -38,9 +41,73 @@ pub enum GraphReconcileSystems {
     /// here is [`LatencyCompensationPlugin`](crate::LatencyCompensationPlugin)'s
     /// debug cross-check, when a host adds it.
     Compensate,
-    /// The session's `Collect` and `Commit` phases: one commit, iff any
-    /// edit was made since the last.
+    /// The session's `Commit` phase: one commit, iff any edit was made
+    /// since the last.
     Commit,
+}
+
+/// The systems that run one of the session's phases
+/// (`tutti_session::Session::run_phase`), one set per [`Phase`].
+///
+/// A headless session runs its phases in `tutti_session::PHASES` order in one
+/// `update()`; a Bevy app runs each from its own system, and these sets are
+/// how the frame keeps the same order:
+/// [`GraphReconcilePlugin`](crate::graph::GraphReconcilePlugin) chains them
+/// from `PHASES` itself (`configure_phases`), so the order is the constant's
+/// and cannot drift from it. Each is also placed against [`GraphReconcileSystems`]:
+///
+/// - `Collect` ([`collect_graph`](super::commit::collect_graph)): before
+///   `Spawn`, first in the frame;
+/// - `Plugins` (`plugin_health_poll`, feature `plugin`): in `Spawn`, after
+///   a load's promotion;
+/// - `RenderMode` (`plugin_render_mode`, features `plugin` and `export`)
+///   and `Modulation` (`ModulationSystems::Apply`, feature `modulation`):
+///   after `Spawn`, before `Params`;
+/// - `Commit` ([`commit_graph`](super::commit_graph)): in `Commit`;
+/// - `AfterCommit` (`ModulationSystems::AfterCommit`), `MidiOut`
+///   (`pump_clock_out_system`, feature `midi`) and `Poll`: after `Commit`.
+///   No system runs `Poll`: a Bevy app reads the device's faults itself
+///   (`device_state_sync_system` into
+///   [`AudioDeviceState`](crate::AudioDeviceState)).
+#[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct SessionPhaseSystems(pub Phase);
+
+/// Chains [`SessionPhaseSystems`] in `PHASES` order and places each against
+/// [`GraphReconcileSystems`] (see [`SessionPhaseSystems`]). Called by
+/// [`GraphReconcilePlugin`](crate::graph::GraphReconcilePlugin).
+pub(crate) fn configure_phases(app: &mut App) {
+    for pair in PHASES.windows(2) {
+        app.configure_sets(
+            Update,
+            SessionPhaseSystems(pair[0]).before(SessionPhaseSystems(pair[1])),
+        );
+    }
+    for &phase in PHASES {
+        let set = SessionPhaseSystems(phase);
+        match phase {
+            Phase::Collect => {
+                app.configure_sets(Update, set.before(GraphReconcileSystems::Spawn));
+            }
+            Phase::Plugins => {
+                app.configure_sets(Update, set.in_set(GraphReconcileSystems::Spawn));
+            }
+            Phase::RenderMode | Phase::Modulation => {
+                app.configure_sets(
+                    Update,
+                    set.after(GraphReconcileSystems::Spawn)
+                        .before(GraphReconcileSystems::Params),
+                );
+            }
+            Phase::Commit => {
+                app.configure_sets(Update, set.in_set(GraphReconcileSystems::Commit));
+            }
+            // `AfterCommit`, `MidiOut`, `Poll`, and a phase added later: after
+            // the frame's commit, where the chain above already orders them.
+            _ => {
+                app.configure_sets(Update, set.after(GraphReconcileSystems::Commit));
+            }
+        }
+    }
 }
 
 /// Run-condition: the audio engine is running.
@@ -84,4 +151,149 @@ pub enum GraphReconcileSystems {
 /// no-op.
 pub fn engine_ready(state: Option<Res<AudioEngineState>>) -> bool {
     state.is_some_and(|s| s.is_running())
+}
+
+#[cfg(test)]
+mod tests {
+    //! The adapter runs the session's phases in `PHASES` order (design 015
+    //! §4.4): `Session::update`'s order, one system per phase.
+
+    use bevy_app::prelude::*;
+    use tutti_session::{Phase, PHASES};
+
+    use crate::graph::{AudioGraphRes, GraphReconcilePlugin};
+    use crate::AudioEngineState;
+
+    /// Where `phase` is in `PHASES`.
+    fn rank(phase: Phase) -> usize {
+        PHASES
+            .iter()
+            .position(|&p| p == phase)
+            .expect("every phase is in PHASES")
+    }
+
+    /// Each frame runs the session's phases in `PHASES` order, each at
+    /// most once, and every phase the enabled features give a system runs:
+    /// what the phase systems record through `AudioGraphRes::run_phase`,
+    /// over the plugins `TuttiPlugin` adds (graph, plugin hosting, export,
+    /// MIDI's clock out) and `TuttiModulationPlugin`.
+    ///
+    /// The order is `PHASES`' own (`rank`); only which phases have a system
+    /// here is written down. `AfterCommit` runs only on a frame with work
+    /// (`after_commit` skips an idle one), so a modulated filter is spawned
+    /// before the first frame, whose target is new until that frame's
+    /// commit. `Poll` has no system: a Bevy app reads the device's faults
+    /// itself.
+    ///
+    /// Before this PR (design 015 PR 7), main ran `Collect` in
+    /// `commit_graph`, right before `Commit` (after `Plugins` and
+    /// `Modulation`), and `MidiOut` unordered: this test failed there.
+    ///
+    /// Mutations (run with `full,plugin`, each failed, then reverted):
+    /// - `collect_graph` in `SessionPhaseSystems(Phase::Commit)`, before
+    ///   `commit_graph` (main's layout): `[Plugins, RenderMode, Modulation,
+    ///   Collect, Commit, ..]`.
+    /// - `ModulationSystems::AfterCommit` configured `before`
+    ///   `GraphReconcileSystems::Commit`, outside its phase set:
+    ///   `AfterCommit` before `Plugins`.
+    /// - `windows(2)` → no pairs in `configure_phases` (the chain from
+    ///   `PHASES` gone, the anchors to `GraphReconcileSystems` kept):
+    ///   `AfterCommit` and `MidiOut`, both only after `Commit`, ran
+    ///   `MidiOut` first (the plugins are added in the order that makes an
+    ///   unordered pair run wrong).
+    /// - `plugin_health_poll` in `SessionPhaseSystems(Phase::AfterCommit)`
+    ///   instead of `Plugins`: it is also in `Spawn`, so the schedule
+    ///   refuses the cycle and the first `update` panics.
+    #[test]
+    fn the_adapter_runs_the_session_phases_in_phases_order() {
+        let mut app = App::new();
+        app.add_plugins(bevy_app::TaskPoolPlugin::default());
+        app.insert_resource(AudioGraphRes::headless(0, 2));
+        app.insert_resource(AudioEngineState::Running);
+        app.insert_resource(crate::graph::AudioConfig {
+            sample_rate: tutti_core::SampleRate(48_000.0),
+            channels: tutti_core::ChannelLayout::STEREO,
+        });
+        app.add_plugins(GraphReconcilePlugin);
+        #[cfg(feature = "modulation")]
+        {
+            use crate::graph::SpawnAudioNode;
+            use crate::modulation::{Lfo, Mods, ParamRef, TuttiModulationPlugin};
+            use bevy_ecs::prelude::*;
+            use tutti_nodes::{SvfFilterNode, SvfType};
+            use tutti_types::{Depth, Hz, UnitParam, Q};
+
+            app.insert_resource(crate::graph::TransportRes(
+                tutti_core::transport::Transport::new(48_000.0),
+            ));
+            app.add_plugins(TuttiModulationPlugin);
+            let filter = app
+                .world_mut()
+                .commands()
+                .spawn_audio_node(SvfFilterNode::<f64>::new(
+                    SvfType::LowPass,
+                    Hz(1_000.0),
+                    Q(0.7),
+                ))
+                .id();
+            app.world_mut().flush();
+            app.world_mut()
+                .run_system_cached_with(
+                    |In(filter): In<Entity>, mut mods: Mods| {
+                        let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
+                        mods.range(cutoff, 200.0, 4_000.0);
+                        let lfo = mods.lfo(Lfo::sine().hz(Hz(1.0)));
+                        mods.route(lfo, cutoff, Depth(0.3));
+                    },
+                    filter,
+                )
+                .expect("runs");
+        }
+        // After the modulation plugin, so that an unordered pair runs in
+        // the wrong order by insertion: `Modulation` before `RenderMode`,
+        // `AfterCommit` after `MidiOut`, unless the chain from `PHASES`
+        // orders them.
+        #[cfg(feature = "midi")]
+        app.add_plugins(crate::midi::ClockOutPlugin);
+        #[cfg(feature = "plugin")]
+        app.add_plugins(crate::plugin_host::TuttiHostingPlugin);
+        #[cfg(feature = "export")]
+        app.add_plugins(crate::export::ExportPlugin);
+
+        // The phases with a system here, each frame.
+        #[allow(unused_mut)]
+        let mut every_frame = vec![Phase::Collect, Phase::Commit];
+        #[cfg(feature = "plugin")]
+        every_frame.push(Phase::Plugins);
+        #[cfg(all(feature = "plugin", feature = "export"))]
+        every_frame.push(Phase::RenderMode);
+        #[cfg(feature = "modulation")]
+        every_frame.push(Phase::Modulation);
+        #[cfg(feature = "midi")]
+        every_frame.push(Phase::MidiOut);
+
+        #[cfg(feature = "modulation")]
+        let mut seen = Vec::new();
+        for frame in 0..3 {
+            app.update();
+            let ran = app
+                .world_mut()
+                .resource_mut::<AudioGraphRes>()
+                .take_phase_log();
+            assert!(
+                ran.windows(2).all(|w| rank(w[0]) < rank(w[1])),
+                "frame {frame}: {ran:?} is not in PHASES order ({PHASES:?})"
+            );
+            for phase in &every_frame {
+                assert!(ran.contains(phase), "frame {frame}: {phase:?} did not run");
+            }
+            #[cfg(feature = "modulation")]
+            seen.extend(ran);
+        }
+        #[cfg(feature = "modulation")]
+        assert!(
+            seen.contains(&Phase::AfterCommit),
+            "a new target's frame runs AfterCommit"
+        );
+    }
 }

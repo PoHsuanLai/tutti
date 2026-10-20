@@ -20,29 +20,29 @@
 # their whole suite and exit non-zero, so nextest fails at *list* time having
 # already executed them. `just test-editor` runs them properly.
 test *ARGS: plugin-server
-    cargo nextest run --workspace {{ARGS}} \
+    cargo nextest run --locked --workspace {{ARGS}} \
         -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
 
 # The AU mapping-family claim, which needs third-party Audio Units installed.
 # It hard-fails rather than skipping when none is present — deliberately — so it
 # is excluded from CI and run on purpose here, on a machine that has them.
 test-au-installed:
-    cargo test -p tutti-au-host --test au_midi_map \
+    cargo test --locked -p tutti-au-host --test au_midi_map \
         no_installed_third_party_unit_implements_the_mapping_family
 
 # The custom-harness editor tests. `cargo test` just execs the binary, which is
 # what a `harness = false` main wants.
 test-editor:
-    cargo test -p tutti-vst3-host --test gui_lifecycle_main
-    cargo test -p tutti-au-host --test au_gui_lifecycle_main
+    cargo test --locked -p tutti-vst3-host --test gui_lifecycle_main
+    cargo test --locked -p tutti-au-host --test au_gui_lifecycle_main
 
 # The editor tests minus the one that needs a plugin corpus with both an
 # editor-bearing and an editorless plugin — what CI runs. Use this if your
 # machine has no third-party VST3s installed.
 test-editor-no-corpus:
     TUTTI_GUI_SKIP=has_editor_agrees_with_opening_one \
-        cargo test -p tutti-vst3-host --test gui_lifecycle_main
-    cargo test -p tutti-au-host --test au_gui_lifecycle_main
+        cargo test --locked -p tutti-vst3-host --test gui_lifecycle_main
+    cargo test --locked -p tutti-au-host --test au_gui_lifecycle_main
 
 # The doctests, which nextest does NOT run — and says nothing about skipping.
 #
@@ -50,10 +50,10 @@ test-editor-no-corpus:
 # examples, so a green `just test` is not a green workspace. `cargo test --doc`
 # is the only way to run them; nextest has no doctest support at all.
 test-doc *ARGS:
-    cargo test --doc --workspace {{ARGS}}
+    cargo test --locked --doc --workspace {{ARGS}}
     # `Device`'s `!Send` proof is a `compile_fail` doctest behind `device`;
     # named here, not left to bevy-tutti's features unifying it in.
-    cargo test --doc -p tutti-session --features device {{ARGS}}
+    cargo test --locked --doc -p tutti-session --features device {{ARGS}}
 
 # Everything.
 test-all: test test-features test-editor test-doc
@@ -80,41 +80,48 @@ test-all: test test-features test-editor test-doc
 #                         (tests/plugin_capture.rs); `full,plugin` so the
 #                         modulation-gated plugin parameter lanes compile
 #                         with it
+#                         (`plugin,modulation` alone: tests/mod_plugin.rs's
+#                         helpers with no test, until PR 7 gated them)
 #   tutti-session/clap  — hosted plugins and the plugin half of export
-#                         (tests/plugin.rs, the §5.2 `plugin_midi_export`
-#                         example); `export,modulation` beside it
+#                         (tests/plugin.rs); `export,modulation` beside it
+#   tutti/clap          — the umbrella's §5.1 and §5.2 examples
+#                         (`plugin_midi_export` runs as a test) and its
+#                         prelude's request types
 #
 # Not `--all-features`: that would pull every plugin-format SDK and (once it
 # exists) JACK, which needs libjack on the box. Name the combinations.
 check-features:
-    cargo clippy -p tutti-cpal --features capture --all-targets -- -D warnings
-    cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
-    cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
-    cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
-    cargo clippy -p bevy-tutti --features full,plugin --all-targets -- -D warnings
-    cargo clippy -p tutti-session --features clap,export,modulation --all-targets -- -D warnings
-    cargo clippy -p tutti-io --features bevy --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
+    cargo clippy --locked -p bevy-tutti --features audio-io --all-targets -- -D warnings
+    cargo clippy --locked -p bevy-tutti --features soundfont --all-targets -- -D warnings
+    cargo clippy --locked -p bevy-tutti --features sampler --all-targets -- -D warnings
+    cargo clippy --locked -p bevy-tutti --features full,plugin --all-targets -- -D warnings
+    cargo clippy --locked -p bevy-tutti --features plugin,modulation --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-session --features clap,export,modulation --all-targets -- -D warnings
+    cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
 
 # Run the suites `just test` leaves dark. See check-features for which.
 # The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs and
-# `tutti-session/clap`'s plugin suite and §5.2 example, which spawn it; CLAP
+# `tutti-session/clap`'s plugin suite and `tutti`'s §5.2 example, which spawn it; CLAP
 # only, as in CI, so no VST3 SDK is needed.
 test-features:
-    cargo build -p tutti-plugin-server --no-default-features --features clap
-    cargo nextest run -p tutti-cpal --features capture
-    cargo nextest run -p bevy-tutti --features audio-io
-    cargo nextest run -p bevy-tutti --features soundfont
-    cargo nextest run -p bevy-tutti --features sampler
-    cargo nextest run -p bevy-tutti --features full,plugin
-    cargo nextest run -p tutti-session --features clap,export,modulation
-    cargo nextest run -p tutti-io --features bevy
+    cargo build --locked -p tutti-plugin-server --no-default-features --features clap
+    cargo nextest run --locked -p tutti-cpal --features capture
+    cargo nextest run --locked -p bevy-tutti --features audio-io
+    cargo nextest run --locked -p bevy-tutti --features soundfont
+    cargo nextest run --locked -p bevy-tutti --features sampler
+    cargo nextest run --locked -p bevy-tutti --features full,plugin
+    cargo nextest run --locked -p tutti-session --features clap,export,modulation
+    cargo nextest run --locked -p tutti --features clap,export,modulation
+    cargo nextest run --locked -p tutti-io --features bevy
     # Threaded task pool, for the tests that need it (see ci.yml).
-    cargo nextest run -p bevy-tutti --features full,bevy_tasks/multi_threaded -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
+    cargo nextest run --locked -p bevy-tutti --features full,bevy_tasks/multi_threaded -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
     # The plugin host on a threaded executor and pool (see ci.yml): every
     # system that calls a main-thread session API must be pinned. Not
     # `export_surface`'s batch test: it assumes a render finishes in the
     # frame that polls it, which a threaded pool does not promise.
-    cargo nextest run -p bevy-tutti --features full,plugin,vst2,clap,bevy_tasks/multi_threaded,bevy_ecs/multi_threaded -E 'not test(a_batch_spawned_in_one_frame_starts_one_at_a_time)'
+    cargo nextest run --locked -p bevy-tutti --features full,plugin,vst2,clap,bevy_tasks/multi_threaded,bevy_ecs/multi_threaded -E 'not test(a_batch_spawned_in_one_frame_starts_one_at_a_time)'
 
 # JACK, separately: it hard-links libjack at BUILD time, so it needs
 # `libjack-jackd2-dev` (Debian) / `jack-audio-connection-kit-devel` (Fedora)
@@ -137,8 +144,8 @@ test-features:
 # `denormals.rs`'s two tests are `#[cfg_attr(miri, ignore)]`d: they read MXCSR,
 # and miri has no x86 SSE intrinsics.
 miri:
-    cargo +nightly miri test -p tutti-types --lib
-    MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test -p tutti-types --lib rt::publish
+    cargo +nightly miri test --locked -p tutti-types --lib
+    MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p tutti-types --lib rt::publish
 
 # The loom models: `RtPublish`'s reclamation protocol, `PosRing`'s no-tear
 # protocol, `RangeCell`'s untorn pair, the sequence cell's unmixed copy and
@@ -149,23 +156,23 @@ miri:
 # the same bound, about five minutes, and the parallel executor's three
 # primitives (`split`, `job_gate`, `task_graph`) at a bound of 3.
 loom:
-    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
-    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test pos_ring_loom
-    RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test range_cell_loom
-    RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test seq_cell_loom
-    RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test cell_loom
-    RUSTFLAGS="--cfg loom" cargo test -p tutti-shm-model --release
-    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test split_loom
-    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test job_gate_loom
-    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test task_graph_loom
+    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test rt_publish_loom
+    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test pos_ring_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test range_cell_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test seq_cell_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test cell_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-shm-model --release
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test split_loom
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test job_gate_loom
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test task_graph_loom
 
 # The `RtPublish` loom models exhaustively (bar `xthread_overflow`, which is
 # always bounded): about 17 minutes. Run it after changing `rt/publish.rs`.
 loom-full:
-    RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test rt_publish_loom
 
 check-jack:
-    cargo clippy -p tutti-cpal --features jack --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings
 
 # The out-of-process plugin bridge at real callback pacing: mean/p50/p99/worst,
 # over-deadline and non-silent counts, scaled over 1/2/4/8 instances.
@@ -174,8 +181,8 @@ check-jack:
 # otherwise, so it runs on a bare checkout; the run prints which. `plugin-server`
 # is built first because the suite spawns it and nothing else in a test run does.
 pressure:
-    cargo build -p tutti-plugin-server
-    cargo nextest run -p tutti-plugin --features clap --test real_plugin_pressure --no-capture
+    cargo build --locked -p tutti-plugin-server
+    cargo nextest run --locked -p tutti-plugin --features clap --test real_plugin_pressure --no-capture
 
 # Benchmarks.
 #
@@ -189,15 +196,15 @@ pressure:
 # Adding a bench means adding a line here, the same contract `check-features`
 # has. There is no sweep that would pick one up silently.
 bench *ARGS:
-    cargo bench -p tutti-nodes     --bench engine_render   {{ARGS}}
-    cargo bench -p tutti-graph     --bench graph_render    {{ARGS}}
-    cargo bench -p tutti-cpal      --bench audio_callback  {{ARGS}}
-    cargo bench -p tutti-export    --bench offline_render  {{ARGS}}
-    cargo bench -p tutti-polysynth --bench polysynth       {{ARGS}}
-    cargo bench -p tutti-sampler   --bench voice_pool      {{ARGS}}
+    cargo bench --locked -p tutti-nodes     --bench engine_render   {{ARGS}}
+    cargo bench --locked -p tutti-graph     --bench graph_render    {{ARGS}}
+    cargo bench --locked -p tutti-cpal      --bench audio_callback  {{ARGS}}
+    cargo bench --locked -p tutti-export    --bench offline_render  {{ARGS}}
+    cargo bench --locked -p tutti-polysynth --bench polysynth       {{ARGS}}
+    cargo bench --locked -p tutti-sampler   --bench voice_pool      {{ARGS}}
     # `--features vst2`: the only plugin path criterion can measure honestly.
     # Everything else is a subprocess — see the bench's own header.
-    cargo bench -p tutti-plugin --features vst2 --bench vst2_in_process {{ARGS}}
+    cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process {{ARGS}}
 
 # Record a named baseline on THIS machine, then compare against it later.
 #
@@ -221,7 +228,7 @@ bench-smoke:
 # Samply a criterion bench. `--profile-time` turns criterion's own analysis
 # off, so the profile is of the code rather than of the statistics.
 profile-bench BENCH="engine_render" PKG="tutti-nodes" SECS="10":
-    cargo bench -p {{PKG}} --bench {{BENCH}} --profile profiling --no-run
+    cargo bench --locked -p {{PKG}} --bench {{BENCH}} --profile profiling --no-run
     samply record target/profiling/deps/{{BENCH}}-* --bench --profile-time {{SECS}}
 
 # Build the out-of-process plugin host.
@@ -240,10 +247,10 @@ profile-bench BENCH="engine_render" PKG="tutti-nodes" SECS="10":
 # (`tutti-clap-host`'s own suites, `clap_param_gain` among them, load the same
 # plugin *in-process* and need none of this.)
 plugin-server:
-    cargo build -p tutti-plugin-server --bin plugin-server
+    cargo build --locked -p tutti-plugin-server --bin plugin-server
 
 plugin-server-release:
-    cargo build --release -p tutti-plugin-server --bin plugin-server
+    cargo build --locked --release -p tutti-plugin-server --bin plugin-server
 
 # The Bevy-free floor.
 #
@@ -252,10 +259,10 @@ plugin-server-release:
 # features instead and proves nothing. Naming the feature is what tests both
 # sides.
 check-bevy-free:
-    cargo check -p tutti-core
-    cargo check -p tutti-core --features bevy
-    cargo check -p tutti-types
-    cargo check -p tutti-types --features bevy
+    cargo check --locked -p tutti-core
+    cargo check --locked -p tutti-core --features bevy
+    cargo check --locked -p tutti-types
+    cargo check --locked -p tutti-types --features bevy
     # The facade, and the assertion the two `cargo check`s above cannot make.
     # A compile only proves the crate builds; it says nothing about what came
     # in with it. This is a NEGATIVE dependency check — no bevy crate may
@@ -266,14 +273,20 @@ check-bevy-free:
     #
     # `--features full` and not `--all-features`: the latter pulls the VST3
     # and AU SDKs, which have nothing to do with this question.
-    cargo check -p tutti
-    cargo check -p tutti --features full
-    @! cargo tree -p tutti --features full -e normal | grep -qE '\bbevy(_[a-z]+)?\b' \
-        || (cargo tree -p tutti --features full -e normal | grep -nE '\bbevy(_[a-z]+)?\b'; \
+    cargo check --locked -p tutti
+    cargo check --locked -p tutti --features full
+    @! cargo tree --locked -p tutti --features full -e normal | grep -qE '\bbevy(_[a-z]+)?\b' \
+        || (cargo tree --locked -p tutti --features full -e normal | grep -nE '\bbevy(_[a-z]+)?\b'; \
             echo "FAIL: a bevy crate reached the Bevy-free facade."; exit 1)
     # The session layer both umbrellas use: no Bevy crate under it with every
-    # feature on, no `bevy` feature, no whole-crate re-export (design 015 §8).
+    # feature on, no `bevy` feature (design 015 §8, check 2).
     scripts/check-bevy-free.sh
+
+# The adapter rules (design 015 §8, checks 3 and 4): `bevy-tutti/src` names
+# none of the engine composition `tutti-session` owns, and `tutti-session`
+# re-exports no crate whole. Perl only, no build.
+check-adapter:
+    scripts/check-adapter.sh
 
 # Import-path gate. Engine types are imported from a crate's root or prelude,
 # never through its modules. Neither rustc nor clippy has a lint for a redundant
@@ -284,7 +297,7 @@ check-paths *ARGS:
 
 lint:
     cargo fmt --all --check
-    cargo clippy --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
+    cargo clippy --locked --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
 
 # Typecheck and lint the Windows cfg paths, from Linux or macOS.
 #
@@ -319,7 +332,7 @@ check-windows:
     printf '#include <stddef.h>\nvoid *_alloca(size_t);\n' > "$stub/malloc.h"
     export CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar
     export CFLAGS_x86_64_pc_windows_msvc="-I$stub"
-    win() { cargo clippy --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
+    win() { cargo clippy --locked --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
     win --workspace --all-targets --exclude rustysynth-tutti \
         --exclude tutti-export --exclude tutti --exclude bevy-tutti \
         --exclude tutti-vst3-host --exclude tutti-plugin-server
@@ -332,7 +345,7 @@ check-windows:
 # private_intra_doc_links to deny, but a plain build never runs rustdoc, so this
 # is where that is actually enforced.
 doc:
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps \
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps \
         --exclude rustysynth-tutti
 
 # The audio-correctness harnesses: a Rust example renders audio to a directory,
@@ -347,10 +360,10 @@ doc:
 #
 # Needs `uv`; deps are declared in pyproject.toml.
 verify-audio OUT="/tmp/tutti-verify":
-    cargo run --release -p tutti-sampler   --example render_cases           -- {{OUT}}/sampler
-    cargo run --release -p tutti-export    --example render_export_cases    -- {{OUT}}/export
-    cargo run --release -p tutti-analysis  --example render_analysis_cases  -- {{OUT}}/analysis
-    cargo run --release -p tutti-polysynth --example render_synth_cases     -- {{OUT}}/synth
+    cargo run --locked --release -p tutti-sampler   --example render_cases           -- {{OUT}}/sampler
+    cargo run --locked --release -p tutti-export    --example render_export_cases    -- {{OUT}}/export
+    cargo run --locked --release -p tutti-analysis  --example render_analysis_cases  -- {{OUT}}/analysis
+    cargo run --locked --release -p tutti-polysynth --example render_synth_cases     -- {{OUT}}/synth
     uv sync --quiet
     uv run python crates/dsp/tutti-sampler/examples/verify_sampler.py   {{OUT}}/sampler
     uv run python crates/core/tutti-export/examples/verify_export.py    {{OUT}}/export
@@ -358,4 +371,4 @@ verify-audio OUT="/tmp/tutti-verify":
     uv run python crates/dsp/tutti-polysynth/examples/verify_synth.py   {{OUT}}/synth
 
 # Everything CI runs, in CI's order.
-ci: lint check-paths check-bevy-free check-features test test-features test-editor test-doc doc
+ci: lint check-paths check-bevy-free check-adapter check-features test test-features test-editor test-doc doc

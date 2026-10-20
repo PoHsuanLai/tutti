@@ -1,5 +1,6 @@
 //! The reference CLAP plugin and the `plugin-server` that hosts it, for the
-//! plugin suite and the §5.2 example.
+//! plugin suite and the §5.2 example (`crates/tutti/examples`, which includes
+//! this file by path).
 //!
 //! The plugin is a dev-dependency, so cargo builds its cdylib alongside the
 //! test. The server is not (it would be a dependency cycle through

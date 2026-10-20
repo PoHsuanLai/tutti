@@ -8,18 +8,20 @@
 //! no plan sent. Prints the output's level per 50 ms window.
 //!
 //! ```text
-//! cargo run -p tutti-session --features modulation --example headless_modulation
+//! cargo run -p tutti --features modulation --example headless_modulation
 //! ```
+//!
+//! The umbrella's, so that it imports as the design does (`tutti::prelude`);
+//! what the prelude does not carry (the node contract, the nodes, the
+//! modulation sources) is named through `tutti::`.
 
 use std::sync::Arc;
 
-use tutti_core::{ChannelLayout, InterleavedMut, SampleRate, Samples};
-use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
-use tutti_mod::{Follower, Lfo};
-use tutti_nodes::testing::Osc;
-use tutti_nodes::{SvfFilterNode, SvfType};
-use tutti_session::{GraphSource, ParamRef, Session};
-use tutti_types::{Depth, Hz, UnitParam, Q};
+use tutti::graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
+use tutti::modulation::{Follower, Lfo};
+use tutti::nodes::testing::Osc;
+use tutti::nodes::{SvfFilterNode, SvfType};
+use tutti::prelude::*;
 
 const RATE: f64 = 48_000.0;
 const BLOCK: usize = 512;

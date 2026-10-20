@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — design 015 PR 7: rules, gates and a pinned toolchain
+
+- **`scripts/check-adapter.sh`**, run in `just ci` and CI's paths job,
+  enforces design 015 §8 rules 3 and 4.
+  - `crates/bevy-tutti/src` may not name `Editor`, `Executor`,
+    `Modulation`, `TuttiDriver`, `AudioCallbackState`, `Engine` or
+    `RenderGraph`. Tests and comments are not checked. A hit names the
+    session item that owns the type.
+  - `crates/tutti-session/src` may not re-export a crate whole. That check
+    moved here from `check-bevy-free.sh`, and now parses each `pub use`
+    as a use tree, so nested groups and root groups are read.
+- **`bevy-tutti` runs the session's phases in `PHASES` order.**
+  `SessionPhaseSystems(Phase)` is a system set per phase. They are chained
+  from `PHASES` and placed in the `GraphReconcileSystems`.
+  - `Phase::Collect` now runs first in the frame, in its own system,
+    `collect_graph`, before `Spawn`. Before, `commit_graph` ran it just
+    ahead of the commit. With a device, a retired node's free can slip one
+    frame, when the audio thread has not yet picked up the previous commit.
+    That is benign: the next frame's collect frees it, on the main thread.
+  - With `plugin` and `export`, `start_exports` (the live graph's fork) now
+    runs before the frame's `Params` and `Commit`, because
+    `plugin_render_mode` runs after it, in
+    `SessionPhaseSystems(Phase::RenderMode)`. Before, the fork was unordered
+    against them.
+  - `Phase::MidiOut` (the clock pump) was unordered against the commit. It
+    now follows `AfterCommit`.
+  - A test derives the expected order from `PHASES` and checks it against
+    the phases the session ran.
+- **The `tutti` prelude gains the session's request types**, behind the
+  features that gate them:
+  - `ExportRequest` and `ExportOutput` (`session` + `export`);
+  - `PluginLoadRequest` (`session` + `plugin`) and `PluginId` (`plugin`);
+  - `ParamRef` (`session` + `modulation`);
+  - `GraphSource`, `ExportConfig`, `MidiFile`, `TimedMidiEvent`,
+    `OfflineTimeline` and `OfflineTimelineConfig`.
+- **The two session examples moved to `tutti`** and use
+  `tutti::prelude::*`:
+  - `cargo run -p tutti --features modulation --example headless_modulation`;
+  - `cargo run -p tutti --features clap,export --example plugin_midi_export`.
+
+  `tutti-session` cannot dev-depend on `tutti`, which depends on it.
+- **Reproducible builds.**
+  - `Cargo.lock` is committed. Every cargo command in CI and `just` passes
+    `--locked`, so a drifted lock fails rather than resolving newer
+    dependencies.
+  - `rust-toolchain.toml` pins Rust 1.99.1 with clippy and rustfmt. CI
+    installs it with `rustup toolchain install` in place of
+    `dtolnay/rust-toolchain@stable`. Miri names `+nightly`.
+  - A consumer that pins this repo as a git dependency resolves with its
+    own lock, so the `audio-automation` rev and the bevy 0.19 line still
+    have to stay in step.
+- **`bevy-tutti --features plugin,modulation` builds its tests without dead
+  code.** `tests/mod_plugin.rs` needs `export` or `vst2` to load a plugin,
+  and is now gated on them. CI's dark-features job lints that combination,
+  and lints and tests `tutti --features clap,export,modulation`.
+- **Breaking.** The table below gathers design 015's renames, PRs 4–7, for
+  a host that skips straight to this release. Each row is checked against
+  the code.
+
+  | Was | Now |
+  |---|---|
+  | `bevy_tutti`'s crate-private `GraphRuntime` (`graph/runtime.rs`) behind `AudioGraphRes` | `tutti_session::Graph`, inside the `Session` that `AudioGraphRes` wraps. A headless host uses `Session::graph()` |
+  | `GraphNode` | `SessionNode` (`bevy_tutti::graph::SessionNode`, also in the prelude) |
+  | `TuttiPlugin`'s `inputs`, `outputs`, `render_workers` and `output_device` building the engine in `bevy-tutti` | the same fields, unchanged, passed to `Session::builder()`: `.inputs`, `.outputs_floor`, `.render_workers` and `.build_device(output_device)`. A headless host calls the builder |
+  | `GraphDirty`, set by hand after an edit | none: an edit through `AudioGraphRes` is committed by that frame's `Phase::Commit` |
+  | Bevy's `ExportRequest` component | unchanged for a Bevy app. `start_exports` translates it into `tutti_session::ExportRequest`. A headless host builds that type and calls `Session::export` |
+  | `bevy_tutti::export::RenderGraph` (a re-export of `tutti_export::RenderGraph`) | removed: name it as `tutti_export::RenderGraph` |
+  | `commit_graph` ran `Phase::Collect`, then `Phase::Commit` | `collect_graph` runs `Collect` first in the frame, in `SessionPhaseSystems(Phase::Collect)`. `commit_graph` runs only `Commit` |
+  | `cargo run -p tutti-session --example {headless_modulation,plugin_midi_export}` | `cargo run -p tutti --example …`, with the same features |
+
 ### Changed — `Param64` replaces `AtomicSamplePosition` and `AtomicReadRate`
 
 - **One `f64` cell beside `Param`** (issue #75). `AtomicSamplePosition` and

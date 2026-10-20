@@ -21,7 +21,7 @@
 //! butler follows it, so there is nothing to request and nothing to flush.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
-use tutti_core::{Amplitude, AtomicF32, AtomicReadRate, PlaybackRate, ReadRate, SrcRatio};
+use tutti_core::{Amplitude, AtomicF32, Param64, PlaybackRate, ReadRate, SrcRatio};
 
 use crate::voice::types::Direction;
 
@@ -51,12 +51,9 @@ pub struct PlaybackParams {
     /// behind the butler's `SharedReader`. `RtState` is the cell both already
     /// share, and it is where the other two rate factors compose.
     ///
-    /// `AtomicReadRate`, not `AtomicF32`, unlike the two neighbours: those hold
-    /// `f32`-backed units, while [`ReadRate`] is `f64` precisely because a disk
-    /// voice accumulates it into a read position once per sample. Narrowing it
-    /// through the cell would reinstate that drift on every load — the error
-    /// does not average out, it integrates.
-    stretch_rate: AtomicReadRate,
+    /// A [`Param64`], not an `AtomicF32` like its neighbours: [`ReadRate`] is
+    /// `f64`, and why the width matters is stated on [`Param64`].
+    stretch_rate: Param64<ReadRate>,
 }
 
 impl Default for PlaybackParams {
@@ -66,7 +63,7 @@ impl Default for PlaybackParams {
             direction: AtomicU8::new(0),
             src_ratio: AtomicF32::new(1.0),
             gain: AtomicF32::new(1.0),
-            stretch_rate: AtomicReadRate::new(ReadRate::UNITY),
+            stretch_rate: Param64::new(ReadRate::UNITY),
         }
     }
 }
@@ -215,14 +212,14 @@ impl RtState {
     /// voice does not stretch.
     #[inline]
     pub fn stretch_rate(&self) -> ReadRate {
-        self.playback.stretch_rate.load(Ordering::Acquire)
+        self.playback.stretch_rate.load()
     }
 
     /// Publish the wrapping stretcher's read rate. Control thread, or the audio
     /// thread's own parameter application — a single relaxed store either way.
     #[inline]
     pub fn set_stretch_rate(&self, rate: ReadRate) {
-        self.playback.stretch_rate.store(rate, Ordering::Release);
+        self.playback.stretch_rate.store(rate);
     }
 
     /// Current playback direction. Backed by the `AtomicU8` (0 = forward,

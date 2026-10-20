@@ -10,10 +10,10 @@ pub use error::{Error, Result};
 // from the same place.
 pub use tutti_types::value::SampleRate;
 pub use tutti_types::value::{
-    Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,
-    Cents, CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Pan, Param, ParamAddr,
-    Phase, PhaseIncrement, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, Seconds,
-    Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam, Q,
+    Amplitude, ArcDegrees, Azimuth, Beat, BeatDuration, Bpm, Cents, CompressionRatio, Db, Depth,
+    Drive, Elevation, Feedback, Hz, Mix, Pan, Param, Param64, ParamAddr, Phase, PhaseIncrement,
+    PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, Seconds, Semitones, Spread,
+    SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam, Q,
 };
 
 mod engine;

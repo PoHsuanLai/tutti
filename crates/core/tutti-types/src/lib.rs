@@ -50,13 +50,12 @@ pub use atomic_float::AtomicF32;
 
 // Value vocabulary.
 pub use value::{
-    Amplitude, ArcDegrees, At, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration,
-    Bpm, CCNumber, Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation,
-    Feedback, Frame, Hz, Latency, MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note,
-    NoteNumberOutOfRange, Pan, Param, ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass,
-    PlayReading, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, SampleRate, Samples,
-    Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitParam,
-    UnitParamOutOfRange, Velocity, Q,
+    Amplitude, ArcDegrees, At, Azimuth, Beat, BeatDuration, Bpm, CCNumber, Cents, CompressionRatio,
+    Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Frame, Hz, Latency,
+    MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param, Param64,
+    ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass, PlayReading, PlaybackRate, Radians,
+    ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds, Semitones, Spread, SrcRatio,
+    StereoWidth, StretchFactor, Tail, Unit, UnitParam, UnitParamOutOfRange, Velocity, Q,
 };
 
 // The frame is the source of truth for time: the one frame↔beat conversion,

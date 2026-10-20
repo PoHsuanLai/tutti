@@ -10,8 +10,8 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
-    Amplitude, AtomicSamplePosition, Beat, BeatDuration, ChannelLayout, Param, PlaybackRate,
-    ReadRate, SamplePosition, SampleRate, Samples, SrcRatio, Tail, UnitParam,
+    Amplitude, Beat, BeatDuration, ChannelLayout, Param, Param64, PlaybackRate, ReadRate,
+    SamplePosition, SampleRate, Samples, SrcRatio, Tail, UnitParam,
 };
 use tutti_graph::{
     param_parts, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
@@ -248,7 +248,7 @@ impl Default for MemorySourceConfig {
 /// [`set_wave`](Self::set_wave), which is control-thread only.
 pub struct MemorySource {
     wave: Arc<Wave>,
-    position: AtomicSamplePosition,
+    position: Param64<SamplePosition>,
 
     /// Defaults to true (auto-play).
     playing: AtomicBool,
@@ -325,7 +325,7 @@ impl std::fmt::Debug for MemorySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemorySource")
             .field("wave_frames", &self.wave.len())
-            .field("position", &self.position.load(Ordering::Relaxed))
+            .field("position", &self.position.load())
             .field("playing", &self.playing.load(Ordering::Relaxed))
             .field("gain", &self.gain)
             .field("speed", &self.speed)
@@ -342,7 +342,7 @@ impl Clone for MemorySource {
     fn clone(&self) -> Self {
         Self {
             wave: Arc::clone(&self.wave),
-            position: AtomicSamplePosition::new(self.position.load(Ordering::Relaxed)),
+            position: Param64::new(self.position.load()),
             playing: AtomicBool::new(self.playing.load(Ordering::Relaxed)),
             gain: self.gain.handle(),
             driven_gain: None,
@@ -372,7 +372,7 @@ impl MemorySource {
         let sample_rate = wave.sample_rate();
         Self {
             wave,
-            position: AtomicSamplePosition::new(SamplePosition::new(0.0)),
+            position: Param64::new(SamplePosition::new(0.0)),
             playing: AtomicBool::new(true),
             gain: Param::new(Amplitude::new(1.0)),
             driven_gain: None,
@@ -483,7 +483,7 @@ impl MemorySource {
     /// [`trigger`](Self::trigger) from an arbitrary [`SamplePosition`] in source
     /// samples rather than from 0.
     pub fn trigger_at(&self, position: SamplePosition) {
-        self.position.store(position, Ordering::Relaxed);
+        self.position.store(position);
         self.looped.store(false, Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
     }
@@ -539,7 +539,7 @@ impl MemorySource {
     /// from the playhead each frame and never writes this — read
     /// [`window_position`](Self::window_position) instead.
     pub fn position(&self) -> SamplePosition {
-        self.position.load(Ordering::Relaxed)
+        self.position.load()
     }
 
     /// Whether this source plays its window of the transport, read from its
@@ -675,8 +675,7 @@ impl MemorySource {
     pub(crate) fn replace_wave(&mut self, wave: Arc<Wave>) -> Arc<Wave> {
         self.sample_rate = wave.sample_rate();
         let old = std::mem::replace(&mut self.wave, wave);
-        self.position
-            .store(SamplePosition::new(0.0), Ordering::Release);
+        self.position.store(SamplePosition::new(0.0));
         self.looped.store(false, Ordering::Relaxed);
         old
     }
@@ -1106,7 +1105,7 @@ impl MemorySource {
             return;
         }
 
-        let pos = self.position.load(Ordering::Relaxed).get();
+        let pos = self.position.load().get();
         let wave_len = self.wave.len() as f64;
         let span = self.loop_mode.span(self.wave.len());
         match &span {
@@ -1140,17 +1139,14 @@ impl MemorySource {
                     Some(span) => span.place(new_pos).0,
                     None => wrap_into_loop(new_pos, loop_start, loop_end),
                 };
-                self.position
-                    .store(SamplePosition::new(wrapped), Ordering::Relaxed);
+                self.position.store(SamplePosition::new(wrapped));
                 self.looped.store(true, Ordering::Relaxed);
             } else {
                 self.playing.store(false, Ordering::Relaxed);
-                self.position
-                    .store(SamplePosition::new(loop_end), Ordering::Relaxed);
+                self.position.store(SamplePosition::new(loop_end));
             }
         } else {
-            self.position
-                .store(SamplePosition::new(new_pos), Ordering::Relaxed);
+            self.position.store(SamplePosition::new(new_pos));
         }
     }
 
@@ -1268,8 +1264,7 @@ impl MemorySource {
     /// Rewind the free-running cursor to the start and stop it; forget the
     /// transport. What [`Node::reset`] does.
     fn rewind(&mut self) {
-        self.position
-            .store(SamplePosition::new(0.0), Ordering::Relaxed);
+        self.position.store(SamplePosition::new(0.0));
         self.playing.store(false, Ordering::Relaxed);
         self.looped.store(false, Ordering::Relaxed);
         self.clock.reset();

@@ -38,7 +38,15 @@
 //! - `begin`'s counter re-arm removed → `diamond_two_participants` (the
 //!   second block's counters wrap and never reach zero, so the caller
 //!   spins; loom fails it with "Model exceeded maximum number of
-//!   branches").
+//!   branches"). Re-run after the caller's wait became `SpinThenYield`
+//!   (`rt/spin.rs`, budget 2 under loom): it still fails the same way.
+//!
+//! The caller's spin-then-yield is a scheduling change, not an ordering
+//! one: its progress check is the same `remaining` load the exit test makes,
+//! and loom's `spin_loop` and `yield_now` both just schedule another thread.
+//! So removing the yield is not a mutation this model can see; the unit
+//! tests `the_caller_yields_while_a_helper_holds_a_task` and `rt::spin`'s
+//! catch it.
 
 #![cfg(loom)]
 

@@ -37,8 +37,14 @@
 //! The caller never waits on a helper that has not started: a helper still
 //! asleep when the gate closes never enters. It waits only for helpers
 //! inside the job, which leave as soon as the job's own termination says so.
+//! That wait spins, and yields the caller's core once per spin budget in
+//! which `entered` has not moved (`SpinThenYield`, `src/rt/spin.rs`), so a
+//! helper queued behind a `SCHED_FIFO` caller on its own core can run and
+//! leave.
 
 use sync::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering, UnsafeCell};
+
+use super::spin::SpinThenYield;
 
 mod sync {
     #[cfg(loom)]
@@ -223,11 +229,13 @@ impl Drop for Close<'_> {
         fence(Ordering::SeqCst);
         // `Acquire`: every helper's use of the job happens-before its exit's
         // `Release`, and so before this returns.
-        while g.entered.load(Ordering::Acquire) != 0 {
-            #[cfg(loom)]
-            loom::thread::yield_now();
-            #[cfg(not(loom))]
-            std::hint::spin_loop();
+        let mut wait = SpinThenYield::new(u32::MAX);
+        loop {
+            let inside = g.entered.load(Ordering::Acquire);
+            if inside == 0 {
+                break;
+            }
+            wait.wait(inside);
         }
         // Nobody reads the cell now; clear it so no stale address lingers.
         // SAFETY: closed, and `entered` is zero.
@@ -299,6 +307,61 @@ mod tests {
         for h in helpers {
             h.join().expect("helper");
         }
+    }
+
+    /// The close, waiting for a helper still inside the job, yields the
+    /// caller's core once its spin budget passes with `entered` unchanged:
+    /// what lets a helper queued behind a `SCHED_FIFO` caller on one core
+    /// leave at all (`src/rt/spin.rs`). The helper stays inside until it
+    /// sees the caller's yield counted, so no timing is involved; the 10 s
+    /// bound is only how a missing yield fails rather than hangs.
+    ///
+    /// Mutation: make `SpinThenYield::wait` spin on every wait (drop its
+    /// yield branch) → no yield is counted → the helper gives up after 10 s
+    /// and leaves → `saw` is false → fails (run: fails after 10 s).
+    #[test]
+    fn the_close_yields_while_a_helper_is_inside() {
+        use std::time::{Duration, Instant};
+        static YIELDED: AtomicU32 = AtomicU32::new(0);
+        let gate = JobGate::new(2);
+        let inside = AtomicBool::new(false);
+        let saw = AtomicBool::new(false);
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut served = 0;
+                while !stop.load(Ordering::Acquire) && !gate.help(&mut served) {
+                    std::hint::spin_loop();
+                }
+            });
+            crate::rt::spin::tests::count_yields_into(&YIELDED);
+            let joined = gate.run(
+                &|i| {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    if i == 0 {
+                        // Hold participant 0 until the helper is inside, so
+                        // the close has a helper to wait for.
+                        while !inside.load(Ordering::Acquire) && Instant::now() < deadline {
+                            std::thread::yield_now();
+                        }
+                    } else {
+                        inside.store(true, Ordering::Release);
+                        while YIELDED.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+                            std::thread::yield_now();
+                        }
+                        saw.store(YIELDED.load(Ordering::Acquire) > 0, Ordering::Relaxed);
+                    }
+                },
+                || {},
+            );
+            assert!(joined);
+            stop.store(true, Ordering::Release);
+        });
+        assert!(inside.load(Ordering::Relaxed), "the helper joined");
+        assert!(
+            saw.load(Ordering::Relaxed),
+            "the close never yielded while the helper was inside"
+        );
     }
 
     /// A call from inside a job runs alone rather than waiting on itself.

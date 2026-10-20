@@ -52,18 +52,26 @@
 //! # Waiting
 //!
 //! A participant with nothing to take while tasks are still running spins.
-//! The audio thread ([`Participant::Caller`]) spins until the block is done:
-//! it never yields (doc 013 §4: never make the callback wait on the OS). A
-//! [`Participant::Helper`] spins at most `HELPER_SPINS` times in a row and
+//! The audio thread ([`Participant::Caller`]) waits until the block is done:
+//! it spins, and once `remaining` has not moved for a spin budget it yields
+//! its core once and spins again (`SpinThenYield`, `src/rt/spin.rs`). A
+//! wait in which a task finishes within the budget is the plain spin it
+//! always was. The yield is for a helper queued behind the caller on the
+//! caller's own core: under `SCHED_FIFO`, which does not time-slice, a
+//! caller that only spun would keep it off that core until the kernel
+//! migrated it, or for good. The yield is not a wait on the OS in doc 013
+//! §4's sense: the caller gives back a core it would only spin on, and gets
+//! it back at once when no thread of its priority is waiting.
+//! A [`Participant::Helper`] spins at most `HELPER_SPINS` times in a row and
 //! then **leaves** `work`, forfeiting the rest of the block, rather than
 //! yielding: the caller waits for every helper still inside the job before
 //! the block ends, so a helper that yielded the CPU while inside it would
 //! make the audio thread wait on the scheduler. Its idle backoff (yield,
 //! park) happens outside the job, in the pool.
 
-use std::cell::Cell;
-
 use sync::{AtomicBool, AtomicU32, Ordering};
+
+use super::spin::SpinThenYield;
 
 mod sync {
     #[cfg(loom)]
@@ -91,7 +99,9 @@ struct Padded<T>(T);
 /// Who is running [`TaskGraph::work`], which decides how it waits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Participant {
-    /// The audio thread: spins while it waits, never yields.
+    /// The audio thread: spins while it waits, and yields its core once per
+    /// spin budget in which no task finished (see the module docs,
+    /// "Waiting").
     Caller,
     /// A worker thread: spins a bounded number of times, then leaves the
     /// block to the others (see `HELPER_SPINS`).
@@ -262,7 +272,10 @@ impl TaskGraph {
     /// take. Any number of participants, including one caller, runs every
     /// task exactly once, each after all its predecessors.
     pub fn work(&self, who: Participant, mut run: impl FnMut(u32)) {
-        let spins = Cell::new(0u32);
+        // Helper: waits in a row with nothing to take.
+        let mut idle = 0u32;
+        // Caller: its wait on `remaining`.
+        let mut caller = SpinThenYield::new(u32::MAX);
         let mut next = None;
         loop {
             if self.aborted.load(Ordering::Relaxed) {
@@ -271,16 +284,24 @@ impl TaskGraph {
             let t = match next.take().or_else(|| self.pop()) {
                 Some(t) => t,
                 None => {
-                    if self.remaining.0.load(Ordering::Acquire) == 0 {
+                    let left = self.remaining.0.load(Ordering::Acquire);
+                    if left == 0 {
                         return;
                     }
-                    if !wait(&spins, who) {
-                        return;
+                    match who {
+                        Participant::Caller => caller.wait(left),
+                        Participant::Helper => {
+                            idle += 1;
+                            if idle > HELPER_SPINS {
+                                return;
+                            }
+                            helper_spin();
+                        }
                     }
                     continue;
                 }
             };
-            spins.set(0);
+            idle = 0;
             run(t);
             let row = self.offsets[t as usize] as usize..self.offsets[t as usize + 1] as usize;
             for &s in &self.targets[row] {
@@ -306,21 +327,15 @@ impl std::fmt::Debug for TaskGraph {
     }
 }
 
-/// One step of a participant's wait for work another is finishing; `false`
-/// when a helper has spun its budget and should leave the block.
-fn wait(spins: &Cell<u32>, who: Participant) -> bool {
-    let n = spins.get().saturating_add(1);
-    spins.set(n);
-    if who == Participant::Helper && n > HELPER_SPINS {
-        return false;
-    }
-    // loom needs a yield to let another thread run; a real spin never
-    // yields (see the module docs, "Waiting").
+/// One step of a helper's wait for work another participant is finishing.
+/// A helper never yields inside the block (see the module docs, "Waiting"):
+/// it leaves instead, after `HELPER_SPINS` of these.
+fn helper_spin() {
+    // loom needs a yield to let another thread run.
     #[cfg(loom)]
     loom::thread::yield_now();
     #[cfg(not(loom))]
     std::hint::spin_loop();
-    true
 }
 
 #[cfg(all(test, not(loom)))]
@@ -472,6 +487,61 @@ mod tests {
         });
         assert!(g.done());
         assert_eq!(helper_ran, 0, "nothing was ready while it waited");
+    }
+
+    /// The caller, with nothing to take while a helper holds the only task
+    /// in flight, yields its core once its spin budget passes with no task
+    /// finished: what lets a helper queued behind a `SCHED_FIFO` caller on
+    /// one core run at all (`src/rt/spin.rs`). The helper holds task 0
+    /// until it sees the caller's yield counted, so no timing is involved;
+    /// the 10 s bound is only how a missing yield fails rather than hangs.
+    ///
+    /// Mutation: make `SpinThenYield::wait` spin on every wait (drop its
+    /// yield branch) → no yield is counted → the helper gives up after 10 s
+    /// and finishes the block → `saw_yield` is false → fails (run: fails
+    /// after 10 s).
+    #[test]
+    fn the_caller_yields_while_a_helper_holds_a_task() {
+        use std::sync::atomic::AtomicU32;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        static YIELDED: AtomicU32 = AtomicU32::new(0);
+        // 0 → 1: while the helper holds 0, the caller has nothing to take.
+        let mut g = TaskGraph::new(&[0, 1], &[0, 1, 1], &[1]);
+        g.begin();
+        let g = &g;
+        let (held_tx, held_rx) = mpsc::channel();
+        let saw_yield = std::thread::scope(|s| {
+            let helper = s.spawn(move || {
+                let mut saw = false;
+                g.work(Participant::Helper, |t| {
+                    if t != 0 {
+                        return;
+                    }
+                    held_tx.send(()).unwrap();
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while YIELDED.load(std::sync::atomic::Ordering::Acquire) == 0 {
+                        if Instant::now() > deadline {
+                            return;
+                        }
+                        std::thread::yield_now();
+                    }
+                    saw = true;
+                });
+                saw
+            });
+            held_rx.recv().unwrap();
+            crate::rt::spin::tests::count_yields_into(&YIELDED);
+            g.work(Participant::Caller, |t| {
+                panic!("the caller took task {t}, which the helper holds or runs inline")
+            });
+            helper.join().unwrap()
+        });
+        assert!(
+            saw_yield,
+            "the caller never yielded while the helper held task 0"
+        );
+        assert!(g.done());
     }
 
     /// An abort makes every participant leave with work pending.

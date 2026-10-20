@@ -26,15 +26,32 @@
 //! (`tutti_types::TaskGraph`'s "Waiting"). Yielding and parking happen only
 //! between jobs, outside the gate.
 //!
+//! The caller's own wait, for a helper still running a task or still inside
+//! the gate, spins, and yields its core once per spin budget in which the
+//! helper made no progress (`tutti_types`' `rt/spin.rs`). That yield is for
+//! a helper queued behind the caller on the caller's core, and it only helps
+//! one at the caller's priority (below).
+//!
 //! # Priority
 //!
 //! A helper runs graph nodes on the audio thread's behalf, so a host that
 //! promotes its audio callback (`SCHED_FIFO`, MMCSS, a macOS audio
-//! workgroup) should promote the helpers the same way: give
-//! [`WorkerPoolBuilder::on_start`] a hook, which each helper runs once on its
-//! own thread before it takes any work. The engine does not do this itself,
-//! for the same reason it does not promote the callback: the device layer
-//! owns the policy (and on Linux the privilege).
+//! workgroup) must promote the helpers the same way, **at the callback's
+//! priority**: give [`WorkerPoolBuilder::on_start`] a hook, which each
+//! helper runs once on its own thread before it takes any work. The engine
+//! does not do this itself, for the same reason it does not promote the
+//! callback: the device layer owns the policy (and on Linux the privilege).
+//!
+//! If they run below it (the default when the hook is not given: `SCHED_OTHER`
+//! helpers under a `SCHED_FIFO` callback), a helper that holds a task and
+//! shares the callback's core cannot run while the callback waits for it:
+//! the callback's yield moves it behind threads of its own priority only.
+//! The block then lasts until the kernel moves the helper to another core,
+//! or until RT throttling takes the core from the callback (950 ms in every
+//! second by default on Linux): a dropout. At the callback's priority, the
+//! yield lets the helper finish its task (`tutti-types`'
+//! `tests/spin_starvation.rs` measures both). Above it is wrong too: a
+//! helper would then preempt the callback on its core.
 
 use std::sync::atomic::{fence, AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -161,8 +178,10 @@ impl WorkerPoolBuilder {
     }
 
     /// A hook each helper runs once on its own thread before taking work,
-    /// with its index — where a host raises the thread's priority or joins
-    /// an audio workgroup (see the module docs).
+    /// with its index — where a host raises the thread's priority to the
+    /// audio callback's or joins its audio workgroup. Under a real-time
+    /// callback the helpers must run at its priority (see the module docs,
+    /// "Priority").
     pub fn on_start(mut self, hook: OnStart) -> Self {
         self.on_start = Some(hook);
         self

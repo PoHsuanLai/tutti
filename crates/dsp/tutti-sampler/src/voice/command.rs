@@ -7,7 +7,7 @@
 //! the callback never has to.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::stretch;
 
@@ -437,6 +437,9 @@ pub struct VoiceNodeHandle {
     /// The node's placement, shared with the node (which reads it once per
     /// block) and with its fork source (which reads it at fork time).
     pub(crate) placement: PlacementCell,
+    /// The window last published to `placement`, for the control side (the
+    /// fork source reads it): never a read of the node's cell.
+    pub(crate) placed: PlacedWindow,
     /// The voice's gain: the cell the node reads once per block.
     pub(crate) gain: Param<Amplitude>,
     /// The gain by address ([`UnitParam::Volume`](tutti_core::UnitParam)),
@@ -448,10 +451,11 @@ pub struct VoiceNodeHandle {
 /// `None` until the handle first sets one, and the node keeps the window it
 /// was built with until then.
 ///
-/// One cell for the three readers. The handle publishes (control thread);
-/// the node reads it once per block, and applies it when it differs from the
-/// window it last applied; the fork source reads it when a fork is taken, so
-/// a clip moved after the insert exports where it was moved to.
+/// The handle publishes (control thread), and records the same window in its
+/// [`PlacedWindow`]; the node reads the cell once per block, and applies it
+/// when it differs from the window it last applied; the fork source reads the
+/// record when a fork is taken, so a clip moved after the insert exports where
+/// it was moved to.
 ///
 /// Latest-wins loses nothing a queue would have delivered: applying a
 /// window is a plain overwrite of the source's window (no seek, no re-arm),
@@ -459,6 +463,12 @@ pub struct VoiceNodeHandle {
 /// state as applying the last, and nothing else rides with it to be ordered
 /// against.
 pub(crate) type PlacementCell = Arc<ArcLend<Option<VoiceWindow>>>;
+
+/// The window last published to a [`PlacementCell`], for the control side:
+/// what a fork starts from. Written under its lock in the same call that
+/// publishes, so the two never disagree once it returns. The node never
+/// takes this lock.
+pub(crate) type PlacedWindow = Arc<Mutex<Option<VoiceWindow>>>;
 
 impl VoiceNodeHandle {
     /// Moves the voice's timeline window, from the node's next block on.
@@ -474,10 +484,16 @@ impl VoiceNodeHandle {
     /// **Control thread**: publishing allocates the new value and frees the
     /// one it replaces, here, so the node never does either.
     pub fn set_placement(&self, start_beat: Beat, duration_beats: Option<BeatDuration>) {
-        self.placement.publish(Arc::new(Some(VoiceWindow {
+        let window = Some(VoiceWindow {
             start: start_beat,
             duration: duration_beats,
-        })));
+        });
+        // Held across the publish, so two handles racing leave the record
+        // and the cell on the same window.
+        let mut placed = self.placed.lock().unwrap_or_else(PoisonError::into_inner);
+        *placed = window;
+        self.placement.publish(Arc::new(window));
+        drop(placed);
         // A clip drag republishes this every frame: where a parked `Loan`
         // shows first. Debug builds only.
         debug_check_reclaiming(&self.placement);

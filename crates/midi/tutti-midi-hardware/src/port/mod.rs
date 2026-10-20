@@ -13,4 +13,4 @@ pub(crate) mod async_port;
 mod manager;
 
 pub use async_port::InputProducerHandle;
-pub use manager::{HardwareMidiInputs, PortId, PortInfo, PortType};
+pub use manager::{HardwareMidiDrain, HardwareMidiInputs, PortId, PortInfo, PortType};

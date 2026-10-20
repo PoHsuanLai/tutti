@@ -20,7 +20,9 @@ pub mod test_support;
 pub use capability::{EndpointId, EndpointInfo, UmpCapability};
 pub use endpoints::{InputConnection, MidiEndpoints};
 pub use error::{Error, Result};
-pub use port::{HardwareMidiInputs, InputProducerHandle, PortId, PortInfo, PortType};
+pub use port::{
+    HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle, PortId, PortInfo, PortType,
+};
 pub use session::MidiSession;
 pub use sysex::Sysex7ByteAssembler;
 

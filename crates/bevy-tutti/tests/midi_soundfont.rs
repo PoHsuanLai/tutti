@@ -519,12 +519,14 @@ mod midi_route {
         Arc::new(SoundFont::new(&mut file).expect("test soundfont parses"))
     }
 
-    /// A wire that hands out what was pushed onto it, on the next poll.
-    #[derive(Default)]
-    struct Wire(Mutex<Vec<MidiEvent>>);
+    /// A wire that hands out what was pushed onto it, on the next poll. A
+    /// clone is another handle on the same wire: the node owns one, the test
+    /// pushes through another.
+    #[derive(Default, Clone)]
+    struct Wire(Arc<Mutex<Vec<MidiEvent>>>);
 
     impl MidiIn for Wire {
-        fn poll_block(&self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+        fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
             let mut pending = self.0.lock().unwrap();
             let n = pending.len().min(buffer.len());
             buffer[..n].copy_from_slice(&pending[..n]);
@@ -556,9 +558,9 @@ mod midi_route {
         let mut app = App::new();
         let mut graph = AudioGraphRes::headless(0, 2);
         graph.set_sample_rate(SampleRate(SAMPLE_RATE));
-        let wire = Arc::new(Wire::default());
+        let wire = Wire::default();
         let (input_node, _) = graph.insert(MidiInputNode::new(Some(
-            Arc::clone(&wire) as Arc<dyn MidiIn>
+            Box::new(wire.clone()) as Box<dyn MidiIn>
         )));
         let mut settings = SynthesizerSettings::new(SAMPLE_RATE as i32);
         settings.enable_reverb_and_chorus = false;

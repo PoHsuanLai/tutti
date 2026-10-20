@@ -34,15 +34,22 @@ pub trait MidiOut: Send + Sync {
     fn queue(&self, events: &[MidiEvent]) -> usize;
 }
 
-/// One input edge that the audio thread drains once per block.
+/// One input edge's per-node read state, which the audio thread polls once per block.
 ///
 /// The events are not yet addressed: nothing here knows
 /// which unit any of them belongs to — deciding that is what the consumer does
-/// with what it gets back. Exactly one owner drains this per block; a second
+/// with what it gets back. Exactly one owner drains an edge per block; a second
 /// drainer takes events the first will never see.
 ///
 /// This is the read-side complement to [`MidiOut`]: one undifferentiated stream,
 /// no id.
+///
+/// **The node owns it** (`Box<dyn MidiIn>`), and polls it through `&mut self`:
+/// whatever state a poll keeps between blocks (a drain's scratch, its read of
+/// a published port set) belongs to the one node that polls, built with it
+/// on the control thread. A shared edge (a hardware port manager) hands out
+/// one such poller per node rather than being polled through a shared
+/// reference.
 ///
 /// `block_size` is the frame count of the upcoming audio block. An edge that
 /// converts arrival timestamps into offsets uses it, and every returned event's
@@ -50,7 +57,7 @@ pub trait MidiOut: Send + Sync {
 ///
 /// Implementations must be **lock-free** and **alloc-free** — this runs on the
 /// audio thread, once per block.
-pub trait MidiIn: Send + Sync {
+pub trait MidiIn: Send {
     /// Writes this block's pending events into `buffer` and returns how many.
     ///
     /// **A full `buffer` drops the overflow.** An implementation draining a
@@ -58,5 +65,5 @@ pub trait MidiIn: Send + Sync {
     /// there is no room, and holding them back would need a stash outliving the
     /// call — so the contract is truncation, not deferral. Size `buffer` for the
     /// largest burst worth surviving.
-    fn poll_block(&self, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
+    fn poll_block(&mut self, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
 }

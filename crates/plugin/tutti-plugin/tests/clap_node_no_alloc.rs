@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tutti_core::meter::{BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
-use tutti_core::{ArcLend, BeatDuration, Depth, PhaseIncrement};
+use tutti_core::{BeatDuration, Depth, PhaseIncrement};
 use tutti_graph::{Offset, Transport, TransportChanges};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
@@ -120,11 +120,11 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         (0.0, 1.0),
     );
     let (mut rig, sender) = Rig::prepared_with_keys(probe.client.bind(), prepare, vec![lfo, lane]);
-    let meter = Arc::new(ArcLend::new(MeterMap::new([MeterChange::new(
+    let meter = tutti_core::ProjectMeter::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
-    )])));
-    rig.controls.set_meter(Arc::clone(&meter));
+    )]));
+    rig.controls.set_meter(meter.clone());
 
     let silence = vec![0.0f32; BLOCK];
     let inputs: Vec<&[f32]> = (0..rig.inputs()).map(|_| &silence[..]).collect();

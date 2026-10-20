@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_core::{ArcLend, MeterMap, Samples};
+use tutti_core::{MeterMap, MeterSlotCell, ProjectMeter, Samples};
 use tutti_graph::{Cx, Offset};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
@@ -129,11 +129,16 @@ pub(super) enum RateDelivery {
 /// callback reads, then calls the plugin.
 #[derive(Clone)]
 pub(super) struct TransportFeed {
-    /// The project meter, read once per block. The cell is shared with the
-    /// node's controls ([`InProcessVst2Client::meter`]), so a meter installed
-    /// through them reaches the node the audio thread runs; a fork has a cell
-    /// of its own ([`forked`](Self::forked)).
+    /// The node's meter slot, shared with its controls
+    /// ([`InProcessVst2Client::meter`]), so a meter installed through them
+    /// reaches the node the audio thread runs; a fork has a slot of its own
+    /// ([`forked`](Self::forked)). Control side only: the block reads
+    /// `cell`.
     meter: PluginMeter,
+    /// The slot's cell, taken when the feed is built: the one cell the block
+    /// reads the project meter from. Installing or clearing a meter publishes
+    /// into it; nothing swaps it.
+    cell: Arc<MeterSlotCell>,
     /// The meter read when none is installed (4/4 from bar 0), held so a
     /// block never builds one.
     default_meter: MeterMap,
@@ -147,32 +152,32 @@ pub(super) struct TransportFeed {
 impl TransportFeed {
     /// No meter installed, nothing rendered.
     pub(super) fn new() -> Self {
+        Self::over(PluginMeter::default())
+    }
+
+    /// A feed reading `meter`'s cell, nothing rendered.
+    fn over(meter: PluginMeter) -> Self {
         Self {
-            meter: PluginMeter::default(),
+            cell: meter.cell(),
+            meter,
             default_meter: MeterMap::default(),
             steady: SteadyTime::default(),
             last: TransportInfo::default(),
         }
     }
 
-    /// A fork's feed: the meter installed now, in a cell of its own (a meter
+    /// A fork's feed: the meter installed now, in a slot of its own (a meter
     /// installed on the live node afterwards does not reach the fork, as for
     /// the out-of-process node's fork), and a counter from zero.
     pub(super) fn forked(&self) -> Self {
-        Self {
-            meter: PluginMeter::holding(self.meter.installed()),
-            default_meter: MeterMap::default(),
-            steady: SteadyTime::default(),
-            last: TransportInfo::default(),
-        }
+        Self::over(PluginMeter::holding(self.meter.installed()))
     }
 
     /// The snapshot for a block of `frames`, then count them. A plugin that
     /// did not declare [`Features::TRANSPORT`] is handed the default
     /// (stopped) snapshot; an empty block, which has no frame to read the
-    /// transport at, repeats the last one. Audio thread: two wait-free
-    /// borrows (the meter slot, then the meter cell it holds), no allocation
-    /// and no free.
+    /// transport at, repeats the last one. Audio thread: one wait-free
+    /// borrow (the node's meter cell), no allocation and no free.
     pub(super) fn block(
         &mut self,
         cx: &Cx<'_>,
@@ -186,13 +191,12 @@ impl TransportFeed {
         let Some(at) = Offset::new(0, Samples(frames)) else {
             return self.last;
         };
-        let slot = self.meter.lend();
-        let meter = slot.as_ref().map(|m| m.lend());
+        let installed = self.cell.lend();
         self.last = transport_source::from_cx(
             cx,
             at,
             self.steady.at(0),
-            meter.as_deref().unwrap_or(&self.default_meter),
+            installed.as_deref().unwrap_or(&self.default_meter),
         );
         self.steady.advance(frames);
         self.last
@@ -285,15 +289,16 @@ impl InProcessVst2Client {
     }
 
     /// Gives the plugin the project meter, for the time signature and bar
-    /// its `audioMasterGetTime` snapshot carries. Pass the cell the host
-    /// publishes meter edits into, and an edit reaches the running plugin
-    /// with nothing re-installed. Replaces any meter installed before.
+    /// its `audioMasterGetTime` snapshot carries. The node's meter follows
+    /// the project meter, so an edit the host publishes there reaches the
+    /// running plugin with nothing re-installed. Replaces any meter installed
+    /// before.
     ///
     /// The transport itself needs no install: each block reads it from the
     /// graph (the transport the block's input was rendered at). The snapshot
     /// reaches plugins declaring [`Features::TRANSPORT`], which the
     /// in-process loader declares for every VST2.
-    pub fn set_meter(&self, meter: Arc<ArcLend<MeterMap>>) {
+    pub fn set_meter(&self, meter: ProjectMeter) {
         self.transport.meter.set_meter(meter);
     }
 
@@ -502,11 +507,8 @@ mod transport_tests {
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH)
     }
 
-    fn seven_eight_meter() -> Arc<ArcLend<MeterMap>> {
-        Arc::new(ArcLend::new(MeterMap::new([MeterChange::new(
-            Beat(0.0),
-            seven_eight(),
-        )])))
+    fn seven_eight_meter() -> ProjectMeter {
+        ProjectMeter::new(MeterMap::new([MeterChange::new(Beat(0.0), seven_eight())]))
     }
 
     /// The feature set the in-process loader builds for a plugin reporting no

@@ -16,7 +16,7 @@
 //! ([`HarmonyControls::set`]); the node reads them once per block.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tutti_core::{ArcLend, Beat, ChannelLayout};
 use tutti_graph::{
@@ -75,8 +75,27 @@ fn lanes(generation: u64, changes: impl IntoIterator<Item = TimedHarmony>) -> La
 
 /// What the node and its controls share.
 struct Shared {
+    /// What the audio thread reads, once per block.
     cell: ArcLend<Lanes>,
+    /// The lanes last published, for the control side (a fork's snapshot, a
+    /// count, the unchanged-lanes check). The node never takes this lock.
+    current: Mutex<Arc<Lanes>>,
     next_generation: AtomicU64,
+}
+
+impl Shared {
+    fn new(changes: impl IntoIterator<Item = TimedHarmony>) -> Arc<Self> {
+        let first = Arc::new(lanes(0, changes));
+        Arc::new(Self {
+            cell: ArcLend::from_arc(Arc::clone(&first)),
+            current: Mutex::new(first),
+            next_generation: AtomicU64::new(1),
+        })
+    }
+
+    fn current(&self) -> Arc<Lanes> {
+        Arc::clone(&self.current.lock().unwrap_or_else(PoisonError::into_inner))
+    }
 }
 
 /// A sequencer's chord and scale lanes as a graph node with one event output.
@@ -103,14 +122,11 @@ pub struct HarmonyNode {
 impl HarmonyNode {
     /// A node sending `changes` (in any order: they are sorted by beat).
     pub fn new(changes: impl IntoIterator<Item = TimedHarmony>) -> Self {
-        Self::over(Arc::new(Shared {
-            cell: ArcLend::new(lanes(0, changes)),
-            next_generation: AtomicU64::new(1),
-        }))
+        Self::over(Shared::new(changes))
     }
 
     fn over(shared: Arc<Shared>) -> Self {
-        let generation = shared.cell.lend().generation;
+        let generation = shared.current().generation;
         Self {
             shared,
             generation,
@@ -132,14 +148,21 @@ impl HarmonyControls {
     /// beat order) change nothing. Control thread.
     pub fn set(&self, changes: impl IntoIterator<Item = TimedHarmony>) {
         let next = lanes(0, changes);
-        if self.shared.cell.lend().changes == next.changes {
+        let mut current = self
+            .shared
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if current.changes == next.changes {
             return;
         }
         let generation = self.shared.next_generation.fetch_add(1, Ordering::Relaxed);
-        self.shared.cell.publish(Arc::new(Lanes {
+        let published = Arc::new(Lanes {
             generation,
             changes: next.changes,
-        }));
+        });
+        *current = Arc::clone(&published);
+        self.shared.cell.publish(published);
     }
 
     /// Sends nothing from the next block on. Control thread.
@@ -149,7 +172,7 @@ impl HarmonyControls {
 
     /// How many changes the lanes hold.
     pub fn len(&self) -> usize {
-        self.shared.cell.lend().changes.len()
+        self.shared.current().changes.len()
     }
 
     /// Whether the lanes hold no change.
@@ -239,8 +262,8 @@ struct HarmonyFork {
 
 impl ForkSource for HarmonyFork {
     fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
-        let changes = self.shared.cell.lend().changes.clone();
-        let node = HarmonyNode::new(changes.iter().copied());
+        let lanes = self.shared.current();
+        let node = HarmonyNode::new(lanes.changes.iter().copied());
         Ok(Forked::new(Box::new(node)))
     }
 }

@@ -14,10 +14,10 @@
 
 #![cfg(feature = "vst2")]
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 use tutti_core::{
-    ArcLend, Beat, BeatsPerBar, Bpm, ChannelLayout, Frame, MeterChange, MeterMap, NoteValue,
+    Beat, BeatsPerBar, Bpm, ChannelLayout, Frame, MeterChange, MeterMap, NoteValue, ProjectMeter,
     SampleRate, Samples, TimeSignature,
 };
 use tutti_graph::{
@@ -309,11 +309,11 @@ fn a_live_node_with_no_latency_is_told_the_blocks_own_time() {
     drop(handle);
 }
 
-fn seven_eight() -> Arc<ArcLend<MeterMap>> {
-    Arc::new(ArcLend::new(MeterMap::new([MeterChange::new(
+fn seven_eight() -> ProjectMeter {
+    ProjectMeter::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
-    )])))
+    )]))
 }
 
 /// **The live node's meter** reaches the plugin: a 7/8 meter installed with

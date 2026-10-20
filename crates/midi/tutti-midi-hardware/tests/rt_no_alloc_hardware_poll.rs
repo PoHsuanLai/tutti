@@ -21,7 +21,7 @@ use std::time::Instant;
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Executor, Prepare, Transport};
-use tutti_midi_hardware::{HardwareMidiInputs, InputProducerHandle};
+use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle};
 use tutti_midi_runtime::{MidiInputNode, MidiOutControls, MidiOutNode};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -43,7 +43,11 @@ struct Rig {
 impl Rig {
     fn new(inputs: Arc<HardwareMidiInputs>) -> Self {
         let (mut editor, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(1024)));
-        editor.insert(NodeKey(1), "in", MidiInputNode::new(Some(inputs)));
+        editor.insert(
+            NodeKey(1),
+            "in",
+            MidiInputNode::new(Some(Box::new(HardwareMidiDrain::new(inputs)))),
+        );
         let out = editor.insert(NodeKey(2), "out", MidiOutNode::new());
         editor.spec_mut().connect_events(
             EventIn {
@@ -227,13 +231,15 @@ fn hardware_poll_with_stale_timestamps_is_allocation_free() {
 /// strong count, and the guard's drop frees that `Vec` inside the gate.
 #[test]
 fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
-    let inputs = HardwareMidiInputs::new(256);
+    let inputs = Arc::new(HardwareMidiInputs::new(256));
     inputs.set_sample_rate(48_000.0);
+    // The audio side's drain, as the input node owns it.
+    let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
     let mut first = inputs.create_input_port("Input 0");
 
     // Warm the scratch outside the gate, as the other gates do.
     feed(&mut first, 4);
-    inputs.cycle_start_read_all_inputs(512, |_, _| {});
+    drain.cycle_start_read_all_inputs(512, |_, _| {});
 
     const BLOCKS: usize = 32;
     let mut visited = 0usize;
@@ -241,7 +247,7 @@ fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
         for block in 0..BLOCKS {
             feed(&mut first, 4);
             let mut plugged = false;
-            visited += inputs.cycle_start_read_all_inputs(512, |_, _| {
+            visited += drain.cycle_start_read_all_inputs(512, |_, _| {
                 if !plugged {
                     plugged = true;
                     assert_no_alloc::permit_alloc(|| {
@@ -283,13 +289,15 @@ fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
 /// same mutation aborts the plug-in gate above.)
 #[test]
 fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
-    let inputs = HardwareMidiInputs::new(256);
+    let inputs = Arc::new(HardwareMidiInputs::new(256));
     inputs.set_sample_rate(48_000.0);
+    // The audio side's drain, as the input node owns it.
+    let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
 
     // Warm the scratch outside the gate, as the other gates do.
     let mut warm = inputs.create_input_port("Warm");
     feed(&mut warm, 4);
-    inputs.cycle_start_read_all_inputs(512, |_, _| {});
+    drain.cycle_start_read_all_inputs(512, |_, _| {});
     assert!(inputs.remove_input_port(warm.port_id()));
     drop(warm);
 
@@ -304,7 +312,7 @@ fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
 
         assert_no_alloc::assert_no_alloc(|| {
             let mut unplugged = false;
-            visited += inputs.cycle_start_read_all_inputs(512, |_, _| {
+            visited += drain.cycle_start_read_all_inputs(512, |_, _| {
                 if !unplugged {
                     unplugged = true;
                     assert_no_alloc::permit_alloc(|| {

@@ -550,7 +550,7 @@ impl Session {
         };
         let plugin = plugin?;
         let handle = plugin.handle().clone();
-        let meter = self.click_settings.meter_cell();
+        let meter = self.click_settings.project_meter();
         let node = match plugin.into_client() {
             Ok(client) => {
                 client.controls().set_meter(meter);

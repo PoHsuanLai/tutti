@@ -12,8 +12,10 @@ Events reach the wire as UMP words, not MIDI 1.0 bytes, so MIDI-2-only messages
 
 [`MidiSession`] is the whole OS edge. Inbound events never pass *through* it:
 each opened input gets its own lock-free ring in [`HardwareMidiInputs`], which
-the audio thread drains through [`MidiIn::poll_block`] (usually from a
-[`MidiInputNode`] in the graph); the session only owns the connection.
+the audio thread drains through a [`HardwareMidiDrain`]: the read state of the
+one node that drains them (usually a [`MidiInputNode`] in the graph), built on
+the control thread and polled through [`MidiIn::poll_block`]. The session only
+owns the connection.
 Disconnecting closes the port and retires its ring, so hot-plug cycles do not
 accumulate rings.
 
@@ -48,8 +50,9 @@ assert_eq!(session.send(&[note]), 1);
 ## Main types
 
 - [`MidiSession`]: enumerate, connect, disconnect and send.
-- [`HardwareMidiInputs`]: the per-input lock-free rings the audio thread polls;
-  it implements [`MidiIn`].
+- [`HardwareMidiInputs`]: the per-input lock-free rings the audio thread polls.
+- [`HardwareMidiDrain`]: one reader's state on those rings, owned by the node
+  that drains them; it implements [`MidiIn`].
 - [`EndpointInfo`], [`EndpointId`], [`UmpCapability`]: what enumeration returns.
 - [`MidiEndpoints`]: the backend trait; [`backend::active`] returns this
   platform's implementation.

@@ -235,9 +235,9 @@ the interpreter.
   `RtPublish<Option<Arc<RtPublish<MeterMap>>>>`: the node borrows the
   installed cell, so an install or clear mid-block retires it for the control
   side, whether or not the host kept a clone. Its read is nested, one slot in
-  each of two cells. The plugin tail, which no audio thread reads, is a
-  `Mutex`. `arc-swap` is now only `tutti-types`' bench baseline (since the
-  move below, `arc-lend`'s).
+  each of two cells (flattened since, by arc-lend E3a below). The plugin
+  tail, which no audio thread reads, is a `Mutex`. `arc-swap` is now only
+  `tutti-types`' bench baseline (since the move below, `arc-lend`'s).
 - **Landed (arc-lend E1): the cell is its own crate.** `RtPublish`/`RtRef`
   are `arc_lend::{ArcLend, Loan}` in `crates/arc-lend`, which names nothing
   of tutti's and is re-exported as `tutti_types::{ArcLend, Loan}`; `read()`
@@ -259,6 +259,27 @@ the interpreter.
   slots), on nested lends, on publisher tails when a reader is preempted
   mid-lend, and in the parked-loan staircase. E3 (registered per-reader slots)
   targets those, and re-runs the same harness.
+- **Landed (arc-lend E3a): every read site reads one cell it owns, from
+  the thread that reads.** The preparation for E3's registered readers,
+  with today's `lend()`. A registered reader is built for one cell before
+  the thread that reads it runs, so each audio read now sits on the node (or
+  butler step) that reads, over one cell whose identity is fixed when that
+  reader is built, and no control-side `&self` method reads a cell the audio
+  thread reads: each keeps a mirror written in the call that publishes
+  (`ClickSettings`, the voice node's placement, `MidiInputControls`'
+  pending MPE mode, `HarmonyControls`, `HardwareMidiInputs`' port list,
+  `PluginMeter::has_meter`). The plugin meter is no longer nested: the
+  project meter is a `tutti_core::ProjectMeter` (the metronome's cell and a
+  list of followers), each plugin node reads its own `MeterSlot` cell, and
+  `ProjectMeter::set_meter` publishes into the metronome's cell and every
+  follower's before it returns, so a block after it reads the same meter in
+  each, as the shared cell did. `MidiIn::poll_block` takes `&mut self`: the
+  node owns its input, and the hardware ports are drained through a
+  `HardwareMidiDrain` that owns the drain's scratch. The butler reads PDC
+  through a `PdcFeed` built by `ButlerThread::with_pdc` and owned by the
+  cycle. Fork templates (`ClickFork`, `LaneFork`, `HarmonyFork`,
+  `VoiceNodeFork`) hold cells or control records, never a node, so they need
+  no reader.
 - **Landed (arc-lend E3): registered readers only; the publisher never
   waits.** The anonymous `lend()`, its shared slots and the overflow epochs
   are gone. A thread registers an `arc_lend::Reader` on the control side

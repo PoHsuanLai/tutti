@@ -69,6 +69,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `commit_graph` ran `Phase::Collect`, then `Phase::Commit` | `collect_graph` runs `Collect` first in the frame, in `SessionPhaseSystems(Phase::Collect)`. `commit_graph` runs only `Commit` |
   | `cargo run -p tutti-session --example {headless_modulation,plugin_midi_export}` | `cargo run -p tutti --example …`, with the same features |
 
+### Changed — `Param64` replaces `AtomicSamplePosition` and `AtomicReadRate`
+
+- **One `f64` cell beside `Param`** (issue #75). `AtomicSamplePosition` and
+  `AtomicReadRate` were the same `AtomicU64`-of-bits wrapper under two
+  names; `tutti_types::Param64<U: Unit<Raw = f64>>` (re-exported from
+  `tutti_core`) is the one cell. `load` and `store` take and return the unit,
+  with `Param`'s `Acquire`/`Release` pairing, and construction does not
+  allocate. `Param` stays the `f32` cell. The old names are removed, with no
+  alias. Neither old type's `Default` was used; `Param64` has none, so the
+  initial value is always named.
+
+  | Was | Now |
+  |---|---|
+  | `AtomicSamplePosition::new(p)` | `Param64::<SamplePosition>::new(p)` |
+  | `AtomicReadRate::new(r)` | `Param64::<ReadRate>::new(r)` |
+  | `cell.load(order)` | `cell.load()` (`Acquire`) |
+  | `cell.store(v, order)` | `cell.store(v)` (`Release`) |
+  | `AtomicSamplePosition::default()` | `Param64::new(SamplePosition::new(0.0))` |
+  | `AtomicReadRate::default()` | `Param64::new(ReadRate::UNITY)` |
+
 ### Changed — design 015 PR 1: MIDI and sample pieces to their owning crates
 
 - **MIDI file decoding, the inbound route compile and the memory voice move

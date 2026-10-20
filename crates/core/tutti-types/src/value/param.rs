@@ -10,9 +10,13 @@
 //!
 //! RT-safety: `load`/`store` never clone the `Arc`. Only `handle()` does, and
 //! it is intended for control-thread construction, not the audio path.
+//!
+//! [`Param64<U>`](Param64) is its `f64` neighbour: the same `load`/`store`,
+//! for the units whose raw representation is `f64`, held inline rather than
+//! shared through an `Arc`.
 
 use core::marker::PhantomData;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::units::Unit;
 use atomic_float::AtomicF32;
@@ -137,10 +141,140 @@ impl<U: Unit<Raw = f32>> core::fmt::Debug for Param<U> {
     }
 }
 
+/// A lock-free scalar cell for a unit whose raw representation is `f64`
+/// (`Unit<Raw = f64>`): [`Param`]'s neighbour, not a mode of it.
+///
+/// The width is the reason it exists. [`ReadRate`](super::ReadRate) and
+/// [`SamplePosition`](super::SamplePosition) are `f64` because a disk voice adds
+/// the rate into its read position once per sample for the length of the file.
+/// A cell that stored the rate as `f32` and widened it on load would put that
+/// rounding back into the sum on every load, and the error does not average
+/// out: it integrates. [`Param`] is `Unit<Raw = f32>` only, so a unit that
+/// needs the width needs this cell.
+///
+/// [`SampleRate`](super::SampleRate) is also `f64` and does not get a cell:
+/// nothing modulates it per sample.
+///
+/// Unlike [`Param`], nothing is shared by cloning: the cell is an inline
+/// [`AtomicU64`] holding the value's bits, construction does not allocate, and
+/// another thread reaches it through `&self` on whatever already shares its
+/// owner (a voice's `RtState`, a memory source). One type for both widths would
+/// hide two implementations behind one name, and a call site would no longer
+/// see which load it pays for. There is no `Default`: a default
+/// [`ReadRate`](super::ReadRate) is `0.0`, a stopped voice, so the initial
+/// value is always named.
+///
+/// [`load`](Self::load) and [`store`](Self::store) are audio-thread safe, with
+/// `Param`'s `Acquire`/`Release` pairing. The bits round-trip exactly, a `NaN`
+/// payload included.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::{Param64, ReadRate};
+///
+/// let stretch_rate = Param64::new(ReadRate::UNITY); // no allocation
+/// stretch_rate.store(ReadRate::new(0.75));
+/// assert_eq!(stretch_rate.load(), ReadRate::new(0.75));
+/// ```
+///
+/// An `f64` unit is not a [`Param`]:
+///
+/// ```compile_fail
+/// use tutti_types::{Param, ReadRate};
+/// struct Voice {
+///     stretch_rate: Param<ReadRate>, // `Param64<ReadRate>`
+/// }
+/// ```
+///
+/// Nor is an `f32` unit a `Param64`:
+///
+/// ```compile_fail
+/// use tutti_types::{Hz, Param64};
+/// struct Filter {
+///     cutoff: Param64<Hz>, // `Param<Hz>`
+/// }
+/// ```
+// Mutations (run) for the two `compile_fail` doctests: `Raw = f32` dropped from
+// `Param`'s struct bound (its impls keep it) → the first compiles → fails;
+// `Raw = f64` dropped from `Param64`'s struct bound → the second compiles →
+// fails.
+pub struct Param64<U: Unit<Raw = f64>> {
+    inner: AtomicU64,
+    _unit: PhantomData<U>,
+}
+
+impl<U: Unit<Raw = f64>> Param64<U> {
+    /// A cell holding `v`. Does not allocate.
+    #[inline]
+    pub fn new(v: U) -> Self {
+        Self {
+            inner: AtomicU64::new(v.to_raw().to_bits()),
+            _unit: PhantomData,
+        }
+    }
+
+    /// Loads the current value with `Acquire` ordering, pairing with `store`'s
+    /// `Release`.
+    ///
+    /// Audio-thread safe.
+    #[inline]
+    pub fn load(&self) -> U {
+        U::from_raw(f64::from_bits(self.inner.load(Ordering::Acquire)))
+    }
+
+    /// Stores a new value with `Release` ordering.
+    ///
+    /// Audio-thread safe.
+    #[inline]
+    pub fn store(&self, v: U) {
+        self.inner.store(v.to_raw().to_bits(), Ordering::Release);
+    }
+}
+
+impl<U: Unit<Raw = f64>> core::fmt::Debug for Param64<U> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Param64")
+            .field("value", &self.load())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Param;
-    use crate::value::units::Hz;
+    use super::{Param, Param64};
+    use crate::value::units::{Hz, ReadRate, SamplePosition};
+
+    /// Both `f64` units round-trip through the cell bit for bit: a value `f32`
+    /// cannot hold, an hour's position at 48 kHz plus a fraction, and a `NaN`
+    /// whose payload bits survive `to_bits`/`from_bits`.
+    ///
+    /// Mutation (run): `store` through `v.to_raw() as f32 as f64` → the
+    /// precision and position cases lose their low bits and the payload `NaN`
+    /// comes back with its payload truncated → fails.
+    #[test]
+    fn param64_round_trips_its_bits() {
+        let nan = f64::from_bits(0x7ff8_0000_dead_beef);
+        assert!(nan.is_nan());
+
+        let rates = [1.0 + f64::EPSILON, 0.1, 17.4, nan];
+        let cell = Param64::new(ReadRate::UNITY);
+        for want in rates {
+            cell.store(ReadRate::new(want));
+            assert_eq!(cell.load().get().to_bits(), want.to_bits(), "{want}");
+        }
+        assert_eq!(
+            Param64::new(ReadRate::new(nan)).load().get().to_bits(),
+            nan.to_bits()
+        );
+
+        let positions = [172_800_000.0 + 0.25, 1.0 / 3.0, -0.0, nan];
+        let cell = Param64::new(SamplePosition::new(0.0));
+        for want in positions {
+            cell.store(SamplePosition::new(want));
+            assert_eq!(cell.load().get().to_bits(), want.to_bits(), "{want}");
+        }
+    }
 
     /// `detach` keeps the value and cuts the cell both ways.
     ///

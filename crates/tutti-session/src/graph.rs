@@ -286,6 +286,11 @@ pub struct Graph {
     /// Crossfades refused `Busy`, in request order.
     parked: VecDeque<Parked>,
     next_crossfade: u64,
+    /// The hosted plugins' records, by node (`plugin.rs`): kept here so a
+    /// crossfade to another plugin and a removal update them where they
+    /// happen.
+    #[cfg(feature = "plugin")]
+    pub(crate) plugins: BTreeMap<AudioNode, crate::HostedPlugin>,
 }
 
 /// What a commit came to.
@@ -363,6 +368,8 @@ impl Graph {
             feeds: BTreeMap::new(),
             parked: VecDeque::new(),
             next_crossfade: 0,
+            #[cfg(feature = "plugin")]
+            plugins: BTreeMap::new(),
         }
     }
 
@@ -549,10 +556,33 @@ impl Graph {
     #[cfg(feature = "plugin")]
     pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> AudioNode {
         let node = AudioNode::fresh();
+        let hosted =
+            crate::HostedPlugin::new(tutti_plugin::handles::PluginHandle::from_client(&client))
+                .with_controls(client.controls());
         let _controls = self.editor.insert(key(node), PLUGIN_KIND, client.bind());
         self.nodes.insert(key(node), Entry { node, params: None });
+        self.plugins.insert(node, hosted);
         self.edited = true;
         node
+    }
+
+    /// Hosts a plugin the host inserted itself (an in-process plugin, a
+    /// wrapper around one): `handle` gets the session's health watch,
+    /// snapshots and render mode at `node`, as
+    /// [`Session::add_plugin`](crate::Session::add_plugin)'s do. Its latency
+    /// is whatever its node's shape declared at insert. Returns `false`
+    /// (and hosts nothing) when `node` is not in the graph.
+    #[cfg(feature = "plugin")]
+    pub fn host_plugin(
+        &mut self,
+        node: AudioNode,
+        handle: tutti_plugin::handles::PluginHandle,
+    ) -> bool {
+        if !self.nodes.contains_key(&key(node)) {
+            return false;
+        }
+        self.plugins.insert(node, crate::HostedPlugin::new(handle));
+        true
     }
 
     /// Swap the plugin at `node` for `client`, as [`replace`](Self::replace)
@@ -577,8 +607,26 @@ impl Graph {
         if self.editor.is_repreparing() {
             return Err(ReplaceRefused::Busy(client));
         }
-        match self.replace(node, client.bind(), fade, curve) {
-            Ok(_controls) => Ok(()),
+        let handle = tutti_plugin::handles::PluginHandle::from_client(&client);
+        let controls = client.controls();
+        match self.swap_unit(node, client.bind(), fade, curve) {
+            Ok(_controls) => {
+                // The record is carried over to the incoming plugin (unlike
+                // `replace`, which takes it out): its handle is what the
+                // health watch and the render mode talk to now, its controls
+                // what the latency poll reads; nothing of the outgoing
+                // plugin's state survives (`HostedPlugin::replace`).
+                match self.plugins.get_mut(&node) {
+                    Some(hosted) => hosted.replace(handle, controls),
+                    None => {
+                        self.plugins.insert(
+                            node,
+                            crate::HostedPlugin::new(handle).with_controls(controls),
+                        );
+                    }
+                }
+                Ok(())
+            }
             Err(ReplaceRefused::Failed(why)) => Err(ReplaceRefused::Failed(why)),
             Err(ReplaceRefused::Busy(_)) => unreachable!("checked above"),
         }
@@ -595,7 +643,7 @@ impl Graph {
     /// What `RenderGraph::gather` refuses (a node with no outputs or not in
     /// the graph, a node that cannot be forked).
     #[cfg(feature = "export")]
-    pub fn gather_for_export(
+    pub(crate) fn gather_for_export(
         &self,
         target: AudioNodeTarget,
         ctx: &tutti_core::transport::OfflineTransport,
@@ -636,7 +684,26 @@ impl Graph {
     /// [`ReplaceRefused::Busy`] with the node handed back while the graph
     /// re-prepares, and for good on a poisoned graph.
     /// [`crossfade`](Self::crossfade) waits out a re-prepare instead.
+    ///
+    /// (`plugin`) A hosted plugin replaced this way is no longer hosted: its
+    /// record is dropped, so its health, snapshots and render mode stop
+    /// (a replacement plugin goes in with
+    /// `Graph::replace_plugin`, which carries the record).
     pub fn replace<N: IntoNode>(
+        &mut self,
+        node: AudioNode,
+        incoming: N,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+    ) -> Result<N::Controls, ReplaceRefused<N>> {
+        let controls = self.swap_unit(node, incoming, fade, curve)?;
+        #[cfg(feature = "plugin")]
+        self.plugins.remove(&node);
+        Ok(controls)
+    }
+
+    /// [`replace`](Self::replace)'s swap, leaving the plugin record alone.
+    fn swap_unit<N: IntoNode>(
         &mut self,
         node: AudioNode,
         incoming: N,
@@ -978,6 +1045,8 @@ impl Graph {
         if self.nodes.remove(&key(node)).is_none() {
             return false;
         }
+        #[cfg(feature = "plugin")]
+        self.plugins.remove(&node);
         self.editor.remove(key(node));
         self.feeds.remove(&key(node));
         for feeds in self.feeds.values_mut() {
@@ -1011,16 +1080,19 @@ impl Graph {
         m: &mut tutti_nodes::Modulation,
         decl: &tutti_mod::Declarations<'_>,
         keys: &dyn ModKeys,
-    ) -> Result<tutti_nodes::Applied, tutti_nodes::ReconcileError> {
+    ) -> Result<(tutti_nodes::Applied, PluginTargets), tutti_nodes::ReconcileError> {
         let host = ModHostOver {
             nodes: &self.nodes,
+            #[cfg(feature = "plugin")]
+            plugins: &self.plugins,
             keys,
+            plugin_targets: std::cell::RefCell::new(BTreeMap::new()),
         };
         let applied = m.apply(decl, &mut self.editor, &host)?;
         if applied.commit {
             self.edited = true;
         }
-        Ok(applied)
+        Ok((applied, host.plugin_targets.into_inner()))
     }
 
     /// Schedules the note-envelope resyncs `m` owes, after the commit that
@@ -1452,7 +1524,7 @@ fn render(
 /// What an export renders: the whole graph, or one node's sub-graph.
 #[cfg(feature = "export")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AudioNodeTarget {
+pub(crate) enum AudioNodeTarget {
     /// The master: every global output.
     Master,
     /// `node`'s outputs.
@@ -1469,10 +1541,6 @@ pub enum AudioNodeTarget {
 pub trait ModKeys {
     /// The node a target's key names.
     fn node(&self, target: u64) -> Option<AudioNode>;
-    /// Plugin parameter `id`'s value on `target`'s node: `None` while not
-    /// read yet, `Some(None)` for a parameter it does not list. Temporary:
-    /// it goes once the session owns the plugin mirror (design 015 PR 6).
-    fn plugin_value(&self, target: u64, id: u32) -> Option<Option<f32>>;
     /// What feeds source `source`'s node.
     fn feed(&self, source: tutti_mod::SourceKey) -> Option<tutti_nodes::Feed>;
 }
@@ -1480,17 +1548,28 @@ pub trait ModKeys {
 /// `tutti_nodes::ModHost` over the graph's nodes and the host's keys: a
 /// target's key names its node, a native target's knob is that node's
 /// `Param` cell, a plugin target feeds the node's event input 0 and starts at
-/// the plugin's mirrored value.
+/// the plugin's mirrored value (the session's record of it,
+/// `HostedPlugin::param_values`).
 #[cfg(feature = "modulation")]
 struct ModHostOver<'a> {
     nodes: &'a BTreeMap<NodeKey, Entry>,
+    #[cfg(feature = "plugin")]
+    plugins: &'a BTreeMap<AudioNode, crate::HostedPlugin>,
     keys: &'a dyn ModKeys,
+    /// Each plugin target the apply resolved, by node and parameter: where
+    /// `Phase::Plugins` writes a GUI edit (`ModState::plugin_target`).
+    plugin_targets: std::cell::RefCell<PluginTargets>,
 }
+
+/// A plugin parameter's modulation target, by its node and parameter id.
+#[cfg(feature = "modulation")]
+pub(crate) type PluginTargets = BTreeMap<(AudioNode, u32), tutti_mod::TargetKey>;
 
 #[cfg(feature = "modulation")]
 impl tutti_nodes::ModHost for ModHostOver<'_> {
     fn target(&self, target: tutti_mod::TargetKey) -> Option<tutti_nodes::Target> {
-        let node = key(self.keys.node(target.node)?);
+        let audio_node = self.keys.node(target.node)?;
+        let node = key(audio_node);
         Some(match target.param {
             tutti_types::ParamAddr::Unit(param) => tutti_nodes::Target::Native {
                 node,
@@ -1502,11 +1581,25 @@ impl tutti_nodes::ModHost for ModHostOver<'_> {
             },
             // A plugin target waits for its mirror: a lane built without
             // a knob could not take one later.
-            tutti_types::ParamAddr::Id(id) => tutti_nodes::Target::Foreign {
-                node,
-                port: 0,
-                knob: self.keys.plugin_value(target.node, id)?,
-            },
+            tutti_types::ParamAddr::Id(id) => {
+                // A node the session hosts no plugin at has no mirror: its
+                // lane has no knob to start from.
+                #[cfg(feature = "plugin")]
+                let knob = self
+                    .plugins
+                    .get(&audio_node)
+                    .map_or(Some(None), |p| p.param_value(id))?;
+                #[cfg(not(feature = "plugin"))]
+                let knob = None;
+                self.plugin_targets
+                    .borrow_mut()
+                    .insert((audio_node, id), target);
+                tutti_nodes::Target::Foreign {
+                    node,
+                    port: 0,
+                    knob,
+                }
+            }
         })
     }
 
@@ -1609,7 +1702,7 @@ impl AudioSide {
 /// ([`Graph::gather_for_export`]) and not yet built: `Send`, holding nothing
 /// of the live graph.
 #[cfg(feature = "export")]
-pub struct PendingExport {
+pub(crate) struct PendingExport {
     fork: tutti_graph::PendingFork,
     pool: Option<Arc<dyn tutti_graph::Pool>>,
 }
@@ -1623,7 +1716,7 @@ impl PendingExport {
     ///
     /// A deferred fork source's failure, or a fork that does not commit,
     /// with what was built, to drop on the main thread.
-    pub fn build(
+    pub(crate) fn build(
         self,
     ) -> Result<tutti_export::RenderGraph, (tutti_export::Error, tutti_graph::ForkRemains)> {
         let mut graph = tutti_export::RenderGraph::build(self.fork)?;

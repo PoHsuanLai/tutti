@@ -432,9 +432,9 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
 /// **A master export is rebound onto the caller's timeline too**, pinned
 /// where a host sees it: what the `prepare` hook is told.
 ///
-/// Mutation (run): `prepare_graph` handing the hook a context of its own
-/// (`ExportClock::frozen().offline()`) instead of the one the fork was
-/// rebound onto → the hook sees 120 BPM, not 90.
+/// Mutation (run): the session's `ExportJob::run` handing the hook a
+/// context of its own (`ExportClock::frozen().offline()`) instead of the
+/// one the fork was rebound onto → the hook sees 120 BPM, not 90.
 #[test]
 fn a_master_export_is_rebound_onto_the_callers_timeline() {
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};

@@ -211,6 +211,35 @@ impl MidiFile {
         }
     }
 
+    /// Seconds from beat 0 to `at`, integrated over the
+    /// [`tempo_map`](Self::tempo_map): each stretch between two changes at
+    /// its own tempo. Before the first change the file plays at
+    /// [`tempo`](Self::tempo), or the 120 BPM an SMF's specification assumes
+    /// when it declares none (a Clip File without a tempo at beat 0 gets the
+    /// same). What an offline render of the file lasts:
+    /// `seconds_at(end())` is `RenderConfig::duration_seconds`.
+    ///
+    /// `f64`, not `Seconds`: `Seconds` is `f32`, which cannot carry an
+    /// hour-long file to the frame (and `duration_seconds` is `f64`).
+    pub fn seconds_at(&self, at: Beat) -> f64 {
+        let mut tempo = self.tempo().unwrap_or(Bpm(120.0));
+        let mut from = 0.0_f64;
+        let mut seconds = 0.0_f64;
+        let to = at.0.max(0.0);
+        for (change, bpm) in self.tempo_map() {
+            let change = change.0;
+            if change >= to {
+                break;
+            }
+            if change > from {
+                seconds += (change - from) * 60.0 / tempo.0;
+                from = change;
+            }
+            tempo = bpm;
+        }
+        seconds + (to - from) * 60.0 / tempo.0
+    }
+
     /// Where the last event lands: the position of the final event
     /// [`timed`](Self::timed) yields (`Beat(0.0)` for an empty file). A
     /// note-off is an event too, so this is where the last message lands,

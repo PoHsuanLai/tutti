@@ -1,10 +1,16 @@
 //! Start renders, and report them when they finish.
 //!
-//! Two systems and no policy. [`start_exports`] gathers each new
-//! [`ExportRequest`]'s fork on the main thread and hands the rest (building
-//! the fork, the hook's edit, the render) to a task on the shared compute
-//! pool; [`poll_exports`] drives those tasks, drops on the main thread what
-//! they hand back ([`ExportDrops`]), and triggers [`ExportDone`].
+//! Two systems and no policy. [`start_exports`] turns each new
+//! [`ExportRequest`] into the session's (its source entity resolved to its
+//! node, its `prepare` hook's look at the world taken) and starts it
+//! (`Session::export`: the fork gathered on the main thread, the plugins
+//! told `Offline`), then hands the job (building the fork, the hook's edit,
+//! the render) to a task on the shared compute pool; [`poll_exports`]
+//! drives those tasks, finishes each on the main thread
+//! (`Session::finish_export_unannounced`: what the render held dropped
+//! there; the plugins are told `Realtime` by the frame's render-mode phase,
+//! after `start_exports`, so a queue of exports never flaps) and triggers
+//! [`ExportDone`].
 //!
 //! The render itself is synchronous and `Send` (tutti-export spawns no threads
 //! by design — "a host that wants a render off the main thread already owns a
@@ -12,36 +18,28 @@
 //! it, and a way to hear about it.
 
 use std::collections::HashMap;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Mutex, PoisonError};
 
 use bevy_ecs::prelude::*;
 use bevy_tasks::AsyncComputeTaskPool;
 
-use tutti_core::transport::OfflineTransport;
-use tutti_export::{render_normalized_to_file, render_to_buffers, render_to_file};
 use tutti_types::NodeKey;
 
 use crate::export::request::{
-    ExportDone, ExportError, ExportInFlight, ExportNode, ExportOutput, ExportRequest, ExportSource,
-    ExportTarget, PreparedGraph,
+    ExportDone, ExportError, ExportInFlight, ExportNode, ExportRequest, ExportSource,
 };
-use crate::graph::resources::ExportRefused;
 use crate::graph::{AudioConfig, AudioGraphRes};
-use tutti_session::PendingExport;
 
 /// Starts the oldest pending [`ExportRequest`], if nothing is already running.
 ///
-/// Here, on the main thread, the fork is **gathered** (`Editor::fork_gather`):
-/// everything it reads of the live graph and its nodes is read now, because
-/// the graph resource cannot cross into a `'static` task and because the fork
-/// is the graph at the moment the export starts (a later live edit does not
-/// reach it). A fork source that must build on the main thread (an
-/// in-process VST2 plugin) builds here too. The slow part of a hosted
-/// plugin's fork (a `plugin-server` launch and its state load) is the
-/// task's: it builds the fork on the compute pool, then runs the hook's edit
-/// and the render, so this frame does not wait for it. Only one export starts
-/// per frame; see [`ExportInFlight`].
+/// Here, on the main thread, the session gathers the fork
+/// (`Session::export`): everything it reads of the live graph and its nodes
+/// is read now, because the fork is the graph at the moment the export
+/// starts (a later live edit does not reach it). A fork source that must
+/// build on the main thread (an in-process VST2 plugin) builds here too.
+/// The slow part of a hosted plugin's fork (a `plugin-server` launch and
+/// its state load) is the job's: it builds the fork on the compute pool,
+/// then runs the hook's edit and the render, so this frame does not wait
+/// for it. Only one export starts per frame; see [`ExportInFlight`].
 ///
 /// Exclusive because a request's `prepare` hook is handed `&World`: preparing a
 /// render reads arbitrary app state (which clips exist, their decoded audio),
@@ -55,12 +53,17 @@ pub fn start_exports(world: &mut World) {
     // condition sees only the state left by the previous frame, so N requests
     // spawned in one frame all pass the gate and all start together. That is
     // the burst the limit exists to prevent, so the check belongs where the
-    // starting happens.
+    // starting happens. The session's own token is asked too: a job a host
+    // started on the session directly, or one cancelled whose task is still
+    // finishing its render, holds it.
     if world
         .query_filtered::<Entity, With<ExportInFlight>>()
         .iter(world)
         .next()
         .is_some()
+        || world
+            .get_resource::<AudioGraphRes>()
+            .is_some_and(|graph| graph.read().export_in_flight())
     {
         return;
     }
@@ -88,177 +91,79 @@ pub fn start_exports(world: &mut World) {
         return;
     };
 
-    // Snapshot the node bindings before the resource borrows: the source
-    // entity resolves to its node here, and a failure names its node by
-    // entity and `Name`. An exclusive system cannot hold a `Query` across the
-    // `world.resource` borrows below.
+    // Snapshot the node bindings first: the source entity resolves to its
+    // node here, and a failure names its node by entity and `Name`. An
+    // exclusive system cannot hold a `Query` across the resource borrows
+    // below.
     let nodes = NodeNames::of(world);
-
-    // Fallible rather than `world.resource::<_>()`: both come from
-    // `engine::build_into`, while the `engine_ready` gate on this system only
-    // reads `AudioEngineState` — a value a host can insert alone. An export with
-    // no engine to render from is a reportable failure, and this request is
-    // already holding the channel to report it on, so it does not silently
-    // vanish the way an early `return` would.
-    let prepared = match (
-        world.get_resource::<AudioGraphRes>(),
-        world.get_resource::<AudioConfig>(),
-    ) {
-        (Some(graph), Some(_)) => prepare_graph(graph, &nodes, &request),
-        // Distinguished from the above so the reason is the real one: an export
-        // requested against a world with no engine is a different failure than a
-        // target that cannot produce audio, and reporting the wrong one sends
-        // whoever reads it looking at the wrong thing.
-        _ => Err(invalid("no audio engine to export from")),
-    };
-
-    let (pending, ctx) = match prepared {
-        Ok(prepared) => prepared,
-        Err(e) => {
-            world.trigger(ExportDone {
-                entity,
-                result: Err(nodes.name(e)),
-            });
-            return;
-        }
-    };
-
-    let ExportRequest {
-        target,
-        config: mut export_config,
-        clock,
-        prepare,
-        latency_from_graph,
-        tail_from_graph,
-        ..
-    } = request;
-    let clock = clock.render_clock();
 
     // The hook's look at the world, now, in the frame the export starts and
     // with the world still readable; its edit runs on the built fork. An
     // isolated copy is born empty, so a sampler-fed tap that skips this
     // renders silence.
-    let edit = prepare.as_ref().map(|prepare| prepare(world));
+    let edit = request.prepare.as_ref().map(|prepare| prepare(world));
 
-    // Everything the task holds goes back to the main thread to drop, on
-    // every path: finished, failed, or cancelled before or after it ran. A
-    // forked in-process VST2 plugin, built in the gather above, closes its
-    // instance when dropped, which VST2 confines to the main thread.
-    let drops = world.get_resource_or_init::<ExportDrops>().sender();
-    let pending = ToMain::new(pending, drops.clone());
-    // The edit too: until it runs (on the pool, once the fork is built) it
-    // is the caller's state, and a failed build or a cancelled task drops it
-    // unrun.
-    let edit = edit.map(|edit| ToMain::new(edit, drops.clone()));
-    let task = AsyncComputeTaskPool::get().spawn(async move {
-        // The fork's build: a hosted plugin's `plugin-server` launch and
-        // state load, here on the pool.
-        let mut graph = match pending.take().build() {
-            Ok(graph) => ToMain::new(graph, drops),
-            Err((e, remains)) => {
-                drop(ToMain::new(remains, drops));
-                return Err(nodes.name(e));
-            }
-        };
-        if let Some(edit) = edit {
-            (edit.take())(PreparedGraph {
-                graph: &mut graph,
-                ctx: &ctx,
+    let started = start(world, &nodes, request, edit);
+    let job = match started {
+        Ok(job) => job,
+        Err(e) => {
+            world.trigger(ExportDone {
+                entity,
+                result: Err(e),
             });
+            return;
         }
-        // A fork's editor holds whatever the edit left, uncommitted: send
-        // it, and apply it here so the render's first block already runs it.
-        if let Err(e) = graph.commit() {
-            return Err(ExportError::Render(invalid(format!(
-                "the prepare hook left the forked graph uncommittable: {e}"
-            ))));
-        }
-
-        // The graph's own figures, asked of the graph that is rendered —
-        // after the edit, which may have changed it.
-        if latency_from_graph {
-            export_config.render.latency = graph.reported_latency();
-        }
-        if let Some(cap) = tail_from_graph {
-            // `resolve`, not `samples().unwrap_or(cap)`: a graph with a node
-            // that never said (`Tail::Unknown`, the default) is spent at what
-            // the others reported, not at the cap — which would append
-            // silence.
-            export_config.render.tail = graph.reported_tail().resolve(cap);
-        }
-
-        let rendered = match target {
-            ExportTarget::File {
-                path,
-                normalize: None,
-            } => render_to_file(&mut *graph, &export_config, clock.as_ref(), &path)
-                .map(ExportOutput::File),
-            ExportTarget::File {
-                path,
-                normalize: Some(normalize),
-            } => render_normalized_to_file(
-                &mut *graph,
-                &export_config,
-                clock.as_ref(),
-                normalize,
-                &path,
-            )
-            .map(ExportOutput::File),
-            ExportTarget::Buffers => render_to_buffers(&mut *graph, &export_config, clock.as_ref())
-                .map(ExportOutput::Buffers),
-        };
-        // `graph` goes to the main thread as it drops, before the result
-        // is ready: `poll_exports` drops it there before reporting.
-        rendered.map_err(|e| nodes.name(e))
-    });
-
-    world.entity_mut(entity).insert(ExportInFlight::new(task));
-}
-
-/// Gather the graph this request renders, plus the offline context its nodes
-/// are rebound onto.
-///
-/// Refuses, with the reason, when the requested node has no outputs — there is
-/// nothing to render from it — and when a node the copy needs cannot be
-/// forked (named by the caller, [`NodeNames::name`]).
-fn prepare_graph(
-    graph: &AudioGraphRes,
-    nodes: &NodeNames,
-    request: &ExportRequest,
-) -> Result<(PendingExport, OfflineTransport), tutti_export::Error> {
-    let node = match request.source {
-        ExportSource::Master => None,
-        // Resolved here rather than stored: see `ExportSource::Node`.
-        ExportSource::Node(entity) => Some(nodes.node(entity).ok_or_else(|| invalid(NOT_A_NODE))?),
     };
-
-    // The timeline every transport-aware node in the copy is re-seated on:
-    // the request's clock, which is the same object the renderer advances
-    // (`ExportClock`), or a timeline stopped at beat 0 for a frozen one.
-    // Never manufactured here from anything else: a default rolling timeline
-    // nothing advances is how a tap on a 90 BPM project once rendered its
-    // voices against a 120 BPM playhead stuck at beat 0.
-    let ctx: OfflineTransport = request.clock.offline();
-
-    // Every node of the fork is isolated, rebound onto `ctx` and reset — see
-    // `AudioGraphRes::export`.
-    match graph.export(node, &ctx, request.config.render.sample_rate) {
-        Ok(graph) => Ok((graph, ctx)),
-        Err(ExportRefused::NoOutputs) => Err(invalid(NO_OUTPUTS)),
-        Err(ExportRefused::GraphHasNoOutputs) => Err(invalid(GRAPH_HAS_NO_OUTPUTS)),
-        Err(ExportRefused::Render(e)) => Err(e),
-    }
+    let task = AsyncComputeTaskPool::get().spawn(async move { job.run() });
+    world
+        .entity_mut(entity)
+        .insert(ExportInFlight::new(task, nodes));
 }
 
-/// Why a node export found nothing to render: its node has no audio outputs.
-const NO_OUTPUTS: &str = "export target node has no audio outputs";
+/// The session's request for `request`, started.
+fn start(
+    world: &mut World,
+    nodes: &NodeNames,
+    request: ExportRequest,
+    edit: Option<tutti_session::PrepareEdit>,
+) -> Result<tutti_session::ExportJob, ExportError> {
+    // Fallible rather than `world.resource::<_>()`: both come from
+    // `engine::build_into`, while the `engine_ready` gate on this system only
+    // reads `AudioEngineState` — a value a host can insert alone. An export
+    // with no engine to render from is a reportable failure, and distinct
+    // from a target that cannot produce audio.
+    if world.get_resource::<AudioConfig>().is_none() {
+        return Err(invalid(NO_ENGINE).into());
+    }
+    let Some(mut graph) = world.get_resource_mut::<AudioGraphRes>() else {
+        return Err(invalid(NO_ENGINE).into());
+    };
+    let source = match request.source {
+        ExportSource::Master => tutti_session::ExportSource::Mix,
+        // Resolved here rather than stored: see `ExportSource::Node`.
+        ExportSource::Node(entity) => tutti_session::ExportSource::Node(
+            nodes.node(entity).ok_or_else(|| invalid(NOT_A_NODE))?,
+        ),
+    };
+    let mut session_request =
+        tutti_session::ExportRequest::new(source, request.target, request.config, request.clock);
+    session_request.latency_from_graph = request.latency_from_graph;
+    session_request.tail_from_graph = request.tail_from_graph;
+    if let Some(edit) = edit {
+        session_request = session_request.with_edit(edit);
+    }
+    graph
+        .session()
+        .export(session_request)
+        .map_err(|e| nodes.session_error(e))
+}
 
 /// Why a node export found nothing to render: the entity is not bound to a
 /// graph node.
 const NOT_A_NODE: &str = "export target entity is not a graph node";
 
-/// Why an export found nothing to render: the graph has no global outputs.
-const GRAPH_HAS_NO_OUTPUTS: &str = "the graph has no outputs to export";
+/// Why an export could not start: the world has no audio engine.
+const NO_ENGINE: &str = "no audio engine to export from";
 
 fn invalid(reason: impl Into<String>) -> tutti_export::Error {
     tutti_export::Error::InvalidConfig(reason.into())
@@ -267,9 +172,10 @@ fn invalid(reason: impl Into<String>) -> tutti_export::Error {
 /// Every entity bound to a graph node, by entity and by node key — what
 /// resolves an [`ExportSource::Node`] to its node, and what names a node an
 /// export failed on. Taken on the main thread when the render starts, and
-/// moved into the render task (a fork can fail mid-render, long after the
-/// world was last readable).
-struct NodeNames {
+/// kept with the render ([`ExportInFlight`]): a fork can fail mid-render,
+/// long after the world was last readable.
+#[derive(Default)]
+pub(crate) struct NodeNames {
     nodes: HashMap<Entity, tutti_core::AudioNode>,
     by_key: HashMap<NodeKey, (Entity, Option<String>)>,
 }
@@ -320,122 +226,68 @@ impl NodeNames {
             other => ExportError::Render(other),
         }
     }
+
+    /// A session's export error as the adapter reports it: the renderer's
+    /// own named as [`name`](Self::name) names it, anything else (another
+    /// export in flight) as an invalid request, with its message.
+    fn session_error(&self, e: tutti_session::Error) -> ExportError {
+        match e {
+            tutti_session::Error::Export(e) => self.name(e),
+            other => ExportError::Render(invalid(other.to_string())),
+        }
+    }
 }
 
-/// Drives in-flight exports; triggers [`ExportDone`] on the ones that
-/// finished.
+/// Drives in-flight exports; finishes the ones whose job returned
+/// (`Session::finish_export_unannounced`: the frame's
+/// `plugin_render_mode` announces) and triggers [`ExportDone`] on them.
 ///
 /// **Pinned to the main thread** ([`NonSendMarker`](bevy_ecs::system::NonSendMarker)):
-/// every export hands its graph (or, failed or cancelled, whatever of it
-/// was built) back through [`ExportDrops`], and it is dropped here, before
-/// the export reports. A forked in-process VST2 plugin closes its instance
-/// when dropped, which VST2 confines to the main thread.
+/// `finish_export` drops the rendered graph (or, failed, whatever of it was
+/// built) there. A forked in-process VST2 plugin closes its instance when
+/// dropped, which VST2 confines to the main thread.
+///
+/// Ungated on the engine: a render still in flight when the engine tears
+/// down is still reported. With no graph to finish it on, it reports a
+/// failure, and what it held drops here.
 pub fn poll_exports(
     mut commands: Commands,
     mut in_flight: Query<(Entity, &mut ExportInFlight)>,
-    drops: Option<Res<ExportDrops>>,
+    mut graph: Option<ResMut<AudioGraphRes>>,
     _main: bevy_ecs::system::NonSendMarker,
 ) {
-    let mut done = Vec::new();
+    // What a cancelled export held, sent back as its task went: dropped
+    // here, on the main thread, every frame (the commit's `Phase::Collect`
+    // does the same, but an app may export without the reconcile systems).
+    if let Some(graph) = graph.as_mut() {
+        graph
+            .bypass_change_detection()
+            .session()
+            .drop_export_leftovers();
+    }
     for (entity, mut export) in in_flight.iter_mut() {
-        if let Some(result) = export.poll() {
-            done.push((entity, result));
-        }
-    }
-    // After the polls: a task sends its graph before its result is ready.
-    if let Some(drops) = drops {
-        drops.drop_here();
-    }
-    for (entity, result) in done {
+        let Some((rendered, names)) = export.poll() else {
+            continue;
+        };
+        let result = match graph.as_mut() {
+            // Unannounced: `start_exports`, next in this frame, may start
+            // the next export, and the plugins must not hear Realtime and
+            // then Offline between the two. `plugin_render_mode`, after both
+            // export systems, announces Realtime if nothing started.
+            Some(graph) => graph
+                .bypass_change_detection()
+                .session()
+                .finish_export_unannounced(rendered)
+                .map_err(|e| names.session_error(e)),
+            None => {
+                drop(rendered);
+                Err(invalid(NO_ENGINE).into())
+            }
+        };
         commands
             .entity(entity)
             .remove::<ExportInFlight>()
             .trigger(move |entity: Entity| ExportDone { entity, result });
-    }
-}
-
-/// What exports hand back to the **main thread** to drop: a rendered graph,
-/// what a failed fork build had made, whatever a cancelled export held.
-/// [`poll_exports`] drops it every frame.
-///
-/// A forked in-process VST2 plugin is built on the main thread (its fork
-/// source is pinned: `tutti_graph::ForkBuild::pinned`) and must close there
-/// too, but its export builds, renders and may be cancelled on the compute
-/// pool; whatever the task holds is wrapped so that wherever it is dropped
-/// it is sent here instead. Inserted by [`ExportPlugin`](super::ExportPlugin)
-/// (and by [`start_exports`] if missing). Something sent once it is gone
-/// drops where it is.
-#[derive(Resource)]
-pub struct ExportDrops {
-    send: Sender<Box<dyn Send>>,
-    recv: Mutex<Receiver<Box<dyn Send>>>,
-}
-
-impl Default for ExportDrops {
-    fn default() -> Self {
-        let (send, recv) = channel();
-        Self {
-            send,
-            recv: Mutex::new(recv),
-        }
-    }
-}
-
-impl ExportDrops {
-    fn sender(&self) -> Sender<Box<dyn Send>> {
-        self.send.clone()
-    }
-
-    /// Drop, on this thread, everything sent so far.
-    fn drop_here(&self) {
-        let recv = self.recv.lock().unwrap_or_else(PoisonError::into_inner);
-        while let Ok(value) = recv.try_recv() {
-            drop(value);
-        }
-    }
-}
-
-/// `T`, sent to [`ExportDrops`] wherever it is dropped, unless
-/// [`take`](Self::take)n first.
-struct ToMain<T: Send + 'static> {
-    value: Option<T>,
-    to: Sender<Box<dyn Send>>,
-}
-
-impl<T: Send + 'static> ToMain<T> {
-    fn new(value: T, to: Sender<Box<dyn Send>>) -> Self {
-        Self {
-            value: Some(value),
-            to,
-        }
-    }
-
-    /// The value, no longer sent anywhere: its new owner drops it.
-    fn take(mut self) -> T {
-        self.value.take().expect("taken once")
-    }
-}
-
-impl<T: Send + 'static> std::ops::Deref for ToMain<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        self.value.as_ref().expect("not taken")
-    }
-}
-
-impl<T: Send + 'static> std::ops::DerefMut for ToMain<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        self.value.as_mut().expect("not taken")
-    }
-}
-
-impl<T: Send + 'static> Drop for ToMain<T> {
-    fn drop(&mut self) {
-        if let Some(value) = self.value.take() {
-            // A receiver already gone (the world is being torn down) hands
-            // the value back, and it drops here.
-            let _ = self.to.send(Box::new(value));
-        }
     }
 }
 
@@ -450,7 +302,7 @@ impl<T: Send + 'static> Drop for ToMain<T> {
 mod tests {
     use super::*;
     use crate::engine::build::build_on;
-    use crate::export::{ExportClock, ExportPlugin};
+    use crate::export::{ExportClock, ExportOutput, ExportPlugin, ExportTarget};
     use crate::graph::{
         EngineNodes, GraphReconcilePlugin, MasterSources, MetronomeRes, SpawnAudioNode,
         TransportRes,
@@ -571,8 +423,8 @@ mod tests {
     }
 
     /// **The rendered graph is dropped on the main thread**, though it
-    /// renders on the compute pool: the task sends it to [`ExportDrops`] as
-    /// it drops, and `poll_exports` (main-thread-pinned) drops it there. A
+    /// renders on the compute pool: the job returns it, and `poll_exports`
+    /// (main-thread-pinned) drops it there (`Session::finish_export`). A
     /// forked in-process VST2 plugin closes its instance when dropped, which
     /// VST2 confines to the main thread.
     ///
@@ -589,12 +441,11 @@ mod tests {
     /// finishes within the frame that polls it, which a threaded pool does
     /// not promise.)
     ///
-    /// Mutation (run, with `bevy_tasks/multi_threaded`): `ToMain`'s drop
-    /// dropping the graph where it is instead of sending it to `ExportDrops`
-    /// (what rendering it by value in the task did) → the copy's drop is
-    /// recorded on a pool thread → fails. Mutation (run, threaded):
-    /// `poll_exports` not draining `ExportDrops` → the copy is never dropped
-    /// → fails.
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): `ExportJob::run`
+    /// dropping the rendered graph before it returns (`graph.take()`
+    /// dropped on the worker) → the copy's drop is recorded on a pool thread
+    /// → fails. (The session's `export_leftovers_drop_on_the_main_thread`
+    /// pins the same over a plain thread, with no Bevy.)
     #[test]
     fn the_rendered_graph_is_dropped_on_the_main_thread() {
         let (mut app, _click, _walker, _stream) = engine_app();

@@ -12,21 +12,22 @@
 //!
 //! # Life of a plugin
 //!
-//! A host spawns a [`PluginRequest`]. [`load`] picks it up, runs the subprocess
-//! launch on a worker, and promotes the result to an `AudioNode` carrying a
-//! [`PluginEmitter`]: the plugin is bound into the graph as a graph node
-//! (reading its transport from each block's `Env`), and its controls and MIDI
-//! port are captured on the way. [`bind`] then gives it the project meter and
-//! builds accumulators for whichever params the host declared modulatable;
-//! [`latency`] hands the graph a latency the plugin changes. [`health`] polls
-//! liveness from there on, and removes `AudioNode` — the one handle everything
-//! else keys on — when a plugin is finally written off.
+//! A host spawns a [`PluginRequest`]. [`load`] picks it up, runs the session's
+//! load job (`tutti_session::PluginLoad`) on a worker, and promotes the result
+//! (`Session::add_plugin`) to an `AudioNode` carrying a [`PluginEmitter`]:
+//! the plugin is bound into the graph as a graph node (reading its transport
+//! from each block's `Env`), and its controls are captured on the way.
+//! [`bind`] then gives it the project meter. From there the session hosts it
+//! (`tutti_session::HostedPlugin`): [`health`] runs the session's
+//! `Phase::Plugins` each frame (liveness, latency, GUI edits, snapshots) and
+//! removes `AudioNode` — the one handle everything else keys on — when a
+//! plugin is finally written off.
 //!
 //! Sub-modules:
 //! - [`load`] — off-thread loading: request → pending → promoted.
-//! - [`bind`] — meter and parameter binding once loaded.
-//! - [`latency`] — a plugin's runtime latency change, onto the graph.
-//! - [`health`] — debounced liveness, state snapshots, unwiring the dead.
+//! - [`bind`] — meter binding once loaded.
+//! - [`health`] — the session's `Phase::Plugins`, placed on the entities.
+//! - `render_mode` (`export`) — the session's `Phase::RenderMode`.
 //! - [`editor`] — the GUI window's lifecycle, driven by [`SetEditorVisible`].
 //! - [`scan`] — catalog scanning with per-plugin progress.
 //! - [`catalog`] — probing a single plugin off the frame thread.
@@ -42,15 +43,11 @@ pub mod bind;
 pub mod catalog;
 pub mod editor;
 pub mod health;
-pub mod latency;
 pub mod load;
 pub mod native_window;
-#[cfg(feature = "modulation")]
-pub mod params;
-// `render_mode` needs `crate::export`'s `ExportInFlight` to know a bounce is
-// running, and that module is itself `export`-gated. This is the one place a
-// `cfg` is right rather than an `is_plugin_added` check: without the feature
-// the type does not exist to name, so there is no plugin to ask about.
+// `render_mode` is scheduled by `crate::export::ExportPlugin`, after its
+// systems, and that module is itself `export`-gated: without the feature
+// the systems do not exist to order against.
 #[cfg(feature = "export")]
 pub mod render_mode;
 pub mod scan;
@@ -73,15 +70,12 @@ pub use editor::{
     PluginEditorOpen, PluginEmitter, PluginFloatingEditorOpen, SetEditorVisible, Visibility,
 };
 pub use health::{plugin_health_poll, plugin_state_snapshot, PluginHealth, PluginLiveness};
-pub use latency::plugin_latency_poll;
 pub use load::{
     plugin_load_promote, plugin_load_start, PendingPlugin, PluginLoadDone, PluginLoadTerminated,
     PluginRequest,
 };
-#[cfg(feature = "modulation")]
-pub use params::{plugin_param_edits, read_plugin_params, PluginParamRead, PluginParamValues};
 #[cfg(feature = "export")]
-pub use render_mode::{plugin_render_mode_drive, PluginRenderMode, RenderModeAnnounced};
+pub use render_mode::plugin_render_mode;
 pub use scan::{
     poll_scan, start_scan, InFlightScan, PluginCatalogState, PluginsScanned, RescanPlugins,
     ScanProgressed,
@@ -156,11 +150,11 @@ impl PluginsRes {
 /// Requires [`crate::graph::GraphReconcilePlugin`] (which configures the
 /// `GraphReconcileSystems` set) to be added before this plugin.
 ///
-/// With the `modulation` feature, each loaded plugin's
-/// [`read_plugin_params`] ([`PluginParamValues::start`]) takes its handle's
-/// single `on_parameter_changed` slot (the GUI edits that move a lane's knob). A
-/// host installing its own callback on that handle replaces it, and the
-/// knobs stop following the plugin's GUI.
+/// With the `modulation` feature, each loaded plugin's parameter mirror (the
+/// session's, `tutti_plugin::PluginParamValues::start` in the load job) takes
+/// its handle's single `on_parameter_changed` slot (the GUI edits that move a
+/// lane's knob). A host installing its own callback on that handle replaces
+/// it, and the knobs stop following the plugin's GUI.
 ///
 /// Also requires the host to have initialised Bevy's task pools — a
 /// `TaskPoolPlugin`, or the `DefaultPlugins`/`MinimalPlugins` that include one.
@@ -248,54 +242,6 @@ impl Plugin for TuttiHostingPlugin {
                 .run_if(windowing_ready),
         );
 
-        // Health needs neither a window nor, strictly, a device — but it unwires
-        // through the graph, so it runs with the engine.
-        app.add_systems(
-            Update,
-            (
-                // Unwires a dead plugin by removing `AudioNode`; the observers
-                // that hang off that removal take the node out of the graph and
-                // the sender off the MIDI bus, so this must land before the
-                // Commit-phase commit_graph rather than after it.
-                plugin_health_poll.before(GraphReconcileSystems::Commit),
-                // Ordered after the poll so a plugin declared dead this frame is
-                // not asked for state it can no longer produce.
-                plugin_state_snapshot.after(plugin_health_poll),
-                // Before `Compensate`, because it works by editing the session
-                // (its latency) and that phase reads the edit flag; after
-                // `plugin_health_poll`, so
-                // a plugin declared dead this frame is not compensated for on
-                // its way out of the graph.
-                plugin_latency_poll
-                    .after(plugin_health_poll)
-                    .before(GraphReconcileSystems::Compensate),
-            )
-                .run_if(crate::graph::engine_ready),
-        );
-
-        // Announce the render mode to hosted plugins, but only if this app can
-        // actually export — `ExportInFlight` is `crate::export`'s component, and
-        // without that plugin the query is over a type nothing ever spawns.
-        //
-        // `is_plugin_added` rather than a feature flag: whether a host bounces
-        // is a composition choice it makes at build time, and a flag would make
-        // it a compile-time property of this crate instead.
-        //
-        // After both export systems, so the frame's answer has settled before it
-        // is read — see the module docs on back-to-back renders. Ungated on the
-        // engine for the same reason `export` is: a render already in flight
-        // when audio stops still has to put its plugins back.
-        #[cfg(feature = "export")]
-        if app.is_plugin_added::<crate::export::ExportPlugin>() {
-            app.init_resource::<PluginRenderMode>();
-            app.add_systems(
-                Update,
-                plugin_render_mode_drive
-                    .after(crate::export::poll_exports)
-                    .after(crate::export::start_exports),
-            );
-        }
-
         // Scanning is deliberately **not** gated on `engine_ready`: it walks the
         // filesystem and probes subprocesses, touching neither the graph nor a
         // window. A host that wants to populate its browser before (or without)
@@ -324,6 +270,22 @@ impl Plugin for TuttiHostingPlugin {
                 .in_set(GraphReconcileSystems::Spawn),
         );
 
+        // The session's `Phase::Plugins` (health, latency, GUI edits,
+        // snapshots), after a promotion so a plugin loaded this frame is
+        // watched from it, and in `Spawn`: before `Compensate`, which reads
+        // the graph's edit flag a latency change sets, and before the
+        // `Commit`-phase commit a dead plugin's removal must reach. A
+        // finished snapshot lands first, so the phase sees it.
+        app.add_systems(
+            Update,
+            (
+                plugin_state_snapshot.before(plugin_health_poll),
+                plugin_health_poll.after(plugin_load_promote),
+            )
+                .in_set(GraphReconcileSystems::Spawn)
+                .run_if(crate::graph::engine_ready),
+        );
+
         // Binding sits between spawn and commit, alongside MIDI registration and
         // route rebuilding: it needs the node to exist, and the graph edits it
         // stages must reach the same frame's commit.
@@ -335,19 +297,9 @@ impl Plugin for TuttiHostingPlugin {
                 .run_if(crate::graph::engine_ready),
         );
 
-        // A plugin's parameter values, mirrored for modulation lanes' knobs,
-        // and its GUI edits written into them (doc 014 §8.2).
-        #[cfg(feature = "modulation")]
-        app.add_systems(
-            Update,
-            params::plugin_param_edits
-                .after(plugin_load_promote)
-                .in_set(GraphReconcileSystems::Spawn),
-        );
-
         // Reaps AppKit observers for editors that lost `PluginEditorOpen`
         // without going through `set_editor_visible_observer` — chiefly
-        // `plugin_health_poll`, which is not main-thread pinned.
+        // `plugin_health_poll`'s removal, which lands with its commands.
         #[cfg(target_os = "macos")]
         app.add_systems(
             Update,

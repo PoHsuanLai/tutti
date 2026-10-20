@@ -80,6 +80,9 @@ test-all: test test-features test-editor test-doc
 #                         (tests/plugin_capture.rs); `full,plugin` so the
 #                         modulation-gated plugin parameter lanes compile
 #                         with it
+#   tutti-session/clap  — hosted plugins and the plugin half of export
+#                         (tests/plugin.rs, the §5.2 `plugin_midi_export`
+#                         example); `export,modulation` beside it
 #
 # Not `--all-features`: that would pull every plugin-format SDK and (once it
 # exists) JACK, which needs libjack on the box. Name the combinations.
@@ -89,11 +92,13 @@ check-features:
     cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features full,plugin --all-targets -- -D warnings
+    cargo clippy -p tutti-session --features clap,export,modulation --all-targets -- -D warnings
     cargo clippy -p tutti-io --features bevy --all-targets -- -D warnings
 
 # Run the suites `just test` leaves dark. See check-features for which.
-# The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs, which
-# spawns it; CLAP only, as in CI, so no VST3 SDK is needed.
+# The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs and
+# `tutti-session/clap`'s plugin suite and §5.2 example, which spawn it; CLAP
+# only, as in CI, so no VST3 SDK is needed.
 test-features:
     cargo build -p tutti-plugin-server --no-default-features --features clap
     cargo nextest run -p tutti-cpal --features capture
@@ -101,9 +106,15 @@ test-features:
     cargo nextest run -p bevy-tutti --features soundfont
     cargo nextest run -p bevy-tutti --features sampler
     cargo nextest run -p bevy-tutti --features full,plugin
+    cargo nextest run -p tutti-session --features clap,export,modulation
     cargo nextest run -p tutti-io --features bevy
     # Threaded task pool, for the tests that need it (see ci.yml).
     cargo nextest run -p bevy-tutti --features full,bevy_tasks/multi_threaded -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
+    # The plugin host on a threaded executor and pool (see ci.yml): every
+    # system that calls a main-thread session API must be pinned. Not
+    # `export_surface`'s batch test: it assumes a render finishes in the
+    # frame that polls it, which a threaded pool does not promise.
+    cargo nextest run -p bevy-tutti --features full,plugin,vst2,clap,bevy_tasks/multi_threaded,bevy_ecs/multi_threaded -E 'not test(a_batch_spawned_in_one_frame_starts_one_at_a_time)'
 
 # JACK, separately: it hard-links libjack at BUILD time, so it needs
 # `libjack-jackd2-dev` (Debian) / `jack-audio-connection-kit-devel` (Fedora)

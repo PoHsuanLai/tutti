@@ -85,6 +85,10 @@ pub struct PluginControls {
     /// What the node's parameter delivery has done
     /// ([`param_delivery`](Self::param_delivery)).
     delivery: Arc<super::param_delivery::DeliveryCounters>,
+    /// What the node's IPC pipeline reports
+    /// ([`missed_chunks`](Self::missed_chunks),
+    /// [`chunk_in_flight_answered`](Self::chunk_in_flight_answered)).
+    chunks: Arc<super::batcher::ChunkCounters>,
 }
 
 impl PluginControls {
@@ -102,7 +106,35 @@ impl PluginControls {
             meter: super::PluginMeter::default(),
             sample_rate: Arc::new(AtomicF64::new(sample_rate.get())),
             delivery: Arc::default(),
+            chunks: Arc::default(),
         }
+    }
+
+    /// The cells the node's IPC pipeline reports to, for the node.
+    pub(super) fn chunk_counters(&self) -> Arc<super::batcher::ChunkCounters> {
+        Arc::clone(&self.chunks)
+    }
+
+    /// How many chunks the plugin-server had not answered by the time the
+    /// node played them, since the plugin was bound: each played as
+    /// silence (a dropout). A crashed plugin's silence is not counted. An
+    /// offline fork waits for every chunk, so its count stays zero unless
+    /// it gave up. RT-safe: one relaxed load.
+    pub fn missed_chunks(&self) -> u64 {
+        self.chunks.missed()
+    }
+
+    /// Whether the chunk the node submitted last, and has not played yet,
+    /// has been answered: `true` with none in flight.
+    ///
+    /// A manual-render helper: for a host (or a test) driving the graph by
+    /// hand, block by block, with no device clock to keep. It waits on this
+    /// before the next block, so that block plays the answer rather than
+    /// silence. A live host does not wait on it: the device's callback
+    /// period is the server's deadline, and a late answer is a dropout,
+    /// counted by [`missed_chunks`](Self::missed_chunks).
+    pub fn chunk_in_flight_answered(&self) -> bool {
+        self.chunks.in_flight_answered()
     }
 
     /// The counters the node's parameter delivery writes, for the node.

@@ -47,22 +47,29 @@ mod builder;
 #[cfg(feature = "device")]
 mod device;
 mod error;
+#[cfg(feature = "export")]
+mod export;
 mod graph;
 #[cfg(feature = "midi")]
 mod midi;
 #[cfg(feature = "modulation")]
 mod modulation;
 mod node;
+#[cfg(feature = "plugin")]
+mod plugin;
 mod session;
 
 pub use builder::{root_width, SessionBuilder};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart};
 pub use error::{Error, Result};
+#[cfg(feature = "export")]
+pub use export::{
+    ExportClock, ExportJob, ExportOutput, ExportRendered, ExportRequest, ExportSource,
+    ExportTarget, PrepareEdit, PreparedGraph, EXPORT_STALL_WARNING,
+};
 #[cfg(feature = "modulation")]
 pub use graph::ModKeys;
-#[cfg(feature = "export")]
-pub use graph::{AudioNodeTarget, PendingExport};
 pub use graph::{
     AudioSide, Committed, Crossfade, CrossfadeId, CrossfadeRefused, EventSource, Graph,
     GraphSource, ReplaceRefused, LIVE_MAX_BLOCK,
@@ -77,6 +84,13 @@ pub use modulation::{
     declare_targets, ModRefusal, ModState, Mods, ParamRef, Take, UNRESOLVED_WARNING,
 };
 pub use node::SessionNode;
+#[cfg(feature = "plugin")]
+pub use plugin::{
+    HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginSnapshot,
+    PluginSnapshotTaken, SNAPSHOT_INTERVAL,
+};
+#[cfg(all(feature = "plugin", feature = "modulation"))]
+pub use plugin::{PluginParamRead, PluginParamsRead};
 #[cfg(feature = "midi")]
 pub use session::MidiNodes;
 #[cfg(feature = "modulation")]

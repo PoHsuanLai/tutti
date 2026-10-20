@@ -323,6 +323,9 @@ pub struct ModState {
     /// An apply has run: from then on every modulation phase applies, so
     /// taking every declaration away tears down what they built.
     applied: bool,
+    /// The plugin targets the last successful apply resolved, by node and
+    /// parameter: where a plugin's GUI edit goes (`Phase::Plugins`).
+    plugin_targets: crate::graph::PluginTargets,
 }
 
 impl ModState {
@@ -335,6 +338,7 @@ impl ModState {
             unresolved_since: BTreeMap::new(),
             warn_after,
             applied: false,
+            plugin_targets: BTreeMap::new(),
         }
     }
 
@@ -355,6 +359,13 @@ impl ModState {
     pub fn set_knob(&self, target: TargetKey, value: f32) -> bool {
         self.lane(target)
             .is_some_and(|(_, controls)| controls.set_knob(value))
+    }
+
+    /// The target of the lane on plugin parameter `id` at `node`, when the
+    /// last apply resolved one.
+    #[cfg(feature = "plugin")]
+    pub(crate) fn plugin_target(&self, node: AudioNode, id: u32) -> Option<TargetKey> {
+        self.plugin_targets.get(&(node, id)).copied()
     }
 
     /// Signal source `source`'s node (a follower's, a note envelope's).
@@ -386,13 +397,14 @@ impl ModState {
     /// Records an apply's outcome; returns whether it asks for a commit.
     fn applied(
         &mut self,
-        applied: Result<tutti_nodes::Applied, ReconcileError>,
+        applied: Result<(tutti_nodes::Applied, crate::graph::PluginTargets), ReconcileError>,
         now: Instant,
         out: &mut Vec<crate::SessionEvent>,
     ) -> bool {
         self.applied = true;
         match applied {
-            Ok(applied) => {
+            Ok((applied, plugin_targets)) => {
+                self.plugin_targets = plugin_targets;
                 self.refusal = None;
                 let warn_after = self.warn_after;
                 let mut since = std::mem::take(&mut self.unresolved_since);
@@ -543,12 +555,6 @@ impl ModKeys for OwnKeys<'_> {
         // A key no node has any more names one the editor does not hold:
         // the reconciler leaves its target unresolved.
         Some(AudioNode(NodeKey(target)))
-    }
-
-    fn plugin_value(&self, _target: u64, _id: u32) -> Option<Option<f32>> {
-        // The session mirrors no plugin's values until it owns them (design
-        // 015 PR 6): a plugin target starts with no knob.
-        Some(None)
     }
 
     fn feed(&self, source: SourceKey) -> Option<Feed> {

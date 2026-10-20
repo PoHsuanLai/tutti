@@ -16,15 +16,21 @@ use crate::graph::{Committed, CrossfadeId, Graph, Retried};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Phase {
-    /// Crossfades that waited out a re-prepare are retried, then
+    /// Crossfades that waited out a re-prepare are retried, what exports
+    /// sent back is dropped (feature `export`; and an export in flight for
+    /// `EXPORT_STALL_WARNING` of `PhaseCx::now` warned about, once), then
     /// `Editor::collect` frees what the audio thread retired (here, on the
     /// main thread) and, mid re-prepare, sends the resumed plan.
     Collect,
-    /// Hosted plugins' health, latency and parameter edits. Empty until the
-    /// session owns the plugins (design 015 PR 6).
+    /// Hosted plugins' health, latency, parameter edits and state
+    /// snapshots (feature `plugin`): a dead plugin's node is removed
+    /// (`SessionEvent::PluginDied`), a moved latency handed to the graph
+    /// (`SessionEvent::PluginLatencyChanged`), a due snapshot handed to the
+    /// host as a job (`SessionEvent::PluginSnapshotDue`).
     Plugins,
-    /// The plugins' render mode (realtime or offline). Empty until the
-    /// session owns exports (design 015 PR 6).
+    /// The plugins' render mode (features `plugin` and `export`): Offline
+    /// while an export is in flight, Realtime otherwise, each plugin told on
+    /// a change or when it was never told.
     RenderMode,
     /// Modulation's apply (feature `modulation`): the declarations (the
     /// host's, `PhaseCx::mods`, or the session's own, `Session::mods`)
@@ -159,6 +165,35 @@ pub enum SessionEvent {
     /// [`PhaseCx::now`].
     #[cfg(feature = "midi")]
     MidiOutDropped(u64),
+    /// A hosted plugin was declared dead (`tutti_plugin::Liveness`): its
+    /// node was removed. Reported once.
+    #[cfg(feature = "plugin")]
+    PluginDied {
+        /// The node it was at, now removed.
+        node: AudioNode,
+        /// The engine's latched reason.
+        cause: String,
+    },
+    /// A hosted plugin's declared latency moved, and the graph took it: the
+    /// next commit compensates it.
+    #[cfg(feature = "plugin")]
+    PluginLatencyChanged {
+        /// The plugin's node.
+        node: AudioNode,
+        /// Its latency now.
+        latency: Samples,
+    },
+    /// A healthy plugin's state is due a snapshot: run the job off the
+    /// control thread and land it with
+    /// [`Session::land_snapshot`](crate::Session::land_snapshot).
+    #[cfg(feature = "plugin")]
+    PluginSnapshotDue(crate::PluginSnapshot),
+    /// A parameter mirror rebuilt by a crossfade to another plugin is due
+    /// its read: run the job off the control thread and land it with
+    /// [`Session::land_params`](crate::Session::land_params). Until then the
+    /// mirror is not ready.
+    #[cfg(all(feature = "plugin", feature = "modulation"))]
+    PluginParamsDue(crate::PluginParamRead),
 }
 
 impl std::fmt::Debug for SessionEvent {
@@ -189,6 +224,22 @@ impl std::fmt::Debug for SessionEvent {
                 .finish(),
             #[cfg(feature = "midi")]
             Self::MidiOutDropped(count) => f.debug_tuple("MidiOutDropped").field(count).finish(),
+            #[cfg(feature = "plugin")]
+            Self::PluginDied { node, cause } => f
+                .debug_struct("PluginDied")
+                .field("node", node)
+                .field("cause", cause)
+                .finish(),
+            #[cfg(feature = "plugin")]
+            Self::PluginLatencyChanged { node, latency } => f
+                .debug_struct("PluginLatencyChanged")
+                .field("node", node)
+                .field("latency", latency)
+                .finish(),
+            #[cfg(feature = "plugin")]
+            Self::PluginSnapshotDue(job) => f.debug_tuple("PluginSnapshotDue").field(job).finish(),
+            #[cfg(all(feature = "plugin", feature = "modulation"))]
+            Self::PluginParamsDue(job) => f.debug_tuple("PluginParamsDue").field(job).finish(),
         }
     }
 }
@@ -287,6 +338,15 @@ pub struct Session {
     /// and the count the last poll saw.
     #[cfg(feature = "device")]
     pub(crate) faults: Option<(Arc<tutti_cpal::StreamFaults>, u64)>,
+    /// How often a healthy plugin's state is captured.
+    #[cfg(feature = "plugin")]
+    pub(crate) snapshot_interval: std::time::Duration,
+    /// The render mode last announced.
+    #[cfg(feature = "plugin")]
+    pub(crate) render_mode: crate::plugin::RenderModeState,
+    /// The export token and the leftovers' channel.
+    #[cfg(feature = "export")]
+    pub(crate) export: crate::export::ExportState,
 }
 
 impl Session {
@@ -341,6 +401,13 @@ impl Session {
                         }
                     });
                 }
+                // What an export left behind (a render's fork, an edit
+                // that never ran) drops here, on the main thread.
+                #[cfg(feature = "export")]
+                {
+                    self.export.drop_leftovers();
+                    self.export.watch_stall(cx.now);
+                }
                 let repreparing = self.graph.is_repreparing();
                 self.graph.collect();
                 // A re-prepare resumed in that collect: it sent the resumed
@@ -380,7 +447,16 @@ impl Session {
                 self.midi_state
                     .midi_out_phase(self.midi.as_ref(), cx.now, out)
             }
-            Phase::Plugins | Phase::RenderMode => {}
+            Phase::Plugins =>
+            {
+                #[cfg(feature = "plugin")]
+                self.plugins_phase(cx, out)
+            }
+            Phase::RenderMode =>
+            {
+                #[cfg(feature = "plugin")]
+                self.render_mode_phase()
+            }
             Phase::Poll =>
             {
                 #[cfg(feature = "device")]

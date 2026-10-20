@@ -7,8 +7,6 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-#[cfg(feature = "export")]
-use tutti_core::transport::OfflineTransport;
 use tutti_core::{AudioNode, Compensation, CrossfadeCurve, Samples, Seconds, Tail};
 use tutti_session::{
     AudioSide, Crossfade, CrossfadeRefused, EventSource, GraphSource, Phase, PhaseCx,
@@ -283,9 +281,36 @@ impl AudioGraphRes {
     /// by state transfer) and its latency (its `Shape`). Capture its controls
     /// first ([`CapturedControls::for_plugin`](crate::graph::CapturedControls::for_plugin)):
     /// the plugin is out of reach once inserted.
+    ///
+    /// The session hosts it from here (`tutti_session::HostedPlugin`): its
+    /// health is watched by
+    /// [`plugin_health_poll`](crate::plugin_host::plugin_health_poll), which
+    /// removes a dead one's node and the `AudioNode` of whichever entity
+    /// holds it, and its latency and render mode are the session's.
     #[cfg(feature = "plugin")]
     pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> AudioNode {
         self.write().graph().insert_plugin(client)
+    }
+
+    /// `f` over what the session keeps for the plugin hosted at `node`
+    /// (`tutti_session::HostedPlugin`: its handle, controls, liveness, last
+    /// snapshot and, with `modulation`, its parameter mirror); `None` when
+    /// no plugin is hosted there.
+    #[cfg(feature = "plugin")]
+    pub fn with_plugin<R>(
+        &self,
+        node: AudioNode,
+        f: impl FnOnce(&tutti_session::HostedPlugin) -> R,
+    ) -> Option<R> {
+        self.read().plugin(node).map(f)
+    }
+
+    /// The render mode last announced to the hosted plugins: `Offline`
+    /// while an export is in flight, else `Realtime` (the session's
+    /// `Phase::RenderMode`).
+    #[cfg(feature = "plugin")]
+    pub fn render_mode(&self) -> tutti_plugin::RenderMode {
+        self.read().render_mode()
     }
 
     /// [`replace`](Self::replace) for a hosted plugin: swap the plugin behind
@@ -601,37 +626,7 @@ impl AudioGraphRes {
         self.read().graph_ref().fork_live().ok()
     }
 
-    /// `node`'s latency moved at runtime — a hosted plugin's latency cell
-    /// changed. The editor holds the latency the node's `Shape` declared at
-    /// insert, so this hands it `latency` (for a plugin,
-    /// `PluginControls::declared_latency`), clamped to what PDC compensates,
-    /// and `Editor::set_latency` moves PDC on the next commit without
-    /// touching the node. Returns whether the figure moved.
-    #[cfg(feature = "plugin")]
-    pub(crate) fn refresh_node_latency(
-        &mut self,
-        node: AudioNode,
-        latency: tutti_types::Latency,
-    ) -> bool {
-        self.write().graph().refresh_node_latency(node, latency)
-    }
-
     // --- Publishing and rendering ---
-
-    /// Commit every edit since the last commit now, and on a sent plan
-    /// publish its compensation (`Session::commit`). Returns whether the
-    /// plan went out: `false` means "retry next frame", and the edit flag
-    /// stays set.
-    ///
-    /// `Editor::commit`, which is refused for now while `QUEUE_CAPACITY`
-    /// commits are out or a re-prepare is between its halves (the retry
-    /// case), and for good when the graph does not compile (logged; the next
-    /// edit tries again). A changed global output count needs nothing
-    /// special: it is part of the spec the commit compiles.
-    #[cfg(all(test, feature = "plugin"))]
-    pub(crate) fn commit(&mut self) -> bool {
-        self.write().commit() == tutti_session::Committed::Sent
-    }
 
     /// Runs one of the session's phases (`Session::run_phase`) at `now`,
     /// returning what it found.
@@ -678,59 +673,4 @@ impl AudioGraphRes {
     pub fn render_frame_at(&mut self, transport: &tutti_graph::Transport, output: &mut [f32]) {
         self.write().render_frame_at(transport, output);
     }
-
-    // --- Export ---
-
-    /// The graph an export renders, gathered: `node`'s sub-graph, or the
-    /// whole graph for `None`, as a fork sharing no state with this one,
-    /// read from the live graph now and built on a worker
-    /// (`PendingExport::build`). Main thread. See
-    /// `export::run::start_exports`.
-    ///
-    /// `Editor::fork_gather` (`ForkTarget::Master` or `ForkTarget::Node`) in
-    /// `ForkMode::Offline(ctx)`, prepared at `rate`. Every node is forked from
-    /// its shadow — isolated, rebound onto `ctx`, reset — **the master
-    /// included**: a master export renders what the graph is driven to play
-    /// from `ctx`, starting silent, not a copy of what is sounding now.
-    ///
-    /// `Err(ExportRefused::GraphHasNoOutputs)` when the graph has no global
-    /// outputs, and `Err(ExportRefused::NoOutputs)` when `node` has no audio
-    /// outputs (or is not in the graph); a fork refusal (`NotForkable`, a
-    /// plugin whose fresh instance did not load) is the renderer's own error.
-    #[cfg(feature = "export")]
-    pub(crate) fn export(
-        &self,
-        node: Option<AudioNode>,
-        ctx: &OfflineTransport,
-        rate: SampleRate,
-    ) -> Result<tutti_session::PendingExport, ExportRefused> {
-        if self.outputs() == 0 {
-            return Err(ExportRefused::GraphHasNoOutputs);
-        }
-        let target = match node {
-            None => tutti_session::AudioNodeTarget::Master,
-            Some(node) => tutti_session::AudioNodeTarget::Node(node),
-        };
-        match self.read().graph_ref().gather_for_export(target, ctx, rate) {
-            Ok(graph) => Ok(graph),
-            Err(tutti_export::Error::Fork(
-                tutti_graph::ForkError::NoOutputs { .. }
-                | tutti_graph::ForkError::NoSuchNode { .. },
-            )) => Err(ExportRefused::NoOutputs),
-            Err(e) => Err(ExportRefused::Render(e)),
-        }
-    }
-}
-
-/// Why [`AudioGraphRes::export`] built nothing.
-#[cfg(feature = "export")]
-#[derive(Debug)]
-pub(crate) enum ExportRefused {
-    /// The target node has no audio outputs, or is not in the graph.
-    NoOutputs,
-    /// The graph has no global outputs: nothing any export could render.
-    GraphHasNoOutputs,
-    /// The fork was refused: a node cannot be forked, or its fork source
-    /// failed.
-    Render(tutti_export::Error),
 }

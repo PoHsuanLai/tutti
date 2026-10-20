@@ -62,8 +62,10 @@ define_class!(
 /// `Drop` calls `NSNotificationCenter::removeObserver`; AppKit is main-thread
 /// only, and an off-main `removeObserver` is a hard crash on macOS. That is
 /// what keeps it out of a Bevy `Component`, whose drop runs wherever a
-/// `Commands` queue happens to be applied (`plugin_health_poll` is *not*
-/// main-thread pinned) or wherever the `World` is torn down.
+/// `Commands` queue happens to be applied (a sync point, not the system
+/// that queued it: `plugin_health_poll`'s removal of `PluginEditorOpen` is
+/// applied there though the system itself is main-thread pinned) or
+/// wherever the `World` is torn down.
 ///
 /// It lives in [`LiveResizeRegistry`], a `NonSend` resource, so Bevy itself
 /// enforces main-thread access. `Drop` additionally re-checks the thread and
@@ -171,8 +173,8 @@ impl LiveResizeRegistry {
 
 /// Reaps observers whose plugin lost its `PluginEditorOpen` without going
 /// through `set_editor_visible_observer` — most importantly
-/// `plugin_health_poll`, which unwires a dead plugin and is *not* main-thread
-/// pinned, so it cannot drop the observer itself.
+/// `plugin_health_poll`, which unwires a dead plugin through `Commands`
+/// and holds no registry, so it cannot drop the observer itself.
 ///
 /// `NonSendMut` pins this system to the main thread, so the AppKit
 /// `removeObserver` in `LiveResizeHandle::drop` always runs where it is legal.

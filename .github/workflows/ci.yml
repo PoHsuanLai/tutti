@@ -61,7 +61,7 @@ jobs:
       # a module is renamed. The per-module gate covers it.
       - run: scripts/check-canonical-paths.sh tutti_graph arena builder command compile editor event exec fade fork io kernels legacy node param plan reference spec time
       # The same for `tutti-session`, which keeps every module private too.
-      - run: scripts/check-canonical-paths.sh tutti_session builder device error graph midi modulation node session
+      - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph midi modulation node plugin session
       # The vendored VST3 SDK is three Steinberg submodules, documented as
       # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
       # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
@@ -177,6 +177,13 @@ jobs:
       #                         only test that watches the latency poll see one.
       #                         `full,plugin` so the modulation-gated param
       #                         binding compiles with it.
+      #   tutti-session/clap  — src/plugin.rs and src/export.rs's plugin half:
+      #                         tests/plugin.rs and the §5.2 example
+      #                         (`plugin_midi_export`, `test = true`) host the
+      #                         reference CLAP plugin through a real
+      #                         plugin-server. `export,modulation` so the
+      #                         render mode and the GUI-edit drain compile
+      #                         with it.
       #
       # Not `--all-features`: that pulls every plugin-format SDK. Name the
       # combinations, and add one here whenever a new feature is added.
@@ -187,15 +194,17 @@ jobs:
           cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features full,plugin --all-targets -- -D warnings
+          cargo clippy -p tutti-session --features clap,export,modulation --all-targets -- -D warnings
           cargo clippy -p tutti-io --features bevy --all-targets -- -D warnings
 
-      # `tests/plugin_capture.rs` spawns the `plugin-server` binary, which no
+      # `tests/plugin_capture.rs` (and tutti-session's `tests/plugin.rs` and
+      # `plugin_midi_export` example) spawn the `plugin-server` binary, which no
       # test build produces (it would be a dependency cycle through
       # `tutti-plugin`), so it is built here, before the tests, as the `test`
       # job does. CLAP only: that is the format the reference plugin is, and the
       # default features would pull the VST3 SDK submodules this checkout does
       # not fetch.
-      - name: Build plugin-server (bevy-tutti/plugin spawns it)
+      - name: Build plugin-server (bevy-tutti/plugin and tutti-session/clap spawn it)
         run: cargo build -p tutti-plugin-server --no-default-features --features clap
 
       - name: Test
@@ -205,6 +214,7 @@ jobs:
           cargo nextest run -p bevy-tutti --features soundfont
           cargo nextest run -p bevy-tutti --features sampler
           cargo nextest run -p bevy-tutti --features full,plugin
+          cargo nextest run -p tutti-session --features clap,export,modulation
           cargo nextest run -p tutti-io --features bevy
 
       # bevy-tutti builds `bevy_tasks` without `multi_threaded`, so its task
@@ -220,6 +230,23 @@ jobs:
         run: >-
           cargo nextest run -p bevy-tutti --features full,bevy_tasks/multi_threaded
           -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
+
+      # The plugin host on a multi-threaded executor and pool, as an app with
+      # Bevy's default features runs it: a system that calls a main-thread
+      # session API (`Session::add_plugin`, the plugin phases, an export's
+      # finish) runs on a pool thread unless it is pinned, and the session's
+      # main-thread assert panics there (a debug build). An in-process VST2
+      # plugin's load is confined to the main thread the same way. The whole
+      # suite, `vst2` included (in process: the CLAP-only server above
+      # suffices), but for `export_surface`'s batch test, as in the step
+      # above: it assumes a render finishes in the frame that polls it
+      # (64 frames for 5 renders, no wait), which a threaded pool does not
+      # promise.
+      - name: Plugin host on a threaded executor
+        run: >-
+          cargo nextest run -p bevy-tutti
+          --features full,plugin,vst2,clap,bevy_tasks/multi_threaded,bevy_ecs/multi_threaded
+          -E 'not test(a_batch_spawned_in_one_frame_starts_one_at_a_time)'
 
       # JACK hard-links libjack at build time, so it gets its own step (and its
       # own apt package) rather than joining the list above. `AudioHost::Jack`

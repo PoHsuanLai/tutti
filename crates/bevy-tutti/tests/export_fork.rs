@@ -226,8 +226,8 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
 /// oscillator's phase, a filter's memory); with the live side never rendered
 /// that makes no difference, so the comparison is like for like.
 ///
-/// Mutation (run): `AudioGraphRes::export` forking `ForkTarget::Master` for a
-/// node export → the node's render is the master's, and the node comparison
+/// Mutation (run): the session's `Graph::gather_for_export` forking
+/// `ForkTarget::Master` for a node export → the node's render is the master's, and the node comparison
 /// fails on channel 1 (the saw, not the filter).
 #[test]
 fn exports_render_their_graph_as_wired_fresh() {
@@ -309,7 +309,7 @@ impl Node for Late {
 /// renders none — not the cap, which would
 /// append silence.
 ///
-/// Mutation (run): `start_exports` ignoring `latency_from_graph` → frame 0
+/// Mutation (run): `ExportJob::run` ignoring `latency_from_graph` → frame 0
 /// reads 0; ignoring `tail_from_graph` → the render is `TAIL` frames short;
 /// resolving the tail as `samples().unwrap_or(cap)` → the unknown graph
 /// renders `cap` extra frames.
@@ -361,9 +361,10 @@ fn latency_and_tail_come_from_the_graph() {
 /// would land on frame `LATE`.
 ///
 /// Mutation (run): not applying the fork's committed hook edit before the
-/// figures are read (`executor.apply_pending()` after the hook's commit, in
-/// `start_exports`' task, a no-op) → the fork's plan is still the live graph's
-/// and nothing is trimmed. Mutation (run): reading the latency before the
+/// figures are read (`RenderGraph::commit` without its
+/// `executor.apply_pending()`, which the session's `ExportJob::run` calls
+/// after the hook) → the fork's plan is still the live graph's and nothing
+/// is trimmed. Mutation (run): reading the latency before the
 /// hook runs → fails.
 #[test]
 fn the_trim_is_read_after_the_prepare_hook() {
@@ -399,7 +400,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
 /// a node — not that the node has none.
 ///
 /// Mutation (run): dropping the `outputs() == 0` check in
-/// `AudioGraphRes::export` → the node export reports its node, the master
+/// `Session::export` → the node export reports its node, the master
 /// renders nothing and reports success.
 #[test]
 fn a_graph_with_no_outputs_says_so() {
@@ -428,10 +429,16 @@ fn a_graph_with_no_outputs_says_so() {
 /// frame 96 000 (at the default 120 BPM it would be 72 000). Silent before,
 /// the clip's own samples from there.
 ///
-/// Mutation (run): `ExportClock::offline` answering the stopped timeline
-/// for a named one → the voice never sounds. Mutation
-/// (run): `Stopped::is_rolling` answering `true` → the frozen export of the
-/// voice at beat 0 sounds.
+/// Mutation (run): `ExportClock::render_clock` answering `FrozenClock` for
+/// a named timeline → the voice never sounds. Mutation (run): a frozen
+/// clock's render clock a rolling 120 BPM timeline → the frozen export of
+/// the voice at beat 0 sounds. (The voice reads the render's `Env`, not the
+/// fork's offline timeline: `ExportClock::offline` answering the stopped
+/// timeline for a named one passes here, and fails `export_surface`'s
+/// rebinding tests. `Stopped::is_rolling` answering `true` passes here: no
+/// node reads the frozen fork's timeline while the render's transport is
+/// stopped. A `PrepareEdit` does: `tutti-session`'s
+/// `a_frozen_exports_timeline_is_stopped_at_beat_zero` pins it.)
 #[cfg(feature = "sampler")]
 #[test]
 fn a_node_export_follows_a_90_bpm_timeline() {
@@ -860,7 +867,7 @@ mod plugin {
     /// PluginClient<Bound>` (`fork: None`) → the export is refused as not forkable,
     /// naming "Probe". Mutation (run):
     /// trimming one frame less than the plan's latency
-    /// (`reported_latency() - 1` in `start_exports`) → every frame reads its
+    /// (`reported_latency() - 1` in the session's `ExportJob::run`) → every frame reads its
     /// predecessor.
     #[test]
     fn a_plugin_effect_exports_through_its_fork() {
@@ -2037,9 +2044,9 @@ mod off_thread {
     /// export renders the graph at the start: the slow node's level and the
     /// param's value then, on the outputs as they were.
     ///
-    /// Mutation (run): `start_exports` building the fork itself
-    /// (`pending.take().build()` before spawning the task) → the frame waits
-    /// out the build's three-second timeout and the build has finished when
+    /// Mutation (run): `start_exports` running the session's job on the
+    /// frame (`job.run()` before spawning a task that returns its result) →
+    /// the frame waits out the build's three-second timeout and the build has finished when
     /// it returns → fails. Mutation (run): `ParamFork::gather` deferring
     /// `fork_node` into the build → the volume set after the start reaches
     /// the fork → fails. Both with `bevy_tasks/multi_threaded`; without it
@@ -2198,8 +2205,8 @@ mod off_thread {
     /// Mutation (run, with `bevy_tasks/multi_threaded`): `fork_gather`
     /// leaving a pinned unit unprepared and the build preparing it (as a
     /// `ForkBuild::ready` one) → prepared on a pool thread → fails. Mutation
-    /// (run, threaded): `ToMain`'s drop dropping its value where it is
-    /// instead of sending it to `ExportDrops` → dropped on a pool thread →
+    /// (run, threaded): the session's `ToMain` drop dropping its value
+    /// where it is instead of sending it back → dropped on a pool thread →
     /// fails.
     #[test]
     fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
@@ -2228,17 +2235,17 @@ mod off_thread {
     /// gather) is despawned in the frame it starts, while its slow build
     /// waits (or before its task ever ran: a pool without threads has not
     /// polled it yet); once released, whatever the task held (the pending
-    /// fork, or the graph if the build had begun) goes to `ExportDrops`, and
-    /// a later `poll_exports` drops it on the main thread. No `ExportDone`
-    /// fires.
+    /// fork, or the graph if the build had begun) goes back to the session,
+    /// and a later `poll_exports` drops it on the main thread
+    /// (`Session::drop_export_leftovers`). No `ExportDone` fires.
     ///
     /// Bites only with a threaded pool; see the module docs.
     ///
-    /// Mutation (run, with `bevy_tasks/multi_threaded`): `ToMain`'s drop
-    /// dropping its value where it is → the pinned unit drops on a pool
-    /// thread (or wherever the cancelled task is dropped) → fails. Mutation
-    /// (run): `poll_exports` not draining `ExportDrops` → the unit is never
-    /// dropped → fails.
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): the session's
+    /// `ToMain` drop dropping its value where it is → the pinned unit drops
+    /// on a pool thread (or wherever the cancelled task is dropped) → fails.
+    /// Mutation (run): `poll_exports` not calling `drop_export_leftovers` →
+    /// the unit is never dropped → fails.
     #[test]
     fn a_cancelled_export_drops_its_fork_on_the_main_thread() {
         let mut graph = graph_on();
@@ -2351,10 +2358,10 @@ mod off_thread {
     ///
     /// Mutation (run): `NodeNames::name` passing a `ForkError::Source` through
     /// as `ExportError::Render` → the refusal names no entity → fails.
-    /// Mutation (run, with `bevy_tasks/multi_threaded`): the task dropping a
-    /// failed build's `ForkRemains` where it is (`drop(remains)`) instead of
-    /// sending it to `ExportDrops` → the pinned unit drops on a pool thread
-    /// → fails.
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): the session's
+    /// `ExportJob::run` dropping a failed build's `ForkRemains` where it is
+    /// (`drop(remains)`) instead of sending it back → the pinned unit drops
+    /// on a pool thread → fails.
     #[test]
     fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
         let mut graph = graph_on();
@@ -2413,10 +2420,10 @@ mod off_thread {
     /// the failing build still returns before the edit, on the main thread,
     /// and the cancel comes after the export has run inside `spawn`.)
     ///
-    /// Mutation (run, with `bevy_tasks/multi_threaded`): the task capturing
-    /// the edit bare instead of in a `ToMain` → the failed build's witness
-    /// drops on a pool thread → fails. Mutation (run, threaded): the edit bare
-    /// but sent to `ExportDrops` on the failed-build path → the cancelled
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): the session's job
+    /// holding the edit bare instead of in a `ToMain` → the failed build's
+    /// witness drops on a pool thread → fails. Mutation (run, threaded): the
+    /// edit bare but sent back on the failed-build path → the cancelled
     /// task's witness drops on a pool thread → fails.
     #[test]
     fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {

@@ -44,9 +44,10 @@ pub struct PluginEditorOpen {
     pub last_applied: (u32, u32),
     // The macOS AppKit live-resize observer is deliberately NOT a field here.
     // It owns a `Retained<NSView>` whose `Drop` calls `removeObserver`, and a
-    // component's drop runs wherever a `Commands` queue is applied
-    // (`plugin_health_poll` is not main-thread pinned) or wherever the `World`
-    // is torn down — off-main AppKit is a hard crash. It lives in the
+    // component's drop runs wherever a `Commands` queue is applied (a
+    // system's `Commands` are applied at a sync point, not in the system,
+    // even `plugin_health_poll`'s, which is main-thread pinned) or wherever
+    // the `World` is torn down — off-main AppKit is a hard crash. It lives in the
     // `NonSend` `LiveResizeRegistry` keyed by this plugin entity, so Bevy pins
     // every access and every drop to the main thread.
 }

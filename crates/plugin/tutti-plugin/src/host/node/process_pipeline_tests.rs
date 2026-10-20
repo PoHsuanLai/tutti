@@ -25,7 +25,7 @@
 
 use crate::host::ipc_client::audio::BridgeThread;
 use crate::host::ipc_client::PluginBridge;
-use crate::host::node::batcher::Batcher;
+use crate::host::node::batcher::{Batcher, ChunkCounters};
 
 /// The chunk these tests ship: the slab ceiling they build each batcher and
 /// slab with, and the block they drive (so every call is one whole chunk).
@@ -1015,6 +1015,63 @@ fn a_stalled_but_live_server_does_not_allocate_on_the_audio_thread() {
             drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
         }
     });
+
+    bridge_thread.shutdown();
+}
+
+/// The pipeline's counters report what the node played: a chunk in flight
+/// reads unanswered until the server answers it, a block collected after the
+/// answer is no miss, and a block that outruns a stalled server is counted.
+///
+/// Mutations, each run and each failing: dropping the `missed` `fetch_add` in
+/// `collect` (0 missed after the back-to-back blocks); storing 0 for
+/// `in_flight` in `submit`, or answering `in_flight_answered` without asking
+/// the slab (answered while the server still sleeps); skipping the wait for
+/// the answer (the next block is counted a miss).
+#[test]
+fn the_chunk_counters_report_misses_and_answers() {
+    let (bridge, mut bridge_thread, _server) =
+        bridge_with_server_stall(std::time::Duration::from_millis(50));
+    let counters = Arc::new(ChunkCounters::default());
+    counters.attach(bridge.audio_buffer());
+    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE)
+        .with_counters(Arc::clone(&counters));
+
+    let mut input = Planar::new();
+    let mut output = Planar::new();
+    for ch in 0..CHANNELS {
+        for i in 0..BATCH_SIZE {
+            input.set_scalar(ch, i, ramp_sample(0, ch, i));
+        }
+    }
+    let mut midi_out = MidiEventVec::new();
+
+    assert!(counters.in_flight_answered(), "nothing in flight yet");
+    drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
+    assert!(
+        !counters.in_flight_answered(),
+        "a chunk the stalled server has not answered read as answered"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !counters.in_flight_answered() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server never answered"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
+    assert_eq!(counters.missed(), 0, "an answered chunk was counted missed");
+
+    // Back to back: each block collects a chunk the server is still sleeping on.
+    for _ in 0..4 {
+        drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
+    }
+    assert!(
+        counters.missed() > 0,
+        "blocks that outran a stalled server were not counted"
+    );
 
     bridge_thread.shutdown();
 }

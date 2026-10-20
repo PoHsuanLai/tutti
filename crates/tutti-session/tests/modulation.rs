@@ -153,7 +153,7 @@ fn the_8_1_example_renders_its_analytic_values() {
     let mut buf = vec![0.0f32; block * 2];
     for _ in 0..total / block {
         s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        for frame in buf.chunks_exact(2) {
+        for frame in buf.as_chunks::<2>().0 {
             all[0].push(frame[0]);
             all[1].push(frame[1]);
         }
@@ -186,10 +186,6 @@ struct HostKeys {
 impl ModKeys for HostKeys {
     fn node(&self, target: u64) -> Option<AudioNode> {
         (target == 1).then(|| self.node.get()).flatten()
-    }
-
-    fn plugin_value(&self, _: u64, _: u32) -> Option<Option<f32>> {
-        Some(None)
     }
 
     fn feed(&self, _: SourceKey) -> Option<Feed> {

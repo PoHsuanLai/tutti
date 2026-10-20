@@ -36,11 +36,11 @@
 //! 3. **Publisher latency** per publish, from the same runs: readers are
 //!    mid-read.
 //! 4. **A store while a reader holds its read** (adversarial case 1).
-//! 5. **Nested reads** past arc-swap's 8 debt slots and arc-lend's 8 hazard
-//!    slots (adversarial case 2).
+//! 5. **Nested reads** past arc-swap's 8 debt slots (adversarial case 2);
+//!    arc-lend nests one registered reader per level.
 //! 6. **Retained memory**: live payloads while publishing, normally and with
 //!    a reader parked across publishes (one read, and a staircase of nested
-//!    reads that drives arc-lend into its epoch-fallback worst case).
+//!    reads, which drove E2's arc-lend into its epoch-fallback worst case).
 //! 7. **Publish cost** against readers registered (all contenders) and
 //!    against retired values pinned (arc-lend).
 //!
@@ -106,8 +106,8 @@ struct Plan {
     stall: Duration,
     /// Section 7: publishes timed per cell.
     cost_publishes: usize,
-    /// Section 7: reader handles registered while publishing. E3's
-    /// registered readers make publish scan them; this axis shows it.
+    /// Section 7: reader handles registered while publishing. arc-lend's
+    /// publish scans its registered readers' slots; this axis shows it.
     registered: &'static [usize],
     /// Section 7: retired values pinned (arc-lend).
     pinned: &'static [usize],
@@ -243,6 +243,8 @@ fn reader_loop<C: Contender>(
     stop: &AtomicBool,
 ) -> ReaderOut {
     pin(core);
+    let mut r = r;
+    C::nest(&mut r, depth);
     let mut hist = new_histogram();
     if C::PREWARM {
         black_box(nested::<C>(&r, 1));
@@ -807,7 +809,7 @@ fn section_nested(plan: &Plan, cores: &Cores, reader_counts: &[usize]) {
     println!(
         "Each block holds *depth* reads of the cell at once (summing each), then drops them all. \
          arc-swap has 8 debt slots **per thread** (`DEBT_SLOT_CNT`), past which a load takes an owned count on the shared `Arc`; \
-         arc-lend has 8 hazard slots **per cell**, shared by every reader, past which a lend takes the overflow epoch path. \
+         arc-lend lends through one registered `Reader` per nesting level on each thread, each with a slot of its own. \
          Locks are left out: a nested lock on one thread deadlocks. Latency is per block of *depth* reads.\n"
     );
     let many = *reader_counts.last().unwrap_or(&1);
@@ -906,7 +908,7 @@ fn hold_staircase<C: Contender>(r: &C::Reader, level: usize, levels: usize, ctl:
 /// What the parked reader and the publisher of a retained-memory run share.
 /// For the first `levels` publishes they alternate: the reader takes read
 /// `i`, then the publisher makes publish `i`, so each of the staircase's
-/// reads is taken in a different publish (for arc-lend, a different epoch).
+/// reads is taken in a different publish, and pins a different value.
 /// Either side gives up waiting once the other has made no progress for
 /// `stall`, which is how a writer that waits for readers is let through.
 struct Lockstep {
@@ -926,7 +928,7 @@ fn retained<C: Contender>(park: Park, plan: &Plan, cores: &Cores) -> RetainedRow
         Park::Staircase(_) => 0,
     };
     let handles: Vec<C::Reader> = (0..normal).map(|_| C::reader(&r0)).collect();
-    let parked = C::reader(&r0);
+    let mut parked = C::reader(&r0);
     let levels = match park {
         Park::None => 0,
         Park::One => 1,
@@ -956,6 +958,7 @@ fn retained<C: Contender>(park: Park, plan: &Plan, cores: &Cores) -> RetainedRow
             let core = cores.reader(normal);
             s.spawn(move || {
                 pin(core);
+                C::nest(&mut parked, levels);
                 start.wait();
                 begin_counting();
                 let at_release = (levels > 0).then(|| hold_staircase::<C>(&parked, 0, levels, ctl));
@@ -1020,7 +1023,7 @@ fn section_retained(plan: &Plan, cores: &Cores) {
     println!(
         "Live payloads (published values not yet freed, counted by the payload's own constructor and destructor) while the publisher \
          makes {} publishes flat out. *Staircase*: one reader takes {} nested reads, one more after each of the first publishes \
-         (8 fill arc-lend's slots, the next 4 park an overflow loan in each epoch), and holds them all. A parked reader lets go once \
+         (arc-lend: through 12 registered readers, as the E2 run's 8 slots and 4 epochs), and holds them all. A parked reader lets go once \
          every publish is done, or once the publisher has made no progress for {} ms (it is waiting for the reader). \
          *live after*: once the readers are gone and the writer has published once more and settled.\n",
         plan.retained_publishes,
@@ -1058,9 +1061,10 @@ fn section_retained(plan: &Plan, cores: &Cores) {
     }
 }
 
-/// 8 slot loans and 4 overflow loans, one per epoch: enough to occupy every
-/// one of arc-lend's default slots and epochs.
-const STAIRCASE: usize = arc_lend::DEFAULT_SLOTS + arc_lend::DEFAULT_EPOCHS;
+/// Twelve parked reads: the E2 run's 8 slot loans and 4 overflow loans (one
+/// per epoch), which occupied every slot and epoch of that version's cell.
+/// Kept at 12 so the rows compare across the two runs.
+const STAIRCASE: usize = 12;
 
 // ---------------------------------------------------------------------------
 // Section 7: publish cost
@@ -1093,14 +1097,14 @@ fn publish_cost<C: Contender>(registered: usize, publishes: usize, cores: &Cores
 }
 
 fn section_publish_cost(plan: &Plan, cores: &Cores) {
-    heading(2, "7. Publish cost (for E3)");
+    heading(2, "7. Publish cost");
     heading(3, "7.1. Against reader handles registered");
     progress("section 7: publish cost");
     println!(
         "{} publishes on one thread, no reader reading, with *registered* reader handles alive. \
-         A handle is a left-right `ReadHandle` (registered with the writer, which scans them on publish) and a clone of the shared \
-         cell for every other contender, so today only left-right's cost can depend on it. arc-lend's E3 registered readers \
-         will (each publish scans the slot list up to its high-water mark); re-run this table then.\n",
+         A handle is a left-right `ReadHandle` (registered with the writer, which scans them on publish), an arc-lend `Reader` \
+         (registered with the cell, whose publish scans every slot up to the high-water mark), and a clone of the shared cell for \
+         every other contender, whose cost cannot depend on it.\n",
         plan.cost_publishes
     );
     println!("| contender | registered | {TAIL_HEAD} |");
@@ -1114,22 +1118,22 @@ fn section_publish_cost(plan: &Plan, cores: &Cores) {
 
     heading(3, "7.2. arc-lend: against retired values pinned");
     println!(
-        "Retired values pinned by parked loans in every slot and epoch (the epoch-stall state, `docs::limitations`). \
-         *pinned publish*: 100 publishes while that many are pinned (each adds one). *release publish*: the one publish after the \
-         loans drop, which frees the whole list; *plain free*: freeing that many `Arc<Payload>` from a `Vec` on the same thread, \
-         the free cost alone. The difference is the retired list's `remove(i)` (refinement P2).\n"
+        "Retired values pinned by parked loans: one registered reader per pinned value, each parking a loan before a publish \
+         retires what it holds (a parked loan pins at most one value per reader). *pinned publish*: 100 publishes while that many \
+         are pinned, each scanning that many slots and filtering that many retired values. *release publish*: the one publish after \
+         the loans drop, which frees the whole list; *plain free*: freeing that many `Arc<Payload>` from a `Vec` on the same \
+         thread, the free cost alone. The difference is the retired list's filter (refinement P2).\n"
     );
     println!(
-        "| pinned | epoch stalls | pinned publish {TAIL_HEAD} | retired at release | release publish | plain free |"
+        "| pinned | pinned publish {TAIL_HEAD} | retired at release | release publish | plain free |"
     );
-    println!("|---:|---:|{TAIL_RULE}|---:|---:|---:|");
+    println!("|---:|{TAIL_RULE}|---:|---:|---:|");
     for &n in plan.pinned {
         progress(&format!("section 7: arc-lend with {n} pinned"));
         let c = ArcLendCell::pinned_publish_cost(n, 100);
         println!(
-            "| {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} |",
             c.retired_before,
-            c.epoch_stalls,
             c.pinned.cells(),
             c.retired_at_release,
             ns(c.release_ns),

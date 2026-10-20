@@ -173,14 +173,18 @@ struct Control<T, const EPOCHS: usize> {
 /// Values outside those ranges fail to compile:
 ///
 /// ```compile_fail
+/// # // Mutation: `assert!(true || SLOTS >= 1, ..)` in `VALID`; this compiles.
 /// let cell: arc_lend::ArcLend<u32, 0> = arc_lend::ArcLend::new_with_params(1); // no slots
 /// ```
 ///
 /// ```compile_fail
+/// # // Mutation: `true || EPOCHS >= 2` in `VALID`; this compiles.
 /// let cell: arc_lend::ArcLend<u32, 8, 1> = arc_lend::ArcLend::new_with_params(1); // one epoch
 /// ```
 ///
 /// ```compile_fail
+/// # // Mutation: `true || EPOCHS <= MAX_EPOCHS` in `VALID`; this compiles
+/// # // (the packing check alone admits 65: seven bits name it).
 /// let cell: arc_lend::ArcLend<u32, 8, 65> = arc_lend::ArcLend::new_with_params(1); // > MAX_EPOCHS
 /// ```
 ///
@@ -701,6 +705,8 @@ enum Held {
 /// cannot free.
 ///
 /// ```compile_fail
+/// # // Mutation: `unsafe impl<T: Sync, ..> Send for Loan<'_, T, ..> {}`; this
+/// # // compiles (and `a_loan_is_not_send` fails its const assertion).
 /// use arc_lend::ArcLend;
 /// let cell = ArcLend::new(1u32);
 /// let loan = cell.lend();

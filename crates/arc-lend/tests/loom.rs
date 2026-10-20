@@ -7,7 +7,7 @@
 //!
 //! Under `--cfg loom`, `src/lend.rs` builds its atomics, fences and mutex
 //! from `loom` (see its `sync` module), so every interleaving and weak-memory
-//! reordering loom explores below is one the real `read`/`publish`/`drop` can
+//! reordering loom explores below is one the real `lend`/`publish`/`drop` can
 //! take. Under the flag `DEFAULT_SLOTS` is 2 and `DEFAULT_EPOCHS` is 3, so three
 //! concurrent reads reach the overflow path and a few publishes reuse an
 //! epoch.
@@ -68,11 +68,41 @@
 //!   that finds no free epoch, where that pin is the only thing keeping a
 //!   stalled publish's retired value alive.
 //!
+//! **Re-run against `arc-lend`** (the moved code, `LOOM_MAX_PREEMPTIONS=3`,
+//! each model run on its own because an aborting model hides the rest). Every
+//! mutation above still fails, and the failing sets are the ones listed or
+//! wider, because the new `one_slot_two_epochs` model joins most of them:
+//!
+//! - either fence removed → every model except
+//!   `overflow_while_another_reader_holds_the_slots` and
+//!   `publishes_with_no_free_epoch` (whose only cross-thread lend overflows);
+//! - the slot path's `Acquire` → `one_reader_two_publishes`,
+//!   `two_readers_one_publish`, `two_publishers_and_a_reader`,
+//!   `xthread_overflow`;
+//! - the overflow path's `Acquire` load → the overflow models,
+//!   `publishes_with_no_free_epoch` and `one_slot_two_epochs`; its
+//!   registering `fetch_add` → the overflow models and `one_slot_two_epochs`;
+//! - the seal's wait deleted → `overflow_while_another_reader_holds_the_slots`;
+//! - the overflow exit's `Release` → the overflow models and
+//!   `one_slot_two_epochs`;
+//! - the slot drop's `Release` → every model with a slot read on another
+//!   thread, `one_slot_two_epochs` included;
+//! - a sealed epoch pinning nothing → `nested_reads_overflow`,
+//!   `overflow_while_another_reader_holds_the_slots`, `xthread_overflow`,
+//!   `publishes_with_no_free_epoch`, `one_slot_two_epochs`;
+//! - the slot check in `take_unprotected` removed → every model but
+//!   `publishes_with_no_free_epoch`;
+//! - `Loan::drop` made to reclaim → "reader thread freed value N" in every
+//!   model but `publishes_with_no_free_epoch` (its reader drops while the
+//!   stalled current epoch pins everything, so there is nothing to free);
+//! - the current epoch pinning nothing → `publishes_with_no_free_epoch` alone.
+//!
 //! One mutation survives, by construction: weakening the overflow reader's
 //! `loaded` increment from `Release` to `Relaxed`. Breaking it needs the
 //! pointer load to read a value published *after* the seal saw the increment — load
 //! buffering — and loom does not explore load buffering. That ordering rests
-//! on the argument in `docs::internal` alone.
+//! on the argument in `docs::internal` alone. (Re-run: it still survives,
+//! all eight models pass.)
 
 #![cfg(loom)]
 

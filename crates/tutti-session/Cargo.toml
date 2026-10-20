@@ -105,3 +105,8 @@ required-features = ["modulation"]
 [[test]]
 name = "midi"
 required-features = ["midi"]
+
+# Design 015 §5.1: doc 014 §8.1's modulation, headless.
+[[example]]
+name = "headless_modulation"
+required-features = ["modulation"]

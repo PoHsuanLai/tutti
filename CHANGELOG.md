@@ -330,7 +330,8 @@ the window (or asserts on `Liveness` with explicit times).
   implements `ModHost` and calls `Modulation::apply`, then
   `Modulation::commit` when `Applied::commit` or `Applied::resync` says
   so, re-applying after a commit while `Applied::unresolved_targets` is
-  not empty (see `tutti-nodes/examples/headless_modulation.rs`).
+  not empty (`tutti-nodes/examples/headless_modulation.rs`; design 015
+  PR 5 moved it to `tutti-session/examples`, where a session does this).
 
 - **Signal-driven modulation sources** (design doc 014, PR 3b): an
   envelope follower and a note envelope, graph nodes that send a raw value

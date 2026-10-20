@@ -1791,7 +1791,8 @@ that need an app or a plugin.
   `for_param::<U>` is a thin wrapper over `for_unit`, so there is one
   construction path.
 - A headless example, `tutti-nodes/examples/headless_modulation.rs` (an
-  LFO and a follower on an SVF's cutoff and Q), and a doctest on
+  LFO and a follower on an SVF's cutoff and Q; moved to
+  `tutti-session/examples` by design 015 PR 5), and a doctest on
   `Modulation`.
 - **Properties, each a test** (`tutti-nodes/tests/modulation_reconcile.rs`
   unless named): the §8.1 example's analytic cutoff and the pad's

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs — `ScopedNoDenormals` soundness
+
+- `ScopedNoDenormals` documents its `# Soundness` (the FP-environment rule it departs from, the audit of what runs under it, why the parallel render stays bit-identical); no behaviour change.
+
 ### Changed — RT primitive cleanups: `RtScratch` dropped, `Capped` folded into `RtVec`, `AudioThread` renamed `RtScope`
 
 | Was | Now |

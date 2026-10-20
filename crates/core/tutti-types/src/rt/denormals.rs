@@ -32,6 +32,66 @@
 /// that later runs on the same thread. Guards nest. On any other architecture
 /// it is an empty struct and every operation compiles away.
 ///
+/// # Soundness
+///
+/// This guard steps outside the floating-point environment Rust compiles
+/// for, and tutti accepts that knowingly. The rule:
+///
+/// - LLVM's LangRef, *Floating-Point Environment*: "Results assume the
+///   round-to-nearest rounding mode, and subnormals are assumed to be
+///   preserved. Running LLVM code in an environment where these assumptions
+///   are not met typically leads to undefined behavior."
+/// - `core::arch::x86_64::_mm_setcsr`, deprecated since 1.75: "modifying the
+///   masking flags, rounding mode, or denormals-are-zero mode flags leads to
+///   **immediate Undefined Behavior**: Rust assumes that these are always in
+///   their default state and will optimize accordingly." Its sanctioned
+///   alternative is to do the float work inside one `asm!` block and restore
+///   MXCSR before that block ends. The Reference's inline-assembly rules say
+///   nothing about MXCSR's control bits or FPCR either way (`preserves_flags`
+///   covers only status and exception flags), so the rule is the two above.
+///
+/// This guard leaves FTZ/DAZ (or FZ) set across ordinary Rust code until it
+/// drops, which is what those texts call undefined behavior. `new` is safe
+/// regardless, because `tutti-graph` is `#![forbid(unsafe_code)]` and calls
+/// it. What tutti relies on instead:
+///
+/// - **The deviation reaches only float values.** The mode changes what an
+///   operation returns when an operand or result is subnormal (it becomes
+///   ±0), and LLVM, assuming IEEE subnormals, may fold or rewrite such an
+///   expression to the unflushed value. Either way the outcome is a float
+///   that differs from another float near zero.
+/// - **Nothing in a guarded block makes memory safety depend on an exact
+///   float result.** The code under the guards is graph nodes and their
+///   DSP, the executor's ops, and, in the plugin server, the plugin's own
+///   `process`. Audited when this section was written: the DSP crates have no
+///   `unsafe`, every float-to-index cast on the audio path is clamped or
+///   bounded before it indexes (a safe index, so a miss would be a panic,
+///   not a stray access), and the `unsafe` the path does run (this crate's
+///   `rt` primitives, the FFT crates, the plugin FFI) indexes with integers
+///   from the plan or the buffer layout. The one dependency that indexes
+///   unchecked with partly float-derived integers is `libm`'s large-argument
+///   reduction for `tan`, whose intermediates are scaled into the normal
+///   range, where the mode changes nothing.
+/// - **The mode is scoped.** It is set in `new` and the saved register is
+///   written back in `drop`, unwinding included. Drop guards in reverse
+///   order of creation (the natural order for locals), never
+///   [`forget`](core::mem::forget) one, and never move one to another thread:
+///   each of those leaves the wrong mode on a thread.
+///
+/// So **do not rely on a bit-exact float result inside a guard** for anything
+/// but the audio itself: a value near the subnormal range can differ between a
+/// folded and a computed expression, between optimisation levels, and between
+/// targets. Within one build, renders still agree bit for bit where they run
+/// the same code in the same mode, and the parallel executor's identity with
+/// the serial one rests on that: the serial executor holds a guard for the
+/// whole block, and in the parallel one every participant (the caller, which
+/// is already inside that guard, and each helper) builds its own guard before
+/// its first op, so every node runs, through the same `dyn Node` code, under
+/// FTZ/DAZ. The guard only adds those bits to the thread's register, so this
+/// assumes the other control bits (rounding mode, exception masks) are at
+/// their defaults on every participating thread, which Rust requires anyway.
+/// The reference interpreter guards its render the same way.
+///
 /// # Examples
 ///
 /// ```

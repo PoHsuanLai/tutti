@@ -87,6 +87,19 @@ impl ButlerCycle {
         }
     }
 
+    /// Read compensation through `pdc` from the next step (a hand-stepped
+    /// controller subscribed after its first step).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_pdc(&mut self, pdc: PdcFeed) {
+        self.local.pdc = pdc;
+    }
+
+    /// The feed this cycle reads compensation through (tests).
+    #[cfg(test)]
+    pub(crate) fn pdc(&mut self) -> &mut PdcFeed {
+        &mut self.local.pdc
+    }
+
     /// Run one cycle: drain every queued command, then — when any channel is
     /// streaming — publish PDC preroll changes, apply direction changes, and
     /// refill the rings.

@@ -23,6 +23,7 @@ the project meter.
 | the project meter was an `Arc<ArcLend<MeterMap>>` the host published into | `tutti_core::ProjectMeter`: `set_meter(Arc<MeterMap>)` publishes to the metronome and to every following plugin before it returns; `current()` reads it back on the control side |
 | `PluginMeter`, `PluginControls`, `PluginClient`, `Plugin`, `TransportView`, the in-process VST2 node and client: `set_meter(Arc<ArcLend<MeterMap>>)` | `set_meter(ProjectMeter)`; `Plugin::set_transport_source` likewise |
 | `PluginMeter` a cell holding the installed cell (`PluginMeter::lend`, crate-private) | `PluginMeter` wraps a `tutti_core::MeterSlot`: the node reads the slot's own cell (`MeterSlotCell`), and installing or clearing is a publish into it |
+| — | new, public: `tutti_core::MeterSlot` (a node's own meter cell, following at most one `ProjectMeter`: `follow`, `unfollow`, `following`, `is_following`, `cell`) and `tutti_core::MeterSlotCell` (`ArcLend<Option<Arc<MeterMap>>>`, what the node reads) |
 | `trait MidiIn: Send + Sync { fn poll_block(&self, ..) }` | `trait MidiIn: Send { fn poll_block(&mut self, ..) }`: an implementor is one reader's state, owned by the node that polls it |
 | `MidiInputNode::new(Option<Arc<dyn MidiIn>>)` | `MidiInputNode::new(Option<Box<dyn MidiIn>>)` |
 | `HardwareMidiInputs` implements `MidiIn`; `HardwareMidiInputs::cycle_start_read_all_inputs[_at]` | `tutti_midi_hardware::HardwareMidiDrain::new(Arc<HardwareMidiInputs>)` implements `MidiIn` and owns those two methods (now `&mut self`); a second drain of the same inputs while one runs returns 0, as a re-entered one did |
@@ -39,6 +40,13 @@ Migration:
   `&mut self`; one the test or host still pushes into after handing it over
   shares its queue through an `Arc` inside the implementor, as
   `bevy-tutti/tests/midi_soundfont.rs`'s `Wire` does.
+- **`MidiIn` is no longer `Sync`.** Code that held an input as
+  `Arc<dyn MidiIn>` (to share one between a node and something else) no
+  longer compiles: `poll_block` needs `&mut`, so an input has one owner.
+  Give the node a `Box<dyn MidiIn>` of its own, and share the state behind
+  it instead (an `Arc` of the rings or queue inside the implementor). A
+  bound `T: MidiIn + Sync` or a `dyn MidiIn` stored in a `Sync` container
+  needs that bound removed, or a `Mutex` around the input.
 
 ### Changed — `RtPublish` is now the `arc-lend` crate's `ArcLend`
 

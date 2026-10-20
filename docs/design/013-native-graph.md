@@ -235,9 +235,9 @@ the interpreter.
   `RtPublish<Option<Arc<RtPublish<MeterMap>>>>`: the node borrows the
   installed cell, so an install or clear mid-block retires it for the control
   side, whether or not the host kept a clone. Its read is nested, one slot in
-  each of two cells. (Flattened since, by arc-lend E3a below.) The plugin tail, which no audio thread reads, is a
-  `Mutex`. `arc-swap` is now only `tutti-types`' bench baseline (since the
-  move below, `arc-lend`'s).
+  each of two cells (flattened since, by arc-lend E3a below). The plugin
+  tail, which no audio thread reads, is a `Mutex`. `arc-swap` is now only
+  `tutti-types`' bench baseline (since the move below, `arc-lend`'s).
 - **Landed (arc-lend E1): the cell is its own crate.** `RtPublish`/`RtRef`
   are `arc_lend::{ArcLend, Loan}` in `crates/arc-lend`, which names nothing
   of tutti's and is re-exported as `tutti_types::{ArcLend, Loan}`; `read()`

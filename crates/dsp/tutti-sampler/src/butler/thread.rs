@@ -103,9 +103,16 @@ impl ButlerThread {
     /// subscription is shared, not copied, so later publications are observed.
     ///
     /// The butler's read state on the table is built here, on the calling
-    /// thread, and handed to the cycle that runs.
+    /// thread, and handed to the cycle that runs. A controller already
+    /// stepped by hand hands it to that cycle too, keeping the cycle's
+    /// streams (dropping the cycle would drop their rings' writers while the
+    /// plans still name them).
     pub fn with_pdc(mut self, snapshot: Arc<ArcLend<Vec<Samples>>>) -> Self {
         self.pdc = PdcFeed::over(snapshot);
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(cycle) = self.manual.as_mut() {
+            cycle.set_pdc(self.pdc.clone());
+        }
         self
     }
 
@@ -290,6 +297,23 @@ mod tests {
     use crate::butler::loop_body::Pacing;
     use crate::butler::ButlerGone;
     use crate::ports::{Command, Commands};
+
+    /// **A table subscribed after the first hand step reaches the cycle**:
+    /// the step's cycle is built once and kept, so `with_pdc` must hand the
+    /// new feed to it, not only to cycles built later.
+    ///
+    /// Mutation (run): `with_pdc` not handing the feed to the kept cycle →
+    /// the cycle still reads no table (preroll 0), fails.
+    #[test]
+    fn a_table_subscribed_after_a_hand_step_reaches_the_cycle() {
+        let mut butler =
+            ButlerThread::with_config(4, SampleRate(48_000.0), BufferConfig::default());
+        let _ = butler.step_once();
+        let mut butler = butler.with_pdc(Arc::new(ArcLend::new(vec![Samples(7)])));
+        let _ = butler.step_once();
+        let cycle = butler.manual.as_mut().expect("stepped by hand");
+        assert_eq!(cycle.pdc().preroll(0), 7);
+    }
 
     /// A butler that, left alone, would sleep far longer than any test waits.
     const LONG_PARK: Pacing = Pacing {

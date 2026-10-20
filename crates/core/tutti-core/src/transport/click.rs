@@ -181,17 +181,18 @@ impl ClickSettings {
         MetronomeMode::from(self.mode.load(Ordering::Acquire))
     }
 
-    /// A fresh cell holding this one's volume, mode and meter now, sharing
-    /// nothing with it: what a fork of the metronome renders with. Control
-    /// thread: it allocates, and reads the meter from the control side's
-    /// mirror, never the node's cell.
+    /// A fresh cell holding this one's volume, mode and meter now, sharing no
+    /// cell with it: what a fork of the metronome renders with. The meter map
+    /// itself is immutable, so the fresh cell holds the same `Arc` rather
+    /// than a copy. Control thread: it allocates, and reads the meter from
+    /// the control side's mirror, never the node's cell.
     pub fn snapshot(&self) -> ClickSettings {
         let fresh = ClickSettings::new();
         fresh
             .volume
             .store(self.volume.load(Ordering::Acquire), Ordering::Release);
         fresh.set_mode(self.mode());
-        fresh.set_meter(Arc::new(MeterMap::clone(&self.meter())));
+        fresh.set_meter(self.meter());
         fresh
     }
 }

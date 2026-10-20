@@ -110,22 +110,27 @@ impl ProjectMeter {
         Arc::clone(&self.0.cell)
     }
 
-    /// Start publishing to `slot`, with the meter in force now.
+    /// Start publishing to `slot`, with the meter in force now. Idempotent:
+    /// a slot already listed is listed once, so a re-follow of the same meter
+    /// does not make each later `set_meter` publish into it twice.
     fn attach(&self, slot: &Arc<MeterSlotCell>) {
         let mut state = self.state();
         slot.publish(Arc::new(Some(Arc::clone(&state.current))));
-        state.followers.retain(|f| f.strong_count() > 0);
-        state.followers.push(Arc::downgrade(slot));
+        let me = Arc::downgrade(slot);
+        state
+            .followers
+            .retain(|f| f.strong_count() > 0 && !Weak::ptr_eq(f, &me));
+        state.followers.push(me);
     }
 
-    /// Stop publishing to `slot`, and empty it.
-    fn detach(&self, slot: &Arc<MeterSlotCell>) {
+    /// Stop publishing to `slot`, leaving what it holds: for a slot moving to
+    /// another meter, whose `attach` replaces the value in one publish.
+    fn forget(&self, slot: &Arc<MeterSlotCell>) {
         let mut state = self.state();
         let gone = Arc::downgrade(slot);
         state
             .followers
             .retain(|f| f.strong_count() > 0 && !Weak::ptr_eq(f, &gone));
-        slot.publish(Arc::new(None));
     }
 
     /// How many live slots follow this meter (tests).
@@ -201,13 +206,15 @@ impl MeterSlot {
     }
 
     /// Follow `meter` from the node's next block: its meter now, and every
-    /// one it publishes after. Replaces any meter followed before. Control
-    /// thread.
+    /// one it publishes after. Replaces any meter followed before, in one
+    /// publish: the node goes from the old meter's map straight to the new
+    /// one's, never through "no meter" (4/4) in between. Following the meter
+    /// already followed changes nothing. Control thread.
     pub fn follow(&self, meter: ProjectMeter) {
         let mut follows = self.follows();
         if let Some(old) = follows.take() {
             if !old.ptr_eq(&meter) {
-                old.detach(&self.0.cell);
+                old.forget(&self.0.cell);
             }
         }
         meter.attach(&self.0.cell);
@@ -218,10 +225,10 @@ impl MeterSlot {
     /// thread.
     pub fn unfollow(&self) {
         let mut follows = self.follows();
-        match follows.take() {
-            Some(old) => old.detach(&self.0.cell),
-            None => self.0.cell.publish(Arc::new(None)),
+        if let Some(old) = follows.take() {
+            old.forget(&self.0.cell);
         }
+        self.0.cell.publish(Arc::new(None));
     }
 
     /// The project meter followed, if any. Control side: a lock, never a read
@@ -273,9 +280,17 @@ mod tests {
     /// another meter, no longer hears it.
     ///
     /// Mutations (run): `set_meter` not publishing to the followers → the
-    /// slots read the old meter, fails; `detach` not removing the slot from
-    /// the list → the unfollowed slot reads 5/4, fails; `follow` not detaching
-    /// from the meter it followed before → the moved slot reads 5/4, fails.
+    /// slots read the old meter, fails; `forget` not removing the slot from
+    /// the list → the unfollowed slot reads 5/4, fails; `follow` not
+    /// forgetting the meter it followed before → the moved slot reads 5/4,
+    /// fails.
+    ///
+    /// Not covered here: that a moved slot goes from the old meter's map to
+    /// the new one's in one publish, never through `None`. The two would be
+    /// consecutive publishes inside one `follow` call, which a reader on one
+    /// thread cannot land between, and `ArcLend` exposes no publish count; it
+    /// is kept by `follow` calling `forget` (which publishes nothing) rather
+    /// than `unfollow`'s publish of `None`.
     #[test]
     fn set_meter_reaches_every_follower_before_it_returns() {
         let project = ProjectMeter::new(MeterMap::default());
@@ -315,6 +330,29 @@ mod tests {
         );
         assert!(slots[1].following().unwrap().ptr_eq(&other));
         assert!(!slots[0].is_following());
+    }
+
+    /// **Following the same meter again lists the slot once**, so a host
+    /// that re-installs the project meter (each `PluginControls::set_meter`)
+    /// does not make every later `set_meter` publish into the node N times.
+    ///
+    /// Mutation (run): `attach` pushing without first removing the slot's
+    /// own entry (`!Weak::ptr_eq(f, &me)` dropped from its `retain`) → five
+    /// follows list five followers, fails.
+    #[test]
+    fn following_the_same_meter_again_lists_the_slot_once() {
+        let project = ProjectMeter::default();
+        let slot = MeterSlot::default();
+        for _ in 0..5 {
+            slot.follow(project.clone());
+        }
+        assert_eq!(project.follower_count(), 1);
+        project.set_meter(meter_of(6));
+        assert_eq!(
+            read(&slot.cell()).unwrap().changes()[0].signature,
+            TimeSignature::from_parts(6, 4),
+            "still following"
+        );
     }
 
     /// A slot whose node and handles are gone is dropped from the project's

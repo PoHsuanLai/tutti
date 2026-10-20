@@ -94,8 +94,9 @@ struct MpeRequest {
 
 impl MidiInputNode {
     /// A node polling `input` each block (`None`: a node that sends nothing),
-    /// with MPE ingestion off. The node owns `input`: build one per node
-    /// (a hardware manager's `HardwareMidiInputs::drain`).
+    /// with MPE ingestion off. The node owns `input`: build one per node (for
+    /// the hardware ports, `tutti_midi_hardware::HardwareMidiDrain::new`
+    /// over the shared `Arc<HardwareMidiInputs>`).
     pub fn new(input: Option<Box<dyn MidiIn>>) -> Self {
         Self {
             input,

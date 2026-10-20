@@ -625,7 +625,7 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
     s.update();
     assert_eq!(s.latency(), Samples(N), "the total is published");
     assert_eq!(
-        s.compensation().lend().as_slice(),
+        s.compensation_reader().lend().as_slice(),
         [Samples(N), Samples(0)],
         "the dry channel pre-rolls by the latent one's latency"
     );

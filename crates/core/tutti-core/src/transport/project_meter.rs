@@ -12,9 +12,9 @@
 //! A plugin is given the project meter after it is built, and can be given
 //! another or none later. When the node read the project's cell through a
 //! slot holding it (a cell of cells), installing a meter swapped which cell
-//! the node read; a reader registered on a cell (the coming `arc-lend`
-//! `Reader`) cannot be built on the audio thread for a cell it has never
-//! seen. So the node reads its own cell, built with it, and installing or
+//! the node read; a reader registered on a cell (an `arc-lend` `Reader`) is
+//! registered on the control side, and cannot be built on the audio thread
+//! for a cell it has never seen. So the node reads its own cell, built with it, and installing or
 //! clearing a meter is a publish into that cell, never a swap of it.
 //!
 //! # Agreement
@@ -29,11 +29,15 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use tutti_types::meter::MeterMap;
-use tutti_types::ArcLend;
+use tutti_types::{ArcLend, Reader};
 
 /// What a following node reads: the project's meter, or none (the node then
 /// reads 4/4 from bar 0).
 pub type MeterSlotCell = ArcLend<Option<Arc<MeterMap>>>;
+
+/// A reader of a [`MeterSlotCell`]: what a following node lends through,
+/// once per block ([`MeterSlot::reader`]).
+pub type MeterSlotReader = Reader<Option<Arc<MeterMap>>>;
 
 /// The project meter: the metronome's cell, and the slots that follow it.
 ///
@@ -105,9 +109,10 @@ impl ProjectMeter {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
-    /// The cell the metronome reads, for the node built over it.
-    pub(crate) fn cell(&self) -> Arc<ArcLend<MeterMap>> {
-        Arc::clone(&self.0.cell)
+    /// A reader of the cell the metronome reads, registered for the node
+    /// built over it. Control thread: registering may allocate.
+    pub(crate) fn reader(&self) -> Reader<MeterMap> {
+        self.0.cell.reader()
     }
 
     /// Start publishing to `slot`, with the meter in force now. Idempotent:
@@ -161,8 +166,8 @@ impl std::fmt::Debug for ProjectMeter {
 
 /// A node's own meter cell: empty, or following one [`ProjectMeter`].
 ///
-/// The node holds [`cell`](Self::cell), built with it and never swapped, and
-/// reads it once per block. A host gives the node the project meter with
+/// The node holds a [`reader`](Self::reader) of its cell, registered when the
+/// node is built and never swapped, and reads it once per block. A host gives the node the project meter with
 /// [`follow`](Self::follow) and takes it away with
 /// [`unfollow`](Self::unfollow): each a publish into that cell. A clone is
 /// another handle on the same slot.
@@ -242,9 +247,16 @@ impl MeterSlot {
         self.follows().is_some()
     }
 
-    /// The cell the node reads, once per block: for the node, at its build.
+    /// The cell the node reads, once per block.
     pub fn cell(&self) -> Arc<MeterSlotCell> {
         Arc::clone(&self.0.cell)
+    }
+
+    /// A reader registered on [`cell`](Self::cell): what the node lends
+    /// through, registered at its build. Control thread: registering may
+    /// allocate.
+    pub fn reader(&self) -> MeterSlotReader {
+        self.0.cell.reader()
     }
 }
 
@@ -269,9 +281,9 @@ mod tests {
         )]))
     }
 
-    /// What a node reading `cell` sees this block.
-    fn read(cell: &MeterSlotCell) -> Option<Arc<MeterMap>> {
-        Option::clone(&cell.lend())
+    /// What a node reading `slot` sees this block.
+    fn read(slot: &MeterSlot) -> Option<Arc<MeterMap>> {
+        Option::clone(&slot.reader().lend())
     }
 
     /// **One `set_meter` reaches the metronome and every following slot
@@ -294,10 +306,10 @@ mod tests {
     #[test]
     fn set_meter_reaches_every_follower_before_it_returns() {
         let project = ProjectMeter::new(MeterMap::default());
-        let click = project.cell();
+        let mut click = project.reader();
         let slots: Vec<MeterSlot> = (0..3).map(|_| MeterSlot::default()).collect();
         for slot in &slots {
-            assert!(read(&slot.cell()).is_none(), "a new slot follows nothing");
+            assert!(read(slot).is_none(), "a new slot follows nothing");
             slot.follow(project.clone());
         }
         assert_eq!(project.follower_count(), 3);
@@ -309,7 +321,7 @@ mod tests {
             "the metronome's cell"
         );
         for slot in &slots {
-            let seen = read(&slot.cell()).expect("a follower holds the meter");
+            let seen = read(slot).expect("a follower holds the meter");
             assert!(Arc::ptr_eq(&seen, &seven), "the same meter, not a copy");
         }
 
@@ -318,14 +330,14 @@ mod tests {
         let other = ProjectMeter::new(MeterMap::default());
         slots[1].follow(other.clone());
         project.set_meter(meter_of(5));
-        assert!(read(&slots[0].cell()).is_none(), "unfollowed reads none");
+        assert!(read(&slots[0]).is_none(), "unfollowed reads none");
         assert_eq!(
-            read(&slots[1].cell()).unwrap().changes()[0].signature,
+            read(&slots[1]).unwrap().changes()[0].signature,
             TimeSignature::from_parts(4, 4),
             "a moved slot reads its new meter"
         );
         assert_eq!(
-            read(&slots[2].cell()).unwrap().changes()[0].signature,
+            read(&slots[2]).unwrap().changes()[0].signature,
             TimeSignature::from_parts(5, 4)
         );
         assert!(slots[1].following().unwrap().ptr_eq(&other));
@@ -349,7 +361,7 @@ mod tests {
         assert_eq!(project.follower_count(), 1);
         project.set_meter(meter_of(6));
         assert_eq!(
-            read(&slot.cell()).unwrap().changes()[0].signature,
+            read(&slot).unwrap().changes()[0].signature,
             TimeSignature::from_parts(6, 4),
             "still following"
         );

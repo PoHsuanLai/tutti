@@ -280,6 +280,36 @@ the interpreter.
   cycle. Fork templates (`ClickFork`, `LaneFork`, `HarmonyFork`,
   `VoiceNodeFork`) hold cells or control records, never a node, so they need
   no reader.
+- **Landed (arc-lend E3): registered readers only; the publisher never
+  waits.** The anonymous `lend()`, its shared slots and the overflow epochs
+  are gone. A thread registers an `arc_lend::Reader` on the control side
+  (`ArcLend::reader`, from an `Arc` of the cell; it may allocate a block of
+  slots) and lends through it (`Reader::lend(&mut self)`), one reader per
+  nesting level. Each reader owns one cache line of a growable, append-only
+  slot list, and a lend writes only that. A publish scans the slots once and
+  never waits: a reader between claiming its slot and announcing what it
+  loaded carries a generation in its claim, and the publisher keeps
+  everything that reader could load until a later scan sees it has moved
+  on. `epoch_stalls()` is replaced by `reclaim()`. The loom model runs the
+  new code, with a new mutation record. In the re-run
+  (`crates/arc-lend/BENCHMARKS.md`, E2 to E3) readers stopped contending
+  (41-42 ns p50 at one to four readers, from E2's 47-300 ns), nested lends
+  stopped overflowing, the staircase stays at one value per parked loan,
+  and the publisher's preemption tails went. The new costs: a publish scans
+  every registered reader, and a reader preempted mid-lend under a
+  flat-out publisher pins what is retired meanwhile (2902 values at peak
+  on the shared VM). tutti's read sites hold `Reader`s, each registered
+  where its node (or the butler's cycle, or the MIDI drain) is built, and a
+  fork's node registers on its own new cell. `debug_check_reclaiming` and
+  `PARKED_LOAN_LIMIT` are gone. A parked loan pins one value per reader; a
+  reader preempted mid-lend pins what is retired meanwhile, until the next
+  scan after it resumes (hosts poll `retired_len()`). The count check
+  measured the overflow epochs' hazard, which no longer exists: a node
+  cannot park a `Loan` across blocks (it would need a self-referential
+  borrow of its own `Reader`), and a `mem::forget` pins one value per
+  reader (`parked_loans_pin_one_value_per_reader`).
+  Hosts register a reader of the compensation table with
+  `ChannelCompensation::reader` or `Session::compensation_reader`.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
   tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is
@@ -3138,8 +3168,9 @@ same-kind sibling batching; `clap.thread-pool`; then (optional) REAPER-style
 anticipative partition for nodes with no live-input dependency, with export as
 its degenerate case.
 
-`RtPublish` (now `arc-lend`'s `ArcLend`, whose slot count is a const
-parameter) under the parallel executor: its eight reader slots per cell share
+`RtPublish` (now `arc-lend`'s `ArcLend`; since arc-lend E3 every reader is
+registered and owns a cache line of its own, so the concern below is
+historical) under the parallel executor: its eight reader slots per cell share
 one cache line, so many worker cores reading the same cell every block will
 bounce that line between them, and past eight concurrent readers the rest take
 the overflow epochs (safe and bounded, but coarser reclamation). If profiling

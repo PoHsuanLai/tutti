@@ -41,18 +41,25 @@ pub struct ButlerThread {
     shutdown: Arc<AtomicBool>,
     shared: Handles,
     config: BufferConfig,
-    /// The read state on the delay-compensation table, built here by
-    /// [`with_pdc`](Self::with_pdc) on the control thread; each cycle owns a
-    /// clone of it.
-    pdc: PdcFeed,
+    /// The delay-compensation table subscribed with
+    /// [`with_pdc`](Self::with_pdc), if any. Each cycle owns a read state on
+    /// it ([`PdcFeed`]), registered here on the control thread when the
+    /// cycle is built.
+    pdc: Option<Arc<ArcLend<Vec<Samples>>>>,
     /// How long the thread parks between cycles.
     pacing: Pacing,
     /// The synchronous cycle, when this controller is being driven by hand
     /// rather than by a thread. `Some` only after [`step_once`](Self::step_once)
     /// has been called on an unstarted controller; `start` refuses once it is
     /// set, so the two drivers can never both own `Local`.
+    ///
+    /// The `Mutex` exists only to keep `ButlerThread` `Sync` (a Bevy
+    /// resource holds it): the cycle's compensation feed holds an
+    /// `arc_lend::Reader`, which is `Send` but not `Sync`. It is only ever
+    /// used through `Mutex::get_mut` (via `manual_cycle`, from `&mut self`),
+    /// so it is never locked.
     #[cfg(any(test, feature = "test-support"))]
-    manual: Option<ButlerCycle>,
+    manual: Option<std::sync::Mutex<ButlerCycle>>,
 }
 
 impl ButlerThread {
@@ -87,7 +94,7 @@ impl ButlerThread {
             shutdown: Arc::new(AtomicBool::new(false)),
             shared,
             config,
-            pdc: PdcFeed::default(),
+            pdc: None,
             pacing: Pacing::DEFAULT,
             #[cfg(any(test, feature = "test-support"))]
             manual: None,
@@ -98,21 +105,22 @@ impl ButlerThread {
     /// index and denominated in [`Samples`].
     ///
     /// Published by whoever runs `tutti_core::latency::compensate` over the
-    /// audio graph; the butler takes a fresh [`ArcLend::lend`] snapshot each
+    /// audio graph; the butler takes a fresh snapshot (a `Reader::lend`) each
     /// refill cycle and pre-rolls each stream by its channel's entry. The
     /// subscription is shared, not copied, so later publications are observed.
     ///
-    /// The butler's read state on the table is built here, on the calling
-    /// thread, and handed to the cycle that runs. A controller already
-    /// stepped by hand hands it to that cycle too, keeping the cycle's
-    /// streams (dropping the cycle would drop their rings' writers while the
-    /// plans still name them).
+    /// The butler's read state on the table (a reader registered on it) is
+    /// built on the calling thread for each cycle: the one
+    /// [`start`](Self::start) runs, and a controller already stepped by hand
+    /// gets one for that cycle here, keeping the cycle's streams (dropping
+    /// the cycle would drop their rings' writers while the plans still name
+    /// them).
     pub fn with_pdc(mut self, snapshot: Arc<ArcLend<Vec<Samples>>>) -> Self {
-        self.pdc = PdcFeed::over(snapshot);
         #[cfg(any(test, feature = "test-support"))]
         if let Some(cycle) = self.manual.as_mut() {
-            cycle.set_pdc(self.pdc.clone());
+            manual_cycle(cycle).set_pdc(PdcFeed::over(Some(&snapshot)));
         }
+        self.pdc = Some(snapshot);
         self
     }
 
@@ -121,7 +129,7 @@ impl ButlerThread {
     /// thread, by both, so the hand-stepped tests build what the thread runs,
     /// the compensation read state included.
     fn cycle(&self) -> ButlerCycle {
-        ButlerCycle::new(self.config, self.pdc.clone())
+        ButlerCycle::new(self.config, PdcFeed::over(self.pdc.as_ref()))
     }
 
     /// A cloneable sender onto the butler's command queue.
@@ -247,9 +255,9 @@ impl ButlerThread {
         );
         let queue = Arc::clone(&self.queue);
         if self.manual.is_none() {
-            self.manual = Some(self.cycle());
+            self.manual = Some(std::sync::Mutex::new(self.cycle()));
         }
-        let cycle = self.manual.as_mut().expect("set just above");
+        let cycle = manual_cycle(self.manual.as_mut().expect("set just above"));
         cycle.step(&self.shared, || queue.pop())
     }
 
@@ -289,6 +297,16 @@ impl Drop for ButlerThread {
     }
 }
 
+/// The hand-stepped cycle, through `&mut` (no lock is taken). A poisoned
+/// mutex still holds a whole cycle: a step that panicked left it as a
+/// thread's cycle would be after the same panic.
+#[cfg(any(test, feature = "test-support"))]
+fn manual_cycle(cycle: &mut std::sync::Mutex<ButlerCycle>) -> &mut ButlerCycle {
+    cycle
+        .get_mut()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -311,7 +329,7 @@ mod tests {
         let _ = butler.step_once();
         let mut butler = butler.with_pdc(Arc::new(ArcLend::new(vec![Samples(7)])));
         let _ = butler.step_once();
-        let cycle = butler.manual.as_mut().expect("stepped by hand");
+        let cycle = manual_cycle(butler.manual.as_mut().expect("stepped by hand"));
         assert_eq!(cycle.pdc().preroll(0), 7);
     }
 

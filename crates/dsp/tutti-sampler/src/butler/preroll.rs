@@ -21,40 +21,42 @@
 use super::plan::ChannelPlan;
 use dashmap::DashMap;
 use std::sync::Arc;
-use tutti_core::ArcLend;
-use tutti_core::Samples;
+use tutti_core::{ArcLend, Reader, Samples};
 
-/// The butler's read state on the published compensation table.
+/// The butler's read state on the published compensation table: a
+/// [`Reader`] registered on it.
 ///
-/// Built on the control thread when the table is subscribed
-/// (`ButlerThread::with_pdc`) and owned by the butler's cycle state, which
-/// reads through it by `&mut`: so a read state that must be registered on the
-/// table before the butler runs (the coming `arc-lend` `Reader`) has a home
-/// built off the butler thread, and one owner. A clone is another read state
-/// on the same table, for a second cycle (a restarted butler, or one stepped
-/// by hand).
+/// Built on the control thread for each cycle (`ButlerThread::cycle`, and
+/// `ButlerThread::with_pdc` for a cycle already stepped by hand), since a
+/// reader is registered off the thread that lends through it, and owned by
+/// that cycle's state, which reads through it by `&mut`. Not `Clone`: a
+/// second cycle (a restarted butler, or one stepped by hand) gets a feed of
+/// its own from the subscription the controller keeps.
 ///
 /// Covered by `live_loop`'s `an_entry_past_the_loop_and_a_preroll_land_where_
 /// the_memory_tier_plays`, a hand-stepped butler whose cycle is built by the
 /// same `ButlerThread::cycle` the thread's is. Mutations (run): `with_pdc`
 /// not keeping the feed → fails; a stream opened at preroll 0 instead of its
 /// channel's entry (`handle_stream_file`) → fails.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(crate) struct PdcFeed {
     /// `None` = no PDC wiring: every channel pre-rolls 0.
-    table: Option<Arc<ArcLend<Vec<Samples>>>>,
+    table: Option<Reader<Vec<Samples>>>,
 }
 
 impl PdcFeed {
-    /// A feed reading `table`. Control thread.
-    pub(crate) fn over(table: Arc<ArcLend<Vec<Samples>>>) -> Self {
-        Self { table: Some(table) }
+    /// A feed reading `table`, through a reader registered on it here, or
+    /// none. Control thread: registering may allocate.
+    pub(crate) fn over(table: Option<&Arc<ArcLend<Vec<Samples>>>>) -> Self {
+        Self {
+            table: table.map(ArcLend::reader),
+        }
     }
 
     /// `channel_index`'s preroll in the table now: 0 with no table, or past
     /// its end. Butler thread.
     pub(crate) fn preroll(&mut self, channel_index: usize) -> u64 {
-        self.table.as_ref().map_or(0, |table| {
+        self.table.as_mut().map_or(0, |table| {
             table
                 .lend()
                 .get(channel_index)
@@ -74,10 +76,10 @@ impl PdcFeed {
 /// zero compensation, which is the same answer as "none needed".
 ///
 /// A no-op when nothing is subscribed. Butler thread: it takes one
-/// [`ArcLend::lend`] snapshot for the pass rather than per channel, and it
+/// [`Reader::lend`] snapshot for the pass rather than per channel, and it
 /// must never run on the audio thread.
 pub(crate) fn apply_pdc_updates(pdc: &mut PdcFeed, plans: &DashMap<usize, ChannelPlan>) {
-    let Some(table) = pdc.table.as_ref() else {
+    let Some(table) = pdc.table.as_mut() else {
         return;
     };
 
@@ -163,7 +165,7 @@ mod tests {
     fn each_ring_is_told_its_channels_preroll() {
         let (plans, rings) = streaming(4);
         let pdc = table([200, 0, 100]);
-        let mut feed = PdcFeed::over(Arc::clone(&pdc));
+        let mut feed = PdcFeed::over(Some(&pdc));
         apply_pdc_updates(&mut feed, &plans);
         assert_eq!(
             rings.iter().map(|r| r.preroll()).collect::<Vec<_>>(),

@@ -36,12 +36,13 @@ fn main() {
 
     let workers: Vec<_> = (0..WORKERS)
         .map(|w| {
-            let (config, kept) = (Arc::clone(&config), Arc::clone(&kept));
+            // Register on the control side; the worker only lends.
+            let (mut reader, kept) = (config.reader(), Arc::clone(&kept));
             thread::spawn(move || {
                 let mut seen_version = 0;
                 for batch in 0..2_000u64 {
                     // One lend per batch, passed down as `&Sampling`.
-                    let sampling = config.lend();
+                    let sampling = reader.lend();
                     seen_version = sampling.version;
                     let mut batch_kept = 0;
                     for event in 0..64u64 {
@@ -74,16 +75,14 @@ fn main() {
 
     let versions: Vec<u32> = workers.into_iter().map(|h| h.join().unwrap()).collect();
 
-    // What a host polls, with its own policy: here, report it. A loan held
-    // only within a batch keeps both near zero.
+    // What a host polls, with its own policy: here, report it. Values the
+    // workers let go of since the last publish wait for the next scan; the
+    // workers have exited and dropped their readers, so a reclaim frees
+    // them all.
     println!(
         "kept {} events; workers last saw versions {versions:?}",
         kept.load(Ordering::Relaxed)
     );
-    println!(
-        "retired values still held: {}, publishes that could not advance an epoch: {}",
-        config.retired_len(),
-        config.epoch_stalls()
-    );
-    assert_eq!(config.epoch_stalls(), 0);
+    println!("retired values awaiting a scan: {}", config.retired_len());
+    assert_eq!(config.reclaim(), 0);
 }

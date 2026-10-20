@@ -5,7 +5,9 @@ use std::any::Any;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tutti_core::{ArcLend, AudioNode, AudioTap, ClickSettings, MasterMeter, Samples, Transport};
+use tutti_core::{
+    ArcLend, AudioNode, AudioTap, ClickSettings, MasterMeter, Reader, Samples, Transport,
+};
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
 
@@ -587,8 +589,21 @@ impl Session {
     /// The per-channel pre-roll of the plan sent last, for a source outside
     /// the graph (a disk stream seeks by it). Republished with every plan;
     /// empty until the first.
+    ///
+    /// The cell, to subscribe a reading structure to (the sampler's butler
+    /// takes it). To read it, register a reader with
+    /// [`compensation_reader`](Self::compensation_reader).
     pub fn compensation(&self) -> &Arc<ArcLend<Vec<Samples>>> {
         &self.compensation
+    }
+
+    /// A reader of [`compensation`](Self::compensation): register one per
+    /// reading thread, keep it, and `lend` through it for each read
+    /// (`reader.lend().get(channel)`, `None` past the table's end).
+    /// Registering takes the cell's publisher lock and may allocate, so it
+    /// belongs off the audio thread.
+    pub fn compensation_reader(&self) -> Reader<Vec<Samples>> {
+        self.compensation.reader()
     }
 
     /// The total latency of the plan sent last: what a DAW displays.

@@ -1,8 +1,6 @@
 //! The project meter a plugin node reads its time signature and bar with.
 
-use std::sync::Arc;
-
-use tutti_core::{MeterSlot, MeterSlotCell, ProjectMeter};
+use tutti_core::{MeterSlot, MeterSlotReader, ProjectMeter};
 
 /// A plugin node's meter: the project meter it reads once per block for the
 /// time-signature and bar fields of the transport it tells the plugin.
@@ -16,8 +14,8 @@ use tutti_core::{MeterSlot, MeterSlotCell, ProjectMeter};
 ///
 /// # One cell, fixed when the node is built
 ///
-/// The node reads one cell of its own ([`MeterSlot::cell`], taken when it is
-/// built), holding the project's [`MeterMap`](tutti_core::MeterMap) or
+/// The node reads one cell of its own, through a reader registered on it when
+/// the node is built ([`MeterSlot::reader`]), holding the project's [`MeterMap`](tutti_core::MeterMap) or
 /// nothing. Installing a meter makes the slot *follow* a [`ProjectMeter`]:
 /// the project meter publishes into the slot now, and on every
 /// [`ProjectMeter::set_meter`] after, so a meter edit reaches the metronome
@@ -57,11 +55,12 @@ impl PluginMeter {
         self.0.is_following()
     }
 
-    /// The cell the node reads once per block: for the node, when it is
-    /// built. A borrow of it is wait-free, allocates nothing, and frees
-    /// nothing when it drops.
-    pub(crate) fn cell(&self) -> Arc<MeterSlotCell> {
-        self.0.cell()
+    /// A reader of the cell the node reads once per block, registered for
+    /// the node when it is built. Control thread: registering may allocate.
+    /// A lend through it is wait-free, allocates nothing, and frees nothing
+    /// when it drops.
+    pub(crate) fn reader(&self) -> MeterSlotReader {
+        self.0.reader()
     }
 
     /// The meter installed now, to give a fork (whose slot is its own).
@@ -89,6 +88,7 @@ impl std::fmt::Debug for PluginMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tutti_core::{Beat, MeterChange, MeterMap, TimeSignature};
 
     /// A project meter of `n`/4 from beat 0, for a block to recognise.
@@ -113,26 +113,26 @@ mod tests {
     /// itself is `arc-lend`'s loom model's.
     ///
     /// Mutation (run): the block taking an owning handle rather than a
-    /// borrow (`Option::clone(&cell.lend())`, the shape an `ArcSwapOption`
+    /// borrow (`Option::clone(&reader.lend())`, the shape an `ArcSwapOption`
     /// guard upgraded into) aborts inside the gate (SIGABRT): an install
     /// replaced the only other owner of the meter the block held, and the
     /// handle's drop frees it there.
     #[test]
     fn installing_or_clearing_during_a_block_frees_nothing_on_the_audio_thread() {
         let slot = PluginMeter::default();
-        let cell = slot.cell();
+        let mut reader = slot.reader();
         // The host keeps no clone: the slot holds the project meter's only
         // handle.
         slot.set_meter(meter_of(1));
         // One read outside the gate, as a stream's first block would be: so
-        // the mutation below fails on the free, not on a lazy first-read
-        // registration (arc-swap allocated a per-thread node on a thread's
-        // first `load`).
-        assert!(cell.lend().is_some());
+        // the mutation below fails on the free, not on anything a first read
+        // might set up (arc-swap allocated a per-thread node on a thread's
+        // first `load`; a `Reader` is registered above, off the gate).
+        assert!(reader.lend().is_some());
 
         for block in 1..=16u32 {
             let seen = assert_no_alloc::assert_no_alloc(|| {
-                let installed = cell.lend();
+                let installed = reader.lend();
                 let meter = installed.as_deref();
                 assert_no_alloc::permit_alloc(|| {
                     if block % 3 == 0 {
@@ -166,7 +166,7 @@ mod tests {
     fn a_project_meter_edit_reaches_the_installed_node() {
         let project = meter_of(3);
         let slot = PluginMeter::default();
-        let cell = slot.cell();
+        let mut reader = slot.reader();
         slot.set_meter(project.clone());
         assert!(slot.installed().unwrap().ptr_eq(&project));
         let seven_eight = TimeSignature::from_parts(7, 8);
@@ -175,12 +175,12 @@ mod tests {
             seven_eight,
         )])));
         assert_eq!(
-            cell.lend().as_deref().map(|m| m.changes()[0].signature),
+            reader.lend().as_deref().map(|m| m.changes()[0].signature),
             Some(seven_eight)
         );
         slot.clear_meter();
-        assert!(cell.lend().is_none());
+        assert!(reader.lend().is_none());
         project.set_meter(Arc::new(MeterMap::default()));
-        assert!(cell.lend().is_none(), "a cleared node no longer follows");
+        assert!(reader.lend().is_none(), "a cleared node no longer follows");
     }
 }

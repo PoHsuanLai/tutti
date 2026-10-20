@@ -10,19 +10,17 @@
 //! what one reader thread owns: a clone of the shared cell for most, a
 //! `ReadHandle` of its own for left-right.
 //!
-//! **When arc-lend's API changes (E3: registered `Reader`s, lent through
-//! `Reader::lend(&mut self)`), this trait is not yet the whole change.**
-//! [`Contender::read`] takes `&Self::Reader`, and `nested` and the
-//! staircase (`main.rs`) call it again inside its closure on the same handle,
-//! which `&mut` forbids. The planned mapping, so the re-run is like for like
-//! (`BENCHMARKS.md`, "What the next change (E3) should move"):
-//!
-//! - depth 1: one registered `Reader` per reader thread, and `read` takes
-//!   `&mut Self::Reader`;
-//! - nesting and the staircase: one registered `Reader` per nesting level on
-//!   each thread, so the bound becomes one value pinned per registered
-//!   `Reader`.
+//! arc-lend lends only through a registered `Reader`, with `&mut self`, so
+//! one reader has one live loan. [`Contender::read`] takes `&Self::Reader`,
+//! and the nesting scenarios (`nested` and the staircase in `main.rs`) call
+//! it again inside its closure on the same handle. arc-lend's handle is
+//! therefore a stack of registered readers, one per nesting level
+//! ([`ArcLendReaders`]), sized by [`Contender::nest`] before the measured
+//! window: the mapping `BENCHMARKS.md` planned for E3, so the rows compare
+//! like for like with the E2 run. Every other contender's handle is what it
+//! was, and its `nest` does nothing.
 
+use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex, RwLock};
 
 use arc_lend::ArcLend;
@@ -58,6 +56,12 @@ pub trait Contender: 'static {
     /// publisher-latency histograms time (with any upkeep the configuration
     /// asks for, such as a graveyard sweep or a `collect`).
     fn publish(w: &mut Self::Writer, value: Payload);
+    /// Prepare `r` for blocks `depth` reads deep, before its measured window
+    /// (and on its own thread). Only arc-lend does anything here: it
+    /// registers one `Reader` per level.
+    fn nest(r: &mut Self::Reader, depth: usize) {
+        let _ = (r, depth);
+    }
     /// One read: borrow the current value for the duration of `f`.
     fn read<R>(r: &Self::Reader, f: impl FnOnce(&Payload) -> R) -> R;
     /// Writer-side cleanup at the end of a run (untimed): drop what the
@@ -71,34 +75,65 @@ pub trait Contender: 'static {
 // arc-lend
 // ---------------------------------------------------------------------------
 
-/// `ArcLend<Payload>` with its default parameters (`SLOTS = 8`,
-/// `EPOCHS = 4`). Readers `lend()` once per block and drop the loan within
-/// it; the publisher `publish`es, which frees whatever no reader holds. No
-/// discipline is configured, because the type has none to configure: the
-/// reader cannot own a value, so cannot free one (`src/lend.rs`, `Loan::drop`).
+/// `ArcLend<Payload>`. Each reader handle is a stack of registered
+/// `arc_lend::Reader`s, one per nesting level, made before the measured
+/// window; a block lends the reader of its level once and drops the loan
+/// within it. The publisher `publish`es, which frees whatever no reader
+/// holds. No discipline is configured, because the type has none to
+/// configure: the reader cannot own a value, so cannot free one
+/// (`src/lend.rs`, `Loan::drop`).
 pub struct ArcLendCell;
+
+/// One arc-lend reader handle: a registered `Reader` per nesting level, and
+/// the level the next lend takes. The bookkeeping (a `Cell` and a
+/// `RefCell` borrow, about a nanosecond) is inside the timed block; it is
+/// what `&mut` lending costs a harness whose `read` takes `&`.
+pub struct ArcLendReaders {
+    cell: Arc<ArcLend<Payload>>,
+    levels: Vec<RefCell<arc_lend::Reader<Payload>>>,
+    depth: Cell<usize>,
+}
+
+impl ArcLendReaders {
+    fn new(cell: Arc<ArcLend<Payload>>) -> Self {
+        let levels = vec![RefCell::new(cell.reader())];
+        Self {
+            cell,
+            levels,
+            depth: Cell::new(0),
+        }
+    }
+}
 
 impl Contender for ArcLendCell {
     const NAME: &'static str = "arc-lend";
-    const CONFIG: &'static str =
-        "ArcLend<T> defaults (SLOTS=8, EPOCHS=4); lend() per block; no prewarm";
+    const CONFIG: &'static str = "ArcLend<T>; one registered Reader per thread and per nesting level, made before the measured window; lend() per block; no prewarm";
     type Writer = Arc<ArcLend<Payload>>;
-    type Reader = Arc<ArcLend<Payload>>;
+    type Reader = ArcLendReaders;
 
     fn new(init: Payload) -> (Self::Writer, Self::Reader) {
         let cell = Arc::new(ArcLend::new(init));
-        (cell.clone(), cell)
+        (cell.clone(), ArcLendReaders::new(cell))
     }
     fn reader(r: &Self::Reader) -> Self::Reader {
-        r.clone()
+        ArcLendReaders::new(r.cell.clone())
+    }
+    fn nest(r: &mut Self::Reader, depth: usize) {
+        while r.levels.len() < depth {
+            r.levels.push(RefCell::new(r.cell.reader()));
+        }
     }
     fn publish(w: &mut Self::Writer, value: Payload) {
         w.publish(Arc::new(value));
     }
     #[inline]
     fn read<R>(r: &Self::Reader, f: impl FnOnce(&Payload) -> R) -> R {
-        let loan = r.lend();
-        f(&loan)
+        let level = r.depth.get();
+        let mut reader = r.levels[level].borrow_mut();
+        r.depth.set(level + 1);
+        let out = f(&reader.lend());
+        r.depth.set(level);
+        out
     }
 }
 
@@ -520,9 +555,8 @@ pub struct PinnedCost {
     pub retired_before: usize,
     /// Retired values the release publish found (and freed).
     pub retired_at_release: usize,
-    /// Publishes that found every overflow epoch occupied.
-    pub epoch_stalls: u64,
-    /// Each timed publish, while `retired_before` (and growing) are pinned.
+    /// Each timed publish, while `retired_before` values are pinned (and as
+    /// many readers registered).
     pub pinned: arc_lend_compare::Tail,
     /// The one publish after the parked loans drop, which frees every
     /// retired value: the list work plus the frees.
@@ -534,17 +568,14 @@ pub struct PinnedCost {
 
 impl ArcLendCell {
     /// Publish cost against the number of retired values pinned, for
-    /// refinement P2 (the retired list's order-preserving `remove`, which
-    /// makes a release quadratic in the list's length).
+    /// refinement P2 (the retired list's filter, which E2's `remove(i)` made
+    /// quadratic in the list's length).
     ///
-    /// arc-lend-specific, because pinning many values takes the epoch
-    /// fallback: `SLOTS` loans parked in the slots, then one overflow loan
-    /// parked per publish until every epoch is occupied
-    /// (`docs::limitations`, "When every epoch is parked"). From then on each
-    /// publish retires a value it cannot free. E3 deletes the fallback, so
-    /// under E3 this function changes with the adapter: there a parked
-    /// `Loan` pins at most one value per reader, and the axis becomes readers
-    /// registered.
+    /// arc-lend-specific. A parked `Loan` pins at most one value per
+    /// registered `Reader`, so pinning `pinned` values takes `pinned` readers,
+    /// each parking a loan before a publish retires what it holds. Every
+    /// timed publish then scans `pinned` slots and filters `pinned` retired
+    /// values, and frees only its own outgoing one.
     pub fn pinned_publish_cost(pinned: usize, timed: usize) -> PinnedCost {
         use std::time::Instant;
         let mut seed = 1u64;
@@ -552,19 +583,15 @@ impl ArcLendCell {
             seed += 1;
             Arc::new(Payload::new(seed))
         };
-        let cell: ArcLend<Payload> = ArcLend::new(Payload::new(0));
+        let cell = Arc::new(ArcLend::new(Payload::new(0)));
         let mut hist = arc_lend_compare::new_histogram();
-        let (retired_before, retired_at_release, epoch_stalls, release_ns);
+        let mut readers: Vec<_> = (0..pinned).map(|_| cell.reader()).collect();
+        let (retired_before, retired_at_release, release_ns);
         {
-            let mut loans = Vec::new();
-            if pinned > 0 {
-                for _ in 0..arc_lend::DEFAULT_SLOTS + arc_lend::DEFAULT_EPOCHS {
-                    loans.push(cell.lend());
-                    cell.publish(next());
-                }
-                while cell.retired_len() < pinned {
-                    cell.publish(next());
-                }
+            let mut loans = Vec::with_capacity(pinned);
+            for reader in &mut readers {
+                loans.push(reader.lend());
+                cell.publish(next());
             }
             retired_before = cell.retired_len();
             for _ in 0..timed {
@@ -573,7 +600,6 @@ impl ArcLendCell {
                 cell.publish(v);
                 hist.saturating_record(t0.elapsed().as_nanos() as u64);
             }
-            epoch_stalls = cell.epoch_stalls();
             retired_at_release = cell.retired_len();
             drop(loans);
             let v = next();
@@ -581,6 +607,7 @@ impl ArcLendCell {
             cell.publish(v);
             release_ns = t0.elapsed().as_nanos() as u64;
         }
+        drop(readers);
         let plain: Vec<Arc<Payload>> = (0..retired_at_release).map(|_| next()).collect();
         let t0 = Instant::now();
         drop(plain);
@@ -588,7 +615,6 @@ impl ArcLendCell {
         PinnedCost {
             retired_before,
             retired_at_release,
-            epoch_stalls,
             pinned: arc_lend_compare::Tail::of(&hist),
             release_ns,
             plain_free_ns,

@@ -17,8 +17,8 @@ use super::slot::{stretch_values_want_filter, stretch_wanted};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tutti_core::{
-    debug_check_reclaiming, Amplitude, ArcLend, Beat, BeatDuration, Cents, ChannelLayout, Param,
-    PlaybackRate, SamplePosition, SampleRate, StretchFactor,
+    Amplitude, ArcLend, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate,
+    SamplePosition, SampleRate, StretchFactor,
 };
 use tutti_graph::ParamSet;
 use tutti_io::Wave;
@@ -494,9 +494,6 @@ impl VoiceNodeHandle {
         *placed = window;
         self.placement.publish(Arc::new(window));
         drop(placed);
-        // A clip drag republishes this every frame: where a parked `Loan`
-        // shows first. Debug builds only.
-        debug_check_reclaiming(&self.placement);
     }
 
     /// Sets the voice's gain, from the node's next block on. A write to a
@@ -648,37 +645,6 @@ impl VoicePoolHandle {
 mod tests {
     use super::*;
     use crate::voice::pool::VoicePool;
-
-    /// A loan of the placement cell parked across blocks trips the debug net
-    /// at `set_placement`, before the retired list grows without bound.
-    ///
-    /// Mutation: delete the `debug_check_reclaiming` call in
-    /// `set_placement`. Every publish succeeds and the test fails with "did
-    /// not panic".
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "a `Loan` is parked across blocks")]
-    fn a_parked_placement_loan_trips_the_debug_net() {
-        use crate::{MemorySource, Playback, VoiceNode, VoiceSource};
-        let wave = Arc::new(Wave::from_samples(48_000.0, &[0.0; 64]));
-        let (_node, handle) = VoiceNode::new(Voice {
-            source: VoiceSource::Memory(MemorySource::new(wave)),
-            play: Playback::default(),
-            channel_index: None,
-        })
-        .with_handle();
-        // What a node that kept its loans would do: loans in every overflow
-        // epoch, so nothing retired after them can be reclaimed.
-        let mut parked = Vec::new();
-        for _ in 0..4 {
-            parked.extend((0..16).map(|_| handle.placement.lend()));
-            handle.set_placement(Beat::new(0.0), None);
-        }
-        for beat in 0..tutti_core::PARKED_LOAN_LIMIT {
-            handle.set_placement(Beat::new(beat as f64), None);
-        }
-        drop(parked);
-    }
 
     /// A full queue is reported to the caller, not logged and forgotten.
     ///

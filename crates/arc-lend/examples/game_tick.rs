@@ -69,7 +69,8 @@ fn main() {
 
     // The tick thread: the one with a deadline.
     let tick = {
-        let level = Arc::clone(&level);
+        // Registered here, on the loader's side; the tick only lends.
+        let mut reader = level.reader();
         let running = Arc::clone(&running);
         thread::spawn(move || {
             let period = Duration::from_millis(2);
@@ -80,7 +81,7 @@ fn main() {
                 {
                     // One lend per tick, at the top. Dropped at the end of
                     // this block: a store, never a free.
-                    let level = level.lend();
+                    let level = reader.lend();
                     step(&level, &mut body, period.as_secs_f32());
                     if level.name != last_name {
                         // Allocating here is for the demo's output only.
@@ -112,6 +113,7 @@ fn main() {
 
     running.store(false, Ordering::Relaxed);
     let ticks = tick.join().unwrap();
-    assert_eq!(level.epoch_stalls(), 0);
+    // The tick thread has exited and dropped its reader: nothing is pinned.
+    assert_eq!(level.reclaim(), 0);
     println!("{ticks} ticks; the tick thread only ever borrowed a level");
 }

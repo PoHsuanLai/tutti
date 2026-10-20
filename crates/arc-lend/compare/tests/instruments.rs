@@ -155,11 +155,10 @@ fn a_promoted_arc_swap_guard_frees_on_the_reader() {
 /// The same handshake against arc-lend: the reader's loan drop frees nothing,
 /// and the old value waits for the publisher's next publish.
 ///
-/// Mutation: make `Loan::drop` reclaim, as `arc-lend/tests/no_alloc.rs`
-/// records (lock the control block, `take_unprotected`, drop the result, in
-/// the slot branch). The loan's drop then frees the retired payload on the
-/// reader, and `counts` reads one payload drop, three frees and one
-/// allocation (the free list) where it should read zeros.
+/// Mutation: make `Reader::drop` reclaim (`self.cell.reclaim()` after
+/// releasing the slot), as `arc-lend/tests/no_alloc.rs` records. The
+/// reader's drop then frees the retired payload on the reader, and `counts`
+/// reads a payload drop and its frees where it should read zeros.
 #[test]
 #[cfg_attr(miri, ignore = "threads; the instrument is not unsafe-heavy")]
 fn an_arc_lend_loan_frees_nothing_on_the_reader() {
@@ -168,14 +167,16 @@ fn an_arc_lend_loan_frees_nothing_on_the_reader() {
     let cell = Arc::new(arc_lend::ArcLend::new(Payload::new(0)));
     let step = Arc::new(Step::default());
     let reader = {
-        let (cell, step) = (cell.clone(), step.clone());
+        // Registered here, on the control side, and moved to the reader.
+        let (mut reader, step) = (cell.reader(), step.clone());
         std::thread::spawn(move || {
             begin_counting();
-            let loan = cell.lend();
+            let loan = reader.lend();
             step.reach(HELD);
             step.wait(STORED);
             black_box(loan.touch());
             drop(loan);
+            drop(reader);
             end_counting()
         })
     };

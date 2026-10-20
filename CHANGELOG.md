@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `arc-lend`: registered readers only; the publisher never waits
+
+`ArcLend` has one read path: a registered `Reader`, which owns one slot (a
+cache line of its own) in a growable, append-only slot list. A lend writes
+only that slot, and a publish never waits on a reader: a reader caught
+between claiming its slot and announcing what it loaded pins what it might
+load, through per-slot generations, and the next publish looks again. The
+loom model runs against the new code, with a new mutation record; six of
+its seven models run exhaustively in CI. A publish's swap is `Release`
+(the lock already orders publishers), and `Debug` formats the value after
+releasing the lock, so a `T::fmt` that publishes to the cell cannot
+deadlock.
+
+| Was | Now |
+|---|---|
+| `ArcLend<T, SLOTS = 8, EPOCHS = 4>` | `ArcLend<T>` |
+| `cell.lend()` (`&self`, any thread) | `cell.reader()` once, on the control side (needs `Arc<ArcLend<T>>`; takes the publisher's lock, may allocate, never fails), then `reader.lend()` (`&mut self`) on the reading thread |
+| a loan claimed one of `SLOTS` shared slots, or fell back to an overflow epoch | a loan uses its reader's own slot; there is no fallback |
+| nested lends of one cell on one thread | one `Reader` per nesting level |
+| — | `Reader<T>`: `Send`, not `Sync`; `Clone` registers a new reader; `Drop` frees its slot with one store; `Reader::cell()` |
+| `ArcLend::new_with_params`, `from_arc_with_params`, `MAX_SLOTS`, `MAX_EPOCHS` | removed |
+| `ArcLend::epoch_stalls()` | removed (there are no epochs); `ArcLend::reclaim()` frees what it can without publishing and returns how many retired values are still pinned |
+| parked overflow loans in every epoch pinned every value retired after them (unbounded) | parked loans pin at most one value per registered reader; a reader preempted mid-lend pins what is retired while it is preempted, freed by the first scan after it announces |
+| a publish spun on a reader between claim and announce, and on an overflow reader between register and load | a publish never waits on a reader |
+| a publish allocated its free list and filtered the retired list in quadratic time | the free buffer is reused across publishes; the filter is one linear, order-preserving pass |
+
+Migration: register a `Reader` per reading thread (and per nesting level)
+where the reading structure is built, store it beside the cell, and call
+`lend` on it; replace `epoch_stalls()` with `reclaim()` or `retired_len()`.
+
+tutti's read sites (the ones E3a gave one cell each) now hold a `Reader`,
+registered where the reading node or structure is built:
+
+| Was | Now |
+|---|---|
+| — | re-exported: `tutti_types::Reader`, `tutti_core::Reader`, and `tutti_core::MeterSlotReader` (`Reader<Option<Arc<MeterMap>>>`) |
+| — | `MeterSlot::reader()`, `ChannelCompensation::reader()` (bevy-tutti), `Session::compensation_reader()` |
+| `compensation.0.lend()`, `session.compensation().lend()` | register once with `reader()` / `compensation_reader()`, keep it, and `lend` through it; re-register when the `ChannelCompensation` resource is rebound |
+| `tutti_types::debug_check_reclaiming`, `PARKED_LOAN_LIMIT` (and their `tutti_core` re-exports) | removed. A parked loan pins one value per reader; a reader preempted mid-lend pins what is retired meanwhile, until the next scan after it resumes (poll `retired_len()`). The count measured the overflow epochs' hazard, which is gone: a node cannot park a `Loan` across blocks (that needs a self-referential borrow of its `Reader`), and a `mem::forget` pins one value per reader (`arc-lend`'s `parked_loans_pin_one_value_per_reader`) |
+| `HardwareMidiInputs::collect` republished the port set to free retired ones | it calls `ArcLend::reclaim`, publishing nothing; same return value |
+
+Each node registers its reader in its constructor, and a fork's node
+(built over a new cell) registers on that: the metronome (`ClickNode`), the
+automation lane, the MIDI clip, harmony and input nodes, the sampler voice's
+placement and its live ring's map, the plugin nodes' meter (out-of-process and
+in-process VST2), the hardware MIDI drain, and the butler's compensation feed
+(a `PdcFeed` per butler cycle, no longer `Clone`). `ClickNode` and the VST2
+`TransportFeed` keep a derived `Clone`, which now registers a new reader.
+
 ### Changed — every `ArcLend` read site reads one cell it owns (arc-lend E3a)
 
 Preparation for `arc-lend`'s registered readers. Each audio-thread read now

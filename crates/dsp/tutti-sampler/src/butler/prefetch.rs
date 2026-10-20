@@ -49,7 +49,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tutti_core::{
-    ArcLend, ChannelLayout, Loan, PosReader, PosRing, PosWriter, Samples, MAX_POS_RING_FRAMES,
+    ArcLend, ChannelLayout, PosReader, PosRing, PosWriter, Reader, Samples, MAX_POS_RING_FRAMES,
 };
 use tutti_io::Wave;
 
@@ -116,8 +116,9 @@ pub(crate) struct Ring {
     seek_target: AtomicU64,
     /// Butler → reader: output frames a reader's crossfade lasts.
     fade_frames: AtomicU64,
-    /// Butler → reader: how to read the slots.
-    map: ArcLend<RingMap>,
+    /// Butler → reader: how to read the slots, lent through the reader the
+    /// voice registers ([`map_reader`](Self::map_reader)).
+    map: Arc<ArcLend<RingMap>>,
     /// The live reader is a placed voice (it follows its clock, so a relayed
     /// seek must not move where the butler fills).
     placed: AtomicBool,
@@ -155,11 +156,11 @@ impl Ring {
         (w.from, w.to)
     }
 
-    /// How to read the slots, for this block (once per block, never per
-    /// sample; never parked across blocks).
-    #[inline]
-    pub(crate) fn map(&self) -> Loan<'_, RingMap> {
-        self.map.lend()
+    /// A reader of how to read the slots, registered for the voice that
+    /// reads this ring: it lends once per block, never per sample, never
+    /// parked across blocks. Control thread: registering may allocate.
+    pub(crate) fn map_reader(&self) -> Reader<RingMap> {
+        self.map.reader()
     }
 
     /// The channel's PDC preroll, file frames.
@@ -460,7 +461,7 @@ impl RegionBuffer {
             seek_epoch: AtomicU64::new(0),
             seek_target: AtomicU64::new(0),
             fade_frames: AtomicU64::new(0),
-            map: ArcLend::new(RingMap::plain(Arrangement::plain(len), 0)),
+            map: Arc::new(ArcLend::new(RingMap::plain(Arrangement::plain(len), 0))),
             placed: AtomicBool::new(false),
         });
         let writer = RegionOut {

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_core::{MeterMap, MeterSlotCell, ProjectMeter, Samples};
+use tutti_core::{MeterMap, MeterSlotReader, ProjectMeter, Samples};
 use tutti_graph::{Cx, Offset};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
@@ -127,18 +127,22 @@ pub(super) enum RateDelivery {
 /// render's. The snapshot is built in `process` before the plugin is
 /// entered: `Vst2Instance::process_f32` publishes it to the cell the
 /// callback reads, then calls the plugin.
+///
+/// A clone shares the meter slot and reads it through a reader of its own
+/// (`Reader::clone` registers one on the same cell), and carries the counter
+/// and the last snapshot as they stand. Only a test clones a feed.
 #[derive(Clone)]
 pub(super) struct TransportFeed {
     /// The node's meter slot, shared with its controls
     /// ([`InProcessVst2Client::meter`]), so a meter installed through them
     /// reaches the node the audio thread runs; a fork has a slot of its own
     /// ([`forked`](Self::forked)). Control side only: the block reads
-    /// `cell`.
+    /// through `reader`.
     meter: PluginMeter,
-    /// The slot's cell, taken when the feed is built: the one cell the block
-    /// reads the project meter from. Installing or clearing a meter publishes
-    /// into it; nothing swaps it.
-    cell: Arc<MeterSlotCell>,
+    /// A reader of the slot's cell, registered when the feed is built: the
+    /// one cell the block reads the project meter from. Installing or
+    /// clearing a meter publishes into it; nothing swaps it.
+    reader: MeterSlotReader,
     /// The meter read when none is installed (4/4 from bar 0), held so a
     /// block never builds one.
     default_meter: MeterMap,
@@ -155,10 +159,11 @@ impl TransportFeed {
         Self::over(PluginMeter::default())
     }
 
-    /// A feed reading `meter`'s cell, nothing rendered.
+    /// A feed reading `meter`'s cell through a reader registered here,
+    /// nothing rendered. Control thread: registering may allocate.
     fn over(meter: PluginMeter) -> Self {
         Self {
-            cell: meter.cell(),
+            reader: meter.reader(),
             meter,
             default_meter: MeterMap::default(),
             steady: SteadyTime::default(),
@@ -191,7 +196,7 @@ impl TransportFeed {
         let Some(at) = Offset::new(0, Samples(frames)) else {
             return self.last;
         };
-        let installed = self.cell.lend();
+        let installed = self.reader.lend();
         self.last = transport_source::from_cx(
             cx,
             at,

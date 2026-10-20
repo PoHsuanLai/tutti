@@ -18,7 +18,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tutti_core::{ArcLend, Beat, ChannelLayout};
+use tutti_core::{ArcLend, Beat, ChannelLayout, Reader};
 use tutti_graph::{
     Cx, Event, EventWriter, ForkCause, ForkMode, ForkSource, Forked, Harmony, HarmonyKind,
     IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
@@ -75,8 +75,9 @@ fn lanes(generation: u64, changes: impl IntoIterator<Item = TimedHarmony>) -> La
 
 /// What the node and its controls share.
 struct Shared {
-    /// What the audio thread reads, once per block.
-    cell: ArcLend<Lanes>,
+    /// What the audio thread reads, once per block, through the node's
+    /// reader.
+    cell: Arc<ArcLend<Lanes>>,
     /// The lanes last published, for the control side (a fork's snapshot, a
     /// count, the unchanged-lanes check). The node never takes this lock.
     current: Mutex<Arc<Lanes>>,
@@ -87,7 +88,7 @@ impl Shared {
     fn new(changes: impl IntoIterator<Item = TimedHarmony>) -> Arc<Self> {
         let first = Arc::new(lanes(0, changes));
         Arc::new(Self {
-            cell: ArcLend::from_arc(Arc::clone(&first)),
+            cell: Arc::new(ArcLend::from_arc(Arc::clone(&first))),
             current: Mutex::new(first),
             next_generation: AtomicU64::new(1),
         })
@@ -114,6 +115,9 @@ impl Shared {
 /// ```
 pub struct HarmonyNode {
     shared: Arc<Shared>,
+    /// A reader of `shared.cell`, registered in [`over`](Self::over): a
+    /// fork's node is built over its own cell and registers there.
+    lanes: Reader<Lanes>,
     /// The generation of the lanes this node last walked.
     generation: u64,
     walk: Walk,
@@ -125,9 +129,12 @@ impl HarmonyNode {
         Self::over(Shared::new(changes))
     }
 
+    /// A node over `shared`, reading it through a reader registered here.
+    /// Control thread: registering may allocate.
     fn over(shared: Arc<Shared>) -> Self {
         let generation = shared.current().generation;
         Self {
+            lanes: shared.cell.reader(),
             shared,
             generation,
             walk: Walk::default(),
@@ -234,7 +241,7 @@ impl Node for HarmonyNode {
     fn prepare(&mut self, _p: &Prepare) {}
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let lanes = self.shared.cell.lend();
+        let lanes = self.lanes.lend();
         if lanes.generation != self.generation {
             self.generation = lanes.generation;
             self.walk.forget();

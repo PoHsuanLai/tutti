@@ -40,8 +40,9 @@
 //! over [`RAMP_FRAMES`], never cut.
 //!
 //! Nothing here allocates, locks or blocks: the buffers are sized at
-//! construction, the map is read once per block (`ArcLend`), and the ring's
-//! samples are atomics.
+//! construction, the map is read once per block (through a `Reader`
+//! registered with the voice's ring reader, on the control thread), and the
+//! ring's samples are atomics.
 //!
 //! # The one reader
 //!
@@ -53,7 +54,7 @@
 //! instead. A block that reads nothing tells the ring so (`PosReader::idle`), so a
 //! paused voice holds no refill back.
 
-use tutti_core::{PosClaim, PosReader, SamplePosition};
+use tutti_core::{PosClaim, PosReader, Reader, SamplePosition};
 
 use crate::butler::{Arrangement, RingMap, RtState, SharedReader};
 use crate::MAX_SAMPLER_CHANNELS;
@@ -133,6 +134,9 @@ pub(crate) struct LiveRead {
     /// The ring's one reader, this voice's alone (see the module docs);
     /// `None` once severed, in a clone, or for a ring whose reader was taken.
     reader: Option<PosReader>,
+    /// A reader of the ring's map, registered beside `reader` when the voice
+    /// is built and dropped with it (`None` exactly when `reader` is).
+    map: Option<Reader<RingMap>>,
     st: State,
 }
 
@@ -143,6 +147,7 @@ impl Clone for LiveRead {
         Self {
             ring: self.ring.clone(),
             reader: None,
+            map: None,
             st: self.st.clone(),
         }
     }
@@ -150,10 +155,12 @@ impl Clone for LiveRead {
 
 impl LiveRead {
     /// A reader over `ring` through its one `reader` (`None`: silent), `width`
-    /// wide (at most [`MAX_SAMPLER_CHANNELS`]).
+    /// wide (at most [`MAX_SAMPLER_CHANNELS`]). Control thread: with a
+    /// `reader`, it registers a reader of the ring's map, which may allocate.
     pub(crate) fn new(ring: SharedReader, reader: Option<PosReader>, width: usize) -> Self {
         let src = ring.channels().count().max(1) as usize;
         Self {
+            map: reader.as_ref().map(|_| ring.map_reader()),
             ring,
             reader,
             st: State {
@@ -217,6 +224,7 @@ impl LiveRead {
     /// ring again, and renders silence through it.
     pub(crate) fn sever(&mut self) {
         self.reader = None;
+        self.map = None;
     }
 
     /// Render a block: frame `i` plays straight position `positions[i]`
@@ -238,7 +246,7 @@ impl LiveRead {
         let st = &mut self.st;
         let w = st.width;
         let silent = [0.0f32; MAX_SAMPLER_CHANNELS];
-        let Some(reader) = self.reader.as_mut() else {
+        let (Some(reader), Some(map)) = (self.reader.as_mut(), self.map.as_mut()) else {
             // Severed, or a clone: nothing to read (not an underrun).
             for i in 0..positions.len() {
                 emit(i, &silent[..w]);
@@ -273,7 +281,7 @@ impl LiveRead {
             (a, e)
         });
         let claim = reader.claim(first.max(0.0).floor() as u64, [(lo, hi), old_range]);
-        let map = ring.map();
+        let map = map.lend();
         let src = st.src;
         if let Some(expected) = jump {
             // The old position's continuation, read from the ring while the

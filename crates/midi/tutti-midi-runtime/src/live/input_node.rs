@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tutti_core::{ArcLend, ChannelLayout};
+use tutti_core::{ArcLend, ChannelLayout, Reader};
 use tutti_graph::{
     Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
@@ -79,13 +79,15 @@ pub struct MidiInputNode {
     translator: Midi1ToMidi2Translator,
     mpe: MpeIngest,
     request: Arc<MpeRequest>,
+    /// A reader of `request.cell`, registered in [`new`](Self::new).
+    mpe_request: Reader<Option<MpeMode>>,
 }
 
 /// The MPE mode a host asked for: what the node reads, and the control
 /// side's record of it.
 struct MpeRequest {
-    /// What the node reads, once per block.
-    cell: ArcLend<Option<MpeMode>>,
+    /// What the node reads, once per block, through its reader.
+    cell: Arc<ArcLend<Option<MpeMode>>>,
     /// The mode last asked for, for the control side
     /// ([`MidiInputControls::pending_mpe_mode`]). The node never takes this
     /// lock.
@@ -98,15 +100,17 @@ impl MidiInputNode {
     /// the hardware ports, `tutti_midi_hardware::HardwareMidiDrain::new`
     /// over the shared `Arc<HardwareMidiInputs>`).
     pub fn new(input: Option<Box<dyn MidiIn>>) -> Self {
+        let request = Arc::new(MpeRequest {
+            cell: Arc::new(ArcLend::new(None)),
+            asked: Mutex::new(None),
+        });
         Self {
+            mpe_request: request.cell.reader(),
             input,
             scratch: vec![MidiEvent::noop(); MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
             translator: Midi1ToMidi2Translator::new(),
             mpe: MpeIngest::new(MpeMode::Disabled),
-            request: Arc::new(MpeRequest {
-                cell: ArcLend::new(None),
-                asked: Mutex::new(None),
-            }),
+            request,
         }
     }
 
@@ -124,7 +128,7 @@ impl MidiInputNode {
     /// the ingest, so re-adopting it every block would drop every sounding
     /// note's voice mapping every block.
     fn adopt_mpe_request(&mut self) {
-        let pending = *self.request.cell.lend();
+        let pending = *self.mpe_request.lend();
         if let Some(mode) = pending {
             if *self.mpe.mode() != mode {
                 self.mpe.set_mode(mode);
@@ -251,7 +255,9 @@ mod tests {
     ///
     /// Mutation (run): `set_mpe_mode` publishing without writing the record
     /// (drop `*asked = Some(mode)`) → `pending_mpe_mode` stays `None`,
-    /// fails.
+    /// fails. The node built without a reader on the controls' cell (its
+    /// `mpe_request` left registered on a cell of its own) → it never sees
+    /// the request, fails (run).
     #[test]
     fn the_controls_report_the_mode_last_asked_for() {
         use tutti_midi_types::mpe::MpeZoneConfig;
@@ -264,8 +270,10 @@ mod tests {
         controls.clone().set_mpe_mode(upper);
         assert_eq!(controls.pending_mpe_mode(), Some(upper), "the last asked");
 
-        // A node over the same request, as the inserted one is.
+        // A node over the same request, reading it through a reader of its
+        // own, as the inserted one is.
         let mut node = MidiInputNode {
+            mpe_request: controls.request.cell.reader(),
             request: Arc::clone(&controls.request),
             ..MidiInputNode::new(None)
         };

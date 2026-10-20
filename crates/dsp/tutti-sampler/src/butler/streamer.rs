@@ -529,6 +529,6 @@ mod tests {
         .unwrap();
 
         pdc.publish(Arc::new(vec![Samples(512), Samples(0)]));
-        assert_eq!(pdc.lend()[0], Samples(512));
+        assert_eq!(pdc.reader().lend()[0], Samples(512));
     }
 }

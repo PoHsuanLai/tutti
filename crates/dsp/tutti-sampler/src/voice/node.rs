@@ -19,7 +19,7 @@ use super::disk_voice::VoiceHealth;
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice};
 use super::VoiceWindow;
-use tutti_core::{Amplitude, ArcLend, ChannelLayout, Param, SampleRate, Tail, UnitParam};
+use tutti_core::{Amplitude, ArcLend, ChannelLayout, Param, Reader, SampleRate, Tail, UnitParam};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, ParamSet, Prepare,
     Shape, Status,
@@ -66,6 +66,10 @@ pub struct VoiceNode {
     /// reads the same cell. Empty (`None`) until a handle sets one, so a node
     /// driven by hand keeps the window it was built with.
     placement: PlacementCell,
+    /// A reader of `placement`, registered whenever the cell is set (here,
+    /// and in [`with_handle`](Self::with_handle)): what the block lends
+    /// through.
+    placement_reader: Reader<Option<VoiceWindow>>,
     /// The window last applied from `placement`, so a block applies a
     /// window once, when it changes, rather than every block.
     applied: Option<VoiceWindow>,
@@ -111,10 +115,12 @@ impl VoiceNode {
         let mut slot =
             PlaybackSlot::with_channels(SlotId(0), Box::new(voice), sample_rate, channels);
         slot.stretch = stretch;
+        let placement = PlacementCell::default();
         Self {
             slot,
             channels,
-            placement: PlacementCell::default(),
+            placement_reader: placement.reader(),
+            placement,
             applied: None,
             gain,
             clock: Clock::new(),
@@ -129,6 +135,7 @@ impl VoiceNode {
     /// node (its gain still does: that cell is the node's for life).
     pub fn with_handle(mut self) -> (Self, VoiceNodeHandle) {
         self.placement = Arc::new(ArcLend::new(None));
+        self.placement_reader = self.placement.reader();
         let params = self.param_set();
         let handle = VoiceNodeHandle {
             placement: Arc::clone(&self.placement),
@@ -162,7 +169,7 @@ impl VoiceNode {
     /// drives it (its last frame, [`VOICE_PARAMS`]); `None` reads the cell.
     #[inline]
     fn drain_commands(&mut self, driven: Option<f32>) {
-        let published = *self.placement.lend();
+        let published = *self.placement_reader.lend();
         if published != self.applied {
             if let Some(window) = published {
                 // Placement is the source's alone: `Playback` has no

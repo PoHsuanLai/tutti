@@ -238,28 +238,29 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
 ## Publishing to the audio thread (MANDATORY)
 
 Non-scalar state handed to the audio thread goes through
-`tutti_types::{ArcLend, Loan}` (the `arc-lend` crate, re-exported). Scalars
-use `Param<U>`.
+`tutti_types::{ArcLend, Reader, Loan}` (the `arc-lend` crate, re-exported).
+Scalars use `Param<U>`.
 
 - **The audio thread never holds an owning handle to published state, and
-  never frees it.** `lend()` returns a `Loan`, a `!Send` borrow, and is
-  wait-free; `publish()` is control-thread only and frees retired values
-  there. This is structural (hazard slots, overflow epochs, and a retirement
-  list only the publisher touches), and the loom model
-  `arc-lend/tests/loom.rs` checks it.
+  never frees it.** A reading thread lends through a `Reader`;
+  `Reader::lend` returns a `Loan`, a `!Send` borrow, and is wait-free.
+  `publish()` is control-thread only and frees retired values there. This is
+  structural (one slot per registered reader, and a retirement list only the
+  publisher touches), and the loom model `arc-lend/tests/loom.rs` checks it.
+- **Register on the control side, where the reader is built**
+  (`ArcLend::reader`, from an `Arc` of the cell: it takes the publisher's
+  lock and may allocate), and store the `Reader` in the node or structure
+  that reads. A fork builds over a new cell and registers there.
+  `Reader::clone` registers a new reader on the same cell.
 - Lend once per block, never per sample. Never park a `Loan` across blocks
-  (a parked one delays the free of what it holds). Avoid nested lends of one
-  cell: past the cell's slot count they stay safe but pin every value current
-  during their overflow epoch, not just the one they hold.
-- **The design's limit:** once parked overflow `Loan`s occupy every overflow
-  epoch, each publish's retired value stays pinned and memory grows until they
-  drop. It is unreachable if the rule above is kept. A host can poll
-  `retired_len()` and `epoch_stalls()`; the cell itself neither asserts nor
-  logs (it is a library, and the policy is the host's). tutti's policy is
-  `debug_check_reclaiming` after a `publish` (a debug-build panic at
-  `PARKED_LOAN_LIMIT` retired values): call it after any cell you republish
-  every frame, as the automation lane's program and the sampler voice's
-  placement do.
+  (it pins the value it holds). One `Reader` per nesting level: `lend` takes
+  `&mut self`.
+- **The design's cost is memory, not waiting:** a publish never waits on a
+  reader, and a reader preempted mid-lend pins what is retired while it is
+  preempted, until the next scan after it resumes. A host polls
+  `retired_len()`; `reclaim()` frees what it can without publishing (call it
+  for a cell that stops being published, as `HardwareMidiInputs::collect`
+  does).
 - Never `publish` from the audio thread.
 - Do not try to prove the race with a no-alloc test. The loom model and miri
   cover it; a single-threaded gate can only pin the reader's code path.

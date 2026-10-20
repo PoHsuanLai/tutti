@@ -58,6 +58,11 @@ mod tests {
     /// Mutation: make `debug_check_reclaiming`'s body empty. The publishes
     /// all succeed and the test fails with "did not panic".
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "1024 publishes over a retired list parked loans hold back: quadratic \
+                  under miri; nextest covers this debug-only check, arc-lend's miri jobs the protocol"
+    )]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "a `Loan` is parked across blocks")]
     fn parked_loans_trip_the_check() {
@@ -75,6 +80,11 @@ mod tests {
     /// Mutation: compare `retired_len() < 1` instead of the limit. A held
     /// loan leaves one retired value at its publish, and the check panics.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "2048 publishes, slow under miri; nextest covers this debug-only \
+                  check, arc-lend's miri jobs the protocol"
+    )]
     fn loans_dropped_each_block_never_trip_the_check() {
         let cell = ArcLend::new(0u64);
         for v in 0..2 * PARKED_LOAN_LIMIT as u64 {

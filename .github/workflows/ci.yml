@@ -577,7 +577,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # `denormals.rs`'s two tests are `#[cfg_attr(miri, ignore)]`d — they read
       # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
-      # rather than vanishing, so the run says what it did not cover.
+      # rather than vanishing, so the run says what it did not cover. So are
+      # `rt/parked.rs`'s two: a thousand-odd publishes each, against a retired
+      # list parked loans keep growing, is quadratic and runs past this job's
+      # timeout under miri. They test a debug-only policy check, which the
+      # native nextest run covers; `ArcLend`'s protocol is miri-tested below.
       - run: cargo +nightly miri test --locked -p tutti-types --lib
       # `ArcLend`'s unit tests, its no-alloc gate and its doctests.
       - run: cargo +nightly miri test --locked -p arc-lend

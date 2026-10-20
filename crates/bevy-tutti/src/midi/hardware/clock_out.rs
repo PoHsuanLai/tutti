@@ -6,8 +6,9 @@
 //! Anything else wired to that node's entity (`EventSources`: a clip, a
 //! plugin's MIDI out) reaches the wire the same way. This module owns the
 //! *off-RT* half: [`ClockMasterRes`] holds the master handle (for
-//! enable/config from the UI) plus the out node's controls, and
-//! [`pump_clock_out_system`] drains it each frame to the OS MIDI output.
+//! enable/config from the UI), and [`pump_clock_out_system`] runs the
+//! session's `Phase::MidiOut` each frame, which drains the out node to the
+//! output the host connected.
 //!
 //! The drain cadence doesn't affect inter-tick spacing — the tick timing is
 //! baked into each event on the audio thread; the OS output thread writes on
@@ -21,58 +22,52 @@ use std::sync::Arc;
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_runtime::{ClockMaster, MidiOutControls};
+use tutti_midi_runtime::ClockMaster;
+use tutti_session::Phase;
 
-use super::hardware_out::{drain_receiver_through, JrStamperRes, MidiOutRouter, UmpOutRes};
+use super::hardware_out::JrStamperRes;
+use crate::graph::AudioGraphRes;
 
-/// The clock master and the hardware-out node's controls, from the engine
-/// build.
+/// The clock master, from the engine build.
 ///
 /// Present only when the engine was built with the `midi` feature. The
-/// master lets the UI toggle enable / MTC / frame-rate; `out` is drained to
-/// hardware-out by [`pump_clock_out_system`].
+/// master lets the UI toggle enable / MTC / frame-rate. The hardware-out
+/// node's ring it ticks into is the session's (`Session::midi_nodes`),
+/// drained by its `Phase::MidiOut`, the one reader.
 #[derive(Resource)]
 pub struct ClockMasterRes {
     /// The generator itself, shared with the clock node that ticks it. Use it
     /// to toggle enable / MTC / frame rate; it starts disabled, so nothing
     /// reaches the wire until a host turns it on.
     pub master: Arc<ClockMaster>,
-    /// The hardware-out node's ring. Read only by [`pump_clock_out_system`] —
-    /// a second reader would take events that one would then never see.
-    pub out: MidiOutControls,
 }
 
 impl ClockMasterRes {
-    /// Pairs a clock master with the hardware-out node it is wired to.
-    pub fn new(master: Arc<ClockMaster>, out: MidiOutControls) -> Self {
-        Self { master, out }
+    /// Holds the clock master of the engine's clock node.
+    pub fn new(master: Arc<ClockMaster>) -> Self {
+        Self { master }
     }
 }
 
-/// Drains the clock-master ring each frame and sends each event to hardware
-/// MIDI out, via the shared [`MidiOutRouter`]. Under `midi-hardware` this reaches the
-/// OS; otherwise it drains and drops (keeping the ring from backing up).
+/// Runs the session's `Phase::MidiOut` each frame: drains the hardware out
+/// (the clock, and whatever else is wired to its node) through the
+/// session's router to the output the host connected, stamping as
+/// [`JrStamperRes`] says. With none connected, the events are dropped
+/// (keeping the ring from backing up) and counted.
 pub fn pump_clock_out_system(
     // `Option`, despite the `engine_ready` gate: that condition reads
-    // `AudioEngineState`, which a host can insert on its own, while
-    // `ClockMasterRes` only appears if `engine::build_into` actually ran. A test
-    // or an example that builds a graph and declares the engine up — which the
-    // crate's own tests do — has the former without the latter, and a hard `Res`
-    // turns that into a panicked schedule rather than a quiet no-op.
-    clock_out: Option<Res<ClockMasterRes>>,
-    drops: Res<super::hardware_out::MidiOutDrops>,
-    ump_out: Option<ResMut<UmpOutRes>>,
+    // `AudioEngineState`, which a host can insert on its own. A session with
+    // no MIDI nodes (a headless graph) drains nothing.
+    graph: Option<ResMut<AudioGraphRes>>,
     jr: Option<Res<JrStamperRes>>,
 ) {
-    let Some(clock_out) = clock_out else {
+    let Some(mut graph) = graph else {
         return;
     };
-    let mut router = MidiOutRouter {
-        out: super::hardware_out::out_active(ump_out, jr),
-        drops: Some(&drops),
-    };
-
-    drain_receiver_through(clock_out.out.receiver(), &mut router);
+    super::hardware_out::mirror_stamping(&mut graph, jr.as_deref());
+    // `MidiOutDropped` is for a host polling the session; the session has
+    // warned of the drops already, and the count is `Midi::out_drops`.
+    let _ = graph.run_phase(Phase::MidiOut, std::time::Instant::now());
 }
 
 /// Registers the clock-master output pump. The [`ClockMasterRes`] itself is
@@ -83,11 +78,8 @@ pub struct ClockOutPlugin;
 
 impl Plugin for ClockOutPlugin {
     fn build(&self, app: &mut App) {
-        // `run_if(engine_ready)` like every other MIDI system — but the gate is
-        // not sufficient on its own, so the system takes `ClockMasterRes` as an
-        // `Option` too. `engine_ready` reads `AudioEngineState`; the resource
-        // comes from `build_into`. Those are two different facts, and a host can
-        // have the first without the second.
+        // `run_if(engine_ready)` like every other MIDI system; the graph is
+        // still an `Option` (see the system).
         app.add_systems(
             Update,
             pump_clock_out_system.run_if(crate::graph::engine_ready),

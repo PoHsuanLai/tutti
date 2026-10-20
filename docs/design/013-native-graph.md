@@ -2625,7 +2625,8 @@ never touches the live ring; a free-running source follows a relayed seek).
     rebuilds it at the prepared rate (keeping the preset, losing the
     sounding voices; on failure, a rate rustysynth refuses, it keeps the
     old rate), so a restart's re-prepare re-rates it.
-  - A host-built `UmpOutRes` (`midi-hardware`): its `JrStream` stamps JR
+  - A host-built `UmpOut` (`midi-hardware`; connected with
+    `Midi::set_hardware_out` since design 015 PR 5, `UmpOutRes` before): its `JrStream` stamps JR
     timestamps and paces JR Clock at the rate it was built with. The host
     constructs it, so the hook cannot see it; `JrStream` has no way to
     re-rate yet (its stamper carries an origin in frames).

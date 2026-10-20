@@ -231,14 +231,20 @@ fn a_re_bound_target_keeps_its_clip() {
 /// clip.** Removing `AudioNode` removes the old node from the graph, and
 /// every feed keyed by it goes with it (`Graph::remove`), so by the time the
 /// new node is bound there is nothing for the event reconcile to move. The
-/// sequencer derives the feed from the target's node on every rebuild, so
-/// the clip reaches the new node anyway.
+/// sequencer re-aims the clip at the target's node on every rebuild
+/// (`tutti_session::Midi::retarget`), so the same clip reaches the new node
+/// anyway.
 ///
-/// Mutation (run): the rebuild setting the feed only when it creates a clip
-/// (not for one it already has) → the new tap hears `[]` → fails.
+/// Mutations (run, design 015 PR 5), each fails: the rebuild not re-aiming
+/// its clips (`retarget` skipped: `play_clip` finds no clip fed into the
+/// new node and makes a second, leaving the first unfed in the graph → "the
+/// same clip"); the session's `play_clip` making a fresh clip on every call
+/// (→ "the same clip"). Before PR 5 (run): the rebuild setting the feed only
+/// when it created a clip → the new tap heard `[]`.
 #[test]
 fn a_target_removed_then_re_bound_keeps_its_clip() {
     use bevy_tutti::graph::InsertAudioNode;
+    use bevy_tutti::midi::SequencedClips;
     use tutti_core::AudioNode;
 
     let mut app = app();
@@ -248,6 +254,8 @@ fn a_target_removed_then_re_bound_keeps_its_clip() {
         note(60, Beat(1.0 / 3.0), BeatDuration(1.0), MF).to_vec(),
     ));
     app.update();
+    let clip = app.world().resource::<SequencedClips>().node(tap);
+    assert!(clip.is_some(), "precondition: the target has a clip");
 
     app.world_mut().entity_mut(tap).remove::<AudioNode>();
     app.world_mut().flush();
@@ -264,6 +272,11 @@ fn a_target_removed_then_re_bound_keeps_its_clip() {
     assert!(
         note_ons(&old).is_empty(),
         "the node the entity left does not"
+    );
+    assert_eq!(
+        app.world().resource::<SequencedClips>().node(tap),
+        clip,
+        "the same clip"
     );
 }
 
@@ -295,9 +308,9 @@ fn two_installs_on_one_target_both_play() {
 /// node's new events replace the old, and the note the old ones held is
 /// released on the edit's first block.
 ///
-/// Mutation (run): the rebuild inserting a fresh clip node per edit and
-/// removing the old one → the old node sends nothing more → no note-off →
-/// fails.
+/// Mutation (run, against `tutti_session::Midi::play_clip` since design 015
+/// PR 5): a fresh clip node per edit (`play_clip` never finding the one it
+/// has) → the old node sends nothing more → no note-off → fails.
 #[test]
 fn an_edit_does_not_hang_the_previous_note() {
     let mut app = app();
@@ -331,8 +344,8 @@ fn an_edit_does_not_hang_the_previous_note() {
 /// **Removing the last install naming a target ends its notes and plays
 /// nothing more**, rather than looping the old clip forever.
 ///
-/// Mutation (run): the rebuild not clearing a clip no install names → the
-/// second note plays at beat 1 → fails.
+/// Mutation (run): the rebuild not clearing a clip no install names
+/// (`Midi::stop_clip` skipped) → the second note plays at beat 1 → fails.
 #[test]
 fn removing_the_last_install_ends_its_notes() {
     let mut app = app();
@@ -451,8 +464,10 @@ fn event_sources_wire_a_clip_node_to_a_graph_synth() {
 /// install goes**, so the notes it left sounding end on its frames
 /// (`removing_the_last_install_ends_its_notes`).
 ///
-/// Mutation: a fresh clip node per edit → the node changes across the edit →
-/// fails. Mutation: removing the clip node with the last install → it is
+/// Mutations (run, design 015 PR 5): a fresh clip node per edit (the
+/// session's `play_clip` never finding the one it has) → the node changes
+/// across the edit → fails. Removing the clip node with the last install
+/// (the rebuild's `gone` taking targets no install names) → it is
 /// gone from the graph → fails.
 #[test]
 fn an_install_on_a_graph_synth_plays_through_a_clip_node() {

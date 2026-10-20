@@ -49,8 +49,8 @@
 //! The hardware input is a graph node ([`MidiEngineNodes::input`]) with one
 //! event output per channel and one for channelless messages (system, SysEx,
 //! Flex). [`rebuild`] turns the rules into which of those ports each target's
-//! event input takes (through the session's feeds,
-//! `AudioGraphRes::set_feed`): a channel rule gives its
+//! event input takes (through the session's routes,
+//! `tutti_session::Midi::set_routes`, which write its feeds): a channel rule gives its
 //! targets that channel's port and the channelless one, an any-channel rule
 //! all seventeen, several rules the union. The fallback takes every port no
 //! rule covers — a channel no rule names, and the channelless port while no
@@ -60,17 +60,14 @@
 //!
 //! [`MidiEngineNodes::input`]: crate::midi::MidiEngineNodes
 
-use std::collections::HashMap;
-
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_runtime::{compile_routes, RouteRule};
 use tutti_midi_types::MidiChannel;
 
 use tutti_core::AudioNode;
 
-use crate::graph::{engine_ready, AudioGraphRes, EventSource, EventWiring, GraphReconcileSystems};
+use crate::graph::{engine_ready, AudioGraphRes, EventWiring, GraphReconcileSystems};
 use crate::midi::MidiEngineNodes;
 
 /// One inbound routing rule: which channel reaches which entities.
@@ -129,23 +126,16 @@ impl MidiRouteRule {
 #[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
 pub struct MidiRouteFallback(pub Option<Entity>);
 
-/// Who feeds a target's node through the route rules, in the session's
-/// feeds.
-const ROUTES: &str = "midi routes";
-
-/// The targets [`rebuild`] fed last, each with the node it fed, so one no
-/// rule names any more (or an entity now on another node) is unwired.
-#[derive(Resource, Default)]
-pub struct RoutedTargets(HashMap<Entity, AudioNode>);
-
 /// Compiles every armed rule into which of the hardware input's ports each
-/// target takes ([`compile_routes`], the engine's pure compile), and writes it
-/// into the session's feeds on each target's node (see the module docs).
+/// target takes, through the session (`tutti_session::Midi::set_routes`,
+/// over `compile_routes`, the engine's pure compile), keyed by entity and
+/// resolved to each target's node (see the module docs).
 ///
 /// Runs when a rule changes, is added, or is removed, when the fallback
 /// changes, and when an entity's node does: a whole recompile, since a
 /// target's ports are the union of every rule naming it. A target with no
-/// node yet is wired on the frame it gets one.
+/// node yet is wired on the frame it gets one; the session unwires a node no
+/// rule reaches any more.
 #[allow(clippy::too_many_arguments)]
 pub fn rebuild(
     nodes: Option<Res<MidiEngineNodes>>,
@@ -156,7 +146,6 @@ pub fn rebuild(
     mut removed: RemovedComponents<MidiRouteRule>,
     bound: Query<&AudioNode>,
     graph: Option<ResMut<AudioGraphRes>>,
-    mut routed: ResMut<RoutedTargets>,
 ) {
     let dirty = !changed.is_empty()
         || !removed.is_empty()
@@ -173,37 +162,19 @@ pub fn rebuild(
         return;
     };
 
-    let ports = compile_routes(
-        rules.iter().filter(|r| r.enabled).map(|r| RouteRule {
+    let rules: Vec<tutti_session::MidiRouteRule<Entity>> = rules
+        .iter()
+        .map(|r| tutti_session::MidiRouteRule {
             channel: r.channel,
-            targets: &r.targets,
-        }),
-        fallback.0,
-    );
-
-    // Every target `compile_routes` returns takes at least one port; one
-    // without a node yet is left for the frame it gets one.
-    let wanted: HashMap<Entity, AudioNode> = ports
-        .keys()
-        .filter_map(|&target| bound.get(target).ok().map(|&node| (target, node)))
+            targets: r.targets.clone(),
+            enabled: r.enabled,
+        })
         .collect();
-    for (target, &fed) in &routed.0 {
-        if wanted.get(target) != Some(&fed) {
-            graph.set_feed(fed, ROUTES, Vec::new());
-        }
-    }
-    for (target, ports) in ports {
-        let Some(&sink) = wanted.get(&target) else {
-            continue;
-        };
-        let sources = ports
-            .into_iter()
-            .filter_map(|p| u16::try_from(p).ok())
-            .map(|p| EventSource::new(nodes.input_node, p))
-            .collect();
-        graph.set_feed(sink, ROUTES, sources);
-    }
-    routed.0 = wanted;
+    graph
+        .midi()
+        .set_routes(nodes.input_node, &rules, fallback.0, |target| {
+            bound.get(target).ok().copied()
+        });
 }
 
 /// Whether the engine's MIDI nodes arrived (or changed) this frame: rules
@@ -222,7 +193,6 @@ pub struct MidiRoutePlugin;
 impl Plugin for MidiRoutePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MidiRouteFallback>();
-        app.init_resource::<RoutedTargets>();
         app.add_systems(
             Update,
             rebuild

@@ -292,7 +292,8 @@ Non-scalar state handed to the audio thread goes through
   `ParamRef`): each modulated param gets a control lane on its port, whose
   knob is the node's own cell (a plugin parameter's lane, its own knob on
   the plugin's event input). One writer per knob: `write_param` for a
-  native one, the plugin's GUI or `ModulationState::set_knob` for a plugin's.
+  native one, the plugin's GUI or `AudioGraphRes::modulation().set_knob`
+  for a plugin's.
   `ModulationSystems::Apply` runs between `GraphReconcileSystems::Spawn` and
   `Params`; `ModulationSystems::AfterCommit` runs after `Commit`.
 

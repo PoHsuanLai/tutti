@@ -137,8 +137,9 @@ mod routes {
     /// **A disabled rule routes nothing, and removing a rule unwires its
     /// target.**
     ///
-    /// Mutation (run): the rebuild not removing the feeds of a target no rule
-    /// names any more (`RoutedTargets` unused) → the ports stay → fails.
+    /// Mutation (run, against `tutti_session::Midi::set_routes` since design
+    /// 015 PR 5): not removing the feeds of a node no rule reaches any more
+    /// (the session's `routed` set unused) → the ports stay → fails.
     #[test]
     fn removing_or_disabling_a_rule_unwires_its_target() {
         let mut app = app();
@@ -234,8 +235,10 @@ mod keyboard {
     /// feeds with it (`Graph::remove`), so nothing is left to move; the live
     /// input re-asserts its feed on the entity's node whenever that changes.
     ///
-    /// Mutation (run): `attach_live_midi` not re-asserting the feed on a
-    /// changed `AudioNode` → the new synth's event input is empty → fails.
+    /// Mutations (run, design 015 PR 5), each fails: `attach_live_midi` not
+    /// re-aiming the queue on a changed `AudioNode` (`Midi::retarget`
+    /// skipped); the session's `retarget` not feeding the new target → the
+    /// new synth's event input is empty.
     #[test]
     fn a_keyboard_follows_its_entity_onto_a_node_bound_after_a_removal() {
         use bevy_tutti::graph::InsertAudioNode;

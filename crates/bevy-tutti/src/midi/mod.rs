@@ -69,16 +69,14 @@ pub mod test_support {
         out.drain_for_test()
     }
 
-    /// A clock master and a hardware-out ring, in no graph. **Tests only.**
+    /// A clock master, in no graph. **Tests only.**
     ///
-    /// Systems gated on `engine_ready` take this as a plain `Res`, because the
-    /// engine block always inserts it — so a test that claims the engine is
-    /// running has to supply it or those systems panic on a missing resource.
+    /// The engine block always inserts it, so a test that claims the engine is
+    /// running supplies it as a host reading the master would find it.
     pub fn clock_master_for_test() -> super::ClockMasterRes {
         use tutti_graph::IntoNode;
         let master = tutti_midi_runtime::ClockNode::new().into_parts().controls;
-        let out = tutti_midi_runtime::MidiOutNode::new().into_parts().controls;
-        super::ClockMasterRes::new(master, out)
+        super::ClockMasterRes::new(master)
     }
 }
 
@@ -89,7 +87,6 @@ pub use nodes::{
 
 pub use inbound::route::{
     rebuild as rebuild_midi_routes, MidiRouteFallback, MidiRoutePlugin, MidiRouteRule,
-    RoutedTargets,
 };
 
 pub use hardware::clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
@@ -99,11 +96,7 @@ pub use hardware::device::{
     DisconnectMidiDevice, DisconnectMidiOutput, MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState,
     MidiDirection, MidiIoRes,
 };
-#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub use hardware::hardware_out::UmpOutRes;
-pub use hardware::hardware_out::{
-    drain_receiver_through, JrStamperRes, MidiOutDrops, MidiOutRouter,
-};
+pub use hardware::hardware_out::JrStamperRes;
 pub use hardware::metadata::{
     flex_metadata_broadcast_system, BroadcastFlexMetadata, MidiMetadataPlugin,
 };
@@ -115,6 +108,7 @@ pub use hardware::negotiation::{
 pub use hardware::track_out::{
     midi_out_send_system, pump_midi_out_system, MidiOutPlugin, MidiOutRes, SendMidiOut,
 };
+pub use tutti_session::{drain_receiver_through, MidiOutDrops, MidiOutRouter, UmpOut};
 
 pub use file::{
     MidiFileAsset, MidiFileAssetLoader, MidiFilePlugin, MidiFileWrite, MidiFileWriteInFlight,

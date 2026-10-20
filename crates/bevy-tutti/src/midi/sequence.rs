@@ -1,9 +1,9 @@
 //! Beat-scheduled MIDI playback, declared in the ECS and clocked by the engine.
 //!
 //! A [`MidiSourceInstall`] names a target entity and the events to play at it.
-//! [`rebuild`] compiles those into a [`MidiClipNode`] of the target's own,
-//! wired to its MIDI event input (the session's feeds,
-//! `AudioGraphRes::set_feed`): a synth, a SoundFont
+//! [`rebuild`] compiles those into the session's clip for the target
+//! ([`tutti_session::Midi::play_clip`]: a `MidiClipNode` wired to its MIDI
+//! event input through the session's feeds): a synth, a SoundFont
 //! player or a plugin inserted as a graph node
 //! ([`spawn_audio_node`](crate::graph::SpawnAudioNode), a plugin load). The
 //! clip reads the block's `Env`, so its notes land on their frames through
@@ -46,7 +46,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-use tutti_midi_runtime::{MidiClipControls, MidiClipNode, TimedMidiEvent};
+use tutti_midi_runtime::TimedMidiEvent;
 
 use crate::graph::{engine_ready, AudioGraphRes, EventWiring, GraphReconcileSystems};
 use tutti_core::AudioNode;
@@ -74,24 +74,23 @@ impl MidiSourceInstall {
     }
 }
 
-/// The sequencer's name among the feeds of a target's node.
-const SEQUENCER: &str = "sequencer";
-
-/// The clip node playing each target that has an event input: its node and
-/// its controls. The node is the sequencer's, not an entity's: emptied when
-/// the last install naming its target goes (which ends its notes), removed
+/// The clip node playing each target that has an event input: the
+/// session's clip ([`tutti_session::Midi::play_clip`]), keyed by the
+/// entity. The node is the sequencer's, not an entity's: emptied when the
+/// last install naming its target goes (which ends its notes), removed
 /// when the target loses its node.
 #[derive(Resource, Default)]
-pub struct SequencedClips(HashMap<Entity, (AudioNode, MidiClipControls)>);
+pub struct SequencedClips(HashMap<Entity, AudioNode>);
 
 impl SequencedClips {
     /// Returns the clip node playing `target`, if it has one.
     pub fn node(&self, target: Entity) -> Option<AudioNode> {
-        self.0.get(&target).map(|(n, _)| *n)
+        self.0.get(&target).copied()
     }
 }
 
-/// Recompiles every changed install into its target's clip node.
+/// Recompiles every changed install into its target's clip node, through
+/// the session's [`Midi`](tutti_session::Midi).
 ///
 /// Runs only when an install changed or went away, or a node was rebound. **Not**
 /// when the device's rate moves (a restart, `restart_device`): a clip node
@@ -100,8 +99,8 @@ impl SequencedClips {
 pub fn rebuild(
     installs: Query<&MidiSourceInstall>,
     changed: Query<Entity, Changed<MidiSourceInstall>>,
-    // A target rebound to a new node (a respawn) keeps its clip: every clip's
-    // feed is re-asserted on its target's current node below. One rebound to a
+    // A target rebound to a new node (a respawn) keeps its clip: every clip
+    // is re-aimed at its target's current node below. One rebound to a
     // node with no event input loses its clip here.
     rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<MidiSourceInstall>,
@@ -130,15 +129,17 @@ pub fn rebuild(
             .extend(install.events.iter().copied());
     }
 
-    // Which targets can play a clip: those whose node has an event input.
-    let playable: HashSet<Entity> = by_target
+    // Which targets can play a clip, and on which node: those whose node
+    // has an event input.
+    let playable: HashMap<Entity, AudioNode> = by_target
         .keys()
         .chain(clips.0.keys())
         .copied()
-        .filter(|t| {
-            nodes
-                .get(*t)
-                .is_ok_and(|&node| graph.node_event_inputs(node) > 0)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .filter_map(|t| {
+            let &node = nodes.get(t).ok()?;
+            (graph.node_event_inputs(node) > 0).then_some((t, node))
         })
         .collect();
 
@@ -149,44 +150,42 @@ pub fn rebuild(
         .0
         .keys()
         .copied()
-        .filter(|t| !playable.contains(t))
+        .filter(|t| !playable.contains_key(t))
         .collect();
     for target in gone {
-        if let Some((node, _)) = clips.0.remove(&target) {
-            graph.remove(node);
+        if let Some(clip) = clips.0.remove(&target) {
+            graph.remove(clip);
         }
     }
 
-    // A clip no install names any more plays nothing from the next block,
-    // ending the notes it left sounding (as new events end the old ones').
-    for (target, (_, controls)) in &clips.0 {
+    let session = graph.session();
+    let mut midi = session.midi();
+    for (target, &clip) in &clips.0 {
+        let sink = playable[target];
+        // Re-aimed on every rebuild: a target whose `AudioNode` was removed
+        // and re-inserted lost its old node's feeds with that node
+        // (`Graph::remove`), and nothing else would restore them. An
+        // unchanged feed (and the edit flag) is left alone.
+        if let Err(e) = midi.retarget(clip, sink) {
+            tracing::error!("sequencer: {target:?}'s clip not re-aimed: {e}");
+        }
+        // A clip no install names any more plays nothing from the next
+        // block, ending the notes it left sounding (as new events end the
+        // old ones').
         if !by_target.contains_key(target) {
-            controls.clear();
+            midi.stop_clip(sink);
         }
     }
 
     for (target, events) in by_target {
-        if !playable.contains(&target) {
+        let Some(&sink) = playable.get(&target) else {
             continue;
-        }
-        let clip = match clips.0.get(&target) {
-            Some((clip, controls)) => {
-                controls.set_events(events);
-                *clip
-            }
-            None => {
-                let (clip, controls) = graph.insert(MidiClipNode::new(events));
-                clips.0.insert(target, (clip, controls));
-                clip
-            }
         };
-        // The feed is derived here, from the target's node now, on every
-        // rebuild: a target whose `AudioNode` was removed and re-inserted
-        // lost its old node's feeds with that node (`Graph::remove`), and
-        // nothing else would restore them. `set_feed` leaves an unchanged
-        // feed (and the edit flag) alone. `playable`: the target has a node.
-        if let Ok(&sink) = nodes.get(target) {
-            graph.set_feed(sink, SEQUENCER, vec![clip.into()]);
+        match midi.play_clip(sink, events) {
+            Ok(clip) => {
+                clips.0.insert(target, clip);
+            }
+            Err(e) => tracing::error!("sequencer: {target:?} takes no clip: {e}"),
         }
     }
 }

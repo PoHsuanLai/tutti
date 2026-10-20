@@ -137,6 +137,19 @@ impl AudioGraphRes {
         self.write()
     }
 
+    /// The session's MIDI ([`tutti_session::Midi`]): the hardware output
+    /// a host connects (`set_hardware_out`), its drop count, and a host's
+    /// own outbound mailbox drained through it (`drain_out`). Clips, live
+    /// inputs and the hardware input's routes are declared in the ECS
+    /// ([`MidiSourceInstall`](crate::midi::MidiSourceInstall),
+    /// [`LiveMidiInput`](crate::midi::LiveMidiInput),
+    /// [`MidiRouteRule`](crate::midi::MidiRouteRule)), whose systems call
+    /// this; what a host edits here directly, they do not see.
+    #[cfg(feature = "midi")]
+    pub fn midi(&mut self) -> tutti_session::Midi<'_> {
+        self.write().midi()
+    }
+
     /// The resource over a built `session` ([`build_into`](crate::engine::build_into)).
     pub(crate) fn from_session(session: Session) -> Self {
         Self(Mutex::new(session))

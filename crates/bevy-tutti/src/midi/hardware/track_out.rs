@@ -5,8 +5,9 @@
 //! [`MidiMailbox`] whose
 //! [`MidiSender`] anyone off-RT (a track system, the UI) — or a clip source on
 //! the audio thread — can push into lock-free, drained each frame and routed to
-//! hardware through the *same* [`MidiOutRouter`] the
-//! clock-master pump uses. So track MIDI out gets the identical JR-stamp/UMP-vs-
+//! hardware through the session's router
+//! ([`tutti_session::Midi::drain_out`]), the one the clock-master pump
+//! drains through. So track MIDI out gets the identical JR-stamp/UMP-vs-
 //! MIDI-1 treatment (JR Timestamps reach the wire iff a native-UMP source +
 //! enabled stamper are present).
 //!
@@ -36,7 +37,7 @@ use bevy_ecs::prelude::*;
 use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 
-use super::hardware_out::{drain_receiver_through, MidiOutRouter};
+use crate::graph::AudioGraphRes;
 
 /// The outbound MIDI-out mailbox: a push [`sender`](Self::sender) any caller
 /// clones to send events to external hardware (off-RT or, as a clip `out_tap`,
@@ -111,23 +112,32 @@ pub fn midi_out_send_system(out: Res<MidiOutRes>, mut requests: MessageReader<Se
 }
 
 /// Drains the track MIDI-out mailbox each frame and routes it to hardware,
-/// through the same [`MidiOutRouter`] the clock-out pump uses.
+/// through the session's router (`Midi::drain_out`), the one the clock-out
+/// pump drains through. With no graph (no engine), the mailbox is drained
+/// and its events dropped, uncounted, so it does not back up.
 pub fn pump_midi_out_system(
     out: Option<Res<MidiOutRes>>,
-    drops: Res<super::hardware_out::MidiOutDrops>,
-    ump_out: Option<ResMut<super::hardware_out::UmpOutRes>>,
+    graph: Option<ResMut<AudioGraphRes>>,
     jr: Option<Res<super::hardware_out::JrStamperRes>>,
 ) {
     let Some(out) = out else {
         return;
     };
-
-    let mut router = MidiOutRouter {
-        out: super::hardware_out::out_active(ump_out, jr),
-        drops: Some(&drops),
-    };
-
-    drain_receiver_through(&out.receiver, &mut router);
+    match graph {
+        Some(mut graph) => {
+            super::hardware_out::mirror_stamping(&mut graph, jr.as_deref());
+            graph.midi().drain_out(&out.receiver);
+        }
+        None => {
+            tutti_session::drain_receiver_through(
+                &out.receiver,
+                &mut tutti_session::MidiOutRouter {
+                    out: None,
+                    drops: None,
+                },
+            );
+        }
+    }
 }
 
 /// Wires the track MIDI-out path: inserts [`MidiOutRes`], registers
@@ -141,7 +151,6 @@ pub struct MidiOutPlugin;
 impl Plugin for MidiOutPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MidiOutRes>();
-        app.init_resource::<super::hardware_out::MidiOutDrops>();
         app.add_message::<SendMidiOut>();
         app.add_systems(
             Update,

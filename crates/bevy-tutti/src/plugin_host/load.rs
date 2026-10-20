@@ -149,6 +149,9 @@ impl Default for PluginRequest {
 #[derive(Component)]
 pub struct PendingPlugin {
     task: Task<PluginLoaded>,
+    /// Hosted in process (VST2): the plugin opens in
+    /// [`plugin_load_promote`], on the frame thread, one per frame.
+    on_main: bool,
 }
 
 /// This entity's load attempt is finished — successfully or not — and must not
@@ -268,9 +271,12 @@ pub fn plugin_load_start(
             .with_config(plugins.0.audio_config().clone())
             .at_rate(request.sample_rate);
 
+        let on_main = job.opens_in_process();
         let task = AsyncComputeTaskPool::get().spawn(async move { job.run() });
 
-        commands.entity(entity).insert(PendingPlugin { task });
+        commands
+            .entity(entity)
+            .insert(PendingPlugin { task, on_main });
     }
 }
 
@@ -286,6 +292,12 @@ pub fn plugin_load_start(
 /// in-process VST2 plugin there, which VST2 confines to the main thread, and
 /// it edits the graph whose collect may drop a plugin with an editor. A
 /// multi-threaded executor otherwise runs this system on a pool thread.
+///
+/// **One in-process open per frame.** An in-process plugin's open (its
+/// library's init, the state restore and the parameter read) runs inside
+/// this system and stalls the frame it lands in; two landing together
+/// would stall it twice over. The second waits, its task unpolled, for the
+/// next frame. Out-of-process loads, opened on the pool, are all promoted.
 pub fn plugin_load_promote(
     _main: bevy_ecs::system::NonSendMarker,
     mut commands: Commands,
@@ -296,10 +308,15 @@ pub fn plugin_load_promote(
         return;
     };
 
+    let mut opened_on_main = false;
     for (entity, mut slot) in pending.iter_mut() {
+        if slot.on_main && opened_on_main {
+            continue; // next frame: one in-process open per frame
+        }
         let Some(result) = block_on(future::poll_once(&mut slot.task)) else {
             continue; // still loading
         };
+        opened_on_main |= slot.on_main;
 
         let path = result.path().display().to_string();
         // `Session::add_plugin`: the node goes in unwired, and its health,

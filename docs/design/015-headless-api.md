@@ -635,7 +635,9 @@ observable. The session keeps that rule:
   is Offline again. `finish_export` and `export_blocking` keep announcing.
 - A token leaked past `EXPORT_STALL_WARNING` (an hour) holds Offline for
   good; `Phase::Collect` warns about it once per export (`tracing::warn!`),
-  on the `now` the host passes.
+  on the `now` the host passes. The clock restarts when an export starts,
+  so a queue handed from one export to the next within a frame is not one
+  long stall.
 - Nothing is announced on a worker, and nothing waits for `Done` to come
   back.
 
@@ -1654,7 +1656,8 @@ the CLAP test plugin. All of them fail, not skip, without
 The session API: `Session::{plugin_load, add_plugin, add_plugin_blocking,
 plugin, plugins, land_snapshot, render_mode, export, finish_export,
 finish_export_unannounced, export_blocking, export_in_flight,
-drop_export_leftovers}`, `Graph::host_plugin` (records a handle at an
+drop_export_leftovers, land_params}`, `PluginLoad::opens_in_process`,
+`PluginParamRead` → `PluginParamsRead` (`SessionEvent::PluginParamsDue`), `Graph::host_plugin` (records a handle at an
 existing node), `SessionBuilder::snapshot_interval`,
 `EXPORT_STALL_WARNING`, `Error::ExportInFlight`, and the events above.
 `tutti-plugin` gained `Plugin::opens_in_process` (the load job defers an
@@ -1681,8 +1684,10 @@ tests (`an_unannounced_finish_leaves_the_mode_to_the_phase`,
 `the_chunk_counters_report_misses_and_answers`; Bevy's
 `back_to_back_renders_stay_offline` (two queued requests over real session
 jobs, a probe between `poll_exports` and `start_exports`),
-`a_non_plugin_node_never_marks_the_graph_edited` and
-`the_poll_is_inert_without_a_graph`; and the §5.2 example,
+`a_non_plugin_node_never_marks_the_graph_edited`,
+`the_poll_is_inert_without_a_graph` and
+`two_in_process_loads_landing_together_open_in_two_frames`
+(`tests/plugin_vst2_open.rs`); and the §5.2 example,
 `examples/plugin_midi_export.rs`, run as a test (`test = true`,
 `the_example_plays`). Each carries its mutations, run. Split: Bevy's
 snapshot cadence test moved to the session (`snapshots_are_taken_on_...`);
@@ -1717,7 +1722,10 @@ Where the code differs from the text above:
   native node) drop it. The incoming plugin is told the render mode on
   the next phase and gets a fresh liveness, no snapshot (a fresh snapshot
   token, so a save in flight from the old plugin is refused) and a mirror
-  read from it.
+  read from it. That read is a job, not a call on the control thread (one
+  round trip per parameter): `Phase::Plugins` hands it out as
+  `SessionEvent::PluginParamsDue(PluginParamRead)`, and
+  `Session::land_params` lands it. Until then the mirror is not ready.
 - **The load job reads the params and restores the state**, off the
   control thread: `add_plugin` only inserts and records. A refused state
   is logged and the plugin loads at its defaults.
@@ -1741,6 +1749,10 @@ Where the code differs from the text above:
   in the hosting plugin for `ExportPlugin` never scheduled it.
 - **An in-process plugin (VST2) opens in `add_plugin`**, on the main
   thread, not in the load job: `PluginLoaded` carries the request back.
+  The open (the library's init, the state restore and the parameter read)
+  stalls the frame it lands in, so Bevy's `plugin_load_promote` opens at
+  most one per frame (`PluginLoad::opens_in_process`); the rest wait,
+  unpolled, for later frames.
   Bevy's `plugin_load_promote`, `plugin_state_snapshot` and
   `plugin_render_mode` are `NonSendMarker`-pinned like
   `plugin_health_poll`.

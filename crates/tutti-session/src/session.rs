@@ -188,6 +188,12 @@ pub enum SessionEvent {
     /// [`Session::land_snapshot`](crate::Session::land_snapshot).
     #[cfg(feature = "plugin")]
     PluginSnapshotDue(crate::PluginSnapshot),
+    /// A parameter mirror rebuilt by a crossfade to another plugin is due
+    /// its read: run the job off the control thread and land it with
+    /// [`Session::land_params`](crate::Session::land_params). Until then the
+    /// mirror is not ready.
+    #[cfg(all(feature = "plugin", feature = "modulation"))]
+    PluginParamsDue(crate::PluginParamRead),
 }
 
 impl std::fmt::Debug for SessionEvent {
@@ -232,6 +238,8 @@ impl std::fmt::Debug for SessionEvent {
                 .finish(),
             #[cfg(feature = "plugin")]
             Self::PluginSnapshotDue(job) => f.debug_tuple("PluginSnapshotDue").field(job).finish(),
+            #[cfg(all(feature = "plugin", feature = "modulation"))]
+            Self::PluginParamsDue(job) => f.debug_tuple("PluginParamsDue").field(job).finish(),
         }
     }
 }

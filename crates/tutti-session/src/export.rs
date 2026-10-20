@@ -345,6 +345,7 @@ pub(crate) struct ExportState {
     /// Whether the current export's stall was warned about.
     stall_warned: bool,
     /// How many stalls were warned about: what a test reads.
+    #[cfg(test)]
     stall_warnings: usize,
 }
 
@@ -357,6 +358,7 @@ impl Default for ExportState {
             recv,
             since: None,
             stall_warned: false,
+            #[cfg(test)]
             stall_warnings: 0,
         }
     }
@@ -370,7 +372,8 @@ impl ExportState {
 
     /// Watches for a leaked token at `now`: warns once when an export has
     /// been in flight (as the collects saw it) for [`EXPORT_STALL_WARNING`].
-    /// Its clock restarts when nothing is in flight.
+    /// Its clock restarts when nothing is in flight, and when an export
+    /// starts ([`restart_stall_watch`](Self::restart_stall_watch)).
     pub(crate) fn watch_stall(&mut self, now: Instant) {
         if !self.in_flight() {
             self.since = None;
@@ -380,7 +383,10 @@ impl ExportState {
         let since = *self.since.get_or_insert(now);
         if !self.stall_warned && now.saturating_duration_since(since) >= EXPORT_STALL_WARNING {
             self.stall_warned = true;
-            self.stall_warnings += 1;
+            #[cfg(test)]
+            {
+                self.stall_warnings += 1;
+            }
             tracing::warn!(
                 "an export has been in flight for over {} minutes: if its job or what it \
                  returned leaked (forgotten, or kept unrun), hosted plugins stay offline \
@@ -388,6 +394,16 @@ impl ExportState {
                 EXPORT_STALL_WARNING.as_secs() / 60
             );
         }
+    }
+
+    /// Restarts the stall clock for an export starting now. A host that
+    /// hands one export's slot to the next within a frame
+    /// ([`Session::finish_export_unannounced`], then [`Session::export`])
+    /// never lets a collect see nothing in flight, so without this a queue
+    /// of exports each well inside the bound would be warned about.
+    fn restart_stall_watch(&mut self) {
+        self.since = None;
+        self.stall_warned = false;
     }
 
     /// Drops, on this thread, every leftover sent back so far.
@@ -559,7 +575,7 @@ impl ExportJob {
 /// What a finished [`ExportJob`] returns: the result, the rendered graph
 /// (dropped on the main thread by [`Session::finish_export`]), and the
 /// export's token. `Send`.
-#[must_use = "finish the export with `Session::finish_export`"]
+#[must_use = "finish the export with `Session::finish_export` (or `finish_export_unannounced`)"]
 pub struct ExportRendered {
     result: tutti_export::Result<ExportOutput>,
     graph: Option<ToMain<RenderGraph>>,
@@ -631,6 +647,8 @@ impl Session {
             )) => return Err(invalid(NO_OUTPUTS).into()),
             Err(e) => return Err(e.into()),
         };
+        // A new export: its own stall clock, from its first collect.
+        self.export.restart_stall_watch();
         let drops = self.export.send.clone();
         let job = ExportJob {
             pending: ToMain::new(pending, drops.clone()),
@@ -837,10 +855,17 @@ mod tests {
     /// about once**, on the collect's `now`; its clock restarts once
     /// nothing is in flight, so the next leaked export is warned about too.
     ///
+    /// The clock also restarts when an export starts: a host handing one
+    /// export's slot to the next within a frame (Bevy) never lets a collect
+    /// see nothing in flight, and two back-to-back exports, each inside the
+    /// bound, are not one long stall.
+    ///
     /// Mutations (each run, each failed): the `!stall_warned` guard removed
     /// (three warnings for the first export); the bound removed (a warning
     /// at the first collect); the clock not restarted when nothing is in
-    /// flight (the second export warned at its first collect).
+    /// flight (the second export warned at its first collect);
+    /// `restart_stall_watch` not called by `export` (the back-to-back pair
+    /// warned at 70 minutes).
     #[test]
     fn a_leaked_export_is_warned_about_once() {
         let mut session = session();
@@ -892,5 +917,31 @@ mod tests {
             "the second leak is warned about too"
         );
         drop(job);
+
+        // Back to back, with no collect between: 50 minutes, then 59.
+        let t2 = t1 + 4 * EXPORT_STALL_WARNING;
+        assert_eq!(collect(&mut session, t2), 2, "nothing in flight");
+        let start = |session: &mut Session| {
+            session
+                .export(ExportRequest::new(
+                    ExportSource::Mix,
+                    ExportTarget::Buffers,
+                    ExportConfig::default(),
+                    ExportClock::frozen(),
+                ))
+                .expect("an export starts")
+        };
+        let first = start(&mut session);
+        assert_eq!(collect(&mut session, t2), 2);
+        assert_eq!(collect(&mut session, t2 + 50 * minute), 2);
+        session.finish_export_unannounced(first.run()).unwrap();
+        let second = start(&mut session);
+        assert_eq!(
+            collect(&mut session, t2 + 70 * minute),
+            2,
+            "the second export has been in flight for 20 minutes, not 70"
+        );
+        assert_eq!(collect(&mut session, t2 + 129 * minute), 2, "59 minutes");
+        session.finish_export_unannounced(second.run()).unwrap();
     }
 }

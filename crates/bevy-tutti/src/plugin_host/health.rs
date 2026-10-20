@@ -38,7 +38,9 @@
 //! round trip with a ten-second timeout, which the frame thread must not
 //! wait out). [`plugin_state_snapshot`] lands finished jobs
 //! (`Session::land_snapshot`) and copies the stored bytes onto the
-//! component.
+//! component. (`modulation`) A crossfade to another plugin's parameter read
+//! goes on the same pool (one round trip per parameter); the poll lands it
+//! (`Session::land_params`) on a later frame.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -137,6 +139,7 @@ impl PluginHealth {
 /// [`AudioGraphRes::insert_plugin`] is watched too).
 pub fn plugin_health_poll(
     _main: bevy_ecs::system::NonSendMarker,
+    #[cfg(feature = "modulation")] mut reads: Local<Vec<Task<tutti_session::PluginParamsRead>>>,
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     mut plugins: ParamSet<(
@@ -147,6 +150,16 @@ pub fn plugin_health_poll(
     let Some(mut graph) = graph else {
         return;
     };
+    // Parameter reads finished since the last frame, landed before the
+    // phase runs (`PluginParamsDue` below).
+    #[cfg(feature = "modulation")]
+    reads.retain_mut(|task| {
+        let Some(read) = block_on(future::poll_once(task)) else {
+            return true; // still reading
+        };
+        graph.bypass_change_detection().session().land_params(read);
+        false
+    });
     let events = graph
         .bypass_change_detection()
         .run_phase(Phase::Plugins, Instant::now());
@@ -203,6 +216,13 @@ pub fn plugin_health_poll(
                 graph.set_changed();
             }
             SessionEvent::PluginLatencyChanged { .. } => graph.set_changed(),
+            // A crossfade's parameter read: off the frame thread, whether
+            // or not an entity holds the plugin (the mirror is the
+            // session's).
+            #[cfg(feature = "modulation")]
+            SessionEvent::PluginParamsDue(job) => {
+                reads.push(AsyncComputeTaskPool::get().spawn(async move { job.run() }));
+            }
             SessionEvent::PluginSnapshotDue(job) => {
                 // No entity with a `PluginHealth` to hold it: dropped
                 // unrun, which frees the plugin for the next interval.

@@ -292,7 +292,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (`NonSendMarker`), and an in-process (VST2) plugin opens in
     `add_plugin` rather than in the load job, which ran on the task pool
     (`Plugin::opens_in_process`). CI and `just ci` run the plugin host on
-    a threaded executor.
+    a threaded executor. That open (the library's init, the state restore
+    and the parameter read) stalls the frame it lands in, so
+    `plugin_load_promote` opens at most one in-process plugin per frame.
   - **Fixed:** `plugin_render_mode` was never scheduled in a `TuttiPlugin`
     app (the hosting plugin is added before `ExportPlugin`, which it checked
     for). `ExportPlugin` schedules it, after `poll_exports` and
@@ -306,10 +308,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and the record no longer keeps the old plugin server alive. A crossfade
     or `replace_plugin` to another plugin gives it a fresh liveness, no
     snapshot (a save in flight from the old plugin is refused) and a mirror
-    read from the new plugin.
+    read from the new plugin. The read is a job
+    (`SessionEvent::PluginParamsDue`, landed with `Session::land_params`),
+    not a round trip per parameter on the control thread; until it lands
+    the mirror is not ready.
   - An export token held past `EXPORT_STALL_WARNING` (an hour) is warned
     about once (`tracing::warn!`) from `Phase::Collect`; it holds Offline
-    until it drops.
+    until it drops. Each export starts its own clock.
   - `tutti_plugin::PluginControls::{missed_chunks, chunk_in_flight_answered}`
     report what the node played: chunks played unanswered while the bridge
     lived, and whether the chunk in flight is answered yet.
@@ -328,13 +333,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | — | `AudioGraphRes::{with_plugin, render_mode}`, `CapturedControls::for_hosted` |
   | `bevy-tutti/plugin` enabled `tutti-plugin/bevy` | it does not: no plugin entity holds a `PluginParamValues` |
   | `plugin_load_promote`, `plugin_state_snapshot`, `plugin_render_mode` on any thread | pinned to the main thread |
-  | a VST2 plugin opened in the load task | opened in `add_plugin`, on the main thread; `PluginLoaded::error()` is `None` until then |
+  | a VST2 plugin opened in the load task | opened in `add_plugin`, on the main thread, stalling that frame for the library's init, the state restore and the parameter read; Bevy opens at most one per frame; `PluginLoaded::error()` is `None` until then |
   | `plugin_render_mode` scheduled by the hosting plugin, if `ExportPlugin` was already added | scheduled by `ExportPlugin`, after both export systems |
   | back-to-back Bevy exports: Offline → Realtime → Offline | Offline throughout (`finish_export_unannounced`) |
   | `Graph::replace`/`crossfade` from a plugin to a native node kept the plugin's record | drop it |
-  | a plugin→plugin crossfade kept the old snapshot, snapshot token and mirror | fresh token, no snapshot, mirror read from the new plugin |
+  | a plugin→plugin crossfade kept the old snapshot, snapshot token and mirror | fresh token, no snapshot, mirror read from the new plugin by a job (`PluginParamsDue`, `land_params`) |
   | a leaked export token: Offline, silently | Offline, warned once past `EXPORT_STALL_WARNING` |
-  | — | `Session::finish_export_unannounced`, `tutti_session::EXPORT_STALL_WARNING`, `tutti_plugin::Plugin::opens_in_process`, `PluginControls::{missed_chunks, chunk_in_flight_answered}` |
+  | — | `Session::{finish_export_unannounced, land_params}`, `PluginLoad::opens_in_process`, `PluginParamRead`, `PluginParamsRead`, `SessionEvent::PluginParamsDue`, `tutti_session::EXPORT_STALL_WARNING`, `tutti_plugin::Plugin::opens_in_process`, `PluginControls::{missed_chunks, chunk_in_flight_answered}` |
 
 ### Added
 

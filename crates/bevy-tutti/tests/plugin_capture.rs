@@ -327,6 +327,28 @@ fn a_crossfaded_plugin_is_bound_again() {
         "the incoming plugin must get the meter installed"
     );
     let node = *app.world().get::<AudioNode>(entity).expect("still bound");
+    // The incoming plugin's parameter mirror is read by a job on the task
+    // pool (`SessionEvent::PluginParamsDue`) and landed by a later frame's
+    // `plugin_health_poll`, not on the frame thread. Mutation (run): that
+    // system's `PluginParamsDue` arm dropping the job → the mirror is
+    // never ready → fails.
+    #[cfg(feature = "modulation")]
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app
+            .world()
+            .resource::<AudioGraphRes>()
+            .with_plugin(node, |p| p.param_values().is_some_and(|m| m.is_ready()))
+            != Some(true)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the incoming plugin's parameter read never landed"
+            );
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     // The gain's lane feeds whichever plugin the entity is bound to: the
     // incoming one now (a crossfade keeps the key and its edges). Mutation
     // (run): `tutti_session::Graph::event_sources` listing only edges from nodes

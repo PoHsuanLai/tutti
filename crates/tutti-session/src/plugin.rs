@@ -32,7 +32,12 @@
 //!   [`SessionEvent::PluginLatencyChanged`](crate::SessionEvent::PluginLatencyChanged).
 //! - **GUI edits** (`modulation`). The values the plugin reported go into
 //!   its mirror, and into the knob of the lane on that parameter when it
-//!   has one (doc 014 §8.2).
+//!   has one (doc 014 §8.2). A mirror rebuilt by a crossfade to another
+//!   plugin is read as a job the host places:
+//!   [`SessionEvent::PluginParamsDue`](crate::SessionEvent::PluginParamsDue),
+//!   whose [`run`](PluginParamRead::run) makes one round trip per
+//!   parameter, landed with [`Session::land_params`]. Until then the
+//!   mirror is not ready, and a lane on the plugin waits for it.
 //! - **Snapshots.** A healthy plugin's state is captured every
 //!   [`SNAPSHOT_INTERVAL`] of `now` (`SessionBuilder::snapshot_interval`),
 //!   as a job the host places: [`SessionEvent::PluginSnapshotDue`](crate::SessionEvent::PluginSnapshotDue),
@@ -107,6 +112,15 @@ impl PluginLoad {
         &self.path
     }
 
+    /// Whether the plugin is hosted in process (`Plugin::opens_in_process`:
+    /// a VST2 plugin, with `vst2`): [`run`](Self::run) leaves it unopened,
+    /// and [`Session::add_plugin`] opens it on the main thread, stalling
+    /// that call for the library's init, the state restore and the
+    /// parameter read.
+    pub fn opens_in_process(&self) -> bool {
+        Plugin::opens_in_process(&self.path)
+    }
+
     /// Opens the plugin, restores the request's state, and (`modulation`)
     /// reads its parameter values, after the state: those are what a
     /// modulation lane's knob starts at. Any thread; it blocks.
@@ -118,7 +132,7 @@ impl PluginLoad {
     /// instance's init, with no subprocess to wait for).
     pub fn run(self) -> PluginLoaded {
         let path = self.path.clone();
-        let opened = if Plugin::opens_in_process(&self.path) {
+        let opened = if self.opens_in_process() {
             Opened::OnMain(self)
         } else {
             Opened::Done(Box::new(self.open()))
@@ -233,6 +247,14 @@ pub struct HostedPlugin {
     snapshot_at: Option<Instant>,
     #[cfg(feature = "modulation")]
     mirror: Option<tutti_plugin::PluginParamValues>,
+    /// The read that fills a mirror a crossfade rebuilt, until
+    /// `Phase::Plugins` hands it to the host as a job.
+    #[cfg(feature = "modulation")]
+    param_read: Option<tutti_plugin::ParamRead>,
+    /// Held by that job: a later crossfade mints a new one, and the
+    /// earlier read lands nowhere.
+    #[cfg(feature = "modulation")]
+    mirror_token: Arc<()>,
 }
 
 impl HostedPlugin {
@@ -249,6 +271,10 @@ impl HostedPlugin {
             snapshot_at: None,
             #[cfg(feature = "modulation")]
             mirror: None,
+            #[cfg(feature = "modulation")]
+            param_read: None,
+            #[cfg(feature = "modulation")]
+            mirror_token: Arc::new(()),
         }
     }
 
@@ -266,10 +292,13 @@ impl HostedPlugin {
     /// ([`Session::land_snapshot`]), and the snapshot clock restarts.
     ///
     /// (`modulation`) A record that kept a parameter mirror gets one for
-    /// the incoming plugin, from its handle (where its reports now arrive)
-    /// and its current values, read here: one round trip per parameter on
-    /// the calling thread. The outgoing mirror's report callback was on the
-    /// outgoing handle, which reports nothing here once it is gone.
+    /// the incoming plugin, from its handle (where its reports now arrive),
+    /// not yet ready: its values are read by a job (one round trip per
+    /// parameter, so not on the calling thread), which the next
+    /// `Phase::Plugins` hands to the host
+    /// ([`SessionEvent::PluginParamsDue`](crate::SessionEvent::PluginParamsDue)).
+    /// The outgoing mirror's report callback was on the outgoing handle,
+    /// which reports nothing here once it is gone.
     pub(crate) fn replace(&mut self, handle: PluginHandle, controls: PluginControls) {
         self.adopt(handle);
         self.meter = Some(controls.meter());
@@ -281,9 +310,10 @@ impl HostedPlugin {
     fn adopt(&mut self, handle: PluginHandle) {
         #[cfg(feature = "modulation")]
         if self.mirror.is_some() {
-            let (mut mirror, read) = tutti_plugin::PluginParamValues::start(&handle);
-            mirror.land(read.run());
+            let (mirror, read) = tutti_plugin::PluginParamValues::start(&handle);
             self.mirror = Some(mirror);
+            self.param_read = Some(read);
+            self.mirror_token = Arc::new(());
         }
         self.handle = handle;
         self.liveness = Liveness::new();
@@ -392,6 +422,64 @@ impl PluginSnapshotTaken {
     }
 }
 
+/// The read of a parameter mirror a crossfade rebuilt, as a job
+/// (`modulation`): `Send`, and [`run`](Self::run) makes one round trip per
+/// parameter, so the host runs it off its control thread and lands the
+/// result with [`Session::land_params`]. Dropped unrun, the mirror stays
+/// not ready (a lane on the plugin keeps waiting) until the next crossfade.
+#[cfg(feature = "modulation")]
+#[must_use = "a parameter read does nothing until it is run and landed"]
+pub struct PluginParamRead {
+    node: AudioNode,
+    /// Boxed: a `SessionEvent` carries the job, and a handle is large.
+    read: Box<tutti_plugin::ParamRead>,
+    token: Arc<()>,
+}
+
+#[cfg(feature = "modulation")]
+impl PluginParamRead {
+    /// The plugin's node.
+    pub fn node(&self) -> AudioNode {
+        self.node
+    }
+
+    /// Reads every parameter the plugin lists. Any thread; it blocks.
+    pub fn run(self) -> PluginParamsRead {
+        PluginParamsRead {
+            node: self.node,
+            values: self.read.run(),
+            token: self.token,
+        }
+    }
+}
+
+#[cfg(feature = "modulation")]
+impl std::fmt::Debug for PluginParamRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginParamRead")
+            .field("node", &self.node)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A finished [`PluginParamRead`], for [`Session::land_params`].
+#[cfg(feature = "modulation")]
+#[must_use = "land it with `Session::land_params`"]
+pub struct PluginParamsRead {
+    node: AudioNode,
+    values: std::collections::HashMap<u32, f32>,
+    /// The record's mirror token when the job was asked for.
+    token: Arc<()>,
+}
+
+#[cfg(feature = "modulation")]
+impl PluginParamsRead {
+    /// The plugin's node.
+    pub fn node(&self) -> AudioNode {
+        self.node
+    }
+}
+
 /// `Phase::RenderMode`'s record: the mode last announced.
 pub(crate) struct RenderModeState {
     pub(crate) announced: tutti_plugin::RenderMode,
@@ -439,7 +527,9 @@ impl Session {
     /// ([`HostedPlugin`]). An out-of-process plugin is bound as it goes in
     /// (`PluginClient::bind`); an in-process VST2 plugin is opened here (its
     /// job left it unopened: VST2 confines the load to the main thread) and
-    /// goes in as its own node.
+    /// goes in as its own node. That open blocks this call for the
+    /// library's init, the state restore and (`modulation`) the parameter
+    /// read: a frame-driven host opens at most one per frame.
     ///
     /// A main-thread call (design 015 §4.2).
     ///
@@ -523,6 +613,33 @@ impl Session {
         }
     }
 
+    /// Lands a finished parameter read: the plugin's mirror holds its
+    /// values and is ready. Returns whether it landed. A read of a plugin no
+    /// longer at its node (removed, or crossfaded again since) lands
+    /// nowhere.
+    #[cfg(feature = "modulation")]
+    pub fn land_params(&mut self, read: PluginParamsRead) -> bool {
+        let PluginParamsRead {
+            node,
+            values,
+            token,
+        } = read;
+        let Some(hosted) = self.graph.plugins.get_mut(&node) else {
+            return false;
+        };
+        if !Arc::ptr_eq(&token, &hosted.mirror_token) {
+            tracing::debug!(
+                "plugin {node:?}: a parameter read of its previous plugin was discarded"
+            );
+            return false;
+        }
+        let Some(mirror) = hosted.mirror.as_mut() else {
+            return false;
+        };
+        mirror.land(values);
+        true
+    }
+
     /// The render mode last announced to the hosted plugins.
     pub fn render_mode(&self) -> tutti_plugin::RenderMode {
         self.render_mode.announced
@@ -589,6 +706,14 @@ impl Session {
                 }
             });
 
+            #[cfg(feature = "modulation")]
+            if let Some(read) = hosted.param_read.take() {
+                out.push(SessionEvent::PluginParamsDue(PluginParamRead {
+                    node,
+                    read: Box::new(read),
+                    token: Arc::clone(&hosted.mirror_token),
+                }));
+            }
             #[cfg(feature = "modulation")]
             if let Some(mirror) = hosted.mirror.as_mut() {
                 let state = &self.mods.state;
@@ -975,13 +1100,22 @@ mod tests {
     }
 
     /// **A crossfade to another plugin rebuilds the parameter mirror from
-    /// the incoming plugin**: its values are the incoming plugin's, read
-    /// through the incoming handle (which `PluginParamValues::start` also
-    /// gives the mirror's report callback; a fake's reports cannot be fired
-    /// from outside `tutti-plugin`, so the callback is not asserted here).
+    /// the incoming plugin, read off the control thread.** Right after the
+    /// crossfade the mirror is not ready (a lane waits rather than start
+    /// from the outgoing plugin's value); the next `Phase::Plugins` hands
+    /// the read to the host as a job, once; the job runs on another thread
+    /// and lands the incoming plugin's values. A read asked for before a
+    /// second crossfade lands nowhere. The read goes through the incoming
+    /// handle, which `PluginParamValues::start` also gives the mirror's
+    /// report callback; a fake's reports cannot be fired from outside
+    /// `tutti-plugin`, so the callback is not asserted here.
     ///
-    /// Mutation (run, failed): `adopt` keeping the old mirror → the value
-    /// reads the outgoing plugin's 0.25.
+    /// Mutations (each run, each failed): `adopt` keeping the old mirror
+    /// (the value reads the outgoing plugin's 0.25); `adopt` running the
+    /// read inline (`mirror.land(read.run())`, the old code: the mirror is
+    /// ready before any job ran); the phase not handing the read out (no
+    /// job); `land_params` without the `ptr_eq` check (the stale read
+    /// lands); `adopt` keeping the old token (the same).
     #[cfg(feature = "modulation")]
     #[test]
     fn a_crossfade_to_another_plugin_rebuilds_the_mirror() {
@@ -998,8 +1132,50 @@ mod tests {
         hosted.adopt(incoming);
         assert_eq!(
             hosted.param_value(3),
+            None,
+            "not ready until the read lands: nothing was read on this thread"
+        );
+
+        let reads = |events: Vec<SessionEvent>| -> Vec<PluginParamRead> {
+            events
+                .into_iter()
+                .filter_map(|e| match e {
+                    SessionEvent::PluginParamsDue(job) => Some(job),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut jobs = reads(rig.events_at(0));
+        assert_eq!(jobs.len(), 1, "the read is handed out as a job");
+        assert!(reads(rig.events_at(10)).is_empty(), "once");
+        let job = jobs.pop().unwrap();
+        assert_eq!(job.node(), rig.node);
+        let done = std::thread::spawn(move || job.run()).join().unwrap();
+        assert!(rig.session.land_params(done));
+        assert_eq!(
+            rig.session.plugin(rig.node).unwrap().param_value(3),
             Some(Some(0.75)),
             "the mirror holds the incoming plugin's values"
+        );
+
+        // A read asked for, then a second crossfade: the first lands nowhere.
+        let (second, _) = fake_handle(None, vec![(param, 0.5)]);
+        let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
+        hosted.adopt(second);
+        let stale = reads(rig.events_at(20)).pop().expect("its read");
+        let (third, _) = fake_handle(None, vec![(param, 0.125)]);
+        let hosted = rig.session.graph.plugins.get_mut(&rig.node).unwrap();
+        hosted.adopt(third);
+        assert!(
+            !rig.session.land_params(stale.run()),
+            "a read of the previous plugin must not land"
+        );
+        assert_eq!(rig.session.plugin(rig.node).unwrap().param_value(3), None);
+        let own = reads(rig.events_at(30)).pop().expect("its own read");
+        assert!(rig.session.land_params(own.run()));
+        assert_eq!(
+            rig.session.plugin(rig.node).unwrap().param_value(3),
+            Some(Some(0.125))
         );
     }
 }

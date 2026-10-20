@@ -89,6 +89,8 @@ pub use plugin::{
     HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginSnapshot,
     PluginSnapshotTaken, SNAPSHOT_INTERVAL,
 };
+#[cfg(all(feature = "plugin", feature = "modulation"))]
+pub use plugin::{PluginParamRead, PluginParamsRead};
 #[cfg(feature = "midi")]
 pub use session::MidiNodes;
 #[cfg(feature = "modulation")]

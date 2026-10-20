@@ -125,9 +125,14 @@ impl PluginControls {
     }
 
     /// Whether the chunk the node submitted last, and has not played yet,
-    /// has been answered: `true` with none in flight. A host (or a test)
-    /// rendering the node by hand waits on it before the next call to play
-    /// the answer rather than silence.
+    /// has been answered: `true` with none in flight.
+    ///
+    /// A manual-render helper: for a host (or a test) driving the graph by
+    /// hand, block by block, with no device clock to keep. It waits on this
+    /// before the next block, so that block plays the answer rather than
+    /// silence. A live host does not wait on it: the device's callback
+    /// period is the server's deadline, and a late answer is a dropout,
+    /// counted by [`missed_chunks`](Self::missed_chunks).
     pub fn chunk_in_flight_answered(&self) -> bool {
         self.chunks.in_flight_answered()
     }

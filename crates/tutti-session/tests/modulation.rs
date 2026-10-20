@@ -188,10 +188,6 @@ impl ModKeys for HostKeys {
         (target == 1).then(|| self.node.get()).flatten()
     }
 
-    fn plugin_value(&self, _: u64, _: u32) -> Option<Option<f32>> {
-        Some(None)
-    }
-
     fn feed(&self, _: SourceKey) -> Option<Feed> {
         None
     }

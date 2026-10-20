@@ -35,6 +35,8 @@ pub struct SessionBuilder {
     mpe_mode: tutti_midi_types::MpeMode,
     #[cfg(feature = "modulation")]
     unresolved_warning: std::time::Duration,
+    #[cfg(feature = "plugin")]
+    snapshot_interval: std::time::Duration,
 }
 
 impl Default for SessionBuilder {
@@ -49,6 +51,8 @@ impl Default for SessionBuilder {
             mpe_mode: tutti_midi_types::MpeMode::Disabled,
             #[cfg(feature = "modulation")]
             unresolved_warning: crate::UNRESOLVED_WARNING,
+            #[cfg(feature = "plugin")]
+            snapshot_interval: crate::SNAPSHOT_INTERVAL,
         }
     }
 }
@@ -111,6 +115,16 @@ impl SessionBuilder {
     #[cfg(feature = "modulation")]
     pub fn unresolved_warning(mut self, after: std::time::Duration) -> Self {
         self.unresolved_warning = after;
+        self
+    }
+
+    /// How often a healthy hosted plugin's state is captured, measured on
+    /// [`PhaseCx::now`](crate::PhaseCx::now)
+    /// ([`SessionEvent::PluginSnapshotDue`](crate::SessionEvent::PluginSnapshotDue)).
+    /// Default [`SNAPSHOT_INTERVAL`](crate::SNAPSHOT_INTERVAL), 8 s.
+    #[cfg(feature = "plugin")]
+    pub fn snapshot_interval(mut self, every: std::time::Duration) -> Self {
+        self.snapshot_interval = every;
         self
     }
 
@@ -231,6 +245,12 @@ impl SessionBuilder {
             disk_streamer,
             #[cfg(feature = "device")]
             faults: None,
+            #[cfg(feature = "plugin")]
+            snapshot_interval: self.snapshot_interval,
+            #[cfg(feature = "plugin")]
+            render_mode: Default::default(),
+            #[cfg(feature = "export")]
+            export: Default::default(),
         })
     }
 

@@ -105,6 +105,12 @@ pub enum Error {
     #[error("Export: {0}")]
     Export(#[from] tutti_export::Error),
 
+    /// Another export is in flight: its job, or what the job returned, is
+    /// still alive (`Session::export`). Finish or drop it first.
+    #[cfg(feature = "export")]
+    #[error("another export is in flight")]
+    ExportInFlight,
+
     /// Standard I/O error encountered while reading or writing audio data.
     #[error(transparent)]
     Io(#[from] std::io::Error),

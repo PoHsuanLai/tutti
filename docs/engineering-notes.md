@@ -314,6 +314,32 @@ barrier, so removing either fence passes every test there, as it does for
 `RtPublish` outside loom and miri. If this handshake ever grows past one
 flag and one drain, move it to `tutti-types` and model it.
 
+### `ScopedNoDenormals`, and why not `no_denormals`
+
+Setting FTZ/DAZ (x86 MXCSR) or FZ (aarch64 FPCR) and running Rust under it
+is undefined behavior by the letter: LLVM assumes "subnormals are assumed to
+be preserved" (LangRef, *Floating-Point Environment*), and `_mm_setcsr`'s
+docs call changing the DAZ, rounding or mask bits "immediate Undefined
+Behavior". Every audio host does it anyway, and the cost is confined to
+float values; the type's `# Soundness` docs give the quotes and the audit
+of what runs under it.
+
+We kept our own guard rather than adopt `no_denormals` 0.3.0:
+
+- Its only API is `pub unsafe fn no_denormals(f)`. Three of the five
+  callers are in `tutti-graph`, which is `#![forbid(unsafe_code)]`, so
+  adopting it needs a safe wrapper in `tutti-types`: the module it was
+  meant to delete.
+- On aarch64 with `fp16` it also sets FZ16, which ours does not.
+- On any architecture but x86, x86_64 and aarch64 it is a
+  `compile_error!`; ours compiles to an empty struct.
+
+There is no crate of our own either. A crate with a safe constructor would
+publish a guarantee Rust does not give; the honest API for that crate is
+an `unsafe fn`, which is `no_denormals`. Ours is safe because the engine
+owns every caller and the audit above, and it stays a module in
+`tutti-types`.
+
 ## Two buffer vocabularies — edges vs graph nodes
 
 The engine has **two** buffer interfaces, and which to use is decided by *what

@@ -4020,6 +4020,9 @@ all three into fresh `Vec`s to keep only the restart flags.
   - on any architecture but x86, x86_64 and aarch64 it is a
     `compile_error!`, where `ScopedNoDenormals` compiles to nothing.
 
+  The guard's soundness argument (the FP-environment rule it departs from,
+  and the audit of what runs under it) is its `# Soundness` docs.
+
 ## Per-node rewrite plan
 
 The question: if the graph had been native from the start, would the nodes

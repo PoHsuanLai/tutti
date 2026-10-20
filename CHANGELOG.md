@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `ScopedNoDenormals` is `!Send` and `!Sync`, and documents its soundness
+
+- `ScopedNoDenormals` is `!Send` and `!Sync`: dropped on another thread, a guard would write its own thread's saved MXCSR/FPCR there. Migration: build the guard on the thread whose block it covers, as every in-tree caller already does.
+- `ScopedNoDenormals` documents its `# Soundness` (the FP-environment rule it departs from, the audit of what runs under it, why the parallel render stays bit-identical).
+
 ### Changed — RT primitive cleanups: `RtScratch` dropped, `Capped` folded into `RtVec`, `AudioThread` renamed `RtScope`
 
 | Was | Now |

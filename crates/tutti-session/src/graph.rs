@@ -116,7 +116,8 @@ impl From<AudioNode> for EventSource {
 }
 
 /// Why [`Graph::replace`] did not take a node — or, as
-/// `ReplaceRefused<Box<PluginClient>>`, [`Graph::replace_plugin`] a plugin.
+/// `ReplaceRefused<Box<PluginClient>>`, `Graph::replace_plugin` (feature
+/// `plugin`) a plugin.
 pub enum ReplaceRefused<U> {
     /// Not now: the graph is re-preparing (a sample-rate or block-size change
     /// between its two commits). The node is handed back, untouched; retry

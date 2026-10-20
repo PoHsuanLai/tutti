@@ -210,8 +210,9 @@ where
         let Some((node_key, mut graph)) = crossfade_target(world, entity) else {
             return;
         };
+        // `graph` borrows `world`; its last use ends the borrow (a `Mut` has
+        // no `Drop`), so `land` can take `world` back.
         let landed = graph.crossfade(node_key, node, FADE, CURVE);
-        drop(graph);
         land(
             world,
             entity,
@@ -245,7 +246,6 @@ pub fn crossfade_plugin_node(
             return;
         };
         let landed = graph.crossfade_plugin(node_key, Box::new(client), FADE, CURVE);
-        drop(graph);
         land(world, entity, node_key, captured, landed, |_, ()| {});
     });
 }

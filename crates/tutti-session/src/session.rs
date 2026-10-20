@@ -28,7 +28,7 @@ pub enum Phase {
     RenderMode,
     /// Modulation's collect and apply. Empty until the session owns the
     /// modulation loop (design 015 PR 5): a host applies its declarations
-    /// with [`Graph::modulate`] until then.
+    /// with `Graph::modulate` (feature `modulation`) until then.
     Modulation,
     /// The commit, iff the graph was edited since the last one, and the
     /// compensation of the plan it sent (or of a re-prepare's resumed plan)
@@ -38,7 +38,7 @@ pub enum Phase {
     AfterCommit,
     /// Hardware MIDI out and the clock. Empty until design 015 PR 5.
     MidiOut,
-    /// The device's faults, as [`SessionEvent::DeviceFault`].
+    /// The device's faults, as `SessionEvent::DeviceFault` (feature `device`).
     Poll,
 }
 
@@ -175,7 +175,7 @@ pub struct MidiNodes {
 ///
 /// Built with [`SessionBuilder`](crate::SessionBuilder): offline (the host
 /// pulls blocks with [`render`](Self::render)), on a device (with a
-/// [`Device`](crate::Device), `device`), or detached (the executor stays on
+/// `Device`, feature `device`), or detached (the executor stays on
 /// this side: [`render_frame`](Self::render_frame)).
 ///
 /// `Send`, not `Sync`: one control thread owns it. With `plugin` on,

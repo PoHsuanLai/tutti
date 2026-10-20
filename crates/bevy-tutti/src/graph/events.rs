@@ -1,4 +1,4 @@
-//! Declaring what feeds a node's event input, and [`param_graph_node!`],
+//! Declaring what feeds a node's event input, and [`param_graph_node!`](crate::param_graph_node),
 //! which makes a host's `ParamNode` a `SessionNode` every spawn path takes.
 //!
 //! A node inserted with [`spawn_audio_node`](crate::graph::SpawnAudioNode)

@@ -5,7 +5,7 @@ use thiserror::Error;
 /// Every subsystem's error, so `?` propagates across crate boundaries.
 ///
 /// Each variant wraps a subsystem error via `#[from]`. Device failures arrive
-/// as one [`Device`](Self::Device) variant rather than a per-CPAL-call
+/// as one `Device` variant (feature `device`) rather than a per-CPAL-call
 /// spread: `tutti_cpal::Error` owns that distinction.
 #[derive(Error, Debug)]
 #[non_exhaustive]

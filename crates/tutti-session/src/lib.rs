@@ -5,7 +5,7 @@
 //! through it, their event feeds), its transport, and the engine side it
 //! renders on, built by a [`SessionBuilder`]: offline (the host pulls blocks
 //! with [`Session::render`]), on a device (`device`: the `!Send`
-//! [`Device`] stays on the thread that opened it), or detached (the
+//! `Device` stays on the thread that opened it), or detached (the
 //! executor stays on this side). One call, [`Session::update`], runs the
 //! steps of a frame in [`PHASES`] order: a Bevy app runs the same phases one
 //! system at a time.

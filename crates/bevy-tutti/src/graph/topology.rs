@@ -39,7 +39,7 @@
 //! Widths, latency and tail are read off the editor's shapes — probed from
 //! the **live unit** when it was inserted — because that is the only place
 //! they exist. A node's arity is not authored
-//! anywhere in the ECS: `spawn_audio_node` takes an `N: GraphNode`, and the
+//! anywhere in the ECS: `spawn_audio_node` takes an `N: SessionNode`, and the
 //! sites that insert a node directly (soundfont promotion, plugin load, the
 //! modulation sources) take one already built. The node is the sole author of
 //! its own shape.
@@ -130,7 +130,7 @@ pub fn entity_of(key: NodeKey) -> Entity {
 ///
 /// Widths, latency and tail come from the **live unit**, as the editor probed
 /// it at insert — the only place they exist today. A node's arity is not authored
-/// anywhere in the ECS: `spawn_audio_node` takes an `N: GraphNode` and the four
+/// anywhere in the ECS: `spawn_audio_node` takes an `N: SessionNode` and the four
 /// direct-`add` sites take an already-built unit, so the unit is the sole
 /// author of its own shape.
 ///
@@ -230,7 +230,7 @@ pub fn build(
 /// [`rebuild`](super::wire::rebuild) has already decided the graph *changed* —
 /// one value comparison, not a per-port read. This second, per-port comparison
 /// answers a different question: **which** ports changed, so that a rebuild
-/// that moves nothing leaves the graph clean (no `GraphDirty`, no commit, no
+/// that moves nothing leaves the graph clean (no edit, no commit, no
 /// compile).
 ///
 /// It is also what repairs an imperative engine-side write. Such a write leaves

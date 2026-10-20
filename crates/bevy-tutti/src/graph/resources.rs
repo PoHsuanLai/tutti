@@ -2,7 +2,7 @@
 //! DSP graph. Each other subsystem keeps its `*Res` beside its own module.
 //!
 //! Both are inserted by [`build_into`](crate::engine::build_into) once the
-//! device is open and the graph is built.
+//! device is open and the session is built.
 
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
@@ -10,11 +10,13 @@ use bevy_reflect::prelude::*;
 #[cfg(feature = "export")]
 use tutti_core::transport::OfflineTransport;
 use tutti_core::{AudioNode, Compensation, CrossfadeCurve, Samples, Seconds, Tail};
+use tutti_session::{
+    AudioSide, Committed, Crossfade, CrossfadeRefused, EventSource, GraphSource, Phase, PhaseCx,
+    ReplaceRefused, Session, SessionEvent, SessionNode,
+};
 use tutti_types::{ChannelLayout, SampleRate, UnitParam};
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
-
-use super::runtime::{AudioSide, Committed, GraphRuntime, ReplaceRefused};
 
 /// Audio device configuration captured at engine build time.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Reflect)]
@@ -51,34 +53,16 @@ fn unconfigured_channels() -> ChannelLayout {
     ChannelLayout::EMPTY
 }
 
-/// Where one input port — a node's, or a global output channel — reads from.
+/// The editable DSP graph, as a Bevy resource: a `tutti_session::Session`.
 ///
-/// The graph's own answer to "what feeds this port", in the same vocabulary as
-/// [`PortSource`](crate::graph::PortSource) but naming the node by its
-/// [`AudioNode`] rather than by entity: a declaration names entities, the graph
-/// holds nodes. Read back with [`AudioGraphRes::source`] and
-/// [`AudioGraphRes::output_source`]; written with
-/// [`set_source`](AudioGraphRes::set_source) and
-/// [`set_output_source`](AudioGraphRes::set_output_source).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum GraphSource {
-    /// Output `port` of `node`.
-    Node(AudioNode, usize),
-    /// Global graph input `port` — a hardware or host input channel.
-    Input(usize),
-    /// Silence: what a port nothing has written holds.
-    #[default]
-    Silence,
-}
-
-/// The editable DSP graph, as a Bevy resource.
+/// Edit through its methods. Every edit marks the session edited, and the
+/// per-frame [`commit_graph`](crate::graph::commit_graph) sends every edit of
+/// the frame to the audio thread at once (one commit per frame at most, and
+/// none on a frame with no edit). Nothing here commits inline.
 ///
-/// Edit through its methods, then set [`GraphDirty`](crate::graph::GraphDirty):
-/// the per-frame [`commit_graph`](crate::graph::commit_graph) publishes every
-/// edit of the frame to the audio thread at once. Nothing here commits inline.
-///
-/// Behind it is a `tutti-graph` [`Editor`](tutti_graph::Editor) on this side
-/// and its executor on the audio thread. Every node goes in through its own
+/// Behind it is the session's graph: a `tutti-graph`
+/// [`Editor`](tutti_graph::Editor) on this side and its executor on the audio
+/// thread. Every node goes in through its own
 /// [`IntoNode`](tutti_graph::IntoNode), and latency compensation (PDC) is the
 /// graph compiler's: nothing is spliced into the graph to align it.
 ///
@@ -99,7 +83,7 @@ pub enum GraphSource {
 /// replace a node under a fade) and takes an [`AudioNode`] and a
 /// [`GraphSource`], never a runtime type. There is no `Deref`: graph mutation
 /// is paired with the per-frame commit, and keeping it behind named methods
-/// keeps the dirty/commit boundary visible at the call site.
+/// keeps the edit/commit boundary visible at the call site.
 ///
 /// # Examples
 ///
@@ -117,47 +101,56 @@ pub enum GraphSource {
 /// assert_eq!(out[0], 0.5);
 /// ```
 ///
-/// The raw graph is not reachable from outside this crate:
+/// The session is not reachable from outside this crate:
 ///
 /// ```compile_fail,E0616
 /// use bevy_tutti::graph::AudioGraphRes;
 ///
 /// let graph = AudioGraphRes::headless(0, 2);
-/// let _editor = graph.0;
+/// let _session = graph.0;
 /// ```
-// Mutation: `pub struct AudioGraphRes(pub Mutex<GraphRuntime>)` (and a `pub`
-// `GraphRuntime`) makes the doctest above compile, which fails it. Everything
-// else in it compiles as written, so the privacy of the field is the only
-// thing it can be failing on.
+// Mutation: `pub struct AudioGraphRes(pub Mutex<Session>)` makes the doctest
+// above compile, which fails it. Everything else in it compiles as written,
+// so the privacy of the field is the only thing it can be failing on.
 #[derive(Resource)]
-// Behind a `Mutex` only because a `Resource` must be `Sync` and the editor is
-// not (it holds boxed nodes and ring ends). Every `&mut self` method reaches
-// it with `get_mut`, lock-free; a `&self` query takes the lock, uncontended —
-// the resource's own borrow already serializes access.
-pub struct AudioGraphRes(Mutex<GraphRuntime>);
-
-/// The per-channel pre-roll and the total a compensation pass arrived at —
-/// what [`commit_graph`](crate::graph::commit_graph) publishes.
-pub(crate) struct PdcFigures {
-    pub(crate) channels: Vec<Samples>,
-    pub(crate) total: Samples,
-}
+// Behind a `Mutex` only because a `Resource` must be `Sync` and the session
+// is `Send` but not `Sync` (it holds boxed nodes and ring ends). Every
+// `&mut self` method reaches it with `get_mut`, lock-free; a `&self` query
+// takes the lock, uncontended — the resource's own borrow already serializes
+// access.
+pub struct AudioGraphRes(Mutex<Session>);
 
 impl AudioGraphRes {
     /// `&self` access. Poison is recovered: a panic mid-edit leaves a spec
     /// the next commit validates, never a torn audio thread.
-    fn read(&self) -> MutexGuard<'_, GraphRuntime> {
+    fn read(&self) -> MutexGuard<'_, Session> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// `&mut self` access: no lock needed.
-    fn write(&mut self) -> &mut GraphRuntime {
+    fn write(&mut self) -> &mut Session {
         self.0.get_mut().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The session, for this crate's engine and restart paths.
+    pub(crate) fn session(&mut self) -> &mut Session {
+        self.write()
+    }
+
+    /// The session, read, for this crate.
+    pub(crate) fn session_ref(&self) -> MutexGuard<'_, Session> {
+        self.read()
+    }
+
+    /// The resource over a built `session` ([`build_into`](crate::engine::build_into)).
+    pub(crate) fn from_session(session: Session) -> Self {
+        Self(Mutex::new(session))
     }
 
     /// A graph with no device behind it: `inputs` global inputs and `outputs`
     /// global outputs, prepared at 44.1 kHz until
-    /// [`set_sample_rate`](Self::set_sample_rate).
+    /// [`set_sample_rate`](Self::set_sample_rate)
+    /// (`SessionBuilder::build_detached`).
     ///
     /// For tests and headless tools that drive the reconcile pipeline without
     /// opening a device. The executor stays on this side until
@@ -169,33 +162,19 @@ impl AudioGraphRes {
     /// this graph as on an engine's: there is no control-side copy of a node
     /// for it to land on at once.
     pub fn headless(inputs: usize, outputs: usize) -> Self {
-        Self::with_rate(inputs, outputs, SampleRate::DEFAULT)
-    }
-
-    /// A graph with every node run at `rate`: what the engine builder makes,
-    /// at the device's rate.
-    pub(crate) fn with_rate(inputs: usize, outputs: usize, rate: SampleRate) -> Self {
-        Self::for_device(inputs, outputs, rate, None)
-    }
-
-    /// A graph with every node run at `rate`, prepared for a device calling
-    /// back with `quantum` frames (when known): what the engine builder makes,
-    /// from the opened stream's spec.
-    pub(crate) fn for_device(
-        inputs: usize,
-        outputs: usize,
-        rate: SampleRate,
-        quantum: Option<Samples>,
-    ) -> Self {
-        Self(Mutex::new(GraphRuntime::new(
-            inputs, outputs, rate, quantum,
-        )))
+        Self::from_session(
+            Session::builder()
+                .inputs(inputs)
+                .outputs_floor(outputs)
+                .build_detached(SampleRate::DEFAULT)
+                .expect("a detached session builds nothing that can fail"),
+        )
     }
 
     /// What every node is prepared for: the rate, the largest block, and the
     /// device's callback size when the engine knows it.
     pub fn prepared(&self) -> tutti_graph::Prepare {
-        self.read().prepared()
+        self.read().graph_ref().prepared()
     }
 
     /// The audio thread's half, for a test that renders what a device would
@@ -206,7 +185,7 @@ impl AudioGraphRes {
     /// If the audio side was already taken — by an earlier call, or by the
     /// engine builder.
     pub fn take_audio_side(&mut self) -> AudioSide {
-        AudioSide::live(self.write().take_executor())
+        self.write().graph().take_audio_side()
     }
 
     /// Re-prepares every node in the graph, and every node inserted after,
@@ -218,64 +197,12 @@ impl AudioGraphRes {
     /// the audio side still here it completes before this returns; with it
     /// taken, commits wait for its second half.
     pub fn set_sample_rate(&mut self, rate: SampleRate) {
-        self.write().set_sample_rate(rate);
-    }
-
-    /// Refuse, before a device restart stops the stream, a `max_block` the
-    /// graph cannot be re-prepared to: past the engine's block capacity, or
-    /// while a re-prepare is already between its halves, or on a poisoned
-    /// graph.
-    pub(crate) fn check_rerate(
-        &self,
-        max_block: Option<Samples>,
-    ) -> Result<(), tutti_graph::CommitError> {
-        self.read().check_reprepare(max_block)
-    }
-
-    /// Move a live graph to the device's new `rate` and, if given, a new
-    /// `max_block`: what a device restart does between the stop and the
-    /// start ([`restart_device`](crate::engine::restart_device)).
-    ///
-    /// The first half of `Editor::reprepare` ([`GraphRuntime::reprepare`]);
-    /// the executor adopts it on its next blocks, the engine following the
-    /// rate on the first of them. Every unit instance is kept; only
-    /// time-based state restarts.
-    ///
-    /// Not committed here; see [`restart_device`](crate::engine::restart_device).
-    pub(crate) fn rerate(
-        &mut self,
-        rate: SampleRate,
-        max_block: Option<Samples>,
-        quantum: Option<Samples>,
-    ) -> Result<(), tutti_graph::CommitError> {
-        self.write().reprepare(rate, max_block, quantum)
+        self.write().graph().set_sample_rate(rate);
     }
 
     /// Whether a re-prepare is between its two commits.
     pub(crate) fn is_repreparing(&self) -> bool {
-        self.read().is_repreparing()
-    }
-
-    /// Build the engine over this graph's audio side, which it takes:
-    /// `Engine::new` over the editor and its executor, which bounds the
-    /// editor to what the engine can render (a commit past it is refused, and
-    /// logged).
-    pub(crate) fn engine(
-        &mut self,
-        transport: &tutti_core::Transport,
-    ) -> Result<tutti_core::Engine, tutti_core::GraphEngineError> {
-        let graph = self.write();
-        let mut exec = graph.take_executor();
-        exec.set_pool(graph.render_pool("tutti-worker"));
-        tutti_core::Engine::new(transport, graph.editor_mut(), exec)
-    }
-
-    /// How many threads render a block, the callback included
-    /// ([`TuttiPlugin::render_workers`](crate::TuttiPlugin::render_workers)):
-    /// the live engine's pool, and each export's. Read when the engine is
-    /// built and when an export forks.
-    pub(crate) fn set_render_workers(&mut self, workers: usize) {
-        self.write().set_render_workers(workers);
+        self.read().graph_ref().is_repreparing()
     }
 
     // --- Nodes ---
@@ -288,24 +215,30 @@ impl AudioGraphRes {
     /// Binding the handle to an entity is the caller's (see
     /// [`CapturedControls::bind`](crate::graph::CapturedControls::bind)), as
     /// is addressing its params ([`set_node_params`](Self::set_node_params));
+    /// [`add`](Self::add) addresses them, and
     /// [`spawn_audio_node`](crate::graph::SpawnAudioNode) does all three, for
-    /// a [`GraphNode`](crate::graph::GraphNode).
+    /// a [`SessionNode`].
     pub fn insert<N: tutti_graph::IntoNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
-        self.write().insert(node)
+        self.write().graph().insert(node)
+    }
+
+    /// [`insert`](Self::insert), addressing the node's params
+    /// ([`SessionNode::params`]).
+    pub fn add<N: SessionNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
+        self.write().graph().add(node)
     }
 
     /// Addresses `node`'s params by `params`, its controls: what
     /// [`set_param`](Self::set_param) writes through for it, and what a fork
     /// of it starts from. `None` takes the address away.
-    /// [`spawn_audio_node`](crate::graph::SpawnAudioNode::spawn_audio_node)
-    /// does this from [`GraphNode::params`](crate::graph::GraphNode::params).
+    /// [`add`](Self::add) does this from [`SessionNode::params`].
     pub fn set_node_params(&mut self, node: AudioNode, params: Option<tutti_graph::ParamSet>) {
-        self.write().set_node_params(node, params);
+        self.write().graph().set_node_params(node, params);
     }
 
     /// How many event inputs `node` declares.
     pub fn node_event_inputs(&self, node: AudioNode) -> usize {
-        self.read().node_event_inputs(node)
+        self.read().graph_ref().node_event_inputs(node)
     }
 
     /// Feeds `sink`'s event input `port` from exactly `sources` (each an
@@ -313,19 +246,33 @@ impl AudioGraphRes {
     /// merge their sources by offset, so any number may feed one port. Takes
     /// effect with the frame's commit.
     /// [`EventSources`](crate::graph::EventSources) is the ECS form.
-    pub fn set_event_sources(
-        &mut self,
-        sink: AudioNode,
-        port: u16,
-        sources: &[crate::graph::EventSource],
-    ) {
-        self.write().set_event_sources(sink, port, sources);
+    pub fn set_event_sources(&mut self, sink: AudioNode, port: u16, sources: &[EventSource]) {
+        self.write().graph().set_event_sources(sink, port, sources);
     }
 
     /// The event outputs feeding `sink`'s event input `port`, as the graph
     /// holds them: a modulation lane on a plugin's parameter events is one.
-    pub fn event_sources(&self, sink: AudioNode, port: u16) -> Vec<crate::graph::EventSource> {
-        self.read().event_sources(sink, port)
+    pub fn event_sources(&self, sink: AudioNode, port: u16) -> Vec<EventSource> {
+        self.read().graph_ref().event_sources(sink, port)
+    }
+
+    /// Sets what `feeder` feeds `sink`'s event input 0, replacing what it fed
+    /// before; empty `sources` removes the feeder. The sink's input reads the
+    /// union of every feeder's sources ([`EventSources`](crate::graph::EventSources)
+    /// is the `"declared"` feeder). Takes effect with the frame's commit.
+    pub fn set_feed(&mut self, sink: AudioNode, feeder: &'static str, sources: Vec<EventSource>) {
+        self.write().graph().set_feed(sink, feeder, sources);
+    }
+
+    /// What `feeder` feeds `sink`: empty when nothing.
+    pub fn feed(&self, sink: AudioNode, feeder: &'static str) -> Vec<EventSource> {
+        self.read().graph_ref().feed(sink, feeder).to_vec()
+    }
+
+    /// Moves every feeder's sources from sink `from` to sink `to`: what the
+    /// event reconcile does when an entity is re-bound to a new node.
+    pub fn move_feeds(&mut self, from: AudioNode, to: AudioNode) {
+        self.write().graph().move_feeds(from, to);
     }
 
     /// Inserts a hosted plugin: bound (`PluginClient::bind`) and inserted as
@@ -335,7 +282,7 @@ impl AudioGraphRes {
     /// the plugin is out of reach once inserted.
     #[cfg(feature = "plugin")]
     pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> AudioNode {
-        self.write().insert_plugin(client)
+        self.write().graph().insert_plugin(client)
     }
 
     /// [`replace`](Self::replace) for a hosted plugin: swap the plugin behind
@@ -351,7 +298,7 @@ impl AudioGraphRes {
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<(), ReplaceRefused<Box<tutti_plugin::handles::PluginClient>>> {
-        self.write().replace_plugin(node, client, fade, curve)
+        self.write().graph().replace_plugin(node, client, fade, curve)
     }
 
     /// Takes `node` out of the graph. Every edge to and from it reads silence
@@ -366,7 +313,7 @@ impl AudioGraphRes {
     /// Whether `node` is in the graph, a modulation lane or signal node
     /// included (staged, committed or not).
     pub fn contains(&self, node: AudioNode) -> bool {
-        self.read().contains(node)
+        self.read().graph_ref().contains(node)
     }
 
     /// Swaps the node behind `node` for `incoming`, fading from one to the
@@ -380,9 +327,10 @@ impl AudioGraphRes {
     /// `incoming` lands as a plain swap on the next commit. And it can be
     /// refused: while the graph re-prepares, with `incoming` handed back
     /// ([`ReplaceRefused::Busy`], retry after the re-prepare resumes), and for
-    /// good on a poisoned graph. Swap the captured controls only on `Ok` —
-    /// [`crossfade_audio_node`](crate::graph::crossfade_audio_node) does all
-    /// of this, re-capturing from `incoming`.
+    /// good on a poisoned graph. [`crossfade`](Self::crossfade) keeps a
+    /// `Busy` one waiting instead, and
+    /// [`crossfade_audio_node`](crate::graph::crossfade_audio_node) binds the
+    /// incoming controls once it lands.
     pub fn replace<N: tutti_graph::IntoNode>(
         &mut self,
         node: AudioNode,
@@ -390,7 +338,45 @@ impl AudioGraphRes {
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<N::Controls, ReplaceRefused<N>> {
-        self.write().replace(node, incoming, fade, curve)
+        self.write().graph().replace(node, incoming, fade, curve)
+    }
+
+    /// [`replace`](Self::replace), addressing the incoming node's params, and
+    /// keeping it waiting while the graph re-prepares: the frame's
+    /// [`commit_graph`](crate::graph::commit_graph) swaps it in once the
+    /// graph has resumed (`tutti_session::Graph::crossfade`).
+    ///
+    /// # Errors
+    ///
+    /// On a poisoned graph, or a node not in it: the incoming node is dropped.
+    pub fn crossfade<N>(
+        &mut self,
+        node: AudioNode,
+        incoming: N,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+    ) -> Result<Crossfade<N::Controls>, CrossfadeRefused>
+    where
+        N: SessionNode,
+        N::Controls: Send + 'static,
+    {
+        self.write().graph().crossfade(node, incoming, fade, curve)
+    }
+
+    /// [`crossfade`](Self::crossfade) for a hosted plugin.
+    ///
+    /// # Errors
+    ///
+    /// As `crossfade`.
+    #[cfg(feature = "plugin")]
+    pub fn crossfade_plugin(
+        &mut self,
+        node: AudioNode,
+        client: Box<tutti_plugin::handles::PluginClient>,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+    ) -> Result<Crossfade<()>, CrossfadeRefused> {
+        self.write().graph().crossfade_plugin(node, client, fade, curve)
     }
 
     /// Writes `value` to `node`'s scalar param `param`, through the node's
@@ -400,14 +386,14 @@ impl AudioGraphRes {
     /// [`headless`](Self::headless) one — and the value a fork starts from.
     /// A node without the param takes nothing.
     pub fn set_param(&mut self, node: AudioNode, param: UnitParam, value: f32) {
-        self.write().set_param(node, param, value);
+        self.write().graph().set_param(node, param, value);
     }
 
     // --- Edges ---
 
     /// What feeds `node`'s input `port`.
     pub fn source(&self, node: AudioNode, port: usize) -> GraphSource {
-        self.read().source(node, port)
+        self.read().graph_ref().source(node, port)
     }
 
     /// Feeds `node`'s input `port` from `source`. A port holds one source; this
@@ -417,7 +403,7 @@ impl AudioGraphRes {
     ///
     /// If `source` is `node` itself: a node cannot feed its own input.
     pub fn set_source(&mut self, node: AudioNode, port: usize, source: GraphSource) {
-        self.write().set_source(node, port, source);
+        self.write().graph().set_source(node, port, source);
     }
 
     // --- Param modulation ---
@@ -425,7 +411,7 @@ impl AudioGraphRes {
     /// Returns whether `node` declares `param` modulatable by the graph: its
     /// shape lists it among its params. False for a node not in the graph.
     pub fn declares_param(&self, node: AudioNode, param: UnitParam) -> bool {
-        self.read().declares_param(node, param)
+        self.read().graph_ref().declares_param(node, param)
     }
 
     /// Drives `node`'s declared `param` from `source`'s event output 0 — a
@@ -461,24 +447,24 @@ impl AudioGraphRes {
         source: Option<AudioNode>,
         range: tutti_graph::ParamRange,
     ) -> Result<(), tutti_graph::GraphInvalid> {
-        self.write().set_param_mod(node, param, source, range)
+        self.write().graph().set_param_mod(node, param, source, range)
     }
 
     /// Stops modulating `node`'s `param`: it reads its own control again,
     /// declicked.
     pub fn clear_param_mod(&mut self, node: AudioNode, param: UnitParam) {
-        self.write().clear_param_mod(node, param);
+        self.write().graph().clear_param_mod(node, param);
     }
 
     /// How `node`'s `param` is modulated, as the graph value holds it:
     /// `None` when nothing modulates it.
     pub fn param_mod(&self, node: AudioNode, param: UnitParam) -> Option<tutti_graph::ParamMod> {
-        self.read().param_mod(node, param)
+        self.read().graph_ref().param_mod(node, param)
     }
 
     /// What feeds global output `channel`.
     pub fn output_source(&self, channel: usize) -> GraphSource {
-        self.read().output_source(channel)
+        self.read().graph_ref().output_source(channel)
     }
 
     /// Feeds global output `channel` from `source`.
@@ -487,7 +473,7 @@ impl AudioGraphRes {
     ///
     /// If `channel` is past the global outputs.
     pub fn set_output_source(&mut self, channel: usize, source: GraphSource) {
-        self.write().set_output_source(channel, source);
+        self.write().graph().set_output_source(channel, source);
     }
 
     /// Feeds **every** global output from `node`: channel `c` from its port
@@ -499,47 +485,47 @@ impl AudioGraphRes {
     /// [`MasterSources`](crate::graph::MasterSources) instead: that neither
     /// wraps nor claims channels it does not name.
     pub fn set_outputs_from(&mut self, node: AudioNode) {
-        self.write().set_outputs_from(node);
+        self.write().graph().set_outputs_from(node);
     }
 
     // --- Shape ---
 
     /// The graph's global input count.
     pub fn inputs(&self) -> usize {
-        self.read().inputs()
+        self.read().graph_ref().inputs()
     }
 
     /// The graph's global output count.
     pub fn outputs(&self) -> usize {
-        self.read().outputs()
+        self.read().graph_ref().outputs()
     }
 
     /// `node`'s input port count.
     pub fn node_inputs(&self, node: AudioNode) -> usize {
-        self.read().node_inputs(node)
+        self.read().graph_ref().node_inputs(node)
     }
 
     /// `node`'s output port count.
     pub fn node_outputs(&self, node: AudioNode) -> usize {
-        self.read().node_outputs(node)
+        self.read().graph_ref().node_outputs(node)
     }
 
     /// The latency `node` reports: the shape the editor holds, read when the
     /// node was inserted (prepared at the graph's rate) and moved since only
     /// by a hosted plugin's latency change.
     pub fn node_latency(&self, node: AudioNode) -> Samples {
-        self.read().node_latency(node)
+        self.read().graph_ref().node_latency(node)
     }
 
     /// The tail `node` reports.
     pub fn node_tail(&self, node: AudioNode) -> Tail {
-        self.read().node_tail(node)
+        self.read().graph_ref().node_tail(node)
     }
 
     /// Widen the global outputs to `channels`. New channels read silence.
     /// Never narrows.
     pub(crate) fn widen_outputs(&mut self, channels: usize) {
-        self.write().widen_outputs(channels);
+        self.write().graph().widen_outputs(channels);
     }
 
     // --- Latency ---
@@ -553,65 +539,76 @@ impl AudioGraphRes {
     /// compensates every commit — so this is always the figure the plans
     /// compensate by.
     pub fn latency_plan(&self) -> Compensation {
-        self.read().latency_plan()
+        self.read().graph_ref().latency_plan()
     }
 
-    /// The figures the frame's commit will compensate by: the spec compiled
-    /// as the commit will compile it, read off the plan's `compensation()`
-    /// and `total_latency()`. Nothing is spliced in. `None` when the spec does
-    /// not compile (the commit reports why).
-    pub(crate) fn compensate(&self) -> Option<PdcFigures> {
-        self.read()
-            .planned_compensation()
-            .map(|(channels, total)| PdcFigures { channels, total })
+    /// The figures the frame's commit will compensate by — the per-channel
+    /// pre-roll and the total — the spec compiled as the commit will compile
+    /// it. Nothing is spliced in. `None` when the spec does not compile (the
+    /// commit reports why).
+    pub(crate) fn compensate(&self) -> Option<(Vec<Samples>, Samples)> {
+        self.read().graph_ref().planned_compensation()
     }
 
     /// The plan last sent to the audio thread (`Editor::base`).
     #[cfg(all(test, feature = "modulation"))]
     pub(crate) fn sent_plan(&self) -> Option<std::sync::Arc<tutti_graph::Plan>> {
-        self.read().sent_plan()
+        self.read().graph_ref().sent_plan()
     }
 
-    /// Whether an edit waits for a commit.
-    #[cfg(feature = "modulation")]
-    pub(crate) fn has_uncommitted_edit(&self) -> bool {
-        self.read().has_uncommitted_edit()
+    /// Whether an edit waits for a commit: the session's edit flag, set by
+    /// every edit, cleared by a commit that sent its plan. The frame's
+    /// [`commit_graph`](crate::graph::commit_graph) commits iff it is set.
+    pub fn is_edited(&self) -> bool {
+        self.read().graph_ref().is_edited()
     }
 
-    /// The compensation of the plan last sent to the audio thread.
-    pub(crate) fn sent_compensation(&self) -> Option<PdcFigures> {
-        self.read()
-            .sent_compensation()
-            .map(|(channels, total)| PdcFigures { channels, total })
+    /// The compensation of the plan last sent to the audio thread: the
+    /// per-channel pre-roll and the total.
+    pub(crate) fn sent_compensation(&self) -> Option<(Vec<Samples>, Samples)> {
+        self.read().graph_ref().sent_compensation()
+    }
+
+    /// The session's published per-channel pre-roll, republished with every
+    /// plan: what [`ChannelCompensation`](crate::ChannelCompensation) holds.
+    pub(crate) fn compensation(&self) -> std::sync::Arc<tutti_core::RtPublish<Vec<Samples>>> {
+        std::sync::Arc::clone(self.read().compensation())
+    }
+
+    /// The total latency of the plan sent last, as the session published it:
+    /// what [`GraphLatency`](crate::GraphLatency) mirrors.
+    pub(crate) fn latency(&self) -> Samples {
+        self.read().latency()
     }
 
     /// A live duplicate of the whole graph that shares no state with it,
     /// rendered through its own [`AudioSide`]: `Editor::fork`, each node
-    /// forked from its own fork source — what an export renders from (offline, through
-    /// [`export`](Self::export)), so a test can check that a control write
-    /// reaches it. `None` when a node cannot be forked.
+    /// forked from its own fork source — what an export renders from
+    /// (offline, through [`export`](Self::export)), so a test can check that
+    /// a control write reaches it. `None` when a node cannot be forked.
     #[cfg(test)]
     pub(crate) fn fork(&self) -> Option<AudioSide> {
-        self.read().fork().ok()
+        self.read().graph_ref().fork_live().ok()
     }
 
-    /// Applies modulation declarations to the editor (doc 014 §8.2). See
-    /// `GraphRuntime::modulate`.
+    /// Applies modulation declarations to the editor (doc 014 §8.2),
+    /// resolving the host's keys through `keys`
+    /// (`tutti_session::Graph::modulate`).
     #[cfg(feature = "modulation")]
     pub(crate) fn modulate(
         &mut self,
         m: &mut tutti_nodes::Modulation,
         decl: &tutti_mod::Declarations<'_>,
-        entities: &dyn crate::modulation::ModEntities,
+        keys: &dyn tutti_session::ModKeys,
     ) -> Result<tutti_nodes::Applied, tutti_nodes::ReconcileError> {
-        self.write().modulate(m, decl, entities)
+        self.write().graph().modulate(m, decl, keys)
     }
 
     /// Schedules the resyncs `m` owes, after the commit that sent their
     /// nodes.
     #[cfg(feature = "modulation")]
     pub(crate) fn send_mod_resyncs(&mut self, m: &mut tutti_nodes::Modulation) {
-        self.write().send_mod_resyncs(m);
+        self.write().graph().send_mod_resyncs(m);
     }
 
     /// `node`'s latency moved at runtime — a hosted plugin's latency cell
@@ -626,14 +623,15 @@ impl AudioGraphRes {
         node: AudioNode,
         latency: tutti_types::Latency,
     ) -> bool {
-        self.write().refresh_node_latency(node, latency)
+        self.write().graph().refresh_node_latency(node, latency)
     }
 
     // --- Publishing and rendering ---
 
-    /// Publish every edit since the last commit to the audio thread. Returns
-    /// whether it is done with them: `false` means "retry next frame", and the
-    /// caller keeps [`GraphDirty`](crate::graph::GraphDirty) set.
+    /// Commit every edit since the last commit now, and on a sent plan
+    /// publish its compensation (`Session::commit`). Returns whether the
+    /// plan went out: `false` means "retry next frame", and the edit flag
+    /// stays set.
     ///
     /// `Editor::commit`, which is refused for now while `QUEUE_CAPACITY`
     /// commits are out or a re-prepare is between its halves (the retry
@@ -641,14 +639,15 @@ impl AudioGraphRes {
     /// edit tries again). A changed global output count needs nothing
     /// special: it is part of the spec the commit compiles.
     pub(crate) fn commit(&mut self) -> bool {
-        self.write().commit() == Committed::Done
+        self.write().commit() == Committed::Sent
     }
 
-    /// Drain what the audio thread sent back, freeing it here, and flush any
-    /// settings a full ring held. On the main thread, every frame, from
-    /// [`commit_graph`](crate::graph::commit_graph).
-    pub(crate) fn collect(&mut self) {
-        self.write().collect();
+    /// Runs one of the session's phases (`Session::run_phase`) at `now`,
+    /// returning what it found.
+    pub(crate) fn run_phase(&mut self, phase: Phase, now: std::time::Instant) -> Vec<SessionEvent> {
+        let mut out = Vec::new();
+        self.write().run_phase(phase, PhaseCx::at(now), &mut out);
+        out
     }
 
     /// Renders one frame on the calling thread: no inputs, `output` sized to
@@ -664,7 +663,7 @@ impl AudioGraphRes {
     /// [`take_audio_side`](Self::take_audio_side) or the engine: there is no
     /// control-side copy of any node to render instead.
     pub fn render_frame(&mut self, output: &mut [f32]) {
-        self.render_frame_at(&tutti_graph::Transport::default(), output);
+        self.write().render_frame(output);
     }
 
     /// [`render_frame`](Self::render_frame) with the transport at
@@ -698,15 +697,15 @@ impl AudioGraphRes {
         node: Option<AudioNode>,
         ctx: &OfflineTransport,
         rate: SampleRate,
-    ) -> Result<super::runtime::PendingExport, ExportRefused> {
+    ) -> Result<tutti_session::PendingExport, ExportRefused> {
         if self.outputs() == 0 {
             return Err(ExportRefused::GraphHasNoOutputs);
         }
         let target = match node {
-            None => tutti_graph::ForkTarget::Master,
-            Some(node) => tutti_graph::ForkTarget::Node(super::runtime::key(node)),
+            None => tutti_session::AudioNodeTarget::Master,
+            Some(node) => tutti_session::AudioNodeTarget::Node(node),
         };
-        match self.read().gather_for_export(target, ctx, rate) {
+        match self.read().graph_ref().gather_for_export(target, ctx, rate) {
             Ok(graph) => Ok(graph),
             Err(tutti_export::Error::Fork(
                 tutti_graph::ForkError::NoOutputs { .. }
@@ -728,49 +727,4 @@ pub(crate) enum ExportRefused {
     /// The fork was refused: a node cannot be forked, or its fork source
     /// failed.
     Render(tutti_export::Error),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tutti_nodes::testing::{Const, Through};
-
-    /// Every [`GraphSource`] arm survives a write and a read-back, on a node
-    /// port and on a global output: the translation to the spec's spelling
-    /// and back is total and lossless.
-    ///
-    /// Mutation: lowering `Input(port)` to `Zero` (or lifting `Global` to
-    /// `Silence`) fails the `Input` row; lowering `Node` with a fixed port 0
-    /// fails the port-1 row.
-    #[test]
-    fn every_source_reads_back_as_written() {
-        let mut graph = AudioGraphRes::headless(1, 2);
-        let (stereo, _) = graph.insert(Const::frame(&[1.0, 2.0]));
-        let (sink, _) = graph.insert(Through::mono());
-        for source in [
-            GraphSource::Node(stereo, 1),
-            GraphSource::Node(stereo, 0),
-            GraphSource::Input(0),
-            GraphSource::Silence,
-        ] {
-            graph.set_source(sink, 0, source);
-            assert_eq!(graph.source(sink, 0), source, "node port");
-            graph.set_output_source(1, source);
-            assert_eq!(graph.output_source(1), source, "global output");
-        }
-    }
-
-    /// `remove` says whether the node was there, so removing a node twice is a
-    /// no-op rather than a panic.
-    ///
-    /// Mutation: dropping the `contains` guard panics on the second call.
-    #[test]
-    fn removing_a_node_twice_is_a_no_op() {
-        let mut graph = AudioGraphRes::headless(0, 1);
-        let (node, _) = graph.insert(Const::mono(1.0));
-        assert!(graph.contains(node));
-        assert!(graph.remove(node));
-        assert!(!graph.contains(node));
-        assert!(!graph.remove(node));
-    }
 }

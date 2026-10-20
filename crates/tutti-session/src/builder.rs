@@ -172,16 +172,23 @@ impl SessionBuilder {
         }
     }
 
-    /// The session over `parts`, `engine` its offline engine if any.
-    fn session(parts: Parts, engine: Option<tutti_core::Engine>) -> Result<Session> {
+    /// The session over `parts`, `engine` its offline engine if any, with
+    /// (`sampler`) a disk streamer when `streamer`.
+    fn session(parts: Parts, engine: Option<tutti_core::Engine>, streamer: bool) -> Result<Session> {
         #[cfg(feature = "sampler")]
-        let disk_streamer = tutti_sampler::DiskStreamer::new(
-            parts.graph.prepared().sample_rate(),
-            tutti_sampler::DiskStreamerConfig {
-                pdc: Some(Arc::clone(&parts.compensation)),
-                ..Default::default()
-            },
-        )?;
+        let disk_streamer = if streamer {
+            Some(tutti_sampler::DiskStreamer::new(
+                parts.graph.prepared().sample_rate(),
+                tutti_sampler::DiskStreamerConfig {
+                    pdc: Some(Arc::clone(&parts.compensation)),
+                    ..Default::default()
+                },
+            )?)
+        } else {
+            None
+        };
+        #[cfg(not(feature = "sampler"))]
+        let _ = streamer;
         Ok(Session {
             graph: parts.graph,
             transport: parts.transport,
@@ -198,7 +205,7 @@ impl SessionBuilder {
             #[cfg(feature = "midi-hardware")]
             midi_io: parts.midi_io,
             #[cfg(feature = "sampler")]
-            disk_streamer: Some(disk_streamer),
+            disk_streamer,
             #[cfg(feature = "device")]
             faults: None,
         })
@@ -227,18 +234,18 @@ impl SessionBuilder {
             root_width(self.outputs_floor, layout),
         );
         let engine = parts.graph.engine(&parts.transport)?;
-        Self::session(parts, Some(engine))
+        Self::session(parts, Some(engine), true)
     }
 
     /// A session with no engine: the executor stays on this side, every
     /// commit is applied at once, and [`Session::render_frame`] renders it
     /// (or [`Graph::take_audio_side`] hands it to a test). No metronome and
-    /// no MIDI nodes are inserted: the graph is exactly `outputs_floor` wide,
-    /// empty, at `rate`.
+    /// no MIDI nodes are inserted, and no disk streamer is started: the
+    /// graph is exactly `outputs_floor` wide, empty, at `rate`.
     ///
     /// # Errors
     ///
-    /// (`sampler`) When the disk streamer cannot start.
+    /// None today; `Result` for the build paths' common shape.
     pub fn build_detached(self, rate: SampleRate) -> Result<Session> {
         let mut graph = Graph::new(self.inputs, self.outputs_floor, rate, LIVE_MAX_BLOCK, None);
         graph.set_render_workers(self.render_workers);
@@ -255,6 +262,7 @@ impl SessionBuilder {
                 midi_io: None,
             },
             None,
+            false,
         )
     }
 
@@ -321,7 +329,7 @@ impl SessionBuilder {
             root_width(self.outputs_floor, spec.channels),
         );
         let engine = parts.graph.engine(&parts.transport)?;
-        let mut session = Self::session(parts, None)?;
+        let mut session = Self::session(parts, None, true)?;
         // Consumers read the meter directly, so it measures from the start.
         session.meter.enable();
         let state = Arc::new(tutti_cpal::AudioCallbackState::new(

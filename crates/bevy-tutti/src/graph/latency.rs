@@ -92,7 +92,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
-use crate::graph::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
+use crate::graph::{engine_ready, AudioGraphRes, GraphReconcileSystems};
 use tutti_core::RtPublish;
 use tutti_core::Samples;
 
@@ -128,36 +128,36 @@ impl GraphLatency {
     }
 }
 
-/// Publish the compensation of the plan `graph` sent last: its per-channel
-/// pre-roll to `table`, its total to `total`, whichever the world has. A graph
-/// that has sent no plan publishes nothing.
-pub(crate) fn publish(
+/// Mirror the session's published figures into the world: the
+/// [`ChannelCompensation`] resource holds the session's own cell (rebound
+/// once, when it is another, as one a reconcile plugin initialized before
+/// the graph was inserted), and [`GraphLatency`] its total, marked changed
+/// only when it moved.
+pub(crate) fn mirror(
     graph: &AudioGraphRes,
-    table: Option<&ChannelCompensation>,
-    total: Option<&mut GraphLatency>,
+    table: Option<ResMut<ChannelCompensation>>,
+    total: Option<ResMut<GraphLatency>>,
 ) {
-    let Some(figures) = graph.sent_compensation() else {
-        return;
-    };
-    if let Some(total) = total {
-        total.0 = figures.total;
+    if let Some(mut table) = table {
+        let cell = graph.compensation();
+        if !Arc::ptr_eq(&table.0, &cell) {
+            table.0 = cell;
+        }
     }
-    if let Some(table) = table {
-        table.0.publish(Arc::new(figures.channels));
+    if let Some(mut total) = total {
+        total.set_if_neq(GraphLatency(graph.latency()));
     }
 }
 
-/// [`publish`], for a caller holding the world (a device restart's hook).
-pub(crate) fn publish_sent(world: &mut World) {
+/// [`mirror`], for a caller holding the world (a device restart).
+pub(crate) fn mirror_world(world: &mut World) {
     world.resource_scope(|world, graph: Mut<AudioGraphRes>| {
-        let table = world.get_resource::<ChannelCompensation>().cloned();
-        publish(
-            &graph,
-            table.as_ref(),
-            world
-                .get_resource_mut::<GraphLatency>()
-                .map(Mut::into_inner),
-        );
+        let mut state: bevy_ecs::system::SystemState<(
+            Option<ResMut<ChannelCompensation>>,
+            Option<ResMut<GraphLatency>>,
+        )> = bevy_ecs::system::SystemState::new(world);
+        let (table, total) = state.get_mut(world);
+        mirror(&graph, table, total);
     });
 }
 
@@ -185,7 +185,8 @@ impl Plugin for LatencyCompensationPlugin {
 /// Checks, in debug builds, that the graph's latency fold matches the plan the
 /// frame's commit will compile.
 ///
-/// Runs only on a frame that edits the graph ([`GraphDirty`] set). The fold
+/// Runs only on a frame that edits the graph (the session's edit flag set).
+/// The fold
 /// over the whole spec ([`AudioGraphRes::latency_plan`]: audio edges plus
 /// event and param-modulation sources) must equal what the compiled plan
 /// compensates by. Both are read on the control side from the one spec, so a
@@ -196,22 +197,22 @@ impl Plugin for LatencyCompensationPlugin {
 /// In debug builds, when the two disagree. Publishes nothing
 /// ([`commit_graph`](crate::graph::commit_graph) does), and in release builds
 /// does nothing. Returns quietly while either resource is missing.
-pub fn compensate_graph(graph: Option<Res<AudioGraphRes>>, dirty: Option<Res<GraphDirty>>) {
-    let (Some(graph), Some(dirty)) = (graph, dirty) else {
+pub fn compensate_graph(graph: Option<Res<AudioGraphRes>>) {
+    let Some(graph) = graph else {
         return;
     };
-    if !cfg!(debug_assertions) || !dirty.0 {
+    if !cfg!(debug_assertions) || !graph.is_edited() {
         return;
     }
     // `None` only for a spec that does not compile: its commit refuses it
     // too, and there is no plan to check against.
-    let Some(compiled) = graph.compensate() else {
+    let Some((channels, total)) = graph.compensate() else {
         return;
     };
     let folded = graph.latency_plan();
     // The fold reports no channels at all when nothing is latent (its "empty
     // result"); the plan has one zero per output. Same figures.
-    let width = folded.channels().len().max(compiled.channels.len());
+    let width = folded.channels().len().max(channels.len());
     let per_channel = |c: &[Samples]| -> Vec<Samples> {
         (0..width)
             .map(|i| c.get(i).copied().unwrap_or(Samples(0)))
@@ -219,7 +220,7 @@ pub fn compensate_graph(graph: Option<Res<AudioGraphRes>>, dirty: Option<Res<Gra
     };
     debug_assert_eq!(
         (per_channel(folded.channels()), folded.total()),
-        (per_channel(&compiled.channels), compiled.total),
+        (per_channel(&channels), total),
         "the spec's latency fold and the compiled plan disagree"
     );
 }

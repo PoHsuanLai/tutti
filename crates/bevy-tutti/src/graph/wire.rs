@@ -99,7 +99,7 @@ use tutti_core::AudioNode;
 use tutti_core::{ChannelLayout, MAX_ROOT_CHANNELS};
 
 use super::topology::{self, LiveGraph};
-use super::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems, GraphSource};
+use super::{engine_ready, AudioGraphRes, GraphReconcileSystems, GraphSource};
 
 /// Where one input port's signal comes from.
 ///
@@ -293,8 +293,8 @@ impl MasterSources {
 ///
 /// The system [`GraphWirePlugin`] schedules between
 /// [`GraphReconcileSystems::Spawn`] and [`GraphReconcileSystems::Compensate`];
-/// it records what it applied in [`LiveGraph`] and sets [`GraphDirty`] when it
-/// wrote anything.
+/// it records what it applied in [`LiveGraph`]. What it writes marks the
+/// session edited, so the frame's commit sends it.
 ///
 /// # What counts as a change
 ///
@@ -329,8 +329,7 @@ impl MasterSources {
 ///
 /// The value decides *what* the graph is, and [`topology::apply`] writes only
 /// the ports whose runtime source differs from it, so a rebuild that moves
-/// nothing leaves the graph clean: no `GraphDirty`, so no compile and no
-/// commit. And a wholesale replace would also clear the ports the declaration
+/// nothing leaves the graph clean: no edit, so no compile and no commit. And a wholesale replace would also clear the ports the declaration
 /// does not name, which belong to whoever wired them (see [`PortSources`]).
 #[allow(
     clippy::too_many_arguments,
@@ -339,7 +338,6 @@ impl MasterSources {
 )]
 pub fn rebuild(
     graph: Option<ResMut<AudioGraphRes>>,
-    dirty: Option<ResMut<GraphDirty>>,
     live: Option<ResMut<LiveGraph>>,
     nodes: Query<(Entity, &AudioNode)>,
     sinks: Query<(Entity, &PortSources)>,
@@ -361,10 +359,10 @@ pub fn rebuild(
     if !is_dirty {
         return;
     }
-    // `build_into`'s graph and `GraphReconcilePlugin`'s flag; `engine_ready`
-    // guarantees neither, and a wire rebuild with no graph is a no-op. Taken
-    // after the dirty gate so the removal drain above still happens.
-    let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
+    // `build_into`'s graph; `engine_ready` does not guarantee it, and a wire
+    // rebuild with no graph is a no-op. Taken after the dirty gate so the
+    // removal drain above still happens.
+    let Some(mut graph) = graph else {
         return;
     };
 
@@ -446,7 +444,6 @@ pub fn rebuild(
         }
         if declared > graph.outputs() {
             graph.widen_outputs(declared);
-            dirty.0 = true;
         }
     }
 
@@ -460,9 +457,7 @@ pub fn rebuild(
         want
     };
 
-    if topology::apply(&want, &mut graph, &nodes) {
-        dirty.0 = true;
-    }
+    topology::apply(&want, &mut graph, &nodes);
 
     // `apply` is meant to have made these agree. `debug_assert` rather than a
     // log, so a divergence is a test failure and never a dropout — a release
@@ -499,12 +494,10 @@ pub fn unwire_removed_sources(
     remove: On<Remove, PortSources>,
     nodes: Query<&AudioNode>,
     declarations: Query<&PortSources>,
+    // `Option`: this observer is registered by `GraphWirePlugin` while the
+    // graph is inserted by `build_into`, and an observer has no run condition
+    // to hide behind, so the only guard is the signature.
     graph: Option<ResMut<AudioGraphRes>>,
-    // `Option` to match `graph`: this observer is registered by `GraphWirePlugin`
-    // while `GraphDirty` is inserted by `GraphReconcilePlugin`, and both are
-    // `pub`. An observer has no run condition to hide behind, so the only guard
-    // is the signature.
-    dirty: Option<ResMut<GraphDirty>>,
 ) {
     let entity = remove.event_target();
     let Ok(node) = nodes.get(entity) else { return };
@@ -512,7 +505,6 @@ pub fn unwire_removed_sources(
         return;
     };
     let Some(mut graph) = graph else { return };
-    let Some(mut dirty) = dirty else { return };
     if !graph.contains(*node) {
         return;
     }
@@ -520,7 +512,6 @@ pub fn unwire_removed_sources(
     for port in 0..claimed {
         if graph.source(*node, port) != GraphSource::Silence {
             graph.set_source(*node, port, GraphSource::Silence);
-            dirty.0 = true;
         }
     }
 }
@@ -530,7 +521,7 @@ pub fn unwire_removed_sources(
 ///
 /// [`rebuild`] runs after `Spawn` (a node must be in the graph before it can be
 /// wired) and before `Compensate` and `Commit`, so the frame's commit carries
-/// the frame's wiring. It sets [`GraphDirty`] and never commits —
+/// the frame's wiring. It edits the graph and never commits —
 /// [`commit_graph`](crate::graph::commit_graph) coalesces.
 /// [`GraphReconcilePlugin`](crate::graph::GraphReconcilePlugin) adds it.
 pub struct GraphWirePlugin;

@@ -892,18 +892,23 @@ impl Graph {
     /// Each feeder (a clip, a route rule, a declaration) owns only its own
     /// entry, so feeders never overwrite each other.
     pub fn set_feed(&mut self, sink: AudioNode, feeder: &'static str, sources: Vec<EventSource>) {
-        let feeds = self.feeds.entry(key(sink)).or_default();
         if sources.is_empty() {
+            // No entry is made for a feeder that feeds nothing.
+            let Some(feeds) = self.feeds.get_mut(&key(sink)) else {
+                return;
+            };
             if feeds.remove(feeder).is_none() {
                 return;
             }
-        } else if feeds.get(feeder) == Some(&sources) {
-            return;
+            if feeds.is_empty() {
+                self.feeds.remove(&key(sink));
+            }
         } else {
+            let feeds = self.feeds.entry(key(sink)).or_default();
+            if feeds.get(feeder) == Some(&sources) {
+                return;
+            }
             feeds.insert(feeder, sources);
-        }
-        if feeds.is_empty() {
-            self.feeds.remove(&key(sink));
         }
         self.write_feeds(sink);
     }

@@ -127,8 +127,8 @@ fn lfo_scene(app: &mut App, side: &mut AudioSide, rate: f32, depth: f32) -> [Ent
 /// follower rebuilt on every apply (`p.decl != n.decl` as `==`: more than
 /// one plan); the range store skipped (`if lane.range != range` as
 /// `false`: "the range clamps" reads 500). Not a mutation this can see:
-/// `after_commit` committing every frame, since a commit with nothing
-/// staged sends no plan.
+/// the session's `Phase::AfterCommit` committing every update, since a
+/// commit with nothing staged sends no plan.
 #[test]
 fn range_and_depth_edits_send_no_plan_and_a_follower_route_one_commit() {
     let (mut app, mut side) = app();

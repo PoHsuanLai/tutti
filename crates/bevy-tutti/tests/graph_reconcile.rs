@@ -498,7 +498,8 @@ mod audio_param {
         }
         let knob = |app: &App| {
             app.world()
-                .resource::<AudioGraphRes>().modulation()
+                .resource::<AudioGraphRes>()
+                .modulation()
                 .lane(drive)
                 .expect("the drive has a lane")
                 .1

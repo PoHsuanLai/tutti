@@ -362,7 +362,8 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
     knob_of(&mut app, p0);
     let lane = AudioNode(
         app.world()
-            .resource::<AudioGraphRes>().modulation()
+            .resource::<AudioGraphRes>()
+            .modulation()
             .lane(p0)
             .expect("a lane")
             .0,

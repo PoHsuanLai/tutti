@@ -85,7 +85,8 @@ fn settle(app: &mut App) {
 /// The knob of `entity`'s drive lane, `None` with no lane or no knob.
 fn knob(app: &App, entity: Entity) -> Option<f32> {
     app.world()
-        .resource::<AudioGraphRes>().modulation()
+        .resource::<AudioGraphRes>()
+        .modulation()
         .lane(ParamRef::unit(entity, UnitParam::Drive))
         .and_then(|(_, lane)| lane.knob())
 }

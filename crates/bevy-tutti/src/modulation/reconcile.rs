@@ -18,13 +18,17 @@ use bevy_ecs::system::SystemParam;
 
 use tutti_core::AudioNode;
 use tutti_graph::EventOut;
-use tutti_mod::{Declarations, RouteDecl, RouteKey, RouteTarget, Source, SourceKey, TargetDecl, TargetKey};
+use tutti_mod::{
+    Declarations, RouteDecl, RouteKey, RouteTarget, Source, SourceKey, TargetDecl, TargetKey,
+};
 use tutti_nodes::automation::LaneControls;
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{ModInput, ModRefusal, Phase, SessionEvent};
 use tutti_types::NodeKey;
 
-use super::declare::{Automation, AutomationTake, ModFeed, ModRange, ModRoute, ModSource, ParamRef};
+use super::declare::{
+    Automation, AutomationTake, ModFeed, ModRange, ModRoute, ModSource, ParamRef,
+};
 use crate::graph::latency::{ChannelCompensation, GraphLatency};
 use crate::graph::AudioGraphRes;
 

@@ -394,7 +394,8 @@ fn lane_of(app: &mut App, target: bevy_tutti::modulation::ParamRef) -> AudioNode
     loop {
         if let Some((key, _)) = app
             .world()
-            .resource::<bevy_tutti::graph::AudioGraphRes>().modulation()
+            .resource::<bevy_tutti::graph::AudioGraphRes>()
+            .modulation()
             .lane(target)
         {
             return AudioNode(key);

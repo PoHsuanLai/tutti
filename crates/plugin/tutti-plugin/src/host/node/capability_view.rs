@@ -13,9 +13,9 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use tutti_core::{meter::MeterMap, RtPublish};
+//! # use tutti_core::{meter::MeterMap, ArcLend};
 //! # use tutti_plugin::handles::PluginClient;
-//! # fn ex(client: &mut PluginClient, meter: Arc<RtPublish<MeterMap>>) {
+//! # fn ex(client: &mut PluginClient, meter: Arc<ArcLend<MeterMap>>) {
 //! // `None` for a plugin that declined transport, so the install is not
 //! // reachable at all rather than reachable and inert.
 //! if let Some(mut t) = client.transport() {
@@ -78,9 +78,9 @@ pub struct TransportView<'a>(&'a mut PluginClient);
 impl TransportView<'_> {
     /// Install the meter map the snapshot's signature and bar are read from.
     ///
-    /// The meter map arrives as an `RtPublish` because the audio thread reads it
+    /// The meter map arrives as an `ArcLend` because the audio thread reads it
     /// once per block and never holds an owning handle.
-    pub fn set_meter(&mut self, meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>) {
+    pub fn set_meter(&mut self, meter: Arc<tutti_core::ArcLend<tutti_core::meter::MeterMap>>) {
         self.0.set_meter(meter);
     }
 

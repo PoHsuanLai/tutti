@@ -18,7 +18,8 @@ umbrella, which re-export it. What is in it:
   (one-borrow-at-a-time interior mutability), the capped `RtVec` (through
   `&mut self`; behind an `AudioThreadCell` for `&self`), the `RtScope`
   "inside a block" marker, the `ScopedNoDenormals` guard, and
-  `RtPublish`/`RtRef` for handing non-scalar state to the audio thread.
+  `ArcLend`/`Loan` (re-exported from the `arc-lend` crate) for handing
+  non-scalar state to the audio thread.
 - **Channels** — `ChannelLayout` (`Mono`/`Stereo`/`Multi(n)`): the one answer to
   "mono, stereo, or how many?" that every subsystem shares instead of a private
   enum or a bare channel-count integer. `ChannelTopology` + `Speaker` answer the

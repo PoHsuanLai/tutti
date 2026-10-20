@@ -87,7 +87,7 @@ type AuMidiOutputCallbackFn = unsafe extern "C" fn(
 ///   frame ([`DECODE_BATCH`]), so any packet-list length is delivered in batches
 ///   without a heap touch. A `Vec<MidiEvent>` return — the obvious shape, and
 ///   where an allocation sneaks in unnoticed — would allocate once per packet
-///   list on the audio thread: the same hazard class `CLAUDE.md`'s `RtPublish`
+///   list on the audio thread: the same hazard class `CLAUDE.md`'s `ArcLend`
 ///   rule exists for (a malloc in the render callback is a lock acquisition,
 ///   and a lock acquisition there is a dropout).
 /// * The borrow makes parking one impossible. A sink that wants to keep events

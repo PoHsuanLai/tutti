@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use tutti_core::{MeterMap, RtPublish, RtRef};
+use tutti_core::{ArcLend, Loan, MeterMap};
 
 /// What a [`PluginMeter`] publishes: the installed meter's cell, or none.
-type Installed = Option<Arc<RtPublish<MeterMap>>>;
+type Installed = Option<Arc<ArcLend<MeterMap>>>;
 
 /// A plugin node's meter cell: the project meter it reads once per block for
 /// the time-signature and bar fields of the transport it tells the plugin.
@@ -19,7 +19,7 @@ type Installed = Option<Arc<RtPublish<MeterMap>>>;
 ///
 /// # Why a cell of an `Arc`, read twice
 ///
-/// The slot is an [`RtPublish`] of the installed cell's `Arc`, so the node
+/// The slot is an [`ArcLend`] of the installed cell's `Arc`, so the node
 /// only ever *borrows* that `Arc`: an install or a clear during playback
 /// retires the old one for the control side to free, even when the host kept
 /// no clone of the meter it installed. (An `ArcSwapOption` here turned the
@@ -38,7 +38,7 @@ type Installed = Option<Arc<RtPublish<MeterMap>>>;
 /// slot count while that is eight or fewer, and safe past it (the overflow
 /// path, which pins a retired meter a publish longer).
 #[derive(Clone)]
-pub struct PluginMeter(Arc<RtPublish<Installed>>);
+pub struct PluginMeter(Arc<ArcLend<Installed>>);
 
 impl Default for PluginMeter {
     fn default() -> Self {
@@ -54,7 +54,7 @@ impl PluginMeter {
     /// Control thread: allocates the slot's new value, and frees the meter it
     /// replaces here unless the node is reading it this block (then the next
     /// install or clear frees it).
-    pub fn set_meter(&self, meter: Arc<RtPublish<MeterMap>>) {
+    pub fn set_meter(&self, meter: Arc<ArcLend<MeterMap>>) {
         self.0.publish(Arc::new(Some(meter)));
     }
 
@@ -67,25 +67,25 @@ impl PluginMeter {
 
     /// Whether a meter is installed.
     pub fn has_meter(&self) -> bool {
-        self.0.read().is_some()
+        self.0.lend().is_some()
     }
 
-    /// The installed meter's cell, for the node's once-per-block read: a
+    /// The installed meter's cell, for the node's once-per-block lend: a
     /// borrow, wait-free, no allocation, and dropping it frees nothing.
-    pub(crate) fn read(&self) -> RtRef<'_, Installed> {
-        self.0.read()
+    pub(crate) fn lend(&self) -> Loan<'_, Installed> {
+        self.0.lend()
     }
 
     /// The meter installed now, to give a fork (whose cell is its own).
     /// Control thread: clones the `Arc`.
     pub(crate) fn installed(&self) -> Installed {
-        Option::clone(&self.0.read())
+        Option::clone(&self.0.lend())
     }
 
     /// A handle on a new cell holding `meter`: the default's, and an
     /// in-process VST2 fork's.
     pub(crate) fn holding(meter: Installed) -> Self {
-        Self(Arc::new(RtPublish::new(meter)))
+        Self(Arc::new(ArcLend::new(meter)))
     }
 }
 
@@ -103,8 +103,8 @@ mod tests {
     use tutti_core::{Beat, MeterChange, TimeSignature};
 
     /// A meter of `n`/4 from beat 0, for a block to recognise.
-    fn meter_of(n: u32) -> Arc<RtPublish<MeterMap>> {
-        Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
+    fn meter_of(n: u32) -> Arc<ArcLend<MeterMap>> {
+        Arc::new(ArcLend::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
             TimeSignature::from_parts(n, 4),
         )])))
@@ -141,8 +141,8 @@ mod tests {
 
         for block in 1..=16u32 {
             let seen = assert_no_alloc::assert_no_alloc(|| {
-                let installed = slot.read();
-                let meter = installed.as_ref().map(|cell| cell.read());
+                let installed = slot.lend();
+                let meter = installed.as_ref().map(|cell| cell.lend());
                 assert_no_alloc::permit_alloc(|| {
                     if block % 3 == 0 {
                         slot.clear_meter();

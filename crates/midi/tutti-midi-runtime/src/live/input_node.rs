@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use tutti_core::{ChannelLayout, RtPublish};
+use tutti_core::{ArcLend, ChannelLayout};
 use tutti_graph::{
     Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
@@ -76,7 +76,7 @@ pub struct MidiInputNode {
     scratch: Box<[MidiEvent]>,
     translator: Midi1ToMidi2Translator,
     mpe: MpeIngest,
-    request: Arc<RtPublish<Option<MpeMode>>>,
+    request: Arc<ArcLend<Option<MpeMode>>>,
 }
 
 impl MidiInputNode {
@@ -88,7 +88,7 @@ impl MidiInputNode {
             scratch: vec![MidiEvent::noop(); MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
             translator: Midi1ToMidi2Translator::new(),
             mpe: MpeIngest::new(MpeMode::Disabled),
-            request: Arc::new(RtPublish::new(None)),
+            request: Arc::new(ArcLend::new(None)),
         }
     }
 
@@ -106,7 +106,7 @@ impl MidiInputNode {
     /// the ingest, so re-adopting it every block would drop every sounding
     /// note's voice mapping every block.
     fn adopt_mpe_request(&mut self) {
-        let pending = *self.request.read();
+        let pending = *self.request.lend();
         if let Some(mode) = pending {
             if *self.mpe.mode() != mode {
                 self.mpe.set_mode(mode);
@@ -118,7 +118,7 @@ impl MidiInputNode {
 /// The host's handle on a [`MidiInputNode`]: its MPE mode. Cheap to clone.
 #[derive(Clone)]
 pub struct MidiInputControls {
-    request: Arc<RtPublish<Option<MpeMode>>>,
+    request: Arc<ArcLend<Option<MpeMode>>>,
 }
 
 impl MidiInputControls {
@@ -135,7 +135,7 @@ impl MidiInputControls {
     /// if any: what was asked, not what is in force (they differ for a block
     /// after a change, and for good if the graph never runs).
     pub fn pending_mpe_mode(&self) -> Option<MpeMode> {
-        *self.request.read()
+        *self.request.lend()
     }
 }
 

@@ -12,7 +12,7 @@
 //! (tutti-sampler, which wraps the ring, cannot build under the flag:
 //! `event-listener`, under its async channels, reacts to `cfg(loom)` without
 //! depending on loom. That is why the protocol lives here, beside
-//! `RtPublish`.)
+//! `ArcLend`.)
 //!
 //! # What each model asserts
 //!
@@ -77,7 +77,7 @@
 //! buffering. Loom does not model load buffering (a load never reads a store
 //! that has not happened yet in its interleaving), so no model here can fail
 //! on it; C++ allows it, and the `Release` is what rules it out, as in
-//! `rt_publish_loom.rs`.
+//! `arc-lend`'s `tests/loom.rs`.
 #![cfg(loom)]
 
 use loom::thread;

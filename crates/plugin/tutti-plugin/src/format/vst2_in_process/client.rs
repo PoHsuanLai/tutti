@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_core::{MeterMap, RtPublish, Samples};
+use tutti_core::{ArcLend, MeterMap, Samples};
 use tutti_graph::{Cx, Offset};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
@@ -186,8 +186,8 @@ impl TransportFeed {
         let Some(at) = Offset::new(0, Samples(frames)) else {
             return self.last;
         };
-        let slot = self.meter.read();
-        let meter = slot.as_ref().map(|m| m.read());
+        let slot = self.meter.lend();
+        let meter = slot.as_ref().map(|m| m.lend());
         self.last = transport_source::from_cx(
             cx,
             at,
@@ -293,7 +293,7 @@ impl InProcessVst2Client {
     /// graph (the transport the block's input was rendered at). The snapshot
     /// reaches plugins declaring [`Features::TRANSPORT`], which the
     /// in-process loader declares for every VST2.
-    pub fn set_meter(&self, meter: Arc<RtPublish<MeterMap>>) {
+    pub fn set_meter(&self, meter: Arc<ArcLend<MeterMap>>) {
         self.transport.meter.set_meter(meter);
     }
 
@@ -502,8 +502,8 @@ mod transport_tests {
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH)
     }
 
-    fn seven_eight_meter() -> Arc<RtPublish<MeterMap>> {
-        Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
+    fn seven_eight_meter() -> Arc<ArcLend<MeterMap>> {
+        Arc::new(ArcLend::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
             seven_eight(),
         )])))

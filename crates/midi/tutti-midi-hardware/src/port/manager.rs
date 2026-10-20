@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use tutti_core::{AudioThreadCell, RtPublish, RtVec, SampleRate};
+use tutti_core::{ArcLend, AudioThreadCell, RtVec, SampleRate};
 
 use super::async_port::{HardwareMidiInput, InputProducerHandle};
 use tutti_midi_types::ump::MidiEvent;
@@ -238,7 +238,7 @@ struct Published {
 /// [`cycle_start_read_all_inputs`]: HardwareMidiInputs::cycle_start_read_all_inputs
 /// [`remove_input_port`]: HardwareMidiInputs::remove_input_port
 pub struct HardwareMidiInputs {
-    /// The port set, published to the audio thread's drain. An [`RtPublish`]
+    /// The port set, published to the audio thread's drain. An [`ArcLend`]
     /// rather than an `ArcSwap`: the drain only borrows the set, so a hotplug
     /// that publishes a new one mid-drain retires the old one for the
     /// *control* side to free. (An `ArcSwap` guard held across that store is
@@ -246,9 +246,9 @@ pub struct HardwareMidiInputs {
     /// the audio thread.) The same holds for a removed port: the set that
     /// still holds it is retired, and the port and its ring are freed on the
     /// control side (see [`collect`](Self::collect)).
-    input_ports: RtPublish<PortSlots>,
+    input_ports: ArcLend<PortSlots>,
     /// Serializes the read, change and publish of every control-side change
-    /// (`RtPublish` has no compare-and-publish), so two control threads racing
+    /// (`ArcLend` has no compare-and-publish), so two control threads racing
     /// on hotplug cannot each publish a copy missing the other's change. The
     /// drain never takes it.
     published: Mutex<Published>,
@@ -267,7 +267,7 @@ impl HardwareMidiInputs {
     pub fn new(fifo_size: usize) -> Self {
         let slots = Arc::new(PortSlots::new());
         Self {
-            input_ports: RtPublish::from_arc(Arc::clone(&slots)),
+            input_ports: ArcLend::from_arc(Arc::clone(&slots)),
             published: Mutex::new(Published {
                 slots,
                 next_generation: 0,
@@ -406,7 +406,7 @@ impl HardwareMidiInputs {
     /// `HardwareMidiInput` ring — outbound MIDI rides the engine mailbox to a
     /// `MidiOut` sink, not a port ring — so `Output` returns `None` (lists as
     /// empty / no-op).
-    fn ports_of(&self, port_type: PortType) -> Option<&RtPublish<PortSlots>> {
+    fn ports_of(&self, port_type: PortType) -> Option<&ArcLend<PortSlots>> {
         match port_type {
             PortType::Input => Some(&self.input_ports),
             PortType::Output => None,
@@ -416,7 +416,7 @@ impl HardwareMidiInputs {
     /// The live port `id` names, if any: a stale id names none.
     fn port(&self, port_type: PortType, id: PortId) -> Option<Arc<HardwareMidiInput>> {
         self.ports_of(port_type)?
-            .read()
+            .lend()
             .get(id.index)
             .and_then(Option::clone)
             .filter(|port| port.id() == id)
@@ -440,7 +440,7 @@ impl HardwareMidiInputs {
             return Vec::new();
         };
         ports
-            .read()
+            .lend()
             .iter()
             .flatten()
             .map(|port| PortInfo::of(port, port_type))
@@ -451,7 +451,7 @@ impl HardwareMidiInputs {
     /// drain walks each block. Bounded by the most ports ever open at once.
     #[cfg(test)]
     pub(crate) fn slot_count(&self) -> usize {
-        self.input_ports.read().len()
+        self.input_ports.lend().len()
     }
 
     /// Sets whether the drain reads the port `id` names. Returns `false`, and
@@ -538,7 +538,7 @@ impl HardwareMidiInputs {
         // when it drops, whatever was published meanwhile. Events are copied
         // into the scratch by value (`MidiEvent: Copy`), so nothing borrows
         // from the snapshot past it.
-        let input_ports = self.input_ports.read();
+        let input_ports = self.input_ports.lend();
         self.scratch
             .read_inputs(&input_ports, nframes, buffer_start);
         let mut visited = 0;
@@ -585,7 +585,7 @@ impl tutti_midi_types::MidiIn for HardwareMidiInputs {
 
 impl core::fmt::Debug for HardwareMidiInputs {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let input_ports = self.input_ports.read();
+        let input_ports = self.input_ports.lend();
 
         f.debug_struct("HardwareMidiInputs")
             .field(
@@ -1028,7 +1028,7 @@ mod tests {
         let id = handle.port_id();
         assert!(handle.push(MidiEvent::noop(), now()));
         let port = {
-            let slots = manager.input_ports.read();
+            let slots = manager.input_ports.lend();
             Arc::downgrade(slots[0].as_ref().expect("the port is live"))
         };
         drop(handle);
@@ -1211,7 +1211,7 @@ mod tests {
         assert!(handle.push(MidiEvent::noop(), now()));
         drop(handle);
         let port = Arc::downgrade(
-            manager.input_ports.read()[0]
+            manager.input_ports.lend()[0]
                 .as_ref()
                 .expect("the port is live"),
         );

@@ -650,7 +650,7 @@ impl<S> PluginClient<S> {
     ///
     /// The transport itself needs no install: the node reads it from each
     /// block. See [`PluginControls::set_meter`].
-    pub fn set_meter(&self, meter: Arc<tutti_core::RtPublish<MeterMap>>) {
+    pub fn set_meter(&self, meter: Arc<tutti_core::ArcLend<MeterMap>>) {
         self.controls.set_meter(meter);
     }
 

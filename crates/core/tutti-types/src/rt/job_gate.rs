@@ -31,7 +31,7 @@
 //! store-load Dekker pair). Fences rather than `SeqCst` accesses because a
 //! fence is what `loom` models exactly (it treats `SeqCst` accesses as
 //! `AcqRel`, under which the model finds the reordering), and it is what
-//! `RtPublish` uses for its own store-load pair. A helper serves each
+//! `ArcLend` uses for its own store-load pair. A helper serves each
 //! generation at most once.
 //!
 //! The caller never waits on a helper that has not started: a helper still

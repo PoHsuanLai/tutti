@@ -17,7 +17,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tutti_core::{
-    Beat, BeatsPerBar, Bpm, ChannelLayout, Frame, MeterChange, MeterMap, NoteValue, RtPublish,
+    ArcLend, Beat, BeatsPerBar, Bpm, ChannelLayout, Frame, MeterChange, MeterMap, NoteValue,
     SampleRate, Samples, TimeSignature,
 };
 use tutti_graph::{
@@ -309,8 +309,8 @@ fn a_live_node_with_no_latency_is_told_the_blocks_own_time() {
     drop(handle);
 }
 
-fn seven_eight() -> Arc<RtPublish<MeterMap>> {
-    Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
+fn seven_eight() -> Arc<ArcLend<MeterMap>> {
+    Arc::new(ArcLend::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
     )])))

@@ -341,6 +341,7 @@ jobs:
           cargo bench --locked -p tutti-polysynth --bench polysynth      -- --test
           cargo bench --locked -p tutti-sampler   --bench voice_pool     -- --test
           cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process -- --test
+          cargo bench --locked -p arc-lend --bench lend -- --test
 
   test:
     name: test (${{ matrix.os }})
@@ -437,9 +438,10 @@ jobs:
       # The RT primitives in release. Some of their properties only exist
       # with `debug_assertions` off: `AudioThreadCell`'s borrow check was
       # debug-only once (two `&mut T` from safe code in release), and nothing
-      # but this run would have caught it outside the loom job.
-      - name: Test tutti-types (release)
-        run: cargo nextest run --locked --release -p tutti-types
+      # but this run would have caught it outside the loom job. `arc-lend`
+      # too: its stress test runs far more interleavings at release speed.
+      - name: Test tutti-types and arc-lend (release)
+        run: cargo nextest run --locked --release -p tutti-types -p arc-lend
 
       # nextest does NOT run doctests, and says nothing about skipping them.
       # That is not a rounding error here: these are the only tests covering the
@@ -543,8 +545,9 @@ jobs:
   # why this crate and not the rest: ~95% of this repo's `unsafe` is a C
   # ABI, which miri does not execute at all, and out-of-process hosting is the
   # structural answer there instead. Of what is left, the two that matter are
-  # the aliasing in `tutti-types`' `AudioThreadCell` and `RtPublish`'s
-  # hazard-slot reclamation. (The third, the pointer arithmetic in
+  # the aliasing in `tutti-types`' `AudioThreadCell` and `arc-lend`'s
+  # hazard-slot reclamation (`ArcLend`, its own crate since it left
+  # `tutti-types`). (The third, the pointer arithmetic in
   # `tutti-node`'s planar buffers, went with that crate in doc 013 Phase 5: a
   # graph node's buffers are `tutti-graph`'s, which forbids `unsafe`.)
   #
@@ -574,18 +577,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # `denormals.rs`'s two tests are `#[cfg_attr(miri, ignore)]`d — they read
       # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
-      # rather than vanishing, so the run says what it did not cover.
+      # rather than vanishing, so the run says what it did not cover. So are
+      # `rt/parked.rs`'s two: a thousand-odd publishes each, against a retired
+      # list parked loans keep growing, is quadratic and runs past this job's
+      # timeout under miri. They test a debug-only policy check, which the
+      # native nextest run covers; `ArcLend`'s protocol is miri-tested below.
       - run: cargo +nightly miri test --locked -p tutti-types --lib
-      # `rt::publish` again over 16 scheduling seeds: its concurrent-readers
+      # `ArcLend`'s unit tests, its no-alloc gate and its doctests.
+      - run: cargo +nightly miri test --locked -p arc-lend
+      # Its unit tests again over 16 scheduling seeds: the concurrent-readers
       # stress test reports a race on a freed value if either `SeqCst` fence in
-      # `RtPublish` goes, but only on some seeds — the default one alone missed
+      # `ArcLend` goes, but only on some seeds — the default one alone missed
       # it. (A plain x86 run never does — a CAS is already a full barrier
       # there — which is why this job and the loom one both exist.)
-      - run: cargo +nightly miri test --locked -p tutti-types --lib rt::publish
+      - run: cargo +nightly miri test --locked -p arc-lend --lib
         env:
           MIRIFLAGS: -Zmiri-many-seeds=0..16
 
-  # The loom models: `RtPublish`'s reclamation protocol and `PosRing`'s no-tear
+  # The loom models: `ArcLend`'s reclamation protocol and `PosRing`'s no-tear
   # protocol (both run against the shipped code — their atomics switch to
   # loom's under the flag) and the plugin
   # shm header's Release/Acquire protocol (a replica, for the reasons in
@@ -593,10 +602,10 @@ jobs:
   # its own target only, never the workspace.
   #
   # Release, because loom explores every interleaving in-process. The
-  # `RtPublish` models run at a preemption bound of 4: about a minute and a
+  # `ArcLend` models run at a preemption bound of 4: about a minute and a
   # half, and every recorded mutation fails at a bound of 3. The exhaustive run
   # (about 17 minutes, bar one model that is always bounded) is
-  # `just loom-full`, for a change to `rt/publish.rs` itself.
+  # `just loom-full`, for a change to `arc-lend`'s `src/lend.rs` itself.
   loom:
     name: loom
     runs-on: ubuntu-latest
@@ -613,7 +622,7 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked -p tutti-types --release --test rt_publish_loom
+      - run: cargo test --locked -p arc-lend --release --test loom
         env:
           LOOM_MAX_PREEMPTIONS: 4
       # `PosRing`'s no-tear protocol (the disk stream's ring), against the

@@ -7,7 +7,7 @@
 //! Not an `ArcSwap`: the audio thread is the *writer* here (once per block),
 //! and `store` would allocate the new snapshot and free the retired one inside
 //! the callback, which the audio thread must never do.
-//! `RtPublish` is control-thread→audio-thread and also takes ownership of a
+//! `ArcLend` is control-thread→audio-thread and also takes ownership of a
 //! fresh value, so it does not fit either. The sequence lock is
 //! `tutti-types`' [`SeqWriter`] / [`SeqReader`], with its loom model there; this file only
 //! packs and unpacks, and holds no `unsafe`.

@@ -21,7 +21,7 @@
 use super::plan::ChannelPlan;
 use dashmap::DashMap;
 use std::sync::Arc;
-use tutti_core::RtPublish;
+use tutti_core::ArcLend;
 use tutti_core::Samples;
 
 /// Reconcile every streaming channel's preroll against the published
@@ -33,17 +33,17 @@ use tutti_core::Samples;
 /// zero compensation, which is the same answer as "none needed".
 ///
 /// A no-op when nothing is subscribed. Butler thread: it takes an
-/// [`RtPublish::read`] snapshot for the pass rather than per channel, and it
+/// [`ArcLend::lend`] snapshot for the pass rather than per channel, and it
 /// must never run on the audio thread.
 pub(crate) fn apply_pdc_updates(
-    pdc: &Option<Arc<RtPublish<Vec<Samples>>>>,
+    pdc: &Option<Arc<ArcLend<Vec<Samples>>>>,
     plans: &DashMap<usize, ChannelPlan>,
 ) {
     let Some(pdc) = pdc.as_ref() else {
         return;
     };
 
-    let snapshot = pdc.read();
+    let snapshot = pdc.lend();
 
     for mut entry in plans.iter_mut() {
         let channel_index = *entry.key();
@@ -73,8 +73,8 @@ mod tests {
     use std::path::PathBuf;
 
     /// A published compensation table, as `latency::compensate` would produce.
-    fn table(compensations: [usize; 3]) -> Arc<RtPublish<Vec<Samples>>> {
-        Arc::new(RtPublish::new(
+    fn table(compensations: [usize; 3]) -> Arc<ArcLend<Vec<Samples>>> {
+        Arc::new(ArcLend::new(
             compensations.into_iter().map(Samples).collect(),
         ))
     }

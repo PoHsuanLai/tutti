@@ -18,7 +18,7 @@ All file references are to `main` at `8ae55f4b`.
   replaces the knob; modulation adds.
 - **The API compiles; a node evaluates.** `tutti-mod` compiles sources and
   routes into one **control program** per target, published through
-  `RtPublish`. A **control lane node** reads it once per block and sends
+  `ArcLend`. A **control lane node** reads it once per block and sends
   `ParamSegment`s to a native param port or a hosted plugin's parameter.
 - **Export equals live** from the same start beat, under the conditions
   §4.3, §5.3 and §6 state. A lane is a pure function of its program, its
@@ -266,7 +266,7 @@ sorts by id and refuses past the caps, duplicate ids, a bad drawing and
 |---|---|---|
 | Knob | **The node's own `Param` cell** (`ParamSet::cell`, `crates/core/tutti-graph/src/controls.rs:113`), cloned into the lane at creation and loaded once per block. `write_param` writes it; nothing else does. | A lane-owned `AtomicF32`, written by `LaneControls::set_knob` (the API's writes and the plugin's GUI edits, §8.2) |
 | Range | **The port's range cell** (`Editor::set_param_range`, already a store with no commit, `editor.rs:904`). The port clamps per frame. The lane holds a read handle to the same cell (`ParamRanges` moves onto `RangeCell`; PR 2 adds a public accessor) and loads it once per block for the span only. | A lane-owned `RangeCell`, loaded once per block for the span and for the clamp, which splits pieces at crossings (§2) |
-| Program | `RtPublish<ControlProgram>` (`LaneControls::publish`) | same |
+| Program | `ArcLend<ControlProgram>` (`LaneControls::publish`) | same |
 
 **As landed (PR 2a).** `Editor::param_range_cell(at)` hands out a
 read-only view of the port's cell (`ParamRangeReader`, `load` only). The
@@ -423,7 +423,8 @@ the 32-byte event are unchanged.
   program holds frozen `Arc`s, not further cells, so there is no nested read
   (it fixes M7).
 - **The fork's copy comes from the control side.** `RtRef` only `Deref`s
-  (`crates/core/tutti-types/src/rt/publish.rs:786`) and must not leave the
+  (`crates/core/tutti-types/src/rt/publish.rs:786`; now arc-lend's `Loan`,
+  in its `lend.rs`) and must not leave the
   block, so `LaneControls` keeps the last published `Arc<ControlProgram>`
   beside the cell; the fork gathers that.
 - **No audio-thread allocation.** Per-layer and per-input state lives in
@@ -882,7 +883,7 @@ open:
 - **`layer_id(route, depth_by)`** is a fixed 64-bit mix of the keys; two
   layers of one target that collide are refused.
 
-- **Pure**: no clock, no state, no `RtPublish`. Equal declarations compile
+- **Pure**: no clock, no state, no `ArcLend`. Equal declarations compile
   equal; `Compiled` is `Eq`, so a host republishes only what changed.
 - **Stable `LayerId`s** from `(RouteKey, depth-by RouteKey)`: identity and
   sum order survive a republish (it fixes M11).

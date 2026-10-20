@@ -5,7 +5,7 @@
 //! optional duration, and truncating a beat position to `f32` re-introduces
 //! the ~2²⁴ cliff that `Sample.loop_start` was moved to `SamplePosition` (f64)
 //! to escape — so it takes the tier the engine reserves for multi-field
-//! state: an `RtPublish` cell the handle publishes to and the node reads once
+//! state: an `ArcLend` cell the handle publishes to and the node reads once
 //! per block, latest wins. The cell sits in the `VoiceNodeHandle` its
 //! `IntoNode` hands back.
 //!
@@ -154,7 +154,7 @@ fn a_queued_placement_moves_a_live_voice() {
 ///
 /// Mutation (run): `VoiceNode::process` not calling `drain_commands` → the
 /// voice never moves → fails. Mutation (run): `with_handle` handing the
-/// handle a fresh cell rather than the node's (`Arc::new(RtPublish::new(None))`
+/// handle a fresh cell rather than the node's (`Arc::new(ArcLend::new(None))`
 /// in place of `Arc::clone(&self.placement)`) → fails. (Rendering a clone
 /// taken at insert is not a possible mutation: nothing clones a graph node.)
 #[test]
@@ -295,7 +295,7 @@ fn a_placement_sent_after_the_insert_reaches_a_fork() {
 /// second would sound there.
 ///
 /// Mutation (run): `set_placement` publishing only when the cell is empty
-/// (`if self.placement.read().is_none()`) → the first window sticks →
+/// (`if self.placement.lend().is_none()`) → the first window sticks →
 /// fails.
 #[test]
 fn the_latest_placement_wins() {

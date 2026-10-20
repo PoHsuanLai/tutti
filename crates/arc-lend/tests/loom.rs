@@ -1,14 +1,14 @@
-//! A `loom` model of `RtPublish`'s reclamation protocol — the shipped code,
+//! A `loom` model of `ArcLend`'s reclamation protocol — the shipped code,
 //! not a replica.
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
+//! LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p arc-lend --release --test loom
 //! ```
 //!
-//! Under `--cfg loom`, `rt/publish.rs` builds its atomics, fences and mutex
+//! Under `--cfg loom`, `src/lend.rs` builds its atomics, fences and mutex
 //! from `loom` (see its `sync` module), so every interleaving and weak-memory
-//! reordering loom explores below is one the real `read`/`publish`/`drop` can
-//! take. Under the flag `READER_SLOTS` is 2 and `EPOCHS` is 3, so three
+//! reordering loom explores below is one the real `lend`/`publish`/`drop` can
+//! take. Under the flag `DEFAULT_SLOTS` is 2 and `DEFAULT_EPOCHS` is 3, so three
 //! concurrent reads reach the overflow path and a few publishes reuse an
 //! epoch.
 //!
@@ -31,16 +31,15 @@
 //!
 //! # Why this can run against the real code
 //!
-//! `tutti-shm-model` exists as a separate crate with a mirrored protocol
-//! because `--cfg loom` breaks `tutti-plugin`'s dependency closure and its
-//! protocol lives in an mmap loom cannot model. Neither applies here: nothing
-//! `tutti-types` depends on reacts to `cfg(loom)`, and the cell is ordinary
-//! heap state. A replica would have to be kept in step by hand; this cannot
-//! drift.
+//! A model of a replica would have to be kept in step with the code by hand;
+//! this one cannot drift. It can run the real code because nothing the crate
+//! depends on reacts to `cfg(loom)` (it has no dependencies), and the cell is
+//! ordinary heap state: no mmap, no FFI.
 //!
 //! # Mutation record
 //!
-//! Each of these was applied to `rt/publish.rs`, and the model failed (run
+//! Each of these was applied to the cell's code (in tutti, where it was
+//! `tutti_types::RtPublish` in `rt/publish.rs`), and the model failed (run
 //! with `LOOM_MAX_PREEMPTIONS=3`; the failing models are named):
 //!
 //! - the reader's `fence(SeqCst)` removed, or the publisher's → causality
@@ -62,27 +61,57 @@
 //! - a sealed epoch made to pin nothing → `nested_reads_overflow`,
 //!   `overflow_while_another_reader_holds_the_slots`;
 //! - the slot check in `take_unprotected` removed → causality violations;
-//! - `RtRef::drop` made to reclaim → "reader thread freed value N", in every
+//! - `Loan::drop` made to reclaim → "reader thread freed value N", in every
 //!   model;
 //! - the current epoch made to pin nothing → `publishes_with_no_free_epoch`,
 //!   alone. It is the only model that reaches the branch of `advance_epoch`
 //!   that finds no free epoch, where that pin is the only thing keeping a
 //!   stalled publish's retired value alive.
 //!
+//! **Re-run against `arc-lend`** (the moved code, `LOOM_MAX_PREEMPTIONS=3`,
+//! each model run on its own because an aborting model hides the rest). Every
+//! mutation above still fails, and the failing sets are the ones listed or
+//! wider, because the new `one_slot_two_epochs` model joins most of them:
+//!
+//! - either fence removed → every model except
+//!   `overflow_while_another_reader_holds_the_slots` and
+//!   `publishes_with_no_free_epoch` (whose only cross-thread lend overflows);
+//! - the slot path's `Acquire` → `one_reader_two_publishes`,
+//!   `two_readers_one_publish`, `two_publishers_and_a_reader`,
+//!   `xthread_overflow`;
+//! - the overflow path's `Acquire` load → the overflow models,
+//!   `publishes_with_no_free_epoch` and `one_slot_two_epochs`; its
+//!   registering `fetch_add` → the overflow models and `one_slot_two_epochs`;
+//! - the seal's wait deleted → `overflow_while_another_reader_holds_the_slots`;
+//! - the overflow exit's `Release` → the overflow models and
+//!   `one_slot_two_epochs`;
+//! - the slot drop's `Release` → every model with a slot read on another
+//!   thread, `one_slot_two_epochs` included;
+//! - a sealed epoch pinning nothing → `nested_reads_overflow`,
+//!   `overflow_while_another_reader_holds_the_slots`, `xthread_overflow`,
+//!   `publishes_with_no_free_epoch`, `one_slot_two_epochs`;
+//! - the slot check in `take_unprotected` removed → every model but
+//!   `publishes_with_no_free_epoch`;
+//! - `Loan::drop` made to reclaim → "reader thread freed value N" in every
+//!   model but `publishes_with_no_free_epoch` (its reader drops while the
+//!   stalled current epoch pins everything, so there is nothing to free);
+//! - the current epoch pinning nothing → `publishes_with_no_free_epoch` alone.
+//!
 //! One mutation survives, by construction: weakening the overflow reader's
 //! `loaded` increment from `Release` to `Relaxed`. Breaking it needs the
 //! pointer load to read a value published *after* the seal saw the increment — load
 //! buffering — and loom does not explore load buffering. That ordering rests
-//! on the argument in `publish.rs`'s module docs alone.
+//! on the argument in `docs::internal` alone. (Re-run: it still survives,
+//! all eight models pass.)
 
 #![cfg(loom)]
 
+use arc_lend::ArcLend;
 use loom::cell::UnsafeCell;
 use loom::sync::atomic::{AtomicBool, Ordering};
 use loom::sync::Mutex;
 use loom::thread;
 use std::sync::Arc;
-use tutti_types::RtPublish;
 
 /// Bookkeeping shared by every value in one model execution. Its own memory is
 /// never freed by the cell, so it is safe to consult about values that are.
@@ -124,7 +153,7 @@ struct Tracked {
     tracker: std::sync::Arc<Tracker>,
 }
 
-// SAFETY (test): `RtPublish<T>` is shared only when `T: Send + Sync`, and
+// SAFETY (test): `ArcLend<T>` is shared only when `T: Send + Sync`, and
 // loom's `UnsafeCell` is not `Sync`. Sharing it is exactly what the model is
 // checking: readers only `with` (shared), the drop only `with_mut`
 // (exclusive), and loom flags any pair of those that is not ordered by
@@ -170,7 +199,7 @@ impl Drop for Tracked {
 
 /// No preemption bound of its own: exhaustive unless `LOOM_MAX_PREEMPTIONS`
 /// is set. CI sets it to 4 (the suite then takes about a minute and a half);
-/// `just loom-full` leaves it unset and runs every model but one
+/// `just loom-full` (in tutti) leaves it unset and runs every model but one
 /// exhaustively (about 17 minutes); see `model_bounded` for the exception.
 fn model(f: impl Fn() + Sync + Send + 'static) {
     loom::model::Builder::new().check(f);
@@ -195,12 +224,12 @@ fn model_bounded(preemptions: usize, f: impl Fn() + Sync + Send + 'static) {
 fn one_reader_two_publishes() {
     model(|| {
         let tracker = Tracker::new(3);
-        let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
+        let cell = std::sync::Arc::new(ArcLend::from_arc(tracker.make(0)));
 
         let reader = {
             let cell = cell.clone();
             thread::spawn(move || {
-                let r = cell.read();
+                let r = cell.lend();
                 r.check();
                 drop(r);
                 thread::current().id()
@@ -222,13 +251,13 @@ fn one_reader_two_publishes() {
 fn two_readers_one_publish() {
     model(|| {
         let tracker = Tracker::new(2);
-        let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
+        let cell = std::sync::Arc::new(ArcLend::from_arc(tracker.make(0)));
 
         let readers: Vec<_> = (0..2)
             .map(|_| {
                 let cell = cell.clone();
                 thread::spawn(move || {
-                    cell.read().check();
+                    cell.lend().check();
                     thread::current().id()
                 })
             })
@@ -250,14 +279,14 @@ fn two_readers_one_publish() {
 fn nested_reads_overflow() {
     model(|| {
         let tracker = Tracker::new(3);
-        let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
+        let cell = std::sync::Arc::new(ArcLend::from_arc(tracker.make(0)));
 
         let reader = {
             let cell = cell.clone();
             thread::spawn(move || {
-                let a = cell.read();
-                let b = cell.read();
-                let c = cell.read(); // overflow
+                let a = cell.lend();
+                let b = cell.lend();
+                let c = cell.lend(); // overflow
                 a.check();
                 b.check();
                 c.check();
@@ -281,12 +310,12 @@ fn nested_reads_overflow() {
 fn two_publishers_and_a_reader() {
     model(|| {
         let tracker = Tracker::new(3);
-        let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
+        let cell = std::sync::Arc::new(ArcLend::from_arc(tracker.make(0)));
 
         let reader = {
             let cell = cell.clone();
             thread::spawn(move || {
-                cell.read().check();
+                cell.lend().check();
                 thread::current().id()
             })
         };
@@ -312,20 +341,20 @@ fn two_publishers_and_a_reader() {
 fn xthread_overflow() {
     model_bounded(4, || {
         let tracker = Tracker::new(3);
-        let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
+        let cell = std::sync::Arc::new(ArcLend::from_arc(tracker.make(0)));
 
         let single = {
             let cell = cell.clone();
             thread::spawn(move || {
-                cell.read().check();
+                cell.lend().check();
                 thread::current().id()
             })
         };
         let double = {
             let cell = cell.clone();
             thread::spawn(move || {
-                let a = cell.read();
-                let b = cell.read();
+                let a = cell.lend();
+                let b = cell.lend();
                 a.check();
                 b.check();
                 drop((a, b));
@@ -353,15 +382,15 @@ fn xthread_overflow() {
 fn overflow_while_another_reader_holds_the_slots() {
     model(|| {
         let tracker = Tracker::new(4);
-        let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
+        let cell = std::sync::Arc::new(ArcLend::from_arc(tracker.make(0)));
 
         let (taken_tx, taken_rx) = loom::sync::mpsc::channel::<()>();
         let (release_tx, release_rx) = loom::sync::mpsc::channel::<()>();
         let holder = {
             let cell = cell.clone();
             thread::spawn(move || {
-                let a = cell.read();
-                let b = cell.read();
+                let a = cell.lend();
+                let b = cell.lend();
                 taken_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
                 a.check();
@@ -376,7 +405,7 @@ fn overflow_while_another_reader_holds_the_slots() {
         let overflow = {
             let cell = cell.clone();
             thread::spawn(move || {
-                cell.read().check();
+                cell.lend().check();
                 thread::current().id()
             })
         };
@@ -407,21 +436,21 @@ fn overflow_while_another_reader_holds_the_slots() {
 fn publishes_with_no_free_epoch() {
     model(|| {
         let tracker = Tracker::new(5);
-        let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
+        let cell = std::sync::Arc::new(ArcLend::from_arc(tracker.make(0)));
 
         // Both slots, then one overflow read in epoch 0 and one in epoch 1.
-        let s1 = cell.read();
-        let s2 = cell.read();
-        let e0 = cell.read();
+        let s1 = cell.lend();
+        let s2 = cell.lend();
+        let e0 = cell.lend();
         cell.publish(tracker.make(1));
-        let e1 = cell.read();
+        let e1 = cell.lend();
         cell.publish(tracker.make(2));
         assert_eq!(cell.epoch_stalls(), 0);
 
         let reader = {
             let cell = cell.clone();
             thread::spawn(move || {
-                cell.read().check();
+                cell.lend().check();
                 thread::current().id()
             })
         };
@@ -435,6 +464,42 @@ fn publishes_with_no_free_epoch() {
             r.check();
         }
         drop((s1, s2, e0, e1));
+        drop(std::sync::Arc::into_inner(cell).unwrap());
+        tracker.assert_all_freed_off(&[reader]);
+    });
+}
+
+/// The smallest valid cell, with explicit parameters: one slot and two
+/// epochs, so the epoch word's index is a single bit. A reader lends twice
+/// (the second lend overflows) against two publishes, so the overflow epoch
+/// is sealed and the other one reopened while the reader may be in it.
+///
+/// Mutation: build `EPOCH_MASK` as `1 << EPOCH_BITS` (no `- 1`). The
+/// overflow lend then reads its registration count's low bit as the epoch
+/// index and indexes past the two epochs: a panic in the reader.
+#[test]
+fn one_slot_two_epochs() {
+    model(|| {
+        let tracker = Tracker::new(3);
+        let cell: std::sync::Arc<ArcLend<Tracked, 1, 2>> =
+            std::sync::Arc::new(ArcLend::from_arc_with_params(tracker.make(0)));
+
+        let reader = {
+            let cell = cell.clone();
+            thread::spawn(move || {
+                let a = cell.lend();
+                let b = cell.lend(); // overflow
+                a.check();
+                b.check();
+                drop((a, b));
+                thread::current().id()
+            })
+        };
+
+        cell.publish(tracker.make(1));
+        cell.publish(tracker.make(2));
+
+        let reader = reader.join().unwrap();
         drop(std::sync::Arc::into_inner(cell).unwrap());
         tracker.assert_all_freed_off(&[reader]);
     });

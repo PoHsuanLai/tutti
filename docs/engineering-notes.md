@@ -203,14 +203,16 @@ same behaviour is not a type.
 
 Non-scalar state handed from a control thread to the audio thread — a routing
 table, a `MeterMap`, a coefficient set — goes through
-`tutti_types::{RtPublish, RtRef}`. Scalars keep using `Param<U>`.
+`tutti_types::{ArcLend, Loan}`, re-exported from the `arc-lend` crate. Scalars
+keep using `Param<U>`. (It was `RtPublish`/`RtRef` in `tutti-types` until it
+moved into its own crate; see the CHANGELOG.)
 
 **The invariant: the audio thread never holds an owning handle to published
-state.** `read()` returns an `RtRef` — a borrow, `!Send`, lifetime-tied to the
+state.** `lend()` returns a `Loan` — a borrow, `!Send`, lifetime-tied to the
 cell, with no way to get an owning `Arc` back out. `publish()` is control-thread
 only: it frees every retired value no reader still holds, *there*, and leaves
 one a reader is holding on a retirement list for a later publish (or the cell's
-drop) to free — still on the control side. The reader's `RtRef::drop` only
+drop) to free — still on the control side. The reader's `Loan::drop` only
 clears a slot; there is no path from it to a destructor.
 
 This exists because an owning read (`ArcSwap::load_full`) on the audio thread can
@@ -222,25 +224,36 @@ property with a no-alloc test**; the hazard is a race, and sampling schedules
 cannot exhaust one. That is why the guarantee lives in the return type.
 
 Rules:
-- **Read once per block, never per sample.** The read is a slot CAS, a
+- **Lend once per block, never per sample.** A lend is a slot CAS, a
   `SeqCst` fence and an `Acquire` load (plus a `Release` store on drop) — far
   heavier than the atomics beside it. Measured at ~3 ns uncontended, the same
   as the `ArcSwap::load` it replaced, and ~25 ns against a publisher hammering
-  the cell (arc-swap: ~41 ns) — `benches/rt_publish_read.rs`.
-- **Never park an `RtRef`** in a struct field or hold one across blocks (now a
-  compile error rather than a review rule).
-- **Avoid nested reads** — several live `RtRef`s into the same cell. Each
-  occupies one of the cell's reader slots; past them a read registers in an
+  the cell (arc-swap: ~41 ns) — `arc-lend`'s `benches/lend.rs` (measured when
+  it was `tutti-types`' `benches/rt_publish_read.rs`).
+- **Never park a `Loan`** in a struct field or hold one across blocks. The
+  type enforces only part of this: a `Loan` is `!Send` and borrows the cell,
+  so it stays on one thread and cannot outlive the cell, but a struct with a
+  lifetime can still hold one across blocks. In debug builds, tutti's
+  `debug_check_reclaiming` at the busiest publish sites panics once a cell
+  holds back `PARKED_LOAN_LIMIT` (1024) retired values.
+- **Avoid nested lends** — several live `Loan`s into the same cell. Each
+  occupies one of the cell's reader slots; past them a lend registers in an
   overflow *epoch* instead, which is just as wait-free and allocation-free for
   the reader but tells the publisher only which run of values was current
   while the epoch was open, so it pins that whole run (usually one or two
-  values). A forgotten overflow `RtRef` pins its run forever and nothing else;
-  the retired list stays bounded. (The slot and epoch counts are
-  implementation details — don't code against a number.)
+  values). A forgotten overflow `Loan` pins its run forever and nothing else;
+  the retired list stays bounded. (The slot and epoch counts are the cell's
+  const parameters, `ArcLend<T, SLOTS = 8, EPOCHS = 4>`; the engine uses the
+  defaults — don't code against a number.) The cell neither asserts nor logs
+  when parked loans stall reclamation; `retired_len()` and `epoch_stalls()`
+  are there for a host to poll with its own policy. tutti's is
+  `tutti_types::debug_check_reclaiming`, called after the two publishes a
+  drag repeats every frame (an automation lane's program, a sampler voice's
+  placement): a debug build panics once 1024 retired values are waiting.
 - **Never `publish` from the audio thread** — it stalls the callback *and* frees
   inside it.
-- Nullable hot-swap slots go through `RtPublish` as well, as
-  `RtPublish<Option<Arc<_>>>`: the plugin nodes' `PluginMeter` publishes the
+- Nullable hot-swap slots go through `ArcLend` as well, as
+  `ArcLend<Option<Arc<_>>>`: the plugin nodes' `PluginMeter` publishes the
   installed meter cell's `Arc`, so the node borrows it and an install or
   clear during playback retires the old cell for the control side to free.
   They were `ArcSwapOption` until a host that installed a meter it did not
@@ -248,10 +261,10 @@ Rules:
   audio thread (the guard-debt hazard below). The node's read is then nested
   (the slot, then the meter cell), but in two cells, one reader slot each.
   Control-thread-only cells (device enumeration in `tutti-midi-hardware`)
-  stay plain; its per-block port set is an `RtPublish` behind a publisher
+  stay plain; its per-block port set is an `ArcLend` behind a publisher
   lock.
 
-**The guarantee is structural.** `RtPublish` used to wrap `ArcSwap`, which made
+**The guarantee is structural.** The cell (then `RtPublish`) used to wrap `ArcSwap`, which made
 RT deallocation very unlikely and bounded but not *impossible*: a guard whose
 debt a writer settled concurrently degraded into an owning reference, and its
 drop could be the last one. It is now an `AtomicPtr` plus per-cell hazard slots,
@@ -260,9 +273,9 @@ overflow epochs, and a retirement list the audio thread never touches (doc 013
 claims a slot, fences, loads, and announces (or, with every slot taken,
 registers in the current epoch with one RMW and loads); a publisher swaps,
 fences, advances the epoch, and frees only what no slot announces and no live
-epoch pins. The soundness argument, in C++20 terms, is in `rt/publish.rs`'s
-module docs. On the slot path the `SeqCst` fence pair is the whole argument,
-and both halves are load-bearing: the loom model (`tutti-types/tests/rt_publish_loom.rs`, run
+epoch pins. The soundness argument, in C++20 terms, is in `arc-lend`'s
+`docs::internal` (`crates/arc-lend/src/docs/internal.rs`). On the slot path the `SeqCst` fence pair is the whole argument,
+and both halves are load-bearing: the loom model (`arc-lend/tests/loom.rs`, run
 against the shipped code; bounded in CI, exhaustive under `just loom-full`)
 fails with either removed, and so does miri, over 16 seeds, on the concurrent
 stress test. A plain x86 run does not — its CAS is
@@ -311,7 +324,7 @@ What covers it instead:
 
 Nothing pins the fences. On x86 crossbeam's tail CAS is already a full
 barrier, so removing either fence passes every test there, as it does for
-`RtPublish` outside loom and miri. If this handshake ever grows past one
+`ArcLend` outside loom and miri. If this handshake ever grows past one
 flag and one drain, move it to `tutti-types` and model it.
 
 ### `ScopedNoDenormals`, and why not `no_denormals`

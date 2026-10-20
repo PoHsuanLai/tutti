@@ -99,7 +99,7 @@ node renders lives behind an `Arc`, shared across clones.
 | a multi-field struct, or anything heap-backed | a command queue: flatten the struct into scalar fields, allocate sender-side, drain in the callback |
 
 A plain `AtomicBool` field is not enough: `Clone` copies the atomic rather
-than sharing it, so writes to one clone never reach another. `RtPublish` is
+than sharing it, so writes to one clone never reach another. `ArcLend` is
 for moving a *deallocation* off the audio thread (routing tables, delay
 vectors), not for sharing a small `Copy` value.
 

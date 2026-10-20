@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use arrayvec::ArrayVec;
-use tutti_core::{ChannelLayout, MeterMap, RtPublish, Samples};
+use tutti_core::{ArcLend, ChannelLayout, MeterMap, Samples};
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, SortedEvents,
     Status, Ump,
@@ -242,7 +242,7 @@ pub struct InProcessVst2Controls {
 impl InProcessVst2Controls {
     /// Gives the plugin the project meter (see
     /// [`InProcessVst2Client::set_meter`]).
-    pub fn set_meter(&self, meter: Arc<RtPublish<MeterMap>>) {
+    pub fn set_meter(&self, meter: Arc<ArcLend<MeterMap>>) {
         self.meter.set_meter(meter);
     }
 

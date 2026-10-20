@@ -13,8 +13,8 @@ use tutti_graph::{
 };
 use tutti_mod::{Clock, ControlProgram, CurveSegment, ProgramTime, Wave, MAX_LANE_INPUTS};
 use tutti_types::{
-    AtomicF32, Beat, Frame, ParamAddr, ParamKey, RangeCell, RtPublish, SamplePosition, Samples,
-    Tail, Unit, UnitParam,
+    debug_check_reclaiming, ArcLend, AtomicF32, Beat, Frame, ParamAddr, ParamKey, RangeCell,
+    SamplePosition, Samples, Tail, Unit, UnitParam,
 };
 
 use super::lane::segment_shape;
@@ -70,9 +70,9 @@ struct Published {
 
 /// What a lane shares with its [`LaneControls`] and its fork source.
 struct Shared {
-    program: RtPublish<Published>,
+    program: ArcLend<Published>,
     /// The last program published and its generation, for the fork (an
-    /// `RtRef` must not leave the block, doc 014 §4.5) and the next
+    /// `Loan` must not leave the block, doc 014 §4.5) and the next
     /// publish's generation. Control thread only.
     last: Mutex<(u64, Arc<ControlProgram>)>,
     /// Set by [`LaneControls::resync`]: the next block sends at frame 0.
@@ -106,6 +106,9 @@ impl LaneControls {
             generation,
             program,
         }));
+        // A modulation edit republishes this every frame: where a parked
+        // `Loan` shows first. Debug builds only.
+        debug_check_reclaiming(&self.0.program);
     }
 
     /// The program last published (or built with).
@@ -285,7 +288,7 @@ impl ControlLaneNode {
         native: bool,
     ) -> Self {
         let shared = Shared {
-            program: RtPublish::new(Published {
+            program: ArcLend::new(Published {
                 generation: 0,
                 program: Arc::clone(&program),
             }),
@@ -912,7 +915,7 @@ impl Node for ControlLaneNode {
             return Status::Modified;
         }
         let s = &*self.shared;
-        let published = s.program.read();
+        let published = s.program.lend();
         let (generation, program) = (published.generation, &*published.program);
         let knob = s
             .knob
@@ -1057,5 +1060,35 @@ impl IntoNode for ControlLaneNode {
             controls,
             fork: Some(Box::new(fork)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A loan of the lane's program parked across blocks trips the debug net
+    /// at `publish`, before the retired list grows without bound.
+    ///
+    /// Mutation: delete the `debug_check_reclaiming` call in `publish_arc`.
+    /// Every publish succeeds and the test fails with "did not panic".
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a `Loan` is parked across blocks")]
+    fn a_parked_program_loan_trips_the_debug_net() {
+        let empty = || ControlProgram::new(None, vec![], vec![]).expect("a valid program");
+        let lane = ControlLaneNode::for_unit(UnitParam::Volume, empty(), None, None);
+        let controls = lane.controls();
+        // What a lane that kept its loans would do: loans in every overflow
+        // epoch, so nothing retired after them can be reclaimed.
+        let mut parked = Vec::new();
+        for _ in 0..4 {
+            parked.extend((0..16).map(|_| controls.0.program.lend()));
+            controls.publish(empty());
+        }
+        for _ in 0..tutti_types::PARKED_LOAN_LIMIT {
+            controls.publish(empty());
+        }
+        drop(parked);
     }
 }

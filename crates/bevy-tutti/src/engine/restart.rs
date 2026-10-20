@@ -327,7 +327,7 @@ mod tests {
             app.world()
                 .resource::<ChannelCompensation>()
                 .0
-                .read()
+                .lend()
                 .first()
                 .copied(),
             Some(new_latency),
@@ -378,7 +378,7 @@ mod tests {
         let new_latency = latency_of(&app, lim);
         assert_ne!(new_latency, old_latency, "the lookahead moved in samples");
         assert_eq!(app.world().resource::<GraphLatency>().0, new_latency);
-        let table = app.world().resource::<ChannelCompensation>().0.read();
+        let table = app.world().resource::<ChannelCompensation>().0.lend();
         assert_eq!(
             table.first().copied(),
             Some(new_latency),
@@ -474,7 +474,7 @@ mod tests {
             assert_eq!(block.len(), 480 * 6);
             app.update();
         }
-        let table = app.world().resource::<ChannelCompensation>().0.read();
+        let table = app.world().resource::<ChannelCompensation>().0.lend();
         assert_eq!(table.len(), 6, "the committed root is six wide");
         drop(table);
 

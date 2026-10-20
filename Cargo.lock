@@ -149,6 +149,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-lend"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "assert_no_alloc",
+ "criterion",
+ "loom",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4649,12 +4659,11 @@ dependencies = [
 name = "tutti-types"
 version = "0.0.1"
 dependencies = [
- "arc-swap",
+ "arc-lend",
  "arrayvec",
  "assert_no_alloc",
  "atomic_float",
  "bevy_reflect",
- "criterion",
  "libc",
  "loom",
  "serde",

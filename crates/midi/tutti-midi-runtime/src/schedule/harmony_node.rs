@@ -12,13 +12,13 @@
 //! mid-lane therefore always has the context, which the timeline-polling
 //! source this replaces left out ("priming-on-join").
 //!
-//! The lanes are published to the node with [`RtPublish`]
+//! The lanes are published to the node with [`ArcLend`]
 //! ([`HarmonyControls::set`]); the node reads them once per block.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::{Beat, ChannelLayout, RtPublish};
+use tutti_core::{ArcLend, Beat, ChannelLayout};
 use tutti_graph::{
     Cx, Event, EventWriter, ForkCause, ForkMode, ForkSource, Forked, Harmony, HarmonyKind,
     IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
@@ -75,7 +75,7 @@ fn lanes(generation: u64, changes: impl IntoIterator<Item = TimedHarmony>) -> La
 
 /// What the node and its controls share.
 struct Shared {
-    cell: RtPublish<Lanes>,
+    cell: ArcLend<Lanes>,
     next_generation: AtomicU64,
 }
 
@@ -104,13 +104,13 @@ impl HarmonyNode {
     /// A node sending `changes` (in any order: they are sorted by beat).
     pub fn new(changes: impl IntoIterator<Item = TimedHarmony>) -> Self {
         Self::over(Arc::new(Shared {
-            cell: RtPublish::new(lanes(0, changes)),
+            cell: ArcLend::new(lanes(0, changes)),
             next_generation: AtomicU64::new(1),
         }))
     }
 
     fn over(shared: Arc<Shared>) -> Self {
-        let generation = shared.cell.read().generation;
+        let generation = shared.cell.lend().generation;
         Self {
             shared,
             generation,
@@ -132,7 +132,7 @@ impl HarmonyControls {
     /// beat order) change nothing. Control thread.
     pub fn set(&self, changes: impl IntoIterator<Item = TimedHarmony>) {
         let next = lanes(0, changes);
-        if self.shared.cell.read().changes == next.changes {
+        if self.shared.cell.lend().changes == next.changes {
             return;
         }
         let generation = self.shared.next_generation.fetch_add(1, Ordering::Relaxed);
@@ -149,7 +149,7 @@ impl HarmonyControls {
 
     /// How many changes the lanes hold.
     pub fn len(&self) -> usize {
-        self.shared.cell.read().changes.len()
+        self.shared.cell.lend().changes.len()
     }
 
     /// Whether the lanes hold no change.
@@ -211,7 +211,7 @@ impl Node for HarmonyNode {
     fn prepare(&mut self, _p: &Prepare) {}
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let lanes = self.shared.cell.read();
+        let lanes = self.shared.cell.lend();
         if lanes.generation != self.generation {
             self.generation = lanes.generation;
             self.walk.forget();
@@ -239,7 +239,7 @@ struct HarmonyFork {
 
 impl ForkSource for HarmonyFork {
     fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
-        let changes = self.shared.cell.read().changes.clone();
+        let changes = self.shared.cell.lend().changes.clone();
         let node = HarmonyNode::new(changes.iter().copied());
         Ok(Forked::new(Box::new(node)))
     }

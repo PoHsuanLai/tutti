@@ -71,7 +71,7 @@ fn two_reads(reader: &SeqReader<2>) {
 // The writer now only stores (it keeps its own sequence), so either
 // placement explores; both run, so a writer that loads again cannot hide
 // behind one of them. (The same limit under-explores `job_gate`,
-// `rt_publish`'s `two_publishers_and_a_reader` and several `pos_ring` models
+// `arc-lend`'s `two_publishers_and_a_reader` and several `pos_ring` models
 // by 4 to 24%; that fix is a separate change.)
 
 /// The writer on the main thread, the reader spawned.

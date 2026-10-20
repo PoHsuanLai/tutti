@@ -4,7 +4,7 @@ use super::{BufferConfig, ButlerSender, ButlerThread};
 use crate::error::Result;
 use crate::ports::{Commands, Status};
 use std::sync::Arc;
-use tutti_core::RtPublish;
+use tutti_core::ArcLend;
 use tutti_core::SampleRate;
 use tutti_core::Samples;
 
@@ -229,7 +229,7 @@ pub struct DiskStreamerConfig {
     /// downstream effects stay sample-aligned. Published by whoever runs
     /// `tutti_core::latency::compensate` over the audio graph — the table is
     /// [`Compensation::channels`](tutti_core::Compensation::channels).
-    pub pdc: Option<Arc<RtPublish<Vec<Samples>>>>,
+    pub pdc: Option<Arc<ArcLend<Vec<Samples>>>>,
 }
 
 // Hand-rolled: print the buffer config + whether a subscription is set, not
@@ -517,7 +517,7 @@ mod tests {
     fn pdc_subscription_is_shared_not_copied() {
         // The caller owns the table and keeps publishing to it after the
         // sampler is built; the sampler must observe those later stores.
-        let pdc = Arc::new(RtPublish::new(vec![Samples(100), Samples(0)]));
+        let pdc = Arc::new(ArcLend::new(vec![Samples(100), Samples(0)]));
 
         let _sampler = DiskStreamer::new(
             44100.0,
@@ -529,6 +529,6 @@ mod tests {
         .unwrap();
 
         pdc.publish(Arc::new(vec![Samples(512), Samples(0)]));
-        assert_eq!(pdc.read()[0], Samples(512));
+        assert_eq!(pdc.lend()[0], Samples(512));
     }
 }

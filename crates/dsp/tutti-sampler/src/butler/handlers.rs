@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tutti_core::RtPublish;
+use tutti_core::ArcLend;
 use tutti_core::{AtomicF64, Ordering, SampleRate, Samples, SrcRatio};
 
 use super::cache::LruCache;
@@ -29,7 +29,7 @@ pub(super) struct Handles {
     pub cache: Arc<LruCache>,
     pub metrics: Arc<Metrics>,
     /// Lock-free subscription to the compensation table. `None` = no PDC wiring.
-    pub pdc: Option<Arc<RtPublish<Vec<Samples>>>>,
+    pub pdc: Option<Arc<ArcLend<Vec<Samples>>>>,
     /// The session rate each stream's [`SrcRatio`] is derived against.
     pub session_rate: SessionRate,
 }
@@ -299,7 +299,7 @@ fn handle_stream_file(
     }
 
     let pdc_preroll = shared.pdc.as_ref().map_or(0, |pdc| {
-        pdc.read()
+        pdc.lend()
             .get(channel_index)
             .copied()
             .unwrap_or_default()

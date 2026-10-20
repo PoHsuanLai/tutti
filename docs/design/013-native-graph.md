@@ -236,7 +236,19 @@ the interpreter.
   installed cell, so an install or clear mid-block retires it for the control
   side, whether or not the host kept a clone. Its read is nested, one slot in
   each of two cells. The plugin tail, which no audio thread reads, is a
-  `Mutex`. `arc-swap` is now only `tutti-types`' bench baseline.
+  `Mutex`. `arc-swap` is now only `tutti-types`' bench baseline (since the
+  move below, `arc-lend`'s).
+- **Landed (arc-lend E1): the cell is its own crate.** `RtPublish`/`RtRef`
+  are `arc_lend::{ArcLend, Loan}` in `crates/arc-lend`, which names nothing
+  of tutti's and is re-exported as `tutti_types::{ArcLend, Loan}`; `read()`
+  is `lend()`. The protocol is unchanged (the loom model, its mutation
+  record, the stress test and the bench moved with it, to
+  `arc-lend/tests/loom.rs` and `arc-lend/benches/lend.rs`). The slot and
+  epoch counts became const parameters with the old values as defaults
+  (`ArcLend<T, SLOTS = 8, EPOCHS = 4>`), and the debug assertion at 1024
+  retired values went: a library does not assert on its host's behaviour,
+  and `retired_len()`/`epoch_stalls()` are what a host polls. The paths in
+  the bullet above are as they were when #15 landed.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
   tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is
@@ -2377,7 +2389,8 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   taken off the reader's position) — moves the window there; a jump inside it
   costs nothing, and a reader a little past its end is caught up rather than
   moved.
-- **The no-tear protocol is `tutti_types::PosRing`'s**, beside `RtPublish`,
+- **The no-tear protocol is `tutti_types::PosRing`'s**, beside what was then
+  `RtPublish` (now the `arc-lend` crate's `ArcLend`),
   and checked the same way: its atomics become loom's under `--cfg loom`, and
   `tutti-types/tests/pos_ring_loom.rs` models a reader making two claims
   against a writer that pushes round the ring, retracts then pushes, and
@@ -3094,7 +3107,8 @@ same-kind sibling batching; `clap.thread-pool`; then (optional) REAPER-style
 anticipative partition for nodes with no live-input dependency, with export as
 its degenerate case.
 
-`RtPublish` under the parallel executor: its eight reader slots per cell share
+`RtPublish` (now `arc-lend`'s `ArcLend`, whose slot count is a const
+parameter) under the parallel executor: its eight reader slots per cell share
 one cache line, so many worker cores reading the same cell every block will
 bounce that line between them, and past eight concurrent readers the rest take
 the overflow epochs (safe and bounded, but coarser reclamation). If profiling
@@ -3105,8 +3119,9 @@ workers a reference, so only one reader touches the cell at all.
 
 That is how it landed: the executor reads the plan once per block on the
 calling thread and hands every worker `&Plan`; no worker reads an
-`RtPublish` cell for the plan. Nodes that read their own `RtPublish` cells
-still do so from whichever worker runs them, one read per block each.
+`ArcLend` cell (then `RtPublish`) for the plan. Nodes that lend their own
+`ArcLend` cells still do so from whichever worker runs them, one lend per
+block each.
 
 #### Phase 6, part (a): the parallel executor
 
@@ -3171,7 +3186,8 @@ Decisions:
    run exhaustively (`tests/task_graph_loom.rs`, ~8 minutes at
    `LOOM_MAX_PREEMPTIONS=3`). Revisit if profiling shows the head's cache
    line contended.
-2. **The unsafe goes in `tutti-types`**, next to `RtPublish`, where the loom
+2. **The unsafe goes in `tutti-types`**, next to `RtPublish` (which has
+   since moved to its own crate, `arc-lend`; these three stay), where the loom
    infrastructure is, and not in `tutti-graph` or `tutti-core`: the three
    primitives are generic (no graph types), and `tutti-graph`'s dependency
    limits did not change.

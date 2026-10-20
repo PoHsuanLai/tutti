@@ -10,7 +10,7 @@ use std::thread::{self, JoinHandle};
 
 use dashmap::DashMap;
 use thread_priority::ThreadPriority;
-use tutti_core::RtPublish;
+use tutti_core::ArcLend;
 use tutti_core::SampleRate;
 use tutti_core::Samples;
 
@@ -92,10 +92,10 @@ impl ButlerThread {
     /// index and denominated in [`Samples`].
     ///
     /// Published by whoever runs `tutti_core::latency::compensate` over the
-    /// audio graph; the butler takes a fresh [`RtPublish::read`] snapshot each
+    /// audio graph; the butler takes a fresh [`ArcLend::lend`] snapshot each
     /// refill cycle and pre-rolls each stream by its channel's entry. The
     /// subscription is shared, not copied, so later publications are observed.
-    pub fn with_pdc(mut self, snapshot: Arc<RtPublish<Vec<Samples>>>) -> Self {
+    pub fn with_pdc(mut self, snapshot: Arc<ArcLend<Vec<Samples>>>) -> Self {
         self.shared.pdc = Some(snapshot);
         self
     }

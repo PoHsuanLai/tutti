@@ -19,7 +19,7 @@ use super::disk_voice::VoiceHealth;
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice};
 use super::VoiceWindow;
-use tutti_core::{Amplitude, ChannelLayout, Param, RtPublish, SampleRate, Tail, UnitParam};
+use tutti_core::{Amplitude, ArcLend, ChannelLayout, Param, SampleRate, Tail, UnitParam};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, ParamSet, Prepare,
     Shape, Status,
@@ -42,7 +42,7 @@ use tutti_graph::{
 ///   [`UnitParam::Volume`] through the handle's [`ParamSet`]. The node reads
 ///   it once per block into the voice's `Playback` record and its source.
 /// - **placement** — a [`Beat`](tutti_core::Beat) and an optional duration:
-///   not a scalar, so the handle publishes it to an `RtPublish` cell the
+///   not a scalar, so the handle publishes it to an `ArcLend` cell the
 ///   node reads once per block, latest wins, allocation-free.
 ///
 /// # Forks
@@ -128,7 +128,7 @@ impl VoiceNode {
     /// placement set through a handle taken before no longer reaches the
     /// node (its gain still does: that cell is the node's for life).
     pub fn with_handle(mut self) -> (Self, VoiceNodeHandle) {
-        self.placement = Arc::new(RtPublish::new(None));
+        self.placement = Arc::new(ArcLend::new(None));
         let params = self.param_set();
         let handle = VoiceNodeHandle {
             placement: Arc::clone(&self.placement),
@@ -150,7 +150,7 @@ impl VoiceNode {
     /// Apply the published placement, and the gain. Runs at the top of each
     /// block.
     ///
-    /// Allocation- and free-free by construction: one `RtPublish` read (a
+    /// Allocation- and free-free by construction: one `ArcLend` read (a
     /// borrow that cannot free, dropped before the block's read), a `Copy`
     /// window, and a field write when it changed. The pool's drain has to be
     /// more careful because its commands carry owned payloads (a `Voice`, a
@@ -161,7 +161,7 @@ impl VoiceNode {
     /// drives it (its last frame, [`VOICE_PARAMS`]); `None` reads the cell.
     #[inline]
     fn drain_commands(&mut self, driven: Option<f32>) {
-        let published = *self.placement.read();
+        let published = *self.placement.lend();
         if published != self.applied {
             if let Some(window) = published {
                 // Placement is the source's alone: `Playback` has no
@@ -353,7 +353,7 @@ struct VoiceNodeFork {
 impl ForkSource for VoiceNodeFork {
     fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         let mut voice = self.template.fork_copy(mode)?;
-        let placed = *self.placement.read();
+        let placed = *self.placement.lend();
         if let Some(window) = placed {
             voice.source.apply_placement(window.start, window.duration);
         }

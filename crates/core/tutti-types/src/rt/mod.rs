@@ -24,9 +24,6 @@
 //! - [`RtVec`] — collect-then-lend through `&mut self`: a capped collection
 //!   that owns its storage and exposes it as `&[T]`. What a per-block pool
 //!   wants when its owner already has `&mut self`.
-//! - [`RtPublish`] — a value published from a control thread and read by the
-//!   audio thread, where the read is a *borrow*: the callback never holds an
-//!   owning handle, so retired values are freed by the publisher.
 //! - [`PosRing`] — frames a writer thread places ahead of the audio thread,
 //!   indexed by position rather than consumed in order (a disk stream's ring):
 //!   one [`PosWriter`] and one [`PosReader`], whose [`PosClaim`] reads any
@@ -47,14 +44,17 @@
 //!   threads: self-resetting activation counters and a ready list.
 //! - [`JobGate`] — lends a borrowed job to a pool's helper threads for one
 //!   call and returns only when every helper has let go of it.
+//! - [`debug_check_reclaiming`] — tutti's debug net for a parked
+//!   [`Loan`](crate::Loan): a debug build panics once a publish cell holds
+//!   back [`PARKED_LOAN_LIMIT`] retired values.
 //! - [`ScopedNoDenormals`] — RAII guard that flushes subnormals to zero for the
 //!   duration of an audio block, then restores the FPU control register.
 
 pub mod cell;
 pub mod denormals;
 pub mod job_gate;
+pub mod parked;
 pub mod pos_ring;
-pub mod publish;
 pub mod range_cell;
 pub mod scope;
 pub mod seq_cell;
@@ -66,10 +66,10 @@ pub mod vec;
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
 pub use job_gate::JobGate;
+pub use parked::{debug_check_reclaiming, PARKED_LOAN_LIMIT};
 pub use pos_ring::{
     PosClaim, PosFrame, PosReader, PosRing, PosWriter, RingWindow, MAX_POS_RING_FRAMES,
 };
-pub use publish::{RtPublish, RtRef};
 pub use range_cell::RangeCell;
 pub use scope::{RtScope, RtScopeGuard};
 pub use seq_cell::{SeqReader, SeqWriter, SEQ_CELL_READ_RETRIES};

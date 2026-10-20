@@ -11,7 +11,7 @@
 //! primes it), and each test drives a plugin switch that *provokes* the corner
 //! rather than the default configuration.
 //!
-//! This says nothing about the `RtPublish` deallocation property, which is a
+//! This says nothing about the `ArcLend` deallocation property, which is a
 //! race no allocation-sampling test can pin. Likewise the `clap.log` mutex: its
 //! allocations are gated below, but a priority inversion is invisible here and
 //! is handled by construction — the host refuses to reach the lock from the

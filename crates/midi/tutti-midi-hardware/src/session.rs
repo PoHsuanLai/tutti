@@ -19,11 +19,11 @@
 //! [`InputProducerHandle`] of a [`HardwareMidiInputs`] ring, which the audio
 //! thread drains via `MidiIn`. That is why there is no `poll` on this type.
 //!
-//! The connection map is a plain `Mutex`, not an [`RtPublish`]: nothing here is
+//! The connection map is a plain `Mutex`, not an [`ArcLend`]: nothing here is
 //! read from the audio thread, and `CLAUDE.md` names device enumeration in this
 //! crate as a deliberate exception to the publish rule.
 //!
-//! [`RtPublish`]: tutti_midi_types::RtPublish
+//! [`ArcLend`]: tutti_midi_types::ArcLend
 //! [`HardwareMidiInputs`]: crate::HardwareMidiInputs
 //! [`InputProducerHandle`]: crate::InputProducerHandle
 

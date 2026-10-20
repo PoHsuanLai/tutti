@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `RtPublish` is now the `arc-lend` crate's `ArcLend`
+
+The publish cell left `tutti-types` for its own crate, `crates/arc-lend`
+(`publish = false`), which depends on nothing and names nothing of tutti's.
+The protocol is unchanged; the loom model, the unit tests, the no-alloc gate
+and the bench moved with it. `tutti-types` and `tutti-core` re-export the new
+names (no aliases for the old ones).
+
+| Was | Now |
+|---|---|
+| `tutti_types::RtPublish<T>` (and `tutti_core::`, `tutti_midi_types::`) | `tutti_types::ArcLend<T>` (same re-exports), `arc_lend::ArcLend<T, SLOTS = 8, EPOCHS = 4>` |
+| `tutti_types::RtRef<'a, T>` | `tutti_types::Loan<'a, T>` |
+| `RtPublish::read()` | `ArcLend::lend()` |
+| `RtPublish::new`, `from_arc`, `publish`, `retired_len`, `epoch_stalls` | unchanged |
+| reader slots and epochs: private constants (8 and 4) | const parameters with those defaults, checked at compile time (`1 ≤ SLOTS ≤ MAX_SLOTS = 1024`, `2 ≤ EPOCHS ≤ MAX_EPOCHS = 64`); `ArcLend::new_with_params` / `from_arc_with_params` build a non-default cell |
+| a debug assertion inside every cell once 1024 retired values were waiting | none in `arc-lend` (it reports `retired_len()` / `epoch_stalls()`); tutti's own policy is `tutti_types::debug_check_reclaiming` (threshold `PARKED_LOAN_LIMIT = 1024`, debug builds), called after the publishes of an automation lane's program and a sampler voice's placement, the cells a drag republishes every frame |
+| `tutti-types/tests/rt_publish_loom.rs` | `arc-lend/tests/loom.rs` |
+| `tutti-types/benches/rt_publish_read.rs` | `arc-lend/benches/lend.rs` (now also in `just bench` and CI's bench smoke) |
+| `PluginMeter::read` (crate-private) | `PluginMeter::lend` |
+
+Migration: rename the types, and `.read()` on a cell to `.lend()`. A cell
+outside those two sites no longer asserts on a parked `Loan`; call
+`debug_check_reclaiming` after its `publish` to restore the check. CI's miri and loom jobs, `just miri`, `just loom` and
+`just loom-full` run `-p arc-lend`.
+
 ### Changed — `ScopedNoDenormals` is `!Send` and `!Sync`, and documents its soundness
 
 - `ScopedNoDenormals` is `!Send` and `!Sync`: dropped on another thread, a guard would write its own thread's saved MXCSR/FPCR there. Migration: build the guard on the thread whose block it covers, as every in-tree caller already does.

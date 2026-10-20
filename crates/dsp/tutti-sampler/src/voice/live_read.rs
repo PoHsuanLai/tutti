@@ -40,7 +40,7 @@
 //! over [`RAMP_FRAMES`], never cut.
 //!
 //! Nothing here allocates, locks or blocks: the buffers are sized at
-//! construction, the map is read once per block (`RtPublish`), and the ring's
+//! construction, the map is read once per block (`ArcLend`), and the ring's
 //! samples are atomics.
 //!
 //! # The one reader

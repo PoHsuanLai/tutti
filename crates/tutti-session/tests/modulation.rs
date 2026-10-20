@@ -506,7 +506,7 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
     assert_eq!(s.mod_state().unresolved_targets(), &[], "the lane is built");
     assert_eq!(s.latency(), Samples(LATE), "the re-apply's plan, published");
     assert_eq!(
-        s.compensation().read().as_slice(),
+        s.compensation().lend().as_slice(),
         s.graph_ref()
             .sent_compensation()
             .expect("a plan was sent")

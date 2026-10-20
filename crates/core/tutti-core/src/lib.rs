@@ -56,8 +56,8 @@ pub use tutti_types::meter::{
     TimeSignature,
 };
 pub use tutti_types::{
-    PosClaim, PosFrame, PosReader, PosRing, PosWriter, RingWindow, RtPublish, RtRef,
-    MAX_POS_RING_FRAMES,
+    debug_check_reclaiming, ArcLend, Loan, PosClaim, PosFrame, PosReader, PosRing, PosWriter,
+    RingWindow, MAX_POS_RING_FRAMES, PARKED_LOAN_LIMIT,
 };
 
 mod metering;

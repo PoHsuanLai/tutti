@@ -413,6 +413,10 @@ impl Contender for MutexCell {
 
     fn new(init: Payload) -> (Self::Writer, Self::Reader) {
         let cell = Arc::new(Mutex::new(Arc::new(init)));
+        // Where std's mutex is pthread-backed (macOS), it is boxed on first
+        // lock: take it once here, so that one-off allocation is the cell's
+        // construction and not whichever counted reader happens to lock first.
+        drop(cell.lock().unwrap());
         (cell.clone(), cell)
     }
     fn reader(r: &Self::Reader) -> Self::Reader {
@@ -443,6 +447,8 @@ impl Contender for RwLockCell {
 
     fn new(init: Payload) -> (Self::Writer, Self::Reader) {
         let cell = Arc::new(RwLock::new(Arc::new(init)));
+        // First use initializes the lock here, as in `MutexCell::new`.
+        drop(cell.write().unwrap());
         (cell.clone(), cell)
     }
     fn reader(r: &Self::Reader) -> Self::Reader {

@@ -4,15 +4,44 @@
 //!
 //! These are deterministic (each handshake fixes the order), so they run in
 //! the ordinary test suite, unlike the benchmark.
+//!
+//! A handshake inside a counted window is a [`Step`], never a
+//! `std::sync::Barrier`: where std's mutex and condvar are pthread-backed and
+//! boxed on first use (macOS), a barrier's first `wait` allocates on whichever
+//! thread gets there first, and the reader was charged two allocations that
+//! were the barrier's, not the cell's.
 
 use std::hint::black_box;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
 
 use arc_lend_compare::{begin_counting, end_counting, live_payloads, CountingAlloc, Payload};
 
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc;
+
+/// A handshake that neither allocates nor frees on any platform: one thread
+/// [`reach`](Step::reach)es a step, the other [`wait`](Step::wait)s for it.
+///
+/// Mutation: make `reach` allocate (`drop(black_box(Box::new(n)))` before the
+/// store), as a lazily boxed barrier does on macOS.
+/// `an_arc_lend_loan_frees_nothing_on_the_reader` then reads
+/// `Counts { allocs: 1, frees: 1, .. }`,
+/// `a_promoted_arc_swap_guard_frees_on_the_reader` reads `allocs: 1, frees: 3`
+/// and `another_threads_allocations_are_not_counted` reads `allocs: 1`.
+#[derive(Default)]
+struct Step(AtomicU8);
+
+impl Step {
+    fn reach(&self, n: u8) {
+        self.0.store(n, Ordering::Release);
+    }
+    fn wait(&self, n: u8) {
+        while self.0.load(Ordering::Acquire) < n {
+            std::hint::spin_loop();
+        }
+    }
+}
 
 /// Mutation: delete the `COUNTING.with(|c| c.set(true))` in `begin_counting`.
 /// No thread is then ever counted, and both counts here read 0.
@@ -39,20 +68,20 @@ fn a_free_on_a_counting_thread_is_counted() {
 #[test]
 #[cfg_attr(miri, ignore = "threads; the instrument is not unsafe-heavy")]
 fn another_threads_allocations_are_not_counted() {
-    let go = Arc::new(Barrier::new(2));
+    let go = Arc::new(Step::default());
     let done = Arc::new(AtomicBool::new(false));
     let quiet = {
         let (go, done) = (go.clone(), done.clone());
         std::thread::spawn(move || {
             begin_counting();
-            go.wait();
+            go.reach(1);
             while !done.load(Ordering::Acquire) {
                 std::hint::spin_loop();
             }
             end_counting()
         })
     };
-    go.wait();
+    go.wait(1);
     for _ in 0..1000 {
         drop(black_box(vec![1u8; 64]));
     }
@@ -95,26 +124,27 @@ fn a_payload_counts_itself_and_its_drop() {
 #[test]
 #[cfg_attr(miri, ignore = "threads; the instrument is not unsafe-heavy")]
 fn a_promoted_arc_swap_guard_frees_on_the_reader() {
+    const HELD: u8 = 1;
+    const STORED: u8 = 2;
     let cell = Arc::new(arc_swap::ArcSwap::from_pointee(Payload::new(0)));
-    let held = Arc::new(Barrier::new(2));
-    let stored = Arc::new(Barrier::new(2));
+    let step = Arc::new(Step::default());
     let reader = {
-        let (cell, held, stored) = (cell.clone(), held.clone(), stored.clone());
+        let (cell, step) = (cell.clone(), step.clone());
         std::thread::spawn(move || {
             // Prewarmed: the thread's debt node exists before counting.
             black_box(cell.load().touch());
             begin_counting();
             let guard = cell.load();
-            held.wait();
-            stored.wait();
+            step.reach(HELD);
+            step.wait(STORED);
             black_box(guard.touch());
             drop(guard);
             end_counting()
         })
     };
-    held.wait();
+    step.wait(HELD);
     cell.store(Arc::new(Payload::new(1)));
-    stored.wait();
+    step.reach(STORED);
     let counts = reader.join().unwrap();
     assert_eq!(counts.payload_drops, 1, "{counts:?}");
     // The payload's array and the `Arc`'s allocation.
@@ -133,24 +163,25 @@ fn a_promoted_arc_swap_guard_frees_on_the_reader() {
 #[test]
 #[cfg_attr(miri, ignore = "threads; the instrument is not unsafe-heavy")]
 fn an_arc_lend_loan_frees_nothing_on_the_reader() {
+    const HELD: u8 = 1;
+    const STORED: u8 = 2;
     let cell = Arc::new(arc_lend::ArcLend::new(Payload::new(0)));
-    let held = Arc::new(Barrier::new(2));
-    let stored = Arc::new(Barrier::new(2));
+    let step = Arc::new(Step::default());
     let reader = {
-        let (cell, held, stored) = (cell.clone(), held.clone(), stored.clone());
+        let (cell, step) = (cell.clone(), step.clone());
         std::thread::spawn(move || {
             begin_counting();
             let loan = cell.lend();
-            held.wait();
-            stored.wait();
+            step.reach(HELD);
+            step.wait(STORED);
             black_box(loan.touch());
             drop(loan);
             end_counting()
         })
     };
-    held.wait();
+    step.wait(HELD);
     cell.publish(Arc::new(Payload::new(1)));
-    stored.wait();
+    step.reach(STORED);
     let counts = reader.join().unwrap();
     assert_eq!(counts, Default::default());
     // The retired value is still waiting, freed by the next publish.

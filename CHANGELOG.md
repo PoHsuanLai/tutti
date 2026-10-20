@@ -1682,9 +1682,14 @@ the window (or asserts on `Liveness` with explicit times).
   `SCHED_FIFO`, which does not time-slice, a helper queued behind the audio
   thread on its core could then not run until the kernel migrated it: a
   same-core probe with both at one FIFO priority stalled until its 2 s
-  watchdog in every run. Each wait now yields its core once per 1024 spins
-  in which the counter it waits on has not moved, and spins as before
-  otherwise; the probe's wait drops to the task's own 2–3 ms. No API
+  watchdog in every run. On Linux and Android, each wait now yields its
+  core once per 250 µs in which the counter it waits on has not moved, and
+  otherwise spins as before. The probe's wait drops to about 1.8 ms, the
+  rest of the task. A healthy block never waits that long: the executor
+  bench's caller does not yield at all, apart from blocks whose helper was
+  off its core. On other platforms the caller only spins, as before:
+  Windows' and macOS's yields can hand the core to a lower-priority thread,
+  and both schedulers round-robin equal-priority real-time threads. No API
   change. **Hosts:** a `WorkerPool`'s helpers must run at the audio
   callback's priority (`WorkerPoolBuilder::on_start`). A helper below it
   still waits for RT throttling (about 950 ms), because a yield only gives

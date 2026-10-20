@@ -27,10 +27,10 @@
 //! between jobs, outside the gate.
 //!
 //! The caller's own wait, for a helper still running a task or still inside
-//! the gate, spins, and yields its core once per spin budget in which the
-//! helper made no progress (`tutti_types`' `rt/spin.rs`). That yield is for
-//! a helper queued behind the caller on the caller's core, and it only helps
-//! one at the caller's priority (below).
+//! the gate, spins, and on Linux yields its core once per 250 µs in which
+//! the helper made no progress (`tutti_types`' `rt/spin.rs`). That yield is
+//! for a helper queued behind the caller on the caller's core, and it only
+//! helps one at the caller's priority (below).
 //!
 //! # Priority
 //!
@@ -50,8 +50,10 @@
 //! or until RT throttling takes the core from the callback (950 ms in every
 //! second by default on Linux): a dropout. At the callback's priority, the
 //! yield lets the helper finish its task (`tutti-types`'
-//! `tests/spin_starvation.rs` measures both). Above it is wrong too: a
-//! helper would then preempt the callback on its core.
+//! `tests/spin_starvation.rs` measures both on Linux; on Windows and macOS,
+//! where the caller does not yield, the scheduler round-robins
+//! equal-priority real-time threads at a quantum's end). Above it is wrong
+//! too: a helper would then preempt the callback on its core.
 
 use std::sync::atomic::{fence, AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};

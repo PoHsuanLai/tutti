@@ -31,10 +31,15 @@
 //! - **`FIFO` caller, `FIFO` helper at the same priority.** FIFO does not
 //!   time-slice, so a caller that only spins keeps the helper off the core
 //!   for good once it is queued behind it (here, after its block): the
-//!   watchdog has to abort the block. A caller that yields
-//!   after its spin budget (`rt/spin.rs`) goes behind the helper, which
-//!   finishes the task, and the wait is about the task's length. This case
-//!   is asserted.
+//!   watchdog has to abort the block. A caller that yields after 250 µs
+//!   without progress (`rt/spin.rs`) goes behind the helper, which finishes
+//!   the task, and the wait is about the rest of the task plus that budget.
+//!   This case is asserted.
+//!
+//! A run whose caller found the task already finished (its wait under
+//! 1 ms: the helper ran its whole task before the caller's 20 µs sleep woke,
+//! which an equal-priority FIFO helper can do) did not exercise the wait. It
+//! is reported as such, and the assertion needs at least one run that did.
 //!
 //! In a real deployment the helper is not pinned, and the kernel's RT
 //! push/pull migrates a runnable FIFO helper to a core running anything of
@@ -107,6 +112,17 @@ struct Outcome {
     aborted: bool,
 }
 
+/// Below this, the caller found task 0 already finished: the run did not
+/// exercise the wait. An exercised wait is at least the task's last 1 ms of
+/// CPU.
+const EXERCISED: Duration = Duration::from_millis(1);
+
+impl Outcome {
+    fn exercised(&self) -> bool {
+        self.aborted || self.wait >= EXERCISED
+    }
+}
+
 /// The caller's wait while a same-core helper holds task 0, or `None` if a
 /// policy was not permitted.
 fn measure(cpu: usize, caller: Policy, helper: Policy, iters: u64) -> Option<Outcome> {
@@ -135,7 +151,10 @@ fn measure(cpu: usize, caller: Policy, helper: Policy, iters: u64) -> Option<Out
                 }
             });
         });
-        // The watchdog, on another core.
+        // The watchdog, on another core. On a one-CPU machine that is the
+        // pair's own core, and the watchdog (`OTHER`) runs only once RT
+        // throttling takes the core from the FIFO pair: its abort comes
+        // late, but it comes.
         s.spawn(move || {
             pin((cpu + 1) % std::thread::available_parallelism().map_or(1, |n| n.get()));
             let deadline = Instant::now() + Duration::from_secs(2);
@@ -214,8 +233,10 @@ fn same_core_caller_and_helper() {
         }
         let waits: Vec<_> = runs.iter().map(|o| o.wait).collect();
         let aborts = runs.iter().filter(|o| o.aborted).count();
+        let idle = runs.iter().filter(|o| !o.exercised()).count();
         println!(
-            "{name}: caller waits {waits:?}; {aborts}/{} aborted by the 2 s watchdog",
+            "{name}: caller waits {waits:?}; {aborts}/{} aborted by the 2 s watchdog, \
+             {idle} not exercised (wait under {EXERCISED:?})",
             runs.len()
         );
         if caller == helper {
@@ -225,13 +246,23 @@ fn same_core_caller_and_helper() {
         }
     }
     // The fix's property: at equal FIFO priority on one core, the caller's
-    // yield lets the helper finish, so no block needs the watchdog.
+    // yield lets the helper finish, so no block needs the watchdog; and at
+    // least one run exercised the wait, so the property was tested.
     //
     // Mutation: make the caller never yield (`SpinThenYield::wait` spins
-    // only) → every FIFO/FIFO run is aborted at 2 s → fails (run: 5/5
-    // aborted, each wait ≈ 2.0 s).
-    assert!(
-        fifo_equal.iter().all(|o| !o.aborted),
-        "a same-priority FIFO caller starved its helper until the watchdog"
-    );
+    // only) → every exercised FIFO/FIFO run is aborted at 2 s → fails (run:
+    // 4/5 aborted at ≈ 2.0 s, the fifth not exercised). Mutation:
+    // drop the helper's mid-task sleep → an equal-priority FIFO caller cannot
+    // run until the helper has finished the task → no run is exercised →
+    // fails (run: 5/5 not exercised, waits 113–200 ns).
+    if !fifo_equal.is_empty() {
+        assert!(
+            fifo_equal.iter().all(|o| !o.aborted),
+            "a same-priority FIFO caller starved its helper until the watchdog"
+        );
+        assert!(
+            fifo_equal.iter().any(Outcome::exercised),
+            "no FIFO/FIFO run exercised the wait: every caller found the task done"
+        );
+    }
 }

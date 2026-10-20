@@ -3174,10 +3174,10 @@ Decisions:
    `Arc<Mutex<_>>`) are ordered serially by accident and not at all in
    parallel.
 7. **The caller spins, then yields** while it waits on a helper (the task
-   graph's `remaining`, the gate's `entered`): after a budget of spins in
-   which the counter has not moved, one `sched_yield`, then spin again
-   (`tutti_types`' `rt/spin.rs`). A helper never yields inside a job; it
-   leaves. This replaced a caller that only spun, which starved a helper
+   graph's `remaining`, the gate's `entered`). On Linux, after 250 µs in
+   which the counter has not moved, it calls `sched_yield` once, then spins
+   again (`tutti_types`' `rt/spin.rs`); elsewhere it only spins. A helper
+   never yields inside a job; it leaves. This replaced a caller that only spun, which starved a helper
    queued behind it on its own core under `SCHED_FIFO` (see ["The caller
    yields to a same-core helper"](#the-caller-yields-to-a-same-core-helper-landed)).
 
@@ -3898,27 +3898,57 @@ all three into fresh `Vec`s to keep only the restart flags.
   are pinned to one core. The helper holds the only task in flight: 1 ms of
   CPU, a 1 ms block, then 1 ms more.
 
-  | caller, helper | spin only | spin, then yield |
+  | caller, helper | spin only (main) | spin, then yield after 250 µs |
   |---|---|---|
-  | `OTHER`, `OTHER` | 1.6–7.9 ms | 2.3–5.0 ms |
-  | `FIFO` 10, `OTHER` | 950 ms–1.0 s (RT throttling) | 949–954 ms |
-  | `FIFO` 10, `FIFO` 10 | never: 5/5 aborted by the 2 s watchdog | 2.0–2.6 ms |
+  | `OTHER`, `OTHER` | 1.6–7.9 ms | 2.1–3.5 ms |
+  | `FIFO` 10, `OTHER` | 950 ms–1.0 s (RT throttling) | 951–953 ms (4 runs; 1 not exercised) |
+  | `FIFO` 10, `FIFO` 10 | never: 5/5 aborted by the 2 s watchdog | 1.83–1.85 ms (3 runs; 2 not exercised) |
 
-- **The fix.** `SpinThenYield` (`rt/spin.rs`): the first `CALLER_SPINS`
-  (1024) waits without progress are the spin they were, and then one
-  `yield_now`, after which the count starts again. Progress (the counter
-  moving) restarts the count. A wait on a task that runs longer than the
-  budget on another core still yields, and with no thread of the caller's
-  priority waiting for its core, the yield returns at once. No allocation;
-  the no-alloc gates are unchanged.
+  A run is "not exercised" when the caller found the task already done
+  (wait under 1 ms): at equal FIFO priority a waking caller cannot preempt
+  the helper, so in some runs the helper finishes before the caller runs.
+  The probe requires at least one exercised FIFO/FIFO run, and none
+  aborted.
+- **The fix.** `SpinThenYield` (`rt/spin.rs`). On Linux and Android, once
+  the counter it waits on has not moved for `CALLER_YIELD_AFTER` (250 µs),
+  the caller calls `yield_now` once and starts timing again. Progress (the
+  counter moving) restarts the clock. The clock (`Instant::now`, about
+  20 ns) is read once every 64 waits. 250 µs is long enough that a healthy
+  block never reaches it, and short enough to hand a starved helper the
+  core with about 2.4 ms of a 128-frame block (2.67 ms at 48 kHz) to spare.
+  No allocation; the no-alloc gates are unchanged.
+- **The first version was routine, not exceptional.** It counted 1024
+  waits instead of timing them, which is 10 to 100 µs depending on the core
+  (a wait is a `pop` attempt, a load and a `spin_loop` hint; a hint is
+  about 14 ns on this VM and 50 to 70 ns on Intel since Skylake). An
+  ordinary tail task outlasted it, so `wide/32x8/4` yielded about 1.2 times
+  per block. A time budget makes the yield exceptional.
+- **What a yield costs.** Under `SCHED_FIFO` or `SCHED_RR`, one system call
+  that returns at once when no thread of the caller's priority is ready on
+  its core. Under `SCHED_OTHER` the fair scheduler may run another task
+  first, for up to a slice of a few milliseconds. On Windows,
+  `SwitchToThread` may run a ready thread of lower priority for up to its
+  quantum, and macOS's `swtch_pri` lowers the caller's priority for up to a
+  quantum. Both also round-robin equal-priority real-time threads at a
+  quantum's end. So the caller yields only on Linux and Android, and spins
+  elsewhere as before. Neither Windows nor macOS was measured.
 - **Cost in the common case** (`tutti-nodes/benches/parallel_render.rs`,
-  everything run under `chrt -f 1` so the other load on the shared VM
-  could not preempt it). `strace -c` counts no extra yields for
-  `deep/128/4` (604 against 616), and about 1.2 caller yields per block for
-  `wide/32x8/4` (20,172 against 4,418), at the tail of each block.
-  `wide/32x8/4` medians over three alternating pairs: 211, 214 and 215 µs
-  on main, against 223, 211 and 218 µs with the yield. That is within
-  run-to-run spread, and every confidence interval overlaps.
+  run under `chrt -f 1` so the other load on the shared VM could not
+  preempt it; caller yields counted on the bench's main thread with
+  `strace -ff`).
+
+  | bench | count of 1024 (first version) | 250 µs |
+  |---|---|---|
+  | `deep/128/4` caller yields | 0 | 0 |
+  | `wide/32x8/4` caller yields | 15,567 (~1.2 per block) | 259, 414, 299 over ~13k blocks |
+
+  The time-based yields come in bursts: 124 and 87 separate gaps of over
+  2 ms in two runs. Each is a block in which no 20 µs lane task finished
+  for 250 µs, more than a whole median block (215 µs): a helper off its
+  core. The VM showed steal time at a load of about 10. Medians over three
+  alternating pairs against main: `wide/32x8/4` 211, 217 and 219 µs on
+  main, against 223, 209 and 216 µs; `deep/128/4` 184, 185 and 195 µs,
+  against 185, 166 and 191 µs. That is within run-to-run spread.
 - **What it does not fix.** A yield moves a FIFO thread behind threads of
   its own priority only. A helper below the callback's priority (a
   `SCHED_OTHER` helper, the default when a host gives
@@ -3933,13 +3963,16 @@ all three into fresh `Vec`s to keep only the restart flags.
   watchdog. Its yield is covered by a unit test.
 - **Tests.** `the_caller_yields_while_a_helper_holds_a_task` and
   `the_close_yields_while_a_helper_is_inside` hold a helper inside until
-  the caller's yield is counted (a test-only per-thread counter), so they
-  involve no timing. Without the yield each fails after its 10 s bound
-  instead of hanging. The loom models run the new wait unchanged (budget 2
-  under loom); the ordering is the same, so their mutation records stand.
-- **Deferred.** The budget is a count, as `HELPER_SPINS` is. A per-pool
-  setting, or a time budget (a `spin_loop` hint's cost differs about tenfold
-  across cores), is for the planned crate extraction.
+  the caller's yield is counted (a test-only per-thread counter). The
+  caller's clock is a test-only stepped one, a quarter of the budget per
+  read, so they involve no timing. Without the yield each fails after its
+  10 s bound instead of hanging. `rt::spin`'s two tests pin the budget on
+  the stepped clock. All four are Linux-only, as the yield is. loom has no
+  clock, so under loom the budget is two waits; the models run the new
+  wait, and the ordering is the same, so their mutation records stand.
+- **Deferred.** `CALLER_YIELD_AFTER` could be a per-pool setting in the
+  planned crate extraction. `HELPER_SPINS` is still a count, so how long a
+  helper stays in a block still differs across cores.
 
 ## Per-node rewrite plan
 

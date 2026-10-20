@@ -37,9 +37,9 @@
 //! The caller never waits on a helper that has not started: a helper still
 //! asleep when the gate closes never enters. It waits only for helpers
 //! inside the job, which leave as soon as the job's own termination says so.
-//! That wait spins, and yields the caller's core once per spin budget in
-//! which `entered` has not moved (`SpinThenYield`, `src/rt/spin.rs`), so a
-//! helper queued behind a `SCHED_FIFO` caller on its own core can run and
+//! That wait spins, and on Linux yields the caller's core once per 250 µs
+//! in which `entered` has not moved (`SpinThenYield`, `src/rt/spin.rs`), so
+//! a helper queued behind a `SCHED_FIFO` caller on its own core can run and
 //! leave.
 
 use sync::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering, UnsafeCell};
@@ -310,16 +310,19 @@ mod tests {
     }
 
     /// The close, waiting for a helper still inside the job, yields the
-    /// caller's core once its spin budget passes with `entered` unchanged:
-    /// what lets a helper queued behind a `SCHED_FIFO` caller on one core
-    /// leave at all (`src/rt/spin.rs`). The helper stays inside until it
+    /// caller's core once its budget passes with `entered` unchanged: what
+    /// lets a helper queued behind a `SCHED_FIFO` caller on one core leave
+    /// at all (`src/rt/spin.rs`). The caller's clock is a stepped one (a
+    /// quarter of the budget per read), and the helper stays inside until it
     /// sees the caller's yield counted, so no timing is involved; the 10 s
-    /// bound is only how a missing yield fails rather than hangs.
+    /// bound is only how a missing yield fails rather than hangs. Linux
+    /// only, as the yield is.
     ///
     /// Mutation: make `SpinThenYield::wait` spin on every wait (drop its
     /// yield branch) → no yield is counted → the helper gives up after 10 s
     /// and leaves → `saw` is false → fails (run: fails after 10 s).
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn the_close_yields_while_a_helper_is_inside() {
         use std::time::{Duration, Instant};
         static YIELDED: AtomicU32 = AtomicU32::new(0);
@@ -335,6 +338,7 @@ mod tests {
                 }
             });
             crate::rt::spin::tests::count_yields_into(&YIELDED);
+            crate::rt::spin::tests::step_clock(crate::rt::spin::CALLER_YIELD_AFTER / 4);
             let joined = gate.run(
                 &|i| {
                     let deadline = Instant::now() + Duration::from_secs(10);

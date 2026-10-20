@@ -53,15 +53,18 @@
 //!
 //! A participant with nothing to take while tasks are still running spins.
 //! The audio thread ([`Participant::Caller`]) waits until the block is done:
-//! it spins, and once `remaining` has not moved for a spin budget it yields
-//! its core once and spins again (`SpinThenYield`, `src/rt/spin.rs`). A
-//! wait in which a task finishes within the budget is the plain spin it
-//! always was. The yield is for a helper queued behind the caller on the
-//! caller's own core: under `SCHED_FIFO`, which does not time-slice, a
-//! caller that only spun would keep it off that core until the kernel
-//! migrated it, or for good. The yield is not a wait on the OS in doc 013
-//! §4's sense: the caller gives back a core it would only spin on, and gets
-//! it back at once when no thread of its priority is waiting.
+//! it spins, and on Linux, once `remaining` has not moved for 250 µs, it
+//! yields its core once and spins again (`SpinThenYield`, `src/rt/spin.rs`).
+//! A healthy block never waits that long without a task finishing, so its
+//! wait is the plain spin it always was. The yield is for a helper queued
+//! behind the caller on the caller's own core: under `SCHED_FIFO`, which
+//! does not time-slice, a caller that only spun would keep it off that core
+//! until the kernel migrated it, or for good. Under `SCHED_FIFO` or
+//! `SCHED_RR` the yield returns at once when no thread of the caller's
+//! priority is ready on its core; under `SCHED_OTHER` it may give the core
+//! to another task for a slice, which is why only a stuck wait yields.
+//! Elsewhere than Linux the caller only spins (`src/rt/spin.rs`, "Only on
+//! Linux").
 //! A [`Participant::Helper`] spins at most `HELPER_SPINS` times in a row and
 //! then **leaves** `work`, forfeiting the rest of the block, rather than
 //! yielding: the caller waits for every helper still inside the job before
@@ -81,10 +84,15 @@ mod sync {
 }
 
 /// How many waits in a row a [`Participant::Helper`] spins with nothing to
-/// take before it leaves [`TaskGraph::work`]. A few microseconds of
-/// `spin_loop` on current x86 and ARM cores: long enough to pick up the
+/// take before it leaves [`TaskGraph::work`]. A wait is a ready-list `pop`
+/// attempt, a load of `remaining` and a `spin_loop` hint: from about 10 ns
+/// to about 100 ns depending on the core and on contention (a `pause` is
+/// about 14 ns on the VM measured in doc 013, 50 to 70 ns on Intel since
+/// Skylake). So this is roughly 10 to 100 µs: long enough to pick up the
 /// successors of a task another participant is finishing, short enough that
-/// a helper behind a long critical-path node goes back to its pool.
+/// a helper behind a long critical-path node goes back to its pool. A count,
+/// so it differs across cores; a time budget like the caller's
+/// (`src/rt/spin.rs`) is the alternative.
 const HELPER_SPINS: u32 = if cfg!(loom) { 2 } else { 1024 };
 
 /// An empty ready-list entry.
@@ -99,8 +107,8 @@ struct Padded<T>(T);
 /// Who is running [`TaskGraph::work`], which decides how it waits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Participant {
-    /// The audio thread: spins while it waits, and yields its core once per
-    /// spin budget in which no task finished (see the module docs,
+    /// The audio thread: spins while it waits, and on Linux yields its core
+    /// once per 250 µs in which no task finished (see the module docs,
     /// "Waiting").
     Caller,
     /// A worker thread: spins a bounded number of times, then leaves the
@@ -490,17 +498,20 @@ mod tests {
     }
 
     /// The caller, with nothing to take while a helper holds the only task
-    /// in flight, yields its core once its spin budget passes with no task
+    /// in flight, yields its core once its budget passes with no task
     /// finished: what lets a helper queued behind a `SCHED_FIFO` caller on
-    /// one core run at all (`src/rt/spin.rs`). The helper holds task 0
-    /// until it sees the caller's yield counted, so no timing is involved;
-    /// the 10 s bound is only how a missing yield fails rather than hangs.
+    /// one core run at all (`src/rt/spin.rs`). The caller's clock is a
+    /// stepped one (a quarter of the budget per read), and the helper holds
+    /// task 0 until it sees the caller's yield counted, so no timing is
+    /// involved; the 10 s bound is only how a missing yield fails rather
+    /// than hangs. Linux only, as the yield is.
     ///
     /// Mutation: make `SpinThenYield::wait` spin on every wait (drop its
     /// yield branch) → no yield is counted → the helper gives up after 10 s
     /// and finishes the block → `saw_yield` is false → fails (run: fails
     /// after 10 s).
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn the_caller_yields_while_a_helper_holds_a_task() {
         use std::sync::atomic::AtomicU32;
         use std::sync::mpsc;
@@ -532,6 +543,7 @@ mod tests {
             });
             held_rx.recv().unwrap();
             crate::rt::spin::tests::count_yields_into(&YIELDED);
+            crate::rt::spin::tests::step_clock(crate::rt::spin::CALLER_YIELD_AFTER / 4);
             g.work(Participant::Caller, |t| {
                 panic!("the caller took task {t}, which the helper holds or runs inline")
             });

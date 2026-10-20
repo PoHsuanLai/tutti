@@ -1,0 +1,96 @@
+# The Bevy-free API layer (design 015): the cross-crate composition both
+# umbrellas use. `bevy-tutti` and `tutti` depend on it; nothing else does.
+#
+# Not an umbrella: it re-exports no crate whole (`scripts/check-bevy-free.sh`
+# fails on `pub use tutti_x as …;`, `pub use tutti_x;` and
+# `pub use tutti_x::*;`), only the single items its own signatures take. And no
+# `bevy` feature: nothing here reaches Bevy (the same script runs
+# `cargo tree -p tutti-session -e normal --all-features`).
+[package]
+name = "tutti-session"
+version = "0.1.0"
+edition = "2021"
+description = "The tutti audio engine's Bevy-free API layer: a graph, its engine, its device and the order they run in"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Always: the graph, the engine and transport, the vocabulary, and the nodes
+# the builder inserts (the click) and modulation applies (`Modulation`).
+tutti-types = { path = "../core/tutti-types", default-features = false }
+tutti-graph = { path = "../core/tutti-graph" }
+tutti-core = { path = "../core/tutti-core", default-features = false }
+tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
+# Logging: what `GraphRuntime`'s `bevy_log` calls became. `bevy_log` is a
+# `tracing` subscriber, so a Bevy app sees these where it saw those.
+tracing = "0.1"
+thiserror.workspace = true
+
+# The sound card. Off: offline only, and no ALSA headers needed.
+tutti-cpal = { path = "../core/tutti-cpal", default-features = false, optional = true }
+tutti-io = { path = "../core/tutti-io", optional = true }
+tutti-mod = { path = "../core/tutti-mod", default-features = false, optional = true }
+tutti-midi-types = { path = "../midi/tutti-midi-types", default-features = false, optional = true }
+tutti-midi-runtime = { path = "../midi/tutti-midi-runtime", default-features = false, optional = true }
+tutti-midi-file = { path = "../midi/tutti-midi-file", optional = true }
+tutti-midi-hardware = { path = "../midi/tutti-midi-hardware", optional = true }
+tutti-sampler = { path = "../dsp/tutti-sampler", default-features = false, optional = true }
+tutti-soundfont = { path = "../dsp/tutti-soundfont", optional = true }
+tutti-polysynth = { path = "../dsp/tutti-polysynth", optional = true }
+tutti-spatial = { path = "../dsp/tutti-spatial", default-features = false, optional = true }
+tutti-export = { path = "../core/tutti-export", optional = true }
+tutti-plugin = { path = "../plugin/tutti-plugin", optional = true }
+# `assert_main_thread`, the debug-only guard on the calls whose frees are
+# main-thread-only (design 015 §4.2).
+tutti-plugin-types = { path = "../plugin/tutti-plugin-types", optional = true }
+
+[features]
+# Every subsystem is a feature, as on every engine crate. There is no `bevy`
+# feature, and there must never be one (`scripts/check-bevy-free.sh`).
+default = []
+device = ["dep:tutti-cpal"]
+audio-io = ["dep:tutti-io", "tutti-cpal?/capture"]
+modulation = ["dep:tutti-mod"]
+midi = [
+    "dep:tutti-midi-types",
+    "dep:tutti-midi-runtime",
+    "dep:tutti-midi-file",
+    "tutti-core/midi",
+]
+midi-hardware = ["midi", "dep:tutti-midi-hardware"]
+sampler = ["dep:tutti-sampler"]
+# `midi`: `tutti-soundfont` needs `tutti-core/midi`.
+soundfont = ["midi", "dep:tutti-soundfont"]
+synth = ["dep:tutti-polysynth"]
+# The `SessionNode` impls of the panners only.
+spatial = ["dep:tutti-spatial"]
+hrtf = ["spatial", "tutti-spatial/hrtf"]
+convolution = ["tutti-nodes/convolution"]
+export = ["dep:tutti-export"]
+plugin = ["dep:tutti-plugin", "dep:tutti-plugin-types", "midi"]
+vst2 = ["plugin", "tutti-plugin/vst2"]
+vst3 = ["plugin", "tutti-plugin/vst3"]
+clap = ["plugin", "tutti-plugin/clap"]
+au = ["plugin", "tutti-plugin/au"]
+
+[dev-dependencies]
+# Stimulus nodes (`Const`, `Osc`, `Through`) for the tests and doctests.
+tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false, features = ["testing"] }
+# The in-memory tone a sampler voice test plays (`Wave`).
+tutti-io = { path = "../core/tutti-io" }
+# `test-support`'s hand-stepped streamer.
+tutti-sampler = { path = "../dsp/tutti-sampler", default-features = false, features = ["test-support"] }
+# `ManualStreamDriver`, `OutputSpec`: the device-free device tests.
+tutti-cpal = { path = "../core/tutti-cpal", default-features = false }
+
+[package.metadata.docs.rs]
+all-features = true
+
+# The device-free device tests (`ManualStreamDriver`): `device` is a feature,
+# so this suite runs under it (a workspace run unifies it in through
+# `bevy-tutti`).
+[[test]]
+name = "device"
+required-features = ["device"]

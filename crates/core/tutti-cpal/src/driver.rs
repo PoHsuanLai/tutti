@@ -164,8 +164,10 @@ impl TuttiDriver {
     /// Restarts the stream on a (possibly different) output device, which
     /// must run at the rate the graph was built at.
     ///
-    /// Stops the current stream, selects `device_index` (the default device
-    /// if `None`), reads its config and starts a new stream on it.
+    /// Stops the current stream, selects `device` (a
+    /// [`DeviceSelector`](crate::DeviceSelector), or an `Option<usize>`
+    /// position with `None` for the default), reads its config and starts a
+    /// new stream on it.
     ///
     /// # Errors
     ///
@@ -176,8 +178,8 @@ impl TuttiDriver {
     /// tempo without a word. Restart through
     /// [`restart_with`](Self::restart_with) to re-rate the graph between
     /// the stop and the start. Otherwise what [`AudioEngine::start`] reports.
-    pub fn restart(&mut self, device_index: Option<usize>) -> Result<()> {
-        self.restart_with(device_index, refuse_rate_change(self.graph_rate))
+    pub fn restart(&mut self, device: impl Into<crate::DeviceSelector>) -> Result<()> {
+        self.restart_with(device, refuse_rate_change(self.graph_rate))
     }
 
     /// Restarts like [`restart`](Self::restart), running `rerate` between the
@@ -205,12 +207,12 @@ impl TuttiDriver {
     /// own error.
     pub fn restart_with<E: From<crate::Error>>(
         &mut self,
-        device_index: Option<usize>,
+        device: impl Into<crate::DeviceSelector>,
         rerate: impl FnOnce(&crate::OutputSpec, &Stopped<'_>) -> core::result::Result<(), E>,
     ) -> core::result::Result<(), E> {
         self.audio_engine.stop();
         self.callback_state.reset_owners();
-        self.audio_engine.set_device(device_index);
+        self.audio_engine.select_device(device.into());
         let old = self.audio_engine.spec().clone();
         let device = self.audio_engine.resolve()?;
         self.rerate_or_restore(old, rerate)?;
